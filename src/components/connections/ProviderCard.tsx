@@ -1,0 +1,228 @@
+"use client";
+
+import { useActionState, useState, useTransition } from "react";
+import {
+  Camera,
+  CreditCard,
+  Calculator,
+  Folder,
+  Mail,
+  Phone,
+  MessageSquare,
+  Users,
+  MessageCircle,
+  Send,
+  CheckCircle2,
+  AlertCircle,
+  Circle,
+  ExternalLink,
+  RefreshCw,
+  Loader2,
+  type LucideIcon,
+} from "lucide-react";
+import type { ProviderDef } from "@/lib/integrations/registry";
+import { connectAryeo, syncAryeoNow, disconnectProvider, type ActionResult } from "@/app/connections/actions";
+
+const ICONS: Record<string, LucideIcon> = {
+  Camera, CreditCard, Calculator, Folder, Mail, Phone, MessageSquare, Users, MessageCircle, Send,
+};
+
+export type ConnState = {
+  status: string;
+  accountLabel: string | null;
+  lastSyncedAt: string | null;
+  lastError: string | null;
+};
+
+export function ProviderCard({
+  provider,
+  conn,
+  deployed,
+}: {
+  provider: ProviderDef;
+  conn: ConnState | null;
+  deployed: boolean;
+}) {
+  const Icon = ICONS[provider.icon] ?? Circle;
+  const connected = conn?.status === "CONNECTED";
+  const errored = conn?.status === "ERROR";
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="rounded-2xl border bg-surface p-4">
+      <div className="flex items-start gap-3">
+        <span
+          className="flex size-10 shrink-0 items-center justify-center rounded-xl"
+          style={{ backgroundColor: `${provider.color}1a`, color: provider.color }}
+        >
+          <Icon className="size-5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold">{provider.name}</span>
+            <StatusPill connected={connected} errored={errored} ready={provider.ready} />
+          </div>
+          <p className="text-xs text-muted">{provider.blurb}</p>
+        </div>
+      </div>
+
+      {/* Status / meta line */}
+      {connected && (
+        <div className="mt-2 text-xs text-muted">
+          {conn?.accountLabel && <span>{conn.accountLabel} · </span>}
+          {conn?.lastSyncedAt
+            ? `Last sync ${new Date(conn.lastSyncedAt).toLocaleString()}`
+            : "Not synced yet"}
+        </div>
+      )}
+      {errored && conn?.lastError && (
+        <div className="mt-2 rounded-lg bg-danger-soft px-2 py-1 text-xs text-danger">{conn.lastError}</div>
+      )}
+
+      {/* Capabilities */}
+      <ul className="mt-3 space-y-1">
+        {provider.capabilities.map((c) => (
+          <li key={c} className="flex items-start gap-1.5 text-xs text-foreground/75">
+            <CheckCircle2 className="mt-0.5 size-3 shrink-0 text-success" /> {c}
+          </li>
+        ))}
+      </ul>
+
+      {/* Action area */}
+      <div className="mt-4">
+        {provider.id === "aryeo" ? (
+          <AryeoActions connected={connected} onExpand={() => setExpanded((e) => !e)} expanded={expanded} />
+        ) : provider.authType === "oauth" && !deployed ? (
+          <button
+            disabled
+            title="OAuth services need the app deployed to a public URL first"
+            className="w-full cursor-not-allowed rounded-lg border bg-surface px-3 py-2 text-sm font-medium opacity-60"
+          >
+            Connect (after deploy)
+          </button>
+        ) : (
+          <button
+            disabled
+            title="Integration code lands next — framework is ready"
+            className="w-full cursor-not-allowed rounded-lg border bg-surface px-3 py-2 text-sm font-medium opacity-60"
+          >
+            {provider.authType === "apikey" ? "Add API key (coming next)" : "Connect (coming next)"}
+          </button>
+        )}
+      </div>
+
+      {provider.docsUrl && (
+        <a
+          href={provider.docsUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-2 inline-flex items-center gap-1 text-xs text-muted-2 hover:text-foreground"
+        >
+          <ExternalLink className="size-3" /> API docs
+        </a>
+      )}
+
+      {provider.id === "aryeo" && expanded && <AryeoConnectForm />}
+    </div>
+  );
+}
+
+function StatusPill({ connected, errored, ready }: { connected: boolean; errored: boolean; ready: boolean }) {
+  if (connected)
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-success-soft px-2 py-0.5 text-[11px] font-medium text-success">
+        <CheckCircle2 className="size-3" /> Connected
+      </span>
+    );
+  if (errored)
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-danger-soft px-2 py-0.5 text-[11px] font-medium text-danger">
+        <AlertCircle className="size-3" /> Error
+      </span>
+    );
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-muted">
+      <Circle className="size-3" /> {ready ? "Not connected" : "Ready to wire"}
+    </span>
+  );
+}
+
+function AryeoActions({
+  connected,
+  onExpand,
+  expanded,
+}: {
+  connected: boolean;
+  onExpand: () => void;
+  expanded: boolean;
+}) {
+  const [pending, startTransition] = useTransition();
+  const [msg, setMsg] = useState<ActionResult | null>(null);
+
+  if (!connected) {
+    return (
+      <button
+        onClick={onExpand}
+        className="w-full rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90"
+      >
+        {expanded ? "Cancel" : "Connect Aryeo"}
+      </button>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex gap-2">
+        <button
+          onClick={() => startTransition(async () => setMsg(await syncAryeoNow()))}
+          disabled={pending}
+          className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+        >
+          {pending ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+          Sync now
+        </button>
+        <button
+          onClick={() => startTransition(async () => setMsg(await disconnectProvider("aryeo")))}
+          disabled={pending}
+          className="rounded-lg border px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-60"
+        >
+          Disconnect
+        </button>
+      </div>
+      {msg && (
+        <p className={`text-xs ${msg.ok ? "text-success" : "text-danger"}`}>{msg.message}</p>
+      )}
+    </div>
+  );
+}
+
+function AryeoConnectForm() {
+  const [state, action, pending] = useActionState(connectAryeo, null);
+  return (
+    <form action={action} className="mt-3 space-y-2 rounded-xl border bg-surface-2 p-3">
+      <label className="text-xs font-medium text-foreground/80">Aryeo API key</label>
+      <input
+        name="key"
+        type="password"
+        autoComplete="off"
+        placeholder="Paste your Aryeo API key"
+        className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
+      />
+      <p className="text-[11px] text-muted">
+        In Aryeo: <strong>Group Settings → Developers → API Keys → Generate</strong>. The key is
+        encrypted before it&apos;s stored and never shown again.
+      </p>
+      <button
+        type="submit"
+        disabled={pending}
+        className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+      >
+        {pending && <Loader2 className="size-4 animate-spin" />}
+        Test &amp; connect
+      </button>
+      {state && (
+        <p className={`text-xs ${state.ok ? "text-success" : "text-danger"}`}>{state.message}</p>
+      )}
+    </form>
+  );
+}

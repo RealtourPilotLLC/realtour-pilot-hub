@@ -1,0 +1,309 @@
+// RealTour Pilot — Operations Hub
+// Data model for Milestone 1: the booked -> delivered project pipeline.
+// Designed to grow: clients, deliverables, checklists, and activity timeline
+// are all first-class so CRM, finance, and the upload portal slot in later.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  ADMIN
+  MANAGER
+  SALES
+  PHOTOGRAPHER
+  EDITOR
+  VA
+}
+
+// The booked -> delivered pipeline stages, in order.
+enum ProjectStatus {
+  BOOKED // order received, not yet scheduled
+  SCHEDULED // shoot date set + photographer assigned
+  SHOT // content captured / uploaded by photographer
+  EDITING // assigned to an editor, in production
+  REVIEW // internal QC / quality check
+  DELIVERED // sent to client
+  ON_HOLD // blocked / waiting on client or info
+  CANCELLED
+}
+
+enum Priority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+// What was ordered for a shoot. Drives the photographer checklist later.
+enum DeliverableType {
+  PHOTOS
+  VIDEO
+  FLOORPLAN
+  DRONE
+  TWILIGHT
+  MATTERPORT_3D
+  VIRTUAL_STAGING
+  SOCIAL_REEL
+  ZILLOW_3D
+  HEADSHOT
+  OTHER
+}
+
+enum DeliverableStatus {
+  PENDING // ordered, not yet produced
+  UPLOADED // photographer uploaded raw content
+  IN_PROGRESS // editor working on it
+  DONE // finished
+  FLAGGED // problem flagged, needs attention
+}
+
+// Kinds of entries on a project's activity timeline.
+enum ActivityType {
+  NOTE
+  STATUS_CHANGE
+  ASSIGNMENT
+  SPECIAL_REQUEST
+  FLAG
+  FILE
+  REMINDER
+  SYSTEM
+}
+
+// ---------------------------------------------------------------------------
+// Core models
+// ---------------------------------------------------------------------------
+
+model TeamMember {
+  id          String   @id @default(cuid())
+  name        String
+  email       String   @unique
+  role        Role     @default(VA)
+  phone       String?
+  avatarColor String   @default("#6366f1") // for UI avatars
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  // Work assigned to this person
+  shootsAsPhotographer Project[]      @relation("Photographer")
+  projectsAsEditor     Project[]      @relation("Editor")
+  projectsAsVa         Project[]      @relation("VA")
+  authoredActivities   Activity[]
+  assignedChecklist    ChecklistItem[]
+  uploadedFiles        UploadedFile[]
+}
+
+model Client {
+  id        String   @id @default(cuid())
+  name      String
+  email     String?
+  phone     String?
+  company   String? // brokerage / team name
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Free-form, smart-notes-ready fields (CRM milestone fills these out)
+  editingPreferences String? // e.g. "Bright & airy, blue skies, no HDR halos"
+  generalNotes       String?
+
+  // External system linkage
+  aryeoCustomerId String? @unique
+
+  projects Project[]
+}
+
+model Project {
+  id        String        @id @default(cuid())
+  title     String // usually the property address
+  status    ProjectStatus @default(BOOKED)
+  priority  Priority      @default(NORMAL)
+
+  // Property / order detail
+  addressLine String?
+  city        String?
+  state       String?
+  zip         String?
+  squareFeet  Int?
+  packageName String? // ordered package label
+  price       Float? // order total
+
+  // Scheduling
+  shootDate   DateTime?
+  deliveryDue DateTime?
+  deliveredAt DateTime?
+
+  // Relations / assignment
+  client         Client      @relation(fields: [clientId], references: [id])
+  clientId       String
+  photographer   TeamMember? @relation("Photographer", fields: [photographerId], references: [id])
+  photographerId String?
+  editor         TeamMember? @relation("Editor", fields: [editorId], references: [id])
+  editorId       String?
+  va             TeamMember? @relation("VA", fields: [vaId], references: [id])
+  vaId           String?
+
+  // External system linkage
+  source        String  @default("MANUAL") // MANUAL | ARYEO | ...
+  aryeoId       String? // legacy/general Aryeo ref
+  aryeoOrderId  String? @unique
+  aryeoListingId String?
+
+  notes String?
+
+  // Photographer's brief to the editor, captured at upload time.
+  editorBrief String?
+  // When the photographer finished the guided upload.
+  uploadedAt  DateTime?
+  // Relative path to the generated editor-brief PDF, if any.
+  editorPdfPath String?
+
+  deliverables Deliverable[]
+  checklist    ChecklistItem[]
+  activities   Activity[]
+  uploads      UploadedFile[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([clientId])
+}
+
+model Deliverable {
+  id        String            @id @default(cuid())
+  project   Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String
+  type      DeliverableType
+  label     String? // optional override label
+  quantity  Int               @default(1)
+  status    DeliverableStatus @default(PENDING)
+  notes     String?
+  createdAt DateTime          @default(now())
+
+  uploads UploadedFile[]
+
+  @@index([projectId])
+}
+
+// A file uploaded through the photographer portal. The actual bytes live in
+// local storage today; this maps cleanly onto a Dropbox file later.
+model UploadedFile {
+  id           String       @id @default(cuid())
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId    String
+  deliverable  Deliverable? @relation(fields: [deliverableId], references: [id], onDelete: SetNull)
+  deliverableId String?
+  originalName String
+  storedPath   String // relative path within the storage root
+  size         Int
+  mimeType     String
+  uploadedBy   TeamMember?  @relation(fields: [uploadedById], references: [id])
+  uploadedById String?
+  createdAt    DateTime     @default(now())
+
+  @@index([projectId])
+}
+
+model ChecklistItem {
+  id           String      @id @default(cuid())
+  project      Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId    String
+  label        String
+  done         Boolean     @default(false)
+  forRole      Role? // which team role this is for
+  assignee     TeamMember? @relation(fields: [assigneeId], references: [id])
+  assigneeId   String?
+  dueAt        DateTime?
+  sortOrder    Int         @default(0)
+  createdAt    DateTime    @default(now())
+
+  @@index([projectId])
+}
+
+model Activity {
+  id        String       @id @default(cuid())
+  project   Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String
+  type      ActivityType @default(NOTE)
+  body      String
+  author    TeamMember?  @relation(fields: [authorId], references: [id])
+  authorId  String?
+  createdAt DateTime     @default(now())
+
+  @@index([projectId])
+}
+
+// ---------------------------------------------------------------------------
+// Knowledge: resources + SOPs (the "Resources" tab Kyle uses)
+// ---------------------------------------------------------------------------
+
+model Resource {
+  id          String   @id @default(cuid())
+  title       String
+  url         String
+  category    String // e.g. "Tools", "Booking & Calls", "Brand Assets"
+  description String?
+  icon        String? // lucide icon name
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  @@index([category])
+}
+
+model Sop {
+  id        String   @id @default(cuid())
+  title     String
+  category  String // e.g. "Shooting", "Editing", "Delivery", "Sales"
+  summary   String? // one-liner
+  content   String // markdown-ish body
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@index([category])
+}
+
+// ---------------------------------------------------------------------------
+// Integrations: external service connections + webhook audit log
+// ---------------------------------------------------------------------------
+
+// One row per connected external service (aryeo, stripe, gmail, …).
+// Secrets are stored encrypted-at-rest (see lib/integrations/crypto.ts) and are
+// never sent to the client.
+model Connection {
+  id                String    @id @default(cuid())
+  provider          String    @unique // "aryeo", "stripe", "dropbox", …
+  status            String    @default("DISCONNECTED") // DISCONNECTED | CONNECTED | ERROR
+  secretEncrypted   String? // encrypted API key / token blob
+  accountLabel      String? // human label, e.g. the connected account name
+  metadata          String? // JSON blob for provider-specific config
+  lastSyncedAt      DateTime?
+  lastError         String?
+  webhookSecret     String? // for verifying inbound webhooks
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+}
+
+// Audit log of every inbound webhook, for debugging + replay.
+model WebhookEvent {
+  id          String    @id @default(cuid())
+  provider    String
+  eventType   String?
+  externalId  String? // provider's event id, for idempotency
+  payload     String // raw JSON
+  status      String    @default("RECEIVED") // RECEIVED | PROCESSED | ERROR
+  error       String?
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([provider])
+  @@index([externalId])
+}
