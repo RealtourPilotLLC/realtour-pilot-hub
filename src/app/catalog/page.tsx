@@ -1,15 +1,14 @@
-import Link from "next/link";
-import { Package, Sun, Plus, Camera, Tag as TagIcon } from "lucide-react";
+import { Package, Sun, Plus, Camera, Home, Building2 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { prisma } from "@/lib/prisma";
 import { formatMoney } from "@/lib/utils";
 import type { Product } from "@prisma/client";
+import type { LucideIcon } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
 type Variant = { title?: string; price_amount?: number; duration?: number };
-type GroupBy = "type" | "tag" | "category";
 
 function tagsOf(p: Product): string[] {
   if (!p.tags) return [];
@@ -20,9 +19,26 @@ function tagsOf(p: Product): string[] {
   }
 }
 
+// The catalog's fixed sections, in display order.
+const SECTIONS: { key: string; label: string; icon: LucideIcon }[] = [
+  { key: "Real Estate", label: "Real Estate", icon: Home },
+  { key: "STR", label: "STR (AirBnb)", icon: Building2 },
+  { key: "JATEAM", label: "JATEAM", icon: Package },
+  { key: "Add-ons", label: "Add-on's", icon: Plus },
+];
+
+// Place each product into one of the four buckets. Add-ons (by product type) go
+// to "Add-on's"; main products go under each of their matching tags, defaulting
+// to Real Estate when none of the three brand tags are present.
+function bucketsFor(p: Product): string[] {
+  if (p.type !== "MAIN") return ["Add-ons"];
+  const tags = tagsOf(p);
+  const matched = ["Real Estate", "STR", "JATEAM"].filter((t) => tags.includes(t));
+  return matched.length ? matched : ["Real Estate"];
+}
+
 function ProductCard({ p }: { p: Product }) {
   const variants: Variant[] = p.variants ? JSON.parse(p.variants) : [];
-  // Drop the cleanest single price label: a from-price keeps cards scannable.
   const from = p.minPrice != null ? formatMoney(p.minPrice / 100) : null;
   const range = p.minPrice != null && p.maxPrice != null && p.minPrice !== p.maxPrice;
 
@@ -41,25 +57,17 @@ function ProductCard({ p }: { p: Product }) {
         </div>
       </div>
 
-      <div className="mt-2 flex flex-wrap items-center gap-1">
-        {p.isTwilight && (
-          <Badge color="#d97706" soft="#fef3c7">
-            <Sun className="mr-0.5 inline size-3" />
-            twilight
-          </Badge>
-        )}
-        {!p.active && <Badge soft="var(--surface-2)">inactive</Badge>}
-        {tagsOf(p)
-          .slice(0, 3)
-          .map((t) => (
-            <span
-              key={t}
-              className="inline-flex items-center gap-0.5 rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted"
-            >
-              {t}
-            </span>
-          ))}
-      </div>
+      {(p.isTwilight || !p.active) && (
+        <div className="mt-2 flex flex-wrap items-center gap-1">
+          {p.isTwilight && (
+            <Badge color="#d97706" soft="#fef3c7">
+              <Sun className="mr-0.5 inline size-3" />
+              twilight
+            </Badge>
+          )}
+          {!p.active && <Badge soft="var(--surface-2)">inactive</Badge>}
+        </div>
+      )}
 
       {variants.length > 1 && (
         <details className="mt-3 border-t pt-2 [&_summary]:list-none">
@@ -80,80 +88,18 @@ function ProductCard({ p }: { p: Product }) {
   );
 }
 
-// Build ordered [groupLabel, products][] for the chosen grouping. A product can
-// appear in multiple groups when grouping by tag (multi-tagged).
-function buildGroups(products: Product[], groupBy: GroupBy): [string, Product[]][] {
-  const map = new Map<string, Product[]>();
-  const push = (key: string, p: Product) => {
-    if (!map.has(key)) map.set(key, []);
-    map.get(key)!.push(p);
-  };
+export default async function CatalogPage() {
+  const products = await prisma.product.findMany({ orderBy: [{ title: "asc" }] });
 
+  // Build the four fixed groups.
+  const grouped = new Map<string, Product[]>(SECTIONS.map((s) => [s.key, []]));
   for (const p of products) {
-    if (groupBy === "type") {
-      push(p.type === "MAIN" ? "Packages & Services" : "Add-ons", p);
-    } else if (groupBy === "category") {
-      push(p.category || "Uncategorized", p);
-    } else {
-      const tags = tagsOf(p);
-      if (tags.length === 0) push("Untagged", p);
-      else for (const t of tags) push(t, p);
-    }
+    for (const b of bucketsFor(p)) grouped.get(b)?.push(p);
   }
-
-  const entries = [...map.entries()];
-  // Keep a sensible order: Packages before Add-ons; otherwise alpha, catch-alls last.
-  const catchAll = ["Untagged", "Uncategorized", "Add-ons"];
-  entries.sort((a, b) => {
-    const ai = catchAll.indexOf(a[0]);
-    const bi = catchAll.indexOf(b[0]);
-    if (ai !== -1 || bi !== -1) return (ai === -1 ? -1 : ai) - (bi === -1 ? -1 : bi);
-    if (a[0] === "Packages & Services") return -1;
-    if (b[0] === "Packages & Services") return 1;
-    return a[0].localeCompare(b[0]);
-  });
-  return entries;
-}
-
-const GROUP_OPTIONS: { key: GroupBy; label: string }[] = [
-  { key: "type", label: "Type" },
-  { key: "tag", label: "Tag" },
-  { key: "category", label: "Category" },
-];
-
-export default async function CatalogPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ group?: string }>;
-}) {
-  const { group } = await searchParams;
-  const groupBy: GroupBy = group === "tag" || group === "category" ? group : "type";
-
-  const products = await prisma.product.findMany({ orderBy: [{ type: "asc" }, { title: "asc" }] });
-  const groups = buildGroups(products, groupBy);
 
   return (
     <div>
-      <PageHeader
-        title="Service Catalog"
-        subtitle={`${products.length} products & packages synced from Aryeo`}
-        actions={
-          <div className="flex items-center gap-1 rounded-lg border bg-surface p-0.5">
-            <span className="px-2 text-xs text-muted">Group by</span>
-            {GROUP_OPTIONS.map((o) => (
-              <Link
-                key={o.key}
-                href={o.key === "type" ? "/catalog" : `/catalog?group=${o.key}`}
-                className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                  groupBy === o.key ? "bg-brand text-brand-fg" : "text-foreground/70 hover:bg-surface-2"
-                }`}
-              >
-                {o.label}
-              </Link>
-            ))}
-          </div>
-        }
-      />
+      <PageHeader title="Service Catalog" subtitle={`${products.length} products & packages synced from Aryeo`} />
       <div className="space-y-8 p-6">
         {products.length === 0 ? (
           <div className="rounded-2xl border border-dashed bg-surface p-8 text-center">
@@ -163,26 +109,24 @@ export default async function CatalogPage({
             </p>
           </div>
         ) : (
-          groups.map(([label, items]) => (
-            <section key={label}>
-              <div className="mb-3 flex items-center gap-2">
-                {groupBy === "tag" ? (
-                  <TagIcon className="size-4 text-brand" />
-                ) : label === "Add-ons" ? (
-                  <Plus className="size-4 text-brand" />
-                ) : (
-                  <Package className="size-4 text-brand" />
-                )}
-                <h2 className="text-sm font-semibold">{label}</h2>
-                <span className="rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">{items.length}</span>
-              </div>
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {items.map((p) => (
-                  <ProductCard key={`${label}-${p.id}`} p={p} />
-                ))}
-              </div>
-            </section>
-          ))
+          SECTIONS.map(({ key, label, icon: Icon }) => {
+            const items = grouped.get(key) ?? [];
+            if (items.length === 0) return null;
+            return (
+              <section key={key}>
+                <div className="mb-3 flex items-center gap-2">
+                  <Icon className="size-4 text-brand" />
+                  <h2 className="text-sm font-semibold">{label}</h2>
+                  <span className="rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">{items.length}</span>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {items.map((p) => (
+                    <ProductCard key={`${key}-${p.id}`} p={p} />
+                  ))}
+                </div>
+              </section>
+            );
+          })
         )}
       </div>
     </div>
