@@ -202,6 +202,7 @@ export interface AryeoProduct {
   is_twilight?: boolean;
   description?: string;
   categories?: { title?: string }[];
+  tags?: { name?: string; title?: string }[];
   variants?: AryeoProductVariant[];
 }
 
@@ -466,6 +467,8 @@ export async function syncAryeoProducts(): Promise<{ products: number }> {
       duration: v.duration,
     }));
     const prices = variants.map((v) => v.price_amount).filter((n): n is number => typeof n === "number");
+    const tagNames = [...new Set((p.tags ?? []).map((t) => t.name || t.title).filter(Boolean))] as string[];
+    const tagsJson = tagNames.length ? JSON.stringify(tagNames) : null;
     await prisma.product.upsert({
       where: { aryeoId: p.id },
       create: {
@@ -479,6 +482,7 @@ export async function syncAryeoProducts(): Promise<{ products: number }> {
         minPrice: prices.length ? Math.min(...prices) : null,
         maxPrice: prices.length ? Math.max(...prices) : null,
         variants: variants.length ? JSON.stringify(variants) : null,
+        tags: tagsJson,
       },
       update: {
         title: p.title ?? "Untitled product",
@@ -490,6 +494,7 @@ export async function syncAryeoProducts(): Promise<{ products: number }> {
         minPrice: prices.length ? Math.min(...prices) : null,
         maxPrice: prices.length ? Math.max(...prices) : null,
         variants: variants.length ? JSON.stringify(variants) : null,
+        tags: tagsJson,
       },
     });
     count++;

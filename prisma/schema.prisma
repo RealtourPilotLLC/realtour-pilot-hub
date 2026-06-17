@@ -284,6 +284,7 @@ model Product {
   minPrice    Int? // cents (lowest variant)
   maxPrice    Int? // cents (highest variant)
   variants    String? // JSON: [{title, price_amount, duration}]
+  tags        String? // JSON: string[] of tag names
   updatedAt   DateTime @updatedAt
   createdAt   DateTime @default(now())
 
