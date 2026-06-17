@@ -22,6 +22,7 @@ import { Suspense } from "react";
 import { ListingMedia, ListingMediaSkeleton } from "@/components/project/ListingMedia";
 import { getProject, getTeam } from "@/lib/queries";
 import { AssignmentPanel } from "@/components/project/AssignmentPanel";
+import { AppointmentManager } from "@/components/project/AppointmentManager";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { StageSelector } from "@/components/project/StageSelector";
@@ -137,39 +138,30 @@ export default async function ProjectPage({
                 </h2>
               </div>
               <div className="divide-y">
-                {project.appointments.map((a) => {
-                  const canceled = (a.status || "").toUpperCase() === "CANCELED";
-                  const scheduled = (a.status || "").toUpperCase() === "SCHEDULED";
-                  return (
-                    <div key={a.id} className="flex items-center justify-between gap-3 px-5 py-3">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 text-sm font-medium">
-                          {a.startAt ? format(a.startAt, "EEE, MMM d · h:mm a") : "Unscheduled"}
-                          {a.durationMin && a.durationMin > 0 ? (
-                            <span className="text-xs text-muted">· {a.durationMin} min</span>
-                          ) : null}
-                        </div>
-                        {a.title && <div className="truncate text-xs text-muted">{a.title}</div>}
-                      </div>
-                      <div className="flex shrink-0 items-center gap-3">
-                        {a.assignedTo ? (
-                          <span className="flex items-center gap-1.5 text-xs text-muted">
-                            <Avatar name={a.assignedTo.name} color={a.assignedTo.avatarColor} size={20} />
-                            {a.assignedTo.name.split(" ")[0]}
-                          </span>
-                        ) : (
-                          <span className="text-xs text-muted-2">Unassigned</span>
-                        )}
-                        <Badge
-                          color={canceled ? "#dc2626" : scheduled ? "#16a34a" : "#64748b"}
-                          soft={canceled ? "#fee2e2" : scheduled ? "#dcfce7" : "var(--surface-2)"}
-                        >
-                          {(a.status || "—").toLowerCase()}
-                        </Badge>
-                      </div>
-                    </div>
-                  );
-                })}
+                {project.appointments.map((a) => (
+                  <AppointmentManager
+                    key={a.id}
+                    appt={{
+                      id: a.id,
+                      startAt: a.startAt,
+                      endAt: a.endAt,
+                      durationMin: a.durationMin,
+                      status: a.status,
+                      title: a.title,
+                      description: a.description,
+                      preferenceType: a.preferenceType,
+                      requiresConfirmation: a.requiresConfirmation,
+                      canCancel: a.canCancel,
+                      canReschedule: a.canReschedule,
+                      rescheduledAt: a.rescheduledAt,
+                      postponedAt: a.postponedAt,
+                      previousStartAt: a.previousStartAt,
+                      assignedTo: a.assignedTo
+                        ? { name: a.assignedTo.name, avatarColor: a.assignedTo.avatarColor }
+                        : null,
+                    }}
+                  />
+                ))}
               </div>
             </section>
           )}

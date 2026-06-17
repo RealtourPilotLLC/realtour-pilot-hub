@@ -119,9 +119,19 @@ model Appointment {
   durationMin Int?
   status      String? // SCHEDULED | CANCELED | UNSCHEDULED
   title       String?
+  description String? // rich brief: customer, lockbox code, special instructions
+  preferenceType       String?
+  requiresConfirmation Boolean  @default(false)
+  canCancel            Boolean  @default(false)
+  canReschedule        Boolean  @default(false)
+  rescheduledAt        DateTime?
+  postponedAt          DateTime?
+  previousStartAt      DateTime?
+  rawJson              String? // full Aryeo payload for completeness
   assignedTo  TeamMember? @relation(fields: [assignedToId], references: [id])
   assignedToId String?
   createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt @default(now())
 
   @@index([projectId])
 }

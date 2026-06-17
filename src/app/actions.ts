@@ -9,6 +9,105 @@ import {
   DeliverableStatus,
 } from "@prisma/client";
 import { stageMeta } from "@/lib/pipeline";
+import { Aryeo } from "@/lib/integrations/aryeo";
+import { getSecret } from "@/lib/integrations/connections";
+
+export type ApptResult = { ok: boolean; message: string };
+
+// Refresh one appointment from Aryeo into our DB (after a write).
+async function refreshAppointment(aryeoId: string, projectId: string) {
+  try {
+    const a = await Aryeo.appointment(aryeoId);
+    await prisma.appointment.update({
+      where: { aryeoId },
+      data: {
+        startAt: a.start_at ? new Date(a.start_at) : null,
+        endAt: a.end_at ? new Date(a.end_at) : null,
+        status: a.status ?? null,
+        canCancel: a.can_cancel ?? false,
+        canReschedule: a.can_reschedule ?? false,
+        rescheduledAt: a.rescheduled_at ? new Date(a.rescheduled_at) : null,
+        previousStartAt: a.previous_start_at ? new Date(a.previous_start_at) : null,
+        rawJson: JSON.stringify(a),
+      },
+    });
+    // Keep the project's shoot date / status in sync with a scheduled appt.
+    if ((a.status || "").toUpperCase() === "SCHEDULED" && a.start_at) {
+      await prisma.project.update({ where: { id: projectId }, data: { shootDate: new Date(a.start_at) } });
+    }
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** Reschedule an appointment in Aryeo, then refresh locally. */
+export async function rescheduleAppointmentAction(
+  appointmentId: string,
+  startAtISO: string,
+  notifyCustomer: boolean,
+): Promise<ApptResult> {
+  if (!(await getSecret("aryeo"))) return { ok: false, message: "Aryeo is not connected." };
+  const appt = await prisma.appointment.findUnique({ where: { id: appointmentId } });
+  if (!appt) return { ok: false, message: "Appointment not found." };
+  if (!appt.canReschedule) return { ok: false, message: "Aryeo says this appointment can't be rescheduled." };
+
+  const start = new Date(startAtISO);
+  if (isNaN(start.getTime())) return { ok: false, message: "Invalid date/time." };
+  const end = new Date(start.getTime() + (appt.durationMin ?? 60) * 60000);
+
+  try {
+    await Aryeo.rescheduleAppointment(appt.aryeoId, {
+      start_at: start.toISOString(),
+      end_at: end.toISOString(),
+      notify_customer: notifyCustomer,
+    });
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Reschedule failed." };
+  }
+
+  await refreshAppointment(appt.aryeoId, appt.projectId);
+  await prisma.activity.create({
+    data: {
+      projectId: appt.projectId,
+      type: ActivityType.SYSTEM,
+      body: `Appointment rescheduled to ${start.toLocaleString()}${notifyCustomer ? " (customer notified)" : ""}.`,
+    },
+  });
+  revalidatePath(`/projects/${appt.projectId}`);
+  revalidatePath("/schedule");
+  revalidatePath("/pipeline");
+  return { ok: true, message: "Appointment rescheduled." };
+}
+
+/** Cancel an appointment in Aryeo, then refresh locally. */
+export async function cancelAppointmentAction(
+  appointmentId: string,
+  notifyCustomer: boolean,
+): Promise<ApptResult> {
+  if (!(await getSecret("aryeo"))) return { ok: false, message: "Aryeo is not connected." };
+  const appt = await prisma.appointment.findUnique({ where: { id: appointmentId } });
+  if (!appt) return { ok: false, message: "Appointment not found." };
+  if (!appt.canCancel) return { ok: false, message: "Aryeo says this appointment can't be cancelled." };
+
+  try {
+    await Aryeo.cancelAppointment(appt.aryeoId, { notify_customer: notifyCustomer });
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Cancel failed." };
+  }
+
+  await refreshAppointment(appt.aryeoId, appt.projectId);
+  await prisma.activity.create({
+    data: {
+      projectId: appt.projectId,
+      type: ActivityType.FLAG,
+      body: `Appointment cancelled${notifyCustomer ? " (customer notified)" : ""}.`,
+    },
+  });
+  revalidatePath(`/projects/${appt.projectId}`);
+  revalidatePath("/schedule");
+  revalidatePath("/pipeline");
+  return { ok: true, message: "Appointment cancelled." };
+}
 
 /** Assign (or clear) a team member for a role on a project. */
 export async function assignMember(

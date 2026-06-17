@@ -114,10 +114,14 @@ export const Aryeo = {
 
   // Appointments + scheduling
   appointments: (q?: Query) => fetchAll<AryeoAppointment>("/appointments", { include: "order", ...q }),
-  appointment: (id: string) => aryeoRequest<{ data: AryeoAppointment }>(`/appointments/${id}`).then((r) => r.data),
-  rescheduleAppointment: (id: string, body: unknown) =>
+  appointment: (id: string) =>
+    aryeoRequest<{ data: AryeoAppointment }>(`/appointments/${id}`, { query: { include: "users,order" } }).then(
+      (r) => r.data,
+    ),
+  rescheduleAppointment: (id: string, body: { start_at: string; end_at: string; notify_customer?: boolean }) =>
     aryeoRequest(`/appointments/${id}/reschedule`, { method: "PUT", body }),
-  cancelAppointment: (id: string) => aryeoRequest(`/appointments/${id}/cancel`, { method: "PUT" }),
+  cancelAppointment: (id: string, body: { notify_customer?: boolean } = {}) =>
+    aryeoRequest(`/appointments/${id}/cancel`, { method: "PUT", body }),
   availableDates: (q?: Query) => aryeoRequest("/scheduling/available-dates", { query: q }),
   availableTimeslots: (q?: Query) => aryeoRequest("/scheduling/available-timeslots", { query: q }),
 
@@ -277,11 +281,19 @@ export interface AryeoGroup {
 }
 interface AryeoAppointment {
   id?: string;
-  start_at?: string;
-  end_at?: string;
+  start_at?: string | null;
+  end_at?: string | null;
   duration?: number; // minutes
   title?: string;
+  description?: string;
   status?: string; // SCHEDULED | CANCELED | UNSCHEDULED
+  preference_type?: string;
+  requires_confirmation?: boolean;
+  can_cancel?: boolean;
+  can_reschedule?: boolean;
+  rescheduled_at?: string | null;
+  postponed_at?: string | null;
+  previous_start_at?: string | null;
   initial_assigned_company_team_member_id?: string | null;
   users?: AryeoUser[]; // assigned team members (via ?include=users)
   order?: { id?: string };
@@ -674,26 +686,27 @@ export async function syncAryeoAppointments(): Promise<{
       const startAt = appt.start_at ? new Date(appt.start_at) : null;
       const scheduled = (appt.status || "").toUpperCase() === "SCHEDULED";
 
+      const fields = {
+        startAt,
+        endAt: appt.end_at ? new Date(appt.end_at) : null,
+        durationMin: appt.duration ?? null,
+        status: appt.status ?? null,
+        title: appt.title ?? null,
+        description: appt.description ?? null,
+        preferenceType: appt.preference_type ?? null,
+        requiresConfirmation: appt.requires_confirmation ?? false,
+        canCancel: appt.can_cancel ?? false,
+        canReschedule: appt.can_reschedule ?? false,
+        rescheduledAt: appt.rescheduled_at ? new Date(appt.rescheduled_at) : null,
+        postponedAt: appt.postponed_at ? new Date(appt.postponed_at) : null,
+        previousStartAt: appt.previous_start_at ? new Date(appt.previous_start_at) : null,
+        rawJson: JSON.stringify(appt),
+        assignedToId,
+      };
       await prisma.appointment.upsert({
         where: { aryeoId: appt.id },
-        create: {
-          aryeoId: appt.id,
-          projectId,
-          startAt,
-          endAt: appt.end_at ? new Date(appt.end_at) : null,
-          durationMin: appt.duration ?? null,
-          status: appt.status ?? null,
-          title: appt.title ?? null,
-          assignedToId,
-        },
-        update: {
-          startAt,
-          endAt: appt.end_at ? new Date(appt.end_at) : null,
-          durationMin: appt.duration ?? null,
-          status: appt.status ?? null,
-          title: appt.title ?? null,
-          assignedToId,
-        },
+        create: { aryeoId: appt.id, projectId, ...fields },
+        update: fields,
       });
       appointmentCount++;
 
