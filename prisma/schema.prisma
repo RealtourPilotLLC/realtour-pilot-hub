@@ -147,6 +147,12 @@ model Project {
   deliveryDue DateTime?
   deliveredAt DateTime?
 
+  // Billing (from Aryeo order)
+  paymentStatus String? // PAID | UNPAID | PARTIALLY_PAID | ...
+  balanceAmount Int? // cents still owed
+  invoiceUrl    String?
+  paymentUrl    String?
+
   // Relations / assignment
   client         Client      @relation(fields: [clientId], references: [id])
   clientId       String

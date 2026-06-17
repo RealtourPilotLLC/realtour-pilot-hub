@@ -135,6 +135,9 @@ export const Aryeo = {
   // Tasks (production / payroll line items)
   tasks: (q?: Query) => fetchAll<unknown>("/tasks", q),
 
+  // Activity feed (account-wide audit/timeline)
+  activities: (q?: Query) => fetchAll<AryeoActivity>("/activities", q),
+
   // Forms, tags, company
   orderForms: (q?: Query) => fetchAll<unknown>("/order-forms", q),
   tags: (q?: Query) => fetchAll<AryeoTag>("/tags", q),
@@ -231,6 +234,17 @@ export interface AryeoTag {
   font_color?: string;
 }
 
+export interface AryeoActivity {
+  id?: string;
+  name?: string; // e.g. APPOINTMENT_SCHEDULED, ORDER_MEDIA_DOWNLOADED
+  description?: string;
+  occurred_at?: string;
+  target_label?: string | null;
+  target_url?: string | null;
+  source?: string;
+  system_activity?: boolean;
+}
+
 export interface AryeoUser {
   id?: string;
   full_name?: string;
@@ -279,9 +293,12 @@ interface AryeoOrder {
   number?: number;
   title?: string;
   fulfillment_status?: string; // FULFILLED | UNFULFILLED
-  payment_status?: string; // PAID | ...
+  payment_status?: string; // PAID | UNPAID | PARTIALLY_PAID
   order_status?: string;
   total_amount?: number; // cents
+  balance_amount?: number; // cents owed
+  invoice_url?: string | null;
+  payment_url?: string | null;
   currency?: string;
   created_at?: string;
   fulfilled_at?: string | null;
@@ -466,6 +483,10 @@ export async function syncAryeoOrders(
             clientId,
             photographerId,
             price: money(order.total_amount),
+            paymentStatus: order.payment_status ?? null,
+            balanceAmount: order.balance_amount ?? null,
+            invoiceUrl: order.invoice_url ?? null,
+            paymentUrl: order.payment_url ?? null,
             addressLine: [addr?.street_number, addr?.street_name].filter(Boolean).join(" ") || null,
             city: addr?.city ?? null,
             state: addr?.state_or_province ?? null,

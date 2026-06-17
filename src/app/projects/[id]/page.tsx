@@ -15,6 +15,8 @@ import {
   Phone,
   Building2,
   Sparkles,
+  CreditCard,
+  ExternalLink,
 } from "lucide-react";
 import { Suspense } from "react";
 import { ListingMedia, ListingMediaSkeleton } from "@/components/project/ListingMedia";
@@ -130,6 +132,53 @@ export default async function ProjectPage({
               ))}
             </div>
           </section>
+
+          {/* Billing (from Aryeo) */}
+          {(project.paymentStatus || project.price) && (
+            <section className="rounded-2xl border bg-surface">
+              <div className="flex items-center justify-between border-b px-5 py-3.5">
+                <h2 className="flex items-center gap-2 text-sm font-semibold">
+                  <CreditCard className="size-4 text-muted" /> Billing
+                </h2>
+                {project.paymentStatus &&
+                  (project.paymentStatus === "PAID" ? (
+                    <Badge color="#16a34a" soft="#dcfce7">Paid</Badge>
+                  ) : (
+                    <Badge color="#d97706" soft="#fef3c7">
+                      {project.paymentStatus.replace(/_/g, " ").toLowerCase()}
+                    </Badge>
+                  ))}
+              </div>
+              <div className="flex flex-wrap items-center gap-x-8 gap-y-2 px-5 py-4 text-sm">
+                <div>
+                  <div className="text-xs text-muted">Order total</div>
+                  <div className="font-semibold">{formatMoney(project.price)}</div>
+                </div>
+                {project.balanceAmount != null && (
+                  <div>
+                    <div className="text-xs text-muted">Balance due</div>
+                    <div className={project.balanceAmount > 0 ? "font-semibold text-warning" : "font-semibold text-success"}>
+                      {formatMoney(project.balanceAmount / 100)}
+                    </div>
+                  </div>
+                )}
+                <div className="ml-auto flex gap-2">
+                  {project.invoiceUrl && (
+                    <a href={project.invoiceUrl} target="_blank" rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium hover:bg-surface-2">
+                      <FileText className="size-3.5" /> Invoice
+                    </a>
+                  )}
+                  {project.paymentUrl && project.balanceAmount != null && project.balanceAmount > 0 && (
+                    <a href={project.paymentUrl} target="_blank" rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-brand-fg hover:opacity-90">
+                      <ExternalLink className="size-3.5" /> Payment link
+                    </a>
+                  )}
+                </div>
+              </div>
+            </section>
+          )}
 
           {/* Delivered media pulled live from Aryeo */}
           {project.aryeoListingId && (

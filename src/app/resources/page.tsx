@@ -9,11 +9,25 @@ import {
   Image as ImageIcon,
   Sliders,
   BookOpen,
+  ClipboardList,
   type LucideIcon,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { prisma } from "@/lib/prisma";
+import { Aryeo } from "@/lib/integrations/aryeo";
+import { getSecret } from "@/lib/integrations/connections";
+
+type OrderForm = { id?: string; title?: string; url?: string; is_public?: boolean };
+
+async function getOrderForms(): Promise<OrderForm[]> {
+  if (!(await getSecret("aryeo"))) return [];
+  try {
+    return (await Aryeo.orderForms()) as OrderForm[];
+  } catch {
+    return [];
+  }
+}
 
 export const dynamic = "force-dynamic";
 
@@ -39,9 +53,10 @@ function groupBy<T>(items: T[], key: (t: T) => string) {
 }
 
 export default async function ResourcesPage() {
-  const [resources, sops] = await Promise.all([
+  const [resources, sops, orderForms] = await Promise.all([
     prisma.resource.findMany({ orderBy: [{ category: "asc" }, { sortOrder: "asc" }] }),
     prisma.sop.findMany({ orderBy: [{ category: "asc" }, { title: "asc" }] }),
+    getOrderForms(),
   ]);
 
   const resourceGroups = groupBy(resources, (r) => r.category);
@@ -54,6 +69,40 @@ export default async function ResourcesPage() {
         subtitle="Links, tools, and standard operating procedures for the team"
       />
       <div className="space-y-8 p-6">
+        {/* Booking forms (live from Aryeo) */}
+        {orderForms.length > 0 && (
+          <section className="space-y-3">
+            <div className="flex items-center gap-2">
+              <ClipboardList className="size-4 text-brand" />
+              <h2 className="text-sm font-semibold text-muted">Booking forms</h2>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {orderForms.map((f) => (
+                <a
+                  key={f.id}
+                  href={f.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="group flex items-center justify-between gap-3 rounded-2xl border bg-surface p-4 transition-shadow hover:shadow-md"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1 truncate font-medium">
+                      <span className="truncate">{f.title}</span>
+                      <ExternalLink className="size-3 shrink-0 text-muted-2 opacity-0 transition-opacity group-hover:opacity-100" />
+                    </div>
+                    <div className="text-xs text-muted">Client order form</div>
+                  </div>
+                  {f.is_public ? (
+                    <Badge color="#16a34a" soft="#dcfce7">Public</Badge>
+                  ) : (
+                    <Badge soft="var(--surface-2)">Private</Badge>
+                  )}
+                </a>
+              ))}
+            </div>
+          </section>
+        )}
+
         {/* Quick links */}
         <section className="space-y-5">
           <h2 className="text-sm font-semibold text-muted">Quick links</h2>

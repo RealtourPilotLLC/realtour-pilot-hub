@@ -56,6 +56,12 @@ export default async function SalesPage() {
       ? projects.reduce((s, p) => s + (p.price ?? 0), 0) / projects.length
       : 0;
 
+  // Outstanding balances (from Aryeo billing data), in dollars.
+  const outstandingOrders = projects.filter(
+    (p) => p.status !== "CANCELLED" && (p.balanceAmount ?? 0) > 0,
+  );
+  const outstanding = outstandingOrders.reduce((s, p) => s + (p.balanceAmount ?? 0), 0) / 100;
+
   // Revenue by month (last 6 months), booked by createdAt.
   const months = Array.from({ length: 6 }, (_, i) => startOfMonth(subMonths(now, 5 - i)));
   const byMonth = months.map((m) => ({
@@ -68,9 +74,9 @@ export default async function SalesPage() {
 
   // Revenue by client.
   const byClient = Object.values(
-    projects.reduce<Record<string, { name: string; total: number; count: number }>>((acc, p) => {
+    projects.reduce<Record<string, { id: string; name: string; total: number; count: number }>>((acc, p) => {
       const k = p.client.id;
-      acc[k] ??= { name: p.client.name, total: 0, count: 0 };
+      acc[k] ??= { id: k, name: p.client.name, total: 0, count: 0 };
       acc[k].total += p.price ?? 0;
       acc[k].count += 1;
       return acc;
@@ -89,9 +95,10 @@ export default async function SalesPage() {
         }
       />
       <div className="space-y-6 p-6">
-        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
           <StatCard icon={DollarSign} label="Revenue this month" value={formatMoney(revenueThisMonth)} accent="#16a34a" />
           <StatCard icon={Wallet} label="Pipeline value" value={formatMoney(pipelineValue)} accent="#0ea5e9" sub={`${active.length} active orders`} />
+          <StatCard icon={DollarSign} label="Outstanding" value={formatMoney(outstanding)} accent="#dc2626" sub={`${outstandingOrders.length} unpaid`} />
           <StatCard icon={Receipt} label="Avg order value" value={formatMoney(avgOrder)} accent="#4f46e5" />
           <StatCard icon={TrendingUp} label="Delivered (all-time)" value={formatMoney(allTime)} accent="#d97706" sub={`${delivered.length} orders`} />
         </div>
@@ -123,7 +130,7 @@ export default async function SalesPage() {
             </div>
             <div className="divide-y">
               {byClient.map((c) => (
-                <div key={c.name} className="flex items-center justify-between px-5 py-2.5">
+                <div key={c.id} className="flex items-center justify-between px-5 py-2.5">
                   <div className="min-w-0">
                     <div className="truncate text-sm font-medium">{c.name}</div>
                     <div className="text-xs text-muted">{c.count} orders</div>
