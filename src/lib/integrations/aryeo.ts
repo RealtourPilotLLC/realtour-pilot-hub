@@ -86,10 +86,16 @@ async function fetchAll<T>(path: string, query: Query = {}, key?: string): Promi
 }
 
 // ---- Convenience endpoints (the full surface is reachable via aryeoRequest) --
+// Relationships to embed on order reads (Aryeo JSON:API-style includes).
+const ORDER_INCLUDES = "customer,items,appointments,listing";
+
 export const Aryeo = {
   request: aryeoRequest,
-  orders: (q?: Query) => fetchAll<AryeoOrder>("/orders", q),
-  order: (id: string) => aryeoRequest<{ data: AryeoOrder }>(`/orders/${id}`).then((r) => r.data),
+  orders: (q?: Query) => fetchAll<AryeoOrder>("/orders", { include: ORDER_INCLUDES, ...q }),
+  order: (id: string) =>
+    aryeoRequest<{ data: AryeoOrder }>(`/orders/${id}`, { query: { include: ORDER_INCLUDES } }).then(
+      (r) => r.data,
+    ),
   listings: (q?: Query) => fetchAll<AryeoListing>("/listings", q),
   listing: (id: string) => aryeoRequest<{ data: AryeoListing }>(`/listings/${id}`).then((r) => r.data),
   appointments: (q?: Query) => fetchAll<AryeoAppointment>("/appointments", q),
@@ -98,29 +104,24 @@ export const Aryeo = {
 };
 
 // ---------------------------------------------------------------------------
-// Loose shapes — Aryeo's payloads vary, so we read defensively everywhere.
+// Aryeo payload shapes (verified against the live v1 API). Money amounts are
+// always integer cents. customer/items/appointments embed via ?include=.
 // ---------------------------------------------------------------------------
-type Money = { amount?: number; currency?: string } | number | null | undefined;
-
 interface AryeoCustomer {
   id?: string;
-  first_name?: string;
-  last_name?: string;
   name?: string;
   email?: string;
-  phone_number?: string;
   phone?: string;
-  company_name?: string;
+  office_name?: string;
 }
 interface AryeoAddress {
-  address_line_1?: string;
-  city_locality?: string;
+  street_number?: string;
+  street_name?: string;
+  unit_number?: string | null;
   city?: string;
-  state_province?: string;
-  state?: string;
+  state_or_province?: string;
   postal_code?: string;
-  zip_code?: string;
-  formatted_address?: string;
+  unparsed_address?: string;
 }
 interface AryeoListing {
   id?: string;
@@ -130,53 +131,50 @@ interface AryeoListing {
 interface AryeoAppointment {
   id?: string;
   start_at?: string;
-  start_time?: string;
+  end_at?: string;
+  status?: string;
 }
 interface AryeoOrderItem {
-  quantity?: number;
+  id?: string;
   title?: string;
-  product?: { title?: string; category?: string };
+  subtitle?: string;
+  quantity?: number;
 }
 interface AryeoOrder {
   id?: string;
-  fulfillment_status?: string;
-  payment_status?: string;
-  total?: Money;
-  total_amount?: Money;
-  amount_total?: Money;
+  number?: number;
+  title?: string;
+  fulfillment_status?: string; // FULFILLED | UNFULFILLED
+  payment_status?: string; // PAID | ...
+  order_status?: string;
+  total_amount?: number; // cents
   currency?: string;
   created_at?: string;
+  fulfilled_at?: string | null;
+  address?: AryeoAddress;
   customer?: AryeoCustomer;
-  contact?: AryeoCustomer;
-  listing?: AryeoListing;
-  listings?: AryeoListing[];
   items?: AryeoOrderItem[];
-  order_items?: AryeoOrderItem[];
-  products?: { title?: string; category?: string; quantity?: number }[];
   appointments?: AryeoAppointment[];
+  listing?: AryeoListing;
 }
 
 // ---- field helpers --------------------------------------------------------
-function money(...candidates: Money[]): number | null {
-  for (const c of candidates) {
-    if (c == null) continue;
-    if (typeof c === "number") return c > 1000 ? c / 100 : c; // heuristic: large ints are cents
-    if (typeof c === "object" && typeof c.amount === "number") return c.amount / 100;
-  }
-  return null;
+// Aryeo monetary amounts are integer cents.
+function money(cents: number | null | undefined): number | null {
+  return typeof cents === "number" ? cents / 100 : null;
 }
 
 function customerName(c?: AryeoCustomer): string {
-  if (!c) return "Unknown client";
-  if (c.name) return c.name;
-  const full = [c.first_name, c.last_name].filter(Boolean).join(" ").trim();
-  return full || c.email || "Unknown client";
+  return c?.name || c?.email || "Unknown client";
 }
 
-function addressTitle(l?: AryeoListing): string | null {
-  const a = l?.address;
-  if (!a) return null;
-  return a.formatted_address || a.address_line_1 || null;
+function addressTitle(order: AryeoOrder): string {
+  const a = order.address;
+  if (a?.unparsed_address) return a.unparsed_address;
+  const street = [a?.street_number, a?.street_name].filter(Boolean).join(" ").trim();
+  const parts = [street, a?.city, a?.state_or_province].filter(Boolean);
+  if (parts.length) return parts.join(", ");
+  return order.title || `Order #${order.number ?? ""}`.trim();
 }
 
 const TYPE_KEYWORDS: [RegExp, DeliverableType][] = [
@@ -198,8 +196,8 @@ function deliverableType(label: string): DeliverableType {
 }
 
 function initialStatus(order: AryeoOrder): ProjectStatus {
-  const f = (order.fulfillment_status || "").toLowerCase();
-  if (f.includes("fulfil") || f.includes("deliver")) return "DELIVERED";
+  const f = (order.fulfillment_status || "").toUpperCase();
+  if (f === "FULFILLED" || order.fulfilled_at) return "DELIVERED";
   if ((order.appointments?.length ?? 0) > 0) return "SCHEDULED";
   return "BOOKED";
 }
@@ -231,10 +229,9 @@ export async function syncAryeoOrders(): Promise<{ imported: number; updated: nu
 
     for (const order of orders) {
       if (!order.id) continue;
-      const cust = order.customer ?? order.contact;
-      const listing = order.listing ?? order.listings?.[0];
-      const title = addressTitle(listing) || customerName(cust) + " — order";
-      const addr = listing?.address;
+      const cust = order.customer;
+      const addr = order.address;
+      const title = addressTitle(order);
 
       // Upsert client (match by aryeoCustomerId, else by email).
       let clientId: string;
@@ -250,8 +247,8 @@ export async function syncAryeoOrders(): Promise<{ imported: number; updated: nu
           where: { id: existingClient.id },
           data: {
             aryeoCustomerId: cust?.id ?? existingClient.aryeoCustomerId,
-            phone: existingClient.phone ?? cust?.phone_number ?? cust?.phone,
-            company: existingClient.company ?? cust?.company_name,
+            phone: existingClient.phone ?? cust?.phone ?? null,
+            company: existingClient.company ?? cust?.office_name ?? null,
           },
         });
       } else {
@@ -259,8 +256,8 @@ export async function syncAryeoOrders(): Promise<{ imported: number; updated: nu
           data: {
             name: customerName(cust),
             email: cust?.email ?? null,
-            phone: cust?.phone_number ?? cust?.phone ?? null,
-            company: cust?.company_name ?? null,
+            phone: cust?.phone ?? null,
+            company: cust?.office_name ?? null,
             aryeoCustomerId: cust?.id ?? null,
           },
         });
@@ -268,67 +265,63 @@ export async function syncAryeoOrders(): Promise<{ imported: number; updated: nu
       }
       clientIds.add(clientId);
 
-      const appt = order.appointments?.[0];
-      const shootDate = appt?.start_at || appt?.start_time;
-      const price = money(order.total, order.total_amount, order.amount_total);
+      const shootDate = order.appointments?.[0]?.start_at;
+      const price = money(order.total_amount);
+      const addressLine = [addr?.street_number, addr?.street_name].filter(Boolean).join(" ") || null;
 
       const existing = await prisma.project.findUnique({ where: { aryeoOrderId: order.id } });
 
       if (existing) {
-        // Non-destructive update: refresh facts, preserve workflow state.
+        // Non-destructive update: refresh facts, preserve workflow state
+        // (status, assignments, notes the team changed by hand).
         await prisma.project.update({
           where: { id: existing.id },
           data: {
+            title,
             price: price ?? existing.price,
-            addressLine: addr?.address_line_1 ?? existing.addressLine,
-            city: addr?.city_locality ?? addr?.city ?? existing.city,
-            state: addr?.state_province ?? addr?.state ?? existing.state,
-            zip: addr?.postal_code ?? addr?.zip_code ?? existing.zip,
+            addressLine: addressLine ?? existing.addressLine,
+            city: addr?.city ?? existing.city,
+            state: addr?.state_or_province ?? existing.state,
+            zip: addr?.postal_code ?? existing.zip,
             shootDate: existing.shootDate ?? (shootDate ? new Date(shootDate) : null),
-            aryeoListingId: listing?.id ?? existing.aryeoListingId,
           },
         });
         updated++;
         continue;
       }
 
-      // Create new project + deliverables.
-      const items = (order.items ?? order.order_items ?? order.products ?? []) as Array<{
-        title?: string;
-        quantity?: number;
-        product?: { title?: string; category?: string };
-      }>;
-      const project = await prisma.project.create({
+      // Create new project + deliverables from order line items.
+      const items = order.items ?? [];
+      await prisma.project.create({
         data: {
           title,
           source: "ARYEO",
           aryeoOrderId: order.id,
-          aryeoListingId: listing?.id ?? null,
           status: initialStatus(order),
           clientId,
           price,
-          addressLine: addr?.address_line_1 ?? null,
-          city: addr?.city_locality ?? addr?.city ?? null,
-          state: addr?.state_province ?? addr?.state ?? null,
-          zip: addr?.postal_code ?? addr?.zip_code ?? null,
-          squareFeet: listing?.square_feet ?? null,
+          addressLine,
+          city: addr?.city ?? null,
+          state: addr?.state_or_province ?? null,
+          zip: addr?.postal_code ?? null,
           shootDate: shootDate ? new Date(shootDate) : null,
+          deliveredAt: order.fulfilled_at ? new Date(order.fulfilled_at) : null,
           deliverables: {
             create: items.map((it) => {
-              const label = it.title || it.product?.title || "Item";
+              const label = it.title || it.subtitle || "Item";
               return {
-                type: deliverableType(String(label)),
-                label: String(label),
+                type: deliverableType(label),
+                label,
                 quantity: it.quantity || 1,
               };
             }),
           },
           activities: {
-            create: { type: "SYSTEM", body: `Imported from Aryeo (order ${order.id}).` },
+            create: { type: "SYSTEM", body: `Imported from Aryeo (order #${order.number ?? order.id}).` },
           },
         },
       });
-      if (project) imported++;
+      imported++;
     }
 
     await markSynced("aryeo");
