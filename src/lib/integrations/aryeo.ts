@@ -279,8 +279,12 @@ interface AryeoAppointment {
   id?: string;
   start_at?: string;
   end_at?: string;
+  duration?: number; // minutes
+  title?: string;
   status?: string; // SCHEDULED | CANCELED | UNSCHEDULED
   initial_assigned_company_team_member_id?: string | null;
+  users?: AryeoUser[]; // assigned team members (via ?include=users)
+  order?: { id?: string };
 }
 interface AryeoOrderItem {
   id?: string;
@@ -622,6 +626,111 @@ export async function syncAryeoTeam(): Promise<{ team: number }> {
   }
 
   return { team: count };
+}
+
+// ---------------------------------------------------------------------------
+// Sync appointments (with their assigned users) → Appointment rows, and use
+// them to assign the photographer + shoot date on each project. The assigned
+// user comes from ?include=users (reliable: 100% filled), not the sparse
+// initial_assigned_company_team_member_id. Also assigns the VA (Kyle).
+// ---------------------------------------------------------------------------
+export async function syncAryeoAppointments(): Promise<{
+  appointments: number;
+  photographerAssigned: number;
+}> {
+  // Preload lookups.
+  const [projects, team] = await Promise.all([
+    prisma.project.findMany({ where: { aryeoOrderId: { not: null } }, select: { id: true, aryeoOrderId: true } }),
+    prisma.teamMember.findMany({ select: { id: true, aryeoUserId: true, name: true, isServiceProvider: true } }),
+  ]);
+  const projectByOrder = new Map(projects.map((p) => [p.aryeoOrderId!, p.id]));
+  const teamByUser = new Map(team.filter((t) => t.aryeoUserId).map((t) => [t.aryeoUserId!, t]));
+  const va = team.find((t) => /kyle/i.test(t.name));
+
+  // Per-project pick of the best appointment for primary assignment.
+  const pick = new Map<string, { photographerId: string | null; shootDate: Date | null; scheduled: boolean }>();
+  let appointmentCount = 0;
+
+  const perPage = 100;
+  let page = 1;
+  for (let i = 0; i < 200; i++) {
+    const res = await aryeoRequest<{ data: AryeoAppointment[]; meta?: { last_page?: number } }>("/appointments", {
+      query: { include: "users,order", page, per_page: perPage },
+    });
+    const batch = res?.data ?? [];
+    if (batch.length === 0) break;
+
+    for (const appt of batch) {
+      const orderId = appt.order?.id;
+      const projectId = orderId ? projectByOrder.get(orderId) : undefined;
+      if (!appt.id || !projectId) continue;
+
+      // Assigned user → our team member (prefer a known service provider).
+      const assignedUser =
+        appt.users?.find((u) => u.id && teamByUser.get(u.id)?.isServiceProvider) ||
+        appt.users?.find((u) => u.id && teamByUser.has(u.id)) ||
+        undefined;
+      const assignedToId = assignedUser?.id ? teamByUser.get(assignedUser.id)?.id ?? null : null;
+      const startAt = appt.start_at ? new Date(appt.start_at) : null;
+      const scheduled = (appt.status || "").toUpperCase() === "SCHEDULED";
+
+      await prisma.appointment.upsert({
+        where: { aryeoId: appt.id },
+        create: {
+          aryeoId: appt.id,
+          projectId,
+          startAt,
+          endAt: appt.end_at ? new Date(appt.end_at) : null,
+          durationMin: appt.duration ?? null,
+          status: appt.status ?? null,
+          title: appt.title ?? null,
+          assignedToId,
+        },
+        update: {
+          startAt,
+          endAt: appt.end_at ? new Date(appt.end_at) : null,
+          durationMin: appt.duration ?? null,
+          status: appt.status ?? null,
+          title: appt.title ?? null,
+          assignedToId,
+        },
+      });
+      appointmentCount++;
+
+      // Prefer a scheduled appointment for the project's primary assignment.
+      const cur = pick.get(projectId);
+      if (!cur || (scheduled && !cur.scheduled)) {
+        pick.set(projectId, { photographerId: assignedToId, shootDate: scheduled ? startAt : cur?.shootDate ?? null, scheduled });
+      } else if (cur && !cur.photographerId && assignedToId) {
+        cur.photographerId = assignedToId;
+      }
+    }
+
+    const last = res?.meta?.last_page;
+    if (last ? page >= last : batch.length < perPage) break;
+    page++;
+  }
+
+  // Apply photographer + shoot date per project (non-destructive: only fill).
+  let assigned = 0;
+  for (const [projectId, info] of pick) {
+    if (!info.photographerId && !info.shootDate) continue;
+    await prisma.project.update({
+      where: { id: projectId },
+      data: {
+        ...(info.photographerId ? { photographerId: info.photographerId } : {}),
+        ...(info.shootDate ? { shootDate: info.shootDate } : {}),
+      },
+    });
+    if (info.photographerId) assigned++;
+  }
+
+  // VA = Kyle on all Aryeo projects.
+  if (va) {
+    await prisma.project.updateMany({ where: { source: "ARYEO" }, data: { vaId: va.id } });
+  }
+
+  return { appointments: appointmentCount, photographerAssigned: assigned };
 }
 
 // Fetch a listing's media live (for the project detail gallery). Returns a

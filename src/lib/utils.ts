@@ -25,3 +25,18 @@ export function formatMoney(value?: number | null) {
     maximumFractionDigits: 0,
   }).format(value);
 }
+
+/** Strip HTML tags + decode common entities (Aryeo notes/descriptions are HTML). */
+export function stripHtml(html?: string | null): string {
+  if (!html) return "";
+  return html
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/\s+/g, " ")
+    .trim();
+}

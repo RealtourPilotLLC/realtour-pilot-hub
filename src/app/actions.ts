@@ -10,6 +10,27 @@ import {
 } from "@prisma/client";
 import { stageMeta } from "@/lib/pipeline";
 
+/** Assign (or clear) a team member for a role on a project. */
+export async function assignMember(
+  projectId: string,
+  role: "photographer" | "editor" | "va",
+  memberId: string | null,
+) {
+  const field = role === "photographer" ? "photographerId" : role === "editor" ? "editorId" : "vaId";
+  const member = memberId ? await prisma.teamMember.findUnique({ where: { id: memberId } }) : null;
+  await prisma.project.update({ where: { id: projectId }, data: { [field]: memberId } });
+  await prisma.activity.create({
+    data: {
+      projectId,
+      type: ActivityType.ASSIGNMENT,
+      body: member ? `${role[0].toUpperCase() + role.slice(1)} set to ${member.name}.` : `${role} unassigned.`,
+    },
+  });
+  revalidatePath(`/projects/${projectId}`);
+  revalidatePath("/pipeline");
+  revalidatePath("/schedule");
+}
+
 /** Move a project to a new pipeline stage and log it on the timeline. */
 export async function moveProjectStatus(projectId: string, status: ProjectStatus) {
   const project = await prisma.project.findUnique({ where: { id: projectId } });

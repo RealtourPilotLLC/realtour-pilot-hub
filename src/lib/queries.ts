@@ -32,6 +32,7 @@ export async function getProject(id: string) {
       checklist: { orderBy: { sortOrder: "asc" }, include: { assignee: true } },
       activities: { orderBy: { createdAt: "desc" }, include: { author: true } },
       uploads: { orderBy: { createdAt: "asc" }, include: { deliverable: true } },
+      appointments: { orderBy: { startAt: "asc" }, include: { assignedTo: true } },
     },
   });
 }

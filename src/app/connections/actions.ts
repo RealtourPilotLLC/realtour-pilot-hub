@@ -2,7 +2,13 @@
 
 import { revalidatePath } from "next/cache";
 import { saveSecret, disconnect as disconnectConn } from "@/lib/integrations/connections";
-import { testAryeoKey, syncAryeoOrders, syncAryeoProducts } from "@/lib/integrations/aryeo";
+import {
+  testAryeoKey,
+  syncAryeoOrders,
+  syncAryeoProducts,
+  syncAryeoTeam,
+  syncAryeoAppointments,
+} from "@/lib/integrations/aryeo";
 
 export type ActionResult = { ok: boolean; message: string };
 
@@ -22,16 +28,19 @@ export async function connectAryeo(_prev: ActionResult | null, formData: FormDat
 
 export async function syncAryeoNow(): Promise<ActionResult> {
   try {
+    await syncAryeoTeam();
     const r = await syncAryeoOrders();
+    const appt = await syncAryeoAppointments();
     revalidatePath("/connections");
     revalidatePath("/pipeline");
+    revalidatePath("/schedule");
     revalidatePath("/");
     return {
       ok: true,
       message:
         r.imported === 0
-          ? "Already up to date — no new orders from Aryeo."
-          : `Synced — ${r.imported} new project${r.imported === 1 ? "" : "s"} and ${r.clients} new client${r.clients === 1 ? "" : "s"} imported.`,
+          ? `Up to date — ${appt.photographerAssigned} shoots assigned from ${appt.appointments} appointments.`
+          : `Synced — ${r.imported} new project${r.imported === 1 ? "" : "s"}, ${r.clients} client${r.clients === 1 ? "" : "s"}, ${appt.photographerAssigned} photographers assigned.`,
     };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Sync failed." };

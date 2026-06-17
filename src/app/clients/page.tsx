@@ -3,6 +3,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { getClients } from "@/lib/queries";
+import { stripHtml } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -53,7 +54,7 @@ export default async function ClientsPage() {
               </div>
             )}
             {c.generalNotes && (
-              <p className="mt-2 text-xs text-muted">{c.generalNotes}</p>
+              <p className="mt-2 line-clamp-4 text-xs text-muted">{stripHtml(c.generalNotes)}</p>
             )}
           </div>
         ))}

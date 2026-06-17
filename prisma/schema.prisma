@@ -105,6 +105,25 @@ model TeamMember {
   authoredActivities   Activity[]
   assignedChecklist    ChecklistItem[]
   uploadedFiles        UploadedFile[]
+  assignedAppointments Appointment[]
+}
+
+// A shoot appointment, synced from Aryeo /appointments (with assigned user).
+model Appointment {
+  id          String      @id @default(cuid())
+  aryeoId     String      @unique
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId   String
+  startAt     DateTime?
+  endAt       DateTime?
+  durationMin Int?
+  status      String? // SCHEDULED | CANCELED | UNSCHEDULED
+  title       String?
+  assignedTo  TeamMember? @relation(fields: [assignedToId], references: [id])
+  assignedToId String?
+  createdAt   DateTime    @default(now())
+
+  @@index([projectId])
 }
 
 model Client {
@@ -182,6 +201,7 @@ model Project {
   checklist    ChecklistItem[]
   activities   Activity[]
   uploads      UploadedFile[]
+  appointments Appointment[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

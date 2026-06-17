@@ -20,7 +20,8 @@ import {
 } from "lucide-react";
 import { Suspense } from "react";
 import { ListingMedia, ListingMediaSkeleton } from "@/components/project/ListingMedia";
-import { getProject } from "@/lib/queries";
+import { getProject, getTeam } from "@/lib/queries";
+import { AssignmentPanel } from "@/components/project/AssignmentPanel";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { StageSelector } from "@/components/project/StageSelector";
@@ -28,7 +29,7 @@ import { Checklist } from "@/components/project/Checklist";
 import { ActivityComposer } from "@/components/project/ActivityComposer";
 import { DeliverableStatusSelect } from "@/components/project/DeliverableStatusSelect";
 import { PRIORITY_META, DELIVERABLE_META } from "@/lib/pipeline";
-import { formatMoney } from "@/lib/utils";
+import { formatMoney, stripHtml } from "@/lib/utils";
 import { format, formatDistanceToNow } from "date-fns";
 import { ActivityType } from "@prisma/client";
 
@@ -51,7 +52,7 @@ export default async function ProjectPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const project = await getProject(id);
+  const [project, team] = await Promise.all([getProject(id), getTeam()]);
   if (!project) notFound();
 
   const priority = PRIORITY_META[project.priority];
@@ -65,12 +66,6 @@ export default async function ProjectPage({
     project.state,
     project.zip,
   ].filter(Boolean);
-
-  const assignments = [
-    { label: "Photographer", member: project.photographer },
-    { label: "Editor", member: project.editor },
-    { label: "VA", member: project.va },
-  ];
 
   return (
     <div className="mx-auto max-w-6xl p-6">
@@ -132,6 +127,52 @@ export default async function ProjectPage({
               ))}
             </div>
           </section>
+
+          {/* Appointments (from Aryeo) */}
+          {project.appointments.length > 0 && (
+            <section className="rounded-2xl border bg-surface">
+              <div className="border-b px-5 py-3.5">
+                <h2 className="flex items-center gap-2 text-sm font-semibold">
+                  <Calendar className="size-4 text-muted" /> Appointment{project.appointments.length > 1 ? "s" : ""}
+                </h2>
+              </div>
+              <div className="divide-y">
+                {project.appointments.map((a) => {
+                  const canceled = (a.status || "").toUpperCase() === "CANCELED";
+                  const scheduled = (a.status || "").toUpperCase() === "SCHEDULED";
+                  return (
+                    <div key={a.id} className="flex items-center justify-between gap-3 px-5 py-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 text-sm font-medium">
+                          {a.startAt ? format(a.startAt, "EEE, MMM d · h:mm a") : "Unscheduled"}
+                          {a.durationMin && a.durationMin > 0 ? (
+                            <span className="text-xs text-muted">· {a.durationMin} min</span>
+                          ) : null}
+                        </div>
+                        {a.title && <div className="truncate text-xs text-muted">{a.title}</div>}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-3">
+                        {a.assignedTo ? (
+                          <span className="flex items-center gap-1.5 text-xs text-muted">
+                            <Avatar name={a.assignedTo.name} color={a.assignedTo.avatarColor} size={20} />
+                            {a.assignedTo.name.split(" ")[0]}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-2">Unassigned</span>
+                        )}
+                        <Badge
+                          color={canceled ? "#dc2626" : scheduled ? "#16a34a" : "#64748b"}
+                          soft={canceled ? "#fee2e2" : scheduled ? "#dcfce7" : "var(--surface-2)"}
+                        >
+                          {(a.status || "—").toLowerCase()}
+                        </Badge>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
 
           {/* Billing (from Aryeo) */}
           {(project.paymentStatus || project.price) && (
@@ -346,7 +387,7 @@ export default async function ProjectPage({
                 </div>
               )}
               {project.client.generalNotes && (
-                <p className="text-xs text-muted">{project.client.generalNotes}</p>
+                <p className="text-xs text-muted">{stripHtml(project.client.generalNotes)}</p>
               )}
             </div>
           </section>
@@ -393,28 +434,20 @@ export default async function ProjectPage({
             </dl>
           </section>
 
-          {/* Team */}
+          {/* Team — editable assignments */}
           <section className="rounded-2xl border bg-surface">
             <div className="border-b px-5 py-3.5">
               <h2 className="text-sm font-semibold">Team</h2>
             </div>
-            <div className="space-y-3 px-5 py-4">
-              {assignments.map(({ label, member }) => (
-                <div key={label} className="flex items-center justify-between">
-                  <span className="text-xs uppercase tracking-wide text-muted-2">
-                    {label}
-                  </span>
-                  {member ? (
-                    <span className="flex items-center gap-2">
-                      <Avatar name={member.name} color={member.avatarColor} size={22} />
-                      <span className="text-sm">{member.name}</span>
-                    </span>
-                  ) : (
-                    <span className="text-sm text-muted-2">Unassigned</span>
-                  )}
-                </div>
-              ))}
-            </div>
+            <AssignmentPanel
+              projectId={project.id}
+              team={team.map((m) => ({ id: m.id, name: m.name, avatarColor: m.avatarColor }))}
+              current={{
+                photographer: project.photographerId,
+                editor: project.editorId,
+                va: project.vaId,
+              }}
+            />
           </section>
         </div>
       </div>
