@@ -21,7 +21,13 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { ProviderDef } from "@/lib/integrations/registry";
-import { connectAryeo, syncAryeoNow, disconnectProvider, type ActionResult } from "@/app/connections/actions";
+import {
+  connectAryeo,
+  syncAryeoNow,
+  syncAryeoProductsNow,
+  disconnectProvider,
+  type ActionResult,
+} from "@/app/connections/actions";
 
 const ICONS: Record<string, LucideIcon> = {
   Camera, CreditCard, Calculator, Folder, Mail, Phone, MessageSquare, Users, MessageCircle, Send,
@@ -179,7 +185,14 @@ function AryeoActions({
           className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
         >
           {pending ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-          Sync now
+          Sync orders
+        </button>
+        <button
+          onClick={() => startTransition(async () => setMsg(await syncAryeoProductsNow()))}
+          disabled={pending}
+          className="rounded-lg border px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-60"
+        >
+          Sync catalog
         </button>
         <button
           onClick={() => startTransition(async () => setMsg(await disconnectProvider("aryeo")))}

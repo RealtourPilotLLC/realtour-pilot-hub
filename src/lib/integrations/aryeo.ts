@@ -93,18 +93,54 @@ const ORDER_INCLUDES = "customer,items,appointments,listing";
 // the hub focuses on current work. Bump this to widen the window.
 const ARYEO_MIN_DATE = new Date("2026-01-01T00:00:00Z");
 
+const LISTING_INCLUDES = "images,videos,floor_plans,interactive_content,files";
+
+// Complete client. `request` reaches ANY endpoint; the named helpers cover every
+// resource exposed by the Aryeo v1 API. Endpoints marked (perm) returned 401 for
+// the current key (need extra scopes); they're included so they work once granted.
 export const Aryeo = {
   request: aryeoRequest,
+
+  // Orders
   orders: (q?: Query) => fetchAll<AryeoOrder>("/orders", { include: ORDER_INCLUDES, ...q }),
   order: (id: string) =>
-    aryeoRequest<{ data: AryeoOrder }>(`/orders/${id}`, { query: { include: ORDER_INCLUDES } }).then(
-      (r) => r.data,
-    ),
+    aryeoRequest<{ data: AryeoOrder }>(`/orders/${id}`, { query: { include: ORDER_INCLUDES } }).then((r) => r.data),
+  createOrder: (body: unknown) => aryeoRequest("/orders", { method: "POST", body }),
+
+  // Listings + their media (images/videos/floor plans/interactive/files are nested)
   listings: (q?: Query) => fetchAll<AryeoListing>("/listings", q),
-  listing: (id: string) => aryeoRequest<{ data: AryeoListing }>(`/listings/${id}`).then((r) => r.data),
-  appointments: (q?: Query) => fetchAll<AryeoAppointment>("/appointments", q),
-  products: (q?: Query) => fetchAll<unknown>("/products", q),
-  vendors: (q?: Query) => fetchAll<unknown>("/vendors", q),
+  listing: (id: string) =>
+    aryeoRequest<{ data: AryeoListing }>(`/listings/${id}`, { query: { include: LISTING_INCLUDES } }).then((r) => r.data),
+
+  // Appointments + scheduling
+  appointments: (q?: Query) => fetchAll<AryeoAppointment>("/appointments", { include: "order", ...q }),
+  appointment: (id: string) => aryeoRequest<{ data: AryeoAppointment }>(`/appointments/${id}`).then((r) => r.data),
+  rescheduleAppointment: (id: string, body: unknown) =>
+    aryeoRequest(`/appointments/${id}/reschedule`, { method: "PUT", body }),
+  cancelAppointment: (id: string) => aryeoRequest(`/appointments/${id}/cancel`, { method: "PUT" }),
+  availableDates: (q?: Query) => aryeoRequest("/scheduling/available-dates", { query: q }),
+  availableTimeslots: (q?: Query) => aryeoRequest("/scheduling/available-timeslots", { query: q }),
+
+  // Products (service catalogue)
+  products: (q?: Query) => fetchAll<AryeoProduct>("/products", q),
+  product: (id: string) => aryeoRequest<{ data: AryeoProduct }>(`/products/${id}`).then((r) => r.data),
+
+  // People
+  customerUsers: (q?: Query) => fetchAll<AryeoCustomerUser>("/customer-users", q),
+  customerUser: (id: string) => aryeoRequest<{ data: AryeoCustomerUser }>(`/customer-users/${id}`).then((r) => r.data),
+
+  // Tasks (production / payroll line items)
+  tasks: (q?: Query) => fetchAll<unknown>("/tasks", q),
+
+  // Forms, tags, company
+  orderForms: (q?: Query) => fetchAll<unknown>("/order-forms", q),
+  tags: (q?: Query) => fetchAll<AryeoTag>("/tags", q),
+  groups: (q?: Query) => fetchAll<unknown>("/groups", q),
+  group: () => fetchAll<AryeoGroup>("/groups").then((g) => g[0]),
+
+  // Permission-gated for the current key (work once the key is granted these):
+  discounts: (q?: Query) => fetchAll<unknown>("/discounts", q), // (perm)
+  addresses: (q?: Query) => fetchAll<unknown>("/addresses", q), // (perm)
 };
 
 // ---------------------------------------------------------------------------
@@ -127,10 +163,77 @@ interface AryeoAddress {
   postal_code?: string;
   unparsed_address?: string;
 }
-interface AryeoListing {
+export interface AryeoImage {
+  id?: string;
+  caption?: string | null;
+  index?: number;
+  filename?: string;
+  thumbnail_url?: string;
+  large_url?: string;
+  original_url?: string;
+  display_in_gallery?: boolean;
+}
+export interface AryeoListing {
   id?: string;
   address?: AryeoAddress;
   square_feet?: number;
+  delivery_status?: string; // DELIVERED | UNDELIVERED
+  thumbnail_url?: string;
+  large_thumbnail_url?: string;
+  is_showcasable?: boolean;
+  images?: AryeoImage[];
+  videos?: unknown[];
+  floor_plans?: unknown[];
+  interactive_content?: unknown[];
+  files?: unknown[];
+}
+
+export interface AryeoProductVariant {
+  id?: string;
+  title?: string;
+  price_amount?: number; // cents
+  duration?: number;
+}
+export interface AryeoProduct {
+  id?: string;
+  title?: string;
+  type?: string; // MAIN | ADDON
+  active?: boolean;
+  is_twilight?: boolean;
+  description?: string;
+  categories?: { title?: string }[];
+  variants?: AryeoProductVariant[];
+}
+
+export interface AryeoCustomerUser {
+  id?: string;
+  full_name?: string;
+  first_name?: string;
+  last_name?: string;
+  email?: string;
+  phone?: string;
+  agent_company_name?: string;
+  agent_license_number?: string;
+  internal_notes?: string;
+}
+
+export interface AryeoTag {
+  id?: string;
+  name?: string;
+  slug?: string;
+  color?: string;
+  font_color?: string;
+}
+
+export interface AryeoGroup {
+  id?: string;
+  name?: string;
+  email?: string;
+  phone?: string;
+  currency?: string;
+  logo_url?: string;
+  order_page_url?: string;
+  timezone?: string;
 }
 interface AryeoAppointment {
   id?: string;
@@ -310,6 +413,7 @@ export async function syncAryeoOrders(
             title: addressTitle(order),
             source: "ARYEO",
             aryeoOrderId: order.id,
+            aryeoListingId: order.listing?.id ?? null,
             status: initialStatus(order),
             clientId,
             price: money(order.total_amount),
@@ -345,5 +449,80 @@ export async function syncAryeoOrders(
     const msg = e instanceof Error ? e.message : String(e);
     await markError("aryeo", msg);
     throw e;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sync the service catalogue from /products into our Product table.
+// ---------------------------------------------------------------------------
+export async function syncAryeoProducts(): Promise<{ products: number }> {
+  const products = await Aryeo.products();
+  let count = 0;
+  for (const p of products) {
+    if (!p.id) continue;
+    const variants = (p.variants ?? []).map((v) => ({
+      title: v.title,
+      price_amount: v.price_amount,
+      duration: v.duration,
+    }));
+    const prices = variants.map((v) => v.price_amount).filter((n): n is number => typeof n === "number");
+    await prisma.product.upsert({
+      where: { aryeoId: p.id },
+      create: {
+        aryeoId: p.id,
+        title: p.title ?? "Untitled product",
+        type: p.type ?? null,
+        category: p.categories?.[0]?.title ?? null,
+        active: p.active ?? true,
+        isTwilight: p.is_twilight ?? false,
+        description: p.description ?? null,
+        minPrice: prices.length ? Math.min(...prices) : null,
+        maxPrice: prices.length ? Math.max(...prices) : null,
+        variants: variants.length ? JSON.stringify(variants) : null,
+      },
+      update: {
+        title: p.title ?? "Untitled product",
+        type: p.type ?? null,
+        category: p.categories?.[0]?.title ?? null,
+        active: p.active ?? true,
+        isTwilight: p.is_twilight ?? false,
+        description: p.description ?? null,
+        minPrice: prices.length ? Math.min(...prices) : null,
+        maxPrice: prices.length ? Math.max(...prices) : null,
+        variants: variants.length ? JSON.stringify(variants) : null,
+      },
+    });
+    count++;
+  }
+  return { products: count };
+}
+
+// Fetch a listing's media live (for the project detail gallery). Returns a
+// compact summary plus gallery image URLs. Never throws — returns null on error.
+export async function getListingMedia(listingId: string): Promise<{
+  deliveryStatus: string | null;
+  photoCount: number;
+  videoCount: number;
+  floorPlanCount: number;
+  cover: string | null;
+  images: { thumb: string; large: string; caption: string | null }[];
+} | null> {
+  try {
+    const l = await Aryeo.listing(listingId);
+    const images = (l.images ?? []).filter((i) => i.display_in_gallery !== false);
+    return {
+      deliveryStatus: l.delivery_status ?? null,
+      photoCount: l.images?.length ?? 0,
+      videoCount: l.videos?.length ?? 0,
+      floorPlanCount: l.floor_plans?.length ?? 0,
+      cover: l.thumbnail_url ?? images[0]?.thumbnail_url ?? null,
+      images: images.slice(0, 24).map((i) => ({
+        thumb: i.thumbnail_url ?? i.large_url ?? i.original_url ?? "",
+        large: i.large_url ?? i.original_url ?? i.thumbnail_url ?? "",
+        caption: i.caption ?? null,
+      })),
+    };
+  } catch {
+    return null;
   }
 }

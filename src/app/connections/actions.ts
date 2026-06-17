@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { saveSecret, disconnect as disconnectConn } from "@/lib/integrations/connections";
-import { testAryeoKey, syncAryeoOrders } from "@/lib/integrations/aryeo";
+import { testAryeoKey, syncAryeoOrders, syncAryeoProducts } from "@/lib/integrations/aryeo";
 
 export type ActionResult = { ok: boolean; message: string };
 
@@ -35,6 +35,17 @@ export async function syncAryeoNow(): Promise<ActionResult> {
     };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Sync failed." };
+  }
+}
+
+export async function syncAryeoProductsNow(): Promise<ActionResult> {
+  try {
+    const r = await syncAryeoProducts();
+    revalidatePath("/connections");
+    revalidatePath("/catalog");
+    return { ok: true, message: `Synced ${r.products} products from Aryeo.` };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Product sync failed." };
   }
 }
 

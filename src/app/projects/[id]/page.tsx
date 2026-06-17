@@ -16,6 +16,8 @@ import {
   Building2,
   Sparkles,
 } from "lucide-react";
+import { Suspense } from "react";
+import { ListingMedia, ListingMediaSkeleton } from "@/components/project/ListingMedia";
 import { getProject } from "@/lib/queries";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
@@ -128,6 +130,13 @@ export default async function ProjectPage({
               ))}
             </div>
           </section>
+
+          {/* Delivered media pulled live from Aryeo */}
+          {project.aryeoListingId && (
+            <Suspense fallback={<ListingMediaSkeleton />}>
+              <ListingMedia listingId={project.aryeoListingId} />
+            </Suspense>
+          )}
 
           {/* Uploads & editor brief */}
           {(project.uploads.length > 0 || project.editorPdfPath || project.editorBrief) && (

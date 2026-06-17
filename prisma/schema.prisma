@@ -271,6 +271,25 @@ model Sop {
   @@index([category])
 }
 
+// Service catalogue synced from Aryeo /products.
+model Product {
+  id          String   @id @default(cuid())
+  aryeoId     String   @unique
+  title       String
+  type        String? // MAIN | ADDON
+  category    String?
+  active      Boolean  @default(true)
+  isTwilight  Boolean  @default(false)
+  description String?
+  minPrice    Int? // cents (lowest variant)
+  maxPrice    Int? // cents (highest variant)
+  variants    String? // JSON: [{title, price_amount, duration}]
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+
+  @@index([type])
+}
+
 // ---------------------------------------------------------------------------
 // Integrations: external service connections + webhook audit log
 // ---------------------------------------------------------------------------

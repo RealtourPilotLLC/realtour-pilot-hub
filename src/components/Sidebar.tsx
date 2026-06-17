@@ -9,6 +9,7 @@ import {
   UserCog,
   DollarSign,
   Wallet,
+  Package,
   Megaphone,
   Palette,
   BookOpen,
@@ -53,6 +54,7 @@ const SECTIONS: NavSection[] = [
     title: "Sales & Finance",
     items: [
       { label: "Sales Tracker", href: "/sales", icon: DollarSign },
+      { label: "Service Catalog", href: "/catalog", icon: Package },
       { label: "Payouts", href: "/payouts", icon: Wallet },
     ],
   },
