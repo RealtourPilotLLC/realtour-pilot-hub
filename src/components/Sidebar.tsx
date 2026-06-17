@@ -5,6 +5,8 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   KanbanSquare,
+  CalendarDays,
+  CheckSquare,
   Users,
   UserCog,
   DollarSign,
@@ -39,6 +41,8 @@ const SECTIONS: NavSection[] = [
     items: [
       { label: "Dashboard", href: "/", icon: LayoutDashboard },
       { label: "Pipeline", href: "/pipeline", icon: KanbanSquare },
+      { label: "Schedule", href: "/schedule", icon: CalendarDays },
+      { label: "Tasks", href: "/tasks", icon: CheckSquare },
       { label: "Clients", href: "/clients", icon: Users },
       { label: "Team", href: "/team", icon: UserCog },
     ],

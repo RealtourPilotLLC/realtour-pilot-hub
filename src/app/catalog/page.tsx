@@ -11,18 +11,6 @@ export const dynamic = "force-dynamic";
 type Variant = { title?: string; price_amount?: number; duration?: number };
 type GroupBy = "type" | "tag" | "category";
 
-// Aryeo product descriptions are HTML — strip tags + decode common entities.
-function stripHtml(html: string): string {
-  return html
-    .replace(/<[^>]*>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function tagsOf(p: Product): string[] {
   if (!p.tags) return [];
   try {
@@ -34,48 +22,49 @@ function tagsOf(p: Product): string[] {
 
 function ProductCard({ p }: { p: Product }) {
   const variants: Variant[] = p.variants ? JSON.parse(p.variants) : [];
-  const tags = tagsOf(p);
+  // Drop the cleanest single price label: a from-price keeps cards scannable.
+  const from = p.minPrice != null ? formatMoney(p.minPrice / 100) : null;
+  const range = p.minPrice != null && p.maxPrice != null && p.minPrice !== p.maxPrice;
+
   return (
     <div className="flex flex-col rounded-2xl border bg-surface p-4">
-      <div className="flex items-start justify-between gap-2">
-        <span className="font-semibold leading-snug">{p.title}</span>
-        {!p.active && <Badge soft="var(--surface-2)">inactive</Badge>}
+      <div className="flex items-start justify-between gap-3">
+        <span className="text-sm font-semibold leading-snug">{p.title}</span>
+        <div className="shrink-0 text-right">
+          {from && (
+            <div className="text-sm font-semibold">
+              {range && <span className="text-xs font-normal text-muted">from </span>}
+              {from}
+            </div>
+          )}
+          {variants.length > 1 && <div className="text-[10px] text-muted-2">{variants.length} tiers</div>}
+        </div>
       </div>
-      <div className="mt-1 flex flex-wrap items-center gap-1.5">
-        <Badge soft="var(--surface-2)">{p.type === "MAIN" ? "Package" : "Add-on"}</Badge>
+
+      <div className="mt-2 flex flex-wrap items-center gap-1">
         {p.isTwilight && (
           <Badge color="#d97706" soft="#fef3c7">
             <Sun className="mr-0.5 inline size-3" />
             twilight
           </Badge>
         )}
-        {tags.map((t) => (
-          <span
-            key={t}
-            className="inline-flex items-center gap-0.5 rounded-full bg-brand-soft px-1.5 py-0.5 text-[10px] font-medium text-brand"
-          >
-            <TagIcon className="size-2.5" />
-            {t}
-          </span>
-        ))}
-      </div>
-      {p.description && <p className="mt-2 line-clamp-2 text-xs text-muted">{stripHtml(p.description)}</p>}
-
-      <div className="mt-3 text-sm">
-        {p.minPrice != null && (
-          <span className="font-semibold">
-            {p.minPrice === p.maxPrice
-              ? formatMoney(p.minPrice / 100)
-              : `${formatMoney((p.minPrice ?? 0) / 100)} – ${formatMoney((p.maxPrice ?? 0) / 100)}`}
-          </span>
-        )}
-        {variants.length > 1 && <span className="ml-1 text-xs text-muted">· {variants.length} tiers</span>}
+        {!p.active && <Badge soft="var(--surface-2)">inactive</Badge>}
+        {tagsOf(p)
+          .slice(0, 3)
+          .map((t) => (
+            <span
+              key={t}
+              className="inline-flex items-center gap-0.5 rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted"
+            >
+              {t}
+            </span>
+          ))}
       </div>
 
-      {variants.length > 0 && (
-        <details className="mt-2 [&_summary]:list-none">
-          <summary className="cursor-pointer text-xs font-medium text-brand">Price tiers</summary>
-          <div className="mt-2 space-y-1 border-t pt-2">
+      {variants.length > 1 && (
+        <details className="mt-3 border-t pt-2 [&_summary]:list-none">
+          <summary className="cursor-pointer text-xs font-medium text-brand">View {variants.length} price tiers</summary>
+          <div className="mt-2 space-y-1">
             {variants.map((v, i) => (
               <div key={i} className="flex items-center justify-between text-xs">
                 <span className="text-foreground/80">{v.title ?? `Tier ${i + 1}`}</span>

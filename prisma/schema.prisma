@@ -91,6 +91,11 @@ model TeamMember {
   phone       String?
   avatarColor String   @default("#6366f1") // for UI avatars
   active      Boolean  @default(true)
+  title       String? // free-form role label, e.g. "Lead Photographer"
+  isServiceProvider Boolean @default(false) // shoots/edits (from Aryeo)
+  // Aryeo linkage
+  aryeoUserId       String? @unique // /users id
+  aryeoTeamMemberId String? @unique // /company-team-members id (appointment assignee)
   createdAt   DateTime @default(now())
 
   // Work assigned to this person
@@ -117,6 +122,7 @@ model Client {
 
   // External system linkage
   aryeoCustomerId String? @unique
+  licenseNumber   String?
 
   projects Project[]
 }

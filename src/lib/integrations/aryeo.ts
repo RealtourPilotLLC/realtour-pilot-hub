@@ -125,9 +125,12 @@ export const Aryeo = {
   products: (q?: Query) => fetchAll<AryeoProduct>("/products", q),
   product: (id: string) => aryeoRequest<{ data: AryeoProduct }>(`/products/${id}`).then((r) => r.data),
 
-  // People
+  // People — customers + internal team
   customerUsers: (q?: Query) => fetchAll<AryeoCustomerUser>("/customer-users", q),
   customerUser: (id: string) => aryeoRequest<{ data: AryeoCustomerUser }>(`/customer-users/${id}`).then((r) => r.data),
+  users: (q?: Query) => fetchAll<AryeoUser>("/users", q),
+  me: () => aryeoRequest<{ data: AryeoUser }>("/me").then((r) => r.data),
+  companyTeamMembers: (q?: Query) => fetchAll<AryeoCompanyTeamMember>("/company-team-members", q),
 
   // Tasks (production / payroll line items)
   tasks: (q?: Query) => fetchAll<unknown>("/tasks", q),
@@ -153,6 +156,8 @@ interface AryeoCustomer {
   email?: string;
   phone?: string;
   office_name?: string;
+  license_number?: string;
+  internal_notes?: string;
 }
 interface AryeoAddress {
   street_number?: string;
@@ -226,6 +231,26 @@ export interface AryeoTag {
   font_color?: string;
 }
 
+export interface AryeoUser {
+  id?: string;
+  full_name?: string;
+  first_name?: string;
+  last_name?: string;
+  email?: string;
+  phone?: string;
+  avatar_url?: string;
+  is_super?: boolean;
+  internal_notes?: string;
+}
+
+export interface AryeoCompanyTeamMember {
+  id?: string; // referenced by appointment.initial_assigned_company_team_member_id
+  is_service_provider?: boolean;
+  calendar_color?: string;
+  external_id?: string;
+  company_user?: AryeoUser;
+}
+
 export interface AryeoGroup {
   id?: string;
   name?: string;
@@ -240,7 +265,8 @@ interface AryeoAppointment {
   id?: string;
   start_at?: string;
   end_at?: string;
-  status?: string;
+  status?: string; // SCHEDULED | CANCELED | UNSCHEDULED
+  initial_assigned_company_team_member_id?: string | null;
 }
 interface AryeoOrderItem {
   id?: string;
@@ -303,10 +329,16 @@ function deliverableType(label: string): DeliverableType {
   return "OTHER";
 }
 
+// The live, non-cancelled appointment for an order (if any).
+function scheduledAppointment(order: AryeoOrder): AryeoAppointment | undefined {
+  return order.appointments?.find((a) => (a.status || "").toUpperCase() === "SCHEDULED");
+}
+
 function initialStatus(order: AryeoOrder): ProjectStatus {
   const f = (order.fulfillment_status || "").toUpperCase();
   if (f === "FULFILLED" || order.fulfilled_at) return "DELIVERED";
-  if ((order.appointments?.length ?? 0) > 0) return "SCHEDULED";
+  // Only "scheduled" if there's an actual SCHEDULED (not CANCELED) appointment.
+  if (scheduledAppointment(order)) return "SCHEDULED";
   return "BOOKED";
 }
 
@@ -349,6 +381,14 @@ export async function syncAryeoOrders(
       prisma.client.findMany({ select: { id: true, aryeoCustomerId: true, email: true } }),
     ]);
     const seenOrders = new Set(existingProjects.map((p) => p.aryeoOrderId!));
+
+    // Map Aryeo company-team-member id → our TeamMember id (for shoot assignment).
+    const team = await prisma.teamMember.findMany({
+      where: { aryeoTeamMemberId: { not: null } },
+      select: { id: true, aryeoTeamMemberId: true },
+    });
+    const teamByCtm = new Map(team.map((t) => [t.aryeoTeamMemberId!, t.id]));
+
     const clientByAryeoId = new Map<string, string>();
     const clientByEmail = new Map<string, string>();
     for (const c of existingClients) {
@@ -367,6 +407,8 @@ export async function syncAryeoOrders(
           email: cust?.email ?? null,
           phone: cust?.phone ?? null,
           company: cust?.office_name ?? null,
+          licenseNumber: cust?.license_number ?? null,
+          generalNotes: cust?.internal_notes ?? null,
           aryeoCustomerId: cust?.id ?? null,
         },
       });
@@ -406,7 +448,12 @@ export async function syncAryeoOrders(
         const cust = order.customer;
         const addr = order.address;
         const clientId = await resolveClient(cust);
-        const shootDate = order.appointments?.[0]?.start_at;
+        const appt = scheduledAppointment(order) ?? order.appointments?.[0];
+        const shootDate = scheduledAppointment(order)?.start_at;
+        const photographerId =
+          (appt?.initial_assigned_company_team_member_id &&
+            teamByCtm.get(appt.initial_assigned_company_team_member_id)) ||
+          null;
         const items = order.items ?? [];
 
         await prisma.project.create({
@@ -417,6 +464,7 @@ export async function syncAryeoOrders(
             aryeoListingId: order.listing?.id ?? null,
             status: initialStatus(order),
             clientId,
+            photographerId,
             price: money(order.total_amount),
             addressLine: [addr?.street_number, addr?.street_name].filter(Boolean).join(" ") || null,
             city: addr?.city ?? null,
@@ -500,6 +548,59 @@ export async function syncAryeoProducts(): Promise<{ products: number }> {
     count++;
   }
   return { products: count };
+}
+
+// ---------------------------------------------------------------------------
+// Sync the internal team from Aryeo (/company-team-members embeds the user).
+// Replaces placeholder team members with the real roster.
+// ---------------------------------------------------------------------------
+export async function syncAryeoTeam(): Promise<{ team: number }> {
+  const members = await Aryeo.companyTeamMembers();
+  let count = 0;
+
+  for (const m of members) {
+    const u = m.company_user;
+    if (!m.id || !u?.email) continue;
+    const role = u.is_super ? "ADMIN" : m.is_service_provider ? "PHOTOGRAPHER" : "MANAGER";
+    const data = {
+      name: u.full_name || [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email,
+      email: u.email,
+      role: role as "ADMIN" | "PHOTOGRAPHER" | "MANAGER",
+      phone: u.phone ?? null,
+      avatarColor: m.calendar_color || "#6366f1",
+      isServiceProvider: m.is_service_provider ?? false,
+      title: m.is_service_provider ? "Service Provider" : null,
+      aryeoUserId: u.id ?? null,
+      aryeoTeamMemberId: m.id,
+    };
+    // Upsert by the Aryeo team-member id; tolerate email collisions with seed rows.
+    const existing = await prisma.teamMember.findFirst({
+      where: { OR: [{ aryeoTeamMemberId: m.id }, { email: u.email }] },
+    });
+    if (existing) {
+      await prisma.teamMember.update({ where: { id: existing.id }, data });
+    } else {
+      await prisma.teamMember.create({ data });
+    }
+    count++;
+  }
+
+  // Drop placeholder/seed members that aren't part of the real Aryeo roster
+  // (only those not referenced by any project, to respect foreign keys).
+  const stale = await prisma.teamMember.findMany({
+    where: {
+      aryeoTeamMemberId: null,
+      shootsAsPhotographer: { none: {} },
+      projectsAsEditor: { none: {} },
+      projectsAsVa: { none: {} },
+    },
+    select: { id: true },
+  });
+  if (stale.length) {
+    await prisma.teamMember.deleteMany({ where: { id: { in: stale.map((s) => s.id) } } });
+  }
+
+  return { team: count };
 }
 
 // Fetch a listing's media live (for the project detail gallery). Returns a
