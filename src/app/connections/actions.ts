@@ -28,7 +28,10 @@ export async function syncAryeoNow(): Promise<ActionResult> {
     revalidatePath("/");
     return {
       ok: true,
-      message: `Sync complete — ${r.imported} new project${r.imported === 1 ? "" : "s"}, ${r.updated} updated, ${r.clients} client${r.clients === 1 ? "" : "s"} touched.`,
+      message:
+        r.imported === 0
+          ? "Already up to date — no new orders from Aryeo."
+          : `Synced — ${r.imported} new project${r.imported === 1 ? "" : "s"} and ${r.clients} new client${r.clients === 1 ? "" : "s"} imported.`,
     };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Sync failed." };
