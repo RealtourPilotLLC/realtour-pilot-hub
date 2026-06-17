@@ -89,6 +89,10 @@ async function fetchAll<T>(path: string, query: Query = {}, key?: string): Promi
 // Relationships to embed on order reads (Aryeo JSON:API-style includes).
 const ORDER_INCLUDES = "customer,items,appointments,listing";
 
+// Only import orders created on/after this date. Aryeo history goes back years;
+// the hub focuses on current work. Bump this to widen the window.
+const ARYEO_MIN_DATE = new Date("2026-01-01T00:00:00Z");
+
 export const Aryeo = {
   request: aryeoRequest,
   orders: (q?: Query) => fetchAll<AryeoOrder>("/orders", { include: ORDER_INCLUDES, ...q }),
@@ -282,6 +286,11 @@ export async function syncAryeoOrders(
       for (const order of batch) {
         if (!order.id) continue;
         scanned++;
+        // Orders are newest-first: once we pass the cutoff date, stop entirely.
+        if (order.created_at && new Date(order.created_at) < ARYEO_MIN_DATE) {
+          stop = true;
+          break;
+        }
         if (seenOrders.has(order.id)) {
           if (!opts.full) {
             stop = true; // everything older is already imported
