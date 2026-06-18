@@ -27,48 +27,48 @@ export const PIPELINE_STAGES: StageMeta[] = [
     label: "Booked",
     short: "Booked",
     description: "Order received — needs scheduling",
-    color: "#6366f1",
-    soft: "#eef2ff",
+    color: "#818cf8",
+    soft: "rgba(129,140,248,0.14)",
   },
   {
     status: ProjectStatus.SCHEDULED,
     label: "Scheduled",
     short: "Scheduled",
     description: "Shoot date set, photographer assigned",
-    color: "#0ea5e9",
-    soft: "#e0f2fe",
+    color: "#38bdf8",
+    soft: "rgba(56,189,248,0.14)",
   },
   {
     status: ProjectStatus.SHOT,
     label: "Shot / Uploaded",
     short: "Shot",
     description: "Content captured and uploaded",
-    color: "#8b5cf6",
-    soft: "#f3e8ff",
+    color: "#a78bfa",
+    soft: "rgba(167,139,250,0.14)",
   },
   {
     status: ProjectStatus.EDITING,
     label: "In Editing",
     short: "Editing",
     description: "Assigned to an editor, in production",
-    color: "#d97706",
-    soft: "#fef3c7",
+    color: "#fbbf24",
+    soft: "rgba(251,191,36,0.14)",
   },
   {
     status: ProjectStatus.REVIEW,
     label: "Review / QC",
     short: "Review",
     description: "Internal quality check before delivery",
-    color: "#db2777",
-    soft: "#fce7f3",
+    color: "#f472b6",
+    soft: "rgba(244,114,182,0.14)",
   },
   {
     status: ProjectStatus.DELIVERED,
     label: "Delivered",
     short: "Delivered",
     description: "Sent to client",
-    color: "#16a34a",
-    soft: "#dcfce7",
+    color: "#34d399",
+    soft: "rgba(52,211,153,0.14)",
   },
 ];
 
@@ -79,24 +79,24 @@ export const SIDE_STATES: StageMeta[] = [
     label: "Revisions",
     short: "Revision",
     description: "Delivered — client requested changes",
-    color: "#ea580c",
-    soft: "#ffedd5",
+    color: "#fb923c",
+    soft: "rgba(251,146,60,0.14)",
   },
   {
     status: ProjectStatus.ON_HOLD,
     label: "On Hold",
     short: "On Hold",
     description: "Blocked — waiting on client or info",
-    color: "#64748b",
-    soft: "#f1f5f9",
+    color: "#94a3b8",
+    soft: "rgba(148,163,184,0.14)",
   },
   {
     status: ProjectStatus.CANCELLED,
     label: "Cancelled",
     short: "Cancelled",
     description: "Order cancelled",
-    color: "#dc2626",
-    soft: "#fee2e2",
+    color: "#f87171",
+    soft: "rgba(248,113,113,0.14)",
   },
 ];
 
@@ -124,10 +124,10 @@ export function prevStage(status: ProjectStatus): ProjectStatus | null {
 // ---------------------------------------------------------------------------
 
 export const PRIORITY_META: Record<Priority, { label: string; color: string; soft: string }> = {
-  [Priority.LOW]: { label: "Low", color: "#64748b", soft: "#f1f5f9" },
-  [Priority.NORMAL]: { label: "Normal", color: "#0ea5e9", soft: "#e0f2fe" },
-  [Priority.HIGH]: { label: "High", color: "#d97706", soft: "#fef3c7" },
-  [Priority.URGENT]: { label: "Urgent", color: "#dc2626", soft: "#fee2e2" },
+  [Priority.LOW]: { label: "Low", color: "#94a3b8", soft: "rgba(148,163,184,0.14)" },
+  [Priority.NORMAL]: { label: "Normal", color: "#38bdf8", soft: "rgba(56,189,248,0.14)" },
+  [Priority.HIGH]: { label: "High", color: "#fbbf24", soft: "rgba(251,191,36,0.14)" },
+  [Priority.URGENT]: { label: "Urgent", color: "#f87171", soft: "rgba(248,113,113,0.14)" },
 };
 
 // ---------------------------------------------------------------------------
@@ -165,9 +165,9 @@ export const DELIVERABLE_STATUS_META: Record<
   DeliverableStatus,
   { label: string; color: string; soft: string }
 > = {
-  [DeliverableStatus.PENDING]: { label: "Pending", color: "#64748b", soft: "#f1f5f9" },
-  [DeliverableStatus.UPLOADED]: { label: "Uploaded", color: "#0ea5e9", soft: "#e0f2fe" },
-  [DeliverableStatus.IN_PROGRESS]: { label: "In Progress", color: "#d97706", soft: "#fef3c7" },
-  [DeliverableStatus.DONE]: { label: "Done", color: "#16a34a", soft: "#dcfce7" },
-  [DeliverableStatus.FLAGGED]: { label: "Flagged", color: "#dc2626", soft: "#fee2e2" },
+  [DeliverableStatus.PENDING]: { label: "Pending", color: "#94a3b8", soft: "rgba(148,163,184,0.14)" },
+  [DeliverableStatus.UPLOADED]: { label: "Uploaded", color: "#38bdf8", soft: "rgba(56,189,248,0.14)" },
+  [DeliverableStatus.IN_PROGRESS]: { label: "In Progress", color: "#fbbf24", soft: "rgba(251,191,36,0.14)" },
+  [DeliverableStatus.DONE]: { label: "Done", color: "#34d399", soft: "rgba(52,211,153,0.14)" },
+  [DeliverableStatus.FLAGGED]: { label: "Flagged", color: "#f87171", soft: "rgba(248,113,113,0.14)" },
 };

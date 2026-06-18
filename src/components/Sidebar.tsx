@@ -85,14 +85,19 @@ export function Sidebar() {
   const pathname = usePathname();
 
   return (
-    <aside className="flex h-full w-64 shrink-0 flex-col border-r bg-surface">
-      <div className="flex items-center gap-2.5 px-5 py-5">
-        <div className="flex size-9 items-center justify-center rounded-xl bg-brand text-brand-fg font-bold">
+    <aside className="flex h-full w-64 shrink-0 flex-col border-r border-border bg-surface/60 backdrop-blur-xl">
+      <div className="flex items-center gap-3 px-5 py-5">
+        <div
+          className="flex size-9 items-center justify-center rounded-xl text-sm font-bold text-white shadow-lg ring-1 ring-white/10"
+          style={{ background: "linear-gradient(135deg, #f97316, #e96320 55%, #c2410c)" }}
+        >
           RP
         </div>
         <div className="leading-tight">
-          <div className="text-sm font-semibold">RealTour Pilot</div>
-          <div className="text-xs text-muted">Operations Hub</div>
+          <div className="text-sm font-semibold tracking-tight">
+            Real<span className="text-brand">Tour</span> Pilot
+          </div>
+          <div className="text-[11px] uppercase tracking-[0.14em] text-muted-2">Operations Hub</div>
         </div>
       </div>
 
@@ -121,10 +126,10 @@ export function Sidebar() {
                   </>
                 );
                 const classes = cn(
-                  "flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                  "flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-all",
                   active
-                    ? "bg-brand-soft text-brand"
-                    : "text-foreground/70 hover:bg-surface-2 hover:text-foreground",
+                    ? "bg-brand-soft text-brand ring-1 ring-inset ring-brand/20"
+                    : "text-foreground/65 hover:bg-surface-2 hover:text-foreground",
                   item.soon && "cursor-default opacity-60 hover:bg-transparent",
                 );
                 return item.soon ? (
