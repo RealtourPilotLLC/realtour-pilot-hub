@@ -21,8 +21,10 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { ProviderDef } from "@/lib/integrations/registry";
+import Link from "next/link";
 import {
   connectAryeo,
+  connectApiKey,
   syncAryeoNow,
   syncAryeoProductsNow,
   disconnectProvider,
@@ -98,6 +100,13 @@ export function ProviderCard({
       <div className="mt-4">
         {provider.id === "aryeo" ? (
           <AryeoActions connected={connected} onExpand={() => setExpanded((e) => !e)} expanded={expanded} />
+        ) : provider.authType === "apikey" && provider.ready ? (
+          <GenericApiKeyActions
+            provider={provider}
+            connected={connected}
+            onExpand={() => setExpanded((e) => !e)}
+            expanded={expanded}
+          />
         ) : provider.authType === "oauth" && !deployed ? (
           <button
             disabled
@@ -129,6 +138,9 @@ export function ProviderCard({
       )}
 
       {provider.id === "aryeo" && expanded && <AryeoConnectForm />}
+      {provider.id !== "aryeo" && provider.authType === "apikey" && provider.ready && expanded && (
+        <GenericApiKeyForm provider={provider} />
+      )}
     </div>
   );
 }
@@ -236,6 +248,82 @@ function AryeoConnectForm() {
       {state && (
         <p className={`text-xs ${state.ok ? "text-success" : "text-danger"}`}>{state.message}</p>
       )}
+    </form>
+  );
+}
+
+// Generic connect/disconnect for any ready API-key provider (OpenPhone, …).
+function GenericApiKeyActions({
+  provider,
+  connected,
+  onExpand,
+  expanded,
+}: {
+  provider: ProviderDef;
+  connected: boolean;
+  onExpand: () => void;
+  expanded: boolean;
+}) {
+  const [pending, startTransition] = useTransition();
+  const [msg, setMsg] = useState<ActionResult | null>(null);
+
+  if (!connected) {
+    return (
+      <button
+        onClick={onExpand}
+        className="w-full rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90"
+      >
+        {expanded ? "Cancel" : `Connect ${provider.name}`}
+      </button>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      <div className="flex gap-2">
+        {provider.id === "openphone" && (
+          <Link
+            href="/communications"
+            className="flex flex-1 items-center justify-center rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90"
+          >
+            View communications
+          </Link>
+        )}
+        <button
+          onClick={() => startTransition(async () => setMsg(await disconnectProvider(provider.id)))}
+          disabled={pending}
+          className="rounded-lg border px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-60"
+        >
+          Disconnect
+        </button>
+      </div>
+      {msg && <p className={`text-xs ${msg.ok ? "text-success" : "text-danger"}`}>{msg.message}</p>}
+    </div>
+  );
+}
+
+function GenericApiKeyForm({ provider }: { provider: ProviderDef }) {
+  const [state, action, pending] = useActionState(connectApiKey, null);
+  return (
+    <form action={action} className="mt-3 space-y-2 rounded-xl border bg-surface-2 p-3">
+      <input type="hidden" name="provider" value={provider.id} />
+      <label className="text-xs font-medium text-foreground/80">{provider.keyLabel ?? "API key"}</label>
+      <input
+        name="key"
+        type="password"
+        autoComplete="off"
+        placeholder={`Paste your ${provider.name} API key`}
+        className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
+      />
+      {provider.keyHelp && <p className="text-[11px] text-muted">{provider.keyHelp}</p>}
+      <button
+        type="submit"
+        disabled={pending}
+        className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+      >
+        {pending && <Loader2 className="size-4 animate-spin" />}
+        Test &amp; connect
+      </button>
+      {state && <p className={`text-xs ${state.ok ? "text-success" : "text-danger"}`}>{state.message}</p>}
     </form>
   );
 }

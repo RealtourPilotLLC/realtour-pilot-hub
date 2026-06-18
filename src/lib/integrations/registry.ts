@@ -102,10 +102,10 @@ export const PROVIDERS: ProviderDef[] = [
     icon: "Phone",
     color: "#6d28d9",
     keyLabel: "OpenPhone API key",
-    keyHelp: "OpenPhone → Settings → API → create a key.",
+    keyHelp: "OpenPhone → Settings → API → create a key. Paste it here (it's encrypted).",
     docsUrl: "https://www.openphone.com/docs",
-    capabilities: ["Log calls & texts to clients", "Trigger reminders", "Feed comms history"],
-    ready: false,
+    capabilities: ["Unified call & text history", "Match conversations to clients", "Comms timeline per project"],
+    ready: true,
   },
   {
     id: "slack",

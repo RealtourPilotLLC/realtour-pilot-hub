@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { saveSecret, disconnect as disconnectConn } from "@/lib/integrations/connections";
+import { testOpenPhoneKey } from "@/lib/integrations/openphone";
 import {
   testAryeoKey,
   syncAryeoOrders,
@@ -45,6 +46,31 @@ export async function syncAryeoNow(): Promise<ActionResult> {
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Sync failed." };
   }
+}
+
+// Generic API-key connect for any provider with a tester. Reads `provider`
+// + `key` from the form so it can back a useActionState form directly.
+const TESTERS: Record<string, (key: string) => Promise<{ ok: true; label: string } | { ok: false; error: string }>> = {
+  aryeo: testAryeoKey,
+  openphone: testOpenPhoneKey,
+};
+
+export async function connectApiKey(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
+  const provider = String(formData.get("provider") || "");
+  const key = String(formData.get("key") || "").trim();
+  if (!provider) return { ok: false, message: "Missing provider." };
+  if (!key) return { ok: false, message: "Please paste your API key." };
+
+  const tester = TESTERS[provider];
+  if (tester) {
+    const test = await tester(key);
+    if (!test.ok) return { ok: false, message: `Couldn't connect: ${test.error}` };
+    await saveSecret(provider, key, { accountLabel: test.label });
+  } else {
+    await saveSecret(provider, key);
+  }
+  revalidatePath("/connections");
+  return { ok: true, message: "Connected." };
 }
 
 export async function syncAryeoProductsNow(): Promise<ActionResult> {
