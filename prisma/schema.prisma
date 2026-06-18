@@ -202,6 +202,12 @@ model Project {
 
   notes String?
 
+  // Smart status engine: JSON evidence of how the status was computed
+  // (expected vs present deliverables, Aryeo media counts, Dropbox files,
+  // missing items, fulfillment mismatch) + when it was last cross-checked.
+  statusEvidence  String?
+  statusCheckedAt DateTime?
+
   // Photographer's brief to the editor, captured at upload time.
   editorBrief String?
   // When the photographer finished the guided upload.

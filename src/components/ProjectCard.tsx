@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { CalendarDays, Package, AlertTriangle, Camera } from "lucide-react";
+import { CalendarDays, Package, AlertTriangle, Camera, CircleAlert, CheckCircle2 } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { PRIORITY_META } from "@/lib/pipeline";
 import { formatMoney } from "@/lib/utils";
+import { statusFlag } from "@/lib/statusEvidence";
 import type { PipelineProject } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 
@@ -34,6 +35,7 @@ export function ProjectCard({
   const flagged = project.deliverables.some((d) => d.status === "FLAGGED");
   const itemCount = project.deliverables.length;
   const showPriority = project.priority === "HIGH" || project.priority === "URGENT";
+  const flag = statusFlag(project.status, project.statusEvidence);
 
   return (
     <Link
@@ -63,6 +65,24 @@ export function ProjectCard({
           <Badge color={priority.color} soft={priority.soft}>
             {priority.label}
           </Badge>
+        </div>
+      )}
+
+      {flag && (
+        <div
+          className={cn(
+            "mt-2 inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium",
+            flag.kind === "missing"
+              ? "bg-danger/10 text-danger"
+              : "bg-success/10 text-success",
+          )}
+        >
+          {flag.kind === "missing" ? (
+            <CircleAlert className="size-3 shrink-0" />
+          ) : (
+            <CheckCircle2 className="size-3 shrink-0" />
+          )}
+          <span className="truncate">{flag.label}</span>
         </div>
       )}
 

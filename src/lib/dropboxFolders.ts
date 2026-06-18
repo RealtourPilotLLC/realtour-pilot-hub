@@ -59,6 +59,46 @@ async function folderFileCount(path: string): Promise<number> {
   }
 }
 
+// Web deep-link that opens a folder in the Dropbox web app (team members land
+// in the team space they have access to).
+export function dropboxWebUrl(path: string): string {
+  return `https://www.dropbox.com/home${path.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+// Live folder state for the upload portal: per-folder file counts + open links.
+// Returns null when Dropbox isn't connected so the UI can degrade gracefully.
+export async function getProjectFolderState(p: FolderProject): Promise<{
+  connected: boolean;
+  folders: { key: keyof ProjectFolders; label: string; path: string; url: string; count: number; raw: boolean }[];
+  hasRaw: boolean;
+  hasFinal: boolean;
+} | null> {
+  const f = projectFolderPaths(p);
+  const defs: { key: keyof ProjectFolders; label: string; raw: boolean }[] = [
+    { key: "rawPhotos", label: "Raw Photos", raw: true },
+    { key: "rawVideo", label: "Raw Video", raw: true },
+    { key: "finalPhotos", label: "Final Photos", raw: false },
+    { key: "finalVideo", label: "Final Video", raw: false },
+  ];
+
+  const connected = dropboxConfigured() && !!(await getSecret("dropbox"));
+  const counts = connected
+    ? await Promise.all(defs.map((d) => folderFileCount(f[d.key])))
+    : defs.map(() => 0);
+
+  const folders = defs.map((d, i) => ({
+    key: d.key,
+    label: d.label,
+    path: f[d.key],
+    url: dropboxWebUrl(f[d.key]),
+    count: counts[i],
+    raw: d.raw,
+  }));
+  const hasRaw = folders.filter((x) => x.raw).some((x) => x.count > 0);
+  const hasFinal = folders.filter((x) => !x.raw).some((x) => x.count > 0);
+  return { connected, folders, hasRaw, hasFinal };
+}
+
 // Poll each active project's RAW + FINAL folders and advance status accordingly:
 //   RAW files present  → SHOT  (photographer uploaded → ready for editing/QA)
 //   FINAL files present → REVIEW (editor done → QC then deliver)

@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { Suspense } from "react";
 import { ListingMedia, ListingMediaSkeleton } from "@/components/project/ListingMedia";
+import { StatusEvidenceCard } from "@/components/project/StatusEvidenceCard";
 import { getProject, getTeam } from "@/lib/queries";
 import { AssignmentPanel } from "@/components/project/AssignmentPanel";
 import { AppointmentManager } from "@/components/project/AppointmentManager";
@@ -98,6 +99,13 @@ export default async function ProjectPage({
       <div className="mt-6 grid gap-6 lg:grid-cols-3">
         {/* Main column */}
         <div className="space-y-6 lg:col-span-2">
+          {/* Smart status cross-check */}
+          <StatusEvidenceCard
+            status={project.status}
+            evidence={project.statusEvidence}
+            checkedAt={project.statusCheckedAt}
+          />
+
           {/* Deliverables */}
           <section className="rounded-2xl border bg-surface">
             <div className="border-b px-5 py-3.5">

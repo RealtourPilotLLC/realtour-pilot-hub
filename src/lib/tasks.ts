@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import crypto from "crypto";
+import { parseEvidence } from "@/lib/statusEvidence";
 
 // ---------------------------------------------------------------------------
 // Phase 1 of the listener-first platform: turnaround rules + due-date/priority
@@ -74,10 +75,33 @@ function specsForProject(p: {
   title: string;
   shootDate: Date | null;
   deliverables: { type: string }[];
+  statusEvidence?: string | null;
 }): TaskSpec[] {
   const specs: TaskSpec[] = [];
   const shoot = p.shootDate;
   const primary = p.deliverables[0]?.type ?? "PHOTOS";
+
+  // Partial delivery: the smart-status engine found ordered media that isn't
+  // live on Aryeo even though the order looked done. Make it an explicit,
+  // urgent task naming exactly what's missing — this is the leak Kyle forgets.
+  const ev = parseEvidence(p.statusEvidence);
+  if (ev && ev.missing.length > 0 && (ev.partial || p.status === "REVIEW")) {
+    specs.push({
+      taskType: "finish_delivery",
+      title: `Finish delivery — ${p.title} (missing ${ev.missing.join(", ")})`,
+      reasonCreated: ev.partial
+        ? "Aryeo marked the order fulfilled but the cross-check found missing deliverables"
+        : "In review — ordered deliverables not all live on Aryeo yet",
+      deliverableType: primary,
+      dueAt: new Date(),
+      checklist: [
+        `Produce / locate the missing item(s): ${ev.missing.join(", ")}`,
+        "Upload them to the Aryeo listing",
+        "Verify all ordered deliverables are now live",
+        "Confirm the order is correctly marked delivered",
+      ],
+    });
+  }
 
   if (p.status === "BOOKED" || p.status === "SCHEDULED") {
     specs.push({
@@ -204,6 +228,7 @@ export async function generateTasksForActiveProjects(): Promise<{ created: numbe
       title: p.title,
       shootDate: p.shootDate,
       deliverables: p.deliverables,
+      statusEvidence: p.statusEvidence,
     });
     for (const s of specs) {
       const key = dedupe([p.id, s.taskType, s.deliverableType]);

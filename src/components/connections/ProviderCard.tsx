@@ -30,6 +30,7 @@ import {
   syncAryeoProductsNow,
   enableOpenPhoneRealtime,
   syncDropboxFoldersNow,
+  recheckStatusesNow,
   disconnectProvider,
   type ActionResult,
 } from "@/app/connections/actions";
@@ -269,6 +270,15 @@ function AryeoActions({
           Disconnect
         </button>
       </div>
+      <button
+        onClick={() => startTransition(async () => setMsg(await recheckStatusesNow()))}
+        disabled={pending}
+        className="flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-60"
+        title="Cross-check ordered deliverables against live Aryeo media + Dropbox to fix project statuses"
+      >
+        {pending ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+        Recheck statuses (cross-check media)
+      </button>
       {msg && (
         <p className={`text-xs ${msg.ok ? "text-success" : "text-danger"}`}>{msg.message}</p>
       )}

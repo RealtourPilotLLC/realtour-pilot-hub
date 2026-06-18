@@ -10,7 +10,6 @@ import {
   AlertTriangle,
   Star,
   Flag,
-  FolderClosed,
   FileText,
   Plus,
   Loader2,
@@ -41,11 +40,6 @@ function formatBytes(n: number) {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function dropboxPath(title: string) {
-  const safe = title.replace(/[\\/:*?"<>|]/g, "").trim();
-  return `/RealTour Pilot/Shoots/${safe}`;
 }
 
 export function UploadPortal({
@@ -203,24 +197,6 @@ export function UploadPortal({
           </div>
         </div>
       )}
-
-      {/* Dropbox connection (simulated) */}
-      <div className="flex items-center gap-3 rounded-2xl border bg-surface p-4">
-        <span className="flex size-10 items-center justify-center rounded-xl bg-[#0061ff1a] text-[#0061ff]">
-          <FolderClosed className="size-5" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            Dropbox
-            <Badge color="#16a34a" soft="#dcfce7">
-              Connected
-            </Badge>
-          </div>
-          <div className="truncate font-mono text-xs text-muted">
-            {dropboxPath(project.title)}
-          </div>
-        </div>
-      </div>
 
       {/* Special requests reminder */}
       {specialRequests.length > 0 && (

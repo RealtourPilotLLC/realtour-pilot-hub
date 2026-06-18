@@ -6,6 +6,7 @@ import { testOpenPhoneKey, registerOpenPhoneWebhooks } from "@/lib/integrations/
 import { exchangeDropboxCode, testDropboxRefreshToken } from "@/lib/integrations/dropbox";
 import { testSlackKey } from "@/lib/integrations/slack";
 import { generateTasksForActiveProjects } from "@/lib/tasks";
+import { syncProjectStatuses } from "@/lib/projectStatus";
 import {
   testAryeoKey,
   syncAryeoOrders,
@@ -35,6 +36,8 @@ export async function syncAryeoNow(): Promise<ActionResult> {
     await syncAryeoTeam();
     const r = await syncAryeoOrders();
     const appt = await syncAryeoAppointments();
+    // Re-evaluate true status by cross-checking Aryeo media (+ Dropbox).
+    await syncProjectStatuses();
     await generateTasksForActiveProjects();
     revalidatePath("/connections");
     revalidatePath("/pipeline");
@@ -119,6 +122,23 @@ export async function syncDropboxFoldersNow(): Promise<ActionResult> {
     };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Folder check failed." };
+  }
+}
+
+export async function recheckStatusesNow(): Promise<ActionResult> {
+  try {
+    const r = await syncProjectStatuses();
+    await generateTasksForActiveProjects();
+    revalidatePath("/pipeline");
+    revalidatePath("/queue");
+    revalidatePath("/");
+    const partials = r.partials > 0 ? ` ${r.partials} partial deliver${r.partials === 1 ? "y" : "ies"} flagged.` : "";
+    return {
+      ok: true,
+      message: `Re-checked ${r.checked} projects — ${r.changed} status${r.changed === 1 ? "" : "es"} updated.${partials}`,
+    };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Status re-check failed." };
   }
 }
 
