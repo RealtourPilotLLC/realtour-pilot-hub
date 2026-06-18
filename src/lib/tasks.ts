@@ -133,6 +133,62 @@ function labelFor(t: string) {
   return t.replace(/_/g, " ").toLowerCase();
 }
 
+// Create a "client reply / callback" task from an inbound communication, matched
+// to a client (+ their latest project). One open reply task per client is kept
+// (deduped) so a burst of texts doesn't spawn duplicates.
+export async function createCommTask(opts: {
+  clientId: string;
+  clientName: string;
+  projectId?: string | null;
+  propertyAddress?: string | null;
+  kind: "text" | "missed_call" | "voicemail";
+  snippet?: string;
+  source?: string;
+}): Promise<boolean> {
+  const key = dedupe([opts.clientId, "client_reply"]);
+  const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+  if (existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED") return false;
+
+  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
+  const verb = opts.kind === "text" ? "Reply to" : "Call back";
+  const reason =
+    opts.kind === "text"
+      ? "Inbound text from client (OpenPhone)"
+      : opts.kind === "voicemail"
+        ? "Voicemail from client (OpenPhone)"
+        : "Missed call from client (OpenPhone)";
+  // Replies due within a few hours; callbacks sooner.
+  const dueAt = new Date(Date.now() + (opts.kind === "text" ? 4 : 1) * HOUR);
+
+  const data = {
+    taskType: "client_reply",
+    title: `${verb} ${opts.clientName}`,
+    description: opts.snippet ? opts.snippet.slice(0, 240) : null,
+    reasonCreated: reason,
+    checklist: JSON.stringify([
+      "Read the full conversation in Communications",
+      "Match to the right order if multiple",
+      "Reply / call back",
+      "Log outcome",
+    ]),
+    source: opts.source ?? "openphone",
+    priority: "HIGH" as const,
+    dueAt,
+    clientId: opts.clientId,
+    projectId: opts.projectId ?? null,
+    propertyAddress: opts.propertyAddress ?? null,
+    ownerId: kyle?.id ?? null,
+    dedupeKey: key,
+  };
+
+  if (existing) {
+    await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } });
+  } else {
+    await prisma.smartTask.create({ data });
+  }
+  return true;
+}
+
 // Generate (idempotently) the expected tasks for every ACTIVE project.
 export async function generateTasksForActiveProjects(): Promise<{ created: number; projects: number }> {
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });

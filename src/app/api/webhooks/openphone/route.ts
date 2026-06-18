@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { phoneKey } from "@/lib/integrations/openphone";
+import { createCommTask } from "@/lib/tasks";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -73,23 +74,46 @@ async function processOpenPhoneEvent(type: string, payload: Record<string, unkno
   const phones = [...new Set(collectPhones(data).map((p) => phoneKey(p)).filter((k) => k.length === 10))];
   if (phones.length === 0) return;
 
-  const client = await prisma.client.findFirst({
-    where: { OR: phones.map((k) => ({ phone: { contains: k.slice(-7) } })) },
-    include: { projects: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true } } },
+  // Match on normalized digits (stored phones are formatted, so substring
+  // queries miss). Load candidate clients and compare by phoneKey.
+  const candidates = await prisma.client.findMany({
+    where: { phone: { not: null } },
+    select: {
+      id: true,
+      name: true,
+      phone: true,
+      projects: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true, title: true } },
+    },
   });
-  const projectId = client?.projects[0]?.id;
-  if (!projectId) return;
+  const want = new Set(phones);
+  const client = candidates.find((c) => want.has(phoneKey(c.phone)));
+  if (!client) return;
+  const project = client.projects[0];
 
   const isCall = type.startsWith("call");
   const direction = (data.direction as string) || "";
+  const incoming = direction.toLowerCase().startsWith("in");
   const text = (data.text as string) || (data.body as string) || "";
-  const body = isCall
-    ? `OpenPhone: ${direction || "call"} call (${type.replace("call.", "")}).`
-    : `OpenPhone ${direction || ""} text: ${text.slice(0, 140)}`.trim();
 
-  await prisma.activity.create({
-    data: { projectId, type: "SYSTEM", body },
-  });
+  // Timeline log on the client's project (if any).
+  if (project) {
+    const body = isCall
+      ? `OpenPhone: ${direction || "call"} call (${type.replace("call.", "")}).`
+      : `OpenPhone ${direction || ""} text: ${text.slice(0, 140)}`.trim();
+    await prisma.activity.create({ data: { projectId: project.id, type: "SYSTEM", body } });
+  }
+
+  // Listener-first: an inbound text becomes a tracked "reply" task in Daily Tasks.
+  if (type === "message.received" || (!isCall && incoming)) {
+    await createCommTask({
+      clientId: client.id,
+      clientName: client.name,
+      projectId: project?.id,
+      propertyAddress: project?.title ?? null,
+      kind: "text",
+      snippet: text,
+    });
+  }
 }
 
 export async function GET() {
