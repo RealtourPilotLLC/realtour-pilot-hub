@@ -25,6 +25,7 @@ import Link from "next/link";
 import {
   connectAryeo,
   connectApiKey,
+  connectDropbox,
   syncAryeoNow,
   syncAryeoProductsNow,
   enableOpenPhoneRealtime,
@@ -47,10 +48,12 @@ export function ProviderCard({
   provider,
   conn,
   deployed,
+  dropboxAuthorizeUrl,
 }: {
   provider: ProviderDef;
   conn: ConnState | null;
   deployed: boolean;
+  dropboxAuthorizeUrl?: string;
 }) {
   const Icon = ICONS[provider.icon] ?? Circle;
   const connected = conn?.status === "CONNECTED";
@@ -101,6 +104,13 @@ export function ProviderCard({
       <div className="mt-4">
         {provider.id === "aryeo" ? (
           <AryeoActions connected={connected} onExpand={() => setExpanded((e) => !e)} expanded={expanded} />
+        ) : provider.id === "dropbox" && provider.ready ? (
+          <GenericApiKeyActions
+            provider={provider}
+            connected={connected}
+            onExpand={() => setExpanded((e) => !e)}
+            expanded={expanded}
+          />
         ) : provider.authType === "apikey" && provider.ready ? (
           <GenericApiKeyActions
             provider={provider}
@@ -142,6 +152,49 @@ export function ProviderCard({
       {provider.id !== "aryeo" && provider.authType === "apikey" && provider.ready && expanded && (
         <GenericApiKeyForm provider={provider} />
       )}
+      {provider.id === "dropbox" && expanded && !connected && (
+        <DropboxConnectForm authorizeUrl={dropboxAuthorizeUrl} />
+      )}
+    </div>
+  );
+}
+
+function DropboxConnectForm({ authorizeUrl }: { authorizeUrl?: string }) {
+  const [state, action, pending] = useActionState(connectDropbox, null);
+  return (
+    <div className="mt-3 space-y-2 rounded-xl border bg-surface-2 p-3">
+      <ol className="list-decimal space-y-1.5 pl-4 text-[11px] text-muted">
+        <li>
+          {authorizeUrl ? (
+            <a href={authorizeUrl} target="_blank" rel="noopener noreferrer" className="font-medium text-brand underline">
+              Open Dropbox to authorize →
+            </a>
+          ) : (
+            <span className="text-danger">Dropbox app key not configured.</span>
+          )}{" "}
+          and click <strong>Allow</strong>.
+        </li>
+        <li>Copy the authorization code Dropbox shows you.</li>
+        <li>Paste it below.</li>
+      </ol>
+      <form action={action} className="space-y-2">
+        <input
+          name="code"
+          type="text"
+          autoComplete="off"
+          placeholder="Paste authorization code"
+          className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
+        />
+        <button
+          type="submit"
+          disabled={pending}
+          className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+        >
+          {pending && <Loader2 className="size-4 animate-spin" />}
+          Connect Dropbox
+        </button>
+      </form>
+      {state && <p className={`text-xs ${state.ok ? "text-success" : "text-danger"}`}>{state.message}</p>}
     </div>
   );
 }

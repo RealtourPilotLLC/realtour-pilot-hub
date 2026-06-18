@@ -3,6 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { saveSecret, disconnect as disconnectConn } from "@/lib/integrations/connections";
 import { testOpenPhoneKey, registerOpenPhoneWebhooks } from "@/lib/integrations/openphone";
+import { exchangeDropboxCode, testDropboxRefreshToken } from "@/lib/integrations/dropbox";
+import { testSlackKey } from "@/lib/integrations/slack";
 import {
   testAryeoKey,
   syncAryeoOrders,
@@ -53,7 +55,25 @@ export async function syncAryeoNow(): Promise<ActionResult> {
 const TESTERS: Record<string, (key: string) => Promise<{ ok: true; label: string } | { ok: false; error: string }>> = {
   aryeo: testAryeoKey,
   openphone: testOpenPhoneKey,
+  slack: testSlackKey,
 };
+
+// Dropbox: exchange the one-time authorization code for a refresh token, verify,
+// and store it encrypted.
+export async function connectDropbox(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
+  const code = String(formData.get("code") || "").trim();
+  if (!code) return { ok: false, message: "Paste the authorization code from Dropbox." };
+  try {
+    const { refreshToken } = await exchangeDropboxCode(code);
+    const test = await testDropboxRefreshToken(refreshToken);
+    if (!test.ok) return { ok: false, message: `Couldn't verify: ${test.error}` };
+    await saveSecret("dropbox", refreshToken, { accountLabel: test.label });
+    revalidatePath("/connections");
+    return { ok: true, message: `Connected — ${test.label}.` };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Dropbox connection failed." };
+  }
+}
 
 export async function connectApiKey(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
   const provider = String(formData.get("provider") || "");
