@@ -58,12 +58,31 @@ export default async function CommunicationsPage() {
     if (k) clientByPhone.set(k, { id: c.id, name: c.name });
   }
 
+  // Fall back to synced OpenPhone/HubSpot contact names for numbers that aren't
+  // one of our clients (each contact can carry several numbers).
+  const contacts = await prisma.contact.findMany({
+    where: { phones: { not: null } },
+    select: { firstName: true, lastName: true, company: true, phones: true },
+  });
+  const contactByPhone = new Map<string, { name: string; company: string | null }>();
+  for (const ct of contacts) {
+    const display = [ct.firstName, ct.lastName].filter(Boolean).join(" ").trim() || ct.company;
+    if (!display) continue;
+    let nums: string[] = [];
+    try { nums = ct.phones ? JSON.parse(ct.phones) : []; } catch { nums = []; }
+    for (const n of nums) {
+      const k = phoneKey(n);
+      if (k.length === 10 && !contactByPhone.has(k)) contactByPhone.set(k, { name: display, company: ct.company });
+    }
+  }
+
   const rows = conversations
     .map((conv) => {
       const others = (conv.participants ?? []).filter((p) => !ourNumbers.has(phoneKey(p)));
       const phone = others[0] ?? conv.participants?.[0] ?? "";
       const client = clientByPhone.get(phoneKey(phone));
-      return { conv, phone, client };
+      const contact = client ? undefined : contactByPhone.get(phoneKey(phone));
+      return { conv, phone, client, contact };
     })
     .sort((a, b) => new Date(b.conv.lastActivityAt ?? 0).getTime() - new Date(a.conv.lastActivityAt ?? 0).getTime());
 
@@ -80,8 +99,8 @@ export default async function CommunicationsPage() {
           <p className="text-sm text-muted">No conversations found.</p>
         ) : (
           <div className="overflow-hidden rounded-2xl border bg-surface">
-            {rows.map(({ conv, phone, client }) => {
-              const name = client?.name || conv.name || fmtPhone(phone);
+            {rows.map(({ conv, phone, client, contact }) => {
+              const name = client?.name || contact?.name || conv.name || fmtPhone(phone);
               const href = `/communications/thread?pn=${encodeURIComponent(conv.phoneNumberId ?? "")}&p=${encodeURIComponent(phone)}&name=${encodeURIComponent(name)}`;
               return (
                 <Link key={conv.id} href={href} className="flex items-center gap-3 border-b px-5 py-3 last:border-0 hover:bg-surface-2">
@@ -91,13 +110,20 @@ export default async function CommunicationsPage() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="truncate text-sm font-medium">{name}</span>
-                      {client && (
+                      {client ? (
                         <span className="inline-flex items-center gap-0.5 rounded bg-success-soft px-1.5 text-[10px] font-medium text-success">
                           <User className="size-2.5" /> client
                         </span>
-                      )}
+                      ) : contact ? (
+                        <span className="inline-flex items-center gap-0.5 rounded bg-surface-2 px-1.5 text-[10px] font-medium text-muted">
+                          <User className="size-2.5" /> contact
+                        </span>
+                      ) : null}
                     </div>
-                    <div className="truncate text-xs text-muted">{fmtPhone(phone)}</div>
+                    <div className="truncate text-xs text-muted">
+                      {fmtPhone(phone)}
+                      {contact?.company ? ` · ${contact.company}` : ""}
+                    </div>
                   </div>
                   {conv.lastActivityAt && (
                     <span className="shrink-0 text-xs text-muted-2">
