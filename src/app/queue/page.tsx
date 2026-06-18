@@ -75,7 +75,7 @@ export default async function DailyTasksPage() {
   return (
     <div>
       <PageHeader
-        eyebrow="Last 30 days"
+        eyebrow="Last 2 weeks"
         title="Daily Tasks"
         subtitle={`${views.length} open task${views.length === 1 ? "" : "s"}`}
         actions={

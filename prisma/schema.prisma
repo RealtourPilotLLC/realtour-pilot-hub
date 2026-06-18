@@ -197,6 +197,7 @@ model Project {
   price       Float? // order total
 
   // Scheduling
+  orderedAt   DateTime? // real Aryeo order date (createdAt is import time)
   shootDate   DateTime?
   deliveryDue DateTime?
   deliveredAt DateTime?

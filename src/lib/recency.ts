@@ -1,38 +1,46 @@
 import type { Prisma } from "@prisma/client";
 
 // ---------------------------------------------------------------------------
-// "Last 30 days" view window. The hub fills up with hundreds of finished jobs,
-// so views show only CURRENT work: everything still active (any age) plus
-// anything delivered/cancelled within this window. Older finished jobs are
-// hidden from the day-to-day views — never deleted (still in the DB + reports).
+// "Recent + moving forward" view window. The hub was back-filled with a year of
+// historical orders, most already delivered. Day-to-day views show only the
+// last 2 weeks plus anything in the future — based on REAL dates (the Aryeo
+// order date, shoot date, delivery date), never the DB import time. Older
+// finished/stale jobs drop off the views; nothing is deleted (still in the DB).
 // ---------------------------------------------------------------------------
 
-export const RECENT_DAYS = 30;
+export const RECENT_DAYS = 14;
 
 export function recentCutoff(days = RECENT_DAYS): Date {
   return new Date(Date.now() - days * 86400000);
 }
 
-// Prisma `where` fragment: a project is "current" if it's not finished, or it
-// finished within the window (delivered → deliveredAt; cancelled → createdAt).
+// Prisma `where` fragment: show a project if any real date is within the window
+// or in the future (upcoming shoots). `createdAt` is deliberately NOT used — it
+// reflects when the row was imported, not when the order was placed.
 export function recentProjectWhere(days = RECENT_DAYS): Prisma.ProjectWhereInput {
   const cutoff = recentCutoff(days);
   return {
     OR: [
-      { status: { notIn: ["DELIVERED", "CANCELLED"] } },
-      { status: "DELIVERED", deliveredAt: { gte: cutoff } },
-      { status: "CANCELLED", createdAt: { gte: cutoff } },
+      { orderedAt: { gte: cutoff } }, // ordered in the last 2 weeks
+      { shootDate: { gte: cutoff } }, // recent or upcoming shoot (moving forward)
+      { deliveredAt: { gte: cutoff } }, // recently delivered
+      { revisionRequestedAt: { gte: cutoff } }, // just reopened for changes
     ],
   };
 }
 
 // In-memory equivalent for lists already loaded (e.g. the dashboard).
 export function isProjectRecent(
-  p: { status: string; deliveredAt: Date | null; createdAt: Date },
+  p: {
+    orderedAt: Date | null;
+    shootDate: Date | null;
+    deliveredAt: Date | null;
+    revisionRequestedAt: Date | null;
+  },
   days = RECENT_DAYS,
 ): boolean {
-  if (p.status !== "DELIVERED" && p.status !== "CANCELLED") return true;
   const cutoff = recentCutoff(days);
-  if (p.status === "DELIVERED") return !!p.deliveredAt && p.deliveredAt >= cutoff;
-  return p.createdAt >= cutoff;
+  return [p.orderedAt, p.shootDate, p.deliveredAt, p.revisionRequestedAt].some(
+    (d) => d != null && d >= cutoff,
+  );
 }

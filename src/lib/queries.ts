@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { ProjectStatus } from "@prisma/client";
-import { recentProjectWhere } from "@/lib/recency";
+import { recentProjectWhere, isProjectRecent } from "@/lib/recency";
 
 /** Projects for the pipeline board — current work only (last-30-day window). */
 export async function getPipelineProjects() {
@@ -68,7 +68,10 @@ export async function getDashboardData() {
     },
   });
 
-  const active = all.filter(
+  // Match the rest of the hub's "last 2 weeks + moving forward" view so the
+  // dashboard counts line up with the pipeline.
+  const recent = all.filter(isProjectRecent);
+  const active = recent.filter(
     (p) => p.status !== ProjectStatus.DELIVERED && p.status !== ProjectStatus.CANCELLED,
   );
 

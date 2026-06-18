@@ -13,7 +13,7 @@ export default async function PipelinePage() {
   return (
     <div className="flex h-full flex-col">
       <PageHeader
-        eyebrow="Last 30 days"
+        eyebrow="Last 2 weeks"
         title="Pipeline"
         subtitle={`${active} active · current work + recently delivered`}
         actions={

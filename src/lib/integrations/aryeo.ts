@@ -507,6 +507,7 @@ export async function syncAryeoOrders(
             city: addr?.city ?? null,
             state: addr?.state_or_province ?? null,
             zip: addr?.postal_code ?? null,
+            orderedAt: order.created_at ? new Date(order.created_at) : null,
             shootDate: shootDate ? new Date(shootDate) : null,
             deliveredAt: order.fulfilled_at ? new Date(order.fulfilled_at) : null,
             deliverables: {
