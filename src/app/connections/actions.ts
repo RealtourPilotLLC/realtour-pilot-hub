@@ -146,10 +146,30 @@ export async function enableOpenPhoneRealtime(): Promise<ActionResult> {
   const base = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
   if (!base) return { ok: false, message: "Deploy the app first — webhooks need a public URL." };
   try {
-    await registerOpenPhoneWebhooks(`${base}/api/webhooks/openphone`);
-    return { ok: true, message: "Real-time enabled — new texts & calls will log automatically." };
+    const r = await registerOpenPhoneWebhooks(`${base}/api/webhooks/openphone`);
+    return {
+      ok: true,
+      message: r.transcripts
+        ? "Real-time enabled — texts, calls & call transcripts will log automatically."
+        : "Real-time enabled for texts & calls (transcripts not available on this plan).",
+    };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Could not register webhooks." };
+  }
+}
+
+export async function syncOpenPhoneContactsNow(): Promise<ActionResult> {
+  try {
+    const { syncOpenPhoneContacts } = await import("@/lib/contacts");
+    const r = await syncOpenPhoneContacts();
+    revalidatePath("/communications");
+    revalidatePath("/clients");
+    return {
+      ok: true,
+      message: `Synced ${r.contacts} contacts — ${r.matchedToClients} matched, reaching ${r.clientsReached} clients.`,
+    };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Contact sync failed." };
   }
 }
 

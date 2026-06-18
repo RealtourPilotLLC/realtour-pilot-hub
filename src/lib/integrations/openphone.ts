@@ -102,8 +102,32 @@ export interface OpCall {
 }
 export interface OpContact {
   id: string;
-  defaultFields?: { firstName?: string; lastName?: string; company?: string; phoneNumbers?: { value?: string }[] };
+  externalId?: string;
+  source?: string;
+  defaultFields?: {
+    firstName?: string;
+    lastName?: string;
+    company?: string;
+    emails?: ({ value?: string } | string)[];
+    phoneNumbers?: ({ value?: string } | string)[];
+  };
   createdAt?: string;
+}
+
+// A call transcript: dialogue lines, each tagged with the speaker's phone
+// (identifier) and userId (non-null = our team member; null = the other party).
+export interface OpTranscriptLine {
+  content?: string;
+  start?: number;
+  end?: number;
+  identifier?: string; // speaker phone number
+  userId?: string | null; // our team member id, or null for the external party
+}
+export interface OpTranscript {
+  callId?: string;
+  createdAt?: string;
+  dialogue?: OpTranscriptLine[];
+  status?: string;
 }
 
 type Paged<T> = { data: T[]; nextPageToken?: string | null; totalItems?: number };
@@ -114,6 +138,8 @@ export const OpenPhone = {
   users: () => openphoneRequest<Paged<OpUser>>("/users").then((r) => r.data ?? []),
   contacts: (q?: Query) => openphoneRequest<Paged<OpContact>>("/contacts", { query: q }),
   conversations: (q?: Query) => openphoneRequest<Paged<OpConversation>>("/conversations", { query: q }),
+  callTranscript: (callId: string) =>
+    openphoneRequest<{ data: OpTranscript }>(`/call-transcripts/${callId}`).then((r) => r.data),
   // NB: OpenPhone wants the participants as the array param `participants[]`.
   messages: (phoneNumberId: string, participants: string[], maxResults = 30) =>
     openphoneRequest<Paged<OpMessage>>("/messages", {
@@ -124,6 +150,52 @@ export const OpenPhone = {
       query: { phoneNumberId, "participants[]": participants, maxResults },
     }).then((r) => r.data ?? []),
 };
+
+// Pull EVERY contact (paginated). OpenPhone caps page size at 50.
+export async function allOpenPhoneContacts(): Promise<OpContact[]> {
+  const out: OpContact[] = [];
+  let pageToken: string | undefined;
+  for (let i = 0; i < 200; i++) {
+    const res = await openphoneRequest<Paged<OpContact>>("/contacts", {
+      query: { maxResults: 50, pageToken },
+    });
+    out.push(...(res.data ?? []));
+    if (!res.nextPageToken) break;
+    pageToken = res.nextPageToken;
+  }
+  return out;
+}
+
+// Pull a phone number's values off a contact regardless of string/object shape.
+export function contactPhoneValues(c: OpContact): string[] {
+  const raw = c.defaultFields?.phoneNumbers ?? [];
+  return raw.map((p) => (typeof p === "string" ? p : p?.value ?? "")).filter(Boolean);
+}
+export function contactEmailValues(c: OpContact): string[] {
+  const raw = c.defaultFields?.emails ?? [];
+  return raw.map((e) => (typeof e === "string" ? e : e?.value ?? "")).filter(Boolean);
+}
+
+// Fetch a call's transcript and split it into the full text and just the OTHER
+// party's words (userId === null), which is what we scan for revision requests.
+export async function callTranscriptText(
+  callId: string,
+): Promise<{ ok: boolean; full: string; clientText: string }> {
+  try {
+    const t = await OpenPhone.callTranscript(callId);
+    const lines = t?.dialogue ?? [];
+    const full = lines.map((l) => l.content ?? "").join(" ").replace(/\s+/g, " ").trim();
+    const clientText = lines
+      .filter((l) => !l.userId) // null/undefined userId = external party (the client)
+      .map((l) => l.content ?? "")
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return { ok: Boolean(full), full, clientText };
+  } catch {
+    return { ok: false, full: "", clientText: "" };
+  }
+}
 
 // Merged, newest-first timeline of texts + calls for one conversation.
 export type ThreadItem =
@@ -161,6 +233,8 @@ export async function conversationThread(
 // ---- Webhooks --------------------------------------------------------------
 export const MESSAGE_EVENTS = ["message.received", "message.delivered"];
 export const CALL_EVENTS = ["call.completed", "call.ringing", "call.recording.completed"];
+// Transcripts arrive on their own event a moment after the call ends.
+export const TRANSCRIPT_EVENTS = ["call.transcript.completed"];
 
 interface OpWebhook {
   id: string;
@@ -176,7 +250,9 @@ export async function listWebhooks(): Promise<OpWebhook[]> {
 
 // Register message + call webhooks pointing at our endpoint (idempotent: clears
 // any existing hooks for the same URL first).
-export async function registerOpenPhoneWebhooks(callbackUrl: string): Promise<{ created: number }> {
+export async function registerOpenPhoneWebhooks(
+  callbackUrl: string,
+): Promise<{ created: number; transcripts: boolean }> {
   const existing = await listWebhooks();
   for (const w of existing) {
     if (w.url === callbackUrl) {
@@ -191,7 +267,19 @@ export async function registerOpenPhoneWebhooks(callbackUrl: string): Promise<{ 
     method: "POST",
     body: { url: callbackUrl, events: CALL_EVENTS, label: "RealTour Pilot Hub" },
   });
-  return { created: 2 };
+  // Call transcripts have a dedicated webhook resource; not every plan exposes
+  // it, so don't let a failure here break message/call registration.
+  let transcripts = false;
+  try {
+    await openphoneRequest("/webhooks/call-transcripts", {
+      method: "POST",
+      body: { url: callbackUrl, events: TRANSCRIPT_EVENTS, label: "RealTour Pilot Hub" },
+    });
+    transcripts = true;
+  } catch {
+    /* plan may not include transcripts */
+  }
+  return { created: transcripts ? 3 : 2, transcripts };
 }
 
 export async function testOpenPhoneKey(

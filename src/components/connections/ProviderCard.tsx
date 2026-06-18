@@ -29,6 +29,7 @@ import {
   syncAryeoNow,
   syncAryeoProductsNow,
   enableOpenPhoneRealtime,
+  syncOpenPhoneContactsNow,
   syncDropboxFoldersNow,
   recheckStatusesNow,
   disconnectProvider,
@@ -359,6 +360,13 @@ function GenericApiKeyActions({
               className="rounded-lg border px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-60"
             >
               {pending ? <Loader2 className="size-4 animate-spin" /> : "Enable real-time"}
+            </button>
+            <button
+              onClick={() => startTransition(async () => setMsg(await syncOpenPhoneContactsNow()))}
+              disabled={pending}
+              className="rounded-lg border px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-60"
+            >
+              {pending ? <Loader2 className="size-4 animate-spin" /> : "Sync contacts"}
             </button>
           </>
         )}

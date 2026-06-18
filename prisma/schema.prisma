@@ -157,6 +157,28 @@ model Client {
 
   projects   Project[]
   smartTasks SmartTask[]
+  contacts   Contact[]
+}
+
+// A synced OpenPhone/HubSpot contact. Lets inbound comms from ANY known number
+// (incl. a client's secondary line) resolve to the right client, and seeds the
+// CRM. phones is a JSON string[] of raw numbers; matching is by last-10 digits.
+model Contact {
+  id          String   @id @default(cuid())
+  openPhoneId String   @unique
+  firstName   String?
+  lastName    String?
+  company     String?
+  email       String?
+  phones      String? // JSON: string[]
+  source      String? // openphone-hubspot | openphone | ...
+  externalId  String? // e.g. HubSpot id
+  client      Client?  @relation(fields: [clientId], references: [id])
+  clientId    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([clientId])
 }
 
 model Project {

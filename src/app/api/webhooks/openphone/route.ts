@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { phoneKey } from "@/lib/integrations/openphone";
+import { phoneKey, callTranscriptText, type OpTranscriptLine } from "@/lib/integrations/openphone";
+import { resolveClientByPhones } from "@/lib/contacts";
 import { recordClientCommunication } from "@/lib/comms";
 
 export const runtime = "nodejs";
@@ -70,25 +71,19 @@ function collectPhones(obj: unknown, acc: string[] = []): string[] {
 async function processOpenPhoneEvent(type: string, payload: Record<string, unknown>) {
   const data = ((payload.data as Record<string, unknown>)?.object ?? payload.data ?? payload) as Record<string, unknown>;
 
-  // Find a client by any phone number in the event.
+  // Call transcripts arrive on their own event — pull the transcript, log it,
+  // and cross-check the CLIENT's spoken words for a revision request.
+  if (type === "call.transcript.completed") {
+    return handleTranscript(data);
+  }
+
+  // Collect every phone in the event and resolve to a client (direct phone or a
+  // synced contact's alternate number) + their most recent project.
   const phones = [...new Set(collectPhones(data).map((p) => phoneKey(p)).filter((k) => k.length === 10))];
   if (phones.length === 0) return;
-
-  // Match on normalized digits (stored phones are formatted, so substring
-  // queries miss). Load candidate clients and compare by phoneKey.
-  const candidates = await prisma.client.findMany({
-    where: { phone: { not: null } },
-    select: {
-      id: true,
-      name: true,
-      phone: true,
-      projects: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true, title: true, status: true } },
-    },
-  });
-  const want = new Set(phones);
-  const client = candidates.find((c) => want.has(phoneKey(c.phone)));
-  if (!client) return;
-  const project = client.projects[0];
+  const match = await resolveClientByPhones(phones);
+  if (!match) return;
+  const { clientId, clientName, project } = match;
 
   const isCall = type.startsWith("call");
   const direction = (data.direction as string) || "";
@@ -107,14 +102,69 @@ async function processOpenPhoneEvent(type: string, payload: Record<string, unkno
   // Tasks, and is cross-checked for a revision/change request on delivered jobs.
   if (type === "message.received" || (!isCall && incoming)) {
     await recordClientCommunication({
-      clientId: client.id,
-      clientName: client.name,
+      clientId,
+      clientName,
       projectId: project?.id,
       projectStatus: project?.status ?? null,
       propertyAddress: project?.title ?? null,
       text,
       kind: "text",
       source: "openphone",
+    });
+  }
+}
+
+// A completed call transcript: fetch it, attach to the client's project, and
+// run the client's portion through revision detection (calls count too).
+async function handleTranscript(data: Record<string, unknown>) {
+  const callId = (data.callId as string) || (data.id as string) || "";
+
+  // Prefer the dialogue already in the webhook payload; fall back to the API.
+  const inline = data.dialogue as OpTranscriptLine[] | undefined;
+  let full = "";
+  let clientText = "";
+  if (Array.isArray(inline) && inline.length) {
+    full = inline.map((l) => l.content ?? "").join(" ").replace(/\s+/g, " ").trim();
+    clientText = inline
+      .filter((l) => !l.userId)
+      .map((l) => l.content ?? "")
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+  } else if (callId) {
+    const t = await callTranscriptText(callId);
+    full = t.full;
+    clientText = t.clientText;
+  }
+  if (!full) return;
+
+  // Resolve the client from phones in the payload + the transcript identifiers.
+  const phones = [...new Set(collectPhones(data).map((p) => phoneKey(p)).filter((k) => k.length === 10))];
+  const match = await resolveClientByPhones(phones);
+  if (!match) return;
+  const { clientId, clientName, project } = match;
+
+  if (project) {
+    await prisma.activity.create({
+      data: {
+        projectId: project.id,
+        type: "SYSTEM",
+        body: `Call transcript: ${full.slice(0, 280)}${full.length > 280 ? "…" : ""}`,
+      },
+    });
+  }
+
+  // Scan the client's spoken words for a revision/change request.
+  if (clientText) {
+    await recordClientCommunication({
+      clientId,
+      clientName,
+      projectId: project?.id,
+      projectStatus: project?.status ?? null,
+      propertyAddress: project?.title ?? null,
+      text: clientText,
+      kind: "voicemail",
+      source: "openphone-call",
     });
   }
 }
