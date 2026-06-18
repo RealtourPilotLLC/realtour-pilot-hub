@@ -67,13 +67,40 @@ export async function dropboxAccessToken(): Promise<string> {
   return accessTokenFrom(refreshToken);
 }
 
+// The team's root namespace — file paths like /AutoHDR resolve against the
+// team space (where the Zap creates folders) rather than the user's personal
+// home. Cached after the first lookup.
+let cachedRootNs: string | null | undefined;
+async function pathRootHeader(token: string): Promise<Record<string, string>> {
+  if (cachedRootNs === undefined) {
+    try {
+      const acct = await dbx<{ root_info?: { root_namespace_id?: string } }>(
+        "users/get_current_account",
+        undefined,
+        token,
+        true, // skip path-root for the account call itself
+      );
+      cachedRootNs = acct.root_info?.root_namespace_id ?? null;
+    } catch {
+      cachedRootNs = null;
+    }
+  }
+  return cachedRootNs ? { "Dropbox-API-Path-Root": JSON.stringify({ ".tag": "root", root: cachedRootNs }) } : {};
+}
+
 // RPC-style API call (api.dropboxapi.com/2/...).
-export async function dbx<T = unknown>(endpoint: string, arg?: unknown, accessToken?: string): Promise<T> {
+export async function dbx<T = unknown>(
+  endpoint: string,
+  arg?: unknown,
+  accessToken?: string,
+  skipPathRoot = false,
+): Promise<T> {
   const token = accessToken ?? (await dropboxAccessToken());
   const res = await fetch(`https://api.dropboxapi.com/2/${endpoint}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
+      ...(skipPathRoot ? {} : await pathRootHeader(token)),
       ...(arg !== undefined ? { "Content-Type": "application/json" } : {}),
     },
     body: arg !== undefined ? JSON.stringify(arg) : undefined,
@@ -129,6 +156,7 @@ export async function dropboxUpload(path: string, bytes: Buffer | Uint8Array): P
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
+      ...(await pathRootHeader(token)),
       "Content-Type": "application/octet-stream",
       "Dropbox-API-Arg": JSON.stringify({ path, mode: "add", autorename: true, mute: false }),
     },
