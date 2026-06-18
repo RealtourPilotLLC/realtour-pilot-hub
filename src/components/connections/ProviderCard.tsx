@@ -27,6 +27,7 @@ import {
   connectApiKey,
   syncAryeoNow,
   syncAryeoProductsNow,
+  enableOpenPhoneRealtime,
   disconnectProvider,
   type ActionResult,
 } from "@/app/connections/actions";
@@ -279,14 +280,23 @@ function GenericApiKeyActions({
   }
   return (
     <div className="space-y-2">
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         {provider.id === "openphone" && (
-          <Link
-            href="/communications"
-            className="flex flex-1 items-center justify-center rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90"
-          >
-            View communications
-          </Link>
+          <>
+            <Link
+              href="/communications"
+              className="flex flex-1 items-center justify-center rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90"
+            >
+              View communications
+            </Link>
+            <button
+              onClick={() => startTransition(async () => setMsg(await enableOpenPhoneRealtime()))}
+              disabled={pending}
+              className="rounded-lg border px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-60"
+            >
+              {pending ? <Loader2 className="size-4 animate-spin" /> : "Enable real-time"}
+            </button>
+          </>
         )}
         <button
           onClick={() => startTransition(async () => setMsg(await disconnectProvider(provider.id)))}

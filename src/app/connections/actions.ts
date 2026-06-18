@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { saveSecret, disconnect as disconnectConn } from "@/lib/integrations/connections";
-import { testOpenPhoneKey } from "@/lib/integrations/openphone";
+import { testOpenPhoneKey, registerOpenPhoneWebhooks } from "@/lib/integrations/openphone";
 import {
   testAryeoKey,
   syncAryeoOrders,
@@ -81,6 +81,17 @@ export async function syncAryeoProductsNow(): Promise<ActionResult> {
     return { ok: true, message: `Synced ${r.products} products from Aryeo.` };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Product sync failed." };
+  }
+}
+
+export async function enableOpenPhoneRealtime(): Promise<ActionResult> {
+  const base = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
+  if (!base) return { ok: false, message: "Deploy the app first — webhooks need a public URL." };
+  try {
+    await registerOpenPhoneWebhooks(`${base}/api/webhooks/openphone`);
+    return { ok: true, message: "Real-time enabled — new texts & calls will log automatically." };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Could not register webhooks." };
   }
 }
 

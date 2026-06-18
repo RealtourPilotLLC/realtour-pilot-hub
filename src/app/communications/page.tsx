@@ -82,8 +82,9 @@ export default async function CommunicationsPage() {
           <div className="overflow-hidden rounded-2xl border bg-surface">
             {rows.map(({ conv, phone, client }) => {
               const name = client?.name || conv.name || fmtPhone(phone);
+              const href = `/communications/thread?pn=${encodeURIComponent(conv.phoneNumberId ?? "")}&p=${encodeURIComponent(phone)}&name=${encodeURIComponent(name)}`;
               return (
-                <div key={conv.id} className="flex items-center gap-3 border-b px-5 py-3 last:border-0 hover:bg-surface-2">
+                <Link key={conv.id} href={href} className="flex items-center gap-3 border-b px-5 py-3 last:border-0 hover:bg-surface-2">
                   <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-brand-soft text-brand">
                     <MessageCircle className="size-4" />
                   </span>
@@ -91,12 +92,9 @@ export default async function CommunicationsPage() {
                     <div className="flex items-center gap-2">
                       <span className="truncate text-sm font-medium">{name}</span>
                       {client && (
-                        <Link
-                          href={`/clients`}
-                          className="inline-flex items-center gap-0.5 rounded bg-success-soft px-1.5 text-[10px] font-medium text-success"
-                        >
+                        <span className="inline-flex items-center gap-0.5 rounded bg-success-soft px-1.5 text-[10px] font-medium text-success">
                           <User className="size-2.5" /> client
-                        </Link>
+                        </span>
                       )}
                     </div>
                     <div className="truncate text-xs text-muted">{fmtPhone(phone)}</div>
@@ -106,7 +104,7 @@ export default async function CommunicationsPage() {
                       {formatDistanceToNow(new Date(conv.lastActivityAt), { addSuffix: true })}
                     </span>
                   )}
-                </div>
+                </Link>
               );
             })}
           </div>
