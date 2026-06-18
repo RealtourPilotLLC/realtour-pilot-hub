@@ -104,6 +104,9 @@ export default async function ProjectPage({
             status={project.status}
             evidence={project.statusEvidence}
             checkedAt={project.statusCheckedAt}
+            projectId={project.id}
+            revisionNote={project.revisionNote}
+            revisionRequestedAt={project.revisionRequestedAt}
           />
 
           {/* Deliverables */}

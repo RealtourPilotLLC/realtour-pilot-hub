@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { CalendarDays, Package, AlertTriangle, Camera, CircleAlert, CheckCircle2 } from "lucide-react";
+import { CalendarDays, Package, AlertTriangle, Camera, CircleAlert, CheckCircle2, RefreshCcw } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { PRIORITY_META } from "@/lib/pipeline";
@@ -74,11 +74,15 @@ export function ProjectCard({
             "mt-2 inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium",
             flag.kind === "missing"
               ? "bg-danger/10 text-danger"
-              : "bg-success/10 text-success",
+              : flag.kind === "revision"
+                ? "bg-[#ea580c]/10 text-[#ea580c]"
+                : "bg-success/10 text-success",
           )}
         >
           {flag.kind === "missing" ? (
             <CircleAlert className="size-3 shrink-0" />
+          ) : flag.kind === "revision" ? (
+            <RefreshCcw className="size-3 shrink-0" />
           ) : (
             <CheckCircle2 className="size-3 shrink-0" />
           )}

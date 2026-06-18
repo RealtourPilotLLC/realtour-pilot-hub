@@ -33,6 +33,7 @@ enum ProjectStatus {
   EDITING // assigned to an editor, in production
   REVIEW // internal QC / quality check
   DELIVERED // sent to client
+  REVISION // delivered, then client requested changes — back in production
   ON_HOLD // blocked / waiting on client or info
   CANCELLED
 }
@@ -207,6 +208,12 @@ model Project {
   // missing items, fulfillment mismatch) + when it was last cross-checked.
   statusEvidence  String?
   statusCheckedAt DateTime?
+
+  // Comms cross-check: set when a client communication (text/call/email) on a
+  // delivered job is detected as a change/revision request. Drives REVISION
+  // status until resolved.
+  revisionRequestedAt DateTime?
+  revisionNote        String?
 
   // Photographer's brief to the editor, captured at upload time.
   editorBrief String?

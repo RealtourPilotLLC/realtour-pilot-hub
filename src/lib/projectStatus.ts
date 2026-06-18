@@ -104,6 +104,8 @@ export type StatusSignals = {
   scheduled: boolean; // a SCHEDULED (non-cancelled) appointment exists
   anyAppt: boolean;
   shootDate: Date | null;
+  revisionOpen: boolean; // client requested changes after delivery (comms)
+  revisionNote?: string | null;
 };
 
 export type StatusEvidence = {
@@ -145,6 +147,27 @@ export function computeStatus(sig: StatusSignals): StatusResult {
 
   let status: ProjectStatus;
   let reason: string;
+
+  // Comms override: a client asked for changes after delivery. The media may
+  // all be present, but the job is NOT done until the revision is handled.
+  if (sig.revisionOpen) {
+    return {
+      status: "REVISION",
+      evidence: {
+        expected: expected.map((c) => CATEGORY_LABEL[c]),
+        present: [...present].map((c) => CATEGORY_LABEL[c]),
+        missing: missing.map((c) => CATEGORY_LABEL[c as MediaCategory]),
+        partial: false,
+        aryeo: a,
+        dropbox: d,
+        fulfilledOnAryeo: fulfilled,
+        reason: sig.revisionNote
+          ? `Client requested changes after delivery: "${sig.revisionNote.slice(0, 160)}"`
+          : "Client requested changes after delivery — revision in progress.",
+        checkedAt: new Date().toISOString(),
+      },
+    };
+  }
 
   if (satisfied && fulfilled) {
     status = "DELIVERED";
@@ -223,6 +246,8 @@ type StatusProject = {
   shootDate: Date | null;
   addressLine: string | null;
   createdAt: Date;
+  revisionRequestedAt: Date | null;
+  revisionNote: string | null;
   client: { name: string };
   deliverables: { id: string; type: string; label: string | null }[];
   appointments: { status: string | null }[];
@@ -264,6 +289,8 @@ async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<Sta
     scheduled: p.appointments.some((a) => (a.status || "").toUpperCase() === "SCHEDULED"),
     anyAppt: p.appointments.length > 0,
     shootDate: p.shootDate,
+    revisionOpen: !!p.revisionRequestedAt,
+    revisionNote: p.revisionNote,
   };
 }
 
@@ -298,11 +325,22 @@ export async function syncProjectStatuses(
 }> {
   const useDropbox = dropboxConfigured() && !!(await getSecret("dropbox"));
 
+  // On a full backfill, first sweep delivered jobs' comms for any revision
+  // request we may have missed, so they reopen to REVISION before we compute.
+  if (opts.full) {
+    const { scanProjectCommsForRevision } = await import("@/lib/comms");
+    const delivered = await prisma.project.findMany({
+      where: { source: "ARYEO", status: "DELIVERED", revisionRequestedAt: null },
+      select: { id: true },
+    });
+    for (const p of delivered) await scanProjectCommsForRevision(p.id);
+  }
+
   const where = opts.full
     ? { source: "ARYEO" as const, status: { notIn: ["ON_HOLD", "CANCELLED"] as ProjectStatus[] } }
     : {
         source: "ARYEO" as const,
-        status: { in: ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW"] as ProjectStatus[] },
+        status: { in: ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW", "REVISION"] as ProjectStatus[] },
       };
 
   const projects = (await prisma.project.findMany({
@@ -318,6 +356,8 @@ export async function syncProjectStatuses(
       shootDate: true,
       addressLine: true,
       createdAt: true,
+      revisionRequestedAt: true,
+      revisionNote: true,
       client: { select: { name: true } },
       deliverables: { select: { id: true, type: true, label: true } },
       appointments: { select: { status: true } },

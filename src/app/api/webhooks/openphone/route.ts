@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { phoneKey } from "@/lib/integrations/openphone";
-import { createCommTask } from "@/lib/tasks";
+import { recordClientCommunication } from "@/lib/comms";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -82,7 +82,7 @@ async function processOpenPhoneEvent(type: string, payload: Record<string, unkno
       id: true,
       name: true,
       phone: true,
-      projects: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true, title: true } },
+      projects: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true, title: true, status: true } },
     },
   });
   const want = new Set(phones);
@@ -103,15 +103,18 @@ async function processOpenPhoneEvent(type: string, payload: Record<string, unkno
     await prisma.activity.create({ data: { projectId: project.id, type: "SYSTEM", body } });
   }
 
-  // Listener-first: an inbound text becomes a tracked "reply" task in Daily Tasks.
+  // Listener-first: an inbound text becomes a tracked "reply" task in Daily
+  // Tasks, and is cross-checked for a revision/change request on delivered jobs.
   if (type === "message.received" || (!isCall && incoming)) {
-    await createCommTask({
+    await recordClientCommunication({
       clientId: client.id,
       clientName: client.name,
       projectId: project?.id,
+      projectStatus: project?.status ?? null,
       propertyAddress: project?.title ?? null,
+      text,
       kind: "text",
-      snippet: text,
+      source: "openphone",
     });
   }
 }

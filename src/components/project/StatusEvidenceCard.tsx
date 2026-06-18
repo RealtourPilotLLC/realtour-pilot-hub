@@ -1,6 +1,7 @@
-import { ShieldCheck, CircleAlert, CheckCircle2, Camera, Video, Ruler, Box } from "lucide-react";
+import { ShieldCheck, CircleAlert, CheckCircle2, Camera, Video, Ruler, Box, RefreshCcw } from "lucide-react";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { stageMeta } from "@/lib/pipeline";
+import { RevisionResolveButton } from "@/components/project/RevisionResolveButton";
 import { formatDistanceToNow } from "date-fns";
 import type { ProjectStatus } from "@prisma/client";
 
@@ -10,16 +11,23 @@ export function StatusEvidenceCard({
   status,
   evidence,
   checkedAt,
+  projectId,
+  revisionNote,
+  revisionRequestedAt,
 }: {
   status: ProjectStatus;
   evidence: string | null;
   checkedAt: Date | null;
+  projectId: string;
+  revisionNote?: string | null;
+  revisionRequestedAt?: Date | null;
 }) {
+  const isRevision = status === "REVISION" || !!revisionRequestedAt;
   const e = parseEvidence(evidence);
-  if (!e) return null;
+  if (!e && !isRevision) return null;
 
   const stage = stageMeta(status);
-  const hasMissing = e.missing.length > 0;
+  const hasMissing = (e?.missing.length ?? 0) > 0;
 
   return (
     <section
@@ -29,7 +37,9 @@ export function StatusEvidenceCard({
     >
       <div className="flex items-center justify-between gap-2 border-b px-5 py-3.5">
         <h2 className="flex items-center gap-2 text-sm font-semibold">
-          {hasMissing ? (
+          {isRevision ? (
+            <RefreshCcw className="size-4 text-[#ea580c]" />
+          ) : hasMissing ? (
             <CircleAlert className="size-4 text-danger" />
           ) : (
             <ShieldCheck className="size-4 text-success" />
@@ -45,11 +55,28 @@ export function StatusEvidenceCard({
       </div>
 
       <div className="space-y-3 px-5 py-4">
-        <p className={"text-sm " + (hasMissing ? "font-medium text-danger" : "text-foreground/85")}>
-          {e.reason}
-        </p>
+        {/* Revision banner — client asked for changes after delivery */}
+        {isRevision && (
+          <div className="rounded-lg border border-[#ea580c]/30 bg-[#ea580c]/10 px-3 py-2.5">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-[#ea580c]">
+              <RefreshCcw className="size-3.5" /> Client requested changes after delivery
+            </div>
+            {revisionNote && (
+              <p className="mt-1 text-sm text-foreground/85">&ldquo;{revisionNote}&rdquo;</p>
+            )}
+            <div className="mt-2">
+              <RevisionResolveButton projectId={projectId} />
+            </div>
+          </div>
+        )}
 
-        {e.partial && (
+        {e && (
+          <p className={"text-sm " + (hasMissing ? "font-medium text-danger" : "text-foreground/85")}>
+            {e.reason}
+          </p>
+        )}
+
+        {e?.partial && (
           <div className="rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger">
             ⚠ Aryeo marked this order fulfilled, but the cross-check found missing deliverables.
             Don&apos;t treat it as done until the rest is uploaded.
@@ -57,7 +84,7 @@ export function StatusEvidenceCard({
         )}
 
         {/* Expected deliverables, color-coded by present / missing */}
-        {e.expected.length > 0 && (
+        {e && e.expected.length > 0 && (
           <div>
             <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-2">
               Ordered deliverables
@@ -84,6 +111,7 @@ export function StatusEvidenceCard({
         )}
 
         {/* Evidence counts from each source */}
+        {e && (
         <div className="grid gap-3 sm:grid-cols-2">
           {e.aryeo && (
             <div className="rounded-lg border bg-surface-2/50 px-3 py-2">
@@ -112,6 +140,7 @@ export function StatusEvidenceCard({
             </div>
           )}
         </div>
+        )}
 
         {checkedAt && (
           <div className="text-[11px] text-muted-2">

@@ -11,6 +11,7 @@ import {
 import { stageMeta } from "@/lib/pipeline";
 import { Aryeo } from "@/lib/integrations/aryeo";
 import { getSecret } from "@/lib/integrations/connections";
+import { resolveRevision } from "@/lib/comms";
 
 export type ApptResult = { ok: boolean; message: string };
 
@@ -150,8 +151,20 @@ export async function moveProjectStatus(projectId: string, status: ProjectStatus
       status,
       deliveredAt:
         status === ProjectStatus.DELIVERED ? new Date() : project.deliveredAt,
+      // Moving a job to Delivered clears any open revision request.
+      ...(status === ProjectStatus.DELIVERED
+        ? { revisionRequestedAt: null, revisionNote: null }
+        : {}),
     },
   });
+
+  // Close out the revision task too when manually delivered.
+  if (status === ProjectStatus.DELIVERED && project.revisionRequestedAt) {
+    await prisma.smartTask.updateMany({
+      where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    });
+  }
 
   await prisma.activity.create({
     data: {
@@ -162,6 +175,15 @@ export async function moveProjectStatus(projectId: string, status: ProjectStatus
   });
 
   revalidatePath("/pipeline");
+  revalidatePath("/");
+  revalidatePath(`/projects/${projectId}`);
+}
+
+// Mark a revision request resolved (handled or dismissed as a false alarm).
+export async function resolveRevisionAction(projectId: string) {
+  await resolveRevision(projectId);
+  revalidatePath("/pipeline");
+  revalidatePath("/queue");
   revalidatePath("/");
   revalidatePath(`/projects/${projectId}`);
 }

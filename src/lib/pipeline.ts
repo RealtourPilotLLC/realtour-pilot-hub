@@ -75,6 +75,14 @@ export const PIPELINE_STAGES: StageMeta[] = [
 // Off-pipeline states (shown separately, not as flow columns).
 export const SIDE_STATES: StageMeta[] = [
   {
+    status: ProjectStatus.REVISION,
+    label: "Revisions",
+    short: "Revision",
+    description: "Delivered — client requested changes",
+    color: "#ea580c",
+    soft: "#ffedd5",
+  },
+  {
     status: ProjectStatus.ON_HOLD,
     label: "On Hold",
     short: "On Hold",

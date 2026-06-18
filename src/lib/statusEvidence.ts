@@ -46,12 +46,14 @@ export function parseEvidence(raw: string | null | undefined): ParsedEvidence | 
 }
 
 // A short, human flag for a card: what (if anything) is wrong/notable.
-export type StatusFlag = { kind: "missing" | "ready" | "stalled"; label: string };
+export type StatusFlag = { kind: "missing" | "ready" | "stalled" | "revision"; label: string };
 
 export function statusFlag(
   status: string,
   raw: string | null | undefined,
 ): StatusFlag | null {
+  // A revision request is the loudest signal — show it regardless of media.
+  if (status === "REVISION") return { kind: "revision", label: "Revision requested" };
   const e = parseEvidence(raw);
   if (!e) return null;
   // A "missing" flag only signals real work when the job is far enough along
