@@ -109,6 +109,15 @@ export async function cancelAppointmentAction(
   return { ok: true, message: "Appointment cancelled." };
 }
 
+/** Update a SmartTask's status (and stamp completion). */
+export async function setSmartTaskStatus(taskId: string, status: string) {
+  await prisma.smartTask.update({
+    where: { id: taskId },
+    data: { status, completedAt: status === "COMPLETED" ? new Date() : null },
+  });
+  revalidatePath("/queue");
+}
+
 /** Assign (or clear) a team member for a role on a project. */
 export async function assignMember(
   projectId: string,

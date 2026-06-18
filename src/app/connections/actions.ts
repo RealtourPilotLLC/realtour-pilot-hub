@@ -5,6 +5,7 @@ import { saveSecret, disconnect as disconnectConn } from "@/lib/integrations/con
 import { testOpenPhoneKey, registerOpenPhoneWebhooks } from "@/lib/integrations/openphone";
 import { exchangeDropboxCode, testDropboxRefreshToken } from "@/lib/integrations/dropbox";
 import { testSlackKey } from "@/lib/integrations/slack";
+import { generateTasksForActiveProjects } from "@/lib/tasks";
 import {
   testAryeoKey,
   syncAryeoOrders,
@@ -34,9 +35,11 @@ export async function syncAryeoNow(): Promise<ActionResult> {
     await syncAryeoTeam();
     const r = await syncAryeoOrders();
     const appt = await syncAryeoAppointments();
+    await generateTasksForActiveProjects();
     revalidatePath("/connections");
     revalidatePath("/pipeline");
     revalidatePath("/schedule");
+    revalidatePath("/queue");
     revalidatePath("/");
     return {
       ok: true,

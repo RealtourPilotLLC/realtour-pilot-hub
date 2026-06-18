@@ -106,6 +106,7 @@ model TeamMember {
   assignedChecklist    ChecklistItem[]
   uploadedFiles        UploadedFile[]
   assignedAppointments Appointment[]
+  smartTasks           SmartTask[]    @relation("TaskOwner")
 }
 
 // A shoot appointment, synced from Aryeo /appointments (with assigned user).
@@ -153,7 +154,8 @@ model Client {
   aryeoCustomerId String? @unique
   licenseNumber   String?
 
-  projects Project[]
+  projects   Project[]
+  smartTasks SmartTask[]
 }
 
 model Project {
@@ -212,6 +214,7 @@ model Project {
   activities   Activity[]
   uploads      UploadedFile[]
   appointments Appointment[]
+  smartTasks   SmartTask[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -311,6 +314,42 @@ model Sop {
   createdAt DateTime @default(now())
 
   @@index([category])
+}
+
+// Listener-first operations: a tracked, auto-generated task in Kyle's queue.
+// status/taskType/priority are strings (the spec has many values) to stay flexible.
+model SmartTask {
+  id            String   @id @default(cuid())
+  status        String   @default("OPEN") // OPEN | IN_PROGRESS | WAITING_* | BLOCKED | COMPLETED | CANCELLED
+  taskType      String // appointment_prep | media_qa | delivery | client_reply | reschedule_confirmation | ...
+  priority      String   @default("MEDIUM") // URGENT | HIGH | MEDIUM | LOW
+  title         String
+  description   String?
+  reasonCreated String?
+  checklist     String? // JSON: string[]
+  source        String   @default("system") // aryeo | openphone | gmail | slack | manual | system
+  sourceDetail  String? // url / message id / note
+  dueAt         DateTime?
+  completedAt   DateTime?
+
+  // Links
+  owner           TeamMember? @relation("TaskOwner", fields: [ownerId], references: [id])
+  ownerId         String?
+  project         Project?    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId       String?
+  client          Client?     @relation(fields: [clientId], references: [id])
+  clientId        String?
+  propertyAddress String?
+  deliverableType String?
+
+  // Idempotency for auto-generated/listener tasks.
+  dedupeKey String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([projectId])
 }
 
 // Service catalogue synced from Aryeo /products.
