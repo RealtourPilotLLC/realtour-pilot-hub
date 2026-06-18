@@ -213,6 +213,36 @@ export async function createCommTask(opts: {
   return true;
 }
 
+// Production tasks that become obsolete once a job is delivered/cancelled.
+const PRODUCTION_TASK_TYPES = ["appointment_prep", "media_qa", "delivery", "finish_delivery"];
+
+// Close out a project's now-obsolete open tasks when it reaches a terminal
+// state, so Daily Tasks doesn't show ghost work on finished/cancelled jobs.
+//   DELIVERED  → complete the production tasks (QA/deliver/prep/finish)
+//   CANCELLED  → cancel every open task on the job
+// Comm-driven tasks (client_reply / revision) are left alone — still actionable.
+export async function closeObsoleteTasks(projectId: string, projectStatus: string): Promise<number> {
+  if (projectStatus === "CANCELLED") {
+    const r = await prisma.smartTask.updateMany({
+      where: { projectId, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      data: { status: "CANCELLED" },
+    });
+    return r.count;
+  }
+  if (projectStatus === "DELIVERED") {
+    const r = await prisma.smartTask.updateMany({
+      where: {
+        projectId,
+        taskType: { in: PRODUCTION_TASK_TYPES },
+        status: { notIn: ["COMPLETED", "CANCELLED"] },
+      },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    });
+    return r.count;
+  }
+  return 0;
+}
+
 // Generate (idempotently) the expected tasks for every ACTIVE project.
 export async function generateTasksForActiveProjects(): Promise<{ created: number; projects: number }> {
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });

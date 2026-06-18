@@ -33,6 +33,11 @@ export async function getProject(id: string) {
       activities: { orderBy: { createdAt: "desc" }, include: { author: true } },
       uploads: { orderBy: { createdAt: "asc" }, include: { deliverable: true } },
       appointments: { orderBy: { startAt: "asc" }, include: { assignedTo: true } },
+      smartTasks: {
+        where: { status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        orderBy: [{ priority: "asc" }, { dueAt: "asc" }],
+        include: { client: { select: { name: true } } },
+      },
     },
   });
 }

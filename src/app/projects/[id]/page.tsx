@@ -21,6 +21,8 @@ import {
 import { Suspense } from "react";
 import { ListingMedia, ListingMediaSkeleton } from "@/components/project/ListingMedia";
 import { StatusEvidenceCard } from "@/components/project/StatusEvidenceCard";
+import { TaskCard } from "@/components/queue/TaskCard";
+import { ListTodo } from "lucide-react";
 import { getProject, getTeam } from "@/lib/queries";
 import { AssignmentPanel } from "@/components/project/AssignmentPanel";
 import { AppointmentManager } from "@/components/project/AppointmentManager";
@@ -108,6 +110,40 @@ export default async function ProjectPage({
             revisionNote={project.revisionNote}
             revisionRequestedAt={project.revisionRequestedAt}
           />
+
+          {/* Open tasks for this job */}
+          {project.smartTasks.length > 0 && (
+            <section className="rounded-2xl border bg-surface">
+              <div className="flex items-center gap-2 border-b px-5 py-3.5">
+                <ListTodo className="size-4 text-brand" />
+                <h2 className="text-sm font-semibold">Open tasks</h2>
+                <span className="rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">
+                  {project.smartTasks.length}
+                </span>
+              </div>
+              <div className="grid gap-3 p-5 sm:grid-cols-2">
+                {project.smartTasks.map((t) => (
+                  <TaskCard
+                    key={t.id}
+                    task={{
+                      id: t.id,
+                      title: t.title,
+                      taskType: t.taskType,
+                      status: t.status,
+                      priority: t.priority,
+                      dueAt: t.dueAt ? t.dueAt.toISOString() : null,
+                      reasonCreated: t.reasonCreated,
+                      checklist: t.checklist ? (JSON.parse(t.checklist) as string[]) : [],
+                      source: t.source,
+                      projectId: t.projectId,
+                      clientName: t.client?.name ?? null,
+                      propertyAddress: t.propertyAddress,
+                    }}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* Deliverables */}
           <section className="rounded-2xl border bg-surface">

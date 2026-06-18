@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
+import { matchProjectFromText } from "@/lib/matchProject";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -83,18 +84,26 @@ async function processSlackEvent(event: Record<string, unknown>) {
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
   const title = text.length > 90 ? text.slice(0, 88) + "…" : text;
 
+  // Figure out which job the message is about and attach the to-do there.
+  const match = await matchProjectFromText(text);
+
   await prisma.smartTask.create({
     data: {
       taskType: "internal_instruction",
       title,
       description: text,
-      reasonCreated: "Instruction posted in Slack",
+      reasonCreated: match
+        ? `Discussed in Slack — re: ${match.title}`
+        : "Action item posted in Slack",
       checklist: JSON.stringify(["Do the requested action", "Reply in Slack when done"]),
       source: "slack",
       sourceDetail: channel ? `channel ${channel} · ${ts}` : ts,
       priority: "MEDIUM",
       dueAt: new Date(Date.now() + 6 * 3600_000),
       ownerId: kyle?.id ?? null,
+      projectId: match?.id ?? null,
+      clientId: match?.clientId ?? null,
+      propertyAddress: match?.title ?? null,
       dedupeKey,
     },
   });

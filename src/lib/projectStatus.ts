@@ -397,6 +397,11 @@ export async function syncProjectStatuses(
 
     if (statusChanged) {
       changed++;
+      // Delivered/cancelled jobs shouldn't keep open production tasks.
+      if (final === "DELIVERED" || final === "CANCELLED") {
+        const { closeObsoleteTasks } = await import("@/lib/tasks");
+        await closeObsoleteTasks(p.id, final);
+      }
       await prisma.activity.create({
         data: {
           projectId: p.id,

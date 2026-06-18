@@ -12,6 +12,7 @@ import { stageMeta } from "@/lib/pipeline";
 import { Aryeo } from "@/lib/integrations/aryeo";
 import { getSecret } from "@/lib/integrations/connections";
 import { resolveRevision } from "@/lib/comms";
+import { closeObsoleteTasks } from "@/lib/tasks";
 
 export type ApptResult = { ok: boolean; message: string };
 
@@ -112,11 +113,13 @@ export async function cancelAppointmentAction(
 
 /** Update a SmartTask's status (and stamp completion). */
 export async function setSmartTaskStatus(taskId: string, status: string) {
-  await prisma.smartTask.update({
+  const t = await prisma.smartTask.update({
     where: { id: taskId },
     data: { status, completedAt: status === "COMPLETED" ? new Date() : null },
+    select: { projectId: true },
   });
   revalidatePath("/queue");
+  if (t.projectId) revalidatePath(`/projects/${t.projectId}`);
 }
 
 /** Assign (or clear) a team member for a role on a project. */
@@ -164,6 +167,11 @@ export async function moveProjectStatus(projectId: string, status: ProjectStatus
       where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
       data: { status: "COMPLETED", completedAt: new Date() },
     });
+  }
+
+  // Clear obsolete production tasks when a job is delivered or cancelled.
+  if (status === ProjectStatus.DELIVERED || status === ProjectStatus.CANCELLED) {
+    await closeObsoleteTasks(projectId, status);
   }
 
   await prisma.activity.create({
