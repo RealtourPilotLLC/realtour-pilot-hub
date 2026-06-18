@@ -29,6 +29,7 @@ import {
   syncAryeoNow,
   syncAryeoProductsNow,
   enableOpenPhoneRealtime,
+  syncDropboxFoldersNow,
   disconnectProvider,
   type ActionResult,
 } from "@/app/connections/actions";
@@ -350,6 +351,15 @@ function GenericApiKeyActions({
               {pending ? <Loader2 className="size-4 animate-spin" /> : "Enable real-time"}
             </button>
           </>
+        )}
+        {provider.id === "dropbox" && (
+          <button
+            onClick={() => startTransition(async () => setMsg(await syncDropboxFoldersNow()))}
+            disabled={pending}
+            className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+          >
+            {pending ? <Loader2 className="size-4 animate-spin" /> : "Check folders → update status"}
+          </button>
         )}
         <button
           onClick={() => startTransition(async () => setMsg(await disconnectProvider(provider.id)))}

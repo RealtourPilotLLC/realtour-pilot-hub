@@ -107,6 +107,21 @@ export async function syncAryeoProductsNow(): Promise<ActionResult> {
   }
 }
 
+export async function syncDropboxFoldersNow(): Promise<ActionResult> {
+  try {
+    const { syncDropboxFolderStatus } = await import("@/lib/dropboxFolders");
+    const r = await syncDropboxFolderStatus();
+    revalidatePath("/pipeline");
+    revalidatePath("/queue");
+    return {
+      ok: true,
+      message: `Checked ${r.checked} projects — ${r.movedToShot} → Shot, ${r.movedToReview} → Review.`,
+    };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Folder check failed." };
+  }
+}
+
 export async function enableOpenPhoneRealtime(): Promise<ActionResult> {
   const base = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
   if (!base) return { ok: false, message: "Deploy the app first — webhooks need a public URL." };
