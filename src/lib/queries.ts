@@ -1,9 +1,11 @@
 import { prisma } from "@/lib/prisma";
 import { ProjectStatus } from "@prisma/client";
+import { recentProjectWhere } from "@/lib/recency";
 
-/** Projects for the pipeline board — light relations + counts. */
+/** Projects for the pipeline board — current work only (last-30-day window). */
 export async function getPipelineProjects() {
   return prisma.project.findMany({
+    where: recentProjectWhere(),
     orderBy: [{ priority: "desc" }, { deliveryDue: "asc" }, { createdAt: "desc" }],
     include: {
       client: true,

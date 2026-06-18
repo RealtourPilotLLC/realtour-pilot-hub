@@ -3,6 +3,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { TaskCard, type QueueTask } from "@/components/queue/TaskCard";
 import { prisma } from "@/lib/prisma";
+import { recentProjectWhere } from "@/lib/recency";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +26,12 @@ function toView(t: {
 
 export default async function DailyTasksPage() {
   const tasks = await prisma.smartTask.findMany({
-    where: { status: { in: ACTIVE } },
+    // Current work only: open tasks that are unlinked or tied to a project
+    // still inside the last-30-day window (finished old jobs drop off).
+    where: {
+      status: { in: ACTIVE },
+      OR: [{ projectId: null }, { project: recentProjectWhere() }],
+    },
     include: { client: { select: { name: true } } },
   });
   const completedCount = await prisma.smartTask.count({ where: { status: "COMPLETED" } });
@@ -69,6 +75,7 @@ export default async function DailyTasksPage() {
   return (
     <div>
       <PageHeader
+        eyebrow="Last 30 days"
         title="Daily Tasks"
         subtitle={`${views.length} open task${views.length === 1 ? "" : "s"}`}
         actions={
