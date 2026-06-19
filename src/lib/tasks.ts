@@ -171,6 +171,9 @@ export async function createCommTask(opts: {
   kind: "text" | "missed_call" | "voicemail";
   snippet?: string;
   source?: string;
+  // AI-derived, specific action ("Reschedule 320 Tarbert to Thursday").
+  aiTitle?: string | null;
+  aiDetail?: string | null;
 }): Promise<boolean> {
   const key = dedupe([opts.clientId, "client_reply"]);
   const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
@@ -178,19 +181,24 @@ export async function createCommTask(opts: {
 
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
   const verb = opts.kind === "text" ? "Reply to" : "Call back";
+  const sourceName =
+    opts.source === "gmail" ? "Gmail" : opts.source === "slack" ? "Slack" : "OpenPhone";
   const reason =
     opts.kind === "text"
-      ? "Inbound text from client (OpenPhone)"
+      ? `Inbound message from client (${sourceName})`
       : opts.kind === "voicemail"
         ? "Voicemail from client (OpenPhone)"
         : "Missed call from client (OpenPhone)";
   // Replies due within a few hours; callbacks sooner.
   const dueAt = new Date(Date.now() + (opts.kind === "text" ? 4 : 1) * HOUR);
 
+  const title = opts.aiTitle ? `${opts.aiTitle} (${opts.clientName})` : `${verb} ${opts.clientName}`;
+  const description = [opts.aiDetail, opts.snippet?.slice(0, 280)].filter(Boolean).join("\n\n") || null;
+
   const data = {
     taskType: "client_reply",
-    title: `${verb} ${opts.clientName}`,
-    description: opts.snippet ? opts.snippet.slice(0, 240) : null,
+    title: title.slice(0, 120),
+    description,
     reasonCreated: reason,
     checklist: JSON.stringify([
       "Read the full conversation in Communications",

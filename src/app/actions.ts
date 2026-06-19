@@ -187,6 +187,35 @@ export async function moveProjectStatus(projectId: string, status: ProjectStatus
   revalidatePath(`/projects/${projectId}`);
 }
 
+// Draft a client reply in Jordan's voice for a comm task. DRAFT ONLY — returns
+// the suggested text for a human to review and send; the hub never sends.
+export async function draftTaskReply(
+  taskId: string,
+): Promise<{ ok: boolean; text?: string; error?: string }> {
+  const { getSecret } = await import("@/lib/integrations/connections");
+  if (!(await getSecret("ai"))) {
+    return { ok: false, error: "Connect the AI Assistant in Connections first." };
+  }
+  const task = await prisma.smartTask.findUnique({
+    where: { id: taskId },
+    include: { client: { select: { name: true } } },
+  });
+  if (!task) return { ok: false, error: "Task not found." };
+  try {
+    const { draftReply } = await import("@/lib/integrations/ai");
+    const text = await draftReply({
+      channel: task.source === "gmail" ? "email" : "text",
+      clientName: task.client?.name ?? null,
+      propertyAddress: task.propertyAddress,
+      message: task.description || task.title,
+      note: task.reasonCreated,
+    });
+    return { ok: true, text };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Draft failed." };
+  }
+}
+
 // Mark a revision request resolved (handled or dismissed as a false alarm).
 export async function resolveRevisionAction(projectId: string) {
   await resolveRevision(projectId);

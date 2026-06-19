@@ -4,6 +4,7 @@ import { ProviderCard, type ConnState } from "@/components/connections/ProviderC
 import { PROVIDERS, SEGMENTS } from "@/lib/integrations/registry";
 import { getAllConnections } from "@/lib/integrations/connections";
 import { dropboxAuthorizeUrl, dropboxConfigured } from "@/lib/integrations/dropbox";
+import { googleAuthorizeUrl, googleConfigured } from "@/lib/integrations/google";
 
 export const dynamic = "force-dynamic";
 
@@ -63,6 +64,9 @@ export default async function ConnectionsPage() {
                       deployed={deployed}
                       dropboxAuthorizeUrl={
                         provider.id === "dropbox" && dropboxConfigured() ? dropboxAuthorizeUrl() : undefined
+                      }
+                      googleAuthorizeUrl={
+                        provider.id === "gmail" && googleConfigured() ? googleAuthorizeUrl() : undefined
                       }
                     />
                   );

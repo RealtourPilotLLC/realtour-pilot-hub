@@ -86,13 +86,14 @@ export const PROVIDERS: ProviderDef[] = [
   {
     id: "gmail",
     name: "Gmail",
-    blurb: "Client email — read & send from the hub",
+    blurb: "Client email — read into tasks",
     segment: "Communication",
     authType: "oauth",
     icon: "Mail",
     color: "#ea4335",
-    capabilities: ["Log client emails to projects", "Send from the hub", "Power smart client notes"],
-    ready: false,
+    docsUrl: "https://developers.google.com/gmail/api",
+    capabilities: ["Read client emails into Kyle's queue", "Match emails to projects", "Feed the morning brief"],
+    ready: true,
   },
   {
     id: "openphone",
@@ -157,6 +158,24 @@ export const PROVIDERS: ProviderDef[] = [
     docsUrl: "https://docs.sendgrid.com/",
     capabilities: ["Send delivery & feedback emails", "Campaign sends", "Email templates"],
     ready: false,
+  },
+  {
+    id: "ai",
+    name: "AI Assistant (Claude)",
+    blurb: "Drafts replies in your voice + smart to-dos",
+    segment: "Operations",
+    authType: "apikey",
+    icon: "Sparkles",
+    color: "#e96320",
+    keyLabel: "Anthropic API key",
+    keyHelp: "console.anthropic.com → Settings → API Keys → Create Key. Paste it here (starts with sk-ant-). It's encrypted.",
+    docsUrl: "https://console.anthropic.com/settings/keys",
+    capabilities: [
+      "Draft client replies in Jordan's voice (you send)",
+      "Turn texts/emails/Slack into specific to-dos",
+      "Summarize call transcripts into action items",
+    ],
+    ready: true,
   },
 ];
 

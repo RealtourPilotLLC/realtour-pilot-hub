@@ -5,6 +5,8 @@ import { saveSecret, disconnect as disconnectConn } from "@/lib/integrations/con
 import { testOpenPhoneKey, registerOpenPhoneWebhooks } from "@/lib/integrations/openphone";
 import { exchangeDropboxCode, testDropboxRefreshToken } from "@/lib/integrations/dropbox";
 import { testSlackKey } from "@/lib/integrations/slack";
+import { testAiKey } from "@/lib/integrations/ai";
+import { syncGmail } from "@/lib/integrations/google";
 import { generateTasksForActiveProjects } from "@/lib/tasks";
 import { syncProjectStatuses } from "@/lib/projectStatus";
 import {
@@ -62,7 +64,20 @@ const TESTERS: Record<string, (key: string) => Promise<{ ok: true; label: string
   aryeo: testAryeoKey,
   openphone: testOpenPhoneKey,
   slack: testSlackKey,
+  ai: testAiKey,
 };
+
+export async function syncGmailNow(): Promise<ActionResult> {
+  try {
+    const r = await syncGmail();
+    revalidatePath("/");
+    revalidatePath("/queue");
+    revalidatePath("/communications");
+    return { ok: true, message: `Scanned ${r.scanned} recent emails — ${r.tasks} new task${r.tasks === 1 ? "" : "s"}.` };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Gmail sync failed." };
+  }
+}
 
 // Dropbox: exchange the one-time authorization code for a refresh token, verify,
 // and store it encrypted.

@@ -12,6 +12,7 @@ import {
   Users,
   MessageCircle,
   Send,
+  Sparkles,
   CheckCircle2,
   AlertCircle,
   Circle,
@@ -31,13 +32,14 @@ import {
   enableOpenPhoneRealtime,
   syncOpenPhoneContactsNow,
   syncDropboxFoldersNow,
+  syncGmailNow,
   recheckStatusesNow,
   disconnectProvider,
   type ActionResult,
 } from "@/app/connections/actions";
 
 const ICONS: Record<string, LucideIcon> = {
-  Camera, CreditCard, Calculator, Folder, Mail, Phone, MessageSquare, Users, MessageCircle, Send,
+  Camera, CreditCard, Calculator, Folder, Mail, Phone, MessageSquare, Users, MessageCircle, Send, Sparkles,
 };
 
 export type ConnState = {
@@ -52,11 +54,13 @@ export function ProviderCard({
   conn,
   deployed,
   dropboxAuthorizeUrl,
+  googleAuthorizeUrl,
 }: {
   provider: ProviderDef;
   conn: ConnState | null;
   deployed: boolean;
   dropboxAuthorizeUrl?: string;
+  googleAuthorizeUrl?: string;
 }) {
   const Icon = ICONS[provider.icon] ?? Circle;
   const connected = conn?.status === "CONNECTED";
@@ -107,6 +111,8 @@ export function ProviderCard({
       <div className="mt-4">
         {provider.id === "aryeo" ? (
           <AryeoActions connected={connected} onExpand={() => setExpanded((e) => !e)} expanded={expanded} />
+        ) : provider.id === "gmail" ? (
+          <GmailActions connected={connected} authorizeUrl={googleAuthorizeUrl} deployed={deployed} />
         ) : provider.id === "dropbox" && provider.ready ? (
           <GenericApiKeyActions
             provider={provider}
@@ -315,6 +321,64 @@ function AryeoConnectForm() {
         <p className={`text-xs ${state.ok ? "text-success" : "text-danger"}`}>{state.message}</p>
       )}
     </form>
+  );
+}
+
+// Gmail uses a Google OAuth redirect (Connect → authorize → callback).
+function GmailActions({
+  connected,
+  authorizeUrl,
+  deployed,
+}: {
+  connected: boolean;
+  authorizeUrl?: string;
+  deployed: boolean;
+}) {
+  const [pending, startTransition] = useTransition();
+  const [msg, setMsg] = useState<ActionResult | null>(null);
+
+  if (!connected) {
+    if (!authorizeUrl) {
+      return (
+        <button
+          disabled
+          title={deployed ? "Set GOOGLE_CLIENT_ID/SECRET to enable Gmail" : "Deploy first, then connect"}
+          className="w-full cursor-not-allowed rounded-lg border bg-surface px-3 py-2 text-sm font-medium opacity-60"
+        >
+          Connect Gmail (needs Google app)
+        </button>
+      );
+    }
+    return (
+      <a
+        href={authorizeUrl}
+        className="block w-full rounded-lg bg-brand px-3 py-2 text-center text-sm font-medium text-brand-fg hover:opacity-90"
+      >
+        Connect Gmail
+      </a>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      <div className="flex gap-2">
+        <button
+          onClick={() => startTransition(async () => setMsg(await syncGmailNow()))}
+          disabled={pending}
+          className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+        >
+          {pending ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+          Scan recent emails
+        </button>
+        <button
+          onClick={() => startTransition(async () => setMsg(await disconnectProvider("gmail")))}
+          disabled={pending}
+          className="rounded-lg border px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-60"
+        >
+          Disconnect
+        </button>
+      </div>
+      {msg && <p className={`text-xs ${msg.ok ? "text-success" : "text-danger"}`}>{msg.message}</p>}
+    </div>
   );
 }
 

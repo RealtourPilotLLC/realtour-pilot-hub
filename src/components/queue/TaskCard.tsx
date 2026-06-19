@@ -2,9 +2,11 @@
 
 import { useState, useTransition } from "react";
 import Link from "next/link";
-import { CheckCircle2, ChevronDown, Clock, MapPin, Loader2 } from "lucide-react";
+import { CheckCircle2, ChevronDown, Clock, MapPin, Loader2, Sparkles, Copy } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
-import { setSmartTaskStatus } from "@/app/actions";
+import { setSmartTaskStatus, draftTaskReply } from "@/app/actions";
+
+const DRAFTABLE = ["client_reply", "revision", "feedback_review", "delivery_text"];
 
 export type QueueTask = {
   id: string;
@@ -53,11 +55,20 @@ function dueLabel(due: string | null) {
 export function TaskCard({ task }: { task: QueueTask }) {
   const [pending, start] = useTransition();
   const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<{ text?: string; error?: string } | null>(null);
+  const [drafting, startDraft] = useTransition();
+  const [copied, setCopied] = useState(false);
   const p = PRIORITY[task.priority] ?? PRIORITY.MEDIUM;
   const due = dueLabel(task.dueAt);
   const done = task.status === "COMPLETED";
+  const canDraft = DRAFTABLE.includes(task.taskType);
 
   const run = (status: string) => start(async () => setSmartTaskStatus(task.id, status));
+  const makeDraft = () =>
+    startDraft(async () => {
+      setCopied(false);
+      setDraft(await draftTaskReply(task.id));
+    });
 
   return (
     <div className={`rounded-2xl border bg-surface p-4 ${done ? "opacity-60" : ""}`}>
@@ -133,12 +144,49 @@ export function TaskCard({ task }: { task: QueueTask }) {
             </select>
           )}
         </div>
-        {task.projectId && (
-          <Link href={`/projects/${task.projectId}`} className="text-xs text-muted hover:text-foreground">
-            Open project →
-          </Link>
-        )}
+        <div className="flex items-center gap-2">
+          {!done && canDraft && (
+            <button
+              onClick={makeDraft}
+              disabled={drafting}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand/10 px-2.5 py-1.5 text-xs font-medium text-brand hover:bg-brand/20 disabled:opacity-60"
+            >
+              {drafting ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+              Draft reply
+            </button>
+          )}
+          {task.projectId && (
+            <Link href={`/projects/${task.projectId}`} className="text-xs text-muted hover:text-foreground">
+              Open project →
+            </Link>
+          )}
+        </div>
       </div>
+
+      {draft && (
+        <div className="mt-3 rounded-xl border bg-surface-2/60 p-3">
+          {draft.error ? (
+            <p className="text-xs text-danger">{draft.error}</p>
+          ) : (
+            <>
+              <div className="mb-1.5 flex items-center justify-between">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-brand">Suggested reply</span>
+                <button
+                  onClick={() => {
+                    navigator.clipboard?.writeText(draft.text ?? "");
+                    setCopied(true);
+                  }}
+                  className="inline-flex items-center gap-1 text-[11px] text-muted hover:text-foreground"
+                >
+                  <Copy className="size-3" /> {copied ? "Copied" : "Copy"}
+                </button>
+              </div>
+              <p className="whitespace-pre-line text-sm text-foreground/90">{draft.text}</p>
+              <p className="mt-2 text-[10px] text-muted-2">Review before sending. The hub never sends on its own.</p>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

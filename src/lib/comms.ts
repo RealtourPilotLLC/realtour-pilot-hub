@@ -81,6 +81,29 @@ export async function recordClientCommunication(opts: {
 }): Promise<{ replyTask: boolean; revision: boolean }> {
   const cls = classifyComm(opts.text);
 
+  // If the AI assistant is connected, turn the message into a specific to-do
+  // ("Reschedule 320 Tarbert to Thursday") instead of a generic "Reply to X".
+  let aiTitle: string | null = null;
+  let aiDetail: string | null = null;
+  try {
+    const { getSecret } = await import("@/lib/integrations/connections");
+    if (await getSecret("ai")) {
+      const { messageToTodo } = await import("@/lib/integrations/ai");
+      const todo = await messageToTodo({
+        channel: opts.kind === "email" ? "email" : opts.kind === "text" ? "text" : "call",
+        clientName: opts.clientName,
+        propertyAddress: opts.propertyAddress,
+        message: opts.text,
+      });
+      if (todo) {
+        aiTitle = todo.title;
+        aiDetail = todo.detail;
+      }
+    }
+  } catch {
+    /* fall back to the generic task */
+  }
+
   // Always surface the inbound message as a reply/callback task.
   const replyTask = await createCommTask({
     clientId: opts.clientId,
@@ -90,6 +113,8 @@ export async function recordClientCommunication(opts: {
     kind: opts.kind === "email" ? "text" : opts.kind,
     snippet: opts.text,
     source: opts.source,
+    aiTitle,
+    aiDetail,
   });
 
   let revision = false;
