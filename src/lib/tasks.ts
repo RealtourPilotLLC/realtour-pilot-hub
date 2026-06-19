@@ -106,15 +106,18 @@ function specsForProject(p: {
   if (p.status === "BOOKED" || p.status === "SCHEDULED") {
     specs.push({
       taskType: "appointment_prep",
-      title: `Prep shoot — ${p.title}`,
-      reasonCreated: "Upcoming Aryeo appointment",
+      title: `Confirmation call — ${p.title}`,
+      reasonCreated: "Day-before confirmation call (SOP)",
       deliverableType: primary,
       dueAt: shoot ? new Date(shoot.getTime() - DAY) : null,
       checklist: [
-        "Confirm address, gate/lockbox code, parking",
-        "Confirm photographer assignment",
-        "Confirm ordered deliverables & special requests",
-        "Send appointment reminder if needed",
+        "Confirm date, time & exact services ordered",
+        "Confirm access — agent/seller meeting us, or lockbox? Get the code",
+        "Ask what features to highlight + anything to avoid",
+        "Confirm listing go-live date (+ song/branding for video)",
+        "Remind them of the property prep list",
+        "Offer an upgrade — twilight, drone, staging, 3D, floor plan",
+        "State the turnaround so expectations are set",
       ],
     });
   }
@@ -238,9 +241,47 @@ export async function closeObsoleteTasks(projectId: string, projectStatus: strin
       },
       data: { status: "COMPLETED", completedAt: new Date() },
     });
+    await createCareCallTask(projectId);
     return r.count;
   }
   return 0;
+}
+
+// When a job is delivered, queue Kyle's day-after care call (the SOP touchpoint
+// that drives reviews + referrals). Deduped one per project.
+export async function createCareCallTask(projectId: string): Promise<void> {
+  const key = dedupe([projectId, "care_call"]);
+  if (await prisma.smartTask.findUnique({ where: { dedupeKey: key } })) return;
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { title: true, clientId: true, deliveredAt: true },
+  });
+  if (!project) return;
+  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
+  const base = project.deliveredAt ?? new Date();
+  await prisma.smartTask.create({
+    data: {
+      taskType: "care_call",
+      title: `Care call — ${project.title}`,
+      reasonCreated: "Day-after-delivery care call (SOP)",
+      checklist: JSON.stringify([
+        "Confirm they can access the delivery link",
+        "Satisfaction check + handle any edits",
+        "Ask for a Google review (offer one back)",
+        "Pitch the referral program ($100 credit each)",
+        "Ask about their next listing",
+        "Log the outcome on the client",
+      ]),
+      source: "system",
+      priority: "HIGH",
+      dueAt: new Date(base.getTime() + DAY),
+      projectId,
+      clientId: project.clientId,
+      propertyAddress: project.title,
+      ownerId: kyle?.id ?? null,
+      dedupeKey: key,
+    },
+  });
 }
 
 // Generate (idempotently) the expected tasks for every ACTIVE project.
