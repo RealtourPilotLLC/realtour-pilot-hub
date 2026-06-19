@@ -241,40 +241,39 @@ export async function closeObsoleteTasks(projectId: string, projectStatus: strin
       },
       data: { status: "COMPLETED", completedAt: new Date() },
     });
-    await createCareCallTask(projectId);
+    await createDeliveryTextTask(projectId);
     return r.count;
   }
   return 0;
 }
 
-// When a job is delivered, queue Kyle's day-after care call (the SOP touchpoint
-// that drives reviews + referrals). Deduped one per project.
-export async function createCareCallTask(projectId: string): Promise<void> {
-  const key = dedupe([projectId, "care_call"]);
+// When a job is delivered, queue Kyle's post-delivery client TEXT (we dropped
+// care calls — no one answers). The drafted, status-aware message + feedback
+// link is attached so Kyle just reviews and sends. Deduped one per project.
+export async function createDeliveryTextTask(projectId: string): Promise<void> {
+  const key = dedupe([projectId, "delivery_text"]);
   if (await prisma.smartTask.findUnique({ where: { dedupeKey: key } })) return;
   const project = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { title: true, clientId: true, deliveredAt: true },
+    select: { id: true, title: true, clientId: true, statusEvidence: true, client: { select: { name: true } } },
   });
   if (!project) return;
+  const { deliveryMessage } = await import("@/lib/delivery");
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
-  const base = project.deliveredAt ?? new Date();
   await prisma.smartTask.create({
     data: {
-      taskType: "care_call",
-      title: `Care call — ${project.title}`,
-      reasonCreated: "Day-after-delivery care call (SOP)",
+      taskType: "delivery_text",
+      title: `Send delivery text — ${project.title}`,
+      description: deliveryMessage(project),
+      reasonCreated: "Delivered — send the post-delivery client text + feedback link",
       checklist: JSON.stringify([
-        "Confirm they can access the delivery link",
-        "Satisfaction check + handle any edits",
-        "Ask for a Google review (offer one back)",
-        "Pitch the referral program ($100 credit each)",
-        "Ask about their next listing",
-        "Log the outcome on the client",
+        "Review the drafted message below",
+        "Send it to the client via OpenPhone",
+        "Watch for a feedback reply (auto-logs to the project)",
       ]),
       source: "system",
-      priority: "HIGH",
-      dueAt: new Date(base.getTime() + DAY),
+      priority: "MEDIUM",
+      dueAt: new Date(),
       projectId,
       clientId: project.clientId,
       propertyAddress: project.title,

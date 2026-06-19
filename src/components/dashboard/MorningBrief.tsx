@@ -2,68 +2,103 @@ import Link from "next/link";
 import {
   Sun,
   MessageSquare,
+  CalendarDays,
   PackageCheck,
   PhoneCall,
-  CircleAlert,
+  KanbanSquare,
   CheckCircle2,
-  ListChecks,
+  ArrowRight,
   type LucideIcon,
 } from "lucide-react";
 import type { BriefTask } from "@/lib/queries";
 
-// The four buckets Kyle works each morning, mapped from task type + source.
-type BucketKey = "messages" | "deliver" | "calls" | "other";
-
-const BUCKETS: { key: BucketKey; label: string; hint: string; icon: LucideIcon; accent: string }[] = [
-  { key: "messages", label: "Messages & follow-ups", hint: "Reply / call back", icon: MessageSquare, accent: "#38bdf8" },
-  { key: "deliver", label: "Deliver content", hint: "Next-day turnaround", icon: PackageCheck, accent: "#34d399" },
-  { key: "calls", label: "Confirmation & care calls", hint: "Day before / day after", icon: PhoneCall, accent: "#fbbf24" },
-  { key: "other", label: "Other to-dos", hint: "", icon: ListChecks, accent: "#a78bfa" },
-];
-
-function bucketOf(t: BriefTask): BucketKey {
-  switch (t.taskType) {
-    case "client_reply":
-    case "internal_instruction":
-    case "revision":
-      return "messages";
-    case "delivery":
-    case "finish_delivery":
-    case "media_qa":
-      return "deliver";
-    case "appointment_prep":
-    case "care_call":
-      return "calls";
-    default:
-      return "other";
-  }
-}
+export type BriefShoot = {
+  id: string;
+  title: string;
+  time: string;
+  clientName: string;
+  photographer: string | null;
+};
 
 const SOURCE_LABEL: Record<string, string> = {
   openphone: "OpenPhone",
   slack: "Slack",
   gmail: "Gmail",
-  aryeo: "Aryeo",
-  system: "Auto",
-  manual: "Manual",
+  feedback: "Feedback",
 };
 
-function dueLabel(iso: string | null, overdue: boolean): string {
+function dueTime(iso: string | null): string {
   if (!iso) return "";
-  const d = new Date(iso);
-  const t = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-  return overdue ? "Overdue" : `by ${t}`;
+  return "by " + new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
 
-export function MorningBrief({ tasks, firstName = "Kyle" }: { tasks: BriefTask[]; firstName?: string }) {
-  const grouped = new Map<BucketKey, BriefTask[]>();
-  for (const t of tasks) {
-    const k = bucketOf(t);
-    if (!grouped.has(k)) grouped.set(k, []);
-    grouped.get(k)!.push(t);
-  }
-  const overdueCount = tasks.filter((t) => t.overdue).length;
-  const total = tasks.length;
+function TaskRow({ t }: { t: BriefTask }) {
+  return (
+    <Link
+      href={t.projectId ? `/projects/${t.projectId}` : "/queue"}
+      className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-surface-2"
+    >
+      <span className="truncate text-sm">{t.title}</span>
+      <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted">
+        {SOURCE_LABEL[t.source] && (
+          <span className="rounded bg-surface-2 px-1 font-medium text-muted-2">{SOURCE_LABEL[t.source]}</span>
+        )}
+        {dueTime(t.dueAt)}
+      </span>
+    </Link>
+  );
+}
+
+function Step({
+  n,
+  icon: Icon,
+  title,
+  count,
+  accent,
+  children,
+  empty,
+}: {
+  n: number;
+  icon: LucideIcon;
+  title: string;
+  count: number;
+  accent: string;
+  children: React.ReactNode;
+  empty: string;
+}) {
+  return (
+    <div className="px-5 py-3.5">
+      <div className="flex items-center gap-2.5">
+        <span className="flex size-6 items-center justify-center rounded-full bg-surface-2 text-xs font-semibold text-muted-2">
+          {n}
+        </span>
+        <Icon className="size-4" style={{ color: accent }} />
+        <h3 className="text-sm font-semibold">{title}</h3>
+        <span className="ml-auto rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">{count}</span>
+      </div>
+      <div className="mt-1.5 pl-[34px]">
+        {count === 0 ? <p className="py-1 text-xs text-muted-2">{empty}</p> : children}
+      </div>
+    </div>
+  );
+}
+
+export function MorningBrief({
+  tasks,
+  todayShoots,
+  tomorrowShoots,
+  firstName = "Kyle",
+}: {
+  tasks: BriefTask[];
+  todayShoots: BriefShoot[];
+  tomorrowShoots: BriefShoot[];
+  firstName?: string;
+}) {
+  const is = (...types: string[]) => tasks.filter((t) => types.includes(t.taskType));
+  const messages = is("client_reply", "internal_instruction", "revision");
+  const deliver = is("delivery", "media_qa", "finish_delivery", "delivery_text", "feedback_review");
+  const confirm = is("appointment_prep");
+  const total = tasks.length + todayShoots.length;
 
   return (
     <section className="overflow-hidden rounded-2xl border border-brand/30 bg-gradient-to-br from-brand/[0.08] via-surface to-surface">
@@ -73,89 +108,81 @@ export function MorningBrief({ tasks, firstName = "Kyle" }: { tasks: BriefTask[]
             <Sun className="size-5" />
           </span>
           <div>
-            <div className="eyebrow">Start here</div>
+            <div className="eyebrow">Your day</div>
             <h2 className="text-lg font-semibold tracking-tight">Good morning, {firstName}</h2>
           </div>
         </div>
-        <div className="flex items-center gap-2 text-sm">
-          {total === 0 ? (
-            <span className="inline-flex items-center gap-1.5 rounded-lg bg-success/10 px-3 py-1.5 font-medium text-success">
-              <CheckCircle2 className="size-4" /> All caught up
-            </span>
-          ) : (
-            <>
-              <span className="rounded-lg bg-surface-2 px-3 py-1.5 font-medium">
-                {total} to-do{total === 1 ? "" : "s"} today
-              </span>
-              {overdueCount > 0 && (
-                <span className="inline-flex items-center gap-1.5 rounded-lg bg-danger/10 px-3 py-1.5 font-medium text-danger">
-                  <CircleAlert className="size-4" /> {overdueCount} overdue
-                </span>
-              )}
-              <Link
-                href="/queue"
-                className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-surface-2"
-              >
-                Full list
-              </Link>
-            </>
-          )}
-        </div>
+        <Link href="/queue" className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-surface-2">
+          Full task list
+        </Link>
       </div>
 
       {total === 0 ? (
         <div className="px-5 py-10 text-center text-sm text-muted">
-          Nothing due today — you&apos;re in front of it. 🎉 New texts, calls, and Slack messages will show up here.
+          Nothing on the schedule today and no to-dos. New texts, calls, and Slack messages will show up here.
         </div>
       ) : (
-        <div className="grid gap-px bg-border sm:grid-cols-2 xl:grid-cols-4">
-          {BUCKETS.map((b) => {
-            const items = grouped.get(b.key) ?? [];
-            return (
-              <div key={b.key} className="bg-surface px-4 py-3.5">
-                <div className="mb-2 flex items-center gap-2">
-                  <b.icon className="size-4" style={{ color: b.accent }} />
-                  <span className="text-sm font-semibold">{b.label}</span>
-                  <span className="ml-auto rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">
-                    {items.length}
-                  </span>
-                </div>
-                {items.length === 0 ? (
-                  <p className="py-2 text-xs text-muted-2">Nothing here</p>
-                ) : (
-                  <ul className="space-y-1.5">
-                    {items.slice(0, 6).map((t) => (
-                      <li key={t.id}>
-                        <Link
-                          href={t.projectId ? `/projects/${t.projectId}` : "/queue"}
-                          className="group block rounded-lg px-2 py-1.5 hover:bg-surface-2"
-                        >
-                          <div className="flex items-center gap-1.5">
-                            <span className="truncate text-sm">{t.title}</span>
-                          </div>
-                          <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted">
-                            {t.source && SOURCE_LABEL[t.source] && b.key === "messages" && (
-                              <span className="rounded bg-surface-2 px-1 font-medium text-muted-2">
-                                {SOURCE_LABEL[t.source]}
-                              </span>
-                            )}
-                            <span className={t.overdue ? "font-medium text-danger" : ""}>
-                              {dueLabel(t.dueAt, t.overdue)}
-                            </span>
-                          </div>
-                        </Link>
-                      </li>
-                    ))}
-                    {items.length > 6 && (
-                      <li className="px-2 pt-0.5 text-[11px] text-muted-2">+{items.length - 6} more</li>
-                    )}
-                  </ul>
-                )}
-              </div>
-            );
-          })}
+        <div className="divide-y divide-border">
+          {/* 1. Comms */}
+          <Step n={1} icon={MessageSquare} title="Check your messages" count={messages.length} accent="#38bdf8" empty="No messages to handle.">
+            <div className="space-y-0.5">{messages.map((t) => <TaskRow key={t.id} t={t} />)}</div>
+          </Step>
+
+          {/* 2. Today's schedule debrief */}
+          <Step n={2} icon={CalendarDays} title="Today's shoots" count={todayShoots.length} accent="#a78bfa" empty="No shoots today.">
+            <div className="space-y-0.5">
+              {todayShoots.map((s) => (
+                <Link key={s.id} href={`/projects/${s.id}`} className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-surface-2">
+                  <span className="truncate text-sm">{s.title}</span>
+                  <span className="shrink-0 text-[11px] text-muted">{s.time} · {s.photographer ?? "Unassigned"}</span>
+                </Link>
+              ))}
+            </div>
+          </Step>
+
+          {/* 3. QC + deliver yesterday's content */}
+          <Step n={3} icon={PackageCheck} title="QC & deliver content" count={deliver.length} accent="#34d399" empty="Nothing to deliver today.">
+            <p className="mb-1 text-[11px] text-muted-2">
+              Check verticals + horizontals, no odd AI edits / reflections / blemishes, item removal + virtual staging done, and every ordered deliverable is on Aryeo.
+            </p>
+            <div className="space-y-0.5">{deliver.map((t) => <TaskRow key={t.id} t={t} />)}</div>
+          </Step>
+
+          {/* 4. Confirm tomorrow */}
+          <Step n={4} icon={PhoneCall} title="Confirm tomorrow's shoots" count={confirm.length + tomorrowShoots.length} accent="#fbbf24" empty="Nothing to confirm.">
+            <div className="space-y-0.5">
+              {confirm.map((t) => <TaskRow key={t.id} t={t} />)}
+              {tomorrowShoots.map((s) => (
+                <Link key={s.id} href={`/projects/${s.id}`} className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-surface-2">
+                  <span className="truncate text-sm text-muted">{s.title}</span>
+                  <span className="shrink-0 text-[11px] text-muted-2">tomorrow {s.time}</span>
+                </Link>
+              ))}
+            </div>
+          </Step>
+
+          {/* 5. Tracker check */}
+          <div className="flex items-center justify-between px-5 py-3">
+            <div className="flex items-center gap-2.5">
+              <span className="flex size-6 items-center justify-center rounded-full bg-surface-2 text-xs font-semibold text-muted-2">5</span>
+              <KanbanSquare className="size-4 text-muted" />
+              <h3 className="text-sm font-semibold">Update the project tracker</h3>
+            </div>
+            <Link href="/pipeline" className="inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">
+              Open pipeline <ArrowRight className="size-3" />
+            </Link>
+          </div>
         </div>
       )}
     </section>
+  );
+}
+
+// Small caught-up banner reused on the dashboard.
+export function AllCaught() {
+  return (
+    <span className="inline-flex items-center gap-1.5 text-sm font-medium text-success">
+      <CheckCircle2 className="size-4" /> All caught up
+    </span>
   );
 }

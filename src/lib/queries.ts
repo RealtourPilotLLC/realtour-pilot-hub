@@ -84,22 +84,13 @@ export type BriefTask = {
   overdue: boolean;
 };
 
-export async function getMorningBrief(): Promise<BriefTask[]> {
-  const now = new Date();
-  const startToday = new Date(now.toDateString());
-  const endToday = new Date(startToday.getTime() + 86400000 - 1);
-
-  const tasks = await prisma.smartTask.findMany({
-    where: {
-      status: { in: BRIEF_ACTIVE },
-      dueAt: { lte: endToday }, // due today or overdue
-      OR: [{ projectId: null }, { project: recentProjectWhere() }],
-    },
-    include: { client: { select: { name: true } } },
-    orderBy: { dueAt: "asc" },
-  });
-
-  return tasks.map((t) => ({
+type RawTask = {
+  id: string; title: string; taskType: string; priority: string;
+  dueAt: Date | null; source: string; projectId: string | null;
+  propertyAddress: string | null; client: { name: string } | null;
+};
+function mapTask(t: RawTask, startToday: Date): BriefTask {
+  return {
     id: t.id,
     title: t.title,
     taskType: t.taskType,
@@ -110,7 +101,56 @@ export async function getMorningBrief(): Promise<BriefTask[]> {
     clientName: t.client?.name ?? null,
     propertyAddress: t.propertyAddress,
     overdue: !!t.dueAt && t.dueAt < startToday,
-  }));
+  };
+}
+
+// Today's to-dos only (overdue rolls into Needs Attention instead).
+export async function getMorningBrief(): Promise<BriefTask[]> {
+  const now = new Date();
+  const startToday = new Date(now.toDateString());
+  const endToday = new Date(startToday.getTime() + 86400000 - 1);
+
+  const tasks = await prisma.smartTask.findMany({
+    where: {
+      status: { in: BRIEF_ACTIVE },
+      dueAt: { gte: startToday, lte: endToday },
+      OR: [{ projectId: null }, { project: recentProjectWhere() }],
+    },
+    include: { client: { select: { name: true } } },
+    orderBy: { dueAt: "asc" },
+  });
+  return tasks.map((t) => mapTask(t, startToday));
+}
+
+// Overdue, still-open to-dos — the things not finished on prior days.
+export async function getOverdueTasks(): Promise<BriefTask[]> {
+  const startToday = new Date(new Date().toDateString());
+  const tasks = await prisma.smartTask.findMany({
+    where: {
+      status: { in: BRIEF_ACTIVE },
+      dueAt: { lt: startToday },
+      OR: [{ projectId: null }, { project: recentProjectWhere() }],
+    },
+    include: { client: { select: { name: true } } },
+    orderBy: [{ priority: "asc" }, { dueAt: "asc" }],
+  });
+  return tasks.map((t) => mapTask(t, startToday));
+}
+
+// Shoots happening today / tomorrow — the daily schedule debrief.
+export async function getShootWindow() {
+  const startToday = new Date(new Date().toDateString());
+  const startTomorrow = new Date(startToday.getTime() + 86400000);
+  const startDayAfter = new Date(startToday.getTime() + 2 * 86400000);
+  const shoots = await prisma.project.findMany({
+    where: { shootDate: { gte: startToday, lt: startDayAfter } },
+    orderBy: { shootDate: "asc" },
+    include: { client: { select: { name: true } }, photographer: { select: { name: true } } },
+  });
+  return {
+    today: shoots.filter((s) => s.shootDate! < startTomorrow),
+    tomorrow: shoots.filter((s) => s.shootDate! >= startTomorrow),
+  };
 }
 
 /** Aggregated data for the dashboard home. */

@@ -11,9 +11,8 @@ import {
 import { PageHeader } from "@/components/PageHeader";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
-import { getDashboardData, getMorningBrief } from "@/lib/queries";
-import { MorningBrief } from "@/components/dashboard/MorningBrief";
-import { stageMeta } from "@/lib/pipeline";
+import { getDashboardData, getMorningBrief, getOverdueTasks, getShootWindow } from "@/lib/queries";
+import { MorningBrief, type BriefShoot } from "@/components/dashboard/MorningBrief";
 import { formatMoney } from "@/lib/utils";
 import { format, formatDistanceToNow } from "date-fns";
 
@@ -49,8 +48,26 @@ function StatCard({
   );
 }
 
+function toBriefShoot(s: {
+  id: string; title: string; shootDate: Date | null;
+  client: { name: string }; photographer: { name: string } | null;
+}): BriefShoot {
+  return {
+    id: s.id,
+    title: s.title,
+    time: s.shootDate ? format(s.shootDate, "h:mm a") : "",
+    clientName: s.client.name,
+    photographer: s.photographer?.name ?? null,
+  };
+}
+
 export default async function DashboardPage() {
-  const [data, brief] = await Promise.all([getDashboardData(), getMorningBrief()]);
+  const [data, brief, overdue, shoots] = await Promise.all([
+    getDashboardData(),
+    getMorningBrief(),
+    getOverdueTasks(),
+    getShootWindow(),
+  ]);
   const today = format(new Date(), "EEEE, MMMM d");
 
   return (
@@ -59,7 +76,11 @@ export default async function DashboardPage() {
 
       <div className="space-y-6 p-6">
         {/* Kyle's morning brief — the first thing he sees each day */}
-        <MorningBrief tasks={brief} />
+        <MorningBrief
+          tasks={brief}
+          todayShoots={shoots.today.map(toBriefShoot)}
+          tomorrowShoots={shoots.tomorrow.map(toBriefShoot)}
+        />
 
         {/* Stat row */}
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
@@ -99,57 +120,51 @@ export default async function DashboardPage() {
         </div>
 
         <div className="grid gap-6 lg:grid-cols-3">
-          {/* Needs attention */}
+          {/* Needs attention — overdue / not finished on prior days */}
           <div className="lg:col-span-2 rounded-2xl border bg-surface">
             <div className="flex items-center justify-between border-b px-5 py-3.5">
               <div className="flex items-center gap-2">
-                <AlertTriangle className="size-4 text-warning" />
+                <AlertTriangle className="size-4 text-danger" />
                 <h2 className="text-sm font-semibold">Needs attention</h2>
+                {overdue.length > 0 && (
+                  <span className="rounded-full bg-danger/10 px-1.5 text-xs font-medium text-danger">
+                    {overdue.length} overdue
+                  </span>
+                )}
               </div>
               <Link
-                href="/pipeline"
+                href="/queue"
                 className="flex items-center gap-1 text-xs font-medium text-brand hover:underline"
               >
-                View pipeline <ArrowRight className="size-3" />
+                Daily tasks <ArrowRight className="size-3" />
               </Link>
             </div>
-            <div className="divide-y">
-              {data.needsAttention.length === 0 && (
+            <div className="max-h-[420px] divide-y overflow-y-auto scroll-thin">
+              {overdue.length === 0 && (
                 <div className="px-5 py-8 text-center text-sm text-muted">
-                  All clear — nothing overdue or urgent. 🎉
+                  All clear — nothing carried over. 🎉
                 </div>
               )}
-              {data.needsAttention.map(({ project, reasons }) => {
-                const stage = stageMeta(project.status);
-                return (
-                  <Link
-                    key={project.id}
-                    href={`/projects/${project.id}`}
-                    className="flex items-center justify-between gap-3 px-5 py-3 hover:bg-surface-2"
-                  >
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium">{project.title}</div>
-                      <div className="truncate text-xs text-muted">
-                        {project.client.name}
-                      </div>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1.5">
-                      {reasons.map((r) => (
-                        <Badge
-                          key={r}
-                          color={r.includes("overdue") || r === "Urgent" ? "#dc2626" : "#d97706"}
-                          soft={r.includes("overdue") || r === "Urgent" ? "#fee2e2" : "#fef3c7"}
-                        >
-                          {r}
-                        </Badge>
-                      ))}
-                      <Badge color={stage.color} soft={stage.soft}>
-                        {stage.short}
-                      </Badge>
-                    </div>
-                  </Link>
-                );
-              })}
+              {overdue.map((t) => (
+                <Link
+                  key={t.id}
+                  href={t.projectId ? `/projects/${t.projectId}` : "/queue"}
+                  className="flex items-center justify-between gap-3 px-5 py-3 hover:bg-surface-2"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium">{t.title}</div>
+                    <div className="truncate text-xs text-muted">{t.clientName ?? t.propertyAddress ?? ""}</div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {t.priority === "URGENT" && <Badge color="#f87171">Urgent</Badge>}
+                    <Badge color="#f87171">
+                      {t.dueAt
+                        ? `${Math.max(1, Math.round((Date.now() - new Date(t.dueAt).getTime()) / 86400000))}d overdue`
+                        : "overdue"}
+                    </Badge>
+                  </div>
+                </Link>
+              ))}
             </div>
           </div>
 

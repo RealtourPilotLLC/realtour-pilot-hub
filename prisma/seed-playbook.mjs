@@ -122,20 +122,21 @@ Editors flag missing footage, poor audio, or unclear instructions BEFORE deliver
   },
   // ---- Client Care ----------------------------------------------------------
   {
-    id: "sop-care-call",
+    id: "sop-delivery-text",
     category: "Client Care",
-    title: "Care Call — Day After Delivery",
-    summary: "Confirm access, satisfaction, edits, then ask for a review + referral.",
-    content: `WHEN: One day after delivery (we do T+1, not a week later).
+    title: "Post-Delivery Text & Feedback",
+    summary: "We text after delivery (no care calls — no one answers). Adapts to full vs partial.",
+    content: `WHEN: Right after content is delivered. The hub drafts the message and queues it for Kyle to review and send.
 
-THE CALL:
-- Confirm they can access the Aryeo delivery link.
-- Satisfaction check; handle any edits within the SLA windows.
-- Resolve any issues.
-- Ask for a Google review (offer to leave them one back).
-- Pitch the referral program: $100 credit for them and $100 for the agent they refer.
-- Ask about their next listing.
-- Log everything in HubSpot / the client record.`,
+THE TEXT (warm, low-pressure, no em dashes, no emojis):
+- Fully delivered: "Hi [First]! We just sent everything over for [Street]. Let us know if you need anything at all. If you would like to share quick feedback on your experience, you can do that here: [feedback link]"
+- Still in production (e.g. video pending): "Hi [First]! We just delivered the [photos] for [Street], and the [video] is still in production. We will have the rest over to you shortly. Let us know if you need anything. Feedback: [feedback link]"
+
+FEEDBACK LOOP:
+- The feedback link is unique per project.
+- Anything the client submits pipes straight onto the project, alerts Kyle, and flags the photographer who shot it.
+- Negative feedback becomes a high-priority task to resolve.
+- We track ratings over time to spot patterns and rank our creatives.`,
   },
   // ---- Pricing & Fees -------------------------------------------------------
   {
@@ -205,6 +206,9 @@ PATTERNS:
 SIGN-OFF: "In the Spirit of Success, Jordan Spackman — Owner, REALTOURPILOT LLC, (215) 645-4889, www.realtourpilot.com." Client care line is staffed Monday–Friday, 9:00 AM–5:30 PM.`,
   },
 ];
+
+// Remove the retired care-call SOP (we text after delivery now).
+await prisma.sop.deleteMany({ where: { id: "sop-care-call" } });
 
 let n = 0;
 for (const s of SOPS) {
