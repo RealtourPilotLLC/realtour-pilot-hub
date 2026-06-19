@@ -13,6 +13,7 @@ import {
 import type { BriefTask } from "@/lib/queries";
 
 export type BriefShoot = {
+  key: string;
   id: string;
   title: string;
   time: string;
@@ -132,7 +133,7 @@ export function MorningBrief({
           <Step n={2} icon={CalendarDays} title="Today's shoots" count={todayShoots.length} accent="#a78bfa" empty="No shoots today.">
             <div className="space-y-0.5">
               {todayShoots.map((s) => (
-                <Link key={s.id} href={`/projects/${s.id}`} className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-surface-2">
+                <Link key={s.key} href={`/projects/${s.id}`} className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-surface-2">
                   <span className="truncate text-sm">{s.title}</span>
                   <span className="shrink-0 text-[11px] text-muted">{s.time} · {s.photographer ?? "Unassigned"}</span>
                 </Link>
@@ -153,9 +154,9 @@ export function MorningBrief({
             <div className="space-y-0.5">
               {confirm.map((t) => <TaskRow key={t.id} t={t} />)}
               {tomorrowShoots.map((s) => (
-                <Link key={s.id} href={`/projects/${s.id}`} className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-surface-2">
+                <Link key={s.key} href={`/projects/${s.id}`} className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-surface-2">
                   <span className="truncate text-sm text-muted">{s.title}</span>
-                  <span className="shrink-0 text-[11px] text-muted-2">tomorrow {s.time}</span>
+                  <span className="shrink-0 text-[11px] text-muted-2">tomorrow {s.time} · {s.photographer ?? "Unassigned"}</span>
                 </Link>
               ))}
             </div>

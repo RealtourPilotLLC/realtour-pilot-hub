@@ -137,19 +137,38 @@ export async function getOverdueTasks(): Promise<BriefTask[]> {
   return tasks.map((t) => mapTask(t, startToday));
 }
 
-// Shoots happening today / tomorrow — the daily schedule debrief.
+// Shoots happening today / tomorrow — driven off APPOINTMENTS, not the single
+// project.shootDate, so an order with multiple appointments shows every shoot
+// on its own day (and with the photographer assigned to that specific visit).
 export async function getShootWindow() {
   const startToday = new Date(new Date().toDateString());
   const startTomorrow = new Date(startToday.getTime() + 86400000);
   const startDayAfter = new Date(startToday.getTime() + 2 * 86400000);
-  const shoots = await prisma.project.findMany({
-    where: { shootDate: { gte: startToday, lt: startDayAfter } },
-    orderBy: { shootDate: "asc" },
-    include: { client: { select: { name: true } }, photographer: { select: { name: true } } },
+
+  const appts = await prisma.appointment.findMany({
+    where: {
+      startAt: { gte: startToday, lt: startDayAfter },
+      status: { not: "CANCELED" },
+      project: { status: { notIn: ["CANCELLED", "DELIVERED"] } },
+    },
+    orderBy: { startAt: "asc" },
+    include: {
+      project: { select: { id: true, title: true, client: { select: { name: true } } } },
+      assignedTo: { select: { name: true } },
+    },
+  });
+
+  const map = (a: (typeof appts)[number]) => ({
+    id: a.project.id,
+    apptId: a.id,
+    title: a.project.title,
+    shootDate: a.startAt!,
+    client: a.project.client,
+    photographer: a.assignedTo,
   });
   return {
-    today: shoots.filter((s) => s.shootDate! < startTomorrow),
-    tomorrow: shoots.filter((s) => s.shootDate! >= startTomorrow),
+    today: appts.filter((a) => a.startAt! < startTomorrow).map(map),
+    tomorrow: appts.filter((a) => a.startAt! >= startTomorrow).map(map),
   };
 }
 
@@ -174,9 +193,25 @@ export async function getDashboardData() {
   const now = new Date();
   const soon = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-  const upcomingShoots = all
-    .filter((p) => p.shootDate && p.shootDate >= now && p.shootDate <= soon)
-    .sort((a, b) => (a.shootDate!.getTime() - b.shootDate!.getTime()));
+  // Next 7 days of shoots — from appointments, so multi-appointment orders show
+  // every visit (not just the project's single primary shootDate).
+  const upcomingShoots = (
+    await prisma.appointment.findMany({
+      where: {
+        startAt: { gte: now, lte: soon },
+        status: { not: "CANCELED" },
+        project: { status: { notIn: ["CANCELLED", "DELIVERED"] } },
+      },
+      orderBy: { startAt: "asc" },
+      include: { project: { select: { id: true, title: true } }, assignedTo: { select: { name: true } } },
+    })
+  ).map((a) => ({
+    id: a.project.id,
+    apptId: a.id,
+    title: a.project.title,
+    shootDate: a.startAt!,
+    photographer: a.assignedTo,
+  }));
 
   // "Needs attention": overdue, urgent, on-hold, or due today.
   const startOfTomorrow = new Date(now);

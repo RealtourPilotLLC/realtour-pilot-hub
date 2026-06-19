@@ -13,34 +13,39 @@ function dayKey(d: Date) {
 }
 
 export default async function SchedulePage() {
-  const now = new Date();
-  const startToday = new Date(now.toDateString());
+  const startToday = new Date(new Date().toDateString());
 
-  const projects = await prisma.project.findMany({
-    where: { shootDate: { not: null }, status: { notIn: ["CANCELLED", "DELIVERED"] } },
-    orderBy: { shootDate: "asc" },
-    include: { client: true, photographer: true },
+  // Driven off APPOINTMENTS so an order with multiple visits shows each shoot on
+  // its own day, with the photographer assigned to that specific appointment.
+  const appts = await prisma.appointment.findMany({
+    where: {
+      startAt: { gte: startToday },
+      status: { not: "CANCELED" },
+      project: { status: { notIn: ["CANCELLED", "DELIVERED"] } },
+    },
+    orderBy: { startAt: "asc" },
+    include: {
+      project: { select: { id: true, title: true, status: true, client: { select: { name: true } } } },
+      assignedTo: true,
+    },
   });
 
-  const upcoming = projects.filter((p) => p.shootDate! >= startToday);
-
-  // Group by calendar day.
-  const groups = new Map<string, typeof projects>();
-  for (const p of upcoming) {
-    const k = dayKey(p.shootDate!);
+  const groups = new Map<string, typeof appts>();
+  for (const a of appts) {
+    const k = dayKey(a.startAt!);
     if (!groups.has(k)) groups.set(k, []);
-    groups.get(k)!.push(p);
+    groups.get(k)!.push(a);
   }
 
   return (
     <div>
       <PageHeader
         title="Schedule"
-        subtitle={`${upcoming.length} upcoming shoot${upcoming.length === 1 ? "" : "s"}`}
+        subtitle={`${appts.length} upcoming shoot${appts.length === 1 ? "" : "s"}`}
         actions={<Badge soft="var(--surface-2)">From Aryeo appointments</Badge>}
       />
       <div className="space-y-6 p-6">
-        {upcoming.length === 0 && <p className="text-sm text-muted">No upcoming shoots scheduled.</p>}
+        {appts.length === 0 && <p className="text-sm text-muted">No upcoming shoots scheduled.</p>}
         {[...groups.entries()].map(([day, items]) => (
           <div key={day}>
             <div className="mb-2 flex items-center gap-2">
@@ -49,12 +54,13 @@ export default async function SchedulePage() {
               <span className="rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">{items.length}</span>
             </div>
             <div className="overflow-hidden rounded-2xl border bg-surface">
-              {items.map((p) => {
+              {items.map((a) => {
+                const p = a.project;
                 const stage = stageMeta(p.status);
-                const time = p.shootDate!.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+                const time = a.startAt!.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
                 return (
                   <Link
-                    key={p.id}
+                    key={a.id}
                     href={`/projects/${p.id}`}
                     className="flex items-center gap-4 border-b px-5 py-3 last:border-0 hover:bg-surface-2"
                   >
@@ -69,10 +75,10 @@ export default async function SchedulePage() {
                     <Badge color={stage.color} soft={stage.soft}>
                       {stage.short}
                     </Badge>
-                    {p.photographer ? (
+                    {a.assignedTo ? (
                       <span className="flex items-center gap-1.5 text-xs text-muted">
-                        <Avatar name={p.photographer.name} color={p.photographer.avatarColor} size={22} />
-                        <span className="hidden sm:inline">{p.photographer.name.split(" ")[0]}</span>
+                        <Avatar name={a.assignedTo.name} color={a.assignedTo.avatarColor} size={22} />
+                        <span className="hidden sm:inline">{a.assignedTo.name.split(" ")[0]}</span>
                       </span>
                     ) : (
                       <span className="flex items-center gap-1 text-xs text-muted-2">

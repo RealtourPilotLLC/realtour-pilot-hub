@@ -49,10 +49,11 @@ function StatCard({
 }
 
 function toBriefShoot(s: {
-  id: string; title: string; shootDate: Date | null;
+  apptId: string; id: string; title: string; shootDate: Date | null;
   client: { name: string }; photographer: { name: string } | null;
 }): BriefShoot {
   return {
+    key: s.apptId,
     id: s.id,
     title: s.title,
     time: s.shootDate ? format(s.shootDate, "h:mm a") : "",
@@ -182,7 +183,7 @@ export default async function DashboardPage() {
               )}
               {data.upcomingShoots.map((p) => (
                 <Link
-                  key={p.id}
+                  key={p.apptId}
                   href={`/projects/${p.id}`}
                   className="flex items-center gap-3 px-5 py-3 hover:bg-surface-2"
                 >

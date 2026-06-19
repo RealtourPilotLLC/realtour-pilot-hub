@@ -663,6 +663,18 @@ export async function syncAryeoAppointments(): Promise<{
   // Per-project pick of the best appointment for primary assignment.
   const pick = new Map<string, { photographerId: string | null; shootDate: Date | null; scheduled: boolean }>();
   let appointmentCount = 0;
+  const nowTs = Date.now();
+
+  // Among an order's appointments, the "primary" shoot is the NEXT upcoming one
+  // (so a multi-appointment order surfaces its soonest visit). If all are past,
+  // use the most recent. Future always beats past.
+  const betterShoot = (next: Date, cur: Date | null): boolean => {
+    if (!cur) return true;
+    const nf = next.getTime() >= nowTs;
+    const cf = cur.getTime() >= nowTs;
+    if (nf !== cf) return nf; // a future shoot wins over a past one
+    return nf ? next < cur : next > cur; // both future: soonest; both past: latest
+  };
 
   const perPage = 100;
   let page = 1;
@@ -711,11 +723,16 @@ export async function syncAryeoAppointments(): Promise<{
       });
       appointmentCount++;
 
-      // Prefer a scheduled appointment for the project's primary assignment.
+      // Primary assignment = the next upcoming scheduled appointment (with the
+      // photographer assigned to THAT visit). Non-scheduled only seeds a fallback.
       const cur = pick.get(projectId);
-      if (!cur || (scheduled && !cur.scheduled)) {
-        pick.set(projectId, { photographerId: assignedToId, shootDate: scheduled ? startAt : cur?.shootDate ?? null, scheduled });
-      } else if (cur && !cur.photographerId && assignedToId) {
+      if (scheduled && startAt) {
+        if (!cur || !cur.scheduled || betterShoot(startAt, cur.shootDate)) {
+          pick.set(projectId, { photographerId: assignedToId, shootDate: startAt, scheduled: true });
+        }
+      } else if (!cur) {
+        pick.set(projectId, { photographerId: assignedToId, shootDate: null, scheduled: false });
+      } else if (!cur.photographerId && assignedToId) {
         cur.photographerId = assignedToId;
       }
     }
