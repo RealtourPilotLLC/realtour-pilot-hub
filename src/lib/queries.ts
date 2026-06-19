@@ -6,7 +6,13 @@ import { recentProjectWhere, isProjectRecent } from "@/lib/recency";
 export async function getPipelineProjects() {
   return prisma.project.findMany({
     where: recentProjectWhere(),
-    orderBy: [{ priority: "desc" }, { deliveryDue: "asc" }, { createdAt: "desc" }],
+    // Chronological: soonest shoot first within each column (the board re-sorts
+    // the Delivered column by most-recently-delivered).
+    orderBy: [
+      { shootDate: { sort: "asc", nulls: "last" } },
+      { deliveryDue: { sort: "asc", nulls: "last" } },
+      { orderedAt: "desc" },
+    ],
     include: {
       client: true,
       photographer: true,

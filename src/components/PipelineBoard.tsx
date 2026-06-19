@@ -59,7 +59,16 @@ export function PipelineBoard({ projects }: { projects: PipelineProject[] }) {
     <div className="flex h-full flex-col">
       <div className="flex flex-1 gap-3 overflow-x-auto scroll-thin px-6 py-4">
         {columns.map((stage) => {
-          const colItems = items.filter((p) => p.status === stage.status);
+          let colItems = items.filter((p) => p.status === stage.status);
+          // Finished work reads best newest-first; active columns keep the
+          // server's chronological (soonest shoot first) order.
+          if (stage.status === "DELIVERED") {
+            colItems = [...colItems].sort(
+              (a, b) =>
+                new Date(b.deliveredAt ?? b.updatedAt).getTime() -
+                new Date(a.deliveredAt ?? a.updatedAt).getTime(),
+            );
+          }
           const isOver = overStage === stage.status;
           const isCollapsed = collapsed.has(stage.status);
           return (
