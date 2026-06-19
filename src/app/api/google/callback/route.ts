@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { exchangeGoogleCode, testGmailToken } from "@/lib/integrations/google";
-import { saveSecret } from "@/lib/integrations/connections";
+import { exchangeGoogleCode, addGmailAccount } from "@/lib/integrations/google";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,8 +15,7 @@ export async function GET(req: NextRequest) {
   }
   try {
     const { refreshToken } = await exchangeGoogleCode(code);
-    const test = await testGmailToken(refreshToken);
-    await saveSecret("gmail", refreshToken, { accountLabel: test.ok ? test.label : "Gmail" });
+    await addGmailAccount(refreshToken);
     return NextResponse.redirect(`${base}/connections?gmail=connected`);
   } catch {
     return NextResponse.redirect(`${base}/connections?gmail=error`);

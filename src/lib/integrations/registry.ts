@@ -86,13 +86,17 @@ export const PROVIDERS: ProviderDef[] = [
   {
     id: "gmail",
     name: "Gmail",
-    blurb: "Client email — read into tasks",
+    blurb: "Client & lead email — read into tasks",
     segment: "Communication",
     authType: "oauth",
     icon: "Mail",
     color: "#ea4335",
     docsUrl: "https://developers.google.com/gmail/api",
-    capabilities: ["Read client emails into Kyle's queue", "Match emails to projects", "Feed the morning brief"],
+    capabilities: [
+      "Reads hello@ + info@ (connect both mailboxes)",
+      "Client & lead emails only — skips marketing, invoices, automated",
+      "Matches to projects + feeds the morning brief",
+    ],
     ready: true,
   },
   {

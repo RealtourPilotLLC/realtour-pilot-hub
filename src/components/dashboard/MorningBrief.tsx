@@ -96,7 +96,7 @@ export function MorningBrief({
   firstName?: string;
 }) {
   const is = (...types: string[]) => tasks.filter((t) => types.includes(t.taskType));
-  const messages = is("client_reply", "internal_instruction", "revision");
+  const messages = is("client_reply", "internal_instruction", "revision", "lead");
   const deliver = is("delivery", "media_qa", "finish_delivery", "delivery_text", "feedback_review");
   const confirm = is("appointment_prep");
   const total = tasks.length + todayShoots.length;

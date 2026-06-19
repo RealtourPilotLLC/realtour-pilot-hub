@@ -377,6 +377,11 @@ function GmailActions({
           Disconnect
         </button>
       </div>
+      {authorizeUrl && (
+        <a href={authorizeUrl} className="block text-center text-xs font-medium text-brand hover:underline">
+          + Add another mailbox (hello@ / info@)
+        </a>
+      )}
       {msg && <p className={`text-xs ${msg.ok ? "text-success" : "text-danger"}`}>{msg.message}</p>}
     </div>
   );

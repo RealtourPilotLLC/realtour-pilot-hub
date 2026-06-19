@@ -61,11 +61,38 @@ export async function exchangeGoogleCode(code: string): Promise<{ refreshToken: 
   return { refreshToken };
 }
 
-async function accessToken(): Promise<string> {
-  const refreshToken = await getSecret("gmail");
-  if (!refreshToken) throw new Error("Gmail is not connected.");
+async function accessTokenFor(refreshToken: string): Promise<string> {
   const json = await tokenRequest({ refresh_token: refreshToken, grant_type: "refresh_token" });
   return json.access_token as string;
+}
+
+// We support multiple mailboxes (hello@ + info@). The "gmail" secret holds an
+// encrypted JSON map of { email: refreshToken }.
+async function gmailAccounts(): Promise<{ email: string; refreshToken: string }[]> {
+  const raw = await getSecret("gmail");
+  if (!raw) return [];
+  try {
+    const map = JSON.parse(raw) as Record<string, string>;
+    return Object.entries(map).map(([email, refreshToken]) => ({ email, refreshToken }));
+  } catch {
+    return [{ email: "account", refreshToken: raw }]; // legacy single-token
+  }
+}
+
+// Add (or refresh) a mailbox after the user authorizes it.
+export async function addGmailAccount(refreshToken: string): Promise<string> {
+  const { saveSecret } = await import("./connections");
+  const token = await accessTokenFor(refreshToken);
+  const profile = await gmail<{ emailAddress?: string }>("/profile", token);
+  const email = (profile.emailAddress || "account").toLowerCase();
+  const existing = await gmailAccounts();
+  const map: Record<string, string> = {};
+  for (const a of existing) map[a.email] = a.refreshToken;
+  map[email] = refreshToken;
+  await saveSecret("gmail", JSON.stringify(map), {
+    accountLabel: `Gmail · ${Object.keys(map).join(", ")}`,
+  });
+  return email;
 }
 
 async function gmail<T = unknown>(path: string, token: string): Promise<T> {
@@ -102,20 +129,39 @@ function parseFrom(from: string): { name: string; email: string } {
   return { name: name || email, email };
 }
 
-// Pull recent inbound client emails and turn the ones we can match to a client
-// into tasks. Deduped per Gmail message id via WebhookEvent.
+// Automated / non-human sender local-parts (the part before @).
+const AUTOMATED_LOCAL = /^(noreply|no-reply|donotreply|do-not-reply|notify|notification|notifications|mailer|mailer-daemon|bounce|bounces|postmaster|news|newsletter|marketing|promo|promotions|billing|invoice|invoices|invoicing|receipt|receipts|payments?|orders?|alerts?|updates?|system|automated|auto|do_not_reply|noticed|team|hello|info|support|help|account|accounts|email|mail|members?|notices?|reply)$/i;
+
+// Vendor / tooling domains whose mail is transactional, never a client.
+const VENDOR_DOMAINS = [
+  "aryeo.com", "dropbox.com", "dropboxmail.com", "stripe.com", "intuit.com", "quickbooks.com",
+  "docusign.net", "docusign.com", "calendly.com", "google.com", "accounts.google.com",
+  "squarespace.com", "wix.com", "openphone.com", "openphone.co", "slack.com", "anthropic.com",
+  "vercel.com", "hubspot.com", "mail.hubspot.com", "zoom.us", "canva.com", "venmo.com",
+  "paypal.com", "facebookmail.com", "mailchimp.com", "sendgrid.net", "amazonses.com",
+  "matterport.com", "cubicasa.com", "autohdr.com", "frame.io",
+];
+
+function isLikelyHuman(fromEmail: string, listUnsubscribe: string, subject: string): boolean {
+  if (!fromEmail || !fromEmail.includes("@")) return false;
+  if (listUnsubscribe) return false; // bulk / marketing / newsletters
+  const [local, domain] = fromEmail.split("@");
+  if (AUTOMATED_LOCAL.test(local)) return false;
+  if (VENDOR_DOMAINS.some((d) => domain === d || domain.endsWith("." + d))) return false;
+  // Obvious receipts/invoices/marketing by subject.
+  if (/\b(invoice|receipt|payment received|your order|statement|unsubscribe|newsletter|webinar|sale ends|% off)\b/i.test(subject)) return false;
+  return true;
+}
+
+// Scan recent inbound emails across all connected mailboxes (hello@ + info@),
+// keep only genuine client/lead messages (no marketing, invoices, automated),
+// and turn them into tasks. Matched clients → reply task; unknown humans → lead.
 export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
   const { recordClientCommunication } = await import("@/lib/comms");
-  const token = await accessToken();
+  const accounts = await gmailAccounts();
+  if (accounts.length === 0) throw new Error("Gmail is not connected.");
 
-  const list = await gmail<{ messages?: { id: string }[] }>(
-    "/messages?q=" + encodeURIComponent("in:inbox newer_than:3d -from:me category:primary") + "&maxResults=25",
-    token,
-  );
-  const ids = (list.messages ?? []).map((m) => m.id);
-  if (ids.length === 0) return { scanned: 0, tasks: 0 };
-
-  // Preload clients + contacts for email matching.
+  // Preload clients + contacts for email matching (shared across mailboxes).
   const [clients, contacts] = await Promise.all([
     prisma.client.findMany({
       where: { email: { not: null } },
@@ -125,39 +171,86 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
   ]);
   const clientByEmail = new Map(clients.filter((c) => c.email).map((c) => [c.email!.toLowerCase(), c]));
   const contactClientByEmail = new Map(contacts.filter((c) => c.email).map((c) => [c.email!.toLowerCase(), c.clientId!]));
+  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
 
+  let scanned = 0;
   let tasks = 0;
-  for (const id of ids) {
-    const seen = await prisma.webhookEvent.findFirst({ where: { provider: "gmail", externalId: id, status: "PROCESSED" } });
-    if (seen) continue;
-    const msg = await gmail<GmailMsg>(`/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject`, token);
-    const { name, email } = parseFrom(header(msg, "From"));
-    const subject = header(msg, "Subject");
-    const text = `${subject ? subject + " — " : ""}${msg.snippet ?? ""}`.trim();
 
-    let client = clientByEmail.get(email);
-    if (!client) {
-      const cid = contactClientByEmail.get(email);
-      if (cid) client = clients.find((c) => c.id === cid);
+  for (const account of accounts) {
+    let token: string;
+    try {
+      token = await accessTokenFor(account.refreshToken);
+    } catch {
+      continue; // token revoked / expired — skip this mailbox
     }
+    const list = await gmail<{ messages?: { id: string }[] }>(
+      "/messages?q=" + encodeURIComponent("in:inbox newer_than:3d -from:me category:primary") + "&maxResults=25",
+      token,
+    );
+    const ids = (list.messages ?? []).map((m) => m.id);
+    scanned += ids.length;
 
-    await prisma.webhookEvent.create({
-      data: { provider: "gmail", eventType: "email", externalId: id, payload: text.slice(0, 1000), status: "PROCESSED", processedAt: new Date() },
-    });
-    if (!client || !text) continue;
+    for (const id of ids) {
+      const dedupe = `${account.email}:${id}`;
+      const seen = await prisma.webhookEvent.findFirst({ where: { provider: "gmail", externalId: dedupe, status: "PROCESSED" } });
+      if (seen) continue;
+      const msg = await gmail<GmailMsg>(
+        `/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=List-Unsubscribe`,
+        token,
+      );
+      const { name, email } = parseFrom(header(msg, "From"));
+      const subject = header(msg, "Subject");
+      const listUnsub = header(msg, "List-Unsubscribe");
+      const text = `${subject ? subject + " — " : ""}${msg.snippet ?? ""}`.trim();
 
-    const project = client.projects[0];
-    await recordClientCommunication({
-      clientId: client.id,
-      clientName: client.name || name,
-      projectId: project?.id,
-      projectStatus: project?.status ?? null,
-      propertyAddress: project?.title ?? null,
-      text,
-      kind: "email",
-      source: "gmail",
-    });
-    tasks++;
+      await prisma.webhookEvent.create({
+        data: { provider: "gmail", eventType: "email", externalId: dedupe, payload: text.slice(0, 1000), status: "PROCESSED", processedAt: new Date() },
+      });
+
+      // Only real client/lead emails — drop marketing, invoices, automated.
+      if (!text || !isLikelyHuman(email, listUnsub, subject)) continue;
+
+      let client = clientByEmail.get(email);
+      if (!client) {
+        const cid = contactClientByEmail.get(email);
+        if (cid) client = clients.find((c) => c.id === cid);
+      }
+
+      if (client) {
+        const project = client.projects[0];
+        await recordClientCommunication({
+          clientId: client.id,
+          clientName: client.name || name,
+          projectId: project?.id,
+          projectStatus: project?.status ?? null,
+          propertyAddress: project?.title ?? null,
+          text,
+          kind: "email",
+          source: "gmail",
+        });
+        tasks++;
+      } else {
+        // Unknown human → a lead. One open lead task per sender.
+        const key = `lead-${email}`;
+        const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+        if (existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED") continue;
+        const data = {
+          taskType: "lead",
+          title: `New lead: ${name || email}`.slice(0, 120),
+          description: text.slice(0, 400),
+          reasonCreated: `New inbound email to ${account.email}`,
+          checklist: JSON.stringify(["Read the email", "Qualify (listing, timeline, budget)", "Reply / book a strategy call", "Add to CRM"]),
+          source: "gmail",
+          priority: "HIGH" as const,
+          dueAt: new Date(Date.now() + 4 * 3600_000),
+          ownerId: kyle?.id ?? null,
+          dedupeKey: key,
+        };
+        if (existing) await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } });
+        else await prisma.smartTask.create({ data });
+        tasks++;
+      }
+    }
   }
-  return { scanned: ids.length, tasks };
+  return { scanned, tasks };
 }
