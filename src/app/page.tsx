@@ -11,7 +11,8 @@ import {
 import { PageHeader } from "@/components/PageHeader";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
-import { getDashboardData } from "@/lib/queries";
+import { getDashboardData, getMorningBrief } from "@/lib/queries";
+import { MorningBrief } from "@/components/dashboard/MorningBrief";
 import { stageMeta } from "@/lib/pipeline";
 import { formatMoney } from "@/lib/utils";
 import { format, formatDistanceToNow } from "date-fns";
@@ -49,7 +50,7 @@ function StatCard({
 }
 
 export default async function DashboardPage() {
-  const data = await getDashboardData();
+  const [data, brief] = await Promise.all([getDashboardData(), getMorningBrief()]);
   const today = format(new Date(), "EEEE, MMMM d");
 
   return (
@@ -57,6 +58,9 @@ export default async function DashboardPage() {
       <PageHeader title="Dashboard" subtitle={today} />
 
       <div className="space-y-6 p-6">
+        {/* Kyle's morning brief — the first thing he sees each day */}
+        <MorningBrief tasks={brief} />
+
         {/* Stat row */}
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
           <StatCard

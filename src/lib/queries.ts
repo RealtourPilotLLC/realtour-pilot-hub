@@ -63,6 +63,56 @@ export async function getClients() {
   });
 }
 
+// Kyle's morning brief: everything due today or overdue, pulled from the
+// comms listeners (OpenPhone texts/calls, Slack, Gmail) + the next-day delivery
+// SLA + day-before/after calls. This is the first thing he sees each morning.
+const BRIEF_ACTIVE = [
+  "OPEN", "IN_PROGRESS", "WAITING_CLIENT", "WAITING_PHOTOGRAPHER",
+  "WAITING_EDITOR", "WAITING_VENDOR", "WAITING_JORDAN", "BLOCKED",
+];
+
+export type BriefTask = {
+  id: string;
+  title: string;
+  taskType: string;
+  priority: string;
+  dueAt: string | null;
+  source: string;
+  projectId: string | null;
+  clientName: string | null;
+  propertyAddress: string | null;
+  overdue: boolean;
+};
+
+export async function getMorningBrief(): Promise<BriefTask[]> {
+  const now = new Date();
+  const startToday = new Date(now.toDateString());
+  const endToday = new Date(startToday.getTime() + 86400000 - 1);
+
+  const tasks = await prisma.smartTask.findMany({
+    where: {
+      status: { in: BRIEF_ACTIVE },
+      dueAt: { lte: endToday }, // due today or overdue
+      OR: [{ projectId: null }, { project: recentProjectWhere() }],
+    },
+    include: { client: { select: { name: true } } },
+    orderBy: { dueAt: "asc" },
+  });
+
+  return tasks.map((t) => ({
+    id: t.id,
+    title: t.title,
+    taskType: t.taskType,
+    priority: t.priority,
+    dueAt: t.dueAt ? t.dueAt.toISOString() : null,
+    source: t.source,
+    projectId: t.projectId,
+    clientName: t.client?.name ?? null,
+    propertyAddress: t.propertyAddress,
+    overdue: !!t.dueAt && t.dueAt < startToday,
+  }));
+}
+
 /** Aggregated data for the dashboard home. */
 export async function getDashboardData() {
   const all = await prisma.project.findMany({
