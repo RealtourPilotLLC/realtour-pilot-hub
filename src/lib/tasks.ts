@@ -325,8 +325,12 @@ export async function createProjectFollowupTask(opts: {
   source?: string;
   aiTitle?: string | null;
   aiDetail?: string | null;
+  priority?: "URGENT" | "HIGH" | "MEDIUM" | "LOW";
 }): Promise<boolean> {
-  const key = dedupe([opts.projectId, "comms_followup", opts.senderName]);
+  // Stable per (project, sender) — normalize the sender so name variants
+  // ("Harrison" vs "Harrison Wells") don't spawn duplicate tasks.
+  const senderKey = opts.senderName.toLowerCase().replace(/[^a-z]/g, "").slice(0, 16) || opts.senderName;
+  const key = dedupe([opts.projectId, "comms_followup", senderKey]);
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
   const street = (opts.propertyAddress ?? "this job").split(",")[0];
   const title = (opts.aiTitle || `${opts.senderName} re ${street}`).slice(0, 120);
@@ -344,7 +348,7 @@ export async function createProjectFollowupTask(opts: {
       "Log the outcome",
     ]),
     source: opts.source ?? "openphone",
-    priority: "HIGH" as const,
+    priority: opts.priority ?? "HIGH",
     dueAt: new Date(Date.now() + 4 * HOUR),
     clientId: opts.clientId ?? null,
     projectId: opts.projectId,

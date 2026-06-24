@@ -35,22 +35,58 @@ export async function maybeCreateSlackTask(opts: { text: string; ts: string; cha
 
   let title = text.length > 90 ? text.slice(0, 88) + "…" : text;
   let detail = text;
-  try {
-    if (await getSecret("ai")) {
-      const { messageToTodo } = await import("@/lib/integrations/ai");
-      const todo = await messageToTodo({
-        channel: "Slack message",
-        clientName: opts.senderName ?? null,
-        propertyAddress: match?.title ?? null,
+  let priority: "URGENT" | "HIGH" | "MEDIUM" | "LOW" = "MEDIUM";
+  let projectId = match?.id ?? null;
+  let usedBrain = false;
+
+  // When the message ties to a client's project, route it through the Smart Brain
+  // so it can skip chatter, merge a duplicate into an existing open to-do, pick
+  // the right order, and set priority from context.
+  if (match?.clientId) {
+    try {
+      const { routeCommTask } = await import("@/lib/brain");
+      const decision = await routeCommTask({
+        channel: "slack",
         message: text,
+        clientId: match.clientId,
+        senderName: opts.senderName ?? null,
+        senderIsClient: false,
       });
-      if (todo) {
-        if (/no action needed/i.test(todo.title)) return false;
-        title = todo.title;
-        detail = todo.detail || text;
+      if (decision) {
+        if (!decision.actionable) return false;
+        if (decision.mergeIntoTaskId) {
+          const { mergeIntoExistingTask } = await import("@/lib/tasks");
+          await mergeIntoExistingTask(decision.mergeIntoTaskId, { title: decision.title, detail: decision.detail, priority: decision.priority, snippet: text });
+          return true;
+        }
+        title = decision.title;
+        detail = decision.detail || text;
+        priority = decision.priority;
+        if (decision.projectId) projectId = decision.projectId;
+        usedBrain = true;
       }
-    }
-  } catch { /* fall back to raw text */ }
+    } catch { /* fall through to single-message helper */ }
+  }
+
+  // Fallback (no client/project match, or brain unavailable): single-message to-do.
+  if (!usedBrain) {
+    try {
+      if (await getSecret("ai")) {
+        const { messageToTodo } = await import("@/lib/integrations/ai");
+        const todo = await messageToTodo({
+          channel: "Slack message",
+          clientName: opts.senderName ?? null,
+          propertyAddress: match?.title ?? null,
+          message: text,
+        });
+        if (todo) {
+          if (/no action needed/i.test(todo.title)) return false;
+          title = todo.title;
+          detail = todo.detail || text;
+        }
+      }
+    } catch { /* fall back to raw text */ }
+  }
 
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
   await prisma.smartTask.create({
@@ -62,10 +98,10 @@ export async function maybeCreateSlackTask(opts: { text: string; ts: string; cha
       checklist: JSON.stringify(["Do the requested action", "Reply in Slack when done"]),
       source: "slack",
       sourceDetail: opts.channel ? `channel ${opts.channel} · ${opts.ts}` : opts.ts,
-      priority: "MEDIUM",
+      priority,
       dueAt: new Date(Date.now() + 6 * 3600_000),
       ownerId: kyle?.id ?? null,
-      projectId: match?.id ?? null,
+      projectId,
       clientId: match?.clientId ?? null,
       propertyAddress: match?.title ?? null,
       dedupeKey,

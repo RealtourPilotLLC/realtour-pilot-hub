@@ -167,40 +167,62 @@ async function processOpenPhoneEvent(type: string, payload: Record<string, unkno
       // Skip when it's the client texting about the same project the reply task
       // already covers (no duplicate); otherwise file it on the named project.
       if (sender && !automated && hitProject && hitProject.id !== match?.project?.id) {
+        // Route through the Smart Brain (the sender is a teammate/photographer,
+        // not the client): it skips chatter, confirms the order, sets priority,
+        // and can merge into an existing open to-do instead of duplicating.
         let aiTitle: string | null = null;
         let aiDetail: string | null = null;
-        try {
-          const { getSecret } = await import("@/lib/integrations/connections");
-          if (await getSecret("ai")) {
-            const { messageToTodo } = await import("@/lib/integrations/ai");
-            const todo = await messageToTodo({
-              channel: "text",
-              clientName: sender.name,
-              propertyAddress: hitProject.title,
-              message: text,
+        let aiPriority: "URGENT" | "HIGH" | "MEDIUM" | "LOW" | undefined;
+        let handled = false; // brain merged it, or judged it non-actionable → no new task
+        let usedBrain = false;
+        if (hitProject.clientId) {
+          try {
+            const { routeCommTask } = await import("@/lib/brain");
+            const decision = await routeCommTask({
+              channel: "text", message: text, clientId: hitProject.clientId,
+              senderName: sender.name, senderIsClient: false,
             });
-            if (todo && !/no action needed/i.test(todo.title)) {
-              aiTitle = todo.title;
-              aiDetail = todo.detail;
+            if (decision) {
+              usedBrain = true;
+              if (!decision.actionable) {
+                handled = true;
+              } else if (decision.mergeIntoTaskId) {
+                const { mergeIntoExistingTask } = await import("@/lib/tasks");
+                await mergeIntoExistingTask(decision.mergeIntoTaskId, { title: decision.title, detail: decision.detail, priority: decision.priority, snippet: text });
+                handled = true;
+              } else {
+                aiTitle = decision.title; aiDetail = decision.detail; aiPriority = decision.priority;
+              }
             }
-          }
-        } catch {
-          /* fall back to a generic title */
+          } catch { /* fall through to the single-message helper */ }
         }
-        const { createProjectFollowupTask } = await import("@/lib/tasks");
-        await createProjectFollowupTask({
-          projectId: hitProject.id,
-          clientId: hitProject.clientId,
-          propertyAddress: hitProject.title,
-          senderName: sender.name,
-          text,
-          source: "openphone",
-          aiTitle,
-          aiDetail,
-        });
-        await prisma.activity.create({
-          data: { projectId: hitProject.id, type: "NOTE", body: `${sender.name} (text): ${text.slice(0, 220)}` },
-        });
+        if (!usedBrain) {
+          try {
+            const { getSecret } = await import("@/lib/integrations/connections");
+            if (await getSecret("ai")) {
+              const { messageToTodo } = await import("@/lib/integrations/ai");
+              const todo = await messageToTodo({ channel: "text", clientName: sender.name, propertyAddress: hitProject.title, message: text });
+              if (todo && !/no action needed/i.test(todo.title)) { aiTitle = todo.title; aiDetail = todo.detail; }
+            }
+          } catch { /* fall back to a generic title */ }
+        }
+        if (!handled) {
+          const { createProjectFollowupTask } = await import("@/lib/tasks");
+          await createProjectFollowupTask({
+            projectId: hitProject.id,
+            clientId: hitProject.clientId,
+            propertyAddress: hitProject.title,
+            senderName: sender.name,
+            text,
+            source: "openphone",
+            aiTitle,
+            aiDetail,
+            priority: aiPriority,
+          });
+          await prisma.activity.create({
+            data: { projectId: hitProject.id, type: "NOTE", body: `${sender.name} (text): ${text.slice(0, 220)}` },
+          });
+        }
       }
     }
   }

@@ -245,7 +245,7 @@ const BRIEF_ACTIVE = [
 // reply for. These belong in the brief's "Check your messages" step and should
 // stay there until handled (NOT roll off when they're no longer due "today",
 // and NOT get buried in Needs Attention). Email/text/Slack/lead all land here.
-const MESSAGE_TASK_TYPES = ["client_reply", "revision", "lead", "internal_instruction", "vendor_update"];
+const MESSAGE_TASK_TYPES = ["client_reply", "comms_followup", "revision", "lead", "internal_instruction", "vendor_update"];
 
 export type BriefTask = {
   id: string;

@@ -628,8 +628,19 @@ export async function execHubTool(
       if (dd) dueAt = new Date(`${dd}T17:00:00-04:00`);
       else dueAt = etAddDays(etDayStartUtc(new Date()), 1);
 
-      const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } }, select: { id: true } });
-      const task = await prisma.smartTask.create({
+      // Don't duplicate: if the same assistant to-do (same title, same order) is
+      // already open, return it instead of making another.
+      const dup = await prisma.smartTask.findFirst({
+        where: {
+          source: "assistant",
+          status: { notIn: ["COMPLETED", "CANCELLED"] },
+          projectId: projectId ?? null,
+          title: { equals: title.slice(0, 140), mode: "insensitive" },
+        },
+        select: { id: true },
+      });
+      const kyle = dup ? null : await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } }, select: { id: true } });
+      const task = dup ?? await prisma.smartTask.create({
         data: {
           taskType: "internal_instruction",
           title: title.slice(0, 140),
