@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { phoneKey, callTranscriptText, type OpTranscriptLine } from "@/lib/integrations/openphone";
 import { resolveClientByPhones, resolveSenderName, findActiveProjectByText } from "@/lib/contacts";
 import { recordClientCommunication } from "@/lib/comms";
+import { logComm } from "@/lib/commLog";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -89,6 +90,21 @@ async function processOpenPhoneEvent(type: string, payload: Record<string, unkno
   const isInboundText = type === "message.received" || (!isCall && incoming);
 
   const match = await resolveClientByPhones(phones);
+
+  // Comms memory: record the full text (in or out) so Ask the Hub can recall it.
+  if (!isCall && text.trim()) {
+    await logComm({
+      channel: "text",
+      direction: incoming ? "in" : "out",
+      clientId: match?.clientId ?? null,
+      clientName: match?.clientName ?? null,
+      projectId: match?.project?.id ?? null,
+      contactName: incoming ? match?.clientName ?? null : "RealTour Pilot",
+      body: text,
+      source: "openphone",
+      externalId: data.id ? `op-${data.id as string}` : undefined,
+    });
+  }
 
   // --- Client path: log + reply task + revision detection (when we know the client).
   if (match) {
@@ -216,6 +232,19 @@ async function handleTranscript(data: Record<string, unknown>) {
       },
     });
   }
+
+  // Comms memory: store the full call transcript.
+  await logComm({
+    channel: "call",
+    direction: "in",
+    clientId,
+    clientName,
+    projectId: project?.id ?? null,
+    contactName: clientName,
+    body: full,
+    source: "openphone-call",
+    externalId: callId ? `op-call-${callId}` : undefined,
+  });
 
   // Scan the client's spoken words for a revision/change request.
   if (clientText) {

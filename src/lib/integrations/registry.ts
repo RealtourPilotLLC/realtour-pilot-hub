@@ -128,6 +128,25 @@ export const PROVIDERS: ProviderDef[] = [
     ready: true,
   },
   {
+    id: "slack_user",
+    name: "Slack (read history)",
+    blurb: "Read team channels + your DMs into the brain",
+    segment: "Communication",
+    authType: "apikey",
+    icon: "MessageSquare",
+    color: "#4a154b",
+    keyLabel: "Slack User OAuth Token (xoxp-…)",
+    keyHelp:
+      "Slack app → Install App → Reinstall to Workspace → Allow → copy the User OAuth Token (starts with xoxp-). This reads your channels + DMs so Ask the Hub can recall what was said. It's encrypted; only Jordan can see DM content in the assistant.",
+    docsUrl: "https://api.slack.com/apps/A0BBB7RET9U/install-on-team",
+    capabilities: [
+      "Reads #video-editing + #rp-project-tracker history",
+      "Reads your DMs with Kyle, Kim & Remar (owner-only)",
+      "Feeds Ask the Hub's comms memory",
+    ],
+    ready: true,
+  },
+  {
     id: "hubspot",
     name: "HubSpot",
     blurb: "CRM sync (migrate off, or run alongside)",

@@ -45,6 +45,22 @@ export async function testSlackKey(
   }
 }
 
+// Validate a USER OAuth token (xoxp-…) — used to read channel + DM history for
+// the comms-memory backfill (a bot token cannot read user-to-user DMs).
+export async function testSlackUserKey(
+  token: string,
+): Promise<{ ok: true; label: string } | { ok: false; error: string }> {
+  try {
+    if (!token.startsWith("xoxp-")) {
+      return { ok: false, error: "That isn't a user token. I need the User OAuth Token (starts with xoxp-), not the bot token." };
+    }
+    const auth = await slackApi<{ team?: string; user?: string }>("auth.test", {}, token);
+    return { ok: true, label: `Slack history · ${auth.user || "user"}` };
+  } catch (e) {
+    return { ok: false, error: e instanceof SlackError ? e.message : String(e) };
+  }
+}
+
 export type SlackChannel = { id: string; name: string; is_member?: boolean };
 
 export async function slackChannels(): Promise<SlackChannel[]> {

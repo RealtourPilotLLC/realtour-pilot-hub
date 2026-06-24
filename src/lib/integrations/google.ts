@@ -358,6 +358,7 @@ export async function clientEmailThreads(
 // and turn them into tasks. Matched clients → reply task; unknown humans → lead.
 export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
   const { recordClientCommunication } = await import("@/lib/comms");
+  const { logComm } = await import("@/lib/commLog");
   const accounts = await gmailAccounts();
   if (accounts.length === 0) throw new Error("Gmail is not connected.");
 
@@ -532,6 +533,19 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
           kind: "email",
           source: "gmail",
           threadRef,
+        });
+        // Comms memory: store the inbound client email (subject + snippet).
+        await logComm({
+          channel: "email",
+          direction: "in",
+          clientId: client.id,
+          clientName: client.name || name,
+          projectId: project?.id ?? null,
+          contactName: client.name || name,
+          subject,
+          body: msg.snippet || text,
+          source: "gmail",
+          externalId: `gmail-${dedupe}`,
         });
         tasks++;
       } else if (CLIENTS_ONLY_MAILBOXES.includes(account.email)) {

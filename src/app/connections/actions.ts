@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { saveSecret, disconnect as disconnectConn } from "@/lib/integrations/connections";
 import { testOpenPhoneKey, registerOpenPhoneWebhooks } from "@/lib/integrations/openphone";
 import { exchangeDropboxCode, testDropboxRefreshToken } from "@/lib/integrations/dropbox";
-import { testSlackKey } from "@/lib/integrations/slack";
+import { testSlackKey, testSlackUserKey } from "@/lib/integrations/slack";
 import { testAiKey } from "@/lib/integrations/ai";
 import { syncGmail } from "@/lib/integrations/google";
 import { generateTasksForActiveProjects } from "@/lib/tasks";
@@ -67,6 +67,7 @@ const TESTERS: Record<string, (key: string) => Promise<{ ok: true; label: string
   aryeo: testAryeoKey,
   openphone: testOpenPhoneKey,
   slack: testSlackKey,
+  slack_user: testSlackUserKey,
   ai: testAiKey,
 };
 

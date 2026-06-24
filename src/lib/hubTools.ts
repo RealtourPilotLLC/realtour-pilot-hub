@@ -114,6 +114,19 @@ export const HUB_TOOLS: HubTool[] = [
       required: ["query"],
     },
   },
+  {
+    name: "search_comms",
+    description: "Search the real communication history: client texts, call transcripts, and emails (OpenPhone/Gmail) PLUS internal Slack — team channels and Jordan's DMs with Kyle and the editors (Kim, Remar). Use for 'what did we tell <client>', 'what have Kyle and I discussed', 'what did the editors say about <project>', 'when did we last talk', or before drafting a reply so it fits the thread. The `person` filter matches a client OR a teammate by name. Returns messages newest first.",
+    input_schema: {
+      type: "object",
+      properties: {
+        person: { type: "string", description: "A person's name to focus on — client OR teammate (Kyle, Kim, Remar). Optional." },
+        client: { type: "string", description: "Alias for person (kept for compatibility)." },
+        query: { type: "string", description: "Keyword to find in message text (optional)." },
+        limit: { type: "number", description: "Max messages, default 12, cap 25." },
+      },
+    },
+  },
 ];
 
 // Role tiers map onto the future per-user RBAC. A viewer sees an item only if
@@ -429,6 +442,52 @@ export async function execHubTool(
           title: h.it.title,
           insight: h.it.body,
           sensitivity: h.it.minRole,
+        })),
+      };
+    }
+
+    case "search_comms": {
+      // Client comms are sensitive: admin + owner only, never creatives.
+      if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.OWNER) < ROLE_RANK.ADMIN) {
+        return { error: "Client communication history is available to admin and owner roles only." };
+      }
+      const person = typeof input.person === "string" && input.person.trim()
+        ? input.person.trim()
+        : typeof input.client === "string" ? input.client.trim() : "";
+      const query = typeof input.query === "string" ? input.query.trim() : "";
+      const limit = Math.min(Number(input.limit) || 12, 25);
+      // Per-row sensitivity: an ADMIN sees ADMIN-tier comms but NOT owner-only
+      // ones (e.g. Jordan's Slack DMs); OWNER sees everything.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const where: any = { minRole: { in: allowedRolesFor(ctx.role) } };
+      if (person) {
+        const matches = await prisma.client.findMany({
+          where: { name: { contains: person, mode: "insensitive" } },
+          select: { id: true }, take: 10,
+        });
+        const ids = matches.map((m) => m.id);
+        // Match a client (by id or denormalized name) OR a teammate (contactName).
+        where.OR = [
+          ...(ids.length ? [{ clientId: { in: ids } }] : []),
+          { clientName: { contains: person, mode: "insensitive" } },
+          { contactName: { contains: person, mode: "insensitive" } },
+        ];
+      }
+      if (query) where.body = { contains: query, mode: "insensitive" };
+      const rows = await prisma.commLog.findMany({
+        where,
+        orderBy: { occurredAt: "desc" },
+        take: limit,
+        select: { channel: true, direction: true, clientName: true, contactName: true, subject: true, body: true, occurredAt: true },
+      });
+      return {
+        count: rows.length,
+        messages: rows.map((r) => ({
+          when: etDateTime(r.occurredAt),
+          channel: r.channel,
+          who: r.direction === "out" ? "Us" : r.contactName || r.clientName || "Client",
+          subject: r.subject || undefined,
+          text: r.body.slice(0, 600),
         })),
       };
     }
