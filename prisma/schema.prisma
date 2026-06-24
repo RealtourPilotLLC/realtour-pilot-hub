@@ -687,3 +687,37 @@ model CommLog {
   @@index([occurredAt])
   @@index([minRole])
 }
+
+// Persisted "Ask the Hub" conversations. Powers the owner-only chat-history +
+// analytics view (what the team asks the brain, and how it answered). `role` is
+// the viewer tier the chat was held under — a stand-in for a real user id until
+// per-user accounts land. Summaries are generated lazily and cached on the row.
+model HubChat {
+  id             String       @id @default(cuid())
+  role           String       @default("OWNER") // OWNER | ADMIN | CREATIVE (who was asking)
+  title          String? // short heuristic/AI title
+  summary        String? // detailed recap, lazy-generated + cached
+  summaryAtCount Int          @default(0) // messageCount when the summary was last built
+  category       String? // dominant question category, for quick scanning
+  messageCount   Int          @default(0)
+  createdAt      DateTime     @default(now())
+  lastMessageAt  DateTime     @default(now())
+  messages       HubMessage[]
+
+  @@index([lastMessageAt])
+}
+
+model HubMessage {
+  id        String   @id @default(cuid())
+  chat      HubChat  @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  chatId    String
+  role      String // user | assistant
+  content   String
+  category  String? // question category (set on user turns), derived from tools used
+  toolsUsed String? // JSON string[] of tool names (assistant turns)
+  createdAt DateTime @default(now())
+
+  @@index([chatId])
+  @@index([category])
+  @@index([createdAt])
+}

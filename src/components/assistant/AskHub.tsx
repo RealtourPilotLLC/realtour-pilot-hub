@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { useState, useRef, useEffect, useTransition } from "react";
-import { Send, Sparkles, BookOpen, Database, User, ShieldCheck, Phone, Copy, Check, Mail, ListChecks, ArrowUpRight } from "lucide-react";
-import { askHub, type HubAnswer, type HubTurn, type HubRole, type HubDraft, type HubTaskCard } from "@/app/assistant/actions";
+import { Send, Sparkles, BookOpen, Database, User, ShieldCheck, Phone, Copy, Check, Mail, ListChecks, ArrowUpRight, Brain, Lock } from "lucide-react";
+import { askHub, type HubAnswer, type HubTurn, type HubRole, type HubDraft, type HubTaskCard, type HubMemoryCard } from "@/app/assistant/actions";
 import { sendClientText } from "@/app/clients/actions";
 
 const PRIORITY_COLOR: Record<string, string> = { URGENT: "#f87171", HIGH: "#fb923c", MEDIUM: "#fbbf24", LOW: "#94a3b8" };
@@ -35,6 +35,29 @@ function TaskCard({ task }: { task: HubTaskCard }) {
   );
 }
 
+const ROLE_LABEL: Record<string, string> = { OWNER: "Owner only", ADMIN: "Team", CREATIVE: "Everyone" };
+
+// Confirmation that the hub learned a new fact and will use it going forward.
+function MemoryCard({ memory }: { memory: HubMemoryCard }) {
+  return (
+    <div className="mt-3 flex items-center gap-3 rounded-xl border border-brand/30 bg-brand-soft/40 p-3">
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 text-brand">
+        <Brain className="size-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5 text-xs font-medium text-brand">
+          <Check className="size-3.5" /> Saved to memory{memory.superseded > 0 ? ` · replaced ${memory.superseded} older note${memory.superseded > 1 ? "s" : ""}` : ""}
+        </div>
+        <div className="truncate text-sm font-medium text-foreground">{memory.title}</div>
+        <div className="truncate text-xs text-muted capitalize">{memory.category.replace(/_/g, " ")}</div>
+      </div>
+      <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-medium text-muted">
+        <Lock className="size-2.5" /> {ROLE_LABEL[memory.minRole] ?? memory.minRole}
+      </span>
+    </div>
+  );
+}
+
 const ROLES: { value: HubRole; label: string; hint: string }[] = [
   { value: "OWNER", label: "Owner (you)", hint: "sees everything" },
   { value: "ADMIN", label: "Admin (Kyle)", hint: "no owner finances/strategy" },
@@ -43,7 +66,7 @@ const ROLES: { value: HubRole; label: string; hint: string }[] = [
 
 type Msg =
   | { role: "user"; text: string }
-  | { role: "hub"; text: string; sources: HubAnswer["sources"]; drafts?: HubDraft[]; tasks?: HubTaskCard[] };
+  | { role: "hub"; text: string; sources: HubAnswer["sources"]; drafts?: HubDraft[]; tasks?: HubTaskCard[]; memories?: HubMemoryCard[] };
 
 const SUGGESTIONS = [
   "What's shooting today?",
@@ -147,6 +170,7 @@ export function AskHub({ initial }: { initial?: string }) {
   const [isPending, startTransition] = useTransition();
   const scrollRef = useRef<HTMLDivElement>(null);
   const seeded = useRef(false);
+  const chatId = useRef<string | undefined>(undefined);
 
   // Auto-ask a seeded question (e.g. from an "Ask the Hub" deep link on a client page).
   useEffect(() => {
@@ -168,8 +192,9 @@ export function AskHub({ initial }: { initial?: string }) {
     setMessages((m) => [...m, { role: "user", text: q }]);
     setValue("");
     startTransition(async () => {
-      const res = await askHub(q, history, role);
-      setMessages((m) => [...m, { role: "hub", text: res.answer, sources: res.sources, drafts: res.drafts, tasks: res.tasks }]);
+      const res = await askHub(q, history, role, chatId.current);
+      if (res.chatId) chatId.current = res.chatId;
+      setMessages((m) => [...m, { role: "hub", text: res.answer, sources: res.sources, drafts: res.drafts, tasks: res.tasks, memories: res.memories }]);
       requestAnimationFrame(() =>
         scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }),
       );
@@ -240,6 +265,7 @@ export function AskHub({ initial }: { initial?: string }) {
                 </span>
                 <div className="rounded-2xl rounded-tl-sm border bg-surface px-4 py-3 text-sm text-foreground/90">
                   <div className="space-y-0.5">{renderText(m.text)}</div>
+                  {m.memories?.map((mem, j) => <MemoryCard key={`m${j}`} memory={mem} />)}
                   {m.tasks?.map((t, j) => <TaskCard key={`t${j}`} task={t} />)}
                   {m.drafts?.map((d, j) => <DraftCard key={j} draft={d} />)}
                   {m.sources.length > 0 && (

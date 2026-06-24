@@ -21,11 +21,20 @@ export type HubTaskCard = {
   project?: string | null;
   href: string;
 };
+export type HubMemoryCard = {
+  id: string;
+  title: string;
+  category: string;
+  minRole: string;
+  superseded: number;
+};
 export type HubAnswer = {
   answer: string;
   sources: HubSource[];
   drafts?: HubDraft[];
   tasks?: HubTaskCard[];
+  memories?: HubMemoryCard[];
+  chatId?: string;
 };
 
 export type HubTurn = { role: "user" | "assistant"; content: string };
@@ -46,6 +55,7 @@ const TOOL_LABEL: Record<string, string> = {
   search_comms: "Client messages",
   draft_client_message: "Drafted a message",
   create_task: "Created a task",
+  remember_fact: "Saved to memory",
 };
 
 export type HubRole = "OWNER" | "ADMIN" | "CREATIVE";
@@ -89,10 +99,12 @@ Drafting: when the user asks to write/draft/reply to a client or follow up with 
 
 Adding tasks: when the user asks to add/create a task, reminder, or follow-up ("add a task to...", "remind me to...", "make a to-do for..."), call create_task with a clear imperative title, and link it to a project or client by name when one is mentioned. Confirm briefly (e.g. "Added it to the queue."). Only create a task when they actually ask for one.
 
-Critical boundary: aside from drafting client messages (proposed for a human to send) and creating internal to-dos when asked, you do not send anything to clients or change external records on your own. The human always stays on the Send button.`;
+Learning (memory): you get smarter over time by remembering what you are told. Call remember_fact ONLY when the user is actively telling you something to remember or correcting you: a durable fact, price, fee, policy, rule, preference, or decision ("remember that...", "from now on...", "our rush fee is now $X", "actually it's...", "going forward...", "no, that's wrong..."). Write the fact as a complete standalone sentence with the specifics, pick the right category, and set min_role by sensitivity: OWNER for money/margins/pay/costs/strategy/personnel, ADMIN for operations/client-handling/fees/scheduling, CREATIVE only for shoot or editing craft. When the user is changing or fixing a value you already knew, set correction=true so the old version is retired. Confirm briefly what you saved (e.g. "Got it, I'll remember the rush fee is now $200."). NEVER call remember_fact to answer a question, to confirm, or to restate a fact you already know or just looked up. If you are only retrieving or reciting something (the user asked "what is X"), just answer. Do NOT use it for one-off action items (use create_task). If the viewer is a creative, you cannot save to memory; say so plainly.
+
+Critical boundary: aside from drafting client messages (proposed for a human to send), creating internal to-dos when asked, and saving facts you are taught, you do not send anything to clients or change external records on your own. The human always stays on the Send button.`;
 }
 
-export async function askHub(question: string, history: HubTurn[] = [], role: HubRole = "OWNER"): Promise<HubAnswer> {
+export async function askHub(question: string, history: HubTurn[] = [], role: HubRole = "OWNER", chatId?: string): Promise<HubAnswer> {
   const q = question.trim();
   if (!q) return { answer: "Ask me anything about your projects, clients, schedule, to-dos, billing, or how the business runs.", sources: [] };
 
@@ -110,9 +122,10 @@ export async function askHub(question: string, history: HubTurn[] = [], role: Hu
   // them as Send-ready cards (the assistant never sends; a human clicks Send).
   const drafts: HubDraft[] = [];
   const tasks: HubTaskCard[] = [];
+  const memories: HubMemoryCard[] = [];
   const exec = async (name: string, input: Record<string, unknown>) => {
     const out = await execHubTool(name, input, { role: viewerRole });
-    const o = out as { drafted?: boolean; client_id?: string; client_name?: string; channel?: string; message?: string; can_text?: boolean; created_task?: boolean; id?: string; title?: string; priority?: string; due?: string; project?: string | null; href?: string };
+    const o = out as { drafted?: boolean; client_id?: string; client_name?: string; channel?: string; message?: string; can_text?: boolean; created_task?: boolean; id?: string; title?: string; priority?: string; due?: string; project?: string | null; href?: string; remembered?: boolean; category?: string; min_role?: string; superseded?: number };
     if (name === "draft_client_message" && o?.drafted && o.message && o.client_id) {
       drafts.push({
         clientId: o.client_id,
@@ -124,6 +137,9 @@ export async function askHub(question: string, history: HubTurn[] = [], role: Hu
     }
     if (name === "create_task" && o?.created_task && o.id && o.title) {
       tasks.push({ id: o.id, title: o.title, priority: o.priority ?? "MEDIUM", due: o.due ?? "", project: o.project ?? null, href: o.href ?? "/queue" });
+    }
+    if (name === "remember_fact" && o?.remembered && o.id && o.title) {
+      memories.push({ id: o.id, title: o.title, category: o.category ?? "preference", minRole: o.min_role ?? "ADMIN", superseded: o.superseded ?? 0 });
     }
     return out;
   };
@@ -146,7 +162,19 @@ export async function askHub(question: string, history: HubTurn[] = [], role: Hu
       seen.add(t.name);
       sources.push({ kind: t.name === "search_knowledge" ? "knowledge" : "data", title: TOOL_LABEL[t.name] ?? t.name });
     }
-    return { answer, sources, drafts: drafts.length ? drafts : undefined, tasks: tasks.length ? tasks : undefined };
+
+    // Persist the exchange (owner-only history + usage analytics). Best-effort;
+    // never let logging break the answer.
+    let newChatId: string | undefined = chatId;
+    try {
+      const { recordHubTurn } = await import("@/lib/hubChats");
+      const saved = await recordHubTurn({ chatId, role: viewerRole, question: q, answer, toolsUsed: toolsUsed.map((t) => t.name) });
+      if (saved) newChatId = saved;
+    } catch {
+      /* ignore */
+    }
+
+    return { answer, sources, drafts: drafts.length ? drafts : undefined, tasks: tasks.length ? tasks : undefined, memories: memories.length ? memories : undefined, chatId: newChatId };
   } catch (e) {
     return {
       answer: e instanceof Error ? e.message : "Something went wrong answering that. Please try again.",

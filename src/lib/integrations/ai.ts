@@ -290,6 +290,33 @@ export async function summarizeWorkday(input: {
   return anthropic({ model: FAST, system, user, maxTokens: 500 });
 }
 
+// Title + detailed recap of one "Ask the Hub" conversation, for the owner-only
+// chat-history view. Factual, skimmable; names the real subjects discussed.
+export async function summarizeHubConversation(input: {
+  transcript: { role: "user" | "assistant"; text: string }[];
+}): Promise<{ title: string; summary: string }> {
+  const lines = input.transcript
+    .filter((t) => t.text && t.text.trim())
+    .slice(0, 40)
+    .map((t) => `${t.role === "user" ? "Asked" : "Hub"}: ${t.text.trim().slice(0, 700)}`)
+    .join("\n");
+  const user = `Here is a conversation between a user and "Ask the Hub", an operations assistant for a real estate media agency.
+"""
+${lines.slice(0, 7000)}
+"""
+
+Respond as strict JSON: {"title": "<4 to 7 word topic title>", "summary": "<2 to 4 sentence recap of what they asked and what the hub answered or did, naming real clients/projects/amounts mentioned>"}. No other text. No emojis, no em dashes, no bold.`;
+  try {
+    const raw = await anthropic({ model: FAST, system: "You output only strict JSON.", user, maxTokens: 300 });
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (!m) return { title: "", summary: "" };
+    const parsed = JSON.parse(m[0]) as { title?: string; summary?: string };
+    return { title: (parsed.title ?? "").slice(0, 80), summary: (parsed.summary ?? "").slice(0, 800) };
+  } catch {
+    return { title: "", summary: "" };
+  }
+}
+
 export async function messageToTodo(ctx: {
   channel: string;
   clientName?: string | null;

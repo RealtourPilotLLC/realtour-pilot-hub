@@ -156,6 +156,21 @@ export const HUB_TOOLS: HubTool[] = [
       required: ["title"],
     },
   },
+  {
+    name: "remember_fact",
+    description: "Save a lasting fact, rule, price, policy, preference, or correction to the hub's long-term memory so it is remembered and used in future answers. Use this WHENEVER the user tells you to remember something, states or changes a price/fee/policy/rule, shares a durable preference or decision, or corrects something you got wrong ('remember that...', 'from now on...', 'our rush fee is now $X', 'actually it's...', 'going forward we...', 'no, that's wrong, it's...'). Do NOT use it for one-off action items (use create_task) or for things already in the live data. Set min_role carefully: OWNER for anything about money, margins, pay, costs, strategy, or personnel; ADMIN for operations, client handling, fees, and scheduling; CREATIVE only for pure shoot/editing craft. When the user is changing or fixing a known value, set correction=true so the old version is retired. After saving, confirm briefly what you stored.",
+    input_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Short label for the fact (e.g. 'Rush fee', 'Preferred drone vendor', 'Twilight pricing')." },
+        fact: { type: "string", description: "The fact itself, written as a complete standalone sentence so it still makes sense months later (include the specifics: amounts, names, conditions)." },
+        category: { type: "string", description: "One of: preference, goal, issue, outcome, sop, fee, pricing, client_insight, strategy, financial, team, comms, script." },
+        min_role: { type: "string", description: "Lowest role allowed to see it: OWNER, ADMIN (default), or CREATIVE. Choose the most restrictive tier that still lets the right people use it." },
+        correction: { type: "boolean", description: "True if this fixes or replaces something previously believed; the stale version is superseded." },
+      },
+      required: ["title", "fact"],
+    },
+  },
 ];
 
 // Role tiers map onto the future per-user RBAC. A viewer sees an item only if
@@ -638,6 +653,35 @@ export async function execHubTool(
         due: etDate(dueAt),
         project: address,
         href: projectId ? `/projects/${projectId}` : "/queue",
+      };
+    }
+
+    case "remember_fact": {
+      // Teaching the brain is an admin/owner action; creatives can't write memory.
+      if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.OWNER) < ROLE_RANK.ADMIN) {
+        return { error: "Saving to the hub's memory is available to admin and owner roles only." };
+      }
+      const { learnFact } = await import("@/lib/learn");
+      const res = await learnFact({
+        title: String(input.title ?? ""),
+        fact: String(input.fact ?? ""),
+        category: typeof input.category === "string" ? input.category : undefined,
+        minRole: typeof input.min_role === "string" ? input.min_role : undefined,
+        correction: input.correction === true,
+        teacherRole: ctx.role,
+      });
+      if (!res.ok) return { error: res.error ?? "Could not save that." };
+      if (res.noop) {
+        // Already in memory verbatim — tell the model, but render no card.
+        return { remembered: false, already_known: true, title: res.title };
+      }
+      return {
+        remembered: true,
+        id: res.id,
+        title: res.title,
+        category: res.category,
+        min_role: res.minRole,
+        superseded: res.superseded,
       };
     }
 
