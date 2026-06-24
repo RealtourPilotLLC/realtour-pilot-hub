@@ -140,6 +140,22 @@ export const HUB_TOOLS: HubTool[] = [
       required: ["client"],
     },
   },
+  {
+    name: "create_task",
+    description: "Create a to-do in the hub. Use whenever the user asks to add/create a task, reminder, or follow-up (e.g. 'add a task to call the editor about 123 Main', 'remind me to invoice Jamie Friday'). Write a clear imperative title. Optionally link it to a project or client by name, set a priority and a due date. The task is created and shown as a confirmation card.",
+    input_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Short imperative task title (e.g. 'Call Luma about the 3725 Old Post reel')." },
+        detail: { type: "string", description: "Optional extra detail / context." },
+        project: { type: "string", description: "Optional project address to link the task to." },
+        client: { type: "string", description: "Optional client name to link the task to." },
+        priority: { type: "string", description: "URGENT, HIGH, MEDIUM (default), or LOW." },
+        dueDate: { type: "string", description: "Optional due date YYYY-MM-DD (Eastern). Defaults to tomorrow." },
+      },
+      required: ["title"],
+    },
+  },
 ];
 
 // Role tiers map onto the future per-user RBAC. A viewer sees an item only if
@@ -560,6 +576,68 @@ export async function execHubTool(
         can_text: phoneOk,
         message: noReply ? "" : clean,
         note: noReply ? "Nothing seems to need a reply right now." : undefined,
+      };
+    }
+
+    case "create_task": {
+      // Creating to-dos is an admin/owner action.
+      if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.OWNER) < ROLE_RANK.ADMIN) {
+        return { error: "Creating tasks is available to admin and owner roles only." };
+      }
+      const title = String(input.title ?? "").trim();
+      if (!title) return { error: "What should the task say?" };
+      const detail = typeof input.detail === "string" ? input.detail.trim() : "";
+      const priIn = String(input.priority ?? "MEDIUM").toUpperCase();
+      const priority = ["URGENT", "HIGH", "MEDIUM", "LOW"].includes(priIn) ? priIn : "MEDIUM";
+
+      // Optional project / client linkage by name.
+      let projectId: string | null = null, clientId: string | null = null, address: string | null = null;
+      const projName = typeof input.project === "string" ? input.project.trim() : "";
+      const cliName = typeof input.client === "string" ? input.client.trim() : "";
+      if (projName) {
+        const p = await prisma.project.findFirst({
+          where: { title: { contains: projName, mode: "insensitive" } },
+          orderBy: [{ orderedAt: { sort: "desc", nulls: "last" } }],
+          select: { id: true, title: true, clientId: true },
+        });
+        if (p) { projectId = p.id; clientId = p.clientId; address = p.title; }
+      }
+      if (!clientId && cliName) {
+        const c = await prisma.client.findFirst({ where: { name: { contains: cliName, mode: "insensitive" } }, select: { id: true } });
+        if (c) clientId = c.id;
+      }
+
+      // Due date: explicit YYYY-MM-DD (ET, ~5pm) or default to tomorrow.
+      let dueAt: Date;
+      const dd = typeof input.dueDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(input.dueDate) ? input.dueDate : "";
+      if (dd) dueAt = new Date(`${dd}T17:00:00-04:00`);
+      else dueAt = etAddDays(etDayStartUtc(new Date()), 1);
+
+      const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } }, select: { id: true } });
+      const task = await prisma.smartTask.create({
+        data: {
+          taskType: "internal_instruction",
+          title: title.slice(0, 140),
+          description: detail || null,
+          reasonCreated: "Added from Ask the Hub",
+          source: "assistant",
+          priority,
+          dueAt,
+          ownerId: kyle?.id ?? null,
+          projectId,
+          clientId,
+          propertyAddress: address,
+        },
+        select: { id: true },
+      });
+      return {
+        created_task: true,
+        id: task.id,
+        title: title.slice(0, 140),
+        priority,
+        due: etDate(dueAt),
+        project: address,
+        href: projectId ? `/projects/${projectId}` : "/queue",
       };
     }
 

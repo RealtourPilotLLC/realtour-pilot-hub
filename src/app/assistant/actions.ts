@@ -13,10 +13,19 @@ export type HubDraft = {
   message: string;
   canText: boolean;
 };
+export type HubTaskCard = {
+  id: string;
+  title: string;
+  priority: string;
+  due: string;
+  project?: string | null;
+  href: string;
+};
 export type HubAnswer = {
   answer: string;
   sources: HubSource[];
   drafts?: HubDraft[];
+  tasks?: HubTaskCard[];
 };
 
 export type HubTurn = { role: "user" | "assistant"; content: string };
@@ -36,6 +45,7 @@ const TOOL_LABEL: Record<string, string> = {
   search_business_knowledge: "Business knowledge",
   search_comms: "Client messages",
   draft_client_message: "Drafted a message",
+  create_task: "Created a task",
 };
 
 export type HubRole = "OWNER" | "ADMIN" | "CREATIVE";
@@ -77,7 +87,9 @@ Hard rules: no em dashes, no emojis, no bold. Speak plainly to the team.
 
 Drafting: when the user asks to write/draft/reply to a client or follow up with someone, call draft_client_message. It writes the message in Jordan's voice grounded in the real thread and shows it to the user with a Send button. You DRAFT; a human always clicks Send. Keep your own reply short (e.g. "Drafted a text to Stephen below, grounded in your last few messages. Review and send.").
 
-Critical boundary: aside from drafting (which only proposes a message for a human to send), you are read-only. You cannot send messages, change records, or take actions yourself. The human always stays on the Send button.`;
+Adding tasks: when the user asks to add/create a task, reminder, or follow-up ("add a task to...", "remind me to...", "make a to-do for..."), call create_task with a clear imperative title, and link it to a project or client by name when one is mentioned. Confirm briefly (e.g. "Added it to the queue."). Only create a task when they actually ask for one.
+
+Critical boundary: aside from drafting client messages (proposed for a human to send) and creating internal to-dos when asked, you do not send anything to clients or change external records on your own. The human always stays on the Send button.`;
 }
 
 export async function askHub(question: string, history: HubTurn[] = [], role: HubRole = "OWNER"): Promise<HubAnswer> {
@@ -97,9 +109,10 @@ export async function askHub(question: string, history: HubTurn[] = [], role: Hu
   // Capture any client-message drafts the agent produces, so the UI can render
   // them as Send-ready cards (the assistant never sends; a human clicks Send).
   const drafts: HubDraft[] = [];
+  const tasks: HubTaskCard[] = [];
   const exec = async (name: string, input: Record<string, unknown>) => {
     const out = await execHubTool(name, input, { role: viewerRole });
-    const o = out as { drafted?: boolean; client_id?: string; client_name?: string; channel?: string; message?: string; can_text?: boolean };
+    const o = out as { drafted?: boolean; client_id?: string; client_name?: string; channel?: string; message?: string; can_text?: boolean; created_task?: boolean; id?: string; title?: string; priority?: string; due?: string; project?: string | null; href?: string };
     if (name === "draft_client_message" && o?.drafted && o.message && o.client_id) {
       drafts.push({
         clientId: o.client_id,
@@ -108,6 +121,9 @@ export async function askHub(question: string, history: HubTurn[] = [], role: Hu
         message: o.message,
         canText: !!o.can_text,
       });
+    }
+    if (name === "create_task" && o?.created_task && o.id && o.title) {
+      tasks.push({ id: o.id, title: o.title, priority: o.priority ?? "MEDIUM", due: o.due ?? "", project: o.project ?? null, href: o.href ?? "/queue" });
     }
     return out;
   };
@@ -130,7 +146,7 @@ export async function askHub(question: string, history: HubTurn[] = [], role: Hu
       seen.add(t.name);
       sources.push({ kind: t.name === "search_knowledge" ? "knowledge" : "data", title: TOOL_LABEL[t.name] ?? t.name });
     }
-    return { answer, sources, drafts: drafts.length ? drafts : undefined };
+    return { answer, sources, drafts: drafts.length ? drafts : undefined, tasks: tasks.length ? tasks : undefined };
   } catch (e) {
     return {
       answer: e instanceof Error ? e.message : "Something went wrong answering that. Please try again.",

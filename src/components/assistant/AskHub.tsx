@@ -1,9 +1,39 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useRef, useEffect, useTransition } from "react";
-import { Send, Sparkles, BookOpen, Database, User, ShieldCheck, Phone, Copy, Check, Mail } from "lucide-react";
-import { askHub, type HubAnswer, type HubTurn, type HubRole, type HubDraft } from "@/app/assistant/actions";
+import { Send, Sparkles, BookOpen, Database, User, ShieldCheck, Phone, Copy, Check, Mail, ListChecks, ArrowUpRight } from "lucide-react";
+import { askHub, type HubAnswer, type HubTurn, type HubRole, type HubDraft, type HubTaskCard } from "@/app/assistant/actions";
 import { sendClientText } from "@/app/clients/actions";
+
+const PRIORITY_COLOR: Record<string, string> = { URGENT: "#f87171", HIGH: "#fb923c", MEDIUM: "#fbbf24", LOW: "#94a3b8" };
+
+// Confirmation that a to-do was created from the chat. Links to where it lives.
+function TaskCard({ task }: { task: HubTaskCard }) {
+  return (
+    <Link
+      href={task.href}
+      className="mt-3 flex items-center gap-3 rounded-xl border border-success/30 bg-success/5 p-3 hover:bg-success/10"
+    >
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-success/15 text-success">
+        <ListChecks className="size-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5 text-xs font-medium text-success">
+          <Check className="size-3.5" /> Task added to the queue
+        </div>
+        <div className="truncate text-sm font-medium text-foreground">{task.title}</div>
+        <div className="truncate text-xs text-muted">
+          {task.due ? `Due ${task.due}` : ""}{task.project ? ` · ${task.project}` : ""}
+        </div>
+      </div>
+      <span className="shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium" style={{ backgroundColor: `${PRIORITY_COLOR[task.priority] ?? "#94a3b8"}22`, color: PRIORITY_COLOR[task.priority] ?? "#94a3b8" }}>
+        {task.priority}
+      </span>
+      <ArrowUpRight className="size-4 shrink-0 text-muted-2" />
+    </Link>
+  );
+}
 
 const ROLES: { value: HubRole; label: string; hint: string }[] = [
   { value: "OWNER", label: "Owner (you)", hint: "sees everything" },
@@ -13,7 +43,7 @@ const ROLES: { value: HubRole; label: string; hint: string }[] = [
 
 type Msg =
   | { role: "user"; text: string }
-  | { role: "hub"; text: string; sources: HubAnswer["sources"]; drafts?: HubDraft[] };
+  | { role: "hub"; text: string; sources: HubAnswer["sources"]; drafts?: HubDraft[]; tasks?: HubTaskCard[] };
 
 const SUGGESTIONS = [
   "What's shooting today?",
@@ -139,7 +169,7 @@ export function AskHub({ initial }: { initial?: string }) {
     setValue("");
     startTransition(async () => {
       const res = await askHub(q, history, role);
-      setMessages((m) => [...m, { role: "hub", text: res.answer, sources: res.sources, drafts: res.drafts }]);
+      setMessages((m) => [...m, { role: "hub", text: res.answer, sources: res.sources, drafts: res.drafts, tasks: res.tasks }]);
       requestAnimationFrame(() =>
         scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }),
       );
@@ -210,6 +240,7 @@ export function AskHub({ initial }: { initial?: string }) {
                 </span>
                 <div className="rounded-2xl rounded-tl-sm border bg-surface px-4 py-3 text-sm text-foreground/90">
                   <div className="space-y-0.5">{renderText(m.text)}</div>
+                  {m.tasks?.map((t, j) => <TaskCard key={`t${j}`} task={t} />)}
                   {m.drafts?.map((d, j) => <DraftCard key={j} draft={d} />)}
                   {m.sources.length > 0 && (
                     <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t pt-2">
