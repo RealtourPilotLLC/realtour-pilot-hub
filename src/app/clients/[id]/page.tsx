@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
   ArrowLeft, Mail, Phone, Building2, IdCard, Package, DollarSign,
-  Activity as ActivityIcon, Star, ArrowRight, Camera, Users,
+  Activity as ActivityIcon, Star, ArrowRight, Camera, Users, Sparkles,
 } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
@@ -81,7 +81,13 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
               )}
             </div>
           </div>
-          <div className="ml-auto flex gap-2">
+          <div className="ml-auto flex items-center gap-2">
+            <Link
+              href={`/assistant?q=${encodeURIComponent(`Catch me up on ${client.name}: recent messages, open work, and anything outstanding.`)}`}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-brand/30 bg-brand-soft/40 px-3 py-2 text-sm font-medium text-brand hover:bg-brand-soft"
+            >
+              <Sparkles className="size-4" /> Ask the Hub
+            </Link>
             <Stat icon={<Package className="size-4" />} label="Orders" value={String(orderCount)} />
             <Stat icon={<DollarSign className="size-4" />} label="Lifetime" value={formatMoney(totalSpend)} />
           </div>

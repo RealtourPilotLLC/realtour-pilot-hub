@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useRef, useTransition } from "react";
-import { Send, Sparkles, BookOpen, Database, User, ShieldCheck } from "lucide-react";
-import { askHub, type HubAnswer, type HubTurn, type HubRole } from "@/app/assistant/actions";
+import { useState, useRef, useEffect, useTransition } from "react";
+import { Send, Sparkles, BookOpen, Database, User, ShieldCheck, Phone, Copy, Check, Mail } from "lucide-react";
+import { askHub, type HubAnswer, type HubTurn, type HubRole, type HubDraft } from "@/app/assistant/actions";
+import { sendClientText } from "@/app/clients/actions";
 
 const ROLES: { value: HubRole; label: string; hint: string }[] = [
   { value: "OWNER", label: "Owner (you)", hint: "sees everything" },
@@ -12,15 +13,81 @@ const ROLES: { value: HubRole; label: string; hint: string }[] = [
 
 type Msg =
   | { role: "user"; text: string }
-  | { role: "hub"; text: string; sources: HubAnswer["sources"] };
+  | { role: "hub"; text: string; sources: HubAnswer["sources"]; drafts?: HubDraft[] };
 
 const SUGGESTIONS = [
   "What's shooting today?",
   "What's overdue right now?",
   "Who owes us money?",
-  "What got delivered today?",
+  "Draft a follow-up to Stephen Kennedy about his balance",
   "Anything in revision?",
 ];
+
+// A Send-ready draft the assistant produced. Editable, then the human sends it
+// (via OpenPhone) or copies it. The assistant never sends.
+function DraftCard({ draft }: { draft: HubDraft }) {
+  const [text, setText] = useState(draft.message);
+  const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [err, setErr] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  async function doSend() {
+    setStatus("sending"); setErr("");
+    try {
+      const r = await sendClientText(draft.clientId, text);
+      if (r.ok) setStatus("sent");
+      else { setStatus("error"); setErr(r.message); }
+    } catch (e) {
+      setStatus("error"); setErr(e instanceof Error ? e.message : "Failed to send.");
+    }
+  }
+  function doCopy() {
+    navigator.clipboard?.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }).catch(() => {});
+  }
+
+  return (
+    <div className="mt-3 rounded-xl border border-brand/30 bg-brand-soft/40 p-3">
+      <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-brand">
+        {draft.channel === "email" ? <Mail className="size-3.5" /> : <Phone className="size-3.5" />}
+        Draft {draft.channel} to {draft.clientName}
+        <span className="ml-auto font-normal text-muted">review before sending</span>
+      </div>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={Math.min(8, Math.max(3, text.split("\n").length + 1))}
+        disabled={status === "sent"}
+        className="w-full resize-y rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-brand/40 disabled:opacity-70"
+      />
+      <div className="mt-2 flex items-center gap-2">
+        {draft.channel === "text" && draft.canText && status !== "sent" && (
+          <button
+            onClick={doSend}
+            disabled={status === "sending" || !text.trim()}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-brand-fg disabled:opacity-50"
+          >
+            <Send className="size-3.5" /> {status === "sending" ? "Sending…" : "Send via OpenPhone"}
+          </button>
+        )}
+        <button
+          onClick={doCopy}
+          className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-3 py-1.5 text-xs font-medium hover:bg-surface-2"
+        >
+          {copied ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />} {copied ? "Copied" : "Copy"}
+        </button>
+        {status === "sent" && (
+          <span className="inline-flex items-center gap-1 text-xs font-medium text-success">
+            <Check className="size-3.5" /> Sent
+          </span>
+        )}
+        {draft.channel === "text" && !draft.canText && (
+          <span className="text-xs text-muted">No phone on file — copy and send manually.</span>
+        )}
+        {status === "error" && <span className="text-xs text-danger">{err}</span>}
+      </div>
+    </div>
+  );
+}
 
 function renderText(text: string) {
   // Lightweight renderer: blank lines → spacing, "- "/"* " → bullets, **bold**.
@@ -43,12 +110,22 @@ function renderText(text: string) {
   });
 }
 
-export function AskHub() {
+export function AskHub({ initial }: { initial?: string }) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [value, setValue] = useState("");
   const [role, setRole] = useState<HubRole>("OWNER");
   const [isPending, startTransition] = useTransition();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const seeded = useRef(false);
+
+  // Auto-ask a seeded question (e.g. from an "Ask the Hub" deep link on a client page).
+  useEffect(() => {
+    if (initial && initial.trim() && !seeded.current) {
+      seeded.current = true;
+      send(initial.trim());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initial]);
 
   function send(text: string) {
     const q = text.trim();
@@ -62,7 +139,7 @@ export function AskHub() {
     setValue("");
     startTransition(async () => {
       const res = await askHub(q, history, role);
-      setMessages((m) => [...m, { role: "hub", text: res.answer, sources: res.sources }]);
+      setMessages((m) => [...m, { role: "hub", text: res.answer, sources: res.sources, drafts: res.drafts }]);
       requestAnimationFrame(() =>
         scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }),
       );
@@ -133,6 +210,7 @@ export function AskHub() {
                 </span>
                 <div className="rounded-2xl rounded-tl-sm border bg-surface px-4 py-3 text-sm text-foreground/90">
                   <div className="space-y-0.5">{renderText(m.text)}</div>
+                  {m.drafts?.map((d, j) => <DraftCard key={j} draft={d} />)}
                   {m.sources.length > 0 && (
                     <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t pt-2">
                       <span className="text-[11px] uppercase tracking-wide text-muted-2">Looked at</span>

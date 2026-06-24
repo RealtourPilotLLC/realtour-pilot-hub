@@ -6,9 +6,17 @@ import { HUB_TOOLS, execHubTool } from "@/lib/hubTools";
 import { etFullDate } from "@/lib/datetime";
 
 export type HubSource = { kind: "data" | "knowledge"; title: string };
+export type HubDraft = {
+  clientId: string;
+  clientName: string;
+  channel: "text" | "email";
+  message: string;
+  canText: boolean;
+};
 export type HubAnswer = {
   answer: string;
   sources: HubSource[];
+  drafts?: HubDraft[];
 };
 
 export type HubTurn = { role: "user" | "assistant"; content: string };
@@ -27,6 +35,7 @@ const TOOL_LABEL: Record<string, string> = {
   search_knowledge: "SOPs & resources",
   search_business_knowledge: "Business knowledge",
   search_comms: "Client messages",
+  draft_client_message: "Drafted a message",
 };
 
 export type HubRole = "OWNER" | "ADMIN" | "CREATIVE";
@@ -66,7 +75,9 @@ CONFIDENTIALITY (critical): The business-knowledge tool ALREADY filters out anyt
 
 Hard rules: no em dashes, no emojis, no bold. Speak plainly to the team.
 
-Critical boundary: you are read-only. You can look things up, summarize, and recommend, but you cannot send messages, change records, or take actions. If asked to message a client or change something, explain what you'd do and point them to where in the hub to do it (a human always stays on the Send button).`;
+Drafting: when the user asks to write/draft/reply to a client or follow up with someone, call draft_client_message. It writes the message in Jordan's voice grounded in the real thread and shows it to the user with a Send button. You DRAFT; a human always clicks Send. Keep your own reply short (e.g. "Drafted a text to Stephen below, grounded in your last few messages. Review and send.").
+
+Critical boundary: aside from drafting (which only proposes a message for a human to send), you are read-only. You cannot send messages, change records, or take actions yourself. The human always stays on the Send button.`;
 }
 
 export async function askHub(question: string, history: HubTurn[] = [], role: HubRole = "OWNER"): Promise<HubAnswer> {
@@ -83,13 +94,31 @@ export async function askHub(question: string, history: HubTurn[] = [], role: Hu
     };
   }
 
+  // Capture any client-message drafts the agent produces, so the UI can render
+  // them as Send-ready cards (the assistant never sends; a human clicks Send).
+  const drafts: HubDraft[] = [];
+  const exec = async (name: string, input: Record<string, unknown>) => {
+    const out = await execHubTool(name, input, { role: viewerRole });
+    const o = out as { drafted?: boolean; client_id?: string; client_name?: string; channel?: string; message?: string; can_text?: boolean };
+    if (name === "draft_client_message" && o?.drafted && o.message && o.client_id) {
+      drafts.push({
+        clientId: o.client_id,
+        clientName: o.client_name ?? "client",
+        channel: o.channel === "email" ? "email" : "text",
+        message: o.message,
+        canText: !!o.can_text,
+      });
+    }
+    return out;
+  };
+
   try {
     const { answer, toolsUsed } = await runHubAgent({
       system: hubSystemPrompt(viewerRole),
       history: history.slice(-8),
       question: q,
       tools: HUB_TOOLS,
-      exec: (name, input) => execHubTool(name, input, { role: viewerRole }),
+      exec,
       maxSteps: 7,
     });
 
@@ -101,7 +130,7 @@ export async function askHub(question: string, history: HubTurn[] = [], role: Hu
       seen.add(t.name);
       sources.push({ kind: t.name === "search_knowledge" ? "knowledge" : "data", title: TOOL_LABEL[t.name] ?? t.name });
     }
-    return { answer, sources };
+    return { answer, sources, drafts: drafts.length ? drafts : undefined };
   } catch (e) {
     return {
       answer: e instanceof Error ? e.message : "Something went wrong answering that. Please try again.",

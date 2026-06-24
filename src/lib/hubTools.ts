@@ -127,6 +127,19 @@ export const HUB_TOOLS: HubTool[] = [
       },
     },
   },
+  {
+    name: "draft_client_message",
+    description: "Draft a ready-to-send message to a client, in Jordan's voice, grounded in their REAL recent conversation history. Use when the user asks to 'draft/write a reply/text to <client>', 'follow up with <client>', or 'reach out to <client about X>'. The draft is shown to the user with a Send button — you NEVER send it yourself, a human always clicks Send. Return your answer briefly noting you drafted it; the draft card renders separately.",
+    input_schema: {
+      type: "object",
+      properties: {
+        client: { type: "string", description: "Client name." },
+        channel: { type: "string", description: "text or email (default text)." },
+        intent: { type: "string", description: "What the message should accomplish (e.g. 'ask for the lockbox code', 'follow up on the unpaid invoice', 'let them know the reel is ready')." },
+      },
+      required: ["client"],
+    },
+  },
 ];
 
 // Role tiers map onto the future per-user RBAC. A viewer sees an item only if
@@ -489,6 +502,64 @@ export async function execHubTool(
           subject: r.subject || undefined,
           text: r.body.slice(0, 600),
         })),
+      };
+    }
+
+    case "draft_client_message": {
+      // Drafting client comms is an admin/owner action (creatives don't message clients).
+      if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.OWNER) < ROLE_RANK.ADMIN) {
+        return { error: "Drafting client messages is available to admin and owner roles only." };
+      }
+      const name2 = String(input.client ?? "").trim();
+      if (!name2) return { error: "Which client?" };
+      const channel = input.channel === "email" ? "email" : "text";
+      const intent = typeof input.intent === "string" ? input.intent.trim() : "";
+      const c = await prisma.client.findFirst({
+        where: { name: { contains: name2, mode: "insensitive" } },
+        select: {
+          id: true, name: true, phone: true, email: true, segment: true, socialClient: true, socialPlan: true,
+          projects: { orderBy: [{ orderedAt: { sort: "desc", nulls: "last" } }], take: 6, select: { title: true, status: true } },
+        },
+      });
+      if (!c) return { error: `No client matching "${name2}".` };
+      // Pull the real recent thread (client-facing channels only) for context.
+      const comms = await prisma.commLog.findMany({
+        where: { clientId: c.id, channel: { in: ["text", "email", "call"] } },
+        orderBy: { occurredAt: "desc" }, take: 14,
+        select: { direction: true, body: true, occurredAt: true },
+      });
+      const transcript = comms.reverse().map((m) => ({
+        role: (m.direction === "out" ? "us" : "client") as "us" | "client",
+        text: m.body, at: m.occurredAt.toISOString(),
+      }));
+      const { draftReplyWithContext } = await import("@/lib/integrations/ai");
+      const draft = await draftReplyWithContext({
+        channel,
+        clientName: c.name,
+        segment: c.segment ?? null,
+        socialPlan: c.socialClient ? (c.socialPlan ?? "yes") : null,
+        propertyAddress: c.projects[0]?.title ?? null,
+        projects: c.projects,
+        transcript: transcript.length ? transcript : [{ role: "client", text: intent || "(no recent message — write a brief, friendly check-in)" }],
+        note: intent || null,
+      });
+      const phoneOk = !!c.phone && c.phone.replace(/\D/g, "").length >= 10;
+      const noReply = /^\s*NO_REPLY_NEEDED\s*$/i.test(draft);
+      // Strip a leaked reasoning preamble ("...here is the reply:") only when it's
+      // clearly meta (reply/draft/message/text), so legit lines like "here is the
+      // link:" inside the message aren't cut. Then trim wrapping quotes.
+      let clean = draft;
+      const marker = draft.match(/\bhere(?:'s| is)\s+(?:the |a |my )?(?:reply|draft|text|message|response|note)\b[^:\n]{0,20}:\s*([\s\S]+)$/i);
+      if (marker) clean = marker[1];
+      clean = clean.trim().replace(/^["“']|["”']$/g, "").trim();
+      return {
+        drafted: true,
+        client_id: c.id,
+        client_name: c.name,
+        channel,
+        can_text: phoneOk,
+        message: noReply ? "" : clean,
+        note: noReply ? "Nothing seems to need a reply right now." : undefined,
       };
     }
 
