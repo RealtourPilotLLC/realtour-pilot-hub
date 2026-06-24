@@ -327,6 +327,7 @@ export type BrainDecision = {
   detail: string;
   priority: BrainPriority;
   mergeIntoTaskId: string | null;
+  isRevisionRequest: boolean; // client wants ALREADY-DELIVERED work changed/redone
   flags: string[];
   reason: string;
 };
@@ -371,13 +372,14 @@ Existing OPEN to-dos for this client (id | type | order | title):
 ${tasksBlock}
 
 Decide how we should handle this message and respond as STRICT JSON only:
-{"actionable": <bool>, "projectId": <"order id" or null>, "title": "<short imperative to-do, max 12 words, what WE must do, no client name>", "detail": "<one sentence of context>", "priority": "<URGENT|HIGH|MEDIUM|LOW>", "mergeIntoTaskId": <"task id" or null>, "flags": ["<short note>", ...], "reason": "<one sentence>"}
+{"actionable": <bool>, "projectId": <"order id" or null>, "title": "<short imperative to-do, max 12 words, what WE must do, no client name>", "detail": "<one sentence of context>", "priority": "<URGENT|HIGH|MEDIUM|LOW>", "mergeIntoTaskId": <"task id" or null>, "isRevisionRequest": <bool>, "flags": ["<short note>", ...], "reason": "<one sentence>"}
 
 Rules:
 - actionable = false ONLY when the message needs no work from us: a thank-you, an emoji/reaction, "sounds good", a confirmation, or something the conversation shows is already fully handled. Otherwise true.
 - projectId: choose the order this message is about, using the addresses and the conversation. Use null only if no order clearly applies. NEVER invent an id; it must be one listed above.
 - priority: URGENT if the client is upset, it is time-sensitive, a delivery is overdue, or they explicitly need it now; HIGH for a normal question or request; MEDIUM for minor or non-urgent; LOW for FYI.
 - mergeIntoTaskId: if one of the existing OPEN to-dos already covers this same request, return its id so we update it instead of creating a duplicate. It must be one of the ids listed above, else null.
+- isRevisionRequest: true ONLY when the client is asking us to CHANGE, FIX, REDO, RESHOOT, or RE-EDIT media we have ALREADY DELIVERED for one of their orders. It is FALSE for scheduling or booking a shoot, availability, pricing/checkout/payment questions, a new order, a general question, a complaint about service, or anything about work not yet delivered. When in doubt, false.
 - flags: 0 to 4 short notes worth surfacing (e.g. "delivery 2 days overdue", "we already promised Tuesday", "asking a second time", "client sounds frustrated"). Only include real, grounded notes.
 - Base everything ONLY on the data above. Do not invent dates, prices, or promises.`;
 
@@ -399,6 +401,7 @@ Rules:
       detail: typeof p.detail === "string" ? p.detail.slice(0, 400) : "",
       priority,
       mergeIntoTaskId: typeof p.mergeIntoTaskId === "string" && taskIds.has(p.mergeIntoTaskId) ? p.mergeIntoTaskId : null,
+      isRevisionRequest: p.isRevisionRequest === true,
       flags: Array.isArray(p.flags) ? p.flags.filter((f): f is string => typeof f === "string").slice(0, 4) : [],
       reason: typeof p.reason === "string" ? p.reason.slice(0, 300) : "",
     };

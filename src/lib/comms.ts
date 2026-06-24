@@ -215,8 +215,12 @@ export async function recordClientCommunication(opts: {
         });
   }
 
+  // Whether this is a real revision request: trust the Smart Brain (it can tell a
+  // booking/scheduling/pricing message from an actual "redo the delivered work"
+  // ask); fall back to the keyword classifier only when the brain is unavailable.
+  const revisionSignal = decision ? decision.isRevisionRequest : cls.isRevision;
   let revision = false;
-  if (cls.isRevision && effProjectId) {
+  if (revisionSignal && effProjectId) {
     if (effProjectStatus && DELIVERED_ISH.has(effProjectStatus)) {
       revision = await raiseRevision({
         projectId: effProjectId,
