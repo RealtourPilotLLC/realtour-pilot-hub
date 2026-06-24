@@ -1,18 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
-import { matchProjectFromText } from "@/lib/matchProject";
+import { logComm } from "@/lib/commLog";
+import { slackUserName } from "@/lib/integrations/slack";
+import { maybeCreateSlackTask } from "@/lib/integrations/slackSync";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET ?? "";
-
-// Phrases that signal Jordan is assigning work (→ create a task).
-const INSTRUCTION_RE =
-  /\b(can you|could you|do you mind|please|reach out|check with|let them know|follow up|make sure|send|add|upload|request a revision|schedule|confirm|call|email|fix)\b/i;
-// Short acknowledgements to ignore.
-const IGNORE_RE = /^(thanks|thank you|ok|okay|sounds good|got it|yep|yes|no problem|np|👍|🙏|done)\.?$/i;
 
 function verifySlack(raw: string, req: NextRequest): boolean {
   if (!SIGNING_SECRET) return false;
@@ -72,41 +68,30 @@ async function processSlackEvent(event: Record<string, unknown>) {
   if (event.type !== "message") return;
   if (event.bot_id || event.subtype) return; // skip bots + edits/joins
   const text = ((event.text as string) || "").trim();
-  if (text.length < 6 || IGNORE_RE.test(text)) return;
-  if (!INSTRUCTION_RE.test(text)) return; // only act on instruction-like messages
+  if (!text) return;
 
   const ts = (event.ts as string) || "";
   const channel = (event.channel as string) || "";
-  const dedupeKey = `slack-${ts}`;
-  const exists = await prisma.smartTask.findUnique({ where: { dedupeKey } });
-  if (exists) return;
+  const userId = (event.user as string) || "";
 
-  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
-  const title = text.length > 90 ? text.slice(0, 88) + "…" : text;
-
-  // Figure out which job the message is about and attach the to-do there.
-  const match = await matchProjectFromText(text);
-
-  await prisma.smartTask.create({
-    data: {
-      taskType: "internal_instruction",
-      title,
-      description: text,
-      reasonCreated: match
-        ? `Discussed in Slack — re: ${match.title}`
-        : "Action item posted in Slack",
-      checklist: JSON.stringify(["Do the requested action", "Reply in Slack when done"]),
-      source: "slack",
-      sourceDetail: channel ? `channel ${channel} · ${ts}` : ts,
-      priority: "MEDIUM",
-      dueAt: new Date(Date.now() + 6 * 3600_000),
-      ownerId: kyle?.id ?? null,
-      projectId: match?.id ?? null,
-      clientId: match?.clientId ?? null,
-      propertyAddress: match?.title ?? null,
-      dedupeKey,
-    },
+  // 1) LIVE comms memory — log every channel message in real time (ADMIN tier;
+  // the bot only sees channels, not Jordan's DMs). Deduped with the hourly
+  // user-token sync via the shared externalId scheme.
+  const senderName = await slackUserName(userId).catch(() => userId);
+  await logComm({
+    channel: "slack",
+    direction: "in",
+    minRole: "ADMIN",
+    contactName: senderName || "Slack",
+    body: text,
+    occurredAt: ts ? new Date(Number(ts) * 1000) : undefined,
+    source: "slack-channel",
+    externalId: `slack-${channel}-${ts}`,
   });
+
+  // 2) Smart task creation — AI decides if it's actionable + writes a clean
+  // title/detail and matches it to a project (shared with the user-token sync).
+  await maybeCreateSlackTask({ text, ts, channel, senderName });
 }
 
 export async function GET() {

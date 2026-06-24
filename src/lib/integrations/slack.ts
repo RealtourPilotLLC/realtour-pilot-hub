@@ -85,3 +85,29 @@ export async function slackNotify(channel: string, text: string): Promise<boolea
     return false;
   }
 }
+
+// Resolve a Slack user id → display name, cached ~1h. Uses the USER token
+// (the bot lacks users:read). Falls back to the id. Used to label real-time
+// Slack messages logged into comms memory.
+let slackUserCache: { at: number; map: Record<string, string> } | null = null;
+export async function slackUserName(id: string): Promise<string> {
+  if (!id) return "";
+  const fresh = slackUserCache && Date.now() - slackUserCache.at < 3600_000;
+  if (!fresh) {
+    try {
+      const t = await getSecret("slack_user");
+      if (t) {
+        const r = await fetch("https://slack.com/api/users.list?limit=500", {
+          headers: { Authorization: `Bearer ${t}` }, cache: "no-store",
+        });
+        const j = (await r.json().catch(() => ({ ok: false }))) as { ok: boolean; members?: { id: string; name?: string; real_name?: string; profile?: { display_name?: string } }[] };
+        if (j.ok && j.members) {
+          const map: Record<string, string> = {};
+          for (const u of j.members) map[u.id] = u.profile?.display_name || u.real_name || u.name || u.id;
+          slackUserCache = { at: Date.now(), map };
+        }
+      }
+    } catch { /* fall back to id */ }
+  }
+  return slackUserCache?.map[id] ?? id;
+}

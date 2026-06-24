@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { syncGmail } from "@/lib/integrations/google";
 import { sweepRepliedOpenPhoneTasks } from "@/lib/integrations/openphone";
+import { syncSlackHistory } from "@/lib/integrations/slackSync";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,6 +30,13 @@ export async function GET(req: NextRequest) {
     out.openphoneClosed = await sweepRepliedOpenPhoneTasks();
   } catch (e) {
     out.openphoneError = e instanceof Error ? e.message : String(e);
+  }
+  try {
+    // Keep Slack comms memory near-live (channels + Jordan's DMs) every few
+    // minutes via the user token. Small window; logComm dedups the overlap.
+    out.slack = await syncSlackHistory({ sinceHours: 2 });
+  } catch (e) {
+    out.slackError = e instanceof Error ? e.message : String(e);
   }
   return NextResponse.json({ ok: true, ...out });
 }

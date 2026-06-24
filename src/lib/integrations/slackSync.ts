@@ -15,6 +15,65 @@ const TARGET_DM_USERS: Record<string, string> = {
 };
 const CHANNEL_NAME_RE = /video-editing|project-tracker|photo-editing/i;
 
+// Instruction detection (shared with the real-time Slack webhook).
+const INSTRUCTION_RE =
+  /\b(can you|could you|do you mind|please|reach out|check with|let them know|follow up|make sure|send|add|upload|request a revision|schedule|confirm|call|email|fix|need|re-?do|redo|re-?edit)\b/i;
+const IGNORE_RE = /^(thanks|thank you|ok|okay|sounds good|got it|yep|yes|no problem|np|👍|🙏|done)\.?$/i;
+
+// Turn a Slack message into a to-do when it reads like an action item. AI writes
+// a clean title/detail and judges whether it's actually actionable (skips
+// chatter). Deduped on the message ts. Used by the webhook AND the poll.
+export async function maybeCreateSlackTask(opts: { text: string; ts: string; channel: string; senderName?: string }): Promise<boolean> {
+  const { prisma } = await import("@/lib/prisma");
+  const text = opts.text.trim();
+  if (text.length < 6 || IGNORE_RE.test(text) || !INSTRUCTION_RE.test(text)) return false;
+  const dedupeKey = `slack-${opts.ts}`;
+  if (await prisma.smartTask.findUnique({ where: { dedupeKey } })) return false;
+
+  const { matchProjectFromText } = await import("@/lib/matchProject");
+  const match = await matchProjectFromText(text);
+
+  let title = text.length > 90 ? text.slice(0, 88) + "…" : text;
+  let detail = text;
+  try {
+    if (await getSecret("ai")) {
+      const { messageToTodo } = await import("@/lib/integrations/ai");
+      const todo = await messageToTodo({
+        channel: "Slack message",
+        clientName: opts.senderName ?? null,
+        propertyAddress: match?.title ?? null,
+        message: text,
+      });
+      if (todo) {
+        if (/no action needed/i.test(todo.title)) return false;
+        title = todo.title;
+        detail = todo.detail || text;
+      }
+    }
+  } catch { /* fall back to raw text */ }
+
+  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
+  await prisma.smartTask.create({
+    data: {
+      taskType: "internal_instruction",
+      title,
+      description: detail,
+      reasonCreated: match ? `From Slack — re: ${match.title}` : `From Slack — ${opts.senderName || "team"}`,
+      checklist: JSON.stringify(["Do the requested action", "Reply in Slack when done"]),
+      source: "slack",
+      sourceDetail: opts.channel ? `channel ${opts.channel} · ${opts.ts}` : opts.ts,
+      priority: "MEDIUM",
+      dueAt: new Date(Date.now() + 6 * 3600_000),
+      ownerId: kyle?.id ?? null,
+      projectId: match?.id ?? null,
+      clientId: match?.clientId ?? null,
+      propertyAddress: match?.title ?? null,
+      dedupeKey,
+    },
+  });
+  return true;
+}
+
 async function su(token: string, method: string, query: Record<string, string> = {}): Promise<any> {
   const url = new URL(`https://slack.com/api/${method}`);
   for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
@@ -58,17 +117,22 @@ async function ingest(channel: string, messages: any[], minRole: string, source:
     if (m.subtype && m.subtype !== "thread_broadcast") continue;
     const text = resolve(m.text || "");
     if (!text.trim()) continue;
-    await logComm({
+    const senderName = m.user === ME ? "Jordan" : userMap[m.user] || otherName || m.user || "Slack";
+    const created = await logComm({
       channel: "slack",
       direction: m.user === ME ? "out" : "in",
       minRole,
-      contactName: m.user === ME ? "Jordan" : userMap[m.user] || otherName || m.user || "Slack",
+      contactName: senderName,
       body: text,
       occurredAt: m.ts ? new Date(Number(m.ts) * 1000) : undefined,
       source,
       externalId: `slack-${channel}-${m.ts}`,
     });
     n++;
+    // Only newly-seen messages become tasks (backfilled history won't re-trigger).
+    if (created) {
+      try { await maybeCreateSlackTask({ text, ts: m.ts, channel, senderName }); } catch { /* non-fatal */ }
+    }
   }
   return n;
 }
