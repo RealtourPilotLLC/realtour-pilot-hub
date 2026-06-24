@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { syncAryeoOrders, syncAryeoAppointments } from "@/lib/integrations/aryeo";
+import { syncSlackHistory } from "@/lib/integrations/slackSync";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,6 +28,13 @@ export async function GET(req: NextRequest) {
     out.appointments = await syncAryeoAppointments({ recentOnlyDays: 21 });
   } catch (e) {
     out.appointmentsError = e instanceof Error ? e.message : String(e);
+  }
+  try {
+    // Slack uses a user token (no webhooks) — pull the last ~3h of history into
+    // comms memory each hour. logComm dedups, so the overlap is harmless.
+    out.slack = await syncSlackHistory({ sinceHours: 3 });
+  } catch (e) {
+    out.slackError = e instanceof Error ? e.message : String(e);
   }
   return NextResponse.json({ ok: true, ...out });
 }

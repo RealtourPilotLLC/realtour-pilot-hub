@@ -672,3 +672,103 @@ export async function getDeliveryHistory(days = 45): Promise<HistoryDelivery[]> 
     .filter((p) => p.deliveredAt)
     .map((p) => ({ id: p.id, title: p.title, deliveredAt: p.deliveredAt!.toISOString(), clientName: p.client?.name ?? null }));
 }
+
+// ---------------------------------------------------------------------------
+// Proactive flags — "what to worry about" without being asked. Surfaces the
+// STRATEGIC risks the tactical Needs-Attention panel misses: aging receivables,
+// VIP clients gone quiet, and stale revisions. Rule-based + fast.
+// ---------------------------------------------------------------------------
+export type ProactiveFlag = {
+  id: string;
+  severity: "high" | "medium" | "low";
+  kind: "ar" | "vip-quiet" | "revision";
+  title: string;
+  detail: string;
+  href: string;
+};
+
+export async function getProactiveFlags(): Promise<ProactiveFlag[]> {
+  const flags: ProactiveFlag[] = [];
+  const now = Date.now();
+  const daysSince = (d: Date | string | null | undefined): number | null =>
+    d ? Math.floor((now - new Date(d).getTime()) / 86400000) : null;
+  const money = (n: number) => `$${Math.round(n).toLocaleString()}`;
+
+  // 1) Aging accounts receivable — group delivered+unpaid jobs by client.
+  try {
+    const { rows } = await getBillingRows();
+    const byClient = new Map<string, { name: string; total: number; oldest: number; count: number }>();
+    for (const r of rows) {
+      const age = daysSince(r.deliveredAt) ?? 0;
+      const key = r.clientName ?? r.id;
+      const cur = byClient.get(key);
+      if (!cur) byClient.set(key, { name: r.clientName ?? "Unknown", total: r.outstanding, oldest: age, count: 1 });
+      else { cur.total += r.outstanding; cur.oldest = Math.max(cur.oldest, age); cur.count += 1; }
+    }
+    const aged = [...byClient.values()].filter((c) => c.oldest >= 30).sort((a, b) => b.oldest - a.oldest).slice(0, 5);
+    for (const c of aged) {
+      flags.push({
+        id: `ar-${c.name}`,
+        severity: c.oldest >= 60 ? "high" : "medium",
+        kind: "ar",
+        title: `${c.name} owes ${money(c.total)}`,
+        detail: `${c.count} delivered job${c.count > 1 ? "s" : ""} unpaid · oldest ${c.oldest} days`,
+        href: "/billing",
+      });
+    }
+  } catch { /* non-fatal */ }
+
+  // 2) VIP / high-volume clients who have gone quiet (no comms in 21+ days).
+  try {
+    const vips = await prisma.client.findMany({
+      where: { segment: { in: ["vip", "heavy"] } },
+      select: { id: true, name: true, segment: true },
+      take: 60,
+    });
+    if (vips.length) {
+      const ids = vips.map((v) => v.id);
+      const lastComm = await prisma.commLog.groupBy({ by: ["clientId"], where: { clientId: { in: ids } }, _max: { occurredAt: true } });
+      const lastMap = new Map(lastComm.map((l) => [l.clientId, l._max.occurredAt]));
+      const quiet = vips
+        .map((v) => ({ v, ago: daysSince(lastMap.get(v.id) ?? null) }))
+        .filter((x) => x.ago === null || x.ago >= 21)
+        .sort((a, b) => (b.ago ?? 99999) - (a.ago ?? 99999))
+        .slice(0, 4);
+      for (const q of quiet) {
+        flags.push({
+          id: `vip-${q.v.id}`,
+          severity: (q.ago ?? 999) >= 45 ? "high" : "medium",
+          kind: "vip-quiet",
+          title: `${q.v.name} has gone quiet`,
+          detail: q.ago === null
+            ? `${(q.v.segment ?? "vip").toUpperCase()} client · no comms on record`
+            : `${(q.v.segment ?? "vip").toUpperCase()} client · no contact in ${q.ago} days`,
+          href: `/clients/${q.v.id}`,
+        });
+      }
+    }
+  } catch { /* non-fatal */ }
+
+  // 3) Stale revisions — a job sitting in REVISION too long.
+  try {
+    const revs = await prisma.project.findMany({
+      where: { status: "REVISION" },
+      select: { id: true, title: true, revisionRequestedAt: true },
+      take: 10,
+    });
+    for (const r of revs) {
+      const ago = daysSince(r.revisionRequestedAt);
+      flags.push({
+        id: `rev-${r.id}`,
+        severity: (ago ?? 0) >= 3 ? "high" : "medium",
+        kind: "revision",
+        title: `${r.title} is in revision`,
+        detail: ago != null ? `Requested ${ago} day${ago === 1 ? "" : "s"} ago` : "Revision in progress",
+        href: `/projects/${r.id}`,
+      });
+    }
+  } catch { /* non-fatal */ }
+
+  const rank = { high: 0, medium: 1, low: 2 };
+  return flags.sort((a, b) => rank[a.severity] - rank[b.severity]).slice(0, 12);
+}

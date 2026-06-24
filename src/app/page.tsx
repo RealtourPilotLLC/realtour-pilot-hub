@@ -11,8 +11,9 @@ import {
 import { PageHeader } from "@/components/PageHeader";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
-import { getDashboardData, getMorningBrief, getOverdueTasks, getShootWindow } from "@/lib/queries";
+import { getDashboardData, getMorningBrief, getOverdueTasks, getShootWindow, getProactiveFlags } from "@/lib/queries";
 import { MorningBrief, type BriefShoot } from "@/components/dashboard/MorningBrief";
+import { ProactiveFlags } from "@/components/dashboard/ProactiveFlags";
 import { formatMoney } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
 import { etTime, etFullDate, etMonth, etDayNum, etDaysAgo } from "@/lib/datetime";
@@ -64,11 +65,12 @@ function toBriefShoot(s: {
 }
 
 export default async function DashboardPage() {
-  const [data, brief, overdue, shoots] = await Promise.all([
+  const [data, brief, overdue, shoots, flags] = await Promise.all([
     getDashboardData(),
     getMorningBrief(),
     getOverdueTasks(),
     getShootWindow(),
+    getProactiveFlags(),
   ]);
   const today = etFullDate(new Date());
 
@@ -83,6 +85,9 @@ export default async function DashboardPage() {
           todayShoots={shoots.today.map(toBriefShoot)}
           tomorrowShoots={shoots.tomorrow.map(toBriefShoot)}
         />
+
+        {/* On your radar — strategic risks (aging AR, quiet VIPs, revisions) */}
+        <ProactiveFlags flags={flags} />
 
         {/* Stat row */}
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
