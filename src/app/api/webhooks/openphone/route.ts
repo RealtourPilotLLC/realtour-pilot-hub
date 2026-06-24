@@ -150,7 +150,9 @@ async function processOpenPhoneEvent(type: string, payload: Record<string, unkno
       ]);
       // Don't make tasks from automated/system senders (Aryeo reminders,
       // no-reply alerts, etc.) — they're notifications, not human instructions.
-      const automated = !!sender && /aryeo|notif|no-?reply|do-?not-?reply|automat|alert|reminder|noreply|system|notify/i.test(sender.name);
+      // Also skip our OWN org: in a group thread our own messages can echo back
+      // as inbound, and we never instruct ourselves onto a client's project.
+      const automated = !!sender && /aryeo|notif|no-?reply|do-?not-?reply|automat|alert|reminder|noreply|system|notify|real\s*tour/i.test(sender.name);
       // Skip when it's the client texting about the same project the reply task
       // already covers (no duplicate); otherwise file it on the named project.
       if (sender && !automated && hitProject && hitProject.id !== match?.project?.id) {

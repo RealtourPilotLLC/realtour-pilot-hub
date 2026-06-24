@@ -226,6 +226,9 @@ function streetCore(addr: string): string {
   s = s.replace(STREET_SUFFIX, "").trim(); // drop the suffix (Dr/St/Rd…)
   return s;
 }
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 export async function findActiveProjectByText(
   text: string,
@@ -241,16 +244,17 @@ export async function findActiveProjectByText(
   let bestLen = 0;
   for (const p of projects) {
     if (!p.clientId) continue;
-    const core = streetCore(p.addressLine || p.title);
-    const words = core.split(/\s+/).filter(Boolean);
-    const candidates = [core];
-    if (words.length > 1) candidates.push(words[words.length - 1]); // bare street name
-    for (const c of candidates) {
-      const cl = c.toLowerCase();
-      if (cl.length >= 4 && t.includes(cl) && cl.length > bestLen) {
-        best = { id: p.id, title: p.title, status: p.status, clientId: p.clientId };
-        bestLen = cl.length;
-      }
+    const core = streetCore(p.addressLine || p.title).toLowerCase();
+    // Match the FULL street core as a whole word/phrase only. We deliberately do
+    // NOT fall back to the bare last word: it is usually a common word ("Market",
+    // "Run", "Way") that turns up in unrelated messages, and the old raw substring
+    // test also matched "market" inside "marketing" — which once filed a note
+    // about one client's video order onto a DIFFERENT client's "E Market St" job.
+    if (core.length < 5) continue;
+    const re = new RegExp(`\\b${escapeRegExp(core)}\\b`, "i");
+    if (re.test(t) && core.length > bestLen) {
+      best = { id: p.id, title: p.title, status: p.status, clientId: p.clientId };
+      bestLen = core.length;
     }
   }
   return best;
