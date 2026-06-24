@@ -5,19 +5,23 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   ListTodo,
+  History,
   KanbanSquare,
   CalendarDays,
+  MapPinned,
   MessageCircle,
   Users,
   UserCog,
   DollarSign,
   Wallet,
+  Receipt,
   Package,
   Megaphone,
   Palette,
   BookOpen,
   Upload,
   MessageSquare,
+  MessageSquarePlus,
   Plug,
   Settings,
   type LucideIcon,
@@ -42,8 +46,10 @@ const SECTIONS: NavSection[] = [
     items: [
       { label: "Dashboard", href: "/", icon: LayoutDashboard },
       { label: "Daily Tasks", href: "/queue", icon: ListTodo },
-      { label: "Pipeline", href: "/pipeline", icon: KanbanSquare },
+      { label: "Task History", href: "/history", icon: History },
+      { label: "Project Tracker", href: "/pipeline", icon: KanbanSquare },
       { label: "Schedule", href: "/schedule", icon: CalendarDays },
+      { label: "Map", href: "/map", icon: MapPinned },
       { label: "Communications", href: "/communications", icon: MessageCircle },
       { label: "Clients", href: "/clients", icon: Users },
       { label: "Team", href: "/team", icon: UserCog },
@@ -60,6 +66,7 @@ const SECTIONS: NavSection[] = [
     title: "Sales & Finance",
     items: [
       { label: "Sales Tracker", href: "/sales", icon: DollarSign },
+      { label: "Billing", href: "/billing", icon: Receipt },
       { label: "Service Catalog", href: "/catalog", icon: Package },
       { label: "Payouts", href: "/payouts", icon: Wallet },
     ],
@@ -77,15 +84,18 @@ const SECTIONS: NavSection[] = [
   },
   {
     title: "System",
-    items: [{ label: "Connections", href: "/connections", icon: Plug }],
+    items: [
+      { label: "Feedback & requests", href: "/feedback", icon: MessageSquarePlus },
+      { label: "Connections", href: "/connections", icon: Plug },
+    ],
   },
 ];
 
-export function Sidebar() {
+export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
 
   return (
-    <aside className="flex h-full w-64 shrink-0 flex-col border-r border-border bg-surface/60 backdrop-blur-xl">
+    <aside className="flex h-full w-64 shrink-0 flex-col border-r border-border bg-surface/95 backdrop-blur-xl lg:bg-surface/60">
       <div className="flex items-center gap-3 px-5 py-5">
         <div
           className="flex size-9 items-center justify-center rounded-xl text-sm font-bold text-white shadow-lg ring-1 ring-white/10"
@@ -137,7 +147,7 @@ export function Sidebar() {
                     {content}
                   </div>
                 ) : (
-                  <Link key={item.href} href={item.href} className={classes}>
+                  <Link key={item.href} href={item.href} className={classes} onClick={onNavigate}>
                     {content}
                   </Link>
                 );
@@ -148,10 +158,14 @@ export function Sidebar() {
       </nav>
 
       <div className="border-t px-3 py-3">
-        <div className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-muted">
+        <Link
+          href="/connections"
+          onClick={onNavigate}
+          className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
+        >
           <Settings className="size-4" />
-          <span>Settings</span>
-        </div>
+          <span>Settings &amp; connections</span>
+        </Link>
       </div>
     </aside>
   );

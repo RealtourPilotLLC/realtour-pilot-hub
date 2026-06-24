@@ -11,7 +11,43 @@ import { getSecret } from "./connections";
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? "";
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? "";
-const SCOPES = ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/userinfo.email"];
+const SCOPES = [
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/gmail.send", // lets the hub email Jordan (e.g. new feedback)
+  "https://www.googleapis.com/auth/userinfo.email",
+];
+
+// Owner's address — where platform notifications (new feedback, etc.) go.
+const OWNER_EMAIL = "info@realtourpilot.com";
+
+// Send a plain-text email from one of our connected mailboxes to the owner.
+// Best-effort: returns false (never throws) if Gmail isn't connected or the
+// token lacks the send scope (readonly-only until the owner reconnects Google).
+export async function notifyOwnerEmail(subject: string, body: string): Promise<boolean> {
+  try {
+    const accounts = await gmailAccounts();
+    const acct = accounts.find((a) => a.email === OWNER_EMAIL) ?? accounts[0];
+    if (!acct) return false;
+    const token = await accessTokenFor(acct.refreshToken);
+    const mime = [
+      `To: ${OWNER_EMAIL}`,
+      `From: ${acct.email}`,
+      `Subject: ${subject}`,
+      "Content-Type: text/plain; charset=UTF-8",
+      "",
+      body,
+    ].join("\r\n");
+    const raw = Buffer.from(mime).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ raw }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
 
 export function googleConfigured() {
   return Boolean(CLIENT_ID && CLIENT_SECRET);
@@ -117,17 +153,30 @@ export async function testGmailToken(
   }
 }
 
-type GmailMsg = { id: string; snippet?: string; payload?: { headers?: { name: string; value: string }[] } };
+type GmailPart = { mimeType?: string; body?: { data?: string; size?: number }; parts?: GmailPart[]; headers?: { name: string; value: string }[] };
+type GmailMsg = { id: string; threadId?: string; snippet?: string; internalDate?: string; payload?: GmailPart };
+type GmailThread = { messages?: GmailMsg[] };
 
 function header(m: GmailMsg, name: string): string {
   return m.payload?.headers?.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value ?? "";
 }
 function parseFrom(from: string): { name: string; email: string } {
   const m = from.match(/^\s*"?([^"<]*)"?\s*<?([^>]*)>?\s*$/);
-  const name = (m?.[1] ?? "").trim();
-  const email = (m?.[2] ?? from).trim().toLowerCase();
+  let name = (m?.[1] ?? "").trim();
+  let email = (m?.[2] ?? "").trim().toLowerCase();
+  // Bare address with no display name / angle brackets (e.g. "status@luma.co"):
+  // the regex captures it as the name and leaves email empty. Recover it.
+  if (!email) {
+    email = name.toLowerCase();
+    name = "";
+  }
   return { name: name || email, email };
 }
+
+// Mailboxes that should ONLY surface emails from people already in the client
+// list (no "new lead" tasks from unknown senders). info@ is Jordan's personal
+// account, so unknown senders there are usually personal mail, not leads.
+const CLIENTS_ONLY_MAILBOXES = ["info@realtourpilot.com"];
 
 // Automated / non-human sender local-parts (the part before @).
 const AUTOMATED_LOCAL = /^(noreply|no-reply|donotreply|do-not-reply|notify|notification|notifications|mailer|mailer-daemon|bounce|bounces|postmaster|news|newsletter|marketing|promo|promotions|billing|invoice|invoices|invoicing|receipt|receipts|payments?|orders?|alerts?|updates?|system|automated|auto|do_not_reply|noticed|team|hello|info|support|help|account|accounts|email|mail|members?|notices?|reply)$/i;
@@ -142,15 +191,166 @@ const VENDOR_DOMAINS = [
   "matterport.com", "cubicasa.com", "autohdr.com", "frame.io",
 ];
 
-function isLikelyHuman(fromEmail: string, listUnsubscribe: string, subject: string): boolean {
+// Our own addresses. Any mail whose latest thread message is from one of these
+// means WE'VE already replied — so the thread shouldn't generate a "to reply" task.
+const OUR_DOMAIN = "realtourpilot.com";
+
+// Luma Visuals = our premium-reel VIDEO EDITOR (a vendor, not a lead). Their
+// status@ / Zapier mails mean "edit done" or "editor has a question" → route to
+// a "check the Luma Visuals reel tracker" task instead of a lead.
+const LUMA_DOMAINS = ["lumavisuals.co", "lumavisuals.com"];
+// A Luma subject like "Revision Request Received -- 3725 Old Post Circle (Rick…)"
+// means the reel is being revised → reflect it on the project (status + task),
+// not just a generic "check the tracker" pointer.
+const LUMA_REVISION_RE = /\brevision\b/i;
+// Match a project to a Luma subject by its street (house number + suffix dropped,
+// so "3752 Old Post Cir" matches "3725 Old Post Circle").
+const STREET_SUFFIX_RE = /\b(dr|drive|st|street|rd|road|ave|avenue|ln|lane|ct|court|blvd|boulevard|way|pl|place|cir|circle|ter|terrace|pkwy|hwy|sq|square|run|trl|trail|loop|pike|row)\.?$/i;
+function streetCore(title: string): string {
+  let s = (title.split(",")[0] || "").trim().replace(/^\d+\s+/, "");
+  s = s.replace(STREET_SUFFIX_RE, "").trim();
+  return s.toLowerCase();
+}
+// Other production-tool senders that should never be leads (drop them).
+const VENDOR_NAME_RE = /\b(autohdr|auto\s?hdr|cubicasa|matterport|aryeo)\b/i;
+
+function isLikelyHuman(fromEmail: string, listUnsubscribe: string, subject: string, fromName = ""): boolean {
   if (!fromEmail || !fromEmail.includes("@")) return false;
   if (listUnsubscribe) return false; // bulk / marketing / newsletters
   const [local, domain] = fromEmail.split("@");
   if (AUTOMATED_LOCAL.test(local)) return false;
+  if (domain === OUR_DOMAIN) return false; // our own / forwarded mail
   if (VENDOR_DOMAINS.some((d) => domain === d || domain.endsWith("." + d))) return false;
+  if (domain === "zapiermail.com") return false; // Zapier-relayed automation
+  if (VENDOR_NAME_RE.test(fromName) || VENDOR_NAME_RE.test(local)) return false; // vendor brands
   // Obvious receipts/invoices/marketing by subject.
   if (/\b(invoice|receipt|payment received|your order|statement|unsubscribe|newsletter|webinar|sale ends|% off)\b/i.test(subject)) return false;
   return true;
+}
+
+// True if the most recent message in the thread was sent by us — i.e. we've
+// already replied, so there's nothing for Kyle to action.
+async function threadAlreadyAnswered(threadId: string, token: string): Promise<boolean> {
+  try {
+    const thread = await gmail<GmailThread>(
+      `/threads/${threadId}?format=metadata&metadataHeaders=From`,
+      token,
+    );
+    const msgs = thread.messages ?? [];
+    if (msgs.length === 0) return false;
+    const last = msgs[msgs.length - 1];
+    const from = header(last, "From").toLowerCase();
+    return from.includes("@" + OUR_DOMAIN);
+  } catch {
+    return false; // if we can't tell, don't suppress
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Reading email threads (for the "see the conversation" view on a client page).
+// Read-only; we only ever display, never send.
+// ---------------------------------------------------------------------------
+
+export type GmailEmail = {
+  id: string;
+  threadId: string;
+  mailbox: string; // which of our mailboxes surfaced it
+  from: string; // display name (or address)
+  fromEmail: string;
+  date: string; // ISO
+  subject: string;
+  snippet: string;
+  body: string; // plain-text body
+  fromUs: boolean; // sent by us (one of our addresses)
+};
+
+function decodeB64Url(data?: string): string {
+  if (!data) return "";
+  try {
+    return Buffer.from(data.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
+// Decode HTML entities so bodies/snippets read naturally (Gmail HTML-encodes
+// snippets — apostrophes show up as &#39; etc).
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(parseInt(d, 10)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+}
+
+// Pull a readable plain-text body out of a (possibly multipart) Gmail payload.
+// Prefers text/plain; falls back to a crude HTML strip.
+function extractBody(payload?: GmailPart): string {
+  if (!payload) return "";
+  const plain: string[] = [];
+  const html: string[] = [];
+  const walk = (p: GmailPart) => {
+    if (p.parts?.length) { p.parts.forEach(walk); return; }
+    const mime = p.mimeType ?? "";
+    if (mime.startsWith("text/plain")) plain.push(decodeB64Url(p.body?.data));
+    else if (mime.startsWith("text/html")) html.push(decodeB64Url(p.body?.data));
+  };
+  walk(payload);
+  let text = plain.join("\n").trim();
+  if (!text) {
+    text = html.join("\n").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ");
+  }
+  // Collapse excess blank lines + decode entities so the panel stays readable.
+  return decodeEntities(text.replace(/\r/g, "").replace(/\n{3,}/g, "\n\n")).trim();
+}
+
+// Load recent email messages involving any of a client's addresses, across all
+// connected mailboxes, newest-last (chronological, like a thread).
+export async function clientEmailThreads(
+  emails: string[],
+  maxMessages = 15,
+): Promise<GmailEmail[]> {
+  const accounts = await gmailAccounts();
+  if (accounts.length === 0) return [];
+  const addrs = Array.from(new Set(emails.map((e) => e.trim().toLowerCase()).filter((e) => e.includes("@"))));
+  if (addrs.length === 0) return [];
+
+  // Gmail OR-group query: {from:a to:a from:b to:b} matches mail to OR from them.
+  const terms = addrs.flatMap((a) => [`from:${a}`, `to:${a}`]);
+  const q = `{${terms.join(" ")}} newer_than:1y`;
+
+  const out: GmailEmail[] = [];
+  const seen = new Set<string>();
+  for (const account of accounts) {
+    let token: string;
+    try { token = await accessTokenFor(account.refreshToken); } catch { continue; }
+    let list: { messages?: { id: string }[] };
+    try {
+      list = await gmail(`/messages?q=${encodeURIComponent(q)}&maxResults=${maxMessages}`, token);
+    } catch { continue; }
+    for (const { id } of list.messages ?? []) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      let msg: GmailMsg;
+      try { msg = await gmail<GmailMsg>(`/messages/${id}?format=full`, token); } catch { continue; }
+      const { name, email } = parseFrom(header(msg, "From"));
+      const dateHdr = header(msg, "Date");
+      const ts = dateHdr ? new Date(dateHdr) : new Date(Number(msg.internalDate ?? 0));
+      out.push({
+        id,
+        threadId: msg.threadId ?? id,
+        mailbox: account.email,
+        from: name || email,
+        fromEmail: email,
+        date: (isNaN(ts.getTime()) ? new Date() : ts).toISOString(),
+        subject: header(msg, "Subject"),
+        snippet: msg.snippet ?? "",
+        body: extractBody(msg.payload).slice(0, 4000),
+        fromUs: email.endsWith("@" + OUR_DOMAIN),
+      });
+    }
+  }
+  return out.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 }
 
 // Scan recent inbound emails across all connected mailboxes (hello@ + info@),
@@ -165,16 +365,35 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
   const [clients, contacts] = await Promise.all([
     prisma.client.findMany({
       where: { email: { not: null } },
-      select: { id: true, name: true, email: true, projects: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true, title: true, status: true } } },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        parentClientId: true, // fold team assistants → the agent who holds the orders
+        // Most-recent REAL order (orderedAt), not import order (createdAt is ≈same for all).
+        projects: {
+          orderBy: [
+            { orderedAt: { sort: "desc", nulls: "last" } },
+            { shootDate: { sort: "desc", nulls: "last" } },
+            { createdAt: "desc" },
+          ],
+          take: 1,
+          select: { id: true, title: true, status: true },
+        },
+      },
     }),
     prisma.contact.findMany({ where: { email: { not: null }, clientId: { not: null } }, select: { email: true, clientId: true } }),
   ]);
   const clientByEmail = new Map(clients.filter((c) => c.email).map((c) => [c.email!.toLowerCase(), c]));
+  const clientById = new Map(clients.map((c) => [c.id, c]));
+  // An assistant's email folds to their agent (where the orders live).
+  const toAgent = (c: (typeof clients)[number]) => (c.parentClientId && clientById.get(c.parentClientId)) || c;
   const contactClientByEmail = new Map(contacts.filter((c) => c.email).map((c) => [c.email!.toLowerCase(), c.clientId!]));
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
 
   let scanned = 0;
   let tasks = 0;
+  const tokens = new Map<string, string>(); // mailbox email -> access token (for the reply sweep)
 
   for (const account of accounts) {
     let token: string;
@@ -183,8 +402,13 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
     } catch {
       continue; // token revoked / expired — skip this mailbox
     }
+    tokens.set(account.email, token);
+    // NOTE: do NOT add `category:primary` — these are Workspace mailboxes that
+    // don't use Gmail's tabbed-inbox categories, so that operator matches zero
+    // messages and silently drops everything. We rely on isLikelyHuman() below
+    // to filter out marketing/automated/vendor mail instead.
     const list = await gmail<{ messages?: { id: string }[] }>(
-      "/messages?q=" + encodeURIComponent("in:inbox newer_than:3d -from:me category:primary") + "&maxResults=25",
+      "/messages?q=" + encodeURIComponent("in:inbox newer_than:3d -from:me") + "&maxResults=50",
       token,
     );
     const ids = (list.messages ?? []).map((m) => m.id);
@@ -202,19 +426,99 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
       const subject = header(msg, "Subject");
       const listUnsub = header(msg, "List-Unsubscribe");
       const text = `${subject ? subject + " — " : ""}${msg.snippet ?? ""}`.trim();
+      const threadId = msg.threadId ?? id;
+      const threadRef = `gmail-thread:${account.email}:${threadId}`;
+      const domain = email.includes("@") ? email.split("@")[1] : "";
 
       await prisma.webhookEvent.create({
         data: { provider: "gmail", eventType: "email", externalId: dedupe, payload: text.slice(0, 1000), status: "PROCESSED", processedAt: new Date() },
       });
+      if (!text) continue;
 
-      // Only real client/lead emails — drop marketing, invoices, automated.
-      if (!text || !isLikelyHuman(email, listUnsub, subject)) continue;
+      // Luma Visuals = our premium-reel video editor. Their mail isn't a lead —
+      // it means an edit is ready or the editor has a question. Route it to a
+      // "check the Luma Visuals reel tracker" task (skip bare order-received acks).
+      if (domain && LUMA_DOMAINS.includes(domain)) {
+        if (!/\b(ready|delivered|complete|completed|message from your editor|question|revision|approved|update)\b/i.test(subject)) continue;
+        const matchedClient = clients.find((c) => c.name && subject.toLowerCase().includes(c.name.toLowerCase()));
+
+        // Revision email → reflect it on the matched project (status → REVISION
+        // when delivered, revision note + urgent revision task). Match by the
+        // street named in the subject; prefer a DELIVERED order (a revision
+        // request lands after the reel was delivered).
+        if (LUMA_REVISION_RE.test(subject) && matchedClient) {
+          const subjLower = subject.toLowerCase();
+          const projs = await prisma.project.findMany({
+            where: { clientId: matchedClient.id },
+            orderBy: [{ orderedAt: { sort: "desc", nulls: "last" } }, { shootDate: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
+            select: { id: true, title: true, status: true, deliverables: { select: { type: true } } },
+          });
+          const addrMatches = projs.filter((p) => { const c = streetCore(p.title); return c.length >= 4 && subjLower.includes(c); });
+          const target = addrMatches.find((p) => p.status === "DELIVERED") || addrMatches[0] || projs[0];
+          if (target) {
+            // Luma does reels/video — reopen that QC item for the re-QC.
+            const types = new Set(target.deliverables.map((d) => d.type));
+            const qcCategories = [types.has("SOCIAL_REEL") ? "Reel" : null, types.has("VIDEO") ? "Video" : null].filter(Boolean) as string[];
+            const { raiseRevision } = await import("@/lib/comms");
+            await raiseRevision({
+              projectId: target.id,
+              clientId: matchedClient.id,
+              clientName: matchedClient.name,
+              propertyAddress: target.title,
+              note: subject.slice(0, 300),
+              source: "Luma Visuals",
+              qcCategories: qcCategories.length ? qcCategories : ["Reel"],
+            });
+            tasks++;
+            continue;
+          }
+        }
+        // One Luma task per project/client (not per notification email) — Luma
+        // fires several mails per reel (revision received / editor message / ready)
+        // and they should collapse to a single "check the tracker" pointer.
+        const key = matchedClient ? `luma-client-${matchedClient.id}` : `luma-${threadId}`;
+        const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+        if (existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED") continue;
+        const who = matchedClient?.name ? ` (${matchedClient.name})` : "";
+        const data = {
+          taskType: "vendor_update",
+          title: `Luma Visuals reel update${who} — check the tracker`.slice(0, 120),
+          description: text.slice(0, 400),
+          reasonCreated: "Luma Visuals (reel editor) update via Gmail",
+          checklist: JSON.stringify([
+            "Open the Luma Visuals tracker: https://portal.lumavisuals.co/",
+            "See if the edit is done or the editor has a question",
+            "QC / download the reel, or answer the editor",
+            "Deliver to the client + update the project if it's done",
+          ]),
+          source: "gmail",
+          sourceDetail: threadRef,
+          priority: "HIGH" as const,
+          dueAt: new Date(Date.now() + 4 * 3600_000),
+          ownerId: kyle?.id ?? null,
+          clientId: matchedClient?.id ?? null,
+          projectId: matchedClient?.projects[0]?.id ?? null,
+          dedupeKey: key,
+        };
+        if (existing) await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } });
+        else await prisma.smartTask.create({ data });
+        tasks++;
+        continue;
+      }
+
+      // Only real client/lead emails — drop marketing, invoices, automated, vendors.
+      if (!isLikelyHuman(email, listUnsub, subject, name)) continue;
+
+      // Don't surface anything we've already replied to (latest thread message
+      // is from us) — only flag messages still awaiting a response.
+      if (await threadAlreadyAnswered(threadId, token)) continue;
 
       let client = clientByEmail.get(email);
       if (!client) {
         const cid = contactClientByEmail.get(email);
         if (cid) client = clients.find((c) => c.id === cid);
       }
+      if (client) client = toAgent(client); // route assistant comms to the agent
 
       if (client) {
         const project = client.projects[0];
@@ -227,8 +531,13 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
           text,
           kind: "email",
           source: "gmail",
+          threadRef,
         });
         tasks++;
+      } else if (CLIENTS_ONLY_MAILBOXES.includes(account.email)) {
+        // info@ is Jordan's personal account — only surface known clients,
+        // never manufacture "leads" from his personal mail. hello@ still does.
+        continue;
       } else {
         // Unknown human → a lead. One open lead task per sender.
         const key = `lead-${email}`;
@@ -241,6 +550,7 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
           reasonCreated: `New inbound email to ${account.email}`,
           checklist: JSON.stringify(["Read the email", "Qualify (listing, timeline, budget)", "Reply / book a strategy call", "Add to CRM"]),
           source: "gmail",
+          sourceDetail: threadRef,
           priority: "HIGH" as const,
           dueAt: new Date(Date.now() + 4 * 3600_000),
           ownerId: kyle?.id ?? null,
@@ -252,5 +562,29 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
       }
     }
   }
+
+  // Reply sweep: close any open email-driven task whose thread we've since
+  // answered (latest message is from us). This keeps "Check your messages" to
+  // only the messages that still need a response.
+  let closed = 0;
+  const openEmailTasks = await prisma.smartTask.findMany({
+    where: {
+      source: "gmail",
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
+      sourceDetail: { startsWith: "gmail-thread:" },
+    },
+    select: { id: true, sourceDetail: true },
+  });
+  for (const t of openEmailTasks) {
+    const [, mailbox, threadId] = (t.sourceDetail ?? "").split(":");
+    const tk = mailbox ? tokens.get(mailbox) : undefined;
+    if (!tk || !threadId) continue;
+    if (await threadAlreadyAnswered(threadId, tk)) {
+      await prisma.smartTask.update({ where: { id: t.id }, data: { status: "COMPLETED", completedAt: new Date() } });
+      closed++;
+    }
+  }
+  void closed;
+
   return { scanned, tasks };
 }

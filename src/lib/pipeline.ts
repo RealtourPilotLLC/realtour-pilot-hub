@@ -5,6 +5,7 @@ import {
   DeliverableType,
   DeliverableStatus,
 } from "@prisma/client";
+import { PALETTE, soft as softTint } from "@/lib/palette";
 
 // ---------------------------------------------------------------------------
 // Pipeline stages (the booked -> delivered workflow)
@@ -27,48 +28,48 @@ export const PIPELINE_STAGES: StageMeta[] = [
     label: "Booked",
     short: "Booked",
     description: "Order received — needs scheduling",
-    color: "#818cf8",
-    soft: "rgba(129,140,248,0.14)",
+    color: PALETTE.gray,
+    soft: softTint(PALETTE.gray),
   },
   {
     status: ProjectStatus.SCHEDULED,
     label: "Scheduled",
     short: "Scheduled",
     description: "Shoot date set, photographer assigned",
-    color: "#38bdf8",
-    soft: "rgba(56,189,248,0.14)",
+    color: PALETTE.blue,
+    soft: softTint(PALETTE.blue),
   },
   {
     status: ProjectStatus.SHOT,
     label: "Shot / Uploaded",
     short: "Shot",
     description: "Content captured and uploaded",
-    color: "#a78bfa",
-    soft: "rgba(167,139,250,0.14)",
+    color: PALETTE.teal,
+    soft: softTint(PALETTE.teal),
   },
   {
     status: ProjectStatus.EDITING,
     label: "In Editing",
     short: "Editing",
     description: "Assigned to an editor, in production",
-    color: "#fbbf24",
-    soft: "rgba(251,191,36,0.14)",
+    color: PALETTE.indigo,
+    soft: softTint(PALETTE.indigo),
   },
   {
     status: ProjectStatus.REVIEW,
     label: "Review / QC",
     short: "Review",
     description: "Internal quality check before delivery",
-    color: "#f472b6",
-    soft: "rgba(244,114,182,0.14)",
+    color: PALETTE.violet,
+    soft: softTint(PALETTE.violet),
   },
   {
     status: ProjectStatus.DELIVERED,
     label: "Delivered",
     short: "Delivered",
     description: "Sent to client",
-    color: "#34d399",
-    soft: "rgba(52,211,153,0.14)",
+    color: PALETTE.green,
+    soft: softTint(PALETTE.green),
   },
 ];
 
@@ -79,24 +80,24 @@ export const SIDE_STATES: StageMeta[] = [
     label: "Revisions",
     short: "Revision",
     description: "Delivered — client requested changes",
-    color: "#fb923c",
-    soft: "rgba(251,146,60,0.14)",
+    color: PALETTE.gold,
+    soft: softTint(PALETTE.gold),
   },
   {
     status: ProjectStatus.ON_HOLD,
     label: "On Hold",
     short: "On Hold",
     description: "Blocked — waiting on client or info",
-    color: "#94a3b8",
-    soft: "rgba(148,163,184,0.14)",
+    color: PALETTE.gray,
+    soft: softTint(PALETTE.gray),
   },
   {
     status: ProjectStatus.CANCELLED,
     label: "Cancelled",
     short: "Cancelled",
     description: "Order cancelled",
-    color: "#f87171",
-    soft: "rgba(248,113,113,0.14)",
+    color: PALETTE.red,
+    soft: softTint(PALETTE.red),
   },
 ];
 
@@ -124,10 +125,10 @@ export function prevStage(status: ProjectStatus): ProjectStatus | null {
 // ---------------------------------------------------------------------------
 
 export const PRIORITY_META: Record<Priority, { label: string; color: string; soft: string }> = {
-  [Priority.LOW]: { label: "Low", color: "#94a3b8", soft: "rgba(148,163,184,0.14)" },
-  [Priority.NORMAL]: { label: "Normal", color: "#38bdf8", soft: "rgba(56,189,248,0.14)" },
-  [Priority.HIGH]: { label: "High", color: "#fbbf24", soft: "rgba(251,191,36,0.14)" },
-  [Priority.URGENT]: { label: "Urgent", color: "#f87171", soft: "rgba(248,113,113,0.14)" },
+  [Priority.LOW]: { label: "Low", color: PALETTE.gray, soft: softTint(PALETTE.gray) },
+  [Priority.NORMAL]: { label: "Normal", color: PALETTE.blue, soft: softTint(PALETTE.blue) },
+  [Priority.HIGH]: { label: "High", color: PALETTE.gold, soft: softTint(PALETTE.gold) },
+  [Priority.URGENT]: { label: "Urgent", color: PALETTE.red, soft: softTint(PALETTE.red) },
 };
 
 // ---------------------------------------------------------------------------
@@ -135,12 +136,12 @@ export const PRIORITY_META: Record<Priority, { label: string; color: string; sof
 // ---------------------------------------------------------------------------
 
 export const ROLE_META: Record<Role, { label: string; color: string }> = {
-  [Role.ADMIN]: { label: "Admin", color: "#0f172a" },
-  [Role.MANAGER]: { label: "Manager", color: "#4f46e5" },
-  [Role.SALES]: { label: "Sales", color: "#0ea5e9" },
-  [Role.PHOTOGRAPHER]: { label: "Photographer", color: "#8b5cf6" },
-  [Role.EDITOR]: { label: "Editor", color: "#d97706" },
-  [Role.VA]: { label: "VA", color: "#16a34a" },
+  [Role.ADMIN]: { label: "Admin", color: PALETTE.violet },
+  [Role.MANAGER]: { label: "Manager", color: PALETTE.indigo },
+  [Role.SALES]: { label: "Sales", color: PALETTE.blue },
+  [Role.PHOTOGRAPHER]: { label: "Photographer", color: PALETTE.teal },
+  [Role.EDITOR]: { label: "Editor", color: PALETTE.gold },
+  [Role.VA]: { label: "VA", color: PALETTE.green },
 };
 
 // ---------------------------------------------------------------------------
@@ -161,13 +162,37 @@ export const DELIVERABLE_META: Record<DeliverableType, { label: string; icon: st
   [DeliverableType.OTHER]: { label: "Other", icon: "package" },
 };
 
+// Refine the display name of video/reel deliverables from the order item text,
+// so the project page distinguishes our three video products:
+//   • Premium Reel  (premium listing reel — outsourced to Luma)
+//   • Monthly Content  (personal-branding: Video Starter/Accelerator/Pro, "influencer")
+//   • Standard Reel  (in-house standard reel)
+function prettifyLabel(raw: string): string {
+  // "SILVER BUNDLE - Effortless Essentials…" → "Silver Bundle"
+  let s = raw.split(/\s+[-–—:]\s+/)[0].trim();
+  if (s && s === s.toUpperCase()) s = s.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+  return s;
+}
+
+export function refinedDeliverableLabel(type: DeliverableType, label?: string | null): string {
+  const l = (label ?? "").trim();
+  // NEVER show the bare word "Other" — use the real order-item name.
+  if (type === DeliverableType.OTHER) return prettifyLabel(l) || "Add-on";
+  const base = DELIVERABLE_META[type]?.label ?? String(type);
+  if (type !== DeliverableType.SOCIAL_REEL && type !== DeliverableType.VIDEO) return base;
+  if (/influencer|monthly|video\s*(starter|accelerator|pro)|personal\s*brand/i.test(l)) return "Monthly Content";
+  if (/premium/i.test(l)) return "Premium Reel";
+  if (/reel|social/i.test(l)) return "Standard Reel";
+  return base;
+}
+
 export const DELIVERABLE_STATUS_META: Record<
   DeliverableStatus,
   { label: string; color: string; soft: string }
 > = {
-  [DeliverableStatus.PENDING]: { label: "Pending", color: "#94a3b8", soft: "rgba(148,163,184,0.14)" },
-  [DeliverableStatus.UPLOADED]: { label: "Uploaded", color: "#38bdf8", soft: "rgba(56,189,248,0.14)" },
-  [DeliverableStatus.IN_PROGRESS]: { label: "In Progress", color: "#fbbf24", soft: "rgba(251,191,36,0.14)" },
-  [DeliverableStatus.DONE]: { label: "Done", color: "#34d399", soft: "rgba(52,211,153,0.14)" },
-  [DeliverableStatus.FLAGGED]: { label: "Flagged", color: "#f87171", soft: "rgba(248,113,113,0.14)" },
+  [DeliverableStatus.PENDING]: { label: "Pending", color: PALETTE.gray, soft: softTint(PALETTE.gray) },
+  [DeliverableStatus.UPLOADED]: { label: "Uploaded", color: PALETTE.blue, soft: softTint(PALETTE.blue) },
+  [DeliverableStatus.IN_PROGRESS]: { label: "In Progress", color: PALETTE.gold, soft: softTint(PALETTE.gold) },
+  [DeliverableStatus.DONE]: { label: "Done", color: PALETTE.green, soft: softTint(PALETTE.green) },
+  [DeliverableStatus.FLAGGED]: { label: "Flagged", color: PALETTE.red, soft: softTint(PALETTE.red) },
 };

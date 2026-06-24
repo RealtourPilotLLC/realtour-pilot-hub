@@ -150,6 +150,45 @@ export async function dropboxListFolder(path: string): Promise<{ name: string; t
   return (res.entries ?? []).map((e) => ({ name: e.name, tag: e[".tag"], path: e.path_display ?? "" }));
 }
 
+// Turn a Dropbox share URL into a direct/raw URL that OpenPhone can fetch.
+function directLink(u: string): string {
+  return u.replace("www.dropbox.com", "dl.dropboxusercontent.com").replace(/([?&])dl=0/, "$1raw=1");
+}
+
+// Create (or reuse) a public shared link for a Dropbox file → direct URL.
+export async function dropboxSharedLink(path: string): Promise<string | null> {
+  try {
+    const r = await dbx<{ url?: string }>("sharing/create_shared_link_with_settings", { path });
+    return r.url ? directLink(r.url) : null;
+  } catch (e) {
+    if (e instanceof DropboxError && /already_exists/i.test(e.message)) {
+      const l = await dbx<{ links?: { url: string }[] }>("sharing/list_shared_links", { path, direct_only: true });
+      const u = l.links?.[0]?.url;
+      return u ? directLink(u) : null;
+    }
+    return null;
+  }
+}
+
+// Upload bytes to Dropbox and return a public direct link (for MMS attachments).
+export async function dropboxUploadPublic(path: string, bytes: Uint8Array): Promise<string | null> {
+  const token = await dropboxAccessToken();
+  const res = await fetch("https://content.dropboxapi.com/2/files/upload", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(await pathRootHeader(token)),
+      "Content-Type": "application/octet-stream",
+      "Dropbox-API-Arg": JSON.stringify({ path, mode: "add", autorename: true, mute: true }),
+    },
+    body: new Uint8Array(bytes) as unknown as BodyInit,
+    cache: "no-store",
+  });
+  if (!res.ok) throw new DropboxError(`Dropbox upload failed: ${(await res.text()).slice(0, 160)}`, res.status);
+  const j = (await res.json()) as { path_display?: string };
+  return dropboxSharedLink(j.path_display ?? path);
+}
+
 export async function dropboxUpload(path: string, bytes: Buffer | Uint8Array): Promise<void> {
   const token = await dropboxAccessToken();
   const res = await fetch("https://content.dropboxapi.com/2/files/upload", {

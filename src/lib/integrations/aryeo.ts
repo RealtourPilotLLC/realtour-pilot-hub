@@ -89,9 +89,11 @@ async function fetchAll<T>(path: string, query: Query = {}, key?: string): Promi
 // Relationships to embed on order reads (Aryeo JSON:API-style includes).
 const ORDER_INCLUDES = "customer,items,appointments,listing";
 
-// Only import orders created on/after this date. Aryeo history goes back years;
-// the hub focuses on current work. Bump this to widen the window.
-const ARYEO_MIN_DATE = new Date("2026-01-01T00:00:00Z");
+// Only import orders created on/after this date. We import the FULL history so
+// every client's real project count + lifetime spend (→ segment) is accurate;
+// the pipeline/dashboard apply their own recency window so old jobs don't clutter
+// the active views.
+const ARYEO_MIN_DATE = new Date("2021-01-01T00:00:00Z");
 
 const LISTING_INCLUDES = "images,videos,floor_plans,interactive_content,files";
 
@@ -153,6 +155,39 @@ export const Aryeo = {
   addresses: (q?: Query) => fetchAll<unknown>("/addresses", q), // (perm)
 };
 
+// Next open shoot dates from Aryeo's scheduling calendar. Used to draft a
+// real availability reply when a client asks "when can you come out?".
+// Aryeo's /scheduling/available-dates requires: timezone, interval (minutes),
+// and filter[start_at]/filter[end_at] as `Y-m-d\TH:i:s\Z` (no milliseconds).
+export async function getSchedulingAvailability(opts?: {
+  days?: number;
+  interval?: number;
+  limit?: number;
+}): Promise<{ date: string }[] | null> {
+  const tz = "America/New_York";
+  const interval = opts?.interval ?? 60;
+  const isoZ = (d: Date) => d.toISOString().replace(/\.\d{3}Z$/, "Z");
+  const start = new Date(Date.now() + 86_400_000); // from tomorrow
+  const end = new Date(Date.now() + (opts?.days ?? 21) * 86_400_000);
+  try {
+    const r = await aryeoRequest<{ data?: { date: string; is_available?: boolean }[] }>(
+      "/scheduling/available-dates",
+      {
+        query: {
+          timezone: tz,
+          interval,
+          "filter[start_at]": isoZ(start),
+          "filter[end_at]": isoZ(end),
+        },
+      },
+    );
+    const dates = (r?.data ?? []).filter((d) => d.is_available !== false).slice(0, opts?.limit ?? 6);
+    return dates.length ? dates.map((d) => ({ date: d.date })) : null;
+  } catch {
+    return null; // not connected / not configured → caller drafts without it
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Aryeo payload shapes (verified against the live v1 API). Money amounts are
 // always integer cents. customer/items/appointments embed via ?include=.
@@ -174,6 +209,8 @@ interface AryeoAddress {
   state_or_province?: string;
   postal_code?: string;
   unparsed_address?: string;
+  latitude?: number;
+  longitude?: number;
 }
 export interface AryeoImage {
   id?: string;
@@ -302,7 +339,12 @@ interface AryeoOrderItem {
   id?: string;
   title?: string;
   subtitle?: string;
+  sub_title?: string;
+  description?: string;
   quantity?: number;
+  is_canceled?: boolean;
+  amount?: number; // line total in cents (list price)
+  gross_total_amount?: number; // cents, after discounts
 }
 interface AryeoOrder {
   id?: string;
@@ -346,8 +388,12 @@ function addressTitle(order: AryeoOrder): string {
 
 const TYPE_KEYWORDS: [RegExp, DeliverableType][] = [
   [/floor\s?plan/i, "FLOORPLAN"],
-  [/matterport|3d tour/i, "MATTERPORT_3D"],
+  // 3D tours: classify by brand FIRST. "Zillow [Showcase] 3D Tour" must beat the
+  // generic "3d tour" rule. Matterport only when explicitly named; a plain
+  // "3D Tour" defaults to Zillow (that's our standard product).
   [/zillow/i, "ZILLOW_3D"],
+  [/matterport/i, "MATTERPORT_3D"],
+  [/3d tour|3-d tour|3d virtual|interactive tour/i, "ZILLOW_3D"],
   [/twilight|dusk/i, "TWILIGHT"],
   [/drone|aerial/i, "DRONE"],
   [/virtual stag/i, "VIRTUAL_STAGING"],
@@ -357,9 +403,198 @@ const TYPE_KEYWORDS: [RegExp, DeliverableType][] = [
   [/photo|image|hdr/i, "PHOTOS"],
 ];
 
-function deliverableType(label: string): DeliverableType {
+export function deliverableType(label: string): DeliverableType {
   for (const [re, t] of TYPE_KEYWORDS) if (re.test(label)) return t;
   return "OTHER";
+}
+
+// Component detection over the full product text (title + subtitle + description).
+// Order matters only for which standard label we attach; types are de-duped.
+const COMPONENT_RULES: [RegExp, DeliverableType, string][] = [
+  [/photo|photograph|\bimage|hdr/i, "PHOTOS", "Photos"],
+  [/twilight|dusk/i, "TWILIGHT", "Twilight"],
+  [/drone|aerial/i, "DRONE", "Drone / Aerial"],
+  [/floor\s?plan/i, "FLOORPLAN", "Floor Plan"],
+  [/matterport/i, "MATTERPORT_3D", "Matterport 3D"],
+  [/zillow|3d tour|3-d tour|interactive tour|3d virtual/i, "ZILLOW_3D", "Zillow 3D Tour"],
+  [/virtual stag/i, "VIRTUAL_STAGING", "Virtual Staging"],
+  [/reel|social media|vertical video/i, "SOCIAL_REEL", "Social Reel"],
+  [/headshot|portrait/i, "HEADSHOT", "Headshot"],
+  [/video|cinematic|walkthrough/i, "VIDEO", "Video"],
+];
+
+export type ParsedDeliverable = { type: DeliverableType; label: string; quantity: number };
+
+// Collapse a project's parsed deliverables to ONE per type. Several order items
+// can each mention the same deliverable in their descriptions (e.g. a Zillow
+// add-on and a package both list "photos" + "floor plan", and an extra item like
+// "Missing Office Photo" adds another photos) — without this they'd show up two
+// or three times. One deliverable per type is what we QA/deliver/track.
+export function dedupeParsedDeliverables(parsed: ParsedDeliverable[]): ParsedDeliverable[] {
+  const byType = new Map<DeliverableType, ParsedDeliverable>();
+  for (const d of parsed) {
+    const ex = byType.get(d.type);
+    if (!ex) byType.set(d.type, { ...d });
+    else ex.quantity = Math.max(ex.quantity, d.quantity);
+  }
+  return [...byType.values()];
+}
+
+// Virtual / AI add-ons creatives are NOT paid a percentage on (no work on a
+// shoot): virtual twilight/staging/declutter/renovation, AI renderings, etc.
+const PAY_EXCLUDED_RE =
+  /\bvirtual\b|\bai\b|a\.i\.|\brender(ing|ings)?\b|\bdigital (stag|declutter|twilight)/i;
+
+export function isPayExcludedItem(item: { title?: string; subtitle?: string; sub_title?: string; description?: string }): boolean {
+  const text = `${item.title ?? ""} ${item.sub_title ?? item.subtitle ?? ""}`;
+  return PAY_EXCLUDED_RE.test(text);
+}
+
+// The eligible services invoice for creative pay: sum of non-canceled order
+// items in DOLLARS, excluding virtual/AI add-ons. This is what the shoot-pay
+// percentage is applied to.
+export function payableInvoiceFromItems(items: AryeoOrderItem[]): number {
+  const cents = items
+    .filter((it) => !it.is_canceled && !isPayExcludedItem(it))
+    .reduce((sum, it) => sum + (typeof it.amount === "number" ? it.amount : 0), 0);
+  return Math.round(cents) / 100;
+}
+
+// Friendly deliverable label per type (for the explicit product map below).
+const TYPE_LABEL: Record<string, string> = {
+  PHOTOS: "Photos", DRONE: "Drone / Aerial", FLOORPLAN: "Floor Plan",
+  MATTERPORT_3D: "Matterport 3D", ZILLOW_3D: "Zillow 3D Tour", TWILIGHT: "Twilight",
+  VIRTUAL_STAGING: "Virtual Staging", SOCIAL_REEL: "Social Reel", VIDEO: "Video",
+  HEADSHOT: "Headshots", OTHER: "Item",
+};
+
+// AUTHORITATIVE per-product deliverable map — built by reading each catalog
+// product's real description (Jun 2026). This is the source of truth; the
+// description parser below is only a fallback for products not listed here.
+// Key insight: premium bundles include BOTH an MLS/cinematic Video AND a Social
+// Reel; standard/cinematic "video" products are Video; "reel" products are a reel.
+const PRODUCT_DELIVERABLES_RAW: [string, DeliverableType[]][] = [
+  ["BRONZE PACKAGE - Simple Solutions for Straightforward Listings", ["PHOTOS"]],
+  ["BRONZE PACKAGE - Two Separate Appointments", ["PHOTOS"]],
+  ["STR Photography", ["PHOTOS"]],
+  ["STR Photography - Interior Only Photos", ["PHOTOS"]],
+  ["STR Exterior Only Photography With Detail Shots", ["PHOTOS"]],
+  ["Community Photography (Ground Photos)", ["PHOTOS"]],
+  ["Detail Shots", ["PHOTOS"]],
+  ["Twilight Photography", ["TWILIGHT"]],
+  ["STR Twilight Photography", ["TWILIGHT"]],
+  ["Virtual Twilight", ["TWILIGHT"]],
+  ["Virtual Staging", ["VIRTUAL_STAGING"]],
+  ["Virtual Decluttering", ["VIRTUAL_STAGING"]],
+  ["2D Floor Plan", ["FLOORPLAN"]],
+  ["Matterport 3D Tour", ["MATTERPORT_3D"]],
+  ["Zillow Showcase 3D Tour Add-on", ["ZILLOW_3D", "FLOORPLAN"]],
+  ["Drone Aerial Photography", ["DRONE"]],
+  ["STR Drone Aerial Photography", ["DRONE"]],
+  ["Drone Photography", ["DRONE"]],
+  ["Drone Videography", ["DRONE", "VIDEO"]],
+  ["Lot Lines", ["OTHER"]],
+  ["Agent on Camera Intro", ["SOCIAL_REEL"]],
+  // Video products
+  ["Standard Cinematic Video", ["VIDEO"]],
+  ["Premium Cinematic Video", ["VIDEO", "DRONE"]],
+  ["STR Luxury Cinematic Video Tour (with drone video)", ["VIDEO", "DRONE"]],
+  ["Video Starter - 2HR Session", ["VIDEO"]],
+  ["Video Accelerator - 4HR Session", ["VIDEO"]],
+  ["VIDEO PRO - 8HR Session", ["VIDEO", "PHOTOS"]],
+  // Reel products
+  ["Standard Video Highlight Reel", ["SOCIAL_REEL"]],
+  ["Standard Reel with Agent Intro", ["SOCIAL_REEL"]],
+  ["Premium Social Media Reel", ["SOCIAL_REEL"]],
+  ["Photography and Standard Reel", ["PHOTOS", "SOCIAL_REEL"]],
+  ["Photography and Standard Reel w/ Agent intro", ["PHOTOS", "SOCIAL_REEL"]],
+  ["SOCIAL MEDIA INFLUENCER - Dominate Social Media, Build Your Brand.", ["PHOTOS", "SOCIAL_REEL", "DRONE", "FLOORPLAN"]],
+  // Combos / land
+  ["Deluxe Land Only Package - Drone Photo and Video", ["DRONE", "VIDEO"]],
+  ["STR Photography & Drone Aerial Photography", ["PHOTOS", "DRONE"]],
+  ["STR Photography | Drone Aerial Photos | Real Twilight", ["PHOTOS", "DRONE", "TWILIGHT"]],
+  ["STR Photography | Video | Drone Aerial Photos | Real Twilight", ["PHOTOS", "VIDEO", "DRONE", "TWILIGHT"]],
+  // Bundles
+  ["SILVER BUNDLE - Effortless Essentials for Everyday Listings", ["PHOTOS", "DRONE", "FLOORPLAN"]],
+  ["AERIAL BUNDLE - Highlight Your Listing's Best Features", ["PHOTOS", "DRONE", "FLOORPLAN", "VIDEO"]],
+  ["STR GOLD BUNDLE", ["PHOTOS", "VIDEO", "DRONE"]],
+  ["STR PRO BUNDLE", ["PHOTOS", "VIDEO", "DRONE", "FLOORPLAN", "TWILIGHT"]],
+  ["GOLD BUNDLE - Comprehensive Marketing Package", ["PHOTOS", "DRONE", "VIDEO", "FLOORPLAN"]],
+  ["GOLD BUNDLE - Photography, Video, Drone, 2D Floor Plan, & More!", ["PHOTOS", "VIDEO", "SOCIAL_REEL", "DRONE", "FLOORPLAN"]],
+  ["EVERYTHING BUNDLE - Photography, Video, Drone, Zillow 3D Tour/Floor Plan, & More!", ["PHOTOS", "VIDEO", "SOCIAL_REEL", "DRONE", "ZILLOW_3D", "FLOORPLAN"]],
+  ["BASICS BUNDLE - Photography, Drone Photos, Zillow 3D Tour / Floor Plan", ["PHOTOS", "DRONE", "ZILLOW_3D", "FLOORPLAN", "TWILIGHT"]],
+  ["BASICS BUNDLE - Photography, Drone Photos, 2D Floor Plan", ["PHOTOS", "DRONE", "FLOORPLAN", "TWILIGHT"]],
+  ["DIAMOND BUNDLE - The Ultimate Real Estate Marketing Package", ["PHOTOS", "SOCIAL_REEL", "VIDEO", "DRONE", "FLOORPLAN"]],
+  ["THE PLATINUM BUNDLE - High-End Real Estate Marketing Package", ["PHOTOS", "VIDEO", "DRONE", "FLOORPLAN"]],
+  ["REALTOUR PRO BUNDLE - Top Tier Luxury Marketing", ["PHOTOS", "SOCIAL_REEL", "VIDEO", "DRONE", "TWILIGHT", "FLOORPLAN"]],
+];
+const normProduct = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+const PRODUCT_DELIVERABLES = new Map(PRODUCT_DELIVERABLES_RAW.map(([t, types]) => [normProduct(t), types]));
+
+// Products whose reel/video is PREMIUM or LUXURY/CINEMATIC (3-4 day turnaround).
+// Everything else's reel/video is standard (1-2 days). Their reel/video
+// deliverables are labeled "Premium ..." so the turnaround engine can tell.
+const PREMIUM_PRODUCTS = new Set([
+  "Premium Social Media Reel",
+  "Premium Cinematic Video",
+  "STR Luxury Cinematic Video Tour (with drone video)",
+  "STR GOLD BUNDLE",
+  "STR PRO BUNDLE",
+  "STR Photography | Video | Drone Aerial Photos | Real Twilight",
+  "EVERYTHING BUNDLE - Photography, Video, Drone, Zillow 3D Tour/Floor Plan, & More!",
+  "GOLD BUNDLE - Photography, Video, Drone, 2D Floor Plan, & More!",
+  "DIAMOND BUNDLE - The Ultimate Real Estate Marketing Package",
+  "REALTOUR PRO BUNDLE - Top Tier Luxury Marketing",
+  "THE PLATINUM BUNDLE - High-End Real Estate Marketing Package",
+  "SOCIAL MEDIA INFLUENCER - Dominate Social Media, Build Your Brand.",
+].map(normProduct));
+
+// Turn ONE ordered item into one or more deliverables. Uses the authoritative
+// per-product map first (exact, hand-verified from descriptions); falls back to
+// description parsing only for products not in the map.
+export function itemToDeliverables(item: AryeoOrderItem): ParsedDeliverable[] {
+  const title = (item.title || item.subtitle || item.sub_title || "Item").trim();
+  const qty = item.quantity || 1;
+
+  const mapped = PRODUCT_DELIVERABLES.get(normProduct(title));
+  if (mapped) {
+    const premium = PREMIUM_PRODUCTS.has(normProduct(title));
+    return mapped.map((type) => ({
+      type,
+      label: premium && (type === "SOCIAL_REEL" || type === "VIDEO") ? `Premium ${TYPE_LABEL[type]}` : (TYPE_LABEL[type] ?? title),
+      quantity: qty,
+    }));
+  }
+  const text = `${item.title ?? ""} ${item.sub_title ?? item.subtitle ?? ""} ${item.description ?? ""}`;
+
+  const found: { type: DeliverableType; label: string }[] = [];
+  const seen = new Set<DeliverableType>();
+  for (const [re, type, label] of COMPONENT_RULES) {
+    if (seen.has(type)) continue;
+    if (re.test(text)) { found.push({ type, label }); seen.add(type); }
+  }
+
+  // For a social-content item, the "video" IS the social reel ("drone video
+  // included in the social media reel"), not a separate property video — so
+  // don't create a standalone VIDEO alongside the reel.
+  if (seen.has("SOCIAL_REEL") && seen.has("VIDEO")) {
+    const i = found.findIndex((f) => f.type === "VIDEO");
+    if (i >= 0) { found.splice(i, 1); seen.delete("VIDEO"); }
+  }
+
+  // No media keywords matched. A photo package/bundle (or interior/exterior-only
+  // coverage) is, at its core, photography → PHOTOS (AutoHDR). Fees/travel/misc
+  // fall through to OTHER.
+  if (found.length === 0) {
+    if (/package|bundle|interior|exterior/i.test(title)) return [{ type: "PHOTOS", label: title, quantity: qty }];
+    return [{ type: deliverableType(title), label: title, quantity: qty }];
+  }
+
+  // Single-service item → keep the real product name as the label.
+  if (found.length === 1) return [{ type: found[0].type, label: title, quantity: qty }];
+
+  // Multi-service bundle → one deliverable per detected component.
+  return found.map((c) => ({ type: c.type, label: c.label, quantity: qty }));
 }
 
 // The live, non-cancelled appointment for an order (if any).
@@ -499,6 +734,7 @@ export async function syncAryeoOrders(
             clientId,
             photographerId,
             price: money(order.total_amount),
+            payableInvoice: payableInvoiceFromItems(items),
             paymentStatus: order.payment_status ?? null,
             balanceAmount: order.balance_amount ?? null,
             invoiceUrl: order.invoice_url ?? null,
@@ -507,14 +743,13 @@ export async function syncAryeoOrders(
             city: addr?.city ?? null,
             state: addr?.state_or_province ?? null,
             zip: addr?.postal_code ?? null,
+            lat: addr?.latitude ?? null,
+            lng: addr?.longitude ?? null,
             orderedAt: order.created_at ? new Date(order.created_at) : null,
             shootDate: shootDate ? new Date(shootDate) : null,
             deliveredAt: order.fulfilled_at ? new Date(order.fulfilled_at) : null,
             deliverables: {
-              create: items.map((it) => {
-                const label = it.title || it.subtitle || "Item";
-                return { type: deliverableType(label), label, quantity: it.quantity || 1 };
-              }),
+              create: dedupeParsedDeliverables(items.filter((it) => !it.is_canceled).flatMap(itemToDeliverables)),
             },
             activities: {
               create: { type: "SYSTEM", body: `Imported from Aryeo (order #${order.number ?? order.id}).` },
@@ -537,6 +772,37 @@ export async function syncAryeoOrders(
     await markError("aryeo", msg);
     throw e;
   }
+}
+
+// Backfill payableInvoice on existing projects by re-reading each order's items
+// (excludes canceled + virtual/AI). Run once after adding the field; cheap going
+// forward since new orders set it at import.
+export async function backfillPayableInvoice(): Promise<{ updated: number; scanned: number }> {
+  let page = 1;
+  const perPage = 50;
+  let updated = 0;
+  let scanned = 0;
+  for (let i = 0; i < 60; i++) {
+    const res = await aryeoRequest<{ data: AryeoOrder[]; meta?: { last_page?: number } }>("/orders", {
+      query: { include: "items", page, per_page: perPage },
+    });
+    const batch = res?.data ?? [];
+    if (batch.length === 0) break;
+    for (const order of batch) {
+      if (!order.id) continue;
+      scanned++;
+      const val = payableInvoiceFromItems(order.items ?? []);
+      const r = await prisma.project.updateMany({
+        where: { aryeoOrderId: order.id },
+        data: { payableInvoice: val },
+      });
+      updated += r.count;
+    }
+    const last = res?.meta?.last_page;
+    if (last ? page >= last : batch.length < perPage) break;
+    page++;
+  }
+  return { updated, scanned };
 }
 
 // ---------------------------------------------------------------------------
@@ -586,6 +852,222 @@ export async function syncAryeoProducts(): Promise<{ products: number }> {
     count++;
   }
   return { products: count };
+}
+
+// ---------------------------------------------------------------------------
+// Enrich clients from /customer-users. The customer object embedded on orders
+// is a GROUP (name/email/phone only) — it does NOT carry the agent's license #,
+// brokerage, or internal notes. Those live on the customer-user record, so we
+// match by email and backfill any EMPTY client fields (never overwrite edits).
+// ---------------------------------------------------------------------------
+export async function syncAryeoCustomers(): Promise<{ enriched: number }> {
+  const { prisma } = await import("@/lib/prisma");
+  const customers = await Aryeo.customerUsers();
+  const byEmail = new Map<string, AryeoCustomerUser>();
+  for (const c of customers) if (c.email) byEmail.set(c.email.toLowerCase(), c);
+  if (byEmail.size === 0) return { enriched: 0 };
+
+  const clients = await prisma.client.findMany({
+    where: { email: { not: null } },
+    select: { id: true, email: true, phone: true, company: true, licenseNumber: true, generalNotes: true },
+  });
+  let enriched = 0;
+  for (const cl of clients) {
+    const cu = byEmail.get((cl.email ?? "").toLowerCase());
+    if (!cu) continue;
+    const data: Record<string, string> = {};
+    if (!cl.phone && cu.phone) data.phone = cu.phone;
+    if (!cl.company && cu.agent_company_name) data.company = cu.agent_company_name;
+    if (!cl.licenseNumber && cu.agent_license_number) data.licenseNumber = cu.agent_license_number;
+    if (!cl.generalNotes && cu.internal_notes) data.generalNotes = cu.internal_notes;
+    if (Object.keys(data).length > 0) {
+      await prisma.client.update({ where: { id: cl.id }, data });
+      enriched++;
+    }
+  }
+  return { enriched };
+}
+
+// Import the FULL Aryeo client roster (every customer-user), not just the ones
+// who placed a recent order. Matches existing clients by email; creates the
+// rest. Idempotent — only creates the missing ones.
+export async function syncAllAryeoClients(): Promise<{ created: number; scanned: number }> {
+  const { prisma } = await import("@/lib/prisma");
+  const customers = await Aryeo.customerUsers();
+  const existing = await prisma.client.findMany({ select: { email: true, aryeoCustomerId: true } });
+  const haveEmail = new Set(existing.map((c) => (c.email ?? "").toLowerCase()).filter(Boolean));
+  const usedAryeoId = new Set(existing.map((c) => c.aryeoCustomerId).filter(Boolean) as string[]);
+
+  let created = 0;
+  for (const cu of customers) {
+    const email = (cu.email ?? "").toLowerCase();
+    if (!email || haveEmail.has(email)) continue;
+    haveEmail.add(email);
+    const name = cu.full_name || [cu.first_name, cu.last_name].filter(Boolean).join(" ") || cu.email!;
+    await prisma.client.create({
+      data: {
+        name,
+        email: cu.email!,
+        phone: cu.phone ?? null,
+        company: cu.agent_company_name ?? null,
+        licenseNumber: cu.agent_license_number ?? null,
+        generalNotes: cu.internal_notes ?? null,
+        // Keep the Aryeo id only when it isn't already taken (it's @unique).
+        aryeoCustomerId: cu.id && !usedAryeoId.has(cu.id) ? cu.id : null,
+      },
+    });
+    if (cu.id) usedAryeoId.add(cu.id);
+    created++;
+  }
+  return { created, scanned: customers.length };
+}
+
+// ---------------------------------------------------------------------------
+// Sync the monthly social-content subscription from Aryeo customer custom
+// fields. Aryeo exposes them under
+//   customer_team_memberships.user.custom_field_entries.custom_field
+// as { custom_field.name, value }:
+//   "Social Client"       → Yes / No
+//   "Social Content Plan" → Starter / Accelerator / Pro
+// We match the customer-user to our client by email and store the result.
+// ---------------------------------------------------------------------------
+function extractSocial(cu: unknown): { socialClient: boolean; socialPlan: string | null } | null {
+  let socialClient = false;
+  let socialPlan: string | null = null;
+  let found = false;
+  const walk = (obj: unknown, depth = 0) => {
+    if (!obj || depth > 9) return;
+    if (Array.isArray(obj)) { obj.forEach((x) => walk(x, depth + 1)); return; }
+    if (typeof obj === "object") {
+      const o = obj as Record<string, unknown>;
+      const cfRaw = (o.custom_field as { data?: unknown } | undefined)?.data ?? o.custom_field;
+      const cf = cfRaw as { name?: string } | undefined;
+      if (cf?.name === "Social Client") { found = true; socialClient = /^yes$/i.test(String(o.value ?? "")); }
+      if (cf?.name === "Social Content Plan") { found = true; const v = String(o.value ?? "").trim(); socialPlan = v || null; }
+      for (const k of Object.keys(o)) walk(o[k], depth + 1);
+    }
+  };
+  walk(cu);
+  if (!found) return null;
+  // A plan implies they're a social client even if the Yes/No box wasn't ticked.
+  if (socialPlan && !socialClient) socialClient = true;
+  return { socialClient, socialPlan };
+}
+
+export async function syncAryeoSocialPlans(): Promise<{ updated: number; matched: number }> {
+  const { prisma } = await import("@/lib/prisma");
+  const inc = "customer_team_memberships.user.custom_field_entries.custom_field";
+  const byEmail = new Map<string, { socialClient: boolean; socialPlan: string | null }>();
+
+  for (let page = 1; page <= 30; page++) {
+    const r = await aryeoRequest<{ data?: { email?: string }[]; meta?: { last_page?: number } }>(
+      `/customer-users?include=${inc}&per_page=100&page=${page}`,
+    );
+    const rows = r?.data ?? [];
+    if (rows.length === 0) break;
+    for (const cu of rows) {
+      const email = (cu.email ?? "").toLowerCase();
+      if (!email) continue;
+      const vals = extractSocial(cu);
+      if (vals) byEmail.set(email, vals);
+    }
+    const last = r?.meta?.last_page;
+    if ((last && page >= last) || rows.length < 100) break;
+  }
+
+  const clients = await prisma.client.findMany({
+    where: { email: { not: null } },
+    select: { id: true, email: true, socialClient: true, socialPlan: true },
+  });
+  let updated = 0;
+  let matched = 0;
+  for (const cl of clients) {
+    const v = byEmail.get((cl.email ?? "").toLowerCase());
+    if (!v) continue;
+    matched++;
+    if (cl.socialClient === v.socialClient && cl.socialPlan === v.socialPlan) continue;
+    await prisma.client.update({
+      where: { id: cl.id },
+      data: { socialClient: v.socialClient, socialPlan: v.socialPlan },
+    });
+    updated++;
+  }
+  return { updated, matched };
+}
+
+// ---------------------------------------------------------------------------
+// Sync Aryeo CUSTOMER teams (agency teams like "The Jamie Achberger Group").
+// Each team groups the agent + their assistants/coordinators as separate
+// customer-users (e.g. Jamie + Kelly "admin" + Ruthie "admin"). Orders live
+// under the AGENT, so we fold every teammate who has NO orders of their own
+// under the agent (`parentClientId`). Comms from a folded assistant then route
+// to the agent's projects (see resolveClientByPhones). Roles are all "admin"
+// in practice, so the agent is identified as the member who actually has orders.
+// ---------------------------------------------------------------------------
+type CuTeamMembership = {
+  customer_team?: { data?: { id?: string; name?: string } } | { id?: string; name?: string };
+};
+type CuWithTeams = { email?: string; customer_team_memberships?: { data?: CuTeamMembership[] } | CuTeamMembership[] };
+
+export async function syncAryeoCustomerTeams(): Promise<{ teams: number; folded: number }> {
+  const inc = "customer_team_memberships.customer_team";
+  const teams = new Map<string, { name: string; emails: Set<string> }>();
+
+  for (let page = 1; page <= 40; page++) {
+    const r = await aryeoRequest<{ data?: CuWithTeams[]; meta?: { last_page?: number } }>(
+      `/customer-users?include=${inc}&per_page=100&page=${page}`,
+    );
+    const rows = r?.data ?? [];
+    if (rows.length === 0) break;
+    for (const cu of rows) {
+      const email = (cu.email ?? "").toLowerCase();
+      if (!email) continue;
+      const mships = (cu.customer_team_memberships as { data?: CuTeamMembership[] })?.data
+        ?? (cu.customer_team_memberships as CuTeamMembership[])
+        ?? [];
+      for (const m of mships) {
+        const t = (m.customer_team as { data?: { id?: string; name?: string } })?.data
+          ?? (m.customer_team as { id?: string; name?: string });
+        if (!t?.id) continue;
+        if (!teams.has(t.id)) teams.set(t.id, { name: t.name ?? "Team", emails: new Set() });
+        teams.get(t.id)!.emails.add(email);
+      }
+    }
+    const last = r?.meta?.last_page;
+    if ((last && page >= last) || rows.length < 100) break;
+  }
+
+  // Our clients, keyed by email, with how many orders each has placed.
+  const clients = await prisma.client.findMany({
+    select: { id: true, email: true, parentClientId: true, _count: { select: { projects: true } } },
+  });
+  const byEmail = new Map<string, (typeof clients)[number]>();
+  for (const c of clients) if (c.email) byEmail.set(c.email.toLowerCase(), c);
+
+  let folded = 0;
+  let realTeams = 0;
+  for (const [teamId, { name, emails }] of teams) {
+    const members = [...emails].map((e) => byEmail.get(e)).filter(Boolean) as (typeof clients)[number][];
+    if (members.length < 2) continue; // a solo team needs no folding
+    // The agent = the member who has placed the most orders. If nobody has any,
+    // we can't tell who's the agent — leave them all standalone.
+    const sorted = [...members].sort((a, b) => b._count.projects - a._count.projects);
+    const agent = sorted[0];
+    if (agent._count.projects === 0) continue;
+    realTeams++;
+    for (const m of members) {
+      const isAgent = m.id === agent.id;
+      // Fold ONLY teammates with no orders of their own (true assistants); a
+      // co-agent with their own orders stays standalone but is still tagged.
+      const parentClientId = isAgent ? null : m._count.projects === 0 ? agent.id : null;
+      await prisma.client.update({
+        where: { id: m.id },
+        data: { aryeoTeamId: teamId, aryeoTeamName: name, parentClientId },
+      });
+      if (parentClientId) folded++;
+    }
+  }
+  return { teams: realTeams, folded };
 }
 
 // ---------------------------------------------------------------------------
@@ -647,10 +1129,15 @@ export async function syncAryeoTeam(): Promise<{ team: number }> {
 // user comes from ?include=users (reliable: 100% filled), not the sparse
 // initial_assigned_company_team_member_id. Also assigns the VA (Kyle).
 // ---------------------------------------------------------------------------
-export async function syncAryeoAppointments(): Promise<{
+export async function syncAryeoAppointments(opts: { recentOnlyDays?: number } = {}): Promise<{
   appointments: number;
   photographerAssigned: number;
 }> {
+  // Hourly cron passes recentOnlyDays so we only write recent + all future
+  // appointments (past shoots are already stored) — keeps the run fast enough
+  // to never time out. The daily cron runs it unbounded to reconcile everything.
+  const windowAgoTs = opts.recentOnlyDays ? Date.now() - opts.recentOnlyDays * 86_400_000 : null;
+
   // Preload lookups.
   const [projects, team] = await Promise.all([
     prisma.project.findMany({ where: { aryeoOrderId: { not: null } }, select: { id: true, aryeoOrderId: true } }),
@@ -697,6 +1184,9 @@ export async function syncAryeoAppointments(): Promise<{
         undefined;
       const assignedToId = assignedUser?.id ? teamByUser.get(assignedUser.id)?.id ?? null : null;
       const startAt = appt.start_at ? new Date(appt.start_at) : null;
+      // In incremental (hourly) mode, skip writing long-past shoots — they're
+      // already stored and don't change. Keep undated + recent + all future.
+      if (windowAgoTs !== null && startAt && startAt.getTime() < windowAgoTs) continue;
       const scheduled = (appt.status || "").toUpperCase() === "SCHEDULED";
 
       const fields = {
@@ -764,18 +1254,147 @@ export async function syncAryeoAppointments(): Promise<{
   return { appointments: appointmentCount, photographerAssigned: assigned };
 }
 
+// Backfill map coordinates onto existing projects from each Aryeo order's
+// address (order.address.latitude/longitude). New projects already get these on
+// create; this catches everything imported before lat/lng was tracked.
+export async function backfillProjectCoords(): Promise<{ updated: number; scanned: number }> {
+  const { prisma } = await import("@/lib/prisma");
+  const need = await prisma.project.findMany({
+    where: { aryeoOrderId: { not: null }, OR: [{ lat: null }, { lng: null }] },
+    select: { id: true, aryeoOrderId: true },
+  });
+  if (need.length === 0) return { updated: 0, scanned: 0 };
+  const wanted = new Map(need.map((p) => [p.aryeoOrderId!, p.id]));
+
+  let updated = 0;
+  let scanned = 0;
+  let page = 1;
+  for (let i = 0; i < 200 && wanted.size > 0; i++) {
+    const res = await aryeoRequest<{ data: AryeoOrder[] }>("/orders", {
+      query: { include: "listing", page, per_page: 50 },
+    });
+    const batch = res?.data ?? [];
+    if (batch.length === 0) break;
+    for (const order of batch) {
+      scanned++;
+      if (!order.id || !wanted.has(order.id)) continue;
+      const a = order.address ?? order.listing?.address;
+      if (a?.latitude != null && a?.longitude != null) {
+        await prisma.project.update({
+          where: { id: wanted.get(order.id)! },
+          data: { lat: a.latitude, lng: a.longitude },
+        });
+        updated++;
+      }
+      wanted.delete(order.id);
+    }
+    page++;
+  }
+  return { updated, scanned };
+}
+
+// Re-derive every Aryeo project's deliverables from its order items' full
+// descriptions (so old bundles/packages get split + correctly categorized).
+// Preserves completed/in-progress status per type where it still applies.
+const STATUS_RANK: Record<string, number> = { PENDING: 0, UPLOADED: 1, FLAGGED: 1, IN_PROGRESS: 2, DONE: 3 };
+export async function reclassifyAryeoDeliverables(): Promise<{ projects: number; before: number; after: number }> {
+  const { prisma } = await import("@/lib/prisma");
+  const projects = await prisma.project.findMany({
+    where: { aryeoOrderId: { not: null } },
+    select: { id: true, aryeoOrderId: true, status: true, deliverables: { select: { type: true, status: true } } },
+  });
+  const byOrder = new Map(projects.map((p) => [p.aryeoOrderId!, p]));
+  type Proj = (typeof projects)[number];
+
+  let changed = 0, before = 0, after = 0;
+  const rebuild = async (proj: Proj, items: AryeoOrderItem[]) => {
+    const parsed = dedupeParsedDeliverables(items.filter((it) => !it.is_canceled).flatMap(itemToDeliverables));
+    if (parsed.length === 0) return;
+    const prior = new Map<string, string>();
+    for (const d of proj.deliverables) {
+      const cur = prior.get(d.type);
+      if (!cur || (STATUS_RANK[d.status] ?? 0) > (STATUS_RANK[cur] ?? 0)) prior.set(d.type, d.status);
+    }
+    before += proj.deliverables.length;
+    await prisma.$transaction([
+      prisma.deliverable.deleteMany({ where: { projectId: proj.id } }),
+      prisma.deliverable.createMany({
+        data: parsed.map((p) => ({
+          projectId: proj.id,
+          type: p.type,
+          label: p.label,
+          quantity: p.quantity,
+          status: (proj.status === "DELIVERED" ? "DONE" : (prior.get(p.type) ?? "PENDING")) as DeliverableStatusValue,
+        })),
+      }),
+    ]);
+    after += parsed.length;
+    changed++;
+  };
+
+  // Fast pass over the paged order list…
+  for (let i = 0, page = 1; i < 200 && byOrder.size > 0; i++, page++) {
+    const res = await aryeoRequest<{ data: AryeoOrder[] }>("/orders", { query: { include: "items", page, per_page: 50 } });
+    const batch = res?.data ?? [];
+    if (batch.length === 0) break;
+    for (const order of batch) {
+      const proj = order.id ? byOrder.get(order.id) : undefined;
+      if (!proj) continue;
+      byOrder.delete(order.id!);
+      await rebuild(proj, order.items ?? []);
+    }
+  }
+  // …then fetch any orders the list didn't return, one by one, so nothing is missed.
+  for (const [orderId, proj] of byOrder) {
+    try {
+      const order = await Aryeo.order(orderId);
+      await rebuild(proj, order.items ?? []);
+    } catch {
+      /* skip unreachable order */
+    }
+  }
+
+  // Safety net: any leftover OTHER deliverable that's clearly a photo package /
+  // bundle / interior-exterior coverage → PHOTOS (so it routes to AutoHDR).
+  await prisma.deliverable.updateMany({
+    where: {
+      type: "OTHER",
+      OR: [
+        { label: { contains: "PACKAGE", mode: "insensitive" } },
+        { label: { contains: "BUNDLE", mode: "insensitive" } },
+        { label: { contains: "Interior", mode: "insensitive" } },
+        { label: { contains: "Exterior", mode: "insensitive" } },
+      ],
+    },
+    data: { type: "PHOTOS" },
+  });
+
+  return { projects: changed, before, after };
+}
+type DeliverableStatusValue = "PENDING" | "UPLOADED" | "IN_PROGRESS" | "DONE" | "FLAGGED";
+
 // Fetch a listing's media live (for the project detail gallery). Returns a
 // compact summary plus gallery image URLs. Never throws — returns null on error.
-export async function getListingMedia(listingId: string): Promise<{
+export type MediaImage = { thumb: string; large: string; original: string; caption: string | null; filename: string | null };
+export type MediaVideo = { title: string | null; thumb: string | null; playback: string | null; download: string | null; duration: number | null };
+export type MediaFloorPlan = { title: string | null; thumb: string; large: string; original: string };
+
+export type ListingMedia = {
   deliveryStatus: string | null;
   photoCount: number;
   videoCount: number;
   floorPlanCount: number;
   cover: string | null;
-  images: { thumb: string; large: string; caption: string | null }[];
-} | null> {
+  images: MediaImage[];
+  videos: MediaVideo[];
+  floorPlans: MediaFloorPlan[];
+};
+
+export async function getListingMedia(listingId: string): Promise<ListingMedia | null> {
   try {
     const l = await Aryeo.listing(listingId);
+    const videos = (l.videos ?? []) as { title?: string; thumbnail_url?: string; playback_url?: string; download_url?: string; duration?: number }[];
+    const floorPlans = (l.floor_plans ?? []) as { title?: string; thumbnail_url?: string; large_url?: string; original_url?: string }[];
     const images = (l.images ?? []).filter((i) => i.display_in_gallery !== false);
     return {
       deliveryStatus: l.delivery_status ?? null,
@@ -783,10 +1402,25 @@ export async function getListingMedia(listingId: string): Promise<{
       videoCount: l.videos?.length ?? 0,
       floorPlanCount: l.floor_plans?.length ?? 0,
       cover: l.thumbnail_url ?? images[0]?.thumbnail_url ?? null,
-      images: images.slice(0, 24).map((i) => ({
+      images: images.map((i) => ({
         thumb: i.thumbnail_url ?? i.large_url ?? i.original_url ?? "",
         large: i.large_url ?? i.original_url ?? i.thumbnail_url ?? "",
+        original: i.original_url ?? i.large_url ?? i.thumbnail_url ?? "",
         caption: i.caption ?? null,
+        filename: i.filename ?? null,
+      })),
+      videos: videos.map((v) => ({
+        title: v.title ?? null,
+        thumb: v.thumbnail_url ?? null,
+        playback: v.playback_url ?? null,
+        download: v.download_url ?? null,
+        duration: v.duration ?? null,
+      })),
+      floorPlans: floorPlans.map((f) => ({
+        title: f.title ?? null,
+        thumb: f.thumbnail_url ?? f.large_url ?? f.original_url ?? "",
+        large: f.large_url ?? f.original_url ?? f.thumbnail_url ?? "",
+        original: f.original_url ?? f.large_url ?? f.thumbnail_url ?? "",
       })),
     };
   } catch {

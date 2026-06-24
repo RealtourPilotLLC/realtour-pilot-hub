@@ -147,7 +147,8 @@ export default async function SalesPage() {
           <div className="border-b px-5 py-3.5">
             <h2 className="text-sm font-semibold">Orders</h2>
           </div>
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto scroll-thin">
+          <table className="w-full min-w-[640px] text-sm">
             <thead>
               <tr className="border-b text-left text-xs uppercase tracking-wide text-muted-2">
                 <th className="px-5 py-2 font-medium">Property</th>
@@ -180,6 +181,7 @@ export default async function SalesPage() {
               })}
             </tbody>
           </table>
+          </div>
         </div>
       </div>
     </div>

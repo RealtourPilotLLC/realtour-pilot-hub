@@ -141,9 +141,9 @@ export async function syncDropboxFolderStatus(): Promise<{
       await prisma.activity.create({
         data: { projectId: p.id, type: "SYSTEM", body: `Raw media detected in Dropbox (${rawP + rawV} files) → moved to Shot/Uploaded.` },
       });
-      // Complete any open "prep" task for this project.
+      // Complete any open confirmation task for this project (the shoot happened).
       await prisma.smartTask.updateMany({
-        where: { projectId: p.id, taskType: "appointment_prep", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        where: { projectId: p.id, taskType: { in: ["confirmation_text", "appointment_prep"] }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
         data: { status: "COMPLETED", completedAt: new Date() },
       });
       movedToShot++;

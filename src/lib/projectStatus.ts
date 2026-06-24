@@ -5,6 +5,7 @@ import { Aryeo } from "@/lib/integrations/aryeo";
 import { dropboxConfigured, dropboxListFolder } from "@/lib/integrations/dropbox";
 import { getSecret } from "@/lib/integrations/connections";
 import { projectFolderPaths } from "@/lib/dropboxFolders";
+import { standardDeliveryDue, deliveryDueFrom } from "@/lib/tasks";
 
 // ---------------------------------------------------------------------------
 // Smart project-status engine.
@@ -44,6 +45,29 @@ export function categoriesForLabel(label: string): MediaCategory[] {
   const out: MediaCategory[] = [];
   for (const [re, cat] of CATEGORY_KEYWORDS) if (re.test(label) && !out.includes(cat)) out.push(cat);
   return out;
+}
+
+// Content goes out staged: photos next day, then the video/reel. A pending
+// reel isn't "missing" until its turnaround window passes — and that window is
+// the SINGLE source of truth in tasks.ts (`deliveryDueFrom`: standard 48h,
+// premium 72h, monthly content 7-10 business days). computeStatus calls it so
+// the status card, delivery-due, and QA task never disagree.
+export type VideoTier = "standard" | "premium";
+// Premium = the higher-end reel products (longer edit). Tune these keywords.
+const PREMIUM_VIDEO_RE = /premium|influencer|cinematic|luxury|signature|elite|flagship/i;
+
+// Classify a project's video deliverable as standard vs premium (or null if no
+// video was ordered) — by the order item's product name.
+export function videoTier(deliverables: { type: string; label: string | null }[]): VideoTier | null {
+  let hasVideo = false;
+  let premium = false;
+  for (const d of deliverables) {
+    if (!expectedCategories([d]).has("VIDEO")) continue;
+    hasVideo = true;
+    if (PREMIUM_VIDEO_RE.test(d.label ?? "")) premium = true;
+  }
+  if (!hasVideo) return null;
+  return premium ? "premium" : "standard";
 }
 
 // Derive the set of media categories an order is expected to deliver from its
@@ -106,6 +130,9 @@ export type StatusSignals = {
   shootDate: Date | null;
   revisionOpen: boolean; // client requested changes after delivery (comms)
   revisionNote?: string | null;
+  videoTier: VideoTier | null; // standard | premium (null = no video ordered)
+  videoType?: string | null; // the reel/video deliverable type (SOCIAL_REEL | VIDEO)
+  monthlyContent: boolean; // recurring social-plan content (longer turnaround)
 };
 
 export type StatusEvidence = {
@@ -118,6 +145,10 @@ export type StatusEvidence = {
   fulfilledOnAryeo: boolean;
   reason: string;
   checkedAt: string;
+  // Video SLA: when a pending video is due, and whether it's past that window.
+  videoTier: VideoTier | null;
+  videoDue: string | null; // ISO date the video is expected by
+  videoOverdue: boolean; // past the window with no video delivered yet
 };
 
 export type StatusResult = { status: ProjectStatus; evidence: StatusEvidence };
@@ -145,6 +176,24 @@ export function computeStatus(sig: StatusSignals): StatusResult {
   // ordered, fall back to "Aryeo says fulfilled AND some media exists".
   const satisfied = verifiable ? missing.length === 0 : fulfilled && anyAryeoMedia;
 
+  // Video SLA: a missing video is only a problem once its production window
+  // (shoot date + standard/premium SLA) has passed. Before that, it's on-track.
+  const fmtDate = (dt: Date) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  let videoDue: Date | null = null;
+  let videoOverdue = false;
+  // Only when content has actually started going out (photos/other media present)
+  // AND the video specifically is still missing — i.e. a real staged/partial
+  // delivery. Not for shoots that haven't happened yet (present is empty there).
+  if (missing.includes("VIDEO") && present.size > 0 && sig.videoTier && sig.shootDate) {
+    // Use the SAME turnaround the task engine uses, so the status card, the
+    // project's delivery-due, and the QA task all agree on one date.
+    videoDue = deliveryDueFrom(sig.shootDate, sig.videoType ?? "SOCIAL_REEL", {
+      premium: sig.videoTier === "premium",
+      monthlyContent: sig.monthlyContent,
+    });
+    videoOverdue = Date.now() > videoDue.getTime();
+  }
+
   let status: ProjectStatus;
   let reason: string;
 
@@ -165,6 +214,9 @@ export function computeStatus(sig: StatusSignals): StatusResult {
           ? `Client requested changes after delivery: "${sig.revisionNote.slice(0, 160)}"`
           : "Client requested changes after delivery — revision in progress.",
         checkedAt: new Date().toISOString(),
+        videoTier: sig.videoTier,
+        videoDue: null,
+        videoOverdue: false,
       },
     };
   }
@@ -179,7 +231,16 @@ export function computeStatus(sig: StatusSignals): StatusResult {
     reason = "All media is present but the order isn't marked delivered on Aryeo yet — ready to deliver.";
   } else if ((fulfilled || anyFinalDropbox || anyAryeoMedia) && verifiable && missing.length > 0) {
     status = "REVIEW";
-    reason = `Partial delivery — still missing ${missing.map((m) => CATEGORY_LABEL[m as MediaCategory]).join(", ")}.`;
+    const others = missing.filter((c) => c !== "VIDEO").map((c) => CATEGORY_LABEL[c]);
+    if (missing.includes("VIDEO") && videoDue) {
+      const tier = sig.videoTier === "premium" ? "Premium" : "Standard";
+      reason = videoOverdue
+        ? `Video overdue — was due ${fmtDate(videoDue)}. Confirm it was delivered to the client, or upload it.`
+        : `Photos delivered. ${tier} video in production — due ${fmtDate(videoDue)}.`;
+      if (others.length) reason += ` Also missing ${others.join(", ")}.`;
+    } else {
+      reason = `Partial delivery — still missing ${missing.map((m) => CATEGORY_LABEL[m as MediaCategory]).join(", ")}.`;
+    }
   } else if (anyRaw) {
     status = "SHOT";
     reason = "Raw files uploaded to Dropbox — awaiting editing.";
@@ -208,6 +269,9 @@ export function computeStatus(sig: StatusSignals): StatusResult {
       fulfilledOnAryeo: fulfilled,
       reason,
       checkedAt: new Date().toISOString(),
+      videoTier: sig.videoTier,
+      videoDue: videoDue ? videoDue.toISOString() : null,
+      videoOverdue,
     },
   };
 }
@@ -248,7 +312,7 @@ type StatusProject = {
   createdAt: Date;
   revisionRequestedAt: Date | null;
   revisionNote: string | null;
-  client: { name: string };
+  client: { name: string; socialClient: boolean };
   deliverables: { id: string; type: string; label: string | null }[];
   appointments: { status: string | null }[];
 };
@@ -291,6 +355,9 @@ async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<Sta
     shootDate: p.shootDate,
     revisionOpen: !!p.revisionRequestedAt,
     revisionNote: p.revisionNote,
+    videoTier: videoTier(p.deliverables),
+    videoType: p.deliverables.find((d) => expectedCategories([d]).has("VIDEO"))?.type ?? null,
+    monthlyContent: p.client?.socialClient ?? false,
   };
 }
 
@@ -316,7 +383,7 @@ async function pMap<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>
 // EDITING project back to SHOT (EDITING is a manual "editor working" superset).
 // ---------------------------------------------------------------------------
 export async function syncProjectStatuses(
-  opts: { full?: boolean; limit?: number } = {},
+  opts: { full?: boolean; limit?: number; projectId?: string } = {},
 ): Promise<{
   checked: number;
   changed: number;
@@ -336,7 +403,9 @@ export async function syncProjectStatuses(
     for (const p of delivered) await scanProjectCommsForRevision(p.id);
   }
 
-  const where = opts.full
+  const where = opts.projectId
+    ? { id: opts.projectId } // single project (e.g. an Aryeo media-delivered webhook)
+    : opts.full
     ? { source: "ARYEO" as const, status: { notIn: ["ON_HOLD", "CANCELLED"] as ProjectStatus[] } }
     : {
         source: "ARYEO" as const,
@@ -346,7 +415,7 @@ export async function syncProjectStatuses(
   const projects = (await prisma.project.findMany({
     where,
     orderBy: { updatedAt: "desc" },
-    ...(opts.full ? {} : { take: opts.limit ?? 80 }),
+    ...(opts.full || opts.projectId ? {} : { take: opts.limit ?? 80 }),
     select: {
       id: true,
       title: true,
@@ -358,7 +427,7 @@ export async function syncProjectStatuses(
       createdAt: true,
       revisionRequestedAt: true,
       revisionNote: true,
-      client: { select: { name: true } },
+      client: { select: { name: true, socialClient: true } },
       deliverables: { select: { id: true, type: true, label: true } },
       appointments: { select: { status: true } },
     },
@@ -382,12 +451,17 @@ export async function syncProjectStatuses(
     byStatus[final] = (byStatus[final] ?? 0) + 1;
 
     const statusChanged = final !== p.status;
+    // Standard delivery due = shoot date + longest turnaround of what was ordered.
+    const deliveryDue = p.shootDate
+      ? standardDeliveryDue(p.shootDate, p.deliverables, p.client?.socialClient ?? false)
+      : null;
     await prisma.project.update({
       where: { id: p.id },
       data: {
         status: final,
         statusEvidence: JSON.stringify(evidence),
         statusCheckedAt: new Date(),
+        ...(deliveryDue ? { deliveryDue } : {}),
         ...(final === "DELIVERED" && !p.deliveredAt ? { deliveredAt: new Date() } : {}),
       },
     });

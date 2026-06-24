@@ -28,6 +28,7 @@ function fmt(d: string | Date | null, withTime = true) {
   if (!d) return null;
   const date = new Date(d);
   return date.toLocaleString("en-US", {
+    timeZone: "America/New_York", // shoots are Eastern
     weekday: "short",
     month: "short",
     day: "numeric",

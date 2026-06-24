@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { prisma } from "@/lib/prisma";
 import { UploadPortal } from "@/components/upload/UploadPortal";
+import { AppointmentFeedback } from "@/components/upload/AppointmentFeedback";
 import { getProjectFolderState } from "@/lib/dropboxFolders";
 import { ActivityType } from "@prisma/client";
 
@@ -95,6 +96,8 @@ export default async function UploadProjectPage({
           .filter((a) => a.type === ActivityType.FLAG)
           .map((a) => a.body)}
       />
+
+      <AppointmentFeedback projectId={project.id} />
     </div>
   );
 }

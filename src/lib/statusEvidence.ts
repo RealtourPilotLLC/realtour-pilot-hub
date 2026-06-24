@@ -23,6 +23,9 @@ export type ParsedEvidence = {
   fulfilledOnAryeo: boolean;
   reason: string;
   checkedAt: string;
+  videoTier: "standard" | "premium" | null;
+  videoDue: string | null;
+  videoOverdue: boolean;
 };
 
 export function parseEvidence(raw: string | null | undefined): ParsedEvidence | null {
@@ -39,6 +42,9 @@ export function parseEvidence(raw: string | null | undefined): ParsedEvidence | 
       fulfilledOnAryeo: e.fulfilledOnAryeo ?? false,
       reason: e.reason ?? "",
       checkedAt: e.checkedAt ?? "",
+      videoTier: e.videoTier ?? null,
+      videoDue: e.videoDue ?? null,
+      videoOverdue: e.videoOverdue ?? false,
     };
   } catch {
     return null;
@@ -46,7 +52,8 @@ export function parseEvidence(raw: string | null | undefined): ParsedEvidence | 
 }
 
 // A short, human flag for a card: what (if anything) is wrong/notable.
-export type StatusFlag = { kind: "missing" | "ready" | "stalled" | "revision"; label: string };
+// "pending" = on-track, not a problem (e.g. a video still within its window).
+export type StatusFlag = { kind: "missing" | "ready" | "stalled" | "revision" | "pending"; label: string };
 
 export function statusFlag(
   status: string,
@@ -62,6 +69,20 @@ export function statusFlag(
   // looked delivered on Aryeo (partial) or it's in Review/Delivered.
   const meaningful = e.partial || status === "REVIEW" || status === "DELIVERED";
   if (e.missing.length > 0 && meaningful) {
+    const onlyVideoPending = e.missing.length === 1 && e.missing[0] === "Video";
+    const dueLabel = e.videoDue
+      ? new Date(e.videoDue).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+      : null;
+    // A video still inside its production window is on-track — calm chip, not an alarm.
+    if (onlyVideoPending && dueLabel && !e.videoOverdue) {
+      return { kind: "pending", label: `Video due ${dueLabel}` };
+    }
+    if (e.videoOverdue && e.missing.includes("Video")) {
+      return {
+        kind: "missing",
+        label: e.missing.length === 1 ? "Video overdue — confirm / upload" : `Overdue: ${e.missing.join(", ")}`,
+      };
+    }
     return {
       kind: "missing",
       label: e.partial ? `Aryeo "done" · missing ${e.missing.join(", ")}` : `Missing ${e.missing.join(", ")}`,

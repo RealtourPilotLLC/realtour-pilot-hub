@@ -15,6 +15,7 @@ import {
   syncAryeoProducts,
   syncAryeoTeam,
   syncAryeoAppointments,
+  syncAryeoCustomers,
 } from "@/lib/integrations/aryeo";
 
 export type ActionResult = { ok: boolean; message: string };
@@ -38,6 +39,8 @@ export async function syncAryeoNow(): Promise<ActionResult> {
     await syncAryeoTeam();
     const r = await syncAryeoOrders();
     const appt = await syncAryeoAppointments();
+    // Backfill client license #, brokerage, notes from /customer-users.
+    await syncAryeoCustomers();
     // Re-evaluate true status by cross-checking Aryeo media (+ Dropbox).
     await syncProjectStatuses();
     await generateTasksForActiveProjects();

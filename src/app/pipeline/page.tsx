@@ -1,28 +1,23 @@
 import { PageHeader } from "@/components/PageHeader";
-import { PipelineBoard } from "@/components/PipelineBoard";
+import { ProjectTracker } from "@/components/tracker/ProjectTracker";
 import { getPipelineProjects } from "@/lib/queries";
+import { buildTrackerRows } from "@/lib/tracker";
 
 export const dynamic = "force-dynamic";
 
 export default async function PipelinePage() {
   const projects = await getPipelineProjects();
-  const active = projects.filter(
-    (p) => p.status !== "DELIVERED" && p.status !== "CANCELLED",
-  ).length;
+  const rows = buildTrackerRows(projects);
+  const active = rows.filter((r) => r.status !== "DELIVERED" && r.status !== "CANCELLED").length;
 
   return (
     <div className="flex h-full flex-col">
       <PageHeader
         eyebrow="Last 2 weeks"
-        title="Pipeline"
-        subtitle={`${active} active · current work + recently delivered`}
-        actions={
-          <span className="hidden text-xs text-muted sm:block">
-            Drag cards between columns to update status
-          </span>
-        }
+        title="Project Tracker"
+        subtitle={`${active} active · sort by shoot or due date, set status inline`}
       />
-      <PipelineBoard projects={projects} />
+      <ProjectTracker rows={rows} showBoards assignee="photographer" emptyLabel="No projects in the last two weeks." />
     </div>
   );
 }

@@ -16,12 +16,16 @@ export default async function ConnectionsPage() {
   const deployed = Boolean(process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL);
 
   const connectedCount = connections.filter((c) => c.status === "CONNECTED").length;
+  const errorCount = connections.filter((c) => c.status === "ERROR").length;
 
   return (
     <div>
       <PageHeader
         title="Connections"
-        subtitle={`${connectedCount} of ${PROVIDERS.length} services connected`}
+        subtitle={
+          `${connectedCount} of ${PROVIDERS.length} services connected` +
+          (errorCount > 0 ? ` · ${errorCount} need${errorCount === 1 ? "s" : ""} attention` : "")
+        }
       />
       <div className="space-y-6 p-6">
         <div className="flex items-start gap-3 rounded-2xl border bg-brand-soft/40 p-4">

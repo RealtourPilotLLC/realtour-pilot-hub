@@ -1,28 +1,55 @@
+import Link from "next/link";
 import { Building2, Mail, Phone, Sparkles } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
+import { SegmentBadge } from "@/components/clients/SegmentBadge";
+import { SocialBadge } from "@/components/clients/SocialBadge";
 import { getClients } from "@/lib/queries";
+import { SEGMENT_META, type SegmentKey } from "@/lib/segments";
 import { stripHtml } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
+// High-value → low-value, so the most important customers sit at the top.
+const SEGMENT_ORDER: SegmentKey[] = ["vip", "heavy", "regular", "casual_repeat", "one_timer", "never_converted"];
+
 export default async function ClientsPage() {
   const clients = await getClients();
+
+  // Group clients by their segment, preserving the name sort within each group.
+  const groups = SEGMENT_ORDER.map((key) => ({
+    key,
+    meta: SEGMENT_META[key],
+    clients: clients.filter((c) => (c.segment ?? "never_converted") === key),
+  })).filter((g) => g.clients.length > 0);
 
   return (
     <div>
       <PageHeader
         title="Clients"
-        subtitle={`${clients.length} clients · smart notes & preferences`}
+        subtitle={`${clients.length} clients · grouped by segment`}
       />
-      <div className="grid gap-4 p-6 sm:grid-cols-2 xl:grid-cols-3">
-        {clients.map((c) => (
-          <div key={c.id} className="rounded-2xl border bg-surface p-5">
+      <div className="space-y-8 p-4 sm:p-6">
+        {groups.map((g) => (
+          <section key={g.key}>
+            <div className="mb-3 flex items-center gap-2">
+              <span className="size-2.5 rounded-full" style={{ backgroundColor: g.meta.color }} />
+              <h2 className="text-sm font-semibold">{g.meta.label}</h2>
+              <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium text-muted">{g.clients.length}</span>
+              <span className="hidden truncate text-xs text-muted-2 sm:inline">· {g.meta.blurb}</span>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {g.clients.map((c) => (
+                <Link key={c.id} href={`/clients/${c.id}`} className="panel-shadow lift rounded-2xl border bg-surface p-5 hover:bg-surface-2">
             <div className="flex items-center gap-3">
               <Avatar name={c.name} size={40} color="#4f46e5" />
               <div className="min-w-0">
-                <div className="truncate font-semibold">{c.name}</div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="truncate font-semibold">{c.name}</span>
+                  <SegmentBadge segment={c.segment} size="xs" />
+                  <SocialBadge socialClient={c.socialClient} socialPlan={c.socialPlan} size="xs" />
+                </div>
                 {c.company && (
                   <div className="flex items-center gap-1 truncate text-xs text-muted">
                     <Building2 className="size-3" /> {c.company}
@@ -56,7 +83,10 @@ export default async function ClientsPage() {
             {c.generalNotes && (
               <p className="mt-2 line-clamp-4 text-xs text-muted">{stripHtml(c.generalNotes)}</p>
             )}
-          </div>
+                </Link>
+              ))}
+            </div>
+          </section>
         ))}
       </div>
     </div>

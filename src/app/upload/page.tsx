@@ -1,80 +1,146 @@
 import Link from "next/link";
-import { CheckCircle2, Camera, ArrowRight } from "lucide-react";
+import { CheckCircle2, Camera, ArrowRight, Upload, FolderOpen } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { prisma } from "@/lib/prisma";
-import { stageMeta } from "@/lib/pipeline";
-import { format } from "date-fns";
+import { stageMeta, DELIVERABLE_META } from "@/lib/pipeline";
+import { DeliverableType } from "@prisma/client";
+import { etDateTime, etDaysAgo } from "@/lib/datetime";
 
 export const dynamic = "force-dynamic";
+
+// Day-buckets for the "come home, unload gear, upload" flow — newest first.
+const BUCKETS = [
+  { key: "today", label: "Today's jobs" },
+  { key: "yesterday", label: "Yesterday" },
+  { key: "week", label: "Past 7 days" },
+  { key: "older", label: "Previous weeks" },
+  { key: "upcoming", label: "Upcoming" },
+  { key: "unscheduled", label: "Unscheduled" },
+] as const;
+type BucketKey = (typeof BUCKETS)[number]["key"];
+
+function bucketFor(shootDate: Date | null): BucketKey {
+  if (!shootDate) return "unscheduled";
+  const days = etDaysAgo(shootDate); // +past / -future, in Eastern calendar days
+  if (days < 0) return "upcoming";
+  if (days === 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days <= 7) return "week";
+  return "older";
+}
 
 export default async function UploadListPage() {
   const shoots = await prisma.project.findMany({
     where: { status: { in: ["BOOKED", "SCHEDULED", "SHOT"] } },
-    orderBy: [{ shootDate: "asc" }, { createdAt: "desc" }],
+    orderBy: [{ shootDate: "desc" }, { createdAt: "desc" }],
     include: {
       client: true,
       photographer: true,
-      deliverables: true,
+      deliverables: { select: { id: true, type: true } },
       _count: { select: { uploads: true } },
     },
   });
+
+  const grouped = new Map<BucketKey, typeof shoots>();
+  for (const s of shoots) {
+    const b = bucketFor(s.shootDate);
+    const arr = grouped.get(b) ?? [];
+    arr.push(s);
+    grouped.set(b, arr);
+  }
+  // "Upcoming" oldest-first (next shoot first); everything else newest-first.
+  const up = grouped.get("upcoming");
+  if (up) up.sort((a, b) => (a.shootDate?.getTime() ?? 0) - (b.shootDate?.getTime() ?? 0));
+
+  const pendingToday = (grouped.get("today") ?? []).filter((s) => !s.uploadedAt).length;
 
   return (
     <div>
       <PageHeader
         title="Upload Portal"
-        subtitle="Pick a shoot to upload content and leave notes for the editors"
+        subtitle="Unload gear, sit down, and clear today's uploads — newest shoots first"
       />
-      <div className="mx-auto max-w-3xl space-y-3 p-6">
-        {shoots.length === 0 && (
-          <p className="text-sm text-muted">No shoots ready for upload right now.</p>
-        )}
-        {shoots.map((s) => {
-          const stage = stageMeta(s.status);
-          const uploaded = s.uploadedAt != null;
+      <div className="mx-auto max-w-3xl space-y-8 p-6">
+        {shoots.length === 0 && <p className="text-sm text-muted">No shoots ready for upload right now.</p>}
+
+        {BUCKETS.map(({ key, label }) => {
+          const items = grouped.get(key);
+          if (!items || items.length === 0) return null;
+          const pending = items.filter((s) => !s.uploadedAt).length;
           return (
-            <Link
-              key={s.id}
-              href={`/upload/${s.id}`}
-              className="flex items-center gap-4 rounded-2xl border bg-surface p-4 transition-shadow hover:shadow-md"
-            >
-              <span
-                className="flex size-11 items-center justify-center rounded-xl"
-                style={{ backgroundColor: stage.soft, color: stage.color }}
-              >
-                {uploaded ? <CheckCircle2 className="size-5" /> : <Camera className="size-5" />}
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="truncate font-semibold">{s.title}</span>
-                  <Badge color={stage.color} soft={stage.soft}>
-                    {stage.short}
-                  </Badge>
-                  {uploaded && (
-                    <Badge color="#16a34a" soft="#dcfce7">
-                      Uploaded
-                    </Badge>
-                  )}
-                </div>
-                <div className="truncate text-xs text-muted">
-                  {s.client.name}
-                  {s.shootDate ? ` · ${format(s.shootDate, "EEE MMM d, h:mm a")}` : ""}
-                  {` · ${s.deliverables.length} item${s.deliverables.length === 1 ? "" : "s"} ordered`}
-                  {s._count.uploads > 0 ? ` · ${s._count.uploads} file${s._count.uploads === 1 ? "" : "s"}` : ""}
-                </div>
+            <section key={key}>
+              <div className="mb-2 flex items-center gap-2">
+                <h2 className="text-sm font-semibold">{label}</h2>
+                <span className="rounded-full bg-surface-2 px-2 text-xs font-medium text-muted">{items.length}</span>
+                {pending > 0 && key !== "upcoming" && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-brand/10 px-2 text-xs font-medium text-brand">
+                    <Upload className="size-3" /> {pending} to upload
+                  </span>
+                )}
               </div>
-              {s.photographer && (
-                <Avatar name={s.photographer.name} color={s.photographer.avatarColor} size={28} />
-              )}
-              <span className="flex items-center gap-1 text-sm font-medium text-brand">
-                {uploaded ? "Review" : "Upload"} <ArrowRight className="size-4" />
-              </span>
-            </Link>
+              <div className="space-y-2">
+                {items.map((s) => (
+                  <JobRow key={s.id} s={s} />
+                ))}
+              </div>
+            </section>
           );
         })}
+
+        {pendingToday === 0 && (grouped.get("today")?.length ?? 0) > 0 && (
+          <p className="text-center text-sm text-success">All of today's jobs are uploaded. Nice work.</p>
+        )}
       </div>
     </div>
+  );
+}
+
+type Shoot = {
+  id: string; title: string; status: string; shootDate: Date | null; uploadedAt: Date | null;
+  client: { name: string }; photographer: { name: string; avatarColor: string } | null;
+  deliverables: { type: DeliverableType }[]; _count: { uploads: number };
+};
+
+function JobRow({ s }: { s: Shoot }) {
+  const stage = stageMeta(s.status as Parameters<typeof stageMeta>[0]);
+  const uploaded = s.uploadedAt != null;
+  // Distinct deliverable types = the checklist of what to capture/upload.
+  const types = [...new Set(s.deliverables.map((d) => d.type))];
+  return (
+    <Link href={`/upload/${s.id}`} className="flex items-center gap-4 rounded-2xl border bg-surface p-4 transition-shadow hover:shadow-md">
+      <span className="flex size-11 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: stage.soft, color: stage.color }}>
+        {uploaded ? <CheckCircle2 className="size-5" /> : <Camera className="size-5" />}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="truncate font-semibold">{s.title}</span>
+          {uploaded ? (
+            <Badge color="#34d399" soft="rgba(52,211,153,0.14)">Uploaded</Badge>
+          ) : (
+            <Badge color={stage.color} soft={stage.soft}>{stage.short}</Badge>
+          )}
+        </div>
+        <div className="truncate text-xs text-muted">
+          {s.client.name}
+          {s.shootDate ? ` · ${etDateTime(s.shootDate)}` : ""}
+          {s._count.uploads > 0 ? ` · ${s._count.uploads} file${s._count.uploads === 1 ? "" : "s"}` : ""}
+        </div>
+        {types.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {types.map((t) => (
+              <span key={t} className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted-2">
+                {DELIVERABLE_META[t]?.label ?? t}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+      {s.photographer && <Avatar name={s.photographer.name} color={s.photographer.avatarColor} size={28} />}
+      <span className="flex shrink-0 items-center gap-1 text-sm font-medium text-brand">
+        {uploaded ? "Review" : <><FolderOpen className="size-4" /> Upload</>} <ArrowRight className="size-4" />
+      </span>
+    </Link>
   );
 }

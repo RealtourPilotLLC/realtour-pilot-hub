@@ -21,7 +21,7 @@ import { DELIVERABLE_META, DELIVERABLE_STATUS_META } from "@/lib/pipeline";
 import { uploadFiles, removeUpload, flagIssue, finalizeUpload } from "@/app/upload/actions";
 import { cn } from "@/lib/utils";
 import type { DeliverableType, DeliverableStatus } from "@prisma/client";
-import { format } from "date-fns";
+import { etDateTime } from "@/lib/datetime";
 
 type FileRow = { id: string; originalName: string; size: number };
 type Deliverable = {
@@ -83,6 +83,7 @@ export function UploadPortal({
   const [isPending, startTransition] = useTransition();
   const [done, setDone] = useState(project.uploadedAt != null);
   const [pdfPath, setPdfPath] = useState<string | null>(project.editorPdfPath);
+  const [err, setErr] = useState<string | null>(null);
 
   const fileInputs = useRef<Record<string, HTMLInputElement | null>>({});
 
@@ -94,21 +95,28 @@ export function UploadPortal({
     if (!files || files.length === 0) return;
     const key = deliverableId ?? "__extra__";
     setBusyTarget(key);
-    const fd = new FormData();
-    Array.from(files).forEach((f) => fd.append("files", f));
-    const created = await uploadFiles(project.id, deliverableId, fd);
-    if (deliverableId) {
-      setDeliverables((prev) =>
-        prev.map((d) =>
-          d.id === deliverableId
-            ? { ...d, status: "UPLOADED", uploads: [...d.uploads, ...created] }
-            : d,
-        ),
-      );
-    } else {
-      setExtra((prev) => [...prev, ...created]);
+    setErr(null);
+    try {
+      const fd = new FormData();
+      Array.from(files).forEach((f) => fd.append("files", f));
+      const created = await uploadFiles(project.id, deliverableId, fd);
+      if (deliverableId) {
+        setDeliverables((prev) =>
+          prev.map((d) =>
+            d.id === deliverableId
+              ? { ...d, status: "UPLOADED", uploads: [...d.uploads, ...created] }
+              : d,
+          ),
+        );
+      } else {
+        setExtra((prev) => [...prev, ...created]);
+      }
+    } catch {
+      // Never leave the photographer thinking files saved when they didn't.
+      setErr("Upload failed — those files were NOT saved. Check your connection and try again.");
+    } finally {
+      setBusyTarget(null);
     }
-    setBusyTarget(null);
   }
 
   function handleRemove(fileId: string, deliverableId: string | null) {
@@ -139,11 +147,24 @@ export function UploadPortal({
   }
 
   function finalize() {
+    // Guard against submitting an incomplete shoot by accident.
+    if (missing.length > 0) {
+      const ok = window.confirm(
+        `${missing.length} ordered item${missing.length === 1 ? " has" : "s have"} no files yet ` +
+          `(${missing.map((d) => DELIVERABLE_META[d.type].label).join(", ")}).\n\nSubmit to editors anyway?`,
+      );
+      if (!ok) return;
+    }
+    setErr(null);
     startTransition(async () => {
-      const res = await finalizeUpload(project.id, { editorBrief, itemNotes });
-      setPdfPath(res.pdfPath);
-      setDone(true);
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      try {
+        const res = await finalizeUpload(project.id, { editorBrief, itemNotes });
+        setPdfPath(res.pdfPath);
+        setDone(true);
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      } catch {
+        setErr("Couldn't finalize — the editors were NOT notified. Please try again.");
+      }
     });
   }
 
@@ -158,7 +179,7 @@ export function UploadPortal({
           {addr && <span>{addr} · </span>}
           {project.clientName}
           {project.shootDate && (
-            <span> · {format(new Date(project.shootDate), "EEE MMM d, h:mm a")}</span>
+            <span> · {etDateTime(project.shootDate)}</span>
           )}
         </div>
         {project.packageName && (
@@ -217,10 +238,18 @@ export function UploadPortal({
         </div>
       )}
 
+      {/* Upload/finalize error */}
+      {err && (
+        <div className="flex items-start gap-2 rounded-xl border border-danger/40 bg-danger/10 p-3 text-sm text-danger">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+          <div className="font-medium">{err}</div>
+        </div>
+      )}
+
       {/* Smart reminder */}
       {!done && missing.length > 0 && (
-        <div className="flex items-start gap-2 rounded-xl border border-accent/30 bg-accent/5 p-3 text-sm">
-          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-accent" />
+        <div className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning-soft/40 p-3 text-sm">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
           <div>
             <span className="font-medium">Still to upload:</span>{" "}
             {missing.map((d) => DELIVERABLE_META[d.type].label).join(", ")}.

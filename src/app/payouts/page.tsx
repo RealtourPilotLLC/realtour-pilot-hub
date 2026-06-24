@@ -1,176 +1,122 @@
 import Link from "next/link";
-import { Banknote, Clock, CheckCircle2 } from "lucide-react";
+import { Banknote, Car, SlidersHorizontal, ChevronLeft, ChevronRight, CalendarCheck, AlertTriangle } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
-import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
-import { prisma } from "@/lib/prisma";
-import { ROLE_META } from "@/lib/pipeline";
-import { photographerPayout, editorPayout, PAYOUT_RULES } from "@/lib/finance";
-import { formatMoney } from "@/lib/utils";
-import { format } from "date-fns";
+import { computePayroll, payPeriodFor, shiftPeriod, unassignedShootsInRange } from "@/lib/payroll";
+import { PayoutCard } from "@/components/payouts/PayoutCard";
+import { usd } from "@/lib/money";
 
 export const dynamic = "force-dynamic";
 
-type Line = {
-  projectId: string;
-  title: string;
-  amount: number;
-  role: "Photographer" | "Editor";
-  delivered: boolean;
-  date: Date | null;
-};
+const fmtKey = (k: string, opts: Intl.DateTimeFormatOptions) =>
+  new Date(k + "T12:00:00Z").toLocaleDateString("en-US", opts);
 
-export default async function PayoutsPage() {
-  const projects = await prisma.project.findMany({
-    where: { status: { not: "CANCELLED" } },
-    include: { photographer: true, editor: true },
-  });
+export default async function PayoutsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ start?: string }>;
+}) {
+  const sp = await searchParams;
+  // Bi-weekly pay periods (anchored May 31, 2026). Default = the period
+  // containing today; ?start= picks a specific period.
+  const period = payPeriodFor(sp.start);
+  const { startKey, endKey, payoutKey } = period;
 
-  // Build per-contractor ledgers.
-  const ledgers = new Map<
-    string,
-    { member: { id: string; name: string; avatarColor: string; role: keyof typeof ROLE_META }; lines: Line[] }
-  >();
+  const start = new Date(startKey + "T00:00:00.000Z");
+  const end = new Date(endKey + "T23:59:59.999Z");
 
-  const add = (
-    member: { id: string; name: string; avatarColor: string; role: keyof typeof ROLE_META } | null,
-    line: Line,
-  ) => {
-    if (!member || line.amount <= 0) return;
-    if (!ledgers.has(member.id)) ledgers.set(member.id, { member, lines: [] });
-    ledgers.get(member.id)!.lines.push(line);
-  };
+  const [people, unassigned] = await Promise.all([
+    computePayroll(start, end),
+    unassignedShootsInRange(start, end),
+  ]);
+  const grandTotal = people.reduce((s, p) => s + p.total, 0);
+  const mileageTotal = people.reduce((s, p) => s + p.mileageTotal, 0);
+  const flagCount = people.reduce((s, p) => s + p.issues.filter((i) => i.level === "warn").length, 0) + (unassigned.length > 0 ? 1 : 0);
 
-  for (const p of projects) {
-    const delivered = p.status === "DELIVERED";
-    if (p.photographer && (delivered || p.status === "SCHEDULED" || p.status === "SHOT" || p.status === "EDITING" || p.status === "REVIEW")) {
-      add(p.photographer, {
-        projectId: p.id,
-        title: p.title,
-        amount: photographerPayout(p.price),
-        role: "Photographer",
-        delivered,
-        date: p.deliveredAt ?? p.shootDate ?? null,
-      });
-    }
-    if (p.editor && (delivered || p.status === "EDITING" || p.status === "REVIEW")) {
-      add(p.editor, {
-        projectId: p.id,
-        title: p.title,
-        amount: editorPayout(p.price),
-        role: "Editor",
-        delivered,
-        date: p.deliveredAt ?? null,
-      });
-    }
-  }
-
-  const contractors = [...ledgers.values()].map((l) => {
-    const owed = l.lines.filter((x) => x.delivered).reduce((s, x) => s + x.amount, 0);
-    const upcoming = l.lines.filter((x) => !x.delivered).reduce((s, x) => s + x.amount, 0);
-    return { ...l, owed, upcoming };
-  });
-
-  const totalOwed = contractors.reduce((s, c) => s + c.owed, 0);
-  const totalUpcoming = contractors.reduce((s, c) => s + c.upcoming, 0);
+  const prev = shiftPeriod(startKey, -1);
+  const next = shiftPeriod(startKey, 1);
+  const current = payPeriodFor();
+  const isCurrent = startKey === current.startKey;
+  const fmtRange = (a: string, b: string) =>
+    `${fmtKey(a, { month: "short", day: "numeric" })} – ${fmtKey(b, { month: "short", day: "numeric", year: "numeric" })}`;
 
   return (
     <div>
       <PageHeader
-        title="Contractor Payouts"
-        subtitle={`Photographers ${Math.round(PAYOUT_RULES.photographerPct * 100)}% · editors ${Math.round(
-          PAYOUT_RULES.editorPct * 100,
-        )}% of order`}
-        actions={<Badge soft="var(--surface-2)">Stripe transfers — coming with integrations</Badge>}
+        title="Payouts"
+        subtitle="Photographer shoot pay + mileage, calculated from your rates"
+        actions={
+          flagCount > 0
+            ? <Badge color="#d97706" soft="#fef3c7">{flagCount} to review</Badge>
+            : <Badge soft="var(--surface-2)">{isCurrent ? "Current period" : "Past period"}</Badge>
+        }
       />
-      <div className="space-y-6 p-6">
-        <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
-          <div className="rounded-2xl border bg-surface p-4">
-            <div className="flex items-center gap-2 text-sm text-muted">
-              <Banknote className="size-4 text-success" /> Owed now (delivered)
-            </div>
-            <div className="mt-2 text-2xl font-semibold">{formatMoney(totalOwed)}</div>
+      <div className="space-y-6 p-4 sm:p-6">
+        {/* Period nav */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-1.5">
+            <Link href={`/payouts?start=${prev.startKey}`} className="inline-flex items-center gap-1 rounded-lg border bg-surface px-2.5 py-1.5 text-xs font-medium hover:bg-surface-2">
+              <ChevronLeft className="size-3.5" /> Prev
+            </Link>
+            <span className="px-2 text-sm font-medium">{fmtRange(startKey, endKey)}</span>
+            <Link href={`/payouts?start=${next.startKey}`} className="inline-flex items-center gap-1 rounded-lg border bg-surface px-2.5 py-1.5 text-xs font-medium hover:bg-surface-2">
+              Next <ChevronRight className="size-3.5" />
+            </Link>
+            {!isCurrent && (
+              <Link href="/payouts" className="ml-1 text-xs text-muted hover:text-foreground">Current</Link>
+            )}
           </div>
-          <div className="rounded-2xl border bg-surface p-4">
-            <div className="flex items-center gap-2 text-sm text-muted">
-              <Clock className="size-4 text-accent" /> Upcoming (in production)
-            </div>
-            <div className="mt-2 text-2xl font-semibold">{formatMoney(totalUpcoming)}</div>
-          </div>
-          <div className="rounded-2xl border bg-surface p-4">
-            <div className="flex items-center gap-2 text-sm text-muted">
-              <CheckCircle2 className="size-4 text-brand" /> Contractors
-            </div>
-            <div className="mt-2 text-2xl font-semibold">{contractors.length}</div>
-          </div>
+          <span className="inline-flex items-center gap-1.5 rounded-lg bg-success/10 px-2.5 py-1.5 text-xs font-medium text-success">
+            <CalendarCheck className="size-3.5" /> Pays {fmtKey(payoutKey, { weekday: "short", month: "short", day: "numeric" })}
+          </span>
         </div>
 
-        <div className="space-y-4">
-          {contractors.map((c) => (
-            <div key={c.member.id} className="rounded-2xl border bg-surface">
-              <div className="flex items-center justify-between gap-3 border-b px-5 py-3.5">
-                <div className="flex items-center gap-3">
-                  <Avatar name={c.member.name} color={c.member.avatarColor} size={32} />
-                  <div>
-                    <div className="text-sm font-semibold">{c.member.name}</div>
-                    <span className="text-xs" style={{ color: ROLE_META[c.member.role].color }}>
-                      {ROLE_META[c.member.role].label}
-                    </span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-4 text-right">
-                  {c.upcoming > 0 && (
-                    <div>
-                      <div className="text-xs text-muted">Upcoming</div>
-                      <div className="text-sm font-medium text-accent">{formatMoney(c.upcoming)}</div>
-                    </div>
-                  )}
-                  <div>
-                    <div className="text-xs text-muted">Owed now</div>
-                    <div className="text-base font-semibold text-success">{formatMoney(c.owed)}</div>
-                  </div>
-                  <button
-                    disabled
-                    title="Available once Stripe is connected"
-                    className="cursor-not-allowed rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-brand-fg opacity-50"
-                  >
-                    Pay out
-                  </button>
-                </div>
-              </div>
-              <div className="divide-y">
-                {c.lines
-                  .sort((a, b) => Number(b.delivered) - Number(a.delivered))
-                  .map((line, i) => (
-                    <div key={i} className="flex items-center justify-between px-5 py-2.5 text-sm">
-                      <div className="flex items-center gap-2">
-                        <Link href={`/projects/${line.projectId}`} className="font-medium hover:underline">
-                          {line.title}
-                        </Link>
-                        <Badge soft="var(--surface-2)">{line.role}</Badge>
-                        {line.delivered ? (
-                          <Badge color="#16a34a" soft="#dcfce7">
-                            Delivered
-                          </Badge>
-                        ) : (
-                          <Badge color="#0ea5e9" soft="#e0f2fe">
-                            In production
-                          </Badge>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-3">
-                        {line.date && (
-                          <span className="text-xs text-muted">{format(line.date, "MMM d")}</span>
-                        )}
-                        <span className="font-semibold">{formatMoney(line.amount)}</span>
-                      </div>
-                    </div>
-                  ))}
-              </div>
-            </div>
-          ))}
+        {/* Totals */}
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
+          <Stat icon={<Banknote className="size-4 text-success" />} label="Period total" value={usd(grandTotal)} />
+          <Stat icon={<Car className="size-4 text-accent" />} label="Mileage in total" value={usd(mileageTotal)} />
+          <Stat icon={<SlidersHorizontal className="size-4 text-brand" />} label="Photographers" value={String(people.length)} />
         </div>
+
+        {/* Unassigned shoots — nobody is being paid for these */}
+        {unassigned.length > 0 && (
+          <div className="rounded-2xl border border-warning/40 bg-warning/5 p-4">
+            <div className="flex items-center gap-2 text-sm font-semibold text-warning">
+              <AlertTriangle className="size-4" /> {unassigned.length} shoot{unassigned.length === 1 ? "" : "s"} this period have no photographer assigned
+            </div>
+            <p className="mt-0.5 text-xs text-muted">Nobody is being paid for these — assign a photographer on the project so they're counted.</p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {unassigned.slice(0, 12).map((u) => (
+                <Link key={u.id} href={`/projects/${u.id}`} className="rounded-lg border bg-surface px-2 py-1 text-xs hover:bg-surface-2">
+                  {u.title.split(",")[0]}{u.shootISO ? ` · ${new Date(u.shootISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}` : ""}
+                </Link>
+              ))}
+              {unassigned.length > 12 && <span className="px-1 py-1 text-xs text-muted">+{unassigned.length - 12} more</span>}
+            </div>
+          </div>
+        )}
+
+        {people.length === 0 ? (
+          <div className="rounded-2xl border border-dashed bg-surface p-10 text-center text-sm text-muted">
+            No shoots in this period. Use the date range above to pick a pay period.
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {people.map((p) => (
+              <PayoutCard key={p.member.id} person={p} periodStartISO={start.toISOString()} />
+            ))}
+          </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+function Stat({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border bg-surface p-4">
+      <div className="flex items-center gap-2 text-sm text-muted">{icon} {label}</div>
+      <div className="mt-2 text-2xl font-semibold">{value}</div>
     </div>
   );
 }

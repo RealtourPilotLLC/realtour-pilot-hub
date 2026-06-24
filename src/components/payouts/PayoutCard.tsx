@@ -1,0 +1,262 @@
+"use client";
+
+import { useState, useTransition } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import {
+  Camera, Car, SlidersHorizontal, ChevronDown, AlertTriangle, Loader2, Plus, X, RefreshCw, FileDown,
+} from "lucide-react";
+import { Avatar } from "@/components/ui/Avatar";
+import { usd } from "@/lib/money";
+import type { PayrollPerson, PayrollJob } from "@/lib/payroll";
+import { setJobOverride, addAdjustment, removeAdjustment, recomputeMileage, creativeStatementHtml } from "@/app/payouts/actions";
+
+function fmtDay(iso: string | null): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" });
+}
+
+export function PayoutCard({ person, periodStartISO }: { person: PayrollPerson; periodStartISO: string }) {
+  const router = useRouter();
+  const [busy, start] = useTransition();
+  const [exporting, startExport] = useTransition();
+  const refresh = () => router.refresh();
+
+  // Open a clean, print-ready statement for the creative (no overrides/flags).
+  // Window is opened synchronously on click to dodge pop-up blockers, then filled.
+  function exportStatement() {
+    const w = window.open("", "_blank");
+    startExport(async () => {
+      const r = await creativeStatementHtml(person.member.id, periodStartISO.slice(0, 10));
+      if (r.ok && r.html && w) { w.document.write(r.html); w.document.close(); }
+      else { w?.close(); router.refresh(); }
+    });
+  }
+
+  return (
+    <div className="rounded-2xl border bg-surface">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-3.5">
+        <div className="flex items-center gap-3">
+          <Avatar name={person.member.name} color={person.member.avatarColor} size={36} />
+          <div>
+            <div className="text-sm font-semibold">{person.member.name}</div>
+            <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted">
+              {person.configured ? (
+                <span>{Math.round((person.payPercent ?? 0) * 100)}% · min {usd(person.payFloor)} · ${person.mileageRate}/mi over {person.homeRadiusMi}mi</span>
+              ) : (
+                <Link href={`/team/${person.member.id}`} className="inline-flex items-center gap-1 text-warning hover:underline">
+                  <AlertTriangle className="size-3" /> Set pay rates
+                </Link>
+              )}
+              {person.configured && !person.hasHome && (
+                <Link href={`/team/${person.member.id}`} className="inline-flex items-center gap-1 text-warning hover:underline">
+                  <AlertTriangle className="size-3" /> Add home address for mileage
+                </Link>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          {person.issues.some((i) => i.level === "warn") && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-1 text-[11px] font-medium text-warning">
+              <AlertTriangle className="size-3" /> {person.issues.filter((i) => i.level === "warn").length} to review
+            </span>
+          )}
+          <div className="text-right">
+            <div className="text-[11px] text-muted">Period total</div>
+            <div className="text-xl font-semibold text-success">{usd(person.total)}</div>
+          </div>
+          <button
+            onClick={exportStatement}
+            disabled={exporting}
+            title="Export a clean statement for the creative"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-surface-2 disabled:opacity-60"
+          >
+            {exporting ? <Loader2 className="size-3.5 animate-spin" /> : <FileDown className="size-3.5" />} Statement
+          </button>
+        </div>
+      </div>
+
+      {/* Discrepancies / issues */}
+      {person.issues.length > 0 && (
+        <div className="space-y-1.5 border-t border-border px-5 py-3">
+          {person.issues.map((iss, i) => (
+            <div key={i} className={`flex items-start gap-1.5 text-xs ${iss.level === "warn" ? "text-warning" : "text-muted"}`}>
+              <AlertTriangle className={`mt-0.5 size-3.5 shrink-0 ${iss.level === "warn" ? "" : "text-muted-2"}`} />
+              {iss.projectId ? (
+                <Link href={`/projects/${iss.projectId}`} className="hover:underline">{iss.message}</Link>
+              ) : (
+                <span>{iss.message}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Breakdown chips */}
+      <div className="flex flex-wrap gap-2 px-5 py-3 text-xs">
+        <Chip icon={<Camera className="size-3.5" />} label="Shoot pay" value={usd(person.shootPayTotal)} />
+        <Chip icon={<Car className="size-3.5" />} label="Mileage" value={usd(person.mileageTotal)} />
+        <Chip icon={<SlidersHorizontal className="size-3.5" />} label="Adjustments" value={usd(person.adjustmentTotal)} />
+      </div>
+
+      {/* Jobs */}
+      <details className="border-t border-border px-5 py-3" open>
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs font-medium text-brand">
+          <ChevronDown className="size-3.5" /> Shoots ({person.jobs.length})
+        </summary>
+        <div className="mt-2 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-[11px] uppercase tracking-wide text-muted-2">
+                <th className="py-1 pr-2 font-medium">Date</th>
+                <th className="py-1 pr-2 font-medium">Property</th>
+                <th className="py-1 pr-2 text-right font-medium">Invoice</th>
+                <th className="py-1 pr-2 text-right font-medium">Shoot</th>
+                <th className="py-1 pr-2 text-right font-medium">Mileage</th>
+                <th className="py-1 pr-2 text-right font-medium">Total</th>
+                <th className="py-1 font-medium"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {person.jobs.map((j) => (
+                <JobRow key={j.projectId} job={j} memberId={person.member.id} busy={busy} run={(fn) => start(async () => { await fn(); refresh(); })} />
+              ))}
+              {person.jobs.length === 0 && (
+                <tr><td colSpan={7} className="py-3 text-center text-xs text-muted">No shoots this period.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </details>
+
+      {/* Daily mileage */}
+      {person.days.length > 0 && (
+        <details className="border-t border-border px-5 py-3">
+          <summary className="flex cursor-pointer list-none items-center justify-between text-xs font-medium text-brand">
+            <span className="inline-flex items-center gap-1.5"><ChevronDown className="size-3.5" /> Daily mileage</span>
+            <button
+              onClick={(e) => { e.preventDefault(); start(async () => { await recomputeMileage(person.member.id); refresh(); }); }}
+              className="inline-flex items-center gap-1 text-[11px] text-muted hover:text-foreground"
+            >
+              {busy ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />} Recompute
+            </button>
+          </summary>
+          <div className="mt-2 space-y-1">
+            {person.days.map((d) => (
+              <div key={d.dayKey} className="flex items-center justify-between gap-2 text-xs">
+                <span className="text-muted">{new Date(d.dayKey + "T12:00:00Z").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}</span>
+                <span className="text-muted-2">
+                  {d.miles.toFixed(1)} mi − {d.freeMiles} free = <span className="text-foreground">{d.payableMiles.toFixed(1)} paid</span> · {d.jobs} job{d.jobs === 1 ? "" : "s"}
+                </span>
+                <span className="font-medium">{usd(d.mileagePay)}</span>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+
+      {/* Adjustments */}
+      <details className="border-t border-border px-5 py-3">
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs font-medium text-brand">
+          <ChevronDown className="size-3.5" /> Manual adjustments ({person.adjustments.length})
+        </summary>
+        <div className="mt-2 space-y-1.5">
+          {person.adjustments.map((a) => (
+            <div key={a.id} className="flex items-center justify-between gap-2 text-sm">
+              <span className="min-w-0 flex-1 truncate">{a.label} <span className="text-[11px] text-muted-2">· {fmtDay(a.dateISO)}</span></span>
+              <span className={a.amount < 0 ? "text-danger" : "text-success"}>{a.amount < 0 ? "−" : "+"}{usd(Math.abs(a.amount))}</span>
+              <button onClick={() => start(async () => { await removeAdjustment(a.id); refresh(); })} className="text-muted-2 hover:text-danger"><X className="size-3.5" /></button>
+            </div>
+          ))}
+          <AdjustmentForm memberId={person.member.id} defaultDateISO={periodStartISO} busy={busy} run={(fn) => start(async () => { await fn(); refresh(); })} />
+        </div>
+      </details>
+    </div>
+  );
+}
+
+function Chip({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-lg bg-surface-2 px-2.5 py-1">
+      <span className="text-muted-2">{icon}</span>
+      <span className="text-muted">{label}</span>
+      <span className="font-semibold">{value}</span>
+    </span>
+  );
+}
+
+function JobRow({ job, memberId, busy, run }: { job: PayrollJob; memberId: string; busy: boolean; run: (fn: () => Promise<unknown>) => void }) {
+  const [open, setOpen] = useState(false);
+  const [invoice, setInvoice] = useState(job.override?.invoiceOverride != null ? String(job.override.invoiceOverride) : "");
+  const [flat, setFlat] = useState(job.override?.flatAmount != null ? String(job.override.flatAmount) : "");
+  const [noMileage, setNoMileage] = useState(!!job.override?.noMileage);
+  const [excluded, setExcluded] = useState(!!job.override?.excluded);
+  const [note, setNote] = useState(job.override?.note ?? "");
+
+  const save = () =>
+    run(() => setJobOverride(job.projectId, memberId, {
+      invoiceOverride: invoice.trim() ? Number(invoice) : null,
+      flatAmount: flat.trim() ? Number(flat) : null,
+      noMileage, excluded, note: note.trim() || null,
+    }));
+  const clear = () => run(() => setJobOverride(job.projectId, memberId, {}));
+
+  return (
+    <>
+      <tr className="border-t border-border/60">
+        <td className="py-1.5 pr-2 text-muted whitespace-nowrap">{fmtDay(job.shootISO)}</td>
+        <td className="py-1.5 pr-2"><Link href={`/projects/${job.projectId}`} className="hover:text-brand">{job.title.split(",")[0]}</Link>{job.override && <span className="ml-1 rounded bg-warning/15 px-1 text-[10px] font-medium text-warning">override</span>}</td>
+        <td className="py-1.5 pr-2 text-right text-muted-2">{usd(job.invoice)}{job.invoiceOverridden ? <span title="invoice manually set" className="text-warning">†</span> : job.invoiceIsFallback ? "*" : ""}</td>
+        <td className="py-1.5 pr-2 text-right">{usd(job.shootPay)}</td>
+        <td className="py-1.5 pr-2 text-right text-muted-2">{job.override?.noMileage ? "—" : usd(job.mileageShare)}</td>
+        <td className="py-1.5 pr-2 text-right font-semibold">{usd(job.jobTotal)}</td>
+        <td className="py-1.5 text-right"><button onClick={() => setOpen((o) => !o)} className="text-[11px] text-muted hover:text-foreground">{open ? "Close" : "Edit"}</button></td>
+      </tr>
+      {open && (
+        <tr className="bg-surface-2/40">
+          <td colSpan={7} className="px-2 py-3">
+            <div className="flex flex-wrap items-end gap-3 text-xs">
+              <label className="flex flex-col gap-1">
+                <span className="text-muted-2">Invoice total ($)</span>
+                <input value={invoice} onChange={(e) => setInvoice(e.target.value)} inputMode="decimal" placeholder="auto" className="w-24 rounded-lg border bg-surface px-2 py-1" />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-muted-2">Flat shoot pay ($)</span>
+                <input value={flat} onChange={(e) => setFlat(e.target.value)} inputMode="decimal" placeholder="auto" className="w-24 rounded-lg border bg-surface px-2 py-1" />
+              </label>
+              <label className="flex items-center gap-1.5"><input type="checkbox" checked={noMileage} onChange={(e) => setNoMileage(e.target.checked)} /> No mileage</label>
+              <label className="flex items-center gap-1.5"><input type="checkbox" checked={excluded} onChange={(e) => setExcluded(e.target.checked)} /> Exclude job</label>
+              <label className="flex flex-1 flex-col gap-1">
+                <span className="text-muted-2">Note</span>
+                <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. partial completion" className="w-full rounded-lg border bg-surface px-2 py-1" />
+              </label>
+              <button onClick={save} disabled={busy} className="rounded-lg bg-brand px-2.5 py-1 font-medium text-white disabled:opacity-60">Save</button>
+              {job.override && <button onClick={clear} disabled={busy} className="rounded-lg border px-2.5 py-1 text-muted hover:text-foreground">Clear</button>}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function AdjustmentForm({ memberId, defaultDateISO, busy, run }: { memberId: string; defaultDateISO: string; busy: boolean; run: (fn: () => Promise<unknown>) => void }) {
+  const [label, setLabel] = useState("");
+  const [amount, setAmount] = useState("");
+  const [date, setDate] = useState(defaultDateISO.slice(0, 10));
+  const add = () => {
+    if (!label.trim() || !amount.trim()) return;
+    run(() => addAdjustment(memberId, label.trim(), Number(amount), new Date(date + "T12:00:00").toISOString()));
+    setLabel(""); setAmount("");
+  };
+  return (
+    <div className="flex flex-wrap items-end gap-2 border-t border-border pt-2 text-xs">
+      <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Bonus / camera payback…" className="flex-1 rounded-lg border bg-surface px-2 py-1.5" />
+      <input value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" placeholder="± $" className="w-20 rounded-lg border bg-surface px-2 py-1.5" />
+      <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="rounded-lg border bg-surface px-2 py-1.5" />
+      <button onClick={add} disabled={busy} className="inline-flex items-center gap-1 rounded-lg bg-brand px-2.5 py-1.5 font-medium text-white disabled:opacity-60"><Plus className="size-3.5" /> Add</button>
+    </div>
+  );
+}

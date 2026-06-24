@@ -1,34 +1,44 @@
 "use client";
 
 import { useState, useRef, useTransition } from "react";
-import { Send, Sparkles, BookOpen, ExternalLink, User } from "lucide-react";
-import { askHub, type HubAnswer } from "@/app/assistant/actions";
+import { Send, Sparkles, BookOpen, Database, User, ShieldCheck } from "lucide-react";
+import { askHub, type HubAnswer, type HubTurn, type HubRole } from "@/app/assistant/actions";
+
+const ROLES: { value: HubRole; label: string; hint: string }[] = [
+  { value: "OWNER", label: "Owner (you)", hint: "sees everything" },
+  { value: "ADMIN", label: "Admin (Kyle)", hint: "no owner finances/strategy" },
+  { value: "CREATIVE", label: "Creative", hint: "craft & shoot info only" },
+];
 
 type Msg =
   | { role: "user"; text: string }
   | { role: "hub"; text: string; sources: HubAnswer["sources"] };
 
 const SUGGESTIONS = [
-  "What's the standard photo shoot checklist?",
-  "How do we handle twilight shoots?",
-  "What's our editing standard?",
-  "How do we deliver galleries?",
+  "What's shooting today?",
+  "What's overdue right now?",
+  "Who owes us money?",
+  "What got delivered today?",
+  "Anything in revision?",
 ];
 
 function renderText(text: string) {
-  // very small **bold** + newline renderer
-  return text.split("\n").map((line, i) => {
-    const parts = line.split(/(\*\*[^*]+\*\*)/g);
-    return (
-      <p key={i} className={line.trim() === "" ? "h-2" : "leading-relaxed"}>
-        {parts.map((p, j) =>
-          p.startsWith("**") && p.endsWith("**") ? (
-            <strong key={j}>{p.slice(2, -2)}</strong>
-          ) : (
-            <span key={j}>{p}</span>
-          ),
-        )}
-      </p>
+  // Lightweight renderer: blank lines → spacing, "- "/"* " → bullets, **bold**.
+  return text.split("\n").map((raw, i) => {
+    const line = raw.replace(/\s+$/, "");
+    if (line.trim() === "") return <div key={i} className="h-2" />;
+    const bullet = /^\s*[-*]\s+/.test(line);
+    const content = bullet ? line.replace(/^\s*[-*]\s+/, "") : line;
+    const parts = content.split(/(\*\*[^*]+\*\*)/g).map((p, j) =>
+      p.startsWith("**") && p.endsWith("**") ? <strong key={j}>{p.slice(2, -2)}</strong> : <span key={j}>{p}</span>,
+    );
+    return bullet ? (
+      <div key={i} className="flex gap-2 leading-relaxed">
+        <span className="mt-2 size-1.5 shrink-0 rounded-full bg-brand/60" />
+        <span>{parts}</span>
+      </div>
+    ) : (
+      <p key={i} className="leading-relaxed">{parts}</p>
     );
   });
 }
@@ -36,16 +46,22 @@ function renderText(text: string) {
 export function AskHub() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [value, setValue] = useState("");
+  const [role, setRole] = useState<HubRole>("OWNER");
   const [isPending, startTransition] = useTransition();
   const scrollRef = useRef<HTMLDivElement>(null);
 
   function send(text: string) {
     const q = text.trim();
-    if (!q) return;
+    if (!q || isPending) return;
+    // Build history from the conversation so far (before this question).
+    const history: HubTurn[] = messages.map((m) => ({
+      role: m.role === "user" ? "user" : "assistant",
+      content: m.text,
+    }));
     setMessages((m) => [...m, { role: "user", text: q }]);
     setValue("");
     startTransition(async () => {
-      const res = await askHub(q);
+      const res = await askHub(q, history, role);
       setMessages((m) => [...m, { role: "hub", text: res.answer, sources: res.sources }]);
       requestAnimationFrame(() =>
         scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }),
@@ -55,6 +71,23 @@ export function AskHub() {
 
   return (
     <div className="mx-auto flex h-[calc(100vh-8.5rem)] max-w-3xl flex-col p-6">
+      <div className="mb-3 flex items-center justify-end gap-2">
+        <span className="inline-flex items-center gap-1 text-xs text-muted">
+          <ShieldCheck className="size-3.5 text-brand" /> Viewing as
+        </span>
+        <select
+          value={role}
+          onChange={(e) => setRole(e.target.value as HubRole)}
+          className="rounded-lg border bg-surface px-2 py-1 text-xs font-medium focus:outline-none"
+          title="What this role is allowed to see. Private knowledge is filtered out for lower roles. Real per-user enforcement arrives with user accounts."
+        >
+          {ROLES.map((r) => (
+            <option key={r.value} value={r.value}>
+              {r.label} — {r.hint}
+            </option>
+          ))}
+        </select>
+      </div>
       <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto scroll-thin pr-1">
         {messages.length === 0 && (
           <div className="rounded-2xl border bg-surface p-6 text-center">
@@ -63,9 +96,8 @@ export function AskHub() {
             </span>
             <h2 className="font-semibold">Ask the Hub</h2>
             <p className="mx-auto mt-1 max-w-md text-sm text-muted">
-              Ask about how we work — shooting, editing, delivery, sales. Today I answer
-              from your SOPs &amp; resources. Soon I&apos;ll learn from your real
-              conversations to match how you actually handle things.
+              Ask anything about your live operation — shoots, clients, the schedule, to-dos,
+              billing, or how the team handles something. I read straight from your hub data.
             </p>
             <div className="mt-4 flex flex-wrap justify-center gap-2">
               {SUGGESTIONS.map((s) => (
@@ -102,27 +134,17 @@ export function AskHub() {
                 <div className="rounded-2xl rounded-tl-sm border bg-surface px-4 py-3 text-sm text-foreground/90">
                   <div className="space-y-0.5">{renderText(m.text)}</div>
                   {m.sources.length > 0 && (
-                    <div className="mt-3 flex flex-wrap gap-1.5 border-t pt-2">
-                      {m.sources.map((s, j) =>
-                        s.href ? (
-                          <a
-                            key={j}
-                            href={s.href}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted hover:text-foreground"
-                          >
-                            <ExternalLink className="size-3" /> {s.title}
-                          </a>
-                        ) : (
-                          <span
-                            key={j}
-                            className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted"
-                          >
-                            <BookOpen className="size-3" /> {s.title}
-                          </span>
-                        ),
-                      )}
+                    <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t pt-2">
+                      <span className="text-[11px] uppercase tracking-wide text-muted-2">Looked at</span>
+                      {m.sources.map((s, j) => (
+                        <span
+                          key={j}
+                          className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted"
+                        >
+                          {s.kind === "knowledge" ? <BookOpen className="size-3" /> : <Database className="size-3" />}
+                          {s.title}
+                        </span>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -136,6 +158,7 @@ export function AskHub() {
             <span className="size-1.5 animate-bounce rounded-full bg-muted-2 [animation-delay:-0.2s]" />
             <span className="size-1.5 animate-bounce rounded-full bg-muted-2 [animation-delay:-0.1s]" />
             <span className="size-1.5 animate-bounce rounded-full bg-muted-2" />
+            <span className="ml-1 text-xs text-muted-2">checking your data…</span>
           </div>
         )}
       </div>
@@ -151,7 +174,7 @@ export function AskHub() {
             }
           }}
           rows={1}
-          placeholder="Ask about shooting, editing, delivery, sales…"
+          placeholder="Ask about shoots, clients, schedule, to-dos, billing…"
           className="flex-1 resize-none bg-transparent px-2 py-1.5 text-sm focus:outline-none"
         />
         <button

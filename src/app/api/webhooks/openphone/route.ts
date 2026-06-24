@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { phoneKey, callTranscriptText, type OpTranscriptLine } from "@/lib/integrations/openphone";
-import { resolveClientByPhones } from "@/lib/contacts";
+import { resolveClientByPhones, resolveSenderName, findActiveProjectByText } from "@/lib/contacts";
 import { recordClientCommunication } from "@/lib/comms";
 
 export const runtime = "nodejs";
@@ -81,36 +81,99 @@ async function processOpenPhoneEvent(type: string, payload: Record<string, unkno
   // synced contact's alternate number) + their most recent project.
   const phones = [...new Set(collectPhones(data).map((p) => phoneKey(p)).filter((k) => k.length === 10))];
   if (phones.length === 0) return;
-  const match = await resolveClientByPhones(phones);
-  if (!match) return;
-  const { clientId, clientName, project } = match;
 
   const isCall = type.startsWith("call");
   const direction = (data.direction as string) || "";
   const incoming = direction.toLowerCase().startsWith("in");
   const text = (data.text as string) || (data.body as string) || "";
+  const isInboundText = type === "message.received" || (!isCall && incoming);
 
-  // Timeline log on the client's project (if any).
-  if (project) {
-    const body = isCall
-      ? `OpenPhone: ${direction || "call"} call (${type.replace("call.", "")}).`
-      : `OpenPhone ${direction || ""} text: ${text.slice(0, 140)}`.trim();
-    await prisma.activity.create({ data: { projectId: project.id, type: "SYSTEM", body } });
+  const match = await resolveClientByPhones(phones);
+
+  // --- Client path: log + reply task + revision detection (when we know the client).
+  if (match) {
+    const { clientId, clientName, project } = match;
+
+    if (project) {
+      const body = isCall
+        ? `OpenPhone: ${direction || "call"} call (${type.replace("call.", "")}).`
+        : `OpenPhone ${direction || ""} text: ${text.slice(0, 140)}`.trim();
+      await prisma.activity.create({ data: { projectId: project.id, type: "SYSTEM", body } });
+    }
+
+    if (isInboundText) {
+      await recordClientCommunication({
+        clientId,
+        clientName,
+        projectId: project?.id,
+        projectStatus: project?.status ?? null,
+        propertyAddress: project?.title ?? null,
+        text,
+        kind: "text",
+        source: "openphone",
+      });
+    }
+
+    // We replied (outbound) → client isn't waiting; close any open reply task.
+    if (!isCall && direction.toLowerCase().startsWith("out")) {
+      const { closeClientReplyTask } = await import("@/lib/tasks");
+      await closeClientReplyTask(clientId);
+    }
   }
 
-  // Listener-first: an inbound text becomes a tracked "reply" task in Daily
-  // Tasks, and is cross-checked for a revision/change request on delivered jobs.
-  if (type === "message.received" || (!isCall && incoming)) {
-    await recordClientCommunication({
-      clientId,
-      clientName,
-      projectId: project?.id,
-      projectStatus: project?.status ?? null,
-      propertyAddress: project?.title ?? null,
-      text,
-      kind: "text",
-      source: "openphone",
-    });
+  // --- Smart project routing: an inbound text that NAMES a specific job, sent
+  // by a known person other than that job's own client (a photographer like
+  // Harrison, a coordinator like Ruthie), becomes an instruction task on that
+  // exact project. Works even when the sender isn't a client at all.
+  if (isInboundText && text.trim()) {
+    const fromPhone = phoneKey((data.from as string) || "");
+    if (fromPhone.length === 10) {
+      const [sender, hitProject] = await Promise.all([
+        resolveSenderName(fromPhone),
+        findActiveProjectByText(text),
+      ]);
+      // Don't make tasks from automated/system senders (Aryeo reminders,
+      // no-reply alerts, etc.) — they're notifications, not human instructions.
+      const automated = !!sender && /aryeo|notif|no-?reply|do-?not-?reply|automat|alert|reminder|noreply|system|notify/i.test(sender.name);
+      // Skip when it's the client texting about the same project the reply task
+      // already covers (no duplicate); otherwise file it on the named project.
+      if (sender && !automated && hitProject && hitProject.id !== match?.project?.id) {
+        let aiTitle: string | null = null;
+        let aiDetail: string | null = null;
+        try {
+          const { getSecret } = await import("@/lib/integrations/connections");
+          if (await getSecret("ai")) {
+            const { messageToTodo } = await import("@/lib/integrations/ai");
+            const todo = await messageToTodo({
+              channel: "text",
+              clientName: sender.name,
+              propertyAddress: hitProject.title,
+              message: text,
+            });
+            if (todo && !/no action needed/i.test(todo.title)) {
+              aiTitle = todo.title;
+              aiDetail = todo.detail;
+            }
+          }
+        } catch {
+          /* fall back to a generic title */
+        }
+        const { createProjectFollowupTask } = await import("@/lib/tasks");
+        await createProjectFollowupTask({
+          projectId: hitProject.id,
+          clientId: hitProject.clientId,
+          propertyAddress: hitProject.title,
+          senderName: sender.name,
+          text,
+          source: "openphone",
+          aiTitle,
+          aiDetail,
+        });
+        await prisma.activity.create({
+          data: { projectId: hitProject.id, type: "NOTE", body: `${sender.name} (text): ${text.slice(0, 220)}` },
+        });
+      }
+    }
   }
 }
 

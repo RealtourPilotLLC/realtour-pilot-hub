@@ -5,21 +5,22 @@ import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { prisma } from "@/lib/prisma";
 import { stageMeta } from "@/lib/pipeline";
+import { etDayStartUtc, etAddDays, etFullDate, etTime } from "@/lib/datetime";
 
 export const dynamic = "force-dynamic";
 
-function dayKey(d: Date) {
-  return d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
-}
+const WINDOW_DAYS = 60;
 
 export default async function SchedulePage() {
-  const startToday = new Date(new Date().toDateString());
+  const startToday = etDayStartUtc(new Date());
+  const windowEnd = etDayStartUtc(etAddDays(new Date(), WINDOW_DAYS));
 
   // Driven off APPOINTMENTS so an order with multiple visits shows each shoot on
   // its own day, with the photographer assigned to that specific appointment.
+  // Bounded to the next WINDOW_DAYS so the list can't balloon unbounded.
   const appts = await prisma.appointment.findMany({
     where: {
-      startAt: { gte: startToday },
+      startAt: { gte: startToday, lt: windowEnd },
       status: { not: "CANCELED" },
       project: { status: { notIn: ["CANCELLED", "DELIVERED"] } },
     },
@@ -32,7 +33,7 @@ export default async function SchedulePage() {
 
   const groups = new Map<string, typeof appts>();
   for (const a of appts) {
-    const k = dayKey(a.startAt!);
+    const k = etFullDate(a.startAt!);
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k)!.push(a);
   }
@@ -41,11 +42,10 @@ export default async function SchedulePage() {
     <div>
       <PageHeader
         title="Schedule"
-        subtitle={`${appts.length} upcoming shoot${appts.length === 1 ? "" : "s"}`}
-        actions={<Badge soft="var(--surface-2)">From Aryeo appointments</Badge>}
+        subtitle={`${appts.length} upcoming shoot${appts.length === 1 ? "" : "s"} · next ${WINDOW_DAYS} days`}
       />
       <div className="space-y-6 p-6">
-        {appts.length === 0 && <p className="text-sm text-muted">No upcoming shoots scheduled.</p>}
+        {appts.length === 0 && <p className="text-sm text-muted">No shoots scheduled in the next {WINDOW_DAYS} days.</p>}
         {[...groups.entries()].map(([day, items]) => (
           <div key={day}>
             <div className="mb-2 flex items-center gap-2">
@@ -57,7 +57,7 @@ export default async function SchedulePage() {
               {items.map((a) => {
                 const p = a.project;
                 const stage = stageMeta(p.status);
-                const time = a.startAt!.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+                const time = etTime(a.startAt!);
                 return (
                   <Link
                     key={a.id}

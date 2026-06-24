@@ -1,9 +1,11 @@
-import { ShieldCheck, CircleAlert, CheckCircle2, Camera, Video, Ruler, Box, RefreshCcw } from "lucide-react";
+import { ShieldCheck, CircleAlert, CheckCircle2, Camera, Video, Ruler, Box, RefreshCcw, FolderOpen, ExternalLink } from "lucide-react";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { stageMeta } from "@/lib/pipeline";
 import { RevisionResolveButton } from "@/components/project/RevisionResolveButton";
 import { formatDistanceToNow } from "date-fns";
 import type { ProjectStatus } from "@prisma/client";
+
+export type DropboxLink = { label: string; url: string };
 
 // Renders the smart-status engine's reasoning: what was ordered, what's
 // confirmed live on Aryeo / sitting in Dropbox, and what's still missing.
@@ -14,6 +16,8 @@ export function StatusEvidenceCard({
   projectId,
   revisionNote,
   revisionRequestedAt,
+  dropboxLinks,
+  dropboxRootUrl,
 }: {
   status: ProjectStatus;
   evidence: string | null;
@@ -21,6 +25,8 @@ export function StatusEvidenceCard({
   projectId: string;
   revisionNote?: string | null;
   revisionRequestedAt?: Date | null;
+  dropboxLinks?: DropboxLink[];
+  dropboxRootUrl?: string;
 }) {
   const isRevision = status === "REVISION" || !!revisionRequestedAt;
   const e = parseEvidence(evidence);
@@ -140,6 +146,38 @@ export function StatusEvidenceCard({
             </div>
           )}
         </div>
+        )}
+
+        {/* Dropbox folders — jump straight to the raw/final upload folders */}
+        {dropboxLinks && dropboxLinks.length > 0 && (
+          <div>
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Dropbox folders</span>
+              {dropboxRootUrl && (
+                <a
+                  href={dropboxRootUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] font-medium text-brand hover:underline"
+                >
+                  Open listing folder <ExternalLink className="size-3" />
+                </a>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {dropboxLinks.map((f) => (
+                <a
+                  key={f.label}
+                  href={f.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 rounded-md border bg-surface-2/50 px-2 py-1 text-xs text-muted hover:bg-surface-2 hover:text-foreground"
+                >
+                  <FolderOpen className="size-3" /> {f.label}
+                </a>
+              ))}
+            </div>
+          </div>
         )}
 
         {checkedAt && (

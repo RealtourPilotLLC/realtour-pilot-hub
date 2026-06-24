@@ -22,6 +22,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { ProviderDef } from "@/lib/integrations/registry";
+import { etDateTime } from "@/lib/datetime";
 import Link from "next/link";
 import {
   connectAryeo,
@@ -90,7 +91,7 @@ export function ProviderCard({
         <div className="mt-2 text-xs text-muted">
           {conn?.accountLabel && <span>{conn.accountLabel} · </span>}
           {conn?.lastSyncedAt
-            ? `Last sync ${new Date(conn.lastSyncedAt).toLocaleString()}`
+            ? `Last sync ${etDateTime(conn.lastSyncedAt)}`
             : "Not synced yet"}
         </div>
       )}

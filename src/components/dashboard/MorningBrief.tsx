@@ -2,9 +2,9 @@ import Link from "next/link";
 import {
   Sun,
   MessageSquare,
+  MessageSquareText,
   CalendarDays,
   PackageCheck,
-  PhoneCall,
   KanbanSquare,
   CheckCircle2,
   ArrowRight,
@@ -30,13 +30,16 @@ const SOURCE_LABEL: Record<string, string> = {
 
 function dueTime(iso: string | null): string {
   if (!iso) return "";
-  return "by " + new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  return "by " + new Date(iso).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
 }
 
 function TaskRow({ t }: { t: BriefTask }) {
+  // Default to the customer page (full context + reply tools); fall back to the
+  // project, then the queue. Message/reply to-dos are about the person.
+  const href = t.clientId ? `/clients/${t.clientId}` : t.projectId ? `/projects/${t.projectId}` : "/queue";
   return (
     <Link
-      href={t.projectId ? `/projects/${t.projectId}` : "/queue"}
+      href={href}
       className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-surface-2"
     >
       <span className="truncate text-sm">{t.title}</span>
@@ -96,13 +99,21 @@ export function MorningBrief({
   firstName?: string;
 }) {
   const is = (...types: string[]) => tasks.filter((t) => types.includes(t.taskType));
-  const messages = is("client_reply", "internal_instruction", "revision", "lead");
-  const deliver = is("delivery", "media_qa", "finish_delivery", "delivery_text", "feedback_review");
-  const confirm = is("appointment_prep");
+  const messages = is("client_reply", "internal_instruction", "revision", "lead", "vendor_update", "comms_followup");
+  // Sub-group the inbox so like-with-like reads cleanly.
+  const msgGroups = [
+    { label: "Replies needed", items: is("client_reply") },
+    { label: "Revisions", items: is("revision") },
+    { label: "New leads", items: is("lead") },
+    { label: "Job instructions", items: is("comms_followup") },
+    { label: "Editor & vendor", items: is("vendor_update", "internal_instruction") },
+  ].filter((g) => g.items.length > 0);
+  const deliver = is("delivery", "media_qa", "finish_delivery", "delivery_text", "feedback_review", "image_fixes");
+  const confirm = is("confirmation_text", "appointment_prep");
   const total = tasks.length + todayShoots.length;
 
   return (
-    <section className="overflow-hidden rounded-2xl border border-brand/30 bg-gradient-to-br from-brand/[0.08] via-surface to-surface">
+    <section className="panel-shadow overflow-hidden rounded-2xl border border-brand/30 bg-gradient-to-br from-brand/[0.08] via-surface to-surface">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
         <div className="flex items-center gap-2.5">
           <span className="flex size-9 items-center justify-center rounded-xl bg-brand/15 text-brand">
@@ -126,7 +137,16 @@ export function MorningBrief({
         <div className="divide-y divide-border">
           {/* 1. Comms */}
           <Step n={1} icon={MessageSquare} title="Check your messages" count={messages.length} accent="#38bdf8" empty="No messages to handle.">
-            <div className="space-y-0.5">{messages.map((t) => <TaskRow key={t.id} t={t} />)}</div>
+            <div className="space-y-2.5">
+              {msgGroups.map((g) => (
+                <div key={g.label}>
+                  <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-2">
+                    {g.label} <span className="rounded-full bg-surface-2 px-1.5 text-[10px] font-medium">{g.items.length}</span>
+                  </div>
+                  <div className="space-y-0.5">{g.items.map((t) => <TaskRow key={t.id} t={t} />)}</div>
+                </div>
+              ))}
+            </div>
           </Step>
 
           {/* 2. Today's schedule debrief */}
@@ -150,7 +170,7 @@ export function MorningBrief({
           </Step>
 
           {/* 4. Confirm tomorrow */}
-          <Step n={4} icon={PhoneCall} title="Confirm tomorrow's shoots" count={confirm.length + tomorrowShoots.length} accent="#fbbf24" empty="Nothing to confirm.">
+          <Step n={4} icon={MessageSquareText} title="Confirm tomorrow's shoots" count={confirm.length + tomorrowShoots.length} accent="#fbbf24" empty="Nothing to confirm.">
             <div className="space-y-0.5">
               {confirm.map((t) => <TaskRow key={t.id} t={t} />)}
               {tomorrowShoots.map((s) => (

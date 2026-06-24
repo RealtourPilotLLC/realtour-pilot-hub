@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 import { getConnection } from "@/lib/integrations/connections";
-import { Aryeo, syncAryeoOrders } from "@/lib/integrations/aryeo";
+import { Aryeo, syncAryeoOrders, syncAryeoAppointments, syncAryeoSocialPlans, syncAryeoCustomers } from "@/lib/integrations/aryeo";
+import { syncClientSegments } from "@/lib/segmentSync";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,11 +14,16 @@ export const dynamic = "force-dynamic";
 export async function POST(req: NextRequest) {
   const raw = await req.text();
 
-  // Optional signature verification (HMAC-SHA256 of the raw body).
+  // Optional signature verification (HMAC-SHA256 of the raw body). Aryeo signs
+  // with a header literally named `Signature` (see docs: "Setting Up Webhooks").
+  // Verification only runs if we've configured a webhookSecret on the Connection;
+  // it's safe to leave off because processAryeoEvent never trusts the payload's
+  // contents — it re-fetches the authoritative record from Aryeo's API.
   const conn = await getConnection("aryeo");
   const secret = conn?.webhookSecret;
   if (secret) {
     const sig =
+      req.headers.get("signature") ||
       req.headers.get("x-aryeo-signature") ||
       req.headers.get("x-signature") ||
       req.headers.get("aryeo-signature") ||
@@ -28,6 +34,14 @@ export async function POST(req: NextRequest) {
       provided.length === expected.length &&
       crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
     if (!ok) {
+      // Log the rejection so a real-but-mismatched Aryeo signature is VISIBLE
+      // (rather than a silent 401 with no trace) — makes a signing-format
+      // mismatch diagnosable. Best-effort; never block the response on it.
+      try {
+        await prisma.webhookEvent.create({
+          data: { provider: "aryeo", eventType: "signature.rejected", status: "REJECTED", payload: (raw || "{}").slice(0, 2000) },
+        });
+      } catch { /* ignore */ }
       return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
     }
   }
@@ -39,7 +53,11 @@ export async function POST(req: NextRequest) {
     /* keep empty */
   }
 
+  // Real Aryeo activity payload is { object:"ACTIVITY", id, name:"ORDER_FULFILLED",
+  // occurred_at, resource:{ object:"ORDER", id } }. `name` is the event; `id` is
+  // the activity id (used for idempotency). Fall back to older shapes too.
   const eventType =
+    (payload.name as string) ||
     (payload.event as string) ||
     (payload.type as string) ||
     (payload.topic as string) ||
@@ -76,50 +94,94 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ ok: true });
 }
 
-// Pull the affected order id out of a few likely payload shapes.
-function orderIdFrom(payload: Record<string, unknown>): string | undefined {
-  const data = (payload.data ?? payload.resource ?? payload) as Record<string, unknown>;
-  return (
-    (data.order_id as string) ||
-    (data.id as string) ||
-    ((data.order as Record<string, unknown>)?.id as string) ||
-    undefined
-  );
+// The activity's subject — { object:"ORDER"|"LISTING"|"APPOINTMENT"|"CUSTOMER", id }.
+// Falls back to older/flat payload shapes.
+function resourceFrom(payload: Record<string, unknown>): { object: string; id?: string } {
+  const r = (payload.resource ?? payload.data ?? {}) as Record<string, unknown>;
+  const object = String((r.object as string) || (payload.resource_type as string) || "").toUpperCase();
+  const id =
+    (r.id as string) ||
+    (r.order_id as string) ||
+    (payload.resource_id as string) ||
+    ((r.order as Record<string, unknown>)?.id as string) ||
+    undefined;
+  return { object, id };
 }
 
-async function processAryeoEvent(eventType: string, payload: Record<string, unknown>) {
-  const type = eventType.toLowerCase();
+async function restatusProject(projectId: string) {
+  const { syncProjectStatuses } = await import("@/lib/projectStatus");
+  await syncProjectStatuses({ projectId });
+}
 
-  // Media delivered / order fulfilled → mark the matching project Delivered.
-  if (type.includes("fulfil") || type.includes("media") || type.includes("deliver")) {
-    const orderId = orderIdFrom(payload);
-    if (orderId) {
-      const project = await prisma.project.findUnique({ where: { aryeoOrderId: orderId } });
-      if (project && project.status !== "DELIVERED") {
-        await prisma.project.update({
-          where: { id: project.id },
-          data: { status: "DELIVERED", deliveredAt: new Date() },
-        });
-        await prisma.activity.create({
-          data: { projectId: project.id, type: "SYSTEM", body: `Aryeo: ${eventType} → marked Delivered.` },
-        });
-      }
+// Routes a real Aryeo activity. Aryeo's webhook API is create-only (no list /
+// delete), and the verified event names are: ORDER_CREATED/FULFILLED/PAID,
+// LISTING_UPDATED, APPOINTMENT_SCHEDULED/ASSIGNED/RESCHEDULED/CANCELED,
+// CUSTOMER_CREATED/UPDATED. We route on the resource type first, then the verb,
+// and always re-fetch authoritative data from Aryeo rather than trusting the body.
+async function processAryeoEvent(eventType: string, payload: Record<string, unknown>) {
+  const name = eventType.toUpperCase();
+  const { object, id } = resourceFrom(payload);
+
+  // ORDER_* — new order, fulfilled (delivery), or paid (billing). Re-fetch the
+  // single order, refresh the order table, and on a fulfil/deliver/paid event
+  // re-run the smart status engine for that project (cross-checks real media).
+  if (object === "ORDER" || name.startsWith("ORDER")) {
+    if (id) { try { await Aryeo.order(id); } catch { /* fall through to full sync */ } }
+    await syncAryeoOrders();
+    if (id && (name.includes("FULFIL") || name.includes("DELIVER") || name.includes("PAID"))) {
+      const project = await prisma.project.findUnique({ where: { aryeoOrderId: id }, select: { id: true } });
+      if (project) { try { await restatusProject(project.id); } catch { /* non-fatal */ } }
     }
+    try { await syncClientSegments(); } catch { /* non-fatal */ }
     return;
   }
 
-  // New/updated order or customer → re-sync (creates or refreshes records).
-  if (type.includes("order") || type.includes("customer") || type.includes("invoice")) {
-    const orderId = orderIdFrom(payload);
-    if (orderId) {
-      // Fetch the single order and let the sync upsert path handle it.
-      try {
-        await Aryeo.order(orderId);
-      } catch {
-        /* fall through to full sync */
-      }
+  // LISTING_* — media/listing changed. Re-check that project's status live so a
+  // delivered gallery or added media flows through immediately.
+  if (object === "LISTING" || name.startsWith("LISTING")) {
+    if (id) {
+      const project = await prisma.project.findFirst({ where: { aryeoListingId: id }, select: { id: true } });
+      if (project) { try { await restatusProject(project.id); } catch { /* non-fatal */ } return; }
     }
+    await syncAryeoOrders(); // listing may not be linked yet — refresh orders
+    return;
+  }
+
+  // APPOINTMENT_* — scheduled / assigned / rescheduled / canceled. Refresh the
+  // appointment-driven schedule + morning brief, then orders so the shoot date follows.
+  if (object === "APPOINTMENT" || name.startsWith("APPOINTMENT")) {
+    try { await syncAryeoAppointments(); } catch { /* non-fatal */ }
     await syncAryeoOrders();
+    return;
+  }
+
+  // CUSTOMER_* (or USER) — new/updated client. Re-enrich, re-score segments, and
+  // refresh social-content plans. Each only writes the rows that actually changed.
+  if (object === "CUSTOMER" || object === "USER" || name.startsWith("CUSTOMER")) {
+    try { await syncAryeoCustomers(); } catch { /* non-fatal */ }
+    try { await syncClientSegments(); } catch { /* non-fatal */ }
+    try { await syncAryeoSocialPlans(); } catch { /* non-fatal */ }
+    return;
+  }
+
+  // Unknown / legacy shape — fall back to substring routing so nothing is dropped.
+  const type = name.toLowerCase();
+  if (type.includes("fulfil") || type.includes("media") || type.includes("deliver")) {
+    if (id) {
+      const project = await prisma.project.findUnique({ where: { aryeoOrderId: id }, select: { id: true } });
+      if (project) { try { await restatusProject(project.id); } catch { /* non-fatal */ } }
+    }
+    return;
+  }
+  if (type.includes("appointment") || type.includes("schedul") || type.includes("booking")) {
+    try { await syncAryeoAppointments(); } catch { /* non-fatal */ }
+    await syncAryeoOrders();
+    return;
+  }
+  if (type.includes("order") || type.includes("customer") || type.includes("invoice")) {
+    if (id) { try { await Aryeo.order(id); } catch { /* non-fatal */ } }
+    await syncAryeoOrders();
+    try { await syncClientSegments(); } catch { /* non-fatal */ }
     return;
   }
 }

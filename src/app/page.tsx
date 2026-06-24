@@ -14,7 +14,8 @@ import { Badge } from "@/components/ui/Badge";
 import { getDashboardData, getMorningBrief, getOverdueTasks, getShootWindow } from "@/lib/queries";
 import { MorningBrief, type BriefShoot } from "@/components/dashboard/MorningBrief";
 import { formatMoney } from "@/lib/utils";
-import { format, formatDistanceToNow } from "date-fns";
+import { formatDistanceToNow } from "date-fns";
+import { etTime, etFullDate, etMonth, etDayNum, etDaysAgo } from "@/lib/datetime";
 
 export const dynamic = "force-dynamic";
 
@@ -32,7 +33,7 @@ function StatCard({
   sub?: string;
 }) {
   return (
-    <div className="rounded-2xl border bg-surface p-4">
+    <div className="panel-shadow rounded-2xl border bg-surface p-4">
       <div className="flex items-center justify-between">
         <span className="text-sm text-muted">{label}</span>
         <span
@@ -56,7 +57,7 @@ function toBriefShoot(s: {
     key: s.apptId,
     id: s.id,
     title: s.title,
-    time: s.shootDate ? format(s.shootDate, "h:mm a") : "",
+    time: s.shootDate ? etTime(s.shootDate) : "",
     clientName: s.client.name,
     photographer: s.photographer?.name ?? null,
   };
@@ -69,7 +70,7 @@ export default async function DashboardPage() {
     getOverdueTasks(),
     getShootWindow(),
   ]);
-  const today = format(new Date(), "EEEE, MMMM d");
+  const today = etFullDate(new Date());
 
   return (
     <div>
@@ -87,10 +88,10 @@ export default async function DashboardPage() {
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
           <StatCard
             icon={Camera}
-            label="Active projects"
-            value={data.counts.active}
+            label="Today's shoots"
+            value={shoots.today.length}
             accent="#4f46e5"
-            sub={`${data.counts.booked} awaiting scheduling`}
+            sub={shoots.tomorrow.length ? `${shoots.tomorrow.length} tomorrow` : `${data.counts.active} active projects`}
           />
           <StatCard
             icon={Palette}
@@ -122,7 +123,7 @@ export default async function DashboardPage() {
 
         <div className="grid gap-6 lg:grid-cols-3">
           {/* Needs attention — overdue / not finished on prior days */}
-          <div className="lg:col-span-2 rounded-2xl border bg-surface">
+          <div className="panel-shadow lg:col-span-2 rounded-2xl border bg-surface">
             <div className="flex items-center justify-between border-b px-5 py-3.5">
               <div className="flex items-center gap-2">
                 <AlertTriangle className="size-4 text-danger" />
@@ -159,9 +160,11 @@ export default async function DashboardPage() {
                   <div className="flex shrink-0 items-center gap-1.5">
                     {t.priority === "URGENT" && <Badge color="#f87171">Urgent</Badge>}
                     <Badge color="#f87171">
-                      {t.dueAt
-                        ? `${Math.max(1, Math.round((Date.now() - new Date(t.dueAt).getTime()) / 86400000))}d overdue`
-                        : "overdue"}
+                      {(() => {
+                        if (!t.dueAt) return "overdue";
+                        const od = etDaysAgo(new Date(t.dueAt)); // ET calendar-day delta
+                        return od >= 1 ? `${od}d overdue` : "overdue";
+                      })()}
                     </Badge>
                   </div>
                 </Link>
@@ -170,7 +173,7 @@ export default async function DashboardPage() {
           </div>
 
           {/* Upcoming shoots */}
-          <div className="rounded-2xl border bg-surface">
+          <div className="panel-shadow rounded-2xl border bg-surface">
             <div className="flex items-center gap-2 border-b px-5 py-3.5">
               <CalendarDays className="size-4 text-accent" />
               <h2 className="text-sm font-semibold">Upcoming shoots</h2>
@@ -189,16 +192,16 @@ export default async function DashboardPage() {
                 >
                   <div className="flex flex-col items-center rounded-lg bg-surface-2 px-2 py-1 text-center">
                     <span className="text-[10px] font-medium uppercase text-muted">
-                      {format(p.shootDate!, "MMM")}
+                      {etMonth(p.shootDate!)}
                     </span>
                     <span className="text-base font-semibold leading-none">
-                      {format(p.shootDate!, "d")}
+                      {etDayNum(p.shootDate!)}
                     </span>
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium">{p.title}</div>
                     <div className="truncate text-xs text-muted">
-                      {format(p.shootDate!, "h:mm a")} ·{" "}
+                      {etTime(p.shootDate!)} ·{" "}
                       {p.photographer?.name ?? "Unassigned"}
                     </div>
                   </div>
@@ -209,11 +212,14 @@ export default async function DashboardPage() {
         </div>
 
         {/* Recent activity */}
-        <div className="rounded-2xl border bg-surface">
+        <div className="panel-shadow rounded-2xl border bg-surface">
           <div className="border-b px-5 py-3.5">
             <h2 className="text-sm font-semibold">Recent activity</h2>
           </div>
           <div className="divide-y">
+            {data.recentActivity.length === 0 && (
+              <div className="px-5 py-8 text-center text-sm text-muted">No recent activity.</div>
+            )}
             {data.recentActivity.map((a) => (
               <div key={a.id} className="flex items-start gap-3 px-5 py-3">
                 {a.author ? (

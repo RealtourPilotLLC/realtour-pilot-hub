@@ -10,6 +10,7 @@ import {
   StickyNote,
   RefreshCw,
   Calendar,
+  CalendarClock,
   Clock,
   Mail,
   Phone,
@@ -17,24 +18,40 @@ import {
   Sparkles,
   CreditCard,
   ExternalLink,
+  ListTodo,
+  ListChecks,
+  History,
+  User,
+  Users,
 } from "lucide-react";
 import { Suspense } from "react";
 import { ListingMedia, ListingMediaSkeleton } from "@/components/project/ListingMedia";
 import { StatusEvidenceCard } from "@/components/project/StatusEvidenceCard";
 import { TaskCard } from "@/components/queue/TaskCard";
-import { ListTodo } from "lucide-react";
 import { getProject, getTeam } from "@/lib/queries";
 import { AssignmentPanel } from "@/components/project/AssignmentPanel";
 import { AppointmentManager } from "@/components/project/AppointmentManager";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
+import { Section } from "@/components/ui/Section";
+import { CopyButton } from "@/components/ui/CopyButton";
+import { parseChecklist } from "@/lib/checklist";
+import { SegmentBadge } from "@/components/clients/SegmentBadge";
+import { SocialBadge } from "@/components/clients/SocialBadge";
+import { VendorBadge } from "@/components/editing/VendorBadge";
 import { StageSelector } from "@/components/project/StageSelector";
 import { Checklist } from "@/components/project/Checklist";
 import { ActivityComposer } from "@/components/project/ActivityComposer";
+import { ProjectMessages } from "@/components/project/ProjectMessages";
+import { ProjectMap } from "@/components/map/ProjectMap";
+import { DroneBadge, hasDroneOps } from "@/components/project/DroneBadge";
+import { DroneAdvisory } from "@/components/project/DroneAdvisory";
 import { DeliverableStatusSelect } from "@/components/project/DeliverableStatusSelect";
-import { PRIORITY_META, DELIVERABLE_META } from "@/lib/pipeline";
+import { PRIORITY_META, DELIVERABLE_META, refinedDeliverableLabel, stageMeta } from "@/lib/pipeline";
+import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { formatMoney, stripHtml } from "@/lib/utils";
 import { format, formatDistanceToNow } from "date-fns";
+import { etDateTime } from "@/lib/datetime";
 import { ActivityType } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
@@ -71,36 +88,125 @@ export default async function ProjectPage({
     project.zip,
   ].filter(Boolean);
 
+  const hasBilling =
+    !!project.paymentStatus ||
+    project.balanceAmount != null ||
+    !!project.invoiceUrl ||
+    !!project.paymentUrl;
+
+  // Deep links to this project's Dropbox upload folders (AutoHDR convention).
+  const folders = projectFolderPaths({
+    title: project.title,
+    addressLine: project.addressLine,
+    shootDate: project.shootDate,
+    createdAt: project.createdAt,
+    client: { name: project.client.name },
+  });
+  const dropboxLinks = [
+    { label: "Raw Photos", url: dropboxWebUrl(folders.rawPhotos) },
+    { label: "Raw Video", url: dropboxWebUrl(folders.rawVideo) },
+    { label: "Final Photos", url: dropboxWebUrl(folders.finalPhotos) },
+    { label: "Final Video", url: dropboxWebUrl(folders.finalVideo) },
+  ];
+
   return (
-    <div className="mx-auto max-w-6xl p-6">
+    <div className="mx-auto max-w-6xl p-4 sm:p-6">
       <Link
         href="/pipeline"
         className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-foreground"
       >
-        <ArrowLeft className="size-4" /> Back to pipeline
+        <ArrowLeft className="size-4" /> Back to tracker
       </Link>
 
       {/* Header */}
       <div className="mt-3 flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2.5">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2.5">
             <h1 className="text-2xl font-semibold tracking-tight">{project.title}</h1>
             <Badge color={priority.color} soft={priority.soft}>
               {priority.label}
             </Badge>
+            {hasDroneOps(project.deliverables) && <DroneBadge />}
           </div>
           {addressParts.length > 0 && (
             <div className="mt-1 flex items-center gap-1.5 text-sm text-muted">
-              <MapPin className="size-3.5" /> {addressParts.join(", ")}
+              <MapPin className="size-3.5 shrink-0" /> {addressParts.join(", ")}
+              <CopyButton value={addressParts.join(", ")} title="Copy address" className="shrink-0" />
             </div>
           )}
         </div>
-        <StageSelector projectId={project.id} status={project.status} />
+        <div className="flex items-center gap-2">
+          {project.aryeoOrderId && (
+            <a
+              href={`https://app.aryeo.com/orders/${project.aryeoOrderId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium hover:bg-surface-2"
+            >
+              Open in Aryeo <ExternalLink className="size-3.5" />
+            </a>
+          )}
+          <StageSelector projectId={project.id} status={project.status} />
+        </div>
       </div>
 
-      <div className="mt-6 grid gap-6 lg:grid-cols-3">
-        {/* Main column */}
-        <div className="space-y-6 lg:col-span-2">
+      {/* Client — who the project is for, surfaced at the top (was buried in the
+          side rail, and fell to the very bottom on mobile). */}
+      <Section icon={User} title="Client" className="mt-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3">
+            <Avatar name={project.client.name} size={44} color="#4f46e5" />
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Link href={`/clients/${project.client.id}`} className="text-base font-semibold hover:underline">
+                  {project.client.name}
+                </Link>
+                <SegmentBadge segment={project.client.segment} size="xs" />
+                <SocialBadge socialClient={project.client.socialClient} socialPlan={project.client.socialPlan} size="xs" />
+              </div>
+              {project.client.company && (
+                <div className="mt-0.5 flex items-center gap-1 text-xs text-muted">
+                  <Building2 className="size-3" /> {project.client.company}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm sm:justify-end">
+            {project.client.email && (
+              <a href={`mailto:${project.client.email}`} className="flex items-center gap-1.5 text-muted hover:text-foreground">
+                <Mail className="size-3.5 shrink-0" /> <span className="truncate">{project.client.email}</span>
+              </a>
+            )}
+            {project.client.phone && (
+              <a href={`tel:${project.client.phone}`} className="flex items-center gap-1.5 text-muted hover:text-foreground">
+                <Phone className="size-3.5 shrink-0" /> {project.client.phone}
+              </a>
+            )}
+          </div>
+        </div>
+        {(project.client.editingPreferences || project.client.generalNotes) && (
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            {project.client.editingPreferences && (
+              <div className="rounded-lg bg-brand-soft px-3 py-2">
+                <div className="mb-0.5 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-brand">
+                  <Sparkles className="size-3" /> Editing preferences
+                </div>
+                <p className="text-xs text-foreground/80">{project.client.editingPreferences}</p>
+              </div>
+            )}
+            {project.client.generalNotes && (
+              <div className="rounded-lg bg-surface-2 px-3 py-2 text-xs text-muted">
+                {stripHtml(project.client.generalNotes)}
+              </div>
+            )}
+          </div>
+        )}
+      </Section>
+
+      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
+        {/* Main column — the work, in workflow order:
+            status → tasks → order → logistics → output → money → collaboration */}
+        <div className="min-w-0 space-y-6 lg:col-span-2">
           {/* Smart status cross-check */}
           <StatusEvidenceCard
             status={project.status}
@@ -109,18 +215,13 @@ export default async function ProjectPage({
             projectId={project.id}
             revisionNote={project.revisionNote}
             revisionRequestedAt={project.revisionRequestedAt}
+            dropboxLinks={dropboxLinks}
+            dropboxRootUrl={dropboxWebUrl(folders.listing)}
           />
 
           {/* Open tasks for this job */}
           {project.smartTasks.length > 0 && (
-            <section className="rounded-2xl border bg-surface">
-              <div className="flex items-center gap-2 border-b px-5 py-3.5">
-                <ListTodo className="size-4 text-brand" />
-                <h2 className="text-sm font-semibold">Open tasks</h2>
-                <span className="rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">
-                  {project.smartTasks.length}
-                </span>
-              </div>
+            <Section icon={ListTodo} title="Open tasks" count={project.smartTasks.length} flush>
               <div className="grid gap-3 p-5 sm:grid-cols-2">
                 {project.smartTasks.map((t) => (
                   <TaskCard
@@ -133,7 +234,8 @@ export default async function ProjectPage({
                       priority: t.priority,
                       dueAt: t.dueAt ? t.dueAt.toISOString() : null,
                       reasonCreated: t.reasonCreated,
-                      checklist: t.checklist ? (JSON.parse(t.checklist) as string[]) : [],
+                      description: t.description,
+                      checklist: parseChecklist(t.checklist),
                       source: t.source,
                       projectId: t.projectId,
                       clientName: t.client?.name ?? null,
@@ -142,30 +244,28 @@ export default async function ProjectPage({
                   />
                 ))}
               </div>
-            </section>
+            </Section>
           )}
 
-          {/* Deliverables */}
-          <section className="rounded-2xl border bg-surface">
-            <div className="border-b px-5 py-3.5">
-              <h2 className="text-sm font-semibold">Ordered deliverables</h2>
-            </div>
+          {/* Ordered deliverables */}
+          <Section icon={Package} title="Ordered deliverables" count={project.deliverables.length || null} flush>
             <div className="divide-y">
               {project.deliverables.length === 0 && (
                 <p className="px-5 py-4 text-sm text-muted">Nothing ordered yet.</p>
               )}
               {project.deliverables.map((d) => (
                 <div key={d.id} className="flex items-center justify-between gap-3 px-5 py-3">
-                  <div className="flex items-center gap-3">
-                    <span className="flex size-8 items-center justify-center rounded-lg bg-surface-2 text-muted">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-muted">
                       <Package className="size-4" />
                     </span>
-                    <div>
-                      <div className="text-sm font-medium">
-                        {DELIVERABLE_META[d.type].label}
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                        {refinedDeliverableLabel(d.type, d.label)}
                         {d.quantity > 1 && (
                           <span className="text-muted"> ×{d.quantity}</span>
                         )}
+                        <VendorBadge type={d.type} label={d.label} />
                       </div>
                       {d.notes && <div className="text-xs text-muted">{d.notes}</div>}
                     </div>
@@ -174,16 +274,16 @@ export default async function ProjectPage({
                 </div>
               ))}
             </div>
-          </section>
+          </Section>
 
           {/* Appointments (from Aryeo) */}
           {project.appointments.length > 0 && (
-            <section className="rounded-2xl border bg-surface">
-              <div className="border-b px-5 py-3.5">
-                <h2 className="flex items-center gap-2 text-sm font-semibold">
-                  <Calendar className="size-4 text-muted" /> Appointment{project.appointments.length > 1 ? "s" : ""}
-                </h2>
-              </div>
+            <Section
+              icon={Calendar}
+              title={`Appointment${project.appointments.length > 1 ? "s" : ""}`}
+              count={project.appointments.length > 1 ? project.appointments.length : null}
+              flush
+            >
               <div className="divide-y">
                 {project.appointments.map((a) => (
                   <AppointmentManager
@@ -210,30 +310,110 @@ export default async function ProjectPage({
                   />
                 ))}
               </div>
-            </section>
+            </Section>
           )}
 
-          {/* Billing (from Aryeo) */}
-          {(project.paymentStatus || project.price) && (
-            <section className="rounded-2xl border bg-surface">
-              <div className="flex items-center justify-between border-b px-5 py-3.5">
-                <h2 className="flex items-center gap-2 text-sm font-semibold">
-                  <CreditCard className="size-4 text-muted" /> Billing
-                </h2>
-                {project.paymentStatus &&
-                  (project.paymentStatus === "PAID" ? (
+          {/* Location map — pin, weather for the shoot time, drive times */}
+          {project.lat != null && project.lng != null && (
+            <Section icon={MapPin} title="Location" bodyClassName="p-4">
+              <ProjectMap
+                pins={[{
+                  id: project.id,
+                  projectId: project.id,
+                  title: project.title,
+                  lat: project.lat,
+                  lng: project.lng,
+                  color: stageMeta(project.status).color,
+                  stage: stageMeta(project.status).short,
+                  client: project.client.name,
+                  shootISO: (project.appointments[0]?.startAt ?? project.shootDate)?.toISOString() ?? null,
+                  endISO: project.appointments[0]?.endAt?.toISOString() ?? null,
+                  photographer: project.photographer?.name ?? null,
+                }]}
+              />
+            </Section>
+          )}
+
+          {/* Drone operations — FAA airspace check + advisory to the creative */}
+          {hasDroneOps(project.deliverables) && <DroneAdvisory projectId={project.id} />}
+
+          {/* Delivered media pulled live from Aryeo */}
+          {project.aryeoListingId && (
+            <Suspense fallback={<ListingMediaSkeleton />}>
+              <ListingMedia listingId={project.aryeoListingId} title={project.title} projectId={project.id} />
+            </Suspense>
+          )}
+
+          {/* Uploads & editor brief */}
+          {(project.uploads.length > 0 || project.editorPdfPath || project.editorBrief) && (
+            <Section
+              icon={FileText}
+              title="Uploads & editor brief"
+              action={
+                project.editorPdfPath ? (
+                  <a
+                    href={`/api/file?path=${encodeURIComponent(project.editorPdfPath)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-brand-soft px-2.5 py-1 text-xs font-medium text-brand hover:opacity-90"
+                  >
+                    <FileText className="size-3.5" /> Editor brief PDF
+                  </a>
+                ) : null
+              }
+              bodyClassName="space-y-3"
+            >
+              {project.editorBrief && (
+                <div className="rounded-lg bg-surface-2 px-3 py-2 text-sm text-foreground/85">
+                  {project.editorBrief}
+                </div>
+              )}
+              {project.uploads.length === 0 ? (
+                <p className="text-sm text-muted">No files uploaded yet.</p>
+              ) : (
+                <ul className="space-y-1">
+                  {project.uploads.map((u) => (
+                    <li
+                      key={u.id}
+                      className="flex items-center gap-2 rounded-lg bg-surface-2 px-2.5 py-1.5 text-xs"
+                    >
+                      <Package className="size-3.5 shrink-0 text-muted" />
+                      <a
+                        href={`/api/file?path=${encodeURIComponent(u.storedPath)}&download=1`}
+                        className="flex-1 truncate hover:underline"
+                      >
+                        {u.originalName}
+                      </a>
+                      {u.deliverable && (
+                        <span className="shrink-0 text-muted-2">
+                          {DELIVERABLE_META[u.deliverable.type].label}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Section>
+          )}
+
+          {/* Billing (from Aryeo) — payment status + balance + links (order total lives in Order & schedule) */}
+          {hasBilling && (
+            <Section
+              icon={CreditCard}
+              title="Billing"
+              action={
+                project.paymentStatus ? (
+                  project.paymentStatus === "PAID" ? (
                     <Badge color="#16a34a" soft="#dcfce7">Paid</Badge>
                   ) : (
                     <Badge color="#d97706" soft="#fef3c7">
                       {project.paymentStatus.replace(/_/g, " ").toLowerCase()}
                     </Badge>
-                  ))}
-              </div>
-              <div className="flex flex-wrap items-center gap-x-8 gap-y-2 px-5 py-4 text-sm">
-                <div>
-                  <div className="text-xs text-muted">Order total</div>
-                  <div className="font-semibold">{formatMoney(project.price)}</div>
-                </div>
+                  )
+                ) : null
+              }
+            >
+              <div className="flex flex-wrap items-center gap-x-8 gap-y-3 text-sm">
                 {project.balanceAmount != null && (
                   <div>
                     <div className="text-xs text-muted">Balance due</div>
@@ -257,186 +437,76 @@ export default async function ProjectPage({
                   )}
                 </div>
               </div>
-            </section>
+            </Section>
           )}
 
-          {/* Delivered media pulled live from Aryeo */}
-          {project.aryeoListingId && (
-            <Suspense fallback={<ListingMediaSkeleton />}>
-              <ListingMedia listingId={project.aryeoListingId} />
-            </Suspense>
-          )}
-
-          {/* Uploads & editor brief */}
-          {(project.uploads.length > 0 || project.editorPdfPath || project.editorBrief) && (
-            <section className="rounded-2xl border bg-surface">
-              <div className="flex items-center justify-between border-b px-5 py-3.5">
-                <h2 className="text-sm font-semibold">Uploads &amp; editor brief</h2>
-                {project.editorPdfPath && (
-                  <a
-                    href={`/api/file?path=${encodeURIComponent(project.editorPdfPath)}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-brand-soft px-2.5 py-1 text-xs font-medium text-brand hover:opacity-90"
-                  >
-                    <FileText className="size-3.5" /> Editor brief PDF
-                  </a>
-                )}
-              </div>
-              <div className="space-y-3 px-5 py-4">
-                {project.editorBrief && (
-                  <div className="rounded-lg bg-surface-2 px-3 py-2 text-sm text-foreground/85">
-                    {project.editorBrief}
-                  </div>
-                )}
-                {project.uploads.length === 0 ? (
-                  <p className="text-sm text-muted">No files uploaded yet.</p>
-                ) : (
-                  <ul className="space-y-1">
-                    {project.uploads.map((u) => (
-                      <li
-                        key={u.id}
-                        className="flex items-center gap-2 rounded-lg bg-surface-2 px-2.5 py-1.5 text-xs"
-                      >
-                        <Package className="size-3.5 text-muted" />
-                        <a
-                          href={`/api/file?path=${encodeURIComponent(u.storedPath)}&download=1`}
-                          className="flex-1 truncate hover:underline"
-                        >
-                          {u.originalName}
-                        </a>
-                        {u.deliverable && (
-                          <span className="text-muted-2">
-                            {DELIVERABLE_META[u.deliverable.type].label}
-                          </span>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </section>
-          )}
+          {/* Team messages — editor/crew coordination on this job */}
+          <ProjectMessages
+            projectId={project.id}
+            team={team.map((m) => ({ id: m.id, name: m.name, avatarColor: m.avatarColor }))}
+            messages={project.messages.map((m) => ({
+              id: m.id,
+              authorId: m.authorId,
+              authorName: m.authorName,
+              body: m.body,
+              createdAt: m.createdAt.toISOString(),
+              ago: formatDistanceToNow(m.createdAt, { addSuffix: true }),
+              replyTo: m.replyTo ? { authorName: m.replyTo.authorName, body: m.replyTo.body } : null,
+            }))}
+          />
 
           {/* Checklist */}
-          <section className="rounded-2xl border bg-surface">
-            <div className="border-b px-5 py-3.5">
-              <h2 className="text-sm font-semibold">Checklist</h2>
-            </div>
-            <div className="px-5 py-4">
-              <Checklist items={project.checklist} />
-            </div>
-          </section>
+          <Section icon={ListChecks} title="Checklist">
+            <Checklist items={project.checklist} />
+          </Section>
 
           {/* Activity */}
-          <section className="rounded-2xl border bg-surface">
-            <div className="border-b px-5 py-3.5">
-              <h2 className="text-sm font-semibold">Activity &amp; notes</h2>
-            </div>
-            <div className="space-y-4 px-5 py-4">
-              <ActivityComposer projectId={project.id} />
-              <ol className="space-y-3">
-                {project.activities.map((a) => {
-                  const meta = ACTIVITY_ICON[a.type] ?? ACTIVITY_ICON.NOTE;
-                  const Icon = meta.icon;
-                  return (
-                    <li key={a.id} className="flex gap-3">
-                      <span
-                        className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full"
-                        style={{ backgroundColor: `${meta.color}1a`, color: meta.color }}
-                      >
-                        <Icon className="size-3.5" />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm text-foreground/90">{a.body}</div>
-                        <div className="mt-0.5 text-xs text-muted">
-                          {a.author?.name ?? "System"} ·{" "}
-                          {formatDistanceToNow(a.createdAt, { addSuffix: true })}
-                        </div>
+          <Section icon={History} title="Activity & notes" bodyClassName="space-y-4">
+            <ActivityComposer projectId={project.id} />
+            <ol className="space-y-3">
+              {project.activities.map((a) => {
+                const meta = ACTIVITY_ICON[a.type] ?? ACTIVITY_ICON.NOTE;
+                const Icon = meta.icon;
+                return (
+                  <li key={a.id} className="flex gap-3">
+                    <span
+                      className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full"
+                      style={{ backgroundColor: `${meta.color}1a`, color: meta.color }}
+                    >
+                      <Icon className="size-3.5" />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm text-foreground/90">{a.body}</div>
+                      <div className="mt-0.5 text-xs text-muted">
+                        {a.author?.name ?? "System"} ·{" "}
+                        {formatDistanceToNow(a.createdAt, { addSuffix: true })}
                       </div>
-                    </li>
-                  );
-                })}
-              </ol>
-            </div>
-          </section>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          </Section>
         </div>
 
-        {/* Side column */}
+        {/* Side column — reference: who, when, how much, who's on it */}
         <div className="space-y-6">
           {/* Special requests highlight */}
           {specialRequests.length > 0 && (
-            <section className="rounded-2xl border border-warning/30 bg-warning-soft/40">
-              <div className="flex items-center gap-2 border-b border-warning/20 px-5 py-3">
-                <Star className="size-4 text-warning" />
-                <h2 className="text-sm font-semibold text-warning">Special requests</h2>
-              </div>
-              <ul className="space-y-2 px-5 py-3">
+            <Section icon={Star} title="Special requests" tone="warning" bodyClassName="py-3">
+              <ul className="space-y-2">
                 {specialRequests.map((r) => (
                   <li key={r.id} className="text-sm text-foreground/90">
                     {r.body}
                   </li>
                 ))}
               </ul>
-            </section>
+            </Section>
           )}
 
-          {/* Client */}
-          <section className="rounded-2xl border bg-surface">
-            <div className="border-b px-5 py-3.5">
-              <h2 className="text-sm font-semibold">Client</h2>
-            </div>
-            <div className="space-y-3 px-5 py-4">
-              <div className="flex items-center gap-3">
-                <Avatar name={project.client.name} size={36} color="#4f46e5" />
-                <div>
-                  <Link
-                    href={`/clients`}
-                    className="text-sm font-semibold hover:underline"
-                  >
-                    {project.client.name}
-                  </Link>
-                  {project.client.company && (
-                    <div className="flex items-center gap-1 text-xs text-muted">
-                      <Building2 className="size-3" /> {project.client.company}
-                    </div>
-                  )}
-                </div>
-              </div>
-              <div className="space-y-1.5 text-sm">
-                {project.client.email && (
-                  <div className="flex items-center gap-2 text-muted">
-                    <Mail className="size-3.5" /> {project.client.email}
-                  </div>
-                )}
-                {project.client.phone && (
-                  <div className="flex items-center gap-2 text-muted">
-                    <Phone className="size-3.5" /> {project.client.phone}
-                  </div>
-                )}
-              </div>
-              {project.client.editingPreferences && (
-                <div className="rounded-lg bg-brand-soft px-3 py-2">
-                  <div className="mb-0.5 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-brand">
-                    <Sparkles className="size-3" /> Editing preferences
-                  </div>
-                  <p className="text-xs text-foreground/80">
-                    {project.client.editingPreferences}
-                  </p>
-                </div>
-              )}
-              {project.client.generalNotes && (
-                <p className="text-xs text-muted">{stripHtml(project.client.generalNotes)}</p>
-              )}
-            </div>
-          </section>
-
           {/* Schedule & order */}
-          <section className="rounded-2xl border bg-surface">
-            <div className="border-b px-5 py-3.5">
-              <h2 className="text-sm font-semibold">Order &amp; schedule</h2>
-            </div>
-            <dl className="space-y-2.5 px-5 py-4 text-sm">
+          <Section icon={CalendarClock} title="Order & schedule">
+            <dl className="space-y-2.5 text-sm">
               {project.packageName && (
                 <Row label="Package" value={project.packageName} />
               )}
@@ -452,7 +522,7 @@ export default async function ProjectPage({
                   project.shootDate ? (
                     <span className="inline-flex items-center gap-1">
                       <Calendar className="size-3.5 text-muted" />
-                      {format(project.shootDate, "MMM d, h:mm a")}
+                      {etDateTime(project.shootDate)}
                     </span>
                   ) : (
                     "Not scheduled"
@@ -471,13 +541,10 @@ export default async function ProjectPage({
                 <Row label="Delivered" value={format(project.deliveredAt, "MMM d, yyyy")} />
               )}
             </dl>
-          </section>
+          </Section>
 
           {/* Team — editable assignments */}
-          <section className="rounded-2xl border bg-surface">
-            <div className="border-b px-5 py-3.5">
-              <h2 className="text-sm font-semibold">Team</h2>
-            </div>
+          <Section icon={Users} title="Team" flush>
             <AssignmentPanel
               projectId={project.id}
               team={team.map((m) => ({ id: m.id, name: m.name, avatarColor: m.avatarColor }))}
@@ -487,7 +554,7 @@ export default async function ProjectPage({
                 va: project.vaId,
               }}
             />
-          </section>
+          </Section>
         </div>
       </div>
     </div>

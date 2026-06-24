@@ -46,6 +46,32 @@ const REVISION_PATTERNS: RegExp[] = [
 
 const PRAISE_ONLY = /\b(thank|thanks|thx|love|great|perfect|awesome|amazing|looks good|beautiful|gorgeous)\b/i;
 
+// A clear edit ask — these still count as a revision even amid scheduling talk.
+const STRONG_REVISION =
+  /\b(revis(e|ion|ions)|re-?(do|edit|shoot|take)|reshoot|brighten|darken|retouch|too (dark|bright|blurry|grainy|crooked|tilted)|different (photo|image|angle|shot|version)|virtual stag|swap|replace)\b/i;
+// Scheduling / availability / booking talk — NOT a revision (e.g. "Thursday works,
+// that's the soonest you have"). This is the #1 false-positive source.
+const SCHEDULING_RE =
+  /\b(re-?schedul|booking|book (a|the|us|me|it|an)|appointment|availab|what time|when can|come (out|back)|next (week|month)|this (week|coming)|push (it|the)|move the (shoot|appointment|date)|soonest|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
+// Client unhappiness — log for happiness/issue tracking even if not a revision.
+const NEGATIVE_RE =
+  /\b(disappoint|unhappy|not happy|frustrat|upset|annoyed|let down|taking (too )?long|too long|been waiting|still waiting|where (is|are)|no one|nobody (got|called|responded)|ridiculous|unacceptable)\b/i;
+// iMessage/SMS reactions ("Liked …", emoji-only) — no reply needed.
+const REACTION_RE = /^(liked|loved|disliked|laughed at|emphasi[sz]ed|questioned|reacted (to|with))\b|^reacted\b/i;
+
+export function isReaction(text: string): boolean {
+  const t = (text || "").trim();
+  if (!t) return true;
+  if (REACTION_RE.test(t)) return true;
+  // Emoji-only / punctuation-only (no letters or digits) and short.
+  if (t.length <= 8 && !/[a-z0-9]/i.test(t)) return true;
+  return false;
+}
+export function isNegativeSentiment(text: string): boolean {
+  const t = (text || "").trim();
+  return NEGATIVE_RE.test(t) && !PRAISE_ONLY.test(t);
+}
+
 export type CommClassification = { isRevision: boolean; matched: string[] };
 
 export function classifyComm(text: string): CommClassification {
@@ -56,7 +82,11 @@ export function classifyComm(text: string): CommClassification {
     const m = t.match(re);
     if (m) matched.push(m[0].toLowerCase());
   }
-  return { isRevision: matched.length > 0, matched: [...new Set(matched)] };
+  let isRevision = matched.length > 0;
+  // A scheduling/booking/availability message isn't a revision unless there's a
+  // clear edit ask (redo/reshoot/brighten/retouch/replace/etc).
+  if (isRevision && SCHEDULING_RE.test(t) && !STRONG_REVISION.test(t)) isRevision = false;
+  return { isRevision, matched };
 }
 
 function dedupeKey(parts: (string | null | undefined)[]): string {
@@ -78,8 +108,27 @@ export async function recordClientCommunication(opts: {
   text: string;
   kind: "text" | "missed_call" | "voicemail" | "email";
   source?: string; // openphone | gmail | facebook | form | ...
+  threadRef?: string | null; // e.g. "gmail-thread:hello@…:<threadId>"
 }): Promise<{ replyTask: boolean; revision: boolean }> {
+  // A "Liked …" / emoji reaction needs no reply — log nothing, make no task.
+  if (isReaction(opts.text)) return { replyTask: false, revision: false };
+
   const cls = classifyComm(opts.text);
+
+  // Track client happiness: clear unhappiness → a NEGATIVE feedback entry on the
+  // project (shows on the client + photographer scorecards), separate from a revision.
+  if (opts.projectId && isNegativeSentiment(opts.text)) {
+    await prisma.feedback.create({
+      data: {
+        projectId: opts.projectId,
+        sentiment: "NEGATIVE",
+        category: "communication",
+        body: opts.text.slice(0, 300),
+        authorName: opts.clientName,
+        source: opts.kind === "email" ? "email" : "text",
+      },
+    }).catch(() => {});
+  }
 
   // If the AI assistant is connected, turn the message into a specific to-do
   // ("Reschedule 320 Tarbert to Thursday") instead of a generic "Reply to X".
@@ -104,18 +153,26 @@ export async function recordClientCommunication(opts: {
     /* fall back to the generic task */
   }
 
-  // Always surface the inbound message as a reply/callback task.
-  const replyTask = await createCommTask({
-    clientId: opts.clientId,
-    clientName: opts.clientName,
-    projectId: opts.projectId ?? null,
-    propertyAddress: opts.propertyAddress ?? null,
-    kind: opts.kind === "email" ? "text" : opts.kind,
-    snippet: opts.text,
-    source: opts.source,
-    aiTitle,
-    aiDetail,
-  });
+  // The AI judged the message already resolved (a confirmation, thank-you, or
+  // "all set") → "No action needed". Don't create a noise task for it; just log
+  // any revision/feedback handling below.
+  const noAction = aiTitle != null && /no action needed/i.test(aiTitle);
+
+  // Surface the inbound message as a reply/callback task (unless it needs none).
+  const replyTask = noAction
+    ? false
+    : await createCommTask({
+        clientId: opts.clientId,
+        clientName: opts.clientName,
+        projectId: opts.projectId ?? null,
+        propertyAddress: opts.propertyAddress ?? null,
+        kind: opts.kind === "email" ? "text" : opts.kind,
+        snippet: opts.text,
+        source: opts.source,
+        aiTitle,
+        aiDetail,
+        threadRef: opts.threadRef ?? null,
+      });
 
   let revision = false;
   if (cls.isRevision && opts.projectId) {
@@ -152,6 +209,7 @@ export async function raiseRevision(opts: {
   propertyAddress?: string | null;
   note: string;
   source: string;
+  qcCategories?: string[]; // QC labels to reopen for re-QC, e.g. ["Reel"]
 }): Promise<boolean> {
   const project = await prisma.project.findUnique({
     where: { id: opts.projectId },
@@ -210,6 +268,15 @@ export async function raiseRevision(opts: {
   } else {
     await prisma.smartTask.create({ data });
   }
+
+  // Reflect the revision in the project's QC task: reopen it and mark the revised
+  // deliverable(s) as needing a re-QC (the Luma reel, a client-flagged category,
+  // or a generic "re-QC after revision").
+  try {
+    const { reflectRevisionInQc } = await import("@/lib/tasks");
+    await reflectRevisionInQc(project.id, opts.qcCategories ?? []);
+  } catch { /* QC reflection is best-effort */ }
+
   return true;
 }
 

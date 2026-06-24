@@ -11,7 +11,7 @@ export function PageHeader({
   actions?: React.ReactNode;
 }) {
   return (
-    <div className="sticky top-0 z-10 flex flex-wrap items-end justify-between gap-3 border-b border-border bg-background/70 px-6 py-4 backdrop-blur-xl">
+    <div className="sticky top-0 z-10 flex flex-wrap items-end justify-between gap-3 border-b border-border bg-background/70 px-4 py-4 backdrop-blur-xl sm:px-6">
       <div>
         {eyebrow && <div className="eyebrow mb-1">{eyebrow}</div>}
         <h1 className="text-xl font-semibold tracking-tight">{title}</h1>

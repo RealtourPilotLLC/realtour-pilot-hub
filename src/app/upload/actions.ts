@@ -62,6 +62,44 @@ export async function flagIssue(projectId: string, body: string) {
   revalidatePath(`/projects/${projectId}`);
 }
 
+// The photographer's debrief on how the shoot went. "issues" routes it to ops
+// as a FLAG + a Kyle to-do; "smooth" just logs a note on the timeline.
+export async function submitAppointmentFeedback(
+  projectId: string,
+  wentWell: boolean,
+  note: string,
+): Promise<{ ok: boolean; message: string }> {
+  const trimmed = note.trim();
+  const body = `Shoot debrief — ${wentWell ? "went smoothly" : "had issues"}${trimmed ? `: ${trimmed}` : "."}`;
+  await prisma.activity.create({
+    data: { projectId, type: wentWell ? ActivityType.NOTE : ActivityType.FLAG, body },
+  });
+  if (!wentWell) {
+    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true, clientId: true } });
+    const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
+    await prisma.smartTask.upsert({
+      where: { dedupeKey: `shoot-issue-${projectId}` },
+      create: {
+        taskType: "internal_instruction",
+        title: `Shoot issue — ${project?.title ?? "a shoot"}`.slice(0, 120),
+        description: trimmed.slice(0, 400) || "Photographer flagged an issue on the shoot.",
+        reasonCreated: "Photographer flagged a problem during the appointment debrief.",
+        source: "manual",
+        priority: "HIGH",
+        dueAt: new Date(Date.now() + 4 * 3600_000),
+        ownerId: kyle?.id ?? null,
+        projectId,
+        clientId: project?.clientId ?? null,
+        dedupeKey: `shoot-issue-${projectId}`,
+      },
+      update: { status: "OPEN", completedAt: null, description: trimmed.slice(0, 400) || "Photographer flagged an issue." },
+    });
+  }
+  revalidatePath(`/upload/${projectId}`);
+  revalidatePath(`/projects/${projectId}`);
+  return { ok: true, message: wentWell ? "Thanks — logged." : "Logged and flagged for Kyle." };
+}
+
 /**
  * Finalize the guided upload: save the editor brief + per-item notes, advance the
  * project to "Shot / Uploaded", generate the editor PDF into the project folder,

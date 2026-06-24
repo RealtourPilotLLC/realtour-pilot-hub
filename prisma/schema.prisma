@@ -94,6 +94,16 @@ model TeamMember {
   active      Boolean  @default(true)
   title       String? // free-form role label, e.g. "Lead Photographer"
   isServiceProvider Boolean @default(false) // shoots/edits (from Aryeo)
+  // Home base for the mileage radius (creatives are paid per mile beyond a radius).
+  homeAddress String?
+  homeLat     Float?
+  homeLng     Float?
+  // Payout settings (manually set per creative; drive automatic payroll).
+  // Shoot pay = max(eligible services invoice × payPercent, payFloor).
+  payPercent  Float?  // e.g. 0.35 = 35% of the eligible invoice
+  payFloor    Float?  // dollar minimum per shoot, e.g. 100
+  mileageRate Float   @default(0.65) // $/mile beyond the home radius
+  homeRadiusMi Int    @default(35)   // free radius each way (daily free miles = ×2)
   // Aryeo linkage
   aryeoUserId       String? @unique // /users id
   aryeoTeamMemberId String? @unique // /company-team-members id (appointment assignee)
@@ -108,6 +118,9 @@ model TeamMember {
   uploadedFiles        UploadedFile[]
   assignedAppointments Appointment[]
   smartTasks           SmartTask[]    @relation("TaskOwner")
+  jobPayOverrides      JobPayOverride[]
+  payoutAdjustments    PayoutAdjustment[]
+  mileageDays          MileageDay[]
 }
 
 // A shoot appointment, synced from Aryeo /appointments (with assigned user).
@@ -136,14 +149,16 @@ model Appointment {
   updatedAt   DateTime    @updatedAt @default(now())
 
   @@index([projectId])
+  @@index([startAt])
 }
 
 model Client {
-  id        String   @id @default(cuid())
-  name      String
-  email     String?
-  phone     String?
-  company   String? // brokerage / team name
+  id          String   @id @default(cuid())
+  name        String
+  email       String? // priority email (most listings delivered to it)
+  backupEmail String? // secondary email kept when duplicate contacts are merged
+  phone       String?
+  company     String? // brokerage / team name
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -151,13 +166,45 @@ model Client {
   editingPreferences String? // e.g. "Bright & airy, blue skies, no HDR halos"
   generalNotes       String?
 
+  // Agent Profile — the client's brand + working preferences (distinct from
+  // editingPreferences, which is purely how to edit their media).
+  clientPreferences String? // how they like to work: scheduling, comms, must-haves
+  brandColors       String? // free text / hex list, e.g. "#0B1F3A, #C9A24B"
+  brandAssetsPath   String? // Dropbox folder path holding their logo/fonts/brand kit
+
   // External system linkage
   aryeoCustomerId String? @unique
   licenseNumber   String?
 
+  // Customer segmentation (computed from lifetime spend + completed-order count).
+  // Mirrors the HubSpot segment model so the label is consistent everywhere a
+  // client name is shown. Persisted so it's queryable + saved for later use.
+  segment          String? // never_converted | one_timer | casual_repeat | regular | heavy | vip
+  lifetimeSpendCents Int?
+  transactionCount   Int     @default(0)
+  segmentUpdatedAt   DateTime?
+
+  // Monthly social-content subscription, synced from Aryeo customer custom
+  // fields ("Social Client" = Yes/No, "Social Content Plan" = Starter/Accelerator/Pro).
+  socialClient Boolean @default(false)
+  socialPlan   String? // Starter | Accelerator | Pro
+
+  // Aryeo customer-team membership. An agency team (e.g. "The Jamie Achberger
+  // Group") groups the agent + their assistants/coordinators as separate
+  // customer-users. We fold the assistants under the agent (`parentClientId`)
+  // so their texts/emails route to the agent's projects — the orders live there.
+  aryeoTeamId    String?
+  aryeoTeamName  String?
+  parentClientId String? // the agent/owner client this person assists (null = standalone)
+  parent         Client?  @relation("ClientTeam", fields: [parentClientId], references: [id], onDelete: SetNull)
+  teamMembers    Client[] @relation("ClientTeam")
+
   projects   Project[]
   smartTasks SmartTask[]
   contacts   Contact[]
+
+  @@index([email])
+  @@index([parentClientId])
 }
 
 // A synced OpenPhone/HubSpot contact. Lets inbound comms from ANY known number
@@ -192,9 +239,15 @@ model Project {
   city        String?
   state       String?
   zip         String?
+  lat         Float? // from Aryeo listing.address.latitude — drives the map pins
+  lng         Float? // from Aryeo listing.address.longitude
   squareFeet  Int?
   packageName String? // ordered package label
   price       Float? // order total
+  // Eligible services invoice for creative pay = sum of non-canceled order items
+  // EXCLUDING virtual/AI add-ons (virtual twilight/staging/declutter, AI renders).
+  // Drives the percentage-of-invoice shoot pay. In dollars, like `price`.
+  payableInvoice Float?
 
   // Scheduling
   orderedAt   DateTime? // real Aryeo order date (createdAt is import time)
@@ -252,6 +305,9 @@ model Project {
   appointments Appointment[]
   smartTasks   SmartTask[]
   feedback     Feedback[]
+  messages     ProjectMessage[]
+  payOverrides JobPayOverride[]
+  imageFlags   ImageFlag[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -387,6 +443,7 @@ model SmartTask {
 
   @@index([status])
   @@index([projectId])
+  @@index([clientId])
 }
 
 // Client feedback collected after delivery (via the post-delivery text's form
@@ -409,6 +466,27 @@ model Feedback {
   @@index([projectId])
   @@index([photographerId])
   @@index([sentiment])
+}
+
+// A lightweight team chat thread on a project — Kyle ↔ editors ↔ photographers
+// coordinating on a specific job (separate from the Aryeo/system Activity feed).
+// Author is a free String (selected from the team in the UI) so editors who
+// aren't full app users can still be attributed.
+model ProjectMessage {
+  id         String   @id @default(cuid())
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId  String
+  authorId   String? // TeamMember id, if picked from the roster
+  authorName String? // display name
+  body       String
+  mentions   String? // JSON array of tagged TeamMember ids
+  // Threaded reply: the message this one is replying to (same thread).
+  replyToId  String?
+  replyTo    ProjectMessage?  @relation("MsgReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies    ProjectMessage[] @relation("MsgReplies")
+  createdAt  DateTime @default(now())
+
+  @@index([projectId])
 }
 
 // Service catalogue synced from Aryeo /products.
@@ -452,6 +530,75 @@ model Connection {
   updatedAt         DateTime  @updatedAt
 }
 
+// Per-job pay override for a creative on one project (covers the manual cases:
+// "$75 flat, no mileage", remove a canceled job, flat partial-completion amount).
+model JobPayOverride {
+  id           String     @id @default(cuid())
+  project      Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId    String
+  teamMember   TeamMember @relation(fields: [teamMemberId], references: [id], onDelete: Cascade)
+  teamMemberId String
+  invoiceOverride Float?  // correct the eligible invoice the % is applied to
+  flatAmount   Float?     // override shoot pay to this flat dollar amount (wins over %)
+  noMileage    Boolean    @default(false) // exclude this job from the day's mileage split
+  excluded     Boolean    @default(false) // drop this job from payout entirely
+  note         String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt @default(now())
+
+  @@unique([projectId, teamMemberId])
+  @@index([teamMemberId])
+}
+
+// A manual pay-period adjustment for a creative (camera payback, bonus, etc.).
+model PayoutAdjustment {
+  id           String     @id @default(cuid())
+  teamMember   TeamMember @relation(fields: [teamMemberId], references: [id], onDelete: Cascade)
+  teamMemberId String
+  date         DateTime   // the date it applies to (falls inside a pay period)
+  label        String
+  amount       Float      // dollars; negative to subtract (e.g. camera payback)
+  createdAt    DateTime   @default(now())
+
+  @@index([teamMemberId])
+  @@index([date])
+}
+
+// Cached daily drive mileage for a creative (home → that day's shoots → home),
+// so the payout view doesn't re-route every load. Recomputable on demand.
+model MileageDay {
+  id           String     @id @default(cuid())
+  teamMember   TeamMember @relation(fields: [teamMemberId], references: [id], onDelete: Cascade)
+  teamMemberId String
+  dayKey       String     // yyyy-mm-dd in ET
+  miles        Float
+  stops        Int        @default(0) // shoots that day (for the route)
+  computedAt   DateTime   @default(now())
+
+  @@unique([teamMemberId, dayKey])
+  @@index([teamMemberId])
+}
+
+// A flagged image needing a fix (item removal, perspective, color, etc.). Builds
+// a labeled dataset (image + note + tags) for later automated QA/editing. Many
+// flags on a project roll up into ONE "fix flagged photos" task for Kyle.
+model ImageFlag {
+  id         String    @id @default(cuid())
+  project    Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId  String
+  imageUrl   String    // canonical (full-res) image URL
+  thumbUrl   String?   // thumbnail for display
+  caption    String?
+  note       String?
+  tags       String    // JSON array of tag labels
+  status     String    @default("OPEN") // OPEN | FIXED
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
+
+  @@index([projectId])
+  @@index([status])
+}
+
 // Audit log of every inbound webhook, for debugging + replay.
 model WebhookEvent {
   id          String    @id @default(cuid())
@@ -466,4 +613,49 @@ model WebhookEvent {
 
   @@index([provider])
   @@index([externalId])
+}
+
+// Platform feedback + feature requests submitted by the team from inside the app.
+// Flow: submit → Jordan is notified (email, best-effort) → he Approves/Declines
+// in-app → approved items queue for Claude to implement → marked Done when shipped.
+model PlatformFeedback {
+  id          String    @id @default(cuid())
+  createdAt   DateTime  @default(now())
+  kind        String    @default("feature") // feature | bug | feedback
+  title       String
+  body        String?
+  submittedBy String? // free-text name/role of the submitter
+  page        String? // where they were when submitting (context)
+  screenshot  String? // optional screenshot, stored as a compressed data URL (image/jpeg)
+  status      String    @default("NEW") // NEW | APPROVED | DECLINED | DONE
+  priority    String? // optional triage label set on approval
+  adminNote   String? // Jordan's note on decision
+  decidedAt   DateTime?
+
+  @@index([status])
+}
+
+// Distilled business knowledge for "Ask the Hub" — durable facts about how
+// RealTour Pilot operates, learned from Jordan's ChatGPT history + the playbook.
+// Each item carries the MINIMUM role allowed to see it, mapping onto the future
+// per-user RBAC (CREATIVE < ADMIN < OWNER). The assistant filters retrieval by
+// the current viewer's role so private knowledge never reaches the wrong person.
+model KnowledgeItem {
+  id         String   @id @default(cuid())
+  category   String // preference | goal | issue | outcome | sop | fee | client_insight | strategy | financial | team | comms | script | pricing
+  title      String
+  body       String // the insight, written concisely and factually
+  minRole    String   @default("ADMIN") // CREATIVE | ADMIN | OWNER (lowest role allowed to see it)
+  tags       String? // JSON string[]
+  source     String   @default("chatgpt-export") // chatgpt-export | playbook | manual
+  sourceRef  String? // provenance: conversation title/id or note
+  confidence Int? // 1-5, how strongly the source supports this
+  pinned     Boolean  @default(false) // always-surface core facts
+  archived   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([category])
+  @@index([minRole])
+  @@index([archived])
 }

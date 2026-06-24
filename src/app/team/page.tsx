@@ -1,21 +1,30 @@
+import Link from "next/link";
 import { Mail, Phone } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { prisma } from "@/lib/prisma";
 import { ROLE_META } from "@/lib/pipeline";
+import { ProjectStatus } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
 
+// In-flight project statuses — what "active assignments" should actually count
+// (not every project the person has ever touched).
+const ACTIVE_STATUSES: ProjectStatus[] = [
+  "BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW", "REVISION",
+];
+
 export default async function TeamPage() {
+  const activeWhere = { status: { in: ACTIVE_STATUSES } };
   const team = await prisma.teamMember.findMany({
     orderBy: { role: "asc" },
     include: {
       _count: {
         select: {
-          shootsAsPhotographer: true,
-          projectsAsEditor: true,
-          projectsAsVa: true,
+          shootsAsPhotographer: { where: activeWhere },
+          projectsAsEditor: { where: activeWhere },
+          projectsAsVa: { where: activeWhere },
         },
       },
     },
@@ -32,7 +41,7 @@ export default async function TeamPage() {
             m._count.projectsAsEditor +
             m._count.projectsAsVa;
           return (
-            <div key={m.id} className="rounded-2xl border bg-surface p-5">
+            <Link key={m.id} href={`/team/${m.id}`} className="panel-shadow lift block rounded-2xl border bg-surface p-5 hover:bg-surface-2">
               <div className="flex items-center gap-3">
                 <Avatar name={m.name} size={44} color={m.avatarColor} />
                 <div className="min-w-0">
@@ -55,7 +64,7 @@ export default async function TeamPage() {
               <div className="mt-3 text-xs text-muted">
                 {load} active assignment{load === 1 ? "" : "s"}
               </div>
-            </div>
+            </Link>
           );
         })}
       </div>
