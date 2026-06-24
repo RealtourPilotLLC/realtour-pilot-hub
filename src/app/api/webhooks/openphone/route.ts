@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { phoneKey, callTranscriptText, type OpTranscriptLine } from "@/lib/integrations/openphone";
-import { resolveClientByPhones, resolveSenderName, findActiveProjectByText } from "@/lib/contacts";
+import { resolveClientByPhones, resolveSenderName, findActiveProjectByText, findClientProjectByText } from "@/lib/contacts";
 import { recordClientCommunication } from "@/lib/comms";
 import { logComm } from "@/lib/commLog";
 
@@ -91,6 +91,16 @@ async function processOpenPhoneEvent(type: string, payload: Record<string, unkno
 
   const match = await resolveClientByPhones(phones);
 
+  // For a multi-order client, prefer the project the message is actually ABOUT
+  // (named by street) over their most-recent order — so a text about an older
+  // active listing isn't filed on their newest one. Client-scoped, so it never
+  // routes onto a different client's job.
+  let effProject = match?.project ?? null;
+  if (match && !isCall && text.trim()) {
+    const named = await findClientProjectByText(match.clientId, text);
+    if (named) effProject = named;
+  }
+
   // Comms memory: record the full text (in or out) so Ask the Hub can recall it.
   if (!isCall && text.trim()) {
     await logComm({
@@ -98,7 +108,7 @@ async function processOpenPhoneEvent(type: string, payload: Record<string, unkno
       direction: incoming ? "in" : "out",
       clientId: match?.clientId ?? null,
       clientName: match?.clientName ?? null,
-      projectId: match?.project?.id ?? null,
+      projectId: effProject?.id ?? null,
       contactName: incoming ? match?.clientName ?? null : "RealTour Pilot",
       body: text,
       source: "openphone",
@@ -108,22 +118,22 @@ async function processOpenPhoneEvent(type: string, payload: Record<string, unkno
 
   // --- Client path: log + reply task + revision detection (when we know the client).
   if (match) {
-    const { clientId, clientName, project } = match;
+    const { clientId, clientName } = match;
 
-    if (project) {
+    if (effProject) {
       const body = isCall
         ? `OpenPhone: ${direction || "call"} call (${type.replace("call.", "")}).`
         : `OpenPhone ${direction || ""} text: ${text.slice(0, 140)}`.trim();
-      await prisma.activity.create({ data: { projectId: project.id, type: "SYSTEM", body } });
+      await prisma.activity.create({ data: { projectId: effProject.id, type: "SYSTEM", body } });
     }
 
     if (isInboundText) {
       await recordClientCommunication({
         clientId,
         clientName,
-        projectId: project?.id,
-        projectStatus: project?.status ?? null,
-        propertyAddress: project?.title ?? null,
+        projectId: effProject?.id,
+        projectStatus: effProject?.status ?? null,
+        propertyAddress: effProject?.title ?? null,
         text,
         kind: "text",
         source: "openphone",

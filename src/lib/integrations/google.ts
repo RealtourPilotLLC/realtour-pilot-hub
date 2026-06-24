@@ -522,7 +522,11 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
       if (client) client = toAgent(client); // route assistant comms to the agent
 
       if (client) {
-        const project = client.projects[0];
+        // Prefer the listing the email is actually about (named in the subject or
+        // body) over the client's most-recent order; fall back to most-recent.
+        const { findClientProjectByText } = await import("@/lib/contacts");
+        const named = await findClientProjectByText(client.id, `${subject ?? ""} ${text}`);
+        const project = named ?? client.projects[0];
         await recordClientCommunication({
           clientId: client.id,
           clientName: client.name || name,

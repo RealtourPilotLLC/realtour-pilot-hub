@@ -259,3 +259,38 @@ export async function findActiveProjectByText(
   }
   return best;
 }
+
+// Which of THIS client's properties is a message about? Scoped to one client and
+// across ALL their projects (any status), so a multi-order client (e.g. an agent
+// with several active listings) who texts about an older order doesn't get it
+// filed on their most-recent order by default. Returns the most specific street
+// match (longest core), preferring the most-recent on ties. Client-scoped, so it
+// can never cross-file onto a different client's job.
+export async function findClientProjectByText(
+  clientId: string,
+  text: string,
+): Promise<{ id: string; title: string; status: string } | null> {
+  const t = (text || "").toLowerCase();
+  if (t.length < 4) return null;
+  const projects = await prisma.project.findMany({
+    where: { clientId },
+    select: { id: true, title: true, status: true, addressLine: true },
+    orderBy: [
+      { orderedAt: { sort: "desc", nulls: "last" } },
+      { shootDate: { sort: "desc", nulls: "last" } },
+      { createdAt: "desc" },
+    ],
+  });
+  let best: { id: string; title: string; status: string } | null = null;
+  let bestLen = 0;
+  for (const p of projects) {
+    const core = streetCore(p.addressLine || p.title).toLowerCase();
+    if (core.length < 5) continue;
+    const re = new RegExp(`\\b${escapeRegExp(core)}\\b`, "i");
+    if (re.test(t) && core.length > bestLen) {
+      best = { id: p.id, title: p.title, status: p.status };
+      bestLen = core.length;
+    }
+  }
+  return best;
+}
