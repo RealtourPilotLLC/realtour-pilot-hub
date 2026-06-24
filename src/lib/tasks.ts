@@ -254,11 +254,15 @@ export async function createCommTask(opts: {
   // AI-derived, specific action ("Reschedule 320 Tarbert to Thursday").
   aiTitle?: string | null;
   aiDetail?: string | null;
+  // Smart-Brain priority (context-aware). Defaults to HIGH.
+  priority?: "URGENT" | "HIGH" | "MEDIUM" | "LOW";
   // Provenance ref (e.g. "gmail-thread:hello@…:<threadId>") so the listener can
   // auto-close the task once we've replied in that thread.
   threadRef?: string | null;
 }): Promise<boolean> {
-  const key = dedupe([opts.clientId, "client_reply"]);
+  // One open reply task per (client, order) — a multi-order client's questions
+  // stay separate, and replying about one order won't close another's.
+  const key = dedupe([opts.clientId, opts.projectId ?? "noproject", "client_reply"]);
   const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
   if (existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED") return false;
 
@@ -291,7 +295,7 @@ export async function createCommTask(opts: {
     ]),
     source: opts.source ?? "openphone",
     sourceDetail: opts.threadRef ?? null,
-    priority: "HIGH" as const,
+    priority: opts.priority ?? "HIGH",
     dueAt,
     clientId: opts.clientId,
     projectId: opts.projectId ?? null,
@@ -356,15 +360,73 @@ export async function createProjectFollowupTask(opts: {
   return true;
 }
 
-// Close a client's open "reply" task — call this once we've responded (an
-// outbound OpenPhone text, an answered Gmail thread, etc.). Returns true if a
-// task was closed. There's at most one open client_reply per client (dedupeKey).
-export async function closeClientReplyTask(clientId: string): Promise<boolean> {
-  const r = await prisma.smartTask.updateMany({
-    where: { clientId, taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] } },
-    data: { status: "COMPLETED", completedAt: new Date() },
-  });
+// Close a client's open "reply" task once we've responded. With per-order reply
+// tasks, pass the projectId to close ONLY that order's reply task; omit it to
+// close all of the client's open reply tasks (used when we can't tell which order
+// a reply addressed).
+export async function closeClientReplyTask(clientId: string, projectId?: string | null): Promise<boolean> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const where: any = { clientId, taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] } };
+  if (projectId) where.projectId = projectId;
+  const r = await prisma.smartTask.updateMany({ where, data: { status: "COMPLETED", completedAt: new Date() } });
   return r.count > 0;
+}
+
+// Close the right reply task after WE send an outbound message, inferring which
+// order it addressed: first from the text (a named street), then from the most
+// recent inbound we logged for this client. Falls back to closing all the
+// client's reply tasks only when the order genuinely can't be determined.
+export async function closeReplyForOutbound(clientId: string, text: string): Promise<boolean> {
+  let projectId: string | null = null;
+  try {
+    const { findClientProjectByText } = await import("@/lib/contacts");
+    const named = await findClientProjectByText(clientId, text || "");
+    if (named) projectId = named.id;
+  } catch { /* fall through */ }
+  if (!projectId) {
+    const lastInbound = await prisma.commLog.findFirst({
+      where: { clientId, direction: "in", projectId: { not: null } },
+      orderBy: { occurredAt: "desc" },
+      select: { projectId: true },
+    });
+    projectId = lastInbound?.projectId ?? null;
+  }
+  // If we resolved an order, close that one; otherwise close all (legacy behavior).
+  return closeClientReplyTask(clientId, projectId ?? undefined);
+}
+
+// Merge a new inbound into an EXISTING open task the Smart Brain flagged as the
+// same request — reopen it, refresh the title/priority/order, and append the new
+// context instead of creating a duplicate.
+export async function mergeIntoExistingTask(taskId: string, opts: {
+  title?: string;
+  detail?: string;
+  priority?: "URGENT" | "HIGH" | "MEDIUM" | "LOW";
+  projectId?: string | null;
+  propertyAddress?: string | null;
+  snippet?: string;
+  clientName?: string;
+}): Promise<boolean> {
+  const existing = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { description: true, taskType: true } });
+  if (!existing) return false;
+  const addition = [opts.detail, opts.snippet?.slice(0, 280)].filter(Boolean).join(" — ");
+  const description = [existing.description, addition ? `Update: ${addition}` : null].filter(Boolean).join("\n\n").slice(0, 2000);
+  const titled = opts.title
+    ? (existing.taskType === "client_reply" && opts.clientName ? `${opts.title} (${opts.clientName})` : opts.title).slice(0, 120)
+    : undefined;
+  await prisma.smartTask.update({
+    where: { id: taskId },
+    data: {
+      status: "OPEN",
+      completedAt: null,
+      description,
+      ...(titled ? { title: titled } : {}),
+      ...(opts.priority ? { priority: opts.priority } : {}),
+      ...(opts.projectId !== undefined ? { projectId: opts.projectId } : {}),
+      ...(opts.propertyAddress !== undefined ? { propertyAddress: opts.propertyAddress } : {}),
+    },
+  });
+  return true;
 }
 
 // When a deliverable goes back into revision (e.g. Luma "Revision Request

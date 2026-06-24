@@ -186,9 +186,15 @@ export async function sweepRepliedOpenPhoneTasks(): Promise<number> {
   const { prisma } = await import("@/lib/prisma");
   const tasks = await prisma.smartTask.findMany({
     where: { source: "openphone", taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] }, clientId: { not: null } },
-    select: { id: true, client: { select: { phone: true } } },
+    select: { id: true, clientId: true, client: { select: { phone: true } } },
   });
   if (tasks.length === 0) return 0;
+
+  // With per-order reply tasks a client can have several open at once; this
+  // phone-level sweep can't tell which order a reply addressed, so skip those
+  // clients and let the real-time, project-aware close handle them.
+  const perClient = new Map<string, number>();
+  for (const t of tasks) if (t.clientId) perClient.set(t.clientId, (perClient.get(t.clientId) ?? 0) + 1);
 
   // Our OpenPhone numbers (the message endpoint needs a phoneNumberId).
   let numbers: string[] = [];
@@ -201,6 +207,7 @@ export async function sweepRepliedOpenPhoneTasks(): Promise<number> {
 
   let closed = 0;
   for (const t of tasks) {
+    if (t.clientId && (perClient.get(t.clientId) ?? 0) > 1) continue; // multi-order: skip
     const k = phoneKey(t.client?.phone);
     if (k.length !== 10) continue;
     const participant = `+1${k}`; // OpenPhone wants E.164; their clients are US.

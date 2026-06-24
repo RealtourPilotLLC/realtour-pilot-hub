@@ -1,7 +1,8 @@
 import "server-only";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
-import { createCommTask } from "@/lib/tasks";
+import { createCommTask, mergeIntoExistingTask } from "@/lib/tasks";
+import { routeCommTask } from "@/lib/brain";
 
 // ---------------------------------------------------------------------------
 // Communications cross-check for the smart-status engine.
@@ -130,58 +131,98 @@ export async function recordClientCommunication(opts: {
     }).catch(() => {});
   }
 
-  // If the AI assistant is connected, turn the message into a specific to-do
-  // ("Reschedule 320 Tarbert to Thursday") instead of a generic "Reply to X".
-  let aiTitle: string | null = null;
-  let aiDetail: string | null = null;
-  try {
-    const { getSecret } = await import("@/lib/integrations/connections");
-    if (await getSecret("ai")) {
-      const { messageToTodo } = await import("@/lib/integrations/ai");
-      const todo = await messageToTodo({
+  // Route through the Smart Brain: it cross-checks the client's orders, the recent
+  // conversation, and existing open to-dos, then creates OR merges the right task
+  // on the right order with a context-aware title + priority. Falls back to the
+  // single-message helper when the brain is unavailable.
+  let replyTask = false;
+  let effProjectId = opts.projectId ?? null;
+  let effProjectStatus = opts.projectStatus ?? null;
+  let effPropertyAddress = opts.propertyAddress ?? null;
+
+  const decision = opts.clientId
+    ? await routeCommTask({
         channel: opts.kind === "email" ? "email" : opts.kind === "text" ? "text" : "call",
-        clientName: opts.clientName,
-        propertyAddress: opts.propertyAddress,
         message: opts.text,
-      });
-      if (todo) {
-        aiTitle = todo.title;
-        aiDetail = todo.detail;
+        clientId: opts.clientId,
+        clientName: opts.clientName,
+        senderIsClient: true,
+      })
+    : null;
+
+  if (decision) {
+    // The brain may correct which order this is about — refresh the project context.
+    if (decision.projectId && decision.projectId !== opts.projectId) {
+      const p = await prisma.project.findUnique({ where: { id: decision.projectId }, select: { status: true, title: true } });
+      if (p) { effProjectId = decision.projectId; effProjectStatus = p.status; effPropertyAddress = p.title; }
+    }
+    if (decision.actionable) {
+      if (decision.mergeIntoTaskId) {
+        replyTask = await mergeIntoExistingTask(decision.mergeIntoTaskId, {
+          title: decision.title, detail: decision.detail, priority: decision.priority,
+          projectId: effProjectId, propertyAddress: effPropertyAddress, snippet: opts.text, clientName: opts.clientName,
+        });
+      } else {
+        replyTask = await createCommTask({
+          clientId: opts.clientId, clientName: opts.clientName,
+          projectId: effProjectId, propertyAddress: effPropertyAddress,
+          kind: opts.kind === "email" ? "text" : opts.kind,
+          snippet: opts.text, source: opts.source,
+          aiTitle: decision.title, aiDetail: decision.detail, priority: decision.priority,
+          threadRef: opts.threadRef ?? null,
+        });
       }
     }
-  } catch {
-    /* fall back to the generic task */
+    // Observability: record what the brain did + any flags, on the chosen order.
+    if (effProjectId) {
+      const what = !decision.actionable ? "no action needed" : decision.mergeIntoTaskId ? "merged into an open to-do" : "created a to-do";
+      const note = `Smart Brain: ${what} — ${decision.reason}${decision.flags.length ? ` [${decision.flags.join("; ")}]` : ""}`;
+      await prisma.activity.create({ data: { projectId: effProjectId, type: "SYSTEM", body: note.slice(0, 300) } }).catch(() => {});
+    }
+  } else {
+    // FALLBACK (brain unavailable): single-message to-do, as before.
+    let aiTitle: string | null = null;
+    let aiDetail: string | null = null;
+    try {
+      const { getSecret } = await import("@/lib/integrations/connections");
+      if (await getSecret("ai")) {
+        const { messageToTodo } = await import("@/lib/integrations/ai");
+        const todo = await messageToTodo({
+          channel: opts.kind === "email" ? "email" : opts.kind === "text" ? "text" : "call",
+          clientName: opts.clientName,
+          propertyAddress: opts.propertyAddress,
+          message: opts.text,
+        });
+        if (todo) { aiTitle = todo.title; aiDetail = todo.detail; }
+      }
+    } catch {
+      /* fall back to the generic task */
+    }
+    const noAction = aiTitle != null && /no action needed/i.test(aiTitle);
+    replyTask = noAction
+      ? false
+      : await createCommTask({
+          clientId: opts.clientId,
+          clientName: opts.clientName,
+          projectId: opts.projectId ?? null,
+          propertyAddress: opts.propertyAddress ?? null,
+          kind: opts.kind === "email" ? "text" : opts.kind,
+          snippet: opts.text,
+          source: opts.source,
+          aiTitle,
+          aiDetail,
+          threadRef: opts.threadRef ?? null,
+        });
   }
 
-  // The AI judged the message already resolved (a confirmation, thank-you, or
-  // "all set") → "No action needed". Don't create a noise task for it; just log
-  // any revision/feedback handling below.
-  const noAction = aiTitle != null && /no action needed/i.test(aiTitle);
-
-  // Surface the inbound message as a reply/callback task (unless it needs none).
-  const replyTask = noAction
-    ? false
-    : await createCommTask({
-        clientId: opts.clientId,
-        clientName: opts.clientName,
-        projectId: opts.projectId ?? null,
-        propertyAddress: opts.propertyAddress ?? null,
-        kind: opts.kind === "email" ? "text" : opts.kind,
-        snippet: opts.text,
-        source: opts.source,
-        aiTitle,
-        aiDetail,
-        threadRef: opts.threadRef ?? null,
-      });
-
   let revision = false;
-  if (cls.isRevision && opts.projectId) {
-    if (opts.projectStatus && DELIVERED_ISH.has(opts.projectStatus)) {
+  if (cls.isRevision && effProjectId) {
+    if (effProjectStatus && DELIVERED_ISH.has(effProjectStatus)) {
       revision = await raiseRevision({
-        projectId: opts.projectId,
+        projectId: effProjectId,
         clientId: opts.clientId,
         clientName: opts.clientName,
-        propertyAddress: opts.propertyAddress ?? null,
+        propertyAddress: effPropertyAddress ?? null,
         note: opts.text,
         source: opts.source ?? "comms",
       });
@@ -189,7 +230,7 @@ export async function recordClientCommunication(opts: {
       // In-flight job: capture the ask as a special request, no status churn.
       await prisma.activity.create({
         data: {
-          projectId: opts.projectId,
+          projectId: effProjectId,
           type: "SPECIAL_REQUEST",
           body: `Client request (${opts.source ?? "comms"}): ${opts.text.slice(0, 220)}`,
         },

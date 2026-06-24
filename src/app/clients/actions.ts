@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { OpenPhone, defaultOpenPhoneNumber, phoneKey } from "@/lib/integrations/openphone";
-import { closeClientReplyTask } from "@/lib/tasks";
+import { closeReplyForOutbound } from "@/lib/tasks";
 
 export type ActionResult = { ok: boolean; message: string; draft?: string };
 
@@ -45,7 +45,7 @@ export async function sendClientText(clientId: string, body: string): Promise<Ac
       data: { projectId, type: "SYSTEM", body: `Text sent to ${client.name}: ${text.slice(0, 200)}` },
     });
   }
-  await closeClientReplyTask(clientId);
+  await closeReplyForOutbound(clientId, text);
   revalidatePath(`/clients/${clientId}`);
   revalidatePath("/");
   revalidatePath("/queue");

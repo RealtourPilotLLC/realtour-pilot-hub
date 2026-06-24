@@ -3,7 +3,7 @@
 import { prisma } from "@/lib/prisma";
 import { OpenPhone, defaultOpenPhoneNumber, defaultOpenPhoneNumberId, phoneKey, conversationThread, recentOpenPhoneConversations } from "@/lib/integrations/openphone";
 import { resolveParticipants } from "@/lib/queries";
-import { closeClientReplyTask } from "@/lib/tasks";
+import { closeReplyForOutbound } from "@/lib/tasks";
 import type { ChatItem, ConvoClient, ChatMember } from "@/components/comms/ConversationView";
 
 export type SendResult = { ok: boolean; message: string };
@@ -164,7 +164,7 @@ export async function sendThreadText(
     if (recent) {
       await prisma.activity.create({ data: { projectId: recent.id, type: "SYSTEM", body: `Text sent: ${(text || "[attachment]").slice(0, 200)}` } });
     }
-    await closeClientReplyTask(clientId);
+    await closeReplyForOutbound(clientId, text || "");
   }
   return { ok: true, message: "Sent." };
 }

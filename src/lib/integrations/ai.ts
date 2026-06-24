@@ -290,6 +290,123 @@ export async function summarizeWorkday(input: {
   return anthropic({ model: FAST, system, user, maxTokens: 500 });
 }
 
+// ---------------------------------------------------------------------------
+// Smart Brain task router. Before an inbound message becomes a to-do, this looks
+// at the WHOLE picture — the client's orders, the recent conversation, and the
+// team's existing open tasks — and decides: is it actionable, which order it is
+// about, the right title + priority, whether it duplicates an open task, and what
+// to flag. This is what makes task creation cross-check the comms instead of
+// reacting to one message in isolation. The DB context is gathered in brain.ts;
+// this function is the AI judgment step.
+// ---------------------------------------------------------------------------
+export type BrainOrder = {
+  id: string;
+  address: string;
+  status: string;
+  due: string | null;
+  delivered: string | null;
+  inRevision: boolean;
+};
+export type BrainOpenTask = { id: string; type: string; about: string | null; title: string };
+export type BrainThreadLine = { who: string; when: string; text: string };
+export type BrainContext = {
+  channel: string; // text | call | email | slack
+  message: string;
+  senderName: string;
+  senderIsClient: boolean;
+  clientName: string | null;
+  orders: BrainOrder[];
+  openTasks: BrainOpenTask[];
+  thread: BrainThreadLine[];
+};
+export type BrainPriority = "URGENT" | "HIGH" | "MEDIUM" | "LOW";
+export type BrainDecision = {
+  actionable: boolean;
+  projectId: string | null;
+  title: string;
+  detail: string;
+  priority: BrainPriority;
+  mergeIntoTaskId: string | null;
+  flags: string[];
+  reason: string;
+};
+
+export async function decideCommTask(ctx: BrainContext, key?: string): Promise<BrainDecision | null> {
+  const apiKey = key ?? (await getSecret("ai"));
+  if (!apiKey) return null;
+  const today = new Date().toLocaleDateString("en-US", {
+    timeZone: "America/New_York", weekday: "long", year: "numeric", month: "long", day: "numeric",
+  });
+
+  const ordersBlock = ctx.orders.length
+    ? ctx.orders
+        .map((o) => `${o.id} | ${o.address} | ${o.status}${o.due ? ` | due ${o.due}` : ""}${o.delivered ? ` | delivered ${o.delivered}` : ""}${o.inRevision ? " | IN REVISION" : ""}`)
+        .join("\n")
+    : "(no orders on file)";
+  const tasksBlock = ctx.openTasks.length
+    ? ctx.openTasks.map((t) => `${t.id} | ${t.type} | ${t.about ?? "no order"} | ${t.title}`).join("\n")
+    : "(no open to-dos)";
+  const threadBlock = ctx.thread.length
+    ? ctx.thread.map((l) => `${l.who} (${l.when}): ${l.text}`).join("\n")
+    : "(no prior messages on record)";
+
+  const system = `You are the task-routing brain for RealTour Pilot, a real estate media agency. You turn an incoming message into the right internal to-do for the team, cross-checking the client's orders, the conversation so far, and the team's existing open to-dos. You output ONLY strict JSON, no prose. No em dashes, no emojis.`;
+
+  const user = `Today is ${today} (Eastern).
+
+A ${ctx.channel} message came in from ${ctx.senderName} (${ctx.senderIsClient ? "the client" : "not the client — a teammate, photographer, or coordinator"}).
+
+Message:
+"""
+${ctx.message.slice(0, 1500)}
+"""
+
+This client's orders (id | address | status | due | delivered | revision):
+${ordersBlock}
+
+Recent conversation (oldest first):
+${threadBlock}
+
+Existing OPEN to-dos for this client (id | type | order | title):
+${tasksBlock}
+
+Decide how we should handle this message and respond as STRICT JSON only:
+{"actionable": <bool>, "projectId": <"order id" or null>, "title": "<short imperative to-do, max 12 words, what WE must do, no client name>", "detail": "<one sentence of context>", "priority": "<URGENT|HIGH|MEDIUM|LOW>", "mergeIntoTaskId": <"task id" or null>, "flags": ["<short note>", ...], "reason": "<one sentence>"}
+
+Rules:
+- actionable = false ONLY when the message needs no work from us: a thank-you, an emoji/reaction, "sounds good", a confirmation, or something the conversation shows is already fully handled. Otherwise true.
+- projectId: choose the order this message is about, using the addresses and the conversation. Use null only if no order clearly applies. NEVER invent an id; it must be one listed above.
+- priority: URGENT if the client is upset, it is time-sensitive, a delivery is overdue, or they explicitly need it now; HIGH for a normal question or request; MEDIUM for minor or non-urgent; LOW for FYI.
+- mergeIntoTaskId: if one of the existing OPEN to-dos already covers this same request, return its id so we update it instead of creating a duplicate. It must be one of the ids listed above, else null.
+- flags: 0 to 4 short notes worth surfacing (e.g. "delivery 2 days overdue", "we already promised Tuesday", "asking a second time", "client sounds frustrated"). Only include real, grounded notes.
+- Base everything ONLY on the data above. Do not invent dates, prices, or promises.`;
+
+  try {
+    const raw = await anthropic({ model: SMART, system, user, maxTokens: 450, key: apiKey });
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    const p = JSON.parse(m[0]) as Partial<BrainDecision>;
+    const orderIds = new Set(ctx.orders.map((o) => o.id));
+    const taskIds = new Set(ctx.openTasks.map((t) => t.id));
+    const priority: BrainPriority = ["URGENT", "HIGH", "MEDIUM", "LOW"].includes(String(p.priority))
+      ? (p.priority as BrainPriority)
+      : "HIGH";
+    const title = (typeof p.title === "string" && p.title.trim() ? p.title.trim() : "Follow up on client message").slice(0, 120);
+    return {
+      actionable: p.actionable !== false, // default to creating a task if unclear
+      projectId: typeof p.projectId === "string" && orderIds.has(p.projectId) ? p.projectId : null,
+      title,
+      detail: typeof p.detail === "string" ? p.detail.slice(0, 400) : "",
+      priority,
+      mergeIntoTaskId: typeof p.mergeIntoTaskId === "string" && taskIds.has(p.mergeIntoTaskId) ? p.mergeIntoTaskId : null,
+      flags: Array.isArray(p.flags) ? p.flags.filter((f): f is string => typeof f === "string").slice(0, 4) : [],
+      reason: typeof p.reason === "string" ? p.reason.slice(0, 300) : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
 // Title + detailed recap of one "Ask the Hub" conversation, for the owner-only
 // chat-history view. Factual, skimmable; names the real subjects discussed.
 export async function summarizeHubConversation(input: {

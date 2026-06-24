@@ -140,10 +140,11 @@ async function processOpenPhoneEvent(type: string, payload: Record<string, unkno
       });
     }
 
-    // We replied (outbound) → client isn't waiting; close any open reply task.
+    // We replied (outbound) → close the reply task for the order this addressed
+    // (inferred from the text / latest inbound), not every order's reply task.
     if (!isCall && direction.toLowerCase().startsWith("out")) {
-      const { closeClientReplyTask } = await import("@/lib/tasks");
-      await closeClientReplyTask(clientId);
+      const { closeReplyForOutbound } = await import("@/lib/tasks");
+      await closeReplyForOutbound(clientId, text);
     }
   }
 
