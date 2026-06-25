@@ -37,36 +37,35 @@ export async function maybeCreateSlackTask(opts: { text: string; ts: string; cha
   let detail = text;
   let priority: "URGENT" | "HIGH" | "MEDIUM" | "LOW" = "MEDIUM";
   let projectId = match?.id ?? null;
+  let clientId = match?.clientId ?? null;
+  let propertyAddress = match?.title ?? null;
   let usedBrain = false;
 
-  // When the message ties to a client's project, route it through the Smart Brain
-  // so it can skip chatter, merge a duplicate into an existing open to-do, pick
-  // the right order, and set priority from context.
-  if (match?.clientId) {
-    try {
-      const { routeCommTask } = await import("@/lib/brain");
-      const decision = await routeCommTask({
-        channel: "slack",
-        message: text,
-        clientId: match.clientId,
-        senderName: opts.senderName ?? null,
-        senderIsClient: false,
-      });
-      if (decision) {
-        if (!decision.actionable) return false;
-        if (decision.mergeIntoTaskId) {
-          const { mergeIntoExistingTask } = await import("@/lib/tasks");
-          await mergeIntoExistingTask(decision.mergeIntoTaskId, { title: decision.title, detail: decision.detail, priority: decision.priority, snippet: text });
-          return true;
-        }
-        title = decision.title;
-        detail = decision.detail || text;
-        priority = decision.priority;
-        if (decision.projectId) projectId = decision.projectId;
-        usedBrain = true;
+  // Route through the thread-aware Smart Brain: it reads the recent Slack thread
+  // (so "she" / "the form" resolve to the right client even when this message
+  // doesn't name them), knows that client's shoots (today/upcoming), and COMBINES
+  // this into an existing open Slack to-do when it's the same workflow.
+  try {
+    const { routeSlackTask } = await import("@/lib/brain");
+    const d = await routeSlackTask({ message: text, ts: opts.ts, channel: opts.channel, senderName: opts.senderName });
+    if (d) {
+      if (!d.actionable) return false;
+      if (d.mergeIntoTaskId) {
+        const { mergeIntoExistingTask } = await import("@/lib/tasks");
+        await mergeIntoExistingTask(d.mergeIntoTaskId, {
+          title: d.title, detail: d.detail, priority: d.priority,
+          projectId: d.projectId ?? undefined, clientId: d.clientId ?? undefined, snippet: text,
+        });
+        return true;
       }
-    } catch { /* fall through to single-message helper */ }
-  }
+      title = d.title;
+      detail = d.detail || text;
+      priority = d.priority;
+      if (d.projectId) projectId = d.projectId;
+      if (d.clientId) clientId = d.clientId;
+      usedBrain = true;
+    }
+  } catch { /* fall through to single-message helper */ }
 
   // Fallback (no client/project match, or brain unavailable): single-message to-do.
   if (!usedBrain) {
@@ -102,8 +101,8 @@ export async function maybeCreateSlackTask(opts: { text: string; ts: string; cha
       dueAt: new Date(Date.now() + 6 * 3600_000),
       ownerId: kyle?.id ?? null,
       projectId,
-      clientId: match?.clientId ?? null,
-      propertyAddress: match?.title ?? null,
+      clientId,
+      propertyAddress,
       dedupeKey,
     },
   });

@@ -1,8 +1,8 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { getSecret } from "@/lib/integrations/connections";
-import { decideCommTask, type BrainContext, type BrainDecision } from "@/lib/integrations/ai";
-import { etDate } from "@/lib/datetime";
+import { decideCommTask, decideSlackTask, type BrainContext, type BrainDecision, type SlackDecision, type SlackCandidate } from "@/lib/integrations/ai";
+import { etDate, etDateTime, etDayStartUtc, etAddDays } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // The Smart Brain task router. Every comms-driven task creation flows through
@@ -90,6 +90,107 @@ export async function routeCommTask(input: {
     };
 
     return await decideCommTask(ctx, key);
+  } catch {
+    return null;
+  }
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Clients whose FULL name (first + last) appears as a whole phrase in the text.
+// Full-name only on purpose: a bare first name like "Daniel" false-matches too
+// easily, so we never auto-link on it. These are just CANDIDATES — the brain
+// then picks the right one from the thread, or none.
+async function resolveClientCandidates(text: string): Promise<{ id: string; name: string }[]> {
+  const hay = ` ${text.toLowerCase()} `;
+  if (hay.trim().length < 5) return [];
+  const clients = await prisma.client.findMany({
+    where: { parentClientId: null },
+    select: { id: true, name: true },
+  });
+  const hits: { id: string; name: string; len: number }[] = [];
+  for (const c of clients) {
+    const name = (c.name || "").toLowerCase().trim();
+    if (name.length < 6 || !name.includes(" ")) continue; // require a full multi-word name
+    if (new RegExp(`\\b${escapeRe(name)}\\b`).test(hay)) hits.push({ id: c.id, name: c.name, len: name.length });
+  }
+  return hits.sort((a, b) => b.len - a.len).slice(0, 3).map(({ id, name }) => ({ id, name }));
+}
+
+export async function routeSlackTask(opts: {
+  message: string;
+  ts: string;
+  channel: string;
+  senderName?: string | null;
+}): Promise<SlackDecision | null> {
+  const text = (opts.message ?? "").trim();
+  if (!text) return null;
+  const key = await getSecret("ai");
+  if (!key) return null;
+
+  try {
+    // The recent thread for this Slack channel (so "she"/"the form" resolve).
+    const threadRows = await prisma.commLog.findMany({
+      where: { channel: "slack", externalId: { startsWith: `slack-${opts.channel}-` } },
+      orderBy: { occurredAt: "asc" },
+      take: 60,
+      select: { contactName: true, body: true },
+    });
+    const recent = threadRows.slice(-22);
+    const threadText = recent.map((r) => r.body ?? "").join("\n");
+
+    // Candidate clients whose full name appears in the thread; the brain picks one.
+    const candNames = await resolveClientCandidates(`${threadText}\n${text}`);
+    const todayStart = etDayStartUtc(new Date());
+    const candidates: SlackCandidate[] = await Promise.all(
+      candNames.map(async (cn) => {
+        const [orders, appts] = await Promise.all([
+          prisma.project.findMany({
+            where: { clientId: cn.id },
+            orderBy: [{ orderedAt: { sort: "desc", nulls: "last" } }, { shootDate: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
+            take: 8,
+            select: { id: true, title: true, status: true, deliveryDue: true, deliveredAt: true, revisionRequestedAt: true },
+          }),
+          prisma.appointment.findMany({
+            where: { project: { clientId: cn.id }, startAt: { gte: etAddDays(todayStart, -1) }, status: { not: "CANCELED" } },
+            orderBy: { startAt: "asc" },
+            take: 5,
+            select: { startAt: true, project: { select: { title: true } } },
+          }),
+        ]);
+        return {
+          id: cn.id,
+          name: cn.name,
+          orders: orders.map((o) => ({
+            id: o.id,
+            address: o.title,
+            status: o.status,
+            due: o.deliveryDue ? etDate(o.deliveryDue) : null,
+            delivered: o.deliveredAt ? etDate(o.deliveredAt) : null,
+            inRevision: !!o.revisionRequestedAt,
+          })),
+          shoots: appts.map((a) => `${a.project?.title ?? "shoot"} — ${a.startAt ? etDateTime(a.startAt) : "TBD"}`),
+        };
+      }),
+    );
+
+    // Open Slack to-dos this might be a continuation of (merge candidates).
+    const openSlack = await prisma.smartTask.findMany({
+      where: { source: "slack", taskType: "internal_instruction", status: { notIn: DONE } },
+      orderBy: { createdAt: "desc" },
+      take: 12,
+      select: { id: true, title: true },
+    });
+
+    return await decideSlackTask({
+      message: text,
+      senderName: opts.senderName || "a teammate",
+      thread: recent.map((r) => ({ who: r.contactName || "teammate", text: (r.body ?? "").replace(/\s+/g, " ").slice(0, 240) })),
+      candidates,
+      openSlackTasks: openSlack.map((t) => ({ id: t.id, title: t.title })),
+    }, key);
   } catch {
     return null;
   }

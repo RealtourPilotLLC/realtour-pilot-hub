@@ -413,6 +413,7 @@ export async function mergeIntoExistingTask(taskId: string, opts: {
   detail?: string;
   priority?: "URGENT" | "HIGH" | "MEDIUM" | "LOW";
   projectId?: string | null;
+  clientId?: string | null;
   propertyAddress?: string | null;
   snippet?: string;
   clientName?: string;
@@ -433,6 +434,7 @@ export async function mergeIntoExistingTask(taskId: string, opts: {
       ...(titled ? { title: titled } : {}),
       ...(opts.priority ? { priority: opts.priority } : {}),
       ...(opts.projectId !== undefined ? { projectId: opts.projectId } : {}),
+      ...(opts.clientId !== undefined ? { clientId: opts.clientId } : {}),
       ...(opts.propertyAddress !== undefined ? { propertyAddress: opts.propertyAddress } : {}),
     },
   });

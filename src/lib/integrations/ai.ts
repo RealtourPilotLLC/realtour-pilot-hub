@@ -410,6 +410,106 @@ Rules:
   }
 }
 
+// Slack-thread-aware task router. Internal Slack messages often say "she" / "the
+// form" with the subject named earlier in the thread, and several messages are
+// really steps of ONE workflow. This reads the recent thread (so it can resolve
+// who it's about) and the team's open Slack to-dos (so it can COMBINE related
+// messages into one task instead of spawning several).
+export type SlackCandidate = { id: string; name: string; orders: BrainOrder[]; shoots: string[] };
+export type SlackBrainContext = {
+  message: string;
+  senderName: string;
+  thread: { who: string; text: string }[]; // recent channel messages, oldest first
+  candidates: SlackCandidate[]; // clients whose full name appears in the thread
+  openSlackTasks: { id: string; title: string }[];
+};
+export type SlackDecision = {
+  actionable: boolean;
+  title: string;
+  detail: string;
+  priority: BrainPriority;
+  clientId: string | null;
+  projectId: string | null;
+  mergeIntoTaskId: string | null;
+  flags: string[];
+  reason: string;
+};
+
+export async function decideSlackTask(ctx: SlackBrainContext, key?: string): Promise<SlackDecision | null> {
+  const apiKey = key ?? (await getSecret("ai"));
+  if (!apiKey) return null;
+  const today = new Date().toLocaleDateString("en-US", {
+    timeZone: "America/New_York", weekday: "long", year: "numeric", month: "long", day: "numeric",
+  });
+  const threadBlock = ctx.thread.length
+    ? ctx.thread.map((l) => `${l.who}: ${l.text}`).join("\n")
+    : "(no earlier messages)";
+  const candidatesBlock = ctx.candidates.length
+    ? ctx.candidates
+        .map((c) => `CLIENT ${c.id} — ${c.name}\n  orders: ${c.orders.map((o) => `${o.id} (${o.address.split(",")[0]}, ${o.status})`).join("; ") || "none"}\n  shoots: ${c.shoots.join("; ") || "none"}`)
+        .join("\n")
+    : "(no client names found in the thread)";
+  const tasksBlock = ctx.openSlackTasks.length
+    ? ctx.openSlackTasks.map((t) => `${t.id} | ${t.title}`).join("\n")
+    : "(none)";
+
+  const system = `You convert the team's internal Slack messages into clean to-dos for the operations assistant. Several messages about the same job or workflow must become ONE combined to-do, not several. You read the recent thread to understand who and what it is about. Output ONLY strict JSON. No em dashes, no emojis.`;
+  const user = `Today is ${today} (Eastern).
+
+New Slack message from ${ctx.senderName}:
+"""
+${ctx.message.slice(0, 1200)}
+"""
+
+Recent Slack conversation in this channel (oldest first):
+${threadBlock}
+
+Possible clients this might be about (their full name appeared in the thread; pick the RIGHT one or none):
+${candidatesBlock}
+
+Existing OPEN Slack to-dos you could COMBINE this into (id | title):
+${tasksBlock}
+
+Decide and respond as STRICT JSON only:
+{"actionable": <bool>, "title": "<one clear to-do for the whole thing>", "detail": "<1-2 sentences or short ordered steps>", "priority": "<URGENT|HIGH|MEDIUM|LOW>", "clientId": <"client id" or null>, "projectId": <"order id" or null>, "mergeIntoTaskId": <"task id" or null>, "flags": ["<short note>", ...], "reason": "<one sentence>"}
+
+Rules:
+- actionable = false for chatter/acknowledgements ("got it", "thanks", "sounds good") or anything that needs no action from us.
+- clientId: ONLY if the THREAD makes clear this message/workflow is about one of the candidate clients above, return that client's id. If it is unclear or none fit, return null. NEVER guess; a wrong client is worse than none.
+- mergeIntoTaskId: if this message is part of the SAME effort as one of the existing open Slack to-dos above (the next step of that workflow, or more detail about it), return THAT to-do's id so we combine them into one. It must be one of the ids listed, else null.
+- title: describe the whole thing the team must do; if combining, cover both. Name the client only when you are confident from the thread.
+- projectId: the order this is about — an id from the CHOSEN client's orders above — or null. NEVER invent an id.
+- flags: short notes worth surfacing (e.g. "shoot today", "waiting on the client's scripting form"). Only real, grounded notes.
+- priority: URGENT if tied to a shoot today or tomorrow or otherwise time-sensitive; HIGH for a normal action; MEDIUM for minor.
+- Base everything ONLY on the data above. Do not invent names, dates, or facts.`;
+
+  try {
+    const raw = await anthropic({ model: SMART, system, user, maxTokens: 450, key: apiKey });
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    const p = JSON.parse(m[0]) as Partial<SlackDecision>;
+    const candIds = new Set(ctx.candidates.map((c) => c.id));
+    const clientId = typeof p.clientId === "string" && candIds.has(p.clientId) ? p.clientId : null;
+    const chosen = clientId ? ctx.candidates.find((c) => c.id === clientId) : undefined;
+    const orderIds = new Set(chosen?.orders.map((o) => o.id) ?? []);
+    const taskIds = new Set(ctx.openSlackTasks.map((t) => t.id));
+    const priority: BrainPriority = ["URGENT", "HIGH", "MEDIUM", "LOW"].includes(String(p.priority)) ? (p.priority as BrainPriority) : "MEDIUM";
+    return {
+      actionable: p.actionable !== false,
+      title: (typeof p.title === "string" && p.title.trim() ? p.title.trim() : "Follow up on Slack message").slice(0, 140),
+      detail: typeof p.detail === "string" ? p.detail.slice(0, 600) : "",
+      priority,
+      clientId,
+      projectId: typeof p.projectId === "string" && orderIds.has(p.projectId) ? p.projectId : null,
+      mergeIntoTaskId: typeof p.mergeIntoTaskId === "string" && taskIds.has(p.mergeIntoTaskId) ? p.mergeIntoTaskId : null,
+      flags: Array.isArray(p.flags) ? p.flags.filter((f): f is string => typeof f === "string").slice(0, 4) : [],
+      reason: typeof p.reason === "string" ? p.reason.slice(0, 300) : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
 // Title + detailed recap of one "Ask the Hub" conversation, for the owner-only
 // chat-history view. Factual, skimmable; names the real subjects discussed.
 export async function summarizeHubConversation(input: {
