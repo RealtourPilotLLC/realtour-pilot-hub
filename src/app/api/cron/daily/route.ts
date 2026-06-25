@@ -32,5 +32,10 @@ export async function GET(req: NextRequest) {
     const r = await prisma.webhookEvent.deleteMany({ where: { createdAt: { lt: cutoff } } });
     out.webhookLogTrimmed = r.count;
   } catch { /* non-fatal */ }
+  // Rebuild a bounded batch of stale client working profiles (AI; cost-capped).
+  try {
+    const { refreshStaleClientProfiles } = await import("@/lib/clientProfile");
+    out.clientProfiles = await refreshStaleClientProfiles(20);
+  } catch (e) { out.clientProfilesError = e instanceof Error ? e.message : String(e); }
   return NextResponse.json({ ok: true, ...out });
 }

@@ -172,6 +172,14 @@ model Client {
   brandColors       String? // free text / hex list, e.g. "#0B1F3A, #C9A24B"
   brandAssetsPath   String? // Dropbox folder path holding their logo/fonts/brand kit
 
+  // AI-built "working profile" — a creative-safe synthesis of who this client is
+  // to work with (touch level, comms style, revision habits, brand taste, shoot
+  // notes, dos/donts), drawn from comms, creatives' shoot debriefs, revision
+  // history, and the manual notes above. Regenerable; powers the creatives portal.
+  profileSummary   String? // one-paragraph narrative
+  profileJson      String? // structured insights (JSON)
+  profileUpdatedAt DateTime?
+
   // External system linkage
   aryeoCustomerId String? @unique
   licenseNumber   String?

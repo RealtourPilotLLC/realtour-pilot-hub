@@ -13,13 +13,15 @@ import { AgentProfile } from "@/components/clients/AgentProfile";
 import { ClientChat } from "@/components/clients/ClientChat";
 import { ClientEmails } from "@/components/clients/ClientEmails";
 import { ClientTodos } from "@/components/clients/ClientTodos";
+import { ClientProfileCard } from "@/components/clients/ClientProfileCard";
+import { parseClientProfile } from "@/lib/clientProfile";
 import { ShowMore } from "@/components/ui/ShowMore";
 import { dropboxWebUrl } from "@/lib/dropboxFolders";
 import { getClientDetail } from "@/lib/queries";
 import { stageMeta } from "@/lib/pipeline";
 import { formatMoney, stripHtml } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
-import { etDateYear, etMonthDay } from "@/lib/datetime";
+import { etDateYear, etMonthDay, etDateTime } from "@/lib/datetime";
 
 export const dynamic = "force-dynamic";
 
@@ -113,6 +115,13 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
       <div className="grid grid-cols-1 gap-6 p-4 sm:p-6 lg:grid-cols-[minmax(0,1fr)_380px]">
         {/* MAIN: orders + activity */}
         <div className="space-y-6">
+          {/* Working profile — who this client is to work with (creative-safe) */}
+          <ClientProfileCard
+            clientId={client.id}
+            profile={parseClientProfile(client.profileJson)}
+            updatedAt={client.profileUpdatedAt ? etDateTime(client.profileUpdatedAt) : null}
+          />
+
           {/* Orders */}
           <section>
             <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold"><Package className="size-4 text-muted" /> Orders &amp; projects</h2>

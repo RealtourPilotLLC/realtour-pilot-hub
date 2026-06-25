@@ -537,6 +537,103 @@ Respond as strict JSON: {"title": "<4 to 7 word topic title>", "summary": "<2 to
   }
 }
 
+// Synthesize a creative-safe "working profile" of a client from everything we
+// know — comms, shoot debriefs, revision history, brand notes. Written FOR the
+// photographers/editors who'll work with them, so it must stay appropriate.
+export type ClientProfileInsights = {
+  summary: string;
+  touchLevel: "high" | "medium" | "low" | "";
+  workingStyle: string;
+  communication: string;
+  revisions: { summary: string; commonTypes: string[] };
+  brandStyle: string;
+  shootNotes: string[];
+  aboutThem: string[];
+  dos: string[];
+  donts: string[];
+};
+export async function synthesizeClientProfile(input: {
+  name: string;
+  company?: string | null;
+  segment?: string | null;
+  socialPlan?: string | null;
+  stats: { totalOrders: number; revisions: number; inboundMsgs: number };
+  sampleOrders: string[];
+  notes: { preferences?: string | null; editing?: string | null; general?: string | null; brandColors?: string | null };
+  comms: { who: string; when: string; text: string }[];
+  activities: string[];
+  feedback: { rating?: number | null; sentiment?: string | null; text: string }[];
+}): Promise<ClientProfileInsights | null> {
+  const commsBlock = input.comms.length
+    ? input.comms.map((c) => `${c.who} (${c.when}): ${c.text.replace(/\s+/g, " ").slice(0, 300)}`).join("\n")
+    : "(no messages on record)";
+  const actsBlock = input.activities.length ? input.activities.map((a) => `- ${a.slice(0, 300)}`).join("\n") : "(none)";
+  const fbBlock = input.feedback.length
+    ? input.feedback.map((f) => `- ${f.rating ? f.rating + "/5 " : ""}${f.sentiment ?? ""}: ${f.text.slice(0, 240)}`).join("\n")
+    : "(none)";
+  const notesBlock = [
+    input.notes.preferences ? `Working preferences: ${input.notes.preferences}` : null,
+    input.notes.editing ? `Editing preferences: ${input.notes.editing}` : null,
+    input.notes.general ? `General notes: ${input.notes.general}` : null,
+    input.notes.brandColors ? `Brand colors: ${input.notes.brandColors}` : null,
+  ].filter(Boolean).join("\n") || "(none on file)";
+
+  const system = `You write an internal "working profile" of a real estate agent (our client) for the CREATIVE TEAM — the photographers and editors who will shoot and edit for them. The reader needs to quickly know who they're working with.
+
+It MUST be appropriate for a creative to read. Focus on: how they are to work with, their communication and revision habits, their brand and aesthetic taste, shoot logistics/preferences, and respectful rapport notes. NEVER include pricing, fees, payments, balances, internal finances, margins, business strategy, or anything unkind or gossipy. If you have nothing solid for a section, leave it brief or empty rather than inventing. Ground every statement ONLY in the data provided. Warm, specific, professional. No em dashes, no emojis, no bold. Output ONLY strict JSON.`;
+
+  const user = `Client: ${input.name}${input.company ? ` (${input.company})` : ""}
+Relationship: ${input.segment ?? "unknown"}${input.socialPlan ? ` · social plan ${input.socialPlan}` : ""}
+By the numbers: ${input.stats.totalOrders} orders, ${input.stats.revisions} revision request(s), ${input.stats.inboundMsgs} inbound messages on record.
+Recent properties: ${input.sampleOrders.slice(0, 8).join("; ") || "n/a"}
+
+Manual notes on file:
+${notesBlock}
+
+Recent messages (to/from them; "Us" = our team):
+${commsBlock}
+
+Shoot debriefs, requests, and timeline notes:
+${actsBlock}
+
+Feedback they've given:
+${fbBlock}
+
+Write the profile as STRICT JSON only:
+{"summary": "<2-4 sentence narrative of who they are to work with>", "touchLevel": "<high|medium|low>", "workingStyle": "<1-2 sentences>", "communication": "<how they communicate: channel, pace, tone>", "revisions": {"summary": "<how often / how particular about revisions>", "commonTypes": ["<recurring kinds of changes they ask for>"]}, "brandStyle": "<their look/aesthetic/brand taste>", "shootNotes": ["<logistics, access, things they mention about shoots>"], "aboutThem": ["<appropriate rapport notes>"], "dos": ["<tips for the creative>"], "donts": ["<things to avoid>"]}
+
+Rules:
+- touchLevel: high = frequent contact / particular / many revisions; low = hands-off / rarely asks for changes.
+- commonTypes / shootNotes / aboutThem / dos / donts: 0 to 5 short bullets each, only real ones from the data.
+- Do not invent facts, dates, or preferences not supported above. Empty arrays and short strings are fine when the signal is thin.`;
+
+  try {
+    const raw = await anthropic({ model: SMART, system, user, maxTokens: 900 });
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    const p = JSON.parse(m[0]) as Partial<ClientProfileInsights> & { revisions?: { summary?: string; commonTypes?: unknown } };
+    const arr = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").slice(0, 6) : []);
+    const touch = ["high", "medium", "low"].includes(String(p.touchLevel)) ? (p.touchLevel as "high" | "medium" | "low") : "";
+    return {
+      summary: typeof p.summary === "string" ? p.summary.slice(0, 1000) : "",
+      touchLevel: touch,
+      workingStyle: typeof p.workingStyle === "string" ? p.workingStyle.slice(0, 500) : "",
+      communication: typeof p.communication === "string" ? p.communication.slice(0, 500) : "",
+      revisions: {
+        summary: typeof p.revisions?.summary === "string" ? p.revisions.summary.slice(0, 500) : "",
+        commonTypes: arr(p.revisions?.commonTypes),
+      },
+      brandStyle: typeof p.brandStyle === "string" ? p.brandStyle.slice(0, 500) : "",
+      shootNotes: arr(p.shootNotes),
+      aboutThem: arr(p.aboutThem),
+      dos: arr(p.dos),
+      donts: arr(p.donts),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function messageToTodo(ctx: {
   channel: string;
   clientName?: string | null;

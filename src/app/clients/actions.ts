@@ -7,6 +7,14 @@ import { closeReplyForOutbound } from "@/lib/tasks";
 
 export type ActionResult = { ok: boolean; message: string; draft?: string };
 
+// (Re)build the client's AI working profile from comms, shoot notes, revisions.
+export async function regenerateClientProfile(clientId: string): Promise<{ ok: boolean; message: string }> {
+  const { buildClientProfile } = await import("@/lib/clientProfile");
+  const r = await buildClientProfile(clientId);
+  if (r.ok) revalidatePath(`/clients/${clientId}`);
+  return { ok: r.ok, message: r.ok ? "Profile updated." : r.error ?? "Could not build the profile." };
+}
+
 // Most-recent project for a client (for logging activity against).
 async function recentProjectId(clientId: string): Promise<string | null> {
   const p = await prisma.project.findFirst({
