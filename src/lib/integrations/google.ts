@@ -510,26 +510,65 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
       // Only real client/lead emails — drop marketing, invoices, automated, vendors.
       if (!isLikelyHuman(email, listUnsub, subject, name)) continue;
 
-      // Don't surface anything we've already replied to (latest thread message
-      // is from us) — only flag messages still awaiting a response.
-      if (await threadAlreadyAnswered(threadId, token)) continue;
+      // Already replied to (latest thread message is from us)? Still logged to
+      // comms memory below, but it won't create a task.
+      const answered = await threadAlreadyAnswered(threadId, token);
 
-      let client = clientByEmail.get(email);
-      if (!client) {
+      // Resolve the sender to a client account (email → synced contact → agent).
+      let senderClient = clientByEmail.get(email);
+      if (!senderClient) {
         const cid = contactClientByEmail.get(email);
-        if (cid) client = clients.find((c) => c.id === cid);
+        if (cid) senderClient = clients.find((c) => c.id === cid);
       }
-      if (client) client = toAgent(client); // route assistant comms to the agent
+      if (senderClient) senderClient = toAgent(senderClient); // fold assistant → agent
 
-      if (client) {
-        // Prefer the listing the email is actually about (named in the subject or
-        // body) over the client's most-recent order; fall back to most-recent.
-        const { findClientProjectByText } = await import("@/lib/contacts");
-        const named = await findClientProjectByText(client.id, `${subject ?? ""} ${text}`);
-        const project = named ?? client.projects[0];
+      // Which listing is this about? Prefer a property named in the subject/body
+      // within the sender's OWN orders; otherwise match it GLOBALLY (a coordinator
+      // or executive assistant emailing about another agent's property) and route
+      // to THAT property's order + owner, not the sender's most-recent job.
+      const { findClientProjectByText, findProjectByText } = await import("@/lib/contacts");
+      let resolvedClientId: string | null = senderClient?.id ?? null;
+      let resolvedClientName: string | null = senderClient?.name ?? null;
+      let project: { id: string; title: string; status: string } | null = null;
+      if (senderClient) {
+        const named = await findClientProjectByText(senderClient.id, `${subject ?? ""} ${text}`);
+        if (named) project = named;
+      }
+      if (!project) {
+        const gp = await findProjectByText(`${subject ?? ""} ${text}`);
+        if (gp) {
+          project = { id: gp.id, title: gp.title, status: gp.status };
+          resolvedClientId = gp.clientId;
+          resolvedClientName = clients.find((c) => c.id === gp.clientId)?.name ?? null;
+        }
+      }
+      if (!project && senderClient) project = senderClient.projects[0] ?? null;
+
+      // Comms memory: log an inbound human email so the Hub can recall it — even
+      // answered ones and leads. (Skip unknown senders on info@, Jordan's personal
+      // inbox.) The SENDER is the contact; the client is the account it's about.
+      const shouldLog = !!resolvedClientId || !CLIENTS_ONLY_MAILBOXES.includes(account.email);
+      if (shouldLog) {
+        await logComm({
+          channel: "email",
+          direction: "in",
+          clientId: resolvedClientId,
+          clientName: resolvedClientName,
+          projectId: project?.id ?? null,
+          contactName: name || resolvedClientName || null,
+          subject,
+          body: msg.snippet || text,
+          source: "gmail",
+          externalId: `gmail-${dedupe}`,
+        });
+      }
+
+      if (answered) continue; // logged above; don't create a task for handled mail
+
+      if (resolvedClientId) {
         await recordClientCommunication({
-          clientId: client.id,
-          clientName: client.name || name,
+          clientId: resolvedClientId,
+          clientName: resolvedClientName || name,
           projectId: project?.id,
           projectStatus: project?.status ?? null,
           propertyAddress: project?.title ?? null,
@@ -537,19 +576,6 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
           kind: "email",
           source: "gmail",
           threadRef,
-        });
-        // Comms memory: store the inbound client email (subject + snippet).
-        await logComm({
-          channel: "email",
-          direction: "in",
-          clientId: client.id,
-          clientName: client.name || name,
-          projectId: project?.id ?? null,
-          contactName: client.name || name,
-          subject,
-          body: msg.snippet || text,
-          source: "gmail",
-          externalId: `gmail-${dedupe}`,
         });
         tasks++;
       } else if (CLIENTS_ONLY_MAILBOXES.includes(account.email)) {

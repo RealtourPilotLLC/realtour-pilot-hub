@@ -260,6 +260,39 @@ export async function findActiveProjectByText(
   return best;
 }
 
+// Which project (any client) is a message about, by the street it names? Used to
+// route a comm to the right LISTING even when the sender isn't that listing's
+// client — e.g. a team coordinator or executive assistant emailing about an
+// agent's property. Whole-word street-core match across all non-cancelled
+// projects; most specific (longest) wins, ties break to the most recent.
+export async function findProjectByText(
+  text: string,
+): Promise<{ id: string; title: string; status: string; clientId: string } | null> {
+  const t = (text || "").toLowerCase();
+  if (t.length < 4) return null;
+  const projects = await prisma.project.findMany({
+    where: { status: { not: "CANCELLED" } },
+    select: { id: true, title: true, status: true, clientId: true, addressLine: true },
+    orderBy: [
+      { orderedAt: { sort: "desc", nulls: "last" } },
+      { shootDate: { sort: "desc", nulls: "last" } },
+    ],
+  });
+  let best: { id: string; title: string; status: string; clientId: string } | null = null;
+  let bestLen = 0;
+  for (const p of projects) {
+    if (!p.clientId) continue;
+    const core = streetCore(p.addressLine || p.title).toLowerCase();
+    if (core.length < 5) continue;
+    const re = new RegExp(`\\b${escapeRegExp(core)}\\b`, "i");
+    if (re.test(t) && core.length > bestLen) {
+      best = { id: p.id, title: p.title, status: p.status, clientId: p.clientId };
+      bestLen = core.length;
+    }
+  }
+  return best;
+}
+
 // Which of THIS client's properties is a message about? Scoped to one client and
 // across ALL their projects (any status), so a multi-order client (e.g. an agent
 // with several active listings) who texts about an older order doesn't get it
