@@ -247,6 +247,13 @@ const BRIEF_ACTIVE = [
 // and NOT get buried in Needs Attention). Email/text/Slack/lead all land here.
 const MESSAGE_TASK_TYPES = ["client_reply", "comms_followup", "revision", "lead", "internal_instruction", "vendor_update"];
 
+// Content-pipeline tasks — QC, deliver, post-delivery text, feedback, image
+// fixes. Kyle works these as the content lands, not on a formal due date, so the
+// brief's "QC & deliver content" step shows them while OPEN on a recent job
+// (any due date) rather than only when due today, and they don't double up in
+// Needs Attention.
+const DELIVER_TASK_TYPES = ["media_qa", "delivery", "delivery_text", "feedback_review", "image_fixes", "finish_delivery"];
+
 export type BriefTask = {
   id: string;
   title: string;
@@ -297,9 +304,16 @@ export async function getMorningBrief(): Promise<BriefTask[]> {
         // Someone wrote in and is waiting, so it shouldn't roll into Needs
         // Attention or get hidden because the project is outside the window.
         { taskType: { in: MESSAGE_TASK_TYPES } },
-        // Everything else (deliveries, shoots, QC): due today, recent project.
+        // QC & deliver content: surface while OPEN on a recent job, ANY due date.
+        // Content gets QC'd as it lands (a shoot's media often comes in a day or
+        // two before the formal turnaround due date), so don't hide it until due.
         {
-          taskType: { notIn: MESSAGE_TASK_TYPES },
+          taskType: { in: DELIVER_TASK_TYPES },
+          OR: [{ projectId: null }, { project: recentProjectWhere() }],
+        },
+        // Everything else (confirmations, shoot prep): due today, recent project.
+        {
+          taskType: { notIn: [...MESSAGE_TASK_TYPES, ...DELIVER_TASK_TYPES] },
           dueAt: { gte: startToday, lte: endToday },
           OR: [{ projectId: null }, { project: recentProjectWhere() }],
         },
@@ -318,9 +332,10 @@ export async function getOverdueTasks(): Promise<BriefTask[]> {
     where: {
       status: { in: BRIEF_ACTIVE },
       dueAt: { lt: startToday },
-      // Message/reply tasks live in "Check your messages" (they show there
-      // regardless of due date), so keep them out of Needs Attention.
-      taskType: { notIn: MESSAGE_TASK_TYPES },
+      // Message tasks live in "Check your messages" and content tasks live in
+      // "QC & deliver content" (both show there regardless of due date), so keep
+      // them out of Needs Attention to avoid double-listing.
+      taskType: { notIn: [...MESSAGE_TASK_TYPES, ...DELIVER_TASK_TYPES] },
       OR: [{ projectId: null }, { project: recentProjectWhere() }],
     },
     include: { client: { select: { name: true } } },

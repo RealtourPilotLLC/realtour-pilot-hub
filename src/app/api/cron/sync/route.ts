@@ -28,5 +28,20 @@ export async function GET(req: NextRequest) {
   } catch (e) {
     out.appointmentsError = e instanceof Error ? e.message : String(e);
   }
+  // Re-evaluate project statuses (Aryeo has no media-upload webhook, so this is
+  // how a shoot's media gets detected → SHOT/REVIEW) and (re)generate the QC /
+  // delivery tasks for active jobs. Bounded to the active set, so it stays cheap.
+  try {
+    const { syncProjectStatuses } = await import("@/lib/projectStatus");
+    out.statuses = await syncProjectStatuses();
+  } catch (e) {
+    out.statusesError = e instanceof Error ? e.message : String(e);
+  }
+  try {
+    const { generateTasksForActiveProjects } = await import("@/lib/tasks");
+    out.tasks = await generateTasksForActiveProjects();
+  } catch (e) {
+    out.tasksError = e instanceof Error ? e.message : String(e);
+  }
   return NextResponse.json({ ok: true, ...out });
 }
