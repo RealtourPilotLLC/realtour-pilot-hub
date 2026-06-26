@@ -5,10 +5,13 @@
 // group; Kyle's own work stays in "Needs you".
 //
 // Roster (per Jordan, 2026-06): Kim → personal-branding / monthly social ·
-// Remar → standard reels + horizontal video · Luma → premium social reels
-// (external) · Kyle → QC (photos/floor plans/3D/video) + item removal /
+// Remar → standard reels + horizontal video · Luma → premium / influencer social
+// reels (external) · Kyle → QC (photos/floor plans/3D/video) + item removal /
 // virtual staging / declutter / fixes · AutoHDR → AI photo editing (external) ·
 // CubiCasa → floor plans (external). (Adrian was let go — not an editor.)
+// The Creative Director (Jordan) = scripting / creative direction ONLY.
+// Coordination — chasing the client's MUSIC SELECTION, DELIVERY DATES, and
+// virtual/digital STAGING direction — is the ADMIN's (Kyle), even "for the video".
 // ---------------------------------------------------------------------------
 
 export type EditorKey = "kyle" | "creative_director" | "kim" | "remar" | "luma" | "autohdr" | "cubicasa";
@@ -49,15 +52,25 @@ export function isDelegated(key: string | null | undefined): boolean {
 // assign). Precedence matters — premium reels and floor plans win first.
 export function routeEditWork(text: string): EditorKey | null {
   const t = (text || "").toLowerCase();
-  // Scripting + creative direction → the Creative Director (currently Jordan).
-  if (/script/.test(t)) return "creative_director";
+  // Coordination ABOUT a video/order — not editing/scripting — is the ADMIN's
+  // (Kyle). These read like editor work ("...for the video") but the admin owns
+  // them: chasing the client's music selection, delivery-date checks, and
+  // virtual/digital staging direction. Checked FIRST so an incidental "script"
+  // mention in the thread can't pull a delivery/music task to the Creative Director.
+  if (/music (selection|choice|option|track|song|pick|window)|select(ing|ion)? (the )?music|deliver(y)? (date|day|window|timeline)|item removal|virtual stag|digital stag|declutter|retouch|photo fix|reflection|blemish|crooked|tilt/.test(t)) return "kyle";
+
+  // Scripting / creative direction → the Creative Director (currently Jordan).
+  // That is ALL the Creative Director does — never coordination or production.
+  if (/\bscript(ing|s)?\b|storyboard/.test(t)) return "creative_director";
+
   if (/floor ?plan/.test(t)) return "cubicasa";
-  if (/premium/.test(t) && /(reel|video|social)/.test(t)) return "luma";
+  // Premium / influencer social reels → Luma (external).
+  if (/(premium|influencer)/.test(t) && /(reel|video|social|bundle)/.test(t)) return "luma";
   // Personal-branding / monthly social, plus logo + animation work → Kim.
   if (/personal ?brand|\bbranding\b|monthly|social (media )?(content|post)|\blogo\b|animat/.test(t)) return "kim";
-  if (/\breel\b|horizontal video|b-?roll|lo-?fi|cross dissolve|text spacing|lengthen (the )?clip/.test(t)) return "remar";
-  if (/\bvideo\b/.test(t)) return "remar";
-  if (/photo|saturation|orange|retouch|item removal|virtual stag|declutter|unedited|hdr|brighten|darken|crooked|tilt|reflection|blemish/.test(t)) return "kyle";
+  // Standard reels + horizontal video → Remar.
+  if (/\breel\b|horizontal video|b-?roll|lo-?fi|cross dissolve|text spacing|lengthen (the )?clip|\bvideo\b/.test(t)) return "remar";
+  if (/\bphoto|saturation|orange|\bhdr\b|brighten|darken|unedited/.test(t)) return "kyle";
   return null;
 }
 
@@ -66,7 +79,7 @@ export function routeEditWork(text: string): EditorKey | null {
 // in-house to the actual editor (Remar standard video, Kim social, Kyle QC).
 export function editorForDeliverable(type: string | null | undefined, label?: string | null, monthly = false): EditorKey {
   const t = (type || "").toUpperCase();
-  const premium = /premium/i.test(label ?? "");
+  const premium = /premium|influencer/i.test(label ?? "");
   if (t === "FLOORPLAN") return "cubicasa";
   if (t === "SOCIAL_REEL" || t === "VIDEO") {
     if (premium) return "luma";
