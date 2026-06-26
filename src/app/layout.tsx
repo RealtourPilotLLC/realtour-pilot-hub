@@ -28,7 +28,7 @@ export default async function RootLayout({
   const cu = await getCurrentUser();
   // Serializable subset for the client Shell/Sidebar.
   const user = cu
-    ? { name: cu.name, email: cu.email, role: cu.role, impersonating: cu.impersonating, realName: cu.realName }
+    ? { name: cu.name, email: cu.email, role: cu.role, permissions: cu.permissions, impersonating: cu.impersonating, realName: cu.realName }
     : null;
   return (
     <html

@@ -17,6 +17,7 @@ export type SessionPayload = {
   email: string;
   role: string; // OWNER | ADMIN | EDITOR | PHOTOGRAPHER
   name?: string;
+  permissions?: string | null; // per-page overrides JSON (for edge page-gating)
   actingAs?: string; // AppUser id being previewed (owner read-only "view as")
 };
 

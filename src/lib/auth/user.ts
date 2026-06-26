@@ -1,6 +1,8 @@
 import "server-only";
+import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "./session";
+import { canAccess, type PageKey } from "./access";
 
 // The current logged-in person, resolved from the session and re-read from the DB
 // (so a role/permission/status change takes effect immediately). `actingAs`
@@ -50,4 +52,19 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
     realRole: real.role,
     realName: real.name,
   };
+}
+
+// Page guards for server components. requireAccess respects role + per-user
+// overrides (and the read-only "view as" effective role).
+export async function requireUser(): Promise<CurrentUser> {
+  const u = await getCurrentUser();
+  if (!u) redirect("/login");
+  return u;
+}
+
+export async function requireAccess(key: PageKey): Promise<CurrentUser> {
+  const u = await getCurrentUser();
+  if (!u) redirect("/login");
+  if (!canAccess(u, key)) redirect("/");
+  return u;
 }

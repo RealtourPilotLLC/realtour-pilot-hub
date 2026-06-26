@@ -1,6 +1,18 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { verifySession, SESSION_COOKIE } from "@/lib/auth/jwt";
+import { canAccess, PAGES, type PageKey } from "@/lib/auth/access";
+
+// Which page-key (if any) a path belongs to — for role/permission gating. Only
+// top-level nav pages are gated; contextual detail routes (/projects/[id], etc.)
+// are allowed to any signed-in user.
+function pathKey(pathname: string): PageKey | null {
+  if (pathname === "/") return "dashboard";
+  for (const p of PAGES) {
+    if (p.href !== "/" && (pathname === p.href || pathname.startsWith(p.href + "/"))) return p.key;
+  }
+  return null;
+}
 
 // Optimistic login gate. Unauthenticated requests to app pages are redirected to
 // /login. Authorization (which role can see which page) is enforced server-side in
@@ -27,13 +39,22 @@ export async function middleware(req: NextRequest) {
   if (process.env.AUTH_ENFORCE !== "true") return NextResponse.next();
 
   const session = await verifySession(req.cookies.get(SESSION_COOKIE)?.value);
-  if (session) return NextResponse.next();
+  if (!session) {
+    const url = req.nextUrl.clone();
+    url.pathname = "/login";
+    url.search = "";
+    url.searchParams.set("next", pathname + req.nextUrl.search);
+    return NextResponse.redirect(url);
+  }
 
-  const url = req.nextUrl.clone();
-  url.pathname = "/login";
-  url.search = "";
-  url.searchParams.set("next", pathname + req.nextUrl.search);
-  return NextResponse.redirect(url);
+  // Signed in: enforce role/permission page access (honours per-user overrides via
+  // the permissions claim). Owner sees everything; others are bounced home from a
+  // page they can't open.
+  const key = pathKey(pathname);
+  if (key && !canAccess({ role: session.role, permissions: session.permissions }, key)) {
+    return NextResponse.redirect(new URL("/", req.url));
+  }
+  return NextResponse.next();
 }
 
 export const config = {

@@ -45,7 +45,7 @@ export async function GET(req: NextRequest) {
     data: { status: "ACTIVE", lastLoginAt: new Date(), name: user.name ?? info.name ?? null, inviteToken: null },
   });
 
-  const token = await signSession({ uid: user.id, email: user.email, role: user.role, name: user.name ?? undefined });
+  const token = await signSession({ uid: user.id, email: user.email, role: user.role, name: user.name ?? undefined, permissions: user.permissions });
   const dest = nextRaw.startsWith("/") && !nextRaw.startsWith("//") ? nextRaw : "/";
   const r = NextResponse.redirect(new URL(dest, req.url));
   r.cookies.set(SESSION_COOKIE, token, {

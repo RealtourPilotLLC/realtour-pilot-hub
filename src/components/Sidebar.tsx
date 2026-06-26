@@ -25,14 +25,17 @@ import {
   Plug,
   Settings,
   LogOut,
+  ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { canAccess, type PageKey } from "@/lib/auth/access";
 
 export type ShellUser = {
   name: string | null;
   email: string;
   role: string;
+  permissions?: string | null;
   impersonating?: boolean;
   realName?: string | null;
 };
@@ -41,6 +44,7 @@ type NavItem = {
   label: string;
   href: string;
   icon: LucideIcon;
+  key: PageKey;
   soon?: boolean;
 };
 
@@ -53,49 +57,50 @@ const SECTIONS: NavSection[] = [
   {
     title: "Operations",
     items: [
-      { label: "Dashboard", href: "/", icon: LayoutDashboard },
-      { label: "Daily Tasks", href: "/queue", icon: ListTodo },
-      { label: "Task History", href: "/history", icon: History },
-      { label: "Project Tracker", href: "/pipeline", icon: KanbanSquare },
-      { label: "Schedule", href: "/schedule", icon: CalendarDays },
-      { label: "Map", href: "/map", icon: MapPinned },
-      { label: "Communications", href: "/communications", icon: MessageCircle },
-      { label: "Clients", href: "/clients", icon: Users },
-      { label: "Team", href: "/team", icon: UserCog },
+      { label: "Dashboard", href: "/", icon: LayoutDashboard, key: "dashboard" },
+      { label: "Daily Tasks", href: "/queue", icon: ListTodo, key: "tasks" },
+      { label: "Task History", href: "/history", icon: History, key: "history" },
+      { label: "Project Tracker", href: "/pipeline", icon: KanbanSquare, key: "pipeline" },
+      { label: "Schedule", href: "/schedule", icon: CalendarDays, key: "schedule" },
+      { label: "Map", href: "/map", icon: MapPinned, key: "map" },
+      { label: "Communications", href: "/communications", icon: MessageCircle, key: "communications" },
+      { label: "Clients", href: "/clients", icon: Users, key: "clients" },
+      { label: "Team", href: "/team", icon: UserCog, key: "team" },
     ],
   },
   {
     title: "Creative",
     items: [
-      { label: "Upload Portal", href: "/upload", icon: Upload },
-      { label: "Editor Queue", href: "/editing", icon: Palette },
+      { label: "Upload Portal", href: "/upload", icon: Upload, key: "upload" },
+      { label: "Editor Queue", href: "/editing", icon: Palette, key: "editing" },
     ],
   },
   {
     title: "Sales & Finance",
     items: [
-      { label: "Sales Tracker", href: "/sales", icon: DollarSign },
-      { label: "Billing", href: "/billing", icon: Receipt },
-      { label: "Service Catalog", href: "/catalog", icon: Package },
-      { label: "Payouts", href: "/payouts", icon: Wallet },
+      { label: "Sales Tracker", href: "/sales", icon: DollarSign, key: "sales" },
+      { label: "Billing", href: "/billing", icon: Receipt, key: "billing" },
+      { label: "Service Catalog", href: "/catalog", icon: Package, key: "catalog" },
+      { label: "Payouts", href: "/payouts", icon: Wallet, key: "payouts" },
     ],
   },
   {
     title: "Marketing",
-    items: [{ label: "Campaigns", href: "/marketing", icon: Megaphone }],
+    items: [{ label: "Campaigns", href: "/marketing", icon: Megaphone, key: "marketing" }],
   },
   {
     title: "Knowledge",
     items: [
-      { label: "Resources & SOPs", href: "/resources", icon: BookOpen },
-      { label: "Ask the Hub", href: "/assistant", icon: MessageSquare },
+      { label: "Resources & SOPs", href: "/resources", icon: BookOpen, key: "resources" },
+      { label: "Ask the Hub", href: "/assistant", icon: MessageSquare, key: "assistant" },
     ],
   },
   {
     title: "System",
     items: [
-      { label: "Feedback & requests", href: "/feedback", icon: MessageSquarePlus },
-      { label: "Connections", href: "/connections", icon: Plug },
+      { label: "Feedback & requests", href: "/feedback", icon: MessageSquarePlus, key: "feedback" },
+      { label: "Users", href: "/users", icon: ShieldCheck, key: "users" },
+      { label: "Connections", href: "/connections", icon: Plug, key: "connections" },
     ],
   },
 ];
@@ -104,6 +109,10 @@ const ROLE_LABEL: Record<string, string> = { OWNER: "Owner", ADMIN: "Admin", EDI
 
 export function Sidebar({ user, onNavigate }: { user?: ShellUser | null; onNavigate?: () => void }) {
   const pathname = usePathname();
+  // When signed in, hide pages this person can't open. When not signed in (gate
+  // still off, pre-cutover), show everything so the open app is unchanged.
+  const can = (key: PageKey) => !user || canAccess(user, key);
+  const sections = SECTIONS.map((s) => ({ ...s, items: s.items.filter((i) => can(i.key)) })).filter((s) => s.items.length > 0);
 
   return (
     <aside className="flex h-full w-64 shrink-0 flex-col border-r border-border bg-surface/95 backdrop-blur-xl lg:bg-surface/60">
@@ -123,7 +132,7 @@ export function Sidebar({ user, onNavigate }: { user?: ShellUser | null; onNavig
       </div>
 
       <nav className="flex-1 space-y-5 overflow-y-auto scroll-thin px-3 py-2">
-        {SECTIONS.map((section) => (
+        {sections.map((section) => (
           <div key={section.title}>
             <div className="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-2">
               {section.title}
@@ -169,14 +178,16 @@ export function Sidebar({ user, onNavigate }: { user?: ShellUser | null; onNavig
       </nav>
 
       <div className="space-y-1 border-t px-3 py-3">
-        <Link
-          href="/connections"
-          onClick={onNavigate}
-          className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
-        >
-          <Settings className="size-4" />
-          <span>Settings &amp; connections</span>
-        </Link>
+        {can("connections") && (
+          <Link
+            href="/connections"
+            onClick={onNavigate}
+            className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
+          >
+            <Settings className="size-4" />
+            <span>Settings &amp; connections</span>
+          </Link>
+        )}
 
         {user && (
           <div className="mt-1 flex items-center gap-2 rounded-lg bg-surface-2/60 px-3 py-2">
