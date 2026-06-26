@@ -23,11 +23,6 @@ import {
 
 const STATUS_ORDER: ShootStatusKind[] = ["on_my_way", "arrived", "complete"];
 
-// Zillow 3D Home tours are captured in Zillow's own mobile app; there's no
-// per-listing capture link in the Aryeo data, so this opens the app/product page.
-// (Swap for a specific capture URL/deep link if we get one.)
-const ZILLOW_3D_CAPTURE_URL = "https://www.zillow.com/3d-home-tours/";
-
 export function ShootScreen({
   view, pay, map, whenText, timing, media,
 }: {
@@ -75,7 +70,7 @@ export function ShootScreen({
         <StatusUpdates view={view} flash={flash} />
         <CustomerCard client={client} segment={segment} profile={profile} />
         <BriefCard view={view} flash={flash} />
-        {deliverables.some((d) => d.type === "ZILLOW_3D") && <ZillowCta />}
+        {view.zillowTourUrl && <ZillowCta url={view.zillowTourUrl} />}
         <Checklist deliverables={deliverables} captured={captured} onToggle={toggleCapture} />
         {pay}
         <NotesCard projectId={project.id} initial={project.editorBrief ?? ""} flash={flash} />
@@ -450,10 +445,10 @@ function BriefRow({ icon: Icon, label, value, tone = "default", mono }: { icon: 
   );
 }
 
-function ZillowCta() {
+function ZillowCta({ url }: { url: string }) {
   return (
     <a
-      href={ZILLOW_3D_CAPTURE_URL}
+      href={url}
       target="_blank"
       rel="noopener noreferrer"
       className="flex items-center gap-3 rounded-2xl border border-brand/30 bg-brand-soft/40 p-4 transition-colors hover:bg-brand-soft/60"
@@ -461,7 +456,7 @@ function ZillowCta() {
       <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-brand/15 text-brand"><Box className="size-5" /></span>
       <div className="min-w-0 flex-1">
         <div className="text-sm font-semibold">Capture Zillow 3D Home Tour</div>
-        <div className="text-xs text-muted">Opens the Zillow 3D Home app to scan this listing</div>
+        <div className="text-xs text-muted">Open the Zillow 3D tour link from this order</div>
       </div>
       <ExternalLink className="size-4 shrink-0 text-muted-2" />
     </a>

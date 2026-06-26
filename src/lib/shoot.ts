@@ -83,6 +83,13 @@ export function parseShootBrief(text: string): ShootBrief | null {
   return any ? out : null;
 }
 
+// A Zillow 3D tour link pasted into the order notes, if any — the photographer
+// opens/captures it on-site. Returns the first zillow URL found, else null.
+export function extractZillowUrl(text: string | null | undefined): string | null {
+  const m = (text ?? "").match(/https?:\/\/[^\s)<>"']*zillow[^\s)<>"']*/i);
+  return m ? m[0].replace(/[).,]+$/, "") : null;
+}
+
 export type ShootDeliverable = {
   id: string;
   type: DeliverableType;
@@ -136,6 +143,7 @@ export type ShootView = {
   specialRequests: string[];
   flags: string[];
   photographer: { id: string; name: string } | null;
+  zillowTourUrl: string | null; // a Zillow 3D tour link found in the order notes
 };
 
 export async function getShoot(projectId: string): Promise<ShootView | null> {
@@ -220,6 +228,7 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
     specialRequests: p.activities.filter((a) => a.type === ActivityType.SPECIAL_REQUEST).map((a) => a.body),
     flags: p.activities.filter((a) => a.type === ActivityType.FLAG).map((a) => a.body),
     photographer: p.photographer,
+    zillowTourUrl: extractZillowUrl(primary?.description),
   };
 }
 
