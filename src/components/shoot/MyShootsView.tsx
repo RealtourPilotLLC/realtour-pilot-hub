@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { ChevronLeft, ChevronRight, MapPin, CheckCircle2, Upload as UploadIcon, Camera, X } from "lucide-react";
 import { etDayKey, etTime, etFullDate } from "@/lib/datetime";
@@ -19,11 +19,43 @@ const MONTHS = [
 const cellKey = (y: number, m: number, d: number) =>
   `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 
-export function MyShootsView({ rows, showWho }: { rows: MyShootRow[]; showWho: boolean }) {
+export function MyShootsView({ rows, showWho, meId }: { rows: MyShootRow[]; showWho: boolean; meId: string | null }) {
+  // Owner/admin photographer filter — toggle each photographer's shoots on/off
+  // (persisted across visits). Photographers themselves are scoped server-side.
+  const photographers = useMemo(() => {
+    if (!showWho) return [];
+    const m = new Map<string, { key: string; name: string; color: string; count: number }>();
+    for (const r of rows) {
+      const key = r.photographerId ?? "unassigned";
+      if (!m.has(key)) m.set(key, { key, name: r.photographerName ?? "Unassigned", color: r.photographerColor ?? "#9aa4b2", count: 0 });
+      m.get(key)!.count++;
+    }
+    return [...m.values()].sort((a, b) => b.count - a.count);
+  }, [rows, showWho]);
+
+  const [off, setOff] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("rtp_shootFilterOff");
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (raw) setOff(new Set(JSON.parse(raw) as string[]));
+    } catch { /* ignore */ }
+  }, []);
+  const persist = (s: Set<string>) => { try { localStorage.setItem("rtp_shootFilterOff", JSON.stringify([...s])); } catch { /* ignore */ } };
+  const togglePhotog = (key: string) =>
+    setOff((prev) => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); persist(n); return n; });
+  const showAll = () => { const n = new Set<string>(); setOff(n); persist(n); };
+  const onlyMine = () => { if (!meId) return; const n = new Set(photographers.map((p) => p.key).filter((k) => k !== meId)); setOff(n); persist(n); };
+
+  const visible = useMemo(
+    () => (showWho ? rows.filter((r) => !off.has(r.photographerId ?? "unassigned")) : rows),
+    [rows, off, showWho],
+  );
+
   // Bucket shoots by their ET calendar day.
   const byDay = useMemo(() => {
     const m = new Map<string, MyShootRow[]>();
-    for (const r of rows) {
+    for (const r of visible) {
       if (!r.whenISO) continue;
       const k = etDayKey(new Date(r.whenISO));
       if (!m.has(k)) m.set(k, []);
@@ -31,7 +63,7 @@ export function MyShootsView({ rows, showWho }: { rows: MyShootRow[]; showWho: b
     }
     for (const list of m.values()) list.sort((a, b) => (a.whenISO ?? "").localeCompare(b.whenISO ?? ""));
     return m;
-  }, [rows]);
+  }, [visible]);
 
   const todayKey = etDayKey(new Date());
   const [cursor, setCursor] = useState(() => {
@@ -66,6 +98,42 @@ export function MyShootsView({ rows, showWho }: { rows: MyShootRow[]; showWho: b
 
   return (
     <div className="space-y-5">
+      {/* Photographer filter (owner/admin only) */}
+      {showWho && photographers.length > 1 && (
+        <div className="rounded-2xl border bg-surface p-3">
+          <div className="mb-2 flex items-center justify-between px-0.5">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-2">Photographers</span>
+            <div className="flex items-center gap-2.5 text-xs">
+              {meId && photographers.some((p) => p.key === meId) && (
+                <button onClick={onlyMine} className="font-medium text-brand hover:underline">Only mine</button>
+              )}
+              <button onClick={showAll} className="text-muted hover:text-foreground">All</button>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {photographers.map((p) => {
+              const on = !off.has(p.key);
+              return (
+                <button
+                  key={p.key}
+                  onClick={() => togglePhotog(p.key)}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-all",
+                    on ? "bg-surface-2 text-foreground" : "border-dashed text-muted-2 opacity-55",
+                  )}
+                >
+                  <span
+                    className="size-2 rounded-full"
+                    style={on ? { background: p.color } : { boxShadow: `inset 0 0 0 1.5px ${p.color}` }}
+                  />
+                  {p.name}<span className="ml-0.5 text-muted-2">{p.count}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Calendar */}
       <div className="rounded-2xl border bg-surface p-3 panel-shadow">
         <div className="mb-2 flex items-center justify-between px-1">
@@ -128,6 +196,9 @@ export function MyShootsView({ rows, showWho }: { rows: MyShootRow[]; showWho: b
         <div className="rounded-2xl border bg-surface p-8 text-center text-sm text-muted">
           <Camera className="mx-auto mb-2 size-6 text-muted-2" /> No shoots scheduled yet.
         </div>
+      )}
+      {rows.length > 0 && visible.length === 0 && (
+        <p className="px-1 text-sm text-muted">No shoots for the selected photographers.</p>
       )}
       {selected && (byDay.get(selected)?.length ?? 0) === 0 && (
         <p className="text-sm text-muted">No shoots on this day.</p>

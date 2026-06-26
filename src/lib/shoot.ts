@@ -388,6 +388,8 @@ export type MyShootRow = {
   uploaded: boolean;
   completed: boolean;
   photographerName: string | null;
+  photographerId: string | null;
+  photographerColor: string | null;
 };
 
 // A photographer's shoots (or all, for owner/admin previews): recent + upcoming,
@@ -404,7 +406,7 @@ export async function listMyShoots(memberId: string | null): Promise<MyShootRow[
     },
     include: {
       client: { select: { name: true } },
-      photographer: { select: { name: true } },
+      photographer: { select: { id: true, name: true, avatarColor: true } },
       deliverables: { select: { type: true } },
       appointments: {
         where: { status: { not: "CANCELED" }, startAt: { not: null } },
@@ -432,6 +434,8 @@ export async function listMyShoots(memberId: string | null): Promise<MyShootRow[
       uploaded: p.uploadedAt != null,
       completed: appt?.completedAt != null,
       photographerName: p.photographer?.name ?? null,
+      photographerId: p.photographer?.id ?? null,
+      photographerColor: p.photographer?.avatarColor ?? null,
     };
   });
 }

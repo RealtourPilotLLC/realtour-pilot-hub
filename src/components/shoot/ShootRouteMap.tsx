@@ -23,9 +23,12 @@ export function ShootRouteMap({
     (async () => {
       if (cancelled || !el.current || mapRef.current) return;
       const L = (await import("leaflet")).default;
-      const map = L.map(el.current, { zoomControl: false, scrollWheelZoom: false, attributionControl: false });
+      const map = L.map(el.current, { zoomControl: false, scrollWheelZoom: false });
+      map.attributionControl.setPrefix(false);
       mapRef.current = map;
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", { maxZoom: 19 }).addTo(map);
+      // Satellite imagery (Esri) + street labels — matches the main map page.
+      L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", { maxZoom: 19, attribution: "Esri" }).addTo(map);
+      L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png", { maxZoom: 19 }).addTo(map);
 
       const bounds: [number, number][] = [];
 
