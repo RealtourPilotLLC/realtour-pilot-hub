@@ -6,6 +6,7 @@ import {
   MapPin, Navigation, Copy, Check, Phone, MessageSquare, Mail, Sparkles, Send,
   CheckCircle2, Circle, Flag, AlertTriangle, Loader2, Crown, Upload, Clock,
   ClipboardList, StickyNote, X, ChevronRight, Camera,
+  KeyRound, DoorOpen, Home, FileText, Info, Box, ExternalLink, type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BackLink } from "@/components/ui/BackLink";
@@ -21,6 +22,11 @@ import {
 } from "@/app/shoot/actions";
 
 const STATUS_ORDER: ShootStatusKind[] = ["on_my_way", "arrived", "complete"];
+
+// Zillow 3D Home tours are captured in Zillow's own mobile app; there's no
+// per-listing capture link in the Aryeo data, so this opens the app/product page.
+// (Swap for a specific capture URL/deep link if we get one.)
+const ZILLOW_3D_CAPTURE_URL = "https://www.zillow.com/3d-home-tours/";
 
 export function ShootScreen({
   view, pay, whenText, timing, media,
@@ -67,6 +73,7 @@ export function ShootScreen({
         <StatusUpdates view={view} flash={flash} />
         <CustomerCard client={client} segment={segment} profile={profile} />
         <BriefCard view={view} flash={flash} />
+        {deliverables.some((d) => d.type === "ZILLOW_3D") && <ZillowCta />}
         <Checklist deliverables={deliverables} captured={captured} onToggle={toggleCapture} />
         {pay}
         <NotesCard projectId={project.id} initial={project.editorBrief ?? ""} flash={flash} />
@@ -428,6 +435,37 @@ function DoList({ tone, items }: { tone: "do" | "dont"; items: string[] }) {
 
 // ---------------------------------------------------------------------------
 
+function BriefRow({ icon: Icon, label, value, tone = "default", mono }: { icon: LucideIcon; label: string; value: string; tone?: "default" | "key" | "warning"; mono?: boolean }) {
+  const accent = tone === "key" ? "text-brand" : tone === "warning" ? "text-warning" : "text-muted";
+  return (
+    <div className="flex gap-2.5">
+      <Icon className={cn("mt-0.5 size-4 shrink-0", accent)} />
+      <div className="min-w-0 flex-1">
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">{label}</div>
+        <div className={cn("text-sm text-foreground/85", mono && "font-mono text-base font-semibold tracking-wide text-foreground")}>{value}</div>
+      </div>
+    </div>
+  );
+}
+
+function ZillowCta() {
+  return (
+    <a
+      href={ZILLOW_3D_CAPTURE_URL}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="flex items-center gap-3 rounded-2xl border border-brand/30 bg-brand-soft/40 p-4 transition-colors hover:bg-brand-soft/60"
+    >
+      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-brand/15 text-brand"><Box className="size-5" /></span>
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-semibold">Capture Zillow 3D Home Tour</div>
+        <div className="text-xs text-muted">Opens the Zillow 3D Home app to scan this listing</div>
+      </div>
+      <ExternalLink className="size-4 shrink-0 text-muted-2" />
+    </a>
+  );
+}
+
 function BriefCard({ view, flash }: { view: ShootView; flash: (k: "ok" | "err", t: string) => void }) {
   const { appointment, specialRequests, project } = view;
   const [flags, setFlags] = useState(view.flags);
@@ -443,6 +481,7 @@ function BriefCard({ view, flash }: { view: ShootView; flash: (k: "ok" | "err", 
   }
 
   const hasBrief = !!appointment?.brief;
+  const p = appointment?.parsed ?? null;
   return (
     <Section icon={ClipboardList} title="Access & shoot brief" bodyClassName="space-y-3">
       {specialRequests.length > 0 && (
@@ -454,7 +493,17 @@ function BriefCard({ view, flash }: { view: ShootView; flash: (k: "ok" | "err", 
         </div>
       )}
 
-      {hasBrief ? (
+      {p ? (
+        <div className="space-y-3">
+          {p.lockbox && <BriefRow icon={KeyRound} label="Lockbox / door code" value={p.lockbox} tone="key" mono />}
+          {p.access && <BriefRow icon={DoorOpen} label="Getting in" value={p.access} />}
+          {p.presence && <BriefRow icon={Home} label="At the property" value={p.presence} />}
+          {p.special && <BriefRow icon={AlertTriangle} label="Special instructions" value={p.special} tone="warning" />}
+          {p.timing && <BriefRow icon={Clock} label="Timing" value={p.timing} />}
+          {p.orderNotes && <BriefRow icon={FileText} label="Order notes" value={p.orderNotes} />}
+          {p.extra.map((e, i) => <BriefRow key={i} icon={Info} label={e.label} value={e.value} />)}
+        </div>
+      ) : hasBrief ? (
         <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-foreground/85">{appointment!.brief}</pre>
       ) : (
         <p className="text-sm text-muted-2">No access notes on this appointment.</p>

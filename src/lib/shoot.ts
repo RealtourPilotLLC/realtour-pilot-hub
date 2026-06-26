@@ -32,6 +32,57 @@ export function cleanBrief(raw?: string | null): string {
 const firstNameOf = (name?: string | null) => (name || "there").trim().split(/\s+/)[0] || "there";
 const streetOf = (title?: string | null) => (title || "").split(",")[0].trim();
 
+// The shoot brief, parsed from Aryeo's "Order Questions" block into the few
+// fields a photographer actually needs on-site. Aryeo's format is consistent:
+//   Order Questions:
+//    - Lock Box / Door Code: 1923
+//    - Additional information to access the property: ...
+//    - Special Instructions for the photographer (for this property only): ...
+//    - Will you or the seller be present at the appointment?: Vacant
+//    - Is the time of the appointment flexible on the requested day?: ...
+export type ShootBrief = {
+  lockbox: string | null;
+  access: string | null;
+  presence: string | null;
+  special: string | null;
+  timing: string | null;
+  orderNotes: string | null;
+  extra: { label: string; value: string }[];
+};
+
+const isBlank = (v: string) => !v || /^n\/?a$/i.test(v.trim());
+
+export function parseShootBrief(text: string): ShootBrief | null {
+  if (!text) return null;
+  const out: ShootBrief = { lockbox: null, access: null, presence: null, special: null, timing: null, orderNotes: null, extra: [] };
+
+  // "Order Notes:" value (the block before "Order Questions:").
+  const on = text.match(/Order Notes:\s*\n+([\s\S]*?)(?:\n\s*\n|Order Questions:|Or View Full)/i);
+  if (on && !isBlank(on[1])) out.orderNotes = on[1].trim();
+
+  // Parse ONLY the "Order Questions:" block (between that header and the order
+  // link) so order-item / customer lines — which also look like "- Key: Value" —
+  // don't get scooped up as questions.
+  const qSection = text.split(/Order Questions:/i)[1]?.split(/Or View Full Order Details/i)[0] ?? "";
+  for (const line of qSection.split("\n")) {
+    const m = line.match(/^\s*[-•]\s+(.+?):\s*(.*)$/);
+    if (!m) continue;
+    const key = m[1].trim();
+    const val = m[2].trim();
+    if (isBlank(val)) continue;
+    if (/present at the appointment|seller be present/i.test(key)) out.presence = val;
+    else if (/lock\s*box|door\s*code/i.test(key)) out.lockbox = val;
+    else if (/access the property|additional information to access/i.test(key)) out.access = val;
+    else if (/special instructions/i.test(key)) out.special = val;
+    else if (/flexible/i.test(key)) out.timing = val;
+    else if (/waitlist|square footage/i.test(key)) continue; // internal noise
+    else out.extra.push({ label: key.replace(/\s*\(for this property only\)/i, ""), value: val });
+  }
+
+  const any = out.lockbox || out.access || out.presence || out.special || out.timing || out.orderNotes || out.extra.length;
+  return any ? out : null;
+}
+
 export type ShootDeliverable = {
   id: string;
   type: DeliverableType;
@@ -63,7 +114,8 @@ export type ShootView = {
     durationMin: number | null;
     status: string | null;
     completedAtISO: string | null;
-    brief: string;
+    brief: string; // raw cleaned text (fallback)
+    parsed: ShootBrief | null; // structured fields for a nice render
     assignedToName: string | null;
   } | null;
   extraAppointments: number; // additional non-canceled appointments beyond the primary
@@ -127,16 +179,20 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
       aryeoListingId: p.aryeoListingId,
     },
     appointment: primary
-      ? {
-          id: primary.id,
-          startISO: primary.startAt?.toISOString() ?? null,
-          endISO: primary.endAt?.toISOString() ?? null,
-          durationMin: primary.durationMin,
-          status: primary.status,
-          completedAtISO: primary.completedAt?.toISOString() ?? null,
-          brief: cleanBrief(primary.description),
-          assignedToName: primary.assignedTo?.name ?? null,
-        }
+      ? (() => {
+          const cleaned = cleanBrief(primary.description);
+          return {
+            id: primary.id,
+            startISO: primary.startAt?.toISOString() ?? null,
+            endISO: primary.endAt?.toISOString() ?? null,
+            durationMin: primary.durationMin,
+            status: primary.status,
+            completedAtISO: primary.completedAt?.toISOString() ?? null,
+            brief: cleaned,
+            parsed: parseShootBrief(cleaned),
+            assignedToName: primary.assignedTo?.name ?? null,
+          };
+        })()
       : null,
     extraAppointments: Math.max(liveAppts.length - 1, 0),
     client: {

@@ -20,6 +20,9 @@ const KINDS = [
 // on the /feedback review board for Jordan to approve.
 export function FeedbackWidget() {
   const pathname = usePathname();
+  // The photographer shoot screen has a sticky bottom action bar ("Mark shoot
+  // complete"); lift the launcher so it never sits on top of that button.
+  const bottom = /^\/shoot\/[^/]+$/.test(pathname) ? "bottom-20" : "bottom-4";
   const [open, setOpen] = useState(false);
   const [kind, setKind] = useState("feature");
   const [title, setTitle] = useState("");
@@ -126,20 +129,20 @@ export function FeedbackWidget() {
         <button
           onClick={() => setOpen(true)}
           title="Send feedback or a feature request"
-          className="fixed bottom-4 right-4 z-[1400] inline-flex items-center gap-2 rounded-full bg-brand px-4 py-2.5 text-sm font-medium text-white shadow-lg ring-1 ring-black/10 transition-transform hover:scale-105"
+          className={cn("fixed right-4 z-[1400] inline-flex items-center gap-2 rounded-full bg-brand px-4 py-2.5 text-sm font-medium text-white shadow-lg ring-1 ring-black/10 transition-transform hover:scale-105", bottom)}
         >
           <MessageSquarePlus className="size-4" /> Feedback
         </button>
       )}
 
       {capturing && (
-        <div className="fixed bottom-4 right-4 z-[1400] inline-flex items-center gap-2 rounded-full bg-surface px-4 py-2.5 text-sm shadow-lg ring-1 ring-border">
+        <div className={cn("fixed right-4 z-[1400] inline-flex items-center gap-2 rounded-full bg-surface px-4 py-2.5 text-sm shadow-lg ring-1 ring-border", bottom)}>
           <Loader2 className="size-4 animate-spin text-brand" /> Capturing…
         </div>
       )}
 
       {open && (
-        <div className="fixed bottom-4 right-4 z-[1400] w-[min(92vw,380px)] rounded-2xl border border-border bg-surface shadow-2xl ring-1 ring-black/10">
+        <div className={cn("fixed right-4 z-[1400] w-[min(92vw,380px)] rounded-2xl border border-border bg-surface shadow-2xl ring-1 ring-black/10", bottom)}>
           <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
             <span className="text-sm font-semibold">Send feedback</span>
             <button onClick={() => setOpen(false)} className="text-muted hover:text-foreground"><X className="size-4" /></button>
