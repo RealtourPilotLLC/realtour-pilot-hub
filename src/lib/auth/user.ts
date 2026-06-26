@@ -1,4 +1,5 @@
 import "server-only";
+import { cache } from "react";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "./session";
@@ -23,7 +24,9 @@ export type CurrentUser = {
   realName: string | null;
 };
 
-export async function getCurrentUser(): Promise<CurrentUser | null> {
+// Wrapped in React `cache()` so the layout + the page + any guard share ONE
+// AppUser read per request instead of each re-querying the DB.
+export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   const s = await getSession();
   if (!s) return null;
 
@@ -52,7 +55,7 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
     realRole: real.role,
     realName: real.name,
   };
-}
+});
 
 // Page guards for server components. requireAccess respects role + per-user
 // overrides (and the read-only "view as" effective role).

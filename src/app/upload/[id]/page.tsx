@@ -1,7 +1,5 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
-  ArrowLeft,
   FolderOpen,
   Image as ImageIcon,
   Video,
@@ -9,6 +7,7 @@ import {
   CheckCircle2,
   Circle,
 } from "lucide-react";
+import { BackLink } from "@/components/ui/BackLink";
 import { prisma } from "@/lib/prisma";
 import { UploadPortal } from "@/components/upload/UploadPortal";
 import { AppointmentFeedback } from "@/components/upload/AppointmentFeedback";
@@ -45,12 +44,7 @@ export default async function UploadProjectPage({
 
   return (
     <div className="mx-auto max-w-3xl p-6">
-      <Link
-        href="/upload"
-        className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-foreground"
-      >
-        <ArrowLeft className="size-4" /> All shoots
-      </Link>
+      <BackLink href="/upload" label="All shoots" />
 
       <DropboxFolders state={folderState} />
 
@@ -102,6 +96,16 @@ export default async function UploadProjectPage({
   );
 }
 
+// Tiny progress chip (declared at module scope, not inside render).
+function Step({ done, label }: { done: boolean; label: string }) {
+  return (
+    <span className={`inline-flex items-center gap-1 ${done ? "text-success" : "text-muted-2"}`}>
+      {done ? <CheckCircle2 className="size-3.5" /> : <Circle className="size-3.5" />}
+      {label}
+    </span>
+  );
+}
+
 function DropboxFolders({
   state,
 }: {
@@ -109,12 +113,6 @@ function DropboxFolders({
 }) {
   if (!state) return null;
   const iconFor = (label: string) => (/video/i.test(label) ? Video : ImageIcon);
-  const Step = ({ done, label }: { done: boolean; label: string }) => (
-    <span className={`inline-flex items-center gap-1 ${done ? "text-success" : "text-muted-2"}`}>
-      {done ? <CheckCircle2 className="size-3.5" /> : <Circle className="size-3.5" />}
-      {label}
-    </span>
-  );
 
   return (
     <section className="mt-4 rounded-2xl border bg-surface p-4">

@@ -1,9 +1,10 @@
 import { notFound, redirect } from "next/navigation";
 import { Suspense } from "react";
-import { getShoot, shootEarnings } from "@/lib/shoot";
+import { getShoot } from "@/lib/shoot";
 import { getCurrentUser } from "@/lib/auth/user";
 import { etDateTime, etDaysAgo } from "@/lib/datetime";
 import { ShootScreen } from "@/components/shoot/ShootScreen";
+import { ShootPayCard, ShootPayCardSkeleton } from "@/components/shoot/ShootPayCard";
 import { ListingMedia, ListingMediaSkeleton } from "@/components/project/ListingMedia";
 
 export const dynamic = "force-dynamic";
@@ -25,8 +26,13 @@ export default async function ShootDetailPage({ params }: { params: Promise<{ id
     redirect("/shoot");
   }
 
-  // Pay is the assigned photographer's (the person paid for this shoot).
-  const earnings = await shootEarnings(id, view.photographer?.id ?? null);
+  // Pay (the assigned photographer's earnings for this shoot) streams in via
+  // Suspense so the screen paints immediately instead of blocking on mileage.
+  const pay = view.photographer ? (
+    <Suspense fallback={<ShootPayCardSkeleton />}>
+      <ShootPayCard projectId={id} memberId={view.photographer.id} />
+    </Suspense>
+  ) : null;
 
   const startISO = view.appointment?.startISO ?? view.project.shootDateISO;
   const whenText = startISO ? etDateTime(startISO) : "";
@@ -42,5 +48,5 @@ export default async function ShootDetailPage({ params }: { params: Promise<{ id
     </Suspense>
   ) : null;
 
-  return <ShootScreen view={view} earnings={earnings} whenText={whenText} timing={timing} media={media} />;
+  return <ShootScreen view={view} pay={pay} whenText={whenText} timing={timing} media={media} />;
 }

@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
-  ArrowLeft,
   MapPin,
   Package,
   FileText,
@@ -24,6 +23,7 @@ import {
   User,
   Users,
 } from "lucide-react";
+import { BackLink } from "@/components/ui/BackLink";
 import { Suspense } from "react";
 import { ListingMedia, ListingMediaSkeleton } from "@/components/project/ListingMedia";
 import { StatusEvidenceCard } from "@/components/project/StatusEvidenceCard";
@@ -111,12 +111,7 @@ export default async function ProjectPage({
 
   return (
     <div className="mx-auto max-w-6xl p-4 sm:p-6">
-      <Link
-        href="/pipeline"
-        className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-foreground"
-      >
-        <ArrowLeft className="size-4" /> Back to tracker
-      </Link>
+      <BackLink href="/pipeline" label="Back to tracker" />
 
       {/* Header */}
       <div className="mt-3 flex flex-wrap items-start justify-between gap-4">

@@ -385,12 +385,13 @@ export async function getShootWindow() {
 
 /** Aggregated data for the dashboard home. */
 export async function getDashboardData() {
+  // Lean projection: the dashboard only needs status, price, and the date fields
+  // (for the "recent + this month" math) — NOT the client/photographer/editor/
+  // checklist relations it used to eagerly join across every project row.
   const all = await prisma.project.findMany({
-    include: {
-      client: true,
-      photographer: true,
-      editor: true,
-      checklist: true,
+    select: {
+      status: true, price: true, deliveredAt: true,
+      orderedAt: true, shootDate: true, revisionRequestedAt: true,
     },
   });
 

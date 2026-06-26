@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { etDayKey } from "@/lib/datetime";
+import { etDayStartUtc } from "@/lib/datetime";
 import { parseClientProfile, type ClientProfile } from "@/lib/clientProfile";
 import { segmentMeta, type SegmentMeta } from "@/lib/segments";
 import { phoneKey } from "@/lib/integrations/openphone";
@@ -198,10 +198,13 @@ export async function shootEarnings(projectId: string, memberId: string | null):
   const payDate = proj?.appointments[0]?.startAt ?? proj?.shootDate ?? null;
   if (!payDate) return null;
 
-  const { computePayroll, payPeriodFor } = await import("@/lib/payroll");
-  const period = payPeriodFor(etDayKey(payDate));
-  const start = new Date(period.startKey + "T00:00:00.000Z");
-  const end = new Date(period.endKey + "T23:59:59.999Z");
+  // Scope payroll to JUST this shoot's ET day, not the whole 14-day pay period.
+  // The per-job numbers (shoot pay + that day's mileage share) are identical, but
+  // we route one day instead of fourteen — the difference between a snappy page
+  // and a multi-second OSRM stall. MileageDay caching makes repeat loads instant.
+  const { computePayroll } = await import("@/lib/payroll");
+  const start = etDayStartUtc(payDate);
+  const end = new Date(start.getTime() + 86400000 - 1);
 
   let person;
   try {

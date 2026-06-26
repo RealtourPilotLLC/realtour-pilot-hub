@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
-  ArrowLeft, Mail, Phone, Building2, IdCard, Package, DollarSign,
+  Mail, Phone, Building2, IdCard, Package, DollarSign,
   Activity as ActivityIcon, Star, ArrowRight, Camera, Users, Sparkles,
 } from "lucide-react";
+import { BackLink } from "@/components/ui/BackLink";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { SegmentBadge } from "@/components/clients/SegmentBadge";
@@ -48,9 +49,7 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
   return (
     <div>
       <div className="border-b border-border px-4 py-4 sm:px-6">
-        <Link href="/clients" className="mb-3 inline-flex items-center gap-1.5 text-sm text-muted hover:text-foreground">
-          <ArrowLeft className="size-4" /> All clients
-        </Link>
+        <BackLink href="/clients" label="All clients" className="mb-3" />
         <div className="flex flex-wrap items-center gap-4">
           <Avatar name={client.name} size={56} color="#4f46e5" />
           <div className="min-w-0">

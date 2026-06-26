@@ -3,31 +3,30 @@
 import { useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import {
-  ArrowLeft, MapPin, Navigation, Copy, Check, Phone, MessageSquare, Mail, Sparkles, Send,
-  CheckCircle2, Circle, DollarSign, Car, Flag, AlertTriangle, Loader2, Crown, Upload, Clock,
+  MapPin, Navigation, Copy, Check, Phone, MessageSquare, Mail, Sparkles, Send,
+  CheckCircle2, Circle, Flag, AlertTriangle, Loader2, Crown, Upload, Clock,
   ClipboardList, StickyNote, X, ChevronRight, Camera,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { BackLink } from "@/components/ui/BackLink";
 import { Badge } from "@/components/ui/Badge";
 import { Section } from "@/components/ui/Section";
 import { DELIVERABLE_META } from "@/lib/pipeline";
 import { PALETTE } from "@/lib/palette";
 import { SHOOT_STATUS_META, shootStatusText, type ShootStatusKind } from "@/lib/statusTexts";
-import type { ShootView, ShootEarnings } from "@/lib/shoot";
+import type { ShootView } from "@/lib/shoot";
 import {
   sendShootStatusText, draftClientMessage, sendClientMessage,
   setDeliverableCaptured, saveShootNote, flagShootIssue, completeShoot,
 } from "@/app/shoot/actions";
 
-const usd = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
 const STATUS_ORDER: ShootStatusKind[] = ["on_my_way", "arrived", "complete"];
 
 export function ShootScreen({
-  view, earnings, whenText, timing, media,
+  view, pay, whenText, timing, media,
 }: {
   view: ShootView;
-  earnings: ShootEarnings | null;
+  pay: React.ReactNode;
   whenText: string;
   timing: "today" | "upcoming" | "past" | null;
   media: React.ReactNode;
@@ -60,9 +59,7 @@ export function ShootScreen({
 
   return (
     <div className="mx-auto max-w-2xl px-4 pb-28 pt-4 sm:px-6">
-      <Link href="/shoot" className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-foreground">
-        <ArrowLeft className="size-4" /> My shoots
-      </Link>
+      <BackLink href="/shoot" label="My shoots" />
 
       <HeaderCard project={project} appointment={appointment} whenText={whenText} timing={timing} onCopy={() => flash("ok", "Address copied")} />
 
@@ -71,7 +68,7 @@ export function ShootScreen({
         <CustomerCard client={client} segment={segment} profile={profile} />
         <BriefCard view={view} flash={flash} />
         <Checklist deliverables={deliverables} captured={captured} onToggle={toggleCapture} />
-        {earnings && <PayCard earnings={earnings} />}
+        {pay}
         <NotesCard projectId={project.id} initial={project.editorBrief ?? ""} flash={flash} />
         <MediaCard media={media} uploaded={project.uploadedAt != null} />
       </div>
@@ -529,42 +526,6 @@ function Checklist({
           </button>
         );
       })}
-    </Section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-
-function PayCard({ earnings }: { earnings: ShootEarnings }) {
-  if (!earnings.configured) {
-    return (
-      <Section icon={DollarSign} title="Your pay">
-        <p className="text-sm text-muted">Your pay rates aren’t set up yet. Once they’re added on the team page, your earnings for each shoot show here.</p>
-      </Section>
-    );
-  }
-  const hasTravel = earnings.mileageShare > 0;
-  return (
-    <Section icon={DollarSign} title="Your pay for this shoot">
-      <div className="flex items-end justify-between">
-        <div>
-          <div className="text-3xl font-semibold tracking-tight">{usd(earnings.total)}</div>
-          <div className="mt-1 space-y-0.5 text-sm text-muted">
-            <div className="flex items-center gap-2"><Camera className="size-3.5" /> Shoot pay {usd(earnings.shootPay)}</div>
-            {hasTravel ? (
-              <div className="flex items-center gap-2">
-                <Car className="size-3.5" /> Travel {usd(earnings.mileageShare)}
-                {earnings.payableMiles ? <span className="text-muted-2">· {Math.round(earnings.payableMiles)} paid mi{earnings.sharedJobs > 1 ? ` ÷ ${earnings.sharedJobs}` : ""}</span> : null}
-              </div>
-            ) : earnings.hasHome ? (
-              <div className="flex items-center gap-2 text-muted-2"><Car className="size-3.5" /> Within your free travel radius</div>
-            ) : (
-              <div className="flex items-center gap-2 text-muted-2"><Car className="size-3.5" /> Add your home address for mileage</div>
-            )}
-          </div>
-        </div>
-      </div>
-      <p className="mt-3 text-[11px] text-muted-2">Estimate — final pay is confirmed on payout day and may combine with other shoots that day for travel.</p>
     </Section>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { Menu, X } from "lucide-react";
 import { Sidebar, type ShellUser } from "@/components/Sidebar";
@@ -13,6 +13,17 @@ import { cn } from "@/lib/utils";
 export function Shell({ user, children }: { user: ShellUser | null; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
+
+  // Count in-app navigations this session so back controls (BackLink) can tell a
+  // real "previous page" from a cold deep link and route accordingly.
+  useEffect(() => {
+    try {
+      sessionStorage.setItem("rtp_nav", String(Number(sessionStorage.getItem("rtp_nav") || "0") + 1));
+    } catch {
+      /* ignore */
+    }
+  }, [pathname]);
+
   const bare = pathname === "/login" || pathname.startsWith("/invite");
 
   if (bare) return <>{children}</>;

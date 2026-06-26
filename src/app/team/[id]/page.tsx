@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
-  ArrowLeft, Mail, Phone, Camera, Palette, Star, CalendarDays,
+  Mail, Phone, Camera, Palette, Star, CalendarDays,
   Upload, MessageSquare, Clock, ArrowRight,
 } from "lucide-react";
+import { BackLink } from "@/components/ui/BackLink";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { TeamTextComposer } from "@/components/team/TeamTextComposer";
@@ -31,9 +32,7 @@ export default async function TeamMemberPage({ params }: { params: Promise<{ id:
   return (
     <div>
       <div className="border-b border-border px-4 py-4 sm:px-6">
-        <Link href="/team" className="mb-3 inline-flex items-center gap-1.5 text-sm text-muted hover:text-foreground">
-          <ArrowLeft className="size-4" /> All team
-        </Link>
+        <BackLink href="/team" label="All team" className="mb-3" />
         <div className="flex flex-wrap items-center gap-4">
           <Avatar name={member.name} size={56} color={member.avatarColor} />
           <div className="min-w-0">

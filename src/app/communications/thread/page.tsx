@@ -1,5 +1,4 @@
-import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
+import { BackLink } from "@/components/ui/BackLink";
 import { getSecret } from "@/lib/integrations/connections";
 import { conversationThread } from "@/lib/integrations/openphone";
 import { getConversationContext, resolveParticipants } from "@/lib/queries";
@@ -49,9 +48,7 @@ export default async function ThreadPage({
   return (
     <div>
       <div className="border-b border-border px-4 py-3 sm:px-6">
-        <Link href="/communications" className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-foreground">
-          <ArrowLeft className="size-4" /> All communications
-        </Link>
+        <BackLink href="/communications" label="All communications" />
       </div>
       {error ? (
         <div className="p-6"><div className="rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div></div>
