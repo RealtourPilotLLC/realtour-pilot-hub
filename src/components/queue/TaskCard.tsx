@@ -8,10 +8,11 @@ import {
   PencilLine, Cpu, CircleDot, User, Users,
 } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
-import { setSmartTaskStatus, draftTaskReply, sendDeliveryText, sendConfirmationText } from "@/app/actions";
+import { setSmartTaskStatus, setTaskAssignee, draftTaskReply, sendDeliveryText, sendConfirmationText } from "@/app/actions";
 import { addTaskNote } from "@/app/projects/messageActions";
 import { etDateTime, etMonthDay, etDaysAgo } from "@/lib/datetime";
 import { sourceMeta, SOURCE_CHIP, type SourceKey } from "@/lib/taskSource";
+import { editorMeta, isDelegated, DELEGATE_KEYS, EDITORS } from "@/lib/editors";
 
 // Friendly display label per task type (QA → QC, etc.).
 const TYPE_LABEL: Record<string, string> = {
@@ -55,6 +56,7 @@ export type QueueTask = {
   deliverables: DeliverableStatus[];
   source: string;
   sourceDetail: string | null;
+  assignedKey: string | null;
   projectId: string | null;
   clientId: string | null;
   clientName: string | null;
@@ -134,7 +136,10 @@ export function TaskCard({ task }: { task: QueueTask }) {
   const [noteText, setNoteText] = useState("");
   const [noteMsg, setNoteMsg] = useState<string | null>(null);
   const [savingNote, startNote] = useTransition();
+  const [assigning, startAssign] = useTransition();
 
+  const assignee = editorMeta(task.assignedKey);
+  const delegated = isDelegated(task.assignedKey);
   const p = PRIORITY[task.priority] ?? PRIORITY.MEDIUM;
   const due = dueLabel(task.dueAt);
   const cameIn = cameInLabel(task.createdAt);
@@ -157,6 +162,7 @@ export function TaskCard({ task }: { task: QueueTask }) {
   const [open, setOpen] = useState(predrafted);
 
   const run = (status: string) => start(async () => setSmartTaskStatus(task.id, status));
+  const assign = (key: string) => startAssign(async () => setTaskAssignee(task.id, key));
   const sendText = () =>
     startSend(async () => {
       const r = task.taskType === "confirmation_text"
@@ -233,6 +239,11 @@ export function TaskCard({ task }: { task: QueueTask }) {
         <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-medium ${SOURCE_CHIP[src.key]}`}>
           <SrcIcon className="size-3" /> {src.label}
         </span>
+        {delegated && assignee && (
+          <span className="inline-flex items-center gap-1 rounded-md bg-brand/10 px-1.5 py-0.5 font-medium text-brand" title={`Delegated to ${assignee.name} — ${assignee.does}`}>
+            <Users className="size-3" /> {assignee.name}
+          </span>
+        )}
         {cameIn && <span className="text-muted-2">· {cameIn}</span>}
       </div>
 
@@ -308,16 +319,30 @@ export function TaskCard({ task }: { task: QueueTask }) {
             disabled={pending}
             onChange={(e) => run(e.target.value)}
             title="Set status"
-            className="max-w-[8rem] rounded-lg border bg-surface px-2 py-1.5 text-xs focus:outline-none"
+            className="w-[6.5rem] min-w-0 rounded-lg border bg-surface px-2 py-1.5 text-xs focus:outline-none"
           >
             {STATUSES.map((s) => (
               <option key={s} value={s}>{s.replace(/_/g, " ").toLowerCase()}</option>
             ))}
           </select>
         )}
+        {!done && (
+          <select
+            value={delegated ? task.assignedKey ?? "" : ""}
+            disabled={assigning}
+            onChange={(e) => assign(e.target.value)}
+            title="Delegate to an editor"
+            className={`w-[6.5rem] min-w-0 rounded-lg border px-2 py-1.5 text-xs focus:outline-none ${delegated ? "bg-brand/10 text-brand" : "bg-surface text-muted"}`}
+          >
+            <option value="">Needs you</option>
+            {DELEGATE_KEYS.map((k) => (
+              <option key={k} value={k}>→ {EDITORS[k].name}</option>
+            ))}
+          </select>
+        )}
 
-        {/* Primary actions pushed to the right; they wrap below on narrow cards. */}
-        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+        {/* Primary actions: own full-width row on mobile, right-aligned on sm+. */}
+        <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:ml-auto sm:w-auto">
           {!done && isLuma && (
             <a
               href={LUMA_TRACKER_URL}

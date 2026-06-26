@@ -1,12 +1,12 @@
-import Link from "next/link";
-import { CheckCircle2, Inbox, ChevronDown, Camera, AlertTriangle, Sun, CalendarClock } from "lucide-react";
+import { CheckCircle2, MessageSquare, PencilLine, PackageCheck, Users, type LucideIcon } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { TaskCard, type QueueTask } from "@/components/queue/TaskCard";
 import { taskToView } from "@/lib/taskView";
 import { prisma } from "@/lib/prisma";
 import { recentProjectWhere } from "@/lib/recency";
-import { etDayStartUtc, etAddDays, etMonthDay } from "@/lib/datetime";
+import { etDayStartUtc } from "@/lib/datetime";
+import { isDelegated, EDITORS, DELEGATE_KEYS, type EditorKey } from "@/lib/editors";
 
 export const dynamic = "force-dynamic";
 
@@ -15,56 +15,34 @@ const PRIORITY_RANK: Record<string, number> = { URGENT: 0, HIGH: 1, MEDIUM: 2, L
 const rank = (t: QueueTask) => PRIORITY_RANK[t.priority] ?? 9;
 const dueMs = (t: QueueTask) => (t.dueAt ? new Date(t.dueAt).getTime() : Infinity);
 
-type Group = {
-  projectId: string; label: string; client: string | null; tasks: QueueTask[];
-  minRank: number; minDue: number; overdue: number; types: string[];
-};
-
-function buildGroups(tasks: QueueTask[], startToday: number): { groups: Group[]; general: QueueTask[] } {
-  const byProject = new Map<string, QueueTask[]>();
-  const general: QueueTask[] = [];
-  for (const v of tasks) {
-    if (v.projectId) { if (!byProject.has(v.projectId)) byProject.set(v.projectId, []); byProject.get(v.projectId)!.push(v); }
-    else general.push(v);
-  }
-  const groups: Group[] = [...byProject.entries()].map(([projectId, ts]) => {
-    ts.sort((a, b) => rank(a) - rank(b) || dueMs(a) - dueMs(b));
-    return {
-      projectId,
-      label: (ts[0].propertyAddress || ts[0].clientName || "Project").split(",")[0],
-      client: ts[0].clientName,
-      tasks: ts,
-      minRank: Math.min(...ts.map(rank)),
-      minDue: Math.min(...ts.map(dueMs)),
-      overdue: ts.filter((t) => t.dueAt && new Date(t.dueAt).getTime() < startToday).length,
-      types: [...new Set(ts.map((t) => t.taskType))],
-    };
-  });
-  groups.sort((a, b) => a.minRank - b.minRank || a.minDue - b.minDue || b.tasks.length - a.tasks.length);
-  general.sort((a, b) => rank(a) - rank(b) || dueMs(a) - dueMs(b));
-  return { groups, general };
+// Which "Needs you" group a non-delegated task belongs to.
+function category(taskType: string): "comms" | "revisions" | "qc" {
+  if (taskType === "revision") return "revisions";
+  if (["media_qa", "image_fixes", "delivery", "feedback_review"].includes(taskType)) return "qc";
+  return "comms"; // replies, instructions, leads, confirmations, delivery texts, decisions
 }
 
-function JobGroup({ g, open }: { g: Group; open: boolean }) {
-  const dueChip =
-    g.overdue > 0 ? <span className="rounded-full bg-danger-soft px-1.5 text-[11px] font-semibold text-danger">{g.overdue} overdue</span>
-    : isFinite(g.minDue) ? <span className="text-[11px] text-muted-2">due {etMonthDay(new Date(g.minDue))}</span>
-    : null;
+// In-progress statuses that read as "being worked" for the delegated summary.
+const WORKING = new Set(["IN_PROGRESS", "WAITING_CLIENT", "WAITING_PHOTOGRAPHER", "WAITING_EDITOR", "WAITING_VENDOR", "WAITING_JORDAN"]);
+
+function GroupCard({ icon: Icon, title, accent, items, overdue, blurb }: {
+  icon: LucideIcon; title: string; accent: string; items: QueueTask[]; overdue: number; blurb?: string;
+}) {
   return (
-    <details open={open} className="group rounded-2xl border bg-surface">
-      <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 hover:bg-surface-2">
-        <ChevronDown className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
-        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-brand-soft text-brand"><Camera className="size-4" /></span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2"><span className="truncate text-sm font-semibold">{g.label}</span>{dueChip}</div>
-          <div className="truncate text-xs text-muted">{g.client ? `${g.client} · ` : ""}{g.tasks.length} task{g.tasks.length === 1 ? "" : "s"} · {g.types.map((t) => t.replace(/_/g, " ")).join(", ")}</div>
-        </div>
-        <Link href={`/projects/${g.projectId}`} className="hidden shrink-0 text-xs text-muted hover:text-foreground sm:inline">Open →</Link>
-      </summary>
-      <div className="grid gap-3 border-t border-border p-3 sm:p-4 lg:grid-cols-2">
-        {g.tasks.map((t) => <TaskCard key={t.id} task={t} />)}
+    <section className="panel-shadow overflow-hidden rounded-2xl border bg-surface">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
+        <span className="flex size-7 items-center justify-center rounded-lg" style={{ background: `${accent}22`, color: accent }}>
+          <Icon className="size-4" />
+        </span>
+        <h2 className="text-sm font-semibold">{title}</h2>
+        <span className="rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">{items.length}</span>
+        {overdue > 0 && <span className="rounded-full bg-danger-soft px-1.5 text-[11px] font-semibold text-danger">{overdue} overdue</span>}
       </div>
-    </details>
+      {blurb && <p className="px-4 pt-2.5 text-[11px] text-muted-2">{blurb}</p>}
+      <div className="grid grid-cols-1 gap-3 p-3 sm:p-4 lg:grid-cols-2">
+        {items.map((t) => <TaskCard key={t.id} task={t} />)}
+      </div>
+    </section>
   );
 }
 
@@ -75,105 +53,101 @@ export default async function DailyTasksPage() {
   });
   const completedCount = await prisma.smartTask.count({ where: { status: "COMPLETED" } });
 
-  // ET day boundaries (the business runs on Eastern).
-  const now = new Date();
-  const startToday = etDayStartUtc(now).getTime();
-  const startTomorrow = etDayStartUtc(etAddDays(now, 1)).getTime();
+  const startToday = etDayStartUtc(new Date()).getTime();
+  const isOverdue = (t: QueueTask) => !!t.dueAt && new Date(t.dueAt).getTime() < startToday;
+  // Urgency sort: overdue first, then priority, then soonest due.
+  const cmp = (a: QueueTask, b: QueueTask) =>
+    (isOverdue(a) ? 0 : 1) - (isOverdue(b) ? 0 : 1) || rank(a) - rank(b) || dueMs(a) - dueMs(b);
 
   const views = tasks.map(taskToView);
-  const overdue = views.filter((t) => t.dueAt && new Date(t.dueAt).getTime() < startToday);
-  const today = views.filter((t) => { const d = dueMs(t); return d === Infinity || (d >= startToday && d < startTomorrow); });
-  const upcoming = views.filter((t) => { const d = dueMs(t); return d !== Infinity && d >= startTomorrow; });
+  const delegated = views.filter((v) => isDelegated(v.assignedKey));
+  const needsYou = views.filter((v) => !isDelegated(v.assignedKey));
 
-  const od = buildGroups(overdue, startToday);
-  const td = buildGroups(today, startToday);
-  const up = buildGroups(upcoming, startToday);
+  const comms = needsYou.filter((v) => category(v.taskType) === "comms").sort(cmp);
+  const revisions = needsYou.filter((v) => category(v.taskType) === "revisions").sort(cmp);
+  const qc = needsYou.filter((v) => category(v.taskType) === "qc").sort(cmp);
+
+  const byEditor = DELEGATE_KEYS
+    .map((k: EditorKey) => ({ key: k, meta: EDITORS[k], items: delegated.filter((v) => v.assignedKey === k).sort(cmp) }))
+    .filter((g) => g.items.length > 0);
+
+  const overdueCount = views.filter(isOverdue).length;
+  const oc = (items: QueueTask[]) => items.filter(isOverdue).length;
+  const nothing = views.length === 0;
 
   return (
     <div>
       <PageHeader
         eyebrow="Eastern time"
         title="Daily Tasks"
-        subtitle={`${today.length} for today · ${overdue.length} overdue · ${upcoming.length} upcoming`}
+        subtitle={`${needsYou.length} need you · ${delegated.length} delegated${overdueCount ? ` · ${overdueCount} overdue` : ""}`}
         actions={
           <div className="flex items-center gap-2">
-            {overdue.length > 0 && <Badge color="#dc2626" soft="#fee2e2">{overdue.length} overdue</Badge>}
+            {overdueCount > 0 && <Badge color="#dc2626" soft="#fee2e2">{overdueCount} overdue</Badge>}
             <Badge soft="var(--surface-2)"><CheckCircle2 className="mr-1 inline size-3 text-success" />{completedCount} done</Badge>
           </div>
         }
       />
-      <div className="space-y-6 p-4 sm:p-6">
-        {views.length === 0 ? (
+      <div className="space-y-5 p-4 sm:p-6">
+        {nothing ? (
           <div className="rounded-2xl border border-dashed bg-surface p-8 text-center">
             <CheckCircle2 className="mx-auto mb-2 size-6 text-success" />
-            <p className="text-sm text-muted">All caught up — nothing due. 🎉</p>
+            <p className="text-sm text-muted">All caught up — nothing open. 🎉</p>
           </div>
         ) : (
           <>
-            {/* OVERDUE — front and center */}
-            {overdue.length > 0 && (
-              <section>
-                <div className="mb-3 flex items-center gap-2">
-                  <AlertTriangle className="size-4 text-danger" />
-                  <h2 className="text-sm font-semibold text-danger">Overdue</h2>
-                  <span className="rounded-full bg-danger-soft px-1.5 text-xs font-medium text-danger">{overdue.length}</span>
-                </div>
-                <div className="space-y-3">
-                  {od.general.length > 0 && <GeneralBlock items={od.general} />}
-                  {od.groups.map((g) => <JobGroup key={g.projectId} g={g} open />)}
-                </div>
-              </section>
+            {/* NEEDS YOU */}
+            <div className="flex items-center gap-2 px-1 pt-1">
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-2">Needs you</h2>
+              <span className="text-xs text-muted-2">· {needsYou.length}</span>
+            </div>
+            {comms.length > 0 && (
+              <GroupCard icon={MessageSquare} title="Replies & admin" accent="#38bdf8" items={comms} overdue={oc(comms)}
+                blurb="Messages to reply to, new leads, confirmations, delivery texts, and decisions." />
+            )}
+            {revisions.length > 0 && (
+              <GroupCard icon={PencilLine} title="Revisions" accent="#fb7185" items={revisions} overdue={oc(revisions)}
+                blurb="Client change requests after delivery — assign each to the right editor when you action it." />
+            )}
+            {qc.length > 0 && (
+              <GroupCard icon={PackageCheck} title="QC & deliver" accent="#34d399" items={qc} overdue={oc(qc)}
+                blurb="Quality-check content as it lands, then deliver." />
+            )}
+            {comms.length + revisions.length + qc.length === 0 && (
+              <p className="rounded-2xl border border-dashed bg-surface px-4 py-6 text-center text-sm text-muted">Nothing needs you right now.</p>
             )}
 
-            {/* TODAY — the daily focus */}
-            <section>
-              <div className="mb-3 flex items-center gap-2">
-                <Sun className="size-4 text-warning" />
-                <h2 className="text-sm font-semibold">Today</h2>
-                <span className="rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">{today.length}</span>
-              </div>
-              {today.length === 0 ? (
-                <p className="rounded-2xl border border-dashed bg-surface px-4 py-6 text-center text-sm text-muted">Nothing due today.</p>
-              ) : (
-                <div className="space-y-3">
-                  {td.general.length > 0 && <GeneralBlock items={td.general} />}
-                  {td.groups.map((g) => <JobGroup key={g.projectId} g={g} open />)}
+            {/* DELEGATED */}
+            {byEditor.length > 0 && (
+              <>
+                <div className="flex items-center gap-2 px-1 pt-2">
+                  <Users className="size-3.5 text-muted-2" />
+                  <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-2">Delegated — in progress</h2>
+                  <span className="text-xs text-muted-2">· {delegated.length}</span>
                 </div>
-              )}
-            </section>
-
-            {/* UPCOMING — collapsed by default */}
-            {upcoming.length > 0 && (
-              <details className="group rounded-2xl border bg-surface">
-                <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 hover:bg-surface-2">
-                  <ChevronDown className="size-4 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
-                  <CalendarClock className="size-4 text-brand" />
-                  <h2 className="text-sm font-semibold">Upcoming</h2>
-                  <span className="rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">{upcoming.length}</span>
-                </summary>
-                <div className="space-y-3 border-t border-border p-3 sm:p-4">
-                  {up.general.length > 0 && <GeneralBlock items={up.general} />}
-                  {up.groups.map((g) => <JobGroup key={g.projectId} g={g} open={false} />)}
-                </div>
-              </details>
+                {byEditor.map((g) => {
+                  const working = g.items.filter((t) => WORKING.has(t.status)).length;
+                  const overdue = oc(g.items);
+                  return (
+                    <section key={g.key} className="panel-shadow overflow-hidden rounded-2xl border bg-surface">
+                      <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
+                        <span className="flex size-7 items-center justify-center rounded-lg bg-brand/15 text-brand"><Users className="size-4" /></span>
+                        <h3 className="text-sm font-semibold">{g.meta.name}</h3>
+                        <span className="rounded-full bg-surface-2 px-1.5 text-[11px] text-muted-2">{g.meta.kind === "external" ? "external" : "in-house"}</span>
+                        <span className="rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">{g.items.length}</span>
+                        {working > 0 && <span className="text-[11px] text-muted-2">{working} in progress</span>}
+                        {overdue > 0 && <span className="rounded-full bg-danger-soft px-1.5 text-[11px] font-semibold text-danger">{overdue} overdue</span>}
+                      </div>
+                      <div className="grid grid-cols-1 gap-3 p-3 sm:p-4 lg:grid-cols-2">
+                        {g.items.map((t) => <TaskCard key={t.id} task={t} />)}
+                      </div>
+                    </section>
+                  );
+                })}
+              </>
             )}
           </>
         )}
-      </div>
-    </div>
-  );
-}
-
-function GeneralBlock({ items }: { items: QueueTask[] }) {
-  return (
-    <div className="rounded-2xl border bg-surface">
-      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-        <Inbox className="size-4 text-brand" />
-        <h3 className="text-sm font-semibold">General</h3>
-        <span className="rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">{items.length}</span>
-      </div>
-      <div className="grid gap-3 p-3 sm:p-4 lg:grid-cols-2">
-        {items.map((t) => <TaskCard key={t.id} task={t} />)}
       </div>
     </div>
   );

@@ -138,13 +138,16 @@ export async function routeSlackTask(opts: {
 
   try {
     // The recent thread for this Slack channel (so "she"/"the form" resolve).
-    const threadRows = await prisma.commLog.findMany({
+    // MUST read the NEWEST messages — order desc, then flip back to chronological.
+    // (Reading oldest-first on a huge DM thread made the brain reason about
+    // months-old history and resurrect long-finished conversations as new tasks.)
+    const threadRowsDesc = await prisma.commLog.findMany({
       where: { channel: "slack", externalId: { startsWith: `slack-${opts.channel}-` } },
-      orderBy: { occurredAt: "asc" },
-      take: 60,
+      orderBy: { occurredAt: "desc" },
+      take: 40,
       select: { contactName: true, body: true },
     });
-    const recent = threadRows.slice(-22);
+    const recent = threadRowsDesc.reverse().slice(-22);
     const threadText = recent.map((r) => r.body ?? "").join("\n");
 
     // Candidate clients whose full name appears in the thread; the brain picks one.

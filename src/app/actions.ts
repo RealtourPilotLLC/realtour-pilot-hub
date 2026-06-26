@@ -123,6 +123,20 @@ export async function setSmartTaskStatus(taskId: string, status: string) {
   if (t.projectId) revalidatePath(`/projects/${t.projectId}`);
 }
 
+// Delegate a task to an editor (or clear it back to "Needs you"). Pass "" / "kyle"
+// to un-delegate. Keys validated against the editor roster (src/lib/editors.ts).
+export async function setTaskAssignee(taskId: string, key: string) {
+  const { EDITOR_KEYS } = await import("@/lib/editors");
+  const assignedKey = key && (EDITOR_KEYS as string[]).includes(key) ? key : null;
+  const t = await prisma.smartTask.update({
+    where: { id: taskId },
+    data: { assignedKey },
+    select: { projectId: true },
+  });
+  revalidatePath("/queue");
+  if (t.projectId) revalidatePath(`/projects/${t.projectId}`);
+}
+
 /**
  * Toggle one checklist item on a task. Low-friction completion: when every item
  * is checked the task auto-completes; unchecking an item on a completed task

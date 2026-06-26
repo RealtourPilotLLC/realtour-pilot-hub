@@ -431,6 +431,7 @@ model SmartTask {
   checklist     String? // JSON: string[] — retained for the consolidated QC task's auto-close (no longer a UI checklist)
   source        String   @default("system") // aryeo | openphone | gmail | slack | manual | system
   sourceDetail  String? // url / message id / note
+  assignedKey   String? // editor this work is delegated to (see src/lib/editors.ts): kim|remar|luma|autohdr|cubicasa|kyle
   dueAt         DateTime?
   completedAt   DateTime?
 

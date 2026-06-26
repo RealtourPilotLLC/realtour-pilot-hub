@@ -27,6 +27,12 @@ export async function maybeCreateSlackTask(opts: { text: string; ts: string; cha
   const { prisma } = await import("@/lib/prisma");
   const text = opts.text.trim();
   if (text.length < 6 || IGNORE_RE.test(text) || !INSTRUCTION_RE.test(text)) return false;
+  // RECENCY GUARD: never turn an OLD message into a task. The Slack ts is unix
+  // seconds; if a history backfill (or a re-sync of a huge thread) feeds us a
+  // months-old message, skip it — only genuinely recent messages become to-dos.
+  // This is what stopped a Sep conversation from being resurrected in June.
+  const tsMs = Number(opts.ts) * 1000;
+  if (Number.isFinite(tsMs) && tsMs > 0 && Date.now() - tsMs > 4 * 24 * 3600_000) return false;
   const dedupeKey = `slack-${opts.ts}`;
   if (await prisma.smartTask.findUnique({ where: { dedupeKey } })) return false;
 
@@ -93,12 +99,17 @@ export async function maybeCreateSlackTask(opts: { text: string; ts: string; cha
   const summary = (usedBrain && detail && detail !== text)
     ? detail
     : `${opts.senderName || "A teammate"} in Slack: “${text.slice(0, 220)}”`;
+  // If it reads as editing work, delegate it to the right editor (so it lands in
+  // the admin's "Delegated — in progress" group, not as a raw admin chore).
+  const { routeEditWork } = await import("@/lib/editors");
+  const assignedKey = routeEditWork(`${title} ${detail}`);
   await prisma.smartTask.create({
     data: {
       taskType: "internal_instruction",
       title,
       summary: summary.slice(0, 500),
       description: detail,
+      assignedKey,
       reasonCreated: match ? `From Slack — re: ${match.title}` : `From Slack — ${opts.senderName || "team"}`,
       checklist: JSON.stringify(["Do the requested action", "Reply in Slack when done"]),
       source: "slack",

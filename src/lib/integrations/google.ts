@@ -498,6 +498,7 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
           priority: "HIGH" as const,
           dueAt: new Date(Date.now() + 4 * 3600_000),
           ownerId: kyle?.id ?? null,
+          assignedKey: "luma",
           clientId: matchedClient?.id ?? null,
           projectId: matchedClient?.projects[0]?.id ?? null,
           dedupeKey: key,

@@ -19,6 +19,7 @@ export type TaskRow = {
   checklist: string | null;
   source: string;
   sourceDetail: string | null;
+  assignedKey: string | null;
   projectId: string | null;
   clientId: string | null;
   propertyAddress: string | null;
@@ -42,6 +43,7 @@ export function taskToView(t: TaskRow): QueueTask {
     deliverables,
     source: t.source,
     sourceDetail: t.sourceDetail,
+    assignedKey: t.assignedKey,
     projectId: t.projectId,
     clientId: t.clientId,
     clientName: t.client?.name ?? null,
