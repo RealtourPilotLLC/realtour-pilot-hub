@@ -5,6 +5,7 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { etDateTime, etDaysAgo } from "@/lib/datetime";
 import { ShootScreen } from "@/components/shoot/ShootScreen";
 import { ShootPayCard, ShootPayCardSkeleton } from "@/components/shoot/ShootPayCard";
+import { ShootMapCard, ShootMapCardSkeleton } from "@/components/shoot/ShootMapCard";
 import { ListingMedia, ListingMediaSkeleton } from "@/components/project/ListingMedia";
 
 export const dynamic = "force-dynamic";
@@ -48,5 +49,13 @@ export default async function ShootDetailPage({ params }: { params: Promise<{ id
     </Suspense>
   ) : null;
 
-  return <ShootScreen view={view} pay={pay} whenText={whenText} timing={timing} media={media} />;
+  // Day's shoots + driving route — streams in (one OSRM call) so the screen
+  // paints first.
+  const map = (
+    <Suspense fallback={<ShootMapCardSkeleton />}>
+      <ShootMapCard projectId={id} memberId={view.photographer?.id ?? null} />
+    </Suspense>
+  );
+
+  return <ShootScreen view={view} pay={pay} map={map} whenText={whenText} timing={timing} media={media} />;
 }

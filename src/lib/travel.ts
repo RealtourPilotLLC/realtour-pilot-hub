@@ -55,6 +55,33 @@ export async function driveBetween(
   }
 }
 
+// The full driving-route geometry through an ordered list of waypoints (home →
+// shoots → home), as [lat, lng] pairs for a Leaflet polyline. One OSRM call for
+// the whole day. Returns null on failure so the caller can fall back to straight
+// lines between the stops.
+export async function dayRouteGeometry(points: { lat: number; lng: number }[]): Promise<[number, number][] | null> {
+  if (points.length < 2) return null;
+  // Hard timeout: the public OSRM server can stall, and this sits inside a
+  // streamed Suspense boundary — we'd rather fall back to straight lines than
+  // hang the map. 6s is plenty for a normal response.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 6000);
+  try {
+    const coords = points.map((p) => `${p.lng},${p.lat}`).join(";");
+    const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`;
+    const res = await fetch(url, { cache: "no-store", signal: ctrl.signal });
+    if (!res.ok) throw new Error(String(res.status));
+    const j = (await res.json()) as { routes?: { geometry?: { coordinates?: [number, number][] } }[] };
+    const g = j.routes?.[0]?.geometry?.coordinates;
+    if (!g?.length) return null;
+    return g.map(([lng, lat]) => [lat, lng] as [number, number]); // GeoJSON is [lng,lat]; Leaflet wants [lat,lng]
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Geocode a free-text US address. Tries the US Census geocoder FIRST (free, no
 // key, excellent on exact street addresses — Nominatim often misses rural/exurban
 // house numbers like "223 Ridge Rd, Spring City, PA"), then falls back to

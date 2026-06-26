@@ -29,10 +29,11 @@ const STATUS_ORDER: ShootStatusKind[] = ["on_my_way", "arrived", "complete"];
 const ZILLOW_3D_CAPTURE_URL = "https://www.zillow.com/3d-home-tours/";
 
 export function ShootScreen({
-  view, pay, whenText, timing, media,
+  view, pay, map, whenText, timing, media,
 }: {
   view: ShootView;
   pay: React.ReactNode;
+  map: React.ReactNode;
   whenText: string;
   timing: "today" | "upcoming" | "past" | null;
   media: React.ReactNode;
@@ -70,6 +71,7 @@ export function ShootScreen({
       <HeaderCard project={project} appointment={appointment} whenText={whenText} timing={timing} onCopy={() => flash("ok", "Address copied")} />
 
       <div className="mt-4 space-y-4">
+        {map}
         <StatusUpdates view={view} flash={flash} />
         <CustomerCard client={client} segment={segment} profile={profile} />
         <BriefCard view={view} flash={flash} />

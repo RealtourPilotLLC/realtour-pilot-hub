@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { etDayStartUtc } from "@/lib/datetime";
+import { etDayStartUtc, etTime } from "@/lib/datetime";
 import { parseClientProfile, type ClientProfile } from "@/lib/clientProfile";
 import { segmentMeta, type SegmentMeta } from "@/lib/segments";
 import { phoneKey } from "@/lib/integrations/openphone";
@@ -286,6 +286,73 @@ export async function shootEarnings(projectId: string, memberId: string | null):
   };
 }
 
+export type ShootMapPin = { lat: number; lng: number; label: string; time: string | null; current: boolean };
+export type ShootMapData = {
+  pins: ShootMapPin[];
+  home: { lat: number; lng: number } | null;
+  route: [number, number][]; // road geometry (or straight-line fallback) for the day
+};
+
+// Map data for the shoot screen: this shoot + the photographer's OTHER shoots
+// that same day, ordered by time, plus the home base and the driving route
+// through them. Returns null if this shoot has no map location.
+export async function getShootMapData(projectId: string, memberId: string | null): Promise<ShootMapData | null> {
+  const proj = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      id: true, title: true, lat: true, lng: true, shootDate: true,
+      appointments: { where: { status: { not: "CANCELED" }, startAt: { not: null } }, select: { startAt: true }, orderBy: { startAt: "asc" } },
+    },
+  });
+  if (!proj || proj.lat == null || proj.lng == null) return null;
+  const thisTime = proj.appointments[0]?.startAt ?? proj.shootDate ?? null;
+
+  type DayProj = { id: string; title: string; lat: number | null; lng: number | null; startAt: Date | null };
+  let dayProjects: DayProj[] = [];
+  let home: { lat: number; lng: number } | null = null;
+
+  if (memberId && thisTime) {
+    const dayStart = etDayStartUtc(thisTime);
+    const dayEnd = new Date(dayStart.getTime() + 86400000);
+    const [rows, member] = await Promise.all([
+      prisma.project.findMany({
+        where: {
+          photographerId: memberId, status: { not: "CANCELLED" }, lat: { not: null }, lng: { not: null },
+          OR: [
+            { appointments: { some: { startAt: { gte: dayStart, lt: dayEnd }, status: { not: "CANCELED" } } } },
+            { shootDate: { gte: dayStart, lt: dayEnd } },
+          ],
+        },
+        select: {
+          id: true, title: true, lat: true, lng: true, shootDate: true,
+          appointments: { where: { startAt: { gte: dayStart, lt: dayEnd }, status: { not: "CANCELED" } }, select: { startAt: true }, orderBy: { startAt: "asc" }, take: 1 },
+        },
+      }),
+      prisma.teamMember.findUnique({ where: { id: memberId }, select: { homeLat: true, homeLng: true } }),
+    ]);
+    dayProjects = rows.map((r) => ({ id: r.id, title: r.title, lat: r.lat, lng: r.lng, startAt: r.appointments[0]?.startAt ?? r.shootDate ?? null }));
+    if (member?.homeLat != null && member?.homeLng != null) home = { lat: member.homeLat, lng: member.homeLng };
+  }
+
+  if (!dayProjects.some((d) => d.id === proj.id)) {
+    dayProjects.push({ id: proj.id, title: proj.title, lat: proj.lat, lng: proj.lng, startAt: thisTime });
+  }
+  dayProjects.sort((a, b) => (a.startAt?.getTime() ?? 0) - (b.startAt?.getTime() ?? 0));
+
+  const pins: ShootMapPin[] = dayProjects
+    .filter((d) => d.lat != null && d.lng != null)
+    .map((d) => ({ lat: d.lat!, lng: d.lng!, label: streetOf(d.title) || d.title, time: d.startAt ? etTime(d.startAt) : null, current: d.id === proj.id }));
+
+  const linePts = [...(home ? [home] : []), ...pins.map((p) => ({ lat: p.lat, lng: p.lng })), ...(home ? [home] : [])];
+  let route: [number, number][] = [];
+  if (linePts.length >= 2) {
+    const { dayRouteGeometry } = await import("@/lib/travel");
+    route = (await dayRouteGeometry(linePts)) ?? linePts.map((p) => [p.lat, p.lng] as [number, number]);
+  }
+
+  return { pins, home, route };
+}
+
 export type MyShootRow = {
   id: string;
   title: string;
@@ -303,7 +370,7 @@ export type MyShootRow = {
 // A photographer's shoots (or all, for owner/admin previews): recent + upcoming,
 // soonest-relevant first. `memberId = null` = no scoping (owner/admin view).
 export async function listMyShoots(memberId: string | null): Promise<MyShootRow[]> {
-  const since = new Date(Date.now() - 21 * 86400000); // last 3 weeks + everything ahead
+  const since = new Date(Date.now() - 60 * 86400000); // last ~2 months + everything ahead (for the calendar)
   const rows = await prisma.project.findMany({
     where: {
       status: { not: "CANCELLED" },
@@ -324,7 +391,7 @@ export async function listMyShoots(memberId: string | null): Promise<MyShootRow[
       },
     },
     orderBy: { shootDate: "asc" },
-    take: 100,
+    take: 250,
   });
 
   return rows.map((p) => {
