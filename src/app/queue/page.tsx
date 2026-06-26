@@ -2,6 +2,7 @@ import { CheckCircle2, MessageSquare, PencilLine, PackageCheck, Users, ChevronDo
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { TaskCard, type QueueTask } from "@/components/queue/TaskCard";
+import { TaskFocus } from "@/components/queue/TaskFocus";
 import { taskToView } from "@/lib/taskView";
 import { prisma } from "@/lib/prisma";
 import { recentProjectWhere } from "@/lib/recency";
@@ -82,6 +83,7 @@ export default async function DailyTasksPage() {
 
   return (
     <div>
+      <TaskFocus />
       <PageHeader
         eyebrow="Eastern time"
         title="Daily Tasks"
@@ -134,7 +136,7 @@ export default async function DailyTasksPage() {
                   const working = g.items.filter((t) => WORKING.has(t.status)).length;
                   const overdue = oc(g.items);
                   return (
-                    <details key={g.key} className="group panel-shadow overflow-hidden rounded-2xl border bg-surface">
+                    <details key={g.key} suppressHydrationWarning className="group panel-shadow overflow-hidden rounded-2xl border bg-surface">
                       <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-4 py-3 hover:bg-surface-2">
                         <ChevronDown className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
                         <span className="flex size-7 items-center justify-center rounded-lg bg-brand/15 text-brand"><Users className="size-4" /></span>

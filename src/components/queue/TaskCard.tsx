@@ -184,7 +184,7 @@ export function TaskCard({ task }: { task: QueueTask }) {
     });
 
   return (
-    <div className={`panel-shadow rounded-2xl border bg-surface p-3 sm:p-4 ${done ? "opacity-60" : ""}`}>
+    <div id={`task-${task.id}`} className={`panel-shadow scroll-mt-24 rounded-2xl border bg-surface p-3 sm:p-4 transition-shadow ${done ? "opacity-60" : ""}`}>
       {/* Meta row: priority + type on the left, due on the right. */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <Badge color={p.color} soft={p.soft}>{task.priority.toLowerCase()}</Badge>

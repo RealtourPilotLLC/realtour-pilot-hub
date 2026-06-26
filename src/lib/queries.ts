@@ -261,6 +261,7 @@ export type BriefTask = {
   priority: string;
   dueAt: string | null;
   source: string;
+  assignedKey: string | null;
   projectId: string | null;
   clientId: string | null;
   clientName: string | null;
@@ -270,7 +271,7 @@ export type BriefTask = {
 
 type RawTask = {
   id: string; title: string; taskType: string; priority: string;
-  dueAt: Date | null; source: string; projectId: string | null;
+  dueAt: Date | null; source: string; assignedKey: string | null; projectId: string | null;
   clientId: string | null;
   propertyAddress: string | null; client: { name: string } | null;
 };
@@ -282,6 +283,7 @@ function mapTask(t: RawTask, startToday: Date): BriefTask {
     priority: t.priority,
     dueAt: t.dueAt ? t.dueAt.toISOString() : null,
     source: t.source,
+    assignedKey: t.assignedKey,
     projectId: t.projectId,
     clientId: t.clientId,
     clientName: t.client?.name ?? null,

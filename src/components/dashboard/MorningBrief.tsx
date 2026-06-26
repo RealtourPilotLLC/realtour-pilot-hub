@@ -12,6 +12,12 @@ import {
 } from "lucide-react";
 import type { BriefTask } from "@/lib/queries";
 import { sourceMeta } from "@/lib/taskSource";
+import { editorMeta, isDelegated } from "@/lib/editors";
+
+// Small priority dot so urgency reads at a glance in the brief.
+const PRIORITY_DOT: Record<string, string> = {
+  URGENT: "#dc2626", HIGH: "#d97706", MEDIUM: "#0ea5e9", LOW: "#64748b",
+};
 
 export type BriefShoot = {
   key: string;
@@ -28,24 +34,27 @@ function dueTime(iso: string | null): string {
 }
 
 function TaskRow({ t }: { t: BriefTask }) {
-  // Default to the customer page (full context + reply tools); fall back to the
-  // project, then the queue. Message/reply to-dos are about the person.
-  const href = t.clientId ? `/clients/${t.clientId}` : t.projectId ? `/projects/${t.projectId}` : "/queue";
+  // Click goes STRAIGHT to the task on the Daily Tasks page (opens its group +
+  // scrolls/highlights it — see TaskFocus).
+  const src = sourceMeta(t.source);
+  const ed = editorMeta(t.assignedKey);
+  const delegated = isDelegated(t.assignedKey);
+  const street = t.propertyAddress ? t.propertyAddress.split(",")[0].trim() : null;
+  const titleHasStreet = !!street && t.title.toLowerCase().includes(street.toLowerCase());
   return (
-    <Link
-      href={href}
-      className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-surface-2"
-    >
-      <span className="truncate text-sm">{t.title}</span>
-      <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted">
-        {(() => {
-          const m = sourceMeta(t.source);
-          return m.key !== "system" ? (
-            <span className="rounded bg-surface-2 px-1 font-medium text-muted-2">{m.label}</span>
-          ) : null;
-        })()}
-        {dueTime(t.dueAt)}
-      </span>
+    <Link href={`/queue?task=${t.id}`} className="block rounded-lg px-2 py-1.5 hover:bg-surface-2">
+      <div className="flex items-center gap-2">
+        <span className="size-1.5 shrink-0 rounded-full" style={{ background: PRIORITY_DOT[t.priority] ?? PRIORITY_DOT.MEDIUM }} />
+        <span className="truncate text-sm">{t.title}</span>
+        <span className={`ml-auto shrink-0 text-[11px] ${t.overdue ? "font-medium text-danger" : "text-muted"}`}>{t.overdue ? "overdue" : dueTime(t.dueAt)}</span>
+      </div>
+      {/* More context: who it's for, where, where it came from, who it's delegated to. */}
+      <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 pl-3.5 text-[11px] text-muted-2">
+        {t.clientName && <span className="font-medium text-muted">{t.clientName}</span>}
+        {street && !titleHasStreet && <span>· {street}</span>}
+        {src.key !== "system" && <span className="rounded bg-surface-2 px-1 font-medium text-muted-2">{src.label}</span>}
+        {delegated && ed && <span className="rounded bg-brand/10 px-1 font-medium text-brand">→ {ed.name}</span>}
+      </div>
     </Link>
   );
 }

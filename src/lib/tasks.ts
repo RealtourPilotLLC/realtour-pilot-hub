@@ -718,7 +718,9 @@ async function syncOneProjectTasks(
           data: {
             checklist: serializeChecklist(merged),
             ...(s.summary ? { summary: s.summary } : {}),
-            ...(s.dueAt ? { dueAt: s.dueAt, priority: computePriority({ dueAt: s.dueAt, shootDate: p.shootDate, status: p.status }) } : {}),
+            // Post-shoot QC: priced by its turnaround due date, NOT shoot proximity
+            // (a 7–10 day monthly job shouldn't read URGENT because it shot today).
+            ...(s.dueAt ? { dueAt: s.dueAt, priority: computePriority({ dueAt: s.dueAt, status: p.status }) } : {}),
             ...(allDone ? { status: "COMPLETED", completedAt: new Date() } : {}),
           },
         });
@@ -728,12 +730,15 @@ async function syncOneProjectTasks(
       if (s.taskType === "delivery" && s.dueAt && exists.dueAt?.getTime() !== s.dueAt.getTime()) {
         await prisma.smartTask.update({
           where: { id: exists.id },
-          data: { dueAt: s.dueAt, priority: computePriority({ dueAt: s.dueAt, shootDate: p.shootDate, status: p.status }) },
+          data: { dueAt: s.dueAt, priority: computePriority({ dueAt: s.dueAt, status: p.status }) },
         });
       }
       continue;
     }
-    const priority = computePriority({ dueAt: s.dueAt, shootDate: p.shootDate, status: p.status });
+    // Pre-shoot tasks (confirmation) factor shoot proximity; post-shoot production
+    // (QC / deliver / delivery text) is priced by its turnaround due date only.
+    const postShoot = ["media_qa", "delivery", "delivery_text"].includes(s.taskType);
+    const priority = computePriority({ dueAt: s.dueAt, shootDate: postShoot ? null : p.shootDate, status: p.status });
     // Pre-draft the confirmation text so Kyle just reviews + sends.
     const description =
       s.taskType === "confirmation_text"
