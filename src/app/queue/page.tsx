@@ -1,4 +1,4 @@
-import { CheckCircle2, MessageSquare, PencilLine, PackageCheck, Users, type LucideIcon } from "lucide-react";
+import { CheckCircle2, MessageSquare, PencilLine, PackageCheck, Users, ChevronDown, type LucideIcon } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { TaskCard, type QueueTask } from "@/components/queue/TaskCard";
@@ -25,24 +25,29 @@ function category(taskType: string): "comms" | "revisions" | "qc" {
 // In-progress statuses that read as "being worked" for the delegated summary.
 const WORKING = new Set(["IN_PROGRESS", "WAITING_CLIENT", "WAITING_PHOTOGRAPHER", "WAITING_EDITOR", "WAITING_VENDOR", "WAITING_JORDAN"]);
 
+// Collapsible group panel — collapsed by default (native <details>, so no client
+// JS needed). The header (counts + overdue) stays visible; click to expand.
 function GroupCard({ icon: Icon, title, accent, items, overdue, blurb }: {
   icon: LucideIcon; title: string; accent: string; items: QueueTask[]; overdue: number; blurb?: string;
 }) {
   return (
-    <section className="panel-shadow overflow-hidden rounded-2xl border bg-surface">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
+    <details className="group panel-shadow overflow-hidden rounded-2xl border bg-surface">
+      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-4 py-3 hover:bg-surface-2">
+        <ChevronDown className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
         <span className="flex size-7 items-center justify-center rounded-lg" style={{ background: `${accent}22`, color: accent }}>
           <Icon className="size-4" />
         </span>
         <h2 className="text-sm font-semibold">{title}</h2>
         <span className="rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">{items.length}</span>
         {overdue > 0 && <span className="rounded-full bg-danger-soft px-1.5 text-[11px] font-semibold text-danger">{overdue} overdue</span>}
+      </summary>
+      <div className="border-t border-border">
+        {blurb && <p className="px-4 pt-2.5 text-[11px] text-muted-2">{blurb}</p>}
+        <div className="grid grid-cols-1 gap-3 p-3 sm:p-4 lg:grid-cols-2">
+          {items.map((t) => <TaskCard key={t.id} task={t} />)}
+        </div>
       </div>
-      {blurb && <p className="px-4 pt-2.5 text-[11px] text-muted-2">{blurb}</p>}
-      <div className="grid grid-cols-1 gap-3 p-3 sm:p-4 lg:grid-cols-2">
-        {items.map((t) => <TaskCard key={t.id} task={t} />)}
-      </div>
-    </section>
+    </details>
   );
 }
 
@@ -129,19 +134,20 @@ export default async function DailyTasksPage() {
                   const working = g.items.filter((t) => WORKING.has(t.status)).length;
                   const overdue = oc(g.items);
                   return (
-                    <section key={g.key} className="panel-shadow overflow-hidden rounded-2xl border bg-surface">
-                      <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
+                    <details key={g.key} className="group panel-shadow overflow-hidden rounded-2xl border bg-surface">
+                      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-4 py-3 hover:bg-surface-2">
+                        <ChevronDown className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
                         <span className="flex size-7 items-center justify-center rounded-lg bg-brand/15 text-brand"><Users className="size-4" /></span>
                         <h3 className="text-sm font-semibold">{g.meta.name}</h3>
                         <span className="rounded-full bg-surface-2 px-1.5 text-[11px] text-muted-2">{g.meta.kind === "external" ? "external" : "in-house"}</span>
                         <span className="rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">{g.items.length}</span>
                         {working > 0 && <span className="text-[11px] text-muted-2">{working} in progress</span>}
                         {overdue > 0 && <span className="rounded-full bg-danger-soft px-1.5 text-[11px] font-semibold text-danger">{overdue} overdue</span>}
-                      </div>
-                      <div className="grid grid-cols-1 gap-3 p-3 sm:p-4 lg:grid-cols-2">
+                      </summary>
+                      <div className="grid grid-cols-1 gap-3 border-t border-border p-3 sm:p-4 lg:grid-cols-2">
                         {g.items.map((t) => <TaskCard key={t.id} task={t} />)}
                       </div>
-                    </section>
+                    </details>
                   );
                 })}
               </>
