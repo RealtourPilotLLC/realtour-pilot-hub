@@ -143,6 +143,9 @@ model Appointment {
   postponedAt          DateTime?
   previousStartAt      DateTime?
   rawJson              String? // full Aryeo payload for completeness
+  // Photographer marked the shoot complete in the field (guided /shoot flow).
+  // Distinct from the Aryeo `status`; drives the on-site experience + team feed.
+  completedAt          DateTime?
   assignedTo  TeamMember? @relation(fields: [assignedToId], references: [id])
   assignedToId String?
   createdAt   DateTime    @default(now())
@@ -333,6 +336,9 @@ model Deliverable {
   quantity  Int               @default(1)
   status    DeliverableStatus @default(PENDING)
   notes     String?
+  // Photographer ticked this off on-site (guided /shoot capture checklist).
+  // Lets the team see what was confirmed captured before files are uploaded.
+  capturedAt DateTime?
   createdAt DateTime          @default(now())
 
   uploads UploadedFile[]

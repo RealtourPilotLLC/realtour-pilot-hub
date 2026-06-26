@@ -8,6 +8,7 @@ import {
   History,
   KanbanSquare,
   CalendarDays,
+  Camera,
   MapPinned,
   MessageCircle,
   Users,
@@ -71,6 +72,7 @@ const SECTIONS: NavSection[] = [
   {
     title: "Creative",
     items: [
+      { label: "My Shoots", href: "/shoot", icon: Camera, key: "shoot" },
       { label: "Upload Portal", href: "/upload", icon: Upload, key: "upload" },
       { label: "Editor Queue", href: "/editing", icon: Palette, key: "editing" },
     ],

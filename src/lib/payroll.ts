@@ -146,8 +146,10 @@ export async function unassignedShootsInRange(start: Date, end: Date): Promise<{
   return rows.map((r) => ({ id: r.id, title: r.title, shootISO: r.shootDate ? r.shootDate.toISOString() : null }));
 }
 
-// Compute payroll for every photographer with shoots in [start, end].
-export async function computePayroll(start: Date, end: Date): Promise<PayrollPerson[]> {
+// Compute payroll for every photographer with shoots in [start, end]. Pass
+// `opts.memberId` to scope to a single creative (used by the /shoot pay card so
+// one photographer's view doesn't route everyone's day).
+export async function computePayroll(start: Date, end: Date, opts?: { memberId?: string }): Promise<PayrollPerson[]> {
   // Attribute pay to the ORIGINAL shoot (earliest appointment), not the latest.
   // A return/reshoot trip adds a later appointment + moves Project.shootDate
   // forward; without this a job would be re-counted in a later period. So we
@@ -155,7 +157,7 @@ export async function computePayroll(start: Date, end: Date): Promise<PayrollPer
   // keep only those whose EARLIEST appointment (the paid shoot) lands in range.
   const projects = await prisma.project.findMany({
     where: {
-      photographerId: { not: null },
+      photographerId: opts?.memberId ?? { not: null },
       status: { not: "CANCELLED" },
       OR: [
         { appointments: { some: { startAt: { gte: start, lte: end }, status: { not: "CANCELED" } } } },

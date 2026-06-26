@@ -192,6 +192,32 @@ Write only the reply, ready to copy and send. Do not add notes or options.`;
   return anthropic({ model: SMART, system: STYLE, user, maxTokens: 500 });
 }
 
+// Polish a photographer's rough, OUTBOUND note into a clean client text in
+// Jordan's voice. Not a reply to anything — the photographer is initiating
+// (e.g. "running 10 late traffic" → a warm, professional heads-up). Keep it the
+// same intent, just well-said. DRAFT ONLY: returned to the UI for a human to
+// review + send. Uses the fast model since it's a light rewrite.
+export async function polishOutbound(ctx: {
+  rough: string;
+  clientName?: string | null;
+  propertyAddress?: string | null;
+  photographerName?: string | null;
+}): Promise<string> {
+  const me = (ctx.photographerName || "").trim().split(/\s+/)[0];
+  const user = `A photographer on a real estate shoot wants to text the client. Rewrite their rough note as a short, polished, professional text.
+${ctx.clientName ? `Client: ${ctx.clientName}` : ""}
+${ctx.propertyAddress ? `Property: ${ctx.propertyAddress}` : ""}
+${me ? `Sender (the photographer): ${me}, with RealTour Pilot` : "Sender: RealTour Pilot"}
+
+Their rough note:
+"""
+${ctx.rough.slice(0, 800)}
+"""
+
+Keep their intent and any facts (times, delays, requests). Warm but brief, no emojis, no em dashes. Write only the finished text, ready to send.`;
+  return anthropic({ model: FAST, system: STYLE, user, maxTokens: 320 });
+}
+
 // A single turn in a conversation. role: who said it. sender: optional speaker
 // label for group threads (e.g. "Jane (buyer agent)").
 export type ConvoTurn = { role: "client" | "us"; text: string; at?: string | null; sender?: string | null };

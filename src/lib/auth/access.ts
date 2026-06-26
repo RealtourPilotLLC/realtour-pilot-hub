@@ -7,7 +7,7 @@ export type PageKey =
   | "dashboard" | "tasks" | "history" | "pipeline" | "schedule" | "map"
   | "communications" | "clients" | "team" | "upload" | "editing" | "sales"
   | "billing" | "catalog" | "payouts" | "marketing" | "resources" | "assistant"
-  | "feedback" | "connections" | "users";
+  | "feedback" | "connections" | "users" | "shoot";
 
 export type Role = "OWNER" | "ADMIN" | "EDITOR" | "PHOTOGRAPHER";
 
@@ -23,6 +23,7 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   { key: "pipeline", label: "Project Tracker", href: "/pipeline" },
   { key: "schedule", label: "Schedule", href: "/schedule" },
   { key: "map", label: "Map", href: "/map" },
+  { key: "shoot", label: "My Shoots", href: "/shoot" },
   { key: "communications", label: "Communications", href: "/communications" },
   { key: "clients", label: "Clients", href: "/clients" },
   { key: "team", label: "Team", href: "/team" },
@@ -47,12 +48,12 @@ const ALL = PAGES.map((p) => p.key);
 const ROLE_PAGES: Record<Role, PageKey[]> = {
   OWNER: ALL,
   ADMIN: [
-    "dashboard", "tasks", "history", "pipeline", "schedule", "map",
+    "dashboard", "tasks", "history", "pipeline", "schedule", "map", "shoot",
     "communications", "clients", "team", "upload", "editing", "billing",
     "catalog", "resources", "assistant", "feedback",
   ],
   EDITOR: ["dashboard", "tasks", "editing", "upload", "resources", "assistant"],
-  PHOTOGRAPHER: ["dashboard", "schedule", "map", "upload", "resources"],
+  PHOTOGRAPHER: ["dashboard", "shoot", "schedule", "map", "upload", "resources"],
 };
 
 export function parsePermissions(raw: string | null | undefined): Record<string, boolean> {
