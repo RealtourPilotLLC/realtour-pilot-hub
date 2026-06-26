@@ -29,6 +29,7 @@ const TYPE_LABEL: Record<string, string> = {
   lead: "new lead",
   feedback_review: "feedback",
   appointment_prep: "shoot prep",
+  todo: "to-do",
 };
 const typeLabel = (t: string) => TYPE_LABEL[t] ?? t.replace(/_/g, " ");
 

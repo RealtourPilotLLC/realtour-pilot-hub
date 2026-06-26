@@ -105,7 +105,7 @@ export function MorningBrief({
   firstName?: string;
 }) {
   const is = (...types: string[]) => tasks.filter((t) => types.includes(t.taskType));
-  const messages = is("client_reply", "internal_instruction", "revision", "lead", "vendor_update", "comms_followup");
+  const messages = is("client_reply", "internal_instruction", "revision", "lead", "vendor_update", "comms_followup", "todo");
   // Sub-group the inbox so like-with-like reads cleanly.
   const msgGroups = [
     { label: "Replies needed", items: is("client_reply") },
@@ -113,6 +113,7 @@ export function MorningBrief({
     { label: "New leads", items: is("lead") },
     { label: "Job instructions", items: is("comms_followup") },
     { label: "Editor & vendor", items: is("vendor_update", "internal_instruction") },
+    { label: "To-dos", items: is("todo") },
   ].filter((g) => g.items.length > 0);
   const deliver = is("delivery", "media_qa", "finish_delivery", "delivery_text", "feedback_review", "image_fixes");
   const confirm = is("confirmation_text", "appointment_prep");

@@ -123,6 +123,71 @@ export async function setSmartTaskStatus(taskId: string, status: string) {
   if (t.projectId) revalidatePath(`/projects/${t.projectId}`);
 }
 
+// Add a to-do by hand from the Daily Tasks page. Optional: link to a job/client
+// (matched by address then client name), a due date, a priority, and delegate it
+// to an editor. Lands in "Needs you → Replies & admin" unless delegated.
+export async function createManualTask(input: {
+  title: string;
+  notes?: string;
+  link?: string;
+  dueDate?: string; // YYYY-MM-DD (Eastern)
+  priority?: string;
+  assignedKey?: string;
+}): Promise<{ ok: boolean; message: string }> {
+  const title = (input.title || "").trim();
+  if (!title) return { ok: false, message: "Give the task a title." };
+
+  // Optional link → a project (by address) or, failing that, a client (by name).
+  let projectId: string | null = null, clientId: string | null = null, propertyAddress: string | null = null;
+  const link = (input.link || "").trim();
+  if (link) {
+    const p = await prisma.project.findFirst({
+      where: { title: { contains: link, mode: "insensitive" }, status: { not: "CANCELLED" } },
+      orderBy: [{ orderedAt: { sort: "desc", nulls: "last" } }],
+      select: { id: true, title: true, clientId: true },
+    });
+    if (p) { projectId = p.id; clientId = p.clientId; propertyAddress = p.title; }
+    else {
+      const c = await prisma.client.findFirst({ where: { name: { contains: link, mode: "insensitive" } }, select: { id: true } });
+      if (c) clientId = c.id;
+    }
+  }
+
+  const priIn = (input.priority || "MEDIUM").toUpperCase();
+  const priority = ["URGENT", "HIGH", "MEDIUM", "LOW"].includes(priIn) ? priIn : "MEDIUM";
+
+  const { EDITOR_KEYS } = await import("@/lib/editors");
+  const ak = input.assignedKey;
+  const assignedKey = ak && ak !== "kyle" && (EDITOR_KEYS as string[]).includes(ak) ? ak : null;
+
+  let dueAt: Date | null = null;
+  const dd = (input.dueDate || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dd)) dueAt = new Date(`${dd}T17:00:00-04:00`);
+
+  const notes = input.notes?.trim() || null;
+  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } }, select: { id: true } });
+  await prisma.smartTask.create({
+    data: {
+      taskType: "todo",
+      title: title.slice(0, 140),
+      summary: notes,
+      description: notes,
+      reasonCreated: "Added by hand",
+      source: "manual",
+      priority,
+      dueAt,
+      assignedKey,
+      projectId,
+      clientId,
+      propertyAddress,
+      ownerId: kyle?.id ?? null,
+    },
+  });
+  revalidatePath("/queue");
+  revalidatePath("/");
+  return { ok: true, message: "Task added." };
+}
+
 // Delegate a task to an editor (or clear it back to "Needs you"). Pass "" / "kyle"
 // to un-delegate. Keys validated against the editor roster (src/lib/editors.ts).
 export async function setTaskAssignee(taskId: string, key: string) {

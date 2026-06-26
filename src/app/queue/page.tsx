@@ -3,6 +3,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { TaskCard, type QueueTask } from "@/components/queue/TaskCard";
 import { TaskFocus } from "@/components/queue/TaskFocus";
+import { AddTask } from "@/components/queue/AddTask";
 import { taskToView } from "@/lib/taskView";
 import { prisma } from "@/lib/prisma";
 import { recentProjectWhere } from "@/lib/recency";
@@ -96,6 +97,7 @@ export default async function DailyTasksPage() {
         }
       />
       <div className="space-y-5 p-4 sm:p-6">
+        <AddTask />
         {nothing ? (
           <div className="rounded-2xl border border-dashed bg-surface p-8 text-center">
             <CheckCircle2 className="mx-auto mb-2 size-6 text-success" />
