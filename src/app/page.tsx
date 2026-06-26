@@ -192,7 +192,7 @@ export default async function DashboardPage() {
               {data.upcomingShoots.map((p) => (
                 <Link
                   key={p.apptId}
-                  href={`/projects/${p.id}`}
+                  href={`/shoot/${p.id}`}
                   className="flex items-center gap-3 px-5 py-3 hover:bg-surface-2"
                 >
                   <div className="flex flex-col items-center rounded-lg bg-surface-2 px-2 py-1 text-center">

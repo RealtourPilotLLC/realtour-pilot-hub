@@ -61,7 +61,7 @@ export default async function SchedulePage() {
                 return (
                   <Link
                     key={a.id}
-                    href={`/projects/${p.id}`}
+                    href={`/shoot/${p.id}`}
                     className="flex items-center gap-4 border-b px-5 py-3 last:border-0 hover:bg-surface-2"
                   >
                     <div className="w-16 shrink-0 text-sm font-semibold text-foreground/80">{time}</div>
