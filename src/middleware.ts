@@ -21,6 +21,11 @@ export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
   if (isPublic(pathname)) return NextResponse.next();
 
+  // Gate is OFF until AUTH_ENFORCE=true. This lets us ship login + test it on the
+  // live URL while the existing (un-onboarded) team keeps working, then flip the
+  // switch once everyone has a user account — a clean cutover with no lockout.
+  if (process.env.AUTH_ENFORCE !== "true") return NextResponse.next();
+
   const session = await verifySession(req.cookies.get(SESSION_COOKIE)?.value);
   if (session) return NextResponse.next();
 
