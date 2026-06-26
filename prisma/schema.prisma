@@ -731,3 +731,28 @@ model HubMessage {
   @@index([category])
   @@index([createdAt])
 }
+
+// ---------------------------------------------------------------------------
+// Auth + RBAC. People who can LOG IN to the hub. Separate from TeamMember (the
+// operational roster) but optionally linked to it. Login is Google-OAuth-only and
+// restricted to rows that exist here (an allowlist) — random Google accounts are
+// denied. `role` drives default page access + the content-sensitivity tier; the
+// `permissions` JSON overrides specific pages per person.
+// ---------------------------------------------------------------------------
+model AppUser {
+  id           String    @id @default(cuid())
+  email        String    @unique // Google login email, lowercased
+  name         String?
+  role         String    @default("PHOTOGRAPHER") // OWNER | ADMIN | EDITOR | PHOTOGRAPHER
+  permissions  String? // JSON: per-page overrides, e.g. {"billing":true,"clients":false}
+  status       String    @default("INVITED") // INVITED | ACTIVE | DISABLED
+  inviteToken  String?   @unique
+  invitedAt    DateTime?
+  lastLoginAt  DateTime?
+  teamMemberId String? // optional link → TeamMember (a photographer's shoots)
+  editorKey    String? // optional link → editor roster (kim/remar/…) for "delegated to me"
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([status])
+}

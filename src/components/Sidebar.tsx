@@ -24,9 +24,18 @@ import {
   MessageSquarePlus,
   Plug,
   Settings,
+  LogOut,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+export type ShellUser = {
+  name: string | null;
+  email: string;
+  role: string;
+  impersonating?: boolean;
+  realName?: string | null;
+};
 
 type NavItem = {
   label: string;
@@ -91,7 +100,9 @@ const SECTIONS: NavSection[] = [
   },
 ];
 
-export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
+const ROLE_LABEL: Record<string, string> = { OWNER: "Owner", ADMIN: "Admin", EDITOR: "Editor", PHOTOGRAPHER: "Photographer" };
+
+export function Sidebar({ user, onNavigate }: { user?: ShellUser | null; onNavigate?: () => void }) {
   const pathname = usePathname();
 
   return (
@@ -157,7 +168,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         ))}
       </nav>
 
-      <div className="border-t px-3 py-3">
+      <div className="space-y-1 border-t px-3 py-3">
         <Link
           href="/connections"
           onClick={onNavigate}
@@ -166,6 +177,20 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           <Settings className="size-4" />
           <span>Settings &amp; connections</span>
         </Link>
+
+        {user && (
+          <div className="mt-1 flex items-center gap-2 rounded-lg bg-surface-2/60 px-3 py-2">
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium">{user.name || user.email}</div>
+              <div className="text-[11px] text-muted-2">{ROLE_LABEL[user.role] ?? user.role}</div>
+            </div>
+            <form action="/api/auth/logout" method="post">
+              <button type="submit" title="Sign out" className="flex size-8 items-center justify-center rounded-lg text-muted-2 hover:bg-surface-2 hover:text-foreground">
+                <LogOut className="size-4" />
+              </button>
+            </form>
+          </div>
+        )}
       </div>
     </aside>
   );

@@ -1,21 +1,27 @@
 "use client";
 
 import { useState } from "react";
+import { usePathname } from "next/navigation";
 import { Menu, X } from "lucide-react";
-import { Sidebar } from "@/components/Sidebar";
+import { Sidebar, type ShellUser } from "@/components/Sidebar";
 import { FeedbackWidget } from "@/components/feedback/FeedbackWidget";
 import { cn } from "@/lib/utils";
 
 // App chrome: a static sidebar on desktop (lg+), and a slide-in drawer with a
-// hamburger top bar on mobile. Keeps the whole hub usable on a phone.
-export function Shell({ children }: { children: React.ReactNode }) {
+// hamburger top bar on mobile. Keeps the whole hub usable on a phone. On the
+// auth pages (login / invite) it renders bare — no sidebar, no chrome.
+export function Shell({ user, children }: { user: ShellUser | null; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
+  const pathname = usePathname();
+  const bare = pathname === "/login" || pathname.startsWith("/invite");
+
+  if (bare) return <>{children}</>;
 
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Desktop sidebar */}
       <div className="hidden lg:block">
-        <Sidebar />
+        <Sidebar user={user} />
       </div>
 
       {/* Mobile drawer + backdrop. z must clear Leaflet map panes/controls
@@ -34,7 +40,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           open ? "translate-x-0" : "-translate-x-full",
         )}
       >
-        <Sidebar onNavigate={() => setOpen(false)} />
+        <Sidebar user={user} onNavigate={() => setOpen(false)} />
       </div>
 
       {/* Main column */}
