@@ -644,6 +644,7 @@ export async function execHubTool(
         data: {
           taskType: "internal_instruction",
           title: title.slice(0, 140),
+          summary: detail || `Added from Ask the Hub: ${title}`.slice(0, 500),
           description: detail || null,
           reasonCreated: "Added from Ask the Hub",
           source: "assistant",

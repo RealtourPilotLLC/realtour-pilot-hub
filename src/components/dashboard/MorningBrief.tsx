@@ -11,6 +11,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { BriefTask } from "@/lib/queries";
+import { sourceMeta } from "@/lib/taskSource";
 
 export type BriefShoot = {
   key: string;
@@ -19,13 +20,6 @@ export type BriefShoot = {
   time: string;
   clientName: string;
   photographer: string | null;
-};
-
-const SOURCE_LABEL: Record<string, string> = {
-  openphone: "OpenPhone",
-  slack: "Slack",
-  gmail: "Gmail",
-  feedback: "Feedback",
 };
 
 function dueTime(iso: string | null): string {
@@ -44,9 +38,12 @@ function TaskRow({ t }: { t: BriefTask }) {
     >
       <span className="truncate text-sm">{t.title}</span>
       <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted">
-        {SOURCE_LABEL[t.source] && (
-          <span className="rounded bg-surface-2 px-1 font-medium text-muted-2">{SOURCE_LABEL[t.source]}</span>
-        )}
+        {(() => {
+          const m = sourceMeta(t.source);
+          return m.key !== "system" ? (
+            <span className="rounded bg-surface-2 px-1 font-medium text-muted-2">{m.label}</span>
+          ) : null;
+        })()}
         {dueTime(t.dueAt)}
       </span>
     </Link>

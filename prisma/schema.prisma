@@ -425,9 +425,10 @@ model SmartTask {
   taskType      String // appointment_prep | media_qa | delivery | client_reply | reschedule_confirmation | ...
   priority      String   @default("MEDIUM") // URGENT | HIGH | MEDIUM | LOW
   title         String
+  summary       String? // human "what happened + what's needed" — shown in the card's expandable section
   description   String?
   reasonCreated String?
-  checklist     String? // JSON: string[]
+  checklist     String? // JSON: string[] — retained for the consolidated QC task's auto-close (no longer a UI checklist)
   source        String   @default("system") // aryeo | openphone | gmail | slack | manual | system
   sourceDetail  String? // url / message id / note
   dueAt         DateTime?

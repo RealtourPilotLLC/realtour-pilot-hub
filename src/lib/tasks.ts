@@ -118,6 +118,7 @@ type TaskSpec = {
   deliverableType?: string;
   dueAt?: Date | null;
   description?: string; // pre-drafted message (e.g. the confirmation text)
+  summary?: string; // "what happened / what's needed" for the card
 };
 
 // Friendly per-deliverable label for the consolidated QC checklist.
@@ -180,6 +181,7 @@ function specsForProject(p: {
       taskType: "confirmation_text",
       title: `Confirmation text — ${p.title}`,
       reasonCreated: "Day-before confirmation text (SOP)",
+      summary: "Day before the shoot: review the drafted confirmation text and send it. Confirm access (someone meeting us or a lockbox + code), what to highlight/avoid, and offer an upgrade if it fits.",
       deliverableType: primary,
       dueAt: shoot ? new Date(shoot.getTime() - DAY) : null,
       // description (the drafted text) is filled in at creation time, where the
@@ -209,6 +211,7 @@ function specsForProject(p: {
         taskType: "media_qa",
         title: `QC — ${p.title}`,
         reasonCreated: "Media in production — quality-check each deliverable",
+        summary: "Content is coming in for this shoot. Quality-check each deliverable as it lands on Aryeo (verticals + horizontals, no odd edits/reflections/blemishes, staging + item removal done), then it's ready to deliver. Auto-completes once every category is live.",
         dueAt: pendingDues.length ? new Date(Math.min(...pendingDues)) : null,
         checklist: qcItems,
       });
@@ -220,6 +223,7 @@ function specsForProject(p: {
         taskType: "delivery",
         title: `Deliver gallery — ${p.title}`,
         reasonCreated: "Ready to deliver after QC",
+        summary: "Photos are QC'd and ready. Deliver the gallery via Aryeo + the branded email, mark it delivered, and the post-delivery client text queues automatically.",
         deliverableType: primary,
         dueAt: deliveryDueFrom(anchor, primary, dueOpts(primary)),
         checklist: guide(["Final QC pass", "Deliver via Aryeo + branded email", "Mark Delivered", "Schedule feedback request"]),
@@ -281,10 +285,16 @@ export async function createCommTask(opts: {
 
   const title = opts.aiTitle ? `${opts.aiTitle} (${opts.clientName})` : `${verb} ${opts.clientName}`;
   const description = [opts.aiDetail, opts.snippet?.slice(0, 280)].filter(Boolean).join("\n\n") || null;
+  // "What happened" summary for the card: the brain's read of the ask, else the
+  // message itself.
+  const summary =
+    opts.aiDetail?.trim() ||
+    (opts.snippet ? `${opts.clientName} ${opts.kind === "text" ? "wrote in" : "reached out"}: “${opts.snippet.slice(0, 200)}”` : `${verb} ${opts.clientName}.`);
 
   const data = {
     taskType: "client_reply",
     title: title.slice(0, 120),
+    summary: summary.slice(0, 500),
     description,
     reasonCreated: reason,
     checklist: JSON.stringify([
@@ -341,10 +351,13 @@ export async function createProjectFollowupTask(opts: {
   const street = (opts.propertyAddress ?? "this job").split(",")[0];
   const title = (opts.aiTitle || `${opts.senderName} re ${street}`).slice(0, 120);
   const description = [opts.aiDetail, opts.text.slice(0, 300)].filter(Boolean).join("\n\n") || null;
+  const summary =
+    opts.aiDetail?.trim() || `${opts.senderName} messaged about ${street}: “${opts.text.slice(0, 200)}”`;
   const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
   const data = {
     taskType: "comms_followup",
     title,
+    summary: summary.slice(0, 500),
     description,
     reasonCreated: `${opts.senderName} texted about this job (${opts.source ?? "openphone"})`,
     checklist: JSON.stringify([
@@ -375,6 +388,10 @@ export async function createProjectFollowupTask(opts: {
 // close all of the client's open reply tasks (used when we can't tell which order
 // a reply addressed).
 export async function closeClientReplyTask(clientId: string, projectId?: string | null): Promise<boolean> {
+  // Only the CLIENT's own reply ask. A comms_followup is a separate instruction
+  // filed by a non-client teammate (a photographer's lockbox code, a coordinator's
+  // note) — replying to the client does NOT mean that instruction was handled, so
+  // it must never be auto-closed here or actionable work would silently vanish.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const where: any = { clientId, taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] } };
   if (projectId) where.projectId = projectId;
@@ -420,17 +437,24 @@ export async function mergeIntoExistingTask(taskId: string, opts: {
 }): Promise<boolean> {
   const existing = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { description: true, taskType: true } });
   if (!existing) return false;
+  // Never merge an inbound comm into a production task (QC/delivery/confirmation/
+  // delivery text) — that would overwrite its title/summary. Refuse so the caller
+  // falls back to creating a proper reply task.
+  if (["media_qa", "delivery", "confirmation_text", "delivery_text", "feedback_review", "image_fixes"].includes(existing.taskType)) return false;
   const addition = [opts.detail, opts.snippet?.slice(0, 280)].filter(Boolean).join(" — ");
   const description = [existing.description, addition ? `Update: ${addition}` : null].filter(Boolean).join("\n\n").slice(0, 2000);
   const titled = opts.title
     ? (existing.taskType === "client_reply" && opts.clientName ? `${opts.title} (${opts.clientName})` : opts.title).slice(0, 120)
     : undefined;
+  // Refresh the "what happened" summary to the latest read when we have one.
+  const summary = (opts.detail?.trim() || opts.snippet?.trim()) ? (opts.detail?.trim() || `New message: “${opts.snippet!.slice(0, 200)}”`) : undefined;
   await prisma.smartTask.update({
     where: { id: taskId },
     data: {
       status: "OPEN",
       completedAt: null,
       description,
+      ...(summary ? { summary: summary.slice(0, 500) } : {}),
       ...(titled ? { title: titled } : {}),
       ...(opts.priority ? { priority: opts.priority } : {}),
       ...(opts.projectId !== undefined ? { projectId: opts.projectId } : {}),
@@ -488,6 +512,7 @@ export async function reflectRevisionInQc(projectId: string, categories: string[
     data: {
       taskType: "media_qa",
       title: `QC — ${project.title}`,
+      summary: "A deliverable went back into revision after delivery. Re-QC the corrected version once it's re-uploaded, then re-deliver to the client.",
       reasonCreated: "Deliverable back in revision — re-QC the new version",
       checklist: serializeChecklist(markRevised([])),
       source: "revision",
@@ -550,6 +575,7 @@ export async function createDeliveryTextTask(projectId: string): Promise<void> {
     data: {
       taskType: "delivery_text",
       title: `Send delivery text — ${project.title}`,
+      summary: "This job was delivered. Review the drafted post-delivery text (with the feedback link) and send it to the client. A feedback reply auto-logs back to the project.",
       description: deliveryMessage(project),
       reasonCreated: "Delivered — send the post-delivery client text + feedback link",
       checklist: JSON.stringify([
@@ -596,88 +622,138 @@ export async function generateTasksForActiveProjects(): Promise<{ created: numbe
   });
 
   let created = 0;
-  for (const p of projects) {
-    const specs = specsForProject({
-      status: p.status,
-      title: p.title,
-      shootDate: p.shootDate,
-      deliverables: p.deliverables,
-      statusEvidence: p.statusEvidence,
-      monthlyContent: p.client.socialClient,
-    });
-    // Reconcile: close any open production task that's no longer expected. This
-    // retires "QA photos" / "Deliver gallery" once the photos are live (even
-    // while a reel is still rendering), and clears a stale "finish delivery"
-    // when its missing items showed up or fell back inside their window.
-    const expectedKeys = new Set(specs.map((s) => dedupe([p.id, s.taskType, s.deliverableType])));
-    await prisma.smartTask.updateMany({
-      where: {
-        projectId: p.id,
-        taskType: { in: ["media_qa", "delivery", "finish_delivery"] },
-        status: { notIn: ["COMPLETED", "CANCELLED"] },
-        NOT: { dedupeKey: { in: [...expectedKeys] } },
-      },
-      data: { status: "COMPLETED", completedAt: new Date() },
-    });
-    for (const s of specs) {
-      const key = dedupe([p.id, s.taskType, s.deliverableType]);
-      const exists = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
-      if (exists) {
-        if (exists.status === "COMPLETED" || exists.status === "CANCELLED") continue;
-        // For the consolidated QC task, re-sync its checklist each run: an item
-        // is checked if it's live on Aryeo OR Kyle already ticked it manually
-        // (manual checks are preserved). If every item ends up checked, the task
-        // auto-completes. Also keep the due date fresh.
-        if (s.taskType === "media_qa") {
-          const prev = parseChecklist(exists.checklist);
-          const prevDone = new Map(prev.map((i) => [i.label, i.done]));
-          const merged: ChecklistItem[] = s.checklist.map((i) => ({ label: i.label, done: i.done || (prevDone.get(i.label) ?? false) }));
-          const allDone = checklistComplete(merged);
-          await prisma.smartTask.update({
-            where: { id: exists.id },
-            data: {
-              checklist: serializeChecklist(merged),
-              ...(s.dueAt ? { dueAt: s.dueAt, priority: computePriority({ dueAt: s.dueAt, shootDate: p.shootDate, status: p.status }) } : {}),
-              ...(allDone ? { status: "COMPLETED", completedAt: new Date() } : {}),
-            },
-          });
-          continue;
-        }
-        // Keep delivery due dates fresh when turnaround rules change.
-        if (s.taskType === "delivery" && s.dueAt && exists.dueAt?.getTime() !== s.dueAt.getTime()) {
-          await prisma.smartTask.update({
-            where: { id: exists.id },
-            data: { dueAt: s.dueAt, priority: computePriority({ dueAt: s.dueAt, shootDate: p.shootDate, status: p.status }) },
-          });
-        }
+  for (const p of projects) created += await syncOneProjectTasks(p, kyle, confirmationMessage);
+  return { created, projects: projects.length };
+}
+
+const ACTIVE_TASK_STATUSES = ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW"];
+
+// Regenerate/reconcile a SINGLE project's tasks right now. The Aryeo webhook
+// calls this so a new order / delivery / appointment change produces or clears
+// its tasks at event time instead of waiting up to an hour for the cron.
+export async function generateTasksForProject(projectId: string): Promise<number> {
+  const p = await prisma.project.findUnique({
+    where: { id: projectId },
+    include: {
+      deliverables: { select: { type: true, label: true } },
+      client: { select: { id: true, name: true, socialClient: true } },
+      photographer: { select: { name: true } },
+    },
+  });
+  if (!p || !ACTIVE_TASK_STATUSES.includes(p.status)) return 0;
+  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
+  const { confirmationMessage } = await import("@/lib/delivery");
+  return syncOneProjectTasks(p, kyle, confirmationMessage);
+}
+
+type TaskProject = {
+  id: string; status: string; title: string; shootDate: Date | null; statusEvidence: string | null;
+  deliverables: { type: string; label: string | null }[];
+  client: { id: string; name: string | null; socialClient: boolean };
+  photographer: { name: string } | null;
+};
+
+// Reconcile one active project's expected tasks (create missing, refresh QC /
+// delivery, retire what's no longer expected). Returns how many it created.
+async function syncOneProjectTasks(
+  p: TaskProject,
+  kyle: { id: string } | null,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  confirmationMessage: (...args: any[]) => string,
+): Promise<number> {
+  let created = 0;
+  const specs = specsForProject({
+    status: p.status,
+    title: p.title,
+    shootDate: p.shootDate,
+    deliverables: p.deliverables,
+    statusEvidence: p.statusEvidence,
+    monthlyContent: p.client.socialClient,
+  });
+  // Reconcile: close any open production task that's no longer expected. This
+  // retires "QA photos" / "Deliver gallery" once the photos are live (even
+  // while a reel is still rendering), and clears a stale "finish delivery"
+  // when its missing items showed up or fell back inside their window.
+  const expectedKeys = new Set(specs.map((s) => dedupe([p.id, s.taskType, s.deliverableType])));
+  await prisma.smartTask.updateMany({
+    where: {
+      projectId: p.id,
+      taskType: { in: ["media_qa", "delivery", "finish_delivery"] },
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
+      NOT: { dedupeKey: { in: [...expectedKeys] } },
+    },
+    data: { status: "COMPLETED", completedAt: new Date() },
+  });
+  for (const s of specs) {
+    const key = dedupe([p.id, s.taskType, s.deliverableType]);
+    const exists = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+    if (exists) {
+      if (exists.status === "COMPLETED" || exists.status === "CANCELLED") continue;
+      // For the consolidated QC task, re-sync its checklist each run: an item
+      // is checked if it's live on Aryeo OR Kyle already ticked it manually
+      // (manual checks are preserved). If every item ends up checked, the task
+      // auto-completes. Also keep the due date fresh. The checklist is no longer
+      // an interactive UI — it drives this auto-close + the read-only status row.
+      if (s.taskType === "media_qa") {
+        const prev = parseChecklist(exists.checklist);
+        const prevDone = new Map(prev.map((i) => [i.label, i.done]));
+        const specLabels = new Set(s.checklist.map((i) => i.label));
+        // Keep any item the SPEC didn't produce (e.g. a revision-injected
+        // "Re-QC after revision" / "QC Reel (revision)" from reflectRevisionInQc)
+        // with its done state — otherwise it'd be silently dropped and the task
+        // could auto-complete while a re-QC was still pending.
+        const extras = prev.filter((i) => !specLabels.has(i.label));
+        const merged: ChecklistItem[] = [
+          ...s.checklist.map((i) => ({ label: i.label, done: i.done || (prevDone.get(i.label) ?? false) })),
+          ...extras,
+        ];
+        const allDone = checklistComplete(merged);
+        await prisma.smartTask.update({
+          where: { id: exists.id },
+          data: {
+            checklist: serializeChecklist(merged),
+            ...(s.summary ? { summary: s.summary } : {}),
+            ...(s.dueAt ? { dueAt: s.dueAt, priority: computePriority({ dueAt: s.dueAt, shootDate: p.shootDate, status: p.status }) } : {}),
+            ...(allDone ? { status: "COMPLETED", completedAt: new Date() } : {}),
+          },
+        });
         continue;
       }
-      const priority = computePriority({ dueAt: s.dueAt, shootDate: p.shootDate, status: p.status });
-      // Pre-draft the confirmation text so Kyle just reviews + sends.
-      const description =
-        s.taskType === "confirmation_text"
-          ? confirmationMessage({ title: p.title, shootDate: p.shootDate, client: { name: p.client.name ?? "" }, photographer: p.photographer, deliverables: p.deliverables })
-          : s.description ?? null;
-      await prisma.smartTask.create({
-        data: {
-          taskType: s.taskType,
-          title: s.title,
-          description,
-          reasonCreated: s.reasonCreated,
-          checklist: serializeChecklist(s.checklist),
-          source: "aryeo",
-          priority,
-          dueAt: s.dueAt ?? null,
-          deliverableType: s.deliverableType ?? null,
-          projectId: p.id,
-          clientId: p.client.id,
-          propertyAddress: p.title,
-          ownerId: kyle?.id ?? null,
-          dedupeKey: key,
-        },
-      });
-      created++;
+      // Keep delivery due dates fresh when turnaround rules change.
+      if (s.taskType === "delivery" && s.dueAt && exists.dueAt?.getTime() !== s.dueAt.getTime()) {
+        await prisma.smartTask.update({
+          where: { id: exists.id },
+          data: { dueAt: s.dueAt, priority: computePriority({ dueAt: s.dueAt, shootDate: p.shootDate, status: p.status }) },
+        });
+      }
+      continue;
     }
+    const priority = computePriority({ dueAt: s.dueAt, shootDate: p.shootDate, status: p.status });
+    // Pre-draft the confirmation text so Kyle just reviews + sends.
+    const description =
+      s.taskType === "confirmation_text"
+        ? confirmationMessage({ title: p.title, shootDate: p.shootDate, client: { name: p.client.name ?? "" }, photographer: p.photographer, deliverables: p.deliverables })
+        : s.description ?? null;
+    await prisma.smartTask.create({
+      data: {
+        taskType: s.taskType,
+        title: s.title,
+        summary: s.summary ?? null,
+        description,
+        reasonCreated: s.reasonCreated,
+        checklist: serializeChecklist(s.checklist),
+        source: "aryeo",
+        priority,
+        dueAt: s.dueAt ?? null,
+        deliverableType: s.deliverableType ?? null,
+        projectId: p.id,
+        clientId: p.client.id,
+        propertyAddress: p.title,
+        ownerId: kyle?.id ?? null,
+        dedupeKey: key,
+      },
+    });
+    created++;
   }
-  return { created, projects: projects.length };
+  return created;
 }

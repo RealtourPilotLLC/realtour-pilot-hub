@@ -52,11 +52,13 @@ export async function maybeCreateSlackTask(opts: { text: string; ts: string; cha
       if (!d.actionable) return false;
       if (d.mergeIntoTaskId) {
         const { mergeIntoExistingTask } = await import("@/lib/tasks");
-        await mergeIntoExistingTask(d.mergeIntoTaskId, {
+        const merged = await mergeIntoExistingTask(d.mergeIntoTaskId, {
           title: d.title, detail: d.detail, priority: d.priority,
           projectId: d.projectId ?? undefined, clientId: d.clientId ?? undefined, snippet: text,
         });
-        return true;
+        // Merge refused (e.g. it pointed at a production task) → fall through and
+        // create a fresh Slack to-do below instead of dropping the message.
+        if (merged) return true;
       }
       title = d.title;
       detail = d.detail || text;
@@ -88,10 +90,14 @@ export async function maybeCreateSlackTask(opts: { text: string; ts: string; cha
   }
 
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
+  const summary = (usedBrain && detail && detail !== text)
+    ? detail
+    : `${opts.senderName || "A teammate"} in Slack: “${text.slice(0, 220)}”`;
   await prisma.smartTask.create({
     data: {
       taskType: "internal_instruction",
       title,
+      summary: summary.slice(0, 500),
       description: detail,
       reasonCreated: match ? `From Slack — re: ${match.title}` : `From Slack — ${opts.senderName || "team"}`,
       checklist: JSON.stringify(["Do the requested action", "Reply in Slack when done"]),

@@ -484,6 +484,7 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
         const data = {
           taskType: "vendor_update",
           title: `Luma Visuals reel update${who} — check the tracker`.slice(0, 120),
+          summary: `Luma Visuals (our reel editor) sent an update${who} via Gmail: “${text.slice(0, 200)}”. Open the tracker — the edit is done or they have a question; QC/download the reel or answer them, then deliver.`.slice(0, 500),
           description: text.slice(0, 400),
           reasonCreated: "Luma Visuals (reel editor) update via Gmail",
           checklist: JSON.stringify([
@@ -590,6 +591,7 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
         const data = {
           taskType: "lead",
           title: `New lead: ${name || email}`.slice(0, 120),
+          summary: `New inbound inquiry to ${account.email} from ${name || email}: “${text.slice(0, 200)}”. Qualify (listing, timeline, budget) and reply / book a strategy call.`.slice(0, 500),
           description: text.slice(0, 400),
           reasonCreated: `New inbound email to ${account.email}`,
           checklist: JSON.stringify(["Read the email", "Qualify (listing, timeline, budget)", "Reply / book a strategy call", "Add to CRM"]),

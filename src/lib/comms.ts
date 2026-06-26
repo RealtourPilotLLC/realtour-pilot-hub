@@ -162,7 +162,10 @@ export async function recordClientCommunication(opts: {
           title: decision.title, detail: decision.detail, priority: decision.priority,
           projectId: effProjectId, propertyAddress: effPropertyAddress, snippet: opts.text, clientName: opts.clientName,
         });
-      } else {
+      }
+      // No merge target (or the merge was refused, e.g. it pointed at a production
+      // task) → create a fresh reply task so the message is still tracked.
+      if (!replyTask) {
         replyTask = await createCommTask({
           clientId: opts.clientId, clientName: opts.clientName,
           projectId: effProjectId, propertyAddress: effPropertyAddress,
@@ -287,6 +290,7 @@ export async function raiseRevision(opts: {
   const data = {
     taskType: "revision",
     title: `Revision — ${project.title}`,
+    summary: `Client asked for changes after delivery: “${note.slice(0, 220)}” — confirm exactly what needs to change, make the edits/reshoot, then re-upload to Aryeo and re-deliver.`,
     description: note,
     reasonCreated: `Client requested changes via ${opts.source} after delivery`,
     checklist: JSON.stringify([

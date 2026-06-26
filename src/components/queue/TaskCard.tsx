@@ -2,12 +2,16 @@
 
 import { useState, useTransition } from "react";
 import Link from "next/link";
-import { CheckCircle2, Clock, MapPin, Loader2, Sparkles, Copy, Send, ExternalLink, Square, CheckSquare, MessageSquarePlus } from "lucide-react";
+import {
+  CheckCircle2, Clock, MapPin, Loader2, Sparkles, Copy, Send, ExternalLink,
+  MessageSquarePlus, ChevronDown, Hash, Mail, Phone, Camera, Star, Clapperboard,
+  PencilLine, Cpu, CircleDot, User, Users,
+} from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
-import { setSmartTaskStatus, toggleTaskChecklistItem, draftTaskReply, sendDeliveryText, sendConfirmationText } from "@/app/actions";
+import { setSmartTaskStatus, draftTaskReply, sendDeliveryText, sendConfirmationText } from "@/app/actions";
 import { addTaskNote } from "@/app/projects/messageActions";
-import { etDaysAgo, etDateTime } from "@/lib/datetime";
-import type { ChecklistItem } from "@/lib/checklist";
+import { etDateTime, etMonthDay, etDaysAgo } from "@/lib/datetime";
+import { sourceMeta, SOURCE_CHIP, type SourceKey } from "@/lib/taskSource";
 
 // Friendly display label per task type (QA → QC, etc.).
 const TYPE_LABEL: Record<string, string> = {
@@ -21,6 +25,9 @@ const TYPE_LABEL: Record<string, string> = {
   vendor_update: "vendor update",
   image_fixes: "photo fixes",
   internal_instruction: "team task",
+  lead: "new lead",
+  feedback_review: "feedback",
+  appointment_prep: "shoot prep",
 };
 const typeLabel = (t: string) => TYPE_LABEL[t] ?? t.replace(/_/g, " ");
 
@@ -29,6 +36,11 @@ const LUMA_TRACKER_URL = "https://portal.lumavisuals.co/";
 // Task types that carry a pre-written message (in `description`) ready to send.
 const PREDRAFTED = ["confirmation_text", "delivery_text"];
 
+// One read-only deliverable status row for a QC task (parsed server-side from the
+// task's checklist JSON — the checklist is no longer an interactive UI, it just
+// feeds this at-a-glance "what's live / what's pending" line and the auto-close).
+export type DeliverableStatus = { label: string; done: boolean };
+
 export type QueueTask = {
   id: string;
   title: string;
@@ -36,11 +48,15 @@ export type QueueTask = {
   status: string;
   priority: string;
   dueAt: string | null;
+  createdAt: string | null;
   reasonCreated: string | null;
+  summary: string | null;
   description: string | null;
-  checklist: ChecklistItem[];
+  deliverables: DeliverableStatus[];
   source: string;
+  sourceDetail: string | null;
   projectId: string | null;
+  clientId: string | null;
   clientName: string | null;
   propertyAddress: string | null;
 };
@@ -64,6 +80,19 @@ const STATUSES = [
   "CANCELLED",
 ];
 
+const SOURCE_ICON: Record<SourceKey, typeof Hash> = {
+  slack: Hash,
+  aryeo: Camera,
+  gmail: Mail,
+  openphone: Phone,
+  feedback: Star,
+  luma: Clapperboard,
+  team: Users,
+  assistant: Sparkles,
+  manual: PencilLine,
+  system: Cpu,
+};
+
 function dueLabel(due: string | null) {
   if (!due) return null;
   const d = new Date(due);
@@ -73,6 +102,24 @@ function dueLabel(due: string | null) {
   const text = etDateTime(d);
   const overdue = d.getTime() < Date.now();
   return { text, overdue, soon: daysUntil <= 1 };
+}
+
+// "Came in" label: relative for the last couple days, else the month/day.
+function cameInLabel(iso: string | null): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  const ago = etDaysAgo(d);
+  if (ago === 0) return "Today";
+  if (ago === 1) return "Yesterday";
+  return etMonthDay(d);
+}
+
+// The card's expandable "what happened" body. Prefers the AI summary; falls back
+// to the why + the raw message so older tasks (no summary yet) still read well.
+function summaryText(task: QueueTask): string | null {
+  if (task.summary?.trim()) return task.summary.trim();
+  if (task.reasonCreated?.trim()) return task.reasonCreated.trim();
+  return null;
 }
 
 export function TaskCard({ task }: { task: QueueTask }) {
@@ -87,16 +134,27 @@ export function TaskCard({ task }: { task: QueueTask }) {
   const [noteText, setNoteText] = useState("");
   const [noteMsg, setNoteMsg] = useState<string | null>(null);
   const [savingNote, startNote] = useTransition();
+
   const p = PRIORITY[task.priority] ?? PRIORITY.MEDIUM;
   const due = dueLabel(task.dueAt);
+  const cameIn = cameInLabel(task.createdAt);
   const done = task.status === "COMPLETED";
   const canDraft = DRAFTABLE.includes(task.taskType);
   const predrafted = PREDRAFTED.includes(task.taskType) && !!task.description;
   const canSend = task.taskType === "delivery_text" || task.taskType === "confirmation_text";
   const isLuma = task.taskType === "vendor_update" && /luma/i.test(task.title);
-  // The title often already contains the street, so drop the redundant address line.
-  const titleHasAddress = !!task.propertyAddress &&
-    task.title.toLowerCase().includes(task.propertyAddress.split(",")[0].trim().toLowerCase());
+  const src = sourceMeta(task.source);
+  const SrcIcon = SOURCE_ICON[src.key];
+  const summary = summaryText(task);
+  // Project chip label: the street, when we have an address.
+  const projectLabel = task.propertyAddress ? task.propertyAddress.split(",")[0].trim() : null;
+  // The title often already contains the street — don't repeat it in the chip.
+  const titleHasAddress = !!projectLabel && task.title.toLowerCase().includes(projectLabel.toLowerCase());
+  // What's worth expanding: a summary, the live/pending deliverable status, the
+  // raw message, or a drafted message to review.
+  const hasBody = !!summary || task.deliverables.length > 0 || (!!task.description && !predrafted);
+  // Drafted-message tasks open expanded so the message is visible to review/send.
+  const [open, setOpen] = useState(predrafted);
 
   const run = (status: string) => start(async () => setSmartTaskStatus(task.id, status));
   const sendText = () =>
@@ -109,6 +167,7 @@ export function TaskCard({ task }: { task: QueueTask }) {
   const makeDraft = () =>
     startDraft(async () => {
       setCopied(false);
+      if (!open) setOpen(true);
       setDraft(await draftTaskReply(task.id));
     });
   const saveNote = () =>
@@ -120,12 +179,9 @@ export function TaskCard({ task }: { task: QueueTask }) {
 
   return (
     <div className={`panel-shadow rounded-2xl border bg-surface p-3 sm:p-4 ${done ? "opacity-60" : ""}`}>
-      {/* Meta row: priority + type on the left, due on the right. Wraps to its
-          own line on narrow cards instead of overlapping. */}
+      {/* Meta row: priority + type on the left, due on the right. */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <Badge color={p.color} soft={p.soft}>
-          {task.priority.toLowerCase()}
-        </Badge>
+        <Badge color={p.color} soft={p.soft}>{task.priority.toLowerCase()}</Badge>
         <span className="text-[11px] uppercase tracking-wide text-muted-2">{typeLabel(task.taskType)}</span>
         {due ? (
           <span className={`ml-auto inline-flex items-center gap-0.5 whitespace-nowrap text-xs ${due.overdue ? "font-semibold text-danger" : due.soon ? "font-medium text-warning" : "text-muted"}`}>
@@ -136,19 +192,85 @@ export function TaskCard({ task }: { task: QueueTask }) {
           <span className="ml-auto inline-flex items-center gap-0.5 whitespace-nowrap text-xs text-muted-2"><Clock className="size-3" />No due date</span>
         )}
       </div>
-      <div className="mt-1.5 break-words text-sm font-semibold leading-snug">{task.title}</div>
-      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-muted">
-        {task.clientName && <span>{task.clientName}</span>}
-        {task.propertyAddress && !titleHasAddress && (
-          <span className="inline-flex min-w-0 items-center gap-0.5">
-            <MapPin className="size-3 shrink-0" /> <span className="truncate">{task.propertyAddress}</span>
-          </span>
+
+      {/* Title — clickable to expand when there's a body to reveal. */}
+      <button
+        type="button"
+        onClick={() => hasBody && setOpen((v) => !v)}
+        className={`mt-1.5 flex w-full items-start gap-1.5 text-left ${hasBody ? "cursor-pointer" : "cursor-default"}`}
+      >
+        <span className="break-words text-sm font-semibold leading-snug">{task.title}</span>
+        {hasBody && (
+          <ChevronDown className={`mt-0.5 size-4 shrink-0 text-muted-2 transition-transform ${open ? "rotate-180" : ""}`} />
         )}
+      </button>
+
+      {/* Identity row: client · project · source · came-in date. The five things
+          that make a task trackable at a glance. */}
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
+        {task.clientName && (
+          task.clientId ? (
+            <Link href={`/clients/${task.clientId}`} className="inline-flex items-center gap-1 rounded-md bg-surface-2 px-1.5 py-0.5 font-medium text-foreground/90 hover:text-foreground">
+              <User className="size-3 text-muted-2" /> {task.clientName}
+            </Link>
+          ) : (
+            <span className="inline-flex items-center gap-1 rounded-md bg-surface-2 px-1.5 py-0.5 font-medium text-foreground/80">
+              <User className="size-3 text-muted-2" /> {task.clientName}
+            </span>
+          )
+        )}
+        {projectLabel && !titleHasAddress && (
+          task.projectId ? (
+            <Link href={`/projects/${task.projectId}`} className="inline-flex min-w-0 items-center gap-1 rounded-md bg-surface-2 px-1.5 py-0.5 text-muted hover:text-foreground">
+              <MapPin className="size-3 shrink-0" /> <span className="max-w-[12rem] truncate">{projectLabel}</span>
+            </Link>
+          ) : (
+            <span className="inline-flex min-w-0 items-center gap-1 rounded-md bg-surface-2 px-1.5 py-0.5 text-muted">
+              <MapPin className="size-3 shrink-0" /> <span className="max-w-[12rem] truncate">{projectLabel}</span>
+            </span>
+          )
+        )}
+        <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-medium ${SOURCE_CHIP[src.key]}`}>
+          <SrcIcon className="size-3" /> {src.label}
+        </span>
+        {cameIn && <span className="text-muted-2">· {cameIn}</span>}
       </div>
 
-      {task.checklist.length > 0 && <ChecklistBox taskId={task.id} initial={task.checklist} />}
+      {/* Expandable body — the "what happened" summary + details. */}
+      {open && hasBody && (
+        <div className="mt-2.5 space-y-2.5 rounded-xl border border-border bg-surface-2/40 p-3">
+          {summary && <p className="whitespace-pre-line break-words text-sm text-foreground/90">{summary}</p>}
 
-      {predrafted && (
+          {/* QC: read-only live/pending status per deliverable. */}
+          {task.deliverables.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {task.deliverables.map((d, i) => (
+                <span
+                  key={i}
+                  className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium ${d.done ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}
+                >
+                  {d.done ? <CheckCircle2 className="size-3" /> : <CircleDot className="size-3" />}
+                  {d.label.replace(/^QC\s+/i, "")}
+                  <span className="opacity-70">{d.done ? "live" : "pending"}</span>
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* The actual inbound message (not for predrafted-send tasks — those show
+              their drafted text below instead). */}
+          {task.description && !predrafted && !summary?.includes(task.description.slice(0, 40)) && (
+            <p className="whitespace-pre-line break-words border-t border-border pt-2 text-xs text-muted">{task.description}</p>
+          )}
+
+          {task.reasonCreated && summary !== task.reasonCreated && (
+            <p className="text-[11px] text-muted-2">Why: {task.reasonCreated}</p>
+          )}
+        </div>
+      )}
+
+      {/* Drafted text ready to review + send (confirmation / delivery texts). */}
+      {predrafted && open && (
         <div className="mt-2 rounded-xl border bg-surface-2/60 p-3">
           <div className="mb-1.5 flex items-center justify-between">
             <span className="text-[11px] font-semibold uppercase tracking-wide text-brand">Drafted text</span>
@@ -164,6 +286,7 @@ export function TaskCard({ task }: { task: QueueTask }) {
         </div>
       )}
 
+      {/* Action footer. */}
       <div className="mt-3 flex flex-wrap items-center gap-2 border-t pt-3">
         {!done ? (
           <button
@@ -188,9 +311,7 @@ export function TaskCard({ task }: { task: QueueTask }) {
             className="max-w-[8rem] rounded-lg border bg-surface px-2 py-1.5 text-xs focus:outline-none"
           >
             {STATUSES.map((s) => (
-              <option key={s} value={s}>
-                {s.replace(/_/g, " ").toLowerCase()}
-              </option>
+              <option key={s} value={s}>{s.replace(/_/g, " ").toLowerCase()}</option>
             ))}
           </select>
         )}
@@ -300,54 +421,6 @@ export function TaskCard({ task }: { task: QueueTask }) {
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-// Interactive checklist: tick items in place; the server persists each toggle
-// and auto-completes the task once every box is checked.
-function ChecklistBox({ taskId, initial }: { taskId: string; initial: ChecklistItem[] }) {
-  const [items, setItems] = useState<ChecklistItem[]>(initial);
-  const [busy, setBusy] = useState<number | null>(null);
-  const [, start] = useTransition();
-  const doneCount = items.filter((i) => i.done).length;
-
-  const toggle = (i: number) => {
-    // Optimistic flip; the server is the source of truth on revalidate.
-    setItems((cur) => cur.map((it, idx) => (idx === i ? { ...it, done: !it.done } : it)));
-    setBusy(i);
-    start(async () => {
-      const r = await toggleTaskChecklistItem(taskId, i);
-      if (r.ok) setItems(r.items);
-      setBusy(null);
-    });
-  };
-
-  return (
-    <div className="mt-2 rounded-xl border border-border bg-surface-2/40 p-2.5">
-      <div className="mb-1 px-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-2">
-        Checklist · {doneCount}/{items.length}
-      </div>
-      <ul className="space-y-0.5">
-        {items.map((it, i) => (
-          <li key={i}>
-            <button
-              onClick={() => toggle(i)}
-              disabled={busy === i}
-              className="flex w-full items-start gap-2 rounded-md px-1.5 py-1 text-left text-xs hover:bg-surface-2 disabled:opacity-60"
-            >
-              {busy === i ? (
-                <Loader2 className="mt-0.5 size-3.5 shrink-0 animate-spin text-muted" />
-              ) : it.done ? (
-                <CheckSquare className="mt-0.5 size-3.5 shrink-0 text-success" />
-              ) : (
-                <Square className="mt-0.5 size-3.5 shrink-0 text-muted-2" />
-              )}
-              <span className={it.done ? "text-muted-2 line-through" : "text-foreground/85"}>{it.label}</span>
-            </button>
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }

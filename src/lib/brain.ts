@@ -17,6 +17,9 @@ import { etDate, etDateTime, etDayStartUtc, etAddDays } from "@/lib/datetime";
 export type { BrainDecision } from "@/lib/integrations/ai";
 
 const DONE = ["COMPLETED", "CANCELLED"];
+// Task types an inbound comm may MERGE into. Excludes production tasks
+// (media_qa/delivery/confirmation_text/delivery_text) so their content is safe.
+const MERGEABLE_TYPES = ["client_reply", "comms_followup", "internal_instruction", "revision", "vendor_update", "lead"];
 
 export async function routeCommTask(input: {
   channel: "text" | "call" | "email" | "slack";
@@ -44,7 +47,10 @@ export async function routeCommTask(input: {
         select: { id: true, title: true, status: true, deliveryDue: true, deliveredAt: true, revisionRequestedAt: true },
       }),
       prisma.smartTask.findMany({
-        where: { clientId: input.clientId, status: { notIn: DONE } },
+        // Only comms-type to-dos are valid MERGE targets — never a production task
+        // (media_qa / delivery / confirmation_text), whose title/summary would get
+        // clobbered if the brain picked it as "the same request".
+        where: { clientId: input.clientId, status: { notIn: DONE }, taskType: { in: MERGEABLE_TYPES } },
         orderBy: { createdAt: "desc" },
         take: 14,
         select: { id: true, taskType: true, title: true, projectId: true },

@@ -35,7 +35,7 @@ import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { Section } from "@/components/ui/Section";
 import { CopyButton } from "@/components/ui/CopyButton";
-import { parseChecklist } from "@/lib/checklist";
+import { taskToView } from "@/lib/taskView";
 import { SegmentBadge } from "@/components/clients/SegmentBadge";
 import { SocialBadge } from "@/components/clients/SocialBadge";
 import { VendorBadge } from "@/components/editing/VendorBadge";
@@ -224,24 +224,7 @@ export default async function ProjectPage({
             <Section icon={ListTodo} title="Open tasks" count={project.smartTasks.length} flush>
               <div className="grid gap-3 p-5 sm:grid-cols-2">
                 {project.smartTasks.map((t) => (
-                  <TaskCard
-                    key={t.id}
-                    task={{
-                      id: t.id,
-                      title: t.title,
-                      taskType: t.taskType,
-                      status: t.status,
-                      priority: t.priority,
-                      dueAt: t.dueAt ? t.dueAt.toISOString() : null,
-                      reasonCreated: t.reasonCreated,
-                      description: t.description,
-                      checklist: parseChecklist(t.checklist),
-                      source: t.source,
-                      projectId: t.projectId,
-                      clientName: t.client?.name ?? null,
-                      propertyAddress: t.propertyAddress,
-                    }}
-                  />
+                  <TaskCard key={t.id} task={taskToView(t)} />
                 ))}
               </div>
             </Section>

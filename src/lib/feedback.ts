@@ -67,6 +67,9 @@ export async function recordFeedback(opts: {
     data: {
       taskType: "feedback_review",
       title: `${negative ? "Resolve" : "Review"} client feedback — ${project.title}`,
+      summary:
+        `${opts.authorName ? opts.authorName + " left" : "Client left"} ${negative ? "unhappy" : ""} feedback${rating ? ` (${rating}/5)` : ""} on ${project.title.split(",")[0]}: “${opts.body.slice(0, 200)}”` +
+        (negative ? " — reach out to make it right and brief the photographer." : "."),
       description:
         `${opts.authorName ? opts.authorName + ": " : ""}${opts.body}` +
         (rating ? `\n\nRating: ${rating}/5` : "") +

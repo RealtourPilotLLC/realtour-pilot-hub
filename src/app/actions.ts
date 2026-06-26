@@ -282,6 +282,7 @@ export async function sendDeliveryText(taskId: string): Promise<{ ok: boolean; m
   await prisma.smartTask.update({ where: { id: taskId }, data: { status: "COMPLETED", completedAt: new Date() } });
   revalidatePath("/");
   revalidatePath("/queue");
+  revalidatePath(`/projects/${task.projectId}`);
   return { ok: true, message: "Delivery text sent." };
 }
 
@@ -329,6 +330,7 @@ export async function sendConfirmationText(taskId: string): Promise<{ ok: boolea
   await prisma.smartTask.update({ where: { id: taskId }, data: { status: "COMPLETED", completedAt: new Date() } });
   revalidatePath("/");
   revalidatePath("/queue");
+  revalidatePath(`/projects/${task.projectId}`);
   return { ok: true, message: "Confirmation text sent." };
 }
 

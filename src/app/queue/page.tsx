@@ -3,10 +3,10 @@ import { CheckCircle2, Inbox, ChevronDown, Camera, AlertTriangle, Sun, CalendarC
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { TaskCard, type QueueTask } from "@/components/queue/TaskCard";
+import { taskToView } from "@/lib/taskView";
 import { prisma } from "@/lib/prisma";
 import { recentProjectWhere } from "@/lib/recency";
 import { etDayStartUtc, etAddDays, etMonthDay } from "@/lib/datetime";
-import { parseChecklist } from "@/lib/checklist";
 
 export const dynamic = "force-dynamic";
 
@@ -14,19 +14,6 @@ const ACTIVE = ["OPEN", "IN_PROGRESS", "WAITING_CLIENT", "WAITING_PHOTOGRAPHER",
 const PRIORITY_RANK: Record<string, number> = { URGENT: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
 const rank = (t: QueueTask) => PRIORITY_RANK[t.priority] ?? 9;
 const dueMs = (t: QueueTask) => (t.dueAt ? new Date(t.dueAt).getTime() : Infinity);
-
-function toView(t: {
-  id: string; title: string; taskType: string; status: string; priority: string;
-  dueAt: Date | null; reasonCreated: string | null; description: string | null; checklist: string | null; source: string;
-  projectId: string | null; propertyAddress: string | null; client: { name: string } | null;
-}): QueueTask {
-  return {
-    id: t.id, title: t.title, taskType: t.taskType, status: t.status, priority: t.priority,
-    dueAt: t.dueAt ? t.dueAt.toISOString() : null, reasonCreated: t.reasonCreated, description: t.description,
-    checklist: parseChecklist(t.checklist),
-    source: t.source, projectId: t.projectId, clientName: t.client?.name ?? null, propertyAddress: t.propertyAddress,
-  };
-}
 
 type Group = {
   projectId: string; label: string; client: string | null; tasks: QueueTask[];
@@ -93,7 +80,7 @@ export default async function DailyTasksPage() {
   const startToday = etDayStartUtc(now).getTime();
   const startTomorrow = etDayStartUtc(etAddDays(now, 1)).getTime();
 
-  const views = tasks.map(toView);
+  const views = tasks.map(taskToView);
   const overdue = views.filter((t) => t.dueAt && new Date(t.dueAt).getTime() < startToday);
   const today = views.filter((t) => { const d = dueMs(t); return d === Infinity || (d >= startToday && d < startTomorrow); });
   const upcoming = views.filter((t) => { const d = dueMs(t); return d !== Infinity && d >= startTomorrow; });

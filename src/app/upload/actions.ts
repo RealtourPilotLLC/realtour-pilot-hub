@@ -82,6 +82,7 @@ export async function submitAppointmentFeedback(
       create: {
         taskType: "internal_instruction",
         title: `Shoot issue — ${project?.title ?? "a shoot"}`.slice(0, 120),
+        summary: `The photographer flagged a problem during the shoot debrief on ${project?.title?.split(",")[0] ?? "this job"}: “${(trimmed || "Photographer flagged an issue.").slice(0, 200)}” — review and follow up.`.slice(0, 500),
         description: trimmed.slice(0, 400) || "Photographer flagged an issue on the shoot.",
         reasonCreated: "Photographer flagged a problem during the appointment debrief.",
         source: "manual",

@@ -113,6 +113,16 @@ async function restatusProject(projectId: string) {
   await syncProjectStatuses({ projectId });
 }
 
+// Capture/reconcile this project's tasks at event time (new order → confirmation
+// task; delivered gallery → QC/deliver tasks flip) instead of waiting for the
+// hourly cron. Best-effort — never block the webhook on it.
+async function retaskProject(projectId: string) {
+  try {
+    const { generateTasksForProject } = await import("@/lib/tasks");
+    await generateTasksForProject(projectId);
+  } catch { /* non-fatal */ }
+}
+
 // Routes a real Aryeo activity. Aryeo's webhook API is create-only (no list /
 // delete), and the verified event names are: ORDER_CREATED/FULFILLED/PAID,
 // LISTING_UPDATED, APPOINTMENT_SCHEDULED/ASSIGNED/RESCHEDULED/CANCELED,
@@ -128,20 +138,34 @@ async function processAryeoEvent(eventType: string, payload: Record<string, unkn
   if (object === "ORDER" || name.startsWith("ORDER")) {
     if (id) { try { await Aryeo.order(id); } catch { /* fall through to full sync */ } }
     await syncAryeoOrders();
-    if (id && (name.includes("FULFIL") || name.includes("DELIVER") || name.includes("PAID"))) {
+    if (id) {
       const project = await prisma.project.findUnique({ where: { aryeoOrderId: id }, select: { id: true } });
-      if (project) { try { await restatusProject(project.id); } catch { /* non-fatal */ } }
+      if (project) {
+        // A fulfil/deliver/paid event means real media may have landed — re-check
+        // status first so QC/delivery tasks reconcile against what's now live.
+        if (name.includes("FULFIL") || name.includes("DELIVER") || name.includes("PAID")) {
+          try { await restatusProject(project.id); } catch { /* non-fatal */ }
+        }
+        // Any order event (incl. CREATED) → (re)generate this job's tasks now:
+        // a new order gets its confirmation task without waiting for the cron.
+        await retaskProject(project.id);
+      }
     }
     try { await syncClientSegments(); } catch { /* non-fatal */ }
     return;
   }
 
   // LISTING_* — media/listing changed. Re-check that project's status live so a
-  // delivered gallery or added media flows through immediately.
+  // delivered gallery or added media flows through immediately, then reconcile
+  // its tasks (QC closes as each category goes live).
   if (object === "LISTING" || name.startsWith("LISTING")) {
     if (id) {
       const project = await prisma.project.findFirst({ where: { aryeoListingId: id }, select: { id: true } });
-      if (project) { try { await restatusProject(project.id); } catch { /* non-fatal */ } return; }
+      if (project) {
+        try { await restatusProject(project.id); } catch { /* non-fatal */ }
+        await retaskProject(project.id);
+        return;
+      }
     }
     await syncAryeoOrders(); // listing may not be linked yet — refresh orders
     return;

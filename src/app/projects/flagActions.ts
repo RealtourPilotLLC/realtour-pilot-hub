@@ -54,6 +54,7 @@ async function syncFixTask(projectId: string) {
   const data = {
     taskType: "image_fixes",
     title: `Fix ${open.length} flagged photo${open.length === 1 ? "" : "s"} — ${street}`.slice(0, 120),
+    summary: `${open.length} photo${open.length === 1 ? "" : "s"} on ${street} flagged for fixes${tagSummary ? ` (${tagSummary})` : ""}. Make the edits, re-upload to Aryeo, and mark each flag fixed — the task closes once none remain.`.slice(0, 500),
     description,
     reasonCreated: "Photos flagged for editing fixes",
     checklist: JSON.stringify([

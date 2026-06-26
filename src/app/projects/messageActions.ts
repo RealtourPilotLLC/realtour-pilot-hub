@@ -35,27 +35,31 @@ export async function postProjectMessage(
     },
   });
 
-  // Notify each tagged teammate with a to-do so the mention isn't missed.
+  // Notify each tagged teammate with a to-do so the mention isn't missed. One open
+  // "you were tagged on this job" task per (project, member) — a later tag
+  // refreshes it (and reopens if they'd closed it) instead of piling up dupes.
   if (mentions.length) {
-    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true } });
+    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true, clientId: true } });
     const tagged = await prisma.teamMember.findMany({ where: { id: { in: mentions } }, select: { id: true } });
-    const stamp = Date.now();
+    const street = project?.title?.split(",")[0] ?? "a project";
     for (const t of tagged) {
-      await prisma.smartTask.create({
-        data: {
-          taskType: "internal_instruction",
-          title: `${authorName ?? "Team"} tagged you — ${project?.title?.split(",")[0] ?? "a project"}`.slice(0, 120),
-          description: text.slice(0, 400),
-          reasonCreated: "You were tagged in a team message",
-          checklist: JSON.stringify(["Read the team message", "Take any needed action", "Reply in the thread"]),
-          source: "team",
-          priority: "HIGH",
-          dueAt: new Date(stamp + 4 * 3600_000),
-          projectId,
-          ownerId: t.id,
-          dedupeKey: `mention-${projectId}-${t.id}-${stamp}`,
-        },
-      }).catch(() => {});
+      const data = {
+        taskType: "internal_instruction",
+        title: `${authorName ?? "Team"} tagged you — ${street}`.slice(0, 120),
+        summary: `${authorName ?? "A teammate"} tagged you in the ${street} team thread: “${text.slice(0, 200)}”. Take any needed action and reply in the thread.`.slice(0, 500),
+        description: text.slice(0, 400),
+        reasonCreated: "You were tagged in a team message",
+        source: "team",
+        priority: "HIGH" as const,
+        dueAt: new Date(Date.now() + 4 * 3600_000),
+        projectId,
+        clientId: project?.clientId ?? null,
+        ownerId: t.id,
+        dedupeKey: `mention-${projectId}-${t.id}`,
+      };
+      const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: data.dedupeKey } });
+      if (existing) await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } }).catch(() => {});
+      else await prisma.smartTask.create({ data }).catch(() => {});
     }
   }
 
