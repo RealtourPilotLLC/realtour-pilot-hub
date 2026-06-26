@@ -1,6 +1,6 @@
 import { notFound, redirect } from "next/navigation";
 import { Suspense } from "react";
-import { getShoot } from "@/lib/shoot";
+import { getShoot, photographerMemberId, photographerOwnsShoot } from "@/lib/shoot";
 import { getCurrentUser } from "@/lib/auth/user";
 import { etDateTime, etDaysAgo } from "@/lib/datetime";
 import { ShootScreen } from "@/components/shoot/ShootScreen";
@@ -15,16 +15,13 @@ export default async function ShootDetailPage({ params }: { params: Promise<{ id
   const view = await getShoot(id);
   if (!view) notFound();
 
-  // When login is enforced, a photographer only sees their own shoots. Owner /
-  // admin (and the open, pre-cutover app) can open any.
+  // A photographer can only open their OWN assigned shoots (by project assignment
+  // or an appointment assignee). Owner / admin (and the open, pre-cutover app)
+  // can open any.
   const user = await getCurrentUser();
-  if (
-    user?.role === "PHOTOGRAPHER" &&
-    user.teamMemberId &&
-    view.photographer &&
-    view.photographer.id !== user.teamMemberId
-  ) {
-    redirect("/shoot");
+  if (user?.role === "PHOTOGRAPHER") {
+    const mine = await photographerMemberId(user);
+    if (!mine || !(await photographerOwnsShoot(id, mine))) redirect("/shoot");
   }
 
   // Pay (the assigned photographer's earnings for this shoot) streams in via

@@ -286,6 +286,29 @@ export async function shootEarnings(projectId: string, memberId: string | null):
   };
 }
 
+// The TeamMember a logged-in user shoots as — their AppUser link, or an email
+// match against the photographer roster as a fallback. Used to scope a
+// photographer to only their own shoots. Returns null when unresolvable (callers
+// fail CLOSED: a photographer we can't place sees no shoots, never everyone's).
+export async function photographerMemberId(user: { teamMemberId: string | null; email: string } | null): Promise<string | null> {
+  if (!user) return null;
+  if (user.teamMemberId) return user.teamMemberId;
+  const tm = await prisma.teamMember.findFirst({
+    where: { email: { equals: user.email, mode: "insensitive" } },
+    select: { id: true },
+  });
+  return tm?.id ?? null;
+}
+
+// Is this shoot assigned to this photographer (as the project's photographer OR
+// the assignee on one of its appointments)?
+export async function photographerOwnsShoot(projectId: string, memberId: string): Promise<boolean> {
+  const n = await prisma.project.count({
+    where: { id: projectId, OR: [{ photographerId: memberId }, { appointments: { some: { assignedToId: memberId } } }] },
+  });
+  return n > 0;
+}
+
 export type ShootMapPin = { lat: number; lng: number; label: string; time: string | null; current: boolean };
 export type ShootMapData = {
   pins: ShootMapPin[];

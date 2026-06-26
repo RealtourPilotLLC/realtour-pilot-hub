@@ -1,4 +1,4 @@
-import { listMyShoots } from "@/lib/shoot";
+import { listMyShoots, photographerMemberId } from "@/lib/shoot";
 import { getCurrentUser } from "@/lib/auth/user";
 import { PageHeader } from "@/components/PageHeader";
 import { MyShootsView } from "@/components/shoot/MyShootsView";
@@ -7,9 +7,11 @@ export const dynamic = "force-dynamic";
 
 export default async function MyShootsPage() {
   const user = await getCurrentUser();
-  // Photographers see only their own shoots; owner/admin (and the open,
-  // pre-cutover app) see everyone's.
-  const scoped = user?.role === "PHOTOGRAPHER" && user.teamMemberId ? user.teamMemberId : null;
+  // Photographers see ONLY their own assigned shoots — fail closed: if we can't
+  // place them on the roster, they see none rather than everyone's. Owner/admin
+  // (and the open, pre-cutover app) see everyone's.
+  const scoped =
+    user?.role === "PHOTOGRAPHER" ? ((await photographerMemberId(user)) ?? "__none__") : null;
   const rows = await listMyShoots(scoped);
 
   return (

@@ -45,6 +45,16 @@ export async function GET(req: NextRequest) {
     data: { status: "ACTIVE", lastLoginAt: new Date(), name: user.name ?? info.name ?? null, inviteToken: null },
   });
 
+  // Link this account to its photographer roster record (by email) so a
+  // photographer is scoped to their own shoots. Only if not already linked.
+  if (!user.teamMemberId) {
+    const tm = await prisma.teamMember.findFirst({
+      where: { email: { equals: info.email, mode: "insensitive" } },
+      select: { id: true },
+    });
+    if (tm) user = await prisma.appUser.update({ where: { id: user.id }, data: { teamMemberId: tm.id } });
+  }
+
   const token = await signSession({ uid: user.id, email: user.email, role: user.role, name: user.name ?? undefined, permissions: user.permissions });
   const dest = nextRaw.startsWith("/") && !nextRaw.startsWith("//") ? nextRaw : "/";
   const r = NextResponse.redirect(new URL(dest, req.url));
