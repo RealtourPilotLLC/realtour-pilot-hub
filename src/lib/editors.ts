@@ -11,7 +11,7 @@
 // CubiCasa → floor plans (external). (Adrian was let go — not an editor.)
 // ---------------------------------------------------------------------------
 
-export type EditorKey = "kyle" | "kim" | "remar" | "luma" | "autohdr" | "cubicasa";
+export type EditorKey = "kyle" | "creative_director" | "kim" | "remar" | "luma" | "autohdr" | "cubicasa";
 
 export type EditorMeta = {
   key: EditorKey;
@@ -22,6 +22,8 @@ export type EditorMeta = {
 
 export const EDITORS: Record<EditorKey, EditorMeta> = {
   kyle: { key: "kyle", name: "Kyle", kind: "admin", does: "QC (photos, floor plans, 3D, video), item removal, virtual staging, declutter, photo fixes" },
+  // The Creative Director owns scripting + creative direction (currently Jordan).
+  creative_director: { key: "creative_director", name: "Creative Director", kind: "in_house", does: "video scripting + creative direction" },
   kim: { key: "kim", name: "Kim", kind: "in_house", does: "personal-branding / monthly social content" },
   remar: { key: "remar", name: "Remar", kind: "in_house", does: "standard reels + horizontal video" },
   luma: { key: "luma", name: "Luma", kind: "external", does: "premium social reels" },
@@ -31,7 +33,7 @@ export const EDITORS: Record<EditorKey, EditorMeta> = {
 
 export const EDITOR_KEYS = Object.keys(EDITORS) as EditorKey[];
 // The ones you delegate to (everyone except the admin). Order = how they list.
-export const DELEGATE_KEYS: EditorKey[] = ["kim", "remar", "luma", "autohdr", "cubicasa"];
+export const DELEGATE_KEYS: EditorKey[] = ["creative_director", "kim", "remar", "luma", "autohdr", "cubicasa"];
 
 export function editorMeta(key: string | null | undefined): EditorMeta | null {
   return key && key in EDITORS ? EDITORS[key as EditorKey] : null;
@@ -47,10 +49,13 @@ export function isDelegated(key: string | null | undefined): boolean {
 // assign). Precedence matters — premium reels and floor plans win first.
 export function routeEditWork(text: string): EditorKey | null {
   const t = (text || "").toLowerCase();
+  // Scripting + creative direction → the Creative Director (currently Jordan).
+  if (/script/.test(t)) return "creative_director";
   if (/floor ?plan/.test(t)) return "cubicasa";
   if (/premium/.test(t) && /(reel|video|social)/.test(t)) return "luma";
-  if (/personal ?brand|monthly|branding|social (media )?(content|post)/.test(t)) return "kim";
-  if (/\breel\b|horizontal video|b-?roll|animat|lo-?fi|cross dissolve|text spacing|lengthen (the )?clip/.test(t)) return "remar";
+  // Personal-branding / monthly social, plus logo + animation work → Kim.
+  if (/personal ?brand|\bbranding\b|monthly|social (media )?(content|post)|\blogo\b|animat/.test(t)) return "kim";
+  if (/\breel\b|horizontal video|b-?roll|lo-?fi|cross dissolve|text spacing|lengthen (the )?clip/.test(t)) return "remar";
   if (/\bvideo\b/.test(t)) return "remar";
   if (/photo|saturation|orange|retouch|item removal|virtual stag|declutter|unedited|hdr|brighten|darken|crooked|tilt|reflection|blemish/.test(t)) return "kyle";
   return null;
@@ -59,13 +64,14 @@ export function routeEditWork(text: string): EditorKey | null {
 // Who edits a given deliverable (used to delegate a revision to the right person
 // by what's being revised). Mirrors vendors.ts production routing but resolves
 // in-house to the actual editor (Remar standard video, Kim social, Kyle QC).
-export function editorForDeliverable(type: string | null | undefined, label?: string | null): EditorKey {
+export function editorForDeliverable(type: string | null | undefined, label?: string | null, monthly = false): EditorKey {
   const t = (type || "").toUpperCase();
   const premium = /premium/i.test(label ?? "");
   if (t === "FLOORPLAN") return "cubicasa";
   if (t === "SOCIAL_REEL" || t === "VIDEO") {
     if (premium) return "luma";
-    if (/monthly|brand|social/i.test(label ?? "")) return "kim";
+    // Monthly social-plan content (7–10 business-day turnaround) is Kim's.
+    if (monthly || /monthly|brand|social/i.test(label ?? "")) return "kim";
     return "remar";
   }
   // Photos / drone / twilight / headshots / staging / 3D → Kyle handles the QC

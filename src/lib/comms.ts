@@ -261,17 +261,17 @@ export async function raiseRevision(opts: {
 }): Promise<boolean> {
   const project = await prisma.project.findUnique({
     where: { id: opts.projectId },
-    select: { id: true, status: true, title: true, clientId: true, revisionRequestedAt: true, deliverables: { select: { type: true, label: true } } },
+    select: { id: true, status: true, title: true, clientId: true, revisionRequestedAt: true, deliverables: { select: { type: true, label: true } }, client: { select: { socialClient: true } } },
   });
   if (!project) return false;
 
   // Delegate the revision to the editor who owns that kind of work. If the request
-  // text names a reel/video it goes to the video editor; otherwise default to the
-  // primary deliverable's editor (photos → Kyle's QC/corrections).
+  // text names scripting/a reel/video it routes there; otherwise default to the
+  // primary deliverable's editor (photos → Kyle; monthly social content → Kim).
   const { editorForDeliverable, routeEditWork } = await import("@/lib/editors");
   const fromText = routeEditWork(opts.note);
   const primary = project.deliverables[0];
-  const assignedKey = fromText && fromText !== "kyle" ? fromText : editorForDeliverable(primary?.type, primary?.label);
+  const assignedKey = fromText && fromText !== "kyle" ? fromText : editorForDeliverable(primary?.type, primary?.label, !!project.client?.socialClient);
 
   const note = opts.note.slice(0, 300);
   await prisma.project.update({

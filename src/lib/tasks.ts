@@ -119,6 +119,7 @@ type TaskSpec = {
   dueAt?: Date | null;
   description?: string; // pre-drafted message (e.g. the confirmation text)
   summary?: string; // "what happened / what's needed" for the card
+  assignedKey?: string; // editor this is delegated to (see src/lib/editors.ts)
 };
 
 // Friendly per-deliverable label for the consolidated QC checklist.
@@ -223,9 +224,13 @@ function specsForProject(p: {
         taskType: "delivery",
         title: `Deliver gallery — ${p.title}`,
         reasonCreated: "Ready to deliver after QC",
-        summary: "Photos are QC'd and ready. Deliver the gallery via Aryeo + the branded email, mark it delivered, and the post-delivery client text queues automatically.",
+        summary: monthly
+          ? "Monthly personal-branding / social content (7–10 business-day turnaround). Produce + deliver this month's content, then mark delivered."
+          : "Photos are QC'd and ready. Deliver the gallery via Aryeo + the branded email, mark it delivered, and the post-delivery client text queues automatically.",
         deliverableType: primary,
         dueAt: deliveryDueFrom(anchor, primary, dueOpts(primary)),
+        // Monthly social-plan content is Kim's; standard galleries are Kyle's deliver step.
+        assignedKey: monthly ? "kim" : undefined,
         checklist: guide(["Final QC pass", "Deliver via Aryeo + branded email", "Mark Delivered", "Schedule feedback request"]),
       });
     }
@@ -742,6 +747,7 @@ async function syncOneProjectTasks(
         description,
         reasonCreated: s.reasonCreated,
         checklist: serializeChecklist(s.checklist),
+        assignedKey: s.assignedKey ?? null,
         source: "aryeo",
         priority,
         dueAt: s.dueAt ?? null,
