@@ -52,6 +52,32 @@ export async function removeUpload(fileId: string) {
   revalidatePath(`/projects/${file.projectId}`);
 }
 
+/**
+ * Tick a deliverable off the upload checklist. Photographers upload to Dropbox
+ * directly (no in-app files), so this is the accountability signal that the raw
+ * files for this item are in. Also nudges the deliverable status to UPLOADED so
+ * the rest of the pipeline reflects it immediately.
+ */
+export async function markDeliverableUploaded(
+  deliverableId: string,
+  uploaded: boolean,
+): Promise<{ ok: boolean }> {
+  const d = await prisma.deliverable.findUnique({ where: { id: deliverableId }, select: { projectId: true, status: true } });
+  if (!d) return { ok: false };
+  await prisma.deliverable.update({
+    where: { id: deliverableId },
+    data: {
+      uploadedAt: uploaded ? new Date() : null,
+      // Only move PENDING → UPLOADED on tick; never downgrade work already in
+      // progress / done, and clearing the tick leaves the status alone.
+      ...(uploaded && d.status === DeliverableStatus.PENDING ? { status: DeliverableStatus.UPLOADED } : {}),
+    },
+  });
+  revalidatePath(`/upload/${d.projectId}`);
+  revalidatePath(`/projects/${d.projectId}`);
+  return { ok: true };
+}
+
 export async function flagIssue(projectId: string, body: string) {
   const trimmed = body.trim();
   if (!trimmed) return;
@@ -108,10 +134,11 @@ export async function submitAppointmentFeedback(
  */
 export async function finalizeUpload(
   projectId: string,
-  data: { editorBrief: string; itemNotes: Record<string, string> },
+  data: { editorBrief: string; itemNotes?: Record<string, string> },
 ) {
-  // Persist per-deliverable notes.
-  for (const [deliverableId, note] of Object.entries(data.itemNotes)) {
+  // Persist per-deliverable notes when provided (the simplified checklist portal
+  // doesn't send these, but other callers may).
+  for (const [deliverableId, note] of Object.entries(data.itemNotes ?? {})) {
     if (note?.trim()) {
       await prisma.deliverable.update({
         where: { id: deliverableId },

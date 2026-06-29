@@ -339,6 +339,10 @@ model Deliverable {
   // Photographer ticked this off on-site (guided /shoot capture checklist).
   // Lets the team see what was confirmed captured before files are uploaded.
   capturedAt DateTime?
+  // Photographer ticked this off as uploaded to Dropbox (/upload checklist).
+  // They upload to Dropbox directly — this is the accountability signal that the
+  // raw files for this item are in, so editors aren't chasing ETAs.
+  uploadedAt DateTime?
   createdAt DateTime          @default(now())
 
   uploads UploadedFile[]

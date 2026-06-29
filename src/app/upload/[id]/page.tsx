@@ -27,11 +27,7 @@ export default async function UploadProjectPage({
     include: {
       client: true,
       photographer: true,
-      deliverables: {
-        orderBy: { createdAt: "asc" },
-        include: { uploads: { orderBy: { createdAt: "asc" } } },
-      },
-      uploads: { where: { deliverableId: null }, orderBy: { createdAt: "asc" } },
+      deliverables: { orderBy: { createdAt: "asc" } },
       activities: {
         where: { type: { in: [ActivityType.SPECIAL_REQUEST, ActivityType.FLAG] } },
         orderBy: { createdAt: "desc" },
@@ -71,17 +67,7 @@ export default async function UploadProjectPage({
           type: d.type,
           quantity: d.quantity,
           status: d.status,
-          notes: d.notes,
-          uploads: d.uploads.map((u) => ({
-            id: u.id,
-            originalName: u.originalName,
-            size: u.size,
-          })),
-        }))}
-        extraUploads={project.uploads.map((u) => ({
-          id: u.id,
-          originalName: u.originalName,
-          size: u.size,
+          uploadedAt: d.uploadedAt?.toISOString() ?? null,
         }))}
         specialRequests={project.activities
           .filter((a) => a.type === ActivityType.SPECIAL_REQUEST)
