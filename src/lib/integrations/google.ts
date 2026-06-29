@@ -536,9 +536,15 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
         const named = await findClientProjectByText(senderClient.id, `${subject ?? ""} ${text}`);
         if (named) project = named;
       }
+      // Fall back to a GLOBAL listing match only when we DON'T already know the
+      // sender (a coordinator/assistant emailing about an agent's property), or
+      // when the match is the sender's OWN listing. Never let it REASSIGN a known
+      // client's email to a DIFFERENT client: a fuzzy street match — e.g. the town
+      // "West Chester" inside the street "1244 West Chester Pike" — must not hijack
+      // a known sender's mail onto someone else's job. Keep it on the real sender.
       if (!project) {
         const gp = await findProjectByText(`${subject ?? ""} ${text}`);
-        if (gp) {
+        if (gp && (!senderClient || gp.clientId === senderClient.id)) {
           project = { id: gp.id, title: gp.title, status: gp.status };
           resolvedClientId = gp.clientId;
           resolvedClientName = clients.find((c) => c.id === gp.clientId)?.name ?? null;
