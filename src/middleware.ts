@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { verifySession, SESSION_COOKIE } from "@/lib/auth/jwt";
-import { canAccess, PAGES, type PageKey } from "@/lib/auth/access";
+import { canAccess, homeFor, PAGES, type PageKey } from "@/lib/auth/access";
 
 // Which page-key (if any) a path belongs to — for role/permission gating. Only
 // top-level nav pages are gated; contextual detail routes (/projects/[id], etc.)
@@ -52,7 +52,10 @@ export async function middleware(req: NextRequest) {
   // page they can't open.
   const key = pathKey(pathname);
   if (key && !canAccess({ role: session.role, permissions: session.permissions }, key)) {
-    return NextResponse.redirect(new URL("/", req.url));
+    const home = homeFor(session.role);
+    // Avoid redirecting onto the same path (defensive — homeFor never points at a
+    // page the role can't open).
+    return NextResponse.redirect(new URL(home === pathname ? "/shoot" : home, req.url));
   }
   return NextResponse.next();
 }

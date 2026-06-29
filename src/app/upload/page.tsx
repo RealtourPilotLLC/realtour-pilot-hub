@@ -4,6 +4,8 @@ import { PageHeader } from "@/components/PageHeader";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { prisma } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/auth/user";
+import { photographerMemberId } from "@/lib/shoot";
 import { stageMeta, DELIVERABLE_META } from "@/lib/pipeline";
 import { DeliverableType } from "@prisma/client";
 import { etDateTime, etDaysAgo } from "@/lib/datetime";
@@ -32,8 +34,16 @@ function bucketFor(shootDate: Date | null): BucketKey {
 }
 
 export default async function UploadListPage() {
+  // Photographers see ONLY their own shoots here (fail-closed: unresolvable →
+  // none). Owner/admin/editor see all.
+  const user = await getCurrentUser();
+  const mine = user?.role === "PHOTOGRAPHER" ? ((await photographerMemberId(user)) ?? "__none__") : null;
+
   const shoots = await prisma.project.findMany({
-    where: { status: { in: ["BOOKED", "SCHEDULED", "SHOT"] } },
+    where: {
+      status: { in: ["BOOKED", "SCHEDULED", "SHOT"] },
+      ...(mine ? { OR: [{ photographerId: mine }, { appointments: { some: { assignedToId: mine } } }] } : {}),
+    },
     orderBy: [{ shootDate: "desc" }, { createdAt: "desc" }],
     include: {
       client: true,

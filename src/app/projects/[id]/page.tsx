@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
+import { getCurrentUser } from "@/lib/auth/user";
 import {
   MapPin,
   Package,
@@ -73,6 +74,13 @@ export default async function ProjectPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
+
+  // Photographers never see the full order detail (pricing, invoices, client
+  // financials). They get the guided field view of their shoot instead. This
+  // guard holds even though /projects isn't a top-level nav key in the middleware.
+  const viewer = await getCurrentUser();
+  if (viewer?.role === "PHOTOGRAPHER") redirect(`/shoot/${id}`);
+
   const [project, team] = await Promise.all([getProject(id), getTeam()]);
   if (!project) notFound();
 

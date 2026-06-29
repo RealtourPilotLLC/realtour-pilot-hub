@@ -1,4 +1,6 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
+import { getCurrentUser } from "@/lib/auth/user";
+import { photographerMemberId, photographerOwnsShoot } from "@/lib/shoot";
 import {
   FolderOpen,
   Image as ImageIcon,
@@ -22,6 +24,14 @@ export default async function UploadProjectPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
+
+  // A photographer can only open the upload page for their OWN shoot.
+  const viewer = await getCurrentUser();
+  if (viewer?.role === "PHOTOGRAPHER") {
+    const mine = await photographerMemberId(viewer);
+    if (!mine || !(await photographerOwnsShoot(id, mine))) redirect("/upload");
+  }
+
   const project = await prisma.project.findUnique({
     where: { id },
     include: {

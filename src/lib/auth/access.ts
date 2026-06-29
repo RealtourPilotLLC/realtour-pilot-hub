@@ -53,8 +53,20 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
     "catalog", "resources", "assistant", "feedback",
   ],
   EDITOR: ["dashboard", "tasks", "editing", "upload", "resources", "assistant"],
-  PHOTOGRAPHER: ["dashboard", "shoot", "schedule", "map", "upload", "resources"],
+  // Photographers live entirely in the field platform: their own shoots (which
+  // already carry their scoped schedule, maps, route + pay), the upload checklist
+  // (scoped to their jobs), and SOPs. They get NO ops/dashboard, schedule, map,
+  // clients, comms, billing, pipeline, etc. — those show the whole business.
+  PHOTOGRAPHER: ["shoot", "upload", "resources"],
 };
+
+// Where to send a user who lands somewhere they can't access — and their
+// post-login home. Photographers start in My Shoots (they have no dashboard);
+// everyone else on the dashboard. Used by the middleware redirect (never points
+// at a page the role can't open, so there's no redirect loop).
+export function homeFor(role: string | null | undefined): string {
+  return role === "PHOTOGRAPHER" ? "/shoot" : "/";
+}
 
 export function parsePermissions(raw: string | null | undefined): Record<string, boolean> {
   if (!raw) return {};
