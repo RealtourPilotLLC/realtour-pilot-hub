@@ -45,7 +45,7 @@ const CAPTURE_GUIDE: Record<string, string> = {
 const POST_PRODUCTION_TYPES = new Set<string>(["VIRTUAL_STAGING"]);
 
 export function ShootScreen({
-  view, pay, map, whenText, timing, media,
+  view, pay, map, whenText, timing, media, backHref = "/shoot",
 }: {
   view: ShootView;
   pay: React.ReactNode;
@@ -53,6 +53,7 @@ export function ShootScreen({
   whenText: string;
   timing: "today" | "upcoming" | "past" | null;
   media: React.ReactNode;
+  backHref?: string;
 }) {
   const { project, appointment, client, segment, profile, deliverables } = view;
 
@@ -103,7 +104,7 @@ export function ShootScreen({
 
   return (
     <div className="mx-auto max-w-2xl px-4 pb-28 pt-4 sm:px-6">
-      <BackLink href="/shoot" label="My shoots" />
+      <BackLink href={backHref} label={backHref === "/shoot" ? "My shoots" : "Back"} />
 
       <HeaderCard project={project} appointment={appointment} whenText={whenText} timing={timing} onCopy={() => flash("ok", "Address copied")} />
 

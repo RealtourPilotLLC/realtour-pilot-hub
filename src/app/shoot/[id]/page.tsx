@@ -10,8 +10,15 @@ import { ListingMedia, ListingMediaSkeleton } from "@/components/project/Listing
 
 export const dynamic = "force-dynamic";
 
-export default async function ShootDetailPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function ShootDetailPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ as?: string }>;
+}) {
   const { id } = await params;
+  const { as } = await searchParams;
   const view = await getShoot(id);
   if (!view) notFound();
 
@@ -54,5 +61,9 @@ export default async function ShootDetailPage({ params }: { params: Promise<{ id
     </Suspense>
   );
 
-  return <ShootScreen view={view} pay={pay} map={map} whenText={whenText} timing={timing} media={media} />;
+  // Owner/admin viewing as a photographer: "back" returns to that photographer's
+  // scoped list. Photographers never carry an ?as= back link (fail-closed).
+  const backHref = user?.role !== "PHOTOGRAPHER" && as ? `/shoot?as=${as}` : "/shoot";
+
+  return <ShootScreen view={view} pay={pay} map={map} whenText={whenText} timing={timing} media={media} backHref={backHref} />;
 }

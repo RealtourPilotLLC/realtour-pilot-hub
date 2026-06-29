@@ -309,6 +309,14 @@ export async function photographerMemberId(user: { teamMemberId: string | null; 
   return tm?.id ?? null;
 }
 
+// Resolve a photographer (TeamMember) by id — used by the owner's "view as a
+// photographer" mode to label the banner and validate the ?as= param.
+export async function getShootPhotographer(memberId: string): Promise<{ id: string; name: string } | null> {
+  if (!memberId) return null;
+  const tm = await prisma.teamMember.findUnique({ where: { id: memberId }, select: { id: true, name: true } });
+  return tm ?? null;
+}
+
 // Is this shoot assigned to this photographer (as the project's photographer OR
 // the assignee on one of its appointments)?
 export async function photographerOwnsShoot(projectId: string, memberId: string): Promise<boolean> {

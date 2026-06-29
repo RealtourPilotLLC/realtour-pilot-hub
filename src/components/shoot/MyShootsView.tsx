@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ChevronLeft, ChevronRight, MapPin, CheckCircle2, Upload as UploadIcon, Camera, X } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { ChevronLeft, ChevronRight, MapPin, CheckCircle2, Upload as UploadIcon, Camera, X, Eye } from "lucide-react";
 import { etDayKey, etTime, etFullDate } from "@/lib/datetime";
 import { DELIVERABLE_META } from "@/lib/pipeline";
 import { Badge } from "@/components/ui/Badge";
@@ -19,7 +20,18 @@ const MONTHS = [
 const cellKey = (y: number, m: number, d: number) =>
   `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
 
-export function MyShootsView({ rows, showWho, meId }: { rows: MyShootRow[]; showWho: boolean; meId: string | null }) {
+export function MyShootsView({
+  rows,
+  showWho,
+  meId,
+  viewAs,
+}: {
+  rows: MyShootRow[];
+  showWho: boolean;
+  meId: string | null;
+  viewAs: { id: string; name: string } | null;
+}) {
+  const router = useRouter();
   // Owner/admin photographer filter — toggle each photographer's shoots on/off
   // (persisted across visits). Photographers themselves are scoped server-side.
   const photographers = useMemo(() => {
@@ -98,6 +110,45 @@ export function MyShootsView({ rows, showWho, meId }: { rows: MyShootRow[]; show
 
   return (
     <div className="space-y-5">
+      {/* Owner is stepping into a specific photographer's view */}
+      {viewAs && (
+        <div className="flex items-center justify-between gap-3 rounded-2xl border border-brand/30 bg-brand-soft/30 p-3">
+          <div className="flex min-w-0 items-center gap-2 text-sm">
+            <Eye className="size-4 shrink-0 text-brand" />
+            <span className="truncate">
+              <span className="font-semibold">Viewing as {viewAs.name}</span>
+              <span className="text-muted"> · read-only preview</span>
+            </span>
+          </div>
+          <Link
+            href="/shoot"
+            className="shrink-0 rounded-lg border bg-surface px-3 py-1.5 text-xs font-medium hover:bg-surface-2"
+          >
+            Exit
+          </Link>
+        </div>
+      )}
+
+      {/* Owner: jump into a single photographer's view */}
+      {showWho && photographers.some((p) => p.key !== "unassigned") && (
+        <label className="flex items-center gap-2 rounded-2xl border bg-surface px-3 py-2 text-sm">
+          <Eye className="size-4 shrink-0 text-muted-2" />
+          <span className="shrink-0 text-muted">See a photographer’s view:</span>
+          <select
+            value=""
+            onChange={(e) => { if (e.target.value) router.push(`/shoot?as=${e.target.value}`); }}
+            className="min-w-0 flex-1 cursor-pointer bg-transparent font-medium focus:outline-none"
+          >
+            <option value="">Choose…</option>
+            {photographers
+              .filter((p) => p.key !== "unassigned")
+              .map((p) => (
+                <option key={p.key} value={p.key}>{p.name} ({p.count})</option>
+              ))}
+          </select>
+        </label>
+      )}
+
       {/* Photographer filter (owner/admin only) */}
       {showWho && photographers.length > 1 && (
         <div className="rounded-2xl border bg-surface p-3">
@@ -212,7 +263,7 @@ export function MyShootsView({ rows, showWho, meId }: { rows: MyShootRow[]; show
               {etFullDate(day + "T12:00:00Z")} · {items.length}
             </div>
             <div className="space-y-2">
-              {items.map((r) => <ShootRowCard key={r.id} r={r} showWho={showWho} />)}
+              {items.map((r) => <ShootRowCard key={r.id} r={r} showWho={showWho} as={viewAs?.id ?? null} />)}
             </div>
           </section>
         );
@@ -221,11 +272,11 @@ export function MyShootsView({ rows, showWho, meId }: { rows: MyShootRow[]; show
   );
 }
 
-function ShootRowCard({ r, showWho }: { r: MyShootRow; showWho: boolean }) {
+function ShootRowCard({ r, showWho, as }: { r: MyShootRow; showWho: boolean; as: string | null }) {
   const types = r.deliverableTypes.map((t) => DELIVERABLE_META[t]?.label ?? t).slice(0, 4);
   return (
     <Link
-      href={`/shoot/${r.id}`}
+      href={as ? `/shoot/${r.id}?as=${as}` : `/shoot/${r.id}`}
       className="flex items-center gap-3 rounded-2xl border bg-surface p-4 transition-colors hover:border-brand/40 hover:bg-surface-2/50"
     >
       <div className="min-w-0 flex-1">
