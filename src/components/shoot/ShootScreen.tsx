@@ -23,6 +23,27 @@ import {
 
 const STATUS_ORDER: ShootStatusKind[] = ["on_my_way", "arrived", "complete"];
 
+// What the photographer actually needs to CAPTURE on-site for each ordered
+// deliverable — so the checklist tells them exactly what the job requires, not
+// just the product name. Keyed by DeliverableType.
+const CAPTURE_GUIDE: Record<string, string> = {
+  PHOTOS: "Full set — every room, both exteriors, and the key selling features (kitchen, primary suite, baths, yard).",
+  VIDEO: "Cinematic walkthrough — exterior establishing shot, smooth room-to-room flow, highlight the best features.",
+  SOCIAL_REEL: "Vertical clips for the reel — hook shot, walking transitions, feature close-ups (agent on camera if it’s booked).",
+  DRONE: "Aerials — front, rear, roofline, lot lines, and a little neighborhood context.",
+  TWILIGHT: "Twilight exterior at dusk with the interior lights on (schedule a dusk return if you’re there in daylight).",
+  FLOORPLAN: "CubiCasa scan — walk every room and level slowly with the app so the floor plan is complete.",
+  MATTERPORT_3D: "Matterport scan — every room and transition so the 3D tour has no gaps.",
+  ZILLOW_3D: "Zillow 3D Home — pano scan of every room (use the Capture button above).",
+  HEADSHOT: "Agent headshots — a few clean, well-lit options framed for their brand.",
+  OTHER: "Capture per the order notes and the brief above.",
+};
+
+// Deliverables produced in EDITING, not captured on-site — they don't belong on
+// the capture checklist (ticking "captured virtual staging" makes no sense). We
+// still surface a shooting reminder for staging via the must-gets block.
+const POST_PRODUCTION_TYPES = new Set<string>(["VIRTUAL_STAGING"]);
+
 export function ShootScreen({
   view, pay, map, whenText, timing, media,
 }: {
@@ -35,6 +56,27 @@ export function ShootScreen({
 }) {
   const { project, appointment, client, segment, profile, deliverables } = view;
 
+  // Only on-site captureable deliverables go on the capture checklist (editing-
+  // only items like virtual staging are surfaced as a shooting reminder instead).
+  const captureables = deliverables.filter((d) => !POST_PRODUCTION_TYPES.has(d.type));
+  const stagingOrdered = deliverables.some((d) => POST_PRODUCTION_TYPES.has(d.type));
+  // Hard, order-specific must-dos (amber "don't leave without"): the order's
+  // special instructions + any logged special requests for this property.
+  const mustGets = Array.from(
+    new Set(
+      [...(appointment?.parsed?.special ? [appointment.parsed.special] : []), ...view.specialRequests]
+        // Strip the "Client request (openphone):" provenance prefix logged on
+        // special-request activities so the checklist reads as a clean instruction.
+        .map((s) => s.replace(/^Client request \([^)]*\):\s*/i, "").trim())
+        .filter(Boolean),
+    ),
+  ).slice(0, 6);
+  // Softer working context for this agent, from their profile shoot notes (how
+  // they like to work, access habits, on-camera timing) — good to know, not a gate.
+  const agentNotes = Array.from(new Set((profile?.shootNotes ?? []).map((s) => s.trim()).filter(Boolean)))
+    .filter((n) => !mustGets.includes(n))
+    .slice(0, 5);
+
   const [toast, setToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   function flash(kind: "ok" | "err", text: string) {
@@ -46,7 +88,7 @@ export function ShootScreen({
   // Capture checklist state lives here so the checklist and the "Mark complete"
   // gate always agree, instantly (no waiting on a server round-trip to re-sync).
   const [captured, setCaptured] = useState<Record<string, boolean>>(
-    Object.fromEntries(deliverables.map((d) => [d.id, d.capturedAt != null])),
+    Object.fromEntries(captureables.map((d) => [d.id, d.capturedAt != null])),
   );
   const [, startCapture] = useTransition();
   function toggleCapture(id: string) {
@@ -71,7 +113,7 @@ export function ShootScreen({
         <CustomerCard client={client} segment={segment} profile={profile} />
         <BriefCard view={view} flash={flash} />
         {view.zillowTourUrl && <ZillowCta url={view.zillowTourUrl} />}
-        <Checklist deliverables={deliverables} captured={captured} onToggle={toggleCapture} />
+        <Checklist deliverables={captureables} captured={captured} onToggle={toggleCapture} mustGets={mustGets} agentNotes={agentNotes} staging={stagingOrdered} />
         {pay}
         <NotesCard projectId={project.id} initial={project.editorBrief ?? ""} flash={flash} />
         <MediaCard media={media} uploaded={project.uploadedAt != null} />
@@ -80,7 +122,7 @@ export function ShootScreen({
       <CompleteBar
         projectId={project.id}
         initialCompletedISO={appointment?.completedAtISO ?? null}
-        total={deliverables.length}
+        total={captureables.length}
         captured={capturedCount}
         flash={flash}
       />
@@ -538,40 +580,96 @@ function BriefCard({ view, flash }: { view: ShootView; flash: (k: "ok" | "err", 
 // ---------------------------------------------------------------------------
 
 function Checklist({
-  deliverables, captured, onToggle,
+  deliverables, captured, onToggle, mustGets, agentNotes, staging,
 }: {
   deliverables: ShootView["deliverables"];
   captured: Record<string, boolean>;
   onToggle: (id: string) => void;
+  mustGets: string[];
+  agentNotes: string[];
+  staging: boolean;
 }) {
   const total = deliverables.length;
   const done = Object.values(captured).filter(Boolean).length;
 
-  if (total === 0) return null;
+  if (total === 0 && mustGets.length === 0 && agentNotes.length === 0 && !staging) return null;
 
   return (
-    <Section icon={Camera} title="Capture checklist" count={`${done}/${total}`} bodyClassName="space-y-1.5">
-      <p className="mb-1 text-xs text-muted">Tick each item once you’ve captured it. Confirm everything before marking the shoot complete.</p>
+    <Section icon={Camera} title="What to capture" count={total > 0 ? `${done}/${total}` : undefined} bodyClassName="space-y-1.5">
+      {/* Agent-specific must-gets — the things that aren't a standard deliverable
+          but WILL come back as a revision if missed. Surfaced first, on purpose. */}
+      {mustGets.length > 0 && (
+        <div className="mb-1 rounded-xl border border-warning/40 bg-warning-soft p-3">
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-warning">
+            <AlertTriangle className="size-3.5" /> Don’t leave without
+          </div>
+          <ul className="mt-1.5 space-y-1">
+            {mustGets.map((m, i) => (
+              <li key={i} className="flex gap-2 text-sm text-foreground/90">
+                <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-warning" />
+                <span>{m}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {total > 0 && (
+        <p className="mb-1 text-xs text-muted">Everything this order needs. Tick each one as you capture it, and confirm the list before you mark the shoot complete.</p>
+      )}
       {deliverables.map((d) => {
         const on = captured[d.id];
         const meta = DELIVERABLE_META[d.type];
+        const guide = CAPTURE_GUIDE[d.type] ?? CAPTURE_GUIDE.OTHER;
         return (
           <button
             key={d.id}
             onClick={() => onToggle(d.id)}
             className={cn(
-              "flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors",
+              "flex w-full items-start gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors",
               on ? "border-success/40 bg-success-soft/30" : "bg-surface hover:bg-surface-2",
             )}
           >
-            {on ? <CheckCircle2 className="size-5 shrink-0 text-success" /> : <Circle className="size-5 shrink-0 text-muted-2" />}
-            <span className="flex-1 text-sm font-medium">
-              {meta?.label ?? d.type}{d.quantity > 1 ? <span className="text-muted"> ×{d.quantity}</span> : null}
+            {on ? <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-success" /> : <Circle className="mt-0.5 size-5 shrink-0 text-muted-2" />}
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-2 text-sm font-medium">
+                <span>{meta?.label ?? d.type}{d.quantity > 1 ? <span className="text-muted"> ×{d.quantity}</span> : null}</span>
+                {d.uploadCount > 0 && <span className="ml-auto shrink-0 text-[11px] font-normal text-muted-2">{d.uploadCount} uploaded</span>}
+              </span>
+              <span className="mt-0.5 block text-xs leading-snug text-muted">{guide}</span>
             </span>
-            {d.uploadCount > 0 && <span className="text-[11px] text-muted-2">{d.uploadCount} uploaded</span>}
           </button>
         );
       })}
+
+      {/* Editing-only deliverable (e.g. virtual staging): not captured on-site,
+          but the photographer still needs to shoot it a specific way. */}
+      {staging && (
+        <div className="flex items-start gap-3 rounded-xl border border-dashed px-3 py-2.5">
+          <Sparkles className="mt-0.5 size-5 shrink-0 text-muted-2" />
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-medium">Virtual staging <span className="font-normal text-muted-2">— done in editing</span></span>
+            <span className="mt-0.5 block text-xs leading-snug text-muted">Nothing to capture for this one. Just shoot the rooms to be staged empty, clean, and straight-on so the editor can furnish them.</span>
+          </span>
+        </div>
+      )}
+
+      {/* Softer working context for this agent — good to know, not a gate. */}
+      {agentNotes.length > 0 && (
+        <div className="mt-1 rounded-xl border bg-surface-2/40 p-3">
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-2">
+            <Info className="size-3.5" /> Good to know for this agent
+          </div>
+          <ul className="mt-1.5 space-y-1">
+            {agentNotes.map((n, i) => (
+              <li key={i} className="flex gap-2 text-xs text-muted">
+                <span className="mt-1.5 size-1 shrink-0 rounded-full bg-muted-2" />
+                <span>{n}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </Section>
   );
 }
