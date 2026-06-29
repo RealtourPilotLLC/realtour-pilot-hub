@@ -288,7 +288,16 @@ export async function createCommTask(opts: {
   // Replies due within a few hours; callbacks sooner.
   const dueAt = new Date(Date.now() + (opts.kind === "text" ? 4 : 1) * HOUR);
 
-  const title = opts.aiTitle ? `${opts.aiTitle} (${opts.clientName})` : `${verb} ${opts.clientName}`;
+  // The client's name renders UNDER the title on every task card, so we keep it
+  // out of the title itself (no redundant "(Client Name)" suffix). Fall back to a
+  // clean generic when the brain didn't title it.
+  const title = opts.aiTitle
+    ? opts.aiTitle
+    : opts.kind === "text"
+      ? "Reply to the latest message"
+      : opts.kind === "voicemail"
+        ? "Return the voicemail"
+        : "Return the missed call";
   const description = [opts.aiDetail, opts.snippet?.slice(0, 280)].filter(Boolean).join("\n\n") || null;
   // "What happened" summary for the card: the brain's read of the ask, else the
   // message itself.
@@ -448,9 +457,7 @@ export async function mergeIntoExistingTask(taskId: string, opts: {
   if (["media_qa", "delivery", "confirmation_text", "delivery_text", "feedback_review", "image_fixes"].includes(existing.taskType)) return false;
   const addition = [opts.detail, opts.snippet?.slice(0, 280)].filter(Boolean).join(" — ");
   const description = [existing.description, addition ? `Update: ${addition}` : null].filter(Boolean).join("\n\n").slice(0, 2000);
-  const titled = opts.title
-    ? (existing.taskType === "client_reply" && opts.clientName ? `${opts.title} (${opts.clientName})` : opts.title).slice(0, 120)
-    : undefined;
+  const titled = opts.title ? opts.title.slice(0, 120) : undefined;
   // Refresh the "what happened" summary to the latest read when we have one.
   const summary = (opts.detail?.trim() || opts.snippet?.trim()) ? (opts.detail?.trim() || `New message: “${opts.snippet!.slice(0, 200)}”`) : undefined;
   await prisma.smartTask.update({

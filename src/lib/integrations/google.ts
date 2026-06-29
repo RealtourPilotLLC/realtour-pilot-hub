@@ -483,7 +483,7 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
         const who = matchedClient?.name ? ` (${matchedClient.name})` : "";
         const data = {
           taskType: "vendor_update",
-          title: `Luma Visuals reel update${who} — check the tracker`.slice(0, 120),
+          title: `Luma Visuals reel update — check the tracker`,
           summary: `Luma Visuals (our reel editor) sent an update${who} via Gmail: “${text.slice(0, 200)}”. Open the tracker — the edit is done or they have a question; QC/download the reel or answer them, then deliver.`.slice(0, 500),
           description: text.slice(0, 400),
           reasonCreated: "Luma Visuals (reel editor) update via Gmail",
