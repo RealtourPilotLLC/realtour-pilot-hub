@@ -4,6 +4,8 @@ import { getSecret } from "@/lib/integrations/connections";
 import { runHubAgent } from "@/lib/integrations/ai";
 import { HUB_TOOLS, execHubTool } from "@/lib/hubTools";
 import { etFullDate } from "@/lib/datetime";
+import { getCurrentUser } from "@/lib/auth/user";
+import { contentTier } from "@/lib/auth/access";
 
 export type HubSource = { kind: "data" | "knowledge"; title: string };
 export type HubDraft = {
@@ -104,11 +106,16 @@ Learning (memory): you get smarter over time by remembering what you are told. C
 Critical boundary: aside from drafting client messages (proposed for a human to send), creating internal to-dos when asked, and saving facts you are taught, you do not send anything to clients or change external records on your own. The human always stays on the Send button.`;
 }
 
-export async function askHub(question: string, history: HubTurn[] = [], role: HubRole = "OWNER", chatId?: string): Promise<HubAnswer> {
+export async function askHub(question: string, history: HubTurn[] = [], chatId?: string): Promise<HubAnswer> {
   const q = question.trim();
   if (!q) return { answer: "Ask me anything about your projects, clients, schedule, to-dos, billing, or how the business runs.", sources: [] };
 
-  const viewerRole: HubRole = role === "ADMIN" || role === "CREATIVE" ? role : "OWNER";
+  // The viewer's content tier is derived from the SIGNED-IN user, never trusted
+  // from the client. A creative (photographer/editor) only ever gets CREATIVE-tier
+  // knowledge + comms; admin → ADMIN; owner → everything. No session = open local
+  // dev → owner. This is the gate that keeps owner-only facts out of lower roles.
+  const me = await getCurrentUser();
+  const viewerRole: HubRole = (me ? contentTier(me.role) : "OWNER") as HubRole;
 
   const key = await getSecret("ai");
   if (!key) {

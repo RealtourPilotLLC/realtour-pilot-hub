@@ -55,9 +55,10 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
   EDITOR: ["dashboard", "tasks", "editing", "upload", "resources", "assistant"],
   // Photographers live entirely in the field platform: their own shoots (which
   // already carry their scoped schedule, maps, route + pay), the upload checklist
-  // (scoped to their jobs), and SOPs. They get NO ops/dashboard, schedule, map,
-  // clients, comms, billing, pipeline, etc. — those show the whole business.
-  PHOTOGRAPHER: ["shoot", "upload", "resources"],
+  // (scoped to their jobs), SOPs, and Ask the Hub (auto-gated to the CREATIVE
+  // content tier — owner/admin-only knowledge + comms are filtered out for them).
+  // They get NO ops/dashboard, schedule, map, clients, comms, billing, pipeline.
+  PHOTOGRAPHER: ["shoot", "upload", "resources", "assistant"],
 };
 
 // Where to send a user who lands somewhere they can't access — and their

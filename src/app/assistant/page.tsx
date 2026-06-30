@@ -3,12 +3,16 @@ import { History } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { AskHub } from "@/components/assistant/AskHub";
 import { isOwnerView } from "@/lib/access";
+import { getCurrentUser } from "@/lib/auth/user";
+import { contentTier } from "@/lib/auth/access";
 
 export const dynamic = "force-dynamic";
 
 export default async function AssistantPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
   const { q } = await searchParams;
   const owner = await isOwnerView();
+  const me = await getCurrentUser();
+  const tier = me ? contentTier(me.role) : "OWNER";
   return (
     <div className="flex h-full flex-col">
       <PageHeader
@@ -25,7 +29,7 @@ export default async function AssistantPage({ searchParams }: { searchParams: Pr
           ) : null
         }
       />
-      <AskHub initial={q} />
+      <AskHub initial={q} tier={tier} />
     </div>
   );
 }

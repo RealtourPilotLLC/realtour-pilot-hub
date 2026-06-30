@@ -163,10 +163,9 @@ function renderText(text: string) {
   });
 }
 
-export function AskHub({ initial }: { initial?: string }) {
+export function AskHub({ initial, tier }: { initial?: string; tier: HubRole }) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [value, setValue] = useState("");
-  const [role, setRole] = useState<HubRole>("OWNER");
   const [isPending, startTransition] = useTransition();
   const scrollRef = useRef<HTMLDivElement>(null);
   const seeded = useRef(false);
@@ -192,7 +191,7 @@ export function AskHub({ initial }: { initial?: string }) {
     setMessages((m) => [...m, { role: "user", text: q }]);
     setValue("");
     startTransition(async () => {
-      const res = await askHub(q, history, role, chatId.current);
+      const res = await askHub(q, history, chatId.current);
       if (res.chatId) chatId.current = res.chatId;
       setMessages((m) => [...m, { role: "hub", text: res.answer, sources: res.sources, drafts: res.drafts, tasks: res.tasks, memories: res.memories }]);
       requestAnimationFrame(() =>
@@ -204,21 +203,13 @@ export function AskHub({ initial }: { initial?: string }) {
   return (
     <div className="mx-auto flex h-[calc(100vh-8.5rem)] max-w-3xl flex-col p-6">
       <div className="mb-3 flex items-center justify-end gap-2">
-        <span className="inline-flex items-center gap-1 text-xs text-muted">
-          <ShieldCheck className="size-3.5 text-brand" /> Viewing as
-        </span>
-        <select
-          value={role}
-          onChange={(e) => setRole(e.target.value as HubRole)}
-          className="rounded-lg border bg-surface px-2 py-1 text-xs font-medium focus:outline-none"
-          title="What this role is allowed to see. Private knowledge is filtered out for lower roles. Real per-user enforcement arrives with user accounts."
+        <span
+          className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-2.5 py-1 text-xs font-medium text-muted"
+          title="What you're allowed to see. Private owner/admin knowledge and comms are filtered out automatically for your role."
         >
-          {ROLES.map((r) => (
-            <option key={r.value} value={r.value}>
-              {r.label} — {r.hint}
-            </option>
-          ))}
-        </select>
+          <ShieldCheck className="size-3.5 text-brand" />
+          {ROLES.find((r) => r.value === tier)?.label ?? tier} view
+        </span>
       </div>
       <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto scroll-thin pr-1">
         {messages.length === 0 && (
