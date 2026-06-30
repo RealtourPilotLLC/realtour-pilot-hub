@@ -13,6 +13,7 @@ import {
   MessageCircle,
   Send,
   Sparkles,
+  Clapperboard,
   CheckCircle2,
   AlertCircle,
   Circle,
@@ -40,7 +41,7 @@ import {
 } from "@/app/connections/actions";
 
 const ICONS: Record<string, LucideIcon> = {
-  Camera, CreditCard, Calculator, Folder, Mail, Phone, MessageSquare, Users, MessageCircle, Send, Sparkles,
+  Camera, CreditCard, Calculator, Folder, Mail, Phone, MessageSquare, Users, MessageCircle, Send, Sparkles, Clapperboard,
 };
 
 export type ConnState = {
@@ -56,12 +57,14 @@ export function ProviderCard({
   deployed,
   dropboxAuthorizeUrl,
   googleAuthorizeUrl,
+  frameioReady,
 }: {
   provider: ProviderDef;
   conn: ConnState | null;
   deployed: boolean;
   dropboxAuthorizeUrl?: string;
   googleAuthorizeUrl?: string;
+  frameioReady?: boolean;
 }) {
   const Icon = ICONS[provider.icon] ?? Circle;
   const connected = conn?.status === "CONNECTED";
@@ -114,6 +117,8 @@ export function ProviderCard({
           <AryeoActions connected={connected} onExpand={() => setExpanded((e) => !e)} expanded={expanded} />
         ) : provider.id === "gmail" ? (
           <GmailActions connected={connected} authorizeUrl={googleAuthorizeUrl} deployed={deployed} />
+        ) : provider.id === "frameio" ? (
+          <FrameioActions connected={connected} ready={!!frameioReady} deployed={deployed} />
         ) : provider.id === "dropbox" && provider.ready ? (
           <GenericApiKeyActions
             provider={provider}
@@ -383,6 +388,47 @@ function GmailActions({
           + Add another mailbox (hello@ / info@)
         </a>
       )}
+      {msg && <p className={`text-xs ${msg.ok ? "text-success" : "text-danger"}`}>{msg.message}</p>}
+    </div>
+  );
+}
+
+// Frame.io uses Adobe IMS OAuth (Connect → Adobe consent → callback stores the
+// refresh token). The connect link hits our /api/frameio/connect route.
+function FrameioActions({ connected, ready, deployed }: { connected: boolean; ready: boolean; deployed: boolean }) {
+  const [pending, startTransition] = useTransition();
+  const [msg, setMsg] = useState<ActionResult | null>(null);
+
+  if (!connected) {
+    if (!deployed || !ready) {
+      return (
+        <button
+          disabled
+          title={!deployed ? "Deploy first, then connect" : "Add FRAMEIO_CLIENT_SECRET in Vercel, then redeploy"}
+          className="w-full cursor-not-allowed rounded-lg border bg-surface px-3 py-2 text-sm font-medium opacity-60"
+        >
+          Connect Frame.io (needs setup)
+        </button>
+      );
+    }
+    return (
+      <a
+        href="/api/frameio/connect"
+        className="block w-full rounded-lg bg-brand px-3 py-2 text-center text-sm font-medium text-brand-fg hover:opacity-90"
+      >
+        Connect Frame.io
+      </a>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      <button
+        onClick={() => startTransition(async () => setMsg(await disconnectProvider("frameio")))}
+        disabled={pending}
+        className="flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-60"
+      >
+        {pending ? <Loader2 className="size-4 animate-spin" /> : "Disconnect"}
+      </button>
       {msg && <p className={`text-xs ${msg.ok ? "text-success" : "text-danger"}`}>{msg.message}</p>}
     </div>
   );

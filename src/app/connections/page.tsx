@@ -5,6 +5,7 @@ import { PROVIDERS, SEGMENTS } from "@/lib/integrations/registry";
 import { getAllConnections } from "@/lib/integrations/connections";
 import { dropboxAuthorizeUrl, dropboxConfigured } from "@/lib/integrations/dropbox";
 import { googleAuthorizeUrl, googleConfigured } from "@/lib/integrations/google";
+import { frameioConfigured } from "@/lib/integrations/frameio";
 
 export const dynamic = "force-dynamic";
 
@@ -72,6 +73,7 @@ export default async function ConnectionsPage() {
                       googleAuthorizeUrl={
                         provider.id === "gmail" && googleConfigured() ? googleAuthorizeUrl() : undefined
                       }
+                      frameioReady={provider.id === "frameio" ? frameioConfigured() : undefined}
                     />
                   );
                 })}

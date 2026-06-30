@@ -84,6 +84,22 @@ export const PROVIDERS: ProviderDef[] = [
     ready: true,
   },
   {
+    id: "frameio",
+    name: "Frame.io",
+    blurb: "Editor review & approvals on finished video",
+    segment: "Files",
+    authType: "oauth",
+    icon: "Clapperboard",
+    color: "#5b53ff",
+    docsUrl: "https://next.developer.frame.io/",
+    capabilities: [
+      "Auto-create a Frame.io project per job (street — client)",
+      "Editors upload finals; you review + comment there",
+      "“Send to RealTour for review” → flips the job to Review + pings Kyle/Jordan",
+    ],
+    ready: true,
+  },
+  {
     id: "gmail",
     name: "Gmail",
     blurb: "Client & lead email — read into tasks",
