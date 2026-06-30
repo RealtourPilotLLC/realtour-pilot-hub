@@ -229,6 +229,8 @@ export async function draftThreadReply(
       });
     }
     const propertyAddress = projects[0]?.title ?? null;
+    const lastClientText = [...turns].reverse().find((t) => t.role === "client")?.text ?? "";
+    const { relevantPolicies } = await import("@/lib/policies");
 
     const draft = await draftReplyWithContext({
       channel: "text",
@@ -239,6 +241,7 @@ export async function draftThreadReply(
       projects,
       transcript: turns,
       isGroup: opts?.isGroup,
+      policies: await relevantPolicies(lastClientText),
     });
 
     if (/^\s*NO_REPLY_NEEDED\s*$/i.test(draft)) {

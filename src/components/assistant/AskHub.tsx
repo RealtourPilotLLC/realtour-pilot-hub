@@ -306,6 +306,7 @@ export function AskHub({ initial, tier }: { initial?: string; tier: HubRole }) {
         <button
           onClick={() => send(value)}
           disabled={isPending || !value.trim()}
+          aria-label="Send"
           className="flex size-9 items-center justify-center rounded-xl bg-brand text-brand-fg disabled:opacity-50"
         >
           <Send className="size-4" />

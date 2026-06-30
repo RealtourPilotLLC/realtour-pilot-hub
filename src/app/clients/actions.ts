@@ -105,6 +105,7 @@ export async function draftClientReply(
     },
   });
   try {
+    const { relevantPolicies } = await import("@/lib/policies");
     const { draftReplyWithContext } = await import("@/lib/integrations/ai");
     const draft = await draftReplyWithContext({
       channel,
@@ -114,6 +115,7 @@ export async function draftClientReply(
       propertyAddress: client?.projects[0]?.title ?? null,
       projects: client?.projects ?? [],
       transcript: [{ role: "client", text: lastMessage || "(no recent message — write a friendly check-in)" }],
+      policies: await relevantPolicies(lastMessage),
     });
     if (/^\s*NO_REPLY_NEEDED\s*$/i.test(draft)) return { ok: false, message: "Looks handled — no reply needed here." };
     return { ok: true, message: "Draft ready. Review before sending.", draft };

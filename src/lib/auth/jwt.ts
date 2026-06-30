@@ -8,6 +8,12 @@ export const SESSION_COOKIE = "rtp_session";
 const DAYS = 7;
 export const SESSION_MAX_AGE = DAYS * 24 * 60 * 60;
 
+// In production, REQUIRE a real APP_SECRET — never fall back to a public dev key
+// (that would make every session token forgeable). Dev keeps a fallback so local
+// runs work without config.
+if (process.env.NODE_ENV === "production" && !process.env.APP_SECRET) {
+  throw new Error("APP_SECRET must be set in production (session signing key).");
+}
 const SECRET = new TextEncoder().encode(
   process.env.APP_SECRET || "dev-insecure-secret-change-me",
 );

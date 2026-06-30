@@ -107,7 +107,15 @@ export async function dbx<T = unknown>(
     cache: "no-store",
   });
   const text = await res.text();
-  const json = text ? JSON.parse(text) : undefined;
+  // Guard the parse — a non-JSON edge/maintenance page (HTML 502, etc.) must
+  // surface as a clean DropboxError, not an uncaught SyntaxError that escapes the
+  // typed error handling callers rely on.
+  let json: { error_summary?: string } | undefined;
+  try {
+    json = text ? JSON.parse(text) : undefined;
+  } catch {
+    /* non-JSON response */
+  }
   if (!res.ok) {
     throw new DropboxError((json?.error_summary as string) || `Dropbox ${endpoint} ${res.status}`, res.status);
   }

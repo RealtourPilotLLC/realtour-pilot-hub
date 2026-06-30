@@ -509,20 +509,24 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
         continue;
       }
 
-      // Only real client/lead emails — drop marketing, invoices, automated, vendors.
-      if (!isLikelyHuman(email, listUnsub, subject, name)) continue;
-
-      // Already replied to (latest thread message is from us)? Still logged to
-      // comms memory below, but it won't create a task.
-      const answered = await threadAlreadyAnswered(threadId, token);
-
-      // Resolve the sender to a client account (email → synced contact → agent).
+      // Resolve the sender to a client account FIRST (email → synced contact →
+      // agent), so a KNOWN client who emails from a brokerage role address
+      // (info@/team@/hello@) is never dropped by the human/lead filter below.
       let senderClient = clientByEmail.get(email);
       if (!senderClient) {
         const cid = contactClientByEmail.get(email);
         if (cid) senderClient = clients.find((c) => c.id === cid);
       }
       if (senderClient) senderClient = toAgent(senderClient); // fold assistant → agent
+
+      // Drop marketing / invoices / automated / vendor mail — but ONLY for senders
+      // we don't already know. A known client always gets logged + a reply task,
+      // even from a role address the lead filter would otherwise reject.
+      if (!senderClient && !isLikelyHuman(email, listUnsub, subject, name)) continue;
+
+      // Already replied to (latest thread message is from us)? Still logged to
+      // comms memory below, but it won't create a task.
+      const answered = await threadAlreadyAnswered(threadId, token);
 
       // Which listing is this about? Prefer a property named in the subject/body
       // within the sender's OWN orders; otherwise match it GLOBALLY (a coordinator

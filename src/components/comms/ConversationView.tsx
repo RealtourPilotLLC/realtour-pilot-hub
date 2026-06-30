@@ -166,7 +166,7 @@ export function ChatPanel({
             className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border hover:bg-surface-2 disabled:opacity-50">
             {drafting ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4 text-brand" />}
           </button>
-          <button onClick={send} disabled={sending || (!body.trim() && !attach)}
+          <button onClick={send} disabled={sending || (!body.trim() && !attach)} aria-label="Send"
             className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-brand text-white disabled:opacity-50">
             {sending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
           </button>

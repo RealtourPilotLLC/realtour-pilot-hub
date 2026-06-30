@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { stageMeta } from "@/lib/pipeline";
 import { formatMoney } from "@/lib/utils";
 import { format, startOfMonth, subMonths, isSameMonth } from "date-fns";
+import { etDateYear } from "@/lib/datetime";
 
 export const dynamic = "force-dynamic";
 
@@ -174,7 +175,7 @@ export default async function SalesPage() {
                         {stage.short}
                       </Badge>
                     </td>
-                    <td className="px-5 py-2.5 text-muted">{format(p.createdAt, "MMM d, yyyy")}</td>
+                    <td className="px-5 py-2.5 text-muted">{etDateYear(p.createdAt)}</td>
                     <td className="px-5 py-2.5 text-right font-semibold">{formatMoney(p.price)}</td>
                   </tr>
                 );

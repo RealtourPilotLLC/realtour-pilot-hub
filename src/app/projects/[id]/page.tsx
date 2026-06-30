@@ -52,7 +52,7 @@ import { PRIORITY_META, DELIVERABLE_META, refinedDeliverableLabel, stageMeta } f
 import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { formatMoney, stripHtml } from "@/lib/utils";
 import { format, formatDistanceToNow } from "date-fns";
-import { etDateTime } from "@/lib/datetime";
+import { etDateTime, etDateYear } from "@/lib/datetime";
 import { ActivityType } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
@@ -75,11 +75,14 @@ export default async function ProjectPage({
 }) {
   const { id } = await params;
 
-  // Photographers never see the full order detail (pricing, invoices, client
-  // financials). They get the guided field view of their shoot instead. This
-  // guard holds even though /projects isn't a top-level nav key in the middleware.
+  // Only owner/admin see the full order detail (pricing, invoices, client
+  // financials). /projects isn't a top-level nav key, so the middleware doesn't
+  // gate it — guard here. Photographers get the guided field view of their shoot;
+  // editors (and any other non-admin role) are bounced home.
   const viewer = await getCurrentUser();
-  if (viewer?.role === "PHOTOGRAPHER") redirect(`/shoot/${id}`);
+  if (viewer && viewer.role !== "OWNER" && viewer.role !== "ADMIN") {
+    redirect(viewer.role === "PHOTOGRAPHER" ? `/shoot/${id}` : "/");
+  }
 
   const [project, team] = await Promise.all([getProject(id), getTeam()]);
   if (!project) notFound();
@@ -518,13 +521,11 @@ export default async function ProjectPage({
               <Row
                 label="Delivery due"
                 value={
-                  project.deliveryDue
-                    ? format(project.deliveryDue, "MMM d, yyyy")
-                    : "—"
+                  project.deliveryDue ? etDateYear(project.deliveryDue) : "—"
                 }
               />
               {project.deliveredAt && (
-                <Row label="Delivered" value={format(project.deliveredAt, "MMM d, yyyy")} />
+                <Row label="Delivered" value={etDateYear(project.deliveredAt)} />
               )}
             </dl>
           </Section>

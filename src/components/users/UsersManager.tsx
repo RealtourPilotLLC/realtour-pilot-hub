@@ -6,6 +6,7 @@ import {
   ROLES, ROLE_LABEL, PAGES, roleHasByDefault, parsePermissions, canAccess, type PageKey,
 } from "@/lib/auth/access";
 import { inviteUser, inviteLinkFor, setUserRole, setUserPermission, setUserStatus, removeUser } from "@/app/users/actions";
+import { etMonthDay } from "@/lib/datetime";
 
 export type UserView = {
   id: string;
@@ -157,7 +158,7 @@ function UserCard({ u }: { u: UserView }) {
             {u.isSelf && <span className="rounded bg-surface-2 px-1.5 text-[10px] text-muted-2">you</span>}
             <span className={`rounded-full px-1.5 text-[11px] font-medium ${STATUS_STYLE[u.status] ?? "bg-surface-2 text-muted"}`}>{u.status.toLowerCase()}</span>
           </div>
-          <div className="truncate text-xs text-muted-2">{u.email}{u.lastLoginAt ? ` · last in ${new Date(u.lastLoginAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : " · hasn't signed in yet"}</div>
+          <div className="truncate text-xs text-muted-2">{u.email}{u.lastLoginAt ? ` · last in ${etMonthDay(u.lastLoginAt)}` : " · hasn't signed in yet"}</div>
         </div>
 
         <select value={u.role} disabled={pending || (u.isSelf && isOwner)} onChange={(e) => changeRole(e.target.value)} title="Role" className="rounded-lg border bg-surface px-2 py-1.5 text-xs focus:outline-none disabled:opacity-60">

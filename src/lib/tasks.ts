@@ -66,7 +66,12 @@ export function deliveryDueFrom(anchor: Date, deliverableType?: string | null, o
   return new Date(anchor.getTime() + h * HOUR);
 }
 
-const isPremiumLabel = (label?: string | null) => !!label && /premium/i.test(label);
+// MUST match projectStatus.ts PREMIUM_VIDEO_RE — the status card's videoDue and
+// the delivery SLA written here have to agree (they previously diverged: this was
+// /premium/ only, so an Influencer/Cinematic reel got a 48h SLA here but showed
+// 72h on the status card — a 24h disagreement).
+const isPremiumLabel = (label?: string | null) =>
+  !!label && /premium|influencer|cinematic|luxury|signature|elite|flagship/i.test(label);
 
 // A project's overall delivery due = shoot date + the LONGEST turnaround among
 // its ordered deliverables (premium reel/video pushes it out, monthly further).

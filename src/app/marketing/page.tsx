@@ -3,7 +3,7 @@ import { Megaphone, Sparkles, Share2, Star } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { prisma } from "@/lib/prisma";
-import { format } from "date-fns";
+import { etMonthDay } from "@/lib/datetime";
 
 export const dynamic = "force-dynamic";
 
@@ -46,7 +46,7 @@ export default async function MarketingPage() {
                     </div>
                     {p.deliveredAt && (
                       <span className="shrink-0 text-xs text-muted-2">
-                        {format(p.deliveredAt, "MMM d")}
+                        {etMonthDay(p.deliveredAt)}
                       </span>
                     )}
                   </div>

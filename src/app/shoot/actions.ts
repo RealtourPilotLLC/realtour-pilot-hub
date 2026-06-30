@@ -66,7 +66,9 @@ async function sendClientText(
         body: text,
         occurredAt: new Date(),
         source: "openphone",
-        externalId: sentId ?? null,
+        // Match the OpenPhone webhook's "op-<id>" format so its later echo of this
+        // same outbound text dedupes instead of double-logging the conversation.
+        externalId: sentId ? `op-${sentId}` : null,
       },
     })
     .catch(() => {}); // never let a log write fail the send result

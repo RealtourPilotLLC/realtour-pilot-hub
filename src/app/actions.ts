@@ -116,16 +116,23 @@ export async function cancelAppointmentAction(
 }
 
 /** Update a SmartTask's status (and stamp completion). */
+const TASK_STATUSES = new Set([
+  "OPEN", "IN_PROGRESS", "WAITING_CLIENT", "WAITING_PHOTOGRAPHER", "WAITING_EDITOR",
+  "WAITING_VENDOR", "WAITING_JORDAN", "BLOCKED", "COMPLETED", "CANCELLED",
+]);
+
 export async function setSmartTaskStatus(taskId: string, status: string) {
   await requireAdmin();
-  const t = await prisma.smartTask.update({
+  if (!TASK_STATUSES.has(status)) return; // never write a free-form status
+  const updated = await prisma.smartTask.updateMany({
     where: { id: taskId },
     data: { status, completedAt: status === "COMPLETED" ? new Date() : null },
-    select: { projectId: true },
   });
+  if (updated.count === 0) return; // task no longer exists — no-op instead of throw
+  const t = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { projectId: true } });
   revalidatePath("/queue");
   revalidatePath("/history");
-  if (t.projectId) revalidatePath(`/projects/${t.projectId}`);
+  if (t?.projectId) revalidatePath(`/projects/${t.projectId}`);
 }
 
 // Add a to-do by hand from the Daily Tasks page. Optional: link to a job/client
