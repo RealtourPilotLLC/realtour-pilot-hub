@@ -1,5 +1,7 @@
 "use server";
 
+import { requireAdmin } from "@/lib/auth/guards";
+
 import { prisma } from "@/lib/prisma";
 import { OpenPhone, defaultOpenPhoneNumber, defaultOpenPhoneNumberId, phoneKey, conversationThread, recentOpenPhoneConversations } from "@/lib/integrations/openphone";
 import { resolveParticipants } from "@/lib/queries";
@@ -27,6 +29,7 @@ export type ClientThread = {
 export async function loadClientGroupThreads(
   clientId: string,
 ): Promise<{ ok: boolean; message: string; threads?: ClientThread[] }> {
+  await requireAdmin();
   const c = await prisma.client.findUnique({
     where: { id: clientId },
     select: { phone: true, teamMembers: { select: { phone: true } } },
@@ -87,6 +90,7 @@ export async function loadClientGroupThreads(
 export async function loadThreadItems(
   participantsCsv: string,
 ): Promise<{ ok: boolean; message: string; items?: ChatItem[] }> {
+  await requireAdmin();
   const numId = await defaultOpenPhoneNumberId();
   if (!numId) return { ok: false, message: "OpenPhone isn't connected." };
   const parts = participantsCsv.split(",").map((s) => s.trim()).filter(Boolean);
@@ -111,6 +115,7 @@ export async function loadThreadItems(
 export async function loadClientThread(
   clientId: string,
 ): Promise<{ ok: boolean; message: string; toPhone?: string; items?: ChatItem[]; client?: ConvoClient }> {
+  await requireAdmin();
   const c = await prisma.client.findUnique({
     where: { id: clientId },
     select: { id: true, name: true, phone: true, email: true, backupEmail: true, company: true, segment: true, socialClient: true, socialPlan: true },
@@ -143,6 +148,7 @@ export async function sendThreadText(
   mediaUrls?: string[],
   clientId?: string | null,
 ): Promise<SendResult> {
+  await requireAdmin();
   const text = content.trim();
   if (!text && !(mediaUrls && mediaUrls.length)) return { ok: false, message: "Write a message first." };
   // toPhone may be a comma-separated list for a group message.
@@ -182,6 +188,7 @@ export async function draftThreadReply(
   transcript: DraftTurn[],
   opts?: { isGroup?: boolean; memberNames?: Record<string, string> },
 ): Promise<{ ok: boolean; message: string; draft?: string }> {
+  await requireAdmin();
   const { getSecret } = await import("@/lib/integrations/connections");
   if (!(await getSecret("ai"))) return { ok: false, message: "Add an AI key in Connections to draft replies." };
   try {
@@ -247,6 +254,7 @@ export async function draftThreadReply(
 export async function uploadCommAttachment(
   form: FormData,
 ): Promise<{ ok: boolean; url?: string; name?: string; message: string }> {
+  await requireAdmin();
   const file = form.get("file");
   if (!(file instanceof File)) return { ok: false, message: "No file." };
   if (file.size > 8 * 1024 * 1024) return { ok: false, message: "Image too large (max 8 MB)." };

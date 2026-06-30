@@ -1,5 +1,7 @@
 "use server";
 
+import { requireOwner } from "@/lib/auth/guards";
+
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 
@@ -13,6 +15,7 @@ export async function addAdjustment(
   amount: number,
   dateISO: string,
 ): Promise<ActionResult> {
+  await requireOwner();
   const l = label.trim();
   if (!l) return { ok: false, message: "Add a label." };
   if (!isFinite(amount) || amount === 0) return { ok: false, message: "Enter a non-zero amount." };
@@ -26,6 +29,7 @@ export async function addAdjustment(
 }
 
 export async function removeAdjustment(id: string): Promise<ActionResult> {
+  await requireOwner();
   await prisma.payoutAdjustment.delete({ where: { id } }).catch(() => {});
   revalidatePath("/payouts");
   return { ok: true, message: "Adjustment removed." };
@@ -37,6 +41,7 @@ export async function setJobOverride(
   teamMemberId: string,
   opts: { invoiceOverride?: number | null; flatAmount?: number | null; noMileage?: boolean; excluded?: boolean; note?: string | null },
 ): Promise<ActionResult> {
+  await requireOwner();
   const invoiceOverride = opts.invoiceOverride != null && isFinite(opts.invoiceOverride) ? opts.invoiceOverride : null;
   const flatAmount = opts.flatAmount != null && isFinite(opts.flatAmount) ? opts.flatAmount : null;
   const noMileage = !!opts.noMileage;
@@ -67,6 +72,7 @@ export async function creativeStatementHtml(
   memberId: string,
   startKey: string,
 ): Promise<{ ok: boolean; html?: string; message?: string }> {
+  await requireOwner();
   const { computePayroll, payPeriodFor } = await import("@/lib/payroll");
   const period = payPeriodFor(startKey);
   const start = new Date(period.startKey + "T00:00:00.000Z");
@@ -160,6 +166,7 @@ export async function creativeStatementHtml(
 // Recompute cached mileage for a date range (or everyone) — forces a fresh route
 // computation on the next payout load.
 export async function recomputeMileage(memberId?: string): Promise<ActionResult> {
+  await requireOwner();
   await prisma.mileageDay.deleteMany({ where: memberId ? { teamMemberId: memberId } : {} });
   revalidatePath("/payouts");
   return { ok: true, message: "Mileage cleared — will recompute on reload." };

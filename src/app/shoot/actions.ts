@@ -1,5 +1,7 @@
 "use server";
 
+import { requireDeliverableAccess, requireShootAccess } from "@/lib/auth/guards";
+
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { shootStatusText, SHOOT_STATUS_META, type ShootStatusKind } from "@/lib/statusTexts";
@@ -80,6 +82,7 @@ export async function sendShootStatusText(
   kind: ShootStatusKind,
   edited?: string,
 ): Promise<{ ok: boolean; message: string }> {
+  await requireShootAccess(projectId);
   let body = (edited || "").trim();
   if (!body) {
     const p = await prisma.project.findUnique({
@@ -97,6 +100,7 @@ export async function sendShootStatusText(
 
 // Send a free-form message the photographer typed (optionally AI-polished).
 export async function sendClientMessage(projectId: string, text: string): Promise<{ ok: boolean; message: string }> {
+  await requireShootAccess(projectId);
   return sendClientText(projectId, text, "Message");
 }
 
@@ -106,6 +110,7 @@ export async function draftClientMessage(
   projectId: string,
   rough: string,
 ): Promise<{ ok: boolean; text?: string; error?: string }> {
+  await requireShootAccess(projectId);
   const note = (rough || "").trim();
   if (!note) return { ok: false, error: "Type a rough note first." };
   const { getSecret } = await import("@/lib/integrations/connections");
@@ -134,6 +139,7 @@ export async function setDeliverableCaptured(
   deliverableId: string,
   captured: boolean,
 ): Promise<{ ok: boolean }> {
+  await requireDeliverableAccess(deliverableId);
   const d = await prisma.deliverable.update({
     where: { id: deliverableId },
     data: { capturedAt: captured ? new Date() : null },
@@ -146,6 +152,7 @@ export async function setDeliverableCaptured(
 // Save the photographer's on-site notes. These flow straight into the editor
 // brief the upload portal uses (Project.editorBrief), so nothing is re-typed.
 export async function saveShootNote(projectId: string, note: string): Promise<{ ok: boolean }> {
+  await requireShootAccess(projectId);
   await prisma.project.update({ where: { id: projectId }, data: { editorBrief: note.trim() || null } });
   revalShoot(projectId);
   return { ok: true };
@@ -154,6 +161,7 @@ export async function saveShootNote(projectId: string, note: string): Promise<{ 
 // Flag an on-site problem (lockbox, access, hazard…). Lands on the project
 // timeline + the upload portal's flag list for the team.
 export async function flagShootIssue(projectId: string, body: string): Promise<{ ok: boolean }> {
+  await requireShootAccess(projectId);
   const text = (body || "").trim();
   if (!text) return { ok: false };
   await prisma.activity.create({ data: { projectId, type: "FLAG", body: text } });
@@ -166,6 +174,7 @@ export async function flagShootIssue(projectId: string, body: string): Promise<{
 // project’s team thread. Does NOT text the client — that’s the separate "Shoot
 // complete" status button the photographer reviews.
 export async function completeShoot(projectId: string): Promise<{ ok: boolean; message: string }> {
+  await requireShootAccess(projectId);
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: {

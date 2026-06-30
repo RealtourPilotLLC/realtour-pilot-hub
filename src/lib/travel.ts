@@ -39,7 +39,9 @@ export async function driveBetween(
     // (which favors longer highway runs). OSRM always includes the fastest route
     // among the alternatives; we choose the minimum-distance one.
     const url = `https://router.project-osrm.org/route/v1/driving/${aLng},${aLat};${bLng},${bLat}?overview=false&alternatives=3`;
-    const res = await fetch(url, { cache: "no-store" });
+    // 5s timeout so a stalled OSRM never hangs payouts (mileage routes a leg per
+    // stop, serially) — on timeout we fall through to the straight-line estimate.
+    const res = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(5000) });
     if (!res.ok) throw new Error(String(res.status));
     const j = (await res.json()) as { routes?: { distance: number; duration: number }[] };
     const routes = j.routes ?? [];

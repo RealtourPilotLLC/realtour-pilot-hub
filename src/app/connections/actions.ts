@@ -1,5 +1,7 @@
 "use server";
 
+import { requireOwner } from "@/lib/auth/guards";
+
 import { revalidatePath } from "next/cache";
 import { saveSecret, disconnect as disconnectConn } from "@/lib/integrations/connections";
 import { testOpenPhoneKey, registerOpenPhoneWebhooks } from "@/lib/integrations/openphone";
@@ -21,6 +23,7 @@ import {
 export type ActionResult = { ok: boolean; message: string };
 
 export async function connectAryeo(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
+  await requireOwner();
   const key = String(formData.get("key") || "").trim();
   if (!key) return { ok: false, message: "Please paste your Aryeo API key." };
 
@@ -35,6 +38,7 @@ export async function connectAryeo(_prev: ActionResult | null, formData: FormDat
 }
 
 export async function syncAryeoNow(): Promise<ActionResult> {
+  await requireOwner();
   try {
     await syncAryeoTeam();
     const r = await syncAryeoOrders();
@@ -72,6 +76,7 @@ const TESTERS: Record<string, (key: string) => Promise<{ ok: true; label: string
 };
 
 export async function syncGmailNow(): Promise<ActionResult> {
+  await requireOwner();
   try {
     const r = await syncGmail();
     revalidatePath("/");
@@ -86,6 +91,7 @@ export async function syncGmailNow(): Promise<ActionResult> {
 // Dropbox: exchange the one-time authorization code for a refresh token, verify,
 // and store it encrypted.
 export async function connectDropbox(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
+  await requireOwner();
   const code = String(formData.get("code") || "").trim();
   if (!code) return { ok: false, message: "Paste the authorization code from Dropbox." };
   try {
@@ -101,6 +107,7 @@ export async function connectDropbox(_prev: ActionResult | null, formData: FormD
 }
 
 export async function connectApiKey(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
+  await requireOwner();
   const provider = String(formData.get("provider") || "");
   const key = String(formData.get("key") || "").trim();
   if (!provider) return { ok: false, message: "Missing provider." };
@@ -119,6 +126,7 @@ export async function connectApiKey(_prev: ActionResult | null, formData: FormDa
 }
 
 export async function syncAryeoProductsNow(): Promise<ActionResult> {
+  await requireOwner();
   try {
     const r = await syncAryeoProducts();
     revalidatePath("/connections");
@@ -130,6 +138,7 @@ export async function syncAryeoProductsNow(): Promise<ActionResult> {
 }
 
 export async function syncDropboxFoldersNow(): Promise<ActionResult> {
+  await requireOwner();
   try {
     const { syncDropboxFolderStatus } = await import("@/lib/dropboxFolders");
     const r = await syncDropboxFolderStatus();
@@ -145,6 +154,7 @@ export async function syncDropboxFoldersNow(): Promise<ActionResult> {
 }
 
 export async function recheckStatusesNow(): Promise<ActionResult> {
+  await requireOwner();
   try {
     const r = await syncProjectStatuses();
     await generateTasksForActiveProjects();
@@ -162,6 +172,7 @@ export async function recheckStatusesNow(): Promise<ActionResult> {
 }
 
 export async function enableOpenPhoneRealtime(): Promise<ActionResult> {
+  await requireOwner();
   const base = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
   if (!base) return { ok: false, message: "Deploy the app first — webhooks need a public URL." };
   try {
@@ -178,6 +189,7 @@ export async function enableOpenPhoneRealtime(): Promise<ActionResult> {
 }
 
 export async function syncOpenPhoneContactsNow(): Promise<ActionResult> {
+  await requireOwner();
   try {
     const { syncOpenPhoneContacts } = await import("@/lib/contacts");
     const r = await syncOpenPhoneContacts();
@@ -193,6 +205,7 @@ export async function syncOpenPhoneContactsNow(): Promise<ActionResult> {
 }
 
 export async function disconnectProvider(provider: string): Promise<ActionResult> {
+  await requireOwner();
   await disconnectConn(provider);
   revalidatePath("/connections");
   return { ok: true, message: "Disconnected." };

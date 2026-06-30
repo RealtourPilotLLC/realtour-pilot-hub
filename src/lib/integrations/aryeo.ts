@@ -24,7 +24,7 @@ type Query = Record<string, string | number | boolean | undefined>;
 // key); otherwise it loads the stored, decrypted key.
 export async function aryeoRequest<T = unknown>(
   path: string,
-  opts: { method?: string; query?: Query; body?: unknown; key?: string } = {},
+  opts: { method?: string; query?: Query; body?: unknown; key?: string; timeoutMs?: number } = {},
 ): Promise<T> {
   const key = opts.key ?? (await getSecret("aryeo"));
   if (!key) throw new AryeoError("Aryeo is not connected — no API key on file.", 401);
@@ -34,16 +34,31 @@ export async function aryeoRequest<T = unknown>(
     if (v !== undefined) url.searchParams.set(k, String(v));
   }
 
-  const res = await fetch(url, {
-    method: opts.method ?? "GET",
-    headers: {
-      Authorization: `Bearer ${key}`,
-      Accept: "application/json",
-      ...(opts.body ? { "Content-Type": "application/json" } : {}),
-    },
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-    cache: "no-store",
-  });
+  // Hard timeout so a stalled Aryeo socket can never hang the request forever
+  // (an un-timed media fetch was holding workers open and OOM-ing the instance).
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 12000);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: opts.method ?? "GET",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        Accept: "application/json",
+        ...(opts.body ? { "Content-Type": "application/json" } : {}),
+      },
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+      cache: "no-store",
+      signal: ctrl.signal,
+    });
+  } catch (e) {
+    if (e instanceof Error && e.name === "AbortError") {
+      throw new AryeoError("Aryeo timed out — please try again.", 504);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 
   const text = await res.text();
   let json: unknown = undefined;

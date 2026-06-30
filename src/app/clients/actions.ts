@@ -1,5 +1,7 @@
 "use server";
 
+import { requireAdmin } from "@/lib/auth/guards";
+
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { OpenPhone, defaultOpenPhoneNumber, phoneKey } from "@/lib/integrations/openphone";
@@ -9,6 +11,7 @@ export type ActionResult = { ok: boolean; message: string; draft?: string };
 
 // (Re)build the client's AI working profile from comms, shoot notes, revisions.
 export async function regenerateClientProfile(clientId: string): Promise<{ ok: boolean; message: string }> {
+  await requireAdmin();
   const { buildClientProfile } = await import("@/lib/clientProfile");
   const r = await buildClientProfile(clientId);
   if (r.ok) revalidatePath(`/clients/${clientId}`);
@@ -31,6 +34,7 @@ async function recentProjectId(clientId: string): Promise<string | null> {
 
 // Send a text to the client via OpenPhone. Human-initiated (Kyle clicks Send).
 export async function sendClientText(clientId: string, body: string): Promise<ActionResult> {
+  await requireAdmin();
   const text = body.trim();
   if (!text) return { ok: false, message: "Write a message first." };
   const client = await prisma.client.findUnique({ where: { id: clientId }, select: { phone: true, name: true } });
@@ -64,6 +68,7 @@ export async function sendClientText(clientId: string, body: string): Promise<Ac
 export async function loadClientEmails(
   clientId: string,
 ): Promise<{ ok: boolean; message: string; emails?: import("@/lib/integrations/google").GmailEmail[] }> {
+  await requireAdmin();
   const { googleConfigured, clientEmailThreads } = await import("@/lib/integrations/google");
   const { getSecret } = await import("@/lib/integrations/connections");
   if (!googleConfigured() || !(await getSecret("gmail"))) {
@@ -89,6 +94,7 @@ export async function draftClientReply(
   channel: "email" | "text",
   lastMessage: string,
 ): Promise<ActionResult> {
+  await requireAdmin();
   const { getSecret } = await import("@/lib/integrations/connections");
   if (!(await getSecret("ai"))) return { ok: false, message: "Add an AI key in Connections to draft replies." };
   const client = await prisma.client.findUnique({
@@ -120,6 +126,7 @@ export async function draftClientReply(
 // thread for context, and when they're asking about availability, pulls real
 // open shoot dates from Aryeo's scheduling calendar so the draft offers them.
 export async function draftEmailReply(clientId: string): Promise<ActionResult> {
+  await requireAdmin();
   const { getSecret } = await import("@/lib/integrations/connections");
   if (!(await getSecret("ai"))) return { ok: false, message: "Add an AI key in Connections to draft replies." };
   const { googleConfigured, clientEmailThreads } = await import("@/lib/integrations/google");
@@ -197,6 +204,7 @@ export async function saveClientNotes(
   editingPreferences: string,
   generalNotes: string,
 ): Promise<ActionResult> {
+  await requireAdmin();
   await prisma.client.update({
     where: { id: clientId },
     data: { editingPreferences: editingPreferences.trim() || null, generalNotes: generalNotes.trim() || null },
@@ -211,6 +219,7 @@ export async function saveAgentProfile(
   clientPreferences: string,
   brandColors: string,
 ): Promise<ActionResult> {
+  await requireAdmin();
   await prisma.client.update({
     where: { id: clientId },
     data: {
@@ -226,6 +235,7 @@ export async function saveAgentProfile(
 export async function setupBrandFolder(
   clientId: string,
 ): Promise<ActionResult & { url?: string }> {
+  await requireAdmin();
   const { ensureClientBrandFolder } = await import("@/lib/clientFolders");
   const r = await ensureClientBrandFolder(clientId);
   if (r.ok) revalidatePath(`/clients/${clientId}`);

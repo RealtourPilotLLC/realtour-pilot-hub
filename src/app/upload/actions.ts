@@ -1,5 +1,7 @@
 "use server";
 
+import { requireDeliverableAccess, requireShootAccess, requireUploadFileAccess } from "@/lib/auth/guards";
+
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { ProjectStatus, DeliverableStatus, ActivityType } from "@prisma/client";
@@ -13,6 +15,7 @@ export async function uploadFiles(
   deliverableId: string | null,
   formData: FormData,
 ) {
+  await requireShootAccess(projectId);
   const files = formData.getAll("files").filter((f): f is File => f instanceof File);
   const created = [];
   for (const file of files) {
@@ -44,6 +47,7 @@ export async function uploadFiles(
 }
 
 export async function removeUpload(fileId: string) {
+  await requireUploadFileAccess(fileId);
   const file = await prisma.uploadedFile.findUnique({ where: { id: fileId } });
   if (!file) return;
   await deleteFile(file.storedPath);
@@ -62,6 +66,7 @@ export async function markDeliverableUploaded(
   deliverableId: string,
   uploaded: boolean,
 ): Promise<{ ok: boolean }> {
+  await requireDeliverableAccess(deliverableId);
   const d = await prisma.deliverable.findUnique({ where: { id: deliverableId }, select: { projectId: true, status: true } });
   if (!d) return { ok: false };
   await prisma.deliverable.update({
@@ -79,6 +84,7 @@ export async function markDeliverableUploaded(
 }
 
 export async function flagIssue(projectId: string, body: string) {
+  await requireShootAccess(projectId);
   const trimmed = body.trim();
   if (!trimmed) return;
   await prisma.activity.create({
@@ -95,6 +101,7 @@ export async function submitAppointmentFeedback(
   wentWell: boolean,
   note: string,
 ): Promise<{ ok: boolean; message: string }> {
+  await requireShootAccess(projectId);
   const trimmed = note.trim();
   const body = `Shoot debrief — ${wentWell ? "went smoothly" : "had issues"}${trimmed ? `: ${trimmed}` : "."}`;
   await prisma.activity.create({
@@ -136,6 +143,7 @@ export async function finalizeUpload(
   projectId: string,
   data: { editorBrief: string; itemNotes?: Record<string, string> },
 ) {
+  await requireShootAccess(projectId);
   // Persist per-deliverable notes when provided (the simplified checklist portal
   // doesn't send these, but other callers may).
   for (const [deliverableId, note] of Object.entries(data.itemNotes ?? {})) {

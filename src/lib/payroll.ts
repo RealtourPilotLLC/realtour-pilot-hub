@@ -62,11 +62,12 @@ async function routeMiles(home: { lat: number; lng: number }, stops: Stop[]): Pr
   if (stops.length === 0) return 0;
   const ordered = [...stops].sort((a, b) => a.at - b.at).map((s) => ({ lat: s.lat, lng: s.lng }));
   const points = [home, ...ordered, home];
-  let miles = 0;
-  for (let i = 0; i < points.length - 1; i++) {
-    const d = await driveBetween(points[i].lat, points[i].lng, points[i + 1].lat, points[i + 1].lng);
-    if (d) miles += d.miles;
-  }
+  // Each leg is independent — route them in parallel (was serial, so a multi-stop
+  // day meant N sequential OSRM round-trips on the payouts render path).
+  const legs = await Promise.all(
+    points.slice(0, -1).map((p, i) => driveBetween(p.lat, p.lng, points[i + 1].lat, points[i + 1].lng)),
+  );
+  const miles = legs.reduce((sum, d) => sum + (d?.miles ?? 0), 0);
   return r2(miles);
 }
 

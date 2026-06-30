@@ -1,5 +1,7 @@
 "use server";
 
+import { requireAdmin } from "@/lib/auth/guards";
+
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import {
@@ -48,6 +50,7 @@ export async function rescheduleAppointmentAction(
   startAtISO: string,
   notifyCustomer: boolean,
 ): Promise<ApptResult> {
+  await requireAdmin();
   if (!(await getSecret("aryeo"))) return { ok: false, message: "Aryeo is not connected." };
   const appt = await prisma.appointment.findUnique({ where: { id: appointmentId } });
   if (!appt) return { ok: false, message: "Appointment not found." };
@@ -86,6 +89,7 @@ export async function cancelAppointmentAction(
   appointmentId: string,
   notifyCustomer: boolean,
 ): Promise<ApptResult> {
+  await requireAdmin();
   if (!(await getSecret("aryeo"))) return { ok: false, message: "Aryeo is not connected." };
   const appt = await prisma.appointment.findUnique({ where: { id: appointmentId } });
   if (!appt) return { ok: false, message: "Appointment not found." };
@@ -113,6 +117,7 @@ export async function cancelAppointmentAction(
 
 /** Update a SmartTask's status (and stamp completion). */
 export async function setSmartTaskStatus(taskId: string, status: string) {
+  await requireAdmin();
   const t = await prisma.smartTask.update({
     where: { id: taskId },
     data: { status, completedAt: status === "COMPLETED" ? new Date() : null },
@@ -134,6 +139,7 @@ export async function createManualTask(input: {
   priority?: string;
   assignedKey?: string;
 }): Promise<{ ok: boolean; message: string }> {
+  await requireAdmin();
   const title = (input.title || "").trim();
   if (!title) return { ok: false, message: "Give the task a title." };
 
@@ -191,6 +197,7 @@ export async function createManualTask(input: {
 // Delegate a task to an editor (or clear it back to "Needs you"). Pass "" / "kyle"
 // to un-delegate. Keys validated against the editor roster (src/lib/editors.ts).
 export async function setTaskAssignee(taskId: string, key: string) {
+  await requireAdmin();
   const { EDITOR_KEYS } = await import("@/lib/editors");
   const assignedKey = key && (EDITOR_KEYS as string[]).includes(key) ? key : null;
   const t = await prisma.smartTask.update({
@@ -211,6 +218,7 @@ export async function toggleTaskChecklistItem(
   taskId: string,
   index: number,
 ): Promise<{ ok: boolean; items: { label: string; done: boolean }[]; completed: boolean }> {
+  await requireAdmin();
   const { parseChecklist, serializeChecklist, checklistComplete } = await import("@/lib/checklist");
   const t = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { checklist: true, status: true, projectId: true } });
   if (!t) return { ok: false, items: [], completed: false };
@@ -242,6 +250,7 @@ export async function assignMember(
   role: "photographer" | "editor" | "va",
   memberId: string | null,
 ) {
+  await requireAdmin();
   const field = role === "photographer" ? "photographerId" : role === "editor" ? "editorId" : "vaId";
   const member = memberId ? await prisma.teamMember.findUnique({ where: { id: memberId } }) : null;
   await prisma.project.update({ where: { id: projectId }, data: { [field]: memberId } });
@@ -259,6 +268,7 @@ export async function assignMember(
 
 /** Move a project to a new pipeline stage and log it on the timeline. */
 export async function moveProjectStatus(projectId: string, status: ProjectStatus) {
+  await requireAdmin();
   const project = await prisma.project.findUnique({ where: { id: projectId } });
   if (!project || project.status === status) return;
 
@@ -306,6 +316,7 @@ export async function moveProjectStatus(projectId: string, status: ProjectStatus
 export async function draftTaskReply(
   taskId: string,
 ): Promise<{ ok: boolean; text?: string; error?: string }> {
+  await requireAdmin();
   const { getSecret } = await import("@/lib/integrations/connections");
   if (!(await getSecret("ai"))) {
     return { ok: false, error: "Connect the AI Assistant in Connections first." };
@@ -393,6 +404,7 @@ export async function draftTaskReply(
 // Send the smart delivery text (what was delivered + what's still in production)
 // to the client via OpenPhone. Human-initiated from a delivery_text to-do.
 export async function sendDeliveryText(taskId: string): Promise<{ ok: boolean; message: string }> {
+  await requireAdmin();
   const task = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { projectId: true } });
   if (!task?.projectId) return { ok: false, message: "No project linked to this task." };
   const project = await prisma.project.findUnique({
@@ -430,6 +442,7 @@ export async function sendDeliveryText(taskId: string): Promise<{ ok: boolean; m
 // message (so the shoot time/photographer are current), logs it, and completes
 // the task.
 export async function sendConfirmationText(taskId: string): Promise<{ ok: boolean; message: string }> {
+  await requireAdmin();
   const task = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { projectId: true } });
   if (!task?.projectId) return { ok: false, message: "No project linked to this task." };
   const project = await prisma.project.findUnique({
@@ -475,6 +488,7 @@ export async function sendConfirmationText(taskId: string): Promise<{ ok: boolea
 
 // Mark a revision request resolved (handled or dismissed as a false alarm).
 export async function resolveRevisionAction(projectId: string) {
+  await requireAdmin();
   await resolveRevision(projectId);
   revalidatePath("/pipeline");
   revalidatePath("/queue");
@@ -483,6 +497,7 @@ export async function resolveRevisionAction(projectId: string) {
 }
 
 export async function toggleChecklistItem(itemId: string, done: boolean) {
+  await requireAdmin();
   const item = await prisma.checklistItem.update({
     where: { id: itemId },
     data: { done },
@@ -496,6 +511,7 @@ export async function addNote(
   body: string,
   type: ActivityType = ActivityType.NOTE,
 ) {
+  await requireAdmin();
   const trimmed = body.trim();
   if (!trimmed) return;
   await prisma.activity.create({
@@ -505,6 +521,7 @@ export async function addNote(
 }
 
 export async function setProjectPriority(projectId: string, priority: Priority) {
+  await requireAdmin();
   await prisma.project.update({ where: { id: projectId }, data: { priority } });
   revalidatePath(`/projects/${projectId}`);
   revalidatePath("/pipeline");
@@ -516,6 +533,7 @@ export async function assignTeamMember(
   field: "photographerId" | "editorId" | "vaId",
   memberId: string | null,
 ) {
+  await requireAdmin();
   await prisma.project.update({
     where: { id: projectId },
     data: { [field]: memberId },
@@ -528,6 +546,7 @@ export async function setDeliverableStatus(
   deliverableId: string,
   status: DeliverableStatus,
 ) {
+  await requireAdmin();
   const d = await prisma.deliverable.update({
     where: { id: deliverableId },
     data: { status },

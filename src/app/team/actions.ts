@@ -1,5 +1,7 @@
 "use server";
 
+import { requireAdmin, requireOwner } from "@/lib/auth/guards";
+
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { OpenPhone, defaultOpenPhoneNumber, phoneKey } from "@/lib/integrations/openphone";
@@ -9,6 +11,7 @@ export type ActionResult = { ok: boolean; message: string };
 // Text a teammate via OpenPhone. Human-initiated (Kyle/Jordan clicks Send) — the
 // platform never auto-texts. Used for shoot coordination + morning well-wishes.
 export async function sendTeamText(memberId: string, body: string): Promise<ActionResult> {
+  await requireAdmin();
   const text = body.trim();
   if (!text) return { ok: false, message: "Write a message first." };
   const member = await prisma.teamMember.findUnique({
@@ -42,6 +45,7 @@ export async function savePaySettings(
     homeRadiusMi?: number | null;
   },
 ): Promise<ActionResult> {
+  await requireOwner();
   const existing = await prisma.teamMember.findUnique({
     where: { id: memberId },
     select: { homeAddress: true, homeLat: true, homeLng: true },

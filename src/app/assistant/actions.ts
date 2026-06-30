@@ -115,7 +115,10 @@ export async function askHub(question: string, history: HubTurn[] = [], chatId?:
   // knowledge + comms; admin → ADMIN; owner → everything. No session = open local
   // dev → owner. This is the gate that keeps owner-only facts out of lower roles.
   const me = await getCurrentUser();
-  const viewerRole: HubRole = (me ? contentTier(me.role) : "OWNER") as HubRole;
+  // No session = open/pre-cutover dev (owner-operated). Once enforcement is on, a
+  // missing session must FAIL CLOSED to the most restrictive tier, never OWNER.
+  const noUserTier: HubRole = process.env.AUTH_ENFORCE === "true" ? "CREATIVE" : "OWNER";
+  const viewerRole: HubRole = (me ? contentTier(me.role) : noUserTier) as HubRole;
 
   const key = await getSecret("ai");
   if (!key) {

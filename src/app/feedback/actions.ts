@@ -1,5 +1,7 @@
 "use server";
 
+import { requireOwner } from "@/lib/auth/guards";
+
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { notifyOwnerEmail } from "@/lib/integrations/google";
@@ -65,6 +67,7 @@ export async function decidePlatformFeedback(
   status: "APPROVED" | "DECLINED" | "DONE" | "NEW",
   adminNote?: string,
 ): Promise<void> {
+  await requireOwner();
   await prisma.platformFeedback.update({
     where: { id },
     data: {

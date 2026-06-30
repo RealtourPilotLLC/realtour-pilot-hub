@@ -153,6 +153,7 @@ model Appointment {
 
   @@index([projectId])
   @@index([startAt])
+  @@index([assignedToId])
 }
 
 model Client {
@@ -325,6 +326,10 @@ model Project {
 
   @@index([status])
   @@index([clientId])
+  @@index([photographerId])
+  @@index([editorId])
+  @@index([shootDate])
+  @@index([deliveredAt])
 }
 
 model Deliverable {
@@ -464,6 +469,8 @@ model SmartTask {
   @@index([status])
   @@index([projectId])
   @@index([clientId])
+  @@index([dueAt])
+  @@index([completedAt])
 }
 
 // Client feedback collected after delivery (via the post-delivery text's form
