@@ -240,8 +240,8 @@ export function TaskCard({ task }: { task: QueueTask }) {
         <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-medium ${SOURCE_CHIP[src.key]}`}>
           <SrcIcon className="size-3" /> {src.label}
         </span>
-        {delegated && assignee && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-brand/10 px-1.5 py-0.5 font-medium text-brand" title={`Delegated to ${assignee.name} — ${assignee.does}`}>
+        {assignee && task.assignedKey !== "kyle" && (
+          <span className="inline-flex items-center gap-1 rounded-md bg-brand/10 px-1.5 py-0.5 font-medium text-brand" title={delegated ? `Delegated to ${assignee.name} — ${assignee.does}` : `For ${assignee.name}`}>
             <Users className="size-3" /> {assignee.name}
           </span>
         )}
@@ -329,13 +329,14 @@ export function TaskCard({ task }: { task: QueueTask }) {
         )}
         {!done && (
           <select
-            value={delegated ? task.assignedKey ?? "" : ""}
+            value={task.assignedKey || "kyle"}
             disabled={assigning}
             onChange={(e) => assign(e.target.value)}
-            title="Delegate to an editor"
-            className={`w-[6.5rem] min-w-0 rounded-lg border px-2 py-1.5 text-xs focus:outline-none ${delegated ? "bg-brand/10 text-brand" : "bg-surface text-muted"}`}
+            title="Assign this task"
+            className={`w-[7rem] min-w-0 rounded-lg border px-2 py-1.5 text-xs focus:outline-none ${task.assignedKey && task.assignedKey !== "kyle" ? "bg-brand/10 text-brand" : "bg-surface text-muted"}`}
           >
-            <option value="">Needs you</option>
+            <option value="kyle">Kyle</option>
+            <option value="jordan">Jordan</option>
             {DELEGATE_KEYS.map((k) => (
               <option key={k} value={k}>→ {EDITORS[k].name}</option>
             ))}

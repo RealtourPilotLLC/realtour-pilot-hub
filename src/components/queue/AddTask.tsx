@@ -16,10 +16,10 @@ export function AddTask() {
   const [link, setLink] = useState("");
   const [due, setDue] = useState("");
   const [priority, setPriority] = useState("MEDIUM");
-  const [assignee, setAssignee] = useState("");
+  const [assignee, setAssignee] = useState("kyle");
   const [msg, setMsg] = useState<string | null>(null);
 
-  const reset = () => { setTitle(""); setNotes(""); setLink(""); setDue(""); setPriority("MEDIUM"); setAssignee(""); };
+  const reset = () => { setTitle(""); setNotes(""); setLink(""); setDue(""); setPriority("MEDIUM"); setAssignee("kyle"); };
   const submit = () =>
     start(async () => {
       setMsg(null);
@@ -84,7 +84,8 @@ export function AddTask() {
           <label className="flex flex-col gap-1 text-[11px] text-muted-2">
             Assign
             <select value={assignee} onChange={(e) => setAssignee(e.target.value)} className="rounded-lg border border-border bg-surface px-2 py-1.5 text-sm outline-none focus:border-brand">
-              <option value="">Needs you</option>
+              <option value="kyle">Kyle</option>
+              <option value="jordan">Jordan</option>
               {DELEGATE_KEYS.map((k) => <option key={k} value={k}>→ {EDITORS[k].name}</option>)}
             </select>
           </label>

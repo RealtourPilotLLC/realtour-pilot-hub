@@ -14,17 +14,20 @@
 // virtual/digital STAGING direction — is the ADMIN's (Kyle), even "for the video".
 // ---------------------------------------------------------------------------
 
-export type EditorKey = "kyle" | "creative_director" | "kim" | "remar" | "luma" | "autohdr" | "cubicasa";
+export type EditorKey = "kyle" | "jordan" | "creative_director" | "kim" | "remar" | "luma" | "autohdr" | "cubicasa";
 
 export type EditorMeta = {
   key: EditorKey;
   name: string;
-  kind: "admin" | "in_house" | "external";
+  kind: "admin" | "owner" | "in_house" | "external";
   does: string;
 };
 
 export const EDITORS: Record<EditorKey, EditorMeta> = {
   kyle: { key: "kyle", name: "Kyle", kind: "admin", does: "QC (photos, floor plans, 3D, video), item removal, virtual staging, declutter, photo fixes" },
+  // Jordan (owner) — tasks he handles personally: decisions, approvals, client
+  // calls, creative sign-off. An operator like Kyle (not an editor delegation).
+  jordan: { key: "jordan", name: "Jordan", kind: "owner", does: "owner decisions, approvals, creative sign-off" },
   // The Creative Director owns scripting + creative direction (currently Jordan).
   creative_director: { key: "creative_director", name: "Creative Director", kind: "in_house", does: "video scripting + creative direction" },
   kim: { key: "kim", name: "Kim", kind: "in_house", does: "personal-branding / monthly social content" },
@@ -35,16 +38,26 @@ export const EDITORS: Record<EditorKey, EditorMeta> = {
 };
 
 export const EDITOR_KEYS = Object.keys(EDITORS) as EditorKey[];
-// The ones you delegate to (everyone except the admin). Order = how they list.
+// The in-house "operators" who work the daily queue (vs. editors we delegate to).
+// Their tasks show under "Needs <name>", not the delegated-editor groups.
+export const OPERATOR_KEYS: EditorKey[] = ["kyle", "jordan"];
+// The ones you delegate editing work to (everyone except the operators). Order =
+// how they list.
 export const DELEGATE_KEYS: EditorKey[] = ["creative_director", "kim", "remar", "luma", "autohdr", "cubicasa"];
 
 export function editorMeta(key: string | null | undefined): EditorMeta | null {
   return key && key in EDITORS ? EDITORS[key as EditorKey] : null;
 }
 
-// A task is "delegated" when it's assigned to someone other than the admin.
+// A task is "delegated" when it's assigned to an EDITOR — i.e. not one of the
+// operators (Kyle/Jordan), whose work stays in their own "Needs <name>" group.
 export function isDelegated(key: string | null | undefined): boolean {
-  return !!key && key !== "kyle" && key in EDITORS;
+  return !!key && !(OPERATOR_KEYS as string[]).includes(key) && key in EDITORS;
+}
+
+// Which operator owns a non-delegated task (defaults to Kyle when unset).
+export function operatorFor(key: string | null | undefined): "kyle" | "jordan" {
+  return key === "jordan" ? "jordan" : "kyle";
 }
 
 // Best-effort: who should an editing instruction go to, from its text. Returns

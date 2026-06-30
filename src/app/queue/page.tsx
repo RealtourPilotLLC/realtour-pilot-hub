@@ -8,7 +8,7 @@ import { taskToView } from "@/lib/taskView";
 import { prisma } from "@/lib/prisma";
 import { recentProjectWhere } from "@/lib/recency";
 import { etDayStartUtc } from "@/lib/datetime";
-import { isDelegated, EDITORS, DELEGATE_KEYS, type EditorKey } from "@/lib/editors";
+import { isDelegated, operatorFor, EDITORS, DELEGATE_KEYS, type EditorKey } from "@/lib/editors";
 
 export const dynamic = "force-dynamic";
 
@@ -69,12 +69,12 @@ export default async function DailyTasksPage() {
 
   const views = tasks.map(taskToView);
   const delegated = views.filter((v) => isDelegated(v.assignedKey));
-  const needsYou = views.filter((v) => !isDelegated(v.assignedKey));
-
-  const confirmations = needsYou.filter((v) => category(v.taskType) === "confirmations").sort(cmp);
-  const comms = needsYou.filter((v) => category(v.taskType) === "comms").sort(cmp);
-  const revisions = needsYou.filter((v) => category(v.taskType) === "revisions").sort(cmp);
-  const qc = needsYou.filter((v) => category(v.taskType) === "qc").sort(cmp);
+  // Non-delegated work belongs to an operator (Kyle or Jordan) — shown under
+  // "Needs Kyle" / "Needs Jordan" so each is assigned to a person, not a vague
+  // "you". Unset defaults to Kyle (he runs the daily queue).
+  const operators = views.filter((v) => !isDelegated(v.assignedKey));
+  const kyleViews = operators.filter((v) => operatorFor(v.assignedKey) === "kyle");
+  const jordanViews = operators.filter((v) => operatorFor(v.assignedKey) === "jordan");
 
   const byEditor = DELEGATE_KEYS
     .map((k: EditorKey) => ({ key: k, meta: EDITORS[k], items: delegated.filter((v) => v.assignedKey === k).sort(cmp) }))
@@ -84,13 +84,46 @@ export default async function DailyTasksPage() {
   const oc = (items: QueueTask[]) => items.filter(isOverdue).length;
   const nothing = views.length === 0;
 
+  // The category-grouped cards for one operator (Kyle / Jordan).
+  const personSection = (name: string, set: QueueTask[]) => {
+    if (set.length === 0) return null;
+    const confirmations = set.filter((v) => category(v.taskType) === "confirmations").sort(cmp);
+    const comms = set.filter((v) => category(v.taskType) === "comms").sort(cmp);
+    const revisions = set.filter((v) => category(v.taskType) === "revisions").sort(cmp);
+    const qc = set.filter((v) => category(v.taskType) === "qc").sort(cmp);
+    return (
+      <div className="space-y-5">
+        <div className="flex items-center gap-2 px-1 pt-1">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-2">Needs {name}</h2>
+          <span className="text-xs text-muted-2">· {set.length}</span>
+        </div>
+        {comms.length > 0 && (
+          <GroupCard icon={MessageSquare} title="Replies & admin" accent="#38bdf8" items={comms} overdue={oc(comms)}
+            blurb="Messages to reply to, new leads, delivery texts, and decisions." />
+        )}
+        {confirmations.length > 0 && (
+          <GroupCard icon={MessageSquareText} title="Confirmation texts" accent="#fbbf24" items={confirmations} overdue={oc(confirmations)}
+            blurb="Confirm upcoming shoots with the client — the text is pre-drafted, just review and send." />
+        )}
+        {revisions.length > 0 && (
+          <GroupCard icon={PencilLine} title="Revisions" accent="#fb7185" items={revisions} overdue={oc(revisions)}
+            blurb="Client change requests after delivery — assign each to the right editor when you action it." />
+        )}
+        {qc.length > 0 && (
+          <GroupCard icon={PackageCheck} title="QC & deliver" accent="#34d399" items={qc} overdue={oc(qc)}
+            blurb="Quality-check content as it lands, then deliver." />
+        )}
+      </div>
+    );
+  };
+
   return (
     <div>
       <TaskFocus />
       <PageHeader
         eyebrow="Eastern time"
         title="Daily Tasks"
-        subtitle={`${needsYou.length} need you · ${delegated.length} delegated${overdueCount ? ` · ${overdueCount} overdue` : ""}`}
+        subtitle={`${operators.length} for Kyle & Jordan · ${delegated.length} delegated${overdueCount ? ` · ${overdueCount} overdue` : ""}`}
         actions={
           <div className="flex items-center gap-2">
             {overdueCount > 0 && <Badge color="#dc2626" soft="#fee2e2">{overdueCount} overdue</Badge>}
@@ -107,29 +140,11 @@ export default async function DailyTasksPage() {
           </div>
         ) : (
           <>
-            {/* NEEDS YOU */}
-            <div className="flex items-center gap-2 px-1 pt-1">
-              <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-2">Needs you</h2>
-              <span className="text-xs text-muted-2">· {needsYou.length}</span>
-            </div>
-            {comms.length > 0 && (
-              <GroupCard icon={MessageSquare} title="Replies & admin" accent="#38bdf8" items={comms} overdue={oc(comms)}
-                blurb="Messages to reply to, new leads, delivery texts, and decisions." />
-            )}
-            {confirmations.length > 0 && (
-              <GroupCard icon={MessageSquareText} title="Confirmation texts" accent="#fbbf24" items={confirmations} overdue={oc(confirmations)}
-                blurb="Confirm upcoming shoots with the client — the text is pre-drafted, just review and send." />
-            )}
-            {revisions.length > 0 && (
-              <GroupCard icon={PencilLine} title="Revisions" accent="#fb7185" items={revisions} overdue={oc(revisions)}
-                blurb="Client change requests after delivery — assign each to the right editor when you action it." />
-            )}
-            {qc.length > 0 && (
-              <GroupCard icon={PackageCheck} title="QC & deliver" accent="#34d399" items={qc} overdue={oc(qc)}
-                blurb="Quality-check content as it lands, then deliver." />
-            )}
-            {confirmations.length + comms.length + revisions.length + qc.length === 0 && (
-              <p className="rounded-2xl border border-dashed bg-surface px-4 py-6 text-center text-sm text-muted">Nothing needs you right now.</p>
+            {/* OPERATORS — what Kyle / Jordan each need to action */}
+            {personSection("Kyle", kyleViews)}
+            {personSection("Jordan", jordanViews)}
+            {kyleViews.length + jordanViews.length === 0 && (
+              <p className="rounded-2xl border border-dashed bg-surface px-4 py-6 text-center text-sm text-muted">Nothing needs Kyle or Jordan right now.</p>
             )}
 
             {/* DELEGATED */}

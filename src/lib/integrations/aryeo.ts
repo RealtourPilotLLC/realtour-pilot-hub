@@ -546,23 +546,20 @@ const PRODUCT_DELIVERABLES_RAW: [string, DeliverableType[]][] = [
 const normProduct = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 const PRODUCT_DELIVERABLES = new Map(PRODUCT_DELIVERABLES_RAW.map(([t, types]) => [normProduct(t), types]));
 
-// Products whose reel/video is PREMIUM or LUXURY/CINEMATIC (3-4 day turnaround).
-// Everything else's reel/video is standard (1-2 days). Their reel/video
-// deliverables are labeled "Premium ..." so the turnaround engine can tell.
-const PREMIUM_PRODUCTS = new Set([
-  "Premium Social Media Reel",
-  "Premium Cinematic Video",
-  "STR Luxury Cinematic Video Tour (with drone video)",
-  "STR GOLD BUNDLE",
-  "STR PRO BUNDLE",
-  "STR Photography | Video | Drone Aerial Photos | Real Twilight",
-  "EVERYTHING BUNDLE - Photography, Video, Drone, Zillow 3D Tour/Floor Plan, & More!",
-  "GOLD BUNDLE - Photography, Video, Drone, 2D Floor Plan, & More!",
-  "DIAMOND BUNDLE - The Ultimate Real Estate Marketing Package",
-  "REALTOUR PRO BUNDLE - Top Tier Luxury Marketing",
-  "THE PLATINUM BUNDLE - High-End Real Estate Marketing Package",
-  "SOCIAL MEDIA INFLUENCER - Dominate Social Media, Build Your Brand.",
-].map(normProduct));
+// Whether a product's reel/video is PREMIUM (→ Luma, 3–4 day turnaround) vs
+// STANDARD (→ in-house Remar/Kim, 1–2 days). Premium is signalled by the product
+// NAME: explicit Premium/Luxury products and the genuinely high-end tiers
+// (Platinum, Diamond/Ultimate, RealTour Pro "Top Tier Luxury", Influencer).
+//
+// IMPORTANT: the generic tier bundles — Silver / Gold / Aerial / Basics /
+// EVERYTHING / STR combos — include a STANDARD reel/video, NOT a premium one, so
+// they must NOT match here. Anything explicitly named "Standard …" is never
+// premium. (Per Jordan: the EVERYTHING bundle has no premium reels.)
+function isPremiumProduct(name: string): boolean {
+  const t = name.toLowerCase();
+  if (/\bstandard\b/.test(t)) return false;
+  return /\b(premium|luxury|platinum|diamond|influencer|ultimate|high[\s-]?end|top[\s-]?tier)\b/.test(t);
+}
 
 // Turn ONE ordered item into one or more deliverables. Uses the authoritative
 // per-product map first (exact, hand-verified from descriptions); falls back to
@@ -573,7 +570,7 @@ export function itemToDeliverables(item: AryeoOrderItem): ParsedDeliverable[] {
 
   const mapped = PRODUCT_DELIVERABLES.get(normProduct(title));
   if (mapped) {
-    const premium = PREMIUM_PRODUCTS.has(normProduct(title));
+    const premium = isPremiumProduct(title);
     return mapped.map((type) => ({
       type,
       label: premium && (type === "SOCIAL_REEL" || type === "VIDEO") ? `Premium ${TYPE_LABEL[type]}` : (TYPE_LABEL[type] ?? title),
@@ -1386,6 +1383,40 @@ export async function reclassifyAryeoDeliverables(): Promise<{ projects: number;
 
   return { projects: changed, before, after };
 }
+
+// Surgical re-label: fix deliverables whose "Premium …" label came from the OLD
+// over-broad premium list (e.g. the EVERYTHING bundle). Re-derives the correct
+// label per type from the live order items and UPDATES IN PLACE — so unlike a
+// full re-derive it preserves each deliverable's status, upload tick, and notes.
+// Bounded to projects that actually have a premium video/reel right now.
+export async function relabelPremiumDeliverables(): Promise<{ scanned: number; relabeled: number }> {
+  const { prisma } = await import("@/lib/prisma");
+  const projects = await prisma.project.findMany({
+    where: {
+      aryeoOrderId: { not: null },
+      deliverables: { some: { type: { in: ["VIDEO", "SOCIAL_REEL"] }, label: { startsWith: "Premium" } } },
+    },
+    select: { id: true, aryeoOrderId: true, deliverables: { select: { id: true, type: true, label: true } } },
+  });
+  let scanned = 0, relabeled = 0;
+  for (const proj of projects) {
+    scanned++;
+    let order: AryeoOrder;
+    try { order = await Aryeo.order(proj.aryeoOrderId!); } catch { continue; }
+    const parsed = dedupeParsedDeliverables((order.items ?? []).filter((it) => !it.is_canceled).flatMap(itemToDeliverables));
+    const want = new Map<string, string>();
+    for (const p of parsed) want.set(p.type, p.label);
+    for (const d of proj.deliverables) {
+      const desired = want.get(d.type);
+      if (desired && desired !== d.label) {
+        await prisma.deliverable.update({ where: { id: d.id }, data: { label: desired } });
+        relabeled++;
+      }
+    }
+  }
+  return { scanned, relabeled };
+}
+
 type DeliverableStatusValue = "PENDING" | "UPLOADED" | "IN_PROGRESS" | "DONE" | "FLAGGED";
 
 // Fetch a listing's media live (for the project detail gallery). Returns a

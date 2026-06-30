@@ -256,22 +256,32 @@ export function ProjectTracker({
     return sorted;
   }, [boardFiltered, showStatusTabs, statusTab, sort, q]);
 
-  // The Undelivered tab is grouped by shoot date (soonest first; undated last) so
-  // it reads like a shoot schedule. Other tabs stay as one flat list.
-  const grouped = showStatusTabs && statusTab === "undelivered";
+  // Undelivered groups by SHOOT date (soonest first) so it reads like a shoot
+  // schedule; Delivered groups by DELIVERY date (most recent first). Undated rows
+  // sort last. Other tabs stay as one flat list.
+  const groupMode: "shoot" | "delivered" | null =
+    showStatusTabs && statusTab === "undelivered" ? "shoot"
+    : showStatusTabs && statusTab === "delivered" ? "delivered"
+    : null;
   const groups = useMemo(() => {
-    if (!grouped) return null;
+    if (!groupMode) return null;
+    const isoOf = (r: TrackerRow) => (groupMode === "delivered" ? r.deliveredISO : r.shootISO);
     const map = new Map<string, TrackerRow[]>();
     for (const r of visible) {
-      const key = r.shootISO ? etDayKey(new Date(r.shootISO)) : "none";
+      const iso = isoOf(r);
+      const key = iso ? etDayKey(new Date(iso)) : "none";
       const arr = map.get(key);
       if (arr) arr.push(r);
       else map.set(key, [r]);
     }
     return [...map.keys()]
-      .sort((a, b) => (a === "none" ? 1 : b === "none" ? -1 : a.localeCompare(b)))
+      .sort((a, b) => {
+        if (a === "none") return 1;
+        if (b === "none") return -1;
+        return groupMode === "delivered" ? b.localeCompare(a) : a.localeCompare(b);
+      })
       .map((k) => ({ key: k, rows: map.get(k)! }));
-  }, [grouped, visible]);
+  }, [groupMode, visible]);
 
   const boards: { key: Board; label: string; icon: typeof Layers; n: number }[] = [
     { key: "all", label: "All", icon: Layers, n: counts.all },
