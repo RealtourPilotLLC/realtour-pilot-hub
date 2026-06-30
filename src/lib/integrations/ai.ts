@@ -19,7 +19,9 @@ export function aiConfigured(key?: string) {
 // Jordan's house style — kept tight so it steers tone without bloating tokens.
 const STYLE = `You write as the RealTour Pilot team (a real estate media agency). Voice: warm, confident, accountable, solution-first. Never pushy or defensive.
 HARD RULES: never use an em dash or double dash. No bold. No emojis. Do not use the words "hidden gem", "gem", "move the needle", "break the mold", or "deal breaker".
-Prefer "investment" over "price", "fully committed" over "booked", "thank you for your patience" over "sorry". Use "we" not "I". Acknowledge once, take ownership, give the clear next step, then stop. Leave room for recourse ("let us know if you need anything"). Keep texts short and copy-paste ready. When scheduling, offer two specific options with exact times. Sign-off only if it reads like a full email, as: "In the Spirit of Success, Jordan Spackman".`;
+Prefer "investment" over "price", "fully committed" over "booked", "thank you for your patience" over "sorry". Use "we" not "I". Acknowledge once, take ownership, give the clear next step, then stop. Leave room for recourse ("let us know if you need anything"). Keep texts short and copy-paste ready.
+NEVER invent specifics you were not given: do not make up dates, times, availability, prices, fees, refunds, discounts, or delivery promises, and never say "no additional cost" / "free" unless a policy or the context says so. When scheduling, only propose real openings you were given; otherwise ask what works for them or say we will confirm a time. When a policy is provided, follow it exactly and do not contradict it.
+Sign-off only if it reads like a full email, as: "In the Spirit of Success, Jordan Spackman".`;
 
 // Low-level POST to the Messages API with transient-failure retry (529/429/5xx/
 // network). Returns the parsed JSON response (caller pulls text / tool_use out).
@@ -237,6 +239,7 @@ export async function draftReplyWithContext(ctx: {
   isGroup?: boolean;
   note?: string | null;
   availability?: string | null; // real open shoot dates (from Aryeo scheduling)
+  policies?: string | null; // agency policies the reply must follow (fees, weather, scheduling)
 }): Promise<string> {
   const turns = ctx.transcript.filter((t) => t.text && t.text.trim()).slice(-24);
   const lines = turns.map((t) => {
@@ -263,7 +266,7 @@ export async function draftReplyWithContext(ctx: {
     ctx.isGroup ? " GROUP" : ""
   } conversation. Read the whole thread first, then answer the client's most recent message.
 
-${profile ? `Who you're talking to:\n${profile}\n` : ""}
+${profile ? `Who you're talking to:\n${profile}\n` : ""}${ctx.policies ? `\nAgency policies you MUST follow (never contradict these; never promise anything they don't allow):\n${ctx.policies}\n` : ""}
 Conversation so far (oldest first):
 """
 ${lines.join("\n")}
@@ -272,7 +275,8 @@ ${lastClient ? `\nThe message to reply to:\n"""\n${lastClient.text!.trim().slice
 
 Rules:
 - Use the conversation for context. If a question was already answered or a time already proposed, do not repeat it; move things forward.
-- Only state facts present in the thread or profile above. Do NOT invent dates, prices, delivery times, or commitments. If you need info we have not stated, ask for it or say we will confirm.
+- Only state facts present in the thread, profile, or policies above. Do NOT invent dates, prices, delivery times, fees, or commitments. If you need info we have not stated, ask for it or say we will confirm.
+- Follow the agency policies above exactly. When a policy answers the client's question, explain it plainly in the reply instead of saying you will "confirm" or "check" it. Never promise a free reschedule, refund, waived fee, or "no additional cost" unless a policy explicitly allows it; if a fee or condition may apply, say so plainly and kindly.
 - If the client is asking about availability / when we can shoot and "open shoot availability" is listed above, offer 2-4 of those exact open dates and ask which works (you MAY use those dates — they're real). Never offer a date that isn't listed.
 - If the latest message needs no reply (a thank-you, a confirmation, an emoji), respond with exactly: NO_REPLY_NEEDED
 ${ctx.isGroup ? "- This is a group thread; address the group naturally, not one person.\n" : ""}

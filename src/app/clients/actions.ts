@@ -166,6 +166,8 @@ export async function draftEmailReply(clientId: string): Promise<ActionResult> {
   }
 
   try {
+    const { relevantPolicies } = await import("@/lib/policies");
+    const policies = await relevantPolicies(lastText);
     const { draftReplyWithContext } = await import("@/lib/integrations/ai");
     const draft = await draftReplyWithContext({
       channel: "email",
@@ -176,6 +178,7 @@ export async function draftEmailReply(clientId: string): Promise<ActionResult> {
       projects: client?.projects ?? [],
       transcript,
       availability,
+      policies,
     });
     if (/^\s*NO_REPLY_NEEDED\s*$/i.test(draft)) return { ok: false, message: "Looks handled — no reply needed here." };
     return {

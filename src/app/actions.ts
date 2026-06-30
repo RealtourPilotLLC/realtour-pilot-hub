@@ -312,18 +312,78 @@ export async function draftTaskReply(
   }
   const task = await prisma.smartTask.findUnique({
     where: { id: taskId },
-    include: { client: { select: { name: true } } },
+    include: {
+      client: {
+        select: {
+          name: true, segment: true, socialClient: true, socialPlan: true,
+          projects: { orderBy: { orderedAt: { sort: "desc", nulls: "last" } }, take: 6, select: { title: true, status: true } },
+        },
+      },
+    },
   });
   if (!task) return { ok: false, error: "Task not found." };
+
+  const channel = task.source === "gmail" ? "email" : "text";
+  const message = task.description || task.title;
+
   try {
-    const { draftReply } = await import("@/lib/integrations/ai");
-    const text = await draftReply({
-      channel: task.source === "gmail" ? "email" : "text",
+    // Read the actual back-and-forth (OpenPhone + Gmail + Slack all land in
+    // CommLog) so the draft answers the real conversation, not just the task line.
+    type Turn = { role: "client" | "us"; text: string; at?: string | null; sender?: string | null };
+    let transcript: Turn[] = [];
+    if (task.clientId) {
+      const comms = await prisma.commLog.findMany({
+        where: { clientId: task.clientId },
+        orderBy: { occurredAt: "desc" },
+        take: 16,
+        select: { direction: true, body: true, subject: true, occurredAt: true, contactName: true },
+      });
+      transcript = comms.reverse().map((c) => ({
+        role: c.direction === "out" ? ("us" as const) : ("client" as const),
+        text: [c.subject, c.body].filter(Boolean).join("\n").slice(0, 600),
+        at: c.occurredAt ? c.occurredAt.toISOString() : null,
+        sender: c.direction === "out" ? null : c.contactName || task.client?.name || null,
+      }));
+    }
+    // Make sure there's a client turn to answer (leads / sparse threads).
+    if (!transcript.some((t) => t.role === "client")) {
+      transcript.push({ role: "client", text: message, at: null, sender: task.client?.name ?? null });
+    }
+
+    // If they're asking about scheduling, pull REAL open dates from Aryeo so the
+    // draft offers actual openings instead of inventing them.
+    let availability: string | null = null;
+    const askText = `${message} ${transcript.filter((t) => t.role === "client").map((t) => t.text).join(" ")}`;
+    if (/\b(availab|when can|what (day|days|time|times)|schedul|book|come out|opening|calendar|times? work|soonest|reschedul)\b/i.test(askText)) {
+      try {
+        const { getSchedulingAvailability } = await import("@/lib/integrations/aryeo");
+        const { etDate } = await import("@/lib/datetime");
+        const slots = await getSchedulingAvailability({ limit: 6 });
+        if (slots?.length) availability = slots.map((s) => etDate(new Date(`${s.date}T12:00:00Z`))).join(", ");
+      } catch { /* draft without availability */ }
+    }
+
+    // Our taught policies (fees, weather/drone, scheduling) so the reply follows
+    // them and never promises something against policy (e.g. a free weather return).
+    const { relevantPolicies } = await import("@/lib/policies");
+    const policies = await relevantPolicies(askText);
+
+    const { draftReplyWithContext } = await import("@/lib/integrations/ai");
+    const text = await draftReplyWithContext({
+      channel,
       clientName: task.client?.name ?? null,
+      segment: task.client?.segment ?? null,
+      socialPlan: task.client?.socialClient ? (task.client?.socialPlan ?? "yes") : null,
       propertyAddress: task.propertyAddress,
-      message: task.description || task.title,
+      projects: task.client?.projects ?? [],
+      transcript,
+      availability,
+      policies,
       note: task.reasonCreated,
     });
+    if (/^\s*NO_REPLY_NEEDED\s*$/i.test(text)) {
+      return { ok: false, error: "This thread looks handled — nothing new to reply to. Write a note if you still want to reach out." };
+    }
     return { ok: true, text };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Draft failed." };
