@@ -1,4 +1,4 @@
-import { CheckCircle2, MessageSquare, PencilLine, PackageCheck, Users, ChevronDown, type LucideIcon } from "lucide-react";
+import { CheckCircle2, MessageSquare, MessageSquareText, PencilLine, PackageCheck, Users, ChevronDown, type LucideIcon } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { TaskCard, type QueueTask } from "@/components/queue/TaskCard";
@@ -18,10 +18,11 @@ const rank = (t: QueueTask) => PRIORITY_RANK[t.priority] ?? 9;
 const dueMs = (t: QueueTask) => (t.dueAt ? new Date(t.dueAt).getTime() : Infinity);
 
 // Which "Needs you" group a non-delegated task belongs to.
-function category(taskType: string): "comms" | "revisions" | "qc" {
+function category(taskType: string): "confirmations" | "comms" | "revisions" | "qc" {
+  if (["confirmation_text", "appointment_prep"].includes(taskType)) return "confirmations";
   if (taskType === "revision") return "revisions";
   if (["media_qa", "image_fixes", "delivery", "feedback_review"].includes(taskType)) return "qc";
-  return "comms"; // replies, instructions, leads, confirmations, delivery texts, decisions
+  return "comms"; // replies, instructions, leads, delivery texts, decisions
 }
 
 // In-progress statuses that read as "being worked" for the delegated summary.
@@ -70,6 +71,7 @@ export default async function DailyTasksPage() {
   const delegated = views.filter((v) => isDelegated(v.assignedKey));
   const needsYou = views.filter((v) => !isDelegated(v.assignedKey));
 
+  const confirmations = needsYou.filter((v) => category(v.taskType) === "confirmations").sort(cmp);
   const comms = needsYou.filter((v) => category(v.taskType) === "comms").sort(cmp);
   const revisions = needsYou.filter((v) => category(v.taskType) === "revisions").sort(cmp);
   const qc = needsYou.filter((v) => category(v.taskType) === "qc").sort(cmp);
@@ -112,7 +114,11 @@ export default async function DailyTasksPage() {
             </div>
             {comms.length > 0 && (
               <GroupCard icon={MessageSquare} title="Replies & admin" accent="#38bdf8" items={comms} overdue={oc(comms)}
-                blurb="Messages to reply to, new leads, confirmations, delivery texts, and decisions." />
+                blurb="Messages to reply to, new leads, delivery texts, and decisions." />
+            )}
+            {confirmations.length > 0 && (
+              <GroupCard icon={MessageSquareText} title="Confirmation texts" accent="#fbbf24" items={confirmations} overdue={oc(confirmations)}
+                blurb="Confirm upcoming shoots with the client — the text is pre-drafted, just review and send." />
             )}
             {revisions.length > 0 && (
               <GroupCard icon={PencilLine} title="Revisions" accent="#fb7185" items={revisions} overdue={oc(revisions)}
@@ -122,7 +128,7 @@ export default async function DailyTasksPage() {
               <GroupCard icon={PackageCheck} title="QC & deliver" accent="#34d399" items={qc} overdue={oc(qc)}
                 blurb="Quality-check content as it lands, then deliver." />
             )}
-            {comms.length + revisions.length + qc.length === 0 && (
+            {confirmations.length + comms.length + revisions.length + qc.length === 0 && (
               <p className="rounded-2xl border border-dashed bg-surface px-4 py-6 text-center text-sm text-muted">Nothing needs you right now.</p>
             )}
 
