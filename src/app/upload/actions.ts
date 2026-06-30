@@ -5,9 +5,7 @@ import { requireDeliverableAccess, requireShootAccess, requireUploadFileAccess }
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { ProjectStatus, DeliverableStatus, ActivityType } from "@prisma/client";
-import { saveUpload, writeFile, deleteFile } from "@/lib/storage";
-import { buildEditorBriefPdf } from "@/lib/editor-pdf";
-import { getProject } from "@/lib/queries";
+import { saveUpload, deleteFile } from "@/lib/storage";
 
 /** Save one or more files, optionally tied to a deliverable, and mark it uploaded. */
 export async function uploadFiles(
@@ -176,23 +174,21 @@ export async function finalizeUpload(
     });
   }
 
-  // Generate the editor brief PDF from the fully-loaded project.
-  const full = await getProject(projectId);
-  let pdfPath: string | null = null;
-  if (full) {
-    const bytes = await buildEditorBriefPdf(full);
-    pdfPath = await writeFile(projectId, "editor-brief.pdf", bytes);
-    await prisma.project.update({
-      where: { id: projectId },
-      data: { editorPdfPath: pdfPath },
-    });
-  }
+  // The editor brief PDF is generated on demand from the project data
+  // (/api/projects/<id>/editor-brief) rather than written to disk — Vercel's
+  // filesystem is ephemeral, and this way the brief always reflects the latest
+  // details. Mark the link so the project + upload pages surface it.
+  const pdfPath = `/api/projects/${projectId}/editor-brief`;
+  await prisma.project.update({
+    where: { id: projectId },
+    data: { editorPdfPath: pdfPath },
+  });
 
   await prisma.activity.create({
     data: {
       projectId,
       type: ActivityType.FILE,
-      body: "Photographer completed upload. Editor brief PDF generated and added to the project folder.",
+      body: "Photographer completed upload. Editor brief is ready for the editors.",
     },
   });
 

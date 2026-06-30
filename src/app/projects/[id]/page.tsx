@@ -51,7 +51,7 @@ import { DeliverableStatusSelect } from "@/components/project/DeliverableStatusS
 import { PRIORITY_META, DELIVERABLE_META, refinedDeliverableLabel, stageMeta } from "@/lib/pipeline";
 import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { formatMoney, stripHtml } from "@/lib/utils";
-import { format, formatDistanceToNow } from "date-fns";
+import { formatDistanceToNow } from "date-fns";
 import { etDateTime, etDateYear } from "@/lib/datetime";
 import { ActivityType } from "@prisma/client";
 
@@ -341,7 +341,7 @@ export default async function ProjectPage({
               action={
                 project.editorPdfPath ? (
                   <a
-                    href={`/api/file?path=${encodeURIComponent(project.editorPdfPath)}`}
+                    href={`/api/projects/${project.id}/editor-brief`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-1.5 rounded-lg bg-brand-soft px-2.5 py-1 text-xs font-medium text-brand hover:opacity-90"

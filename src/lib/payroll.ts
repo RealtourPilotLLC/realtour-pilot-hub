@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { driveBetween } from "@/lib/travel";
-import { etDayKey } from "@/lib/datetime";
+import { etDayKey, etDayStartUtc } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // Creative payroll engine.
@@ -32,9 +32,11 @@ const keyOf = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 
 export type PayPeriod = { startKey: string; endKey: string; payoutKey: string };
 
-// The pay period containing a given yyyy-mm-dd (defaults to today).
+// The pay period containing a given yyyy-mm-dd (defaults to today, in ET — the
+// business's timezone. Using the UTC day here would roll the period over a few
+// hours early on the evening a period ends.)
 export function payPeriodFor(dateKey?: string): PayPeriod {
-  const today = keyOf(Date.now());
+  const today = etDayKey(new Date());
   const d = noonUTC(dateKey && /^\d{4}-\d{2}-\d{2}$/.test(dateKey) ? dateKey : today);
   const anchor = noonUTC(PERIOD_ANCHOR);
   const idx = Math.floor((d - anchor) / (PERIOD_DAYS * DAY_MS));
@@ -49,6 +51,18 @@ export function payPeriodFor(dateKey?: string): PayPeriod {
 // Shift a period start by N periods (negative = earlier).
 export function shiftPeriod(startKey: string, periods: number): PayPeriod {
   return payPeriodFor(keyOf(noonUTC(startKey) + periods * PERIOD_DAYS * DAY_MS));
+}
+
+// The [start, end] instant window for a period, anchored to ET calendar days.
+// A shoot at 8pm ET on the last day of a period is 00:00 UTC the next day — a
+// UTC midnight-to-midnight window would push it (and its pay) into the next
+// period. These bounds are ET-midnight(startKey) → last-ms-of(endKey, ET), so
+// pay lands in the period the shoot actually happened in.
+export function periodBounds(p: { startKey: string; endKey: string }): { start: Date; end: Date } {
+  const start = etDayStartUtc(new Date(p.startKey + "T12:00:00Z"));
+  const endDayStart = etDayStartUtc(new Date(p.endKey + "T12:00:00Z"));
+  const end = new Date(endDayStart.getTime() + DAY_MS - 1);
+  return { start, end };
 }
 
 export function shootPay(invoice: number, percent?: number | null, floor?: number | null): number {

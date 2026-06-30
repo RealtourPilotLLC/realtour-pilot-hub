@@ -197,15 +197,20 @@ export async function dropboxUploadPublic(path: string, bytes: Uint8Array): Prom
   return dropboxSharedLink(j.path_display ?? path);
 }
 
-export async function dropboxUpload(path: string, bytes: Buffer | Uint8Array): Promise<void> {
+export async function dropboxUpload(
+  path: string,
+  bytes: Buffer | Uint8Array,
+  opts: { overwrite?: boolean } = {},
+): Promise<void> {
   const token = await dropboxAccessToken();
+  const mode = opts.overwrite ? "overwrite" : "add";
   const res = await fetch("https://content.dropboxapi.com/2/files/upload", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
       ...(await pathRootHeader(token)),
       "Content-Type": "application/octet-stream",
-      "Dropbox-API-Arg": JSON.stringify({ path, mode: "add", autorename: true, mute: false }),
+      "Dropbox-API-Arg": JSON.stringify({ path, mode, autorename: !opts.overwrite, mute: false }),
     },
     body: new Uint8Array(bytes) as unknown as BodyInit,
     cache: "no-store",
@@ -213,5 +218,35 @@ export async function dropboxUpload(path: string, bytes: Buffer | Uint8Array): P
   if (!res.ok) {
     const t = await res.text();
     throw new DropboxError(`Dropbox upload failed: ${t.slice(0, 160)}`, res.status);
+  }
+}
+
+// Download a file's raw bytes (content API). Throws DropboxError (status 409 with
+// a path/not_found summary) when the file is missing.
+export async function dropboxDownload(path: string): Promise<Buffer> {
+  const token = await dropboxAccessToken();
+  const res = await fetch("https://content.dropboxapi.com/2/files/download", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(await pathRootHeader(token)),
+      "Dropbox-API-Arg": JSON.stringify({ path }),
+    },
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new DropboxError(`Dropbox download failed: ${t.slice(0, 160)}`, res.status);
+  }
+  return Buffer.from(await res.arrayBuffer());
+}
+
+// Delete a file/folder; a missing path is treated as success (idempotent).
+export async function dropboxDelete(path: string): Promise<void> {
+  try {
+    await dbx("files/delete_v2", { path });
+  } catch (e) {
+    if (e instanceof DropboxError && /not_found|path_lookup/i.test(e.message)) return;
+    throw e;
   }
 }

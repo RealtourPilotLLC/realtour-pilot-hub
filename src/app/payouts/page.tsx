@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Banknote, Car, SlidersHorizontal, ChevronLeft, ChevronRight, CalendarCheck, AlertTriangle } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
-import { computePayroll, payPeriodFor, shiftPeriod, unassignedShootsInRange } from "@/lib/payroll";
+import { computePayroll, payPeriodFor, shiftPeriod, periodBounds, unassignedShootsInRange } from "@/lib/payroll";
 import { PayoutCard } from "@/components/payouts/PayoutCard";
 import { usd } from "@/lib/money";
 
@@ -22,8 +22,7 @@ export default async function PayoutsPage({
   const period = payPeriodFor(sp.start);
   const { startKey, endKey, payoutKey } = period;
 
-  const start = new Date(startKey + "T00:00:00.000Z");
-  const end = new Date(endKey + "T23:59:59.999Z");
+  const { start, end } = periodBounds(period);
 
   const [people, unassigned] = await Promise.all([
     computePayroll(start, end),
@@ -84,7 +83,7 @@ export default async function PayoutsPage({
             <div className="flex items-center gap-2 text-sm font-semibold text-warning">
               <AlertTriangle className="size-4" /> {unassigned.length} shoot{unassigned.length === 1 ? "" : "s"} this period have no photographer assigned
             </div>
-            <p className="mt-0.5 text-xs text-muted">Nobody is being paid for these — assign a photographer on the project so they're counted.</p>
+            <p className="mt-0.5 text-xs text-muted">Nobody is being paid for these — assign a photographer on the project so they&apos;re counted.</p>
             <div className="mt-2 flex flex-wrap gap-1.5">
               {unassigned.slice(0, 12).map((u) => (
                 <Link key={u.id} href={`/projects/${u.id}`} className="rounded-lg border bg-surface px-2 py-1 text-xs hover:bg-surface-2">

@@ -160,7 +160,10 @@ export async function getTeamMemberDetail(id: string) {
   if (!member) return null;
 
   const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  // First of the month in ET. The server runs in UTC, so `new Date(y, m, 1)`
+  // would bucket "this month" on the UTC month — off by a few hours near month
+  // boundaries (and a whole month for the first/last hours of a month).
+  const monthStart = etDayStartUtc(new Date(etDayKey(now).slice(0, 8) + "01T12:00:00Z"));
 
   const [upcoming, recentShoots, editingNow, feedback, uploads, shotCount, editCount] =
     await Promise.all([

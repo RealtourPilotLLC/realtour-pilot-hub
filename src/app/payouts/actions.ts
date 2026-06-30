@@ -73,10 +73,9 @@ export async function creativeStatementHtml(
   startKey: string,
 ): Promise<{ ok: boolean; html?: string; message?: string }> {
   await requireOwner();
-  const { computePayroll, payPeriodFor } = await import("@/lib/payroll");
+  const { computePayroll, payPeriodFor, periodBounds } = await import("@/lib/payroll");
   const period = payPeriodFor(startKey);
-  const start = new Date(period.startKey + "T00:00:00.000Z");
-  const end = new Date(period.endKey + "T23:59:59.999Z");
+  const { start, end } = periodBounds(period);
   const people = await computePayroll(start, end);
   const p = people.find((x) => x.member.id === memberId);
   if (!p) return { ok: false, message: "No payout for this creative in this period." };

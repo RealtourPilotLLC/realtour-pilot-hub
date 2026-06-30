@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, Fragment } from "react";
 import Link from "next/link";
 import { Star, FolderOpen, Film, Camera, Search, ArrowUpDown, Layers } from "lucide-react";
 import { StageSelector } from "@/components/project/StageSelector";
 import { Avatar } from "@/components/ui/Avatar";
 import { PRIORITY_META } from "@/lib/pipeline";
-import { etMonthDay, etDaysAgo } from "@/lib/datetime";
+import { etMonthDay, etDaysAgo, etDayKey, etDate } from "@/lib/datetime";
 import { cn } from "@/lib/utils";
 import type { ProjectStatus } from "@prisma/client";
 import type { TrackerRow } from "@/lib/tracker";
@@ -124,6 +124,70 @@ function FileLinks({ row }: { row: TrackerRow }) {
   );
 }
 
+// Heading for a shoot-date group in the Undelivered tab. Key is an ET day "key"
+// (yyyy-mm-dd) or "none" for shoots with no date yet.
+function groupLabel(key: string): string {
+  if (key === "none") return "No shoot date";
+  const d = new Date(key + "T12:00:00Z");
+  const rel = etDaysAgo(d);
+  if (rel === 0) return "Today";
+  if (rel === -1) return "Tomorrow";
+  if (rel === 1) return "Yesterday";
+  return etDate(d);
+}
+
+type AssigneeKind = "photographer" | "editor";
+
+function DesktopRow({ r, assignee }: { r: TrackerRow; assignee: AssigneeKind }) {
+  return (
+    <tr className="group transition-colors hover:bg-surface-2/40">
+      <td className="max-w-[260px] px-4 py-2.5">
+        <Link href={`/projects/${r.id}`} className="block truncate font-medium hover:text-brand">
+          {r.street}
+        </Link>
+        {r.client && <div className="truncate text-xs text-muted">{r.client}</div>}
+      </td>
+      <td className="px-3 py-2.5"><TypePill row={r} /></td>
+      <td className="max-w-[180px] px-3 py-2.5"><span className="block truncate text-xs text-foreground/80">{r.details}</span></td>
+      <td className="px-3 py-2.5"><StageSelector projectId={r.id} status={r.status as ProjectStatus} /></td>
+      <td className="px-3 py-2.5 text-xs"><DateCell iso={r.shootISO} /></td>
+      <td className="px-3 py-2.5 text-xs"><DateCell iso={r.dueISO} overdueCheck={!r.deliveredISO} /></td>
+      <td className="px-3 py-2.5"><Priority priority={r.priority} /></td>
+      <td className="max-w-[140px] px-3 py-2.5"><Assignee name={assignee === "editor" ? r.editor : r.photographer} color={assignee === "editor" ? r.editorColor : r.photographerColor} /></td>
+      <td className="px-3 py-2.5"><FileLinks row={r} /></td>
+    </tr>
+  );
+}
+
+function MobileCard({ r, assignee }: { r: TrackerRow; assignee: AssigneeKind }) {
+  return (
+    <div className="panel-shadow rounded-2xl border border-border bg-surface p-3">
+      <div className="flex items-start justify-between gap-2">
+        <Link href={`/projects/${r.id}`} className="min-w-0 font-medium leading-snug hover:text-brand">
+          <span className="block truncate">{r.street}</span>
+          {r.client && <span className="block truncate text-xs font-normal text-muted">{r.client}</span>}
+        </Link>
+        <Priority priority={r.priority} />
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <TypePill row={r} />
+        <span className="truncate text-xs text-muted">{r.details}</span>
+      </div>
+      <div className="mt-2.5 flex items-center justify-between gap-2">
+        <StageSelector projectId={r.id} status={r.status as ProjectStatus} />
+        <Assignee name={assignee === "editor" ? r.editor : r.photographer} color={assignee === "editor" ? r.editorColor : r.photographerColor} />
+      </div>
+      <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2.5 text-xs">
+        <span className="inline-flex items-center gap-3 text-muted">
+          <span>Shoot <DateCell iso={r.shootISO} /></span>
+          <span>Due <DateCell iso={r.dueISO} overdueCheck={!r.deliveredISO} /></span>
+        </span>
+        <FileLinks row={r} />
+      </div>
+    </div>
+  );
+}
+
 export function ProjectTracker({
   rows,
   showBoards = true,
@@ -191,6 +255,23 @@ export function ProjectTracker({
     }
     return sorted;
   }, [boardFiltered, showStatusTabs, statusTab, sort, q]);
+
+  // The Undelivered tab is grouped by shoot date (soonest first; undated last) so
+  // it reads like a shoot schedule. Other tabs stay as one flat list.
+  const grouped = showStatusTabs && statusTab === "undelivered";
+  const groups = useMemo(() => {
+    if (!grouped) return null;
+    const map = new Map<string, TrackerRow[]>();
+    for (const r of visible) {
+      const key = r.shootISO ? etDayKey(new Date(r.shootISO)) : "none";
+      const arr = map.get(key);
+      if (arr) arr.push(r);
+      else map.set(key, [r]);
+    }
+    return [...map.keys()]
+      .sort((a, b) => (a === "none" ? 1 : b === "none" ? -1 : a.localeCompare(b)))
+      .map((k) => ({ key: k, rows: map.get(k)! }));
+  }, [grouped, visible]);
 
   const boards: { key: Board; label: string; icon: typeof Layers; n: number }[] = [
     { key: "all", label: "All", icon: Layers, n: counts.all },
@@ -292,56 +373,34 @@ export function ProjectTracker({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {visible.map((r) => (
-                    <tr key={r.id} className="group transition-colors hover:bg-surface-2/40">
-                      <td className="max-w-[260px] px-4 py-2.5">
-                        <Link href={`/projects/${r.id}`} className="block truncate font-medium hover:text-brand">
-                          {r.street}
-                        </Link>
-                        {r.client && <div className="truncate text-xs text-muted">{r.client}</div>}
-                      </td>
-                      <td className="px-3 py-2.5"><TypePill row={r} /></td>
-                      <td className="max-w-[180px] px-3 py-2.5"><span className="block truncate text-xs text-foreground/80">{r.details}</span></td>
-                      <td className="px-3 py-2.5"><StageSelector projectId={r.id} status={r.status as ProjectStatus} /></td>
-                      <td className="px-3 py-2.5 text-xs"><DateCell iso={r.shootISO} /></td>
-                      <td className="px-3 py-2.5 text-xs"><DateCell iso={r.dueISO} overdueCheck={!r.deliveredISO} /></td>
-                      <td className="px-3 py-2.5"><Priority priority={r.priority} /></td>
-                      <td className="max-w-[140px] px-3 py-2.5"><Assignee name={assignee === "editor" ? r.editor : r.photographer} color={assignee === "editor" ? r.editorColor : r.photographerColor} /></td>
-                      <td className="px-3 py-2.5"><FileLinks row={r} /></td>
-                    </tr>
-                  ))}
+                  {groups
+                    ? groups.map((g) => (
+                        <Fragment key={g.key}>
+                          <tr className="bg-surface-2/50">
+                            <td colSpan={9} className="px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-2">
+                              {groupLabel(g.key)} <span className="text-muted-2/70">· {g.rows.length}</span>
+                            </td>
+                          </tr>
+                          {g.rows.map((r) => <DesktopRow key={r.id} r={r} assignee={assignee} />)}
+                        </Fragment>
+                      ))
+                    : visible.map((r) => <DesktopRow key={r.id} r={r} assignee={assignee} />)}
                 </tbody>
               </table>
             </div>
 
             {/* Mobile cards */}
             <div className="space-y-2.5 lg:hidden">
-              {visible.map((r) => (
-                <div key={r.id} className="panel-shadow rounded-2xl border border-border bg-surface p-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <Link href={`/projects/${r.id}`} className="min-w-0 font-medium leading-snug hover:text-brand">
-                      <span className="block truncate">{r.street}</span>
-                      {r.client && <span className="block truncate text-xs font-normal text-muted">{r.client}</span>}
-                    </Link>
-                    <Priority priority={r.priority} />
-                  </div>
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <TypePill row={r} />
-                    <span className="truncate text-xs text-muted">{r.details}</span>
-                  </div>
-                  <div className="mt-2.5 flex items-center justify-between gap-2">
-                    <StageSelector projectId={r.id} status={r.status as ProjectStatus} />
-                    <Assignee name={assignee === "editor" ? r.editor : r.photographer} color={assignee === "editor" ? r.editorColor : r.photographerColor} />
-                  </div>
-                  <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2.5 text-xs">
-                    <span className="inline-flex items-center gap-3 text-muted">
-                      <span>Shoot <DateCell iso={r.shootISO} /></span>
-                      <span>Due <DateCell iso={r.dueISO} overdueCheck={!r.deliveredISO} /></span>
-                    </span>
-                    <FileLinks row={r} />
-                  </div>
-                </div>
-              ))}
+              {groups
+                ? groups.map((g) => (
+                    <div key={g.key} className="space-y-2.5">
+                      <div className="px-1 pt-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-2">
+                        {groupLabel(g.key)} <span className="text-muted-2/70">· {g.rows.length}</span>
+                      </div>
+                      {g.rows.map((r) => <MobileCard key={r.id} r={r} assignee={assignee} />)}
+                    </div>
+                  ))
+                : visible.map((r) => <MobileCard key={r.id} r={r} assignee={assignee} />)}
             </div>
           </>
         )}

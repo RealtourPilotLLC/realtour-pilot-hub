@@ -143,12 +143,12 @@ export function UploadPortal({
             <span className="font-semibold">Submitted — editors notified</span>
           </div>
           <p className="mt-1 text-sm text-foreground/80">
-            Thanks! The editors know the files are in Dropbox. The editor brief was generated and added to the project folder.
+            Thanks! The editors know the files are in Dropbox, and the editor brief is ready for them.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             {pdfPath && (
               <a
-                href={`/api/file?path=${encodeURIComponent(pdfPath)}`}
+                href={pdfPath}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-1.5 rounded-lg bg-surface px-3 py-1.5 text-sm font-medium hover:bg-surface-2"
