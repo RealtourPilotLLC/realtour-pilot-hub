@@ -53,6 +53,7 @@ import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { formatMoney, stripHtml } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
 import { etDateTime, etDateYear } from "@/lib/datetime";
+import { listAssignees } from "@/lib/assignees";
 import { ActivityType } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
@@ -84,8 +85,9 @@ export default async function ProjectPage({
     redirect(viewer.role === "PHOTOGRAPHER" ? `/shoot/${id}` : "/");
   }
 
-  const [project, team] = await Promise.all([getProject(id), getTeam()]);
+  const [project, team, assigneeList] = await Promise.all([getProject(id), getTeam(), listAssignees()]);
   if (!project) notFound();
+  const assignees = assigneeList.map((a) => ({ key: a.key, name: a.name }));
 
   const priority = PRIORITY_META[project.priority];
   const specialRequests = project.activities.filter(
@@ -230,7 +232,7 @@ export default async function ProjectPage({
             <Section icon={ListTodo} title="Open tasks" count={project.smartTasks.length} flush>
               <div className="grid gap-3 p-5 sm:grid-cols-2">
                 {project.smartTasks.map((t) => (
-                  <TaskCard key={t.id} task={taskToView(t)} />
+                  <TaskCard key={t.id} task={taskToView(t)} assignees={assignees} />
                 ))}
               </div>
             </Section>

@@ -125,7 +125,15 @@ function summaryText(task: QueueTask): string | null {
   return null;
 }
 
-export function TaskCard({ task }: { task: QueueTask }) {
+// Fallback roster when the page didn't pass the live team (keeps older callers
+// working). The Daily Tasks queue + project page pass the full team via props.
+const FALLBACK_ASSIGNEES = [
+  { key: "kyle", name: "Kyle" },
+  { key: "jordan", name: "Jordan" },
+  ...DELEGATE_KEYS.map((k) => ({ key: k, name: EDITORS[k].name })),
+];
+
+export function TaskCard({ task, assignees }: { task: QueueTask; assignees?: { key: string; name: string }[] }) {
   const [pending, start] = useTransition();
   const [draft, setDraft] = useState<{ text?: string; error?: string } | null>(null);
   const [drafting, startDraft] = useTransition();
@@ -141,6 +149,8 @@ export function TaskCard({ task }: { task: QueueTask }) {
 
   const assignee = editorMeta(task.assignedKey);
   const delegated = isDelegated(task.assignedKey);
+  const roster = assignees ?? FALLBACK_ASSIGNEES;
+  const assigneeName = roster.find((a) => a.key === task.assignedKey)?.name ?? assignee?.name ?? null;
   const p = PRIORITY[task.priority] ?? PRIORITY.MEDIUM;
   const due = dueLabel(task.dueAt);
   const cameIn = cameInLabel(task.createdAt);
@@ -240,9 +250,9 @@ export function TaskCard({ task }: { task: QueueTask }) {
         <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-medium ${SOURCE_CHIP[src.key]}`}>
           <SrcIcon className="size-3" /> {src.label}
         </span>
-        {assignee && task.assignedKey !== "kyle" && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-brand/10 px-1.5 py-0.5 font-medium text-brand" title={delegated ? `Delegated to ${assignee.name} — ${assignee.does}` : `For ${assignee.name}`}>
-            <Users className="size-3" /> {assignee.name}
+        {assigneeName && task.assignedKey && task.assignedKey !== "kyle" && (
+          <span className="inline-flex items-center gap-1 rounded-md bg-brand/10 px-1.5 py-0.5 font-medium text-brand" title={delegated ? `Delegated to ${assigneeName}${assignee?.does ? ` — ${assignee.does}` : ""}` : `For ${assigneeName}`}>
+            <Users className="size-3" /> {assigneeName}
           </span>
         )}
         {cameIn && <span className="text-muted-2">· {cameIn}</span>}
@@ -333,12 +343,10 @@ export function TaskCard({ task }: { task: QueueTask }) {
             disabled={assigning}
             onChange={(e) => assign(e.target.value)}
             title="Assign this task"
-            className={`w-[7rem] min-w-0 rounded-lg border px-2 py-1.5 text-xs focus:outline-none ${task.assignedKey && task.assignedKey !== "kyle" ? "bg-brand/10 text-brand" : "bg-surface text-muted"}`}
+            className={`w-[7.5rem] min-w-0 rounded-lg border px-2 py-1.5 text-xs focus:outline-none ${task.assignedKey && task.assignedKey !== "kyle" ? "bg-brand/10 text-brand" : "bg-surface text-muted"}`}
           >
-            <option value="kyle">Kyle</option>
-            <option value="jordan">Jordan</option>
-            {DELEGATE_KEYS.map((k) => (
-              <option key={k} value={k}>→ {EDITORS[k].name}</option>
+            {roster.map((a) => (
+              <option key={a.key} value={a.key}>{a.name}</option>
             ))}
           </select>
         )}

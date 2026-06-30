@@ -169,9 +169,10 @@ export async function createManualTask(input: {
   const priIn = (input.priority || "MEDIUM").toUpperCase();
   const priority = ["URGENT", "HIGH", "MEDIUM", "LOW"].includes(priIn) ? priIn : "MEDIUM";
 
-  const { EDITOR_KEYS } = await import("@/lib/editors");
+  const { listAssignees } = await import("@/lib/assignees");
+  const validKeys = new Set((await listAssignees()).map((a) => a.key));
   const ak = input.assignedKey;
-  const assignedKey = ak && ak !== "kyle" && (EDITOR_KEYS as string[]).includes(ak) ? ak : null;
+  const assignedKey = ak && ak !== "kyle" && validKeys.has(ak) ? ak : null;
 
   let dueAt: Date | null = null;
   const dd = (input.dueDate || "").trim();
@@ -205,8 +206,9 @@ export async function createManualTask(input: {
 // to un-delegate. Keys validated against the editor roster (src/lib/editors.ts).
 export async function setTaskAssignee(taskId: string, key: string) {
   await requireAdmin();
-  const { EDITOR_KEYS } = await import("@/lib/editors");
-  const assignedKey = key && (EDITOR_KEYS as string[]).includes(key) ? key : null;
+  const { listAssignees } = await import("@/lib/assignees");
+  const validKeys = new Set((await listAssignees()).map((a) => a.key));
+  const assignedKey = key && validKeys.has(key) ? key : null;
   const t = await prisma.smartTask.update({
     where: { id: taskId },
     data: { assignedKey },

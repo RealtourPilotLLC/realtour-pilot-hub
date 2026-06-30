@@ -1,4 +1,6 @@
-import { CheckCircle2, MessageSquare, MessageSquareText, PencilLine, PackageCheck, Users, ChevronDown, type LucideIcon } from "lucide-react";
+import { CheckCircle2, MessageSquare, MessageSquareText, PencilLine, PackageCheck, ChevronDown, type LucideIcon } from "lucide-react";
+import Link from "next/link";
+import { Fragment } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { TaskCard, type QueueTask } from "@/components/queue/TaskCard";
@@ -8,7 +10,9 @@ import { taskToView } from "@/lib/taskView";
 import { prisma } from "@/lib/prisma";
 import { recentProjectWhere } from "@/lib/recency";
 import { etDayStartUtc } from "@/lib/datetime";
-import { isDelegated, operatorFor, EDITORS, DELEGATE_KEYS, type EditorKey } from "@/lib/editors";
+import { listAssignees, slugForName, firstName } from "@/lib/assignees";
+import { getCurrentUser } from "@/lib/auth/user";
+import { cn } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +21,7 @@ const PRIORITY_RANK: Record<string, number> = { URGENT: 0, HIGH: 1, MEDIUM: 2, L
 const rank = (t: QueueTask) => PRIORITY_RANK[t.priority] ?? 9;
 const dueMs = (t: QueueTask) => (t.dueAt ? new Date(t.dueAt).getTime() : Infinity);
 
-// Which "Needs you" group a non-delegated task belongs to.
+// Which category a task belongs to within a person's list.
 function category(taskType: string): "confirmations" | "comms" | "revisions" | "qc" {
   if (["confirmation_text", "appointment_prep"].includes(taskType)) return "confirmations";
   if (taskType === "revision") return "revisions";
@@ -25,13 +29,11 @@ function category(taskType: string): "confirmations" | "comms" | "revisions" | "
   return "comms"; // replies, instructions, leads, delivery texts, decisions
 }
 
-// In-progress statuses that read as "being worked" for the delegated summary.
-const WORKING = new Set(["IN_PROGRESS", "WAITING_CLIENT", "WAITING_PHOTOGRAPHER", "WAITING_EDITOR", "WAITING_VENDOR", "WAITING_JORDAN"]);
-
 // Collapsible group panel — collapsed by default (native <details>, so no client
 // JS needed). The header (counts + overdue) stays visible; click to expand.
-function GroupCard({ icon: Icon, title, accent, items, overdue, blurb }: {
+function GroupCard({ icon: Icon, title, accent, items, overdue, blurb, assignees }: {
   icon: LucideIcon; title: string; accent: string; items: QueueTask[]; overdue: number; blurb?: string;
+  assignees: { key: string; name: string }[];
 }) {
   return (
     <details className="group panel-shadow overflow-hidden rounded-2xl border bg-surface">
@@ -47,44 +49,74 @@ function GroupCard({ icon: Icon, title, accent, items, overdue, blurb }: {
       <div className="border-t border-border">
         {blurb && <p className="px-4 pt-2.5 text-[11px] text-muted-2">{blurb}</p>}
         <div className="grid grid-cols-1 gap-3 p-3 sm:p-4 lg:grid-cols-2">
-          {items.map((t) => <TaskCard key={t.id} task={t} />)}
+          {items.map((t) => <TaskCard key={t.id} task={t} assignees={assignees} />)}
         </div>
       </div>
     </details>
   );
 }
 
-export default async function DailyTasksPage() {
-  const tasks = await prisma.smartTask.findMany({
-    where: { status: { in: ACTIVE }, OR: [{ projectId: null }, { project: recentProjectWhere() }] },
-    include: { client: { select: { name: true } } },
-  });
+function FilterChip({ href, label, count, active }: { href: string; label: string; count: number; active: boolean }) {
+  return (
+    <Link
+      href={href}
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors",
+        active ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground",
+      )}
+    >
+      {label}
+      <span className={cn("rounded-full px-1.5 text-[10px]", active ? "bg-white/20" : "bg-surface-2")}>{count}</span>
+    </Link>
+  );
+}
+
+export default async function DailyTasksPage({ searchParams }: { searchParams: Promise<{ who?: string }> }) {
+  const sp = await searchParams;
+  const [tasks, assignees, me] = await Promise.all([
+    prisma.smartTask.findMany({
+      where: { status: { in: ACTIVE }, OR: [{ projectId: null }, { project: recentProjectWhere() }] },
+      include: { client: { select: { name: true } } },
+    }),
+    listAssignees(),
+    getCurrentUser().catch(() => null),
+  ]);
   const completedCount = await prisma.smartTask.count({ where: { status: "COMPLETED" } });
+  const assigneeChips = assignees.map((a) => ({ key: a.key, name: a.name }));
 
   const startToday = etDayStartUtc(new Date()).getTime();
   const isOverdue = (t: QueueTask) => !!t.dueAt && new Date(t.dueAt).getTime() < startToday;
-  // Urgency sort: overdue first, then priority, then soonest due.
   const cmp = (a: QueueTask, b: QueueTask) =>
     (isOverdue(a) ? 0 : 1) - (isOverdue(b) ? 0 : 1) || rank(a) - rank(b) || dueMs(a) - dueMs(b);
 
   const views = tasks.map(taskToView);
-  const delegated = views.filter((v) => isDelegated(v.assignedKey));
-  // Non-delegated work belongs to an operator (Kyle or Jordan) — shown under
-  // "Needs Kyle" / "Needs Jordan" so each is assigned to a person, not a vague
-  // "you". Unset defaults to Kyle (he runs the daily queue).
-  const operators = views.filter((v) => !isDelegated(v.assignedKey));
-  const kyleViews = operators.filter((v) => operatorFor(v.assignedKey) === "kyle");
-  const jordanViews = operators.filter((v) => operatorFor(v.assignedKey) === "jordan");
+  // Unassigned auto-generated work defaults to Kyle (he runs the daily queue).
+  const ownerKey = (v: QueueTask) => v.assignedKey || "kyle";
+  const countOf = (key: string) => views.filter((v) => ownerKey(v) === key).length;
 
-  const byEditor = DELEGATE_KEYS
-    .map((k: EditorKey) => ({ key: k, meta: EDITORS[k], items: delegated.filter((v) => v.assignedKey === k).sort(cmp) }))
-    .filter((g) => g.items.length > 0);
+  // "My tasks" = the signed-in person, matched to their assignee slug.
+  const meKey = me?.name ? slugForName(me.name) : null;
+  const meHasChip = !!meKey && assignees.some((a) => a.key === meKey);
+
+  // Selected filter. ?who=all | me | <slug>.
+  const whoRaw = (sp.who ?? "all").toLowerCase();
+  const who = whoRaw === "me" && meKey ? meKey : whoRaw;
+  const activeKey = whoRaw === "all" ? "all" : whoRaw === "me" && meKey ? "me" : who;
+  const shown = who === "all" ? views : views.filter((v) => ownerKey(v) === who);
+
+  const byKey = new Map<string, QueueTask[]>();
+  for (const v of shown) {
+    const k = ownerKey(v);
+    const arr = byKey.get(k);
+    if (arr) arr.push(v);
+    else byKey.set(k, [v]);
+  }
 
   const overdueCount = views.filter(isOverdue).length;
   const oc = (items: QueueTask[]) => items.filter(isOverdue).length;
   const nothing = views.length === 0;
 
-  // The category-grouped cards for one operator (Kyle / Jordan).
+  // The category-grouped cards for one person.
   const personSection = (name: string, set: QueueTask[]) => {
     if (set.length === 0) return null;
     const confirmations = set.filter((v) => category(v.taskType) === "confirmations").sort(cmp);
@@ -98,24 +130,30 @@ export default async function DailyTasksPage() {
           <span className="text-xs text-muted-2">· {set.length}</span>
         </div>
         {comms.length > 0 && (
-          <GroupCard icon={MessageSquare} title="Replies & admin" accent="#38bdf8" items={comms} overdue={oc(comms)}
+          <GroupCard icon={MessageSquare} title="Replies & admin" accent="#38bdf8" items={comms} overdue={oc(comms)} assignees={assigneeChips}
             blurb="Messages to reply to, new leads, delivery texts, and decisions." />
         )}
         {confirmations.length > 0 && (
-          <GroupCard icon={MessageSquareText} title="Confirmation texts" accent="#fbbf24" items={confirmations} overdue={oc(confirmations)}
+          <GroupCard icon={MessageSquareText} title="Confirmation texts" accent="#fbbf24" items={confirmations} overdue={oc(confirmations)} assignees={assigneeChips}
             blurb="Confirm upcoming shoots with the client — the text is pre-drafted, just review and send." />
         )}
         {revisions.length > 0 && (
-          <GroupCard icon={PencilLine} title="Revisions" accent="#fb7185" items={revisions} overdue={oc(revisions)}
+          <GroupCard icon={PencilLine} title="Revisions" accent="#fb7185" items={revisions} overdue={oc(revisions)} assignees={assigneeChips}
             blurb="Client change requests after delivery — assign each to the right editor when you action it." />
         )}
         {qc.length > 0 && (
-          <GroupCard icon={PackageCheck} title="QC & deliver" accent="#34d399" items={qc} overdue={oc(qc)}
+          <GroupCard icon={PackageCheck} title="QC & deliver" accent="#34d399" items={qc} overdue={oc(qc)} assignees={assigneeChips}
             blurb="Quality-check content as it lands, then deliver." />
         )}
       </div>
     );
   };
+
+  // Sections in roster order; any assignedKey not in the roster falls through last.
+  const sections = assignees.filter((a) => (byKey.get(a.key)?.length ?? 0) > 0);
+  const known = new Set(assignees.map((a) => a.key));
+  const orphans = [...byKey.keys()].filter((k) => !known.has(k));
+  const selectedName = assignees.find((a) => a.key === who)?.name ?? firstName(who);
 
   return (
     <div>
@@ -123,7 +161,7 @@ export default async function DailyTasksPage() {
       <PageHeader
         eyebrow="Eastern time"
         title="Daily Tasks"
-        subtitle={`${operators.length} for Kyle & Jordan · ${delegated.length} delegated${overdueCount ? ` · ${overdueCount} overdue` : ""}`}
+        subtitle={`${views.length} open${overdueCount ? ` · ${overdueCount} overdue` : ""}`}
         actions={
           <div className="flex items-center gap-2">
             {overdueCount > 0 && <Badge color="#dc2626" soft="#fee2e2">{overdueCount} overdue</Badge>}
@@ -132,52 +170,37 @@ export default async function DailyTasksPage() {
         }
       />
       <div className="space-y-5 p-4 sm:p-6">
-        <AddTask />
+        <AddTask assignees={assigneeChips} />
+
+        {/* Person filter — see everyone, just you, or one teammate's tasks. */}
+        {!nothing && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <FilterChip href="/queue" label="Everyone" count={views.length} active={activeKey === "all"} />
+            {meHasChip && <FilterChip href="/queue?who=me" label="My tasks" count={countOf(meKey!)} active={activeKey === "me"} />}
+            {assignees
+              .filter((a) => countOf(a.key) > 0 || a.key === who)
+              .map((a) => (
+                <FilterChip key={a.key} href={`/queue?who=${a.key}`} label={a.name} count={countOf(a.key)} active={activeKey === a.key} />
+              ))}
+          </div>
+        )}
+
         {nothing ? (
           <div className="rounded-2xl border border-dashed bg-surface p-8 text-center">
             <CheckCircle2 className="mx-auto mb-2 size-6 text-success" />
             <p className="text-sm text-muted">All caught up — nothing open. 🎉</p>
           </div>
-        ) : (
+        ) : shown.length === 0 ? (
+          <p className="rounded-2xl border border-dashed bg-surface px-4 py-6 text-center text-sm text-muted">
+            Nothing assigned to {activeKey === "me" ? "you" : selectedName} right now.
+          </p>
+        ) : who === "all" ? (
           <>
-            {/* OPERATORS — what Kyle / Jordan each need to action */}
-            {personSection("Kyle", kyleViews)}
-            {personSection("Jordan", jordanViews)}
-            {kyleViews.length + jordanViews.length === 0 && (
-              <p className="rounded-2xl border border-dashed bg-surface px-4 py-6 text-center text-sm text-muted">Nothing needs Kyle or Jordan right now.</p>
-            )}
-
-            {/* DELEGATED */}
-            {byEditor.length > 0 && (
-              <>
-                <div className="flex items-center gap-2 px-1 pt-2">
-                  <Users className="size-3.5 text-muted-2" />
-                  <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-2">Delegated — in progress</h2>
-                  <span className="text-xs text-muted-2">· {delegated.length}</span>
-                </div>
-                {byEditor.map((g) => {
-                  const working = g.items.filter((t) => WORKING.has(t.status)).length;
-                  const overdue = oc(g.items);
-                  return (
-                    <details key={g.key} suppressHydrationWarning className="group panel-shadow overflow-hidden rounded-2xl border bg-surface">
-                      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-4 py-3 hover:bg-surface-2">
-                        <ChevronDown className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
-                        <span className="flex size-7 items-center justify-center rounded-lg bg-brand/15 text-brand"><Users className="size-4" /></span>
-                        <h3 className="text-sm font-semibold">{g.meta.name}</h3>
-                        <span className="rounded-full bg-surface-2 px-1.5 text-[11px] text-muted-2">{g.meta.kind === "external" ? "external" : "in-house"}</span>
-                        <span className="rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">{g.items.length}</span>
-                        {working > 0 && <span className="text-[11px] text-muted-2">{working} in progress</span>}
-                        {overdue > 0 && <span className="rounded-full bg-danger-soft px-1.5 text-[11px] font-semibold text-danger">{overdue} overdue</span>}
-                      </summary>
-                      <div className="grid grid-cols-1 gap-3 border-t border-border p-3 sm:p-4 lg:grid-cols-2">
-                        {g.items.map((t) => <TaskCard key={t.id} task={t} />)}
-                      </div>
-                    </details>
-                  );
-                })}
-              </>
-            )}
+            {sections.map((a) => <Fragment key={a.key}>{personSection(a.name, byKey.get(a.key)!.slice().sort(cmp))}</Fragment>)}
+            {orphans.map((k) => <Fragment key={k}>{personSection(firstName(k), byKey.get(k)!.slice().sort(cmp))}</Fragment>)}
           </>
+        ) : (
+          personSection(selectedName, shown.slice().sort(cmp))
         )}
       </div>
     </div>

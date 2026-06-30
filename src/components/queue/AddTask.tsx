@@ -5,10 +5,17 @@ import { Plus, Loader2, X } from "lucide-react";
 import { createManualTask } from "@/app/actions";
 import { DELEGATE_KEYS, EDITORS } from "@/lib/editors";
 
+const ADD_FALLBACK = [
+  { key: "kyle", name: "Kyle" },
+  { key: "jordan", name: "Jordan" },
+  ...DELEGATE_KEYS.map((k) => ({ key: k, name: EDITORS[k].name })),
+];
+
 // Add a to-do by hand from the Daily Tasks page. Collapsed to a button; expands
 // to a compact form (title + optional notes, job/client link, due, priority,
-// delegate).
-export function AddTask() {
+// assignee).
+export function AddTask({ assignees }: { assignees?: { key: string; name: string }[] }) {
+  const roster = assignees ?? ADD_FALLBACK;
   const [open, setOpen] = useState(false);
   const [pending, start] = useTransition();
   const [title, setTitle] = useState("");
@@ -84,9 +91,7 @@ export function AddTask() {
           <label className="flex flex-col gap-1 text-[11px] text-muted-2">
             Assign
             <select value={assignee} onChange={(e) => setAssignee(e.target.value)} className="rounded-lg border border-border bg-surface px-2 py-1.5 text-sm outline-none focus:border-brand">
-              <option value="kyle">Kyle</option>
-              <option value="jordan">Jordan</option>
-              {DELEGATE_KEYS.map((k) => <option key={k} value={k}>→ {EDITORS[k].name}</option>)}
+              {roster.map((a) => <option key={a.key} value={a.key}>{a.name}</option>)}
             </select>
           </label>
         </div>
