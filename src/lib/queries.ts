@@ -303,7 +303,12 @@ export async function getMorningBrief(): Promise<BriefTask[]> {
   const tasks = await prisma.smartTask.findMany({
     where: {
       status: { in: BRIEF_ACTIVE },
-      OR: [
+      // The brief is Kyle's day: his own + unassigned work (which defaults to
+      // him). Anything delegated to an editor (Kim/Remar/Luma/…) shows on THEIR
+      // /queue section, not here — so the brief and the queue's "Kyle" view agree.
+      AND: [
+        { OR: [{ assignedKey: null }, { assignedKey: "kyle" }] },
+        { OR: [
         // Messages/replies (email, text, Slack, lead, revision): always surface
         // in "Check your messages" while open — any due date, any project age.
         // Someone wrote in and is waiting, so it shouldn't roll into Needs
@@ -322,6 +327,7 @@ export async function getMorningBrief(): Promise<BriefTask[]> {
           dueAt: { gte: startToday, lte: endToday },
           OR: [{ projectId: null }, { project: recentProjectWhere() }],
         },
+        ] },
       ],
     },
     include: { client: { select: { name: true } } },

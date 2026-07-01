@@ -12,6 +12,7 @@ import { prisma } from "@/lib/prisma";
 import { recentProjectWhere } from "@/lib/recency";
 import { etDayStartUtc } from "@/lib/datetime";
 import { listAssignees, slugForName, firstName } from "@/lib/assignees";
+import { isNeedsAssigning } from "@/lib/triage";
 import { getCurrentUser } from "@/lib/auth/user";
 import { cn } from "@/lib/utils";
 
@@ -27,16 +28,11 @@ function category(taskType: string): "confirmations" | "deliveries" | "comms" | 
   if (["confirmation_text", "appointment_prep"].includes(taskType)) return "confirmations";
   if (taskType === "delivery_text") return "deliveries";
   if (taskType === "revision") return "revisions";
-  if (["media_qa", "image_fixes", "delivery", "feedback_review"].includes(taskType)) return "qc";
+  if (["media_qa", "image_fixes", "delivery", "feedback_review", "finish_delivery"].includes(taskType)) return "qc";
   return "comms"; // replies, instructions, leads, decisions
 }
 
-// Delegatable work that arrives without a fixed owner — a person still has to
-// pick who handles it (mostly Slack to-dos + unrouted edit/vendor work). The
-// system's own routine (confirm / QC / deliver / client replies) is Kyle's SOP
-// by default and is NOT triage, so it stays in his normal groups below.
-const TRIAGE_TYPES = new Set(["internal_instruction", "todo", "revision", "lead", "vendor_update"]);
-const isNeedsAssigning = (v: QueueTask) => !v.assignedKey && TRIAGE_TYPES.has(v.taskType);
+// Triage ("needs assigning") is shared with the morning brief via src/lib/triage.
 const TRIAGE = "needs-assigning";
 
 // Collapsible group panel — collapsed by default (native <details>, so no client
@@ -172,7 +168,7 @@ export default async function DailyTasksPage({ searchParams }: { searchParams: P
         )}
         {revisions.length > 0 && (
           <GroupCard icon={PencilLine} title="Revisions" accent="#fb7185" items={revisions} overdue={oc(revisions)} assignees={assigneeChips}
-            blurb="Client change requests after delivery — assign each to the right editor when you action it." />
+            blurb="Client change requests after delivery — auto-routed to the deliverable's editor; reassign if it should go to someone else." />
         )}
         {qc.length > 0 && (
           <GroupCard icon={PackageCheck} title="QC & deliver" accent="#34d399" items={qc} overdue={oc(qc)} assignees={assigneeChips}
