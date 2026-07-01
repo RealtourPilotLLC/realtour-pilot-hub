@@ -40,6 +40,12 @@ export async function GET(req: NextRequest) {
     const { retryFailedWebhooks } = await import("@/lib/webhookRetry");
     return retryFailedWebhooks(25);
   });
+  // Ensure in-production video jobs have a Frame.io review project (covers raw
+  // that skipped the in-app upload). No-op if Frame.io isn't connected.
+  await step("frameioProjects", async () => {
+    const { ensureFrameioProjectsForActiveVideoJobs } = await import("@/lib/integrations/frameio");
+    return ensureFrameioProjectsForActiveVideoJobs(5);
+  });
 
   return NextResponse.json({ ok: true, ...out });
 }

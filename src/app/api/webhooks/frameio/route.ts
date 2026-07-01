@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { ProjectStatus } from "@prisma/client";
+import { frameioRequestAuthorized } from "@/lib/integrations/frameio";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,6 +12,11 @@ export const dynamic = "force-dynamic";
 // (Public route so Frame.io can reach it. Raw payload is logged so we can refine
 // the field mapping against a real trigger.)
 export async function POST(req: NextRequest) {
+  // Reject spoofed callbacks once the action has been (re)registered with a
+  // shared token (backward compatible: allowed until a token is stored).
+  if (!(await frameioRequestAuthorized(req.nextUrl.searchParams.get("t")))) {
+    return NextResponse.json({ title: "Unauthorized", description: "Invalid action token." }, { status: 401 });
+  }
   let body: Record<string, unknown> = {};
   try { body = (await req.json()) as Record<string, unknown>; } catch { /* non-JSON */ }
 
@@ -44,6 +50,35 @@ export async function POST(req: NextRequest) {
   });
   if (!project) {
     return NextResponse.json({ title: "RealTour Pilot", description: "This Frame.io project isn't linked to a job yet." });
+  }
+
+  // A review COMMENT (not the "ready for review" action) → a revision for the
+  // deliverable's editor to address, instead of flipping the stage. Best-effort
+  // field extraction; the exact comment payload + author filtering are confirmed
+  // against a live trigger, and this only fires once a comment webhook is
+  // registered (the custom action alone doesn't send comment events).
+  const isComment = /comment/i.test(eventType) || !!g(body, "comment") || !!g(body, "data", "comment");
+  if (isComment) {
+    const text =
+      (g(body, "comment", "text") as string) ||
+      (g(body, "data", "comment", "text") as string) ||
+      (g(body, "comment", "body") as string) ||
+      (body.text as string) ||
+      "";
+    if (text.trim()) {
+      const { raiseRevision } = await import("@/lib/comms");
+      await raiseRevision({
+        projectId: project.id,
+        clientId: project.clientId,
+        propertyAddress: project.title,
+        note: `Frame.io review note: ${text.trim()}`,
+        source: "frameio",
+      }).catch(() => {});
+    }
+    await prisma.webhookEvent
+      .updateMany({ where: { provider: "frameio", eventType, processedAt: null }, data: { status: "PROCESSED", processedAt: new Date() } })
+      .catch(() => {});
+    return NextResponse.json({ ok: true });
   }
 
   // Flip to Review (only from an in-production stage, so we don't disturb

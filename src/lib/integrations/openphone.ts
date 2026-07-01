@@ -1,5 +1,6 @@
 import "server-only";
-import { getSecret } from "./connections";
+import crypto from "crypto";
+import { getSecret, saveSecret } from "./connections";
 
 // ---------------------------------------------------------------------------
 // OpenPhone (Quo) REST client. Base: https://api.openphone.com/v1
@@ -366,19 +367,28 @@ export async function listWebhooks(): Promise<OpWebhook[]> {
 export async function registerOpenPhoneWebhooks(
   callbackUrl: string,
 ): Promise<{ created: number; transcripts: boolean }> {
+  // A shared-secret token in the callback URL authenticates inbound events: a
+  // spoofer who doesn't know it can't POST fake texts/calls and inject tasks or
+  // revisions. Rotated on every (re)registration; the receiver reads it back
+  // from the stored "openphone_webhook" secret.
+  const token = crypto.randomBytes(24).toString("hex");
+  await saveSecret("openphone_webhook", token);
+  const url = `${callbackUrl}?t=${token}`;
+
   const existing = await listWebhooks();
   for (const w of existing) {
-    if (w.url === callbackUrl) {
+    // Match regardless of any prior token query param.
+    if ((w.url || "").split("?")[0] === callbackUrl) {
       await openphoneRequest(`/webhooks/${w.id}`, { method: "DELETE" }).catch(() => {});
     }
   }
   await openphoneRequest("/webhooks/messages", {
     method: "POST",
-    body: { url: callbackUrl, events: MESSAGE_EVENTS, label: "RealTour Pilot Hub" },
+    body: { url, events: MESSAGE_EVENTS, label: "RealTour Pilot Hub" },
   });
   await openphoneRequest("/webhooks/calls", {
     method: "POST",
-    body: { url: callbackUrl, events: CALL_EVENTS, label: "RealTour Pilot Hub" },
+    body: { url, events: CALL_EVENTS, label: "RealTour Pilot Hub" },
   });
   // Call transcripts have a dedicated webhook resource; not every plan exposes
   // it, so don't let a failure here break message/call registration.
@@ -386,13 +396,24 @@ export async function registerOpenPhoneWebhooks(
   try {
     await openphoneRequest("/webhooks/call-transcripts", {
       method: "POST",
-      body: { url: callbackUrl, events: TRANSCRIPT_EVENTS, label: "RealTour Pilot Hub" },
+      body: { url, events: TRANSCRIPT_EVENTS, label: "RealTour Pilot Hub" },
     });
     transcripts = true;
   } catch {
     /* plan may not include transcripts */
   }
   return { created: transcripts ? 3 : 2, transcripts };
+}
+
+// Verify an inbound OpenPhone webhook's shared-secret token (constant-time).
+// Returns true when there's nothing to verify against yet (no token stored) so
+// the pipeline keeps working until the webhook is (re)registered with a token.
+export async function openPhoneRequestAuthorized(token: string | null): Promise<boolean> {
+  const expected = await getSecret("openphone_webhook");
+  if (!expected) return true; // not yet activated — backward compatible
+  const got = token ?? "";
+  if (got.length !== expected.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expected));
 }
 
 export async function testOpenPhoneKey(

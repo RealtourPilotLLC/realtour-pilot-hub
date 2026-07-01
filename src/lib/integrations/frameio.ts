@@ -1,4 +1,5 @@
 import "server-only";
+import crypto from "crypto";
 import { getSecret, saveSecret } from "./connections";
 
 // ---------------------------------------------------------------------------
@@ -193,10 +194,19 @@ export const FRAMEIO_REVIEW_EVENT = "rtp.ready_for_review";
 // public prod receiver, so pass the base explicitly when running off-prod.
 export async function ensureReviewAction(baseUrl?: string): Promise<{ created: boolean; id?: string; url: string }> {
   const { accountId, workspaceId } = await frameioContext();
-  const url = `${baseUrl || appBase()}/api/webhooks/frameio`;
+  // A shared-secret token in the action URL authenticates the callback: a
+  // spoofer who doesn't know it can't push a job into review or spam Kyle.
+  // Rotated on (re)registration; read back from the "frameio_webhook" secret.
+  const token = crypto.randomBytes(24).toString("hex");
+  await saveSecret("frameio_webhook", token);
+  const url = `${baseUrl || appBase()}/api/webhooks/frameio?t=${token}`;
   const list = await fio<{ data?: { id: string; event: string }[] }>(`/accounts/${accountId}/workspaces/${workspaceId}/actions`);
+  // Recreate any existing action so the new token URL takes effect (the list
+  // response doesn't expose the URL, so we can't tell if it already has one).
   const existing = (list.data ?? []).find((a) => a.event === FRAMEIO_REVIEW_EVENT);
-  if (existing) return { created: false, id: existing.id, url };
+  if (existing) {
+    await fio(`/accounts/${accountId}/workspaces/${workspaceId}/actions/${existing.id}`, { method: "DELETE" }).catch(() => {});
+  }
   const r = await fio<{ data: { id: string } }>(
     `/accounts/${accountId}/workspaces/${workspaceId}/actions`,
     {
@@ -212,4 +222,60 @@ export async function ensureReviewAction(baseUrl?: string): Promise<{ created: b
     },
   );
   return { created: true, id: r.data?.id, url };
+}
+
+// Verify an inbound Frame.io callback's shared-secret token (constant-time).
+// True when nothing to verify against yet (no token stored) so the action keeps
+// working until it's (re)registered with a token.
+export async function frameioRequestAuthorized(token: string | null): Promise<boolean> {
+  const expected = await getSecret("frameio_webhook");
+  if (!expected) return true;
+  const got = token ?? "";
+  if (got.length !== expected.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expected));
+}
+
+// Idempotently ensure a Frame.io review project exists for a job (create + save
+// its id/url). No-ops when one already exists or Frame.io isn't connected. Used
+// by BOTH the manual "set up" button and the auto-create sweep, so a video job
+// gets its review project whether or not the raw came through the in-app upload.
+export async function ensureFrameioProjectForProject(projectId: string): Promise<{ created: boolean; viewUrl?: string }> {
+  const { prisma } = await import("@/lib/prisma");
+  const p = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { id: true, title: true, frameioProjectId: true, frameioViewUrl: true, client: { select: { name: true } } },
+  });
+  if (!p) return { created: false };
+  if (p.frameioProjectId) return { created: false, viewUrl: p.frameioViewUrl ?? undefined };
+  if (!(await frameioConnected())) return { created: false };
+  const street = (p.title || "").split(",")[0].trim() || p.title || "Project";
+  const name = `${street} — ${p.client?.name ?? "Client"}`.slice(0, 250);
+  const proj = await createFrameioProject(name);
+  await prisma.project.update({ where: { id: p.id }, data: { frameioProjectId: proj.id, frameioViewUrl: proj.viewUrl } });
+  return { created: true, viewUrl: proj.viewUrl };
+}
+
+// Auto-create review projects for in-production VIDEO jobs that don't have one
+// yet. Bounded + best-effort (a failure on one job never breaks the sweep).
+export async function ensureFrameioProjectsForActiveVideoJobs(limit = 5): Promise<number> {
+  const { prisma } = await import("@/lib/prisma");
+  if (!(await frameioConnected())) return 0;
+  const jobs = await prisma.project.findMany({
+    where: {
+      status: { in: ["EDITING", "REVIEW", "REVISION"] },
+      frameioProjectId: null,
+      deliverables: { some: { type: { in: ["VIDEO", "SOCIAL_REEL"] } } },
+    },
+    select: { id: true },
+    take: limit,
+  });
+  let created = 0;
+  for (const j of jobs) {
+    try {
+      if ((await ensureFrameioProjectForProject(j.id)).created) created++;
+    } catch {
+      /* best-effort; try the next job */
+    }
+  }
+  return created;
 }

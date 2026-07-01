@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { phoneKey, callTranscriptText, type OpTranscriptLine } from "@/lib/integrations/openphone";
+import { phoneKey, callTranscriptText, openPhoneRequestAuthorized, type OpTranscriptLine } from "@/lib/integrations/openphone";
 import { resolveClientByPhones, resolveSenderName, findActiveProjectByText, findClientProjectByText } from "@/lib/contacts";
 import { recordClientCommunication } from "@/lib/comms";
 import { logComm } from "@/lib/commLog";
@@ -12,6 +12,12 @@ export const dynamic = "force-dynamic";
 // recording.completed), logs them, and attaches an activity to the matching
 // client's most recent project so comms show up in real time.
 export async function POST(req: NextRequest) {
+  // Reject spoofed events once the webhook has been (re)registered with a shared
+  // token (backward compatible: allowed until a token is stored). See
+  // registerOpenPhoneWebhooks / openPhoneRequestAuthorized.
+  if (!(await openPhoneRequestAuthorized(req.nextUrl.searchParams.get("t")))) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
   const raw = await req.text();
   let payload: Record<string, unknown> = {};
   try {
