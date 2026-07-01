@@ -1,4 +1,4 @@
-import { CheckCircle2, MessageSquare, MessageSquareText, PencilLine, PackageCheck, ChevronDown, type LucideIcon } from "lucide-react";
+import { CheckCircle2, MessageSquare, MessageSquareText, Send, PencilLine, PackageCheck, ChevronDown, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { Fragment } from "react";
 import { PageHeader } from "@/components/PageHeader";
@@ -23,11 +23,12 @@ const rank = (t: QueueTask) => PRIORITY_RANK[t.priority] ?? 9;
 const dueMs = (t: QueueTask) => (t.dueAt ? new Date(t.dueAt).getTime() : Infinity);
 
 // Which category a task belongs to within a person's list.
-function category(taskType: string): "confirmations" | "comms" | "revisions" | "qc" {
+function category(taskType: string): "confirmations" | "deliveries" | "comms" | "revisions" | "qc" {
   if (["confirmation_text", "appointment_prep"].includes(taskType)) return "confirmations";
+  if (taskType === "delivery_text") return "deliveries";
   if (taskType === "revision") return "revisions";
   if (["media_qa", "image_fixes", "delivery", "feedback_review"].includes(taskType)) return "qc";
-  return "comms"; // replies, instructions, leads, delivery texts, decisions
+  return "comms"; // replies, instructions, leads, decisions
 }
 
 // Collapsible group panel — collapsed by default (native <details>, so no client
@@ -130,6 +131,7 @@ export default async function DailyTasksPage({ searchParams }: { searchParams: P
   const personSection = (name: string, set: QueueTask[]) => {
     if (set.length === 0) return null;
     const confirmations = set.filter((v) => category(v.taskType) === "confirmations").sort(cmp);
+    const deliveries = set.filter((v) => category(v.taskType) === "deliveries").sort(cmp);
     const comms = set.filter((v) => category(v.taskType) === "comms").sort(cmp);
     const revisions = set.filter((v) => category(v.taskType) === "revisions").sort(cmp);
     const qc = set.filter((v) => category(v.taskType) === "qc").sort(cmp);
@@ -141,11 +143,15 @@ export default async function DailyTasksPage({ searchParams }: { searchParams: P
         </div>
         {comms.length > 0 && (
           <GroupCard icon={MessageSquare} title="Replies & admin" accent="#38bdf8" items={comms} overdue={oc(comms)} assignees={assigneeChips}
-            blurb="Messages to reply to, new leads, delivery texts, and decisions." />
+            blurb="Messages to reply to, new leads, and decisions." />
         )}
         {confirmations.length > 0 && (
           <GroupCard icon={MessageSquareText} title="Confirmation texts" accent="#fbbf24" items={confirmations} overdue={oc(confirmations)} assignees={assigneeChips}
             blurb="Confirm upcoming shoots with the client — the text is pre-drafted, just review and send." />
+        )}
+        {deliveries.length > 0 && (
+          <GroupCard icon={Send} title="Delivery texts" accent="#22c55e" items={deliveries} overdue={oc(deliveries)} assignees={assigneeChips}
+            blurb="The “your gallery is ready” text to the client after delivery — pre-drafted, just review and send." />
         )}
         {revisions.length > 0 && (
           <GroupCard icon={PencilLine} title="Revisions" accent="#fb7185" items={revisions} overdue={oc(revisions)} assignees={assigneeChips}
