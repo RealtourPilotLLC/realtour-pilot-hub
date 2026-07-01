@@ -133,7 +133,7 @@ const FALLBACK_ASSIGNEES = [
   ...DELEGATE_KEYS.map((k) => ({ key: k, name: EDITORS[k].name })),
 ];
 
-export function TaskCard({ task, assignees }: { task: QueueTask; assignees?: { key: string; name: string }[] }) {
+export function TaskCard({ task, assignees, assignPrompt }: { task: QueueTask; assignees?: { key: string; name: string }[]; assignPrompt?: boolean }) {
   const [pending, start] = useTransition();
   const [draft, setDraft] = useState<{ text?: string; error?: string } | null>(null);
   const [drafting, startDraft] = useTransition();
@@ -339,12 +339,19 @@ export function TaskCard({ task, assignees }: { task: QueueTask; assignees?: { k
         )}
         {!done && (
           <select
-            value={task.assignedKey || "kyle"}
+            value={task.assignedKey || (assignPrompt ? "" : "kyle")}
             disabled={assigning}
             onChange={(e) => assign(e.target.value)}
             title="Assign this task"
-            className={`w-[7.5rem] min-w-0 rounded-lg border px-2 py-1.5 text-xs focus:outline-none ${task.assignedKey && task.assignedKey !== "kyle" ? "bg-brand/10 text-brand" : "bg-surface text-muted"}`}
+            className={`w-[7.5rem] min-w-0 rounded-lg border px-2 py-1.5 text-xs focus:outline-none ${
+              task.assignedKey && task.assignedKey !== "kyle"
+                ? "bg-brand/10 text-brand"
+                : assignPrompt && !task.assignedKey
+                  ? "border-warning/40 bg-warning/10 font-medium text-warning"
+                  : "bg-surface text-muted"
+            }`}
           >
+            {assignPrompt && <option value="">Unassigned</option>}
             {roster.map((a) => (
               <option key={a.key} value={a.key}>{a.name}</option>
             ))}

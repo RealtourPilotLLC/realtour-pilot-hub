@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import crypto from "crypto";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { type ChecklistItem, parseChecklist, serializeChecklist, checklistComplete } from "@/lib/checklist";
+import { etDayStartUtc } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // Phase 1 of the listener-first platform: turnaround rules + due-date/priority
@@ -182,13 +183,21 @@ function specsForProject(p: {
   // was just duplicate, often-stale noise (e.g. "missing Video" on a reel that
   // was actually on track). Removed in favor of the per-deliverable tasks.
 
-  if (p.status === "BOOKED" || p.status === "SCHEDULED") {
+  // Only while the shoot is still ahead of us. Once the shoot day arrives (or
+  // the job advances past SCHEDULED), the confirmation is moot — dropping the
+  // spec lets the reconciler auto-close any open confirmation_text below, so it
+  // never lingers or reads "overdue" forever.
+  const shootUpcoming = !shoot || shoot.getTime() >= etDayStartUtc().getTime();
+  if ((p.status === "BOOKED" || p.status === "SCHEDULED") && shootUpcoming) {
     specs.push({
       taskType: "confirmation_text",
       title: `Confirmation text — ${p.title}`,
       reasonCreated: "Day-before confirmation text (SOP)",
       summary: "Day before the shoot: review the drafted confirmation text and send it. Confirm access (someone meeting us or a lockbox + code), what to highlight/avoid, and offer an upgrade if it fits.",
-      deliverableType: primary,
+      // No deliverableType: a confirmation is one-per-shoot, so its dedupe key must
+      // stay stable. Keying it on the primary deliverable meant a re-synced order
+      // whose deliverables reordered could mint a SECOND confirmation task.
+      deliverableType: undefined,
       dueAt: shoot ? new Date(shoot.getTime() - DAY) : null,
       // description (the drafted text) is filled in at creation time, where the
       // client name + shoot time + photographer are available.
@@ -697,7 +706,10 @@ async function syncOneProjectTasks(
   await prisma.smartTask.updateMany({
     where: {
       projectId: p.id,
-      taskType: { in: ["media_qa", "delivery", "finish_delivery"] },
+      // confirmation_text is included so it auto-closes once the shoot day has
+      // passed or the job moves past SCHEDULED (specsForProject stops emitting
+      // it, so it's no longer in expectedKeys). The send button also closes it.
+      taskType: { in: ["media_qa", "delivery", "finish_delivery", "confirmation_text"] },
       status: { notIn: ["COMPLETED", "CANCELLED"] },
       NOT: { dedupeKey: { in: [...expectedKeys] } },
     },

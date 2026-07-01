@@ -1,4 +1,4 @@
-import { CheckCircle2, MessageSquare, MessageSquareText, Send, PencilLine, PackageCheck, ChevronDown, type LucideIcon } from "lucide-react";
+import { CheckCircle2, MessageSquare, MessageSquareText, Send, PencilLine, PackageCheck, UserPlus, ChevronDown, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { Fragment } from "react";
 import { PageHeader } from "@/components/PageHeader";
@@ -31,14 +31,22 @@ function category(taskType: string): "confirmations" | "deliveries" | "comms" | 
   return "comms"; // replies, instructions, leads, decisions
 }
 
+// Delegatable work that arrives without a fixed owner — a person still has to
+// pick who handles it (mostly Slack to-dos + unrouted edit/vendor work). The
+// system's own routine (confirm / QC / deliver / client replies) is Kyle's SOP
+// by default and is NOT triage, so it stays in his normal groups below.
+const TRIAGE_TYPES = new Set(["internal_instruction", "todo", "revision", "lead", "vendor_update"]);
+const isNeedsAssigning = (v: QueueTask) => !v.assignedKey && TRIAGE_TYPES.has(v.taskType);
+const TRIAGE = "needs-assigning";
+
 // Collapsible group panel — collapsed by default (native <details>, so no client
 // JS needed). The header (counts + overdue) stays visible; click to expand.
-function GroupCard({ icon: Icon, title, accent, items, overdue, blurb, assignees }: {
+function GroupCard({ icon: Icon, title, accent, items, overdue, blurb, assignees, defaultOpen, assignPrompt }: {
   icon: LucideIcon; title: string; accent: string; items: QueueTask[]; overdue: number; blurb?: string;
-  assignees: { key: string; name: string }[];
+  assignees: { key: string; name: string }[]; defaultOpen?: boolean; assignPrompt?: boolean;
 }) {
   return (
-    <details className="group panel-shadow overflow-hidden rounded-2xl border bg-surface">
+    <details open={defaultOpen} className="group panel-shadow overflow-hidden rounded-2xl border bg-surface">
       <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-4 py-3 hover:bg-surface-2">
         <ChevronDown className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
         <span className="flex size-7 items-center justify-center rounded-lg" style={{ background: `${accent}22`, color: accent }}>
@@ -51,7 +59,7 @@ function GroupCard({ icon: Icon, title, accent, items, overdue, blurb, assignees
       <div className="border-t border-border">
         {blurb && <p className="px-4 pt-2.5 text-[11px] text-muted-2">{blurb}</p>}
         <div className="grid grid-cols-1 gap-3 p-3 sm:p-4 lg:grid-cols-2">
-          {items.map((t) => <TaskCard key={t.id} task={t} assignees={assignees} />)}
+          {items.map((t) => <TaskCard key={t.id} task={t} assignees={assignees} assignPrompt={assignPrompt} />)}
         </div>
       </div>
     </details>
@@ -101,22 +109,28 @@ export default async function DailyTasksPage({ searchParams }: { searchParams: P
     (isOverdue(a) ? 0 : 1) - (isOverdue(b) ? 0 : 1) || rank(a) - rank(b) || dueMs(a) - dueMs(b);
 
   const views = tasks.map(taskToView);
-  // Unassigned auto-generated work defaults to Kyle (he runs the daily queue).
+  // Pull the "needs assigning" pile out first — delegatable work with no owner
+  // yet — so it surfaces in its own pinned section instead of hiding in Kyle's
+  // pile. Everything else has a home (an editor, or Kyle's default routine).
+  const triage = views.filter(isNeedsAssigning);
+  const assigned = views.filter((v) => !isNeedsAssigning(v));
+  // Unassigned routine work still defaults to Kyle (he runs the daily queue).
   const ownerKey = (v: QueueTask) => v.assignedKey || "kyle";
-  const countOf = (key: string) => views.filter((v) => ownerKey(v) === key).length;
+  const countOf = (key: string) => assigned.filter((v) => ownerKey(v) === key).length;
 
   // "My tasks" = the signed-in person, matched to their assignee slug.
   const meKey = me?.name ? slugForName(me.name) : null;
   const meHasChip = !!meKey && assignees.some((a) => a.key === meKey);
 
-  // Selected filter. ?who=all | me | <slug>.
+  // Selected filter. ?who=all | me | needs-assigning | <slug>.
   const whoRaw = (sp.who ?? "all").toLowerCase();
   const who = whoRaw === "me" && meKey ? meKey : whoRaw;
   const activeKey = whoRaw === "all" ? "all" : whoRaw === "me" && meKey ? "me" : who;
-  const shown = who === "all" ? views : views.filter((v) => ownerKey(v) === who);
+  // Person buckets are built from assigned work only (triage renders on its own).
+  const forGrouping = who === "all" ? assigned : who === TRIAGE ? [] : assigned.filter((v) => ownerKey(v) === who);
 
   const byKey = new Map<string, QueueTask[]>();
-  for (const v of shown) {
+  for (const v of forGrouping) {
     const k = ownerKey(v);
     const arr = byKey.get(k);
     if (arr) arr.push(v);
@@ -126,6 +140,9 @@ export default async function DailyTasksPage({ searchParams }: { searchParams: P
   const overdueCount = views.filter(isOverdue).length;
   const oc = (items: QueueTask[]) => items.filter(isOverdue).length;
   const nothing = views.length === 0;
+  const showTriage = (who === "all" || who === TRIAGE) && triage.length > 0;
+  // Nothing to render for the current filter (but there ARE tasks elsewhere).
+  const empty = !showTriage && forGrouping.length === 0;
 
   // The category-grouped cards for one person.
   const personSection = (name: string, set: QueueTask[]) => {
@@ -171,15 +188,29 @@ export default async function DailyTasksPage({ searchParams }: { searchParams: P
   const orphans = [...byKey.keys()].filter((k) => !known.has(k));
   const selectedName = assignees.find((a) => a.key === who)?.name ?? firstName(who);
 
+  // The "needs assigning" pile — pinned above the person sections, open by
+  // default, so unowned work is a visible number, not something to hunt for.
+  const triageSection = (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 px-1 pt-1">
+        <h2 className="text-xs font-semibold uppercase tracking-wide" style={{ color: "#d97706" }}>Needs assigning</h2>
+        <span className="text-xs text-muted-2">· {triage.length}</span>
+      </div>
+      <GroupCard icon={UserPlus} title="Pick who owns each" accent="#f59e0b" items={triage.slice().sort(cmp)} overdue={oc(triage)} assignees={assigneeChips} defaultOpen assignPrompt
+        blurb="Work that came in without an owner — mostly Slack to-dos. Assign each to the right person and it moves to their list." />
+    </div>
+  );
+
   return (
     <div>
       <TaskFocus />
       <PageHeader
         eyebrow="Eastern time"
         title="Daily Tasks"
-        subtitle={`${views.length} open${overdueCount ? ` · ${overdueCount} overdue` : ""}`}
+        subtitle={`${views.length} open${triage.length ? ` · ${triage.length} to assign` : ""}${overdueCount ? ` · ${overdueCount} overdue` : ""}`}
         actions={
           <div className="flex items-center gap-2">
+            {triage.length > 0 && <Badge color="#b45309" soft="#fef3c7">{triage.length} to assign</Badge>}
             {overdueCount > 0 && <Badge color="#dc2626" soft="#fee2e2">{overdueCount} overdue</Badge>}
             <Badge soft="var(--surface-2)"><CheckCircle2 className="mr-1 inline size-3 text-success" />{completedCount} done</Badge>
           </div>
@@ -193,6 +224,7 @@ export default async function DailyTasksPage({ searchParams }: { searchParams: P
           <div className="flex flex-wrap items-center gap-1.5">
             <FilterChip href="/queue" label="Everyone" count={views.length} active={activeKey === "all"} />
             {meHasChip && <FilterChip href="/queue?who=me" label="My tasks" count={countOf(meKey!)} active={activeKey === "me"} />}
+            {triage.length > 0 && <FilterChip href={`/queue?who=${TRIAGE}`} label="Needs assigning" count={triage.length} active={activeKey === TRIAGE} />}
             {assignees
               .filter((a) => countOf(a.key) > 0 || a.key === who)
               .map((a) => (
@@ -206,17 +238,24 @@ export default async function DailyTasksPage({ searchParams }: { searchParams: P
             <CheckCircle2 className="mx-auto mb-2 size-6 text-success" />
             <p className="text-sm text-muted">All caught up — nothing open. 🎉</p>
           </div>
-        ) : shown.length === 0 ? (
+        ) : empty ? (
           <p className="rounded-2xl border border-dashed bg-surface px-4 py-6 text-center text-sm text-muted">
-            Nothing assigned to {activeKey === "me" ? "you" : selectedName} right now.
+            {who === TRIAGE
+              ? "Nothing needs assigning right now."
+              : `Nothing assigned to ${activeKey === "me" ? "you" : selectedName} right now.`}
           </p>
-        ) : who === "all" ? (
-          <>
-            {sections.map((a) => <Fragment key={a.key}>{personSection(a.name, byKey.get(a.key)!.slice().sort(cmp))}</Fragment>)}
-            {orphans.map((k) => <Fragment key={k}>{personSection(firstName(k), byKey.get(k)!.slice().sort(cmp))}</Fragment>)}
-          </>
         ) : (
-          personSection(selectedName, shown.slice().sort(cmp))
+          <>
+            {showTriage && triageSection}
+            {who === "all" ? (
+              <>
+                {sections.map((a) => <Fragment key={a.key}>{personSection(a.name, byKey.get(a.key)!.slice().sort(cmp))}</Fragment>)}
+                {orphans.map((k) => <Fragment key={k}>{personSection(firstName(k), byKey.get(k)!.slice().sort(cmp))}</Fragment>)}
+              </>
+            ) : who === TRIAGE ? null : (
+              personSection(selectedName, forGrouping.slice().sort(cmp))
+            )}
+          </>
         )}
       </div>
     </div>
