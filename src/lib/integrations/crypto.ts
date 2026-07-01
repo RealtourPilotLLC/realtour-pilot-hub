@@ -9,8 +9,11 @@ const DEV_FALLBACK = "rtp-dev-only-secret-change-me-please-32xx";
 
 function masterKey(): Buffer {
   const secret = process.env.APP_SECRET || DEV_FALLBACK;
-  if (!process.env.APP_SECRET && process.env.NODE_ENV === "production") {
-    throw new Error("APP_SECRET must be set in production to encrypt secrets.");
+  // Require a real key on ANY deployed environment (Vercel sets VERCEL), not only
+  // NODE_ENV=production — otherwise a preview/staging deploy would silently
+  // encrypt real integration tokens with the committed dev fallback key.
+  if (!process.env.APP_SECRET && (process.env.NODE_ENV === "production" || process.env.VERCEL)) {
+    throw new Error("APP_SECRET must be set on any deployed environment to encrypt secrets.");
   }
   // Derive a 32-byte key from whatever length secret is provided.
   return crypto.createHash("sha256").update(secret).digest();

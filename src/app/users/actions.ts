@@ -112,6 +112,42 @@ export async function setUserStatus(id: string, status: "ACTIVE" | "DISABLED"): 
   }
 }
 
+// Owner read-only preview of another user's view. Sets `actingAs` in the session;
+// getCurrentUser resolves the effective user for rendering while the guards keep
+// the real owner + block every mutation (see requireRole). Exit restores it.
+export async function viewAs(id: string): Promise<Res> {
+  try {
+    const actor = await requireOwnerActor();
+    if (id === actor.id) return { ok: false, message: "That's already you." };
+    const target = await prisma.appUser.findUnique({ where: { id }, select: { id: true, name: true } });
+    if (!target) return { ok: false, message: "User not found." };
+    const { getSession, setSession } = await import("@/lib/auth/session");
+    const s = await getSession();
+    if (!s) return { ok: false, message: "Not signed in." };
+    await setSession({ ...s, actingAs: id });
+    revalidatePath("/", "layout");
+    return { ok: true, message: `Now viewing as ${target.name ?? "user"}.` };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Failed." };
+  }
+}
+
+export async function exitViewAs(): Promise<Res> {
+  try {
+    const { getSession, setSession } = await import("@/lib/auth/session");
+    const s = await getSession();
+    if (!s) return { ok: false, message: "Not signed in." };
+    if (s.role !== "OWNER") return { ok: false, message: "Nothing to exit." };
+    const rest = { ...s };
+    delete rest.actingAs;
+    await setSession(rest);
+    revalidatePath("/", "layout");
+    return { ok: true, message: "Exited preview." };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Failed." };
+  }
+}
+
 export async function removeUser(id: string): Promise<Res> {
   try {
     const actor = await requireOwnerActor();

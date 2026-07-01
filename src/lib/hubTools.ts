@@ -177,7 +177,7 @@ export const HUB_TOOLS: HubTool[] = [
 // their role rank is >= the item's required minRole rank.
 const ROLE_RANK: Record<string, number> = { CREATIVE: 1, ADMIN: 2, OWNER: 3 };
 function allowedRolesFor(viewer: string): string[] {
-  const rank = ROLE_RANK[viewer] ?? ROLE_RANK.OWNER;
+  const rank = ROLE_RANK[viewer] ?? ROLE_RANK.CREATIVE;
   return Object.keys(ROLE_RANK).filter((r) => ROLE_RANK[r] <= rank);
 }
 
@@ -200,7 +200,7 @@ function resolveRange(input: { range?: string; from?: string; to?: string }): { 
 export async function execHubTool(
   name: string,
   input: Record<string, unknown>,
-  ctx: { role: string } = { role: "OWNER" },
+  ctx: { role: string } = { role: "CREATIVE" }, // least privilege if a caller forgets
 ): Promise<unknown> {
   switch (name) {
     case "current_datetime": {
@@ -492,7 +492,7 @@ export async function execHubTool(
 
     case "search_comms": {
       // Client comms are sensitive: admin + owner only, never creatives.
-      if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.OWNER) < ROLE_RANK.ADMIN) {
+      if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.CREATIVE) < ROLE_RANK.ADMIN) {
         return { error: "Client communication history is available to admin and owner roles only." };
       }
       const person = typeof input.person === "string" && input.person.trim()
@@ -538,7 +538,7 @@ export async function execHubTool(
 
     case "draft_client_message": {
       // Drafting client comms is an admin/owner action (creatives don't message clients).
-      if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.OWNER) < ROLE_RANK.ADMIN) {
+      if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.CREATIVE) < ROLE_RANK.ADMIN) {
         return { error: "Drafting client messages is available to admin and owner roles only." };
       }
       const name2 = String(input.client ?? "").trim();
@@ -596,7 +596,7 @@ export async function execHubTool(
 
     case "create_task": {
       // Creating to-dos is an admin/owner action.
-      if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.OWNER) < ROLE_RANK.ADMIN) {
+      if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.CREATIVE) < ROLE_RANK.ADMIN) {
         return { error: "Creating tasks is available to admin and owner roles only." };
       }
       const title = String(input.title ?? "").trim();
@@ -670,7 +670,7 @@ export async function execHubTool(
 
     case "remember_fact": {
       // Teaching the brain is an admin/owner action; creatives can't write memory.
-      if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.OWNER) < ROLE_RANK.ADMIN) {
+      if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.CREATIVE) < ROLE_RANK.ADMIN) {
         return { error: "Saving to the hub's memory is available to admin and owner roles only." };
       }
       const { learnFact } = await import("@/lib/learn");

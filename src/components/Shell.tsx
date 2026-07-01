@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { Menu, X } from "lucide-react";
 import { Sidebar, type ShellUser } from "@/components/Sidebar";
 import { FeedbackWidget } from "@/components/feedback/FeedbackWidget";
+import { ViewAsBanner } from "@/components/ViewAsBanner";
 import { cn } from "@/lib/utils";
 
 // App chrome: a static sidebar on desktop (lg+), and a slide-in drawer with a
@@ -78,6 +79,7 @@ export function Shell({ user, children }: { user: ShellUser | null; children: Re
           </div>
         </header>
 
+        {user?.impersonating && <ViewAsBanner name={user.name} />}
         <main className="flex-1 overflow-y-auto scroll-thin">{children}</main>
       </div>
 

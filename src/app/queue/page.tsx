@@ -79,10 +79,16 @@ function FilterChip({ href, label, count, active }: { href: string; label: strin
 
 export default async function DailyTasksPage({ searchParams }: { searchParams: Promise<{ who?: string }> }) {
   const sp = await searchParams;
-  const [tasks, assignees, me] = await Promise.all([
+  const me = await getCurrentUser().catch(() => null);
+  // Editors are scoped to their OWN delegated work — never the whole team's
+  // queue. editorKey = kim/remar/…; fall back to their first-name slug.
+  const editorScope = me?.role === "EDITOR" ? (me.editorKey || (me.name ? slugForName(me.name) : null)) : null;
+  const [tasks, assignees] = await Promise.all([
     prisma.smartTask.findMany({
       where: {
         status: { in: ACTIVE },
+        // DB-level scope for editors, so their view can't even load others' work.
+        ...(editorScope ? { assignedKey: editorScope } : {}),
         OR: [
           { projectId: null },
           { project: recentProjectWhere() },
@@ -94,7 +100,6 @@ export default async function DailyTasksPage({ searchParams }: { searchParams: P
       include: { client: { select: { name: true } } },
     }),
     listAssignees(),
-    getCurrentUser().catch(() => null),
   ]);
   const completedCount = await prisma.smartTask.count({ where: { status: "COMPLETED" } });
   const assigneeChips = assignees.map((a) => ({ key: a.key, name: a.name }));
@@ -118,8 +123,9 @@ export default async function DailyTasksPage({ searchParams }: { searchParams: P
   const meKey = me?.name ? slugForName(me.name) : null;
   const meHasChip = !!meKey && assignees.some((a) => a.key === meKey);
 
-  // Selected filter. ?who=all | me | needs-assigning | <slug>.
-  const whoRaw = (sp.who ?? "all").toLowerCase();
+  // Selected filter. ?who=all | me | needs-assigning | <slug>. An editor is
+  // locked to their own key (the ?who= param can't broaden their view).
+  const whoRaw = (editorScope ?? sp.who ?? "all").toLowerCase();
   const who = whoRaw === "me" && meKey ? meKey : whoRaw;
   const activeKey = whoRaw === "all" ? "all" : whoRaw === "me" && meKey ? "me" : who;
   // Person buckets are built from assigned work only (triage renders on its own).
@@ -136,7 +142,7 @@ export default async function DailyTasksPage({ searchParams }: { searchParams: P
   const overdueCount = views.filter(isOverdue).length;
   const oc = (items: QueueTask[]) => items.filter(isOverdue).length;
   const nothing = views.length === 0;
-  const showTriage = (who === "all" || who === TRIAGE) && triage.length > 0;
+  const showTriage = !editorScope && (who === "all" || who === TRIAGE) && triage.length > 0;
   // Nothing to render for the current filter (but there ARE tasks elsewhere).
   const empty = !showTriage && forGrouping.length === 0;
 
@@ -215,8 +221,9 @@ export default async function DailyTasksPage({ searchParams }: { searchParams: P
       <div className="space-y-5 p-4 sm:p-6">
         <AddTask assignees={assigneeChips} />
 
-        {/* Person filter — see everyone, just you, or one teammate's tasks. */}
-        {!nothing && (
+        {/* Person filter — see everyone, just you, or one teammate's tasks.
+            Hidden for editors, who are locked to their own work. */}
+        {!nothing && !editorScope && (
           <div className="flex flex-wrap items-center gap-1.5">
             <FilterChip href="/queue" label="Everyone" count={views.length} active={activeKey === "all"} />
             {meHasChip && <FilterChip href="/queue?who=me" label="My tasks" count={countOf(meKey!)} active={activeKey === "me"} />}

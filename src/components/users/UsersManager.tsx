@@ -1,11 +1,12 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { UserPlus, Loader2, Copy, Check, ChevronDown, Shield, Ban, RotateCcw, Trash2, X } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { UserPlus, Loader2, Copy, Check, ChevronDown, Shield, Ban, RotateCcw, Trash2, X, Eye } from "lucide-react";
 import {
   ROLES, ROLE_LABEL, PAGES, roleHasByDefault, parsePermissions, canAccess, type PageKey,
 } from "@/lib/auth/access";
-import { inviteUser, inviteLinkFor, setUserRole, setUserPermission, setUserStatus, removeUser } from "@/app/users/actions";
+import { inviteUser, inviteLinkFor, setUserRole, setUserPermission, setUserStatus, removeUser, viewAs } from "@/app/users/actions";
 import { etMonthDay } from "@/lib/datetime";
 
 export type UserView = {
@@ -140,8 +141,10 @@ function UserCard({ u }: { u: UserView }) {
   const [expanded, setExpanded] = useState(false);
   const [link, setLink] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const router = useRouter();
   const neverLoggedIn = !u.lastLoginAt;
 
+  const preview = () => start(async () => { const r = await viewAs(u.id); if (r.ok) { router.push("/"); router.refresh(); } else setMsg(r.message); });
   const changeRole = (role: string) => start(async () => { const r = await setUserRole(u.id, role); if (!r.ok) setMsg(r.message); });
   const getLink = () => start(async () => { const r = await inviteLinkFor(u.id); if (r.ok && r.link) setLink(r.link); else setMsg(r.message); });
   const toggleStatus = () => start(async () => { const r = await setUserStatus(u.id, u.status === "DISABLED" ? "ACTIVE" : "DISABLED"); if (!r.ok) setMsg(r.message); });
@@ -173,6 +176,11 @@ function UserCard({ u }: { u: UserView }) {
         {neverLoggedIn && (
           <button onClick={getLink} disabled={pending} className="inline-flex items-center gap-1 rounded-lg bg-brand/10 px-2.5 py-1.5 text-xs font-medium text-brand hover:bg-brand/20">
             <Copy className="size-3.5" /> Invite link
+          </button>
+        )}
+        {!u.isSelf && u.status === "ACTIVE" && (
+          <button onClick={preview} disabled={pending} title="Preview this person's view (read-only)" className="inline-flex items-center gap-1 rounded-lg bg-surface-2 px-2.5 py-1.5 text-xs font-medium text-muted hover:text-foreground">
+            <Eye className="size-3.5" /> View as
           </button>
         )}
         {!u.isSelf && (

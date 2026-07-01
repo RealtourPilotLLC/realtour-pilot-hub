@@ -31,6 +31,14 @@ async function main() {
   const jordan = await prisma.teamMember.create({
     data: { name: "Jordan Spackman", email: "info@realtourpilot.com", role: Role.ADMIN, avatarColor: "#4f46e5" },
   });
+  // Owner login account (idempotent) — so a fresh DB always has an active OWNER
+  // and turning on AUTH_ENFORCE can never lock everyone out (the callback denies
+  // any email without an AppUser row).
+  await prisma.appUser.upsert({
+    where: { email: "info@realtourpilot.com" },
+    update: { role: "OWNER", status: "ACTIVE" },
+    create: { email: "info@realtourpilot.com", name: "Jordan Spackman", role: "OWNER", status: "ACTIVE", teamMemberId: jordan.id },
+  });
   const kyle = await prisma.teamMember.create({
     data: { name: "Kyle", email: "kyle@realtourpilot.com", role: Role.MANAGER, avatarColor: "#0ea5e9" },
   });

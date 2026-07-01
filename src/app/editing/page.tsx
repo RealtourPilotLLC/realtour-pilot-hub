@@ -3,6 +3,9 @@ import { ProjectTracker } from "@/components/tracker/ProjectTracker";
 import { buildTrackerRows } from "@/lib/tracker";
 import { etAddDays } from "@/lib/datetime";
 import { prisma } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/auth/user";
+import { slugForName } from "@/lib/assignees";
+import { editorForDeliverable } from "@/lib/editors";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +27,17 @@ export default async function EditorQueuePage() {
     include: { client: true, photographer: true, editor: true, deliverables: true },
   });
 
-  const rows = buildTrackerRows(projects).filter((r) => r.kind === "video");
+  // Editors see only the jobs whose video routes to them; owner/admin see all.
+  const me = await getCurrentUser().catch(() => null);
+  const editorScope = me?.role === "EDITOR" ? (me.editorKey || (me.name ? slugForName(me.name) : null)) : null;
+  const scoped = editorScope
+    ? projects.filter((p) => {
+        const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL") ?? p.deliverables[0];
+        return editorForDeliverable(v?.type, v?.label, !!p.client?.socialClient) === editorScope;
+      })
+    : projects;
+
+  const rows = buildTrackerRows(scoped).filter((r) => r.kind === "video");
   const inProduction = rows.filter((r) => r.status !== "DELIVERED").length;
   const waiting = rows.filter((r) => r.status === "SHOT").length;
 
