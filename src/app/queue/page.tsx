@@ -7,6 +7,7 @@ import { TaskCard, type QueueTask } from "@/components/queue/TaskCard";
 import { TaskFocus } from "@/components/queue/TaskFocus";
 import { AddTask } from "@/components/queue/AddTask";
 import { taskToView } from "@/lib/taskView";
+import { MESSAGE_TASK_TYPES } from "@/lib/queries";
 import { prisma } from "@/lib/prisma";
 import { recentProjectWhere } from "@/lib/recency";
 import { etDayStartUtc } from "@/lib/datetime";
@@ -75,7 +76,16 @@ export default async function DailyTasksPage({ searchParams }: { searchParams: P
   const sp = await searchParams;
   const [tasks, assignees, me] = await Promise.all([
     prisma.smartTask.findMany({
-      where: { status: { in: ACTIVE }, OR: [{ projectId: null }, { project: recentProjectWhere() }] },
+      where: {
+        status: { in: ACTIVE },
+        OR: [
+          { projectId: null },
+          { project: recentProjectWhere() },
+          // Messages/replies surface regardless of project age — same as the
+          // morning brief — so clicking one in the brief always finds it here.
+          { taskType: { in: MESSAGE_TASK_TYPES } },
+        ],
+      },
       include: { client: { select: { name: true } } },
     }),
     listAssignees(),
