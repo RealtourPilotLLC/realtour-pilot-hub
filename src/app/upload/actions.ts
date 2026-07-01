@@ -192,6 +192,24 @@ export async function finalizeUpload(
     },
   });
 
+  // Auto-create the Frame.io review project for VIDEO jobs (editors upload their
+  // finished video there). Best-effort — never block the photographer's submit.
+  try {
+    const p = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { title: true, frameioProjectId: true, client: { select: { name: true } }, deliverables: { select: { type: true } } },
+    });
+    const isVideo = p?.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+    if (p && isVideo && !p.frameioProjectId) {
+      const { frameioConnected, createFrameioProject } = await import("@/lib/integrations/frameio");
+      if (await frameioConnected()) {
+        const street = (p.title || "").split(",")[0].trim() || p.title || "Project";
+        const proj = await createFrameioProject(`${street} — ${p.client?.name ?? "Client"}`.slice(0, 250));
+        await prisma.project.update({ where: { id: projectId }, data: { frameioProjectId: proj.id, frameioViewUrl: proj.viewUrl } });
+      }
+    }
+  } catch { /* non-fatal */ }
+
   revalidatePath(`/upload/${projectId}`);
   revalidatePath(`/projects/${projectId}`);
   revalidatePath("/pipeline");

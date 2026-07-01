@@ -26,8 +26,9 @@ const V4 = "https://api.frame.io/v4";
 // The scopes the Adobe credential exposes (all auto-granted). offline_access is
 // what gets us the refresh token.
 const SCOPES = "openid,offline_access,profile,email,additional_info.roles";
-// V4 requires an api-version header; "experimental" is the current named version.
-const API_VERSION = "experimental";
+// V4 requires an api-version header; "4.0" is the current stable version (per the
+// published OpenAPI spec — "experimental" only exposes reads).
+const API_VERSION = "4.0";
 
 export class FrameioError extends Error {
   constructor(message: string, public status?: number) {
@@ -143,4 +144,72 @@ export async function frameioPing(): Promise<{ ok: boolean; detail?: string }> {
   } catch (e) {
     return { ok: false, detail: e instanceof FrameioError ? e.message : String(e) };
   }
+}
+
+// True once the OAuth refresh token is stored (connected).
+export async function frameioConnected(): Promise<boolean> {
+  return !!(await getSecret("frameio"));
+}
+
+// The account + workspace we create projects under (the connected owner's first
+// of each). Cached per warm instance.
+let ctxCache: { accountId: string; workspaceId: string } | null = null;
+export async function frameioContext(): Promise<{ accountId: string; workspaceId: string }> {
+  if (ctxCache) return ctxCache;
+  const accs = await fio<{ data?: { id: string }[] }>("/accounts");
+  const accountId = accs.data?.[0]?.id;
+  if (!accountId) throw new FrameioError("No Frame.io account found for this login.");
+  const wss = await fio<{ data?: { id: string }[] }>(`/accounts/${accountId}/workspaces`);
+  const workspaceId = wss.data?.[0]?.id;
+  if (!workspaceId) throw new FrameioError("No Frame.io workspace found.");
+  ctxCache = { accountId, workspaceId };
+  return ctxCache;
+}
+
+export type FrameioProject = { id: string; name: string; viewUrl: string; rootFolderId: string };
+
+// Create a review project (titled e.g. "123 Main St — Client Name").
+export async function createFrameioProject(name: string): Promise<FrameioProject> {
+  const { accountId, workspaceId } = await frameioContext();
+  const r = await fio<{ data: { id: string; name: string; view_url: string; root_folder_id: string } }>(
+    `/accounts/${accountId}/workspaces/${workspaceId}/projects`,
+    { method: "POST", body: { data: { name: name.slice(0, 250) } } },
+  );
+  const d = r.data;
+  return { id: d.id, name: d.name, viewUrl: d.view_url, rootFolderId: d.root_folder_id };
+}
+
+export async function deleteFrameioProject(projectId: string): Promise<void> {
+  const { accountId } = await frameioContext();
+  await fio(`/accounts/${accountId}/projects/${projectId}`, { method: "DELETE" }).catch(() => {});
+}
+
+// The custom-action event string our webhook receiver keys on. Editors click
+// "Send to RealTour for review" on a project/asset → Frame.io POSTs this to us.
+export const FRAMEIO_REVIEW_EVENT = "rtp.ready_for_review";
+
+// Register the "Send to RealTour for review" custom action once for the
+// workspace (idempotent — skips if it already exists). Its URL must be the
+// public prod receiver, so pass the base explicitly when running off-prod.
+export async function ensureReviewAction(baseUrl?: string): Promise<{ created: boolean; id?: string; url: string }> {
+  const { accountId, workspaceId } = await frameioContext();
+  const url = `${baseUrl || appBase()}/api/webhooks/frameio`;
+  const list = await fio<{ data?: { id: string; event: string }[] }>(`/accounts/${accountId}/workspaces/${workspaceId}/actions`);
+  const existing = (list.data ?? []).find((a) => a.event === FRAMEIO_REVIEW_EVENT);
+  if (existing) return { created: false, id: existing.id, url };
+  const r = await fio<{ data: { id: string } }>(
+    `/accounts/${accountId}/workspaces/${workspaceId}/actions`,
+    {
+      method: "POST",
+      body: {
+        data: {
+          name: "Send to RealTour for review",
+          description: "Tell RealTour Pilot the finished video is ready to review",
+          event: FRAMEIO_REVIEW_EVENT,
+          url,
+        },
+      },
+    },
+  );
+  return { created: true, id: r.data?.id, url };
 }

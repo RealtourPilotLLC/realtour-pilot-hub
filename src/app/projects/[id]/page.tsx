@@ -48,6 +48,7 @@ import { ProjectMap } from "@/components/map/ProjectMap";
 import { DroneBadge, hasDroneOps } from "@/components/project/DroneBadge";
 import { DroneAdvisory } from "@/components/project/DroneAdvisory";
 import { DeliverableStatusSelect } from "@/components/project/DeliverableStatusSelect";
+import { FrameioButton } from "@/components/project/FrameioButton";
 import { PRIORITY_META, DELIVERABLE_META, refinedDeliverableLabel, stageMeta } from "@/lib/pipeline";
 import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { formatMoney, stripHtml } from "@/lib/utils";
@@ -341,16 +342,19 @@ export default async function ProjectPage({
               icon={FileText}
               title="Uploads & editor brief"
               action={
-                project.editorPdfPath ? (
-                  <a
-                    href={`/api/projects/${project.id}/editor-brief`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-brand-soft px-2.5 py-1 text-xs font-medium text-brand hover:opacity-90"
-                  >
-                    <FileText className="size-3.5" /> Editor brief PDF
-                  </a>
-                ) : null
+                <div className="flex flex-wrap items-center gap-2">
+                  <FrameioButton projectId={project.id} viewUrl={project.frameioViewUrl} />
+                  {project.editorPdfPath && (
+                    <a
+                      href={`/api/projects/${project.id}/editor-brief`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-brand-soft px-2.5 py-1 text-xs font-medium text-brand hover:opacity-90"
+                    >
+                      <FileText className="size-3.5" /> Editor brief PDF
+                    </a>
+                  )}
+                </div>
               }
               bodyClassName="space-y-3"
             >

@@ -310,6 +310,10 @@ model Project {
   // Relative path to the generated editor-brief PDF, if any.
   editorPdfPath String?
 
+  // Frame.io V4 review project (editors upload finals + we review there).
+  frameioProjectId String?
+  frameioViewUrl   String?
+
   deliverables Deliverable[]
   checklist    ChecklistItem[]
   activities   Activity[]
