@@ -125,6 +125,11 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
               <a href={finalUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-3 py-1.5 text-sm font-medium hover:bg-surface-2">
                 <FolderOpen className="size-4 text-muted" /> Final footage <ExternalLink className="size-3.5 text-muted-2" />
               </a>
+              {brandUrl && (
+                <a href={brandUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-3 py-1.5 text-sm font-medium hover:bg-surface-2">
+                  <Palette className="size-4 text-muted" /> Brand assets (logo, fonts) <ExternalLink className="size-3.5 text-muted-2" />
+                </a>
+              )}
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-[#5b53ff]/25 bg-[#5b53ff]/5 p-3">
               <Clapperboard className="size-4 text-[#5b53ff]" />
@@ -155,22 +160,15 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
 
         {/* RIGHT — the agent's brand + working profile */}
         <div className="space-y-6">
-          {(brandColors.length > 0 || brandUrl) && (
-            <Section icon={Palette} title="Brand kit">
-              {brandColors.length > 0 && (
-                <div className="flex flex-wrap items-center gap-2">
-                  {brandColors.map((c) => (
-                    <span key={c} className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-2 py-1 text-xs font-medium">
-                      <span className="size-4 rounded" style={{ backgroundColor: c }} /> {c.toUpperCase()}
-                    </span>
-                  ))}
-                </div>
-              )}
-              {brandUrl && (
-                <a href={brandUrl} target="_blank" rel="noopener noreferrer" className="mt-3 inline-flex items-center gap-1.5 rounded-lg border bg-surface px-3 py-1.5 text-sm font-medium hover:bg-surface-2">
-                  <FolderOpen className="size-4 text-muted" /> Logo & brand assets <ExternalLink className="size-3.5 text-muted-2" />
-                </a>
-              )}
+          {brandColors.length > 0 && (
+            <Section icon={Palette} title="Brand colors">
+              <div className="flex flex-wrap items-center gap-2">
+                {brandColors.map((c) => (
+                  <span key={c} className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-2 py-1 text-xs font-medium">
+                    <span className="size-4 rounded" style={{ backgroundColor: c }} /> {c.toUpperCase()}
+                  </span>
+                ))}
+              </div>
             </Section>
           )}
 
