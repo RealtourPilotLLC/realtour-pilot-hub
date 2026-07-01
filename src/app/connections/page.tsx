@@ -18,6 +18,7 @@ export default async function ConnectionsPage() {
 
   const connectedCount = connections.filter((c) => c.status === "CONNECTED").length;
   const errorCount = connections.filter((c) => c.status === "ERROR").length;
+  const frameioReady = await frameioConfigured();
 
   return (
     <div>
@@ -73,7 +74,7 @@ export default async function ConnectionsPage() {
                       googleAuthorizeUrl={
                         provider.id === "gmail" && googleConfigured() ? googleAuthorizeUrl() : undefined
                       }
-                      frameioReady={provider.id === "frameio" ? frameioConfigured() : undefined}
+                      frameioReady={provider.id === "frameio" ? frameioReady : undefined}
                     />
                   );
                 })}

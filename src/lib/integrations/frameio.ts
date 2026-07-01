@@ -13,7 +13,13 @@ import { getSecret, saveSecret } from "./connections";
 // ---------------------------------------------------------------------------
 
 const CLIENT_ID = process.env.FRAMEIO_CLIENT_ID ?? "";
-const CLIENT_SECRET = process.env.FRAMEIO_CLIENT_SECRET ?? "";
+
+// The Adobe OAuth client secret. Pasted into the Connections page → encrypted in
+// the Connection store (preferred, so the owner never touches Vercel); falls back
+// to an env var if one is set.
+async function clientSecret(): Promise<string> {
+  return (await getSecret("frameio_app")) || process.env.FRAMEIO_CLIENT_SECRET || "";
+}
 
 const IMS = "https://ims-na1.adobelogin.com";
 const V4 = "https://api.frame.io/v4";
@@ -37,8 +43,9 @@ function appBase(): string {
   );
 }
 
-export function frameioConfigured(): boolean {
-  return Boolean(CLIENT_ID && CLIENT_SECRET);
+// True once the Client ID (env) and Client Secret (Connection store) are both set.
+export async function frameioConfigured(): Promise<boolean> {
+  return Boolean(CLIENT_ID && (await clientSecret()));
 }
 
 export function frameioRedirectUri(): string {
@@ -64,7 +71,7 @@ export async function exchangeFrameioCode(code: string): Promise<{ ok: boolean; 
     body: new URLSearchParams({
       grant_type: "authorization_code",
       client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET,
+      client_secret: await clientSecret(),
       code: code.trim(),
       redirect_uri: frameioRedirectUri(),
     }),
@@ -90,7 +97,7 @@ async function frameioAccessToken(): Promise<string> {
     body: new URLSearchParams({
       grant_type: "refresh_token",
       client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET,
+      client_secret: await clientSecret(),
       refresh_token: refresh,
     }),
     cache: "no-store",

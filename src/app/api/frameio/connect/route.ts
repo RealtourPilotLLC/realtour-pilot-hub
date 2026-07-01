@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
     const u = await getCurrentUser();
     if (!u || u.realRole !== "OWNER") return NextResponse.redirect(new URL("/", req.url));
   }
-  if (!frameioConfigured()) return NextResponse.redirect(new URL("/connections?frameio=config", req.url));
+  if (!(await frameioConfigured())) return NextResponse.redirect(new URL("/connections?frameio=config", req.url));
 
   const state = randomUUID();
   const res = NextResponse.redirect(frameioAuthorizeUrl(state));

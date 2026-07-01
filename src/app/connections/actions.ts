@@ -106,6 +106,18 @@ export async function connectDropbox(_prev: ActionResult | null, formData: FormD
   }
 }
 
+// Save the Frame.io (Adobe) OAuth Client Secret — encrypted, never re-shown. The
+// Client ID is already configured in env; this is the only secret the owner
+// pastes. After saving, the "Connect Frame.io" button lights up.
+export async function connectFrameioSecret(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
+  await requireOwner();
+  const secret = String(formData.get("secret") || "").trim();
+  if (!secret) return { ok: false, message: "Paste the Client Secret from Adobe." };
+  await saveSecret("frameio_app", secret, { accountLabel: "Frame.io app credential" });
+  revalidatePath("/connections");
+  return { ok: true, message: "Saved — now click “Connect Frame.io”." };
+}
+
 export async function connectApiKey(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
   await requireOwner();
   const provider = String(formData.get("provider") || "");
