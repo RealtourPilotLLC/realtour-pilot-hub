@@ -7,6 +7,10 @@ import {
   AlertTriangle,
   CalendarDays,
   ArrowRight,
+  MessageSquare,
+  Users,
+  MapPin,
+  KanbanSquare,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Avatar } from "@/components/ui/Avatar";
@@ -26,15 +30,17 @@ function StatCard({
   value,
   accent,
   sub,
+  href,
 }: {
   icon: typeof Camera;
   label: string;
   value: string | number;
   accent: string;
   sub?: string;
+  href?: string;
 }) {
-  return (
-    <div className="panel-shadow rounded-2xl border bg-surface p-4">
+  const body = (
+    <>
       <div className="flex items-center justify-between">
         <span className="text-sm text-muted">{label}</span>
         <span
@@ -46,7 +52,15 @@ function StatCard({
       </div>
       <div className="mt-2 text-2xl font-semibold tracking-tight">{value}</div>
       {sub && <div className="mt-0.5 text-xs text-muted">{sub}</div>}
-    </div>
+    </>
+  );
+  const cls = "panel-shadow rounded-2xl border bg-surface p-4";
+  return href ? (
+    <Link href={href} className={`${cls} block transition-colors hover:bg-surface-2`}>
+      {body}
+    </Link>
+  ) : (
+    <div className={cls}>{body}</div>
   );
 }
 
@@ -97,18 +111,21 @@ export default async function DashboardPage() {
             value={shoots.today.length}
             accent="#4f46e5"
             sub={shoots.tomorrow.length ? `${shoots.tomorrow.length} tomorrow` : `${data.counts.active} active projects`}
+            href="/schedule"
           />
           <StatCard
             icon={Palette}
             label="In editing"
             value={data.counts.editing}
             accent="#d97706"
+            href="/editing"
           />
           <StatCard
             icon={CheckCircle2}
             label="In review / QC"
             value={data.counts.review}
             accent="#db2777"
+            href="/queue"
           />
           <StatCard
             icon={CheckCircle2}
@@ -116,6 +133,7 @@ export default async function DashboardPage() {
             value={data.counts.deliveredThisMonth}
             accent="#16a34a"
             sub={formatMoney(data.revenueThisMonth)}
+            href="/pipeline"
           />
           <StatCard
             icon={DollarSign}
@@ -123,7 +141,27 @@ export default async function DashboardPage() {
             value={formatMoney(data.pipelineRevenue)}
             accent="#0ea5e9"
             sub="active orders"
+            href="/sales"
           />
+        </div>
+
+        {/* Jump-offs — one-click into the day's tools (launchpad). */}
+        <div className="flex flex-wrap gap-2">
+          {[
+            { href: "/communications", label: "Communications", icon: MessageSquare },
+            { href: "/billing", label: "Billing", icon: DollarSign },
+            { href: "/clients", label: "Clients", icon: Users },
+            { href: "/map", label: "Map", icon: MapPin },
+            { href: "/pipeline", label: "Project Tracker", icon: KanbanSquare },
+          ].map((l) => (
+            <Link
+              key={l.href}
+              href={l.href}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
+            >
+              <l.icon className="size-3.5" /> {l.label}
+            </Link>
+          ))}
         </div>
 
         <div className="grid gap-6 lg:grid-cols-3">

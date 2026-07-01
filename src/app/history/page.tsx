@@ -64,7 +64,7 @@ export default async function HistoryPage() {
 
   return (
     <div>
-      <PageHeader title="Task history" subtitle="What happened, day by day — shoots, completed to-dos, and deliveries. Tap “Write a recap” for a plain-English summary." />
+      <PageHeader title="Task History" subtitle="What happened, day by day — shoots, completed to-dos, and deliveries. Tap “Write a recap” for a plain-English summary." />
       <div className="mx-auto max-w-3xl space-y-6 p-4 sm:p-6">
         {orderedDays.length === 0 && (
           <div className="rounded-2xl border border-border bg-surface p-8 text-center text-sm text-muted">

@@ -24,7 +24,6 @@ import {
   MessageSquare,
   MessageSquarePlus,
   Plug,
-  Settings,
   LogOut,
   ShieldCheck,
   type LucideIcon,
@@ -88,7 +87,7 @@ const SECTIONS: NavSection[] = [
   },
   {
     title: "Marketing",
-    items: [{ label: "Campaigns", href: "/marketing", icon: Megaphone, key: "marketing" }],
+    items: [{ label: "Marketing", href: "/marketing", icon: Megaphone, key: "marketing" }],
   },
   {
     title: "Knowledge",
@@ -180,17 +179,7 @@ export function Sidebar({ user, onNavigate }: { user?: ShellUser | null; onNavig
       </nav>
 
       <div className="space-y-1 border-t px-3 py-3">
-        {can("connections") && (
-          <Link
-            href="/connections"
-            onClick={onNavigate}
-            className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
-          >
-            <Settings className="size-4" />
-            <span>Settings &amp; connections</span>
-          </Link>
-        )}
-
+        {/* Connections lives in the System nav section — no duplicate here. */}
         {user && (
           <div className="mt-1 flex items-center gap-2 rounded-lg bg-surface-2/60 px-3 py-2">
             <div className="min-w-0 flex-1">

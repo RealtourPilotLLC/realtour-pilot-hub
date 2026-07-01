@@ -89,7 +89,7 @@ export default async function SalesPage() {
   return (
     <div>
       <PageHeader
-        title="Sales & Finance"
+        title="Sales Tracker"
         subtitle="Revenue, orders, and pipeline value"
         actions={
           <Badge soft="var(--surface-2)">QuickBooks &amp; Stripe sync — coming with integrations</Badge>
