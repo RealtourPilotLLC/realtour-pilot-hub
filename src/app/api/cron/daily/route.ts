@@ -31,6 +31,11 @@ export async function GET(req: NextRequest) {
   await step("customerTeams", () => syncAryeoCustomerTeams());
   // Full appointments reconcile once a day (the hourly cron only does recent+future).
   await step("appointments", () => syncAryeoAppointments());
+  // Retire delivery-text nudges that lingered a week (already sent off-app / moot).
+  await step("staleDeliveryTexts", async () => {
+    const { closeStaleDeliveryTexts } = await import("@/lib/tasks");
+    return closeStaleDeliveryTexts(7);
+  });
   await step("webhookLogTrimmed", async () => {
     const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const r = await prisma.webhookEvent.deleteMany({ where: { createdAt: { lt: cutoff } } });

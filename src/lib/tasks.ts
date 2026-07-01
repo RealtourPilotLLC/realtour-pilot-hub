@@ -448,8 +448,29 @@ export async function closeReplyForOutbound(clientId: string, text: string): Pro
     });
     projectId = lastInbound?.projectId ?? null;
   }
-  // If we resolved an order, close that one; otherwise close all (legacy behavior).
-  return closeClientReplyTask(clientId, projectId ?? undefined);
+  return closeReplyScoped(clientId, projectId);
+}
+
+// After an outbound CALL to the client (we returned their call), close the
+// callback/reply task. No text to parse, so scope to the passed order when known,
+// else close only when there's a single open reply task.
+export async function closeReplyForOutboundCall(clientId: string, projectId?: string | null): Promise<boolean> {
+  return closeReplyScoped(clientId, projectId ?? null);
+}
+
+// Close a client's reply task WITHOUT risking the wrong order's: if the order is
+// known, close that one; if not, only blanket-close when the client has exactly
+// ONE open reply task. Multi-order + unknown → leave it for a human, so a generic
+// "thanks!" outbound can't silently clear an unrelated order's open question.
+async function closeReplyScoped(clientId: string, projectId: string | null): Promise<boolean> {
+  if (projectId) return closeClientReplyTask(clientId, projectId);
+  const open = await prisma.smartTask.findMany({
+    where: { clientId, taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    select: { id: true },
+  });
+  if (open.length !== 1) return false;
+  await prisma.smartTask.update({ where: { id: open[0].id }, data: { status: "COMPLETED", completedAt: new Date() } });
+  return true;
 }
 
 // Merge a new inbound into an EXISTING open task the Smart Brain flagged as the
@@ -557,6 +578,11 @@ export async function reflectRevisionInQc(projectId: string, categories: string[
 
 // Production tasks that become obsolete once a job is delivered/cancelled.
 const PRODUCTION_TASK_TYPES = ["confirmation_text", "appointment_prep", "media_qa", "delivery", "finish_delivery"];
+// On DELIVERED we ALSO retire a couple of non-"production" types that are moot
+// once the gallery shipped: outstanding photo-flag fixes (a real re-do comes back
+// as a client revision, which is left open) and teammate job-prep instructions.
+// NOT delivery_text — that's created below and closes on its own timer/send.
+const DELIVERED_CLOSE_TYPES = [...PRODUCTION_TASK_TYPES, "image_fixes", "comms_followup"];
 
 // Close out a project's now-obsolete open tasks when it reaches a terminal
 // state, so Daily Tasks doesn't show ghost work on finished/cancelled jobs.
@@ -575,7 +601,7 @@ export async function closeObsoleteTasks(projectId: string, projectStatus: strin
     const r = await prisma.smartTask.updateMany({
       where: {
         projectId,
-        taskType: { in: PRODUCTION_TASK_TYPES },
+        taskType: { in: DELIVERED_CLOSE_TYPES },
         status: { notIn: ["COMPLETED", "CANCELLED"] },
       },
       data: { status: "COMPLETED", completedAt: new Date() },
@@ -621,6 +647,20 @@ export async function createDeliveryTextTask(projectId: string): Promise<void> {
       dedupeKey: key,
     },
   });
+}
+
+// A delivery text is a courtesy "your gallery is ready" nudge. If it's still open
+// a week after it was queued, Kyle already sent it (often straight from his phone,
+// bypassing the in-app Send button that closes it) or it's simply moot — the
+// client got the gallery via Aryeo's delivery email regardless. Close it so it
+// stops reading "overdue" forever and inflating the queue's overdue count.
+export async function closeStaleDeliveryTexts(days = 7): Promise<number> {
+  const cutoff = new Date(Date.now() - days * DAY);
+  const r = await prisma.smartTask.updateMany({
+    where: { taskType: "delivery_text", status: { notIn: ["COMPLETED", "CANCELLED"] }, createdAt: { lt: cutoff } },
+    data: { status: "COMPLETED", completedAt: new Date() },
+  });
+  return r.count;
 }
 
 // Generate (idempotently) the expected tasks for every ACTIVE project.

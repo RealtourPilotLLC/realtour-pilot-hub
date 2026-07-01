@@ -408,17 +408,36 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
     // don't use Gmail's tabbed-inbox categories, so that operator matches zero
     // messages and silently drops everything. We rely on isLikelyHuman() below
     // to filter out marketing/automated/vendor mail instead.
-    const list = await gmail<{ messages?: { id: string }[] }>(
-      "/messages?q=" + encodeURIComponent("in:inbox newer_than:3d -from:me") + "&maxResults=50",
-      token,
-    );
-    const ids = (list.messages ?? []).map((m) => m.id);
+    // Page through the inbox so a busy day (>50 human emails between runs) doesn't
+    // silently drop the surplus past the first page. Bounded (~300/run) so a
+    // flooded mailbox can't run away.
+    const ids: string[] = [];
+    let pageToken: string | undefined;
+    for (let page = 0; page < 6; page++) {
+      const list = await gmail<{ messages?: { id: string }[]; nextPageToken?: string }>(
+        "/messages?q=" + encodeURIComponent("in:inbox newer_than:3d -from:me") + "&maxResults=50" +
+          (pageToken ? "&pageToken=" + encodeURIComponent(pageToken) : ""),
+        token,
+      );
+      for (const m of list.messages ?? []) ids.push(m.id);
+      if (!list.nextPageToken) break;
+      pageToken = list.nextPageToken;
+    }
     scanned += ids.length;
+
+    // One query for everything already handled, instead of a read per message.
+    const seenSet = new Set(
+      (
+        await prisma.webhookEvent.findMany({
+          where: { provider: "gmail", status: "PROCESSED", externalId: { in: ids.map((id) => `${account.email}:${id}`) } },
+          select: { externalId: true },
+        })
+      ).map((r) => r.externalId),
+    );
 
     for (const id of ids) {
       const dedupe = `${account.email}:${id}`;
-      const seen = await prisma.webhookEvent.findFirst({ where: { provider: "gmail", externalId: dedupe, status: "PROCESSED" } });
-      if (seen) continue;
+      if (seenSet.has(dedupe)) continue;
       const msg = await gmail<GmailMsg>(
         `/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=List-Unsubscribe`,
         token,

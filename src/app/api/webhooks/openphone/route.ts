@@ -69,7 +69,7 @@ function collectPhones(obj: unknown, acc: string[] = []): string[] {
   return acc;
 }
 
-async function processOpenPhoneEvent(type: string, payload: Record<string, unknown>) {
+export async function processOpenPhoneEvent(type: string, payload: Record<string, unknown>) {
   const data = ((payload.data as Record<string, unknown>)?.object ?? payload.data ?? payload) as Record<string, unknown>;
 
   // Call transcripts arrive on their own event — pull the transcript, log it,
@@ -140,11 +140,31 @@ async function processOpenPhoneEvent(type: string, payload: Record<string, unkno
       });
     }
 
-    // We replied (outbound) → close the reply task for the order this addressed
-    // (inferred from the text / latest inbound), not every order's reply task.
-    if (!isCall && direction.toLowerCase().startsWith("out")) {
-      const { closeReplyForOutbound } = await import("@/lib/tasks");
-      await closeReplyForOutbound(clientId, text);
+    // An inbound call we DIDN'T answer → a "call back" task. Texts already make a
+    // reply task; calls didn't, so a missed call was invisible to the daily queue.
+    // Deduped (client_reply key) with any voicemail transcript task that follows.
+    if (isCall && incoming && type === "call.completed") {
+      const status = String(data.status ?? "").toLowerCase();
+      const dur = Number(data.duration ?? 0);
+      const missed = /no[-\s]?answer|missed|unanswered|declined|rejected/.test(status) || (data.answeredAt === null && !(dur > 0));
+      if (missed) {
+        const { createCommTask } = await import("@/lib/tasks");
+        await createCommTask({ clientId, clientName, projectId: effProject?.id ?? null, propertyAddress: effProject?.title ?? null, kind: "missed_call", source: "openphone" });
+      }
+    }
+
+    // We responded (outbound) → close the reply/callback task for the order this
+    // addressed. A text infers the order from its content; an outbound call closes
+    // the callback only if we actually CONNECTED (a no-answer leaves it open so we
+    // still try again), and never guesses across a multi-order client's tasks.
+    if (direction.toLowerCase().startsWith("out")) {
+      const { closeReplyForOutbound, closeReplyForOutboundCall } = await import("@/lib/tasks");
+      if (!isCall) {
+        await closeReplyForOutbound(clientId, text);
+      } else if (type === "call.completed") {
+        const dur = Number(data.duration ?? 0);
+        if (!!data.answeredAt || dur > 0) await closeReplyForOutboundCall(clientId, effProject?.id ?? null);
+      }
     }
   }
 
@@ -291,7 +311,9 @@ async function handleTranscript(data: Record<string, unknown>) {
       propertyAddress: project?.title ?? null,
       text: clientText,
       kind: "voicemail",
-      source: "openphone-call",
+      // Task source stays "openphone" (not "openphone-call") so the reply sweep +
+      // real-time outbound close pick up voicemail callbacks like any other reply.
+      source: "openphone",
     });
   }
 }

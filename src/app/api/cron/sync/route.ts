@@ -34,6 +34,12 @@ export async function GET(req: NextRequest) {
     const { generateTasksForActiveProjects } = await import("@/lib/tasks");
     return generateTasksForActiveProjects();
   });
+  // Retry webhook events that errored on first receipt (transient blips) so a
+  // dropped delivered/paid/inbound event doesn't silently vanish.
+  await step("retryWebhooks", async () => {
+    const { retryFailedWebhooks } = await import("@/lib/webhookRetry");
+    return retryFailedWebhooks(25);
+  });
 
   return NextResponse.json({ ok: true, ...out });
 }

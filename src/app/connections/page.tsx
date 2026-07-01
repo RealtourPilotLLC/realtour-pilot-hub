@@ -1,4 +1,4 @@
-import { Plug, ShieldCheck } from "lucide-react";
+import { Plug, ShieldCheck, AlertTriangle } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { ProviderCard, type ConnState } from "@/components/connections/ProviderCard";
 import { PROVIDERS, SEGMENTS } from "@/lib/integrations/registry";
@@ -6,12 +6,14 @@ import { getAllConnections } from "@/lib/integrations/connections";
 import { dropboxAuthorizeUrl, dropboxConfigured } from "@/lib/integrations/dropbox";
 import { googleAuthorizeUrl, googleConfigured } from "@/lib/integrations/google";
 import { frameioConfigured } from "@/lib/integrations/frameio";
+import { webhookErrorCount } from "@/lib/webhookRetry";
 
 export const dynamic = "force-dynamic";
 
 export default async function ConnectionsPage() {
   const connections = await getAllConnections();
   const byProvider = new Map(connections.map((c) => [c.provider, c]));
+  const webhookErrors = await webhookErrorCount();
 
   // Deployed = we have a public base URL configured (set on Vercel).
   const deployed = Boolean(process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL);
@@ -30,6 +32,19 @@ export default async function ConnectionsPage() {
         }
       />
       <div className="space-y-6 p-6">
+        {webhookErrors > 0 && (
+          <div className="flex items-start gap-3 rounded-2xl border border-warning/40 bg-warning/10 p-4">
+            <AlertTriangle className="mt-0.5 size-5 shrink-0 text-warning" />
+            <div className="text-sm">
+              <p className="font-medium">{webhookErrors} incoming event{webhookErrors === 1 ? "" : "s"} failed to process in the last 7 days.</p>
+              <p className="text-muted">
+                These are auto-retried once on the hourly sync. Any that still show here couldn’t be
+                recovered — a delivered/paid/inbound event may not have registered. Usually a transient
+                blip; if the number keeps climbing, a provider connection likely needs attention.
+              </p>
+            </div>
+          </div>
+        )}
         <div className="flex items-start gap-3 rounded-2xl border bg-brand-soft/40 p-4">
           <ShieldCheck className="mt-0.5 size-5 shrink-0 text-brand" />
           <div className="text-sm">

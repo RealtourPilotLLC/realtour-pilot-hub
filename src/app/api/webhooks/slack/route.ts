@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ ok: true });
 }
 
-async function processSlackEvent(event: Record<string, unknown>) {
+export async function processSlackEvent(event: Record<string, unknown>) {
   if (event.type !== "message") return;
   if (event.bot_id || event.subtype) return; // skip bots + edits/joins
   const text = ((event.text as string) || "").trim();

@@ -185,7 +185,9 @@ export async function defaultOpenPhoneNumberId(): Promise<string | null> {
 export async function sweepRepliedOpenPhoneTasks(): Promise<number> {
   const { prisma } = await import("@/lib/prisma");
   const tasks = await prisma.smartTask.findMany({
-    where: { source: "openphone", taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] }, clientId: { not: null } },
+    // Include call-sourced reply tasks (voicemail callbacks) — legacy ones were
+    // filed as "openphone-call" and would otherwise never be swept closed.
+    where: { source: { in: ["openphone", "openphone-call"] }, taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] }, clientId: { not: null } },
     select: { id: true, clientId: true, client: { select: { phone: true } } },
   });
   if (tasks.length === 0) return 0;

@@ -128,7 +128,7 @@ async function retaskProject(projectId: string) {
 // LISTING_UPDATED, APPOINTMENT_SCHEDULED/ASSIGNED/RESCHEDULED/CANCELED,
 // CUSTOMER_CREATED/UPDATED. We route on the resource type first, then the verb,
 // and always re-fetch authoritative data from Aryeo rather than trusting the body.
-async function processAryeoEvent(eventType: string, payload: Record<string, unknown>) {
+export async function processAryeoEvent(eventType: string, payload: Record<string, unknown>) {
   const name = eventType.toUpperCase();
   const { object, id } = resourceFrom(payload);
 
