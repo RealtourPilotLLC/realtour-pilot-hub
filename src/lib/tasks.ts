@@ -234,8 +234,10 @@ function specsForProject(p: {
           : "Photos are QC'd and ready. Deliver the gallery via Aryeo + the branded email, mark it delivered, and the post-delivery client text queues automatically.",
         deliverableType: primary,
         dueAt: deliveryDueFrom(anchor, primary, dueOpts(primary)),
-        // Monthly social-plan content is Kim's; standard galleries are Kyle's deliver step.
-        assignedKey: monthly ? "kim" : undefined,
+        // Delivering a gallery (Aryeo + branded email) is always Kyle's step — even
+        // for a social-plan client's regular property shoots. He assigns the actual
+        // monthly-content production to Kim; the delivery itself stays with him.
+        assignedKey: undefined,
         checklist: guide(["Final QC pass", "Deliver via Aryeo + branded email", "Mark Delivered", "Schedule feedback request"]),
       });
     }

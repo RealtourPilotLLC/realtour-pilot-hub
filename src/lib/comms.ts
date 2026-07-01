@@ -265,13 +265,14 @@ export async function raiseRevision(opts: {
   });
   if (!project) return false;
 
-  // Delegate the revision to the editor who owns that kind of work. If the request
-  // text names scripting/a reel/video it routes there; otherwise default to the
-  // primary deliverable's editor (photos → Kyle; monthly social content → Kim).
-  const { editorForDeliverable, routeEditWork } = await import("@/lib/editors");
-  const fromText = routeEditWork(opts.note);
-  const primary = project.deliverables[0];
-  const assignedKey = fromText && fromText !== "kyle" ? fromText : editorForDeliverable(primary?.type, primary?.label, !!project.client?.socialClient);
+  // Delegate the revision to the editor who actually MADE that deliverable —
+  // deterministic (from the real deliverable), not guessed from the request
+  // wording. A video/reel revision → its editor (Remar standard · Kim monthly ·
+  // Luma premium); photos/3D/floorplan → Kyle. If it's not clearly a video job it
+  // stays with Kyle to triage.
+  const { editorForDeliverable } = await import("@/lib/editors");
+  const primary = project.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL") ?? project.deliverables[0];
+  const assignedKey = editorForDeliverable(primary?.type, primary?.label, !!project.client?.socialClient);
 
   const note = opts.note.slice(0, 300);
   await prisma.project.update({

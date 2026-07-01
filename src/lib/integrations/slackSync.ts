@@ -99,17 +99,16 @@ export async function maybeCreateSlackTask(opts: { text: string; ts: string; cha
   const summary = (usedBrain && detail && detail !== text)
     ? detail
     : `${opts.senderName || "A teammate"} in Slack: “${text.slice(0, 220)}”`;
-  // If it reads as editing work, delegate it to the right editor (so it lands in
-  // the admin's "Delegated — in progress" group, not as a raw admin chore).
-  const { routeEditWork } = await import("@/lib/editors");
-  const assignedKey = routeEditWork(`${title} ${detail}`);
+  // Slack notes land on Kyle to triage — he assigns to the right person in one
+  // click. (Keyword auto-routing mis-fired constantly: any message mentioning
+  // "reel"/"video"/"social" got shoved at Remar/Kim even when it wasn't theirs.)
   await prisma.smartTask.create({
     data: {
       taskType: "internal_instruction",
       title,
       summary: summary.slice(0, 500),
       description: detail,
-      assignedKey,
+      assignedKey: null,
       reasonCreated: match ? `From Slack — re: ${match.title}` : `From Slack — ${opts.senderName || "team"}`,
       checklist: JSON.stringify(["Do the requested action", "Reply in Slack when done"]),
       source: "slack",
