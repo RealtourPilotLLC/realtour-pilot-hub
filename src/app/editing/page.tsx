@@ -40,6 +40,7 @@ export default async function EditorQueuePage() {
         showBoards={false}
         defaultStatus="editing"
         assignee="editor"
+        hrefBase="/edit"
         emptyLabel="No video jobs in production right now."
       />
     </div>

@@ -138,11 +138,11 @@ function groupLabel(key: string): string {
 
 type AssigneeKind = "photographer" | "editor";
 
-function DesktopRow({ r, assignee }: { r: TrackerRow; assignee: AssigneeKind }) {
+function DesktopRow({ r, assignee, hrefBase }: { r: TrackerRow; assignee: AssigneeKind; hrefBase: string }) {
   return (
     <tr className="group transition-colors hover:bg-surface-2/40">
       <td className="max-w-[260px] px-4 py-2.5">
-        <Link href={`/projects/${r.id}`} className="block truncate font-medium hover:text-brand">
+        <Link href={`${hrefBase}/${r.id}`} className="block truncate font-medium hover:text-brand">
           {r.street}
         </Link>
         {r.client && <div className="truncate text-xs text-muted">{r.client}</div>}
@@ -159,11 +159,11 @@ function DesktopRow({ r, assignee }: { r: TrackerRow; assignee: AssigneeKind }) 
   );
 }
 
-function MobileCard({ r, assignee }: { r: TrackerRow; assignee: AssigneeKind }) {
+function MobileCard({ r, assignee, hrefBase }: { r: TrackerRow; assignee: AssigneeKind; hrefBase: string }) {
   return (
     <div className="panel-shadow rounded-2xl border border-border bg-surface p-3">
       <div className="flex items-start justify-between gap-2">
-        <Link href={`/projects/${r.id}`} className="min-w-0 font-medium leading-snug hover:text-brand">
+        <Link href={`${hrefBase}/${r.id}`} className="min-w-0 font-medium leading-snug hover:text-brand">
           <span className="block truncate">{r.street}</span>
           {r.client && <span className="block truncate text-xs font-normal text-muted">{r.client}</span>}
         </Link>
@@ -195,6 +195,7 @@ export function ProjectTracker({
   defaultStatus = "undelivered",
   assignee = "photographer",
   emptyLabel = "No projects.",
+  hrefBase = "/projects",
 }: {
   rows: TrackerRow[];
   showBoards?: boolean;
@@ -202,6 +203,7 @@ export function ProjectTracker({
   defaultStatus?: StatusGroup;
   assignee?: "photographer" | "editor";
   emptyLabel?: string;
+  hrefBase?: string;
 }) {
   const [board, setBoard] = useState<Board>("all");
   const [statusTab, setStatusTab] = useState<StatusGroup>(defaultStatus);
@@ -391,10 +393,10 @@ export function ProjectTracker({
                               {groupLabel(g.key)} <span className="text-muted-2/70">· {g.rows.length}</span>
                             </td>
                           </tr>
-                          {g.rows.map((r) => <DesktopRow key={r.id} r={r} assignee={assignee} />)}
+                          {g.rows.map((r) => <DesktopRow key={r.id} r={r} assignee={assignee} hrefBase={hrefBase} />)}
                         </Fragment>
                       ))
-                    : visible.map((r) => <DesktopRow key={r.id} r={r} assignee={assignee} />)}
+                    : visible.map((r) => <DesktopRow key={r.id} r={r} assignee={assignee} hrefBase={hrefBase} />)}
                 </tbody>
               </table>
             </div>
@@ -407,10 +409,10 @@ export function ProjectTracker({
                       <div className="px-1 pt-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-2">
                         {groupLabel(g.key)} <span className="text-muted-2/70">· {g.rows.length}</span>
                       </div>
-                      {g.rows.map((r) => <MobileCard key={r.id} r={r} assignee={assignee} />)}
+                      {g.rows.map((r) => <MobileCard key={r.id} r={r} assignee={assignee} hrefBase={hrefBase} />)}
                     </div>
                   ))
-                : visible.map((r) => <MobileCard key={r.id} r={r} assignee={assignee} />)}
+                : visible.map((r) => <MobileCard key={r.id} r={r} assignee={assignee} hrefBase={hrefBase} />)}
             </div>
           </>
         )}
