@@ -5,24 +5,32 @@ import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
 
+// A 910 Academy Vimeo watch URL (e.g. https://vimeo.com/1206234728/43eb0c934b?share=copy)
+// → the player embed src (https://player.vimeo.com/video/1206234728?h=43eb0c934b).
+function vimeoEmbed(url: string): string | null {
+  const m = url.match(/vimeo\.com\/(\d+)(?:\/([a-zA-Z0-9]+))?/);
+  if (!m) return null;
+  return `https://player.vimeo.com/video/${m[1]}${m[2] ? `?h=${m[2]}` : ""}`;
+}
+
 // Browsable course library (910 Academy) — full transcripts from TrainingLesson,
 // grouped Volume → Course → Lesson (both collapsible). The same content the Hub
 // searches (as concise/chunked KnowledgeItems); this is the READING view.
 export default async function TrainingPage() {
   const lessons = await prisma.trainingLesson.findMany({
     orderBy: [{ volumeNo: "asc" }, { courseNo: "asc" }, { orderNo: "asc" }],
-    select: { volumeNo: true, volume: true, courseNo: true, course: true, title: true, body: true, summaryMd: true },
+    select: { volumeNo: true, volume: true, courseNo: true, course: true, title: true, body: true, summaryMd: true, videoUrl: true },
   });
 
   // Group: volume → course → lessons (input is already ordered).
-  type L = { title: string; body: string; summaryMd: string | null };
+  type L = { title: string; body: string; summaryMd: string | null; videoUrl: string | null };
   const volumes: { volumeNo: number; volume: string; courses: { course: string; lessons: L[] }[] }[] = [];
   for (const l of lessons) {
     let v = volumes.find((x) => x.volumeNo === l.volumeNo);
     if (!v) { v = { volumeNo: l.volumeNo, volume: l.volume, courses: [] }; volumes.push(v); }
     let c = v.courses.find((x) => x.course === l.course);
     if (!c) { c = { course: l.course, lessons: [] }; v.courses.push(c); }
-    c.lessons.push({ title: l.title, body: l.body, summaryMd: l.summaryMd });
+    c.lessons.push({ title: l.title, body: l.body, summaryMd: l.summaryMd, videoUrl: l.videoUrl });
   }
 
   return (
@@ -54,13 +62,28 @@ export default async function TrainingPage() {
                       <span className="ml-auto rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">{c.lessons.length}</span>
                     </summary>
                     <div className="divide-y divide-border border-t border-border">
-                      {c.lessons.map((l, i) => (
+                      {c.lessons.map((l, i) => {
+                        const embed = l.videoUrl ? vimeoEmbed(l.videoUrl) : null;
+                        return (
                         <details key={i} className="group/l">
                           <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2.5 pl-6 hover:bg-surface-2">
                             <ChevronDown className="size-3.5 shrink-0 -rotate-90 text-muted-2 transition-transform group-open/l:rotate-0" />
                             <span className="text-sm text-foreground/90">{l.title}</span>
+                            {embed && <span className="ml-auto rounded-full bg-brand-soft px-1.5 text-[10px] font-medium text-brand">Video</span>}
                           </summary>
                           <div className="px-4 pb-4 pl-12">
+                            {embed && (
+                              <div className="mb-3 aspect-video overflow-hidden rounded-xl border border-border bg-black">
+                                <iframe
+                                  src={embed}
+                                  className="size-full"
+                                  loading="lazy"
+                                  title={l.title}
+                                  allow="autoplay; fullscreen; picture-in-picture; clipboard-write"
+                                  allowFullScreen
+                                />
+                              </div>
+                            )}
                             {l.summaryMd
                               ? <Markdown content={l.summaryMd} />
                               : <div className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/80">{l.body}</div>}
@@ -74,7 +97,8 @@ export default async function TrainingPage() {
                             )}
                           </div>
                         </details>
-                      ))}
+                        );
+                      })}
                     </div>
                   </details>
                 ))}

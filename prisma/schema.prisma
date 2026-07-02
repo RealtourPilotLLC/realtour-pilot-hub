@@ -459,6 +459,7 @@ model TrainingLesson {
   title     String
   body      String // full transcript (verbatim)
   summaryMd String? // AI-formatted, summarized markdown (headings + bullets) — the default reading view
+  videoUrl  String? // 910 Academy Vimeo watch URL (embedded in the lesson view)
   source    String   @default("910-academy")
   createdAt DateTime @default(now())
 
