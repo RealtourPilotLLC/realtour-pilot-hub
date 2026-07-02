@@ -462,11 +462,23 @@ export async function execHubTool(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const where: any = { archived: false, minRole: { in: allowed } };
       if (category) where.category = category;
-      const items = await prisma.knowledgeItem.findMany({
-        where,
-        take: 400,
-        select: { category: true, title: true, body: true, minRole: true, tags: true, confidence: true },
-      });
+      // Keyword prefilter in SQL so the KB scales past a few hundred rows (the
+      // ingested training courses add thousands of transcript chunks). Fetch
+      // TITLE/tag matches (few, high-signal) and BODY matches (capped) SEPARATELY
+      // then merge — so a specific lesson title is never crowded out of the slice
+      // by a common word that appears in thousands of chunks.
+      const sel = { id: true, category: true, title: true, body: true, minRole: true, tags: true, confidence: true } as const;
+      let items: { id: string; category: string; title: string; body: string; minRole: string; tags: string | null; confidence: number | null }[];
+      if (terms.length) {
+        const [titleHits, bodyHits] = await Promise.all([
+          prisma.knowledgeItem.findMany({ where: { ...where, OR: terms.flatMap((t) => [{ title: { contains: t, mode: "insensitive" } }, { tags: { contains: t, mode: "insensitive" } }]) }, take: 300, select: sel }),
+          prisma.knowledgeItem.findMany({ where: { ...where, OR: terms.map((t) => ({ body: { contains: t, mode: "insensitive" } })) }, take: 500, select: sel }),
+        ]);
+        const seen = new Set<string>();
+        items = [...titleHits, ...bodyHits].filter((it) => (seen.has(it.id) ? false : (seen.add(it.id), true)));
+      } else {
+        items = await prisma.knowledgeItem.findMany({ where, take: 200, select: sel });
+      }
       const score = (it: { title: string; body: string; tags: string | null }) => {
         const hay = `${it.title} ${it.body} ${it.tags ?? ""}`.toLowerCase();
         let s = 0;
@@ -484,7 +496,10 @@ export async function execHubTool(
         knowledge: hits.map((h) => ({
           category: h.it.category,
           title: h.it.title,
-          insight: h.it.body,
+          // Bound the returned text so a long lesson/chunk can't blow the Hub's
+          // context (most curated facts are well under this; only long training
+          // transcript chunks get clipped).
+          insight: h.it.body.length > 2600 ? h.it.body.slice(0, 2600) + "…" : h.it.body,
           sensitivity: h.it.minRole,
         })),
       };

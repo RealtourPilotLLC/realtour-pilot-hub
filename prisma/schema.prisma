@@ -446,6 +446,25 @@ model Sop {
   @@index([category])
 }
 
+// Full training transcripts for the browsable /training course library (910
+// Academy). Kept separate from KnowledgeItem: these are long-form (some 200k+
+// chars) for READING, while the Hub searches concise/chunked KnowledgeItems.
+model TrainingLesson {
+  id        String   @id @default(cuid())
+  volumeNo  Int      @default(1) // 1 = Agent on Camera, 2 = All Courses
+  volume    String // display name of the volume
+  courseNo  Int      @default(0) // order of the course within the volume
+  course    String // course / module grouping within the volume
+  orderNo   Int // lesson order within the volume
+  title     String
+  body      String // full transcript (verbatim)
+  summaryMd String? // AI-formatted, summarized markdown (headings + bullets) — the default reading view
+  source    String   @default("910-academy")
+  createdAt DateTime @default(now())
+
+  @@index([volumeNo, orderNo])
+}
+
 // Listener-first operations: a tracked, auto-generated task in Kyle's queue.
 // status/taskType/priority are strings (the spec has many values) to stay flexible.
 model SmartTask {

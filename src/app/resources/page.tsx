@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
+import { Markdown } from "@/components/ui/Markdown";
 import { prisma } from "@/lib/prisma";
 import { Aryeo } from "@/lib/integrations/aryeo";
 import { getSecret } from "@/lib/integrations/connections";
@@ -167,8 +168,8 @@ export default async function ResourcesPage() {
                       <span className="text-xs text-muted-2 group-open:hidden">Open</span>
                       <span className="hidden text-xs text-muted-2 group-open:inline">Close</span>
                     </summary>
-                    <div className="mt-3 whitespace-pre-line border-t pt-3 text-sm text-foreground/85">
-                      {s.content}
+                    <div className="mt-3 border-t pt-3">
+                      <Markdown content={s.content} />
                     </div>
                   </details>
                 ))}
