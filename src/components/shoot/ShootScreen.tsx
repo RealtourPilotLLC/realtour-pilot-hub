@@ -10,6 +10,8 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BackLink } from "@/components/ui/BackLink";
+import { ReelRecipeCard } from "@/components/project/ReelRecipeCard";
+import { AocPlaybookCard } from "@/components/project/AocPlaybookCard";
 import { Badge } from "@/components/ui/Badge";
 import { Section } from "@/components/ui/Section";
 import { DELIVERABLE_META } from "@/lib/pipeline";
@@ -61,6 +63,8 @@ export function ShootScreen({
   // only items like virtual staging are surfaced as a shooting reminder instead).
   const captureables = deliverables.filter((d) => !POST_PRODUCTION_TYPES.has(d.type));
   const stagingOrdered = deliverables.some((d) => POST_PRODUCTION_TYPES.has(d.type));
+  // Video/reel jobs get the Agent-on-Camera playbook + reel recipe on-site.
+  const isVideo = deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
   // Hard, order-specific must-dos (amber "don't leave without"): the order's
   // special instructions + any logged special requests for this property.
   const mustGets = Array.from(
@@ -113,6 +117,18 @@ export function ShootScreen({
         <StatusUpdates view={view} flash={flash} />
         <CustomerCard client={client} segment={segment} profile={profile} />
         <BriefCard view={view} flash={flash} />
+        {isVideo && <AocPlaybookCard context="shoot" />}
+        {isVideo && (
+          <ReelRecipeCard
+            projectId={project.id}
+            hook={project.reelHook}
+            script={project.reelScript}
+            song={project.reelSong}
+            shotList={project.reelShotList}
+            scriptUrl={project.reelScriptUrl}
+            updatedAt={project.reelRecipeUpdatedAt ? new Date(project.reelRecipeUpdatedAt).toLocaleDateString() : null}
+          />
+        )}
         {view.zillowTourUrl && <ZillowCta url={view.zillowTourUrl} />}
         <Checklist deliverables={captureables} captured={captured} onToggle={toggleCapture} mustGets={mustGets} agentNotes={agentNotes} staging={stagingOrdered} />
         {pay}

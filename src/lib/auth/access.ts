@@ -7,7 +7,7 @@ export type PageKey =
   | "dashboard" | "tasks" | "history" | "pipeline" | "schedule" | "map"
   | "communications" | "clients" | "team" | "upload" | "editing" | "sales"
   | "billing" | "catalog" | "payouts" | "marketing" | "resources" | "assistant"
-  | "feedback" | "connections" | "users" | "shoot";
+  | "training" | "feedback" | "connections" | "users" | "shoot";
 
 export type Role = "OWNER" | "ADMIN" | "EDITOR" | "PHOTOGRAPHER";
 
@@ -35,6 +35,7 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   { key: "payouts", label: "Payouts", href: "/payouts" },
   { key: "marketing", label: "Campaigns", href: "/marketing" },
   { key: "resources", label: "Resources & SOPs", href: "/resources" },
+  { key: "training", label: "Training", href: "/training" },
   { key: "assistant", label: "Ask the Hub", href: "/assistant" },
   { key: "feedback", label: "Feedback & requests", href: "/feedback" },
   { key: "connections", label: "Connections", href: "/connections", ownerOnly: true },
@@ -50,15 +51,15 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
   ADMIN: [
     "dashboard", "tasks", "history", "pipeline", "schedule", "map", "shoot",
     "communications", "clients", "team", "upload", "editing", "billing",
-    "catalog", "resources", "assistant", "feedback",
+    "catalog", "resources", "training", "assistant", "feedback",
   ],
-  EDITOR: ["dashboard", "tasks", "editing", "upload", "resources", "assistant"],
+  EDITOR: ["dashboard", "tasks", "editing", "upload", "resources", "training", "assistant"],
   // Photographers live entirely in the field platform: their own shoots (which
   // already carry their scoped schedule, maps, route + pay), the upload checklist
   // (scoped to their jobs), SOPs, and Ask the Hub (auto-gated to the CREATIVE
   // content tier — owner/admin-only knowledge + comms are filtered out for them).
   // They get NO ops/dashboard, schedule, map, clients, comms, billing, pipeline.
-  PHOTOGRAPHER: ["shoot", "upload", "resources", "assistant"],
+  PHOTOGRAPHER: ["shoot", "upload", "resources", "training", "assistant"],
 };
 
 // Where to send a user who lands somewhere they can't access — and their

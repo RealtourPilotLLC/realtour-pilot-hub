@@ -314,6 +314,16 @@ model Project {
   frameioProjectId String?
   frameioViewUrl   String?
 
+  // "Reel recipe" — the creative plan for a video/reel job (Agent-on-Camera).
+  // Captured pre-shoot, carried to the editor. reelScriptUrl bridges to Jordan's
+  // external script generator/tracker (live API sync TBD).
+  reelHook         String?
+  reelScript       String?
+  reelSong         String?
+  reelShotList     String?
+  reelScriptUrl    String?
+  reelRecipeUpdatedAt DateTime?
+
   deliverables Deliverable[]
   checklist    ChecklistItem[]
   activities   Activity[]

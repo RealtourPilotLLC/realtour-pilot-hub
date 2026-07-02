@@ -20,6 +20,7 @@ import {
   Megaphone,
   Palette,
   BookOpen,
+  GraduationCap,
   Upload,
   MessageSquare,
   MessageSquarePlus,
@@ -93,6 +94,7 @@ const SECTIONS: NavSection[] = [
     title: "Knowledge",
     items: [
       { label: "Resources & SOPs", href: "/resources", icon: BookOpen, key: "resources" },
+      { label: "Training", href: "/training", icon: GraduationCap, key: "training" },
       { label: "Ask the Hub", href: "/assistant", icon: MessageSquare, key: "assistant" },
     ],
   },

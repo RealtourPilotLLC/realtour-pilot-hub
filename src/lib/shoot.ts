@@ -113,6 +113,12 @@ export type ShootView = {
     editorBrief: string | null;
     uploadedAt: string | null;
     aryeoListingId: string | null; // for pulling captured media off Aryeo
+    reelHook: string | null;
+    reelScript: string | null;
+    reelSong: string | null;
+    reelShotList: string | null;
+    reelScriptUrl: string | null;
+    reelRecipeUpdatedAt: string | null;
   };
   appointment: {
     id: string;
@@ -185,6 +191,12 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
       editorBrief: p.editorBrief,
       uploadedAt: p.uploadedAt?.toISOString() ?? null,
       aryeoListingId: p.aryeoListingId,
+      reelHook: p.reelHook,
+      reelScript: p.reelScript,
+      reelSong: p.reelSong,
+      reelShotList: p.reelShotList,
+      reelScriptUrl: p.reelScriptUrl,
+      reelRecipeUpdatedAt: p.reelRecipeUpdatedAt?.toISOString() ?? null,
     },
     appointment: primary
       ? (() => {

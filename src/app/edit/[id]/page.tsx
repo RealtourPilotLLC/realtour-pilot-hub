@@ -10,6 +10,8 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { parseClientProfile } from "@/lib/clientProfile";
 import { ClientProfileCard } from "@/components/clients/ClientProfileCard";
 import { ProjectMessages } from "@/components/project/ProjectMessages";
+import { ReelRecipeCard } from "@/components/project/ReelRecipeCard";
+import { AocPlaybookCard } from "@/components/project/AocPlaybookCard";
 import { FrameioButton } from "@/components/project/FrameioButton";
 import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { refinedDeliverableLabel } from "@/lib/pipeline";
@@ -88,6 +90,19 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
             </div>
           </Section>
 
+          {/* Reel recipe — the creative plan (video jobs only) */}
+          {videoDeliverables.length > 0 && (
+            <ReelRecipeCard
+              projectId={project.id}
+              hook={project.reelHook}
+              script={project.reelScript}
+              song={project.reelSong}
+              shotList={project.reelShotList}
+              scriptUrl={project.reelScriptUrl}
+              updatedAt={project.reelRecipeUpdatedAt ? formatDistanceToNow(project.reelRecipeUpdatedAt, { addSuffix: true }) : null}
+            />
+          )}
+
           {/* Editing notes from the photographer */}
           <Section icon={PenLine} title="Editing notes">
             {project.editorBrief ? (
@@ -160,6 +175,7 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
 
         {/* RIGHT — the agent's brand + working profile */}
         <div className="space-y-6">
+          {videoDeliverables.length > 0 && <AocPlaybookCard context="edit" />}
           {brandColors.length > 0 && (
             <Section icon={Palette} title="Brand colors">
               <div className="flex flex-wrap items-center gap-2">
