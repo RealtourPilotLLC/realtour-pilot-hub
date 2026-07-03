@@ -7,12 +7,27 @@ import {
   scriptingConfigured,
   scriptingCreateProject,
   scriptingGetByExternalId,
+  scriptingListSince,
   studioToRecipe,
   studioBestLink,
   ScriptingError,
 } from "@/lib/integrations/scripting";
 
 type Result = { ok: boolean; message: string; url?: string };
+
+// Read-only connectivity check — lists a few Studio projects (no writes, no
+// emails). Confirms SCRIPTING_BASE_URL + SCRIPTING_API_KEY actually reach the
+// Studio, so we can verify the link without triggering an agent intake email.
+export async function testScriptingConnection(): Promise<Result> {
+  await requireRole(["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"]);
+  if (!scriptingConfigured()) return { ok: false, message: "Not connected — SCRIPTING_BASE_URL / SCRIPTING_API_KEY aren't set on the server." };
+  try {
+    const projects = await scriptingListSince("1970-01-01T00:00:00.000Z", 5);
+    return { ok: true, message: `Connected ✓ — reached Script Studio (${projects.length} recent project${projects.length === 1 ? "" : "s"} visible).` };
+  } catch (e) {
+    return { ok: false, message: e instanceof ScriptingError ? `Couldn't reach Studio: ${e.message}` : "Couldn't reach Script Studio." };
+  }
+}
 
 // Create (or re-link to) a Script Studio project for this job, seeded from what
 // the hub already knows (client, address, city, appointment). Idempotent on the

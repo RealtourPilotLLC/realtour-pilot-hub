@@ -2,8 +2,8 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Sparkles, RefreshCw, ExternalLink } from "lucide-react";
-import { createScriptProject, syncScriptFromStudio } from "@/app/projects/scriptingActions";
+import { Loader2, Sparkles, RefreshCw, ExternalLink, PlugZap } from "lucide-react";
+import { createScriptProject, syncScriptFromStudio, testScriptingConnection } from "@/app/projects/scriptingActions";
 
 // The two interactive controls for the Script Studio panel: create/link the
 // Studio project, then pull the latest script back into the reel recipe.
@@ -17,6 +17,12 @@ export function ScriptStudioActions({ projectId, linked, url }: { projectId: str
       const r = await fn(projectId);
       setMsg(r.message);
       router.refresh();
+    });
+
+  const test = () =>
+    start(async () => {
+      const r = await testScriptingConnection();
+      setMsg(r.message);
     });
 
   return (
@@ -44,6 +50,14 @@ export function ScriptStudioActions({ projectId, linked, url }: { projectId: str
             Open in Studio <ExternalLink className="size-3" />
           </a>
         )}
+        <button
+          onClick={test}
+          disabled={pending}
+          className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-muted-2 hover:text-foreground disabled:opacity-50"
+          title="Read-only check — lists projects, sends nothing"
+        >
+          <PlugZap className="size-3.5" /> Test connection
+        </button>
       </div>
       {msg && <p className="text-xs text-muted-2">{msg}</p>}
     </div>
