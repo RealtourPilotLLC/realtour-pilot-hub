@@ -316,13 +316,21 @@ model Project {
 
   // "Reel recipe" — the creative plan for a video/reel job (Agent-on-Camera).
   // Captured pre-shoot, carried to the editor. reelScriptUrl bridges to Jordan's
-  // external script generator/tracker (live API sync TBD).
+  // external script generator/tracker; the reelScripting* fields below are the
+  // LIVE link to it (Script Studio API v1).
   reelHook         String?
   reelScript       String?
   reelSong         String?
   reelShotList     String?
   reelScriptUrl    String?
   reelRecipeUpdatedAt DateTime?
+
+  // Live link to the external Script Studio (scripting platform API v1). external_id
+  // there == this project's id (dedupe key). Populated by create + webhook sync.
+  scriptingId       String? // the Script Studio project id
+  scriptingStatus   String? // last-known Studio status (awaiting_intake … done)
+  scriptingUrl      String? // best link to open there (agent intake or review)
+  scriptingSyncedAt DateTime?
 
   deliverables Deliverable[]
   checklist    ChecklistItem[]

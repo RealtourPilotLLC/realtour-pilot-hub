@@ -11,6 +11,7 @@ import { parseClientProfile } from "@/lib/clientProfile";
 import { ClientProfileCard } from "@/components/clients/ClientProfileCard";
 import { ProjectMessages } from "@/components/project/ProjectMessages";
 import { ReelRecipeCard } from "@/components/project/ReelRecipeCard";
+import { ScriptStudioCard } from "@/components/project/ScriptStudioCard";
 import { AocPlaybookCard } from "@/components/project/AocPlaybookCard";
 import { FrameioButton } from "@/components/project/FrameioButton";
 import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
@@ -92,15 +93,18 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
 
           {/* Reel recipe — the creative plan (video jobs only) */}
           {videoDeliverables.length > 0 && (
-            <ReelRecipeCard
-              projectId={project.id}
-              hook={project.reelHook}
-              script={project.reelScript}
-              song={project.reelSong}
-              shotList={project.reelShotList}
-              scriptUrl={project.reelScriptUrl}
-              updatedAt={project.reelRecipeUpdatedAt ? formatDistanceToNow(project.reelRecipeUpdatedAt, { addSuffix: true }) : null}
-            />
+            <>
+              <ReelRecipeCard
+                projectId={project.id}
+                hook={project.reelHook}
+                script={project.reelScript}
+                song={project.reelSong}
+                shotList={project.reelShotList}
+                scriptUrl={project.reelScriptUrl}
+                updatedAt={project.reelRecipeUpdatedAt ? formatDistanceToNow(project.reelRecipeUpdatedAt, { addSuffix: true }) : null}
+              />
+              <ScriptStudioCard projectId={project.id} />
+            </>
           )}
 
           {/* Editing notes from the photographer */}
