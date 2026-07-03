@@ -36,7 +36,7 @@ export default async function RootLayout({
       className={`${inter.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full">
-        <Shell user={user}>{children}</Shell>
+        <Shell user={user} scriptingUrl={process.env.SCRIPTING_BASE_URL || null}>{children}</Shell>
       </body>
     </html>
   );

@@ -106,12 +106,15 @@ export async function scriptingCreateProject(input: CreateStudioInput): Promise<
   if (input.appointmentDate) body.appointment_date = input.appointmentDate.toISOString();
   if (input.assignedCreative) body.assigned_creative = input.assignedCreative;
   if (input.brandWords) body.brand_words = input.brandWords;
-  return sc<StudioProject>("/projects", { method: "POST", body });
+  const r = await sc<unknown>("/projects", { method: "POST", body });
+  return unwrap(r) as StudioProject;
 }
 
 // Full detail for a Studio project addressed by the HUB's id (external_id).
+// The detail endpoint wraps the record as { project: {...} } — normalize it flat.
 export async function scriptingGetByExternalId(hubProjectId: string): Promise<StudioProject> {
-  return sc<StudioProject>(`/projects/${encodeURIComponent(hubProjectId)}?by=external_id`);
+  const r = await sc<unknown>(`/projects/${encodeURIComponent(hubProjectId)}?by=external_id`);
+  return unwrap(r) as StudioProject;
 }
 
 // Reconcile: projects changed at/after `sinceIso` (source of truth for webhooks).
@@ -133,31 +136,55 @@ function at(o: unknown, ...keys: string[]): unknown {
   return cur;
 }
 
+// The detail endpoint wraps the record as { project: {...} }; list/create return
+// it flat. Normalize to the flat project object either way.
+function unwrap(raw: unknown): Record<string, unknown> {
+  const r = raw as Record<string, unknown> | null;
+  if (r && typeof r === "object" && r.project && typeof r.project === "object") return r.project as Record<string, unknown>;
+  return (r ?? {}) as Record<string, unknown>;
+}
+
+// The chosen hook text: chosen_hook when a hook is picked, else the recommended
+// option. Handles options being strings or {hook/text/...} objects.
+function chosenHookText(hooks: unknown): string | null {
+  if (typeof hooks === "string") return hooks.trim() || null;
+  if (!hooks || typeof hooks !== "object") return null;
+  const h = hooks as Record<string, unknown>;
+  const chosen = firstString(h.chosen_hook, at(h, "chosen", "text"), h.chosen, at(h, "selected", "text"));
+  if (chosen) return chosen;
+  const opts = Array.isArray(h.options) ? h.options : [];
+  const idx = typeof h.recommended_index === "number" ? h.recommended_index : 0;
+  const o = opts[idx] ?? opts[0];
+  if (typeof o === "string") return o.trim() || null;
+  return firstString(at(o, "hook"), at(o, "text"), at(o, "hook_text"), at(o, "line"), at(o, "value"));
+}
+
 // The best single link to open in the Studio for a project, given its status.
-export function studioBestLink(p: StudioProject): string | null {
+// Real link keys: intake_url (agent form) · creative_url (tokenized script view)
+// · admin_url (Jordan's console).
+export function studioBestLink(raw: StudioProject | unknown): string | null {
+  const p = unwrap(raw);
   const links = (p.links ?? {}) as Record<string, string>;
-  const review = firstString(links.review, links.review_url, links.client, links.client_url, at(p, "review_url"));
-  const intake = firstString(p.intake_url, links.intake, links.intake_url, at(p, "links", "intake"));
+  const creative = firstString(links.creative_url, links.creative);
+  const intake = firstString(p.intake_url, links.intake_url, links.intake);
+  const admin = firstString(links.admin_url, links.admin);
   const ready = READY_STATUSES.has(String(p.status ?? ""));
-  return (ready ? review || intake : intake || review) || review || intake;
+  // Once a script exists, the creative page shows it; before that, the intake form.
+  return (ready ? creative || intake || admin : intake || creative || admin) || creative || intake || admin || null;
 }
 
 // Map a Studio detail → the fields we mirror into the reel recipe. Only returns
 // what it actually found, so a partial payload never blanks existing recipe data.
-export function studioToRecipe(p: StudioProject): { hook?: string; script?: string; song?: string; url?: string; status?: string } {
-  const hook = firstString(
-    at(p, "hooks", "chosen", "text"), at(p, "hooks", "chosen_hook"), at(p, "hooks", "chosen"),
-    at(p, "hooks", "selected", "text"), at(p, "hooks", "recommended", "text"), at(p, "script", "hook"),
-    typeof p.hooks === "string" ? p.hooks : null,
-  );
-  // Script markdown: the platform stores it as `raw_ai_output`; the API may also
-  // expose it as script.raw / a bare string. Check them all.
+export function studioToRecipe(raw: StudioProject): { hook?: string; script?: string; song?: string; url?: string; status?: string } {
+  const p = unwrap(raw);
+  const hook = chosenHookText(p.hooks) ?? firstString(at(p, "script", "hook"));
+  // Script markdown lives at script.raw (also handle raw_ai_output / a bare string).
   const script = firstString(
     typeof p.script === "string" ? p.script : null,
     at(p, "script", "raw"), at(p, "script", "raw_ai_output"), at(p, "script", "markdown"),
     at(p, "script", "text"), at(p, "script", "body"),
   );
-  // Song: a dedicated field if present, else the SONG: line inside the script.
+  // Song: the dedicated script.song field, else a SONG: line inside the script.
   const songLine = script ? script.match(/(?:^|\n)\s*(?:\*{0,2})song(?:\*{0,2})\s*[:\-–—]\s*(.+)/i)?.[1]?.trim() : null;
   const song = firstString(at(p, "script", "song"), at(p, "intake", "answers", "song"), at(p, "intake", "answers", "music"), at(p, "song"), songLine);
   const url = studioBestLink(p) ?? undefined;

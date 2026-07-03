@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 // App chrome: a static sidebar on desktop (lg+), and a slide-in drawer with a
 // hamburger top bar on mobile. Keeps the whole hub usable on a phone. On the
 // auth pages (login / invite) it renders bare — no sidebar, no chrome.
-export function Shell({ user, children }: { user: ShellUser | null; children: React.ReactNode }) {
+export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null; scriptingUrl?: string | null; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
 
@@ -33,7 +33,7 @@ export function Shell({ user, children }: { user: ShellUser | null; children: Re
     <div className="flex h-screen overflow-hidden">
       {/* Desktop sidebar */}
       <div className="hidden lg:block">
-        <Sidebar user={user} />
+        <Sidebar user={user} scriptingUrl={scriptingUrl} />
       </div>
 
       {/* Mobile drawer + backdrop. z must clear Leaflet map panes/controls
@@ -52,7 +52,7 @@ export function Shell({ user, children }: { user: ShellUser | null; children: Re
           open ? "translate-x-0" : "-translate-x-full",
         )}
       >
-        <Sidebar user={user} onNavigate={() => setOpen(false)} />
+        <Sidebar user={user} scriptingUrl={scriptingUrl} onNavigate={() => setOpen(false)} />
       </div>
 
       {/* Main column */}

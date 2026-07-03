@@ -27,6 +27,8 @@ import {
   Plug,
   LogOut,
   ShieldCheck,
+  PenLine,
+  ExternalLink,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -45,8 +47,9 @@ type NavItem = {
   label: string;
   href: string;
   icon: LucideIcon;
-  key: PageKey;
+  key?: PageKey; // internal pages carry a PageKey for role-gating
   soon?: boolean;
+  external?: boolean; // opens in a new tab (e.g. the Script Studio app)
 };
 
 type NavSection = {
@@ -110,12 +113,21 @@ const SECTIONS: NavSection[] = [
 
 const ROLE_LABEL: Record<string, string> = { OWNER: "Owner", ADMIN: "Admin", EDITOR: "Editor", PHOTOGRAPHER: "Photographer" };
 
-export function Sidebar({ user, onNavigate }: { user?: ShellUser | null; onNavigate?: () => void }) {
+export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser | null; scriptingUrl?: string | null; onNavigate?: () => void }) {
   const pathname = usePathname();
   // When signed in, hide pages this person can't open. When not signed in (gate
   // still off, pre-cutover), show everything so the open app is unchanged.
-  const can = (key: PageKey) => !user || canAccess(user, key);
-  const sections = SECTIONS.map((s) => ({ ...s, items: s.items.filter((i) => can(i.key)) })).filter((s) => s.items.length > 0);
+  const can = (item: NavItem) => (item.key ? !user || canAccess(user, item.key) : true);
+  // External link to the Script Studio app — owner/admin only, and only when it's
+  // configured (SCRIPTING_BASE_URL set). Injected into the Creative section.
+  const showScripting = !!scriptingUrl && (!user || user.role === "OWNER" || user.role === "ADMIN");
+  const sections = SECTIONS.map((s) => {
+    let items = s.items.filter(can);
+    if (showScripting && s.title === "Creative") {
+      items = [...items, { label: "Script Writing", href: scriptingUrl!, icon: PenLine, external: true }];
+    }
+    return { ...s, items };
+  }).filter((s) => s.items.length > 0);
 
   return (
     <aside className="flex h-full w-64 shrink-0 flex-col border-r border-border bg-surface/95 backdrop-blur-xl lg:bg-surface/60">
@@ -151,6 +163,7 @@ export function Sidebar({ user, onNavigate }: { user?: ShellUser | null; onNavig
                   <>
                     <Icon className="size-4 shrink-0" />
                     <span className="flex-1">{item.label}</span>
+                    {item.external && <ExternalLink className="size-3.5 shrink-0 text-muted-2" />}
                     {item.soon && (
                       <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted-2">
                         soon
@@ -169,6 +182,10 @@ export function Sidebar({ user, onNavigate }: { user?: ShellUser | null; onNavig
                   <div key={item.href} className={classes} title="Coming in a later milestone">
                     {content}
                   </div>
+                ) : item.external ? (
+                  <a key={item.href} href={item.href} target="_blank" rel="noopener noreferrer" className={classes} onClick={onNavigate}>
+                    {content}
+                  </a>
                 ) : (
                   <Link key={item.href} href={item.href} className={classes} onClick={onNavigate}>
                     {content}
