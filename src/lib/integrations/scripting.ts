@@ -147,10 +147,19 @@ export function studioBestLink(p: StudioProject): string | null {
 export function studioToRecipe(p: StudioProject): { hook?: string; script?: string; song?: string; url?: string; status?: string } {
   const hook = firstString(
     at(p, "hooks", "chosen", "text"), at(p, "hooks", "chosen_hook"), at(p, "hooks", "chosen"),
-    at(p, "hooks", "selected", "text"), at(p, "script", "hook"),
+    at(p, "hooks", "selected", "text"), at(p, "hooks", "recommended", "text"), at(p, "script", "hook"),
+    typeof p.hooks === "string" ? p.hooks : null,
   );
-  const script = firstString(at(p, "script", "raw"), at(p, "script", "markdown"), at(p, "script", "text"), at(p, "script", "body"));
-  const song = firstString(at(p, "script", "song"), at(p, "intake", "answers", "song"), at(p, "intake", "answers", "music"), at(p, "song"));
+  // Script markdown: the platform stores it as `raw_ai_output`; the API may also
+  // expose it as script.raw / a bare string. Check them all.
+  const script = firstString(
+    typeof p.script === "string" ? p.script : null,
+    at(p, "script", "raw"), at(p, "script", "raw_ai_output"), at(p, "script", "markdown"),
+    at(p, "script", "text"), at(p, "script", "body"),
+  );
+  // Song: a dedicated field if present, else the SONG: line inside the script.
+  const songLine = script ? script.match(/(?:^|\n)\s*(?:\*{0,2})song(?:\*{0,2})\s*[:\-–—]\s*(.+)/i)?.[1]?.trim() : null;
+  const song = firstString(at(p, "script", "song"), at(p, "intake", "answers", "song"), at(p, "intake", "answers", "music"), at(p, "song"), songLine);
   const url = studioBestLink(p) ?? undefined;
   const out: { hook?: string; script?: string; song?: string; url?: string; status?: string } = {};
   if (hook) out.hook = hook;
