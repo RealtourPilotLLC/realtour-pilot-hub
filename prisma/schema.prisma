@@ -642,6 +642,7 @@ model MileageDay {
   dayKey       String     // yyyy-mm-dd in ET
   miles        Float
   stops        Int        @default(0) // shoots that day (for the route)
+  sig          String?    // signature of the stop coords — recompute when it changes
   computedAt   DateTime   @default(now())
 
   @@unique([teamMemberId, dayKey])

@@ -13,6 +13,11 @@ import { etDayKey, etDayStartUtc } from "@/lib/datetime";
 //   Job Total  = Shoot Pay + Mileage Pay Per Job
 //   Period Total = Σ Job Totals ± manual adjustments
 //
+// Payroll is APPOINTMENT-centric: each appointment is paid to whoever actually
+// shot it (Appointment.assignedTo), not the project's single photographer. The
+// earliest appointment is the primary shoot (full pay); a later appointment by a
+// DIFFERENT photographer is a second/return trip, paid at that person's flat rate.
+//
 // The eligible invoice (Project.payableInvoice) already excludes virtual/AI
 // add-ons + canceled items. Mileage is real road distance (home → that day's
 // shoots → home) via OSRM, cached per day in MileageDay.
@@ -92,15 +97,22 @@ async function dailyMiles(
   home: { lat: number; lng: number },
   stops: Stop[],
 ): Promise<number> {
+  // Signature of the day's route (home + the stop coords, order-independent). ANY
+  // change — a shoot reassigned to or from this person — invalidates the cache.
+  // Keying on the stop COUNT alone missed reassignments that kept the count equal.
+  const sig = [
+    `h:${home.lat.toFixed(5)},${home.lng.toFixed(5)}`,
+    ...stops.map((s) => `${s.lat.toFixed(5)},${s.lng.toFixed(5)}`).sort(),
+  ].join("|");
   const cached = await prisma.mileageDay.findUnique({
     where: { teamMemberId_dayKey: { teamMemberId: memberId, dayKey } },
   });
-  if (cached && cached.stops === stops.length) return cached.miles;
+  if (cached && cached.sig === sig) return cached.miles;
   const miles = await routeMiles(home, stops);
   await prisma.mileageDay.upsert({
     where: { teamMemberId_dayKey: { teamMemberId: memberId, dayKey } },
-    create: { teamMemberId: memberId, dayKey, miles, stops: stops.length },
-    update: { miles, stops: stops.length, computedAt: new Date() },
+    create: { teamMemberId: memberId, dayKey, miles, stops: stops.length, sig },
+    update: { miles, stops: stops.length, sig, computedAt: new Date() },
   });
   return miles;
 }
@@ -118,6 +130,7 @@ export type PayrollJob = {
   mileageShare: number;
   jobTotal: number;
   hasCoords: boolean;
+  returnTrip: boolean; // a later/second trip by a different shooter — paid at their flat rate
   override: { invoiceOverride: number | null; flatAmount: number | null; noMileage: boolean; excluded: boolean; note: string | null } | null;
 };
 
@@ -165,31 +178,34 @@ export async function unassignedShootsInRange(start: Date, end: Date): Promise<{
 // `opts.memberId` to scope to a single creative (used by the /shoot pay card so
 // one photographer's view doesn't route everyone's day).
 export async function computePayroll(start: Date, end: Date, opts?: { memberId?: string }): Promise<PayrollPerson[]> {
-  // Attribute pay to the ORIGINAL shoot (earliest appointment), not the latest.
-  // A return/reshoot trip adds a later appointment + moves Project.shootDate
-  // forward; without this a job would be re-counted in a later period. So we
-  // match any project with a relevant appointment OR shootDate in range, then
-  // keep only those whose EARLIEST appointment (the paid shoot) lands in range.
+  // Candidate projects: any non-cancelled project with a shoot (appointment or
+  // shootDate) in range. We do NOT pre-filter by the project's photographer —
+  // the payee is decided per appointment below. When scoped to one member (the
+  // /shoot pay card), limit to projects that member could be paid on.
+  const memberScope = opts?.memberId
+    ? [{ photographerId: opts.memberId }, { appointments: { some: { assignedToId: opts.memberId } } }]
+    : null;
   const projects = await prisma.project.findMany({
     where: {
-      photographerId: opts?.memberId ?? { not: null },
       status: { not: "CANCELLED" },
-      OR: [
-        { appointments: { some: { startAt: { gte: start, lte: end }, status: { not: "CANCELED" } } } },
-        { shootDate: { gte: start, lte: end } },
+      AND: [
+        {
+          OR: [
+            { appointments: { some: { startAt: { gte: start, lte: end }, status: { not: "CANCELED" } } } },
+            { shootDate: { gte: start, lte: end } },
+          ],
+        },
+        ...(memberScope ? [{ OR: memberScope }] : []),
       ],
     },
     select: {
       id: true, title: true, shootDate: true, lat: true, lng: true,
       price: true, payableInvoice: true, photographerId: true,
-      photographer: {
-        select: {
-          id: true, name: true, avatarColor: true,
-          payPercent: true, payFloor: true, mileageRate: true, homeRadiusMi: true,
-          homeLat: true, homeLng: true, homeAddress: true,
-        },
+      appointments: {
+        where: { status: { not: "CANCELED" }, startAt: { not: null } },
+        select: { startAt: true, assignedToId: true },
+        orderBy: { startAt: "asc" },
       },
-      appointments: { where: { status: { not: "CANCELED" }, startAt: { not: null } }, select: { startAt: true }, orderBy: { startAt: "asc" } },
       payOverrides: { select: { teamMemberId: true, invoiceOverride: true, flatAmount: true, noMileage: true, excluded: true, note: true } },
     },
     orderBy: { shootDate: "asc" },
@@ -197,7 +213,7 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
 
   // Manual adjustments in the period, grouped by member.
   const adjustments = await prisma.payoutAdjustment.findMany({
-    where: { date: { gte: start, lte: end } },
+    where: { date: { gte: start, lte: end }, ...(opts?.memberId ? { teamMemberId: opts.memberId } : {}) },
     orderBy: { date: "asc" },
   });
   const adjByMember = new Map<string, typeof adjustments>();
@@ -206,97 +222,128 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
     adjByMember.get(a.teamMemberId)!.push(a);
   }
 
-  // Group projects by photographer.
-  const byMember = new Map<string, typeof projects>();
+  // Load pay settings for everyone who could be paid (appt assignees, project
+  // photographers, and anyone with a period adjustment).
+  const memberIds = new Set<string>(adjByMember.keys());
   for (const p of projects) {
-    if (!p.photographer) continue;
-    if (!byMember.has(p.photographer.id)) byMember.set(p.photographer.id, []);
-    byMember.get(p.photographer.id)!.push(p);
+    if (p.photographerId) memberIds.add(p.photographerId);
+    for (const a of p.appointments) if (a.assignedToId) memberIds.add(a.assignedToId);
   }
+  const memberRows = memberIds.size
+    ? await prisma.teamMember.findMany({
+        where: { id: { in: [...memberIds] } },
+        select: {
+          id: true, name: true, avatarColor: true,
+          payPercent: true, payFloor: true, mileageRate: true, homeRadiusMi: true,
+          homeLat: true, homeLng: true,
+        },
+      })
+    : [];
+  const memberMap = new Map(memberRows.map((m) => [m.id, m]));
 
-  const out: PayrollPerson[] = [];
-  for (const [memberId, jobs] of byMember) {
-    const m = jobs[0].photographer!;
-    const home = m.homeLat != null && m.homeLng != null ? { lat: m.homeLat, lng: m.homeLng } : null;
+  // Build pay lines — one per paid appointment, grouped by the member who shot it.
+  type Built = PayrollJob & { _at: number };
+  const linesByMember = new Map<string, Built[]>();
+  const coordsByProject = new Map<string, { lat: number; lng: number } | null>();
 
-    // Build job lines (apply per-job overrides; drop excluded).
-    type Built = PayrollJob & { _at: number };
-    const built: Built[] = [];
-    const returnTripJobs: { title: string; original: string; returns: string[] }[] = [];
-    for (const p of jobs) {
+  for (const p of projects) {
+    coordsByProject.set(p.id, p.lat != null && p.lng != null ? { lat: p.lat, lng: p.lng } : null);
+
+    // Timeline of who shot when. Fall back to the project photographer on the
+    // shootDate when a project has no per-appointment records.
+    const timeline: { at: Date; memberId: string | null }[] = p.appointments.length
+      ? p.appointments.map((a) => ({ at: a.startAt!, memberId: a.assignedToId ?? p.photographerId }))
+      : p.shootDate
+        ? [{ at: p.shootDate, memberId: p.photographerId }]
+        : [];
+    if (timeline.length === 0) continue;
+
+    const paidHere = new Set<string>(); // members already paid on this project
+    timeline.forEach((slot, idx) => {
+      const memberId = slot.memberId;
+      if (!memberId) return;
+      const isPrimary = idx === 0;
+      // A later trip by an already-paid member is that person's own reshoot — not re-paid.
+      if (!isPrimary && paidHere.has(memberId)) return;
+      const at = slot.at;
+      const inRange = at.getTime() >= start.getTime() && at.getTime() <= end.getTime();
+      // A leg outside this period is paid in its own period; mark the shooter so a
+      // same-person later leg here isn't treated as new.
+      if (!inRange) { paidHere.add(memberId); return; }
+      if (opts?.memberId && memberId !== opts.memberId) { paidHere.add(memberId); return; }
+
       const ov = p.payOverrides.find((o) => o.teamMemberId === memberId) ?? null;
-      if (ov?.excluded) continue;
-
-      // Pay date = earliest non-canceled appointment (the original shoot); later
-      // appointments are return/reshoot trips and aren't separately paid.
-      const apptDates = p.appointments.map((a) => a.startAt!).filter(Boolean);
-      const payDate = apptDates[0] ?? p.shootDate;
-      if (!payDate) continue;
-      const t = payDate.getTime();
-      if (t < start.getTime() || t > end.getTime()) continue; // belongs to another period
-
-      // Note any later visit days (a return trip) for transparency / flagging.
-      const payDayKey = etDayKey(payDate);
-      const extraDays = Array.from(new Set(apptDates.map((d) => etDayKey(d)))).filter((k) => k > payDayKey);
-      if (extraDays.length > 0) returnTripJobs.push({ title: p.title, original: payDayKey, returns: extraDays });
-
-      // Invoice the % applies to: manual correction wins, else eligible invoice, else order total.
+      if (ov?.excluded) { paidHere.add(memberId); return; }
+      const m = memberMap.get(memberId);
+      const returnTrip = !isPrimary; // a later trip by a different (not-yet-paid) shooter
       const invoice = ov?.invoiceOverride != null ? ov.invoiceOverride : (p.payableInvoice ?? p.price ?? 0);
-      const base = shootPay(invoice, m.payPercent, m.payFloor);
+      // Primary shoot = full pay (% of invoice or floor). Return leg = flat rate
+      // (their floor). A manual flatAmount override always wins.
+      const base = returnTrip ? r2(m?.payFloor ?? 0) : shootPay(invoice, m?.payPercent, m?.payFloor);
       const pay = ov?.flatAmount != null ? r2(ov.flatAmount) : base;
-      built.push({
+      const dayKey = etDayKey(at);
+      const line: Built = {
         projectId: p.id,
         title: p.title,
-        shootISO: payDate.toISOString(),
-        dayKey: payDayKey,
-        invoice: r2(invoice),
-        invoiceIsFallback: ov?.invoiceOverride == null && p.payableInvoice == null,
+        shootISO: at.toISOString(),
+        dayKey,
+        invoice: r2(returnTrip ? 0 : invoice), // return legs aren't a % of invoice
+        invoiceIsFallback: !returnTrip && ov?.invoiceOverride == null && p.payableInvoice == null,
         invoiceOverridden: ov?.invoiceOverride != null,
         shootPay: pay,
         baseShootPay: base,
         mileageShare: 0,
         jobTotal: pay,
         hasCoords: p.lat != null && p.lng != null,
+        returnTrip,
         override: ov ? { invoiceOverride: ov.invoiceOverride ?? null, flatAmount: ov.flatAmount ?? null, noMileage: ov.noMileage, excluded: ov.excluded, note: ov.note ?? null } : null,
-        _at: payDate.getTime(),
-      });
-    }
+        _at: at.getTime(),
+      };
+      if (!linesByMember.has(memberId)) linesByMember.set(memberId, []);
+      linesByMember.get(memberId)!.push(line);
+      paidHere.add(memberId);
+    });
+  }
 
-    // Mileage by day.
-    const freeMiles = (m.homeRadiusMi ?? 35) * 2;
+  // Everyone with lines OR a period adjustment gets a card.
+  const outMemberIds = new Set<string>([...linesByMember.keys(), ...adjByMember.keys()]);
+  if (opts?.memberId) for (const id of [...outMemberIds]) if (id !== opts.memberId) outMemberIds.delete(id);
+
+  const out: PayrollPerson[] = [];
+  for (const memberId of outMemberIds) {
+    const m = memberMap.get(memberId);
+    const built = linesByMember.get(memberId) ?? [];
+    const home = m && m.homeLat != null && m.homeLng != null ? { lat: m.homeLat, lng: m.homeLng } : null;
+
+    // Mileage by day (both the primary shoot and any return legs count).
+    const freeMiles = (m?.homeRadiusMi ?? 35) * 2;
     const days: PayrollDay[] = [];
     const dayKeys = Array.from(new Set(built.map((b) => b.dayKey))).filter((k) => k !== "unknown");
     for (const dayKey of dayKeys) {
       const dayJobs = built.filter((b) => b.dayKey === dayKey);
-      // Jobs that take a mileage share (not flagged no-mileage, with coords for the route).
       const mileageJobs = dayJobs.filter((b) => !b.override?.noMileage);
       let miles = 0;
       if (home) {
-        const stops: Stop[] = dayJobs.filter((b) => b.hasCoords).map((b) => {
-          const p = jobs.find((j) => j.id === b.projectId)!;
-          return { lat: p.lat!, lng: p.lng!, at: b._at };
-        });
+        const stops: Stop[] = dayJobs
+          .filter((b) => b.hasCoords)
+          .map((b) => { const c = coordsByProject.get(b.projectId)!; return { lat: c!.lat, lng: c!.lng, at: b._at }; });
         miles = await dailyMiles(memberId, dayKey, home, stops);
       }
       const payableMiles = Math.max(miles - freeMiles, 0);
-      const mileagePay = r2(payableMiles * (m.mileageRate ?? 0.65));
+      const mileagePay = r2(payableMiles * (m?.mileageRate ?? 0.65));
       const share = mileageJobs.length > 0 ? r2(mileagePay / mileageJobs.length) : 0;
-      for (const b of mileageJobs) {
-        b.mileageShare = share;
-        b.jobTotal = r2(b.shootPay + share);
-      }
+      for (const b of mileageJobs) { b.mileageShare = share; b.jobTotal = r2(b.shootPay + share); }
       days.push({ dayKey, miles, freeMiles, payableMiles: r2(payableMiles), mileagePay, jobs: mileageJobs.length });
     }
 
     // ---- Discrepancy detection ------------------------------------------
     const issues: PayrollIssue[] = [];
-    if (!(m.payPercent != null && m.payFloor != null)) {
+    if (built.length > 0 && !(m?.payPercent != null && m?.payFloor != null)) {
       issues.push({ level: "warn", message: "Pay rates not set — shoot pay shows $0. Set them on the team page." });
     }
-    if (m.payPercent != null && !home) {
+    if (built.length > 0 && m?.payPercent != null && !home) {
       issues.push({ level: "warn", message: "No home address — mileage can't be calculated. Add it on the team page." });
     }
-    // Shoots missing a map location can't be routed → understate the day's miles.
     const noCoords = built.filter((b) => !b.hasCoords);
     if (home && noCoords.length > 0) {
       issues.push({
@@ -305,7 +352,6 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
         projectId: noCoords[0].projectId,
       });
     }
-    // Implausible daily mileage usually means a shoot geocoded to the wrong place.
     for (const d of days) {
       if (d.miles > 350 || (d.jobs > 0 && d.miles / d.jobs > 200)) {
         issues.push({
@@ -314,8 +360,7 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
         });
       }
     }
-    // $0 eligible invoice → shoot pay fell to the floor (or $0).
-    const zeroInvoice = built.filter((b) => b.invoice === 0 && !b.override);
+    const zeroInvoice = built.filter((b) => !b.returnTrip && b.invoice === 0 && !b.override);
     if (zeroInvoice.length > 0) {
       issues.push({
         level: "info",
@@ -323,16 +368,14 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
         projectId: zeroInvoice[0].projectId,
       });
     }
-    // Return/reshoot trips: a later visit to a shoot already paid this period.
-    // Pay stays on the original shoot; flag so it's clear the return isn't re-paid.
-    for (const rt of returnTripJobs) {
-      const days = rt.returns.map((k) => new Date(k + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric" })).join(", ");
+    const returnLegs = built.filter((b) => b.returnTrip);
+    if (returnLegs.length > 0) {
       issues.push({
         level: "info",
-        message: `${rt.title.split(",")[0]}: return trip on ${days} — paid once on the original shoot, not re-paid.`,
+        message: `${returnLegs.length} return trip${returnLegs.length === 1 ? "" : "s"} paid at your flat rate — a later visit you shot after the first photographer (${returnLegs[0].title.split(",")[0]}${returnLegs.length > 1 ? ", …" : ""}).`,
+        projectId: returnLegs[0].projectId,
       });
     }
-    // Order total used because there's no itemized invoice to exclude add-ons from.
     const fallback = built.filter((b) => b.invoiceIsFallback);
     if (fallback.length > 0) {
       issues.push({
@@ -348,13 +391,13 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
     const total = r2(shootPayTotal + mileageTotal + adjustmentTotal);
 
     out.push({
-      member: { id: m.id, name: m.name, avatarColor: m.avatarColor },
-      configured: m.payPercent != null && m.payFloor != null,
+      member: { id: memberId, name: m?.name ?? "Unknown", avatarColor: m?.avatarColor ?? "#8b93a3" },
+      configured: m?.payPercent != null && m?.payFloor != null,
       hasHome: !!home,
-      payPercent: m.payPercent ?? null,
-      payFloor: m.payFloor ?? null,
-      mileageRate: m.mileageRate ?? 0.65,
-      homeRadiusMi: m.homeRadiusMi ?? 35,
+      payPercent: m?.payPercent ?? null,
+      payFloor: m?.payFloor ?? null,
+      mileageRate: m?.mileageRate ?? 0.65,
+      homeRadiusMi: m?.homeRadiusMi ?? 35,
       // strip the internal _at field
       jobs: built.map(({ _at, ...j }) => { void _at; return j; }).sort((a, b) => (a.shootISO ?? "").localeCompare(b.shootISO ?? "")),
       days: days.sort((a, b) => a.dayKey.localeCompare(b.dayKey)),
