@@ -1,15 +1,15 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useEffect, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  Camera, Car, SlidersHorizontal, ChevronDown, AlertTriangle, Loader2, Plus, X, RefreshCw, FileDown,
+  Camera, Car, SlidersHorizontal, ChevronDown, AlertTriangle, Loader2, Plus, X, RefreshCw, FileDown, RotateCcw, Search,
 } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { usd } from "@/lib/money";
 import type { PayrollPerson, PayrollJob } from "@/lib/payroll";
-import { setJobOverride, addAdjustment, removeAdjustment, recomputeMileage, creativeStatementHtml } from "@/app/payouts/actions";
+import { setJobOverride, addAdjustment, removeAdjustment, recomputeMileage, creativeStatementHtml, restoreJob, searchPayableProjects, addShootToPayroll } from "@/app/payouts/actions";
 
 function fmtDay(iso: string | null): string {
   if (!iso) return "—";
@@ -130,6 +130,37 @@ export function PayoutCard({ person, periodStartISO }: { person: PayrollPerson; 
           </table>
         </div>
       </details>
+
+      {/* Add a shoot (by address → pulls the order) */}
+      <div className="border-t border-border px-5 py-2.5">
+        <AddShoot memberId={person.member.id} busy={busy} run={(fn) => start(async () => { await fn(); refresh(); })} />
+      </div>
+
+      {/* Removed shoots — restore anything taken out of the payout */}
+      {person.removedJobs.length > 0 && (
+        <details className="border-t border-border px-5 py-3">
+          <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs font-medium text-muted">
+            <ChevronDown className="size-3.5" /> Removed shoots ({person.removedJobs.length})
+          </summary>
+          <div className="mt-2 space-y-1.5">
+            {person.removedJobs.map((j) => (
+              <div key={j.projectId} className="flex items-center justify-between gap-2 text-sm">
+                <span className="min-w-0 flex-1 truncate">
+                  <Link href={`/projects/${j.projectId}`} className="text-muted line-through hover:text-brand">{j.title.split(",")[0]}</Link>
+                  <span className="ml-1 text-[11px] text-muted-2">· {fmtDay(j.shootISO)}</span>
+                </span>
+                <button
+                  onClick={() => start(async () => { await restoreJob(j.projectId, person.member.id); refresh(); })}
+                  disabled={busy}
+                  className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-[11px] font-medium hover:bg-surface-2 disabled:opacity-60"
+                >
+                  <RotateCcw className="size-3" /> Restore
+                </button>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
 
       {/* Daily mileage */}
       {person.days.length > 0 && (
@@ -257,6 +288,67 @@ function AdjustmentForm({ memberId, defaultDateISO, busy, run }: { memberId: str
       <input value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" placeholder="± $" className="w-20 rounded-lg border bg-surface px-2 py-1.5" />
       <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="rounded-lg border bg-surface px-2 py-1.5" />
       <button onClick={add} disabled={busy} className="inline-flex items-center gap-1 rounded-lg bg-brand px-2.5 py-1.5 font-medium text-white disabled:opacity-60"><Plus className="size-3.5" /> Add</button>
+    </div>
+  );
+}
+
+// Add a shoot to this creative's payout by typing the address — searches synced
+// Aryeo orders and pulls the invoice. Pays them full (tune with the row's Edit).
+function AddShoot({ memberId, busy, run }: { memberId: string; busy: boolean; run: (fn: () => Promise<unknown>) => void }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState<{ id: string; title: string; invoice: number; dateISO: string | null; photographer: string | null }[]>([]);
+  const [searching, setSearching] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const query = q.trim();
+    if (query.length < 3) { setResults([]); setSearching(false); return; }
+    let alive = true;
+    setSearching(true);
+    const h = setTimeout(async () => {
+      const r = await searchPayableProjects(query);
+      if (alive) { setResults(r); setSearching(false); }
+    }, 300);
+    return () => { alive = false; clearTimeout(h); };
+  }, [q, open]);
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} className="inline-flex items-center gap-1.5 text-xs font-medium text-brand hover:underline">
+        <Plus className="size-3.5" /> Add a shoot
+      </button>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <div className="flex flex-1 items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1.5">
+          <Search className="size-3.5 text-muted-2" />
+          <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Type the address — pulls the order…" className="flex-1 bg-transparent text-sm outline-none" />
+          {searching && <Loader2 className="size-3.5 animate-spin text-muted-2" />}
+        </div>
+        <button onClick={() => { setOpen(false); setQ(""); setResults([]); }} className="rounded-lg border border-border px-2 py-1.5 text-muted hover:bg-surface-2"><X className="size-3.5" /></button>
+      </div>
+      {q.trim().length >= 3 && (
+        <div className="max-h-56 space-y-1 overflow-y-auto rounded-lg border border-border bg-surface-2/40 p-1">
+          {results.length === 0 && !searching && <div className="px-2 py-2 text-xs text-muted">No matching orders.</div>}
+          {results.map((r) => (
+            <button
+              key={r.id}
+              disabled={busy}
+              onClick={() => run(async () => { await addShootToPayroll(r.id, memberId); setOpen(false); setQ(""); setResults([]); })}
+              className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left hover:bg-surface disabled:opacity-60"
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm">{r.title.split(",")[0]}</span>
+                <span className="text-[11px] text-muted-2">{r.photographer ? `${r.photographer} · ` : ""}{r.dateISO ? fmtDay(r.dateISO) : "no date"}</span>
+              </span>
+              <span className="whitespace-nowrap text-xs font-medium text-muted">{usd(r.invoice)}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

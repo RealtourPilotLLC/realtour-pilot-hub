@@ -64,6 +64,63 @@ export async function setJobOverride(
   return { ok: true, message: "Override saved." };
 }
 
+// Restore a removed (excluded) job — un-hide it from payout. If nothing else was
+// overridden, drop the override entirely so it's back to fully automatic.
+export async function restoreJob(projectId: string, teamMemberId: string): Promise<ActionResult> {
+  await requireOwner();
+  const ov = await prisma.jobPayOverride.findUnique({ where: { projectId_teamMemberId: { projectId, teamMemberId } } });
+  if (!ov) { revalidatePath("/payouts"); return { ok: true, message: "Restored." }; }
+  const stillHasSettings = ov.invoiceOverride != null || ov.flatAmount != null || ov.noMileage || ov.manualAdd || (ov.note ?? "").trim();
+  if (stillHasSettings) {
+    await prisma.jobPayOverride.update({ where: { projectId_teamMemberId: { projectId, teamMemberId } }, data: { excluded: false } });
+  } else {
+    await prisma.jobPayOverride.delete({ where: { projectId_teamMemberId: { projectId, teamMemberId } } }).catch(() => {});
+  }
+  revalidatePath("/payouts");
+  return { ok: true, message: "Shoot restored." };
+}
+
+// Search existing projects (synced Aryeo orders) by address — for manually adding
+// a shoot to someone's payout. Returns the order's invoice so it can be pulled in.
+export async function searchPayableProjects(query: string): Promise<{ id: string; title: string; invoice: number; dateISO: string | null; photographer: string | null }[]> {
+  await requireOwner();
+  const q = query.trim();
+  if (q.length < 3) return [];
+  const rows = await prisma.project.findMany({
+    where: { status: { not: "CANCELLED" }, title: { contains: q, mode: "insensitive" } },
+    select: {
+      id: true, title: true, payableInvoice: true, price: true, shootDate: true,
+      photographer: { select: { name: true } },
+      appointments: { where: { startAt: { not: null } }, orderBy: { startAt: "asc" }, take: 1, select: { startAt: true } },
+    },
+    orderBy: { shootDate: "desc" },
+    take: 8,
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    invoice: r.payableInvoice ?? r.price ?? 0,
+    dateISO: (r.appointments[0]?.startAt ?? r.shootDate)?.toISOString() ?? null,
+    photographer: r.photographer?.name ?? null,
+  }));
+}
+
+// Manually add a shoot to a creative's payout — pays them full for the job (from
+// the pulled invoice), even if they aren't the appointment shooter. Tune amount
+// afterward with the row's Edit (flat amount / invoice) if needed.
+export async function addShootToPayroll(projectId: string, teamMemberId: string): Promise<ActionResult> {
+  await requireOwner();
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true } });
+  if (!project) return { ok: false, message: "Couldn't find that order." };
+  await prisma.jobPayOverride.upsert({
+    where: { projectId_teamMemberId: { projectId, teamMemberId } },
+    create: { projectId, teamMemberId, manualAdd: true, excluded: false },
+    update: { manualAdd: true, excluded: false },
+  });
+  revalidatePath("/payouts");
+  return { ok: true, message: `Added ${project.title.split(",")[0]} to the payout.` };
+}
+
 // Build a clean, print-ready payout statement for ONE creative — what they see
 // when they get paid. Shows final per-shoot pay + mileage + any adjustments and
 // the total. Deliberately HIDES internal mechanics: no override badges, no

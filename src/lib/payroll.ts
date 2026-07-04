@@ -154,6 +154,7 @@ export type PayrollPerson = {
   mileageRate: number;
   homeRadiusMi: number;
   jobs: PayrollJob[];
+  removedJobs: { projectId: string; title: string; shootISO: string | null }[]; // excluded — restorable
   days: PayrollDay[];
   adjustments: { id: string; label: string; amount: number; dateISO: string }[];
   issues: PayrollIssue[];
@@ -183,7 +184,11 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
   // the payee is decided per appointment below. When scoped to one member (the
   // /shoot pay card), limit to projects that member could be paid on.
   const memberScope = opts?.memberId
-    ? [{ photographerId: opts.memberId }, { appointments: { some: { assignedToId: opts.memberId } } }]
+    ? [
+        { photographerId: opts.memberId },
+        { appointments: { some: { assignedToId: opts.memberId } } },
+        { payOverrides: { some: { teamMemberId: opts.memberId, manualAdd: true } } },
+      ]
     : null;
   const projects = await prisma.project.findMany({
     where: {
@@ -206,7 +211,7 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
         select: { startAt: true, assignedToId: true },
         orderBy: { startAt: "asc" },
       },
-      payOverrides: { select: { teamMemberId: true, invoiceOverride: true, flatAmount: true, noMileage: true, excluded: true, note: true } },
+      payOverrides: { select: { teamMemberId: true, invoiceOverride: true, flatAmount: true, noMileage: true, excluded: true, manualAdd: true, note: true } },
     },
     orderBy: { shootDate: "asc" },
   });
@@ -228,6 +233,7 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
   for (const p of projects) {
     if (p.photographerId) memberIds.add(p.photographerId);
     for (const a of p.appointments) if (a.assignedToId) memberIds.add(a.assignedToId);
+    for (const o of p.payOverrides) if (o.manualAdd) memberIds.add(o.teamMemberId);
   }
   const memberRows = memberIds.size
     ? await prisma.teamMember.findMany({
@@ -244,7 +250,12 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
   // Build pay lines — one per paid appointment, grouped by the member who shot it.
   type Built = PayrollJob & { _at: number };
   const linesByMember = new Map<string, Built[]>();
+  const removedByMember = new Map<string, { projectId: string; title: string; shootISO: string | null }[]>();
   const coordsByProject = new Map<string, { lat: number; lng: number } | null>();
+  const pushRemoved = (memberId: string, projectId: string, title: string, at: Date | null) => {
+    if (!removedByMember.has(memberId)) removedByMember.set(memberId, []);
+    removedByMember.get(memberId)!.push({ projectId, title, shootISO: at ? at.toISOString() : null });
+  };
 
   for (const p of projects) {
     coordsByProject.set(p.id, p.lat != null && p.lng != null ? { lat: p.lat, lng: p.lng } : null);
@@ -273,7 +284,7 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
       if (opts?.memberId && memberId !== opts.memberId) { paidHere.add(memberId); return; }
 
       const ov = p.payOverrides.find((o) => o.teamMemberId === memberId) ?? null;
-      if (ov?.excluded) { paidHere.add(memberId); return; }
+      if (ov?.excluded) { pushRemoved(memberId, p.id, p.title, at); paidHere.add(memberId); return; }
       const m = memberMap.get(memberId);
       const returnTrip = !isPrimary; // a later trip by a different (not-yet-paid) shooter
       const invoice = ov?.invoiceOverride != null ? ov.invoiceOverride : (p.payableInvoice ?? p.price ?? 0);
@@ -303,10 +314,39 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
       linesByMember.get(memberId)!.push(line);
       paidHere.add(memberId);
     });
+
+    // Manually-added shoots: pay this member for the job even though they aren't
+    // the appointment shooter (e.g. a shoot the sync missed). Full pay by default,
+    // attributed to the project's shoot day.
+    const primaryAt = timeline[0]?.at ?? p.shootDate ?? null;
+    for (const o of p.payOverrides) {
+      if (!o.manualAdd || paidHere.has(o.teamMemberId)) continue;
+      if (opts?.memberId && o.teamMemberId !== opts.memberId) continue;
+      if (!primaryAt) continue;
+      if (o.excluded) { pushRemoved(o.teamMemberId, p.id, p.title, primaryAt); paidHere.add(o.teamMemberId); continue; }
+      if (primaryAt.getTime() < start.getTime() || primaryAt.getTime() > end.getTime()) continue;
+      const m = memberMap.get(o.teamMemberId);
+      const invoice = o.invoiceOverride != null ? o.invoiceOverride : (p.payableInvoice ?? p.price ?? 0);
+      const base = shootPay(invoice, m?.payPercent, m?.payFloor);
+      const pay = o.flatAmount != null ? r2(o.flatAmount) : base;
+      const line: Built = {
+        projectId: p.id, title: p.title, shootISO: primaryAt.toISOString(), dayKey: etDayKey(primaryAt),
+        invoice: r2(invoice),
+        invoiceIsFallback: o.invoiceOverride == null && p.payableInvoice == null,
+        invoiceOverridden: o.invoiceOverride != null,
+        shootPay: pay, baseShootPay: base, mileageShare: 0, jobTotal: pay,
+        hasCoords: p.lat != null && p.lng != null, returnTrip: false,
+        override: { invoiceOverride: o.invoiceOverride ?? null, flatAmount: o.flatAmount ?? null, noMileage: o.noMileage, excluded: o.excluded, note: o.note ?? null },
+        _at: primaryAt.getTime(),
+      };
+      if (!linesByMember.has(o.teamMemberId)) linesByMember.set(o.teamMemberId, []);
+      linesByMember.get(o.teamMemberId)!.push(line);
+      paidHere.add(o.teamMemberId);
+    }
   }
 
-  // Everyone with lines OR a period adjustment gets a card.
-  const outMemberIds = new Set<string>([...linesByMember.keys(), ...adjByMember.keys()]);
+  // Everyone with lines, a period adjustment, OR a removed job gets a card.
+  const outMemberIds = new Set<string>([...linesByMember.keys(), ...adjByMember.keys(), ...removedByMember.keys()]);
   if (opts?.memberId) for (const id of [...outMemberIds]) if (id !== opts.memberId) outMemberIds.delete(id);
 
   const out: PayrollPerson[] = [];
@@ -400,6 +440,7 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
       homeRadiusMi: m?.homeRadiusMi ?? 35,
       // strip the internal _at field
       jobs: built.map(({ _at, ...j }) => { void _at; return j; }).sort((a, b) => (a.shootISO ?? "").localeCompare(b.shootISO ?? "")),
+      removedJobs: removedByMember.get(memberId) ?? [],
       days: days.sort((a, b) => a.dayKey.localeCompare(b.dayKey)),
       adjustments: adj,
       issues,

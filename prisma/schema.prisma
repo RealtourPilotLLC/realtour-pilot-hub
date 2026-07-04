@@ -611,6 +611,7 @@ model JobPayOverride {
   flatAmount   Float?     // override shoot pay to this flat dollar amount (wins over %)
   noMileage    Boolean    @default(false) // exclude this job from the day's mileage split
   excluded     Boolean    @default(false) // drop this job from payout entirely
+  manualAdd    Boolean    @default(false) // pay this member for this job even if they aren't the appt shooter (manually added)
   note         String?
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt @default(now())
