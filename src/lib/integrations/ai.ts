@@ -506,8 +506,9 @@ Decide and respond as STRICT JSON only:
 Rules:
 - actionable = false for chatter/acknowledgements ("got it", "thanks", "sounds good") or anything that needs no action from us.
 - clientId: ONLY if the THREAD makes clear this message/workflow is about one of the candidate clients above, return that client's id. If it is unclear or none fit, return null. NEVER guess; a wrong client is worse than none.
-- mergeIntoTaskId: if this message is part of the SAME effort as one of the existing open Slack to-dos above (the next step of that workflow, or more detail about it), return THAT to-do's id so we combine them into one. It must be one of the ids listed, else null.
-- title: describe the whole thing the team must do; if combining, cover both. Name the client only when you are confident from the thread.
+- mergeIntoTaskId: return an existing to-do's id ONLY when this message is the SAME effort for the SAME client/property/vendor (the next step of that exact workflow, or more detail about it). NEVER merge work about a DIFFERENT client, property, or vendor into one to-do — if the subject differs at all, return null so it becomes its own task. Must be one of the ids listed, else null.
+- One task = one client/subject. If a single message covers two different clients (e.g. "send Joe's videos AND Jamie's videos"), pick the ONE this message is primarily about for this task; do not blend two clients' work into a single title/summary.
+- title: describe the ONE thing the team must do for this client/subject. Name the client only when you are confident from the thread.
 - projectId: the order this is about — an id from the CHOSEN client's orders above — or null. NEVER invent an id.
 - flags: short notes worth surfacing (e.g. "shoot today", "waiting on the client's scripting form"). Only real, grounded notes.
 - priority: URGENT if tied to a shoot today or tomorrow or otherwise time-sensitive; HIGH for a normal action; MEDIUM for minor.
