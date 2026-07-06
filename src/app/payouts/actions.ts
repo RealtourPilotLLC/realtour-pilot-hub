@@ -4,6 +4,7 @@ import { requireOwner } from "@/lib/auth/guards";
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
+import { parseMoney } from "@/lib/money";
 
 export type ActionResult = { ok: boolean; message: string };
 
@@ -39,11 +40,11 @@ export async function removeAdjustment(id: string): Promise<ActionResult> {
 export async function setJobOverride(
   projectId: string,
   teamMemberId: string,
-  opts: { invoiceOverride?: number | null; flatAmount?: number | null; noMileage?: boolean; excluded?: boolean; note?: string | null },
+  opts: { invoiceOverride?: number | string | null; flatAmount?: number | string | null; noMileage?: boolean; excluded?: boolean; note?: string | null },
 ): Promise<ActionResult> {
   await requireOwner();
-  const invoiceOverride = opts.invoiceOverride != null && isFinite(opts.invoiceOverride) ? opts.invoiceOverride : null;
-  const flatAmount = opts.flatAmount != null && isFinite(opts.flatAmount) ? opts.flatAmount : null;
+  const invoiceOverride = parseMoney(opts.invoiceOverride);
+  const flatAmount = parseMoney(opts.flatAmount);
   const noMileage = !!opts.noMileage;
   const excluded = !!opts.excluded;
   const note = (opts.note ?? "").trim() || null;

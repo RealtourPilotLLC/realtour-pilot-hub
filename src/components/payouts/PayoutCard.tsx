@@ -7,7 +7,7 @@ import {
   Camera, Car, SlidersHorizontal, ChevronDown, AlertTriangle, Loader2, Plus, X, RefreshCw, FileDown, RotateCcw, Search,
 } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
-import { usd } from "@/lib/money";
+import { usd, parseMoney } from "@/lib/money";
 import type { PayrollPerson, PayrollJob } from "@/lib/payroll";
 import { setJobOverride, addAdjustment, removeAdjustment, recomputeMileage, creativeStatementHtml, restoreJob, searchPayableProjects, addShootToPayroll } from "@/app/payouts/actions";
 
@@ -228,8 +228,10 @@ function JobRow({ job, memberId, busy, run }: { job: PayrollJob; memberId: strin
 
   const save = () =>
     run(() => setJobOverride(job.projectId, memberId, {
-      invoiceOverride: invoice.trim() ? Number(invoice) : null,
-      flatAmount: flat.trim() ? Number(flat) : null,
+      // parseMoney tolerates "$1,200" / "1,200" — a bare Number() would make those
+      // NaN and the server would then wipe the override instead of setting it.
+      invoiceOverride: parseMoney(invoice),
+      flatAmount: parseMoney(flat),
       noMileage, excluded, note: note.trim() || null,
     }));
   const clear = () => run(() => setJobOverride(job.projectId, memberId, {}));
@@ -248,10 +250,15 @@ function JobRow({ job, memberId, busy, run }: { job: PayrollJob; memberId: strin
       {open && (
         <tr className="bg-surface-2/40">
           <td colSpan={7} className="px-2 py-3">
+            {job.returnTrip && (
+              <div className="mb-2 rounded-md bg-warning/10 px-2 py-1.5 text-[11px] text-warning">
+                Return/second trip — paid a flat rate (their minimum), not a % of the invoice, so the invoice total doesn&apos;t affect this row. To change the pay, use <span className="font-semibold">Flat shoot pay</span>.
+              </div>
+            )}
             <div className="flex flex-wrap items-end gap-3 text-xs">
               <label className="flex flex-col gap-1">
                 <span className="text-muted-2">Invoice total ($)</span>
-                <input value={invoice} onChange={(e) => setInvoice(e.target.value)} inputMode="decimal" placeholder="auto" className="w-24 rounded-lg border bg-surface px-2 py-1" />
+                <input value={invoice} onChange={(e) => setInvoice(e.target.value)} inputMode="decimal" placeholder={job.returnTrip ? "n/a" : "auto"} disabled={job.returnTrip} title={job.returnTrip ? "Return trip — paid a flat rate, not a % of invoice. Use Flat shoot pay to change it." : undefined} className="w-24 rounded-lg border bg-surface px-2 py-1 disabled:opacity-50" />
               </label>
               <label className="flex flex-col gap-1">
                 <span className="text-muted-2">Flat shoot pay ($)</span>
@@ -278,8 +285,9 @@ function AdjustmentForm({ memberId, defaultDateISO, busy, run }: { memberId: str
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState(defaultDateISO.slice(0, 10));
   const add = () => {
-    if (!label.trim() || !amount.trim()) return;
-    run(() => addAdjustment(memberId, label.trim(), Number(amount), new Date(date + "T12:00:00").toISOString()));
+    const amt = parseMoney(amount);
+    if (!label.trim() || amt == null || amt === 0) return;
+    run(() => addAdjustment(memberId, label.trim(), amt, new Date(date + "T12:00:00").toISOString()));
     setLabel(""); setAmount("");
   };
   return (
