@@ -499,6 +499,10 @@ model SmartTask {
   projectId       String?
   client          Client?     @relation(fields: [clientId], references: [id])
   clientId        String?
+  // The actual human who wrote in (e.g. an assistant like Olivia), shown as the
+  // person on the task when it differs from the account client the message folds
+  // to (the agent whose orders it lands on). Null when the sender IS the client.
+  contactName     String?
   propertyAddress String?
   deliverableType String?
 

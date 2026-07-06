@@ -268,6 +268,7 @@ export type BriefTask = {
   projectId: string | null;
   clientId: string | null;
   clientName: string | null;
+  contactName: string | null;
   propertyAddress: string | null;
   overdue: boolean;
 };
@@ -275,7 +276,7 @@ export type BriefTask = {
 type RawTask = {
   id: string; title: string; taskType: string; priority: string;
   dueAt: Date | null; source: string; assignedKey: string | null; projectId: string | null;
-  clientId: string | null;
+  clientId: string | null; contactName: string | null;
   propertyAddress: string | null; client: { name: string } | null;
 };
 function mapTask(t: RawTask, startToday: Date): BriefTask {
@@ -290,6 +291,7 @@ function mapTask(t: RawTask, startToday: Date): BriefTask {
     projectId: t.projectId,
     clientId: t.clientId,
     clientName: t.client?.name ?? null,
+    contactName: t.contactName,
     propertyAddress: t.propertyAddress,
     overdue: !!t.dueAt && t.dueAt < startToday,
   };

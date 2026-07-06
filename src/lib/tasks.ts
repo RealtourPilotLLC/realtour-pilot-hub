@@ -116,6 +116,17 @@ function dedupe(parts: (string | null | undefined)[]): string {
   return crypto.createHash("sha1").update(parts.filter(Boolean).join("|")).digest("hex").slice(0, 24);
 }
 
+// The real sender to store on a task, but ONLY when it's a different person than
+// the account client it folds to (e.g. assistant "Olivia" on agent "Mike"'s
+// account). Returns null when they're the same, so the card doesn't show a
+// redundant name.
+function differentName(contactName: string | null | undefined, clientName: string | null | undefined): string | null {
+  const c = (contactName ?? "").trim();
+  if (!c) return null;
+  if (c.toLowerCase() === (clientName ?? "").trim().toLowerCase()) return null;
+  return c.slice(0, 120);
+}
+
 type TaskSpec = {
   taskType: string;
   title: string;
@@ -271,6 +282,9 @@ function labelFor(t: string) {
 export async function createCommTask(opts: {
   clientId: string;
   clientName: string;
+  // The real person who wrote in, when different from the account client (e.g. an
+  // assistant emailing on the agent's behalf). Shown as the person on the card.
+  contactName?: string | null;
   projectId?: string | null;
   propertyAddress?: string | null;
   kind: "text" | "missed_call" | "voicemail";
@@ -338,6 +352,7 @@ export async function createCommTask(opts: {
     priority: opts.priority ?? "HIGH",
     dueAt,
     clientId: opts.clientId,
+    contactName: differentName(opts.contactName, opts.clientName),
     projectId: opts.projectId ?? null,
     propertyAddress: opts.propertyAddress ?? null,
     ownerId: kyle?.id ?? null,
@@ -485,6 +500,7 @@ export async function mergeIntoExistingTask(taskId: string, opts: {
   propertyAddress?: string | null;
   snippet?: string;
   clientName?: string;
+  contactName?: string | null;
 }): Promise<boolean> {
   const existing = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { description: true, taskType: true } });
   if (!existing) return false;
@@ -509,6 +525,7 @@ export async function mergeIntoExistingTask(taskId: string, opts: {
       ...(opts.projectId !== undefined ? { projectId: opts.projectId } : {}),
       ...(opts.clientId !== undefined ? { clientId: opts.clientId } : {}),
       ...(opts.propertyAddress !== undefined ? { propertyAddress: opts.propertyAddress } : {}),
+      ...(opts.contactName !== undefined ? { contactName: differentName(opts.contactName, opts.clientName) } : {}),
     },
   });
   return true;

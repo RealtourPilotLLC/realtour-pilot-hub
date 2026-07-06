@@ -600,6 +600,10 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
         await recordClientCommunication({
           clientId: resolvedClientId,
           clientName: resolvedClientName || name,
+          // The real person who wrote in. When their email folded to an agent's
+          // account (assistant → agent), this keeps the human on the task instead
+          // of showing the agent who never sent anything.
+          contactName: name || null,
           projectId: project?.id,
           projectStatus: project?.status ?? null,
           propertyAddress: project?.title ?? null,

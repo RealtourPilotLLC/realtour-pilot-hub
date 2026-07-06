@@ -110,6 +110,9 @@ export async function recordClientCommunication(opts: {
   kind: "text" | "missed_call" | "voicemail" | "email";
   source?: string; // openphone | gmail | facebook | form | ...
   threadRef?: string | null; // e.g. "gmail-thread:hello@…:<threadId>"
+  // The real human who sent this, when different from the folded account client
+  // (e.g. an assistant emailing on the agent's behalf). Shown as the task person.
+  contactName?: string | null;
 }): Promise<{ replyTask: boolean; revision: boolean }> {
   // A "Liked …" / emoji reaction needs no reply — log nothing, make no task.
   if (isReaction(opts.text)) return { replyTask: false, revision: false };
@@ -160,14 +163,15 @@ export async function recordClientCommunication(opts: {
       if (decision.mergeIntoTaskId) {
         replyTask = await mergeIntoExistingTask(decision.mergeIntoTaskId, {
           title: decision.title, detail: decision.detail, priority: decision.priority,
-          projectId: effProjectId, propertyAddress: effPropertyAddress, snippet: opts.text, clientName: opts.clientName,
+          projectId: effProjectId, propertyAddress: effPropertyAddress, snippet: opts.text,
+          clientName: opts.clientName, contactName: opts.contactName ?? null,
         });
       }
       // No merge target (or the merge was refused, e.g. it pointed at a production
       // task) → create a fresh reply task so the message is still tracked.
       if (!replyTask) {
         replyTask = await createCommTask({
-          clientId: opts.clientId, clientName: opts.clientName,
+          clientId: opts.clientId, clientName: opts.clientName, contactName: opts.contactName ?? null,
           projectId: effProjectId, propertyAddress: effPropertyAddress,
           kind: opts.kind === "email" ? "text" : opts.kind,
           snippet: opts.text, source: opts.source,
@@ -207,6 +211,7 @@ export async function recordClientCommunication(opts: {
       : await createCommTask({
           clientId: opts.clientId,
           clientName: opts.clientName,
+          contactName: opts.contactName ?? null,
           projectId: opts.projectId ?? null,
           propertyAddress: opts.propertyAddress ?? null,
           kind: opts.kind === "email" ? "text" : opts.kind,

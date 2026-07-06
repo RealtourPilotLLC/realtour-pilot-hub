@@ -61,6 +61,7 @@ export type QueueTask = {
   projectId: string | null;
   clientId: string | null;
   clientName: string | null;
+  contactName: string | null;
   propertyAddress: string | null;
 };
 
@@ -166,6 +167,11 @@ export function TaskCard({ task, assignees, assignPrompt }: { task: QueueTask; a
   const projectLabel = task.propertyAddress ? task.propertyAddress.split(",")[0].trim() : null;
   // The title often already contains the street — don't repeat it in the chip.
   const titleHasAddress = !!projectLabel && task.title.toLowerCase().includes(projectLabel.toLowerCase());
+  // When the person shown is a sender on someone else's account, reveal whose on hover.
+  const personTitle =
+    task.contactName && task.clientName && task.contactName !== task.clientName
+      ? `${task.contactName} — on ${task.clientName}'s account`
+      : undefined;
   // What's worth expanding: a summary, the live/pending deliverable status, the
   // raw message, or a drafted message to review.
   const hasBody = !!summary || task.deliverables.length > 0 || (!!task.description && !predrafted);
@@ -225,14 +231,17 @@ export function TaskCard({ task, assignees, assignPrompt }: { task: QueueTask; a
       {/* Identity row: client · project · source · came-in date. The five things
           that make a task trackable at a glance. */}
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
-        {task.clientName && (
+        {(task.contactName ?? task.clientName) && (
+          // Show the real person who wrote in (contactName) when it differs from
+          // the account it folds to; hover reveals whose account. Falls back to the
+          // client. Links to the account client (where the orders live).
           task.clientId ? (
-            <Link href={`/clients/${task.clientId}`} className="inline-flex items-center gap-1 rounded-md bg-surface-2 px-1.5 py-0.5 font-medium text-foreground/90 hover:text-foreground">
-              <User className="size-3 text-muted-2" /> {task.clientName}
+            <Link href={`/clients/${task.clientId}`} title={personTitle} className="inline-flex items-center gap-1 rounded-md bg-surface-2 px-1.5 py-0.5 font-medium text-foreground/90 hover:text-foreground">
+              <User className="size-3 text-muted-2" /> {task.contactName ?? task.clientName}
             </Link>
           ) : (
-            <span className="inline-flex items-center gap-1 rounded-md bg-surface-2 px-1.5 py-0.5 font-medium text-foreground/80">
-              <User className="size-3 text-muted-2" /> {task.clientName}
+            <span title={personTitle} className="inline-flex items-center gap-1 rounded-md bg-surface-2 px-1.5 py-0.5 font-medium text-foreground/80">
+              <User className="size-3 text-muted-2" /> {task.contactName ?? task.clientName}
             </span>
           )
         )}

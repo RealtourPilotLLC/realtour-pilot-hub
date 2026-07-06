@@ -58,7 +58,16 @@ export function BriefTaskRow({ t }: { t: BriefTask }) {
           <span className={`ml-auto shrink-0 text-[11px] ${t.overdue ? "font-medium text-danger" : "text-muted"}`}>{t.overdue ? "overdue" : dueTime(t.dueAt)}</span>
         </div>
         <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-muted-2">
-          {t.clientName && <span className="font-medium text-muted">{t.clientName}</span>}
+          {/* The real person who wrote in (contactName) when it differs from the
+              folded account client; hover shows whose account. */}
+          {(t.contactName ?? t.clientName) && (
+            <span
+              className="font-medium text-muted"
+              title={t.contactName && t.clientName && t.contactName !== t.clientName ? `${t.contactName} — on ${t.clientName}'s account` : undefined}
+            >
+              {t.contactName ?? t.clientName}
+            </span>
+          )}
           {street && !titleHasStreet && <span>· {street}</span>}
           {src.key !== "system" && <span className="rounded bg-surface-2 px-1 font-medium text-muted-2">{src.label}</span>}
           {delegated && ed && <span className="rounded bg-brand/10 px-1 font-medium text-brand">→ {ed.name}</span>}
