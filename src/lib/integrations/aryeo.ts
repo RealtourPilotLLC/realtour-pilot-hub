@@ -698,7 +698,15 @@ export async function syncAryeoOrders(
       return created.id;
     };
 
-    // Paginate newest-first so incremental can stop early.
+    // Paginate newest-first. We CAN'T just stop at the first order we've already
+    // imported: Aryeo orders finalize out of created_at order (a draft placed
+    // today can carry a created_at from days ago), so an order can appear "behind"
+    // ones we've already synced and would be stranded forever. Instead, incremental
+    // scans a bounded RECENT WINDOW and imports anything in it we don't yet have; a
+    // full sweep scans the entire history. (The daily cron also runs a full sweep
+    // as a safety net for anything that finalized older than the window.)
+    const RECENT_WINDOW_DAYS = 45;
+    const floorDate = opts.full ? ARYEO_MIN_DATE : new Date(Date.now() - RECENT_WINDOW_DAYS * 24 * 3600_000);
     const perPage = 50;
     let page = 1;
     let stop = false;
@@ -712,18 +720,15 @@ export async function syncAryeoOrders(
       for (const order of batch) {
         if (!order.id) continue;
         scanned++;
-        // Orders are newest-first: once we pass the cutoff date, stop entirely.
-        if (order.created_at && new Date(order.created_at) < ARYEO_MIN_DATE) {
+        // Newest-first: once we pass the window floor (full = all history,
+        // incremental = the recent window), stop entirely.
+        if (order.created_at && new Date(order.created_at) < floorDate) {
           stop = true;
           break;
         }
-        if (seenOrders.has(order.id)) {
-          if (!opts.full) {
-            stop = true; // everything older is already imported
-            break;
-          }
-          continue;
-        }
+        // Already imported — skip it, but KEEP scanning the window so a
+        // late-finalized order sitting behind it still gets picked up.
+        if (seenOrders.has(order.id)) continue;
 
         const cust = order.customer;
         const addr = order.address;

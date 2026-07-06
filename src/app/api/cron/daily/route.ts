@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { syncAryeoSocialPlans, syncAllAryeoClients, syncAryeoAppointments, syncAryeoCustomerTeams } from "@/lib/integrations/aryeo";
+import { syncAryeoSocialPlans, syncAllAryeoClients, syncAryeoAppointments, syncAryeoCustomerTeams, syncAryeoOrders } from "@/lib/integrations/aryeo";
 import { syncClientSegments } from "@/lib/segmentSync";
 import { dedupeClients } from "@/lib/clientDedupe";
 import { cronBudget } from "@/lib/cron";
@@ -29,6 +29,10 @@ export async function GET(req: NextRequest) {
   await step("social", () => syncAryeoSocialPlans());
   // Fold agency-team assistants under their agent so comms route to the orders.
   await step("customerTeams", () => syncAryeoCustomerTeams());
+  // Full ORDERS reconcile once a day — safety net for any order that finalized out
+  // of created_at order (e.g. a draft placed days after it was created) and slipped
+  // past the hourly incremental's recent window, so it can never be stranded.
+  await step("ordersFullReconcile", () => syncAryeoOrders({ full: true }));
   // Full appointments reconcile once a day (the hourly cron only does recent+future).
   await step("appointments", () => syncAryeoAppointments());
   // Retire delivery-text nudges that lingered a week (already sent off-app / moot).
