@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { canAccess, type PageKey } from "@/lib/auth/access";
+import { NotificationsBell } from "@/components/NotificationsBell";
 
 export type ShellUser = {
   name: string | null;
@@ -132,7 +133,8 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
   }).filter((s) => s.items.length > 0);
 
   return (
-    <aside className="flex h-full w-64 shrink-0 flex-col border-r border-border bg-surface/95 backdrop-blur-xl lg:bg-surface/60">
+    // relative: the notification-bell panel anchors to the sidebar (opens upward).
+    <aside className="relative flex h-full w-64 shrink-0 flex-col border-r border-border bg-surface/95 backdrop-blur-xl lg:bg-surface/60">
       <div className="flex items-center gap-3 px-5 py-5">
         <div
           className="flex size-9 items-center justify-center rounded-xl text-sm font-bold text-white shadow-lg ring-1 ring-white/10"
@@ -207,6 +209,7 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
               <div className="truncate text-sm font-medium">{user.name || user.email}</div>
               <div className="text-[11px] text-muted-2">{ROLE_LABEL[user.role] ?? user.role}</div>
             </div>
+            <NotificationsBell />
             <form action="/api/auth/logout" method="post">
               <button type="submit" title="Sign out" className="flex size-8 items-center justify-center rounded-lg text-muted-2 hover:bg-surface-2 hover:text-foreground">
                 <LogOut className="size-4" />

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { Menu, X } from "lucide-react";
+import { NotificationsBell } from "@/components/NotificationsBell";
 import { Sidebar, type ShellUser } from "@/components/Sidebar";
 import { FeedbackWidget } from "@/components/feedback/FeedbackWidget";
 import { ViewAsBanner } from "@/components/ViewAsBanner";
@@ -76,6 +77,9 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
             <span className="text-sm font-semibold tracking-tight">
               Real<span className="text-brand">Tour</span> Pilot
             </span>
+          </div>
+          <div className="ml-auto">
+            <NotificationsBell variant="header" />
           </div>
         </header>
 

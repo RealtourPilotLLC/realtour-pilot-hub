@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { slackNotify, slackChannels } from "@/lib/integrations/slack";
+import type { Role } from "@/lib/auth/access";
 
 // ---------------------------------------------------------------------------
 // Internal operational pings → Slack (never clients). The task engine files
@@ -51,6 +52,68 @@ export async function opsAlert(text: string): Promise<boolean> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// In-app notifications (the bell). Same philosophy as opsAlert: best-effort,
+// NEVER throws — a bell miss must never break a webhook, cron, or task write.
+// One Notification row per target: a role broadcast (no userKey) or one person
+// ("tm:<teamMemberId>" / "editor:<editorKey>", role still required). Emitters
+// dual-write next to their existing Slack ping/task — never instead of it.
+// ---------------------------------------------------------------------------
+
+export type { Role };
+export type NotifyTarget = { roles: Role[]; userKey?: string; href?: string }; // href overrides the default per row
+
+export async function notifyInApp(n: {
+  kind: string;
+  title: string;
+  body?: string;
+  href: string; // default deep link; a target's href wins for its row
+  targets: NotifyTarget[]; // ONE Notification row per target
+  dedupeKey?: string; // suffixed "-0","-1",… per target index so multi-target events insert every row
+}): Promise<void> {
+  try {
+    const title = n.title.slice(0, 90);
+    for (let i = 0; i < n.targets.length; i++) {
+      const t = n.targets[i];
+      let roles = t.roles;
+      let body = n.body ? n.body.slice(0, 140) : null;
+      const href = t.href ?? n.href;
+      // Money clamp — the SINGLE enforcement point (not 16 call sites): creatives
+      // never see money. Any row that can reach an editor/photographer loses its
+      // body; a money destination collapses the row to owner-only.
+      if (roles.includes("EDITOR") || roles.includes("PHOTOGRAPHER")) {
+        body = null;
+        if (href.startsWith("/billing") || href.startsWith("/payouts") || n.kind === "order_paid") {
+          roles = ["OWNER"];
+          console.warn("notifyInApp money clamp", n.kind);
+        }
+      }
+      try {
+        await prisma.notification.create({
+          data: {
+            kind: n.kind,
+            title,
+            body,
+            href,
+            audience: JSON.stringify(roles),
+            userKey: t.userKey ?? null,
+            dedupeKey: n.dedupeKey ? `${n.dedupeKey}-${i}` : null,
+          },
+        });
+      } catch (e) {
+        // Unique violation on dedupeKey = this event was already announced —
+        // silently skip (recurring events put the changing part IN the key, e.g.
+        // a reschedule's new startAt). Anything else is logged but still swallowed.
+        if ((e as { code?: string } | null)?.code !== "P2002") {
+          console.warn("notifyInApp failed", n.kind, e);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("notifyInApp failed", n.kind, e);
+  }
+}
+
 // Ping the team about a just-created task that shouldn't wait for a hub visit
 // (URGENT priority, a new lead, a revision request). Task titles are already
 // self-describing ("Revision — 123 Main St", "New lead: …"), so the message is
@@ -75,6 +138,14 @@ export async function alertWebhookRejections(provider: string): Promise<void> {
       await opsAlert(
         `⚠️ ${provider} webhooks: ${n} signature rejections in the last hour — real events may be bouncing at the door. ${appBase()}/connections`,
       );
+      await notifyInApp({
+        kind: "system",
+        title: `${provider} webhooks bouncing (${n}/hr)`,
+        href: "/connections",
+        targets: [{ roles: ["OWNER"] }],
+        // Hour-bucketed key = the same natural rate limit as the Slack ping.
+        dedupeKey: `whrej-${provider}-${new Date().toISOString().slice(0, 13).replace("T", "-")}`,
+      });
     }
   } catch {
     /* never let alerting break the receiver */

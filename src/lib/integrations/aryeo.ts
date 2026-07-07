@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { getSecret, markSynced, markError } from "./connections";
 import type { DeliverableType, ProjectStatus } from "@prisma/client";
+import type { NotifyTarget } from "@/lib/notify";
 
 // ---------------------------------------------------------------------------
 // Aryeo REST client.  Base: https://api.aryeo.com/v1  ·  Auth: Bearer {key}
@@ -680,7 +681,7 @@ export async function syncAryeoOrders(
         where: { aryeoOrderId: { not: null } },
         select: {
           id: true, aryeoOrderId: true, status: true, clientId: true, deliveredAt: true,
-          price: true, payableInvoice: true, paymentStatus: true, balanceAmount: true,
+          price: true, payableInvoice: true, paymentStatus: true, balanceAmount: true, title: true,
         },
       }),
       prisma.client.findMany({ select: { id: true, aryeoCustomerId: true, email: true } }),
@@ -808,6 +809,21 @@ export async function syncAryeoOrders(
                 data: { projectId: proj.id, type: "SYSTEM", body: `Client re-linked to match the order's current Aryeo customer (${customerName(cust)}).` },
               }).catch(() => {});
             }
+            // First flip to PAID → owner bell (same "paid" literal /billing keys
+            // off). Checked against the PRE-update proj so it fires exactly once;
+            // the dedupe key backstops any re-read race. Best-effort.
+            if ((proj.paymentStatus ?? null) !== "paid" && order.payment_status === "paid") {
+              try {
+                const { notifyInApp } = await import("@/lib/notify");
+                await notifyInApp({
+                  kind: "order_paid",
+                  title: `Paid — ${proj.title}${price != null ? ` ($${Math.round(price).toLocaleString("en-US")})` : ""}`,
+                  href: "/billing",
+                  targets: [{ roles: ["OWNER"] }],
+                  dedupeKey: `order-paid-${proj.id}`,
+                });
+              } catch { /* bell is best-effort */ }
+            }
             // Keep the in-memory row current so a duplicate page doesn't re-write.
             Object.assign(proj, {
               price, payableInvoice: payable,
@@ -832,7 +848,7 @@ export async function syncAryeoOrders(
           null;
         const items = order.items ?? [];
 
-        await prisma.project.create({
+        const createdProject = await prisma.project.create({
           data: {
             title: addressTitle(order),
             source: "ARYEO",
@@ -866,6 +882,19 @@ export async function syncAryeoOrders(
         });
         seenOrders.add(order.id);
         imported++;
+        // Bell: a fresh booking, announced here (not the webhook receiver — it
+        // only triggers this sync, and emitting here covers cron-discovered
+        // orders too). Deduped per project. Best-effort.
+        try {
+          const { notifyInApp } = await import("@/lib/notify");
+          await notifyInApp({
+            kind: "order_booked",
+            title: `Booked — ${createdProject.title}`,
+            href: `/projects/${createdProject.id}`,
+            targets: [{ roles: ["OWNER", "ADMIN"] }],
+            dedupeKey: `order-booked-${createdProject.id}`,
+          });
+        } catch { /* bell is best-effort */ }
       }
 
       const last = res?.meta?.last_page;
@@ -1248,10 +1277,11 @@ export async function syncAryeoAppointments(opts: { recentOnlyDays?: number } = 
 
   // Preload lookups.
   const [projects, team] = await Promise.all([
-    prisma.project.findMany({ where: { aryeoOrderId: { not: null } }, select: { id: true, aryeoOrderId: true } }),
+    prisma.project.findMany({ where: { aryeoOrderId: { not: null } }, select: { id: true, aryeoOrderId: true, title: true } }),
     prisma.teamMember.findMany({ select: { id: true, aryeoUserId: true, name: true, isServiceProvider: true } }),
   ]);
   const projectByOrder = new Map(projects.map((p) => [p.aryeoOrderId!, p.id]));
+  const titleByProject = new Map(projects.map((p) => [p.id, p.title]));
   const teamByUser = new Map(team.filter((t) => t.aryeoUserId).map((t) => [t.aryeoUserId!, t]));
   const va = team.find((t) => /kyle/i.test(t.name));
 
@@ -1279,6 +1309,15 @@ export async function syncAryeoAppointments(opts: { recentOnlyDays?: number } = 
     });
     const batch = res?.data ?? [];
     if (batch.length === 0) break;
+
+    // Pre-read this page's stored rows in ONE query, so after each upsert we can
+    // tell a real reschedule/cancel (start moved ≥ 1 min, or status flipped to
+    // canceled) from a routine re-sync — those changes ring the bell below.
+    const priorRows = await prisma.appointment.findMany({
+      where: { aryeoId: { in: batch.map((a) => a.id).filter((id): id is string => !!id) } },
+      select: { aryeoId: true, startAt: true, status: true },
+    });
+    const priorByAryeoId = new Map(priorRows.map((r) => [r.aryeoId, r]));
 
     for (const appt of batch) {
       const orderId = appt.order?.id;
@@ -1320,6 +1359,37 @@ export async function syncAryeoAppointments(opts: { recentOnlyDays?: number } = 
         update: fields,
       });
       appointmentCount++;
+
+      // Bell: a KNOWN appointment that moved or got canceled — admin broadcast +
+      // the assigned photographer (routed to /shoot). New appointments stay quiet
+      // here (the booking already announced). The new start time (or "canceled")
+      // lives IN the dedupe key, so each further reschedule rings again exactly
+      // once. Best-effort — never breaks the sync.
+      const prior = priorByAryeoId.get(appt.id);
+      if (prior) {
+        const nowCanceled = (appt.status ?? "").toUpperCase().startsWith("CANCEL");
+        const wasCanceled = (prior.status ?? "").toUpperCase().startsWith("CANCEL");
+        const canceled = nowCanceled && !wasCanceled;
+        const moved =
+          !nowCanceled && !!startAt && !!prior.startAt &&
+          Math.abs(startAt.getTime() - prior.startAt.getTime()) >= 60_000;
+        if (canceled || moved) {
+          try {
+            const { notifyInApp } = await import("@/lib/notify");
+            const { etDateTime } = await import("@/lib/datetime");
+            const street = (titleByProject.get(projectId) || "a shoot").split(",")[0].trim();
+            const targets: NotifyTarget[] = [{ roles: ["ADMIN"] }];
+            if (assignedToId) targets.push({ roles: ["PHOTOGRAPHER"], userKey: `tm:${assignedToId}`, href: "/shoot" });
+            await notifyInApp({
+              kind: "appointment_change",
+              title: canceled ? `Canceled — ${street}` : `Rescheduled — ${street} → ${etDateTime(startAt)}`,
+              href: `/projects/${projectId}`,
+              targets,
+              dedupeKey: `appt-${appt.id}-${canceled ? "canceled" : startAt!.toISOString()}`,
+            });
+          } catch { /* bell is best-effort */ }
+        }
+      }
 
       // Primary assignment = the next upcoming scheduled appointment (with the
       // photographer assigned to THAT visit). Non-scheduled only seeds a fallback.

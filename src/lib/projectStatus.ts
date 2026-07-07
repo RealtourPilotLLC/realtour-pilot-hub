@@ -6,6 +6,7 @@ import { dropboxConfigured, dropboxListFolder, DropboxError } from "@/lib/integr
 import { getSecret } from "@/lib/integrations/connections";
 import { projectFolderPaths } from "@/lib/dropboxFolders";
 import { standardDeliveryDue, deliveryDueFrom } from "@/lib/tasks";
+import type { NotifyTarget } from "@/lib/notify";
 
 // ---------------------------------------------------------------------------
 // Smart project-status engine.
@@ -321,6 +322,7 @@ type StatusProject = {
   createdAt: Date;
   revisionRequestedAt: Date | null;
   revisionNote: string | null;
+  photographerId: string | null;
   client: { name: string; socialClient: boolean };
   deliverables: { id: string; type: string; label: string | null }[];
   appointments: { status: string | null }[];
@@ -451,6 +453,7 @@ export async function syncProjectStatuses(
       createdAt: true,
       revisionRequestedAt: true,
       revisionNote: true,
+      photographerId: true,
       client: { select: { name: true, socialClient: true } },
       deliverables: { select: { id: true, type: true, label: true } },
       appointments: { select: { status: true } },
@@ -504,6 +507,9 @@ export async function syncProjectStatuses(
     byStatus[final] = (byStatus[final] ?? 0) + 1;
 
     const statusChanged = final !== p.status;
+    // First arrival at DELIVERED — the same condition that stamps deliveredAt
+    // below; drives the one-time "Delivered" bell inside the statusChanged block.
+    const justDelivered = final === "DELIVERED" && !p.deliveredAt;
     // Standard delivery due = shoot date + longest turnaround of what was ordered.
     const deliveryDue = p.shootDate
       ? standardDeliveryDue(p.shootDate, p.deliverables, p.client?.socialClient ?? false)
@@ -551,6 +557,24 @@ export async function syncProjectStatuses(
           body: `Status re-evaluated: ${p.status} → ${final}. ${evidence.reason}`,
         },
       });
+      // Bell: the job just shipped — ops broadcast + the photographer who shot
+      // it (per-editor rows are skipped in v1; they see /editing clear). The
+      // delivery_text task above is untouched — this is the announcement, not
+      // the work item. Best-effort.
+      if (justDelivered) {
+        try {
+          const { notifyInApp } = await import("@/lib/notify");
+          const targets: NotifyTarget[] = [{ roles: ["OWNER", "ADMIN"] }];
+          if (p.photographerId) targets.push({ roles: ["PHOTOGRAPHER"], userKey: `tm:${p.photographerId}` });
+          await notifyInApp({
+            kind: "delivery_out",
+            title: `Delivered — ${(p.title || "this job").split(",")[0].trim()}`,
+            href: `/projects/${p.id}`,
+            targets,
+            dedupeKey: `delivered-${p.id}`,
+          });
+        } catch { /* bell is best-effort */ }
+      }
     }
   }
 

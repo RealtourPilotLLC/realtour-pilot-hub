@@ -70,10 +70,19 @@ export async function submitPlatformFeedback(input: {
   // crack #36). Slack is the reliable channel: always ping ops, and say so when
   // the email didn't go out. Best-effort, never blocks the submission.
   try {
-    const { opsAlert } = await import("@/lib/notify");
+    const { opsAlert, notifyInApp } = await import("@/lib/notify");
     await opsAlert(
       `${label}: “${title}”${fb.submittedBy ? ` — from ${fb.submittedBy}` : ""}${emailed ? "" : " (owner email failed — Gmail send not connected)"} → ${base}/feedback`,
     );
+    // Bell: put the submission in Jordan's in-app field of view too (the email
+    // path is still broken separately — Gmail send scope isn't connected).
+    await notifyInApp({
+      kind: "system",
+      title: `Platform feedback — ${title.slice(0, 60)}`,
+      href: "/feedback",
+      targets: [{ roles: ["OWNER"] }],
+      dedupeKey: `pf-${fb.id}`,
+    });
   } catch { /* non-fatal */ }
 
   revalidatePath("/feedback");

@@ -31,7 +31,7 @@ export async function postProjectMessage(
   }
 
   const mentions = Array.from(new Set(mentionIds.filter(Boolean)));
-  await prisma.projectMessage.create({
+  const msg = await prisma.projectMessage.create({
     data: {
       projectId,
       authorId: authorId || null,
@@ -67,6 +67,20 @@ export async function postProjectMessage(
       const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: data.dedupeKey } });
       if (existing) await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } }).catch(() => {});
       else await prisma.smartTask.create({ data }).catch(() => {});
+      // Bell mirror: the tagged person (whatever their role), keyed per message
+      // so every new tag rings even when the task above just refreshed. The
+      // money clamp strips the body for creative roles automatically.
+      try {
+        const { notifyInApp } = await import("@/lib/notify");
+        await notifyInApp({
+          kind: "mention",
+          title: `${authorName ?? "Team"} mentioned you — ${street}`,
+          body: text.slice(0, 140),
+          href: `/projects/${projectId}`,
+          targets: [{ roles: ["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"], userKey: `tm:${t.id}` }],
+          dedupeKey: `mention-${msg.id}-${t.id}`,
+        });
+      } catch { /* bell is best-effort */ }
     }
   }
 

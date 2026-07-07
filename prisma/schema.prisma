@@ -834,10 +834,34 @@ model AppUser {
   inviteToken  String?   @unique
   invitedAt    DateTime?
   lastLoginAt  DateTime?
+  notificationsSeenAt DateTime? // bell "unread" watermark; null = never opened
   teamMemberId String? // optional link → TeamMember (a photographer's shoots)
   editorKey    String? // optional link → editor roster (kim/remar/…) for "delegated to me"
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
   @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// In-app notifications (the bell). One row per event PER TARGET: a role
+// broadcast (userKey null) or one person (userKey "tm:<teamMemberId>" /
+// "editor:<editorKey>" — the same scoping keys /queue and /editing use; role
+// still required either way). Written best-effort by notifyInApp() next to the
+// existing Slack pings/tasks — never a replacement for them. Unread is a single
+// per-user watermark (AppUser.notificationsSeenAt), no per-row read state.
+// Retention: the daily cron deletes rows older than 90 days.
+// ---------------------------------------------------------------------------
+model Notification {
+  id        String   @id @default(cuid())
+  kind      String // order_booked | order_paid | delivery_out | revision_raised | revision_resolved | appointment_change | new_lead | raws_landed | edit_finished | shoot_completed | client_feedback | mention | system
+  title     String // <= 90 chars, e.g. "Delivered — 320 Tarbert Dr"
+  body      String? // one line; notifyInApp strips it for creative audiences
+  href      String // in-app deep link: /projects/<id> | /billing | /editing | /queue | /connections | /feedback | /shoot
+  audience  String // JSON Role[] e.g. ["OWNER","ADMIN"]
+  userKey   String? // null = role broadcast; "tm:<id>" | "editor:<key>" = that person only
+  dedupeKey String?  @unique
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
 }

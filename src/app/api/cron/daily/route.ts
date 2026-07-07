@@ -53,6 +53,17 @@ export async function GET(req: NextRequest) {
     const r = await prisma.cronRun.deleteMany({ where: { startedAt: { lt: cutoff } } });
     return r.count;
   });
+  // Trim bell notifications past their 90-day retention (single-watermark unread
+  // means old rows are pure noise; own try/catch so a pre-db-push run can't fail).
+  await step("notificationsTrimmed", async () => {
+    try {
+      const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+      const r = await prisma.notification.deleteMany({ where: { createdAt: { lt: cutoff } } });
+      return r.count;
+    } catch {
+      return 0; // table not pushed yet — never degrade the run over housekeeping
+    }
+  });
   // Rebuild a bounded batch of stale client working profiles (AI; cost-capped).
   await step("clientProfiles", async () => {
     const { refreshStaleClientProfiles } = await import("@/lib/clientProfile");

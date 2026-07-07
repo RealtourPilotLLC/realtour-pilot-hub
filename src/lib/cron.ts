@@ -104,8 +104,17 @@ export function cronBudget(budgetMs: number, startedAtMs: number, job?: string):
               firstError ? `error — ${firstError}` : null,
               skipped.length ? `skipped: ${skipped.join(", ")}` : null,
             ].filter(Boolean).join(" · ");
-            const { opsAlert } = await import("@/lib/notify");
+            const { opsAlert, notifyInApp } = await import("@/lib/notify");
             await opsAlert(`🟥 Cron "${job}" degraded: ${bits || "unknown failure"}`);
+            // Bell mirror for the owner — hour-bucketed key on top of the
+            // previous-run signature guard above, so a flapping job can't spam.
+            await notifyInApp({
+              kind: "system",
+              title: `Sync degraded — ${job}`,
+              href: "/connections",
+              targets: [{ roles: ["OWNER"] }],
+              dedupeKey: `cron-${job}-${new Date().toISOString().slice(0, 13).replace("T", "-")}`,
+            });
           }
         }
       } catch {

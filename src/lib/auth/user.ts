@@ -19,6 +19,7 @@ export type CurrentUser = {
   status: string;
   teamMemberId: string | null;
   editorKey: string | null;
+  notificationsSeenAt: Date | null; // bell "unread" watermark
   impersonating: boolean; // true when an owner is viewing as someone else
   realRole: string; // the true viewer's role (OWNER when impersonating)
   realName: string | null;
@@ -51,6 +52,7 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
     status: eff.status,
     teamMemberId: eff.teamMemberId,
     editorKey: eff.editorKey,
+    notificationsSeenAt: eff.notificationsSeenAt,
     impersonating,
     realRole: real.role,
     realName: real.name,

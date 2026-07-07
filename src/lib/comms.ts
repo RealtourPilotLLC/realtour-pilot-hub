@@ -3,6 +3,7 @@ import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 import { createCommTask, mergeIntoExistingTask, closeObsoleteTasks } from "@/lib/tasks";
 import { routeCommTask } from "@/lib/brain";
+import type { NotifyTarget } from "@/lib/notify";
 
 // ---------------------------------------------------------------------------
 // Communications cross-check for the smart-status engine.
@@ -327,21 +328,35 @@ export async function raiseRevision(opts: {
     dedupeKey: key,
   };
   const wasAlreadyOpen = !!existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED";
+  let taskId: string;
   if (existing) {
     await prisma.smartTask.update({
       where: { id: existing.id },
       data: { ...data, status: "OPEN", completedAt: null },
     });
+    taskId = existing.id;
   } else {
-    await prisma.smartTask.create({ data });
+    const created = await prisma.smartTask.create({ data });
+    taskId = created.id;
   }
   // A revision request shouldn't wait for someone to open the hub — Slack-ping
   // when the task is NEWLY raised (a repeat text about an already-open revision
-  // stays quiet). Best-effort: never breaks the revision itself.
+  // stays quiet), mirrored to the in-app bell for ops + the editor it's delegated
+  // to. Best-effort: never breaks the revision itself.
   if (!wasAlreadyOpen) {
     try {
-      const { notifyUrgent } = await import("@/lib/notify");
+      const { notifyUrgent, notifyInApp } = await import("@/lib/notify");
       await notifyUrgent(`${data.title}: “${note.slice(0, 140)}”`);
+      const targets: NotifyTarget[] = [{ roles: ["OWNER", "ADMIN"] }];
+      if (assignedKey) targets.push({ roles: ["EDITOR"], userKey: `editor:${assignedKey}` });
+      await notifyInApp({
+        kind: "revision_raised",
+        title: `Revision — ${project.title.split(",")[0].trim()}`,
+        body: note.slice(0, 140),
+        href: `/projects/${project.id}`,
+        targets,
+        dedupeKey: `rev-${taskId}`,
+      });
     } catch { /* non-fatal */ }
   }
 
@@ -362,7 +377,13 @@ export async function raiseRevision(opts: {
 export async function resolveRevision(projectId: string): Promise<void> {
   const project = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { status: true },
+    select: { status: true, title: true },
+  });
+  // Who the revision was delegated to — read BEFORE the close below wipes the
+  // open task, so the bell can tell that editor their revision cleared.
+  const revTask = await prisma.smartTask.findFirst({
+    where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    select: { assignedKey: true },
   });
   await prisma.project.update({
     where: { id: projectId },
@@ -388,6 +409,20 @@ export async function resolveRevision(projectId: string): Promise<void> {
   await prisma.activity.create({
     data: { projectId, type: "STATUS_CHANGE", body: "Revision marked resolved — back to Delivered." },
   });
+  // Bell: ops broadcast + the editor who worked it (best-effort, never breaks
+  // the resolve). Day-bucketed key so a same-day re-resolve stays quiet.
+  try {
+    const { notifyInApp } = await import("@/lib/notify");
+    const targets: NotifyTarget[] = [{ roles: ["OWNER", "ADMIN"] }];
+    if (revTask?.assignedKey) targets.push({ roles: ["EDITOR"], userKey: `editor:${revTask.assignedKey}` });
+    await notifyInApp({
+      kind: "revision_resolved",
+      title: `Revision resolved — ${(project?.title || "this job").split(",")[0].trim()}`,
+      href: `/projects/${projectId}`,
+      targets,
+      dedupeKey: `revres-${projectId}-${new Date().toISOString().slice(0, 10)}`,
+    });
+  } catch { /* non-fatal */ }
 }
 
 // Backfill / sweep: scan a project's recent inbound-text activities for a

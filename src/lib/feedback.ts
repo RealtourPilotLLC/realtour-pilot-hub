@@ -1,6 +1,7 @@
 import "server-only";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
+import type { NotifyTarget } from "@/lib/notify";
 
 // Lightweight sentiment when there's no star rating to go on.
 const NEG = /\b(bad|terrible|awful|disappointed|unhappy|not happy|wrong|blurry|dark|reflection|issue|problem|redo|fix|mistake|poor|sloppy|rushed|late)\b/i;
@@ -62,39 +63,58 @@ export async function recordFeedback(opts: {
     },
   });
 
-  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
-  await prisma.smartTask.create({
-    data: {
-      taskType: "feedback_review",
-      title: `${negative ? "Resolve" : "Review"} client feedback — ${project.title}`,
-      summary:
-        `${opts.authorName ? opts.authorName + " left" : "Client left"} ${negative ? "unhappy" : ""} feedback${rating ? ` (${rating}/5)` : ""} on ${project.title.split(",")[0]}: “${opts.body.slice(0, 200)}”` +
-        (negative ? " — reach out to make it right and brief the photographer." : "."),
-      description:
-        `${opts.authorName ? opts.authorName + ": " : ""}${opts.body}` +
-        (rating ? `\n\nRating: ${rating}/5` : "") +
-        (project.photographer ? `\nPhotographer: ${project.photographer.name}` : ""),
-      reasonCreated: negative
-        ? "Negative client feedback — resolve and follow up"
-        : "Client submitted feedback",
-      checklist: JSON.stringify(
-        negative
-          ? ["Read the full feedback", "Call/text the client to make it right", "Brief the photographer", "Log how it was resolved"]
-          : ["Read the feedback", "Thank the client", "Note anything to carry forward"],
-      ),
-      source: "feedback",
-      priority: negative ? "URGENT" : "MEDIUM",
-      // Negative feedback needs someone NOW; a "loved it!" is a next-day glance,
-      // not an instantly-overdue task (it also auto-closes after a week via
-      // closeStaleFeedbackReviews if nobody gets to it).
-      dueAt: negative ? new Date() : new Date(Date.now() + 24 * 3600_000),
-      projectId: project.id,
-      clientId: project.clientId,
-      propertyAddress: project.title,
-      ownerId: kyle?.id ?? null,
-      dedupeKey: dedupeKey([fb.id, "feedback"]),
-    },
-  });
+  // NEGATIVE feedback keeps the URGENT resolve task — someone has to act NOW.
+  // Positive/neutral is notification-only (the bell below): the old "Review
+  // client feedback" task was ceremony nothing ever closed, and any pre-existing
+  // rows still drain via closeStaleFeedbackReviews over the next week.
+  if (negative) {
+    const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
+    await prisma.smartTask.create({
+      data: {
+        taskType: "feedback_review",
+        title: `Resolve client feedback — ${project.title}`,
+        summary:
+          `${opts.authorName ? opts.authorName + " left" : "Client left"} unhappy feedback${rating ? ` (${rating}/5)` : ""} on ${project.title.split(",")[0]}: “${opts.body.slice(0, 200)}”` +
+          " — reach out to make it right and brief the photographer.",
+        description:
+          `${opts.authorName ? opts.authorName + ": " : ""}${opts.body}` +
+          (rating ? `\n\nRating: ${rating}/5` : "") +
+          (project.photographer ? `\nPhotographer: ${project.photographer.name}` : ""),
+        reasonCreated: "Negative client feedback — resolve and follow up",
+        checklist: JSON.stringify(
+          ["Read the full feedback", "Call/text the client to make it right", "Brief the photographer", "Log how it was resolved"],
+        ),
+        source: "feedback",
+        priority: "URGENT",
+        dueAt: new Date(),
+        projectId: project.id,
+        clientId: project.clientId,
+        propertyAddress: project.title,
+        ownerId: kyle?.id ?? null,
+        dedupeKey: dedupeKey([fb.id, "feedback"]),
+      },
+    });
+  }
+
+  // Bell: every piece of feedback rings someone. Negative = an owner-only FYI
+  // next to Kyle's URGENT task above — it NEVER reaches creatives (playbook
+  // rule). Positive/neutral = ops broadcast + the photographer who shot it.
+  // Best-effort — the Feedback row above is what matters.
+  try {
+    const { notifyInApp } = await import("@/lib/notify");
+    const targets: NotifyTarget[] = negative ? [{ roles: ["OWNER"] }] : [{ roles: ["OWNER", "ADMIN"] }];
+    if (!negative && project.photographerId) {
+      targets.push({ roles: ["PHOTOGRAPHER"], userKey: `tm:${project.photographerId}` });
+    }
+    await notifyInApp({
+      kind: "client_feedback",
+      title: `Client feedback${rating ? ` ${rating}/5` : ""} — ${project.title.split(",")[0].trim()}`,
+      body: opts.body.slice(0, 140),
+      href: `/projects/${project.id}`,
+      targets,
+      dedupeKey: `fb-${fb.id}`,
+    });
+  } catch { /* bell is best-effort */ }
 
   return { ok: true };
 }

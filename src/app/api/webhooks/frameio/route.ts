@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { ProjectStatus } from "@prisma/client";
 import { frameioRequestAuthorized } from "@/lib/integrations/frameio";
+import type { NotifyTarget } from "@/lib/notify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -96,7 +97,12 @@ export async function processFrameioEvent(
 
   const project = await prisma.project.findFirst({
     where: { frameioProjectId: String(fioProjectId) },
-    select: { id: true, title: true, clientId: true, status: true },
+    select: {
+      id: true, title: true, clientId: true, status: true,
+      // For the bell: which editor made the video (same routing /editing uses).
+      deliverables: { select: { type: true, label: true } },
+      client: { select: { socialClient: true } },
+    },
   });
   if (!project) {
     return { title: "RealTour Pilot", description: "This Frame.io project isn't linked to a job yet." };
@@ -152,6 +158,30 @@ export async function processFrameioEvent(
     },
     update: { status: "OPEN", completedAt: null, priority: "HIGH" },
   });
+
+  // Bell: tell the owner the edit is ready + confirm to the editor who cut it
+  // that the handoff landed. Deduped per Frame.io event (or payload hash when
+  // the payload carries no id) so the hourly webhook retry can't re-announce.
+  try {
+    const { notifyInApp } = await import("@/lib/notify");
+    const { editorForDeliverable } = await import("@/lib/editors");
+    const { createHash } = await import("crypto");
+    const v = project.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL") ?? project.deliverables[0];
+    const editorKey = editorForDeliverable(v?.type, v?.label, !!project.client?.socialClient);
+    const eventId =
+      (g(body, "resource", "id") as string) ||
+      (body.id as string) ||
+      createHash("sha1").update(JSON.stringify(body)).digest("hex").slice(0, 12);
+    const targets: NotifyTarget[] = [{ roles: ["OWNER"] }];
+    if (editorKey) targets.push({ roles: ["EDITOR"], userKey: `editor:${editorKey}` });
+    await notifyInApp({
+      kind: "edit_finished",
+      title: `Edit ready for review — ${street}`,
+      href: `/projects/${project.id}`,
+      targets,
+      dedupeKey: `editdone-${project.id}-${eventId}`,
+    });
+  } catch { /* bell is best-effort */ }
 
   return { title: "Sent to RealTour ✓", description: "The team has been notified to review your finals." };
 }

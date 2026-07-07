@@ -207,6 +207,16 @@ export async function completeShoot(projectId: string): Promise<{ ok: boolean; m
   await prisma.activity.create({
     data: { projectId, type: "SYSTEM", body: `Shoot marked complete on-site by ${who}.` },
   });
+  try {
+    const { notifyInApp } = await import("@/lib/notify");
+    await notifyInApp({
+      kind: "shoot_completed",
+      title: `Shoot done — ${street} (${who})`,
+      href: `/projects/${projectId}`,
+      targets: [{ roles: ["OWNER", "ADMIN"] }],
+      dedupeKey: `shootdone-${appt?.id ?? projectId}`,
+    });
+  } catch { /* bell is best-effort */ }
   await prisma.projectMessage
     .create({
       data: {

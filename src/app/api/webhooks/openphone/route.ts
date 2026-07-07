@@ -475,10 +475,18 @@ async function upsertPhoneLeadTask(opts: {
     await prisma.smartTask.create({ data });
   }
   // The phone line is the highest-intent lead source — ping Slack the moment the
-  // lead task is (re)minted instead of waiting for a hub visit. Best-effort.
+  // lead task is (re)minted instead of waiting for a hub visit, and mirror it to
+  // the in-app bell (deduped per number per day). Best-effort.
   try {
-    const { notifyUrgent } = await import("@/lib/notify");
+    const { notifyUrgent, notifyInApp } = await import("@/lib/notify");
     await notifyUrgent(data.title);
+    await notifyInApp({
+      kind: "new_lead",
+      title: `New lead — ${who}`,
+      href: "/queue",
+      targets: [{ roles: ["OWNER", "ADMIN"] }],
+      dedupeKey: `lead-op-${opts.phone}-${new Date().toISOString().slice(0, 10)}`,
+    });
   } catch { /* never break lead capture on a notify failure */ }
 }
 

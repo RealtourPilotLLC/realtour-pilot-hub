@@ -798,8 +798,17 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
       data: { projectId, type: "SYSTEM", body: `${MARKER} — editors notified via Slack.` },
     });
     try {
-      const { notifyUrgent } = await import("@/lib/notify");
+      const { notifyUrgent, notifyInApp } = await import("@/lib/notify");
       await notifyUrgent(`Raws in for ${street} — ready for editing`, "/editing");
+      // Bell mirror: ops + the whole editor bench (raws are pull-work — whoever
+      // it routes to sees it in /editing either way).
+      await notifyInApp({
+        kind: "raws_landed",
+        title: `Raws in — ${street}`,
+        href: "/editing",
+        targets: [{ roles: ["ADMIN"] }, { roles: ["EDITOR"] }],
+        dedupeKey: `raws-${projectId}`,
+      });
     } catch { /* never let a ping break the upload flow */ }
   }
 

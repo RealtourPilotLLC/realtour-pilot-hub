@@ -683,10 +683,18 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
           };
           if (existing) await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } });
           else await prisma.smartTask.create({ data });
-          // A new lead shouldn't wait for someone to open the hub (best-effort).
+          // A new lead shouldn't wait for someone to open the hub — Slack ping +
+          // in-app bell mirror, deduped per sender per day (best-effort).
           try {
-            const { notifyUrgent } = await import("@/lib/notify");
+            const { notifyUrgent, notifyInApp } = await import("@/lib/notify");
             await notifyUrgent(data.title);
+            await notifyInApp({
+              kind: "new_lead",
+              title: `New lead — ${name || email}`,
+              href: "/queue",
+              targets: [{ roles: ["OWNER", "ADMIN"] }],
+              dedupeKey: `lead-em-${email}-${new Date().toISOString().slice(0, 10)}`,
+            });
           } catch { /* never break the scan on a notify failure */ }
           return 1;
         }
