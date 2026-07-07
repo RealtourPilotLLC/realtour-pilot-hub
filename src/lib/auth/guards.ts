@@ -5,11 +5,20 @@ type AppRole = "OWNER" | "ADMIN" | "EDITOR" | "PHOTOGRAPHER";
 
 // Authorization for SERVER ACTIONS. Middleware only gates page navigation, not
 // the POST that invokes a "use server" action — so sensitive actions must guard
-// themselves. These are no-ops in open / pre-cutover mode (AUTH_ENFORCE off) so
-// local dev keeps working, and fail-CLOSED once enforcement is on. Authorization
+// themselves. These are no-ops ONLY in local dev (open / pre-cutover mode) so
+// dev keeps working, and fail-CLOSED once enforcement is on. Authorization
 // uses the REAL (non-impersonated) role, and blocks mutations while an owner is
 // previewing someone else ("view as" is read-only).
-const enforced = () => process.env.AUTH_ENFORCE === "true";
+//
+// FAIL CLOSED IN PROD: enforcement is ALWAYS on when running in production or
+// on Vercel, regardless of AUTH_ENFORCE — losing/typo-ing the env var on a
+// redeploy or an unscoped preview deployment must never turn every permission
+// check into a no-op against the shared prod database (audit crack #26). The
+// AUTH_ENFORCE flag remains only as a way to turn enforcement ON locally.
+const enforced = () =>
+  process.env.AUTH_ENFORCE === "true" ||
+  process.env.NODE_ENV === "production" ||
+  Boolean(process.env.VERCEL);
 
 export async function requireRole(
   roles: AppRole[],

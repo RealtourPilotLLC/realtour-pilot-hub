@@ -33,10 +33,15 @@ export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
   if (isPublic(pathname)) return NextResponse.next();
 
-  // Gate is OFF until AUTH_ENFORCE=true. This lets us ship login + test it on the
-  // live URL while the existing (un-onboarded) team keeps working, then flip the
-  // switch once everyone has a user account — a clean cutover with no lockout.
-  if (process.env.AUTH_ENFORCE !== "true") return NextResponse.next();
+  // Gate is OFF only in local dev (no AUTH_ENFORCE, not production, not Vercel).
+  // In production / on Vercel the gate is ALWAYS on regardless of AUTH_ENFORCE —
+  // losing the env var must fail CLOSED, never silently open every page against
+  // the shared prod database (audit crack #26).
+  const enforced =
+    process.env.AUTH_ENFORCE === "true" ||
+    process.env.NODE_ENV === "production" ||
+    Boolean(process.env.VERCEL);
+  if (!enforced) return NextResponse.next();
 
   const session = await verifySession(req.cookies.get(SESSION_COOKIE)?.value);
   if (!session) {

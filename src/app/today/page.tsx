@@ -9,6 +9,7 @@ import { recentProjectWhere } from "@/lib/recency";
 import { etDayStartUtc } from "@/lib/datetime";
 import { isNeedsAssigning } from "@/lib/triage";
 import { listAssignees } from "@/lib/assignees";
+import { DELEGATE_KEYS, editorMeta, isDelegated } from "@/lib/editors";
 
 export const dynamic = "force-dynamic";
 
@@ -49,7 +50,10 @@ export default async function TodayPage() {
     prisma.smartTask.findMany({
       where: {
         status: { in: ACTIVE },
-        OR: [{ assignedKey: null }, { assignedKey: "kyle" }],
+        // Kyle's own + unassigned work, PLUS anything delegated to an editor/
+        // vendor (Kim/Remar/Luma/…) — they never log in, so delegated tasks
+        // surface in Kyle's "Do" stack with a "→ Kim" chip instead of vanishing.
+        OR: [{ assignedKey: null }, { assignedKey: "kyle" }, { assignedKey: { in: [...DELEGATE_KEYS] } }],
         AND: [{
           OR: [
             // Messages/replies: always surface while open (someone is waiting).
@@ -87,10 +91,14 @@ export default async function TodayPage() {
 
   const cards: TodayCard[] = tasks.map((t) => {
     const hasDraft = SEND_TYPES.includes(t.taskType) && !!t.description;
-    const verb = verbFor(t.taskType, hasDraft);
+    // Delegated work lands in "Do these" — Kyle's action is to check on the
+    // person it's with, not to reply/send/QC himself.
+    const delegatedTo = isDelegated(t.assignedKey) ? editorMeta(t.assignedKey)?.name ?? t.assignedKey : null;
+    const verb = delegatedTo ? "do" : verbFor(t.taskType, hasDraft);
     return {
       id: t.id,
       verb,
+      delegatedTo,
       taskType: t.taskType,
       typeLabel: TYPE_LABEL[t.taskType] ?? t.taskType.replace(/_/g, " "),
       title: t.title,

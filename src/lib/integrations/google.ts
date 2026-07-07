@@ -543,7 +543,12 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
             priority: "HIGH" as const,
             dueAt: new Date(Date.now() + 4 * 3600_000),
             ownerId: kyle?.id ?? null,
-            assignedKey: "luma",
+            // KYLE's job (unassigned = his by default), NOT assigned to "luma":
+            // Luma never opens the hub, and every Kyle-facing surface (brief,
+            // /today) filters to his own + unassigned work — assigning the
+            // chase-the-tracker checklist to the vendor made it invisible to
+            // every human. The vendor is already named in the title/summary.
+            assignedKey: null,
             clientId: matchedClient?.id ?? null,
             projectId: lumaProject?.id ?? matchedClient?.projects[0]?.id ?? null,
             dedupeKey: key,
@@ -665,6 +670,11 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
           };
           if (existing) await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } });
           else await prisma.smartTask.create({ data });
+          // A new lead shouldn't wait for someone to open the hub (best-effort).
+          try {
+            const { notifyUrgent } = await import("@/lib/notify");
+            await notifyUrgent(data.title);
+          } catch { /* never break the scan on a notify failure */ }
           return 1;
         }
       };

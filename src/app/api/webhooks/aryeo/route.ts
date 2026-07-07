@@ -41,6 +41,10 @@ export async function POST(req: NextRequest) {
         await prisma.webhookEvent.create({
           data: { provider: "aryeo", eventType: "signature.rejected", status: "REJECTED", payload: (raw || "{}").slice(0, 2000) },
         });
+        // Spike alert: >5 rejections in an hour means real events are bouncing
+        // at the door (this ran silent for 13 days once). Best-effort.
+        const { alertWebhookRejections } = await import("@/lib/notify");
+        await alertWebhookRejections("aryeo");
       } catch { /* ignore */ }
       return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
     }

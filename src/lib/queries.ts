@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { ProjectStatus } from "@prisma/client";
 import { recentProjectWhere, isProjectRecent } from "@/lib/recency";
 import { etDayStartUtc, etAddDays, etDayKey } from "@/lib/datetime";
+import { DELEGATE_KEYS } from "@/lib/editors";
 
 /** Projects for the pipeline board — current work only (last-30-day window). */
 export async function getPipelineProjects() {
@@ -306,10 +307,14 @@ export async function getMorningBrief(): Promise<BriefTask[]> {
     where: {
       status: { in: BRIEF_ACTIVE },
       // The brief is Kyle's day: his own + unassigned work (which defaults to
-      // him). Anything delegated to an editor (Kim/Remar/Luma/…) shows on THEIR
-      // /queue section, not here — so the brief and the queue's "Kyle" view agree.
+      // him) PLUS anything delegated to an editor/vendor (Kim/Remar/Luma/…).
+      // Delegated work renders as its own "Delegated — check on these" group —
+      // Kim/Remar/Luma never log in, so a task assigned to them that only lived
+      // on their /queue section was effectively invisible to every human
+      // (audit crack #4: an URGENT client-ETA task sat overdue addressed to a
+      // vendor). Kyle stays the human checkpoint on all delegated work.
       AND: [
-        { OR: [{ assignedKey: null }, { assignedKey: "kyle" }] },
+        { OR: [{ assignedKey: null }, { assignedKey: "kyle" }, { assignedKey: { in: [...DELEGATE_KEYS] } }] },
         { OR: [
         // Messages/replies (email, text, Slack, lead, revision): always surface
         // in "Check your messages" while open — any due date, any project age.

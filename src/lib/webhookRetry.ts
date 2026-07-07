@@ -75,3 +75,26 @@ export async function webhookErrorCount(): Promise<number> {
     where: { status: { in: ["ERROR", "FAILED"] }, createdAt: { gt: cutoff } },
   });
 }
+
+// Per-provider webhook health for the Connections "Sync health" panel: how many
+// events were REJECTED at the door (signature failures) vs ERROR/FAILED in
+// processing over the last 7 days. Rejected events were previously counted
+// nowhere — 765 bounced Aryeo events ran silent for 13 days while the page
+// stayed green (audit crack #7).
+export type WebhookProviderHealth = { provider: string; rejected: number; errored: number };
+export async function webhookHealthByProvider(days = 7): Promise<WebhookProviderHealth[]> {
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const rows = await prisma.webhookEvent.groupBy({
+    by: ["provider", "status"],
+    where: { status: { in: ["REJECTED", "ERROR", "FAILED"] }, createdAt: { gt: cutoff } },
+    _count: { _all: true },
+  });
+  const byProvider = new Map<string, WebhookProviderHealth>();
+  for (const r of rows) {
+    const cur = byProvider.get(r.provider) ?? { provider: r.provider, rejected: 0, errored: 0 };
+    if (r.status === "REJECTED") cur.rejected += r._count._all;
+    else cur.errored += r._count._all;
+    byProvider.set(r.provider, cur);
+  }
+  return [...byProvider.values()].sort((a, b) => b.rejected + b.errored - (a.rejected + a.errored));
+}

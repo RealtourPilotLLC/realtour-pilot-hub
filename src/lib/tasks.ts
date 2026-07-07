@@ -364,6 +364,14 @@ export async function createCommTask(opts: {
   } else {
     await prisma.smartTask.create({ data });
   }
+  // URGENT means "someone should know NOW" — ping Slack instead of waiting for
+  // the next hub visit. Best-effort: never breaks task creation.
+  if (data.priority === "URGENT") {
+    try {
+      const { notifyUrgent } = await import("@/lib/notify");
+      await notifyUrgent(`URGENT — ${data.title}${opts.clientName ? ` (${opts.clientName})` : ""}`);
+    } catch { /* non-fatal */ }
+  }
   return true;
 }
 

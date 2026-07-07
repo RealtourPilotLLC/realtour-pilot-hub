@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
   }
-  const { step, out } = cronBudget(250_000, Date.now()); // ~50s headroom under maxDuration
+  const { step, out, finish } = cronBudget(250_000, Date.now(), "sync"); // ~50s headroom under maxDuration
 
   await step("orders", () => syncAryeoOrders({ full: false }));
   // Recent + future only, so the hourly run stays well under the time limit.
@@ -46,6 +46,9 @@ export async function GET(req: NextRequest) {
     const { ensureFrameioProjectsForActiveVideoJobs } = await import("@/lib/integrations/frameio");
     return ensureFrameioProjectsForActiveVideoJobs(5);
   });
+
+  // Persist this run (CronRun) + Slack-ping on a NEW failure/skip. Best-effort.
+  await finish();
 
   return NextResponse.json({ ok: true, ...out });
 }

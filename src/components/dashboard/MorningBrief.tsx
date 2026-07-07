@@ -13,6 +13,7 @@ import {
 import type { BriefTask } from "@/lib/queries";
 import { BriefTaskRow } from "@/components/dashboard/BriefTaskRow";
 import { isNeedsAssigning } from "@/lib/triage";
+import { isDelegated } from "@/lib/editors";
 
 export type BriefShoot = {
   key: string;
@@ -68,11 +69,18 @@ export function MorningBrief({
   tomorrowShoots: BriefShoot[];
   firstName?: string;
 }) {
-  const is = (...types: string[]) => tasks.filter((t) => types.includes(t.taskType));
+  // Work delegated to an editor/vendor (Kim/Remar/Luma/…) — none of whom log in.
+  // Kyle is the human checkpoint: it renders as its own group inside step 1
+  // instead of mixing into (or hiding from) his own lists.
+  const delegated = tasks.filter((t) => isDelegated(t.assignedKey));
+  const delegatedIds = new Set(delegated.map((t) => t.id));
+  const own = tasks.filter((t) => !delegatedIds.has(t.id));
+
+  const is = (...types: string[]) => own.filter((t) => types.includes(t.taskType));
   const messages = is("client_reply", "internal_instruction", "revision", "lead", "vendor_update", "comms_followup", "todo");
   // Pull the "needs assigning" pile (unowned delegatable work) to the top of the
   // inbox — same definition as the /queue triage section, so the two never drift.
-  const needsAssigning = tasks.filter(isNeedsAssigning);
+  const needsAssigning = own.filter(isNeedsAssigning);
   const naIds = new Set(needsAssigning.map((t) => t.id));
   const notNA = (arr: BriefTask[]) => arr.filter((t) => !naIds.has(t.id));
   // Sub-group the rest of the inbox so like-with-like reads cleanly.
@@ -87,6 +95,7 @@ export function MorningBrief({
   const deliver = is("delivery", "media_qa", "finish_delivery", "delivery_text", "feedback_review", "image_fixes");
   const confirm = is("confirmation_text", "appointment_prep");
   const total = tasks.length + todayShoots.length;
+  const step1Count = messages.length + delegated.length;
 
   return (
     <section className="panel-shadow overflow-hidden rounded-2xl border border-brand/30 bg-gradient-to-br from-brand/[0.08] via-surface to-surface">
@@ -112,7 +121,7 @@ export function MorningBrief({
       ) : (
         <div className="divide-y divide-border">
           {/* 1. Comms */}
-          <Step n={1} icon={MessageSquare} title="Check your messages" count={messages.length} accent="#38bdf8" empty="No messages to handle.">
+          <Step n={1} icon={MessageSquare} title="Check your messages" count={step1Count} accent="#38bdf8" empty="No messages to handle.">
             <div className="space-y-2.5">
               {needsAssigning.length > 0 && (
                 <div>
@@ -120,6 +129,15 @@ export function MorningBrief({
                     Needs assigning <span className="rounded-full bg-warning/15 px-1.5 text-[10px] font-medium text-warning">{needsAssigning.length}</span>
                   </div>
                   <div className="space-y-0.5">{needsAssigning.map((t) => <BriefTaskRow key={t.id} t={t} />)}</div>
+                </div>
+              )}
+              {delegated.length > 0 && (
+                <div>
+                  {/* Kim/Remar/Luma never open the hub — Kyle checks their work along. */}
+                  <div className="mb-0.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-brand">
+                    Delegated — check on these <span className="rounded-full bg-brand/10 px-1.5 text-[10px] font-medium text-brand">{delegated.length}</span>
+                  </div>
+                  <div className="space-y-0.5">{delegated.map((t) => <BriefTaskRow key={t.id} t={t} />)}</div>
                 </div>
               )}
               {msgGroups.map((g) => (

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { syncGmail } from "@/lib/integrations/google";
 import { sweepRepliedOpenPhoneTasks } from "@/lib/integrations/openphone";
 import { syncSlackHistory } from "@/lib/integrations/slackSync";
+import { cronBudget } from "@/lib/cron";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,23 +21,17 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
   }
-  const out: Record<string, unknown> = { at: new Date().toISOString() };
-  try {
-    out.gmail = await syncGmail();
-  } catch (e) {
-    out.gmailError = e instanceof Error ? e.message : String(e);
-  }
-  try {
-    out.openphoneClosed = await sweepRepliedOpenPhoneTasks();
-  } catch (e) {
-    out.openphoneError = e instanceof Error ? e.message : String(e);
-  }
-  try {
-    // Keep Slack comms memory near-live (channels + Jordan's DMs) every few
-    // minutes via the user token. Small window; logComm dedups the overlap.
-    out.slack = await syncSlackHistory({ sinceHours: 2 });
-  } catch (e) {
-    out.slackError = e instanceof Error ? e.message : String(e);
-  }
+  // Budgeted steps (same pattern as /sync + /daily): each failure is captured
+  // per-step, and the run lands in CronRun so a dead comms scan is visible on
+  // /connections instead of silently degrading.
+  const { step, out, finish } = cronBudget(100_000, Date.now(), "gmail"); // ~20s headroom under maxDuration
+
+  await step("gmail", () => syncGmail());
+  await step("openphoneClosed", () => sweepRepliedOpenPhoneTasks());
+  // Keep Slack comms memory near-live (channels + Jordan's DMs) every few
+  // minutes via the user token. Small window; logComm dedups the overlap.
+  await step("slack", () => syncSlackHistory({ sinceHours: 2 }));
+
+  await finish();
   return NextResponse.json({ ok: true, ...out });
 }

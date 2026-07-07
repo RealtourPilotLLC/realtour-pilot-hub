@@ -37,6 +37,9 @@ export type TodayCard = {
   triage: boolean;
   warnStale: boolean;
   warnQcOpen: boolean;
+  // Editor/vendor this task is delegated to (Kim/Remar/Luma/…) — they never log
+  // in, so the card shows in Kyle's stack with a "→ Kim" chip to check on it.
+  delegatedTo: string | null;
 };
 
 export type TodayShoot = { key: string; id: string; title: string; time: string; photographer: string | null };
@@ -182,6 +185,7 @@ function ActionCard({ card, assignees, onGone }: {
         )}
         <span className="rounded bg-surface-2 px-1 font-medium">{src.label}</span>
         <span className="text-muted-2">· {card.typeLabel}</span>
+        {card.delegatedTo && <span className="rounded bg-brand/10 px-1 font-medium text-brand">→ {card.delegatedTo}</span>}
         {card.status.startsWith("WAITING") && <span className="rounded bg-warning/10 px-1 font-medium text-warning">{card.status.replace(/_/g, " ").toLowerCase()}</span>}
       </div>
 

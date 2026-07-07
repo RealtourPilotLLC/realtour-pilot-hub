@@ -122,6 +122,14 @@ export async function maybeCreateSlackTask(opts: { text: string; ts: string; cha
       dedupeKey,
     },
   });
+  // URGENT means "someone should know NOW" — Slack-ping instead of waiting for
+  // the next hub visit. Best-effort: never breaks task creation.
+  if (priority === "URGENT") {
+    try {
+      const { notifyUrgent } = await import("@/lib/notify");
+      await notifyUrgent(`URGENT — ${title}`);
+    } catch { /* non-fatal */ }
+  }
   return true;
 }
 

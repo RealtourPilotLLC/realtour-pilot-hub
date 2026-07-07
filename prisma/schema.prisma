@@ -690,6 +690,23 @@ model WebhookEvent {
   @@index([externalId])
 }
 
+// One row per scheduled cron invocation (hourly sync / daily / comms), so a
+// failed or skipped step is VISIBLE on /connections (and can Slack-ping) instead
+// of vanishing with the HTTP response Vercel throws away. `summary` holds the
+// per-step results JSON; `error` the first step error. A row with no finishedAt
+// means the run was hard-killed mid-flight.
+model CronRun {
+  id         String    @id @default(cuid())
+  job        String // "sync" | "daily" | "gmail"
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  ok         Boolean   @default(false)
+  summary    String? // JSON: per-step results + skipped list
+  error      String? // first step error, if any
+
+  @@index([job, startedAt])
+}
+
 // Platform feedback + feature requests submitted by the team from inside the app.
 // Flow: submit → Jordan is notified (email, best-effort) → he Approves/Declines
 // in-app → approved items queue for Claude to implement → marked Done when shipped.

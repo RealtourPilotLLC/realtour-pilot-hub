@@ -324,6 +324,7 @@ export async function raiseRevision(opts: {
     assignedKey,
     dedupeKey: key,
   };
+  const wasAlreadyOpen = !!existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED";
   if (existing) {
     await prisma.smartTask.update({
       where: { id: existing.id },
@@ -331,6 +332,15 @@ export async function raiseRevision(opts: {
     });
   } else {
     await prisma.smartTask.create({ data });
+  }
+  // A revision request shouldn't wait for someone to open the hub — Slack-ping
+  // when the task is NEWLY raised (a repeat text about an already-open revision
+  // stays quiet). Best-effort: never breaks the revision itself.
+  if (!wasAlreadyOpen) {
+    try {
+      const { notifyUrgent } = await import("@/lib/notify");
+      await notifyUrgent(`${data.title}: “${note.slice(0, 140)}”`);
+    } catch { /* non-fatal */ }
   }
 
   // Reflect the revision in the project's QC task: reopen it and mark the revised

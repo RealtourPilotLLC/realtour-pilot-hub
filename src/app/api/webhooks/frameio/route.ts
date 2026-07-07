@@ -15,6 +15,16 @@ export async function POST(req: NextRequest) {
   // Reject spoofed callbacks once the action has been (re)registered with a
   // shared token (backward compatible: allowed until a token is stored).
   if (!(await frameioRequestAuthorized(req.nextUrl.searchParams.get("t")))) {
+    // A token IS configured and this POST failed it (no token stored = the check
+    // passes) — log the rejection so it's countable/visible on /connections, and
+    // spike-alert if it keeps happening. Best-effort; the 401 always goes out.
+    try {
+      await prisma.webhookEvent.create({
+        data: { provider: "frameio", eventType: "signature.rejected", status: "REJECTED", error: "unsigned: token missing or mismatched", payload: "{}" },
+      });
+      const { alertWebhookRejections } = await import("@/lib/notify");
+      await alertWebhookRejections("frameio");
+    } catch { /* ignore */ }
     return NextResponse.json({ title: "Unauthorized", description: "Invalid action token." }, { status: 401 });
   }
   let body: Record<string, unknown> = {};

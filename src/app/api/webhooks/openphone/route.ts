@@ -16,6 +16,16 @@ export async function POST(req: NextRequest) {
   // token (backward compatible: allowed until a token is stored). See
   // registerOpenPhoneWebhooks / openPhoneRequestAuthorized.
   if (!(await openPhoneRequestAuthorized(req.nextUrl.searchParams.get("t")))) {
+    // A token IS configured and this POST failed it (no token stored = the check
+    // passes) — log the rejection so it's countable/visible on /connections, and
+    // spike-alert if it keeps happening. Best-effort; the 401 always goes out.
+    try {
+      await prisma.webhookEvent.create({
+        data: { provider: "openphone", eventType: "signature.rejected", status: "REJECTED", error: "unsigned: token missing or mismatched", payload: "{}" },
+      });
+      const { alertWebhookRejections } = await import("@/lib/notify");
+      await alertWebhookRejections("openphone");
+    } catch { /* ignore */ }
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
   const raw = await req.text();
@@ -464,6 +474,12 @@ async function upsertPhoneLeadTask(opts: {
   } else {
     await prisma.smartTask.create({ data });
   }
+  // The phone line is the highest-intent lead source — ping Slack the moment the
+  // lead task is (re)minted instead of waiting for a hub visit. Best-effort.
+  try {
+    const { notifyUrgent } = await import("@/lib/notify");
+    await notifyUrgent(data.title);
+  } catch { /* never break lead capture on a notify failure */ }
 }
 
 export async function GET() {
