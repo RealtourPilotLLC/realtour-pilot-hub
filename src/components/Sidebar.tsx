@@ -29,6 +29,7 @@ import {
   ShieldCheck,
   PenLine,
   ExternalLink,
+  Sun,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -62,6 +63,7 @@ const SECTIONS: NavSection[] = [
     title: "Operations",
     items: [
       { label: "Dashboard", href: "/", icon: LayoutDashboard, key: "dashboard" },
+      { label: "Today", href: "/today", icon: Sun, key: "today" },
       { label: "Daily Tasks", href: "/queue", icon: ListTodo, key: "tasks" },
       { label: "Task History", href: "/history", icon: History, key: "history" },
       { label: "Project Tracker", href: "/pipeline", icon: KanbanSquare, key: "pipeline" },

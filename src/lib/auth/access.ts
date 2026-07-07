@@ -4,7 +4,7 @@
 // a couple of pages are owner-only and can never be granted to other roles.
 
 export type PageKey =
-  | "dashboard" | "tasks" | "history" | "pipeline" | "schedule" | "map"
+  | "dashboard" | "today" | "tasks" | "history" | "pipeline" | "schedule" | "map"
   | "communications" | "clients" | "team" | "upload" | "editing" | "sales"
   | "billing" | "catalog" | "payouts" | "marketing" | "resources" | "assistant"
   | "training" | "feedback" | "connections" | "users" | "shoot";
@@ -18,6 +18,7 @@ export const ROLE_LABEL: Record<string, string> = {
 
 export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boolean }[] = [
   { key: "dashboard", label: "Dashboard", href: "/" },
+  { key: "today", label: "Today", href: "/today" },
   { key: "tasks", label: "Daily Tasks", href: "/queue" },
   { key: "history", label: "Task History", href: "/history" },
   { key: "pipeline", label: "Project Tracker", href: "/pipeline" },
@@ -49,7 +50,7 @@ const ALL = PAGES.map((p) => p.key);
 const ROLE_PAGES: Record<Role, PageKey[]> = {
   OWNER: ALL,
   ADMIN: [
-    "dashboard", "tasks", "history", "pipeline", "schedule", "map", "shoot",
+    "dashboard", "today", "tasks", "history", "pipeline", "schedule", "map", "shoot",
     "communications", "clients", "team", "upload", "editing", "billing",
     "catalog", "resources", "training", "assistant", "feedback",
   ],
