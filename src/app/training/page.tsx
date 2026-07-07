@@ -2,8 +2,26 @@ import { ChevronDown, GraduationCap } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Markdown } from "@/components/ui/Markdown";
 import { prisma } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/auth/user";
+import { contentTier } from "@/lib/auth/access";
 
 export const dynamic = "force-dynamic";
+
+// Which Vol II courses creatives (photographers/editors) may see. Jordan's rule:
+// they get everything CREATIVE — shooting, filming, editing, scripting — and
+// none of the business side (sales, pricing, systems, growth, coaching replays).
+// Vol I "Agent on Camera" is entirely creative and always visible. This is an
+// ALLOWLIST on purpose: a newly-ingested business course is hidden by default.
+// The Hub's KnowledgeItem chunks for the excluded courses are minRole ADMIN, so
+// Ask-the-Hub matches this page.
+const CREATIVE_VOL2_COURSES = new Set([
+  "AI Editing",
+  "Editing",
+  "Scripting",
+  "Shooting",
+  "Viral Editing Masterclass (2024)",
+  "Viral Editing Masterclass (2025)",
+]);
 
 // A 910 Academy Vimeo watch URL (e.g. https://vimeo.com/1206234728/43eb0c934b?share=copy)
 // → the player embed src (https://player.vimeo.com/video/1206234728?h=43eb0c934b).
@@ -17,10 +35,15 @@ function vimeoEmbed(url: string): string | null {
 // grouped Volume → Course → Lesson (both collapsible). The same content the Hub
 // searches (as concise/chunked KnowledgeItems); this is the READING view.
 export default async function TrainingPage() {
-  const lessons = await prisma.trainingLesson.findMany({
+  const me = await getCurrentUser().catch(() => null);
+  const creative = !!me && contentTier(me.role) === "CREATIVE";
+  const allLessons = await prisma.trainingLesson.findMany({
     orderBy: [{ volumeNo: "asc" }, { courseNo: "asc" }, { orderNo: "asc" }],
     select: { volumeNo: true, volume: true, courseNo: true, course: true, title: true, body: true, summaryMd: true, videoUrl: true },
   });
+  const lessons = creative
+    ? allLessons.filter((l) => l.volume === "Agent on Camera" || CREATIVE_VOL2_COURSES.has(l.course))
+    : allLessons;
 
   // Group: volume → course → lessons (input is already ordered).
   type L = { title: string; body: string; summaryMd: string | null; videoUrl: string | null };
