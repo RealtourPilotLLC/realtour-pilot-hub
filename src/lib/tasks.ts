@@ -231,40 +231,30 @@ function specsForProject(p: {
     // the reconciler closes any existing one).
     const qcTypes = dedupeTypes(p.deliverables);
     const qcItems: ChecklistItem[] = qcTypes.map((d) => ({ label: `QC ${QC_LABEL[d] ?? labelFor(d)}`, done: isDelivered(d) }));
+    // QC and "deliver the gallery" are ONE motion for Kyle — a separate
+    // "Deliver gallery" task open NEXT TO the QC task doubled every job's cards
+    // (Jordan: "too many redundant QC tasks"; 47 of 65 recent jobs carried 2-4
+    // check-type tasks). The deliver step is the QC card's LAST checklist item,
+    // auto-checked when the gallery goes out — so the card lives QC → deliver →
+    // done, and one job = one card. (The old delivery-spec keys fall out of
+    // expectedKeys, so the reconciler retires existing open ones.)
+    qcItems.push({
+      label: monthly
+        ? "Produce + deliver this month's content (Aryeo + branded email)"
+        : "Deliver the gallery (Aryeo + branded email)",
+      done: galleryDelivered,
+    });
     const pendingDues = qcTypes.filter((d) => !isDelivered(d)).map((d) => deliveryDueFrom(anchor, d, dueOpts(d)).getTime());
-    if (qcItems.length > 0 && qcItems.some((i) => !i.done)) {
+    if (qcTypes.length > 0 && qcItems.some((i) => !i.done)) {
       specs.push({
         taskType: "media_qa",
-        title: `QC — ${p.title}`,
-        reasonCreated: "Media in production — quality-check each deliverable",
-        summary: "Content is coming in for this shoot. Quality-check each deliverable as it lands on Aryeo (verticals + horizontals, no odd edits/reflections/blemishes, staging + item removal done), then it's ready to deliver. Auto-completes once every category is live.",
-        dueAt: pendingDues.length ? new Date(Math.min(...pendingDues)) : null,
-        checklist: qcItems,
-      });
-    }
-    // The "deliver gallery" step is done once the photos are live (staged
-    // delivery sends photos first); don't keep nagging while the reel renders.
-    if (!galleryDelivered) {
-      specs.push({
-        taskType: "delivery",
-        title: `Deliver gallery — ${p.title}`,
-        reasonCreated: "Ready to deliver after QC",
+        title: `QC & deliver — ${p.title}`,
+        reasonCreated: "Media in production — QC each deliverable, then deliver",
         summary: monthly
-          ? "Monthly personal-branding / social content (7–10 business-day turnaround). Produce + deliver this month's content, then mark delivered."
-          : "Photos are QC'd and ready. Deliver the gallery via Aryeo + the branded email, mark it delivered, and the post-delivery client text queues automatically.",
-        // No deliverableType: delivering the gallery is one-per-project, so its
-        // dedupe key must stay stable. Keying it on deliverables[0] (an unordered
-        // list) meant a re-derive that reshuffled the deliverables minted a SECOND
-        // "Deliver gallery" task — 15 jobs got 2-4 dupes (audit crack #30; same
-        // fix as confirmation_text above). The old-key open dupes fall out of
-        // expectedKeys, so the reconciler auto-closes them, keeping this one.
-        deliverableType: undefined,
-        dueAt: deliveryDueFrom(anchor, primary, dueOpts(primary)),
-        // Delivering a gallery (Aryeo + branded email) is always Kyle's step — even
-        // for a social-plan client's regular property shoots. He assigns the actual
-        // monthly-content production to Kim; the delivery itself stays with him.
-        assignedKey: undefined,
-        checklist: guide(["Final QC pass", "Deliver via Aryeo + branded email", "Mark Delivered", "Schedule feedback request"]),
+          ? "Monthly personal-branding / social content (7–10 business-day turnaround). QC each piece as it lands, then produce + deliver this month's content. Auto-completes once everything is live and delivered."
+          : "Content is coming in for this shoot. Quality-check each deliverable as it lands on Aryeo (verticals + horizontals, no odd edits/reflections/blemishes, staging + item removal done), then deliver the gallery via Aryeo + the branded email. Auto-completes once every category is live and the gallery is out.",
+        dueAt: pendingDues.length ? new Date(Math.min(...pendingDues)) : deliveryDueFrom(anchor, primary, dueOpts(primary)),
+        checklist: qcItems,
       });
     }
   }
