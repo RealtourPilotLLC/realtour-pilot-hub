@@ -446,6 +446,18 @@ export async function syncProjectStatuses(
     // Don't demote a manually-advanced EDITING project back to SHOT.
     let final = status;
     if (p.status === "EDITING" && status === "SHOT") final = "EDITING";
+    // A job whose shoot already happened can NEVER go back to Scheduled/Booked.
+    // Zero detected media there means either a transient Aryeo/Dropbox failure or
+    // raws not uploaded yet — un-shooting the job is always wrong, and the demotion
+    // cascades: the task reconciler auto-completes its QC/delivery tasks and never
+    // re-mints them (audit crack #2 — live jobs went invisible after API blips).
+    if (
+      ["SHOT", "EDITING", "REVIEW", "REVISION"].includes(p.status) &&
+      (final === "SCHEDULED" || final === "BOOKED") &&
+      p.shootDate && p.shootDate.getTime() < Date.now()
+    ) {
+      final = p.status;
+    }
 
     if (evidence.partial) partials++;
     byStatus[final] = (byStatus[final] ?? 0) + 1;
