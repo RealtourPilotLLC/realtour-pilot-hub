@@ -181,6 +181,11 @@ function allowedRolesFor(viewer: string): string[] {
   return Object.keys(ROLE_RANK).filter((r) => ROLE_RANK[r] <= rank);
 }
 
+// Money visibility: creatives (photographers/editors) may look up schedules,
+// projects, and clients — but NEVER dollars. Prices, balances, invoice links,
+// lifetime spend, and AR are admin/owner only, matching the page-level RBAC.
+const canSeeMoney = (role: string) => (ROLE_RANK[role] ?? ROLE_RANK.CREATIVE) >= ROLE_RANK.ADMIN;
+
 // Resolve a range keyword / explicit dates into [startUtc, endUtc).
 function resolveRange(input: { range?: string; from?: string; to?: string }): { start: Date; end: Date; label: string } {
   const todayStart = etDayStartUtc(new Date());
@@ -200,7 +205,9 @@ function resolveRange(input: { range?: string; from?: string; to?: string }): { 
 export async function execHubTool(
   name: string,
   input: Record<string, unknown>,
-  ctx: { role: string } = { role: "CREATIVE" }, // least privilege if a caller forgets
+  // Least privilege if a caller forgets; `impersonating` = the owner is in the
+  // read-only "view as" preview, so write tools must refuse.
+  ctx: { role: string; impersonating?: boolean } = { role: "CREATIVE" },
 ): Promise<unknown> {
   switch (name) {
     case "current_datetime": {
@@ -230,6 +237,7 @@ export async function execHubTool(
           deliverables: { select: { type: true, label: true } },
         },
       });
+      const money = canSeeMoney(ctx.role); // creatives see the job, never the dollars
       return {
         count: rows.length,
         projects: rows.map((p) => ({
@@ -240,7 +248,7 @@ export async function execHubTool(
           shoot: p.shootDate ? etDate(p.shootDate) : null,
           due: p.deliveryDue ? etDate(p.deliveryDue) : null,
           delivered: p.deliveredAt ? etDate(p.deliveredAt) : null,
-          balance_owed: dollars(p.balanceAmount),
+          balance_owed: money ? dollars(p.balanceAmount) : undefined,
           deliverables: deliverableLabels(p.deliverables),
         })),
       };
@@ -281,7 +289,11 @@ export async function execHubTool(
         delivered_categories: ev?.present ?? [],
         missing: ev?.missing ?? [],
         in_revision: p.revisionRequestedAt ? { since: etDate(p.revisionRequestedAt), note: p.revisionNote } : null,
-        billing: { total: p.price, balance_owed: dollars(p.balanceAmount), payment_status: p.paymentStatus, invoice_url: p.invoiceUrl },
+        // Billing block (price, balance, payment status, invoice link) is
+        // admin/owner only — creatives get the project without the money.
+        billing: canSeeMoney(ctx.role)
+          ? { total: p.price, balance_owed: dollars(p.balanceAmount), payment_status: p.paymentStatus, invoice_url: p.invoiceUrl }
+          : undefined,
         open_tasks: p.smartTasks.map((t) => ({ type: t.taskType, title: t.title, priority: t.priority, due: t.dueAt ? etDate(t.dueAt) : null })),
         recent_messages: p.messages.map((m) => ({ from: m.authorName, at: etDate(m.createdAt), text: (m.body ?? "").slice(0, 280) })),
         aryeo_url: p.aryeoOrderId ? `https://app.aryeo.com/orders/${p.aryeoOrderId}` : null,
@@ -308,6 +320,7 @@ export async function execHubTool(
         },
       });
       if (!clients.length) return { error: `No client matching "${nm}".` };
+      const money = canSeeMoney(ctx.role); // spend is money: admin/owner only
       return {
         matches: clients.map((c) => ({
           id: c.id,
@@ -316,7 +329,7 @@ export async function execHubTool(
           company: c.company,
           email: c.email,
           phone: c.phone,
-          lifetime_spend: dollars(c.lifetimeSpendCents),
+          lifetime_spend: money ? dollars(c.lifetimeSpendCents) : undefined,
           completed_orders: c.transactionCount,
           total_projects: c._count.projects,
           social_plan: c.socialClient ? (c.socialPlan ?? "yes") : null,
@@ -387,6 +400,10 @@ export async function execHubTool(
     }
 
     case "get_billing": {
+      // Full accounts receivable is money data: admin + owner only, never creatives.
+      if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.CREATIVE) < ROLE_RANK.ADMIN) {
+        return { error: "Billing and outstanding balances are available to admin and owner roles only." };
+      }
       const { rows, totalOutstanding } = await getBillingRows();
       return {
         total_outstanding: Math.round(totalOutstanding * 100) / 100,
@@ -610,6 +627,10 @@ export async function execHubTool(
     }
 
     case "create_task": {
+      // "View as" is read-only — same rule as the server-action guards.
+      if (ctx.impersonating) {
+        return { error: "You're previewing another user — exit the View As preview to create tasks." };
+      }
       // Creating to-dos is an admin/owner action.
       if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.CREATIVE) < ROLE_RANK.ADMIN) {
         return { error: "Creating tasks is available to admin and owner roles only." };
@@ -684,6 +705,11 @@ export async function execHubTool(
     }
 
     case "remember_fact": {
+      // "View as" is read-only — and a fact taught mid-preview would be
+      // misattributed to the impersonated role.
+      if (ctx.impersonating) {
+        return { error: "You're previewing another user — exit the View As preview to save to memory." };
+      }
       // Teaching the brain is an admin/owner action; creatives can't write memory.
       if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.CREATIVE) < ROLE_RANK.ADMIN) {
         return { error: "Saving to the hub's memory is available to admin and owner roles only." };

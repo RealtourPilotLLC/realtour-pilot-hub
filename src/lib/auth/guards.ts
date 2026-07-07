@@ -20,6 +20,11 @@ const enforced = () =>
   process.env.NODE_ENV === "production" ||
   Boolean(process.env.VERCEL);
 
+// Exported for callers that need the same on/off signal without a fixed role
+// requirement (e.g. Ask the Hub resolves a content TIER rather than a role, but
+// must still refuse unauthenticated calls once enforcement is on).
+export const authEnforced = enforced;
+
 export async function requireRole(
   roles: AppRole[],
   opts: { allowImpersonation?: boolean } = {},

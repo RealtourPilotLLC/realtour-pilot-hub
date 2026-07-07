@@ -1,6 +1,6 @@
 "use server";
 
-import { requireOwner } from "@/lib/auth/guards";
+import { requireOwner, requireRole } from "@/lib/auth/guards";
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
@@ -17,6 +17,15 @@ export async function submitPlatformFeedback(input: {
   page?: string;
   screenshot?: string; // data URL (image/jpeg|png)
 }): Promise<{ ok: boolean; message: string }> {
+  // Any signed-in staff member may file platform feedback (this was the one
+  // staff-facing write with no login check). NOTE: the PUBLIC client feedback
+  // form is a different action (/feedback/[id] → submitFeedback) and stays
+  // unauthenticated. Returned as {ok:false} so the widget shows it inline.
+  try {
+    await requireRole(["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"]);
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Please sign in to do that." };
+  }
   const title = input.title.trim();
   if (!title) return { ok: false, message: "Add a short title." };
   const kind = ["feature", "bug", "feedback"].includes(input.kind) ? input.kind : "feature";

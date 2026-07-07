@@ -5,7 +5,8 @@ import { runHubAgent } from "@/lib/integrations/ai";
 import { HUB_TOOLS, execHubTool } from "@/lib/hubTools";
 import { etFullDate } from "@/lib/datetime";
 import { getCurrentUser } from "@/lib/auth/user";
-import { contentTier } from "@/lib/auth/access";
+import { canAccess, contentTier } from "@/lib/auth/access";
+import { authEnforced } from "@/lib/auth/guards";
 
 export type HubSource = { kind: "data" | "knowledge"; title: string };
 export type HubDraft = {
@@ -112,13 +113,19 @@ export async function askHub(question: string, history: HubTurn[] = [], chatId?:
 
   // The viewer's content tier is derived from the SIGNED-IN user, never trusted
   // from the client. A creative (photographer/editor) only ever gets CREATIVE-tier
-  // knowledge + comms; admin → ADMIN; owner → everything. No session = open local
-  // dev → owner. This is the gate that keeps owner-only facts out of lower roles.
+  // knowledge + comms; admin → ADMIN; owner → everything. Middleware only gates
+  // page navigation, not the POST that invokes this action — so once enforcement
+  // is on (always in prod/Vercel, same signal as the server-action guards) an
+  // unauthenticated or unauthorized call must refuse cleanly, never fall back to
+  // a privileged tier. No session with enforcement OFF = open local dev → owner.
   const me = await getCurrentUser();
-  // No session = open/pre-cutover dev (owner-operated). Once enforcement is on, a
-  // missing session must FAIL CLOSED to the most restrictive tier, never OWNER.
-  const noUserTier: HubRole = process.env.AUTH_ENFORCE === "true" ? "CREATIVE" : "OWNER";
-  const viewerRole: HubRole = (me ? contentTier(me.role) : noUserTier) as HubRole;
+  if (authEnforced()) {
+    if (!me) return { answer: "Please sign in to use Ask the Hub.", sources: [] };
+    if (!canAccess(me, "assistant")) {
+      return { answer: "Ask the Hub isn't available at your access level.", sources: [] };
+    }
+  }
+  const viewerRole: HubRole = me ? contentTier(me.role) : "OWNER";
 
   const key = await getSecret("ai");
   if (!key) {
@@ -134,7 +141,9 @@ export async function askHub(question: string, history: HubTurn[] = [], chatId?:
   const tasks: HubTaskCard[] = [];
   const memories: HubMemoryCard[] = [];
   const exec = async (name: string, input: Record<string, unknown>) => {
-    const out = await execHubTool(name, input, { role: viewerRole });
+    // Impersonation state rides along so write tools (create_task, remember_fact)
+    // stay read-only while the owner is previewing someone else ("view as").
+    const out = await execHubTool(name, input, { role: viewerRole, impersonating: me?.impersonating ?? false });
     const o = out as { drafted?: boolean; client_id?: string; client_name?: string; channel?: string; message?: string; can_text?: boolean; created_task?: boolean; id?: string; title?: string; priority?: string; due?: string; project?: string | null; href?: string; remembered?: boolean; category?: string; min_role?: string; superseded?: number };
     if (name === "draft_client_message" && o?.drafted && o.message && o.client_id) {
       drafts.push({
