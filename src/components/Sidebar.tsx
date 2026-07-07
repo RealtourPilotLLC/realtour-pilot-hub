@@ -124,8 +124,12 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
   // External link to the Script Studio app — owner/admin only, and only when it's
   // configured (SCRIPTING_BASE_URL set). Injected into the Creative section.
   const showScripting = !!scriptingUrl && (!user || user.role === "OWNER" || user.role === "ADMIN");
+  // Creatives see /resources as a pure "SOP Center" (no forms/quick links), so
+  // the nav label matches what the page actually is for them.
+  const creative = !!user && (user.role === "EDITOR" || user.role === "PHOTOGRAPHER");
   const sections = SECTIONS.map((s) => {
     let items = s.items.filter(can);
+    if (creative) items = items.map((i) => (i.key === "resources" ? { ...i, label: "SOP Center" } : i));
     if (showScripting && s.title === "Creative") {
       items = [...items, { label: "Script Writing", href: scriptingUrl!, icon: PenLine, external: true }];
     }

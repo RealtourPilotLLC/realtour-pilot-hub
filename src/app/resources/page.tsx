@@ -83,8 +83,11 @@ export default async function ResourcesPage() {
     prisma.sop.findMany({ orderBy: [{ category: "asc" }, { title: "asc" }] }),
     getOrderForms(),
   ]);
-  const resources = creative ? allResources.filter(creativeSafeResource) : allResources;
+  // Creatives get a pure "SOP Center": procedures only — no booking forms, no
+  // quick links/tools (those are ops surfaces, not field material).
+  const resources = creative ? [] : allResources;
   const sops = creative ? allSops.filter(creativeSafeSop) : allSops;
+  const forms = creative ? [] : orderForms;
 
   const resourceGroups = groupBy(resources, (r) => r.category);
   const sopGroups = groupBy(sops, (s) => s.category);
@@ -92,19 +95,19 @@ export default async function ResourcesPage() {
   return (
     <div>
       <PageHeader
-        title="Resources & SOPs"
-        subtitle="Links, tools, and standard operating procedures for the team"
+        title={creative ? "SOP Center" : "Resources & SOPs"}
+        subtitle={creative ? "How we shoot, edit, and deliver — the standards for every job" : "Links, tools, and standard operating procedures for the team"}
       />
       <div className="space-y-8 p-6">
         {/* Booking forms (live from Aryeo) */}
-        {orderForms.length > 0 && (
+        {forms.length > 0 && (
           <section className="space-y-3">
             <div className="flex items-center gap-2">
               <ClipboardList className="size-4 text-brand" />
               <h2 className="text-sm font-semibold text-muted">Booking forms</h2>
             </div>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {orderForms.map((f) => (
+              {forms.map((f) => (
                 <a
                   key={f.id}
                   href={f.url}
