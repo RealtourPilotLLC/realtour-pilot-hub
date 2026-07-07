@@ -1,9 +1,15 @@
 "use server";
 
+import { requireRole } from "@/lib/auth/guards";
+
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 
 export type MsgResult = { ok: boolean; message: string };
+
+// Editors post in the team thread from the editor queue, so allow all staff
+// roles (photographers use the shoot-app messaging instead).
+const requireStaff = () => requireRole(["OWNER", "ADMIN", "EDITOR"]);
 
 // Post a message to a project's team thread. Author is picked from the roster
 // in the UI (or left as a free name) so editors get attribution.
@@ -14,6 +20,7 @@ export async function postProjectMessage(
   mentionIds: string[] = [],
   replyToId?: string | null,
 ): Promise<MsgResult> {
+  await requireStaff();
   const text = body.trim();
   if (!text) return { ok: false, message: "Write a message first." };
 
@@ -71,6 +78,7 @@ export async function postProjectMessage(
 // Leave a note from a task — it posts into that task's project team-message
 // thread (so notes live with the job, visible to the crew).
 export async function addTaskNote(taskId: string, note: string): Promise<MsgResult> {
+  await requireStaff();
   const text = note.trim();
   if (!text) return { ok: false, message: "Write a note first." };
   const task = await prisma.smartTask.findUnique({

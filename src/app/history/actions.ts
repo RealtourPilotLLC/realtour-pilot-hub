@@ -1,5 +1,7 @@
 "use server";
 
+import { requireAdmin } from "@/lib/auth/guards";
+
 import { getTaskHistory, getDeliveryHistory, getShootHistory } from "@/lib/queries";
 import { etDayKey } from "@/lib/datetime";
 
@@ -13,6 +15,7 @@ const TYPE_NAME: Record<string, string> = {
 };
 
 export async function summarizeDay(dayKey: string): Promise<{ ok: boolean; text?: string; message?: string }> {
+  await requireAdmin(); // costs an AI call — staff only
   const [tasks, deliveries, shoots] = await Promise.all([
     getTaskHistory(120),
     getDeliveryHistory(120),

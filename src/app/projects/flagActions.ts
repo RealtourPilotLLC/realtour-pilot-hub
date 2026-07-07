@@ -1,8 +1,13 @@
 "use server";
 
+import { requireRole } from "@/lib/auth/guards";
+
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { IMAGE_FLAG_TAGS } from "@/lib/imageFlags";
+
+// Flags are worked by admins AND editors (fixes land on Kyle/Kim), so any staff role.
+const requireStaff = () => requireRole(["OWNER", "ADMIN", "EDITOR"]);
 
 export type FlaggedImage = {
   id: string;
@@ -84,6 +89,7 @@ export async function flagImages(
   note: string,
   tags: string[],
 ): Promise<FlagResult> {
+  await requireStaff();
   const imgs = images.filter((i) => i.url);
   if (imgs.length === 0) return { ok: false, message: "Select at least one photo." };
   const cleanTags = tags.filter((t) => (IMAGE_FLAG_TAGS as readonly string[]).includes(t));
@@ -119,6 +125,7 @@ export async function flagImages(
 
 // Mark a single flag fixed (and close the task if none remain).
 export async function resolveImageFlag(flagId: string): Promise<FlagResult> {
+  await requireStaff();
   const flag = await prisma.imageFlag.update({
     where: { id: flagId },
     data: { status: "FIXED", resolvedAt: new Date() },
@@ -131,6 +138,7 @@ export async function resolveImageFlag(flagId: string): Promise<FlagResult> {
 
 // Mark every open flag on a project fixed.
 export async function resolveAllImageFlags(projectId: string): Promise<FlagResult> {
+  await requireStaff();
   await prisma.imageFlag.updateMany({
     where: { projectId, status: "OPEN" },
     data: { status: "FIXED", resolvedAt: new Date() },
