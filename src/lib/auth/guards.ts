@@ -76,6 +76,10 @@ export async function requireShootAccess(projectId: string): Promise<void> {
   if (!enforced()) return;
   const u = await getCurrentUser();
   if (!u) throw new Error("Please sign in to do that.");
+  // "View as" is read-only everywhere — a previewing owner tapping Send on the
+  // shoot screen would REALLY text the client (audit: field actions were the
+  // one guard family missing this block).
+  if (u.impersonating) throw new Error("You're previewing another user — exit the preview to make changes.");
   if (u.realRole === "OWNER" || u.realRole === "ADMIN") return;
   if (u.realRole === "PHOTOGRAPHER") {
     const { photographerMemberId, photographerOwnsShoot } = await import("@/lib/shoot");

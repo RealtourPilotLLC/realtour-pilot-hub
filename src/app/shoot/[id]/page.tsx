@@ -26,16 +26,21 @@ export default async function ShootDetailPage({
   // or an appointment assignee). Owner / admin (and the open, pre-cutover app)
   // can open any.
   const user = await getCurrentUser();
+  let viewerMemberId: string | null = null;
   if (user?.role === "PHOTOGRAPHER") {
-    const mine = await photographerMemberId(user);
-    if (!mine || !(await photographerOwnsShoot(id, mine))) redirect("/shoot");
+    viewerMemberId = await photographerMemberId(user);
+    if (!viewerMemberId || !(await photographerOwnsShoot(id, viewerMemberId))) redirect("/shoot");
   }
+  // Whose pay/route to show: a photographer viewer always sees THEIR OWN numbers
+  // (a second shooter on someone else's project must never see the primary's
+  // pay); owner/admin (and ?as= previews) see the assigned photographer's.
+  const payMemberId = viewerMemberId ?? view.photographer?.id ?? null;
 
-  // Pay (the assigned photographer's earnings for this shoot) streams in via
-  // Suspense so the screen paints immediately instead of blocking on mileage.
-  const pay = view.photographer ? (
+  // Pay (this viewer's earnings for this shoot) streams in via Suspense so the
+  // screen paints immediately instead of blocking on mileage.
+  const pay = payMemberId ? (
     <Suspense fallback={<ShootPayCardSkeleton />}>
-      <ShootPayCard projectId={id} memberId={view.photographer.id} />
+      <ShootPayCard projectId={id} memberId={payMemberId} />
     </Suspense>
   ) : null;
 
@@ -57,7 +62,7 @@ export default async function ShootDetailPage({
   // paints first.
   const map = (
     <Suspense fallback={<ShootMapCardSkeleton />}>
-      <ShootMapCard projectId={id} memberId={view.photographer?.id ?? null} />
+      <ShootMapCard projectId={id} memberId={payMemberId} />
     </Suspense>
   );
 

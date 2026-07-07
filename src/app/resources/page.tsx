@@ -18,6 +18,28 @@ import { Markdown } from "@/components/ui/Markdown";
 import { prisma } from "@/lib/prisma";
 import { Aryeo } from "@/lib/integrations/aryeo";
 import { getSecret } from "@/lib/integrations/connections";
+import { getCurrentUser } from "@/lib/auth/user";
+import { contentTier } from "@/lib/auth/access";
+
+// Photographers/editors get the CREATIVE cut of this page: no client pricing,
+// fee schedules, sales SOPs, or finance tools (QuickBooks/Stripe). Jordan's
+// rule — creatives never see client prices — applies to documents too.
+const MONEY_RE = /\b(pricing|price|fees?|fee schedule|sales|billing|invoice|payment|payout|finance|financial|quickbooks|stripe|revenue|margin)\b/i;
+// Fees hiding in the BODY also disqualify a doc — the audit found client fees
+// inside innocently-titled SOPs ("Scheduling & Reschedule Rules" carried
+// $150/$125). But a bare dollar amount isn't enough: creative SOPs quote listing
+// prices ("hooks for a $500K home"), so the body only disqualifies when a dollar
+// figure appears in a doc that ALSO talks fees/charges/billing.
+const DOLLAR_RE = /\$\s?\d{2,}/;
+const FEE_CONTEXT_RE = /\b(fees?|charge[sd]?|cancellation|reschedul\w*\s+fee|invoice|billing|payment\s+(due|policy|terms)|waive)\b/i;
+function creativeSafeSop(s: { title: string; category: string; content: string }): boolean {
+  if (MONEY_RE.test(s.title) || MONEY_RE.test(s.category)) return false;
+  if (/quickbooks|stripe/i.test(s.content)) return false;
+  return !(DOLLAR_RE.test(s.content) && FEE_CONTEXT_RE.test(s.content));
+}
+function creativeSafeResource(r: { title: string; category: string; url: string; description: string | null }): boolean {
+  return !MONEY_RE.test(r.title) && !MONEY_RE.test(r.category) && !MONEY_RE.test(r.description ?? "") && !/quickbooks|stripe/i.test(r.url);
+}
 
 type OrderForm = { id?: string; title?: string; url?: string; is_public?: boolean };
 
@@ -54,11 +76,15 @@ function groupBy<T>(items: T[], key: (t: T) => string) {
 }
 
 export default async function ResourcesPage() {
-  const [resources, sops, orderForms] = await Promise.all([
+  const me = await getCurrentUser().catch(() => null);
+  const creative = !!me && contentTier(me.role) === "CREATIVE";
+  const [allResources, allSops, orderForms] = await Promise.all([
     prisma.resource.findMany({ orderBy: [{ category: "asc" }, { sortOrder: "asc" }] }),
     prisma.sop.findMany({ orderBy: [{ category: "asc" }, { title: "asc" }] }),
     getOrderForms(),
   ]);
+  const resources = creative ? allResources.filter(creativeSafeResource) : allResources;
+  const sops = creative ? allSops.filter(creativeSafeSop) : allSops;
 
   const resourceGroups = groupBy(resources, (r) => r.category);
   const sopGroups = groupBy(sops, (s) => s.category);

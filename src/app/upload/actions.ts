@@ -160,7 +160,9 @@ export async function finalizeUpload(
   await prisma.project.update({
     where: { id: projectId },
     data: {
-      editorBrief: data.editorBrief.trim() || null,
+      // Only overwrite the brief when the finalize actually carries one — a
+      // re-finalize with an empty field must not wipe the photographer's notes.
+      ...(data.editorBrief.trim() ? { editorBrief: data.editorBrief.trim() } : {}),
       uploadedAt: new Date(),
     },
   });
