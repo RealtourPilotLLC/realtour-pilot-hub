@@ -2,6 +2,7 @@ import { ShieldCheck, CircleAlert, CheckCircle2, Camera, Video, Ruler, Box, Refr
 import { parseEvidence } from "@/lib/statusEvidence";
 import { stageMeta } from "@/lib/pipeline";
 import { RevisionResolveButton } from "@/components/project/RevisionResolveButton";
+import { RecheckStatusButton } from "@/components/project/RecheckStatusButton";
 import { formatDistanceToNow } from "date-fns";
 import type { ProjectStatus } from "@prisma/client";
 
@@ -180,11 +181,18 @@ export function StatusEvidenceCard({
           </div>
         )}
 
-        {checkedAt && (
-          <div className="text-[11px] text-muted-2">
-            Cross-checked {formatDistanceToNow(checkedAt, { addSuffix: true })} · Aryeo media + Dropbox folders
-          </div>
-        )}
+        {/* Last check + on-demand re-check, so a just-fixed flag clears now
+            instead of on the next hourly cron (audit crack #41). */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {checkedAt ? (
+            <div className="text-[11px] text-muted-2">
+              Cross-checked {formatDistanceToNow(checkedAt, { addSuffix: true })} · Aryeo media + Dropbox folders
+            </div>
+          ) : (
+            <span />
+          )}
+          <RecheckStatusButton projectId={projectId} />
+        </div>
       </div>
     </section>
   );

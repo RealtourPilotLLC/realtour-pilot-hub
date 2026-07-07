@@ -49,7 +49,7 @@ export async function submitPlatformFeedback(input: {
 
   const base = process.env.NEXT_PUBLIC_APP_URL || "https://realtour-pilot-hub.vercel.app";
   const label = kind === "bug" ? "🐞 Bug report" : kind === "feedback" ? "💬 Feedback" : "✨ Feature request";
-  await notifyOwnerEmail(
+  const emailed = await notifyOwnerEmail(
     `${label}: ${title}`,
     [
       `${label} submitted to the RealTour hub${input.submittedBy ? ` by ${input.submittedBy}` : ""}.`,
@@ -65,6 +65,17 @@ export async function submitPlatformFeedback(input: {
     ].join("\n"),
   );
 
+  // The email notify fails SILENTLY today (Gmail send scope isn't connected), so
+  // a bug filed from a phone reached nobody — the board was a black hole (audit
+  // crack #36). Slack is the reliable channel: always ping ops, and say so when
+  // the email didn't go out. Best-effort, never blocks the submission.
+  try {
+    const { opsAlert } = await import("@/lib/notify");
+    await opsAlert(
+      `${label}: “${title}”${fb.submittedBy ? ` — from ${fb.submittedBy}` : ""}${emailed ? "" : " (owner email failed — Gmail send not connected)"} → ${base}/feedback`,
+    );
+  } catch { /* non-fatal */ }
+
   revalidatePath("/feedback");
   return { ok: true, message: "Thanks! Sent to Jordan for review." };
 }
@@ -77,7 +88,7 @@ export async function decidePlatformFeedback(
   adminNote?: string,
 ): Promise<void> {
   await requireOwner();
-  await prisma.platformFeedback.update({
+  const fb = await prisma.platformFeedback.update({
     where: { id },
     data: {
       status,
@@ -85,5 +96,16 @@ export async function decidePlatformFeedback(
       decidedAt: status === "NEW" ? null : new Date(),
     },
   });
+  // A decision used to go nowhere beyond the row flip (audit crack #36) — ping
+  // ops so an APPROVED item actually enters someone's field of view. The board
+  // itself already shows the new status (grouped sections). Best-effort.
+  if (status !== "NEW") {
+    try {
+      const { opsAlert } = await import("@/lib/notify");
+      const base = process.env.NEXT_PUBLIC_APP_URL || "https://realtour-pilot-hub.vercel.app";
+      const verb = status === "APPROVED" ? "✅ approved — into the build queue" : status === "DONE" ? "🚀 marked shipped" : "🗄 declined";
+      await opsAlert(`Feedback “${fb.title}” ${verb}${fb.submittedBy ? ` (filed by ${fb.submittedBy})` : ""} → ${base}/feedback`);
+    } catch { /* non-fatal */ }
+  }
   revalidatePath("/feedback");
 }

@@ -712,6 +712,138 @@ export async function closeStaleFeedbackReviews(days = 7): Promise<number> {
   return r.count;
 }
 
+// ---------------------------------------------------------------------------
+// Vendor round-trip chase (audit crack #16). CubiCasa (floor plans) and AutoHDR
+// (photo edits) are fire-and-forget vendors: their "it's ready" emails are
+// filtered as noise, so when their piece never comes back the only tracker is
+// Kyle's memory — 14 of 141 recent deliveries shipped missing a whole ordered
+// category. When the status cross-check shows one of their categories STILL
+// missing days after the shoot, mint ONE deduped chase task per
+// project+category (never re-minted once handled, even if completed).
+// ---------------------------------------------------------------------------
+const VENDOR_CHASE: { category: string; vendor: string; work: string; delayDays: number }[] = [
+  // Floor-plan turnaround is 36h; photos are next-morning. Chasing a day+ past
+  // those SLAs keeps this conservative — no task while the vendor is on time.
+  { category: "Floor plan", vendor: "CubiCasa", work: "floor plan", delayDays: 3 },
+  { category: "Photos", vendor: "AutoHDR", work: "photo edits", delayDays: 2 },
+];
+
+export async function chaseVendorsForMissing(
+  projectId: string,
+  opts: { title: string; shootDate: Date | null; missing: string[] },
+): Promise<number> {
+  if (!opts.shootDate || opts.missing.length === 0) return 0;
+  const daysSinceShoot = (Date.now() - opts.shootDate.getTime()) / DAY;
+  const due = VENDOR_CHASE.filter(
+    (v) => opts.missing.includes(v.category) && daysSinceShoot >= v.delayDays,
+  );
+  if (due.length === 0) return 0;
+
+  const street = (opts.title || "this job").split(",")[0].trim();
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { clientId: true } });
+  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
+
+  let created = 0;
+  for (const v of due) {
+    // One chase per project+category, ever — a completed chase means Kyle
+    // already handled it; don't nag again on the next hourly pass.
+    const key = `vendor-chase-${projectId}-${v.category.toLowerCase().replace(/\s+/g, "")}`;
+    if (await prisma.smartTask.findUnique({ where: { dedupeKey: key } })) continue;
+    await prisma.smartTask.create({
+      data: {
+        taskType: "comms_followup",
+        title: `Chase ${v.vendor} ${v.work} — ${street}`.slice(0, 120),
+        summary: `The ordered ${v.category.toLowerCase()} still isn't live on Aryeo ${Math.floor(daysSinceShoot)} days after the shoot — the ${v.vendor} round-trip may have dropped. Check the ${v.vendor} portal/email for the finished ${v.work}, upload it, or chase them for an ETA.`.slice(0, 500),
+        reasonCreated: `Ordered ${v.category.toLowerCase()} missing ${v.delayDays}+ days after the shoot (${v.vendor} round-trip)`,
+        checklist: JSON.stringify([
+          `Check ${v.vendor} for the finished ${v.work}`,
+          "Upload it to Aryeo (or confirm it was delivered off-Aryeo)",
+          `Chase ${v.vendor} for an ETA if it's not ready`,
+        ]),
+        source: "system",
+        priority: "HIGH",
+        dueAt: new Date(Date.now() + 4 * HOUR),
+        projectId,
+        clientId: project?.clientId ?? null,
+        propertyAddress: opts.title,
+        ownerId: kyle?.id ?? null,
+        dedupeKey: key,
+      },
+    });
+    created++;
+  }
+  return created;
+}
+
+// ---------------------------------------------------------------------------
+// Push handoff when a shoot's raws land (audit crack #19). Flipping to SHOT
+// notified no one — the editor queue is pull-only — and a premium reel had no
+// "send raws + brief to Luma" task anywhere, so a forgotten dispatch surfaced
+// only as an overdue video days later. Called from the upload portal's
+// finalize + the Dropbox raw-detection sweep, on the actual transition only.
+// Idempotent: the Slack ping is keyed off a timeline marker, the Luma dispatch
+// task off its dedupe key. Best-effort by design — callers never let it throw.
+// ---------------------------------------------------------------------------
+export async function notifyRawsLanded(projectId: string): Promise<void> {
+  const p = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      title: true,
+      clientId: true,
+      deliverables: { select: { type: true, label: true } },
+    },
+  });
+  if (!p) return;
+  const street = (p.title || "this job").split(",")[0].trim();
+
+  // Ping ops once per project — if either path (portal finalize / Dropbox sweep)
+  // already announced it, don't re-ping.
+  const MARKER = `Raws in for ${street}`;
+  const already = await prisma.activity.findFirst({
+    where: { projectId, type: "SYSTEM", body: { startsWith: MARKER } },
+    select: { id: true },
+  });
+  if (!already) {
+    await prisma.activity.create({
+      data: { projectId, type: "SYSTEM", body: `${MARKER} — editors notified via Slack.` },
+    });
+    try {
+      const { notifyUrgent } = await import("@/lib/notify");
+      await notifyUrgent(`Raws in for ${street} — ready for editing`, "/editing");
+    } catch { /* never let a ping break the upload flow */ }
+  }
+
+  // Premium reel → the raws + brief go OUT to Luma, and nothing tracked that
+  // dispatch. One deduped task, Kyle-owned (vendor named in the title — vendor
+  // keys route to no human), auto-closed when the job delivers (comms_followup
+  // is in DELIVERED_CLOSE_TYPES).
+  const { videoTier } = await import("@/lib/projectStatus");
+  if (videoTier(p.deliverables) !== "premium") return;
+  const key = `luma-dispatch-${projectId}`;
+  if (await prisma.smartTask.findUnique({ where: { dedupeKey: key } })) return;
+  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
+  await prisma.smartTask.create({
+    data: {
+      taskType: "comms_followup",
+      title: `Send raws + brief to Luma — ${street}`.slice(0, 120),
+      summary: "This job has a premium reel and the raws just landed — send the raw video + editor brief to Luma (ReadyPost) so the edit starts now instead of when the video goes overdue.",
+      reasonCreated: "Premium reel raws landed — dispatch to Luma",
+      checklist: JSON.stringify([
+        "Send the raw video + editor brief to Luma",
+        "Confirm Luma received it and note the ETA",
+      ]),
+      source: "system",
+      priority: "HIGH",
+      dueAt: new Date(Date.now() + 4 * HOUR),
+      projectId,
+      clientId: p.clientId,
+      propertyAddress: p.title,
+      ownerId: kyle?.id ?? null,
+      dedupeKey: key,
+    },
+  });
+}
+
 // Generate (idempotently) the expected tasks for every ACTIVE project.
 export async function generateTasksForActiveProjects(): Promise<{ created: number; projects: number }> {
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });

@@ -57,11 +57,19 @@ export default async function SalesPage() {
       ? projects.reduce((s, p) => s + (p.price ?? 0), 0) / projects.length
       : 0;
 
-  // Outstanding balances (from Aryeo billing data), in dollars.
-  const outstandingOrders = projects.filter(
-    (p) => p.status !== "CANCELLED" && (p.balanceAmount ?? 0) > 0,
-  );
+  // Outstanding balances (from Aryeo billing data), in dollars — the SAME
+  // definition as /billing (delivered + still owing, non-cancelled) so the two
+  // pages can never show contradictory money (audit crack #37: they were $5,595
+  // apart because this stat silently included not-yet-delivered invoices).
+  // Undelivered unpaid invoices are surfaced as their own labeled number below.
+  const deliveredIsh = (p: { status: string; deliveredAt: Date | null }) =>
+    p.status === "DELIVERED" || !!p.deliveredAt;
+  const owing = projects.filter((p) => p.status !== "CANCELLED" && (p.balanceAmount ?? 0) > 0);
+  const outstandingOrders = owing.filter(deliveredIsh);
   const outstanding = outstandingOrders.reduce((s, p) => s + (p.balanceAmount ?? 0), 0) / 100;
+  // Billed but not yet delivered — normal in-flight money, not receivables.
+  const preDelivery = owing.filter((p) => !deliveredIsh(p));
+  const preDeliveryTotal = preDelivery.reduce((s, p) => s + (p.balanceAmount ?? 0), 0) / 100;
 
   // Revenue by month (last 6 months), booked by createdAt.
   const months = Array.from({ length: 6 }, (_, i) => startOfMonth(subMonths(now, 5 - i)));
@@ -99,7 +107,13 @@ export default async function SalesPage() {
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
           <StatCard icon={DollarSign} label="Revenue this month" value={formatMoney(revenueThisMonth)} accent="#16a34a" />
           <StatCard icon={Wallet} label="Pipeline value" value={formatMoney(pipelineValue)} accent="#0ea5e9" sub={`${active.length} active orders`} />
-          <StatCard icon={DollarSign} label="Outstanding" value={formatMoney(outstanding)} accent="#dc2626" sub={`${outstandingOrders.length} unpaid`} />
+          <StatCard
+            icon={DollarSign}
+            label="Outstanding"
+            value={formatMoney(outstanding)}
+            accent="#dc2626"
+            sub={`${outstandingOrders.length} delivered & unpaid — matches Billing${preDeliveryTotal > 0 ? ` · +${formatMoney(preDeliveryTotal)} invoiced, not yet delivered` : ""}`}
+          />
           <StatCard icon={Receipt} label="Avg order value" value={formatMoney(avgOrder)} accent="#4f46e5" />
           <StatCard icon={TrendingUp} label="Delivered (all-time)" value={formatMoney(allTime)} accent="#d97706" sub={`${delivered.length} orders`} />
         </div>

@@ -272,6 +272,9 @@ model Project {
   balanceAmount Int? // cents still owed
   invoiceUrl    String?
   paymentUrl    String?
+  // AR follow-up: when we last nudged the client about this unpaid job
+  // (set by the /billing "Followed up" marker or sending a payment reminder).
+  lastNudgedAt  DateTime?
 
   // Relations / assignment
   client         Client      @relation(fields: [clientId], references: [id])

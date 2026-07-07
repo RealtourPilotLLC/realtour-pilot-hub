@@ -146,6 +146,12 @@ export async function syncDropboxFolderStatus(): Promise<{
         where: { projectId: p.id, taskType: { in: ["confirmation_text", "appointment_prep"] }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
         data: { status: "COMPLETED", completedAt: new Date() },
       });
+      // Raws landed → ping the editors + mint the premium-reel Luma dispatch
+      // task (audit crack #19). Idempotent; best-effort so it never breaks the sweep.
+      try {
+        const { notifyRawsLanded } = await import("@/lib/tasks");
+        await notifyRawsLanded(p.id);
+      } catch { /* non-fatal */ }
       movedToShot++;
     }
   }

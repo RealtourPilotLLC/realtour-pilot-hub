@@ -37,9 +37,9 @@ const TRIAGE = "needs-assigning";
 
 // Collapsible group panel — collapsed by default (native <details>, so no client
 // JS needed). The header (counts + overdue) stays visible; click to expand.
-function GroupCard({ icon: Icon, title, accent, items, overdue, blurb, assignees, defaultOpen, assignPrompt }: {
+function GroupCard({ icon: Icon, title, accent, items, overdue, blurb, assignees, defaultOpen, assignPrompt, editorView }: {
   icon: LucideIcon; title: string; accent: string; items: QueueTask[]; overdue: number; blurb?: string;
-  assignees: { key: string; name: string }[]; defaultOpen?: boolean; assignPrompt?: boolean;
+  assignees: { key: string; name: string }[]; defaultOpen?: boolean; assignPrompt?: boolean; editorView?: boolean;
 }) {
   return (
     <details open={defaultOpen} className="group panel-shadow overflow-hidden rounded-2xl border bg-surface">
@@ -55,7 +55,7 @@ function GroupCard({ icon: Icon, title, accent, items, overdue, blurb, assignees
       <div className="border-t border-border">
         {blurb && <p className="px-4 pt-2.5 text-[11px] text-muted-2">{blurb}</p>}
         <div className="grid grid-cols-1 gap-3 p-3 sm:p-4 lg:grid-cols-2">
-          {items.map((t) => <TaskCard key={t.id} task={t} assignees={assignees} assignPrompt={assignPrompt} />)}
+          {items.map((t) => <TaskCard key={t.id} task={t} assignees={assignees} assignPrompt={assignPrompt} editorView={editorView} />)}
         </div>
       </div>
     </details>
@@ -161,23 +161,23 @@ export default async function DailyTasksPage({ searchParams }: { searchParams: P
           <span className="text-xs text-muted-2">· {set.length}</span>
         </div>
         {comms.length > 0 && (
-          <GroupCard icon={MessageSquare} title="Replies & admin" accent="#38bdf8" items={comms} overdue={oc(comms)} assignees={assigneeChips}
+          <GroupCard icon={MessageSquare} title="Replies & admin" accent="#38bdf8" items={comms} overdue={oc(comms)} assignees={assigneeChips} editorView={!!editorScope}
             blurb="Messages to reply to, new leads, and decisions." />
         )}
         {confirmations.length > 0 && (
-          <GroupCard icon={MessageSquareText} title="Confirmation texts" accent="#fbbf24" items={confirmations} overdue={oc(confirmations)} assignees={assigneeChips}
+          <GroupCard icon={MessageSquareText} title="Confirmation texts" accent="#fbbf24" items={confirmations} overdue={oc(confirmations)} assignees={assigneeChips} editorView={!!editorScope}
             blurb="Confirm upcoming shoots with the client — the text is pre-drafted, just review and send." />
         )}
         {deliveries.length > 0 && (
-          <GroupCard icon={Send} title="Delivery texts" accent="#22c55e" items={deliveries} overdue={oc(deliveries)} assignees={assigneeChips}
+          <GroupCard icon={Send} title="Delivery texts" accent="#22c55e" items={deliveries} overdue={oc(deliveries)} assignees={assigneeChips} editorView={!!editorScope}
             blurb="The “your gallery is ready” text to the client after delivery — pre-drafted, just review and send." />
         )}
         {revisions.length > 0 && (
-          <GroupCard icon={PencilLine} title="Revisions" accent="#fb7185" items={revisions} overdue={oc(revisions)} assignees={assigneeChips}
+          <GroupCard icon={PencilLine} title="Revisions" accent="#fb7185" items={revisions} overdue={oc(revisions)} assignees={assigneeChips} editorView={!!editorScope}
             blurb="Client change requests after delivery — auto-routed to the deliverable's editor; reassign if it should go to someone else." />
         )}
         {qc.length > 0 && (
-          <GroupCard icon={PackageCheck} title="QC & deliver" accent="#34d399" items={qc} overdue={oc(qc)} assignees={assigneeChips}
+          <GroupCard icon={PackageCheck} title="QC & deliver" accent="#34d399" items={qc} overdue={oc(qc)} assignees={assigneeChips} editorView={!!editorScope}
             blurb="Quality-check content as it lands, then deliver." />
         )}
       </div>

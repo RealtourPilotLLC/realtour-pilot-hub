@@ -43,6 +43,33 @@ export async function requireRole(
 export const requireOwner = () => requireRole(["OWNER"]);
 export const requireAdmin = () => requireRole(["OWNER", "ADMIN"]);
 
+// Owner/admin, OR the EDITOR a task is delegated to. Editors are DB-scoped to
+// their own tasks on /queue, but the Complete/status/assign buttons behind it
+// were admin-only — the day Kim/Remar get accounts they'd hit "You don't have
+// access" on their own finished work (audit crack #28). Matches the task's
+// assignedKey against their editorKey, else their first-name slug (the same
+// resolution /queue uses to scope them). Photographers stay excluded — their
+// field flow goes through requireShootAccess.
+export async function requireTaskAccess(taskId: string): Promise<void> {
+  if (!enforced()) return;
+  const u = await getCurrentUser();
+  if (!u) throw new Error("Please sign in to do that.");
+  if (u.impersonating) {
+    throw new Error("You're previewing another user — exit the preview to make changes.");
+  }
+  if (u.realRole === "OWNER" || u.realRole === "ADMIN") return;
+  if (u.realRole === "EDITOR") {
+    const { prisma } = await import("@/lib/prisma");
+    const { slugForName } = await import("@/lib/assignees");
+    const myKey = u.editorKey || (u.name ? slugForName(u.name) : null);
+    if (myKey) {
+      const t = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { assignedKey: true } });
+      if (t?.assignedKey === myKey) return;
+    }
+  }
+  throw new Error("You don't have access to do that.");
+}
+
 // Owner/admin, OR the photographer assigned to this shoot. Used by the field
 // (/shoot, /upload) actions so a photographer can only act on their own jobs.
 export async function requireShootAccess(projectId: string): Promise<void> {

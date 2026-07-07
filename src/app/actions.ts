@@ -1,6 +1,6 @@
 "use server";
 
-import { requireAdmin } from "@/lib/auth/guards";
+import { requireAdmin, requireTaskAccess } from "@/lib/auth/guards";
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
@@ -122,7 +122,9 @@ const TASK_STATUSES = new Set([
 ]);
 
 export async function setSmartTaskStatus(taskId: string, status: string) {
-  await requireAdmin();
+  // Owner/admin, or the editor this task is delegated to — editors must be able
+  // to complete their own queue work (audit crack #28).
+  await requireTaskAccess(taskId);
   if (!TASK_STATUSES.has(status)) return; // never write a free-form status
   const updated = await prisma.smartTask.updateMany({
     where: { id: taskId },
@@ -215,7 +217,9 @@ export async function createManualTask(input: {
 // Delegate a task to an editor (or clear it back to "Needs you"). Pass "" / "kyle"
 // to un-delegate. Keys validated against the editor roster (src/lib/editors.ts).
 export async function setTaskAssignee(taskId: string, key: string) {
-  await requireAdmin();
+  // Owner/admin, or the editor this task is currently assigned to (so an editor
+  // can hand a task back to Kyle) — audit crack #28.
+  await requireTaskAccess(taskId);
   const { listAssignees } = await import("@/lib/assignees");
   const validKeys = new Set((await listAssignees()).map((a) => a.key));
   const assignedKey = key && validKeys.has(key) ? key : null;
@@ -571,4 +575,32 @@ export async function setDeliverableStatus(
     data: { status },
   });
   revalidatePath(`/projects/${d.projectId}`);
+}
+
+// Re-run the smart status cross-check for ONE project, on demand. Kyle fixes a
+// missing deliverable and the red flag kept screaming for up to an hour — the
+// only manual re-check lived on the owner-only Connections page (audit crack
+// #41). Admin-or-owner; the owner-wide Connections recompute stays owner-only.
+export async function recheckProjectStatus(
+  projectId: string,
+): Promise<{ ok: boolean; message: string }> {
+  await requireAdmin();
+  try {
+    const { syncProjectStatuses } = await import("@/lib/projectStatus");
+    const r = await syncProjectStatuses({ projectId });
+    // Refresh the project's tasks too, so a now-complete category retires its
+    // QC/delivery work at the same moment the flag clears.
+    const { generateTasksForProject } = await import("@/lib/tasks");
+    await generateTasksForProject(projectId);
+    revalidatePath(`/projects/${projectId}`);
+    revalidatePath("/pipeline");
+    revalidatePath("/queue");
+    revalidatePath("/");
+    return {
+      ok: true,
+      message: r.changed > 0 ? "Re-checked — status updated." : "Re-checked — no change.",
+    };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Re-check failed." };
+  }
 }

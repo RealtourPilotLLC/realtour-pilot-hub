@@ -142,6 +142,10 @@ export async function finalizeUpload(
   data: { editorBrief: string; itemNotes?: Record<string, string> },
 ) {
   await requireShootAccess(projectId);
+  // First finalize or a re-submit? The raws-landed handoff below only fires on
+  // the FIRST completed upload (the transition), never on edits/re-submits.
+  const prior = await prisma.project.findUnique({ where: { id: projectId }, select: { uploadedAt: true } });
+  const firstFinalize = !prior?.uploadedAt;
   // Persist per-deliverable notes when provided (the simplified checklist portal
   // doesn't send these, but other callers may).
   for (const [deliverableId, note] of Object.entries(data.itemNotes ?? {})) {
@@ -191,6 +195,16 @@ export async function finalizeUpload(
       body: "Photographer completed upload. Editor brief is ready for the editors.",
     },
   });
+
+  // Raws are in → tell the editors (Slack ops ping) and, for a premium reel,
+  // mint the "Send raws + brief to Luma" dispatch task. Flipping to SHOT used
+  // to notify no one (audit crack #19). Best-effort — never block the submit.
+  if (firstFinalize) {
+    try {
+      const { notifyRawsLanded } = await import("@/lib/tasks");
+      await notifyRawsLanded(projectId);
+    } catch { /* non-fatal */ }
+  }
 
   // Auto-create the Frame.io review project for VIDEO jobs (editors upload their
   // finished video there). Best-effort — never block the photographer's submit.

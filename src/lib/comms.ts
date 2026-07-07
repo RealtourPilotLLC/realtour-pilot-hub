@@ -308,7 +308,9 @@ export async function raiseRevision(opts: {
     description: note,
     reasonCreated: `Client requested changes via ${opts.source} after delivery`,
     checklist: JSON.stringify([
-      "Read the full request in Communications",
+      // "…in Communications" pointed editors at a page their role can't open
+      // (audit crack #38) — the request is right on the card.
+      "Read the client's request below",
       "Confirm exactly what needs to change",
       "Make the edits / reshoot if needed",
       "Re-upload to Aryeo + re-deliver to client",

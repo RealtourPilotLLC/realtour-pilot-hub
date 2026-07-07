@@ -658,6 +658,7 @@ export type BillingRow = {
   aryeoListingId: string | null;
   deliverables: string[]; // distinct labels of what was delivered
   openTasks: number;
+  lastNudgedAt: string | null; // when we last chased this payment (AR follow-up)
 };
 
 export async function getBillingRows(): Promise<{ rows: BillingRow[]; totalOutstanding: number }> {
@@ -674,6 +675,18 @@ export async function getBillingRows(): Promise<{ rows: BillingRow[]; totalOutst
     },
   });
 
+  // lastNudgedAt is a freshly-added column — read it in a separate best-effort
+  // pass so /billing keeps rendering even if this code deploys before the
+  // migration lands (the shared prod DB would otherwise 500 the whole page).
+  const nudged = new Map<string, Date>();
+  try {
+    const n = await prisma.project.findMany({
+      where: { id: { in: projects.map((p) => p.id) } },
+      select: { id: true, lastNudgedAt: true },
+    });
+    for (const r of n) if (r.lastNudgedAt) nudged.set(r.id, r.lastNudgedAt);
+  } catch { /* column not migrated yet — rows just show no nudge history */ }
+
   const rows: BillingRow[] = projects.map((p) => ({
     id: p.id,
     title: p.title,
@@ -689,6 +702,7 @@ export async function getBillingRows(): Promise<{ rows: BillingRow[]; totalOutst
     aryeoListingId: p.aryeoListingId ?? null,
     deliverables: [...new Set(p.deliverables.map((d) => d.label || d.type).filter(Boolean))] as string[],
     openTasks: p.smartTasks.length,
+    lastNudgedAt: nudged.get(p.id)?.toISOString() ?? null,
   }));
   const totalOutstanding = rows.reduce((s, r) => s + r.outstanding, 0);
   return { rows, totalOutstanding };

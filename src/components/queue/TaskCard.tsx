@@ -134,7 +134,12 @@ const FALLBACK_ASSIGNEES = [
   ...DELEGATE_KEYS.map((k) => ({ key: k, name: EDITORS[k].name })),
 ];
 
-export function TaskCard({ task, assignees, assignPrompt }: { task: QueueTask; assignees?: { key: string; name: string }[]; assignPrompt?: boolean }) {
+// editorView: the viewer is an EDITOR — their role can't open /projects or
+// /clients (those redirect non-admins home), so the card's links point at their
+// own surfaces instead: the project goes to /edit/<id> (the editor brief), and
+// the client chip renders unlinked (audit crack #38). Admin-only actions that
+// would bounce them (AI draft / OpenPhone send) are hidden too.
+export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: QueueTask; assignees?: { key: string; name: string }[]; assignPrompt?: boolean; editorView?: boolean }) {
   const [pending, start] = useTransition();
   const [draft, setDraft] = useState<{ text?: string; error?: string } | null>(null);
   const [drafting, startDraft] = useTransition();
@@ -156,9 +161,15 @@ export function TaskCard({ task, assignees, assignPrompt }: { task: QueueTask; a
   const due = dueLabel(task.dueAt);
   const cameIn = cameInLabel(task.createdAt);
   const done = task.status === "COMPLETED";
-  const canDraft = DRAFTABLE.includes(task.taskType);
+  const canDraft = DRAFTABLE.includes(task.taskType) && !editorView;
   const predrafted = PREDRAFTED.includes(task.taskType) && !!task.description;
-  const canSend = task.taskType === "delivery_text" || task.taskType === "confirmation_text";
+  const canSend = (task.taskType === "delivery_text" || task.taskType === "confirmation_text") && !editorView;
+  // Where "open the job" goes for this viewer (editors can't open /projects).
+  const projectHref = task.projectId
+    ? editorView
+      ? `/edit/${task.projectId}`
+      : `/projects/${task.projectId}`
+    : null;
   const isLuma = task.taskType === "vendor_update" && /luma/i.test(task.title);
   const src = sourceMeta(task.source);
   const SrcIcon = SOURCE_ICON[src.key];
@@ -235,7 +246,7 @@ export function TaskCard({ task, assignees, assignPrompt }: { task: QueueTask; a
           // Show the real person who wrote in (contactName) when it differs from
           // the account it folds to; hover reveals whose account. Falls back to the
           // client. Links to the account client (where the orders live).
-          task.clientId ? (
+          task.clientId && !editorView ? (
             <Link href={`/clients/${task.clientId}`} title={personTitle} className="inline-flex items-center gap-1 rounded-md bg-surface-2 px-1.5 py-0.5 font-medium text-foreground/90 hover:text-foreground">
               <User className="size-3 text-muted-2" /> {task.contactName ?? task.clientName}
             </Link>
@@ -246,8 +257,8 @@ export function TaskCard({ task, assignees, assignPrompt }: { task: QueueTask; a
           )
         )}
         {projectLabel && !titleHasAddress && (
-          task.projectId ? (
-            <Link href={`/projects/${task.projectId}`} className="inline-flex min-w-0 items-center gap-1 rounded-md bg-surface-2 px-1.5 py-0.5 text-muted hover:text-foreground">
+          projectHref ? (
+            <Link href={projectHref} className="inline-flex min-w-0 items-center gap-1 rounded-md bg-surface-2 px-1.5 py-0.5 text-muted hover:text-foreground">
               <MapPin className="size-3 shrink-0" /> <span className="max-w-[12rem] truncate">{projectLabel}</span>
             </Link>
           ) : (
@@ -411,9 +422,9 @@ export function TaskCard({ task, assignees, assignPrompt }: { task: QueueTask; a
               <MessageSquarePlus className="size-3.5" /> Note
             </button>
           )}
-          {task.projectId && (
+          {projectHref && (
             <Link
-              href={`/projects/${task.projectId}${task.taskType === "image_fixes" ? "#flags" : ""}`}
+              href={`${projectHref}${task.taskType === "image_fixes" && !editorView ? "#flags" : ""}`}
               className="text-xs text-muted hover:text-foreground"
             >
               Open →

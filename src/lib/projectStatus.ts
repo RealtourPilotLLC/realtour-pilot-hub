@@ -522,6 +522,21 @@ export async function syncProjectStatuses(
     // Reflect category presence onto the deliverable rows for the portal/detail.
     await syncDeliverableStatuses(p, evidence);
 
+    // Vendor round-trip chase (audit crack #16): a floor plan (CubiCasa) or the
+    // photo edits (AutoHDR) still missing days after the shoot means the vendor
+    // handoff dropped — mint ONE deduped chase task per project+category.
+    // Non-delivered production stages only; best-effort, never breaks the sync.
+    if (["SHOT", "EDITING", "REVIEW"].includes(final) && evidence.missing.length > 0) {
+      try {
+        const { chaseVendorsForMissing } = await import("@/lib/tasks");
+        await chaseVendorsForMissing(p.id, {
+          title: p.title,
+          shootDate: p.shootDate,
+          missing: evidence.missing,
+        });
+      } catch { /* chase is best-effort */ }
+    }
+
     if (statusChanged) {
       changed++;
       // Delivered/cancelled jobs shouldn't keep open production tasks.
