@@ -4,6 +4,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { prisma } from "@/lib/prisma";
+import { CullingReminder } from "@/components/upload/CullingReminder";
 import { getCurrentUser } from "@/lib/auth/user";
 import { photographerMemberId } from "@/lib/shoot";
 import { stageMeta, DELIVERABLE_META } from "@/lib/pipeline";
@@ -73,6 +74,8 @@ export default async function UploadListPage() {
         subtitle="Unload gear, sit down, and clear today's uploads — newest shoots first"
       />
       <div className="mx-auto max-w-3xl space-y-8 p-6">
+        <CullingReminder />
+
         {shoots.length === 0 && <p className="text-sm text-muted">No shoots ready for upload right now.</p>}
 
         {BUCKETS.map(({ key, label }) => {

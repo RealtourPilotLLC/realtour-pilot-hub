@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { Camera, Car, Wallet, ChevronRight, SlidersHorizontal } from "lucide-react";
+import { Camera, Car, Wallet, ChevronRight, SlidersHorizontal, Receipt } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { PayFlag } from "@/components/mypay/PayFlag";
 import { prisma } from "@/lib/prisma";
@@ -12,9 +12,11 @@ import { homeFor } from "@/lib/auth/access";
 export const dynamic = "force-dynamic";
 
 // A photographer's OWN pay — nothing else. Shoot pay + mileage per job with
-// period totals; NO invoice amounts, no other people, no client pricing. Only
-// the CURRENT and NEXT pay periods (history stays on Jordan's /payouts).
-// Anything that looks off gets flagged straight to Jordan from the row.
+// period totals; no other people, no client pricing. The invoice shown per job
+// is the ELIGIBLE-services invoice their % is applied to (payableInvoice —
+// virtual/AI add-ons like staging, twilight, declutter are already excluded),
+// so pay × % visibly lines up. Only the CURRENT and NEXT pay periods (history
+// stays on Jordan's /payouts). Anything off gets flagged straight to Jordan.
 
 const fmtDay = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : "—";
@@ -122,6 +124,7 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
         <div className="panel-shadow rounded-2xl border border-border bg-surface p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap gap-2">
+              <Chip icon={<Receipt className="size-3.5" />} label="Invoices" value={usd(jobs.reduce((s, j) => s + j.invoice, 0))} />
               <Chip icon={<Camera className="size-3.5" />} label="Shoot pay" value={usd(person?.shootPayTotal ?? 0)} />
               <Chip icon={<Car className="size-3.5" />} label="Mileage" value={usd(person?.mileageTotal ?? 0)} />
               {(person?.adjustmentTotal ?? 0) !== 0 && (
@@ -135,7 +138,8 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
           </div>
         </div>
 
-        {/* Shoots — no invoice column, ever */}
+        {/* Shoots — each row shows the eligible-services invoice the pay % is
+            applied to (virtual add-ons already excluded) next to the pay. */}
         <div className="panel-shadow rounded-2xl border border-border bg-surface">
           <div className="flex items-center gap-2 border-b border-border px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-muted">
             <Camera className="size-3.5" /> Shoots
@@ -159,7 +163,7 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
                       <span className="shrink-0 font-semibold">{usd(j.jobTotal)}</span>
                     </div>
                     <div className="mt-0.5 flex items-center justify-between gap-3 text-[11px] text-muted-2">
-                      <span>{fmtDay(j.shootISO)} · shoot {usd(j.shootPay)}{j.mileageShare > 0 ? ` · mileage ${usd(j.mileageShare)}` : ""}</span>
+                      <span>{fmtDay(j.shootISO)}{j.invoice > 0 ? ` · invoice ${usd(j.invoice)}` : ""} · shoot {usd(j.shootPay)}{j.mileageShare > 0 ? ` · mileage ${usd(j.mileageShare)}` : ""}</span>
                       <PayFlag projectId={j.projectId} street={j.title.split(",")[0]} periodStartKey={period.startKey} already={flagged.has(key)} />
                     </div>
                   </div>
@@ -167,6 +171,10 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
               })}
             </div>
           )}
+          <p className="border-t border-border/60 px-4 py-2 text-[11px] leading-relaxed text-muted-2">
+            Invoice totals only count the services you shoot — virtual add-ons (staging, twilights, declutter, AI edits)
+            aren&apos;t included — and are subject to change with change orders, refunds, credits, and discounts.
+          </p>
         </div>
 
         {/* Mileage days */}

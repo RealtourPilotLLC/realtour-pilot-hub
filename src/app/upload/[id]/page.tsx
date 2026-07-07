@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { BackLink } from "@/components/ui/BackLink";
 import { prisma } from "@/lib/prisma";
+import { CullingReminder } from "@/components/upload/CullingReminder";
 import { UploadPortal } from "@/components/upload/UploadPortal";
 import { AppointmentFeedback } from "@/components/upload/AppointmentFeedback";
 import { getProjectFolderState } from "@/lib/dropboxFolders";
@@ -53,6 +54,11 @@ export default async function UploadProjectPage({
       <BackLink href="/upload" label="All shoots" />
 
       <DropboxFolders state={folderState} />
+
+      {/* Always visible at the drop point — culling targets + the pay policy. */}
+      <div className="mt-4">
+        <CullingReminder compact />
+      </div>
 
       <UploadPortal
         project={{
