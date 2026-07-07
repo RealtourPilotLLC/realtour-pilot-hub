@@ -4,7 +4,7 @@ import { useState, useEffect, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  Camera, Car, SlidersHorizontal, ChevronDown, AlertTriangle, Loader2, Plus, X, RefreshCw, FileDown, RotateCcw, Search,
+  Camera, Car, SlidersHorizontal, ChevronDown, AlertTriangle, Loader2, Plus, X, RefreshCw, FileDown, RotateCcw, Search, Receipt,
 } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { usd, parseMoney } from "@/lib/money";
@@ -96,6 +96,9 @@ export function PayoutCard({ person, periodStartISO }: { person: PayrollPerson; 
 
       {/* Breakdown chips */}
       <div className="flex flex-wrap gap-2 px-5 py-3 text-xs">
+        {/* Total eligible invoices their % is computed from (return-trip legs
+            count $0 — those pay a flat rate, not a share of the invoice). */}
+        <Chip icon={<Receipt className="size-3.5" />} label="Invoices" value={usd(person.jobs.reduce((s, j) => s + j.invoice, 0))} />
         <Chip icon={<Camera className="size-3.5" />} label="Shoot pay" value={usd(person.shootPayTotal)} />
         <Chip icon={<Car className="size-3.5" />} label="Mileage" value={usd(person.mileageTotal)} />
         <Chip icon={<SlidersHorizontal className="size-3.5" />} label="Adjustments" value={usd(person.adjustmentTotal)} />
