@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
 import { canAccess } from "@/lib/auth/access";
-import { MESSAGE_TASK_TYPES, getShootWindow } from "@/lib/queries";
+import { MESSAGE_TASK_TYPES, DELIVER_TASK_TYPES, getShootWindow, getHandledToday } from "@/lib/queries";
 import { recentProjectWhere } from "@/lib/recency";
 import { etDayStartUtc } from "@/lib/datetime";
 import { isNeedsAssigning } from "@/lib/triage";
@@ -18,8 +18,8 @@ export const dynamic = "force-dynamic";
 // (a count in the footer), so the list can actually reach zero.
 
 const ACTIVE = ["OPEN", "IN_PROGRESS", "WAITING_CLIENT", "WAITING_PHOTOGRAPHER", "WAITING_EDITOR", "WAITING_VENDOR", "WAITING_JORDAN", "BLOCKED"];
-// QC/deliver work (DELIVER_TASK_TYPES isn't exported from queries — keep in sync).
-const CHECK_TYPES = ["media_qa", "delivery", "image_fixes", "feedback_review", "finish_delivery"];
+// QC/deliver work — the shared list minus delivery_text, which is a SEND card here.
+const CHECK_TYPES = DELIVER_TASK_TYPES.filter((t) => t !== "delivery_text");
 const SEND_TYPES = ["confirmation_text", "delivery_text"];
 const REPLY_TYPES = ["client_reply", "lead"];
 
@@ -74,7 +74,7 @@ export default async function TodayPage() {
       orderBy: { dueAt: "asc" },
     }),
     getShootWindow(),
-    prisma.smartTask.count({ where: { status: "COMPLETED", completedAt: { gte: startToday } } }),
+    getHandledToday(),
     listAssignees(),
   ]);
 
@@ -145,7 +145,7 @@ export default async function TodayPage() {
         subtitle="Everything that needs you — work down the stack and you're done."
       />
       <div className="p-4 sm:p-6">
-        <TodayFeed cards={cards} shoots={shoots} handledToday={handledToday} assignees={chips} />
+        <TodayFeed cards={cards} shoots={shoots} handledToday={handledToday} assignees={chips} tomorrowCount={shootWindow.tomorrow.length} />
       </div>
     </div>
   );

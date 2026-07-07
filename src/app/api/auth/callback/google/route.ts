@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { exchangeLoginCode } from "@/lib/auth/google";
 import { signSession, SESSION_COOKIE, SESSION_MAX_AGE } from "@/lib/auth/jwt";
+import { homeFor } from "@/lib/auth/access";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -56,7 +57,10 @@ export async function GET(req: NextRequest) {
   }
 
   const token = await signSession({ uid: user.id, email: user.email, role: user.role, name: user.name ?? undefined, permissions: user.permissions });
-  const dest = nextRaw.startsWith("/") && !nextRaw.startsWith("//") ? nextRaw : "/";
+  // With no explicit destination, land each role on its WORK surface (admin →
+  // /today, editor → /editing, photographer → /shoot) instead of a generic "/"
+  // that middleware would bounce anyway (double-hop).
+  const dest = nextRaw.startsWith("/") && !nextRaw.startsWith("//") && nextRaw !== "/" ? nextRaw : homeFor(user.role);
   const r = NextResponse.redirect(new URL(dest, req.url));
   r.cookies.set(SESSION_COOKIE, token, {
     httpOnly: true,

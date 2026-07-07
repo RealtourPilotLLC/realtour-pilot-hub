@@ -54,7 +54,9 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
     "communications", "clients", "team", "upload", "editing", "billing",
     "catalog", "resources", "training", "assistant", "feedback",
   ],
-  EDITOR: ["dashboard", "tasks", "editing", "upload", "resources", "training", "assistant"],
+  // No "dashboard": the overview page carries ops counts + owner money strips
+  // that aren't an editor's business — middleware bounces them to /editing.
+  EDITOR: ["tasks", "editing", "upload", "resources", "training", "assistant"],
   // Photographers live entirely in the field platform: their own shoots (which
   // already carry their scoped schedule, maps, route + pay), the upload checklist
   // (scoped to their jobs), SOPs, and Ask the Hub (auto-gated to the CREATIVE
@@ -64,11 +66,17 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
 };
 
 // Where to send a user who lands somewhere they can't access — and their
-// post-login home. Photographers start in My Shoots (they have no dashboard);
-// everyone else on the dashboard. Used by the middleware redirect (never points
-// at a page the role can't open, so there's no redirect loop).
+// post-login home. Everyone starts on their WORK surface: Kyle (admin) in the
+// Today action feed, editors in their queue, photographers in My Shoots. Only
+// the owner lands on the overview dashboard. Used by the middleware redirect —
+// every target is in that role's ROLE_PAGES, so there's no redirect loop.
 export function homeFor(role: string | null | undefined): string {
-  return role === "PHOTOGRAPHER" ? "/shoot" : "/";
+  switch (role) {
+    case "PHOTOGRAPHER": return "/shoot";
+    case "EDITOR": return "/editing";
+    case "ADMIN": return "/today";
+    default: return "/";
+  }
 }
 
 export function parsePermissions(raw: string | null | undefined): Record<string, boolean> {

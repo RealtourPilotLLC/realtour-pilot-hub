@@ -256,7 +256,7 @@ export const MESSAGE_TASK_TYPES = ["client_reply", "comms_followup", "revision",
 // brief's "QC & deliver content" step shows them while OPEN on a recent job
 // (any due date) rather than only when due today, and they don't double up in
 // Needs Attention.
-const DELIVER_TASK_TYPES = ["media_qa", "delivery", "delivery_text", "feedback_review", "image_fixes", "finish_delivery"];
+export const DELIVER_TASK_TYPES = ["media_qa", "delivery", "delivery_text", "feedback_review", "image_fixes", "finish_delivery"];
 
 export type BriefTask = {
   id: string;
@@ -399,76 +399,44 @@ export async function getShootWindow() {
   };
 }
 
-/** Aggregated data for the dashboard home. */
-export async function getDashboardData() {
-  // Lean projection: the dashboard only needs status, price, and the date fields
-  // (for the "recent + this month" math) — NOT the client/photographer/editor/
-  // checklist relations it used to eagerly join across every project row.
-  const all = await prisma.project.findMany({
-    select: {
-      status: true, price: true, deliveredAt: true,
-      orderedAt: true, shootDate: true, revisionRequestedAt: true,
-    },
+// Tasks completed today (ET) — the dashboard's "handled" count and /today's
+// footer share this so the two never disagree.
+export async function getHandledToday(): Promise<number> {
+  return prisma.smartTask.count({
+    where: { status: "COMPLETED", completedAt: { gte: etDayStartUtc(new Date()) } },
   });
+}
 
-  // Match the rest of the hub's "last 2 weeks + moving forward" view so the
-  // dashboard counts line up with the pipeline.
-  const recent = all.filter(isProjectRecent);
-  const active = recent.filter(
-    (p) => p.status !== ProjectStatus.DELIVERED && p.status !== ProjectStatus.CANCELLED,
-  );
-
-  const now = new Date();
-  const soon = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-
-  // Next 7 days of shoots — from appointments, so multi-appointment orders show
-  // every visit (not just the project's single primary shootDate).
-  const upcomingShoots = (
-    await prisma.appointment.findMany({
-      where: {
-        startAt: { gte: now, lte: soon },
-        status: { not: "CANCELED" },
-        project: { status: { notIn: ["CANCELLED", "DELIVERED"] } },
-      },
-      orderBy: { startAt: "asc" },
-      include: { project: { select: { id: true, title: true } }, assignedTo: { select: { name: true } } },
-    })
-  ).map((a) => ({
-    id: a.project.id,
-    apptId: a.id,
-    title: a.project.title,
-    shootDate: a.startAt!,
-    photographer: a.assignedTo,
-  }));
-
-  const recentActivity = await prisma.activity.findMany({
-    take: 8,
-    orderBy: { createdAt: "desc" },
-    include: { author: true, project: true },
-  });
-
-  // Revenue in pipeline (active orders) and delivered this month.
-  const pipelineRevenue = active.reduce((sum, p) => sum + (p.price ?? 0), 0);
+// The owner's money glance — three aggregates, no row fetches. (Replaced the
+// old getDashboardData, which pulled every project row for stat cards nobody
+// acted on.)
+export async function getOwnerStats(): Promise<{
+  revenueThisMonth: number;
+  deliveredThisMonth: number;
+  pipelineRevenue: number;
+  activeCount: number;
+}> {
   // Month boundary in ET (server is UTC) so deliveries don't slip months at the
   // ET-evening rollover on the 1st.
-  const startOfMonth = etDayStartUtc(new Date(etDayKey(now).slice(0, 8) + "01T12:00:00Z"));
-  const deliveredThisMonth = all.filter(
-    (p) => p.deliveredAt && p.deliveredAt >= startOfMonth,
-  );
-  const revenueThisMonth = deliveredThisMonth.reduce((s, p) => s + (p.price ?? 0), 0);
-
+  const startOfMonth = etDayStartUtc(new Date(etDayKey(new Date()).slice(0, 8) + "01T12:00:00Z"));
+  const ACTIVE = ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW", "REVISION"] as ProjectStatus[];
+  const [month, pipeline] = await Promise.all([
+    prisma.project.aggregate({
+      where: { deliveredAt: { gte: startOfMonth }, status: { not: "CANCELLED" } },
+      _sum: { price: true },
+      _count: true,
+    }),
+    prisma.project.aggregate({
+      where: { status: { in: ACTIVE } },
+      _sum: { price: true },
+      _count: true,
+    }),
+  ]);
   return {
-    counts: {
-      active: active.length,
-      booked: all.filter((p) => p.status === ProjectStatus.BOOKED).length,
-      editing: all.filter((p) => p.status === ProjectStatus.EDITING).length,
-      review: all.filter((p) => p.status === ProjectStatus.REVIEW).length,
-      deliveredThisMonth: deliveredThisMonth.length,
-    },
-    pipelineRevenue,
-    revenueThisMonth,
-    upcomingShoots,
-    recentActivity,
+    revenueThisMonth: month._sum.price ?? 0,
+    deliveredThisMonth: month._count,
+    pipelineRevenue: pipeline._sum.price ?? 0,
+    activeCount: pipeline._count,
   };
 }
 
@@ -735,8 +703,15 @@ export type ProactiveFlag = {
   href: string;
 };
 
-export async function getProactiveFlags(): Promise<ProactiveFlag[]> {
+// Returns the top ≤3 freshest flags (not a 12-row wall — freshness is the MVP
+// mechanism, do not raise the cap back up) plus the single largest AR balance
+// for the owner's money strip (computed here so /billing isn't queried twice).
+export async function getProactiveFlags(): Promise<{
+  flags: ProactiveFlag[];
+  topAr: { name: string; total: number } | null;
+}> {
   const flags: ProactiveFlag[] = [];
+  let topAr: { name: string; total: number } | null = null;
   const now = Date.now();
   const daysSince = (d: Date | string | null | undefined): number | null =>
     d ? Math.floor((now - new Date(d).getTime()) / 86400000) : null;
@@ -753,7 +728,12 @@ export async function getProactiveFlags(): Promise<ProactiveFlag[]> {
       if (!cur) byClient.set(key, { name: r.clientName ?? "Unknown", total: r.outstanding, oldest: age, count: 1 });
       else { cur.total += r.outstanding; cur.oldest = Math.max(cur.oldest, age); cur.count += 1; }
     }
-    const aged = [...byClient.values()].filter((c) => c.oldest >= 30).sort((a, b) => b.oldest - a.oldest).slice(0, 5);
+    const balances = [...byClient.values()];
+    const biggest = balances.slice().sort((a, b) => b.total - a.total)[0];
+    if (biggest) topAr = { name: biggest.name, total: biggest.total };
+    // FRESH risk first (30-60d), not the same ancient zombie balance headlining
+    // every day — those are already visible (and nudgeable) on /billing.
+    const aged = balances.filter((c) => c.oldest >= 30).sort((a, b) => a.oldest - b.oldest).slice(0, 5);
     for (const c of aged) {
       flags.push({
         id: `ar-${c.name}`,
@@ -780,7 +760,9 @@ export async function getProactiveFlags(): Promise<ProactiveFlag[]> {
       const quiet = vips
         .map((v) => ({ v, ago: daysSince(lastMap.get(v.id) ?? null) }))
         .filter((x) => x.ago === null || x.ago >= 21)
-        .sort((a, b) => (b.ago ?? 99999) - (a.ago ?? 99999))
+        // Freshest quietness first — a VIP who JUST crossed 21 days is a save;
+        // one silent for a year is a churn statistic.
+        .sort((a, b) => (a.ago ?? 99999) - (b.ago ?? 99999))
         .slice(0, 4);
       for (const q of quiet) {
         flags.push({
@@ -797,12 +779,16 @@ export async function getProactiveFlags(): Promise<ProactiveFlag[]> {
     }
   } catch { /* non-fatal */ }
 
-  // 3) Stale revisions — a job sitting in REVISION too long.
+  // 3) STALE revisions only — a revision the team is actively working is not a
+  // risk (it's step 1 on /today); it becomes one after 2+ days without closure.
+  // (Flagging from minute zero triple-listed every fresh revision across the
+  // dashboard.)
   try {
     const revs = await prisma.project.findMany({
-      where: { status: "REVISION" },
+      where: { status: "REVISION", revisionRequestedAt: { lte: new Date(now - 2 * 86400000) } },
       select: { id: true, title: true, revisionRequestedAt: true },
-      take: 10,
+      orderBy: { revisionRequestedAt: "desc" },
+      take: 5,
     });
     for (const r of revs) {
       const ago = daysSince(r.revisionRequestedAt);
@@ -810,7 +796,7 @@ export async function getProactiveFlags(): Promise<ProactiveFlag[]> {
         id: `rev-${r.id}`,
         severity: (ago ?? 0) >= 3 ? "high" : "medium",
         kind: "revision",
-        title: `${r.title} is in revision`,
+        title: `${r.title.split(",")[0]} is stuck in revision`,
         detail: ago != null ? `Requested ${ago} day${ago === 1 ? "" : "s"} ago` : "Revision in progress",
         href: `/projects/${r.id}`,
       });
@@ -818,5 +804,5 @@ export async function getProactiveFlags(): Promise<ProactiveFlag[]> {
   } catch { /* non-fatal */ }
 
   const rank = { high: 0, medium: 1, low: 2 };
-  return flags.sort((a, b) => rank[a.severity] - rank[b.severity]).slice(0, 12);
+  return { flags: flags.sort((a, b) => rank[a.severity] - rank[b.severity]).slice(0, 3), topAr };
 }

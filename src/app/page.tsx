@@ -1,292 +1,175 @@
 import Link from "next/link";
-import {
-  Camera,
-  Palette,
-  CheckCircle2,
-  DollarSign,
-  AlertTriangle,
-  CalendarDays,
-  ArrowRight,
-  MessageSquare,
-  Users,
-  MapPin,
-  KanbanSquare,
-} from "lucide-react";
+import { redirect } from "next/navigation";
+import { ArrowRight, AlertTriangle, Camera, CheckCircle2, MessageSquare, PackageCheck, Sun, UserPlus } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
-import { Avatar } from "@/components/ui/Avatar";
-import { Badge } from "@/components/ui/Badge";
-import { getDashboardData, getMorningBrief, getOverdueTasks, getShootWindow, getProactiveFlags } from "@/lib/queries";
-import { MorningBrief, type BriefShoot } from "@/components/dashboard/MorningBrief";
 import { ProactiveFlags } from "@/components/dashboard/ProactiveFlags";
+import {
+  getMorningBrief, getOverdueTasks, getShootWindow, getProactiveFlags,
+  getHandledToday, getOwnerStats, DELIVER_TASK_TYPES,
+} from "@/lib/queries";
+import { getCurrentUser } from "@/lib/auth/user";
+import { contentTier, homeFor } from "@/lib/auth/access";
+import { isNeedsAssigning } from "@/lib/triage";
 import { formatMoney } from "@/lib/utils";
-import { formatDistanceToNow } from "date-fns";
-import { etTime, etFullDate, etMonth, etDayNum, etDaysAgo } from "@/lib/datetime";
+import { etFullDate, etTime } from "@/lib/datetime";
 
 export const dynamic = "force-dynamic";
 
-function StatCard({
-  icon: Icon,
-  label,
-  value,
-  accent,
-  sub,
-  href,
-}: {
-  icon: typeof Camera;
-  label: string;
-  value: string | number;
-  accent: string;
-  sub?: string;
-  href?: string;
-}) {
-  const body = (
-    <>
-      <div className="flex items-center justify-between">
-        <span className="text-sm text-muted">{label}</span>
-        <span
-          className="flex size-8 items-center justify-center rounded-lg"
-          style={{ backgroundColor: `${accent}1a`, color: accent }}
-        >
-          <Icon className="size-4" />
-        </span>
-      </div>
-      <div className="mt-2 text-2xl font-semibold tracking-tight">{value}</div>
-      {sub && <div className="mt-0.5 text-xs text-muted">{sub}</div>}
-    </>
-  );
-  const cls = "panel-shadow rounded-2xl border bg-surface p-4";
-  return href ? (
-    <Link href={href} className={`${cls} block transition-colors hover:bg-surface-2`}>
-      {body}
-    </Link>
-  ) : (
-    <div className={cls}>{body}</div>
-  );
-}
+// The dashboard's ONE job: a 10-second, role-aware glance — is anything on
+// fire, and one button into where the work happens (/today). It shows COUNTS;
+// /today shows rows. It never renders a task list. Keep it to ~one phone
+// screen with exactly one primary CTA. (The old page was ~5,000px tall with
+// 154 links and no primary action — don't let it grow back.)
 
-function toBriefShoot(s: {
-  apptId: string; id: string; title: string; shootDate: Date | null;
-  client: { name: string }; photographer: { name: string } | null;
-}): BriefShoot {
-  return {
-    key: s.apptId,
-    id: s.id,
-    title: s.title,
-    time: s.shootDate ? etTime(s.shootDate) : "",
-    clientName: s.client.name,
-    photographer: s.photographer?.name ?? null,
-  };
+function CountChip({ label, count, tone }: { label: string; count: number; tone: string }) {
+  return (
+    <Link
+      href="/today"
+      className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-border bg-surface px-3 py-2.5 text-sm hover:bg-surface-2"
+    >
+      <span className="text-lg font-semibold tabular-nums" style={{ color: tone }}>{count}</span>
+      <span className="text-muted">{label}</span>
+    </Link>
+  );
 }
 
 export default async function DashboardPage() {
-  const [data, brief, overdue, shoots, flags] = await Promise.all([
-    getDashboardData(),
+  const me = await getCurrentUser().catch(() => null);
+  // Creatives never see the ops overview (middleware already bounces the roles;
+  // this covers per-user "dashboard" permission overrides). Sessionless local
+  // dev renders the full owner view.
+  if (me && contentTier(me.role) === "CREATIVE") redirect(homeFor(me.role));
+  const isOwner = !me || me.role === "OWNER";
+
+  const [brief, overdue, shoots, radar, handledToday, ownerStats] = await Promise.all([
     getMorningBrief(),
     getOverdueTasks(),
     getShootWindow(),
     getProactiveFlags(),
+    getHandledToday(),
+    isOwner ? getOwnerStats() : Promise.resolve(null),
   ]);
-  const today = etFullDate(new Date());
+
+  const replies = brief.filter((t) => ["client_reply", "lead"].includes(t.taskType)).length;
+  const toAssign = brief.filter(isNeedsAssigning).length;
+  const toQc = brief.filter((t) => DELIVER_TASK_TYPES.includes(t.taskType)).length;
+  const total = brief.length;
+  const blockers = overdue.slice(0, 3);
+  const firstName = me?.name?.split(" ")[0] ?? (isOwner ? "Jordan" : "there");
+  const allClear = total === 0 && overdue.length === 0 && shoots.today.length === 0;
+  const nextTomorrow = shoots.tomorrow[0] ?? null;
 
   return (
     <div>
-      <PageHeader title="Dashboard" subtitle={today} />
-
-      <div className="space-y-6 p-6">
-        {/* Kyle's morning brief — the first thing he sees each day */}
-        <MorningBrief
-          tasks={brief}
-          todayShoots={shoots.today.map(toBriefShoot)}
-          tomorrowShoots={shoots.tomorrow.map(toBriefShoot)}
-        />
-
-        {/* On your radar — strategic risks (aging AR, quiet VIPs, revisions) */}
-        <ProactiveFlags flags={flags} />
-
-        {/* Stat row */}
-        <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
-          <StatCard
-            icon={Camera}
-            label="Today's shoots"
-            value={shoots.today.length}
-            accent="#4f46e5"
-            sub={shoots.tomorrow.length ? `${shoots.tomorrow.length} tomorrow` : `${data.counts.active} active projects`}
-            href="/schedule"
-          />
-          <StatCard
-            icon={Palette}
-            label="In editing"
-            value={data.counts.editing}
-            accent="#d97706"
-            href="/editing"
-          />
-          <StatCard
-            icon={CheckCircle2}
-            label="In review / QC"
-            value={data.counts.review}
-            accent="#db2777"
-            href="/queue"
-          />
-          <StatCard
-            icon={CheckCircle2}
-            label="Delivered (mo.)"
-            value={data.counts.deliveredThisMonth}
-            accent="#16a34a"
-            sub={formatMoney(data.revenueThisMonth)}
-            href="/pipeline"
-          />
-          <StatCard
-            icon={DollarSign}
-            label="Revenue in pipeline"
-            value={formatMoney(data.pipelineRevenue)}
-            accent="#0ea5e9"
-            sub="active orders"
-            href="/sales"
-          />
+      <PageHeader eyebrow="Eastern time" title="Dashboard" subtitle={etFullDate(new Date())} />
+      <div className="mx-auto max-w-3xl space-y-4 p-4 sm:p-6">
+        {/* 1 · Orientation */}
+        <div className="flex items-center gap-2.5">
+          <span className="flex size-9 items-center justify-center rounded-xl bg-brand/15 text-brand"><Sun className="size-5" /></span>
+          <div>
+            <h2 className="text-lg font-semibold tracking-tight">Good morning, {firstName}</h2>
+            <p className="text-xs text-muted">{handledToday} thing{handledToday === 1 ? "" : "s"} handled today</p>
+          </div>
         </div>
 
-        {/* Jump-offs — one-click into the day's tools (launchpad). */}
-        <div className="flex flex-wrap gap-2">
-          {[
-            { href: "/communications", label: "Communications", icon: MessageSquare },
-            { href: "/billing", label: "Billing", icon: DollarSign },
-            { href: "/clients", label: "Clients", icon: Users },
-            { href: "/map", label: "Map", icon: MapPin },
-            { href: "/pipeline", label: "Project Tracker", icon: KanbanSquare },
-          ].map((l) => (
+        {allClear ? (
+          /* All clear — one calm card instead of five empty sections. */
+          <div className="panel-shadow rounded-2xl border border-border bg-surface p-6 text-center">
+            <CheckCircle2 className="mx-auto size-8 text-success" />
+            <p className="mt-2 text-sm font-semibold">You&apos;re clear — {handledToday} handled today.</p>
+            <p className="mt-1 text-xs text-muted">
+              Next shoot: {nextTomorrow ? `tomorrow ${etTime(nextTomorrow.shootDate!)} — ${nextTomorrow.title.split(",")[0]} · ${nextTomorrow.photographer?.name ?? "unassigned"}` : "none scheduled"}
+            </p>
+          </div>
+        ) : (
+          <>
+            {/* 2 · THE button — the page's single primary action */}
             <Link
-              key={l.href}
-              href={l.href}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
+              href="/today"
+              className="flex w-full items-center justify-between rounded-2xl bg-brand px-5 py-4 text-white shadow-lg transition-opacity hover:opacity-90"
             >
-              <l.icon className="size-3.5" /> {l.label}
+              <span className="text-base font-semibold">Start your day</span>
+              <span className="flex items-center gap-2 text-sm font-medium opacity-90">
+                {total} thing{total === 1 ? "" : "s"} need you <ArrowRight className="size-4" />
+              </span>
             </Link>
-          ))}
-        </div>
 
-        <div className="grid gap-6 lg:grid-cols-3">
-          {/* Needs attention — overdue / not finished on prior days */}
-          <div className="panel-shadow lg:col-span-2 rounded-2xl border bg-surface">
-            <div className="flex items-center justify-between border-b px-5 py-3.5">
-              <div className="flex items-center gap-2">
-                <AlertTriangle className="size-4 text-danger" />
-                <h2 className="text-sm font-semibold">Needs attention</h2>
-                {overdue.length > 0 && (
-                  <span className="rounded-full bg-danger/10 px-1.5 text-xs font-medium text-danger">
-                    {overdue.length} overdue
-                  </span>
+            {/* 3 · The numbers without the walls */}
+            <div className="flex gap-2">
+              <CountChip label="replies" count={replies} tone="#38bdf8" />
+              <CountChip label="to QC" count={toQc} tone="#a78bfa" />
+              <CountChip label="to assign" count={toAssign} tone="#d97706" />
+            </div>
+
+            {/* 4 · Blockers — overdue carry-over, capped at 3 */}
+            {blockers.length > 0 && (
+              <div className="panel-shadow rounded-2xl border border-danger/30 bg-surface">
+                <div className="flex items-center gap-2 border-b border-border px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-danger">
+                  <AlertTriangle className="size-3.5" /> Blockers
+                </div>
+                <div className="divide-y divide-border/60">
+                  {blockers.map((t) => (
+                    <Link key={t.id} href="/today" className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm hover:bg-surface-2">
+                      <span className="min-w-0 truncate">{t.title}</span>
+                      <span className="shrink-0 text-[11px] font-medium text-danger">overdue</span>
+                    </Link>
+                  ))}
+                </div>
+                {overdue.length > 3 && (
+                  <Link href="/today" className="block border-t border-border px-4 py-2 text-xs font-medium text-brand hover:underline">
+                    +{overdue.length - 3} more → Today
+                  </Link>
                 )}
               </div>
-              <Link
-                href="/queue"
-                className="flex items-center gap-1 text-xs font-medium text-brand hover:underline"
-              >
-                Daily tasks <ArrowRight className="size-3" />
+            )}
+
+            {/* 5 · Today's schedule (rendered once — the only shoots list here) */}
+            <div className="panel-shadow rounded-2xl border border-border bg-surface">
+              <div className="flex items-center gap-2 border-b border-border px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-muted">
+                <Camera className="size-3.5" /> Today&apos;s shoots
+                <span className="ml-auto rounded-full bg-surface-2 px-1.5 text-[10px] font-medium">{shoots.today.length}</span>
+              </div>
+              {shoots.today.length === 0 ? (
+                <p className="px-4 py-3 text-sm text-muted-2">No shoots today.</p>
+              ) : (
+                <div className="divide-y divide-border/60">
+                  {shoots.today.slice(0, 4).map((s) => (
+                    <Link key={s.apptId} href={`/shoot/${s.id}`} className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm hover:bg-surface-2">
+                      <span className="min-w-0 truncate">{s.title.split(",")[0]}</span>
+                      <span className="shrink-0 text-xs text-muted">{etTime(s.shootDate!)} · {s.photographer?.name ?? "Unassigned"}</span>
+                    </Link>
+                  ))}
+                </div>
+              )}
+              <Link href="/schedule" className="block border-t border-border px-4 py-2 text-xs text-muted hover:text-foreground">
+                Tomorrow: {shoots.tomorrow.length} shoot{shoots.tomorrow.length === 1 ? "" : "s"} → Schedule
               </Link>
             </div>
-            <div className="max-h-[420px] divide-y overflow-y-auto scroll-thin">
-              {overdue.length === 0 && (
-                <div className="px-5 py-8 text-center text-sm text-muted">
-                  All clear — nothing carried over. 🎉
-                </div>
-              )}
-              {overdue.map((t) => (
-                <Link
-                  key={t.id}
-                  href={t.projectId ? `/projects/${t.projectId}` : "/queue"}
-                  className="flex items-center justify-between gap-3 px-5 py-3 hover:bg-surface-2"
-                >
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">{t.title}</div>
-                    <div className="truncate text-xs text-muted">{t.clientName ?? t.propertyAddress ?? ""}</div>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    {t.priority === "URGENT" && <Badge color="#f87171">Urgent</Badge>}
-                    <Badge color="#f87171">
-                      {(() => {
-                        if (!t.dueAt) return "overdue";
-                        const od = etDaysAgo(new Date(t.dueAt)); // ET calendar-day delta
-                        return od >= 1 ? `${od}d overdue` : "overdue";
-                      })()}
-                    </Badge>
-                  </div>
-                </Link>
-              ))}
-            </div>
-          </div>
+          </>
+        )}
 
-          {/* Upcoming shoots */}
-          <div className="panel-shadow rounded-2xl border bg-surface">
-            <div className="flex items-center gap-2 border-b px-5 py-3.5">
-              <CalendarDays className="size-4 text-accent" />
-              <h2 className="text-sm font-semibold">Upcoming shoots</h2>
-            </div>
-            <div className="divide-y">
-              {data.upcomingShoots.length === 0 && (
-                <div className="px-5 py-8 text-center text-sm text-muted">
-                  No shoots in the next 7 days.
-                </div>
-              )}
-              {data.upcomingShoots.map((p) => (
-                <Link
-                  key={p.apptId}
-                  href={`/shoot/${p.id}`}
-                  className="flex items-center gap-3 px-5 py-3 hover:bg-surface-2"
-                >
-                  <div className="flex flex-col items-center rounded-lg bg-surface-2 px-2 py-1 text-center">
-                    <span className="text-[10px] font-medium uppercase text-muted">
-                      {etMonth(p.shootDate!)}
-                    </span>
-                    <span className="text-base font-semibold leading-none">
-                      {etDayNum(p.shootDate!)}
-                    </span>
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium">{p.title}</div>
-                    <div className="truncate text-xs text-muted">
-                      {etTime(p.shootDate!)} ·{" "}
-                      {p.photographer?.name ?? "Unassigned"}
-                    </div>
-                  </div>
-                </Link>
-              ))}
-            </div>
-          </div>
-        </div>
+        {/* 6 · Radar — fresh risk only (≤3; creatives never reach this page) */}
+        {radar.flags.length > 0 && <ProactiveFlags flags={radar.flags} />}
 
-        {/* Recent activity */}
-        <div className="panel-shadow rounded-2xl border bg-surface">
-          <div className="border-b px-5 py-3.5">
-            <h2 className="text-sm font-semibold">Recent activity</h2>
-          </div>
-          <div className="divide-y">
-            {data.recentActivity.length === 0 && (
-              <div className="px-5 py-8 text-center text-sm text-muted">No recent activity.</div>
-            )}
-            {data.recentActivity.map((a) => (
-              <div key={a.id} className="flex items-start gap-3 px-5 py-3">
-                {a.author ? (
-                  <Avatar name={a.author.name} color={a.author.avatarColor} size={26} />
-                ) : (
-                  <span className="flex size-[26px] items-center justify-center rounded-full bg-surface-2 text-[10px] font-semibold text-muted">
-                    SYS
-                  </span>
-                )}
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm">
-                    {a.author && <span className="font-medium">{a.author.name} </span>}
-                    <span className="text-foreground/80">{a.body}</span>
-                  </div>
-                  <div className="mt-0.5 text-xs text-muted">
-                    <Link href={`/projects/${a.projectId}`} className="hover:underline">
-                      {a.project.title}
-                    </Link>{" "}
-                    · {formatDistanceToNow(a.createdAt, { addSuffix: true })}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+        {/* 7 · Money strip — owner only */}
+        {isOwner && ownerStats && (
+          <Link href="/sales" className="panel-shadow flex flex-wrap items-center gap-x-6 gap-y-1 rounded-2xl border border-border bg-surface px-5 py-3.5 text-sm hover:bg-surface-2">
+            <span><span className="text-muted">Delivered this month</span> <b>{formatMoney(ownerStats.revenueThisMonth)}</b> <span className="text-muted-2">({ownerStats.deliveredThisMonth})</span></span>
+            <span><span className="text-muted">Pipeline</span> <b>{formatMoney(ownerStats.pipelineRevenue)}</b> <span className="text-muted-2">({ownerStats.activeCount} active)</span></span>
+            {radar.topAr && <span><span className="text-muted">Top AR</span> <b>{radar.topAr.name} {formatMoney(radar.topAr.total)}</b></span>}
+            <ArrowRight className="ml-auto size-4 text-muted-2" />
+          </Link>
+        )}
+
+        {/* Quiet secondary links — everything else lives in the sidebar */}
+        <div className="flex flex-wrap items-center gap-4 px-1 text-xs text-muted-2">
+          <Link href="/queue" className="hover:text-foreground">Full task board</Link>
+          <Link href="/pipeline" className="hover:text-foreground">Project tracker</Link>
+          <span className="ml-auto inline-flex items-center gap-3">
+            {toAssign > 0 && <span><UserPlus className="mr-1 inline size-3" />{toAssign} unassigned</span>}
+            <span><PackageCheck className="mr-1 inline size-3" />{toQc} in QC</span>
+            <span><MessageSquare className="mr-1 inline size-3" />{replies} waiting</span>
+          </span>
         </div>
       </div>
     </div>

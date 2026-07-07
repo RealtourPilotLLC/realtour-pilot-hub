@@ -48,7 +48,8 @@ const SECTIONS: { verb: TodayCard["verb"]; title: string; blurb: string; accent:
   { verb: "reply", title: "Reply to people", blurb: "Clients waiting on an answer.", accent: "#38bdf8", icon: MessageSquare },
   { verb: "do", title: "Do these", blurb: "Instructions and to-dos.", accent: "#f59e0b", icon: ClipboardCheck },
   { verb: "send", title: "Send these texts", blurb: "Pre-written — review, tap Send, done.", accent: "#22c55e", icon: Send },
-  { verb: "check", title: "Check & deliver", blurb: "QC the content, then deliver.", accent: "#a78bfa", icon: PackageCheck },
+  // Blurb carries the QC SOP (lived on the old morning brief; kept verbatim).
+  { verb: "check", title: "Check & deliver", blurb: "Check verticals + horizontals, no odd AI edits / reflections / blemishes, item removal + virtual staging done, and every ordered deliverable is on Aryeo.", accent: "#a78bfa", icon: PackageCheck },
 ];
 
 const PRIORITY_RANK: Record<string, number> = { URGENT: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
@@ -299,11 +300,12 @@ function ActionCard({ card, assignees, onGone }: {
   );
 }
 
-export function TodayFeed({ cards, shoots, handledToday, assignees }: {
+export function TodayFeed({ cards, shoots, handledToday, assignees, tomorrowCount = 0 }: {
   cards: TodayCard[];
   shoots: TodayShoot[];
   handledToday: number;
   assignees: { key: string; name: string }[];
+  tomorrowCount?: number;
 }) {
   const router = useRouter();
   const [goneNotes, setGoneNotes] = useState<Record<string, string>>({});
@@ -350,6 +352,9 @@ export function TodayFeed({ cards, shoots, handledToday, assignees }: {
               </Link>
             ))}
           </div>
+          <Link href="/schedule" className="block border-t border-border px-4 py-2 text-xs text-muted hover:text-foreground">
+            Tomorrow: {tomorrowCount} shoot{tomorrowCount === 1 ? "" : "s"} → Schedule
+          </Link>
         </div>
       )}
 
