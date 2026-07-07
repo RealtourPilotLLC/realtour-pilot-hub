@@ -93,6 +93,10 @@ export default async function DashboardPage() {
                 {total} thing{total === 1 ? "" : "s"} need you <ArrowRight className="size-4" />
               </span>
             </Link>
+            {/* Guided variant: same stack, one card at a time */}
+            <Link href="/today?guided=1" className="-mt-2 block px-1 text-xs font-medium text-muted hover:text-foreground">
+              or walk me through it one at a time →
+            </Link>
 
             {/* 3 · The numbers without the walls */}
             <div className="flex gap-2">

@@ -320,18 +320,25 @@ function ActionCard({ card, assignees, onGone }: {
   );
 }
 
-export function TodayFeed({ cards, shoots, handledToday, assignees, tomorrowCount = 0 }: {
+export function TodayFeed({ cards, shoots, handledToday, assignees, tomorrowCount = 0, initialGuided = false }: {
   cards: TodayCard[];
   shoots: TodayShoot[];
   handledToday: number;
   assignees: { key: string; name: string }[];
   tomorrowCount?: number;
+  initialGuided?: boolean;
 }) {
   const router = useRouter();
   const [goneNotes, setGoneNotes] = useState<Record<string, string>>({});
+  // Guided walkthrough: one card at a time — do it or tap Next to skip; the
+  // stack advances itself. Same cards, same actions, zero scanning.
+  const [guided, setGuided] = useState(initialGuided);
+  const [skipped, setSkipped] = useState<Set<string>>(new Set());
+  const [lastNote, setLastNote] = useState<string | null>(null);
 
   const onGone = (id: string, note: string) => {
     setGoneNotes((m) => ({ ...m, [id]: note }));
+    setLastNote(note);
     router.refresh();
   };
 
@@ -346,6 +353,80 @@ export function TodayFeed({ cards, shoots, handledToday, assignees, tomorrowCoun
   const remaining = sorted.filter((c) => !goneNotes[c.id]).length;
   const clearedNow = Object.keys(goneNotes).length;
 
+  // Guided order: section by section (reply → do → send → check), same sort
+  // within — identical to reading the stack top to bottom.
+  const guidedQueue = useMemo(
+    () => SECTIONS.flatMap((sec) => sorted.filter((c) => c.verb === sec.verb)).filter((c) => !goneNotes[c.id] && !skipped.has(c.id)),
+    [sorted, goneNotes, skipped],
+  );
+
+  if (guided) {
+    const total = sorted.filter((c) => !goneNotes[c.id]).length + clearedNow;
+    const position = Math.min(clearedNow + skipped.size + 1, total);
+    const current = guidedQueue[0] ?? null;
+    const sec = current ? SECTIONS.find((s) => s.verb === current.verb) : null;
+    const SecIcon = sec?.icon;
+    return (
+      <div className="mx-auto max-w-2xl space-y-4">
+        {/* Walkthrough header: where you are + the way out */}
+        <div className="flex items-center justify-between px-1">
+          <p className="text-sm text-muted">
+            {current ? <>Step <span className="font-semibold text-foreground">{position}</span> of {total}</> : "Walkthrough finished"}
+          </p>
+          <button onClick={() => setGuided(false)} className="text-xs font-medium text-muted hover:text-foreground hover:underline">
+            Show the full list →
+          </button>
+        </div>
+        <div className="h-1.5 overflow-hidden rounded-full bg-surface-2">
+          <div className="h-full rounded-full bg-brand transition-all" style={{ width: `${total ? Math.round(((clearedNow + skipped.size) / total) * 100) : 100}%` }} />
+        </div>
+        {lastNote && current && (
+          <p className="flex items-center gap-2 px-1 text-xs text-muted-2">
+            <CheckCircle2 className="size-3.5 text-success" /> {lastNote} — next up:
+          </p>
+        )}
+
+        {current ? (
+          <>
+            {sec && SecIcon && (
+              <div className="flex items-center gap-2 px-1">
+                <span className="flex size-6 items-center justify-center rounded-lg" style={{ background: `${sec.accent}22`, color: sec.accent }}>
+                  <SecIcon className="size-3.5" />
+                </span>
+                <h2 className="text-sm font-semibold">{sec.title}</h2>
+                <span className="hidden text-[11px] text-muted-2 sm:inline">· {sec.blurb}</span>
+              </div>
+            )}
+            <ActionCard key={current.id} card={current} assignees={assignees} onGone={onGone} />
+            <div className="flex items-center justify-between">
+              <p className="px-1 text-[11px] text-muted-2">Handle it above, or skip it for now.</p>
+              <button
+                onClick={() => setSkipped((s) => new Set(s).add(current.id))}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-border bg-surface px-4 py-2.5 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+              >
+                Next <ArrowRight className="size-4" />
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="rounded-2xl border border-dashed border-border bg-surface p-10 text-center">
+            <CheckCircle2 className="mx-auto mb-3 size-10 text-success" />
+            <p className="text-base font-semibold">{skipped.size > 0 ? "You walked the whole stack 👏" : "All clear 🎉"}</p>
+            <p className="mt-1 text-sm text-muted">
+              {clearedNow > 0 ? `${clearedNow} handled this walkthrough. ` : ""}
+              {skipped.size > 0 ? `${skipped.size} skipped for later.` : "Nothing left for today."}
+            </p>
+            {skipped.size > 0 && (
+              <button onClick={() => setSkipped(new Set())} className="mt-4 rounded-xl bg-brand px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90">
+                Go through the {skipped.size} skipped
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       {/* Progress line */}
@@ -353,7 +434,14 @@ export function TodayFeed({ cards, shoots, handledToday, assignees, tomorrowCoun
         <p className="text-sm text-muted">
           {remaining === 0 ? "Nothing needs you." : <><span className="font-semibold text-foreground">{remaining}</span> {remaining === 1 ? "thing needs" : "things need"} you</>}
         </p>
-        <Link href="/queue" className="text-xs font-medium text-muted hover:text-foreground hover:underline">Full board →</Link>
+        <span className="flex items-center gap-3">
+          {remaining > 0 && (
+            <button onClick={() => { setGuided(true); setSkipped(new Set()); }} className="text-xs font-semibold text-brand hover:underline">
+              Guide me →
+            </button>
+          )}
+          <Link href="/queue" className="text-xs font-medium text-muted hover:text-foreground hover:underline">Full board →</Link>
+        </span>
       </div>
 
       {/* Today's shoots strip */}

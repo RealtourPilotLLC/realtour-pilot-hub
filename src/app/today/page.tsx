@@ -38,7 +38,8 @@ const TYPE_LABEL: Record<string, string> = {
   comms_followup: "job instruction", revision: "revision", appointment_prep: "shoot prep",
 };
 
-export default async function TodayPage() {
+export default async function TodayPage({ searchParams }: { searchParams: Promise<{ guided?: string }> }) {
+  const sp = await searchParams;
   // Same guard pattern as /queue: middleware gates when auth is enforced; here we
   // re-check role access for signed-in users (local dev runs sessionless/open).
   const me = await getCurrentUser().catch(() => null);
@@ -145,7 +146,7 @@ export default async function TodayPage() {
         subtitle="Everything that needs you — work down the stack and you're done."
       />
       <div className="p-4 sm:p-6">
-        <TodayFeed cards={cards} shoots={shoots} handledToday={handledToday} assignees={chips} tomorrowCount={shootWindow.tomorrow.length} />
+        <TodayFeed cards={cards} shoots={shoots} handledToday={handledToday} assignees={chips} tomorrowCount={shootWindow.tomorrow.length} initialGuided={sp.guided === "1"} />
       </div>
     </div>
   );
