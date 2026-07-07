@@ -199,10 +199,6 @@ const OUR_DOMAIN = "realtourpilot.com";
 // status@ / Zapier mails mean "edit done" or "editor has a question" → route to
 // a "check the Luma Visuals reel tracker" task instead of a lead.
 const LUMA_DOMAINS = ["lumavisuals.co", "lumavisuals.com"];
-// A Luma subject like "Revision Request Received -- 3725 Old Post Circle (Rick…)"
-// means the reel is being revised → reflect it on the project (status + task),
-// not just a generic "check the tracker" pointer.
-const LUMA_REVISION_RE = /\brevision\b/i;
 // Match a project to a Luma subject by its street (house number + suffix dropped,
 // so "3752 Old Post Cir" matches "3725 Old Post Circle").
 const STREET_SUFFIX_RE = /\b(dr|drive|st|street|rd|road|ave|avenue|ln|lane|ct|court|blvd|boulevard|way|pl|place|cir|circle|ter|terrace|pkwy|hwy|sq|square|run|trl|trail|loop|pike|row)\.?$/i;
@@ -465,51 +461,33 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
       const handleMessage = async (): Promise<number> => {
         if (!text) return 0;
 
-        // Luma Visuals = our premium-reel video editor. Their mail isn't a lead —
-        // it means an edit is ready or the editor has a question. Route it to a
-        // "check the Luma Visuals reel tracker" task (skip bare order-received acks).
+        // Luma Visuals = our premium-reel video editor. Only TWO of their emails
+        // are work for us: the edit is FINISHED (go download/QC/deliver) or the
+        // EDITOR wrote us something (answer them). Everything else — "revision
+        // request received", "order received", status pings — is an echo of
+        // something WE did; it gets logged to comms memory and creates nothing.
+        // (The old handler even raised a REVISION off Luma's revision-received
+        // ack — us asking Luma for a fix boomeranged into an urgent task at us.)
         if (domain && LUMA_DOMAINS.includes(domain)) {
-          if (!/\b(ready|delivered|complete|completed|message from your editor|question|revision|approved|update)\b/i.test(subject)) return 0;
-          const matchedClient = clients.find((c) => c.name && subject.toLowerCase().includes(c.name.toLowerCase()));
+          const subj = subject || "";
+          // 1) Acks of our own submissions → do nothing.
+          if (/\b(request|order)\s+(received|submitted)\b/i.test(subj) || /^thank(s| you)/i.test(subj)) return 0;
 
-          // Revision email → reflect it on the matched project (status → REVISION
-          // when delivered, revision note + urgent revision task). Match by the
-          // street named in the subject; prefer a DELIVERED order (a revision
-          // request lands after the reel was delivered).
-          if (LUMA_REVISION_RE.test(subject) && matchedClient) {
-            const subjLower = subject.toLowerCase();
-            const projs = await prisma.project.findMany({
-              where: { clientId: matchedClient.id },
-              orderBy: [{ orderedAt: { sort: "desc", nulls: "last" } }, { shootDate: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
-              select: { id: true, title: true, status: true, deliverables: { select: { type: true } } },
-            });
-            const addrMatches = projs.filter((p) => { const c = streetCore(p.title); return c.length >= 4 && subjLower.includes(c); });
-            const target = addrMatches.find((p) => p.status === "DELIVERED") || addrMatches[0] || projs[0];
-            if (target) {
-              // Luma does reels/video — reopen that QC item for the re-QC.
-              const types = new Set(target.deliverables.map((d) => d.type));
-              const qcCategories = [types.has("SOCIAL_REEL") ? "Reel" : null, types.has("VIDEO") ? "Video" : null].filter(Boolean) as string[];
-              const { raiseRevision } = await import("@/lib/comms");
-              await raiseRevision({
-                projectId: target.id,
-                clientId: matchedClient.id,
-                clientName: matchedClient.name,
-                propertyAddress: target.title,
-                note: subject.slice(0, 300),
-                source: "Luma Visuals",
-                qcCategories: qcCategories.length ? qcCategories : ["Reel"],
-              });
-              return 1;
-            }
-          }
-          // Which JOB is this update about? Match the street named in the subject
-          // within the client's orders, so a client with two reels in flight gets
-          // one "check the tracker" task PER JOB — keying on the client alone
-          // silently swallowed the second reel's "ready" email while the first
-          // task was still open. Repeat mails about the same job still collapse.
-          let lumaProject: { id: string } | null = null;
+          const isDone = /\b(ready|complete|completed|delivered|approved|final(ized)?)\b/i.test(subj);
+          const local = (email.split("@")[0] || "").toLowerCase();
+          const editorMsg =
+            /\b(message from your editor|question|comment|note from)\b/i.test(subj) ||
+            // A real person at Luma (not status@/no-reply@ automation) emailed us.
+            (!AUTOMATED_LOCAL.test(local) && !/^(status|updates?)$/.test(local));
+          // 2) Neither finished nor a human message → status ping; log only.
+          if (!isDone && !editorMsg) return 0;
+
+          const matchedClient = clients.find((c) => c.name && subj.toLowerCase().includes(c.name.toLowerCase()));
+          // Which JOB is this about? Match the street named in the subject within
+          // the client's orders so two reels in flight get separate tasks.
+          let lumaProject: { id: string; title: string } | null = null;
           if (matchedClient) {
-            const subjLower = subject.toLowerCase();
+            const subjLower = subj.toLowerCase();
             const projs = await prisma.project.findMany({
               where: { clientId: matchedClient.id },
               orderBy: [{ orderedAt: { sort: "desc", nulls: "last" } }, { shootDate: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
@@ -517,37 +495,50 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
             });
             lumaProject = projs.find((p) => { const c = streetCore(p.title); return c.length >= 4 && subjLower.includes(c); }) ?? null;
           }
-          // No street in the subject → fall back to the subject line itself, so
-          // distinct notifications about distinct jobs still get distinct tasks.
-          const subjectKey = subject.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
+          const street = lumaProject ? lumaProject.title.split(",")[0] : matchedClient?.name ?? "see tracker";
+          const subjectKey = subj.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
+          const kind = isDone ? "done" : "msg";
           const key = matchedClient
-            ? `luma-client-${matchedClient.id}-${lumaProject?.id ?? (subjectKey || threadId)}`
+            ? `luma-client-${matchedClient.id}-${lumaProject?.id ?? (subjectKey || threadId)}-${kind}`
             : `luma-${threadId}`;
+
+          // The finished edit is positive evidence — close any open chase/update
+          // tasks for this job before minting the "go get it" task.
+          if (isDone && lumaProject) {
+            await prisma.smartTask.updateMany({
+              where: {
+                projectId: lumaProject.id,
+                status: { notIn: ["COMPLETED", "CANCELLED"] },
+                OR: [{ taskType: "vendor_update" }, { dedupeKey: { startsWith: `vendor-chase-${lumaProject.id}` } }, { dedupeKey: { startsWith: `luma-dispatch-${lumaProject.id}` } }],
+              },
+              data: { status: "COMPLETED", completedAt: new Date() },
+            }).catch(() => {});
+          }
+
           const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
           if (existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED") return 0;
-          const who = matchedClient?.name ? ` (${matchedClient.name})` : "";
           const data = {
             taskType: "vendor_update",
-            title: `Luma Visuals reel update — check the tracker`,
-            summary: `Luma Visuals (our reel editor) sent an update${who} via Gmail: “${text.slice(0, 200)}”. Open the tracker — the edit is done or they have a question; QC/download the reel or answer them, then deliver.`.slice(0, 500),
+            title: isDone
+              ? `Download + QC the finished Luma reel — ${street}`
+              : `Answer Luma's editor — ${street}`,
+            summary: isDone
+              ? `Luma says the edit is finished: “${text.slice(0, 180)}”. Download it from the tracker, QC it, deliver to the client, and update the job.`.slice(0, 500)
+              : `Luma's editor wrote us: “${text.slice(0, 200)}”. Read it in the tracker and answer so the edit keeps moving.`.slice(0, 500),
             description: text.slice(0, 400),
-            reasonCreated: "Luma Visuals (reel editor) update via Gmail",
-            checklist: JSON.stringify([
-              "Open the Luma Visuals tracker: https://portal.lumavisuals.co/",
-              "See if the edit is done or the editor has a question",
-              "QC / download the reel, or answer the editor",
-              "Deliver to the client + update the project if it's done",
-            ]),
+            reasonCreated: isDone ? "Luma Visuals: edit finished" : "Luma Visuals: message from the editor",
+            checklist: JSON.stringify(
+              isDone
+                ? ["Open the Luma tracker: https://portal.lumavisuals.co/", "Download the finished reel", "QC it (per the QC SOP)", "Deliver to the client + update the project"]
+                : ["Open the Luma tracker: https://portal.lumavisuals.co/", "Read the editor's message", "Answer them so the edit keeps moving"],
+            ),
             source: "gmail",
             sourceDetail: threadRef,
             priority: "HIGH" as const,
             dueAt: new Date(Date.now() + 4 * 3600_000),
             ownerId: kyle?.id ?? null,
-            // KYLE's job (unassigned = his by default), NOT assigned to "luma":
-            // Luma never opens the hub, and every Kyle-facing surface (brief,
-            // /today) filters to his own + unassigned work — assigning the
-            // chase-the-tracker checklist to the vendor made it invisible to
-            // every human. The vendor is already named in the title/summary.
+            // KYLE's job (unassigned = his by default) — the vendor is named in
+            // the title; assigning to "luma" hid it from every human surface.
             assignedKey: null,
             clientId: matchedClient?.id ?? null,
             projectId: lumaProject?.id ?? matchedClient?.projects[0]?.id ?? null,
