@@ -79,6 +79,7 @@ const SECTIONS: NavSection[] = [
     title: "Creative",
     items: [
       { label: "My Shoots", href: "/shoot", icon: Camera, key: "shoot" },
+      { label: "My Pay", href: "/my-pay", icon: Wallet, key: "mypay" },
       { label: "Upload Portal", href: "/upload", icon: Upload, key: "upload" },
       { label: "Editor Queue", href: "/editing", icon: Palette, key: "editing" },
     ],
@@ -130,6 +131,9 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
   const sections = SECTIONS.map((s) => {
     let items = s.items.filter(can);
     if (creative) items = items.map((i) => (i.key === "resources" ? { ...i, label: "SOP Center" } : i));
+    // "My Pay" is the photographer's own payout view — owner/admin use /payouts,
+    // so keep it out of their nav even though canAccess(OWNER) allows everything.
+    if (user && user.role !== "PHOTOGRAPHER") items = items.filter((i) => i.key !== "mypay");
     if (showScripting && s.title === "Creative") {
       items = [...items, { label: "Script Writing", href: scriptingUrl!, icon: PenLine, external: true }];
     }

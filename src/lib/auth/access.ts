@@ -7,7 +7,7 @@ export type PageKey =
   | "dashboard" | "today" | "tasks" | "history" | "pipeline" | "schedule" | "map"
   | "communications" | "clients" | "team" | "upload" | "editing" | "sales"
   | "billing" | "catalog" | "payouts" | "marketing" | "resources" | "assistant"
-  | "training" | "feedback" | "connections" | "users" | "shoot";
+  | "training" | "feedback" | "connections" | "users" | "shoot" | "mypay";
 
 export type Role = "OWNER" | "ADMIN" | "EDITOR" | "PHOTOGRAPHER";
 
@@ -25,6 +25,7 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   { key: "schedule", label: "Schedule", href: "/schedule" },
   { key: "map", label: "Map", href: "/map" },
   { key: "shoot", label: "My Shoots", href: "/shoot" },
+  { key: "mypay", label: "My Pay", href: "/my-pay" },
   { key: "communications", label: "Communications", href: "/communications" },
   { key: "clients", label: "Clients", href: "/clients" },
   { key: "team", label: "Team", href: "/team" },
@@ -62,7 +63,9 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
   // (scoped to their jobs), SOPs, and Ask the Hub (auto-gated to the CREATIVE
   // content tier — owner/admin-only knowledge + comms are filtered out for them).
   // They get NO ops/dashboard, schedule, map, clients, comms, billing, pipeline.
-  PHOTOGRAPHER: ["shoot", "upload", "resources", "training", "assistant"],
+  // "mypay" = their OWN pay for the current/next period (shoot pay + mileage,
+  // no invoices) with a flag-a-question loop to Jordan.
+  PHOTOGRAPHER: ["shoot", "mypay", "upload", "resources", "training", "assistant"],
 };
 
 // Where to send a user who lands somewhere they can't access — and their
