@@ -404,12 +404,14 @@ ${tasksBlock}
 Decide how we should handle this message and respond as STRICT JSON only:
 {"actionable": <bool>, "projectId": <"order id" or null>, "title": "<short imperative to-do, max 12 words, what WE must do, no client name>", "detail": "<one sentence of context>", "priority": "<URGENT|HIGH|MEDIUM|LOW>", "mergeIntoTaskId": <"task id" or null>, "isRevisionRequest": <bool>, "flags": ["<short note>", ...], "reason": "<one sentence>"}
 
+Team roster (get roles right): photographers Harrison Wells + James Livingston shoot on site; Kim + Remar are EDITORS (edit only, never shoot/film); Luma/AutoHDR/CubiCasa/ReadyPost are editing vendors.
+
 Rules:
 - actionable = false ONLY when the message needs no work from us: a thank-you, an emoji/reaction, "sounds good", a confirmation, or something the conversation shows is already fully handled. Otherwise true.
 - projectId: choose the order this message is about, using the addresses and the conversation. Use null only if no order clearly applies. NEVER invent an id; it must be one listed above.
 - priority: URGENT if the client is upset, it is time-sensitive, a delivery is overdue, or they explicitly need it now; HIGH for a normal question or request; MEDIUM for minor or non-urgent; LOW for FYI.
-- mergeIntoTaskId: if one of the existing OPEN to-dos already covers this same request, return its id so we update it instead of creating a duplicate. It must be one of the ids listed above, else null.
-- isRevisionRequest: true ONLY when the client is asking us to CHANGE, FIX, REDO, RESHOOT, or RE-EDIT media we have ALREADY DELIVERED for one of their orders. It is FALSE for scheduling or booking a shoot, availability, pricing/checkout/payment questions, a new order, a general question, a complaint about service, or anything about work not yet delivered. When in doubt, false.
+- mergeIntoTaskId: if one of the existing OPEN to-dos already covers this same request, return its id so we update it instead of creating a duplicate. It must be one of the ids listed above, else null. NEVER merge a NEW topic into a revision to-do: merging overwrites that to-do's title and summary, and a revision task must keep describing the revision. If the message is a different subject than the open to-do (a new email thread, new ideas, a different deliverable), return null and let it be its own task.
+- isRevisionRequest: true ONLY when the client is asking us to CHANGE, FIX, REDO, RESHOOT, or RE-EDIT media we have ALREADY DELIVERED for one of their orders. It is FALSE for scheduling or booking a shoot, availability, pricing/checkout/payment questions, a new order, a general question, a complaint about service, or anything about work not yet delivered. It is also FALSE when the client is sharing IDEAS, reference videos, style examples, scripts, or creative direction for their NEXT or future content (common for monthly social-content clients: "check out this video", "I like this style", "ideas for the next one") — that is a normal reply/instruction, not a revision. When in doubt, false.
 - flags: 0 to 4 short notes worth surfacing (e.g. "delivery 2 days overdue", "we already promised Tuesday", "asking a second time", "client sounds frustrated"). Only include real, grounded notes.
 - Base everything ONLY on the data above. Do not invent dates, prices, or promises.`;
 
@@ -503,9 +505,12 @@ ${tasksBlock}
 Decide and respond as STRICT JSON only:
 {"actionable": <bool>, "title": "<one clear to-do for the whole thing>", "detail": "<1-2 sentences or short ordered steps>", "priority": "<URGENT|HIGH|MEDIUM|LOW>", "clientId": <"client id" or null>, "projectId": <"order id" or null>, "mergeIntoTaskId": <"task id" or null>, "flags": ["<short note>", ...], "reason": "<one sentence>"}
 
+Team roster (get roles RIGHT in titles/details): Jordan = owner, Kyle = ops manager/VA. Harrison Wells and James Livingston are the PHOTOGRAPHERS (they shoot/film on site). Kim and Remar are video/photo EDITORS — they edit only and NEVER shoot or film; "get Remar/Kim X done" or "schedule Remar/Kim for X" means line up or finish the EDIT of X, not a shoot. Luma Visuals / AutoHDR / CubiCasa / ReadyPost are external editing vendors.
+
 Rules:
 - actionable = false for chatter/acknowledgements ("got it", "thanks", "sounds good") or anything that needs no action from us.
 - clientId: ONLY if the THREAD makes clear this message/workflow is about one of the candidate clients above, return that client's id. If it is unclear or none fit, return null. NEVER guess; a wrong client is worse than none.
+- Never invent activities the roster can't do (an editor "filming", a photographer "editing") — describe the task in terms of what that person actually does.
 - mergeIntoTaskId: return an existing to-do's id ONLY when this message is the SAME effort for the SAME client/property/vendor (the next step of that exact workflow, or more detail about it). NEVER merge work about a DIFFERENT client, property, or vendor into one to-do — if the subject differs at all, return null so it becomes its own task. Must be one of the ids listed, else null.
 - One task = one client/subject. If a single message covers two different clients (e.g. "send Joe's videos AND Jamie's videos"), pick the ONE this message is primarily about for this task; do not blend two clients' work into a single title/summary.
 - title: describe the ONE thing the team must do for this client/subject. Name the client only when you are confident from the thread.

@@ -11,7 +11,9 @@ import { closeReplyForOutbound } from "@/lib/tasks";
 // that exact task (closeReplyForOutbound is street-inference based and can miss
 // when a client has several open replies — Today's cards are per-task, so we
 // close deterministically). Human-initiated: Kyle reviews the draft and taps Send.
-export async function sendReplyForTask(taskId: string, body: string): Promise<{ ok: boolean; message: string }> {
+// opts.keepOpen: for REVISION cards — acknowledging the client doesn't finish
+// the edit, so the task stays open after the reply goes out.
+export async function sendReplyForTask(taskId: string, body: string, opts: { keepOpen?: boolean } = {}): Promise<{ ok: boolean; message: string }> {
   await requireAdmin();
   const text = body.trim();
   if (!text) return { ok: false, message: "Write a message first." };
@@ -38,15 +40,17 @@ export async function sendReplyForTask(taskId: string, body: string): Promise<{ 
       data: { projectId: task.projectId, type: "SYSTEM", body: `Text sent to ${task.client.name}: ${text.slice(0, 200)}` },
     }).catch(() => {});
   }
-  // Close THIS task first (deterministic), then let the generic sweep close any
-  // sibling reply task the text also answers.
-  await prisma.smartTask.updateMany({
-    where: { id: task.id, status: { notIn: ["COMPLETED", "CANCELLED"] } },
-    data: { status: "COMPLETED", completedAt: new Date() },
-  });
-  await closeReplyForOutbound(task.clientId, text).catch(() => {});
+  if (!opts.keepOpen) {
+    // Close THIS task first (deterministic), then let the generic sweep close any
+    // sibling reply task the text also answers.
+    await prisma.smartTask.updateMany({
+      where: { id: task.id, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    });
+    await closeReplyForOutbound(task.clientId, text).catch(() => {});
+  }
   revalidatePath("/today");
   revalidatePath("/queue");
   revalidatePath("/");
-  return { ok: true, message: "Reply sent." };
+  return { ok: true, message: opts.keepOpen ? "Reply sent — the edit work stays on the card." : "Reply sent." };
 }

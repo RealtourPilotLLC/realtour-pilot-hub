@@ -115,6 +115,7 @@ function ActionCard({ card, assignees, onGone }: {
   const [drafting, startDraft] = useTransition();
   const [kept, setKept] = useState(false); // triage: Kyle tapped "I'll do it"
   const [copied, setCopied] = useState(false);
+  const [sentNote, setSentNote] = useState<string | null>(null); // revision reply sent, card stays
 
   const src = sourceMeta(card.source);
   const due = dueLabel(card);
@@ -133,11 +134,15 @@ function ActionCard({ card, assignees, onGone }: {
       else setErr(r.message);
     });
 
+  // A revision card's reply is an acknowledgement — the edit work remains, so
+  // the task (and card) stay open after sending.
+  const isRevision = card.taskType === "revision";
   const sendReply = () =>
     start(async () => {
       setErr(null);
-      const r = await sendReplyForTask(card.id, draftText);
-      if (r.ok) onGone(card.id, `Reply sent${card.clientName ? ` to ${card.clientName}` : ""}`);
+      const r = await sendReplyForTask(card.id, draftText, { keepOpen: isRevision });
+      if (r.ok && isRevision) { setCompose(false); setDraftText(""); setSentNote(r.message); }
+      else if (r.ok) onGone(card.id, `Reply sent${card.clientName ? ` to ${card.clientName}` : ""}`);
       else setErr(r.message);
     });
 
@@ -230,8 +235,9 @@ function ActionCard({ card, assignees, onGone }: {
           </div>
         )}
 
-        {/* Reply compose */}
-        {card.verb === "reply" && compose && (
+        {/* Reply compose (reply cards + revision cards — a revision is an
+            incoming client email too, so it gets the same draft-and-send) */}
+        {(card.verb === "reply" || isRevision) && compose && (
           <div className="space-y-2">
             <textarea
               value={draftText}
@@ -245,6 +251,7 @@ function ActionCard({ card, assignees, onGone }: {
         )}
 
         {err && <p className="text-xs font-medium text-danger">{err}</p>}
+        {sentNote && <p className="text-xs font-medium text-success">✓ {sentNote}</p>}
 
         {/* Actions */}
         <div className="flex flex-wrap items-center gap-2 pt-0.5">
@@ -287,6 +294,19 @@ function ActionCard({ card, assignees, onGone }: {
               <Btn primary onClick={() => done("Done")} busy={busy}>
                 <CheckCircle2 className="size-4" /> Done
               </Btn>
+              {/* Revisions come from a client message — let Kyle acknowledge it
+                  right here (send keeps the card open; the edit still needs doing). */}
+              {isRevision && !compose && (
+                <>
+                  <Btn onClick={aiDraft} busy={drafting}><Sparkles className="size-4" /> Draft reply</Btn>
+                  <Btn onClick={() => setCompose(true)}>Write my own</Btn>
+                </>
+              )}
+              {isRevision && compose && card.hasPhone && (
+                <Btn primary onClick={sendReply} busy={busy} disabled={!draftText.trim()}>
+                  <Send className="size-4" /> Send
+                </Btn>
+              )}
               {card.projectId && (
                 <Link href={`/projects/${card.projectId}`} className="inline-flex items-center gap-1 rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">
                   Open job <ArrowRight className="size-3.5" />
