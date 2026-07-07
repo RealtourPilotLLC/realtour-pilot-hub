@@ -84,7 +84,10 @@ export async function recordFeedback(opts: {
       ),
       source: "feedback",
       priority: negative ? "URGENT" : "MEDIUM",
-      dueAt: new Date(),
+      // Negative feedback needs someone NOW; a "loved it!" is a next-day glance,
+      // not an instantly-overdue task (it also auto-closes after a week via
+      // closeStaleFeedbackReviews if nobody gets to it).
+      dueAt: negative ? new Date() : new Date(Date.now() + 24 * 3600_000),
       projectId: project.id,
       clientId: project.clientId,
       propertyAddress: project.title,

@@ -61,6 +61,14 @@ async function dispatch(provider: string, eventType: string | null, payload: Rec
   } else if (provider === "slack") {
     const { processSlackEvent } = await import("@/app/api/webhooks/slack/route");
     await processSlackEvent((payload.event as Record<string, unknown>) || {});
+  } else if (provider === "frameio") {
+    const { processFrameioEvent } = await import("@/app/api/webhooks/frameio/route");
+    await processFrameioEvent(eventType || "action", payload);
+  } else if (provider === "scripting") {
+    // Scripting rows store the raw {event, data} body.
+    const { processScriptingEvent } = await import("@/app/api/webhooks/scripting/route");
+    type StudioData = Parameters<typeof processScriptingEvent>[1];
+    await processScriptingEvent((payload.event as string) || eventType || "unknown", ((payload.data as StudioData) || {}) as StudioData);
   } else {
     throw new Error(`no retry handler for provider "${provider}"`);
   }

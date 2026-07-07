@@ -31,10 +31,50 @@ export async function POST(req: NextRequest) {
   try { body = (await req.json()) as Record<string, unknown>; } catch { /* non-JSON */ }
 
   const eventType = String((body.type as string) || (body.event as string) || "action");
-  await prisma.webhookEvent
+  const evt = await prisma.webhookEvent
     .create({ data: { provider: "frameio", eventType, payload: JSON.stringify(body).slice(0, 12000) } })
-    .catch(() => {});
+    .catch(() => null);
 
+  try {
+    const result = await processFrameioEvent(eventType, body);
+    if (evt) {
+      await prisma.webhookEvent
+        .update({ where: { id: evt.id }, data: { status: "PROCESSED", processedAt: new Date() } })
+        .catch(() => {});
+    }
+    return NextResponse.json({ ok: true, ...result });
+  } catch (e) {
+    // Surface the REAL failure instead of "Sent ✓": mark THIS event row ERROR so
+    // retryFailedWebhooks re-runs it on the hourly cron, and tell the editor the
+    // handoff didn't land (audit crack #21). 200 so Frame.io renders our message
+    // (its own retries don't help — ours do).
+    const message = (e instanceof Error ? e.message : String(e)).slice(0, 300);
+    if (evt) {
+      await prisma.webhookEvent
+        .update({ where: { id: evt.id }, data: { status: "ERROR", error: message.slice(0, 500) } })
+        .catch(() => {});
+    }
+    return NextResponse.json(
+      {
+        ok: false,
+        message,
+        title: "RealTour Pilot — something went wrong",
+        description: `The hub couldn't process this (${message.slice(0, 120)}). It will retry automatically — if the team doesn't respond, ping Kyle directly.`,
+      },
+      { status: 200 },
+    );
+  }
+}
+
+// Process one Frame.io event end-to-end. THROWS on a real failure (DB write,
+// revision raise) so the caller marks the event row ERROR and surfaces the
+// message — the old version wrapped every write in .catch(()=>{}), blanket-marked
+// PROCESSED, and returned "Sent ✓" regardless. Returns the Frame.io-visible
+// title/description for soft outcomes. Exported for the webhookRetry dispatcher.
+export async function processFrameioEvent(
+  eventType: string,
+  body: Record<string, unknown>,
+): Promise<{ title: string; description: string }> {
   // Dig out the Frame.io project id the action fired on (payload shape varies by
   // trigger — check the common spots).
   const g = (o: unknown, ...keys: string[]): unknown => {
@@ -51,7 +91,7 @@ export async function POST(req: NextRequest) {
     null;
 
   if (!fioProjectId) {
-    return NextResponse.json({ title: "RealTour Pilot", description: "Received — but couldn't identify the project." });
+    return { title: "RealTour Pilot", description: "Received — but couldn't identify the project." };
   }
 
   const project = await prisma.project.findFirst({
@@ -59,7 +99,7 @@ export async function POST(req: NextRequest) {
     select: { id: true, title: true, clientId: true, status: true },
   });
   if (!project) {
-    return NextResponse.json({ title: "RealTour Pilot", description: "This Frame.io project isn't linked to a job yet." });
+    return { title: "RealTour Pilot", description: "This Frame.io project isn't linked to a job yet." };
   }
 
   // A review COMMENT (not the "ready for review" action) → a revision for the
@@ -83,18 +123,15 @@ export async function POST(req: NextRequest) {
         propertyAddress: project.title,
         note: `Frame.io review note: ${text.trim()}`,
         source: "frameio",
-      }).catch(() => {});
+      });
     }
-    await prisma.webhookEvent
-      .updateMany({ where: { provider: "frameio", eventType, processedAt: null }, data: { status: "PROCESSED", processedAt: new Date() } })
-      .catch(() => {});
-    return NextResponse.json({ ok: true });
+    return { title: "RealTour Pilot", description: "Review note received — filed as a revision." };
   }
 
   // Flip to Review (only from an in-production stage, so we don't disturb
   // delivered/cancelled jobs) and notify Kyle.
   if (["SHOT", "EDITING", "REVISION"].includes(project.status)) {
-    await prisma.project.update({ where: { id: project.id }, data: { status: ProjectStatus.REVIEW } }).catch(() => {});
+    await prisma.project.update({ where: { id: project.id }, data: { status: ProjectStatus.REVIEW } });
   }
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } }, select: { id: true } });
   const street = project.title?.split(",")[0] ?? "a job";
@@ -114,11 +151,7 @@ export async function POST(req: NextRequest) {
       dedupeKey: `frameio-review-${project.id}`,
     },
     update: { status: "OPEN", completedAt: null, priority: "HIGH" },
-  }).catch(() => {});
+  });
 
-  await prisma.webhookEvent
-    .updateMany({ where: { provider: "frameio", eventType, processedAt: null }, data: { status: "PROCESSED", processedAt: new Date() } })
-    .catch(() => {});
-
-  return NextResponse.json({ title: "Sent to RealTour ✓", description: "The team has been notified to review your finals." });
+  return { title: "Sent to RealTour ✓", description: "The team has been notified to review your finals." };
 }

@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import type { ProjectStatus } from "@prisma/client";
 import { Aryeo } from "@/lib/integrations/aryeo";
-import { dropboxConfigured, dropboxListFolder } from "@/lib/integrations/dropbox";
+import { dropboxConfigured, dropboxListFolder, DropboxError } from "@/lib/integrations/dropbox";
 import { getSecret } from "@/lib/integrations/connections";
 import { projectFolderPaths } from "@/lib/dropboxFolders";
 import { standardDeliveryDue, deliveryDueFrom } from "@/lib/tasks";
@@ -128,6 +128,10 @@ export type StatusSignals = {
   scheduled: boolean; // a SCHEDULED (non-cancelled) appointment exists
   anyAppt: boolean;
   shootDate: Date | null;
+  // Dropbox was needed but couldn't be read (not connected, or a listing call
+  // FAILED — distinct from "no folders", which is a real zero). Signals here are
+  // absent, not empty; don't conclude "no media" from them.
+  dropboxUnavailable: boolean;
   revisionOpen: boolean; // client requested changes after delivery (comms)
   revisionNote?: string | null;
   videoTier: VideoTier | null; // standard | premium (null = no video ordered)
@@ -293,11 +297,16 @@ async function aryeoMedia(listingId: string): Promise<AryeoMediaSignal | null> {
   }
 }
 
-async function folderCount(path: string): Promise<number> {
+// A missing folder is a trustworthy ZERO (nothing was uploaded there). Any OTHER
+// failure — auth, rate limit, network, a 5xx — is UNKNOWN, not zero: treating it
+// as zero made a one-second Dropbox blip read as "no media", which demoted shot
+// jobs and destroyed their QC/delivery tasks (audit crack #2). null = "couldn't look".
+async function folderCount(path: string): Promise<number | null> {
   try {
     return (await dropboxListFolder(path)).filter((e) => e.tag === "file").length;
-  } catch {
-    return 0;
+  } catch (e) {
+    if (e instanceof DropboxError && /not_found|path_lookup/i.test(e.message)) return 0;
+    return null;
   }
 }
 
@@ -334,6 +343,7 @@ async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<Sta
     });
 
   let dropbox: DropboxSignal | null = null;
+  let dropboxUnavailable = !useDropbox;
   if (useDropbox && !aryeoSatisfies) {
     const f = projectFolderPaths(p);
     const [rawPhotos, rawVideo, finalPhotos, finalVideo] = await Promise.all([
@@ -342,13 +352,25 @@ async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<Sta
       folderCount(f.finalPhotos),
       folderCount(f.finalVideo),
     ]);
-    dropbox = { rawPhotos, rawVideo, finalPhotos, finalVideo };
+    // Any FAILED folder read (null ≠ a real "not found" zero) poisons the whole
+    // signal — partial counts would read as "media vanished". Unknown beats wrong.
+    if ([rawPhotos, rawVideo, finalPhotos, finalVideo].some((c) => c === null)) {
+      dropboxUnavailable = true;
+    } else {
+      dropbox = {
+        rawPhotos: rawPhotos as number,
+        rawVideo: rawVideo as number,
+        finalPhotos: finalPhotos as number,
+        finalVideo: finalVideo as number,
+      };
+    }
   }
 
   return {
     expected,
     aryeo,
     dropbox,
+    dropboxUnavailable,
     fulfilled: !!p.deliveredAt,
     scheduled: p.appointments.some((a) => (a.status || "").toUpperCase() === "SCHEDULED"),
     // Canceled appointments are not "an appointment on file" — a job whose only
@@ -441,10 +463,27 @@ export async function syncProjectStatuses(
 
   const results = await pMap(projects, 5, async (p) => {
     const sig = await gatherSignals(p, useDropbox);
-    return { p, ...computeStatus(sig) };
+    return { p, sig, ...computeStatus(sig) };
   });
 
-  for (const { p, status, evidence } of results) {
+  for (const { p, sig, status, evidence } of results) {
+    // Signal-fetch FAILURE is unknown, not zero. When Aryeo couldn't be read AND
+    // Dropbox is unavailable for a past-shoot production job, we have no evidence
+    // at all — keep the prior status/evidence untouched instead of recomputing
+    // from nothing (which erased "present" evidence, flipped deliverables back to
+    // PENDING, and cascaded into destroyed QC tasks — audit crack #2).
+    if (
+      !sig.aryeo &&
+      !sig.dropbox &&
+      sig.dropboxUnavailable &&
+      ["SHOT", "EDITING", "REVIEW", "REVISION"].includes(p.status) &&
+      p.shootDate &&
+      p.shootDate.getTime() < Date.now()
+    ) {
+      byStatus[p.status] = (byStatus[p.status] ?? 0) + 1;
+      await prisma.project.update({ where: { id: p.id }, data: { statusCheckedAt: new Date() } });
+      continue;
+    }
     // Don't demote a manually-advanced EDITING project back to SHOT.
     let final = status;
     if (p.status === "EDITING" && status === "SHOT") final = "EDITING";

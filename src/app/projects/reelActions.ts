@@ -32,6 +32,12 @@ export async function saveReelRecipe(projectId: string, input: ReelRecipeInput):
       reelRecipeUpdatedAt: new Date(),
     },
   });
+  // Saving the recipe IS the "review/lock the generated script" step — retire the
+  // Script Studio nudge task (nothing else closed it; audit crack #35).
+  await prisma.smartTask.updateMany({
+    where: { dedupeKey: `scripting-script-${projectId}`, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    data: { status: "COMPLETED", completedAt: new Date() },
+  });
   revalidatePath(`/edit/${projectId}`);
   revalidatePath(`/shoot/${projectId}`);
   revalidatePath(`/projects/${projectId}`);

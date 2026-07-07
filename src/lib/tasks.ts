@@ -252,7 +252,13 @@ function specsForProject(p: {
         summary: monthly
           ? "Monthly personal-branding / social content (7–10 business-day turnaround). Produce + deliver this month's content, then mark delivered."
           : "Photos are QC'd and ready. Deliver the gallery via Aryeo + the branded email, mark it delivered, and the post-delivery client text queues automatically.",
-        deliverableType: primary,
+        // No deliverableType: delivering the gallery is one-per-project, so its
+        // dedupe key must stay stable. Keying it on deliverables[0] (an unordered
+        // list) meant a re-derive that reshuffled the deliverables minted a SECOND
+        // "Deliver gallery" task — 15 jobs got 2-4 dupes (audit crack #30; same
+        // fix as confirmation_text above). The old-key open dupes fall out of
+        // expectedKeys, so the reconciler auto-closes them, keeping this one.
+        deliverableType: undefined,
         dueAt: deliveryDueFrom(anchor, primary, dueOpts(primary)),
         // Delivering a gallery (Aryeo + branded email) is always Kyle's step — even
         // for a social-plan client's regular property shoots. He assigns the actual
@@ -688,6 +694,24 @@ export async function closeStaleDeliveryTexts(days = 7): Promise<number> {
   return r.count;
 }
 
+// Positive/neutral feedback mints a "review client feedback" task that nothing
+// ever closes (feedback_review is in no auto-close list — audit crack #35). A
+// week on, a "thanks, loved it!" needs no follow-up: close the non-urgent ones.
+// NEGATIVE feedback tasks are URGENT and stay open until a human resolves them.
+export async function closeStaleFeedbackReviews(days = 7): Promise<number> {
+  const cutoff = new Date(Date.now() - days * DAY);
+  const r = await prisma.smartTask.updateMany({
+    where: {
+      taskType: "feedback_review",
+      priority: { not: "URGENT" },
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
+      createdAt: { lt: cutoff },
+    },
+    data: { status: "COMPLETED", completedAt: new Date() },
+  });
+  return r.count;
+}
+
 // Generate (idempotently) the expected tasks for every ACTIVE project.
 export async function generateTasksForActiveProjects(): Promise<{ created: number; projects: number }> {
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
@@ -746,6 +770,13 @@ type TaskProject = {
   photographer: { name: string } | null;
 };
 
+// Dedupe-key families minted OUTSIDE this reconciler (webhooks/integrations).
+// Their keys aren't sha1 spec hashes, so they never appear in expectedKeys — the
+// reconciler used to read that as "no longer expected" and auto-complete them
+// within the hour (the Frame.io "Review finals" task self-destructed on first
+// use — audit crack #20). Externally-minted tasks are closed by their OWN flows.
+const EXTERNAL_KEY_PREFIXES = ["frameio-review-", "scripting-script-", "scripting-client-", "luma-", "slack-", "lead-"];
+
 // Reconcile one active project's expected tasks (create missing, refresh QC /
 // delivery, retire what's no longer expected). Returns how many it created.
 async function syncOneProjectTasks(
@@ -776,7 +807,12 @@ async function syncOneProjectTasks(
       // it, so it's no longer in expectedKeys). The send button also closes it.
       taskType: { in: ["media_qa", "delivery", "finish_delivery", "confirmation_text"] },
       status: { notIn: ["COMPLETED", "CANCELLED"] },
-      NOT: { dedupeKey: { in: [...expectedKeys] } },
+      NOT: [
+        { dedupeKey: { in: [...expectedKeys] } },
+        // Never auto-close externally-minted tasks (Frame.io review handoffs etc.)
+        // just because this reconciler didn't expect their key.
+        ...EXTERNAL_KEY_PREFIXES.map((pfx) => ({ dedupeKey: { startsWith: pfx } })),
+      ],
     },
     data: { status: "COMPLETED", completedAt: new Date() },
   });
@@ -784,7 +820,7 @@ async function syncOneProjectTasks(
     const key = dedupe([p.id, s.taskType, s.deliverableType]);
     const exists = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
     if (exists) {
-      if (exists.status === "COMPLETED" || exists.status === "CANCELLED") continue;
+      if (exists.status === "CANCELLED") continue;
       // For the consolidated QC task, re-sync its checklist each run: an item
       // is checked if it's live on Aryeo OR Kyle already ticked it manually
       // (manual checks are preserved). If every item ends up checked, the task
@@ -804,6 +840,13 @@ async function syncOneProjectTasks(
           ...extras,
         ];
         const allDone = checklistComplete(merged);
+        // A COMPLETED QC whose evidence still shows unchecked work on a live
+        // SHOT/EDITING/REVIEW job was almost certainly auto-closed by this
+        // reconciler during a transient signal blip (a demoted-then-healed job) —
+        // REOPEN it: auto-close requires positive evidence, and a completed
+        // dedupe key is never re-minted, so the work would vanish forever
+        // (audit crack #2). If everything IS live, leave the completion alone.
+        if (exists.status === "COMPLETED" && allDone) continue;
         await prisma.smartTask.update({
           where: { id: exists.id },
           data: {
@@ -812,11 +855,16 @@ async function syncOneProjectTasks(
             // Post-shoot QC: priced by its turnaround due date, NOT shoot proximity
             // (a 7–10 day monthly job shouldn't read URGENT because it shot today).
             ...(s.dueAt ? { dueAt: s.dueAt, priority: computePriority({ dueAt: s.dueAt, status: p.status }) } : {}),
-            ...(allDone ? { status: "COMPLETED", completedAt: new Date() } : {}),
+            ...(allDone
+              ? { status: "COMPLETED", completedAt: new Date() }
+              : exists.status === "COMPLETED"
+                ? { status: "OPEN", completedAt: null }
+                : {}),
           },
         });
         continue;
       }
+      if (exists.status === "COMPLETED") continue;
       // Keep delivery due dates fresh when turnaround rules change.
       if (s.taskType === "delivery" && s.dueAt && exists.dueAt?.getTime() !== s.dueAt.getTime()) {
         await prisma.smartTask.update({

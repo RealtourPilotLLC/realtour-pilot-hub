@@ -36,6 +36,12 @@ export async function GET(req: NextRequest) {
     const { closeStaleDeliveryTexts } = await import("@/lib/tasks");
     return closeStaleDeliveryTexts(7);
   });
+  // Retire week-old positive/neutral feedback-review tasks (nothing else closes
+  // them; negative/URGENT ones stay until a human resolves them).
+  await step("staleFeedbackReviews", async () => {
+    const { closeStaleFeedbackReviews } = await import("@/lib/tasks");
+    return closeStaleFeedbackReviews(7);
+  });
   await step("webhookLogTrimmed", async () => {
     const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const r = await prisma.webhookEvent.deleteMany({ where: { createdAt: { lt: cutoff } } });

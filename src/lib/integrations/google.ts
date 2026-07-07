@@ -625,7 +625,29 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
           externalId: `gmail-${dedupe}`,
         });
 
-        if (answered) return 0; // logged above; don't create a task for handled mail
+        if (answered) {
+          // Skip only the reply-task creation for handled mail — still run
+          // revision detection: a client's "can you brighten the kitchen" that
+          // Kyle answered "on it!" from his phone before this scan used to skip
+          // classification entirely, so the project never flipped to REVISION and
+          // no editor task existed (audit crack #33). Lands on exactly the mail
+          // Kyle answers fastest: unhappy clients.
+          if (resolvedClientId && project && ["DELIVERED", "REVISION", "REVIEW"].includes(project.status)) {
+            const { classifyComm, raiseRevision } = await import("@/lib/comms");
+            if (classifyComm(text).isRevision) {
+              const raised = await raiseRevision({
+                projectId: project.id,
+                clientId: resolvedClientId,
+                clientName: resolvedClientName,
+                propertyAddress: project.title,
+                note: text,
+                source: "gmail",
+              });
+              return raised ? 1 : 0;
+            }
+          }
+          return 0; // logged above; don't create a task for handled mail
+        }
 
         if (resolvedClientId) {
           await recordClientCommunication({

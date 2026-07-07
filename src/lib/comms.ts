@@ -1,7 +1,7 @@
 import "server-only";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
-import { createCommTask, mergeIntoExistingTask } from "@/lib/tasks";
+import { createCommTask, mergeIntoExistingTask, closeObsoleteTasks } from "@/lib/tasks";
 import { routeCommTask } from "@/lib/brain";
 
 // ---------------------------------------------------------------------------
@@ -374,6 +374,15 @@ export async function resolveRevision(projectId: string): Promise<void> {
     where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
     data: { status: "COMPLETED", completedAt: new Date() },
   });
+  // The job is delivered again → its re-QC / delivery tasks are done too. The
+  // revision flow reopened the QC task (reflectRevisionInQc), but nothing could
+  // ever close it: the task sync skips REVISION jobs and this function only
+  // closed the revision task — every revision left a permanently-overdue QC in
+  // Kyle's list (audit crack #22). A REVIEW job that merely carried a revision
+  // note keeps its stage AND its open QC work.
+  if (project?.status === "REVISION" || project?.status === "DELIVERED") {
+    await closeObsoleteTasks(projectId, "DELIVERED");
+  }
   await prisma.activity.create({
     data: { projectId, type: "STATUS_CHANGE", body: "Revision marked resolved — back to Delivered." },
   });

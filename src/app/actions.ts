@@ -129,7 +129,17 @@ export async function setSmartTaskStatus(taskId: string, status: string) {
     data: { status, completedAt: status === "COMPLETED" ? new Date() : null },
   });
   if (updated.count === 0) return; // task no longer exists — no-op instead of throw
-  const t = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { projectId: true } });
+  const t = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { projectId: true, taskType: true } });
+  // Completing a revision task from the queue (Kyle's habit) must ALSO clear the
+  // project's revision flag — only the project-page button called resolveRevision,
+  // so the hourly sync re-pinned the job as REVISION forever (audit crack #10).
+  // resolveRevision also returns the job to DELIVERED and closes its now-moot
+  // re-QC / delivery tasks.
+  if (status === "COMPLETED" && t?.taskType === "revision" && t.projectId) {
+    await resolveRevision(t.projectId);
+    revalidatePath("/pipeline");
+    revalidatePath("/");
+  }
   revalidatePath("/queue");
   revalidatePath("/history");
   if (t?.projectId) revalidatePath(`/projects/${t.projectId}`);
