@@ -252,13 +252,13 @@ function JobRow({ job, memberId, busy, run }: { job: PayrollJob; memberId: strin
           <td colSpan={7} className="px-2 py-3">
             {job.returnTrip && (
               <div className="mb-2 rounded-md bg-warning/10 px-2 py-1.5 text-[11px] text-warning">
-                Return/second trip — paid a flat rate (their minimum), not a % of the invoice, so the invoice total doesn&apos;t affect this row. To change the pay, use <span className="font-semibold">Flat shoot pay</span>.
+                Return/second trip — pays the flat minimum by default. Set an <span className="font-semibold">Invoice total</span> here to pay their % of that amount instead (e.g. a split-invoice job), or hard-set the pay with <span className="font-semibold">Flat shoot pay</span>.
               </div>
             )}
             <div className="flex flex-wrap items-end gap-3 text-xs">
               <label className="flex flex-col gap-1">
                 <span className="text-muted-2">Invoice total ($)</span>
-                <input value={invoice} onChange={(e) => setInvoice(e.target.value)} inputMode="decimal" placeholder={job.returnTrip ? "n/a" : "auto"} disabled={job.returnTrip} title={job.returnTrip ? "Return trip — paid a flat rate, not a % of invoice. Use Flat shoot pay to change it." : undefined} className="w-24 rounded-lg border bg-surface px-2 py-1 disabled:opacity-50" />
+                <input value={invoice} onChange={(e) => setInvoice(e.target.value)} inputMode="decimal" placeholder="auto" className="w-24 rounded-lg border bg-surface px-2 py-1" />
               </label>
               <label className="flex flex-col gap-1">
                 <span className="text-muted-2">Flat shoot pay ($)</span>

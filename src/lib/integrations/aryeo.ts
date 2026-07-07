@@ -36,29 +36,45 @@ export async function aryeoRequest<T = unknown>(
 
   // Hard timeout so a stalled Aryeo socket can never hang the request forever
   // (an un-timed media fetch was holding workers open and OOM-ing the instance).
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 12000);
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: opts.method ?? "GET",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        Accept: "application/json",
-        ...(opts.body ? { "Content-Type": "application/json" } : {}),
-      },
-      body: opts.body ? JSON.stringify(opts.body) : undefined,
-      cache: "no-store",
-      signal: ctrl.signal,
-    });
-  } catch (e) {
-    if (e instanceof Error && e.name === "AbortError") {
-      throw new AryeoError("Aryeo timed out — please try again.", 504);
+  // GETs are idempotent, and Aryeo throws transient timeouts/5xxs routinely —
+  // retry those up to 2 extra times with a short backoff instead of failing the
+  // whole sync run on one blip (audit crack #25). Writes are never retried.
+  const method = opts.method ?? "GET";
+  const maxAttempts = method === "GET" ? 3 : 1;
+  let res: Response | null = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 12000);
+    try {
+      res = await fetch(url, {
+        method,
+        headers: {
+          Authorization: `Bearer ${key}`,
+          Accept: "application/json",
+          ...(opts.body ? { "Content-Type": "application/json" } : {}),
+        },
+        body: opts.body ? JSON.stringify(opts.body) : undefined,
+        cache: "no-store",
+        signal: ctrl.signal,
+      });
+      if (res.status >= 500 && attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, attempt * 1000));
+        continue;
+      }
+      break;
+    } catch (e) {
+      const timedOut = e instanceof Error && e.name === "AbortError";
+      if (timedOut && attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, attempt * 1000));
+        continue;
+      }
+      if (timedOut) throw new AryeoError("Aryeo timed out — please try again.", 504);
+      throw e;
+    } finally {
+      clearTimeout(timer);
     }
-    throw e;
-  } finally {
-    clearTimeout(timer);
   }
+  if (!res) throw new AryeoError("Aryeo timed out — please try again.", 504);
 
   const text = await res.text();
   let json: unknown = undefined;
@@ -467,12 +483,16 @@ export function isPayExcludedItem(item: { title?: string; subtitle?: string; sub
 
 // The eligible services invoice for creative pay: sum of non-canceled order
 // items in DOLLARS, excluding virtual/AI add-ons. This is what the shoot-pay
-// percentage is applied to.
-export function payableInvoiceFromItems(items: AryeoOrderItem[]): number {
+// percentage is applied to. Capped at the order total when provided: item list
+// prices can sum ABOVE a discounted order's total, and the % must never be paid
+// on money the client didn't actually pay (audit crack #18 — 205 orders).
+export function payableInvoiceFromItems(items: AryeoOrderItem[], orderTotalDollars?: number | null): number {
   const cents = items
     .filter((it) => !it.is_canceled && !isPayExcludedItem(it))
     .reduce((sum, it) => sum + (typeof it.amount === "number" ? it.amount : 0), 0);
-  return Math.round(cents) / 100;
+  const dollars = Math.round(cents) / 100;
+  if (orderTotalDollars != null && orderTotalDollars >= 0 && dollars > orderTotalDollars) return orderTotalDollars;
+  return dollars;
 }
 
 // Friendly deliverable label per type (for the explicit product map below).
@@ -646,21 +666,27 @@ export async function testAryeoKey(key: string): Promise<{ ok: true; label: stri
 // ---------------------------------------------------------------------------
 export async function syncAryeoOrders(
   opts: { full?: boolean } = {},
-): Promise<{ imported: number; clients: number; scanned: number }> {
+): Promise<{ imported: number; updated: number; clients: number; scanned: number }> {
   let imported = 0;
+  let updated = 0;
   let scanned = 0;
   let clientsCreated = 0;
 
   try {
-    // Preload what we already have to avoid a per-order round-trip.
+    // Preload what we already have to avoid a per-order round-trip. The extra
+    // fields feed the UPDATE PASS below (payments/cancellations/client drift).
     const [existingProjects, existingClients] = await Promise.all([
       prisma.project.findMany({
         where: { aryeoOrderId: { not: null } },
-        select: { aryeoOrderId: true },
+        select: {
+          id: true, aryeoOrderId: true, status: true, clientId: true, deliveredAt: true,
+          price: true, payableInvoice: true, paymentStatus: true, balanceAmount: true,
+        },
       }),
       prisma.client.findMany({ select: { id: true, aryeoCustomerId: true, email: true } }),
     ]);
     const seenOrders = new Set(existingProjects.map((p) => p.aryeoOrderId!));
+    const projByOrder = new Map(existingProjects.map((p) => [p.aryeoOrderId!, p]));
 
     // Map Aryeo company-team-member id → our TeamMember id (for shoot assignment).
     const team = await prisma.teamMember.findMany({
@@ -726,9 +752,74 @@ export async function syncAryeoOrders(
           stop = true;
           break;
         }
-        // Already imported — skip it, but KEEP scanning the window so a
-        // late-finalized order sitting behind it still gets picked up.
-        if (seenOrders.has(order.id)) continue;
+        // Already imported → UPDATE PASS (audit cracks #1/#14/#18/#29): orders
+        // change after import — payments land, invoices grow, orders get
+        // canceled, customers get swapped — and a write-once import froze all of
+        // it (phantom AR, stale payroll basis, 30 undead cancellations). Mirror
+        // the money fields, map CANCELED, and re-link a changed customer.
+        if (seenOrders.has(order.id)) {
+          const proj = projByOrder.get(order.id);
+          if (!proj) continue;
+          const price = money(order.total_amount);
+          const payable = payableInvoiceFromItems(order.items ?? [], price);
+          const isCanceled = (order.order_status ?? "").toUpperCase().startsWith("CANCEL");
+          const cust = order.customer;
+          const custClientId = cust?.id ? clientByAryeoId.get(cust.id) : undefined;
+
+          const neq = (a: number | null, b: number | null) =>
+            (a == null) !== (b == null) || (a != null && b != null && Math.abs(a - b) > 0.005);
+          const moneyChanged =
+            neq(proj.price, price) || neq(proj.payableInvoice, payable) ||
+            (proj.paymentStatus ?? null) !== (order.payment_status ?? null) ||
+            (proj.balanceAmount ?? null) !== (order.balance_amount ?? null);
+          // Never cancel a delivered job from here (refunds are a human call).
+          const cancelNow = isCanceled && proj.status !== "CANCELLED" && !proj.deliveredAt;
+          // Customer changed on the order: same person under a new Aryeo id
+          // re-links silently; a different person gets an activity trail.
+          const clientChanged = !!cust?.id && custClientId !== undefined && custClientId !== proj.clientId;
+          const clientNeedsResolve = !!cust?.id && custClientId === undefined;
+
+          if (moneyChanged || cancelNow || clientChanged || clientNeedsResolve) {
+            const newClientId = clientChanged || clientNeedsResolve ? await resolveClient(cust) : proj.clientId;
+            await prisma.project.update({
+              where: { id: proj.id },
+              data: {
+                price,
+                payableInvoice: payable,
+                paymentStatus: order.payment_status ?? null,
+                balanceAmount: order.balance_amount ?? null,
+                invoiceUrl: order.invoice_url ?? null,
+                paymentUrl: order.payment_url ?? null,
+                ...(newClientId !== proj.clientId ? { clientId: newClientId } : {}),
+                ...(cancelNow ? { status: "CANCELLED" } : {}),
+              },
+            });
+            if (cancelNow) {
+              try {
+                const { closeObsoleteTasks } = await import("@/lib/tasks");
+                await closeObsoleteTasks(proj.id, "CANCELLED");
+              } catch { /* tasks close on the next cron sweep */ }
+              await prisma.activity.create({
+                data: { projectId: proj.id, type: "SYSTEM", body: "Order canceled in Aryeo — project cancelled and its tasks closed." },
+              }).catch(() => {});
+            }
+            if (newClientId !== proj.clientId) {
+              await prisma.activity.create({
+                data: { projectId: proj.id, type: "SYSTEM", body: `Client re-linked to match the order's current Aryeo customer (${customerName(cust)}).` },
+              }).catch(() => {});
+            }
+            // Keep the in-memory row current so a duplicate page doesn't re-write.
+            Object.assign(proj, {
+              price, payableInvoice: payable,
+              paymentStatus: order.payment_status ?? null,
+              balanceAmount: order.balance_amount ?? null,
+              clientId: newClientId,
+              status: cancelNow ? "CANCELLED" : proj.status,
+            });
+            updated++;
+          }
+          continue;
+        }
 
         const cust = order.customer;
         const addr = order.address;
@@ -751,7 +842,7 @@ export async function syncAryeoOrders(
             clientId,
             photographerId,
             price: money(order.total_amount),
-            payableInvoice: payableInvoiceFromItems(items),
+            payableInvoice: payableInvoiceFromItems(items, money(order.total_amount)),
             paymentStatus: order.payment_status ?? null,
             balanceAmount: order.balance_amount ?? null,
             invoiceUrl: order.invoice_url ?? null,
@@ -783,7 +874,7 @@ export async function syncAryeoOrders(
     }
 
     await markSynced("aryeo");
-    return { imported, clients: clientsCreated, scanned };
+    return { imported, updated, clients: clientsCreated, scanned };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     await markError("aryeo", msg);
@@ -808,7 +899,7 @@ export async function backfillPayableInvoice(): Promise<{ updated: number; scann
     for (const order of batch) {
       if (!order.id) continue;
       scanned++;
-      const val = payableInvoiceFromItems(order.items ?? []);
+      const val = payableInvoiceFromItems(order.items ?? [], money(order.total_amount));
       const r = await prisma.project.updateMany({
         where: { aryeoOrderId: order.id },
         data: { payableInvoice: val },

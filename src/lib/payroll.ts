@@ -125,6 +125,7 @@ export type PayrollJob = {
   invoice: number; // eligible services invoice the % is applied to
   invoiceIsFallback: boolean; // true when we fell back to order total (no payableInvoice)
   invoiceOverridden: boolean; // true when the invoice was manually corrected
+  invoiceOverTotal?: boolean; // pay basis exceeds the discounted order total — review
   shootPay: number; // after any flat override
   baseShootPay: number; // before override (for transparency)
   mileageShare: number;
@@ -270,37 +271,52 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
     if (timeline.length === 0) continue;
 
     const paidHere = new Set<string>(); // members already paid on this project
+    const paidDayByMember = new Map<string, string>(); // member → ET day of the leg we handled
     timeline.forEach((slot, idx) => {
       const memberId = slot.memberId;
       if (!memberId) return;
       const isPrimary = idx === 0;
-      // A later trip by an already-paid member is that person's own reshoot — not re-paid.
-      if (!isPrimary && paidHere.has(memberId)) return;
+      const slotDay = etDayKey(slot.at);
+      // A later leg by an already-paid shooter: SAME ET day = the same visit
+      // (multiple appointment rows for one trip — skip). A DIFFERENT day is a
+      // real second trip to the property — pay it as a return trip (flat) and
+      // count its mileage, instead of silently dropping it (audit crack #15;
+      // Jordan was hand-patching these with manual adjustments).
+      if (!isPrimary && paidHere.has(memberId) && paidDayByMember.get(memberId) === slotDay) return;
       const at = slot.at;
       const inRange = at.getTime() >= start.getTime() && at.getTime() <= end.getTime();
       // A leg outside this period is paid in its own period; mark the shooter so a
-      // same-person later leg here isn't treated as new.
-      if (!inRange) { paidHere.add(memberId); return; }
-      if (opts?.memberId && memberId !== opts.memberId) { paidHere.add(memberId); return; }
+      // same-person same-day leg here isn't treated as new.
+      if (!inRange) { paidHere.add(memberId); paidDayByMember.set(memberId, slotDay); return; }
+      if (opts?.memberId && memberId !== opts.memberId) { paidHere.add(memberId); paidDayByMember.set(memberId, slotDay); return; }
 
       const ov = p.payOverrides.find((o) => o.teamMemberId === memberId) ?? null;
-      if (ov?.excluded) { pushRemoved(memberId, p.id, p.title, at); paidHere.add(memberId); return; }
+      if (ov?.excluded) { pushRemoved(memberId, p.id, p.title, at); paidHere.add(memberId); paidDayByMember.set(memberId, slotDay); return; }
       const m = memberMap.get(memberId);
-      const returnTrip = !isPrimary; // a later trip by a different (not-yet-paid) shooter
+      const returnTrip = !isPrimary; // a later trip (second shooter OR the same shooter on another day)
       const invoice = ov?.invoiceOverride != null ? ov.invoiceOverride : (p.payableInvoice ?? p.price ?? 0);
       // Primary shoot = full pay (% of invoice or floor). Return leg = flat rate
-      // (their floor). A manual flatAmount override always wins.
-      const base = returnTrip ? r2(m?.payFloor ?? 0) : shootPay(invoice, m?.payPercent, m?.payFloor);
+      // (their floor) — UNLESS the owner set an invoice override for this member
+      // on this job, which means "pay the % of THIS amount" and must be honored
+      // on return legs too (audit crack #5: the override badge showed but the
+      // engine silently paid the floor). A manual flatAmount always wins.
+      const base = returnTrip
+        ? (ov?.invoiceOverride != null ? shootPay(ov.invoiceOverride, m?.payPercent, m?.payFloor) : r2(m?.payFloor ?? 0))
+        : shootPay(invoice, m?.payPercent, m?.payFloor);
       const pay = ov?.flatAmount != null ? r2(ov.flatAmount) : base;
-      const dayKey = etDayKey(at);
+      const dayKey = slotDay;
       const line: Built = {
         projectId: p.id,
         title: p.title,
         shootISO: at.toISOString(),
         dayKey,
-        invoice: r2(returnTrip ? 0 : invoice), // return legs aren't a % of invoice
+        // Return legs aren't a % of invoice unless an override says so.
+        invoice: r2(returnTrip ? (ov?.invoiceOverride ?? 0) : invoice),
         invoiceIsFallback: !returnTrip && ov?.invoiceOverride == null && p.payableInvoice == null,
         invoiceOverridden: ov?.invoiceOverride != null,
+        // Discounted order: the pay basis exceeds what the client actually pays
+        // (item list prices > discounted order total) — surfaced as a warning.
+        invoiceOverTotal: !returnTrip && ov?.invoiceOverride == null && p.price != null && invoice > p.price + 0.005,
         shootPay: pay,
         baseShootPay: base,
         mileageShare: 0,
@@ -313,6 +329,7 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
       if (!linesByMember.has(memberId)) linesByMember.set(memberId, []);
       linesByMember.get(memberId)!.push(line);
       paidHere.add(memberId);
+      paidDayByMember.set(memberId, dayKey);
     });
 
     // Manually-added shoots: pay this member for the job even though they aren't
@@ -412,8 +429,19 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
     if (returnLegs.length > 0) {
       issues.push({
         level: "info",
-        message: `${returnLegs.length} return trip${returnLegs.length === 1 ? "" : "s"} paid at your flat rate — a later visit you shot after the first photographer (${returnLegs[0].title.split(",")[0]}${returnLegs.length > 1 ? ", …" : ""}).`,
+        message: `${returnLegs.length} return trip${returnLegs.length === 1 ? "" : "s"} paid at your flat rate — a second/later visit to the property (${returnLegs[0].title.split(",")[0]}${returnLegs.length > 1 ? ", …" : ""}). Set an invoice total on the row to pay a % instead.`,
         projectId: returnLegs[0].projectId,
+      });
+    }
+    // Discounted orders: the item list prices sum above what the client actually
+    // pays, so the % would be applied to money that never came in. Flag for a
+    // per-job call (override the invoice or leave it as goodwill).
+    const overTotal = built.filter((b) => b.invoiceOverTotal);
+    if (overTotal.length > 0) {
+      issues.push({
+        level: "warn",
+        message: `${overTotal.length} shoot${overTotal.length === 1 ? "" : "s"} pay on a basis HIGHER than the discounted order total (${overTotal[0].title.split(",")[0]}${overTotal.length > 1 ? ", …" : ""}) — review or set the invoice on the row.`,
+        projectId: overTotal[0].projectId,
       });
     }
     const fallback = built.filter((b) => b.invoiceIsFallback);

@@ -351,7 +351,9 @@ async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<Sta
     dropbox,
     fulfilled: !!p.deliveredAt,
     scheduled: p.appointments.some((a) => (a.status || "").toUpperCase() === "SCHEDULED"),
-    anyAppt: p.appointments.length > 0,
+    // Canceled appointments are not "an appointment on file" — a job whose only
+    // appointments were canceled must not read as scheduled (audit crack #14).
+    anyAppt: p.appointments.some((a) => (a.status || "").toUpperCase() !== "CANCELED"),
     shootDate: p.shootDate,
     revisionOpen: !!p.revisionRequestedAt,
     revisionNote: p.revisionNote,
