@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { phoneKey, callTranscriptText, openPhoneRequestAuthorized, type OpTranscriptLine } from "@/lib/integrations/openphone";
+import { phoneKey, callTranscriptText, openPhoneRequestAuthorized, ourOpenPhoneNumberKeys, type OpTranscriptLine } from "@/lib/integrations/openphone";
 import { resolveClientByPhones, resolveSenderName, findActiveProjectByText, findClientProjectByText } from "@/lib/contacts";
 import { recordClientCommunication } from "@/lib/comms";
 import { logComm } from "@/lib/commLog";
@@ -56,10 +56,25 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ ok: true });
 }
 
+// Automated/system senders (Aryeo reminders, no-reply alerts, our own org…):
+// notifications, not humans — never leads, never logged as client messages,
+// never project instructions.
+const AUTOMATED_SENDER_RE = /aryeo|notif|no-?reply|do-?not-?reply|automat|alert|reminder|noreply|system|notify|real\s*tour/i;
+
+// Format a 10-digit key back into a readable US number for titles/log rows.
+function prettyPhone(k: string): string {
+  return k.length === 10 ? `(${k.slice(0, 3)}) ${k.slice(3, 6)}-${k.slice(6)}` : k;
+}
+
 function collectPhones(obj: unknown, acc: string[] = []): string[] {
   if (!obj) return acc;
   if (typeof obj === "string") {
-    if (/^\+?\d[\d\s().-]{6,}$/.test(obj)) acc.push(obj);
+    // Group texts arrive with `to` as ONE comma-joined string ("+1555…,+1444…")
+    // — split it so every participant is matched, not none.
+    for (const part of obj.split(",")) {
+      const s = part.trim();
+      if (/^\+?\d[\d\s().-]{6,}$/.test(s)) acc.push(s);
+    }
     return acc;
   }
   if (Array.isArray(obj)) {
@@ -93,9 +108,24 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
   const direction = (data.direction as string) || "";
   const incoming = direction.toLowerCase().startsWith("in");
   const text = (data.text as string) || (data.body as string) || "";
-  const isInboundText = type === "message.received" || (!isCall && incoming);
 
-  const match = await resolveClientByPhones(phones);
+  // Our own numbers: in a group thread our own replies echo back as "incoming"
+  // events FROM our line — those are OURS (outbound), not a client's message.
+  // Our lines are also excluded from client matching so a group thread resolves
+  // on the real participants.
+  const ourNumbers = await ourOpenPhoneNumberKeys();
+  const fromPhone = phoneKey((data.from as string) || "");
+  const fromUs = fromPhone.length === 10 && ourNumbers.has(fromPhone);
+  const effIncoming = incoming && !fromUs;
+  const isInboundText = !fromUs && (type === "message.received" || (!isCall && incoming));
+
+  // Who actually sent this? (team member / client / synced contact — or nobody
+  // we know). Robo-senders (Aryeo reminders etc.) are notifications, not client
+  // messages: don't log them as such and never turn them into leads.
+  const sender = !fromUs && fromPhone.length === 10 ? await resolveSenderName(fromPhone) : null;
+  const robo = !fromUs && !!sender && AUTOMATED_SENDER_RE.test(sender.name);
+
+  const match = await resolveClientByPhones(phones.filter((k) => !ourNumbers.has(k)));
 
   // For a multi-order client, prefer the project the message is actually ABOUT
   // (named by street) over their most-recent order — so a text about an older
@@ -108,14 +138,22 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
   }
 
   // Comms memory: record the full text (in or out) so Ask the Hub can recall it.
-  if (!isCall && text.trim()) {
+  // Attributed to the REAL sender: our own messages are "Us" (outbound even when
+  // they echoed back as incoming), inbound gets the sender's resolved name (or
+  // their number, so an unknown texter still leaves an identifiable trace), and
+  // robo-texts are skipped entirely — they'd read as fake client messages.
+  if (!isCall && text.trim() && !robo) {
     await logComm({
       channel: "text",
-      direction: incoming ? "in" : "out",
+      direction: effIncoming ? "in" : "out",
       clientId: match?.clientId ?? null,
       clientName: match?.clientName ?? null,
       projectId: effProject?.id ?? null,
-      contactName: incoming ? match?.clientName ?? null : "RealTour Pilot",
+      contactName: fromUs
+        ? "Us"
+        : effIncoming
+          ? sender?.name ?? match?.clientName ?? (fromPhone.length === 10 ? prettyPhone(fromPhone) : null)
+          : "RealTour Pilot",
       body: text,
       source: "openphone",
       externalId: data.id ? `op-${data.id as string}` : undefined,
@@ -163,7 +201,9 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
     // addressed. A text infers the order from its content; an outbound call closes
     // the callback only if we actually CONNECTED (a no-answer leaves it open so we
     // still try again), and never guesses across a multi-order client's tasks.
-    if (direction.toLowerCase().startsWith("out")) {
+    // A group-thread reply from our own line echoes back as "incoming" — that's
+    // still us replying, so it closes the task too.
+    if (direction.toLowerCase().startsWith("out") || (fromUs && !isCall)) {
       const { closeReplyForOutbound, closeReplyForOutboundCall } = await import("@/lib/tasks");
       if (!isCall) {
         await closeReplyForOutbound(clientId, text);
@@ -178,21 +218,17 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
   // by a known person other than that job's own client (a photographer like
   // Harrison, a coordinator like Ruthie), becomes an instruction task on that
   // exact project. Works even when the sender isn't a client at all.
+  let routedToProject = false; // a project instruction isn't a lead (see below)
   if (isInboundText && text.trim()) {
-    const fromPhone = phoneKey((data.from as string) || "");
     if (fromPhone.length === 10) {
-      const [sender, hitProject] = await Promise.all([
-        resolveSenderName(fromPhone),
-        findActiveProjectByText(text),
-      ]);
+      const hitProject = await findActiveProjectByText(text);
       // Don't make tasks from automated/system senders (Aryeo reminders,
       // no-reply alerts, etc.) — they're notifications, not human instructions.
-      // Also skip our OWN org: in a group thread our own messages can echo back
-      // as inbound, and we never instruct ourselves onto a client's project.
-      const automated = !!sender && /aryeo|notif|no-?reply|do-?not-?reply|automat|alert|reminder|noreply|system|notify|real\s*tour/i.test(sender.name);
+      // Our OWN org is already excluded (isInboundText is false for our echoes).
       // Skip when it's the client texting about the same project the reply task
       // already covers (no duplicate); otherwise file it on the named project.
-      if (sender && !automated && hitProject && hitProject.id !== match?.project?.id) {
+      if (sender && !robo && hitProject && hitProject.id !== match?.project?.id) {
+        routedToProject = true;
         // Route through the Smart Brain (the sender is a teammate/photographer,
         // not the client): it skips chatter, confirms the order, sets priority,
         // and can merge into an existing open to-do instead of duplicating.
@@ -252,6 +288,40 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
       }
     }
   }
+
+  // --- Lead path: an inbound call or text from a number we DON'T know. The
+  // phone line is the highest-intent lead source, so it must never just vanish
+  // — mirror the Gmail lead flow: leave a CommLog trace (texts were logged
+  // above) and mint ONE open HIGH lead task per phone number for Kyle. Never
+  // for teammates, robo-senders, or a message that just routed to a project as
+  // an instruction (a coordinator, not a lead).
+  if (!match && effIncoming && !robo && !sender?.isTeam && !routedToProject) {
+    const callerKey = fromPhone.length === 10 ? fromPhone : phones.find((k) => !ourNumbers.has(k)) ?? "";
+    if (callerKey.length === 10 && !ourNumbers.has(callerKey)) {
+      if (!isCall && text.trim()) {
+        await upsertPhoneLeadTask({ phone: callerKey, kind: "text", senderName: sender?.name ?? null, snippet: text });
+      } else if (isCall && type === "call.completed") {
+        const status = String(data.status ?? "").toLowerCase();
+        const dur = Number(data.duration ?? 0);
+        const missed = /no[-\s]?answer|missed|unanswered|declined|rejected/.test(status) || (data.answeredAt === null && !(dur > 0));
+        // The call itself leaves a comms-memory trace (there may never be a
+        // transcript to log later).
+        await logComm({
+          channel: "call",
+          direction: "in",
+          clientId: null,
+          contactName: sender?.name ?? prettyPhone(callerKey),
+          body: `Inbound ${missed ? "missed call" : "call"} from ${prettyPhone(callerKey)}${dur > 0 ? ` (${Math.round(dur)}s)` : ""} — no matching client.`,
+          source: "openphone",
+          externalId: data.id ? `op-${data.id as string}` : undefined,
+        });
+        // Only a MISSED call needs an immediate callback task — an answered one
+        // was already handled live, and if they left a voicemail the transcript
+        // event upgrades this lead with what they actually said.
+        if (missed) await upsertPhoneLeadTask({ phone: callerKey, kind: "call", senderName: sender?.name ?? null, snippet: "" });
+      }
+    }
+  }
 }
 
 // A completed call transcript: fetch it, attach to the client's project, and
@@ -280,8 +350,30 @@ async function handleTranscript(data: Record<string, unknown>) {
 
   // Resolve the client from phones in the payload + the transcript identifiers.
   const phones = [...new Set(collectPhones(data).map((p) => phoneKey(p)).filter((k) => k.length === 10))];
-  const match = await resolveClientByPhones(phones);
-  if (!match) return;
+  const ourNumbers = await ourOpenPhoneNumberKeys();
+  const match = await resolveClientByPhones(phones.filter((k) => !ourNumbers.has(k)));
+
+  // Unknown caller → this is a LEAD, not noise. Log the transcript (previously
+  // it vanished without a trace) and mint/upgrade the callback task with what
+  // they actually said. Requires the OTHER party to have spoken (clientText) so
+  // our own outbound voicemails don't lead on ourselves.
+  if (!match) {
+    const callerKey = phones.find((k) => !ourNumbers.has(k));
+    if (!callerKey || !clientText) return;
+    const sender = await resolveSenderName(callerKey);
+    if (sender && (sender.isTeam || AUTOMATED_SENDER_RE.test(sender.name))) return; // teammate / robo-call
+    await logComm({
+      channel: "call",
+      direction: "in",
+      clientId: null,
+      contactName: sender?.name ?? prettyPhone(callerKey),
+      body: full,
+      source: "openphone-call",
+      externalId: callId ? `op-call-${callId}` : undefined,
+    });
+    await upsertPhoneLeadTask({ phone: callerKey, kind: "voicemail", senderName: sender?.name ?? null, snippet: clientText });
+    return;
+  }
   const { clientId, clientName, project } = match;
 
   if (project) {
@@ -321,6 +413,56 @@ async function handleTranscript(data: Record<string, unknown>) {
       // real-time outbound close pick up voicemail callbacks like any other reply.
       source: "openphone",
     });
+  }
+}
+
+// One open "call this lead back" task per unknown phone number, owned by Kyle —
+// mirrors the Gmail lead flow (google.ts `lead-<email>` dedupe keys) so a phone
+// lead gets the same treatment an emailed one always did. Missed call →
+// voicemail → text about the same number all collapse onto one task; a
+// voicemail upgrades an open task's summary with what the caller actually said.
+async function upsertPhoneLeadTask(opts: {
+  phone: string; // 10-digit key
+  kind: "call" | "voicemail" | "text";
+  senderName: string | null;
+  snippet: string;
+}) {
+  const pretty = prettyPhone(opts.phone);
+  const who = opts.senderName ? `${opts.senderName} (${pretty})` : pretty;
+  const key = `lead-${opts.phone}`;
+  const kindLabel =
+    opts.kind === "voicemail" ? "left a voicemail" : opts.kind === "text" ? "texted us" : "called us (missed)";
+  const quote = opts.snippet ? ` They said: “${opts.snippet.slice(0, 200)}”.` : "";
+  const summary =
+    `${who} ${kindLabel} — not a client we recognize, so treat it as a lead.${quote} Call back, qualify (listing, timeline, budget), and add them to the CRM.`.slice(0, 500);
+  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
+  const data = {
+    taskType: "lead",
+    title: (opts.kind === "text" ? `New texter — reply to ${who}` : `New caller — call back ${who}`).slice(0, 120),
+    summary,
+    description: opts.snippet.slice(0, 400) || null,
+    reasonCreated: `Unmatched inbound ${opts.kind} on the business line`,
+    checklist: JSON.stringify(["Call / text them back", "Qualify (listing, timeline, budget)", "Book the shoot or a strategy call", "Add to CRM"]),
+    source: "openphone",
+    sourceDetail: `phone:${pretty}`,
+    priority: "HIGH" as const,
+    dueAt: new Date(Date.now() + 4 * 3600_000),
+    ownerId: kyle?.id ?? null,
+    dedupeKey: key,
+  };
+  const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+  if (existing) {
+    if (existing.status !== "COMPLETED" && existing.status !== "CANCELLED") {
+      // Already open: only a voicemail improves it (the transcript beats a bare
+      // "missed call" — Kyle sees what they want before calling back).
+      if (opts.kind === "voicemail" && opts.snippet) {
+        await prisma.smartTask.update({ where: { id: existing.id }, data: { summary, description: data.description } });
+      }
+      return;
+    }
+    await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } });
+  } else {
+    await prisma.smartTask.create({ data });
   }
 }
 

@@ -12,7 +12,11 @@ import { prisma } from "@/lib/prisma";
 export async function retryFailedWebhooks(limit = 25): Promise<{ retried: number; recovered: number; failed: number }> {
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const rows = await prisma.webhookEvent.findMany({
-    where: { status: "ERROR", createdAt: { gt: cutoff } },
+    // Gmail rows are excluded: they can't be re-dispatched from the stored
+    // payload (it's just a snippet) — the gmail cron re-scans the inbox and
+    // retries any non-PROCESSED row itself, so marking them FAILED here would
+    // only fight that loop.
+    where: { status: "ERROR", provider: { not: "gmail" }, createdAt: { gt: cutoff } },
     orderBy: { createdAt: "asc" },
     take: limit,
     select: { id: true, provider: true, eventType: true, payload: true },

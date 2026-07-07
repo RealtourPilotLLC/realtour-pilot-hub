@@ -169,6 +169,24 @@ export async function defaultOpenPhoneNumber(): Promise<string | null> {
   }
 }
 
+// Our own OpenPhone numbers as 10-digit keys, briefly cached (per lambda). The
+// webhook uses this to tell OUR messages — which echo back as "incoming" in
+// group threads — from a client's, and to keep our own lines out of the
+// client-match / lead paths. Best-effort: an API failure returns the last known
+// set (or empty) rather than throwing, so a blip never blocks event processing.
+let ourNumbersCache: { at: number; keys: Set<string> } | null = null;
+export async function ourOpenPhoneNumberKeys(): Promise<Set<string>> {
+  if (ourNumbersCache && Date.now() - ourNumbersCache.at < 10 * 60_000) return ourNumbersCache.keys;
+  try {
+    const nums = await OpenPhone.phoneNumbers();
+    const keys = new Set(nums.map((n) => phoneKey(n.number)).filter((k) => k.length === 10));
+    ourNumbersCache = { at: Date.now(), keys };
+    return keys;
+  } catch {
+    return ourNumbersCache?.keys ?? new Set();
+  }
+}
+
 // Our first OpenPhone number's RESOURCE id, used as `phoneNumberId` when
 // querying messages/calls/threads.
 export async function defaultOpenPhoneNumberId(): Promise<string | null> {

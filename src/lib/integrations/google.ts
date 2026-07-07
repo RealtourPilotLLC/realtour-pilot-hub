@@ -425,19 +425,19 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
     }
     scanned += ids.length;
 
-    // One query for everything already handled, instead of a read per message.
-    const seenSet = new Set(
-      (
-        await prisma.webhookEvent.findMany({
-          where: { provider: "gmail", status: "PROCESSED", externalId: { in: ids.map((id) => `${account.email}:${id}`) } },
-          select: { externalId: true },
-        })
-      ).map((r) => r.externalId),
-    );
+    // One query for everything already seen, instead of a read per message.
+    // Includes non-PROCESSED rows so a message that ERRORed last run reuses its
+    // row and gets retried here, instead of minting a duplicate row per attempt.
+    const seenRows = await prisma.webhookEvent.findMany({
+      where: { provider: "gmail", externalId: { in: ids.map((id) => `${account.email}:${id}`) } },
+      select: { id: true, externalId: true, status: true },
+    });
+    const seenByExt = new Map(seenRows.map((r) => [r.externalId, r]));
 
     for (const id of ids) {
       const dedupe = `${account.email}:${id}`;
-      if (seenSet.has(dedupe)) continue;
+      const prior = seenByExt.get(dedupe);
+      if (prior?.status === "PROCESSED") continue;
       const msg = await gmail<GmailMsg>(
         `/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=List-Unsubscribe`,
         token,
@@ -450,139 +450,166 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
       const threadRef = `gmail-thread:${account.email}:${threadId}`;
       const domain = email.includes("@") ? email.split("@")[1] : "";
 
-      await prisma.webhookEvent.create({
-        data: { provider: "gmail", eventType: "email", externalId: dedupe, payload: text.slice(0, 1000), status: "PROCESSED", processedAt: new Date() },
-      });
-      if (!text) continue;
-
-      // Luma Visuals = our premium-reel video editor. Their mail isn't a lead —
-      // it means an edit is ready or the editor has a question. Route it to a
-      // "check the Luma Visuals reel tracker" task (skip bare order-received acks).
-      if (domain && LUMA_DOMAINS.includes(domain)) {
-        if (!/\b(ready|delivered|complete|completed|message from your editor|question|revision|approved|update)\b/i.test(subject)) continue;
-        const matchedClient = clients.find((c) => c.name && subject.toLowerCase().includes(c.name.toLowerCase()));
-
-        // Revision email → reflect it on the matched project (status → REVISION
-        // when delivered, revision note + urgent revision task). Match by the
-        // street named in the subject; prefer a DELIVERED order (a revision
-        // request lands after the reel was delivered).
-        if (LUMA_REVISION_RE.test(subject) && matchedClient) {
-          const subjLower = subject.toLowerCase();
-          const projs = await prisma.project.findMany({
-            where: { clientId: matchedClient.id },
-            orderBy: [{ orderedAt: { sort: "desc", nulls: "last" } }, { shootDate: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
-            select: { id: true, title: true, status: true, deliverables: { select: { type: true } } },
+      // Durability: the dedupe row starts RECEIVED and is stamped PROCESSED only
+      // AFTER the message is actually handled (below). The old order — stamp
+      // first, handle second — meant a crash or timeout mid-message permanently
+      // ate that email; now it's marked ERROR and the next scan retries it.
+      const evt = prior
+        ? await prisma.webhookEvent.update({ where: { id: prior.id }, data: { status: "RECEIVED", error: null } })
+        : await prisma.webhookEvent.create({
+            data: { provider: "gmail", eventType: "email", externalId: dedupe, payload: text.slice(0, 1000) },
           });
-          const addrMatches = projs.filter((p) => { const c = streetCore(p.title); return c.length >= 4 && subjLower.includes(c); });
-          const target = addrMatches.find((p) => p.status === "DELIVERED") || addrMatches[0] || projs[0];
-          if (target) {
-            // Luma does reels/video — reopen that QC item for the re-QC.
-            const types = new Set(target.deliverables.map((d) => d.type));
-            const qcCategories = [types.has("SOCIAL_REEL") ? "Reel" : null, types.has("VIDEO") ? "Video" : null].filter(Boolean) as string[];
-            const { raiseRevision } = await import("@/lib/comms");
-            await raiseRevision({
-              projectId: target.id,
-              clientId: matchedClient.id,
-              clientName: matchedClient.name,
-              propertyAddress: target.title,
-              note: subject.slice(0, 300),
-              source: "Luma Visuals",
-              qcCategories: qcCategories.length ? qcCategories : ["Reel"],
+
+      // Handle ONE inbound email end-to-end (vendor routing → client reply task
+      // → lead); returns how many tasks it created.
+      const handleMessage = async (): Promise<number> => {
+        if (!text) return 0;
+
+        // Luma Visuals = our premium-reel video editor. Their mail isn't a lead —
+        // it means an edit is ready or the editor has a question. Route it to a
+        // "check the Luma Visuals reel tracker" task (skip bare order-received acks).
+        if (domain && LUMA_DOMAINS.includes(domain)) {
+          if (!/\b(ready|delivered|complete|completed|message from your editor|question|revision|approved|update)\b/i.test(subject)) return 0;
+          const matchedClient = clients.find((c) => c.name && subject.toLowerCase().includes(c.name.toLowerCase()));
+
+          // Revision email → reflect it on the matched project (status → REVISION
+          // when delivered, revision note + urgent revision task). Match by the
+          // street named in the subject; prefer a DELIVERED order (a revision
+          // request lands after the reel was delivered).
+          if (LUMA_REVISION_RE.test(subject) && matchedClient) {
+            const subjLower = subject.toLowerCase();
+            const projs = await prisma.project.findMany({
+              where: { clientId: matchedClient.id },
+              orderBy: [{ orderedAt: { sort: "desc", nulls: "last" } }, { shootDate: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
+              select: { id: true, title: true, status: true, deliverables: { select: { type: true } } },
             });
-            tasks++;
-            continue;
+            const addrMatches = projs.filter((p) => { const c = streetCore(p.title); return c.length >= 4 && subjLower.includes(c); });
+            const target = addrMatches.find((p) => p.status === "DELIVERED") || addrMatches[0] || projs[0];
+            if (target) {
+              // Luma does reels/video — reopen that QC item for the re-QC.
+              const types = new Set(target.deliverables.map((d) => d.type));
+              const qcCategories = [types.has("SOCIAL_REEL") ? "Reel" : null, types.has("VIDEO") ? "Video" : null].filter(Boolean) as string[];
+              const { raiseRevision } = await import("@/lib/comms");
+              await raiseRevision({
+                projectId: target.id,
+                clientId: matchedClient.id,
+                clientName: matchedClient.name,
+                propertyAddress: target.title,
+                note: subject.slice(0, 300),
+                source: "Luma Visuals",
+                qcCategories: qcCategories.length ? qcCategories : ["Reel"],
+              });
+              return 1;
+            }
+          }
+          // Which JOB is this update about? Match the street named in the subject
+          // within the client's orders, so a client with two reels in flight gets
+          // one "check the tracker" task PER JOB — keying on the client alone
+          // silently swallowed the second reel's "ready" email while the first
+          // task was still open. Repeat mails about the same job still collapse.
+          let lumaProject: { id: string } | null = null;
+          if (matchedClient) {
+            const subjLower = subject.toLowerCase();
+            const projs = await prisma.project.findMany({
+              where: { clientId: matchedClient.id },
+              orderBy: [{ orderedAt: { sort: "desc", nulls: "last" } }, { shootDate: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
+              select: { id: true, title: true },
+            });
+            lumaProject = projs.find((p) => { const c = streetCore(p.title); return c.length >= 4 && subjLower.includes(c); }) ?? null;
+          }
+          // No street in the subject → fall back to the subject line itself, so
+          // distinct notifications about distinct jobs still get distinct tasks.
+          const subjectKey = subject.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
+          const key = matchedClient
+            ? `luma-client-${matchedClient.id}-${lumaProject?.id ?? (subjectKey || threadId)}`
+            : `luma-${threadId}`;
+          const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+          if (existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED") return 0;
+          const who = matchedClient?.name ? ` (${matchedClient.name})` : "";
+          const data = {
+            taskType: "vendor_update",
+            title: `Luma Visuals reel update — check the tracker`,
+            summary: `Luma Visuals (our reel editor) sent an update${who} via Gmail: “${text.slice(0, 200)}”. Open the tracker — the edit is done or they have a question; QC/download the reel or answer them, then deliver.`.slice(0, 500),
+            description: text.slice(0, 400),
+            reasonCreated: "Luma Visuals (reel editor) update via Gmail",
+            checklist: JSON.stringify([
+              "Open the Luma Visuals tracker: https://portal.lumavisuals.co/",
+              "See if the edit is done or the editor has a question",
+              "QC / download the reel, or answer the editor",
+              "Deliver to the client + update the project if it's done",
+            ]),
+            source: "gmail",
+            sourceDetail: threadRef,
+            priority: "HIGH" as const,
+            dueAt: new Date(Date.now() + 4 * 3600_000),
+            ownerId: kyle?.id ?? null,
+            assignedKey: "luma",
+            clientId: matchedClient?.id ?? null,
+            projectId: lumaProject?.id ?? matchedClient?.projects[0]?.id ?? null,
+            dedupeKey: key,
+          };
+          if (existing) await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } });
+          else await prisma.smartTask.create({ data });
+          return 1;
+        }
+
+        // Resolve the sender to a client account FIRST (email → synced contact →
+        // agent), so a KNOWN client who emails from a brokerage role address
+        // (info@/team@/hello@) is never dropped by the human/lead filter below.
+        let senderClient = clientByEmail.get(email);
+        if (!senderClient) {
+          const cid = contactClientByEmail.get(email);
+          if (cid) senderClient = clients.find((c) => c.id === cid);
+        }
+        if (senderClient) senderClient = toAgent(senderClient); // fold assistant → agent
+
+        // Drop marketing / invoices / automated / vendor mail — but ONLY for senders
+        // we don't already know. A known client always gets logged + a reply task,
+        // even from a role address the lead filter would otherwise reject.
+        if (!senderClient && !isLikelyHuman(email, listUnsub, subject, name)) return 0;
+
+        // Already replied to (latest thread message is from us)? Still logged to
+        // comms memory below, but it won't create a task.
+        const answered = await threadAlreadyAnswered(threadId, token);
+
+        // Which listing is this about? Prefer a property named in the subject/body
+        // within the sender's OWN orders; otherwise match it GLOBALLY (a coordinator
+        // or executive assistant emailing about another agent's property) and route
+        // to THAT property's order + owner, not the sender's most-recent job.
+        const { findClientProjectByText, findProjectByText } = await import("@/lib/contacts");
+        let resolvedClientId: string | null = senderClient?.id ?? null;
+        let resolvedClientName: string | null = senderClient?.name ?? null;
+        let project: { id: string; title: string; status: string } | null = null;
+        if (senderClient) {
+          const named = await findClientProjectByText(senderClient.id, `${subject ?? ""} ${text}`);
+          if (named) project = named;
+        }
+        // Fall back to a GLOBAL listing match only when we DON'T already know the
+        // sender (a coordinator/assistant emailing about an agent's property), or
+        // when the match is the sender's OWN listing. Never let it REASSIGN a known
+        // client's email to a DIFFERENT client: a fuzzy street match — e.g. the town
+        // "West Chester" inside the street "1244 West Chester Pike" — must not hijack
+        // a known sender's mail onto someone else's job. Keep it on the real sender.
+        if (!project) {
+          const gp = await findProjectByText(`${subject ?? ""} ${text}`);
+          if (gp && (!senderClient || gp.clientId === senderClient.id)) {
+            project = { id: gp.id, title: gp.title, status: gp.status };
+            resolvedClientId = gp.clientId;
+            resolvedClientName = clients.find((c) => c.id === gp.clientId)?.name ?? null;
           }
         }
-        // One Luma task per project/client (not per notification email) — Luma
-        // fires several mails per reel (revision received / editor message / ready)
-        // and they should collapse to a single "check the tracker" pointer.
-        const key = matchedClient ? `luma-client-${matchedClient.id}` : `luma-${threadId}`;
-        const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
-        if (existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED") continue;
-        const who = matchedClient?.name ? ` (${matchedClient.name})` : "";
-        const data = {
-          taskType: "vendor_update",
-          title: `Luma Visuals reel update — check the tracker`,
-          summary: `Luma Visuals (our reel editor) sent an update${who} via Gmail: “${text.slice(0, 200)}”. Open the tracker — the edit is done or they have a question; QC/download the reel or answer them, then deliver.`.slice(0, 500),
-          description: text.slice(0, 400),
-          reasonCreated: "Luma Visuals (reel editor) update via Gmail",
-          checklist: JSON.stringify([
-            "Open the Luma Visuals tracker: https://portal.lumavisuals.co/",
-            "See if the edit is done or the editor has a question",
-            "QC / download the reel, or answer the editor",
-            "Deliver to the client + update the project if it's done",
-          ]),
-          source: "gmail",
-          sourceDetail: threadRef,
-          priority: "HIGH" as const,
-          dueAt: new Date(Date.now() + 4 * 3600_000),
-          ownerId: kyle?.id ?? null,
-          assignedKey: "luma",
-          clientId: matchedClient?.id ?? null,
-          projectId: matchedClient?.projects[0]?.id ?? null,
-          dedupeKey: key,
-        };
-        if (existing) await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } });
-        else await prisma.smartTask.create({ data });
-        tasks++;
-        continue;
-      }
+        if (!project && senderClient) project = senderClient.projects[0] ?? null;
 
-      // Resolve the sender to a client account FIRST (email → synced contact →
-      // agent), so a KNOWN client who emails from a brokerage role address
-      // (info@/team@/hello@) is never dropped by the human/lead filter below.
-      let senderClient = clientByEmail.get(email);
-      if (!senderClient) {
-        const cid = contactClientByEmail.get(email);
-        if (cid) senderClient = clients.find((c) => c.id === cid);
-      }
-      if (senderClient) senderClient = toAgent(senderClient); // fold assistant → agent
-
-      // Drop marketing / invoices / automated / vendor mail — but ONLY for senders
-      // we don't already know. A known client always gets logged + a reply task,
-      // even from a role address the lead filter would otherwise reject.
-      if (!senderClient && !isLikelyHuman(email, listUnsub, subject, name)) continue;
-
-      // Already replied to (latest thread message is from us)? Still logged to
-      // comms memory below, but it won't create a task.
-      const answered = await threadAlreadyAnswered(threadId, token);
-
-      // Which listing is this about? Prefer a property named in the subject/body
-      // within the sender's OWN orders; otherwise match it GLOBALLY (a coordinator
-      // or executive assistant emailing about another agent's property) and route
-      // to THAT property's order + owner, not the sender's most-recent job.
-      const { findClientProjectByText, findProjectByText } = await import("@/lib/contacts");
-      let resolvedClientId: string | null = senderClient?.id ?? null;
-      let resolvedClientName: string | null = senderClient?.name ?? null;
-      let project: { id: string; title: string; status: string } | null = null;
-      if (senderClient) {
-        const named = await findClientProjectByText(senderClient.id, `${subject ?? ""} ${text}`);
-        if (named) project = named;
-      }
-      // Fall back to a GLOBAL listing match only when we DON'T already know the
-      // sender (a coordinator/assistant emailing about an agent's property), or
-      // when the match is the sender's OWN listing. Never let it REASSIGN a known
-      // client's email to a DIFFERENT client: a fuzzy street match — e.g. the town
-      // "West Chester" inside the street "1244 West Chester Pike" — must not hijack
-      // a known sender's mail onto someone else's job. Keep it on the real sender.
-      if (!project) {
-        const gp = await findProjectByText(`${subject ?? ""} ${text}`);
-        if (gp && (!senderClient || gp.clientId === senderClient.id)) {
-          project = { id: gp.id, title: gp.title, status: gp.status };
-          resolvedClientId = gp.clientId;
-          resolvedClientName = clients.find((c) => c.id === gp.clientId)?.name ?? null;
-        }
-      }
-      if (!project && senderClient) project = senderClient.projects[0] ?? null;
-
-      // Comms memory: log an inbound human email so the Hub can recall it — even
-      // answered ones and leads. (Skip unknown senders on info@, Jordan's personal
-      // inbox.) The SENDER is the contact; the client is the account it's about.
-      const shouldLog = !!resolvedClientId || !CLIENTS_ONLY_MAILBOXES.includes(account.email);
-      if (shouldLog) {
+        // Comms memory: log EVERY inbound human email so the Hub can recall it —
+        // even answered ones and leads. Unknown senders on info@ (Jordan's
+        // personal inbox) don't create tasks below, but they're logged owner-only
+        // so a missed lead is at least auditable instead of leaving zero trace.
+        // The SENDER is the contact; the client is the account it's about.
+        const unknownOnPersonal = !resolvedClientId && CLIENTS_ONLY_MAILBOXES.includes(account.email);
         await logComm({
           channel: "email",
           direction: "in",
+          minRole: unknownOnPersonal ? "OWNER" : undefined,
           clientId: resolvedClientId,
           clientName: resolvedClientName,
           projectId: project?.id ?? null,
@@ -592,53 +619,65 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
           source: "gmail",
           externalId: `gmail-${dedupe}`,
         });
-      }
 
-      if (answered) continue; // logged above; don't create a task for handled mail
+        if (answered) return 0; // logged above; don't create a task for handled mail
 
-      if (resolvedClientId) {
-        await recordClientCommunication({
-          clientId: resolvedClientId,
-          clientName: resolvedClientName || name,
-          // The real person who wrote in. When their email folded to an agent's
-          // account (assistant → agent), this keeps the human on the task instead
-          // of showing the agent who never sent anything.
-          contactName: name || null,
-          projectId: project?.id,
-          projectStatus: project?.status ?? null,
-          propertyAddress: project?.title ?? null,
-          text,
-          kind: "email",
-          source: "gmail",
-          threadRef,
-        });
-        tasks++;
-      } else if (CLIENTS_ONLY_MAILBOXES.includes(account.email)) {
-        // info@ is Jordan's personal account — only surface known clients,
-        // never manufacture "leads" from his personal mail. hello@ still does.
-        continue;
-      } else {
-        // Unknown human → a lead. One open lead task per sender.
-        const key = `lead-${email}`;
-        const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
-        if (existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED") continue;
-        const data = {
-          taskType: "lead",
-          title: `New lead: ${name || email}`.slice(0, 120),
-          summary: `New inbound inquiry to ${account.email} from ${name || email}: “${text.slice(0, 200)}”. Qualify (listing, timeline, budget) and reply / book a strategy call.`.slice(0, 500),
-          description: text.slice(0, 400),
-          reasonCreated: `New inbound email to ${account.email}`,
-          checklist: JSON.stringify(["Read the email", "Qualify (listing, timeline, budget)", "Reply / book a strategy call", "Add to CRM"]),
-          source: "gmail",
-          sourceDetail: threadRef,
-          priority: "HIGH" as const,
-          dueAt: new Date(Date.now() + 4 * 3600_000),
-          ownerId: kyle?.id ?? null,
-          dedupeKey: key,
-        };
-        if (existing) await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } });
-        else await prisma.smartTask.create({ data });
-        tasks++;
+        if (resolvedClientId) {
+          await recordClientCommunication({
+            clientId: resolvedClientId,
+            clientName: resolvedClientName || name,
+            // The real person who wrote in. When their email folded to an agent's
+            // account (assistant → agent), this keeps the human on the task instead
+            // of showing the agent who never sent anything.
+            contactName: name || null,
+            projectId: project?.id,
+            projectStatus: project?.status ?? null,
+            propertyAddress: project?.title ?? null,
+            text,
+            kind: "email",
+            source: "gmail",
+            threadRef,
+          });
+          return 1;
+        } else if (CLIENTS_ONLY_MAILBOXES.includes(account.email)) {
+          // info@ is Jordan's personal account — only surface known clients,
+          // never manufacture "leads" from his personal mail. hello@ still does.
+          // (Logged owner-only above so the skip is auditable.)
+          return 0;
+        } else {
+          // Unknown human → a lead. One open lead task per sender.
+          const key = `lead-${email}`;
+          const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+          if (existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED") return 0;
+          const data = {
+            taskType: "lead",
+            title: `New lead: ${name || email}`.slice(0, 120),
+            summary: `New inbound inquiry to ${account.email} from ${name || email}: “${text.slice(0, 200)}”. Qualify (listing, timeline, budget) and reply / book a strategy call.`.slice(0, 500),
+            description: text.slice(0, 400),
+            reasonCreated: `New inbound email to ${account.email}`,
+            checklist: JSON.stringify(["Read the email", "Qualify (listing, timeline, budget)", "Reply / book a strategy call", "Add to CRM"]),
+            source: "gmail",
+            sourceDetail: threadRef,
+            priority: "HIGH" as const,
+            dueAt: new Date(Date.now() + 4 * 3600_000),
+            ownerId: kyle?.id ?? null,
+            dedupeKey: key,
+          };
+          if (existing) await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } });
+          else await prisma.smartTask.create({ data });
+          return 1;
+        }
+      };
+
+      try {
+        tasks += await handleMessage();
+        await prisma.webhookEvent.update({ where: { id: evt.id }, data: { status: "PROCESSED", processedAt: new Date() } });
+      } catch (e) {
+        // One bad message must not eat the rest of the scan (or itself, forever):
+        // mark ITS row ERROR — it stays retryable on the next run — and move on.
+        await prisma.webhookEvent
+          .update({ where: { id: evt.id }, data: { status: "ERROR", error: (e instanceof Error ? e.message : String(e)).slice(0, 500) } })
+          .catch(() => {});
       }
     }
   }
