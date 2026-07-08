@@ -75,7 +75,7 @@ export type NotifyTarget = { roles: Role[]; userKey?: string; href?: string }; /
 // doesn't wake anyone); only fires when the bell row was NEWLY created, so a
 // deduped re-announcement can't re-text.
 // ---------------------------------------------------------------------------
-const SMS_KINDS = new Set(["appointment_change", "order_canceled", "mention"]);
+const SMS_KINDS = new Set(["appointment_change", "order_canceled", "mention", "review_feedback"]);
 
 function withinTextingHours(): boolean {
   const hour = Number(

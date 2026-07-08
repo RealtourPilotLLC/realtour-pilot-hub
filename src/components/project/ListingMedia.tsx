@@ -5,6 +5,10 @@ import { Badge } from "@/components/ui/Badge";
 import { MediaGallery } from "@/components/project/MediaGallery";
 import type { FlaggedImage } from "@/app/projects/flagActions";
 import { PALETTE } from "@/lib/palette";
+import { getCurrentUser } from "@/lib/auth/user";
+import { authEnforced } from "@/lib/auth/guards";
+import { getProjectReview } from "@/lib/review";
+import type { ReviewData } from "@/components/review/types";
 
 // Async server component: fetches a project's Aryeo media live, then hands it to
 // the interactive gallery (grid + lightbox + downloads + photo flagging).
@@ -22,6 +26,22 @@ export async function ListingMedia({ listingId, title, projectId }: { listingId:
     tags: (() => { try { return JSON.parse(f.tags) as string[]; } catch { return []; } })(),
     createdAt: f.createdAt.toISOString(),
   }));
+
+  // Review room data — the owner's desk only. Gate on the EFFECTIVE role so
+  // "view as" shows exactly what that person sees: photographers/editors get
+  // NO review affordances and never receive EDIT-lane notes (their capture
+  // feedback arrives via the /shoot page instead). Sessionless local dev
+  // (enforcement off, no login) renders as the owner so the room works
+  // pre-cutover. Fetch failures just hide the room — never break the gallery.
+  let review: ReviewData | undefined;
+  if (projectId) {
+    const viewer = await getCurrentUser().catch(() => null);
+    const ownerDesk = viewer ? viewer.role === "OWNER" || viewer.role === "ADMIN" : !authEnforced();
+    if (ownerDesk) {
+      const r = await getProjectReview(projectId).catch(() => null);
+      if (r) review = { notes: r.notes, verdicts: r.verdicts, enabled: true };
+    }
+  }
 
   const delivered = media.deliveryStatus === "DELIVERED";
   const hasAny = media.images.length + media.videos.length + media.floorPlans.length > 0;
@@ -51,7 +71,7 @@ export async function ListingMedia({ listingId, title, projectId }: { listingId:
           <StatusBadge delivered={delivered} status={media.deliveryStatus} />
         </div>
       )}
-      <MediaGallery media={media} slug={slug} projectId={projectId} flags={flagViews} />
+      <MediaGallery media={media} slug={slug} projectId={projectId} flags={flagViews} review={review} />
     </div>
   );
 }

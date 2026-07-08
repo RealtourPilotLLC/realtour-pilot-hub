@@ -114,6 +114,7 @@ model TeamMember {
   projectsAsEditor     Project[]      @relation("Editor")
   projectsAsVa         Project[]      @relation("VA")
   authoredActivities   Activity[]
+  mediaNotes           MediaNote[]
   assignedChecklist    ChecklistItem[]
   uploadedFiles        UploadedFile[]
   assignedAppointments Appointment[]
@@ -349,6 +350,8 @@ model Project {
   messages     ProjectMessage[]
   payOverrides JobPayOverride[]
   imageFlags   ImageFlag[]
+  mediaNotes   MediaNote[]
+  mediaVerdicts MediaVerdict[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -679,6 +682,53 @@ model ImageFlag {
 
   @@index([projectId])
   @@index([status])
+}
+
+// The in-house review room (Frame.io-style). A note is a pin on a photo
+// (normalized x/y) or a timestamped comment on a video, routed to a lane:
+// EDIT (Kyle fixes it) or PHOTOGRAPHER (capture feedback — kind "fix" needs
+// action, "coaching" is do-better-next-time). Threaded via parentId (replies
+// carry no pin). ImageFlag stays for the legacy Flags tab; this supersedes it
+// for review workflows.
+model MediaNote {
+  id        String  @id @default(cuid())
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String
+  assetUrl  String // canonical media URL (full-res image or video source)
+  thumbUrl  String?
+  assetType String  @default("image") // image | video
+  x         Float? // normalized 0..1 pin position (photos)
+  y         Float?
+  timeSec   Float? // video timestamp (seconds)
+  lane      String  @default("EDIT") // EDIT | PHOTOGRAPHER
+  kind      String  @default("fix") // fix | coaching
+  body      String
+  status    String  @default("OPEN") // OPEN | FIXED | RESOLVED
+  authorKey  String? // "owner" | "tm:<teamMemberId>" | "editor:<key>"
+  authorName String?
+  // PHOTOGRAPHER-lane notes: whose capture feedback this is (scopes their view).
+  photographer   TeamMember? @relation(fields: [photographerId], references: [id])
+  photographerId String?
+  parent   MediaNote?  @relation("Thread", fields: [parentId], references: [id], onDelete: Cascade)
+  parentId String?
+  replies  MediaNote[] @relation("Thread")
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
+
+  @@index([projectId, status])
+  @@index([photographerId, status])
+}
+
+// Per-photo quick verdict while arrowing through a gallery in review mode.
+model MediaVerdict {
+  id        String  @id @default(cuid())
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String
+  assetUrl  String
+  verdict   String // APPROVED | NEEDS_WORK
+  updatedAt DateTime @updatedAt
+
+  @@unique([projectId, assetUrl])
 }
 
 // Audit log of every inbound webhook, for debugging + replay.

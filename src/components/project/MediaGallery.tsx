@@ -1,14 +1,20 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, useTransition } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import {
   Images, Video as VideoIcon, Map as MapIcon, Download, X, ChevronLeft, ChevronRight, Play, DownloadCloud,
-  Flag, Check, Loader2,
+  Flag, Check, Loader2, MessageSquarePlus, Pencil,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ListingMedia, MediaImage, MediaVideo, MediaFloorPlan } from "@/lib/integrations/aryeo";
 import { flagImages, resolveImageFlag, resolveAllImageFlags, type FlaggedImage } from "@/app/projects/flagActions";
 import { IMAGE_FLAG_TAGS } from "@/lib/imageFlags";
+import { addMediaNote, replyMediaNote, setMediaNoteStatus, setMediaVerdict } from "@/app/projects/reviewActions";
+import { ReviewBar } from "@/components/review/ReviewBar";
+import { ImageReview } from "@/components/review/ImageReview";
+import { VideoReview } from "@/components/review/VideoReview";
+import type { ReviewData, ReviewNote, ReviewVerdict } from "@/components/review/types";
 
 export type ImageFlagView = FlaggedImage;
 
@@ -24,12 +30,124 @@ function fmtDuration(s: number | null): string {
   return `${m}:${String(r).padStart(2, "0")}`;
 }
 
-export function MediaGallery({ media, slug, projectId, flags = [] }: { media: ListingMedia; slug: string; projectId?: string; flags?: FlaggedImage[] }) {
+// Canonical identity of a video for notes/verdicts: the same source order the
+// player + download button use, falling back to the thumb so even a source-less
+// video can still carry (un-timestamped) notes.
+function videoAssetUrl(v: MediaVideo): string | null {
+  return v.download ?? v.playback ?? v.thumb ?? null;
+}
+
+export function MediaGallery({ media, slug, projectId, flags = [], review }: { media: ListingMedia; slug: string; projectId?: string; flags?: FlaggedImage[]; review?: ReviewData }) {
+  const router = useRouter();
   // Live list of open flags — grows when you flag a photo in the lightbox,
   // shrinks when you mark one fixed in the Flags tab.
   const [flagList, setFlagList] = useState<FlaggedImage[]>(flags);
   const flaggedSet = new Set(flagList.map((f) => f.imageUrl));
   const [busy, startBusy] = useTransition();
+
+  // --- Review room (owner/admin only — `review` is undefined for creatives).
+  // Notes/verdicts live in local state as a zero-latency preview; every server
+  // action revalidates the page, and the effect below reconciles with the
+  // authoritative payload when it streams back in.
+  const reviewable = Boolean(review?.enabled && projectId);
+  const [reviewOn, setReviewOn] = useState(false);
+  const [rNotes, setRNotes] = useState<ReviewNote[]>(review?.notes ?? []);
+  const [rVerdicts, setRVerdicts] = useState<Record<string, ReviewVerdict>>(review?.verdicts ?? {});
+  useEffect(() => {
+    if (review) {
+      setRNotes(review.notes);
+      setRVerdicts(review.verdicts);
+    }
+  }, [review]);
+
+  const noteCountByAsset = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const n of rNotes) m.set(n.assetUrl, (m.get(n.assetUrl) ?? 0) + 1);
+    return m;
+  }, [rNotes]);
+  const editOpenCount = rNotes.filter((n) => n.lane === "EDIT" && n.status === "OPEN").length;
+  const photogOpenCount = rNotes.filter((n) => n.lane === "PHOTOGRAPHER" && n.status === "OPEN").length;
+  const fixedCount = rNotes.filter((n) => n.status === "FIXED").length;
+  const notesFor = (url: string | null) => (url ? rNotes.filter((n) => n.assetUrl === url) : []);
+
+  async function reviewAdd(input: {
+    assetUrl: string;
+    thumbUrl?: string | null;
+    assetType: "image" | "video";
+    x?: number | null;
+    y?: number | null;
+    timeSec?: number | null;
+    lane: "EDIT" | "PHOTOGRAPHER";
+    kind: "fix" | "coaching";
+    body: string;
+  }): Promise<{ ok: boolean; message?: string }> {
+    if (!projectId) return { ok: false, message: "No project to note against." };
+    const r = await addMediaNote({ projectId, ...input });
+    if (r.ok && r.id) {
+      const note: ReviewNote = {
+        id: r.id,
+        assetUrl: input.assetUrl,
+        thumbUrl: input.thumbUrl ?? null,
+        assetType: input.assetType,
+        x: input.x ?? null,
+        y: input.y ?? null,
+        timeSec: input.timeSec ?? null,
+        lane: input.lane,
+        kind: input.lane === "EDIT" ? "fix" : input.kind, // mirror the server's coercion
+        body: input.body,
+        status: "OPEN",
+        authorName: "You",
+        createdAt: new Date().toISOString(),
+        replies: [],
+      };
+      setRNotes((xs) => [note, ...xs]);
+      router.refresh();
+    }
+    return { ok: r.ok, message: r.message };
+  }
+
+  async function reviewReply(noteId: string, body: string): Promise<{ ok: boolean; message?: string }> {
+    const r = await replyMediaNote(noteId, body);
+    if (r.ok) {
+      setRNotes((xs) =>
+        xs.map((n) =>
+          n.id === noteId
+            ? { ...n, replies: [...n.replies, { id: `optimistic-${Date.now()}`, body, authorName: "You", createdAt: new Date().toISOString() }] }
+            : n,
+        ),
+      );
+      router.refresh();
+    }
+    return r;
+  }
+
+  async function reviewStatus(noteId: string, status: "OPEN" | "FIXED" | "RESOLVED"): Promise<{ ok: boolean; message?: string }> {
+    const r = await setMediaNoteStatus(noteId, status);
+    if (r.ok) {
+      setRNotes((xs) => xs.map((n) => (n.id === noteId ? { ...n, status } : n)));
+      router.refresh();
+    }
+    return r;
+  }
+
+  // Verdicts toggle: tapping the active verdict clears it back to unreviewed.
+  // Optimistic flip first, revert on failure.
+  function toggleVerdict(assetUrl: string, v: ReviewVerdict) {
+    if (!projectId) return;
+    const next = rVerdicts[assetUrl] === v ? null : v;
+    const before = rVerdicts;
+    setRVerdicts((s) => {
+      const n = { ...s };
+      if (next) n[assetUrl] = next;
+      else delete n[assetUrl];
+      return n;
+    });
+    startBusy(async () => {
+      const r = await setMediaVerdict(projectId, assetUrl, next);
+      if (!r.ok) setRVerdicts(before);
+      else router.refresh();
+    });
+  }
 
   // Per-photo flagging state inside the lightbox.
   const [lbPanel, setLbPanel] = useState(false);
@@ -97,6 +215,10 @@ export function MediaGallery({ media, slug, projectId, flags = [] }: { media: Li
   useEffect(() => {
     if (idx == null) return;
     const onKey = (e: KeyboardEvent) => {
+      // Don't steal keys while typing a note/flag/reply — arrow keys inside a
+      // textarea would otherwise flip to the next photo mid-sentence.
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "TEXTAREA" || t.tagName === "INPUT")) return;
       if (e.key === "Escape") close();
       else if (e.key === "ArrowLeft") prev();
       else if (e.key === "ArrowRight") next();
@@ -170,6 +292,15 @@ export function MediaGallery({ media, slug, projectId, flags = [] }: { media: Li
 
   const currentFlagged = idx != null && isImageTab && flaggedSet.has((images[idx] as MediaImage | MediaFloorPlan).original);
 
+  // Canonical URL of the asset open in the lightbox — verdicts + notes key off it.
+  const lbAssetUrl =
+    idx == null
+      ? null
+      : tab === "videos"
+        ? media.videos[idx] ? videoAssetUrl(media.videos[idx]) : null
+        : isImageTab && images[idx] ? (images[idx] as MediaImage | MediaFloorPlan).original : null;
+  const lbVerdict = lbAssetUrl ? rVerdicts[lbAssetUrl] : undefined;
+
   return (
     <section ref={sectionRef} id="flags" className="overflow-hidden rounded-2xl border bg-surface scroll-mt-20">
       {/* Header toggle + tabs + actions */}
@@ -207,14 +338,28 @@ export function MediaGallery({ media, slug, projectId, flags = [] }: { media: Li
             );
           })}
         </div>
-        {isImageTab && count > 0 && (
+        {(reviewable || (isImageTab && count > 0)) && (
           <div className="ml-auto flex items-center gap-1.5">
-            <button
-              onClick={downloadAll}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-surface-2"
-            >
-              <DownloadCloud className="size-3.5" /> Download all
-            </button>
+            {reviewable && (
+              <button
+                onClick={() => setReviewOn((v) => !v)}
+                aria-pressed={reviewOn}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors",
+                  reviewOn ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground",
+                )}
+              >
+                <MessageSquarePlus className="size-3.5" /> Review
+              </button>
+            )}
+            {isImageTab && count > 0 && (
+              <button
+                onClick={downloadAll}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium hover:bg-surface-2"
+              >
+                <DownloadCloud className="size-3.5" /> Download all
+              </button>
+            )}
           </div>
         )}
         </>
@@ -223,13 +368,24 @@ export function MediaGallery({ media, slug, projectId, flags = [] }: { media: Li
 
       {open && (
       <div className="p-4 sm:p-5">
+        {/* Review rollup — shown once the room is in use (or armed) so the owner
+            always sees where the round stands before sending it to a lane. */}
+        {reviewable && projectId && (reviewOn || rNotes.length > 0) && (
+          <ReviewBar projectId={projectId} editOpen={editOpenCount} photogOpen={photogOpenCount} fixed={fixedCount} />
+        )}
         {isImageTab && (
           <>
-            <p className="mb-3 text-xs text-muted">Tap a photo to open it full screen — flag it for fixes from there.</p>
+            <p className="mb-3 text-xs text-muted">
+              {reviewOn
+                ? "Review mode — open a photo, then tap anywhere on it to drop a pin-point note."
+                : "Tap a photo to open it full screen — flag it for fixes from there."}
+            </p>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
               {(images as (MediaImage | MediaFloorPlan)[]).map((img, i) => {
                 const caption = ("caption" in img && img.caption) || null;
                 const alreadyFlagged = flaggedSet.has(img.original);
+                const verdict = reviewable ? rVerdicts[img.original] : undefined;
+                const nNotes = reviewable ? (noteCountByAsset.get(img.original) ?? 0) : 0;
                 return (
                   <button
                     key={i}
@@ -246,6 +402,20 @@ export function MediaGallery({ media, slug, projectId, flags = [] }: { media: Li
                     <span className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/30 to-transparent opacity-0 transition-opacity group-hover:opacity-100" />
                     {alreadyFlagged && (
                       <span className="absolute left-1.5 top-1.5 inline-flex items-center gap-0.5 rounded bg-warning px-1 py-0.5 text-[10px] font-semibold text-white"><Flag className="size-2.5" /> flagged</span>
+                    )}
+                    {verdict && (
+                      <span className={cn(
+                        "absolute right-1.5 top-1.5 inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-semibold text-white",
+                        verdict === "APPROVED" ? "bg-success" : "bg-brand",
+                      )}>
+                        {verdict === "APPROVED" ? <Check className="size-2.5" /> : <Pencil className="size-2.5" />}
+                        {verdict === "APPROVED" ? "approved" : "needs work"}
+                      </span>
+                    )}
+                    {nNotes > 0 && (
+                      <span className="absolute bottom-1.5 right-1.5 inline-flex items-center gap-0.5 rounded-full bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                        <MessageSquarePlus className="size-2.5" /> {nNotes}
+                      </span>
                     )}
                   </button>
                 );
@@ -312,7 +482,11 @@ export function MediaGallery({ media, slug, projectId, flags = [] }: { media: Li
         {/* Video grid */}
         {tab === "videos" && (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {media.videos.map((v, i) => (
+            {media.videos.map((v, i) => {
+              const vUrl = reviewable ? videoAssetUrl(v) : null;
+              const vVerdict = vUrl ? rVerdicts[vUrl] : undefined;
+              const vNotes = vUrl ? (noteCountByAsset.get(vUrl) ?? 0) : 0;
+              return (
               <button
                 key={i}
                 onClick={() => setIdx(i)}
@@ -324,6 +498,20 @@ export function MediaGallery({ media, slug, projectId, flags = [] }: { media: Li
                 ) : (
                   <div className="flex aspect-video w-full items-center justify-center"><VideoIcon className="size-8 text-muted-2" /></div>
                 )}
+                {vVerdict && (
+                  <span className={cn(
+                    "absolute left-1.5 top-1.5 z-10 inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-semibold text-white",
+                    vVerdict === "APPROVED" ? "bg-success" : "bg-brand",
+                  )}>
+                    {vVerdict === "APPROVED" ? <Check className="size-2.5" /> : <Pencil className="size-2.5" />}
+                    {vVerdict === "APPROVED" ? "approved" : "needs work"}
+                  </span>
+                )}
+                {vNotes > 0 && (
+                  <span className="absolute right-1.5 top-1.5 z-10 inline-flex items-center gap-0.5 rounded-full bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                    <MessageSquarePlus className="size-2.5" /> {vNotes}
+                  </span>
+                )}
                 <span className="absolute inset-0 flex items-center justify-center bg-black/20 transition-colors group-hover:bg-black/35">
                   <span className="flex size-12 items-center justify-center rounded-full bg-white/90 text-black shadow-lg">
                     <Play className="size-5 translate-x-0.5 fill-black" />
@@ -334,7 +522,8 @@ export function MediaGallery({ media, slug, projectId, flags = [] }: { media: Li
                   {v.duration ? <span className="shrink-0 tabular-nums">{fmtDuration(v.duration)}</span> : null}
                 </span>
               </button>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -356,7 +545,31 @@ export function MediaGallery({ media, slug, projectId, flags = [] }: { media: Li
           <div className="flex items-center justify-between gap-2 px-4 py-3 text-white" onClick={(e) => e.stopPropagation()}>
             <span className="text-sm text-white/70">{idx + 1} / {count}</span>
             <div className="flex items-center gap-2">
-              {projectId && isImageTab && (
+              {/* Review mode swaps the legacy Flag affordance for verdict chips
+                  (pins carry the detail; the verdict is the quick thumbs call). */}
+              {reviewable && reviewOn && lbAssetUrl && (
+                <>
+                  <button
+                    onClick={() => toggleVerdict(lbAssetUrl, "APPROVED")}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium",
+                      lbVerdict === "APPROVED" ? "bg-success text-white" : "bg-white/10 text-white hover:bg-white/20",
+                    )}
+                  >
+                    <Check className="size-4" /> {lbVerdict === "APPROVED" ? "Approved" : "Approve"}
+                  </button>
+                  <button
+                    onClick={() => toggleVerdict(lbAssetUrl, "NEEDS_WORK")}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium",
+                      lbVerdict === "NEEDS_WORK" ? "bg-brand text-white" : "bg-white/10 text-white hover:bg-white/20",
+                    )}
+                  >
+                    <Pencil className="size-4" /> Needs work
+                  </button>
+                </>
+              )}
+              {projectId && isImageTab && !reviewOn && (
                 <button
                   onClick={() => { setLbPanel((v) => !v); setLbMsg(null); }}
                   className={cn(
@@ -383,7 +596,36 @@ export function MediaGallery({ media, slug, projectId, flags = [] }: { media: Li
             )}
 
             {tab === "videos" ? (
-              <VideoPlayer video={media.videos[idx]} />
+              reviewable && reviewOn ? (
+                <VideoReview
+                  key={idx} // reset composer/thread state per video
+                  video={media.videos[idx]}
+                  notes={notesFor(videoAssetUrl(media.videos[idx]))}
+                  onAdd={(body, lane, kind, timeSec) => {
+                    const v = media.videos[idx];
+                    const url = videoAssetUrl(v);
+                    if (!url) return Promise.resolve({ ok: false, message: "No video source to note against." });
+                    return reviewAdd({ assetUrl: url, thumbUrl: v.thumb, assetType: "video", timeSec, lane, kind, body });
+                  }}
+                  onReply={reviewReply}
+                  onSetStatus={reviewStatus}
+                />
+              ) : (
+                <VideoPlayer video={media.videos[idx]} />
+              )
+            ) : reviewable && reviewOn ? (
+              <ImageReview
+                key={idx} // reset pins-in-progress per photo
+                src={(images[idx] as MediaImage | MediaFloorPlan).large}
+                alt={("caption" in images[idx] && (images[idx] as MediaImage).caption) || ""}
+                notes={notesFor((images[idx] as MediaImage | MediaFloorPlan).original)}
+                onAdd={(body, lane, kind, x, y) => {
+                  const it = images[idx] as MediaImage | MediaFloorPlan;
+                  return reviewAdd({ assetUrl: it.original, thumbUrl: it.thumb, assetType: "image", x, y, lane, kind, body });
+                }}
+                onReply={reviewReply}
+                onSetStatus={reviewStatus}
+              />
             ) : (
               // eslint-disable-next-line @next/next/no-img-element
               <img

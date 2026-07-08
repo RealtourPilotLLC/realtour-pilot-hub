@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { MessageCircle, Phone, Send, User, Users } from "lucide-react";
+import { Mail, MessageCircle, Phone, Send, User, Users } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { Avatar } from "@/components/ui/Avatar";
@@ -8,6 +8,9 @@ import { getSecret } from "@/lib/integrations/connections";
 import { OpenPhone, phoneKey, recentOpenPhoneConversations, type OpConversation } from "@/lib/integrations/openphone";
 import { getClientTextTasks } from "@/lib/queries";
 import { ClientTextsPanel } from "@/components/texts/ClientTextsPanel";
+import { getEmailThreads } from "@/components/comms/emailThreads";
+import { EmailThreadList } from "@/components/comms/EmailThreadList";
+import { TeamMessagesPanel } from "@/components/comms/TeamMessagesPanel";
 import { formatDistanceToNow } from "date-fns";
 
 export const dynamic = "force-dynamic";
@@ -17,17 +20,38 @@ function fmtPhone(p: string) {
   return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : p;
 }
 
-// One comms surface, two tabs (Jordan: "keep comms all in one tab"): the live
-// OpenPhone inbox, and the Outbox — today's drafted confirmation + delivery
-// texts waiting for a human to review and send.
-function CommsTabs({ tab, pending }: { tab: "inbox" | "outbox"; pending: number }) {
+// One comms surface, four tabs (Jordan: "keep comms all in one tab" → "sick
+// messaging and comms hub"): the live OpenPhone inbox, client email threads,
+// internal team messaging, and the Outbox — today's drafted confirmation +
+// delivery texts waiting for a human to review and send. Every tab is
+// shareable via ?tab= and loads ONLY its own data (the heavy OpenPhone pull
+// never runs for the other three).
+type CommsTab = "inbox" | "email" | "team" | "outbox";
+
+function CommsTabs({ tab, pending, emailFresh = 0 }: { tab: CommsTab; pending: number; emailFresh?: number }) {
   const active = "rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white";
   const idle = "rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted hover:bg-surface-2";
   return (
-    <div className="mb-4 flex items-center gap-1.5">
+    <div className="mb-4 flex flex-wrap items-center gap-1.5">
       <Link href="/communications" className={tab === "inbox" ? active : idle}>
         <MessageCircle className="mr-1.5 inline size-3.5" />
         Inbox
+      </Link>
+      <Link href="/communications?tab=email" className={tab === "email" ? active : idle}>
+        <Mail className="mr-1.5 inline size-3.5" />
+        Email
+        {/* "Unread-ish": threads where the client wrote last, in the past 48h.
+            Computed by the email tab's own query, so it shows there (no extra
+            CommLog scan is spent on the other tabs). */}
+        {emailFresh > 0 && (
+          <span className={`ml-1.5 rounded-full px-1.5 text-xs font-semibold ${tab === "email" ? "bg-white/20" : "bg-brand/15 text-brand"}`}>
+            {emailFresh}
+          </span>
+        )}
+      </Link>
+      <Link href="/communications?tab=team" className={tab === "team" ? active : idle}>
+        <Users className="mr-1.5 inline size-3.5" />
+        Team
       </Link>
       <Link href="/communications?tab=outbox" className={tab === "outbox" ? active : idle}>
         <Send className="mr-1.5 inline size-3.5" />
@@ -44,7 +68,7 @@ function CommsTabs({ tab, pending }: { tab: "inbox" | "outbox"; pending: number 
 
 export default async function CommunicationsPage({ searchParams }: { searchParams: Promise<{ tab?: string }> }) {
   const sp = await searchParams;
-  const tab = sp.tab === "outbox" ? "outbox" : "inbox";
+  const tab: CommsTab = sp.tab === "outbox" || sp.tab === "email" || sp.tab === "team" ? sp.tab : "inbox";
   const pendingTexts = (await getClientTextTasks()).length;
 
   // The Outbox renders without the (slow) OpenPhone conversation pull — drafts
@@ -60,6 +84,42 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
         <div className="p-4 sm:p-6">
           <CommsTabs tab="outbox" pending={pendingTexts} />
           <ClientTextsPanel />
+        </div>
+      </div>
+    );
+  }
+
+  // Email: read-only client/lead threads from the Gmail sync (CommLog rows) —
+  // no OpenPhone involved. Replies happen in Gmail (no send scope connected).
+  if (tab === "email") {
+    const { threads, fresh } = await getEmailThreads();
+    return (
+      <div>
+        <PageHeader
+          title="Communications"
+          subtitle="Client email from the last 60 days, grouped into threads. Reply from Gmail."
+          actions={<Badge soft="var(--surface-2)">Synced from Gmail</Badge>}
+        />
+        <div className="p-4 sm:p-6">
+          <CommsTabs tab="email" pending={pendingTexts} emailFresh={fresh} />
+          <EmailThreadList threads={threads} />
+        </div>
+      </div>
+    );
+  }
+
+  // Team: internal project-message threads across every job — one stream, no
+  // external providers touched. Rows deep-link to the project's composer.
+  if (tab === "team") {
+    return (
+      <div>
+        <PageHeader
+          title="Communications"
+          subtitle="Team messages across all projects — click a thread to reply on the project page."
+        />
+        <div className="p-4 sm:p-6">
+          <CommsTabs tab="team" pending={pendingTexts} />
+          <TeamMessagesPanel />
         </div>
       </div>
     );
