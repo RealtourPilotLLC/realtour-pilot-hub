@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Clapperboard, Loader2, Check, ExternalLink, Link2, Circle } from "lucide-react";
 import { saveReelRecipe } from "@/app/projects/reelActions";
+import { ink } from "@/components/ui/Badge";
 
 // The creative plan for a video/reel job — captured pre-shoot, carried to the
 // editor. Editable by any crew role. The "script link" bridges to the external
@@ -48,7 +49,7 @@ export function ReelRecipeCard({
   return (
     <div className="panel-shadow overflow-hidden rounded-2xl border bg-surface">
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
-        <span className="flex size-7 items-center justify-center rounded-lg" style={{ background: "#a78bfa22", color: "#a78bfa" }}>
+        <span className="flex size-7 items-center justify-center rounded-lg" style={{ background: "#a78bfa22", color: ink("#a78bfa") }}>
           <Clapperboard className="size-4" />
         </span>
         <h2 className="text-sm font-semibold">Reel recipe</h2>

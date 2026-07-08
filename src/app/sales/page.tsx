@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { DollarSign, TrendingUp, Receipt, Wallet } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
-import { Badge } from "@/components/ui/Badge";
+import { Badge, ink } from "@/components/ui/Badge";
 import { prisma } from "@/lib/prisma";
 import { stageMeta } from "@/lib/pipeline";
 import { formatMoney } from "@/lib/utils";
@@ -29,7 +29,7 @@ function StatCard({
         <span className="text-sm text-muted">{label}</span>
         <span
           className="flex size-8 items-center justify-center rounded-lg"
-          style={{ backgroundColor: `${accent}1a`, color: accent }}
+          style={{ backgroundColor: `${accent}1a`, color: ink(accent) }}
         >
           <Icon className="size-4" />
         </span>

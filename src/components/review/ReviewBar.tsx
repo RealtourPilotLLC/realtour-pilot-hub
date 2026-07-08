@@ -44,7 +44,7 @@ export function ReviewBar({
           <Pencil className="size-3.5 text-brand" /> {editOpen} Kyle fix{editOpen === 1 ? "" : "es"} open
         </span>
         <span className="inline-flex items-center gap-1.5 text-xs font-medium">
-          <Camera className="size-3.5 text-sky-400" /> {photogOpen} photographer note{photogOpen === 1 ? "" : "s"}
+          <Camera className="size-3.5 text-sky-400 light:text-sky-600" /> {photogOpen} photographer note{photogOpen === 1 ? "" : "s"}
         </span>
         <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted">
           <RefreshCw className="size-3.5 text-success" /> {fixed} fixed awaiting re-review

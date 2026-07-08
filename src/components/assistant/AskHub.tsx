@@ -5,6 +5,7 @@ import { useState, useRef, useEffect, useTransition } from "react";
 import { Send, Sparkles, BookOpen, Database, User, ShieldCheck, Phone, Copy, Check, Mail, ListChecks, ArrowUpRight, Brain, Lock } from "lucide-react";
 import { askHub, type HubAnswer, type HubTurn, type HubRole, type HubDraft, type HubTaskCard, type HubMemoryCard } from "@/app/assistant/actions";
 import { sendClientText } from "@/app/clients/actions";
+import { ink } from "@/components/ui/Badge";
 
 const PRIORITY_COLOR: Record<string, string> = { URGENT: "#f87171", HIGH: "#fb923c", MEDIUM: "#fbbf24", LOW: "#94a3b8" };
 
@@ -27,7 +28,7 @@ function TaskCard({ task }: { task: HubTaskCard }) {
           {task.due ? `Due ${task.due}` : ""}{task.project ? ` · ${task.project}` : ""}
         </div>
       </div>
-      <span className="shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium" style={{ backgroundColor: `${PRIORITY_COLOR[task.priority] ?? "#94a3b8"}22`, color: PRIORITY_COLOR[task.priority] ?? "#94a3b8" }}>
+      <span className="shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-medium" style={{ backgroundColor: `${PRIORITY_COLOR[task.priority] ?? "#94a3b8"}22`, color: ink(PRIORITY_COLOR[task.priority] ?? "#94a3b8") }}>
         {task.priority}
       </span>
       <ArrowUpRight className="size-4 shrink-0 text-muted-2" />

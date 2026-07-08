@@ -33,7 +33,7 @@ import { getProject, getTeam } from "@/lib/queries";
 import { AssignmentPanel } from "@/components/project/AssignmentPanel";
 import { AppointmentManager } from "@/components/project/AppointmentManager";
 import { Avatar } from "@/components/ui/Avatar";
-import { Badge } from "@/components/ui/Badge";
+import { Badge, ink } from "@/components/ui/Badge";
 import { Section } from "@/components/ui/Section";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { taskToView } from "@/lib/taskView";
@@ -466,7 +466,7 @@ export default async function ProjectPage({
                   <li key={a.id} className="flex gap-3">
                     <span
                       className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full"
-                      style={{ backgroundColor: `${meta.color}1a`, color: meta.color }}
+                      style={{ backgroundColor: `${meta.color}1a`, color: ink(meta.color) }}
                     >
                       <Icon className="size-3.5" />
                     </span>

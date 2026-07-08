@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { BookOpen, Sparkles, GraduationCap, Camera, CheckSquare } from "lucide-react";
+import { ink } from "@/components/ui/Badge";
 
 // In-context Agent-on-Camera coaching for a video job — so the crew doesn't have
 // to hunt /resources. On the shoot screen it shows the camera-settings cheat sheet
@@ -21,7 +22,7 @@ export function AocPlaybookCard({ context }: { context: "shoot" | "edit" }) {
   return (
     <div className="panel-shadow overflow-hidden rounded-2xl border bg-surface">
       <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-        <span className="flex size-7 items-center justify-center rounded-lg" style={{ background: "#f9731622", color: "#f97316" }}>
+        <span className="flex size-7 items-center justify-center rounded-lg" style={{ background: "#f9731622", color: ink("#f97316") }}>
           <Camera className="size-4" />
         </span>
         <h2 className="text-sm font-semibold">Agent-on-Camera playbook</h2>

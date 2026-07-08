@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { Clapperboard, Loader2, ExternalLink } from "lucide-react";
 import { setupFrameioForProject } from "@/app/frameio/actions";
+import { ink } from "@/components/ui/Badge";
 
 const FIO = "#5b53ff";
 
@@ -20,7 +21,7 @@ export function FrameioButton({ projectId, viewUrl }: { projectId: string; viewU
         target="_blank"
         rel="noopener noreferrer"
         className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium hover:opacity-90"
-        style={{ backgroundColor: `${FIO}1a`, color: FIO }}
+        style={{ backgroundColor: `${FIO}1a`, color: ink(FIO) }}
       >
         <Clapperboard className="size-3.5" /> Open in Frame.io <ExternalLink className="size-3" />
       </a>

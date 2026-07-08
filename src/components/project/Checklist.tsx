@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { Check } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
+import { ink } from "@/components/ui/Badge";
 import { toggleChecklistItem } from "@/app/actions";
 import { ROLE_META } from "@/lib/pipeline";
 import { cn } from "@/lib/utils";
@@ -74,7 +75,7 @@ export function Checklist({ items }: { items: Item[] }) {
               ) : item.forRole ? (
                 <span
                   className="rounded px-1.5 py-0.5 text-[10px] font-medium"
-                  style={{ color: ROLE_META[item.forRole].color, backgroundColor: "var(--surface-2)" }}
+                  style={{ color: ink(ROLE_META[item.forRole].color), backgroundColor: "var(--surface-2)" }}
                 >
                   {ROLE_META[item.forRole].label}
                 </span>

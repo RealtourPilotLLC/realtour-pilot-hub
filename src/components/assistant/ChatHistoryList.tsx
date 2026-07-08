@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { Sparkles, User, ChevronDown, ChevronRight, RefreshCw } from "lucide-react";
 import { generateChatSummary, getChatTranscript } from "@/app/assistant/history/actions";
+import { ink } from "@/components/ui/Badge";
 
 export type ChatListItem = {
   id: string;
@@ -55,11 +56,11 @@ function ChatRow({ chat }: { chat: ChatListItem }) {
   return (
     <div className="rounded-xl border bg-surface p-4">
       <div className="mb-1.5 flex flex-wrap items-center gap-2">
-        <span className="inline-flex items-center gap-1.5 text-xs font-medium" style={{ color: chat.categoryColor }}>
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium" style={{ color: ink(chat.categoryColor) }}>
           <span className="size-2 rounded-full" style={{ backgroundColor: chat.categoryColor }} />
           {chat.categoryLabel}
         </span>
-        <span className="ml-auto inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium" style={{ backgroundColor: `${role.color}22`, color: role.color }}>
+        <span className="ml-auto inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium" style={{ backgroundColor: `${role.color}22`, color: ink(role.color) }}>
           {role.label}
         </span>
         <span className="text-xs text-muted-2">{chat.when}</span>

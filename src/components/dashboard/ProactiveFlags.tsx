@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Radar, DollarSign, UserMinus, RefreshCw, ChevronRight } from "lucide-react";
 import type { ProactiveFlag } from "@/lib/queries";
+import { ink } from "@/components/ui/Badge";
 
 const KIND_ICON = { ar: DollarSign, "vip-quiet": UserMinus, revision: RefreshCw } as const;
 const SEV = {
@@ -43,7 +44,7 @@ export function ProactiveFlags({ flags }: { flags: ProactiveFlag[] }) {
                 href={f.href}
                 className="group flex items-center gap-3 bg-surface px-5 py-3 hover:bg-surface-2"
               >
-                <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: `${sev.dot}1a`, color: sev.dot }}>
+                <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: `${sev.dot}1a`, color: ink(sev.dot) }}>
                   <Icon className="size-4" />
                 </span>
                 <div className="min-w-0 flex-1">

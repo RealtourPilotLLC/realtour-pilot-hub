@@ -35,6 +35,7 @@ import {
 import { cn } from "@/lib/utils";
 import { canAccess, type PageKey } from "@/lib/auth/access";
 import { NotificationsBell } from "@/components/NotificationsBell";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 export type ShellUser = {
   name: string | null;
@@ -217,6 +218,7 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
               <div className="truncate text-sm font-medium">{user.name || user.email}</div>
               <div className="text-[11px] text-muted-2">{ROLE_LABEL[user.role] ?? user.role}</div>
             </div>
+            <ThemeToggle />
             <NotificationsBell />
             <form action="/api/auth/logout" method="post">
               <button type="submit" title="Sign out" className="flex size-8 items-center justify-center rounded-lg text-muted-2 hover:bg-surface-2 hover:text-foreground">

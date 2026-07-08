@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Star, FolderOpen, Film, Camera, Search, ArrowUpDown, Layers } from "lucide-react";
 import { StageSelector } from "@/components/project/StageSelector";
 import { Avatar } from "@/components/ui/Avatar";
+import { ink } from "@/components/ui/Badge";
 import { PRIORITY_META } from "@/lib/pipeline";
 import { etMonthDay, etDaysAgo, etDayKey, etDate } from "@/lib/datetime";
 import { cn } from "@/lib/utils";
@@ -56,7 +57,7 @@ function TypePill({ row }: { row: TrackerRow }) {
       <span
         className={cn(
           "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-semibold",
-          premium ? "bg-[#8b5cf6]/15 text-[#a78bfa]" : "bg-surface-2 text-foreground/80",
+          premium ? "bg-[#8b5cf6]/15 text-[#a78bfa] light:text-[#7160a2]" : "bg-surface-2 text-foreground/80",
         )}
       >
         <Film className="size-3" /> {row.videoTier}
@@ -82,7 +83,7 @@ function Priority({ priority }: { priority: string }) {
         <Star
           key={i}
           className="size-3.5"
-          style={i < n ? { color: meta.color, fill: meta.color } : { color: "var(--muted-2)" }}
+          style={i < n ? { color: ink(meta.color), fill: ink(meta.color) } : { color: "var(--muted-2)" }}
         />
       ))}
     </span>

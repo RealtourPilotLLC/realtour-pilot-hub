@@ -23,6 +23,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { ProviderDef } from "@/lib/integrations/registry";
+import { ink } from "@/components/ui/Badge";
 import { etDateTime } from "@/lib/datetime";
 import Link from "next/link";
 import {
@@ -77,7 +78,7 @@ export function ProviderCard({
       <div className="flex items-start gap-3">
         <span
           className="flex size-10 shrink-0 items-center justify-center rounded-xl"
-          style={{ backgroundColor: `${provider.color}1a`, color: provider.color }}
+          style={{ backgroundColor: `${provider.color}1a`, color: ink(provider.color) }}
         >
           <Icon className="size-5" />
         </span>

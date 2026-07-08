@@ -83,9 +83,9 @@ export function ProjectCard({
             flag.kind === "missing"
               ? "bg-danger/10 text-danger"
               : flag.kind === "revision"
-                ? "bg-[#d4a95f]/12 text-[#d4a95f]"
+                ? "bg-[#d4a95f]/12 text-[#d4a95f] light:text-[#8c7245]"
                 : flag.kind === "pending"
-                  ? "bg-[#6ba3d6]/12 text-[#6ba3d6]"
+                  ? "bg-[#6ba3d6]/12 text-[#6ba3d6] light:text-[#4d6e8d]"
                   : "bg-success/10 text-success",
           )}
         >

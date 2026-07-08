@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { BackLink } from "@/components/ui/BackLink";
 import { Avatar } from "@/components/ui/Avatar";
-import { Badge } from "@/components/ui/Badge";
+import { Badge, ink } from "@/components/ui/Badge";
 import { SegmentBadge } from "@/components/clients/SegmentBadge";
 import { SocialBadge } from "@/components/clients/SocialBadge";
 import { ClientWorkspace } from "@/components/clients/ClientWorkspace";
@@ -131,7 +131,7 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
                 const stage = stageMeta(p.status);
                 return (
                   <Link key={p.id} href={`/projects/${p.id}`} className="flex items-center gap-3 rounded-xl border bg-surface p-3 hover:bg-surface-2">
-                    <span className="flex size-9 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: stage.soft, color: stage.color }}>
+                    <span className="flex size-9 shrink-0 items-center justify-center rounded-lg" style={{ backgroundColor: stage.soft, color: ink(stage.color) }}>
                       <Camera className="size-4" />
                     </span>
                     <div className="min-w-0 flex-1">

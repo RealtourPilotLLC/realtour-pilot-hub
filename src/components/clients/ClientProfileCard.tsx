@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { UserRound, RefreshCw, Sparkles, ThumbsUp, ThumbsDown, MessageSquare, Repeat, Camera, Palette, ShieldCheck } from "lucide-react";
 import { regenerateClientProfile } from "@/app/clients/actions";
 import type { ClientProfile } from "@/lib/clientProfile";
+import { ink } from "@/components/ui/Badge";
 
 const TOUCH: Record<string, { label: string; color: string }> = {
   high: { label: "High touch", color: "#d782ac" },
@@ -61,7 +62,7 @@ export function ClientProfileCard({ clientId, profile, updatedAt }: { clientId: 
         <span className="flex size-7 items-center justify-center rounded-lg bg-brand-soft text-brand"><UserRound className="size-4" /></span>
         <h2 className="text-sm font-semibold">Working profile</h2>
         {touch && (
-          <span className="rounded-full px-2 py-0.5 text-[11px] font-medium" style={{ backgroundColor: `${touch.color}22`, color: touch.color }}>
+          <span className="rounded-full px-2 py-0.5 text-[11px] font-medium" style={{ backgroundColor: `${touch.color}22`, color: ink(touch.color) }}>
             {touch.label}
           </span>
         )}

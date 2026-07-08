@@ -34,7 +34,18 @@ export default async function RootLayout({
     <html
       lang="en"
       className={`${inter.variable} ${geistMono.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
+      <head>
+        {/* Theme boot: runs before paint so a light-mode user never sees a dark
+            flash. localStorage choice wins; first visit follows the device. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              '(function(){try{var t=localStorage.getItem("rtp_theme");if(t==="light"||(!t&&window.matchMedia("(prefers-color-scheme: light)").matches))document.documentElement.classList.add("light");}catch(e){}})();',
+          }}
+        />
+      </head>
       <body className="min-h-full">
         <Shell user={user} scriptingUrl={process.env.SCRIPTING_BASE_URL || null}>{children}</Shell>
       </body>

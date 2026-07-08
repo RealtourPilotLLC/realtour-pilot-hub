@@ -3,6 +3,7 @@ import { formatDistanceToNow } from "date-fns";
 import { prisma } from "@/lib/prisma";
 import { scriptingConfigured } from "@/lib/integrations/scripting";
 import { ScriptStudioActions } from "./ScriptStudioActions";
+import { ink } from "@/components/ui/Badge";
 
 // Human label + tone for a Studio status.
 function statusChip(status: string | null): { label: string; cls: string } | null {
@@ -33,7 +34,7 @@ export async function ScriptStudioCard({ projectId }: { projectId: string }) {
   return (
     <div className="panel-shadow overflow-hidden rounded-2xl border bg-surface">
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
-        <span className="flex size-7 items-center justify-center rounded-lg" style={{ background: "#38bdf822", color: "#38bdf8" }}>
+        <span className="flex size-7 items-center justify-center rounded-lg" style={{ background: "#38bdf822", color: ink("#38bdf8") }}>
           <FileText className="size-4" />
         </span>
         <h2 className="text-sm font-semibold">Script Studio</h2>

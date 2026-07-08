@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* `light:` utility variant for the few hardcoded hues that need a darker
+   equivalent on the light canvas (mirrors Tailwind's class-based `dark:`). */
+@custom-variant light (&:where(html.light, html.light *));
+
 /* ---------------------------------------------------------------------------
    RealTour Pilot — Operations Hub design tokens
    Dark, elegant, high-tech — matched to realtourpilot.com:
@@ -30,7 +34,49 @@
   --danger: #f87171;
   --danger-soft: rgba(248, 113, 113, 0.14);
 
+  /* Chip ink — hex-colored chips mix their hue toward this so the text clears
+     the tinted background in BOTH themes. Dark: lift toward white (Badge keeps
+     its historical 18% lift; pure-hue accents stay untouched at 0%). Light:
+     sink toward near-black so the ~65%-lightness pastel palette stays legible
+     on white surfaces. Consumed by Badge/ink() in src/components/ui/Badge.tsx. */
+  --chip-ink: #ffffff;
+  --chip-ink-mix: 18%;
+  --hue-ink-mix: 0%;
+
   --radius: 0.875rem;
+}
+
+/* Light mode — same token contract, warm-white palette. Activated by a class
+   on <html> (set pre-paint by the theme boot script in layout.tsx, persisted
+   in localStorage; first visit follows the device preference). Semantic colors
+   shift darker so chips/badges keep AA contrast on light surfaces. */
+html.light {
+  color-scheme: light;
+
+  --background: #f6f5f2;
+  --surface: #ffffff;
+  --surface-2: #f1efeb;
+  --foreground: #1a1a1a;
+  --muted: #5c5c5c;
+  --muted-2: #8a8a8a;
+  --border: rgba(20, 20, 20, 0.1);
+  --border-strong: rgba(20, 20, 20, 0.2);
+
+  --brand: #d95816; /* a touch deeper so white-on-brand stays readable */
+  --brand-soft: rgba(217, 88, 22, 0.12);
+
+  --accent: #d95816;
+  --success: #059669;
+  --success-soft: rgba(5, 150, 105, 0.12);
+  --warning: #b45309;
+  --warning-soft: rgba(180, 83, 9, 0.14);
+  --danger: #dc2626;
+  --danger-soft: rgba(220, 38, 38, 0.1);
+
+  /* Chip text sinks toward near-black on the light canvas (see :root note). */
+  --chip-ink: #1f1f1f;
+  --chip-ink-mix: 42%;
+  --hue-ink-mix: 40%;
 }
 
 @theme inline {
@@ -77,14 +123,24 @@ body {
   letter-spacing: -0.011em;
 }
 
+/* Light canvas keeps the copper glow but swaps the white sheen for a soft
+   paper wash — same motif, inverted value scale. */
+html.light body {
+  background:
+    radial-gradient(1100px 520px at 50% -8%, rgba(217, 88, 22, 0.05), transparent 60%),
+    radial-gradient(900px 600px at 100% 0%, rgba(20, 20, 20, 0.02), transparent 55%),
+    var(--background);
+  background-attachment: fixed;
+}
+
 /* Headings get the tightened, high-tech tracking the brand site uses. */
 h1, h2, h3 {
   letter-spacing: -0.02em;
 }
 
-/* Brand-colored selection + focus. */
+/* Brand-colored selection + focus (token-driven so both themes read). */
 ::selection {
-  background: rgba(233, 99, 32, 0.3);
+  background: color-mix(in srgb, var(--brand) 30%, transparent);
 }
 :focus-visible {
   outline: 2px solid var(--brand);
@@ -121,6 +177,20 @@ summary,
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.03),
     0 1px 2px rgba(0, 0, 0, 0.28);
+}
+/* Light surfaces read depth through soft shadow, not inner glow. */
+html.light .panel-shadow {
+  box-shadow:
+    0 1px 2px rgba(20, 20, 20, 0.05),
+    0 4px 16px -8px rgba(20, 20, 20, 0.12);
+}
+html.light .lift:hover {
+  box-shadow:
+    0 2px 4px rgba(20, 20, 20, 0.06),
+    0 14px 32px -16px rgba(20, 20, 20, 0.25);
+}
+html.light .scroll-thin::-webkit-scrollbar-thumb:hover {
+  background: rgba(20, 20, 20, 0.3);
 }
 
 /* Interactive cards lift slightly and brighten their border on hover. */

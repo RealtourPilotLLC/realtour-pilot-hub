@@ -3,6 +3,7 @@ import { parseEvidence } from "@/lib/statusEvidence";
 import { stageMeta } from "@/lib/pipeline";
 import { RevisionResolveButton } from "@/components/project/RevisionResolveButton";
 import { RecheckStatusButton } from "@/components/project/RecheckStatusButton";
+import { ink } from "@/components/ui/Badge";
 import { formatDistanceToNow } from "date-fns";
 import type { ProjectStatus } from "@prisma/client";
 
@@ -45,7 +46,7 @@ export function StatusEvidenceCard({
       <div className="flex items-center justify-between gap-2 border-b px-5 py-3.5">
         <h2 className="flex items-center gap-2 text-sm font-semibold">
           {isRevision ? (
-            <RefreshCcw className="size-4 text-[#ea580c]" />
+            <RefreshCcw className="size-4 text-[#ea580c] light:text-[#c2410c]" />
           ) : hasMissing ? (
             <CircleAlert className="size-4 text-danger" />
           ) : (
@@ -55,7 +56,7 @@ export function StatusEvidenceCard({
         </h2>
         <span
           className="rounded-full px-2 py-0.5 text-xs font-semibold"
-          style={{ backgroundColor: stage.soft, color: stage.color }}
+          style={{ backgroundColor: stage.soft, color: ink(stage.color) }}
         >
           {stage.label}
         </span>
@@ -65,7 +66,7 @@ export function StatusEvidenceCard({
         {/* Revision banner — client asked for changes after delivery */}
         {isRevision && (
           <div className="rounded-lg border border-[#ea580c]/30 bg-[#ea580c]/10 px-3 py-2.5">
-            <div className="flex items-center gap-1.5 text-xs font-semibold text-[#ea580c]">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-[#ea580c] light:text-[#c2410c]">
               <RefreshCcw className="size-3.5" /> Client requested changes after delivery
             </div>
             {revisionNote && (

@@ -88,7 +88,7 @@ export default async function HistoryPage() {
                 <h2 className="text-sm font-semibold">{friendlyDay(key)}</h2>
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
                   {dayShoots.length > 0 && (
-                    <span className="inline-flex items-center gap-1"><Camera className="size-3.5 text-violet-400" /> {dayShoots.length} {dayShoots.length === 1 ? "shoot" : "shoots"}</span>
+                    <span className="inline-flex items-center gap-1"><Camera className="size-3.5 text-violet-400 light:text-violet-600" /> {dayShoots.length} {dayShoots.length === 1 ? "shoot" : "shoots"}</span>
                   )}
                   {dayTasks.length > 0 && (
                     <span className="inline-flex items-center gap-1"><CheckCircle2 className="size-3.5 text-success" /> {dayTasks.length} done</span>
@@ -109,7 +109,7 @@ export default async function HistoryPage() {
               <ul className="divide-y divide-border">
                 {dayShoots.map((s) => (
                   <li key={`s-${s.id}`} className="flex items-start gap-2.5 px-4 py-2.5">
-                    <Camera className="mt-0.5 size-4 shrink-0 text-violet-400" />
+                    <Camera className="mt-0.5 size-4 shrink-0 text-violet-400 light:text-violet-600" />
                     <div className="min-w-0 flex-1">
                       <Link href={`/projects/${s.projectId}`} className="text-sm font-medium hover:text-brand">{s.title}</Link>
                       <div className="text-[11px] text-muted-2">Shoot · {s.time}{s.photographer ? ` · ${s.photographer}` : ""}{s.clientName ? ` · ${s.clientName}` : ""}</div>

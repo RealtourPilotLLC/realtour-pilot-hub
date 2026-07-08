@@ -8,17 +8,14 @@ function tint(color: string, alpha: number): string {
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 
-// Lighten a hex toward white so chip TEXT always clears the dark tinted
-// background, even when the source hue is on the darker side.
-function lighten(color: string, amount: number): string {
-  const m = /^#?([0-9a-f]{6})$/i.exec(color.trim());
-  if (!m) return color;
-  const n = parseInt(m[1], 16);
-  const mix = (c: number) => Math.round(c + (255 - c) * amount);
-  const r = mix((n >> 16) & 255);
-  const g = mix((n >> 8) & 255);
-  const b = mix(n & 255);
-  return `rgb(${r}, ${g}, ${b})`;
+// Theme-aware chip ink: mixes a hue toward the canvas-appropriate ink (white
+// on dark, near-black on light — the --chip-ink / --hue-ink-mix tokens in
+// globals.css) so the ~65%-lightness pastel palette stays legible on BOTH
+// canvases. Dark mode mixes 0% — pixel-identical to the raw hue. Use this for
+// any inline `style={{ color: someHue }}` chip/icon text on page surfaces.
+export function ink(color: string): string {
+  const c = /^[0-9a-f]{6}$/i.test(color.trim()) ? `#${color.trim()}` : color;
+  return `color-mix(in srgb, ${c}, var(--chip-ink, #fff) var(--hue-ink-mix, 0%))`;
 }
 
 export function Badge({
@@ -36,8 +33,12 @@ export function Badge({
 }) {
   const isHex = !!color && /^#?[0-9a-f]{6}$/i.test(color);
   const bg = isHex ? tint(color!, 0.15) : soft ?? "var(--surface-2)";
-  // Slightly lift the text so even mid-tone hues stay readable on the tint.
-  const fg = isHex ? lighten(color!, 0.18) : color ?? "var(--muted)";
+  // Mix the text toward the theme ink (white lift on dark — same 18% as the
+  // old `lighten` — a stronger sink toward black on light) so it stays
+  // readable on the tint in both themes.
+  const fg = isHex
+    ? `color-mix(in srgb, ${color!.startsWith("#") ? color : `#${color}`}, var(--chip-ink, #fff) var(--chip-ink-mix, 18%))`
+    : color ?? "var(--muted)";
   return (
     <span
       className={cn(

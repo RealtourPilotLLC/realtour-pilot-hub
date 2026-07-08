@@ -14,6 +14,7 @@ import { DroneAdvisory } from "@/components/project/DroneAdvisory";
 import type { Weather, DriveInfo } from "@/lib/travel";
 import { getTerritories, territoriesContaining, covers, type Territory } from "@/lib/territories";
 import { CopyButton } from "@/components/ui/CopyButton";
+import { ink } from "@/components/ui/Badge";
 
 export type MapPin = {
   id: string; // appointment id (or project id in single-pin mode)
@@ -399,7 +400,7 @@ function PinDetail({ pin, home, onAddress, territories }: { pin: MapPin; home: H
           <Link href={`/projects/${pin.projectId}`} className="font-semibold leading-snug hover:text-brand">{pin.title}</Link>
           <CopyButton value={pin.title} title="Copy address" className="mt-0.5 shrink-0" />
         </div>
-        <span className="shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium" style={{ color: pin.color, backgroundColor: pin.color + "22" }}>{pin.stage}</span>
+        <span className="shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium" style={{ color: ink(pin.color), backgroundColor: pin.color + "22" }}>{pin.stage}</span>
       </div>
       <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
         <span className="truncate">{pin.client}</span>

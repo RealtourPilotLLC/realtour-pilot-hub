@@ -2,7 +2,7 @@ import Link from "next/link";
 import { CheckCircle2, Camera, ArrowRight, Upload, FolderOpen } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Avatar } from "@/components/ui/Avatar";
-import { Badge } from "@/components/ui/Badge";
+import { Badge, ink } from "@/components/ui/Badge";
 import { prisma } from "@/lib/prisma";
 import { CullingReminder } from "@/components/upload/CullingReminder";
 import { getCurrentUser } from "@/lib/auth/user";
@@ -123,7 +123,7 @@ function JobRow({ s }: { s: Shoot }) {
   const types = [...new Set(s.deliverables.map((d) => d.type))];
   return (
     <Link href={`/upload/${s.id}`} className="flex items-center gap-4 rounded-2xl border bg-surface p-4 transition-shadow hover:shadow-md">
-      <span className="flex size-11 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: stage.soft, color: stage.color }}>
+      <span className="flex size-11 shrink-0 items-center justify-center rounded-xl" style={{ backgroundColor: stage.soft, color: ink(stage.color) }}>
         {uploaded ? <CheckCircle2 className="size-5" /> : <Camera className="size-5" />}
       </span>
       <div className="min-w-0 flex-1">
