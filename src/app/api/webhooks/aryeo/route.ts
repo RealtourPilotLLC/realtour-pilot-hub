@@ -57,19 +57,15 @@ export async function POST(req: NextRequest) {
     /* keep empty */
   }
 
-  // Real Aryeo activity payload is { object:"ACTIVITY", id, name:"ORDER_FULFILLED",
-  // occurred_at, resource:{ object:"ORDER", id } }. `name` is the event; `id` is
-  // the activity id (used for idempotency). Fall back to older shapes too.
-  const eventType =
-    (payload.name as string) ||
-    (payload.event as string) ||
-    (payload.type as string) ||
-    (payload.topic as string) ||
-    "unknown";
-  const externalId =
-    (payload.id as string) || (payload.event_id as string) || undefined;
-
-  // Idempotency: skip if we've already processed this event id.
+  const cls = classifyAryeoPayload(payload);
+  const eventType = cls.eventName;
+  // Idempotency: ONLY when we have a true activity id (the documented ACTIVITY
+  // wrapper). Flat resource payloads carry the RESOURCE's id — deduping on that
+  // would skip every FUTURE event about the same order/appointment after the
+  // first one processed (which is exactly what happened: real events silently
+  // swallowed). Flat events therefore process every time; that's safe because
+  // processAryeoEvent re-fetches authoritative state (idempotent reconciles).
+  const externalId = cls.activityId;
   if (externalId) {
     const seen = await prisma.webhookEvent.findFirst({
       where: { provider: "aryeo", externalId, status: "PROCESSED" },
@@ -98,18 +94,55 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ ok: true });
 }
 
-// The activity's subject — { object:"ORDER"|"LISTING"|"APPOINTMENT"|"CUSTOMER", id }.
-// Falls back to older/flat payload shapes.
-function resourceFrom(payload: Record<string, unknown>): { object: string; id?: string } {
+// What did Aryeo just tell us about? Aryeo's docs describe an ACTIVITY wrapper
+// ({ object:"ACTIVITY", id, name:"ORDER_FULFILLED", resource:{ object, id } }),
+// but REAL deliveries (verified against stored WebhookEvent payloads, Jul 2026)
+// are the FLAT RESOURCE itself: the order/listing/customer-group object at the
+// top level — and appointment payloads carry no `object` key at all, just
+// start_at/end_at/rescheduled_at/previous_start_at. The old parser only knew
+// the wrapper shape, so every real event fell through unrouted ("unknown" or a
+// customer's NAME as the event type) and was silently dropped. Detect both.
+type AryeoClass = { object: "ORDER" | "LISTING" | "APPOINTMENT" | "CUSTOMER" | ""; id?: string; eventName: string; activityId?: string };
+export function classifyAryeoPayload(payload: Record<string, unknown>): AryeoClass {
+  const top = String((payload.object as string) || "").toUpperCase();
   const r = (payload.resource ?? payload.data ?? {}) as Record<string, unknown>;
-  const object = String((r.object as string) || (payload.resource_type as string) || "").toUpperCase();
-  const id =
-    (r.id as string) ||
-    (r.order_id as string) ||
-    (payload.resource_id as string) ||
-    ((r.order as Record<string, unknown>)?.id as string) ||
-    undefined;
-  return { object, id };
+
+  // Documented ACTIVITY wrapper (kept for forward-compat if Aryeo adopts it).
+  if (top === "ACTIVITY" || (r && typeof r === "object" && (r.object || r.id))) {
+    const object = String((r.object as string) || (payload.resource_type as string) || "").toUpperCase();
+    const id = (r.id as string) || (r.order_id as string) || (payload.resource_id as string) || ((r.order as Record<string, unknown>)?.id as string) || undefined;
+    const mapped = object === "GROUP" || object === "USER" ? "CUSTOMER" : object;
+    return {
+      object: (["ORDER", "LISTING", "APPOINTMENT", "CUSTOMER"].includes(mapped) ? mapped : "") as AryeoClass["object"],
+      id,
+      eventName: (payload.name as string) || (payload.event as string) || "unknown",
+      activityId: (payload.id as string) || (payload.event_id as string) || undefined,
+    };
+  }
+
+  // Flat resource with a top-level `object` discriminator.
+  if (top === "ORDER" || top === "LISTING") {
+    return { object: top, id: payload.id as string, eventName: `${top}_CHANGED` };
+  }
+  if (top === "GROUP" || top === "CUSTOMER" || top === "USER") {
+    return { object: "CUSTOMER", id: payload.id as string, eventName: "CUSTOMER_CHANGED" };
+  }
+  if (top === "APPOINTMENT") {
+    return { object: "APPOINTMENT", id: payload.id as string, eventName: "APPOINTMENT_CHANGED" };
+  }
+
+  // Flat appointment: no `object` key — recognize it by its scheduling shape.
+  if (payload.start_at !== undefined && (payload.end_at !== undefined || payload.duration !== undefined || payload.requires_confirmation !== undefined)) {
+    return { object: "APPOINTMENT", id: payload.id as string, eventName: "APPOINTMENT_CHANGED" };
+  }
+
+  // Legacy/unknown — surface whatever event-ish field exists for the log and
+  // let the substring fallback in processAryeoEvent take a swing.
+  return {
+    object: "",
+    id: (payload.resource_id as string) || undefined,
+    eventName: (payload.name as string) || (payload.event as string) || (payload.type as string) || (payload.topic as string) || "unknown",
+  };
 }
 
 async function restatusProject(projectId: string) {
@@ -127,31 +160,28 @@ async function retaskProject(projectId: string) {
   } catch { /* non-fatal */ }
 }
 
-// Routes a real Aryeo activity. Aryeo's webhook API is create-only (no list /
-// delete), and the verified event names are: ORDER_CREATED/FULFILLED/PAID,
-// LISTING_UPDATED, APPOINTMENT_SCHEDULED/ASSIGNED/RESCHEDULED/CANCELED,
-// CUSTOMER_CREATED/UPDATED. We route on the resource type first, then the verb,
-// and always re-fetch authoritative data from Aryeo rather than trusting the body.
+// Routes a real Aryeo event. The 10 registered subscriptions are:
+// ORDER_CREATED/FULFILLED/PAID, LISTING_UPDATED, APPOINTMENT_SCHEDULED/
+// ASSIGNED/RESCHEDULED/CANCELED, CUSTOMER_CREATED/UPDATED — but flat payloads
+// don't say WHICH verb fired, so we route on the resource type and reconcile
+// authoritative state (never trusting the body). That covers every verb.
 export async function processAryeoEvent(eventType: string, payload: Record<string, unknown>) {
   const name = eventType.toUpperCase();
-  const { object, id } = resourceFrom(payload);
+  const { object, id } = classifyAryeoPayload(payload);
 
-  // ORDER_* — new order, fulfilled (delivery), or paid (billing). Re-fetch the
-  // single order, refresh the order table, and on a fulfil/deliver/paid event
-  // re-run the smart status engine for that project (cross-checks real media).
+  // ORDER — created, fulfilled (delivery), paid, or unknown-verb flat change.
+  // Refresh the order table, then re-run the smart status engine + task
+  // reconciler for that project (cheap, idempotent — and since flat payloads
+  // hide the verb, a fulfil/paid must not wait for the cron to be noticed).
   if (object === "ORDER" || name.startsWith("ORDER")) {
     if (id) { try { await Aryeo.order(id); } catch { /* fall through to full sync */ } }
     await syncAryeoOrders();
     if (id) {
       const project = await prisma.project.findUnique({ where: { aryeoOrderId: id }, select: { id: true } });
       if (project) {
-        // A fulfil/deliver/paid event means real media may have landed — re-check
-        // status first so QC/delivery tasks reconcile against what's now live.
-        if (name.includes("FULFIL") || name.includes("DELIVER") || name.includes("PAID")) {
-          try { await restatusProject(project.id); } catch { /* non-fatal */ }
-        }
-        // Any order event (incl. CREATED) → (re)generate this job's tasks now:
-        // a new order gets its confirmation task without waiting for the cron.
+        try { await restatusProject(project.id); } catch { /* non-fatal */ }
+        // (Re)generate this job's tasks now: a new order gets its confirmation
+        // task, a delivered one flips QC — without waiting for the cron.
         await retaskProject(project.id);
       }
     }
@@ -176,10 +206,20 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
   }
 
   // APPOINTMENT_* — scheduled / assigned / rescheduled / canceled. Refresh the
-  // appointment-driven schedule + morning brief, then orders so the shoot date follows.
+  // appointment-driven schedule + morning brief (this also fires the
+  // appointment_change notifications on real diffs), then orders so the shoot
+  // date follows — and reconcile the affected project's status + task due
+  // dates right now instead of on the next cron.
   if (object === "APPOINTMENT" || name.startsWith("APPOINTMENT")) {
     try { await syncAryeoAppointments(); } catch { /* non-fatal */ }
     await syncAryeoOrders();
+    if (id) {
+      const appt = await prisma.appointment.findUnique({ where: { aryeoId: id }, select: { projectId: true } });
+      if (appt) {
+        try { await restatusProject(appt.projectId); } catch { /* non-fatal */ }
+        await retaskProject(appt.projectId);
+      }
+    }
     return;
   }
 
