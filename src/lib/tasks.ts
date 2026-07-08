@@ -4,6 +4,8 @@ import crypto from "crypto";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { type ChecklistItem, parseChecklist, serializeChecklist, checklistComplete } from "@/lib/checklist";
 import { etDayStartUtc } from "@/lib/datetime";
+import { slugForName } from "@/lib/assignees";
+import { BRACKET_RATIO, photoTargetFor } from "@/lib/culling";
 
 // ---------------------------------------------------------------------------
 // Phase 1 of the listener-first platform: turnaround rules + due-date/priority
@@ -166,6 +168,10 @@ function specsForProject(p: {
   deliverables: { type: string; label?: string | null }[];
   statusEvidence?: string | null;
   monthlyContent?: boolean;
+  // Culling budget inputs — size the "gallery is over target, cull it" nudge on
+  // the QC checklist (Kyle's manual read, doesn't gate auto-close).
+  squareFeet?: number | null;
+  photoTarget?: number | null;
 }): TaskSpec[] {
   const specs: TaskSpec[] = [];
   const shoot = p.shootDate;
@@ -244,6 +250,21 @@ function specsForProject(p: {
         : "Deliver the gallery (Aryeo + branded email)",
       done: galleryDelivered,
     });
+    // Cull-at-delivery guardrail (Jul 2026 audit): delivered count == final-folder
+    // count in EVERY observed job — nobody culls, so 76% of galleries ship over 50.
+    // When the live photo count already exceeds this home's budget, add ONE
+    // guidance line so Kyle culls near-duplicates before delivering. It's a READ,
+    // not a gate: pushed pre-checked (done: true) so it NEVER blocks the media_qa
+    // auto-close (checklistComplete needs every item done). Mirrors how the
+    // isDelivered() items ride the same checklist without becoming Kyle's work.
+    const galleryPhotoCount = Math.max(ev?.aryeo?.photos ?? 0, ev?.dropbox?.finalPhotos ?? 0);
+    const budget = photoTargetFor({ squareFeet: p.squareFeet, photoTarget: p.photoTarget });
+    if (galleryPhotoCount > budget) {
+      qcItems.push({
+        label: `Gallery is ${galleryPhotoCount} photos vs ~${budget} target — cull near-duplicates before delivering (keep the best of each room).`,
+        done: true,
+      });
+    }
     const pendingDues = qcTypes.filter((d) => !isDelivered(d)).map((d) => deliveryDueFrom(anchor, d, dueOpts(d)).getTime());
     if (qcTypes.length > 0 && qcItems.some((i) => !i.done)) {
       specs.push({
@@ -766,6 +787,82 @@ export async function chaseVendorsForMissing(
 }
 
 // ---------------------------------------------------------------------------
+// Cull-at-the-source (Jul 2026 audit). The hourly status sweep is the only place
+// that reads the RAW folder count, so it's where "the photographer shot too much"
+// gets caught. When raws blow past the photo budget × the overage factor, mint
+// ONE deduped task pointing at the photographer so the pile gets culled BEFORE it
+// costs editing money — and text them, since they've left the property. Called
+// from syncProjectStatuses on SHOT/EDITING jobs only (raws in, not yet delivered).
+// Best-effort by design: the caller never lets it break the sweep.
+// ---------------------------------------------------------------------------
+export async function mintCullTask(opts: {
+  projectId: string;
+  title: string;
+  rawPhotos: number;
+  target: number;
+  photographerId: string | null;
+  photographerName: string | null;
+}): Promise<boolean> {
+  const { projectId, rawPhotos, target } = opts;
+  const street = (opts.title || "this job").split(",")[0].trim();
+  const estFinals = Math.round(rawPhotos / BRACKET_RATIO);
+  const overBy = rawPhotos - target * BRACKET_RATIO;
+  // One cull task per project, ever — a completed one means the photographer
+  // already handled it; don't re-nag on the next hourly pass (mirrors the
+  // vendor-chase dedupe). "todo" type so no reconciler/auto-close sweep fights it.
+  const key = `cull-${projectId}`;
+  if (await prisma.smartTask.findUnique({ where: { dedupeKey: key } })) return false;
+
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { clientId: true, addressLine: true },
+  });
+  // Route to the photographer by their first-name slug (same convention as every
+  // other photographer-owned task); if we can't resolve one, leave it null so it
+  // lands in triage rather than on the wrong person.
+  const assignedKey = opts.photographerName ? slugForName(opts.photographerName) : null;
+
+  await prisma.smartTask.create({
+    data: {
+      taskType: "todo",
+      title: `Cull before edit — ${street}: ${rawPhotos} raws ≈ ${estFinals} finals vs ~${target} target`.slice(0, 120),
+      summary: `This shoot uploaded ${rawPhotos} raw photos — roughly ${estFinals} finals once AutoHDR blends the brackets, against a ~${target}-photo budget for this home (${overBy > 0 ? `~${overBy} raws over` : "over budget"}). Cull the raw folder before it goes to editing: keep the best ONE of each room/composition and drop the near-duplicates. Culling here saves editing money and gives the client a tighter gallery.`.slice(0, 500),
+      reasonCreated: `Raw upload (${rawPhotos}) far exceeds the ~${target}-photo budget (× bracket ratio) — over-shot`,
+      checklist: JSON.stringify([
+        "Open the 01-RAW-Photos folder for this shoot",
+        "Keep the best single frame of each room / composition",
+        "Delete the near-duplicates and machine-gunned extras",
+        `Aim to land near ~${target} finals (~${target * BRACKET_RATIO} bracketed raws)`,
+      ]),
+      source: "system",
+      priority: "HIGH",
+      dueAt: new Date(Date.now() + 4 * HOUR),
+      projectId,
+      clientId: project?.clientId ?? null,
+      propertyAddress: opts.title,
+      assignedKey,
+      dedupeKey: key,
+    },
+  });
+
+  // Text the photographer — they've left the property, so the bell alone won't
+  // reach them. Best-effort; the bridge no-ops if OpenPhone/phone is missing.
+  if (opts.photographerId) {
+    try {
+      const { notifyInApp } = await import("@/lib/notify");
+      await notifyInApp({
+        kind: "cull",
+        title: `Cull before edit — ${street}: ${rawPhotos} raws vs ~${target} target`,
+        href: `/upload/${projectId}`,
+        targets: [{ roles: ["PHOTOGRAPHER"], userKey: `tm:${opts.photographerId}`, href: `/upload/${projectId}` }],
+        dedupeKey: `cull-notify-${projectId}`,
+      });
+    } catch { /* SMS/bell is best-effort */ }
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Push handoff when a shoot's raws land (audit crack #19). Flipping to SHOT
 // notified no one — the editor queue is pull-only — and a premium reel had no
 // "send raws + brief to Luma" task anywhere, so a forgotten dispatch surfaced
@@ -896,6 +993,7 @@ export async function generateTasksForProject(projectId: string): Promise<number
 
 type TaskProject = {
   id: string; status: string; title: string; shootDate: Date | null; statusEvidence: string | null;
+  squareFeet: number | null; photoTarget: number | null;
   deliverables: { type: string; label: string | null }[];
   client: { id: string; name: string | null; socialClient: boolean };
   photographer: { name: string } | null;
@@ -928,6 +1026,8 @@ async function syncOneProjectTasks(
     deliverables: p.deliverables,
     statusEvidence: p.statusEvidence,
     monthlyContent: p.client.socialClient,
+    squareFeet: p.squareFeet,
+    photoTarget: p.photoTarget,
   });
   // Reconcile: close any open production task that's no longer expected. This
   // retires "QA photos" / "Deliver gallery" once the photos are live (even

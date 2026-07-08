@@ -7,6 +7,7 @@ import { getSecret } from "@/lib/integrations/connections";
 import { projectFolderPaths } from "@/lib/dropboxFolders";
 import { standardDeliveryDue, deliveryDueFrom } from "@/lib/tasks";
 import type { NotifyTarget } from "@/lib/notify";
+import { photoTargetFor, RAW_OVERAGE_FACTOR, BRACKET_RATIO } from "@/lib/culling";
 
 // ---------------------------------------------------------------------------
 // Smart project-status engine.
@@ -154,6 +155,10 @@ export type StatusEvidence = {
   videoTier: VideoTier | null;
   videoDue: string | null; // ISO date the video is expected by
   videoOverdue: boolean; // past the window with no video delivered yet
+  // Cull-at-source (Jul 2026): stamped when the raw pile blew past the photo
+  // budget × the overage factor, so the project page / Kyle can see WHY the
+  // cull task fired. Absent when raws are within budget or unknown.
+  cull?: { rawPhotos: number; photoTarget: number; overBy: number };
 };
 
 export type StatusResult = { status: ProjectStatus; evidence: StatusEvidence };
@@ -323,6 +328,11 @@ type StatusProject = {
   revisionRequestedAt: Date | null;
   revisionNote: string | null;
   photographerId: string | null;
+  // Culling budget inputs: squareFeet sizes the 50-vs-80 default, photoTarget is
+  // the owner override. The photographer name keys the cull task's assignedKey.
+  squareFeet: number | null;
+  photoTarget: number | null;
+  photographer: { name: string } | null;
   client: { name: string; socialClient: boolean };
   deliverables: { id: string; type: string; label: string | null }[];
   appointments: { status: string | null; startAt: Date | null }[];
@@ -454,6 +464,9 @@ export async function syncProjectStatuses(
       revisionRequestedAt: true,
       revisionNote: true,
       photographerId: true,
+      squareFeet: true,
+      photoTarget: true,
+      photographer: { select: { name: true } },
       client: { select: { name: true, socialClient: true } },
       deliverables: { select: { id: true, type: true, label: true } },
       appointments: { select: { status: true, startAt: true } },
@@ -526,6 +539,22 @@ export async function syncProjectStatuses(
     byStatus[final] = (byStatus[final] ?? 0) + 1;
 
     const statusChanged = final !== p.status;
+
+    // Cull-at-the-source (Jul 2026 audit). Raws in but not yet delivered is the
+    // only window where over-shooting can still be fixed cheaply. When the live
+    // raw count blows past the home's photo budget × the overage factor, stamp
+    // the evidence (so the project page shows WHY) and mint ONE cull task + text
+    // the photographer below. SHOT/EDITING only — never nag a delivered job.
+    let cullOver = false;
+    if (["SHOT", "EDITING"].includes(final) && sig.dropbox && sig.dropbox.rawPhotos > 0) {
+      const photoTarget = photoTargetFor(p);
+      const rawPhotos = sig.dropbox.rawPhotos;
+      if (rawPhotos > photoTarget * RAW_OVERAGE_FACTOR) {
+        cullOver = true;
+        evidence.cull = { rawPhotos, photoTarget, overBy: rawPhotos - photoTarget * BRACKET_RATIO };
+      }
+    }
+
     // First arrival at DELIVERED — the same condition that stamps deliveredAt
     // below; drives the one-time "Delivered" bell inside the statusChanged block.
     const justDelivered = final === "DELIVERED" && !p.deliveredAt;
@@ -546,6 +575,23 @@ export async function syncProjectStatuses(
 
     // Reflect category presence onto the deliverable rows for the portal/detail.
     await syncDeliverableStatuses(p, evidence);
+
+    // Over-shot the budget → mint ONE cull task + text the photographer, so the
+    // pile gets thinned BEFORE it costs editing money. Deduped per project inside
+    // mintCullTask. Best-effort; never breaks the sweep.
+    if (cullOver && evidence.cull) {
+      try {
+        const { mintCullTask } = await import("@/lib/tasks");
+        await mintCullTask({
+          projectId: p.id,
+          title: p.title,
+          rawPhotos: evidence.cull.rawPhotos,
+          target: evidence.cull.photoTarget,
+          photographerId: p.photographerId,
+          photographerName: p.photographer?.name ?? null,
+        });
+      } catch { /* cull nudge is best-effort */ }
+    }
 
     // Vendor round-trip chase (audit crack #16): a floor plan (CubiCasa) or the
     // photo edits (AutoHDR) still missing days after the shoot means the vendor

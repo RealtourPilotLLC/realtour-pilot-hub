@@ -112,6 +112,9 @@ export type ShootView = {
     shootDateISO: string | null;
     editorBrief: string | null;
     uploadedAt: string | null;
+    // Culling budget inputs (counts only — the field view never shows money).
+    squareFeet: number | null;
+    photoTarget: number | null;
     aryeoListingId: string | null; // for pulling captured media off Aryeo
     reelHook: string | null;
     reelScript: string | null;
@@ -190,6 +193,8 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
       shootDateISO: p.shootDate?.toISOString() ?? null,
       editorBrief: p.editorBrief,
       uploadedAt: p.uploadedAt?.toISOString() ?? null,
+      squareFeet: p.squareFeet,
+      photoTarget: p.photoTarget,
       aryeoListingId: p.aryeoListingId,
       reelHook: p.reelHook,
       reelScript: p.reelScript,

@@ -17,6 +17,8 @@ import { Section } from "@/components/ui/Section";
 import { DELIVERABLE_META } from "@/lib/pipeline";
 import { PALETTE } from "@/lib/palette";
 import { SHOOT_STATUS_META, shootStatusText, type ShootStatusKind } from "@/lib/statusTexts";
+import { CullingReminder } from "@/components/upload/CullingReminder";
+import { photoTargetFor, roomBudgetText } from "@/lib/culling";
 import type { ShootView } from "@/lib/shoot";
 import {
   sendShootStatusText, draftClientMessage, sendClientMessage,
@@ -63,6 +65,11 @@ export function ShootScreen({
   // only items like virtual staging are surfaced as a shooting reminder instead).
   const captureables = deliverables.filter((d) => !POST_PRODUCTION_TYPES.has(d.type));
   const stagingOrdered = deliverables.some((d) => POST_PRODUCTION_TYPES.has(d.type));
+  // Photo budget for this home (counts only — never money on the field view).
+  // Only relevant when a photo set is actually being captured; the room budget
+  // rides on the PHOTOS capture row and the culling reminder above the checklist.
+  const photosOrdered = deliverables.some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d.type));
+  const photoTarget = photosOrdered ? photoTargetFor(project) : null;
   // Video/reel jobs get the Agent-on-Camera playbook + reel recipe on-site.
   const isVideo = deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
   // Hard, order-specific must-dos (amber "don't leave without"): the order's
@@ -130,7 +137,7 @@ export function ShootScreen({
           />
         )}
         {view.zillowTourUrl && <ZillowCta url={view.zillowTourUrl} />}
-        <Checklist deliverables={captureables} captured={captured} onToggle={toggleCapture} mustGets={mustGets} agentNotes={agentNotes} staging={stagingOrdered} />
+        <Checklist deliverables={captureables} captured={captured} onToggle={toggleCapture} mustGets={mustGets} agentNotes={agentNotes} staging={stagingOrdered} photoTarget={photoTarget} />
         {pay}
         <NotesCard projectId={project.id} initial={project.editorBrief ?? ""} flash={flash} />
         <MediaCard media={media} uploaded={project.uploadedAt != null} />
@@ -597,7 +604,7 @@ function BriefCard({ view, flash }: { view: ShootView; flash: (k: "ok" | "err", 
 // ---------------------------------------------------------------------------
 
 function Checklist({
-  deliverables, captured, onToggle, mustGets, agentNotes, staging,
+  deliverables, captured, onToggle, mustGets, agentNotes, staging, photoTarget,
 }: {
   deliverables: ShootView["deliverables"];
   captured: Record<string, boolean>;
@@ -605,6 +612,7 @@ function Checklist({
   mustGets: string[];
   agentNotes: string[];
   staging: boolean;
+  photoTarget: number | null;
 }) {
   const total = deliverables.length;
   const done = Object.values(captured).filter(Boolean).length;
@@ -613,6 +621,13 @@ function Checklist({
 
   return (
     <Section icon={Camera} title="What to capture" count={total > 0 ? `${done}/${total}` : undefined} bodyClassName="space-y-1.5">
+      {/* Photo budget for THIS home (counts only). Culling in the field is far
+          cheaper than culling after AutoHDR blends every bracket. */}
+      {photoTarget != null && (
+        <div className="mb-1">
+          <CullingReminder compact target={photoTarget} hidePay />
+        </div>
+      )}
       {/* Agent-specific must-gets — the things that aren't a standard deliverable
           but WILL come back as a revision if missed. Surfaced first, on purpose. */}
       {mustGets.length > 0 && (
@@ -654,6 +669,11 @@ function Checklist({
                 {d.uploadCount > 0 && <span className="ml-auto shrink-0 text-[11px] font-normal text-muted-2">{d.uploadCount} uploaded</span>}
               </span>
               <span className="mt-0.5 block text-xs leading-snug text-muted">{guide}</span>
+              {/* Room-by-room photo budget, on the PHOTOS row only — turns
+                  "aim ~N" into a concrete plan (counts only, never money). */}
+              {d.type === "PHOTOS" && photoTarget != null && (
+                <span className="mt-1 block text-xs leading-snug text-warning">{roomBudgetText(photoTarget)}</span>
+              )}
             </span>
           </button>
         );

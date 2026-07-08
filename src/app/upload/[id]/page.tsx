@@ -11,10 +11,12 @@ import {
 } from "lucide-react";
 import { BackLink } from "@/components/ui/BackLink";
 import { prisma } from "@/lib/prisma";
+import { cn } from "@/lib/utils";
 import { CullingReminder } from "@/components/upload/CullingReminder";
 import { UploadPortal } from "@/components/upload/UploadPortal";
 import { AppointmentFeedback } from "@/components/upload/AppointmentFeedback";
 import { getProjectFolderState } from "@/lib/dropboxFolders";
+import { photoTargetFor, rawBudgetFor, rawOverageCeiling } from "@/lib/culling";
 import { ActivityType } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
@@ -48,16 +50,19 @@ export default async function UploadProjectPage({
   if (!project) notFound();
 
   const folderState = await getProjectFolderState(project);
+  // This home's photo budget (from sq ft or the owner override) — surfaced next
+  // to the live raw count so the photographer sees over-shooting immediately.
+  const photoTarget = photoTargetFor(project);
 
   return (
     <div className="mx-auto max-w-3xl p-6">
       <BackLink href="/upload" label="All shoots" />
 
-      <DropboxFolders state={folderState} />
+      <DropboxFolders state={folderState} photoTarget={photoTarget} />
 
-      {/* Always visible at the drop point — culling targets + the pay policy. */}
+      {/* Always visible at the drop point — this home's budget + the pay policy. */}
       <div className="mt-4">
-        <CullingReminder compact />
+        <CullingReminder compact target={photoTarget} />
       </div>
 
       <UploadPortal
@@ -110,11 +115,21 @@ function Step({ done, label }: { done: boolean; label: string }) {
 
 function DropboxFolders({
   state,
+  photoTarget,
 }: {
   state: Awaited<ReturnType<typeof getProjectFolderState>>;
+  photoTarget: number;
 }) {
   if (!state) return null;
   const iconFor = (label: string) => (/video/i.test(label) ? Video : ImageIcon);
+
+  // Live raw-photo count vs this home's budget. Amber past the bracket budget
+  // (target × 3), red past the overage ceiling (target × 3.3 → over-shot).
+  const rawPhotoCount = state.folders.find((f) => f.key === "rawPhotos")?.count ?? 0;
+  const rawBudget = rawBudgetFor(photoTarget);
+  const overage = rawOverageCeiling(photoTarget);
+  const budgetTone =
+    rawPhotoCount > overage ? "danger" : rawPhotoCount > rawBudget ? "warning" : "muted";
 
   return (
     <section className="mt-4 rounded-2xl border bg-surface p-4">
@@ -130,6 +145,24 @@ function DropboxFolders({
           <Step done={state.hasFinal} label="Final delivered" />
         </div>
       </div>
+
+      {/* Raw count vs budget — only meaningful once Dropbox is connected AND raws
+          have started landing. Turns amber/red as the pile blows past budget. */}
+      {state.connected && rawPhotoCount > 0 && (
+        <div
+          className={cn(
+            "mt-2 inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium",
+            budgetTone === "danger" && "bg-danger/10 text-danger",
+            budgetTone === "warning" && "bg-warning/10 text-warning",
+            budgetTone === "muted" && "bg-surface-2 text-muted",
+          )}
+        >
+          <ImageIcon className="size-3.5" />
+          Raw photos: {rawPhotoCount} / ~{rawBudget} budget
+          {budgetTone === "danger" && " — over budget, cull before delivering"}
+          {budgetTone === "warning" && " — approaching the budget"}
+        </div>
+      )}
 
       <p className="mt-1.5 text-xs text-muted">
         Drop originals into the <strong>Raw</strong> folders — the hub watches them and moves the project to{" "}

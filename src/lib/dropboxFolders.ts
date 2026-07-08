@@ -99,6 +99,23 @@ export async function getProjectFolderState(p: FolderProject): Promise<{
   return { connected, folders, hasRaw, hasFinal };
 }
 
+// Raw-photo folder count for ONE project (a single Dropbox call), for the upload
+// list's "over budget" chip. Returns null when Dropbox isn't connected so the
+// caller can skip the whole batch. Kept lean (raw photos only) so a list of
+// shoots doesn't fan out four calls per row like getProjectFolderState.
+export async function rawPhotoCounts(
+  projects: FolderProject[],
+): Promise<Map<FolderProject, number> | null> {
+  if (!dropboxConfigured() || !(await getSecret("dropbox"))) return null;
+  const out = new Map<FolderProject, number>();
+  await Promise.all(
+    projects.map(async (p) => {
+      out.set(p, await folderFileCount(projectFolderPaths(p).rawPhotos));
+    }),
+  );
+  return out;
+}
+
 // Poll each active project's RAW + FINAL folders and advance status accordingly:
 //   RAW files present  → SHOT  (photographer uploaded → ready for editing/QA)
 //   FINAL files present → REVIEW (editor done → QC then deliver)

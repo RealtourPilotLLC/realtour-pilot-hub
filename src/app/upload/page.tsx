@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { CheckCircle2, Camera, ArrowRight, Upload, FolderOpen } from "lucide-react";
+import { CheckCircle2, Camera, ArrowRight, Upload, FolderOpen, Scissors } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge, ink } from "@/components/ui/Badge";
@@ -7,6 +7,8 @@ import { prisma } from "@/lib/prisma";
 import { CullingReminder } from "@/components/upload/CullingReminder";
 import { getCurrentUser } from "@/lib/auth/user";
 import { photographerMemberId } from "@/lib/shoot";
+import { rawPhotoCounts } from "@/lib/dropboxFolders";
+import { photoTargetFor, rawOverageCeiling } from "@/lib/culling";
 import { stageMeta, DELIVERABLE_META } from "@/lib/pipeline";
 import { DeliverableType } from "@prisma/client";
 import { etDateTime, etDaysAgo } from "@/lib/datetime";
@@ -54,6 +56,21 @@ export default async function UploadListPage() {
     },
   });
 
+  // "Over budget" chip: only SHOT jobs have raws in the folder, so we only spend
+  // Dropbox calls on those (one call each, in parallel). A shoot is over budget
+  // when its raw pile exceeds its home's target × the overage factor.
+  const overBudget = new Set<string>();
+  const shotJobs = shoots.filter((s) => s.status === "SHOT");
+  if (shotJobs.length > 0) {
+    const counts = await rawPhotoCounts(shotJobs);
+    if (counts) {
+      for (const s of shotJobs) {
+        const raw = counts.get(s) ?? 0;
+        if (raw > rawOverageCeiling(photoTargetFor(s))) overBudget.add(s.id);
+      }
+    }
+  }
+
   const grouped = new Map<BucketKey, typeof shoots>();
   for (const s of shoots) {
     const b = bucketFor(s.shootDate);
@@ -95,7 +112,7 @@ export default async function UploadListPage() {
               </div>
               <div className="space-y-2">
                 {items.map((s) => (
-                  <JobRow key={s.id} s={s} />
+                  <JobRow key={s.id} s={s} overBudget={overBudget.has(s.id)} />
                 ))}
               </div>
             </section>
@@ -116,7 +133,7 @@ type Shoot = {
   deliverables: { type: DeliverableType }[]; _count: { uploads: number };
 };
 
-function JobRow({ s }: { s: Shoot }) {
+function JobRow({ s, overBudget }: { s: Shoot; overBudget: boolean }) {
   const stage = stageMeta(s.status as Parameters<typeof stageMeta>[0]);
   const uploaded = s.uploadedAt != null;
   // Distinct deliverable types = the checklist of what to capture/upload.
@@ -133,6 +150,12 @@ function JobRow({ s }: { s: Shoot }) {
             <Badge color="#34d399" soft="rgba(52,211,153,0.14)">Uploaded</Badge>
           ) : (
             <Badge color={stage.color} soft={stage.soft}>{stage.short}</Badge>
+          )}
+          {/* Raw pile blew past this home's budget — cull before it goes to edit. */}
+          {overBudget && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-semibold text-warning">
+              <Scissors className="size-3" /> Over budget
+            </span>
           )}
         </div>
         <div className="truncate text-xs text-muted">

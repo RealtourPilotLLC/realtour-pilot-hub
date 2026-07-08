@@ -52,6 +52,8 @@ import { DeliverableStatusSelect } from "@/components/project/DeliverableStatusS
 import { FrameioButton } from "@/components/project/FrameioButton";
 import { PRIORITY_META, DELIVERABLE_META, refinedDeliverableLabel, stageMeta } from "@/lib/pipeline";
 import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
+import { photoTargetFor } from "@/lib/culling";
+import { PhotoTargetControl } from "@/components/project/PhotoTargetControl";
 import { formatMoney, stripHtml } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
 import { etDateTime, etDateYear } from "@/lib/datetime";
@@ -523,6 +525,15 @@ export default async function ProjectPage({
               {project.squareFeet && (
                 <Row label="Size" value={`${project.squareFeet.toLocaleString()} sq ft`} />
               )}
+              {/* Owner/admin photo-culling budget (the whole page is admin-gated). */}
+              <div className="pt-1">
+                <PhotoTargetControl
+                  projectId={project.id}
+                  photoTarget={project.photoTarget}
+                  computed={photoTargetFor({ squareFeet: project.squareFeet, photoTarget: null })}
+                  squareFeet={project.squareFeet}
+                />
+              </div>
               <Row
                 label="Shoot"
                 value={

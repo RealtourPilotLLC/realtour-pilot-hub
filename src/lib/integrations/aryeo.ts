@@ -916,6 +916,12 @@ export async function syncAryeoOrders(
             zip: addr?.postal_code ?? null,
             lat: addr?.latitude ?? null,
             lng: addr?.longitude ?? null,
+            // Square footage lives on the LISTING, not the address. It was never
+            // mapped (audit: 0/153 projects had it), so the culling budget had
+            // nothing to size the 50-vs-80 photo default on — every home fell
+            // back to 50. Pull it through so large homes get the 80 target.
+            squareFeet:
+              order.listing?.square_feet != null ? Math.round(order.listing.square_feet) : null,
             orderedAt: order.created_at ? new Date(order.created_at) : null,
             shootDate: shootDate ? new Date(shootDate) : null,
             deliveredAt: order.fulfilled_at ? new Date(order.fulfilled_at) : null,

@@ -304,6 +304,27 @@ export async function assignMember(
   revalidatePath("/schedule");
 }
 
+/**
+ * Set (or clear) a project's photo-culling budget. `null` restores the computed
+ * default (50, or 80 for homes >= 3500 sq ft). The budget drives the field guide,
+ * the upload chip, the cull task, and Kyle's deliver guardrail — so the owner can
+ * override it per home (e.g. an unusually photogenic estate that warrants more).
+ */
+export async function setPhotoTarget(projectId: string, target: number | null) {
+  await requireAdmin();
+  // Clamp to a sane range so a fat-fingered value can't mint absurd budgets.
+  const value = target == null ? null : Math.max(1, Math.min(500, Math.round(target)));
+  await prisma.project.update({ where: { id: projectId }, data: { photoTarget: value } });
+  await prisma.activity.create({
+    data: {
+      projectId,
+      type: ActivityType.SYSTEM,
+      body: value == null ? "Photo budget reset to the automatic default." : `Photo budget set to ${value} photos.`,
+    },
+  });
+  revalidatePath(`/projects/${projectId}`);
+}
+
 /** Move a project to a new pipeline stage and log it on the timeline. */
 export async function moveProjectStatus(projectId: string, status: ProjectStatus) {
   await requireAdmin();

@@ -255,6 +255,11 @@ model Project {
   lat         Float? // from Aryeo listing.address.latitude — drives the map pins
   lng         Float? // from Aryeo listing.address.longitude
   squareFeet  Int?
+  // Culling budget: target FINAL delivered photo count. Defaulted in code from
+  // squareFeet (≥3500 → 80, else 50) unless the owner overrides on the project.
+  // The status engine flags raw drops that blow past ~3.3× this (bracket ratio)
+  // and Kyle's deliver card warns when the gallery ships over it.
+  photoTarget Int?
   packageName String? // ordered package label
   price       Float? // order total
   // Eligible services invoice for creative pay = sum of non-canceled order items
