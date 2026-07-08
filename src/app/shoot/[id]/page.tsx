@@ -10,6 +10,7 @@ import { ShootPayCard, ShootPayCardSkeleton } from "@/components/shoot/ShootPayC
 import { ShootMapCard, ShootMapCardSkeleton } from "@/components/shoot/ShootMapCard";
 import { ShootFeedback } from "@/components/shoot/ShootFeedback";
 import { PropertyGlimpse } from "@/components/shoot/PropertyGlimpse";
+import { ReelScriptCard } from "@/components/project/ReelScriptCard";
 import { ListingMedia, ListingMediaSkeleton } from "@/components/project/ListingMedia";
 
 export const dynamic = "force-dynamic";
@@ -46,7 +47,13 @@ export default async function ShootDetailPage({
   // fetches just the pin. Both are cheap — fetched in parallel, no Suspense.
   const [feedback, geo] = await Promise.all([
     payMemberId ? getPhotographerFeedback(id, payMemberId) : Promise.resolve([]),
-    prisma.project.findUnique({ where: { id }, select: { lat: true, lng: true } }),
+    // Also pull the locked reel recipe: the photographer directs the agent on
+    // camera from this script, so it belongs on the shoot screen (content only
+    // — the external Studio link stays owner/admin-side on the project page).
+    prisma.project.findUnique({
+      where: { id },
+      select: { lat: true, lng: true, reelHook: true, reelScript: true, reelSong: true, reelShotList: true, reelRecipeUpdatedAt: true },
+    }),
   ]);
   // Only the photographer the feedback is addressed to can reply / mark fixed;
   // owner-admin previews (including "view as") are read-only here, matching
@@ -86,6 +93,13 @@ export default async function ShootDetailPage({
       {feedback.length > 0 && (
         <ShootFeedback notes={feedback} readOnly={feedbackReadOnly} photographerName={view.photographer?.name ?? null} />
       )}
+      <ReelScriptCard
+        hook={geo?.reelHook ?? null}
+        script={geo?.reelScript ?? null}
+        song={geo?.reelSong ?? null}
+        shotList={geo?.reelShotList ?? null}
+        updatedAt={geo?.reelRecipeUpdatedAt ? geo.reelRecipeUpdatedAt.toISOString() : null}
+      />
       <Suspense fallback={<ShootMapCardSkeleton />}>
         <ShootMapCard projectId={id} memberId={payMemberId} />
       </Suspense>

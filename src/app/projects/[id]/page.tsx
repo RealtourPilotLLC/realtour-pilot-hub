@@ -29,6 +29,7 @@ import { Suspense } from "react";
 import { ListingMedia, ListingMediaSkeleton } from "@/components/project/ListingMedia";
 import { StatusEvidenceCard } from "@/components/project/StatusEvidenceCard";
 import { TaskCard } from "@/components/queue/TaskCard";
+import { ReelScriptCard } from "@/components/project/ReelScriptCard";
 import { getProject, getTeam } from "@/lib/queries";
 import { AssignmentPanel } from "@/components/project/AssignmentPanel";
 import { AppointmentManager } from "@/components/project/AppointmentManager";
@@ -238,6 +239,17 @@ export default async function ProjectPage({
               </div>
             </Section>
           )}
+
+          {/* The locked reel script from Script Studio — visible to the whole
+              crew here (the photographer also gets it on their shoot screen). */}
+          <ReelScriptCard
+            hook={project.reelHook}
+            script={project.reelScript}
+            song={project.reelSong}
+            shotList={project.reelShotList}
+            updatedAt={project.reelRecipeUpdatedAt ? project.reelRecipeUpdatedAt.toISOString() : null}
+            studioUrl={project.scriptingUrl ?? project.reelScriptUrl}
+          />
 
           {/* Ordered deliverables */}
           <Section icon={Package} title="Ordered deliverables" count={project.deliverables.length || null} flush>
