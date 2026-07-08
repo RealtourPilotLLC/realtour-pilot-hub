@@ -771,7 +771,7 @@ const PRODUCTION_TASK_TYPES = ["confirmation_text", "appointment_prep", "media_q
 // once the gallery shipped: outstanding photo-flag fixes (a real re-do comes back
 // as a client revision, which is left open) and teammate job-prep instructions.
 // NOT delivery_text — that's created below and closes on its own timer/send.
-const DELIVERED_CLOSE_TYPES = [...PRODUCTION_TASK_TYPES, "image_fixes", "comms_followup"];
+const DELIVERED_CLOSE_TYPES = [...PRODUCTION_TASK_TYPES, "image_fixes", "comms_followup", "edit_video"];
 
 // Close out a project's now-obsolete open tasks when it reaches a terminal
 // state, so Daily Tasks doesn't show ghost work on finished/cancelled jobs.
@@ -1024,6 +1024,7 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
     select: {
       title: true,
       clientId: true,
+      client: { select: { socialClient: true } },
       deliverables: { select: { type: true, label: true } },
     },
   });
@@ -1043,14 +1044,28 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
     });
     try {
       const { notifyUrgent, notifyInApp } = await import("@/lib/notify");
+      const { editorForDeliverable } = await import("@/lib/editors");
       await notifyUrgent(`Raws in for ${street} — ready for editing`, "/editing");
       // Bell mirror: ops + the whole editor bench (raws are pull-work — whoever
-      // it routes to sees it in /editing either way).
+      // it routes to sees it in /editing either way) + a PERSON-ADDRESSED row for
+      // the routed video editor (editor:<key>) so the notify bridge can DM/text
+      // them in Manila. Photos-only jobs route to Kyle (not a bench editor) — the
+      // editor:key row is only added for a real video route (kim/remar/luma).
+      const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+      const targets: import("@/lib/notify").NotifyTarget[] = [{ roles: ["ADMIN"] }, { roles: ["EDITOR"] }];
+      if (v) {
+        const key = editorForDeliverable(v.type, v.label, p.client?.socialClient ?? false);
+        // Only in-house editors have a reachable channel; Luma (external) has no
+        // bell/DM — its dispatch is the Kyle task below.
+        if (key === "kim" || key === "remar") {
+          targets.push({ roles: ["EDITOR"], userKey: `editor:${key}` });
+        }
+      }
       await notifyInApp({
         kind: "raws_landed",
         title: `Raws in — ${street}`,
         href: "/editing",
-        targets: [{ roles: ["ADMIN"] }, { roles: ["EDITOR"] }],
+        targets,
         dedupeKey: `raws-${projectId}`,
       });
     } catch { /* never let a ping break the upload flow */ }
@@ -1082,6 +1097,111 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
       clientId: p.clientId,
       propertyAddress: p.title,
       ownerId: kyle?.id ?? null,
+      dedupeKey: key,
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// The editor's WORK ITEM for a video job. `notifyRawsLanded` pings the bench;
+// THIS mints the accountable task that lands in the routed editor's "Do now"
+// list on /editing — the one thing that was missing while 4-of-8 videos ran
+// overdue with nobody's name on them. VIDEO-ONLY: photos are AutoHDR'd on
+// upload (no human), so a photos-only job mints nothing here. Deduped
+// `edit-video-<projectId>`; auto-closed by the reconciler when the final video
+// lands (see syncOneProjectTasks). Best-effort — callers wrap in try/catch.
+//
+// dueAt = the video's delivery-due MINUS a 12h QC buffer: the edit has to be in
+// the door early enough for Kyle to QC + the client to see it before the SLA
+// clock (shootDate + VIDEO SLA) actually expires. If the buffer would put the
+// due date in the past (an already-late job), we don't backdate below "now +
+// nudge" — an overdue edit is URGENT either way and a wildly-past date just
+// reads as noise.
+// ---------------------------------------------------------------------------
+export async function mintEditTask(projectId: string): Promise<void> {
+  const p = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      title: true,
+      clientId: true,
+      shootDate: true,
+      addressLine: true,
+      createdAt: true,
+      frameioViewUrl: true,
+      client: { select: { name: true, socialClient: true } },
+      deliverables: { select: { type: true, label: true } },
+    },
+  });
+  if (!p) return;
+  // Only video/reel jobs get an editor task — photos are automated.
+  const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  if (!v) return;
+
+  const { videoTier } = await import("@/lib/projectStatus");
+  const { editorForDeliverable, editorMeta } = await import("@/lib/editors");
+  const { dropboxWebUrl, projectFolderPaths } = await import("@/lib/dropboxFolders");
+
+  const monthly = !!p.client?.socialClient;
+  const tier = videoTier(p.deliverables); // standard | premium | null
+  const isPremium = tier === "premium";
+  const assignedKey = editorForDeliverable(v.type, v.label, monthly); // kim | remar | luma
+  const editorName = editorMeta(assignedKey)?.name ?? assignedKey;
+  const street = (p.title || "this job").split(",")[0].trim();
+
+  // Video delivery-due = shootDate + the SAME SLA the status card uses, then a
+  // 12h QC buffer pulls the EDIT due earlier. No shootDate → no computable SLA,
+  // fall back to a short nudge window so the task still surfaces.
+  const videoDue = p.shootDate
+    ? deliveryDueFrom(p.shootDate, v.type, { premium: isPremium, monthlyContent: monthly })
+    : null;
+  const rawDue = videoDue ? new Date(videoDue.getTime() - 12 * HOUR) : new Date(Date.now() + 4 * HOUR);
+  // Never surface a wildly-backdated due; clamp an already-late edit to "soon".
+  const dueAt = rawDue.getTime() < Date.now() ? new Date(Date.now() + HOUR) : rawDue;
+
+  const rawUrl = dropboxWebUrl(projectFolderPaths(p).rawVideo);
+  const briefUrl = `/edit/${projectId}`;
+  const tierLabel = isPremium ? "Premium" : "Standard";
+  const dueLabel = videoDue
+    ? videoDue.toLocaleDateString("en-US", { month: "short", day: "numeric" })
+    : "soon";
+
+  const summary =
+    `${tierLabel} reel for ${street}. Raws are in — cut the video. Delivery due ${dueLabel} (edit due 12h earlier for QC). ` +
+    `RAW footage: ${rawUrl} · Brief: ${briefUrl}` +
+    (p.frameioViewUrl ? ` · Frame.io: ${p.frameioViewUrl}` : "");
+
+  const key = `edit-video-${projectId}`;
+  const priority = computePriority({ dueAt, status: "SHOT" });
+  // Upsert so a re-detected SHOT keeps ONE task and refreshes its route/due,
+  // but a COMPLETED one is never resurrected (the reconciler owns re-open).
+  const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+  if (existing) {
+    if (existing.status === "COMPLETED" || existing.status === "CANCELLED") return;
+    await prisma.smartTask.update({
+      where: { id: existing.id },
+      data: { assignedKey, dueAt, priority, summary: summary.slice(0, 500) },
+    });
+    return;
+  }
+  await prisma.smartTask.create({
+    data: {
+      taskType: "edit_video",
+      title: `Edit — ${street}`.slice(0, 120),
+      summary: summary.slice(0, 500),
+      reasonCreated: `Raws landed — ${tierLabel} reel routed to ${editorName}`,
+      checklist: JSON.stringify([
+        "Open the RAW video folder",
+        "Read the brief (reel recipe, editing notes, brand)",
+        "Cut the video to the brief",
+        "Upload to Frame.io and send to RealTour for review",
+      ]),
+      source: "system",
+      priority,
+      dueAt,
+      assignedKey,
+      projectId,
+      clientId: p.clientId,
+      propertyAddress: p.title,
       dedupeKey: key,
     },
   });
@@ -1153,7 +1273,7 @@ type TaskProject = {
 // reconciler used to read that as "no longer expected" and auto-complete them
 // within the hour (the Frame.io "Review finals" task self-destructed on first
 // use — audit crack #20). Externally-minted tasks are closed by their OWN flows.
-const EXTERNAL_KEY_PREFIXES = ["frameio-review-", "scripting-script-", "scripting-client-", "luma-", "slack-", "lead-"];
+const EXTERNAL_KEY_PREFIXES = ["frameio-review-", "scripting-script-", "scripting-client-", "luma-", "slack-", "lead-", "edit-video-"];
 
 // Reconcile one active project's expected tasks (create missing, refresh QC /
 // delivery, retire what's no longer expected). Returns how many it created.
@@ -1164,6 +1284,35 @@ async function syncOneProjectTasks(
   confirmationMessage: (...args: any[]) => string,
 ): Promise<number> {
   let created = 0;
+  // edit_video is externally-minted (mintEditTask, off the →SHOT hook), so it's
+  // NOT in `specs` and the spec-based sweep never touches it (edit-video- is in
+  // EXTERNAL_KEY_PREFIXES). Close it here on EVIDENCE the cut landed — the final
+  // video is on Aryeo/Dropbox (present.Video / dropbox.finalVideo) OR the job
+  // advanced past editing (REVIEW/DELIVERED). Mirrors how media_qa auto-closes
+  // on positive evidence: an editor's finished cut shouldn't sit open forever.
+  // REVISION deliberately does NOT close it — a bounced reel is back on the
+  // editor's plate. Best-effort; wrapped so a stray parse can't break the sync.
+  try {
+    let finalVideoLanded = ["REVIEW", "DELIVERED"].includes(p.status);
+    if (!finalVideoLanded && p.statusEvidence) {
+      const ev = JSON.parse(p.statusEvidence) as {
+        present?: string[];
+        dropbox?: { finalVideo?: number } | null;
+      };
+      finalVideoLanded =
+        (ev.present ?? []).includes("Video") || (ev.dropbox?.finalVideo ?? 0) > 0;
+    }
+    if (finalVideoLanded) {
+      await prisma.smartTask.updateMany({
+        where: {
+          projectId: p.id,
+          taskType: "edit_video",
+          status: { notIn: ["COMPLETED", "CANCELLED"] },
+        },
+        data: { status: "COMPLETED", completedAt: new Date() },
+      });
+    }
+  } catch { /* evidence-close is best-effort */ }
   // One draft per project — the confirmation text is (re)rendered at creation,
   // on reopen, and on a due-date drift, always from the same current fields.
   const draftConfirmation = () =>

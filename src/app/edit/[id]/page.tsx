@@ -15,6 +15,8 @@ import { ScriptStudioCard } from "@/components/project/ScriptStudioCard";
 import { AocPlaybookCard } from "@/components/project/AocPlaybookCard";
 import { FrameioButton } from "@/components/project/FrameioButton";
 import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
+import { getVideoSlaStatus } from "@/lib/projectStatus";
+import { SlaCountdown } from "@/components/editing/SlaCountdown";
 import { refinedDeliverableLabel } from "@/lib/pipeline";
 import { ActivityType } from "@prisma/client";
 import { formatDistanceToNow } from "date-fns";
@@ -45,6 +47,15 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
     .split(/[,\s]+/).map((c) => c.trim()).filter((c) => /^#?[0-9a-f]{3,8}$/i.test(c)).map((c) => (c.startsWith("#") ? c : `#${c}`));
   const street = project.title?.split(",")[0]?.trim() || project.title || "Project";
 
+  // Video SLA header line — when the cut is due + a live countdown, so the
+  // editor (and Kyle/Jordan glancing at the brief) always sees the clock.
+  const sla = getVideoSlaStatus({
+    shootDate: project.shootDate,
+    status: project.status,
+    deliverables: project.deliverables,
+    client: { socialClient: project.client.socialClient },
+  });
+
   const videoDeliverables = project.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
   const editDeliverables = videoDeliverables.length ? videoDeliverables : project.deliverables;
   const specialRequests = project.activities.filter((a) => a.type === ActivityType.SPECIAL_REQUEST);
@@ -67,6 +78,16 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
           </div>
         }
       />
+
+      {sla && (
+        <div className="flex flex-wrap items-center gap-2 px-4 pt-3 text-sm text-muted sm:px-6">
+          <span>
+            Due {sla.due.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+          </span>
+          <span className="text-muted-2">·</span>
+          <SlaCountdown dueISO={sla.due.toISOString()} />
+        </div>
+      )}
 
       <div className="grid gap-6 p-4 sm:p-6 lg:grid-cols-3">
         {/* LEFT — the brief */}

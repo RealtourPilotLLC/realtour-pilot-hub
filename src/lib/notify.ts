@@ -76,10 +76,19 @@ export type NotifyTarget = { roles: Role[]; userKey?: string; href?: string }; /
 // deduped re-announcement can't re-text.
 // ---------------------------------------------------------------------------
 const SMS_KINDS = new Set(["appointment_change", "order_canceled", "mention", "review_feedback", "cull"]);
+// The video editors (Kim/Remar) have no push either, and the whole point of the
+// editor platform is that raws-landed / a revision / a review-back actually
+// REACH them — in Manila. These kinds bridge an `editor:<key>` bell row to their
+// channel (Slack DM if we have their id, else SMS via their TeamMember phone),
+// gated by quiet hours in THEIR timezone (see channelForEditor).
+const EDITOR_CHANNEL_KINDS = new Set(["raws_landed", "revision_raised", "mention", "edit_finished"]);
 
-function withinTextingHours(): boolean {
+// Quiet hours in a SPECIFIC timezone (7:00–22:00 local). Photographer texting
+// stays ET via the default; editor texting passes the recipient's tz so a
+// Manila editor isn't pinged at 3am (their night = the old ET window exactly).
+function withinTextingHours(tz = "America/New_York"): boolean {
   const hour = Number(
-    new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }).format(new Date()),
+    new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hour12: false }).format(new Date()),
   );
   return hour >= 7 && hour < 22;
 }
@@ -100,6 +109,44 @@ async function smsPhotographer(teamMemberId: string, title: string, href: string
     await OpenPhone.sendMessage(from, to, `⚙️ RealTour Hub: ${title}\n${appBase()}${href}`);
   } catch (e) {
     console.warn("smsPhotographer failed", e);
+  }
+}
+
+// Reach an editor addressed by `editor:<key>` (Kim/Remar) on THEIR channel:
+//   · Slack DM if the roster carries a slackUserId (preferred — same path as
+//     Kyle's DM, no phone dependency, no quiet-hours phone leak);
+//   · else SMS via their TeamMember phone (Kim has one; Remar until Jordan adds
+//     hers — the lookup no-ops cleanly when absent).
+// Quiet hours are checked in the EDITOR's timezone (default Asia/Manila) so an
+// offshore editor isn't pinged at 3am. Title + deep link only (money clamp —
+// same as photographer SMS). Best-effort; never throws.
+async function channelForEditor(editorKey: string, title: string, href: string): Promise<void> {
+  try {
+    const { editorMeta, editorTeamMemberId, DEFAULT_EDITOR_TZ } = await import("@/lib/editors");
+    const meta = editorMeta(editorKey);
+    if (!meta) return;
+    if (!withinTextingHours(meta.tz ?? DEFAULT_EDITOR_TZ)) return; // bell row still landed
+    const link = `${appBase()}${href}`;
+    // Prefer a Slack DM when we have the id (opening the bot's DM with them).
+    if (meta.slackUserId) {
+      await slackNotify(meta.slackUserId, `⚙️ RealTour Hub: ${title}\n${link}`);
+      return;
+    }
+    // Fall back to SMS via their TeamMember phone.
+    const tmId = await editorTeamMemberId(editorKey);
+    if (!tmId) return; // no linkable person / no phone yet (e.g. Remar)
+    const member = await prisma.teamMember.findUnique({ where: { id: tmId }, select: { phone: true } });
+    const phone = member?.phone?.replace(/[^\d+]/g, "");
+    if (!phone) return;
+    const { OpenPhone, defaultOpenPhoneNumber, phoneKey } = await import("@/lib/integrations/openphone");
+    const from = await defaultOpenPhoneNumber();
+    if (!from) return;
+    // Editors are offshore — keep an explicit + international number as-is; only
+    // bare 10-digit US numbers get the +1 prefix.
+    const to = phone.startsWith("+") ? phone : `+1${phoneKey(phone)}`;
+    await OpenPhone.sendMessage(from, to, `⚙️ RealTour Hub: ${title}\n${link}`);
+  } catch (e) {
+    console.warn("channelForEditor failed", e);
   }
 }
 
@@ -144,6 +191,11 @@ export async function notifyInApp(n: {
         // photographer rows to SMS so shoot changes reach the field without push.
         if (SMS_KINDS.has(n.kind) && t.userKey?.startsWith("tm:") && roles.includes("PHOTOGRAPHER")) {
           await smsPhotographer(t.userKey.slice(3), title, href);
+        }
+        // …and bridge person-addressed EDITOR rows (editor:<key>) to Slack/SMS so
+        // raws-landed / a revision / a review-back reaches Kim/Remar in Manila.
+        if (EDITOR_CHANNEL_KINDS.has(n.kind) && t.userKey?.startsWith("editor:") && roles.includes("EDITOR")) {
+          await channelForEditor(t.userKey.slice(7), title, href);
         }
       } catch (e) {
         // Unique violation on dedupeKey = this event was already announced —

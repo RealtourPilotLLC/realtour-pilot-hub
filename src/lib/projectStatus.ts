@@ -72,6 +72,33 @@ export function videoTier(deliverables: { type: string; label: string | null }[]
   return premium ? "premium" : "standard";
 }
 
+// One place to ask "is this video job's SLA blown, and by how much?" — the
+// /editing countdown, the /edit header line, and any later dashboard read all
+// agree by calling this instead of recomputing the window. Returns null when
+// there's no video ordered or no shoot date to anchor the SLA. `due` is the
+// VIDEO delivery-due (shootDate + standard/premium/monthly window); `overdue`
+// is past-due with the cut not yet delivered; `msRemaining` is negative when
+// overdue (drives the red "OVERDUE 2d" chip). Pure — safe on client via a prop.
+export function getVideoSlaStatus(p: {
+  shootDate: Date | null;
+  status?: string | null;
+  deliverables: { type: string; label: string | null }[];
+  client?: { socialClient?: boolean | null } | null;
+}): { tier: VideoTier; due: Date; overdue: boolean; msRemaining: number } | null {
+  const tier = videoTier(p.deliverables);
+  if (!tier || !p.shootDate) return null;
+  const v = p.deliverables.find((d) => expectedCategories([d]).has("VIDEO"));
+  const monthly = !!p.client?.socialClient;
+  const due = deliveryDueFrom(p.shootDate, v?.type ?? "SOCIAL_REEL", {
+    premium: tier === "premium",
+    monthlyContent: monthly,
+  });
+  const msRemaining = due.getTime() - Date.now();
+  // A video already delivered isn't "overdue" even past its window.
+  const delivered = (p.status ?? "").toUpperCase() === "DELIVERED";
+  return { tier, due, overdue: !delivered && msRemaining < 0, msRemaining };
+}
+
 // Derive the set of media categories an order is expected to deliver from its
 // line items (the Deliverable rows mirror the Aryeo order items).
 export function expectedCategories(
@@ -614,6 +641,34 @@ export async function syncProjectStatuses(
       if (final === "DELIVERED" || final === "CANCELLED") {
         const { closeObsoleteTasks } = await import("@/lib/tasks");
         await closeObsoleteTasks(p.id, final);
+      }
+      // RAWS LANDED — the real handoff. This IS the status path (the only place
+      // that TruthfulLY detects a job entering SHOT); notifyRawsLanded had never
+      // fired in prod because it was only wired to the unused upload-portal +
+      // legacy Dropbox sweep. On (anything)→SHOT: ping the editor bench, mint the
+      // routed editor's edit_video work item, and persist Project.editorId when
+      // the route maps to an in-house TeamMember (Kim/Remar) so /editing shows a
+      // name and one-click reassign has something to update. All best-effort and
+      // idempotent (activity-marker + dedupeKeys) — a throw here must NEVER break
+      // the sweep, and re-entering SHOT must not re-announce.
+      if (final === "SHOT") {
+        try {
+          const { notifyRawsLanded, mintEditTask } = await import("@/lib/tasks");
+          await notifyRawsLanded(p.id);
+          await mintEditTask(p.id);
+          // Persist the editor for the tracker + reassign, only for a video job
+          // whose route maps to a linkable person (externals/vendors stay null).
+          const hasVideo = p.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+          if (hasVideo) {
+            const { editorForDeliverable, editorTeamMemberId } = await import("@/lib/editors");
+            const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+            const key = editorForDeliverable(v?.type, v?.label, p.client?.socialClient ?? false);
+            const tmId = await editorTeamMemberId(key);
+            if (tmId) {
+              await prisma.project.update({ where: { id: p.id }, data: { editorId: tmId } });
+            }
+          }
+        } catch { /* raws-landed handoff is best-effort */ }
       }
       await prisma.activity.create({
         data: {

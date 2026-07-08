@@ -21,21 +21,65 @@ export type EditorMeta = {
   name: string;
   kind: "admin" | "owner" | "in_house" | "external";
   does: string;
+  // --- Notification-channel meta (code constants, NOT schema) ---
+  // The video editors are REAL people we now ping directly when raws land / a
+  // revision is raised / their edit is reviewed. Two things the bell alone can't
+  // reach them by:
+  //   · `teamMemberName` — substring we resolve their TeamMember row by (for the
+  //     SMS phone). Kim Miguel has one (+63…); Remar does not yet, so SMS no-ops
+  //     for her until Jordan adds it. Externals (Luma) intentionally have none.
+  //   · `slackUserId`   — a Slack DM id (preferred over SMS when present, same as
+  //     Kyle's DM). Fill once we know their Slack ids.
+  // `tz` is the recipient's LOCAL timezone for quiet hours — the Manila editors'
+  // night is precisely the old ET texting window, so a text keyed to ET would fire
+  // at 3am their time. Default Asia/Manila for the offshore in-house editors.
+  teamMemberName?: string;
+  slackUserId?: string;
+  tz?: string;
 };
 
+// Quiet-hours default when an editor has no explicit tz. The in-house video
+// editors (Kim, Remar) are in the Philippines.
+export const DEFAULT_EDITOR_TZ = "Asia/Manila";
+
 export const EDITORS: Record<EditorKey, EditorMeta> = {
-  kyle: { key: "kyle", name: "Kyle", kind: "admin", does: "QC (photos, floor plans, 3D, video), item removal, virtual staging, declutter, photo fixes" },
+  kyle: { key: "kyle", name: "Kyle", kind: "admin", does: "QC (photos, floor plans, 3D, video), item removal, virtual staging, declutter, photo fixes", teamMemberName: "Kyle", tz: "America/New_York" },
   // Jordan (owner) — tasks he handles personally: decisions, approvals, client
   // calls, creative sign-off. An operator like Kyle (not an editor delegation).
-  jordan: { key: "jordan", name: "Jordan", kind: "owner", does: "owner decisions, approvals, creative sign-off" },
+  jordan: { key: "jordan", name: "Jordan", kind: "owner", does: "owner decisions, approvals, creative sign-off", tz: "America/New_York" },
   // The Creative Director owns scripting + creative direction (currently Jordan).
-  creative_director: { key: "creative_director", name: "Creative Director", kind: "in_house", does: "video scripting + creative direction" },
-  kim: { key: "kim", name: "Kim", kind: "in_house", does: "personal-branding / monthly social content" },
-  remar: { key: "remar", name: "Remar", kind: "in_house", does: "standard reels + horizontal video" },
+  creative_director: { key: "creative_director", name: "Creative Director", kind: "in_house", does: "video scripting + creative direction", tz: "America/New_York" },
+  // Kim Miguel — Manila. Has a TeamMember row with a phone → SMS reaches her.
+  kim: { key: "kim", name: "Kim", kind: "in_house", does: "personal-branding / monthly social content", teamMemberName: "Kim", tz: "Asia/Manila" },
+  // Remar — Manila. No TeamMember/phone yet (Jordan to add), so SMS no-ops until then.
+  remar: { key: "remar", name: "Remar", kind: "in_house", does: "standard reels + horizontal video", teamMemberName: "Remar", tz: "Asia/Manila" },
   luma: { key: "luma", name: "Luma", kind: "external", does: "premium social reels" },
   autohdr: { key: "autohdr", name: "AutoHDR", kind: "external", does: "AI photo editing" },
   cubicasa: { key: "cubicasa", name: "CubiCasa", kind: "external", does: "floor plans" },
 };
+
+// The editor keys that map to an actual person we persist on Project.editorId
+// (an in-house TeamMember). Externals (Luma) and vendors stay Kyle-dispatch and
+// never get a TeamMember link — their work is tracked by the edit_video task.
+export const TEAM_MEMBER_EDITOR_KEYS: EditorKey[] = ["kim", "remar"];
+
+// Resolve an editor key → its TeamMember id (for the phone / Project.editorId),
+// or null when the editor isn't a linkable person (external/vendor) or has no
+// TeamMember row yet (Remar until Jordan adds her). Best-effort; never throws.
+export async function editorTeamMemberId(key: EditorKey | string | null | undefined): Promise<string | null> {
+  const meta = editorMeta(key);
+  if (!meta?.teamMemberName) return null;
+  try {
+    const { prisma } = await import("@/lib/prisma");
+    const tm = await prisma.teamMember.findFirst({
+      where: { name: { contains: meta.teamMemberName } },
+      select: { id: true },
+    });
+    return tm?.id ?? null;
+  } catch {
+    return null;
+  }
+}
 
 export const EDITOR_KEYS = Object.keys(EDITORS) as EditorKey[];
 // The in-house "operators" who work the daily queue (vs. editors we delegate to).
