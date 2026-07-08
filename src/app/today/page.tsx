@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
 import { canAccess } from "@/lib/auth/access";
-import { MESSAGE_TASK_TYPES, DELIVER_TASK_TYPES, getShootWindow, getHandledToday } from "@/lib/queries";
+import { MESSAGE_TASK_TYPES, DELIVER_TASK_TYPES, CLIENT_TEXT_TYPES, getClientTextTasks, getShootWindow, getHandledToday } from "@/lib/queries";
 import { recentProjectWhere } from "@/lib/recency";
 import { etDayStartUtc } from "@/lib/datetime";
 import { isNeedsAssigning } from "@/lib/triage";
@@ -18,14 +18,12 @@ export const dynamic = "force-dynamic";
 // (a count in the footer), so the list can actually reach zero.
 
 const ACTIVE = ["OPEN", "IN_PROGRESS", "WAITING_CLIENT", "WAITING_PHOTOGRAPHER", "WAITING_EDITOR", "WAITING_VENDOR", "WAITING_JORDAN", "BLOCKED"];
-// QC/deliver work — the shared list minus delivery_text, which is a SEND card here.
+// QC/deliver work — the shared list minus delivery_text, which lives on /texts.
 const CHECK_TYPES = DELIVER_TASK_TYPES.filter((t) => t !== "delivery_text");
-const SEND_TYPES = ["confirmation_text", "delivery_text"];
 const REPLY_TYPES = ["client_reply", "lead"];
 
-function verbFor(taskType: string, hasDraft: boolean): TodayCard["verb"] {
+function verbFor(taskType: string): TodayCard["verb"] {
   if (REPLY_TYPES.includes(taskType)) return "reply";
-  if (SEND_TYPES.includes(taskType) && hasDraft) return "send";
   if (CHECK_TYPES.includes(taskType)) return "check";
   return "do";
 }
@@ -45,9 +43,8 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
   const me = await getCurrentUser().catch(() => null);
   if (me && !canAccess(me, "today")) redirect("/");
   const startToday = etDayStartUtc(new Date());
-  const now = new Date();
 
-  const [tasks, shootWindow, handledToday, assignees] = await Promise.all([
+  const [tasks, textTasks, shootWindow, handledToday, assignees] = await Promise.all([
     prisma.smartTask.findMany({
       where: {
         status: { in: ACTIVE },
@@ -61,10 +58,12 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
             { taskType: { in: MESSAGE_TASK_TYPES } },
             // QC & deliver: while open on a recent job, any due date.
             { taskType: { in: CHECK_TYPES }, OR: [{ projectId: null }, { project: recentProjectWhere() }] },
-            // Everything else (confirmations, prep): due by end of today INCLUDING
+            // Everything else (prep, to-dos): due by end of today INCLUDING
             // overdue — the stack must cover all of it, not hide it in "needs attention".
+            // Confirmation/delivery texts are carved out to /texts; one rollup
+            // card below stands in for all of them.
             {
-              taskType: { notIn: [...MESSAGE_TASK_TYPES, ...CHECK_TYPES] },
+              taskType: { notIn: [...MESSAGE_TASK_TYPES, ...CHECK_TYPES, ...CLIENT_TEXT_TYPES] },
               dueAt: { lte: new Date(startToday.getTime() + 24 * 3600_000 - 1) },
               OR: [{ projectId: null }, { project: recentProjectWhere() }],
             },
@@ -74,28 +73,17 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
       include: { client: { select: { name: true, phone: true } } },
       orderBy: { dueAt: "asc" },
     }),
+    getClientTextTasks(),
     getShootWindow(),
     getHandledToday(),
     listAssignees(),
   ]);
 
-  // A delivery text sent while the job's QC is still open would tell the client
-  // "everything's over" prematurely — flag it. Check ALL open QC tasks (any assignee).
-  const dtProjects = tasks.filter((t) => t.taskType === "delivery_text" && t.projectId).map((t) => t.projectId!);
-  const openQc = dtProjects.length
-    ? await prisma.smartTask.findMany({
-        where: { projectId: { in: dtProjects }, taskType: { in: CHECK_TYPES }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
-        select: { projectId: true },
-      })
-    : [];
-  const qcOpenSet = new Set(openQc.map((t) => t.projectId));
-
   const cards: TodayCard[] = tasks.map((t) => {
-    const hasDraft = SEND_TYPES.includes(t.taskType) && !!t.description;
     // Delegated work lands in "Do these" — Kyle's action is to check on the
     // person it's with, not to reply/send/QC himself.
     const delegatedTo = isDelegated(t.assignedKey) ? editorMeta(t.assignedKey)?.name ?? t.assignedKey : null;
-    const verb = delegatedTo ? "do" : verbFor(t.taskType, hasDraft);
+    const verb = delegatedTo ? "do" : verbFor(t.taskType);
     return {
       id: t.id,
       verb,
@@ -104,9 +92,9 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
       typeLabel: TYPE_LABEL[t.taskType] ?? t.taskType.replace(/_/g, " "),
       title: t.title,
       summary: t.summary,
-      // What the body means depends on the verb: a ready-to-send draft, the
-      // client's quoted message, or instructions.
-      draft: verb === "send" ? t.description : null,
+      // What the body means depends on the verb: the client's quoted message,
+      // or instructions. (Send drafts moved to /texts with their tasks.)
+      draft: null,
       quote: verb === "reply" ? t.description : null,
       body: verb === "do" || verb === "check" ? t.description : null,
       clientId: t.clientId,
@@ -120,11 +108,50 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
       dueAt: t.dueAt ? t.dueAt.toISOString() : null,
       overdue: !!t.dueAt && t.dueAt < startToday,
       triage: isNeedsAssigning(t),
-      // Overdue confirmation = the shoot may already have happened; double-check.
-      warnStale: t.taskType === "confirmation_text" && !!t.dueAt && t.dueAt < now,
-      warnQcOpen: t.taskType === "delivery_text" && !!t.projectId && qcOpenSet.has(t.projectId),
+      warnStale: false,
+      warnQcOpen: false,
     };
   });
+
+  // Jordan's "one task per day to check the delivery/confirmation texts": ONE
+  // rollup card standing in for every text now reviewed on /texts. Computed live
+  // from the same query that tab renders — no cron and no extra task rows to
+  // create or auto-close, so it appears whenever texts are waiting and vanishes
+  // on its own the moment the tab is cleared. The underlying SmartTasks (dedupe,
+  // auto-close, /queue) are untouched; this is presentation only.
+  if (textTasks.length > 0) {
+    const confirmations = textTasks.filter((t) => t.taskType === "confirmation_text").length;
+    const deliveries = textTasks.length - confirmations;
+    // Inherit the most urgent priority + soonest due so the rollup sorts where
+    // the loudest of its texts would have.
+    const rank: Record<string, number> = { URGENT: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+    const priority = textTasks.reduce((best, t) => ((rank[t.priority] ?? 9) < (rank[best] ?? 9) ? t.priority : best), "LOW");
+    cards.push({
+      id: "client-texts-rollup",
+      verb: "check",
+      delegatedTo: null,
+      taskType: "client_texts", // sentinel — TodayFeed renders a link to /texts
+      typeLabel: "client texts",
+      title: "Check today's client texts",
+      summary: null,
+      draft: null,
+      quote: null,
+      body: `${confirmations} confirmation${confirmations === 1 ? "" : "s"} + ${deliveries} delivery text${deliveries === 1 ? "" : "s"} waiting`,
+      clientId: null,
+      clientName: null,
+      hasPhone: false,
+      street: null,
+      projectId: null,
+      source: "system",
+      priority,
+      status: "OPEN",
+      dueAt: textTasks[0].dueAt ? textTasks[0].dueAt.toISOString() : null, // query is dueAt-asc
+      overdue: textTasks.some((t) => !!t.dueAt && t.dueAt < startToday),
+      triage: false,
+      warnStale: false,
+      warnQcOpen: false,
+    });
+  }
 
   const fmtTime = (d: Date | null) =>
     d ? d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }) : "";

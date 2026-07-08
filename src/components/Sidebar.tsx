@@ -24,6 +24,7 @@ import {
   Upload,
   MessageSquare,
   MessageSquarePlus,
+  MessageSquareText,
   Plug,
   LogOut,
   ShieldCheck,
@@ -65,6 +66,9 @@ const SECTIONS: NavSection[] = [
     items: [
       { label: "Dashboard", href: "/", icon: LayoutDashboard, key: "dashboard" },
       { label: "Today", href: "/today", icon: Sun, key: "today" },
+      // Client Texts sits right under Today because it's the daily companion tab
+      // — the Today rollup card points here. Role-gated to owner/admin via key.
+      { label: "Client Texts", href: "/texts", icon: MessageSquareText, key: "texts" },
       { label: "Daily Tasks", href: "/queue", icon: ListTodo, key: "tasks" },
       { label: "Task History", href: "/history", icon: History, key: "history" },
       { label: "Project Tracker", href: "/pipeline", icon: KanbanSquare, key: "pipeline" },

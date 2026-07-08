@@ -258,6 +258,37 @@ export const MESSAGE_TASK_TYPES = ["client_reply", "comms_followup", "revision",
 // Needs Attention.
 export const DELIVER_TASK_TYPES = ["media_qa", "delivery", "delivery_text", "feedback_review", "image_fixes", "finish_delivery"];
 
+// Client texts — the day-before shoot confirmation and the "your content is
+// ready" delivery text. Jordan wants these off the /today stack and on their own
+// review tab (/texts, owner/admin only), with /today carrying a single
+// "check today's client texts" rollup instead of one card per text.
+export const CLIENT_TEXT_TYPES = ["confirmation_text", "delivery_text"];
+
+// Everything the /texts tab lists — and exactly what the /today rollup counts.
+// One query serves both so the rollup number can never drift from the tab.
+// The filters match what the /today feed applied back when these rendered as
+// individual send cards: Kyle's own/unassigned + delegated work, due by end of
+// today INCLUDING overdue, on a recent (or unlinked) job.
+export async function getClientTextTasks() {
+  const endToday = new Date(etDayStartUtc(etAddDays(new Date(), 1)).getTime() - 1);
+  return prisma.smartTask.findMany({
+    where: {
+      status: { in: BRIEF_ACTIVE },
+      taskType: { in: CLIENT_TEXT_TYPES },
+      dueAt: { lte: endToday },
+      AND: [
+        { OR: [{ assignedKey: null }, { assignedKey: "kyle" }, { assignedKey: { in: [...DELEGATE_KEYS] } }] },
+        { OR: [{ projectId: null }, { project: recentProjectWhere() }] },
+      ],
+    },
+    // Phone decides whether Send is even possible; the client name feeds chips.
+    include: { client: { select: { name: true, phone: true } } },
+    // Soonest due first — overdue confirmations naturally float to the top.
+    orderBy: { dueAt: "asc" },
+  });
+}
+export type ClientTextTask = Awaited<ReturnType<typeof getClientTextTasks>>[number];
+
 export type BriefTask = {
   id: string;
   title: string;

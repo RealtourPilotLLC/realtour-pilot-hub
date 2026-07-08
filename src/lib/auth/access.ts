@@ -4,7 +4,7 @@
 // a couple of pages are owner-only and can never be granted to other roles.
 
 export type PageKey =
-  | "dashboard" | "today" | "tasks" | "history" | "pipeline" | "schedule" | "map"
+  | "dashboard" | "today" | "texts" | "tasks" | "history" | "pipeline" | "schedule" | "map"
   | "communications" | "clients" | "team" | "upload" | "editing" | "sales"
   | "billing" | "catalog" | "payouts" | "marketing" | "resources" | "assistant"
   | "training" | "feedback" | "connections" | "users" | "shoot" | "mypay";
@@ -19,6 +19,7 @@ export const ROLE_LABEL: Record<string, string> = {
 export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boolean }[] = [
   { key: "dashboard", label: "Dashboard", href: "/" },
   { key: "today", label: "Today", href: "/today" },
+  { key: "texts", label: "Client Texts", href: "/texts" },
   { key: "tasks", label: "Daily Tasks", href: "/queue" },
   { key: "history", label: "Task History", href: "/history" },
   { key: "pipeline", label: "Project Tracker", href: "/pipeline" },
@@ -50,8 +51,10 @@ const ALL = PAGES.map((p) => p.key);
 // granted to a person via a per-user override (except owner-only pages).
 const ROLE_PAGES: Record<Role, PageKey[]> = {
   OWNER: ALL,
+  // "texts" = client confirmation/delivery texting — front-office work, so it's
+  // owner/admin only (creatives never message clients directly).
   ADMIN: [
-    "dashboard", "today", "tasks", "history", "pipeline", "schedule", "map", "shoot",
+    "dashboard", "today", "texts", "tasks", "history", "pipeline", "schedule", "map", "shoot",
     "communications", "clients", "team", "upload", "editing", "billing",
     "catalog", "resources", "training", "assistant", "feedback",
   ],

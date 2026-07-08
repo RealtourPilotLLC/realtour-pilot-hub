@@ -120,6 +120,12 @@ function ActionCard({ card, assignees, onGone }: {
   const src = sourceMeta(card.source);
   const due = dueLabel(card);
 
+  // The client-texts rollup isn't a real task row — its whole action is opening
+  // the /texts tab, and it disappears by itself once the texts there are handled.
+  // So it gets a link instead of Done (there's nothing to complete here), while
+  // guided mode still treats it as a normal step (Next skips it like any card).
+  const isTextsRollup = card.taskType === "client_texts";
+
   const done = (note = "Done") =>
     start(async () => {
       await setSmartTaskStatus(card.id, "COMPLETED");
@@ -289,7 +295,15 @@ function ActionCard({ card, assignees, onGone }: {
               )}
             </>
           )}
-          {(card.verb === "do" || card.verb === "check") && (
+          {(card.verb === "do" || card.verb === "check") && isTextsRollup && (
+            <Link
+              href="/texts"
+              className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-brand px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:opacity-90"
+            >
+              Check texts <ArrowRight className="size-4" />
+            </Link>
+          )}
+          {(card.verb === "do" || card.verb === "check") && !isTextsRollup && (
             <>
               <Btn primary onClick={() => done("Done")} busy={busy}>
                 <CheckCircle2 className="size-4" /> Done
