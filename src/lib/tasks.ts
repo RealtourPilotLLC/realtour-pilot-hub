@@ -917,6 +917,10 @@ async function syncOneProjectTasks(
   confirmationMessage: (...args: any[]) => string,
 ): Promise<number> {
   let created = 0;
+  // One draft per project — the confirmation text is (re)rendered at creation,
+  // on reopen, and on a due-date drift, always from the same current fields.
+  const draftConfirmation = () =>
+    confirmationMessage({ title: p.title, shootDate: p.shootDate, client: { name: p.client.name ?? "" }, photographer: p.photographer, deliverables: p.deliverables });
   const specs = specsForProject({
     status: p.status,
     title: p.title,
@@ -951,6 +955,46 @@ async function syncOneProjectTasks(
     const key = dedupe([p.id, s.taskType, s.deliverableType]);
     const exists = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
     if (exists) {
+      // The confirmation follows the shoot even out of a terminal state. Its
+      // dedupe key is deliberately date-less (changing it would re-mint
+      // duplicates for every already-confirmed project), so a fresh task can
+      // never appear — the existing row must be REOPENED instead:
+      //   · COMPLETED: the client confirmed the OLD time — void once the spec's
+      //     dueAt (shoot - 1 day) drifts >= 1h, or when the confirmation was
+      //     completed while the job had NO shoot date and a real one landed.
+      //     The 1h guard keeps bulk-auto-closed tasks from flapping when
+      //     nothing actually moved.
+      //   · CANCELLED: the dead-slot sweep in aryeo.ts cancels it when a shoot
+      //     is postponed; the spec re-emitting WITH a dueAt means the shoot is
+      //     back on the books.
+      // No ping-pong with the auto-close sweep above: this reopen only fires
+      // while the spec IS emitted (key in expectedKeys), the sweep only when it
+      // is NOT — mutually exclusive by construction. Nulling completedAt
+      // mirrors the media_qa reopen, so /history stops counting it as a sent
+      // confirmation until it's re-sent. Every OTHER task type keeps its
+      // terminal states terminal.
+      if (s.taskType === "confirmation_text" && (exists.status === "CANCELLED" || exists.status === "COMPLETED")) {
+        if (s.dueAt) {
+          const rebooked = exists.status === "CANCELLED";
+          const drifted = !exists.dueAt || Math.abs(s.dueAt.getTime() - exists.dueAt.getTime()) >= HOUR;
+          if (rebooked || drifted) {
+            await prisma.smartTask.update({
+              where: { id: exists.id },
+              data: {
+                status: "OPEN",
+                completedAt: null,
+                dueAt: s.dueAt,
+                priority: computePriority({ dueAt: s.dueAt, shootDate: p.shootDate, status: p.status }),
+                description: draftConfirmation(),
+                reasonCreated: rebooked
+                  ? "Shoot was re-booked after being postponed — confirm the new time with the client"
+                  : "Shoot was rescheduled after the last confirmation — confirm the new time with the client",
+              },
+            });
+          }
+        }
+        continue;
+      }
       if (exists.status === "CANCELLED") continue;
       // For the consolidated QC task, re-sync its checklist each run: an item
       // is checked if it's live on Aryeo OR Kyle already ticked it manually
@@ -995,12 +1039,26 @@ async function syncOneProjectTasks(
         });
         continue;
       }
+      // Other completed task types stay closed — only the confirmation (handled
+      // above) follows the shoot.
       if (exists.status === "COMPLETED") continue;
-      // Keep delivery due dates fresh when turnaround rules change.
-      if (s.taskType === "delivery" && s.dueAt && exists.dueAt?.getTime() !== s.dueAt.getTime()) {
+      // A rescheduled shoot (or a turnaround-rule change, for delivery-type
+      // tasks) moves the spec's dueAt — any still-open task has to
+      // follow it (>= 1h drift, so rounding noise doesn't churn writes) or it
+      // surfaces in the morning brief on the WRONG day and then sits overdue.
+      // Priority rides along, same formula as the creation path below. The
+      // confirmation's drafted preview embeds the old date/time and
+      // sendConfirmationText re-renders fresh at send time — re-render here too
+      // so the draft Kyle reviews matches what actually gets sent.
+      if (s.dueAt && (!exists.dueAt || Math.abs(s.dueAt.getTime() - exists.dueAt.getTime()) >= HOUR)) {
+        const postShoot = ["media_qa", "delivery", "delivery_text"].includes(s.taskType);
         await prisma.smartTask.update({
           where: { id: exists.id },
-          data: { dueAt: s.dueAt, priority: computePriority({ dueAt: s.dueAt, status: p.status }) },
+          data: {
+            dueAt: s.dueAt,
+            priority: computePriority({ dueAt: s.dueAt, shootDate: postShoot ? null : p.shootDate, status: p.status }),
+            ...(s.taskType === "confirmation_text" ? { description: draftConfirmation() } : {}),
+          },
         });
       }
       continue;
@@ -1010,10 +1068,7 @@ async function syncOneProjectTasks(
     const postShoot = ["media_qa", "delivery", "delivery_text"].includes(s.taskType);
     const priority = computePriority({ dueAt: s.dueAt, shootDate: postShoot ? null : p.shootDate, status: p.status });
     // Pre-draft the confirmation text so Kyle just reviews + sends.
-    const description =
-      s.taskType === "confirmation_text"
-        ? confirmationMessage({ title: p.title, shootDate: p.shootDate, client: { name: p.client.name ?? "" }, photographer: p.photographer, deliverables: p.deliverables })
-        : s.description ?? null;
+    const description = s.taskType === "confirmation_text" ? draftConfirmation() : s.description ?? null;
     await prisma.smartTask.create({
       data: {
         taskType: s.taskType,

@@ -275,8 +275,23 @@ export async function assignMember(
 ) {
   await requireAdmin();
   const field = role === "photographer" ? "photographerId" : role === "editor" ? "editorId" : "vaId";
-  const member = memberId ? await prisma.teamMember.findUnique({ where: { id: memberId } }) : null;
-  await prisma.project.update({ where: { id: projectId }, data: { [field]: memberId } });
+  const [member, project] = await Promise.all([
+    memberId ? prisma.teamMember.findUnique({ where: { id: memberId } }) : null,
+    prisma.project.findUnique({ where: { id: projectId }, select: { source: true } }),
+  ]);
+  await prisma.project.update({
+    where: { id: projectId },
+    data: {
+      [field]: memberId,
+      // Tug-of-war guard: on Aryeo jobs the hourly sync auto-fills photographerId
+      // from the appointment assignee, silently reverting any hand assignment
+      // within the hour. The flag tells the sync a human chose this photographer;
+      // clearing the assignment hands control back to Aryeo.
+      ...(role === "photographer" && project?.source === "ARYEO"
+        ? { photographerManual: memberId != null }
+        : {}),
+    },
+  });
   await prisma.activity.create({
     data: {
       projectId,

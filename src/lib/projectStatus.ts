@@ -325,7 +325,7 @@ type StatusProject = {
   photographerId: string | null;
   client: { name: string; socialClient: boolean };
   deliverables: { id: string; type: string; label: string | null }[];
-  appointments: { status: string | null }[];
+  appointments: { status: string | null; startAt: Date | null }[];
 };
 
 async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<StatusSignals> {
@@ -456,7 +456,7 @@ export async function syncProjectStatuses(
       photographerId: true,
       client: { select: { name: true, socialClient: true } },
       deliverables: { select: { id: true, type: true, label: true } },
-      appointments: { select: { status: true } },
+      appointments: { select: { status: true, startAt: true } },
     },
   })) as StatusProject[];
 
@@ -470,6 +470,24 @@ export async function syncProjectStatuses(
   });
 
   for (const { p, sig, status, evidence } of results) {
+    // "The shoot already happened" — the arming condition for both anti-demotion
+    // guards below. shootDate alone is NOT enough: it's movable. When an
+    // already-shot job gets a return visit or a forward reschedule, the
+    // appointment sync points shootDate at the FUTURE leg, and a guard keyed
+    // only on `shootDate < now` silently disarms — re-opening the exact
+    // demotion cascade it was built to stop (audit crack #2 / 2075 Flint Hill).
+    // So we also accept any non-canceled appointment leg that started in the
+    // past as proof a shoot happened. The shootDate test still matters on its
+    // own: manual/unsynced projects have no appointment rows at all.
+    const now = Date.now();
+    const shootHappened =
+      (p.shootDate !== null && p.shootDate.getTime() < now) ||
+      p.appointments.some(
+        (a) =>
+          (a.status || "").toUpperCase() !== "CANCELED" &&
+          a.startAt !== null &&
+          a.startAt.getTime() < now,
+      );
     // Signal-fetch FAILURE is unknown, not zero. When Aryeo couldn't be read AND
     // Dropbox is unavailable for a past-shoot production job, we have no evidence
     // at all — keep the prior status/evidence untouched instead of recomputing
@@ -480,8 +498,7 @@ export async function syncProjectStatuses(
       !sig.dropbox &&
       sig.dropboxUnavailable &&
       ["SHOT", "EDITING", "REVIEW", "REVISION"].includes(p.status) &&
-      p.shootDate &&
-      p.shootDate.getTime() < Date.now()
+      shootHappened
     ) {
       byStatus[p.status] = (byStatus[p.status] ?? 0) + 1;
       await prisma.project.update({ where: { id: p.id }, data: { statusCheckedAt: new Date() } });
@@ -495,10 +512,12 @@ export async function syncProjectStatuses(
     // raws not uploaded yet — un-shooting the job is always wrong, and the demotion
     // cascades: the task reconciler auto-completes its QC/delivery tasks and never
     // re-mints them (audit crack #2 — live jobs went invisible after API blips).
+    // `shootHappened` (not `shootDate < now`) because a rescheduled/return-visit
+    // job carries a FUTURE shootDate while its original leg is already in the can.
     if (
       ["SHOT", "EDITING", "REVIEW", "REVISION"].includes(p.status) &&
       (final === "SCHEDULED" || final === "BOOKED") &&
-      p.shootDate && p.shootDate.getTime() < Date.now()
+      shootHappened
     ) {
       final = p.status;
     }

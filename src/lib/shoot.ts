@@ -256,6 +256,11 @@ export type ShootEarnings = {
   mileageRate: number;
 };
 
+// Mirrors computePayroll's SHOOT_HAPPENED_STATUSES (src/lib/payroll.ts): a
+// post-shoot status proves the shoot produced work, so earned pay survives
+// Aryeo retro-canceling the appointment rows of an order canceled afterwards.
+const SHOOT_HAPPENED_STATUSES = new Set(["SHOT", "EDITING", "REVIEW", "REVISION", "DELIVERED"]);
+
 // What the assigned photographer earns on THIS shoot — base shoot pay + their
 // share of the day's drive mileage. Reuses the canonical payroll engine, scoped
 // to one creative so a single shoot view doesn't route everyone's day.
@@ -265,6 +270,12 @@ export async function shootEarnings(projectId: string, memberId: string | null):
     where: { id: projectId },
     select: {
       shootDate: true,
+      status: true,
+      // All rows regardless of status — see computePayroll: shootDate is stale
+      // (never cleared) once every appointment cancels, so it only stands in for
+      // the pay date on projects that never had appointments synced at all — or
+      // whose post-shoot status shows the visit happened anyway.
+      _count: { select: { appointments: true } },
       appointments: {
         where: { status: { not: "CANCELED" }, startAt: { not: null } },
         select: { startAt: true },
@@ -272,7 +283,9 @@ export async function shootEarnings(projectId: string, memberId: string | null):
       },
     },
   });
-  const payDate = proj?.appointments[0]?.startAt ?? proj?.shootDate ?? null;
+  const payDate =
+    proj?.appointments[0]?.startAt ??
+    (proj && (proj._count.appointments === 0 || SHOOT_HAPPENED_STATUSES.has(proj.status)) ? proj.shootDate : null);
   if (!payDate) return null;
 
   // Scope payroll to JUST this shoot's ET day, not the whole 14-day pay period.
@@ -369,10 +382,27 @@ export async function getShootMapData(projectId: string, memberId: string | null
     const [rows, member] = await Promise.all([
       prisma.project.findMany({
         where: {
-          photographerId: memberId, status: { not: "CANCELLED" }, lat: { not: null }, lng: { not: null },
+          status: { not: "CANCELLED" }, lat: { not: null }, lng: { not: null },
+          // Same member scope as payroll/My Shoots: a leg assigned to this member,
+          // or the project's photographer — but as photographer only when the
+          // day's legs weren't ALL reassigned to someone else (an unassigned leg
+          // defaults to the photographer, matching computePayroll's timeline), so
+          // the route map agrees with the pay card's dayMiles/sharedJobs.
           OR: [
-            { appointments: { some: { startAt: { gte: dayStart, lt: dayEnd }, status: { not: "CANCELED" } } } },
-            { shootDate: { gte: dayStart, lt: dayEnd } },
+            { appointments: { some: { assignedToId: memberId, startAt: { gte: dayStart, lt: dayEnd }, status: { not: "CANCELED" } } } },
+            {
+              photographerId: memberId,
+              OR: [
+                { appointments: { some: { assignedToId: null, startAt: { gte: dayStart, lt: dayEnd }, status: { not: "CANCELED" } } } },
+                {
+                  shootDate: { gte: dayStart, lt: dayEnd },
+                  // No same-day rows AT ALL (any status): rows that exist but are
+                  // all CANCELED mean a same-day cancel — it drops off pay, so it
+                  // must drop off the route map too, not render as a stop.
+                  appointments: { none: { startAt: { gte: dayStart, lt: dayEnd } } },
+                },
+              ],
+            },
           ],
         },
         select: {

@@ -74,6 +74,13 @@ export function shootPay(invoice: number, percent?: number | null, floor?: numbe
   return r2(Math.max(invoice * (percent ?? 0), floor ?? 0));
 }
 
+// Statuses proving the shoot produced work (post-shoot pipeline stages). Aryeo
+// retro-cancels an order's appointment rows when it's canceled AFTER the shoot
+// (and delivered projects are deliberately never auto-cancelled), so all-rows-
+// canceled on one of these jobs still means the visit happened and must pay.
+// Mirrored in shootEarnings (src/lib/shoot.ts).
+const SHOOT_HAPPENED_STATUSES = new Set(["SHOT", "EDITING", "REVIEW", "REVISION", "DELIVERED"]);
+
 type Stop = { lat: number; lng: number; at: number };
 
 // Total drive miles for a day: home → stops (in time order) → home.
@@ -206,7 +213,14 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
     },
     select: {
       id: true, title: true, shootDate: true, lat: true, lng: true,
-      price: true, payableInvoice: true, photographerId: true,
+      price: true, payableInvoice: true, photographerId: true, photographerManual: true,
+      // status: whether a post-shoot stage proves the shoot happened (see the
+      // timeline fallback below).
+      status: true,
+      // ALL appointment rows regardless of status — distinguishes "never synced
+      // any appointments" (shootDate fallback is legit) from "every appointment
+      // was canceled" (the shoot never happened; the stale shootDate must not pay).
+      _count: { select: { appointments: true } },
       appointments: {
         where: { status: { not: "CANCELED" }, startAt: { not: null } },
         select: { startAt: true, assignedToId: true },
@@ -229,12 +243,14 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
   }
 
   // Load pay settings for everyone who could be paid (appt assignees, project
-  // photographers, and anyone with a period adjustment).
+  // photographers, and anyone with a period adjustment). Every override holder
+  // too — a reassigned shoot can leave an override keyed to a member with no pay
+  // line, and the orphaned-override warning needs their name.
   const memberIds = new Set<string>(adjByMember.keys());
   for (const p of projects) {
     if (p.photographerId) memberIds.add(p.photographerId);
     for (const a of p.appointments) if (a.assignedToId) memberIds.add(a.assignedToId);
-    for (const o of p.payOverrides) if (o.manualAdd) memberIds.add(o.teamMemberId);
+    for (const o of p.payOverrides) memberIds.add(o.teamMemberId);
   }
   const memberRows = memberIds.size
     ? await prisma.teamMember.findMany({
@@ -257,20 +273,36 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
     if (!removedByMember.has(memberId)) removedByMember.set(memberId, []);
     removedByMember.get(memberId)!.push({ projectId, title, shootISO: at ? at.toISOString() : null });
   };
+  // Warnings minted during line construction (orphaned overrides), attached to
+  // the right cards when the output is assembled below.
+  const issuesByMember = new Map<string, PayrollIssue[]>();
 
   for (const p of projects) {
     coordsByProject.set(p.id, p.lat != null && p.lng != null ? { lat: p.lat, lng: p.lng } : null);
 
     // Timeline of who shot when. Fall back to the project photographer on the
-    // shootDate when a project has no per-appointment records.
+    // shootDate when the project has no appointment rows at all (unsynced or
+    // manually created), OR when a post-shoot status proves the shoot produced
+    // work — Aryeo retro-cancels the rows of an order canceled after the shoot,
+    // and earned pay must survive that. A BOOKED/SCHEDULED job whose rows are
+    // all CANCELED means the shoot was called off — the sync never clears the
+    // stale shootDate, and paying off it would pay for a visit that never
+    // happened.
     const timeline: { at: Date; memberId: string | null }[] = p.appointments.length
-      ? p.appointments.map((a) => ({ at: a.startAt!, memberId: a.assignedToId ?? p.photographerId }))
-      : p.shootDate
+      ? p.appointments.map((a) => ({
+          at: a.startAt!,
+          // photographerManual = the owner explicitly took over who's paid on
+          // this job — Aryeo's per-leg assignee is deliberately ignored.
+          memberId: p.photographerManual ? p.photographerId : a.assignedToId ?? p.photographerId,
+        }))
+      : p.shootDate && (p._count.appointments === 0 || SHOOT_HAPPENED_STATUSES.has(p.status))
         ? [{ at: p.shootDate, memberId: p.photographerId }]
         : [];
-    if (timeline.length === 0) continue;
+    // No early-out on an empty timeline: a manualAdd override below is an
+    // explicit owner decision and must still pay (off the shootDate).
 
     const paidHere = new Set<string>(); // members already paid on this project
+    const linedHere = new Set<string>(); // members with an actual pay line here this period
     const paidDayByMember = new Map<string, string>(); // member → ET day of the leg we handled
     timeline.forEach((slot, idx) => {
       const memberId = slot.memberId;
@@ -329,6 +361,7 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
       if (!linesByMember.has(memberId)) linesByMember.set(memberId, []);
       linesByMember.get(memberId)!.push(line);
       paidHere.add(memberId);
+      linedHere.add(memberId);
       paidDayByMember.set(memberId, dayKey);
     });
 
@@ -359,6 +392,38 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
       if (!linesByMember.has(o.teamMemberId)) linesByMember.set(o.teamMemberId, []);
       linesByMember.get(o.teamMemberId)!.push(line);
       paidHere.add(o.teamMemberId);
+      linedHere.add(o.teamMemberId);
+    }
+
+    // An override keyed to a member who earned nothing on this job while someone
+    // else did means the shoot was reassigned after the override was set: the
+    // flat/invoice intent silently stops applying and the new shooter collects
+    // default pay. Surface it so the owner re-keys or clears it. (paidHere also
+    // covers members whose leg fell outside this period — their override still
+    // applies in its own period, so it isn't orphaned.)
+    if (linedHere.size > 0) {
+      // Blame deterministically: the primary shooter (their line here isn't a
+      // return trip), not whatever Set-insertion order put first.
+      const shooterId =
+        [...linedHere].find((id) =>
+          (linesByMember.get(id) ?? []).some((l) => l.projectId === p.id && !l.returnTrip),
+        ) ?? [...linedHere][0];
+      for (const o of p.payOverrides) {
+        if (o.manualAdd || o.excluded || (o.invoiceOverride == null && o.flatAmount == null)) continue;
+        if (linedHere.has(o.teamMemberId) || paidHere.has(o.teamMemberId)) continue;
+        const street = p.title.split(",")[0];
+        const setFor = memberMap.get(o.teamMemberId)?.name ?? "another photographer";
+        const shotBy = memberMap.get(shooterId)?.name ?? "another photographer";
+        const issue: PayrollIssue = {
+          level: "warn",
+          message: `Pay override on ${street} was set for ${setFor} but ${shotBy} shot it — re-apply it to ${shotBy} or clear it.`,
+          projectId: p.id,
+        };
+        for (const id of new Set([shooterId, o.teamMemberId])) {
+          if (!issuesByMember.has(id)) issuesByMember.set(id, []);
+          issuesByMember.get(id)!.push(issue);
+        }
+      }
     }
   }
 
@@ -451,6 +516,7 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
         message: `${fallback.length} shoot${fallback.length === 1 ? "" : "s"} use the order total (no itemized invoice synced) — virtual/AI add-ons may not be excluded.`,
       });
     }
+    issues.push(...(issuesByMember.get(memberId) ?? []));
 
     const adj = (adjByMember.get(memberId) ?? []).map((a) => ({ id: a.id, label: a.label, amount: r2(a.amount), dateISO: a.date.toISOString() }));
     const shootPayTotal = r2(built.reduce((s, b) => s + b.shootPay, 0));

@@ -682,6 +682,7 @@ export async function syncAryeoOrders(
         select: {
           id: true, aryeoOrderId: true, status: true, clientId: true, deliveredAt: true,
           price: true, payableInvoice: true, paymentStatus: true, balanceAmount: true, title: true,
+          photographerId: true, // cancel bell targets the assigned photographer
         },
       }),
       prisma.client.findMany({ select: { id: true, aryeoCustomerId: true, email: true } }),
@@ -775,6 +776,34 @@ export async function syncAryeoOrders(
             (proj.balanceAmount ?? null) !== (order.balance_amount ?? null);
           // Never cancel a delivered job from here (refunds are a human call).
           const cancelNow = isCanceled && proj.status !== "CANCELLED" && !proj.deliveredAt;
+          // A cancel AFTER delivery keeps that policy — but the human it defers
+          // to has to actually hear about it, or the canceled order silently
+          // stays in /billing's AR chase. Surface it exactly once: a SYSTEM
+          // activity (checked by marker text, since this update pass re-scans
+          // the same canceled order every hour) + an owner-only bell (dedupeKey
+          // backstops the race). Best-effort — never breaks the sync.
+          if (isCanceled && proj.status !== "CANCELLED" && proj.deliveredAt) {
+            try {
+              const marker = "Order canceled in Aryeo AFTER delivery";
+              const already = await prisma.activity.findFirst({
+                where: { projectId: proj.id, type: "SYSTEM", body: { startsWith: marker } },
+                select: { id: true },
+              });
+              if (!already) {
+                await prisma.activity.create({
+                  data: { projectId: proj.id, type: "SYSTEM", body: `${marker} — review for refund / AR write-off.` },
+                });
+                const { notifyInApp } = await import("@/lib/notify");
+                await notifyInApp({
+                  kind: "order_canceled",
+                  title: `Canceled after delivery — ${(proj.title || "a job").split(",")[0].trim()}`,
+                  href: `/projects/${proj.id}`,
+                  targets: [{ roles: ["OWNER"] }],
+                  dedupeKey: `order-canceled-delivered-${proj.id}`,
+                });
+              }
+            } catch { /* visibility is best-effort */ }
+          }
           // Customer changed on the order: same person under a new Aryeo id
           // re-links silently; a different person gets an activity trail.
           const clientChanged = !!cust?.id && custClientId !== undefined && custClientId !== proj.clientId;
@@ -803,6 +832,24 @@ export async function syncAryeoOrders(
               await prisma.activity.create({
                 data: { projectId: proj.id, type: "SYSTEM", body: "Order canceled in Aryeo — project cancelled and its tasks closed." },
               }).catch(() => {});
+              // Bell: a canceled order otherwise just vanishes from /schedule,
+              // /shoot and /upload (they all filter CANCELLED) with zero notice —
+              // the photographer could still drive out, and nobody knows to
+              // release the slot. Mirrors the order_booked/order_paid emitters.
+              try {
+                const { notifyInApp } = await import("@/lib/notify");
+                const targets: NotifyTarget[] = [{ roles: ["OWNER", "ADMIN"] }];
+                if (proj.photographerId) {
+                  targets.push({ roles: ["PHOTOGRAPHER"], userKey: `tm:${proj.photographerId}`, href: "/shoot" });
+                }
+                await notifyInApp({
+                  kind: "order_canceled",
+                  title: `Canceled — ${(proj.title || "a job").split(",")[0].trim()}`,
+                  href: `/projects/${proj.id}`,
+                  targets,
+                  dedupeKey: `order-canceled-${proj.id}`,
+                });
+              } catch { /* bell is best-effort */ }
             }
             if (newClientId !== proj.clientId) {
               await prisma.activity.create({
@@ -1277,11 +1324,12 @@ export async function syncAryeoAppointments(opts: { recentOnlyDays?: number } = 
 
   // Preload lookups.
   const [projects, team] = await Promise.all([
-    prisma.project.findMany({ where: { aryeoOrderId: { not: null } }, select: { id: true, aryeoOrderId: true, title: true } }),
+    prisma.project.findMany({ where: { aryeoOrderId: { not: null } }, select: { id: true, aryeoOrderId: true, title: true, photographerManual: true } }),
     prisma.teamMember.findMany({ select: { id: true, aryeoUserId: true, name: true, isServiceProvider: true } }),
   ]);
   const projectByOrder = new Map(projects.map((p) => [p.aryeoOrderId!, p.id]));
   const titleByProject = new Map(projects.map((p) => [p.id, p.title]));
+  const manualPhotogByProject = new Map(projects.map((p) => [p.id, p.photographerManual]));
   const teamByUser = new Map(team.filter((t) => t.aryeoUserId).map((t) => [t.aryeoUserId!, t]));
   const va = team.find((t) => /kyle/i.test(t.name));
 
@@ -1304,8 +1352,23 @@ export async function syncAryeoAppointments(opts: { recentOnlyDays?: number } = 
   const perPage = 100;
   let page = 1;
   for (let i = 0; i < 200; i++) {
+    // Incremental runs used to fetch the ENTIRE appointment history (~15 heavy
+    // pages hourly) and only apply the window locally — the repeated Aryeo
+    // timeouts stalled the one reliable propagation path for reschedules and
+    // cancels. Probed live against GET /appointments (2026-07-07):
+    //   · sort=-start_at IS honored: undated rows (UNSCHEDULED/CANCELED with
+    //     start_at null) come FIRST, then start_at strictly descending — so we
+    //     can stop paging once a page dips below the window floor.
+    //   · filter[start_at_gte] IS honored too, but it silently DROPS the
+    //     null-start rows — exactly the postponed/canceled appointments the
+    //     transition detection below must observe — so sort + early-break is
+    //     the only bounded fetch that still sees them.
+    //   · filter[start_at][gte] / start_at_after / start_at_min / filter[status]
+    //     are all silently ignored (same totals as unfiltered).
+    // Full (nightly) runs keep the plain unbounded pagination to reconcile all
+    // of history.
     const res = await aryeoRequest<{ data: AryeoAppointment[]; meta?: { last_page?: number } }>("/appointments", {
-      query: { include: "users,order", page, per_page: perPage },
+      query: { include: "users,order", page, per_page: perPage, ...(windowAgoTs !== null ? { sort: "-start_at" } : {}) },
     });
     const batch = res?.data ?? [];
     if (batch.length === 0) break;
@@ -1315,7 +1378,7 @@ export async function syncAryeoAppointments(opts: { recentOnlyDays?: number } = 
     // canceled) from a routine re-sync — those changes ring the bell below.
     const priorRows = await prisma.appointment.findMany({
       where: { aryeoId: { in: batch.map((a) => a.id).filter((id): id is string => !!id) } },
-      select: { aryeoId: true, startAt: true, status: true },
+      select: { aryeoId: true, startAt: true, status: true, assignedToId: true },
     });
     const priorByAryeoId = new Map(priorRows.map((r) => [r.aryeoId, r]));
 
@@ -1373,20 +1436,84 @@ export async function syncAryeoAppointments(opts: { recentOnlyDays?: number } = 
         const moved =
           !nowCanceled && !!startAt && !!prior.startAt &&
           Math.abs(startAt.getTime() - prior.startAt.getTime()) >= 60_000;
-        if (canceled || moved) {
+        // Both legs of the postpone-then-rebook cycle (the most common real
+        // reschedule flow) fell between `canceled` and `moved` and rang nothing:
+        // a start cleared to TBD isn't a cancel, and a dateless appointment
+        // gaining a start has no prior.startAt for the moved delta.
+        const postponed = !nowCanceled && !startAt && !!prior.startAt;
+        const rebooked = !nowCanceled && !!startAt && !prior.startAt;
+        // Reassignment rings ONLY on a real handoff (both sides known). A null
+        // transition still wrote the row above, but stays silent: a transient
+        // empty `users` array from a flaky API page would otherwise fire a
+        // spurious "No longer yours" — worse than silence on the rare true
+        // unassignment.
+        const reassigned = !nowCanceled && !!prior.assignedToId && !!assignedToId && prior.assignedToId !== assignedToId;
+        // Shared by both bell blocks below — hoisted so neither duplicates the
+        // imports / street derivation. Best-effort like the bells themselves.
+        const bellDeps =
+          canceled || moved || postponed || rebooked || reassigned
+            ? await Promise.all([import("@/lib/notify"), import("@/lib/datetime")]).catch(() => null)
+            : null;
+        const street = (titleByProject.get(projectId) || "a shoot").split(",")[0].trim();
+        if ((canceled || moved || postponed || rebooked) && bellDeps) {
           try {
-            const { notifyInApp } = await import("@/lib/notify");
-            const { etDateTime } = await import("@/lib/datetime");
-            const street = (titleByProject.get(projectId) || "a shoot").split(",")[0].trim();
+            const [{ notifyInApp }, { etDateTime }] = bellDeps;
             const targets: NotifyTarget[] = [{ roles: ["ADMIN"] }];
             if (assignedToId) targets.push({ roles: ["PHOTOGRAPHER"], userKey: `tm:${assignedToId}`, href: "/shoot" });
+            // The changing part lives IN the dedupe key (new start, or the start
+            // being abandoned for TBD), so each further transition rings again
+            // exactly once while re-syncs of the same state stay silent.
+            const [title, keyPart] = canceled
+              ? [`Canceled — ${street}`, "canceled"]
+              : postponed
+                ? [`Postponed — ${street} (new date TBD)`, `tbd-${prior.startAt!.toISOString()}`]
+                : rebooked
+                  ? [`Scheduled — ${street} → ${etDateTime(startAt)}`, `rebooked-${startAt!.toISOString()}`]
+                  : [`Rescheduled — ${street} → ${etDateTime(startAt)}`, startAt!.toISOString()];
             await notifyInApp({
               kind: "appointment_change",
-              title: canceled ? `Canceled — ${street}` : `Rescheduled — ${street} → ${etDateTime(startAt)}`,
+              title,
               href: `/projects/${projectId}`,
               targets,
-              dedupeKey: `appt-${appt.id}-${canceled ? "canceled" : startAt!.toISOString()}`,
+              dedupeKey: `appt-${appt.id}-${keyPart}`,
             });
+          } catch { /* bell is best-effort */ }
+        }
+        // Reassignment: the shoot silently moving between photographers' /shoot
+        // lists is at least as bell-worthy as a 1-minute move. Old and new
+        // assignee read different messages, so each audience gets its own row
+        // (a cancel already rings above — don't double-announce it here).
+        if (reassigned && bellDeps) {
+          try {
+            const [{ notifyInApp }, { etDateTime }] = bellDeps;
+            // Both sides in the key so an A→B→A swap still rings each leg once.
+            const base = `appt-${appt.id}-assign-${prior.assignedToId ?? "none"}-${assignedToId ?? "none"}`;
+            const when = startAt ? `, ${etDateTime(startAt)}` : "";
+            await notifyInApp({
+              kind: "appointment_change",
+              title: `Reassigned — ${street}`,
+              href: `/projects/${projectId}`,
+              targets: [{ roles: ["ADMIN"] }],
+              dedupeKey: `${base}-admin`,
+            });
+            if (prior.assignedToId) {
+              await notifyInApp({
+                kind: "appointment_change",
+                title: `No longer yours — ${street}`,
+                href: "/shoot",
+                targets: [{ roles: ["PHOTOGRAPHER"], userKey: `tm:${prior.assignedToId}`, href: "/shoot" }],
+                dedupeKey: `${base}-old`,
+              });
+            }
+            if (assignedToId) {
+              await notifyInApp({
+                kind: "appointment_change",
+                title: `New shoot — ${street}${when}`,
+                href: "/shoot",
+                targets: [{ roles: ["PHOTOGRAPHER"], userKey: `tm:${assignedToId}`, href: "/shoot" }],
+                dedupeKey: `${base}-new`,
+              });
+            }
           } catch { /* bell is best-effort */ }
         }
       }
@@ -1405,6 +1532,18 @@ export async function syncAryeoAppointments(opts: { recentOnlyDays?: number } = 
       }
     }
 
+    // Incremental early-break: with sort=-start_at (verified: undated first,
+    // then start_at strictly descending), once this page's oldest dated row
+    // falls before the window floor every later page is older still — stop
+    // paging instead of fetching all of history. The per-row window skip above
+    // already dropped this page's stale tail.
+    if (windowAgoTs !== null) {
+      const starts = batch
+        .map((a) => (a.start_at ? new Date(a.start_at).getTime() : null))
+        .filter((t): t is number => t !== null);
+      if (starts.length > 0 && Math.min(...starts) < windowAgoTs) break;
+    }
+
     const last = res?.meta?.last_page;
     if (last ? page >= last : batch.length < perPage) break;
     page++;
@@ -1417,11 +1556,79 @@ export async function syncAryeoAppointments(opts: { recentOnlyDays?: number } = 
     await prisma.project.update({
       where: { id: projectId },
       data: {
-        ...(info.photographerId ? { photographerId: info.photographerId } : {}),
+        // Tug-of-war guard: a hand-picked photographer (assignMember sets
+        // photographerManual) must not be silently reverted to Aryeo's assignee
+        // an hour later — skip the auto-fill until the manual hold is released
+        // (unassigning in the app clears the flag, so Aryeo resumes control).
+        ...(info.photographerId && !manualPhotogByProject.get(projectId) ? { photographerId: info.photographerId } : {}),
         ...(info.shootDate ? { shootDate: info.shootDate } : {}),
       },
     });
     if (info.photographerId) assigned++;
+  }
+
+  // Cancel/postpone propagation: when NO live appointment remains on a project
+  // (live = dated and not canceled), its stored shootDate is an abandoned slot —
+  // the fill-only apply above can never clear it, so the job sat SCHEDULED
+  // forever on the pipeline, /upload and My Shoots, and payroll's shootDate
+  // fallback could pay for a shoot that never happened. Constraints: only clear
+  // a FUTURE shootDate (a past one may describe a shoot that actually took
+  // place — payroll history must not rewrite), and only for projects that HAVE
+  // appointment rows (an appointment-less project's shootDate comes from order
+  // data). photographerId is deliberately left alone. Re-checks against the DB
+  // (not just this fetch) so an old dated visit outside the incremental window
+  // still counts as live. Idempotent: once cleared, the future-shootDate filter
+  // stops matching.
+  const deadCandidates = [...pick.entries()].filter(([, info]) => !info.scheduled).map(([id]) => id);
+  if (deadCandidates.length > 0) {
+    // Future-shootDate filter FIRST: it usually whittles the dead candidates to
+    // a handful, and appointment rows are only needed for those — the nightly
+    // full run would otherwise pull thousands of rows to gate a few writes.
+    const candProjects = await prisma.project.findMany({
+      where: { id: { in: deadCandidates }, shootDate: { gt: new Date() } },
+      select: { id: true },
+    });
+    const candAppts = candProjects.length
+      ? await prisma.appointment.findMany({
+          where: { projectId: { in: candProjects.map((p) => p.id) } },
+          select: { projectId: true, startAt: true, status: true },
+        })
+      : [];
+    const hasRows = new Set(candAppts.map((a) => a.projectId));
+    // "Live" = an appointment that can EXPLAIN a future stored shootDate: dated,
+    // not canceled, and not already in the past (small grace for in-progress
+    // shoots). A past leg — e.g. a completed earlier visit on a job whose future
+    // return visit was canceled — can't justify keeping a future date, and
+    // counting it would leave that stale slot on the books forever.
+    const liveFloor = Date.now() - 60 * 60 * 1000;
+    const hasLive = new Set(
+      candAppts
+        .filter((a) => a.startAt && a.startAt.getTime() > liveFloor && !(a.status ?? "").toUpperCase().startsWith("CANCEL"))
+        .map((a) => a.projectId),
+    );
+    for (const p of candProjects) {
+      if (!hasRows.has(p.id) || hasLive.has(p.id)) continue;
+      await Promise.all([
+        prisma.project.update({ where: { id: p.id }, data: { shootDate: null } }),
+        // Pre-shoot tasks are moot without a shoot on the books. CANCELLED, not
+        // COMPLETED — history must not claim a confirmation was ever sent.
+        prisma.smartTask.updateMany({
+          where: {
+            projectId: p.id,
+            taskType: { in: ["confirmation_text", "appointment_prep"] },
+            status: { notIn: ["COMPLETED", "CANCELLED"] },
+          },
+          data: { status: "CANCELLED" },
+        }),
+        prisma.activity.create({
+          data: {
+            projectId: p.id,
+            type: "SYSTEM",
+            body: "All Aryeo appointments are canceled or unscheduled — cleared the upcoming shoot date and retired the pre-shoot tasks.",
+          },
+        }).catch(() => {}),
+      ]);
+    }
   }
 
   // VA = Kyle on all Aryeo projects.

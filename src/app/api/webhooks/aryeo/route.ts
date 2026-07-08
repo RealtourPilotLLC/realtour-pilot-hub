@@ -211,11 +211,21 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
   // date follows — and reconcile the affected project's status + task due
   // dates right now instead of on the next cron.
   if (object === "APPOINTMENT" || name.startsWith("APPOINTMENT")) {
-    try { await syncAryeoAppointments(); } catch { /* non-fatal */ }
+    // Bounded window: a webhook is about a change happening NOW — no need to
+    // re-walk appointment history (the sort=-start_at early-break makes this
+    // ~1 page instead of ~15). The nightly full sync remains the backstop.
+    try { await syncAryeoAppointments({ recentOnlyDays: 21 }); } catch { /* non-fatal */ }
     await syncAryeoOrders();
     if (id) {
-      const appt = await prisma.appointment.findUnique({ where: { aryeoId: id }, select: { projectId: true } });
+      const appt = await prisma.appointment.findUnique({ where: { aryeoId: id }, select: { projectId: true, startAt: true } });
       if (appt) {
+        // The bounded sync skips DATED rows older than its window, so a
+        // retro-cancel/reassign of an old appointment would otherwise sit
+        // unpropagated until the nightly full sync. Rare path: re-run unbounded
+        // so the change lands now.
+        if (appt.startAt && appt.startAt.getTime() < Date.now() - 21 * 86_400_000) {
+          try { await syncAryeoAppointments(); } catch { /* non-fatal */ }
+        }
         try { await restatusProject(appt.projectId); } catch { /* non-fatal */ }
         await retaskProject(appt.projectId);
       }
@@ -223,9 +233,10 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
     return;
   }
 
-  // CUSTOMER_* (or USER) — new/updated client. Re-enrich, re-score segments, and
-  // refresh social-content plans. Each only writes the rows that actually changed.
-  if (object === "CUSTOMER" || object === "USER" || name.startsWith("CUSTOMER")) {
+  // CUSTOMER_* — new/updated client (the classifier folds GROUP/USER payloads
+  // into CUSTOMER). Re-enrich, re-score segments, and refresh social-content
+  // plans. Each only writes the rows that actually changed.
+  if (object === "CUSTOMER" || name.startsWith("CUSTOMER")) {
     try { await syncAryeoCustomers(); } catch { /* non-fatal */ }
     try { await syncClientSegments(); } catch { /* non-fatal */ }
     try { await syncAryeoSocialPlans(); } catch { /* non-fatal */ }
@@ -242,7 +253,7 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
     return;
   }
   if (type.includes("appointment") || type.includes("schedul") || type.includes("booking")) {
-    try { await syncAryeoAppointments(); } catch { /* non-fatal */ }
+    try { await syncAryeoAppointments({ recentOnlyDays: 21 }); } catch { /* non-fatal */ }
     await syncAryeoOrders();
     return;
   }

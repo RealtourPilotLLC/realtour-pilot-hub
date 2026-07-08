@@ -9,6 +9,7 @@ import {
   Bell,
   CalendarClock,
   CalendarPlus,
+  CalendarX,
   Camera,
   Clapperboard,
   DollarSign,
@@ -40,6 +41,7 @@ type Item = {
 
 const KIND_ICON: Record<string, LucideIcon> = {
   order_booked: CalendarPlus,
+  order_canceled: CalendarX,
   order_paid: DollarSign,
   delivery_out: PackageCheck,
   revision_raised: Undo2,

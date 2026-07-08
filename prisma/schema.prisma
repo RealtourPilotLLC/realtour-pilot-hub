@@ -281,6 +281,10 @@ model Project {
   clientId       String
   photographer   TeamMember? @relation("Photographer", fields: [photographerId], references: [id])
   photographerId String?
+  // Set when the owner assigns the photographer by hand — the Aryeo sync then
+  // stops auto-filling photographerId from appointment assignees, so a manual
+  // assignment isn't silently reverted an hour later.
+  photographerManual Boolean @default(false)
   editor         TeamMember? @relation("Editor", fields: [editorId], references: [id])
   editorId       String?
   va             TeamMember? @relation("VA", fields: [vaId], references: [id])
