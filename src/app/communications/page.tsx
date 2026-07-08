@@ -1,11 +1,13 @@
 import Link from "next/link";
-import { MessageCircle, Phone, User, Users } from "lucide-react";
+import { MessageCircle, Phone, Send, User, Users } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { Avatar } from "@/components/ui/Avatar";
 import { prisma } from "@/lib/prisma";
 import { getSecret } from "@/lib/integrations/connections";
 import { OpenPhone, phoneKey, recentOpenPhoneConversations, type OpConversation } from "@/lib/integrations/openphone";
+import { getClientTextTasks } from "@/lib/queries";
+import { ClientTextsPanel } from "@/components/texts/ClientTextsPanel";
 import { formatDistanceToNow } from "date-fns";
 
 export const dynamic = "force-dynamic";
@@ -15,7 +17,54 @@ function fmtPhone(p: string) {
   return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : p;
 }
 
-export default async function CommunicationsPage() {
+// One comms surface, two tabs (Jordan: "keep comms all in one tab"): the live
+// OpenPhone inbox, and the Outbox — today's drafted confirmation + delivery
+// texts waiting for a human to review and send.
+function CommsTabs({ tab, pending }: { tab: "inbox" | "outbox"; pending: number }) {
+  const active = "rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white";
+  const idle = "rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted hover:bg-surface-2";
+  return (
+    <div className="mb-4 flex items-center gap-1.5">
+      <Link href="/communications" className={tab === "inbox" ? active : idle}>
+        <MessageCircle className="mr-1.5 inline size-3.5" />
+        Inbox
+      </Link>
+      <Link href="/communications?tab=outbox" className={tab === "outbox" ? active : idle}>
+        <Send className="mr-1.5 inline size-3.5" />
+        Outbox
+        {pending > 0 && (
+          <span className={`ml-1.5 rounded-full px-1.5 text-xs font-semibold ${tab === "outbox" ? "bg-white/20" : "bg-brand/15 text-brand"}`}>
+            {pending}
+          </span>
+        )}
+      </Link>
+    </div>
+  );
+}
+
+export default async function CommunicationsPage({ searchParams }: { searchParams: Promise<{ tab?: string }> }) {
+  const sp = await searchParams;
+  const tab = sp.tab === "outbox" ? "outbox" : "inbox";
+  const pendingTexts = (await getClientTextTasks()).length;
+
+  // The Outbox renders without the (slow) OpenPhone conversation pull — drafts
+  // come from SmartTasks; OpenPhone is only involved when a human hits Send.
+  if (tab === "outbox") {
+    return (
+      <div>
+        <PageHeader
+          eyebrow="Eastern time"
+          title="Communications"
+          subtitle="Today's confirmation and delivery texts — review each draft, then send."
+        />
+        <div className="p-4 sm:p-6">
+          <CommsTabs tab="outbox" pending={pendingTexts} />
+          <ClientTextsPanel />
+        </div>
+      </div>
+    );
+  }
+
   const connected = await getSecret("openphone");
   if (!connected) {
     return (
@@ -118,6 +167,7 @@ export default async function CommunicationsPage() {
         actions={<Badge soft="var(--surface-2)">Live from OpenPhone</Badge>}
       />
       <div className="p-6">
+        <CommsTabs tab="inbox" pending={pendingTexts} />
         {error && <div className="mb-4 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>}
         {rows.length === 0 && !error ? (
           <p className="text-sm text-muted">No conversations found.</p>

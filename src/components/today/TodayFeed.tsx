@@ -297,7 +297,7 @@ function ActionCard({ card, assignees, onGone }: {
           )}
           {(card.verb === "do" || card.verb === "check") && isTextsRollup && (
             <Link
-              href="/texts"
+              href="/communications?tab=outbox"
               className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-brand px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:opacity-90"
             >
               Check texts <ArrowRight className="size-4" />
