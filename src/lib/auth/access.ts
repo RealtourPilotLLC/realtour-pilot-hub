@@ -8,6 +8,11 @@ export type PageKey =
   | "communications" | "clients" | "team" | "upload" | "editing" | "sales"
   | "billing" | "catalog" | "payouts" | "marketing" | "resources" | "assistant"
   | "training" | "feedback" | "connections" | "users" | "shoot" | "mypay";
+// NOTE: "map", "billing", "payouts", "team" survive in this type only so stored
+// per-user permission JSON keeps resolving and so canAccess() can treat them as
+// legacy grants on the pages they merged into (see canAccess). They no longer
+// appear in PAGES — their routes are redirect stubs with NO PageKey (like
+// /texts), so pathKey() returns null and any signed-in user takes the hop.
 
 export type Role = "OWNER" | "ADMIN" | "EDITOR" | "PHOTOGRAPHER";
 
@@ -25,26 +30,32 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   // and the destination page enforces access itself.
   { key: "tasks", label: "Tasks", href: "/tasks" },
   { key: "pipeline", label: "Project Tracker", href: "/pipeline" },
+  // Schedule now owns both the day-list and the Map (the ?view=map tab). /map is
+  // a redirect stub → /schedule?view=map, so "map" no longer needs its own key.
   { key: "schedule", label: "Schedule", href: "/schedule" },
-  { key: "map", label: "Map", href: "/map" },
   { key: "shoot", label: "My Shoots", href: "/shoot" },
   { key: "mypay", label: "My Pay", href: "/my-pay" },
   { key: "communications", label: "Communications", href: "/communications" },
   { key: "clients", label: "Clients", href: "/clients" },
-  { key: "team", label: "Team", href: "/team" },
   { key: "upload", label: "Upload Portal", href: "/upload" },
   { key: "editing", label: "Editor Queue", href: "/editing" },
-  { key: "sales", label: "Sales Tracker", href: "/sales" },
-  { key: "billing", label: "Billing", href: "/billing" },
+  // "sales" is the merged Finance hub — Revenue (old /sales) + Unpaid (old
+  // /billing) + Payroll (old /payouts) are its tabs now. /billing and /payouts
+  // are redirect stubs, so "billing"/"payouts" no longer need their own keys.
+  // Per-tab gating lives on the page: Unpaid = admin-visible, Payroll = owner-only.
+  { key: "sales", label: "Finance", href: "/sales" },
   { key: "catalog", label: "Service Catalog", href: "/catalog" },
-  { key: "payouts", label: "Payouts", href: "/payouts" },
   { key: "marketing", label: "Campaigns", href: "/marketing" },
   { key: "resources", label: "Resources & SOPs", href: "/resources" },
   { key: "training", label: "Training", href: "/training" },
   { key: "assistant", label: "Ask the Hub", href: "/assistant" },
   { key: "feedback", label: "Feedback & requests", href: "/feedback" },
   { key: "connections", label: "Connections", href: "/connections", ownerOnly: true },
-  { key: "users", label: "Users", href: "/users", ownerOnly: true },
+  // "users" is the merged People hub — Team (old /team, admin-visible) + Logins &
+  // access (old /users AppUser allowlist, owner-only). It can no longer be
+  // ownerOnly: admins need the Team tab. The Logins tab gates owner-only on the
+  // page itself. /team is a redirect stub → /users?tab=team.
+  { key: "users", label: "People", href: "/users" },
 ];
 
 const ALL = PAGES.map((p) => p.key);
@@ -53,9 +64,16 @@ const ALL = PAGES.map((p) => p.key);
 // granted to a person via a per-user override (except owner-only pages).
 const ROLE_PAGES: Record<Role, PageKey[]> = {
   OWNER: ALL,
+  // Finance ("sales") and People ("users") are admin-visible so Kyle reaches the
+  // Unpaid tab (old /billing) and the Team tab (old /team). The *owner-only*
+  // slices — Finance's Revenue + Payroll tabs, People's Logins tab — gate on the
+  // page itself, exactly as /sales, /payouts and /users did before the merge
+  // (admins only ever saw Unpaid + the Team directory). No "map"/"billing"/
+  // "payouts"/"team" here: those merged away and canAccess() maps their legacy
+  // grants onto schedule/sales/users below.
   ADMIN: [
-    "dashboard", "tasks", "pipeline", "schedule", "map", "shoot",
-    "communications", "clients", "team", "upload", "editing", "billing",
+    "dashboard", "tasks", "pipeline", "schedule", "shoot",
+    "communications", "clients", "users", "upload", "editing", "sales",
     "catalog", "resources", "training", "assistant", "feedback",
   ],
   // No "dashboard": the overview page carries ops counts + owner money strips
@@ -103,11 +121,20 @@ export function canAccess(user: AccessUser, key: PageKey): boolean {
   const page = PAGES.find((p) => p.key === key);
   if (page?.ownerOnly) return false; // never for non-owners, even via override
   const perms = parsePermissions(user.permissions);
-  // The old Today / Daily Tasks / Task History pages merged into the one Tasks
-  // hub. Saved per-user permission JSON may still carry the legacy "today" /
-  // "history" keys — honour any of the three as an override on the merged page,
-  // so nobody's stored grants lose access on the consolidation.
-  const keys = key === "tasks" ? ["tasks", "today", "history"] : [key];
+  // Consolidated pages absorb the permission keys of the routes they merged, so
+  // nobody's stored grants lose access on the consolidation. Same pattern the
+  // Tasks hub used (today/history → tasks):
+  //   schedule ← map            (Map is now the ?view=map tab)
+  //   sales    ← billing/payouts (Finance = Revenue | Unpaid | Payroll tabs)
+  //   users    ← team            (People = Team | Logins tabs)
+  // Honour ANY of the merged keys as an override on the destination page.
+  const LEGACY: Partial<Record<PageKey, PageKey[]>> = {
+    tasks: ["tasks", "today" as PageKey, "history" as PageKey],
+    schedule: ["schedule", "map"],
+    sales: ["sales", "billing", "payouts"],
+    users: ["users", "team"],
+  };
+  const keys = LEGACY[key] ?? [key];
   const overridden = keys.filter((k) => k in perms);
   if (overridden.length > 0) return overridden.some((k) => !!perms[k]);
   const role = (ROLE_PAGES[user.role as Role] ?? []) as PageKey[];

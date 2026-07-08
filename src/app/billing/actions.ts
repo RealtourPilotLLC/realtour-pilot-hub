@@ -127,7 +127,7 @@ export async function sendPaymentNudge(
   // Stamp the chase (best-effort until the lastNudgedAt migration lands).
   await prisma.project.update({ where: { id: projectId }, data: { lastNudgedAt: new Date() } }).catch(() => {});
 
-  revalidatePath("/billing");
+  revalidatePath("/sales");
   revalidatePath(`/projects/${projectId}`);
   return { ok: true, message: "Reminder sent." };
 }
@@ -144,6 +144,6 @@ export async function markBillingNudged(projectId: string): Promise<{ ok: boolea
   await prisma.activity
     .create({ data: { projectId, type: "NOTE", body: "Marked as followed up on the outstanding balance (billing)." } })
     .catch(() => {});
-  revalidatePath("/billing");
+  revalidatePath("/sales");
   return { ok: true, message: "Marked followed up." };
 }

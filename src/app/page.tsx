@@ -6,9 +6,10 @@ import { ProactiveFlags } from "@/components/dashboard/ProactiveFlags";
 import { StuckJobs } from "@/components/dashboard/StuckJobs";
 import { WeekStrip } from "@/components/dashboard/WeekStrip";
 import { PulseStrip } from "@/components/dashboard/PulseStrip";
+import { QualityDials } from "@/components/dashboard/QualityDials";
 import {
   getTodayCardCount, getActionCounts, getStuckJobs, getShootWindow,
-  getProactiveFlags, getHandledToday, getOwnerStats, getOwnerPulse,
+  getProactiveFlags, getHandledToday, getOwnerStats, getOwnerPulse, getOwnerDials,
 } from "@/lib/queries";
 import { getCurrentUser } from "@/lib/auth/user";
 import { contentTier, homeFor } from "@/lib/auth/access";
@@ -47,7 +48,7 @@ export default async function DashboardPage() {
   if (me && contentTier(me.role) === "CREATIVE") redirect(homeFor(me.role));
   const isOwner = !me || me.role === "OWNER";
 
-  const [todayCount, counts, stuck, shoots, radar, handledToday, ownerStats, pulse] = await Promise.all([
+  const [todayCount, counts, stuck, shoots, radar, handledToday, ownerStats, pulse, dials] = await Promise.all([
     getTodayCardCount(), // = the card count /today renders, so the button never lies
     getActionCounts(),
     getStuckJobs(),
@@ -56,6 +57,8 @@ export default async function DashboardPage() {
     getHandledToday(),
     isOwner ? getOwnerStats() : Promise.resolve(null),
     isOwner ? getOwnerPulse() : Promise.resolve(null),
+    // Owner-only quality dials (video-SLA roll-up + QC health) — same gate.
+    isOwner ? getOwnerDials() : Promise.resolve(null),
   ]);
 
   const firstName = me?.name?.split(" ")[0] ?? (isOwner ? "Jordan" : "there");
@@ -162,6 +165,14 @@ export default async function DashboardPage() {
             deliberately OUTSIDE the all-clear branch: quiet days still show
             whether the machine is speeding up or slipping. */}
         {isOwner && pulse && <PulseStrip pulse={pulse} />}
+
+        {/* 9 · Quality dials — the two already-built Phase-2/3 helpers surfaced:
+            a compact video-SLA roll-up (links to the Editor Queue; NOT a re-list
+            of the stuck jobs above) + the QC quality dial. Owner-only, same gate
+            as the pulse. Self-hides when there's no video in flight AND no QC
+            history yet (fresh install), and guards the QC empty state so a new
+            DB never shows a misleading 0%. */}
+        {isOwner && dials && <QualityDials dials={dials} />}
 
         {/* Quiet secondary links — everything else lives in the sidebar. (The
             old footer also repeated the chip numbers in grey; deleted — the

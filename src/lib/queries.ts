@@ -4,6 +4,12 @@ import { recentProjectWhere, isProjectRecent } from "@/lib/recency";
 import { etDayStartUtc, etAddDays, etDayKey } from "@/lib/datetime";
 import { DELEGATE_KEYS } from "@/lib/editors";
 import { TRIAGE_TYPES } from "@/lib/triage";
+import { getVideoSlaStatus } from "@/lib/projectStatus";
+import { getQcStats, type QcStats } from "@/lib/qc";
+
+// Re-export the QC quality dial's type so the dashboard can consume it without
+// reaching past this module — queries.ts is the dashboard's single data door.
+export type { QcStats } from "@/lib/qc";
 
 /** Projects for the pipeline board — current work only (last-30-day window). */
 export async function getPipelineProjects() {
@@ -632,6 +638,64 @@ export async function getOwnerPulse(): Promise<OwnerPulse> {
     replyDelta: delta(replyPct, replyPrev),
     openRevisions,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Owner quality dials — two already-built helpers surfaced on the dashboard.
+//
+//   • VIDEO SLA (getVideoSlaStatus, projectStatus.ts): the SAME in-flight video
+//     jobs the /editing "Video SLA" panel ranks. Aggregated here to ONE pair of
+//     counts — how many videos are in editing, how many are past their delivery
+//     window — so the owner sees the editing-bench heat as a single line without
+//     the full table. NOTE these jobs mostly ALSO appear in getStuckJobs (shot
+//     48h+ undelivered / past deliveryDue), so we never re-list them as fires —
+//     we show a compact roll-up line that links into the /editing queue.
+//   • QC quality (getQcStats, qc.ts): revision-after-delivery rate + avg misses
+//     per pass. Empty at launch (no QcRecords until Kyle completes guided-QC
+//     cards), so the page GUARDS on qcPasses === 0 and shows a "tracking starts"
+//     hint instead of a misleading 0%/NaN.
+//
+// Both are owner-only — call this behind the same gate as the pulse/money strips.
+// ---------------------------------------------------------------------------
+export type OwnerDials = {
+  video: { inEditing: number; pastSla: number }; // in-flight video jobs / of those past SLA
+  qc: QcStats; // qcPasses === 0 → dashboard hides the QC dial (empty-state guard)
+};
+
+export async function getOwnerDials(): Promise<OwnerDials> {
+  const [projects, qc] = await Promise.all([
+    // Mirror /editing's `inflightVideo`: non-delivered production stages that
+    // ordered a video/reel. Same statuses + deliverable filter the Editor Queue
+    // uses, so the dashboard's count can't drift from that page.
+    prisma.project.findMany({
+      where: { status: { in: ["SHOT", "EDITING", "REVIEW", "REVISION"] } },
+      select: {
+        shootDate: true,
+        status: true,
+        client: { select: { socialClient: true } },
+        deliverables: { select: { type: true, label: true } },
+      },
+    }),
+    getQcStats(30),
+  ]);
+
+  let inEditing = 0;
+  let pastSla = 0;
+  for (const p of projects) {
+    // getVideoSlaStatus returns null when no video was ordered / no shoot date —
+    // that filters non-video jobs for us (same rule the SLA panel applies).
+    const sla = getVideoSlaStatus({
+      shootDate: p.shootDate,
+      status: p.status,
+      deliverables: p.deliverables,
+      client: p.client,
+    });
+    if (!sla) continue;
+    inEditing++;
+    if (sla.overdue) pastSla++;
+  }
+
+  return { video: { inEditing, pastSla }, qc };
 }
 
 // Shoots happening today / tomorrow — driven off APPOINTMENTS, not the single

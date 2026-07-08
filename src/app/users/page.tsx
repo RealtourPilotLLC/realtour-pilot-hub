@@ -1,37 +1,54 @@
-import { PageHeader } from "@/components/PageHeader";
-import { prisma } from "@/lib/prisma";
-import { requireAccess } from "@/lib/auth/user";
-import { UsersManager, type UserView } from "@/components/users/UsersManager";
+import { redirect } from "next/navigation";
+import { getCurrentUser } from "@/lib/auth/user";
+import { canAccess } from "@/lib/auth/access";
+import { authEnforced } from "@/lib/auth/guards";
+import { TeamTab } from "@/components/people/TeamTab";
+import { LoginsTab } from "@/components/people/LoginsTab";
+import type { PeopleTab } from "@/components/people/PeopleTabs";
 
 export const dynamic = "force-dynamic";
 
-export default async function UsersPage() {
-  const me = await requireAccess("users"); // owner-only
-  const rows = await prisma.appUser.findMany({ orderBy: [{ status: "asc" }, { name: "asc" }] });
-  const ROLE_ORDER: Record<string, number> = { OWNER: 0, ADMIN: 1, EDITOR: 2, PHOTOGRAPHER: 3 };
-  const users: UserView[] = rows
-    .sort((a, b) => (ROLE_ORDER[a.role] ?? 9) - (ROLE_ORDER[b.role] ?? 9) || (a.name || a.email).localeCompare(b.name || b.email))
-    .map((u) => ({
-      id: u.id,
-      email: u.email,
-      name: u.name,
-      role: u.role,
-      permissions: u.permissions,
-      status: u.status,
-      lastLoginAt: u.lastLoginAt ? u.lastLoginAt.toISOString() : null,
-      isSelf: u.id === me.id,
-    }));
+// People = the merged Team (old /team workload directory) | Logins & access (old
+// /users AppUser allowlist) hub. Each tab early-returns loading ONLY its own data
+// (the communications pattern): the AppUser pull never runs for a Team view, the
+// TeamMember pull never runs for a Logins view.
+//
+// PER-TAB GATING mirrors the two separate routes exactly:
+//   • Team   — admin-visible (old /team was in ADMIN's page set)
+//   • Logins — owner-only    (old /users was owner-only)
+// A non-owner who deep-links ?tab=logins is redirected to Team — same net effect
+// as the old owner-only route gate, now scoped to the tab.
+export default async function PeoplePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ tab?: string }>;
+}) {
+  // Same guard shape as the Tasks hub: getCurrentUser() is null sessionless
+  // (local dev = owner view, gate off) and never redirects on its own; we only
+  // bounce a signed-in user who lacks "users" access (owner + admin have it;
+  // creatives are already stopped by middleware). No user ⇒ owner-view default.
+  const me = await getCurrentUser().catch(() => null);
+  if (me && !canAccess(me, "users")) redirect("/");
+  // A real user → their role decides. No user → owner ONLY when auth is off
+  // (local dev). In prod a null user is unauthenticated OR a revoked/disabled
+  // account with a live JWT — neither may reach the owner-only Logins allowlist.
+  const isOwner = me ? me.role === "OWNER" : !authEnforced();
 
-  return (
-    <div>
-      <PageHeader
-        eyebrow="Access control"
-        title="Users"
-        subtitle="Who can sign in, their role, and exactly what they can see."
-      />
-      <div className="p-4 sm:p-6">
-        <UsersManager users={users} />
-      </div>
-    </div>
-  );
+  const sp = await searchParams;
+  const requested = sp.tab;
+
+  // Which tabs this viewer may see (owner: both; admin: Team only).
+  const show: PeopleTab[] = isOwner ? ["team", "logins"] : ["team"];
+
+  let tab: PeopleTab;
+  if (requested === "logins") tab = "logins";
+  else tab = "team"; // default (and the only tab admins get)
+
+  // Owner-only tab: bounce a non-owner who asked for Logins to the Team tab.
+  if (!isOwner && tab === "logins") {
+    redirect("/users?tab=team");
+  }
+
+  if (tab === "logins") return <LoginsTab show={show} me={me} />;
+  return <TeamTab show={show} />;
 }

@@ -8,15 +8,11 @@ import {
   KanbanSquare,
   CalendarDays,
   Camera,
-  MapPinned,
   MessageCircle,
   Users,
-  UserCog,
   DollarSign,
   Wallet,
-  Receipt,
   Package,
-  Megaphone,
   Palette,
   BookOpen,
   GraduationCap,
@@ -25,7 +21,6 @@ import {
   MessageSquarePlus,
   Plug,
   LogOut,
-  ShieldCheck,
   PenLine,
   ExternalLink,
   type LucideIcon,
@@ -67,11 +62,17 @@ const SECTIONS: NavSection[] = [
       // (tabs: Today / Board / Done) — Jordan: "the toolbar has too many things".
       { label: "Tasks", href: "/tasks", icon: ListTodo, key: "tasks" },
       { label: "Project Tracker", href: "/pipeline", icon: KanbanSquare, key: "pipeline" },
+      // Schedule now carries the Map as its ?view=map tab (List | Map toggle in
+      // the header), so the standalone "Map" item is gone — one appointment
+      // window, two views that can't drift apart.
       { label: "Schedule", href: "/schedule", icon: CalendarDays, key: "schedule" },
-      { label: "Map", href: "/map", icon: MapPinned, key: "map" },
       { label: "Communications", href: "/communications", icon: MessageCircle, key: "communications" },
       { label: "Clients", href: "/clients", icon: Users, key: "clients" },
-      { label: "Team", href: "/team", icon: UserCog, key: "team" },
+      // People = the merged Team (workload cards, admin-visible) + Logins &
+      // access (AppUser allowlist, owner-only) hub. Lives in Operations next to
+      // Clients — both are "who we work with" directories, and it reads cleaner
+      // here than buried in System. The old System "Users" item is gone.
+      { label: "People", href: "/users", icon: Users, key: "users" },
     ],
   },
   {
@@ -84,22 +85,24 @@ const SECTIONS: NavSection[] = [
     ],
   },
   {
-    title: "Sales & Finance",
+    // Finance = Revenue (old Sales Tracker) + Unpaid (old Billing) + Payroll
+    // (old Payouts) as one page's tabs. The three-item "Sales & Finance" section
+    // collapses to a single item. Service Catalog moved out to Knowledge (it's a
+    // price reference, not money that moves). Marketing is retired from the nav
+    // entirely (coming-soon stub) — re-add a { label: "Marketing", href:
+    // "/marketing", icon: Megaphone, key: "marketing" } item here once social
+    // scheduling actually ships; the /marketing route stays reachable meanwhile.
+    title: "Finance",
     items: [
-      { label: "Sales Tracker", href: "/sales", icon: DollarSign, key: "sales" },
-      { label: "Billing", href: "/billing", icon: Receipt, key: "billing" },
-      { label: "Service Catalog", href: "/catalog", icon: Package, key: "catalog" },
-      { label: "Payouts", href: "/payouts", icon: Wallet, key: "payouts" },
+      { label: "Finance", href: "/sales", icon: DollarSign, key: "sales" },
     ],
-  },
-  {
-    title: "Marketing",
-    items: [{ label: "Marketing", href: "/marketing", icon: Megaphone, key: "marketing" }],
   },
   {
     title: "Knowledge",
     items: [
       { label: "Resources & SOPs", href: "/resources", icon: BookOpen, key: "resources" },
+      // Service Catalog is a static price reference — knowledge, not finance.
+      { label: "Service Catalog", href: "/catalog", icon: Package, key: "catalog" },
       { label: "Training", href: "/training", icon: GraduationCap, key: "training" },
       { label: "Ask the Hub", href: "/assistant", icon: MessageSquare, key: "assistant" },
     ],
@@ -108,7 +111,6 @@ const SECTIONS: NavSection[] = [
     title: "System",
     items: [
       { label: "Feedback & requests", href: "/feedback", icon: MessageSquarePlus, key: "feedback" },
-      { label: "Users", href: "/users", icon: ShieldCheck, key: "users" },
       { label: "Connections", href: "/connections", icon: Plug, key: "connections" },
     ],
   },

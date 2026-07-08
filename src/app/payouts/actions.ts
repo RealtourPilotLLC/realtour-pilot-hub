@@ -25,14 +25,14 @@ export async function addAdjustment(
   await prisma.payoutAdjustment.create({
     data: { teamMemberId: memberId, label: l, amount, date },
   });
-  revalidatePath("/payouts");
+  revalidatePath("/sales");
   return { ok: true, message: "Adjustment added." };
 }
 
 export async function removeAdjustment(id: string): Promise<ActionResult> {
   await requireOwner();
   await prisma.payoutAdjustment.delete({ where: { id } }).catch(() => {});
-  revalidatePath("/payouts");
+  revalidatePath("/sales");
   return { ok: true, message: "Adjustment removed." };
 }
 
@@ -52,7 +52,7 @@ export async function setJobOverride(
   // Nothing set → remove any existing override (back to automatic).
   if (invoiceOverride == null && flatAmount == null && !noMileage && !excluded && !note) {
     await prisma.jobPayOverride.deleteMany({ where: { projectId, teamMemberId } });
-    revalidatePath("/payouts");
+    revalidatePath("/sales");
     return { ok: true, message: "Override cleared — back to automatic." };
   }
 
@@ -61,7 +61,7 @@ export async function setJobOverride(
     create: { projectId, teamMemberId, invoiceOverride, flatAmount, noMileage, excluded, note },
     update: { invoiceOverride, flatAmount, noMileage, excluded, note },
   });
-  revalidatePath("/payouts");
+  revalidatePath("/sales");
   return { ok: true, message: "Override saved." };
 }
 
@@ -70,14 +70,14 @@ export async function setJobOverride(
 export async function restoreJob(projectId: string, teamMemberId: string): Promise<ActionResult> {
   await requireOwner();
   const ov = await prisma.jobPayOverride.findUnique({ where: { projectId_teamMemberId: { projectId, teamMemberId } } });
-  if (!ov) { revalidatePath("/payouts"); return { ok: true, message: "Restored." }; }
+  if (!ov) { revalidatePath("/sales"); return { ok: true, message: "Restored." }; }
   const stillHasSettings = ov.invoiceOverride != null || ov.flatAmount != null || ov.noMileage || ov.manualAdd || (ov.note ?? "").trim();
   if (stillHasSettings) {
     await prisma.jobPayOverride.update({ where: { projectId_teamMemberId: { projectId, teamMemberId } }, data: { excluded: false } });
   } else {
     await prisma.jobPayOverride.delete({ where: { projectId_teamMemberId: { projectId, teamMemberId } } }).catch(() => {});
   }
-  revalidatePath("/payouts");
+  revalidatePath("/sales");
   return { ok: true, message: "Shoot restored." };
 }
 
@@ -118,7 +118,7 @@ export async function addShootToPayroll(projectId: string, teamMemberId: string)
     create: { projectId, teamMemberId, manualAdd: true, excluded: false },
     update: { manualAdd: true, excluded: false },
   });
-  revalidatePath("/payouts");
+  revalidatePath("/sales");
   return { ok: true, message: `Added ${project.title.split(",")[0]} to the payout.` };
 }
 
@@ -225,6 +225,6 @@ export async function creativeStatementHtml(
 export async function recomputeMileage(memberId?: string): Promise<ActionResult> {
   await requireOwner();
   await prisma.mileageDay.deleteMany({ where: memberId ? { teamMemberId: memberId } : {} });
-  revalidatePath("/payouts");
+  revalidatePath("/sales");
   return { ok: true, message: "Mileage cleared — will recompute on reload." };
 }
