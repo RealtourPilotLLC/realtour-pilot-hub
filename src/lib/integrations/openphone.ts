@@ -150,8 +150,10 @@ export const OpenPhone = {
     openphoneRequest<Paged<OpCall>>("/calls", {
       query: { phoneNumberId, "participants[]": participants, maxResults },
     }).then((r) => r.data ?? []),
-  // Send an SMS/MMS. `from` is one of our OpenPhone numbers (E.164), `to` the
-  // client. Human-initiated only (a person clicks Send) — never auto-sent.
+  // Send an SMS/MMS. `from` is one of our OpenPhone numbers (E.164). CLIENT
+  // texts are human-initiated only (a person clicks Send) — never auto-sent.
+  // Sole automated caller: the internal TEAM SMS bridge in notify.ts, which
+  // only ever texts TeamMember phones (photographer notifications).
   sendMessage: (from: string, to: string | string[], content: string, mediaUrls?: string[]) =>
     openphoneRequest<{ data: OpMessage }>("/messages", {
       method: "POST",

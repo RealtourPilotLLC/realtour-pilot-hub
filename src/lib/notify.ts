@@ -63,6 +63,46 @@ export async function opsAlert(text: string): Promise<boolean> {
 export type { Role };
 export type NotifyTarget = { roles: Role[]; userKey?: string; href?: string }; // href overrides the default per row
 
+// ---------------------------------------------------------------------------
+// SMS bridge: photographers have no push notifications, so person-addressed
+// bell rows for the kinds below ALSO go out as a text via OpenPhone. Rules:
+// TEAM MEMBERS ONLY (the recipient's number comes off their TeamMember row,
+// never a client contact — the drafts-only policy for client texting is not
+// weakened here); title + deep link only, never the body (money-clamp
+// philosophy: an SMS is even leakier than the bell); "⚙️ RealTour Hub:" prefix
+// so an automated text is never mistaken for Kyle texting from the same
+// number; quiet hours 7:00–22:00 ET (the bell row still lands — the text just
+// doesn't wake anyone); only fires when the bell row was NEWLY created, so a
+// deduped re-announcement can't re-text.
+// ---------------------------------------------------------------------------
+const SMS_KINDS = new Set(["appointment_change", "order_canceled", "mention"]);
+
+function withinTextingHours(): boolean {
+  const hour = Number(
+    new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }).format(new Date()),
+  );
+  return hour >= 7 && hour < 22;
+}
+
+async function smsPhotographer(teamMemberId: string, title: string, href: string): Promise<void> {
+  try {
+    if (!withinTextingHours()) return;
+    const member = await prisma.teamMember.findUnique({
+      where: { id: teamMemberId },
+      select: { phone: true },
+    });
+    const phone = member?.phone?.replace(/[^\d+]/g, "");
+    if (!phone) return;
+    const { OpenPhone, defaultOpenPhoneNumber, phoneKey } = await import("@/lib/integrations/openphone");
+    const from = await defaultOpenPhoneNumber();
+    if (!from) return;
+    const to = phone.startsWith("+") ? phone : `+1${phoneKey(phone)}`;
+    await OpenPhone.sendMessage(from, to, `⚙️ RealTour Hub: ${title}\n${appBase()}${href}`);
+  } catch (e) {
+    console.warn("smsPhotographer failed", e);
+  }
+}
+
 export async function notifyInApp(n: {
   kind: string;
   title: string;
@@ -100,6 +140,11 @@ export async function notifyInApp(n: {
             dedupeKey: n.dedupeKey ? `${n.dedupeKey}-${i}` : null,
           },
         });
+        // Row is NEW (a dedupe hit threw P2002 above) — bridge person-addressed
+        // photographer rows to SMS so shoot changes reach the field without push.
+        if (SMS_KINDS.has(n.kind) && t.userKey?.startsWith("tm:") && roles.includes("PHOTOGRAPHER")) {
+          await smsPhotographer(t.userKey.slice(3), title, href);
+        }
       } catch (e) {
         // Unique violation on dedupeKey = this event was already announced —
         // silently skip (recurring events put the changing part IN the key, e.g.
