@@ -5,10 +5,10 @@ import Link from "next/link";
 import {
   CheckCircle2, Clock, MapPin, Loader2, Sparkles, Copy, Send, ExternalLink,
   MessageSquarePlus, ChevronDown, Hash, Mail, Phone, Camera, Star, Clapperboard,
-  PencilLine, Cpu, CircleDot, User, Users,
+  PencilLine, Cpu, CircleDot, User, Users, Square, CheckSquare, ShieldAlert, Repeat,
 } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
-import { setSmartTaskStatus, setTaskAssignee, draftTaskReply, sendDeliveryText, sendConfirmationText } from "@/app/actions";
+import { setSmartTaskStatus, setTaskAssignee, draftTaskReply, sendDeliveryText, sendConfirmationText, toggleTaskChecklistItem } from "@/app/actions";
 import { addTaskNote } from "@/app/projects/messageActions";
 import { etDateTime, etMonthDay, etDaysAgo } from "@/lib/datetime";
 import { sourceMeta, SOURCE_CHIP, type SourceKey } from "@/lib/taskSource";
@@ -38,10 +38,24 @@ const LUMA_TRACKER_URL = "https://portal.lumavisuals.co/";
 // Task types that carry a pre-written message (in `description`) ready to send.
 const PREDRAFTED = ["confirmation_text", "delivery_text"];
 
-// One read-only deliverable status row for a QC task (parsed server-side from the
-// task's checklist JSON — the checklist is no longer an interactive UI, it just
-// feeds this at-a-glance "what's live / what's pending" line and the auto-close).
+// One checklist row for a QC (media_qa) task, parsed server-side from the task's
+// checklist JSON. Two kinds share this shape: auto-check EVIDENCE rows (category
+// "QC <x>" + the deliver row + the cull line — done state comes from Aryeo, not
+// Kyle, so they render non-interactive) and Kyle's manual failure-mode TICKS
+// (clickable → toggleTaskChecklistItem, and they gate the card's auto-close).
 export type DeliverableStatus = { label: string; done: boolean };
+
+// The read-only "know this client" context shown under a QC checklist so QC
+// stops being client-blind. Built server-side in taskView.ts from the client's
+// segment + editing prefs + working profile (all JSON parsing guarded there).
+export type QcClientContext = {
+  segment: string | null;
+  isVip: boolean;
+  editingPreferences: string | null;
+  usuallyAsks: string[]; // profileJson.revisions.commonTypes — predicts bounce-backs
+  dos: string[];
+  donts: string[];
+};
 
 export type QueueTask = {
   id: string;
@@ -55,6 +69,7 @@ export type QueueTask = {
   summary: string | null;
   description: string | null;
   deliverables: DeliverableStatus[];
+  qcClient?: QcClientContext | null;
   source: string;
   sourceDetail: string | null;
   assignedKey: string | null;
@@ -133,6 +148,174 @@ const FALLBACK_ASSIGNEES = [
   { key: "jordan", name: "Jordan" },
   ...DELEGATE_KEYS.map((k) => ({ key: k, name: EDITORS[k].name })),
 ];
+
+// Auto-check EVIDENCE rows on a QC checklist are driven by Aryeo/gallery signals,
+// not by Kyle — they show live/pending, non-interactive. Everything else is a
+// manual failure-mode TICK he clicks. MUST match isAutoCheckRow in src/lib/tasks.ts
+// (the server's miss-count keys on the same rule).
+function isEvidenceRow(label: string): boolean {
+  const l = label.trim();
+  if (/^QC\s/i.test(l) && !/\(revision\)/i.test(l)) return true;
+  if (/deliver the gallery/i.test(l) || /produce \+ deliver/i.test(l)) return true;
+  if (/cull near-duplicates/i.test(l)) return true;
+  return false;
+}
+const isVipTick = (label: string) => /^VIP —/.test(label.trim());
+const SEGMENT_LABEL: Record<string, string> = {
+  vip: "VIP", heavy: "Heavy repeat", regular: "Regular", casual_repeat: "Casual repeat",
+  one_timer: "One-timer", never_converted: "Prospect",
+};
+
+// The interactive QC surface: Kyle's daily checklist. Evidence rows read as
+// live/pending chips; failure-mode ticks are one-tap checkboxes (optimistic, so a
+// tap feels instant) that drive the card's auto-close. The VIP extra pass gets its
+// own highlighted block, and the client-context strip sits below — read-only.
+function QcChecklist({ taskId, items, qcClient, interactive }: {
+  taskId: string; items: DeliverableStatus[]; qcClient?: QcClientContext | null; interactive: boolean;
+}) {
+  // Optimistic local copy so a tick flips immediately; the server action reconciles.
+  const [local, setLocal] = useState(items);
+  const [busy, setBusy] = useState<number | null>(null);
+  // Keep in sync if the parent re-renders with fresh server data (e.g. a sync
+  // filled in a newly-live category's sub-items).
+  const itemsKey = items.map((i) => `${i.label}:${i.done ? 1 : 0}`).join("|");
+  const [lastKey, setLastKey] = useState(itemsKey);
+  if (itemsKey !== lastKey) { setLocal(items); setLastKey(itemsKey); }
+
+  const toggle = (index: number) => {
+    if (!interactive || busy !== null) return;
+    // Optimistic flip.
+    setLocal((prev) => prev.map((it, i) => (i === index ? { ...it, done: !it.done } : it)));
+    setBusy(index);
+    void (async () => {
+      try {
+        const r = await toggleTaskChecklistItem(taskId, index);
+        if (r.ok) setLocal(r.items);
+      } finally {
+        setBusy(null);
+      }
+    })();
+  };
+
+  const evidence = local.map((it, i) => ({ it, i })).filter(({ it }) => isEvidenceRow(it.label));
+  const ticks = local.map((it, i) => ({ it, i })).filter(({ it }) => !isEvidenceRow(it.label) && !isVipTick(it.label));
+  const vip = local.map((it, i) => ({ it, i })).filter(({ it }) => isVipTick(it.label));
+
+  return (
+    <div className="space-y-2.5">
+      {/* Evidence: what's live vs. pending on Aryeo — non-interactive. */}
+      {evidence.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {evidence.map(({ it, i }) => (
+            <span
+              key={i}
+              className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium ${it.done ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}
+            >
+              {it.done ? <CheckCircle2 className="size-3" /> : <CircleDot className="size-3" />}
+              {it.label.replace(/^QC\s+/i, "").replace(/\s*\(revision\)/i, "")}
+              <span className="opacity-70">{it.done ? "live" : "pending"}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Kyle's failure-mode checklist — the actual QC pass. One tap per item. */}
+      {ticks.length > 0 && (
+        <div>
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">Check each before delivering</div>
+          <ul className="space-y-0.5">
+            {ticks.map(({ it, i }) => (
+              <li key={i}>
+                <button
+                  type="button"
+                  onClick={() => toggle(i)}
+                  disabled={!interactive || busy !== null}
+                  className={`flex w-full items-start gap-2 rounded-md px-1.5 py-1 text-left text-sm transition-colors ${interactive ? "hover:bg-surface-2" : "cursor-default"} ${it.done ? "text-muted" : "text-foreground/90"}`}
+                >
+                  {busy === i ? (
+                    <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin text-muted-2" />
+                  ) : it.done ? (
+                    <CheckSquare className="mt-0.5 size-4 shrink-0 text-success" />
+                  ) : (
+                    <Square className="mt-0.5 size-4 shrink-0 text-muted-2" />
+                  )}
+                  <span className={it.done ? "line-through decoration-muted-2/60" : ""}>{it.label}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* VIP extra pass — visually distinct: high-value client, don't let it bounce. */}
+      {vip.length > 0 && (
+        <div className="rounded-lg border border-amber-400/40 bg-amber-400/10 p-2">
+          <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">
+            <ShieldAlert className="size-3.5" /> VIP — extra pass
+          </div>
+          <ul className="space-y-0.5">
+            {vip.map(({ it, i }) => (
+              <li key={i}>
+                <button
+                  type="button"
+                  onClick={() => toggle(i)}
+                  disabled={!interactive || busy !== null}
+                  className={`flex w-full items-start gap-2 rounded-md px-1.5 py-1 text-left text-sm transition-colors ${interactive ? "hover:bg-amber-400/15" : "cursor-default"} ${it.done ? "text-muted" : "text-foreground/90"}`}
+                >
+                  {busy === i ? (
+                    <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin text-muted-2" />
+                  ) : it.done ? (
+                    <CheckSquare className="mt-0.5 size-4 shrink-0 text-success" />
+                  ) : (
+                    <Square className="mt-0.5 size-4 shrink-0 text-amber-500" />
+                  )}
+                  {/* Drop the "VIP — " prefix in the row; the section header carries it. */}
+                  <span className={it.done ? "line-through decoration-muted-2/60" : ""}>{it.label.replace(/^VIP —\s*/, "")}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Know this client — read-only context so QC isn't blind to who's receiving. */}
+      <QcClientStrip qcClient={qcClient} />
+    </div>
+  );
+}
+
+// The compact read-only client-context strip under a QC checklist.
+function QcClientStrip({ qcClient }: { qcClient?: QcClientContext | null }) {
+  if (!qcClient) return null;
+  const { segment, isVip, editingPreferences, usuallyAsks, dos, donts } = qcClient;
+  const segLabel = segment ? SEGMENT_LABEL[segment] ?? segment : null;
+  if (!segLabel && !editingPreferences && usuallyAsks.length === 0 && dos.length === 0 && donts.length === 0) return null;
+  return (
+    <div className="rounded-lg border border-border bg-surface-2/40 p-2 text-xs">
+      <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
+        <User className="size-3.5" /> Know this client
+        {segLabel && (
+          <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${isVip ? "bg-amber-400/15 text-amber-600 dark:text-amber-400" : "bg-surface-2 text-muted"}`}>{segLabel}</span>
+        )}
+      </div>
+      <div className="space-y-1 text-foreground/85">
+        {editingPreferences && (
+          <p><span className="text-muted-2">Editing style:</span> {editingPreferences}</p>
+        )}
+        {usuallyAsks.length > 0 && (
+          <p className="flex flex-wrap items-baseline gap-1">
+            <span className="inline-flex items-center gap-1 text-muted-2"><Repeat className="size-3" /> Usually asks for:</span>
+            {usuallyAsks.map((t, i) => (
+              <span key={i} className="rounded-full bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted">{t}</span>
+            ))}
+          </p>
+        )}
+        {dos.length > 0 && <p><span className="text-success">Do:</span> {dos.join(" · ")}</p>}
+        {donts.length > 0 && <p><span className="text-danger">Avoid:</span> {donts.join(" · ")}</p>}
+      </div>
+    </div>
+  );
+}
 
 // editorView: the viewer is an EDITOR — their role can't open /projects or
 // /clients (those redirect non-admins home), so the card's links point at their
@@ -283,20 +466,11 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
         <div className="mt-2.5 space-y-2.5 rounded-xl border border-border bg-surface-2/40 p-3">
           {summary && <p className="whitespace-pre-line break-words text-sm text-foreground/90">{summary}</p>}
 
-          {/* QC: read-only live/pending status per deliverable. */}
-          {task.deliverables.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              {task.deliverables.map((d, i) => (
-                <span
-                  key={i}
-                  className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium ${d.done ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}
-                >
-                  {d.done ? <CheckCircle2 className="size-3" /> : <CircleDot className="size-3" />}
-                  {d.label.replace(/^QC\s+/i, "")}
-                  <span className="opacity-70">{d.done ? "live" : "pending"}</span>
-                </span>
-              ))}
-            </div>
+          {/* QC: evidence chips + Kyle's interactive failure-mode checklist + the
+              client-context strip. Editors see it read-only (the toggle action is
+              admin-only, and it's not their surface). */}
+          {task.taskType === "media_qa" && task.deliverables.length > 0 && (
+            <QcChecklist taskId={task.id} items={task.deliverables} qcClient={task.qcClient} interactive={!editorView && !done} />
           )}
 
           {/* The actual inbound message (not for predrafted-send tasks — those show

@@ -357,6 +357,7 @@ model Project {
   imageFlags   ImageFlag[]
   mediaNotes   MediaNote[]
   mediaVerdicts MediaVerdict[]
+  qcRecords    QcRecord[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -734,6 +735,27 @@ model MediaVerdict {
   updatedAt DateTime @updatedAt
 
   @@unique([projectId, assetUrl])
+}
+
+// One row per QC pass, written when a media_qa card completes — the owner's
+// quality dial. Snapshots which checklist items Kyle actually ticked (misses =
+// unticked-at-completion), the client segment (so VIP misses can be weighted),
+// and, if a revision later reopens the QC, when + why (that IS the QC-miss
+// event). Read-only analytics; never gates anything.
+model QcRecord {
+  id            String   @id @default(cuid())
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId     String
+  clientSegment String?
+  itemsChecked  String // JSON snapshot: [{label, done}]
+  missCount     Int      @default(0) // items unticked at completion
+  completedBy   String? // assignee key / name
+  completedAt   DateTime @default(now())
+  reopenedByRevisionAt DateTime?
+  revisionReason       String?
+
+  @@index([projectId])
+  @@index([completedAt])
 }
 
 // Audit log of every inbound webhook, for debugging + replay.

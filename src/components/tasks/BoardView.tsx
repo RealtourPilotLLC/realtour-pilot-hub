@@ -114,7 +114,10 @@ export async function BoardView({ sp, tabs }: { sp: { who?: string }; tabs: Reac
   const [tasks, assignees] = await Promise.all([
     prisma.smartTask.findMany({
       where: boardWhere(editorScope),
-      include: { client: { select: { name: true } } },
+      // segment / editingPreferences / profileJson feed the QC card's client-aware
+      // strip + VIP flag (taskView builds the compact context). Cheap columns on
+      // the already-joined client — only used by media_qa cards.
+      include: { client: { select: { name: true, segment: true, editingPreferences: true, profileJson: true } } },
     }),
     listAssignees(),
   ]);

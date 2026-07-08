@@ -243,12 +243,32 @@ export async function toggleTaskChecklistItem(
 ): Promise<{ ok: boolean; items: { label: string; done: boolean }[]; completed: boolean }> {
   await requireAdmin();
   const { parseChecklist, serializeChecklist, checklistComplete } = await import("@/lib/checklist");
-  const t = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { checklist: true, status: true, projectId: true } });
+  const t = await prisma.smartTask.findUnique({
+    where: { id: taskId },
+    // taskType/assignedKey + the client's segment let us log a QcRecord when a
+    // media_qa card completes via ticking (the owner's quality dial).
+    select: { checklist: true, status: true, projectId: true, taskType: true, assignedKey: true, client: { select: { segment: true } } },
+  });
   if (!t) return { ok: false, items: [], completed: false };
   const items = parseChecklist(t.checklist);
   if (index < 0 || index >= items.length) return { ok: false, items, completed: false };
   items[index] = { ...items[index], done: !items[index].done };
   const completed = checklistComplete(items);
+  // Log a QC pass when this tick is the one that finishes a media_qa card (and it
+  // wasn't already complete). recordQcCompletion snapshots the ticks, counts the
+  // misses, and is deduped/best-effort so it can't double-write vs the reconciler
+  // or break completion.
+  if (completed && t.status !== "COMPLETED" && t.taskType === "media_qa" && t.projectId) {
+    try {
+      const { recordQcCompletion } = await import("@/lib/tasks");
+      await recordQcCompletion({
+        projectId: t.projectId,
+        items,
+        clientSegment: t.client?.segment ?? null,
+        completedBy: t.assignedKey ?? "kyle",
+      });
+    } catch { /* dial is analytics-only — never block the tick */ }
+  }
   await prisma.smartTask.update({
     where: { id: taskId },
     data: {
@@ -263,6 +283,7 @@ export async function toggleTaskChecklistItem(
   });
   revalidatePath("/queue");
   revalidatePath("/history");
+  revalidatePath("/tasks");
   if (t.projectId) revalidatePath(`/projects/${t.projectId}`);
   return { ok: true, items, completed };
 }

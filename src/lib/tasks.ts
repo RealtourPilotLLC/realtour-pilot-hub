@@ -149,6 +149,50 @@ const QC_LABEL: Record<string, string> = {
 };
 const guide = (steps: string[]): ChecklistItem[] => steps.map((label) => ({ label, done: false }));
 
+// Guided QC failure modes — the SPECIFIC things Kyle must actually eyeball before
+// a category ships. These exist because QC was blind: his written guidance was one
+// static sentence and the checklist had nothing to tick, so revisions ran ~13.7%
+// and the sampled bounce-back reasons were EXACTLY the misses below (crooked
+// verticals/perspective, item-removal left undone, reflections, sign/clutter). The
+// vocabulary is keyed to IMAGE_FLAG_TAGS so a later auto-QA model trains on the
+// same labels. Keyed by media CATEGORY (Photos / Video / Floor plan) — one block
+// per category, appended to the checklist ONLY once that category is live on Aryeo
+// (so we never ask Kyle to verify photos that haven't landed yet, and nothing gates
+// prematurely). Labels are STABLE strings: the reconciler merge keys on label to
+// preserve Kyle's manual ticks across syncs, so these must never change wording
+// once shipped or a re-sync would drop the tick and silently re-open the gate.
+const QC_FAILURE_MODES: Record<string, string[]> = {
+  // Photos (covers PHOTOS / DRONE / TWILIGHT / HEADSHOT / VIRTUAL_STAGING — all
+  // fold to the "Photos" category in TYPE_CATEGORY_LABEL and QC together).
+  Photos: [
+    "Verticals & horizontals straight (perspective)",
+    "Blemishes / AI errors removed",
+    "Colors & lighting consistent",
+    "Clutter + our yard sign removed",
+    "People / camera in mirrors & reflections gone",
+    "Virtual staging / item removal done (if ordered)",
+  ],
+  // Video covers VIDEO + SOCIAL_REEL (both "Video" category).
+  Video: [
+    "Text on screen spelled right",
+    "Music + branding correct",
+  ],
+  "Floor plan": [
+    "Square footage matches the listing",
+  ],
+};
+
+// The two extra passes we ask for on VIP / heavy clients — 38% of deliveries are
+// VIP-segment (66% VIP+heavy) yet QC was client-blind. These are the two misses
+// that most often bounce a high-value client. Prefixed "VIP —" so the card can
+// render them as a distinct extra-pass section; they're real Kyle-ticks and gate
+// auto-close like any other failure-mode item.
+const VIP_EXTRA_PASS = [
+  "VIP — Mirrors/reflections re-checked frame by frame",
+  "VIP — Clutter sweep on every room",
+] as const;
+export const VIP_SEGMENTS = new Set(["vip", "heavy"]);
+
 // Media category label for a deliverable type — mirrors CATEGORY_LABEL in
 // projectStatus.ts (kept here to avoid a circular import). Lets us tell, from a
 // project's status evidence (which lists present/missing by category label),
@@ -172,6 +216,9 @@ function specsForProject(p: {
   // the QC checklist (Kyle's manual read, doesn't gate auto-close).
   squareFeet?: number | null;
   photoTarget?: number | null;
+  // Client segment (vip | heavy | …) — drives the VIP extra-pass ticks on the QC
+  // checklist. QC used to be client-blind despite 38% of deliveries being VIP.
+  clientSegment?: string | null;
 }): TaskSpec[] {
   const specs: TaskSpec[] = [];
   const shoot = p.shootDate;
@@ -236,7 +283,30 @@ function specsForProject(p: {
     // pending (unchecked) items are work; if everything's live we skip it (and
     // the reconciler closes any existing one).
     const qcTypes = dedupeTypes(p.deliverables);
-    const qcItems: ChecklistItem[] = qcTypes.map((d) => ({ label: `QC ${QC_LABEL[d] ?? labelFor(d)}`, done: isDelivered(d) }));
+    // Build the checklist category-by-category: the auto-checked "QC <category>"
+    // evidence row, then — ONLY once that category is live on Aryeo — the guided
+    // failure-mode sub-items Kyle must actually verify. Appending sub-items only
+    // when isDelivered(d) means a photos-not-yet-live job shows NO photo sub-items
+    // yet, so nothing gates before the media exists; they appear the moment the
+    // category lands and the reconciler's prevDone map preserves Kyle's ticks from
+    // then on. Auto-check rows stay auto-checked; only the sub-items are his work.
+    const isVip = !!p.clientSegment && VIP_SEGMENTS.has(p.clientSegment);
+    const seenCategories = new Set<string>();
+    const qcItems: ChecklistItem[] = [];
+    for (const d of qcTypes) {
+      const live = isDelivered(d);
+      qcItems.push({ label: `QC ${QC_LABEL[d] ?? labelFor(d)}`, done: live });
+      // Failure modes attach to the media CATEGORY, not the raw type, and only
+      // once — a job with photos + drone (both "Photos") gets ONE photo block.
+      const category = TYPE_CATEGORY_LABEL[d];
+      if (live && category && !seenCategories.has(category)) {
+        seenCategories.add(category);
+        for (const label of QC_FAILURE_MODES[category] ?? []) qcItems.push({ label, done: false });
+        // VIP extra pass rides on the Photos block (that's where reflections/
+        // clutter misses live) — the two ticks that most often bounce a VIP.
+        if (isVip && category === "Photos") for (const label of VIP_EXTRA_PASS) qcItems.push({ label, done: false });
+      }
+    }
     // QC and "deliver the gallery" are ONE motion for Kyle — a separate
     // "Deliver gallery" task open NEXT TO the QC task doubled every job's cards
     // (Jordan: "too many redundant QC tasks"; 47 of 65 recent jobs carried 2-4
@@ -556,12 +626,89 @@ export async function mergeIntoExistingTask(taskId: string, opts: {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// QcRecord — the owner's quality dial. One row per QC pass, written when a
+// media_qa card completes. It snapshots WHICH failure-mode items Kyle actually
+// ticked (a miss = a Kyle-tick left false at completion) so we can see, over
+// time, whether QC is being run or rubber-stamped, and — when a revision later
+// reopens the QC — WHY it bounced. Read-only analytics; never gates task flow.
+// ---------------------------------------------------------------------------
+
+// Auto-checked evidence rows on a media_qa checklist are driven by Aryeo/gallery
+// signals, NOT by Kyle: the per-category "QC <label>" rows, the "Deliver the
+// gallery / Produce + deliver …" row, and the pre-checked "cull near-duplicates"
+// guidance line. Everything else (the failure-mode sub-items, VIP passes, and any
+// revision-injected re-QC item) is a MANUAL Kyle-tick — those are the ones a miss
+// is counted against. Keep this in sync with the labels specsForProject emits.
+function isAutoCheckRow(label: string): boolean {
+  const l = label.trim();
+  // Category evidence rows: "QC Photos", "QC Reel", "QC Floor plan", … BUT not a
+  // revision-injected "QC <cat> (revision)" (that IS Kyle's manual re-QC work).
+  if (/^QC\s/i.test(l) && !/\(revision\)/i.test(l)) return true;
+  if (/deliver the gallery/i.test(l) || /produce \+ deliver/i.test(l)) return true;
+  if (/cull near-duplicates/i.test(l)) return true;
+  return false;
+}
+
+// How many Kyle-tick items were left unchecked at completion (the auto-check
+// evidence rows don't count as misses — they're not his to verify).
+export function countQcMisses(items: ChecklistItem[]): number {
+  return items.filter((i) => !isAutoCheckRow(i.label) && !i.done).length;
+}
+
+// Write ONE QcRecord for a just-completed media_qa task, idempotently. Called
+// from BOTH completion paths (the reconciler's auto-complete branch and the
+// interactive toggle action) — dedupe on "a QcRecord for this project completed
+// in the last few minutes" so re-running the reconciler right after a completion
+// never double-writes. Best-effort: a QcRecord failure must never break the task
+// flow, so callers wrap this and swallow.
+const QC_RECORD_DEDUPE_MS = 5 * 60_000;
+export async function recordQcCompletion(opts: {
+  projectId: string;
+  items: ChecklistItem[];
+  clientSegment?: string | null;
+  completedBy?: string | null;
+}): Promise<void> {
+  const recent = await prisma.qcRecord.findFirst({
+    where: { projectId: opts.projectId, completedAt: { gte: new Date(Date.now() - QC_RECORD_DEDUPE_MS) } },
+    select: { id: true },
+  });
+  if (recent) return; // already logged this completion (both paths fired)
+  await prisma.qcRecord.create({
+    data: {
+      projectId: opts.projectId,
+      clientSegment: opts.clientSegment ?? null,
+      itemsChecked: serializeChecklist(opts.items),
+      missCount: countQcMisses(opts.items),
+      completedBy: opts.completedBy ?? null,
+    },
+  });
+}
+
 // When a deliverable goes back into revision (e.g. Luma "Revision Request
 // Received" on a reel), reflect it in the project's QC task: reopen it and mark
 // the revised deliverable's checkbox as needing a re-QC (unchecked). Creates the
 // QC task if the job had already been delivered + its QC completed.
 // `categories` = QC labels like ["Reel"] / ["Photos"]; empty = generic re-QC.
-export async function reflectRevisionInQc(projectId: string, categories: string[]): Promise<void> {
+// `reason` = the revision summary; when present we stamp the project's latest
+// QcRecord with reopenedByRevisionAt + revisionReason — that bounce IS the QC-miss
+// event, and it's what the owner dial reads to compute the real miss rate.
+export async function reflectRevisionInQc(projectId: string, categories: string[], reason?: string | null): Promise<void> {
+  // Stamp the latest QC pass as reopened-by-revision (best-effort, before the
+  // reopen below re-opens the task). If QC never ran (no record) this no-ops.
+  try {
+    const last = await prisma.qcRecord.findFirst({
+      where: { projectId },
+      orderBy: { completedAt: "desc" },
+      select: { id: true },
+    });
+    if (last) {
+      await prisma.qcRecord.update({
+        where: { id: last.id },
+        data: { reopenedByRevisionAt: new Date(), revisionReason: reason?.slice(0, 500) ?? null },
+      });
+    }
+  } catch { /* dial is analytics-only — never block the revision */ }
   const existing = await prisma.smartTask.findFirst({
     where: { projectId, taskType: "media_qa" },
     orderBy: { createdAt: "desc" },
@@ -961,7 +1108,8 @@ export async function generateTasksForActiveProjects(): Promise<{ created: numbe
     where: { status: { in: ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW"] } },
     include: {
       deliverables: { select: { type: true, label: true } },
-      client: { select: { id: true, name: true, socialClient: true } },
+      // segment drives the VIP extra-pass ticks on the guided QC checklist.
+      client: { select: { id: true, name: true, socialClient: true, segment: true } },
       photographer: { select: { name: true } },
     },
   });
@@ -981,7 +1129,8 @@ export async function generateTasksForProject(projectId: string): Promise<number
     where: { id: projectId },
     include: {
       deliverables: { select: { type: true, label: true } },
-      client: { select: { id: true, name: true, socialClient: true } },
+      // segment drives the VIP extra-pass ticks on the guided QC checklist.
+      client: { select: { id: true, name: true, socialClient: true, segment: true } },
       photographer: { select: { name: true } },
     },
   });
@@ -995,7 +1144,7 @@ type TaskProject = {
   id: string; status: string; title: string; shootDate: Date | null; statusEvidence: string | null;
   squareFeet: number | null; photoTarget: number | null;
   deliverables: { type: string; label: string | null }[];
-  client: { id: string; name: string | null; socialClient: boolean };
+  client: { id: string; name: string | null; socialClient: boolean; segment: string | null };
   photographer: { name: string } | null;
 };
 
@@ -1028,6 +1177,7 @@ async function syncOneProjectTasks(
     monthlyContent: p.client.socialClient,
     squareFeet: p.squareFeet,
     photoTarget: p.photoTarget,
+    clientSegment: p.client.segment,
   });
   // Reconcile: close any open production task that's no longer expected. This
   // retires "QA photos" / "Deliver gallery" once the photos are live (even
@@ -1122,6 +1272,22 @@ async function syncOneProjectTasks(
         // dedupe key is never re-minted, so the work would vanish forever
         // (audit crack #2). If everything IS live, leave the completion alone.
         if (exists.status === "COMPLETED" && allDone) continue;
+        // A real completion this run: everything (incl. Kyle's failure-mode ticks)
+        // is done and the task wasn't already closed. Log the QC pass for the
+        // owner dial. Best-effort + deduped so the interactive-toggle path (which
+        // also logs) can't double-write. Do it BEFORE the status flip so a throw
+        // can't leave a completed task with no record — recordQcCompletion swallows.
+        const nowCompleting = allDone && exists.status !== "COMPLETED";
+        if (nowCompleting) {
+          try {
+            await recordQcCompletion({
+              projectId: p.id,
+              items: merged,
+              clientSegment: p.client.segment,
+              completedBy: exists.assignedKey ?? "kyle",
+            });
+          } catch { /* analytics only — never block auto-close */ }
+        }
         await prisma.smartTask.update({
           where: { id: exists.id },
           data: {

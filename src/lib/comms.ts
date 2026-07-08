@@ -365,7 +365,10 @@ export async function raiseRevision(opts: {
   // or a generic "re-QC after revision").
   try {
     const { reflectRevisionInQc } = await import("@/lib/tasks");
-    await reflectRevisionInQc(project.id, opts.qcCategories ?? []);
+    // Pass the revision note as the reason so the project's latest QcRecord gets
+    // stamped reopenedByRevisionAt + revisionReason — that bounce IS the QC-miss
+    // event the owner dial reads.
+    await reflectRevisionInQc(project.id, opts.qcCategories ?? [], note);
   } catch { /* QC reflection is best-effort */ }
 
   return true;
