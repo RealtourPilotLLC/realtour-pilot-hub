@@ -1,17 +1,19 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ArrowRight, AlertTriangle, Camera, CheckCircle2, MessageSquare, PackageCheck, Sun, UserPlus } from "lucide-react";
+import { ArrowRight, Camera, CheckCircle2, Sun } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { ProactiveFlags } from "@/components/dashboard/ProactiveFlags";
+import { StuckJobs } from "@/components/dashboard/StuckJobs";
+import { WeekStrip } from "@/components/dashboard/WeekStrip";
+import { PulseStrip } from "@/components/dashboard/PulseStrip";
 import {
-  getMorningBrief, getOverdueTasks, getShootWindow, getProactiveFlags,
-  getHandledToday, getOwnerStats, DELIVER_TASK_TYPES,
+  getTodayCardCount, getActionCounts, getStuckJobs, getShootWindow,
+  getProactiveFlags, getHandledToday, getOwnerStats, getOwnerPulse,
 } from "@/lib/queries";
 import { getCurrentUser } from "@/lib/auth/user";
 import { contentTier, homeFor } from "@/lib/auth/access";
-import { isNeedsAssigning } from "@/lib/triage";
 import { formatMoney } from "@/lib/utils";
-import { etFullDate, etTime } from "@/lib/datetime";
+import { etDate, etFullDate, etTime } from "@/lib/datetime";
 
 export const dynamic = "force-dynamic";
 
@@ -20,12 +22,16 @@ export const dynamic = "force-dynamic";
 // /today shows rows. It never renders a task list. Keep it to ~one phone
 // screen with exactly one primary CTA. (The old page was ~5,000px tall with
 // 154 links and no primary action — don't let it grow back.)
+//
+// The counts are HONEST and system-wide (audit 2026-07-08: the old chips read
+// "1 replies / 0 to assign" off the brief slice while 34 tasks sat unassigned),
+// and each chip deep-links to where that pile is worked.
 
-function CountChip({ label, count, tone }: { label: string; count: number; tone: string }) {
+function CountChip({ label, count, tone, href }: { label: string; count: number; tone: string; href: string }) {
   return (
     <Link
-      href="/today"
-      className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-border bg-surface px-3 py-2.5 text-sm hover:bg-surface-2"
+      href={href}
+      className="flex min-w-[30%] flex-1 items-center justify-center gap-2 rounded-xl border border-border bg-surface px-3 py-2.5 text-sm hover:bg-surface-2"
     >
       <span className="text-lg font-semibold tabular-nums" style={{ color: tone }}>{count}</span>
       <span className="text-muted">{label}</span>
@@ -41,23 +47,22 @@ export default async function DashboardPage() {
   if (me && contentTier(me.role) === "CREATIVE") redirect(homeFor(me.role));
   const isOwner = !me || me.role === "OWNER";
 
-  const [brief, overdue, shoots, radar, handledToday, ownerStats] = await Promise.all([
-    getMorningBrief(),
-    getOverdueTasks(),
+  const [todayCount, counts, stuck, shoots, radar, handledToday, ownerStats, pulse] = await Promise.all([
+    getTodayCardCount(), // = the card count /today renders, so the button never lies
+    getActionCounts(),
+    getStuckJobs(),
     getShootWindow(),
     getProactiveFlags(),
     getHandledToday(),
     isOwner ? getOwnerStats() : Promise.resolve(null),
+    isOwner ? getOwnerPulse() : Promise.resolve(null),
   ]);
 
-  const replies = brief.filter((t) => ["client_reply", "lead"].includes(t.taskType)).length;
-  const toAssign = brief.filter(isNeedsAssigning).length;
-  const toQc = brief.filter((t) => DELIVER_TASK_TYPES.includes(t.taskType)).length;
-  const total = brief.length;
-  const blockers = overdue.slice(0, 3);
   const firstName = me?.name?.split(" ")[0] ?? (isOwner ? "Jordan" : "there");
-  const allClear = total === 0 && overdue.length === 0 && shoots.today.length === 0;
-  const nextTomorrow = shoots.tomorrow[0] ?? null;
+  // All clear = nothing to work, nothing stuck, nothing shooting today. The
+  // pulse + money strips still render below — trends matter on quiet days too.
+  const allClear = todayCount === 0 && stuck.length === 0 && shoots.today.length === 0;
+  const nextShoot = shoots.week[0] ?? null;
 
   return (
     <div>
@@ -78,19 +83,20 @@ export default async function DashboardPage() {
             <CheckCircle2 className="mx-auto size-8 text-success" />
             <p className="mt-2 text-sm font-semibold">You&apos;re clear — {handledToday} handled today.</p>
             <p className="mt-1 text-xs text-muted">
-              Next shoot: {nextTomorrow ? `tomorrow ${etTime(nextTomorrow.shootDate!)} — ${nextTomorrow.title.split(",")[0]} · ${nextTomorrow.photographer?.name ?? "unassigned"}` : "none scheduled"}
+              Next shoot: {nextShoot ? `${etDate(nextShoot.shootDate)} ${etTime(nextShoot.shootDate)} — ${nextShoot.title.split(",")[0]} · ${nextShoot.photographer?.name ?? "unassigned"}` : "none scheduled"}
             </p>
           </div>
         ) : (
           <>
-            {/* 2 · THE button — the page's single primary action */}
+            {/* 2 · THE button — the page's single primary action. Its number is
+                the exact card count /today renders (shared query logic). */}
             <Link
               href="/today"
               className="flex w-full items-center justify-between rounded-2xl bg-brand px-5 py-4 text-white shadow-lg transition-opacity hover:opacity-90"
             >
               <span className="text-base font-semibold">Start your day</span>
               <span className="flex items-center gap-2 text-sm font-medium opacity-90">
-                {total} thing{total === 1 ? "" : "s"} need you <ArrowRight className="size-4" />
+                {todayCount} thing{todayCount === 1 ? "" : "s"} need you <ArrowRight className="size-4" />
               </span>
             </Link>
             {/* Guided variant: same stack, one card at a time */}
@@ -98,36 +104,25 @@ export default async function DashboardPage() {
               or walk me through it one at a time →
             </Link>
 
-            {/* 3 · The numbers without the walls */}
-            <div className="flex gap-2">
-              <CountChip label="replies" count={replies} tone="#38bdf8" />
-              <CountChip label="to QC" count={toQc} tone="#a78bfa" />
-              <CountChip label="to assign" count={toAssign} tone="#d97706" />
+            {/* 3 · The numbers without the walls — system-wide truth, each one a
+                deep link into the surface where that pile gets worked. The amber
+                "to assign" chip only exists while something actually needs an
+                owner (routine work defaults to Kyle and isn't triage). */}
+            <div className="flex flex-wrap gap-2">
+              <CountChip label="waiting on reply" count={counts.replies} tone="#38bdf8" href="/today?focus=reply" />
+              <CountChip label="in QC" count={counts.qc} tone="#a78bfa" href="/today?focus=check" />
+              <CountChip label="running late" count={counts.late} tone="var(--danger)" href="/today" />
+              {counts.toAssign > 0 && (
+                <CountChip label="to assign" count={counts.toAssign} tone="var(--warning)" href="/queue" />
+              )}
             </div>
 
-            {/* 4 · Blockers — overdue carry-over, capped at 3 */}
-            {blockers.length > 0 && (
-              <div className="panel-shadow rounded-2xl border border-danger/30 bg-surface">
-                <div className="flex items-center gap-2 border-b border-border px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-danger">
-                  <AlertTriangle className="size-3.5" /> Blockers
-                </div>
-                <div className="divide-y divide-border/60">
-                  {blockers.map((t) => (
-                    <Link key={t.id} href="/today" className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm hover:bg-surface-2">
-                      <span className="min-w-0 truncate">{t.title}</span>
-                      <span className="shrink-0 text-[11px] font-medium text-danger">overdue</span>
-                    </Link>
-                  ))}
-                </div>
-                {overdue.length > 3 && (
-                  <Link href="/today" className="block border-t border-border px-4 py-2 text-xs font-medium text-brand hover:underline">
-                    +{overdue.length - 3} more → Today
-                  </Link>
-                )}
-              </div>
-            )}
+            {/* 4 · Stuck jobs — PROJECT-level fires (late vs promise, stale
+                revision, shot-but-undelivered), not overdue admin tasks. */}
+            <StuckJobs jobs={stuck} />
 
-            {/* 5 · Today's schedule (rendered once — the only shoots list here) */}
+            {/* 5 · Today's schedule (rendered once — the only shoots list here),
+                with the week ahead as a per-day strip instead of a one-liner. */}
             <div className="panel-shadow rounded-2xl border border-border bg-surface">
               <div className="flex items-center gap-2 border-b border-border px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-muted">
                 <Camera className="size-3.5" /> Today&apos;s shoots
@@ -140,14 +135,12 @@ export default async function DashboardPage() {
                   {shoots.today.slice(0, 4).map((s) => (
                     <Link key={s.apptId} href={`/shoot/${s.id}`} className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm hover:bg-surface-2">
                       <span className="min-w-0 truncate">{s.title.split(",")[0]}</span>
-                      <span className="shrink-0 text-xs text-muted">{etTime(s.shootDate!)} · {s.photographer?.name ?? "Unassigned"}</span>
+                      <span className="shrink-0 text-xs text-muted">{etTime(s.shootDate)} · {s.photographer?.name ?? "Unassigned"}</span>
                     </Link>
                   ))}
                 </div>
               )}
-              <Link href="/schedule" className="block border-t border-border px-4 py-2 text-xs text-muted hover:text-foreground">
-                Tomorrow: {shoots.tomorrow.length} shoot{shoots.tomorrow.length === 1 ? "" : "s"} → Schedule
-              </Link>
+              <WeekStrip week={shoots.week} />
             </div>
           </>
         )}
@@ -165,15 +158,17 @@ export default async function DashboardPage() {
           </Link>
         )}
 
-        {/* Quiet secondary links — everything else lives in the sidebar */}
+        {/* 8 · Owner pulse — health trends (30d vs prior 30d). Owner-only, and
+            deliberately OUTSIDE the all-clear branch: quiet days still show
+            whether the machine is speeding up or slipping. */}
+        {isOwner && pulse && <PulseStrip pulse={pulse} />}
+
+        {/* Quiet secondary links — everything else lives in the sidebar. (The
+            old footer also repeated the chip numbers in grey; deleted — the
+            same number twice on one screen is how dashboards start lying.) */}
         <div className="flex flex-wrap items-center gap-4 px-1 text-xs text-muted-2">
           <Link href="/queue" className="hover:text-foreground">Full task board</Link>
           <Link href="/pipeline" className="hover:text-foreground">Project tracker</Link>
-          <span className="ml-auto inline-flex items-center gap-3">
-            {toAssign > 0 && <span><UserPlus className="mr-1 inline size-3" />{toAssign} unassigned</span>}
-            <span><PackageCheck className="mr-1 inline size-3" />{toQc} in QC</span>
-            <span><MessageSquare className="mr-1 inline size-3" />{replies} waiting</span>
-          </span>
         </div>
       </div>
     </div>

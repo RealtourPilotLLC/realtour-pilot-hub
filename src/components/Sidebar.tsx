@@ -5,7 +5,6 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   ListTodo,
-  History,
   KanbanSquare,
   CalendarDays,
   Camera,
@@ -29,7 +28,6 @@ import {
   ShieldCheck,
   PenLine,
   ExternalLink,
-  Sun,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -65,9 +63,9 @@ const SECTIONS: NavSection[] = [
     title: "Operations",
     items: [
       { label: "Dashboard", href: "/", icon: LayoutDashboard, key: "dashboard" },
-      { label: "Today", href: "/today", icon: Sun, key: "today" },
-      { label: "Daily Tasks", href: "/queue", icon: ListTodo, key: "tasks" },
-      { label: "Task History", href: "/history", icon: History, key: "history" },
+      // Today + Daily Tasks + Task History merged into the one Tasks hub
+      // (tabs: Today / Board / Done) — Jordan: "the toolbar has too many things".
+      { label: "Tasks", href: "/tasks", icon: ListTodo, key: "tasks" },
       { label: "Project Tracker", href: "/pipeline", icon: KanbanSquare, key: "pipeline" },
       { label: "Schedule", href: "/schedule", icon: CalendarDays, key: "schedule" },
       { label: "Map", href: "/map", icon: MapPinned, key: "map" },

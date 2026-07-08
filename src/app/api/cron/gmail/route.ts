@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { syncGmail } from "@/lib/integrations/google";
 import { sweepRepliedOpenPhoneTasks } from "@/lib/integrations/openphone";
 import { syncSlackHistory } from "@/lib/integrations/slackSync";
+import { sweepReplySla } from "@/lib/commsSla";
 import { cronBudget } from "@/lib/cron";
 
 export const runtime = "nodejs";
@@ -31,6 +32,11 @@ export async function GET(req: NextRequest) {
   // Keep Slack comms memory near-live (channels + Jordan's DMs) every few
   // minutes via the user token. Small window; logComm dedups the overlap.
   await step("slack", () => syncSlackHistory({ sinceHours: 2 }));
+  // Reply-SLA escalation: page the team when an inbound client text sits
+  // unanswered (30m → ADMIN bell + Slack, 2h → OWNER + urgent; VIPs faster).
+  // Best-effort by construction — sweepReplySla never throws — and the step()
+  // wrapper keeps even a surprise failure from blocking Gmail polling.
+  await step("replySla", () => sweepReplySla());
 
   await finish();
   return NextResponse.json({ ok: true, ...out });

@@ -4,7 +4,7 @@
 // a couple of pages are owner-only and can never be granted to other roles.
 
 export type PageKey =
-  | "dashboard" | "today" | "texts" | "tasks" | "history" | "pipeline" | "schedule" | "map"
+  | "dashboard" | "tasks" | "pipeline" | "schedule" | "map"
   | "communications" | "clients" | "team" | "upload" | "editing" | "sales"
   | "billing" | "catalog" | "payouts" | "marketing" | "resources" | "assistant"
   | "training" | "feedback" | "connections" | "users" | "shoot" | "mypay";
@@ -18,10 +18,12 @@ export const ROLE_LABEL: Record<string, string> = {
 
 export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boolean }[] = [
   { key: "dashboard", label: "Dashboard", href: "/" },
-  { key: "today", label: "Today", href: "/today" },
-  { key: "texts", label: "Client Texts", href: "/texts" },
-  { key: "tasks", label: "Daily Tasks", href: "/queue" },
-  { key: "history", label: "Task History", href: "/history" },
+  // "tasks" is the merged Tasks hub — the old Today (/today), Daily Tasks
+  // (/queue) and Task History (/history) pages are its tabs now; those routes
+  // (plus /texts → the comms Outbox) live on only as redirect stubs. The stubs
+  // deliberately have NO PageKey: any signed-in user may take the redirect hop,
+  // and the destination page enforces access itself.
+  { key: "tasks", label: "Tasks", href: "/tasks" },
   { key: "pipeline", label: "Project Tracker", href: "/pipeline" },
   { key: "schedule", label: "Schedule", href: "/schedule" },
   { key: "map", label: "Map", href: "/map" },
@@ -51,10 +53,8 @@ const ALL = PAGES.map((p) => p.key);
 // granted to a person via a per-user override (except owner-only pages).
 const ROLE_PAGES: Record<Role, PageKey[]> = {
   OWNER: ALL,
-  // "texts" = client confirmation/delivery texting — front-office work, so it's
-  // owner/admin only (creatives never message clients directly).
   ADMIN: [
-    "dashboard", "today", "texts", "tasks", "history", "pipeline", "schedule", "map", "shoot",
+    "dashboard", "tasks", "pipeline", "schedule", "map", "shoot",
     "communications", "clients", "team", "upload", "editing", "billing",
     "catalog", "resources", "training", "assistant", "feedback",
   ],
@@ -73,14 +73,14 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
 
 // Where to send a user who lands somewhere they can't access — and their
 // post-login home. Everyone starts on their WORK surface: Kyle (admin) in the
-// Today action feed, editors in their queue, photographers in My Shoots. Only
-// the owner lands on the overview dashboard. Used by the middleware redirect —
-// every target is in that role's ROLE_PAGES, so there's no redirect loop.
+// Tasks hub (Today tab), editors in their queue, photographers in My Shoots.
+// Only the owner lands on the overview dashboard. Used by the middleware
+// redirect — every target is in that role's ROLE_PAGES, so there's no redirect loop.
 export function homeFor(role: string | null | undefined): string {
   switch (role) {
     case "PHOTOGRAPHER": return "/shoot";
     case "EDITOR": return "/editing";
-    case "ADMIN": return "/today";
+    case "ADMIN": return "/tasks";
     default: return "/";
   }
 }
@@ -103,7 +103,13 @@ export function canAccess(user: AccessUser, key: PageKey): boolean {
   const page = PAGES.find((p) => p.key === key);
   if (page?.ownerOnly) return false; // never for non-owners, even via override
   const perms = parsePermissions(user.permissions);
-  if (key in perms) return !!perms[key];
+  // The old Today / Daily Tasks / Task History pages merged into the one Tasks
+  // hub. Saved per-user permission JSON may still carry the legacy "today" /
+  // "history" keys — honour any of the three as an override on the merged page,
+  // so nobody's stored grants lose access on the consolidation.
+  const keys = key === "tasks" ? ["tasks", "today", "history"] : [key];
+  const overridden = keys.filter((k) => k in perms);
+  if (overridden.length > 0) return overridden.some((k) => !!perms[k]);
   const role = (ROLE_PAGES[user.role as Role] ?? []) as PageKey[];
   return role.includes(key);
 }

@@ -3,6 +3,7 @@ import { ProjectStatus } from "@prisma/client";
 import { recentProjectWhere, isProjectRecent } from "@/lib/recency";
 import { etDayStartUtc, etAddDays, etDayKey } from "@/lib/datetime";
 import { DELEGATE_KEYS } from "@/lib/editors";
+import { TRIAGE_TYPES } from "@/lib/triage";
 
 /** Projects for the pipeline board — current work only (last-30-day window). */
 export async function getPipelineProjects() {
@@ -393,6 +394,246 @@ export async function getOverdueTasks(): Promise<BriefTask[]> {
   return tasks.map((t) => mapTask(t, startToday));
 }
 
+// ---------------------------------------------------------------------------
+// Dashboard chip counts — HONEST, system-wide numbers. The old chips counted
+// only the morning-brief slice (Kyle's due-today view), so the dashboard read
+// "1 replies / 0 to assign" while 44 tasks were active and 34 sat unassigned.
+// These count EVERY active task, so the glance can't understate the backlog.
+// ---------------------------------------------------------------------------
+export type ActionCounts = {
+  replies: number; // open message-type tasks — someone wrote in and is waiting
+  qc: number; // open QC/deliver-type tasks — content sitting in the pipeline
+  late: number; // ANY active task past its dueAt
+  toAssign: number; // triage-type tasks with no owner (isNeedsAssigning, in SQL)
+};
+
+export async function getActionCounts(): Promise<ActionCounts> {
+  const [replies, qc, late, toAssign] = await Promise.all([
+    prisma.smartTask.count({ where: { status: { in: BRIEF_ACTIVE }, taskType: { in: MESSAGE_TASK_TYPES } } }),
+    prisma.smartTask.count({ where: { status: { in: BRIEF_ACTIVE }, taskType: { in: DELIVER_TASK_TYPES } } }),
+    prisma.smartTask.count({ where: { status: { in: BRIEF_ACTIVE }, dueAt: { lt: new Date() } } }),
+    // Same definition as isNeedsAssigning (src/lib/triage.ts) — delegatable work
+    // that arrived without an owner — expressed in SQL so it counts system-wide
+    // instead of only the brief slice.
+    prisma.smartTask.count({ where: { status: { in: BRIEF_ACTIVE }, assignedKey: null, taskType: { in: [...TRIAGE_TYPES] } } }),
+  ]);
+  return { replies, qc, late, toAssign };
+}
+
+// The number on the dashboard's "Start your day →" button = the number of CARDS
+// /today actually renders. It replicates /today's stack query EXACTLY
+// (src/app/today/page.tsx): Kyle's own/unassigned + delegated work; message
+// tasks at any due date; QC/deliver (minus delivery_text, which lives on /texts)
+// while open on a recent job; everything else due by end of today INCLUDING
+// overdue; client texts carved out and replaced by ONE rollup card when any are
+// waiting. Kept here so /today can adopt this helper later and the two numbers
+// can never drift.
+export async function getTodayCardCount(): Promise<number> {
+  const endToday = new Date(etDayStartUtc(etAddDays(new Date(), 1)).getTime() - 1);
+  // /today's "check" step excludes delivery_text — those moved to /texts.
+  const CHECK_TYPES = DELIVER_TASK_TYPES.filter((t) => t !== "delivery_text");
+  const [stack, texts] = await Promise.all([
+    prisma.smartTask.count({
+      where: {
+        status: { in: BRIEF_ACTIVE },
+        OR: [{ assignedKey: null }, { assignedKey: "kyle" }, { assignedKey: { in: [...DELEGATE_KEYS] } }],
+        AND: [{
+          OR: [
+            // Messages/replies: always surface while open (someone is waiting).
+            { taskType: { in: MESSAGE_TASK_TYPES } },
+            // QC & deliver: while open on a recent job, any due date.
+            { taskType: { in: CHECK_TYPES }, OR: [{ projectId: null }, { project: recentProjectWhere() }] },
+            // Everything else: due by end of today INCLUDING overdue.
+            {
+              taskType: { notIn: [...MESSAGE_TASK_TYPES, ...CHECK_TYPES, ...CLIENT_TEXT_TYPES] },
+              dueAt: { lte: endToday },
+              OR: [{ projectId: null }, { project: recentProjectWhere() }],
+            },
+          ],
+        }],
+      },
+    }),
+    getClientTextTasks(),
+  ]);
+  // The texts themselves aren't cards — /today shows one rollup card for all.
+  return stack + (texts.length > 0 ? 1 : 0);
+}
+
+// ---------------------------------------------------------------------------
+// Stuck jobs — the dashboard's real fires. The old "Blockers" panel listed
+// overdue admin TASKS (e.g. two unsent confirmation texts) while PROJECTS days
+// past their delivery promise were invisible on the whole page. This is
+// project-level lateness: past deliveryDue, stuck in revision 2+ days (same
+// threshold as getProactiveFlags' stale-revision branch), or shot 48h+ ago and
+// still not delivered.
+// ---------------------------------------------------------------------------
+export type StuckJob = {
+  id: string;
+  title: string;
+  reason: string; // "3 days late" · "revision stuck 4d" · "shot 3d ago, not delivered"
+  stage: string; // pipeline status (SHOT / EDITING / REVISION / ...)
+  daysLate: number; // whole days behind, for sorting/AC display
+};
+
+export async function getStuckJobs(): Promise<StuckJob[]> {
+  const now = new Date();
+  const DAY = 86400000;
+  const projects = await prisma.project.findMany({
+    where: {
+      // "Active" = anything not finished — cancelled/delivered can't be stuck.
+      status: { notIn: ["CANCELLED", "DELIVERED"] },
+      OR: [
+        // Past the delivery promise.
+        { deliveryDue: { lt: now } },
+        // Stale revision — 2+ days without closure (a fresh revision is step 1
+        // on /today, not a fire; flagging at minute zero triple-listed them).
+        { status: "REVISION", revisionRequestedAt: { lte: new Date(now.getTime() - 2 * DAY) } },
+        // Shot 48h+ ago and the content still hasn't gone out.
+        { status: { in: ["SHOT", "EDITING"] }, deliveredAt: null, shootDate: { lt: new Date(now.getTime() - 2 * DAY) } },
+      ],
+    },
+    select: {
+      id: true, title: true, status: true,
+      deliveryDue: true, revisionRequestedAt: true, shootDate: true, deliveredAt: true,
+    },
+  });
+
+  // A project can match several reasons — dedupe to ONE row with the WORST
+  // reason (most days gone) so the row reads as bad as reality.
+  const jobs = projects
+    .map((p) => {
+      const candidates: { reason: string; days: number }[] = [];
+      if (p.deliveryDue && p.deliveryDue < now) {
+        const d = (now.getTime() - p.deliveryDue.getTime()) / DAY;
+        const whole = Math.floor(d);
+        candidates.push({
+          // Under a day late still deserves the panel — say it in hours.
+          reason: whole >= 1 ? `${whole} day${whole === 1 ? "" : "s"} late` : `${Math.max(1, Math.floor(d * 24))}h late`,
+          days: d,
+        });
+      }
+      if (p.status === "REVISION" && p.revisionRequestedAt && now.getTime() - p.revisionRequestedAt.getTime() >= 2 * DAY) {
+        const d = (now.getTime() - p.revisionRequestedAt.getTime()) / DAY;
+        candidates.push({ reason: `revision stuck ${Math.floor(d)}d`, days: d });
+      }
+      if ((p.status === "SHOT" || p.status === "EDITING") && !p.deliveredAt && p.shootDate && now.getTime() - p.shootDate.getTime() >= 2 * DAY) {
+        const d = (now.getTime() - p.shootDate.getTime()) / DAY;
+        candidates.push({ reason: `shot ${Math.floor(d)}d ago, not delivered`, days: d });
+      }
+      const worst = candidates.sort((a, b) => b.days - a.days)[0];
+      return worst ? { id: p.id, title: p.title, reason: worst.reason, stage: p.status as string, days: worst.days } : null;
+    })
+    .filter((j): j is NonNullable<typeof j> => j !== null)
+    .sort((a, b) => b.days - a.days); // worst fires first (sorted on raw days)
+
+  return jobs.map(({ days, ...j }) => ({ ...j, daysLate: Math.floor(days) }));
+}
+
+// ---------------------------------------------------------------------------
+// Owner pulse — "is the machine healthy?" in four numbers: on-time delivery %,
+// median shoot→delivered turnaround, % of client texts answered within the
+// hour, and open revisions. Trailing 30 days, with deltas vs the PRIOR 30 days
+// so the arrows show direction rather than noise. Deliberately NO QC-pass-rate
+// — that metric was judged gameable and is not shipped.
+// ---------------------------------------------------------------------------
+export type OwnerPulse = {
+  onTimePct: number | null; // % delivered on/before deliveryDue (30d)
+  onTimeDelta: number | null; // pct-points vs prior 30d — positive = better
+  turnaroundH: number | null; // median shoot→delivered hours (30d)
+  turnaroundDeltaH: number | null; // hours vs prior 30d — NEGATIVE = better
+  replyPct: number | null; // % inbound texts answered <1h (30d)
+  replyDelta: number | null; // pct-points vs prior 30d — positive = better
+  openRevisions: number; // active revision tasks right now
+};
+
+function median(xs: number[]): number | null {
+  if (xs.length === 0) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+export async function getOwnerPulse(): Promise<OwnerPulse> {
+  const now = Date.now();
+  const d30 = new Date(now - 30 * 86400000);
+  const d60 = new Date(now - 60 * 86400000);
+
+  const [delivered, texts, openRevisions] = await Promise.all([
+    // Both 30d windows in one fetch, bucketed in JS below.
+    prisma.project.findMany({
+      where: { deliveredAt: { gte: d60 }, status: { not: "CANCELLED" } },
+      select: { deliveredAt: true, deliveryDue: true, shootDate: true },
+    }),
+    // Texts only (calls/emails have different response norms), clientId set so
+    // inbound/outbound can be paired per conversation. Ordered ASC so "the next
+    // outbound" is a forward scan.
+    prisma.commLog.findMany({
+      where: { channel: "text", occurredAt: { gte: d60 }, clientId: { not: null } },
+      select: { direction: true, clientId: true, occurredAt: true },
+      orderBy: { occurredAt: "asc" },
+    }),
+    prisma.smartTask.count({ where: { taskType: "revision", status: { in: BRIEF_ACTIVE } } }),
+  ]);
+
+  const pct = (ok: number, total: number) => (total ? Math.round((ok / total) * 100) : null);
+
+  // (a) on-time % — only judgeable when the project carried a due date.
+  const judged = delivered.filter((p) => p.deliveredAt && p.deliveryDue);
+  const curJ = judged.filter((p) => p.deliveredAt! >= d30);
+  const prevJ = judged.filter((p) => p.deliveredAt! < d30);
+  const onTimePct = pct(curJ.filter((p) => p.deliveredAt! <= p.deliveryDue!).length, curJ.length);
+  const onTimePrev = pct(prevJ.filter((p) => p.deliveredAt! <= p.deliveryDue!).length, prevJ.length);
+
+  // (b) median shoot→delivered hours (skip rows where delivery precedes the
+  // shoot — backfilled data has a few).
+  const turnaround = (ps: typeof delivered) =>
+    median(
+      ps
+        .filter((p) => p.shootDate && p.deliveredAt && p.deliveredAt > p.shootDate)
+        .map((p) => (p.deliveredAt!.getTime() - p.shootDate!.getTime()) / 3600000),
+    );
+  const curT = turnaround(delivered.filter((p) => p.deliveredAt! >= d30));
+  const prevT = turnaround(delivered.filter((p) => p.deliveredAt! < d30));
+
+  // (c) replies <1h — pair each inbound text with the NEXT outbound to the same
+  // client; a never-answered inbound counts against the %.
+  const byClient = new Map<string, { dir: string; at: number }[]>();
+  for (const t of texts) {
+    const arr = byClient.get(t.clientId!);
+    const ev = { dir: t.direction, at: t.occurredAt.getTime() };
+    if (arr) arr.push(ev);
+    else byClient.set(t.clientId!, [ev]);
+  }
+  let curIn = 0, curFast = 0, prevIn = 0, prevFast = 0;
+  for (const events of byClient.values()) {
+    for (let i = 0; i < events.length; i++) {
+      if (events[i].dir !== "in") continue;
+      let fast = false;
+      for (let j = i + 1; j < events.length; j++) {
+        if (events[j].dir !== "out") continue;
+        fast = events[j].at - events[i].at <= 3600000;
+        break;
+      }
+      // Bucket by when the INBOUND arrived (the reply may cross the boundary).
+      if (events[i].at >= d30.getTime()) { curIn++; if (fast) curFast++; }
+      else { prevIn++; if (fast) prevFast++; }
+    }
+  }
+  const replyPct = pct(curFast, curIn);
+  const replyPrev = pct(prevFast, prevIn);
+
+  const delta = (a: number | null, b: number | null) => (a != null && b != null ? a - b : null);
+  return {
+    onTimePct,
+    onTimeDelta: delta(onTimePct, onTimePrev),
+    turnaroundH: curT != null ? Math.round(curT) : null,
+    turnaroundDeltaH: curT != null && prevT != null ? Math.round(curT - prevT) : null,
+    replyPct,
+    replyDelta: delta(replyPct, replyPrev),
+    openRevisions,
+  };
+}
+
 // Shoots happening today / tomorrow — driven off APPOINTMENTS, not the single
 // project.shootDate, so an order with multiple appointments shows every shoot
 // on its own day (and with the photographer assigned to that specific visit).
@@ -402,10 +643,15 @@ export async function getShootWindow() {
   const startToday = etDayStartUtc(new Date());
   const startTomorrow = etDayStartUtc(etAddDays(new Date(), 1));
   const startDayAfter = etDayStartUtc(etAddDays(new Date(), 2));
+  // The window used to hard-stop at tomorrow, which hid a busy week (9 shoots)
+  // behind a "Tomorrow: N" one-liner. It now runs today + the NEXT 7 DAYS so
+  // the dashboard's week strip can show the real load; `today`/`tomorrow` keep
+  // their original meaning for existing callers (/today's footer count).
+  const endWindow = etDayStartUtc(etAddDays(new Date(), 8));
 
   const appts = await prisma.appointment.findMany({
     where: {
-      startAt: { gte: startToday, lt: startDayAfter },
+      startAt: { gte: startToday, lt: endWindow },
       status: { not: "CANCELED" },
       project: { status: { notIn: ["CANCELLED", "DELIVERED"] } },
     },
@@ -426,9 +672,12 @@ export async function getShootWindow() {
   });
   return {
     today: appts.filter((a) => a.startAt! < startTomorrow).map(map),
-    tomorrow: appts.filter((a) => a.startAt! >= startTomorrow).map(map),
+    tomorrow: appts.filter((a) => a.startAt! >= startTomorrow && a.startAt! < startDayAfter).map(map),
+    // Tomorrow through day 7 — feeds the dashboard's "This week" strip.
+    week: appts.filter((a) => a.startAt! >= startTomorrow).map(map),
   };
 }
+export type ShootWindow = Awaited<ReturnType<typeof getShootWindow>>;
 
 // Tasks completed today (ET) — the dashboard's "handled" count and /today's
 // footer share this so the two never disagree.
