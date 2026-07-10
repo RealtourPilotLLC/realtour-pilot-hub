@@ -1,34 +1,56 @@
 import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // Diagnostic: does the server's GOOGLE_MAPS_API_KEY actually work against the
-// Street View Static API? Fetches one frame SERVER-SIDE and reports only the
-// outcome — the key itself never appears in the response (safe to expose;
-// added to the middleware PUBLIC list so it can be probed while debugging).
-// Google failure modes this distinguishes: API not enabled, billing not
-// enabled, key restricted to the wrong API/referrer, invalid key.
+// Street View Static API, and what would the My Shoots cards render for the
+// next few UPCOMING shoots? Everything is fetched SERVER-SIDE and the key
+// never appears in the response (safe to expose; on the middleware PUBLIC
+// list while debugging). The two referer variants distinguish a key with an
+// HTTP-referrer ("Websites") restriction: the browser sends our domain as
+// Referer, server-to-server sends none — if one works and the other 403s,
+// the key's application restriction is the culprit.
 export async function GET() {
   const key = process.env.GOOGLE_MAPS_API_KEY;
   if (!key) {
-    return NextResponse.json({ keyConfigured: false, ok: false, hint: "GOOGLE_MAPS_API_KEY is not set in this environment." });
+    return NextResponse.json({ keyConfigured: false, hint: "GOOGLE_MAPS_API_KEY is not set in this environment." });
   }
-  try {
-    const url = `https://maps.googleapis.com/maps/api/streetview?size=100x100&location=${encodeURIComponent("1555 Mission Rd, Lancaster, PA")}&key=${key}`;
-    const r = await fetch(url, { cache: "no-store" });
-    const contentType = r.headers.get("content-type") ?? "";
-    const isImage = contentType.startsWith("image/");
-    // On errors Google returns text/plain or JSON explaining exactly why.
-    const body = isImage ? null : (await r.text()).slice(0, 300);
-    return NextResponse.json({
-      keyConfigured: true,
-      ok: r.ok && isImage,
-      googleStatus: r.status,
-      contentType,
-      googleSays: body,
-    });
-  } catch (e) {
-    return NextResponse.json({ keyConfigured: true, ok: false, error: (e as Error).message.slice(0, 200) });
-  }
+
+  const probe = async (referer?: string) => {
+    try {
+      const url = `https://maps.googleapis.com/maps/api/streetview?size=100x100&location=39.9731263,-75.2428753&fov=75&key=${key}`;
+      const r = await fetch(url, { cache: "no-store", headers: referer ? { Referer: referer } : {} });
+      const contentType = r.headers.get("content-type") ?? "";
+      const isImage = contentType.startsWith("image/");
+      return { status: r.status, contentType, ok: r.ok && isImage, googleSays: isImage ? null : (await r.text()).slice(0, 200) };
+    } catch (e) {
+      return { status: 0, contentType: "", ok: false, googleSays: (e as Error).message.slice(0, 150) };
+    }
+  };
+
+  // What the My Shoots list would compute for upcoming, not-yet-photographed shoots.
+  const upcoming = await prisma.project.findMany({
+    where: { status: { in: ["BOOKED", "SCHEDULED"] }, shootDate: { gte: new Date() }, coverImageUrl: null },
+    select: { title: true, lat: true, lng: true },
+    orderBy: { shootDate: "asc" },
+    take: 6,
+  });
+
+  const [noReferer, ourReferer] = await Promise.all([
+    probe(),
+    probe("https://realtour-pilot-hub.vercel.app/shoot"),
+  ]);
+
+  return NextResponse.json({
+    keyConfigured: true,
+    serverToServer: noReferer,
+    browserStyleWithOurReferer: ourReferer,
+    upcomingCards: upcoming.map((p) => ({
+      street: p.title.split(",")[0],
+      hasCoords: p.lat != null && p.lng != null,
+      wouldRenderStreetView: p.lat != null && p.lng != null,
+    })),
+  });
 }
