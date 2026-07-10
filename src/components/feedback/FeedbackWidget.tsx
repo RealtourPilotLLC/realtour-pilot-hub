@@ -20,9 +20,14 @@ const KINDS = [
 // on the /feedback review board for Jordan to approve.
 export function FeedbackWidget() {
   const pathname = usePathname();
-  // The photographer shoot screen has a sticky bottom action bar ("Mark shoot
-  // complete"); lift the launcher so it never sits on top of that button.
-  const bottom = /^\/shoot\/[^/]+$/.test(pathname) ? "bottom-20" : "bottom-4";
+  // The photographer shoot screen has a two-row sticky action bar; lift the
+  // open panel/capture chip clear of it there.
+  const shootPage = /^\/shoot\/[^/]+$/.test(pathname);
+  const bottom = shootPage ? "bottom-32" : "bottom-4";
+  // The launcher itself is a slim edge tab (not a floating pill — it kept
+  // sitting on top of content/action bars). Anchored to the right EDGE, up and
+  // out of the thumb zone.
+  const tabBottom = shootPage ? "bottom-40" : "bottom-24";
   const [open, setOpen] = useState(false);
   const [kind, setKind] = useState("feature");
   const [title, setTitle] = useState("");
@@ -124,14 +129,21 @@ export function FeedbackWidget() {
 
   return (
     <>
-      {/* Launcher — fixed, clears Leaflet (~1000) and the mobile drawer (1300). */}
+      {/* Launcher — a slim tab tucked against the right edge (clears Leaflet
+          ~1000 and the mobile drawer 1300). Icon-only and semi-transparent so
+          it never covers content or the shoot action bar; it nudges fully into
+          view on hover. */}
       {!open && (
         <button
           onClick={() => setOpen(true)}
           title="Send feedback or a feature request"
-          className={cn("fixed right-4 z-[1400] inline-flex items-center gap-2 rounded-full bg-brand px-4 py-2.5 text-sm font-medium text-white shadow-lg ring-1 ring-black/10 transition-transform hover:scale-105", bottom)}
+          aria-label="Send feedback"
+          className={cn(
+            "fixed right-0 z-[1400] flex translate-x-1 items-center rounded-l-xl border border-r-0 border-border bg-surface/90 py-3 pl-2 pr-2.5 text-brand shadow-lg backdrop-blur transition-all hover:translate-x-0 hover:bg-surface",
+            tabBottom,
+          )}
         >
-          <MessageSquarePlus className="size-4" /> Feedback
+          <MessageSquarePlus className="size-4" />
         </button>
       )}
 
