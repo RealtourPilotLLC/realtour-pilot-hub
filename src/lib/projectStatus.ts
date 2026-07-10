@@ -8,6 +8,7 @@ import { projectFolderPaths } from "@/lib/dropboxFolders";
 import { standardDeliveryDue, deliveryDueFrom } from "@/lib/tasks";
 import type { NotifyTarget } from "@/lib/notify";
 import { photoTargetFor, RAW_OVERAGE_FACTOR, BRACKET_RATIO } from "@/lib/culling";
+import { isMonthlyContentJob } from "@/lib/pipeline";
 
 // ---------------------------------------------------------------------------
 // Smart project-status engine.
@@ -88,7 +89,9 @@ export function getVideoSlaStatus(p: {
   const tier = videoTier(p.deliverables);
   if (!tier || !p.shootDate) return null;
   const v = p.deliverables.find((d) => expectedCategories([d]).has("VIDEO"));
-  const monthly = !!p.client?.socialClient;
+  // PROJECT-level test — a listing shoot for a social-plan client is NOT
+  // monthly content (see isMonthlyContentJob).
+  const monthly = isMonthlyContentJob(p.client?.socialClient, p.deliverables);
   const due = deliveryDueFrom(p.shootDate, v?.type ?? "SOCIAL_REEL", {
     premium: tier === "premium",
     monthlyContent: monthly,
@@ -421,7 +424,7 @@ async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<Sta
     revisionNote: p.revisionNote,
     videoTier: videoTier(p.deliverables),
     videoType: p.deliverables.find((d) => expectedCategories([d]).has("VIDEO"))?.type ?? null,
-    monthlyContent: p.client?.socialClient ?? false,
+    monthlyContent: isMonthlyContentJob(p.client?.socialClient, p.deliverables),
   };
 }
 
@@ -594,7 +597,7 @@ export async function syncProjectStatuses(
     const justDelivered = final === "DELIVERED" && !p.deliveredAt;
     // Standard delivery due = shoot date + longest turnaround of what was ordered.
     const deliveryDue = p.shootDate
-      ? standardDeliveryDue(p.shootDate, p.deliverables, p.client?.socialClient ?? false)
+      ? standardDeliveryDue(p.shootDate, p.deliverables, isMonthlyContentJob(p.client?.socialClient, p.deliverables))
       : null;
     // Raws detected in Dropbox → stamp uploadedAt (first time only). This sweep
     // is the path that ACTUALLY detects uploads in prod, but it never wrote the

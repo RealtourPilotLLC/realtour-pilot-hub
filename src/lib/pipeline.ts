@@ -196,3 +196,28 @@ export const DELIVERABLE_STATUS_META: Record<
   [DeliverableStatus.DONE]: { label: "Done", color: PALETTE.green, soft: softTint(PALETTE.green) },
   [DeliverableStatus.FLAGGED]: { label: "Flagged", color: PALETTE.red, soft: softTint(PALETTE.red) },
 };
+
+// ---------------------------------------------------------------------------
+// Is THIS project a monthly personal-branding / social-content job (7–10
+// business-day turnaround, Kim's lane), or a normal listing shoot that happens
+// to belong to a social-plan client? `Client.socialClient` is a CLIENT
+// attribute — using it alone branded every listing shoot those agents booked
+// as "monthly content" (wrong QC copy, wrong SLA, wrong editor routing —
+// caught live on 523 S Coventry / 238 Hudson / 419 Riverview, July 2026).
+// Ground truth from the data: real monthly-content orders are video/reel-ONLY
+// (e.g. an office-address reel); listing shoots always carry listing media
+// (photos / floor plan / drone / 3D / twilight / staging).
+// ---------------------------------------------------------------------------
+const LISTING_MEDIA_TYPES = new Set<string>([
+  "PHOTOS", "FLOORPLAN", "DRONE", "TWILIGHT", "MATTERPORT_3D", "ZILLOW_3D", "VIRTUAL_STAGING",
+]);
+
+export function isMonthlyContentJob(
+  socialClient: boolean | null | undefined,
+  deliverables: { type: string }[],
+): boolean {
+  if (!socialClient || deliverables.length === 0) return false;
+  const hasVideo = deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  const hasListingMedia = deliverables.some((d) => LISTING_MEDIA_TYPES.has(d.type));
+  return hasVideo && !hasListingMedia;
+}

@@ -277,8 +277,15 @@ export async function raiseRevision(opts: {
   // Luma premium); photos/3D/floorplan → Kyle. If it's not clearly a video job it
   // stays with Kyle to triage.
   const { editorForDeliverable } = await import("@/lib/editors");
+  const { isMonthlyContentJob } = await import("@/lib/pipeline");
   const primary = project.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL") ?? project.deliverables[0];
-  const assignedKey = editorForDeliverable(primary?.type, primary?.label, !!project.client?.socialClient);
+  // PROJECT-level monthly test — a listing-shoot revision for a social-plan
+  // client routes like any listing job, not to the monthly-content lane.
+  const assignedKey = editorForDeliverable(
+    primary?.type,
+    primary?.label,
+    isMonthlyContentJob(project.client?.socialClient, project.deliverables),
+  );
 
   const note = opts.note.slice(0, 300);
   await prisma.project.update({

@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { etAddDays } from "@/lib/datetime";
 import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { videoTier } from "@/lib/projectStatus";
+import { isMonthlyContentJob } from "@/lib/pipeline";
 import { SlaCountdown } from "./SlaCountdown";
 import { SendToReviewButton } from "./EditorActions";
 
@@ -92,7 +93,7 @@ export async function EditorDay({ editorScope, editorName }: { editorScope: stri
     .map((p) => {
       const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
       if (!v) return null;
-      const key = editorForDeliverable(v.type, v.label, !!p.client?.socialClient);
+      const key = editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.client?.socialClient, p.deliverables));
       if (key !== editorScope) return null;
       const tier = videoTier(p.deliverables);
       return {

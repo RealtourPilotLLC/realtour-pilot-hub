@@ -6,6 +6,7 @@ import { type ChecklistItem, parseChecklist, serializeChecklist, checklistComple
 import { etDayStartUtc } from "@/lib/datetime";
 import { slugForName } from "@/lib/assignees";
 import { BRACKET_RATIO, photoTargetFor } from "@/lib/culling";
+import { isMonthlyContentJob } from "@/lib/pipeline";
 
 // ---------------------------------------------------------------------------
 // Phase 1 of the listener-first platform: turnaround rules + due-date/priority
@@ -1088,7 +1089,7 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
       const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
       const targets: import("@/lib/notify").NotifyTarget[] = [{ roles: ["ADMIN"] }, { roles: ["EDITOR"] }];
       if (v) {
-        const key = editorForDeliverable(v.type, v.label, p.client?.socialClient ?? false);
+        const key = editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.client?.socialClient, p.deliverables));
         // Only in-house editors have a reachable channel; Luma (external) has no
         // bell/DM — its dispatch is the Kyle task below.
         if (key === "kim" || key === "remar") {
@@ -1175,7 +1176,7 @@ export async function mintEditTask(projectId: string): Promise<void> {
   const { editorForDeliverable, editorMeta } = await import("@/lib/editors");
   const { dropboxWebUrl, projectFolderPaths } = await import("@/lib/dropboxFolders");
 
-  const monthly = !!p.client?.socialClient;
+  const monthly = isMonthlyContentJob(p.client?.socialClient, p.deliverables);
   const tier = videoTier(p.deliverables); // standard | premium | null
   const isPremium = tier === "premium";
   const assignedKey = editorForDeliverable(v.type, v.label, monthly); // kim | remar | luma
@@ -1291,7 +1292,7 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
   // 2. Persist the routed editor for the tracker + one-click reassign (in-house only).
   try {
     const { editorForDeliverable, editorTeamMemberId } = await import("@/lib/editors");
-    const key = editorForDeliverable(v.type, v.label, p.client?.socialClient ?? false);
+    const key = editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.client?.socialClient, p.deliverables));
     const tmId = await editorTeamMemberId(key);
     if (tmId && p.editorId !== tmId) {
       await prisma.project.update({ where: { id: projectId }, data: { editorId: tmId } });
@@ -1623,7 +1624,10 @@ async function syncOneProjectTasks(
     shootDate: p.shootDate,
     deliverables: p.deliverables,
     statusEvidence: p.statusEvidence,
-    monthlyContent: p.client.socialClient,
+    // PROJECT-level: a listing shoot for a social-plan client is NOT monthly
+    // content — the client flag alone gave listing jobs the 7–10-day QC copy
+    // and SLA (caught live July 2026).
+    monthlyContent: isMonthlyContentJob(p.client.socialClient, p.deliverables),
     squareFeet: p.squareFeet,
     photoTarget: p.photoTarget,
     clientSegment: p.client.segment,

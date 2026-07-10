@@ -7,6 +7,7 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { dbx, dropboxSharedLink, DropboxError } from "@/lib/integrations/dropbox";
 import { projectFolderPaths } from "@/lib/dropboxFolders";
 import { editorForDeliverable, editorMeta, type EditorKey } from "@/lib/editors";
+import { isMonthlyContentJob } from "@/lib/pipeline";
 import { notifyInApp, type NotifyTarget } from "@/lib/notify";
 
 // ---------------------------------------------------------------------------
@@ -59,7 +60,9 @@ async function projectEditorKey(projectId: string): Promise<string | null> {
   });
   if (!p) return null;
   const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL") ?? p.deliverables[0];
-  return editorForDeliverable(v?.type, v?.label, !!p.client?.socialClient);
+  // PROJECT-level monthly test — see isMonthlyContentJob (client flag alone
+  // routed social clients' LISTING reels to the monthly-content lane).
+  return editorForDeliverable(v?.type, v?.label, isMonthlyContentJob(p.client?.socialClient, p.deliverables));
 }
 
 // Owner/admin, OR the editor an EDITOR-lane root note belongs to (they may
