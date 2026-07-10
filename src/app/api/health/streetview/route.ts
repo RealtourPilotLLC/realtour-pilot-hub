@@ -43,14 +43,31 @@ export async function GET() {
     probe("https://realtour-pilot-hub.vercel.app/shoot"),
   ]);
 
+  // The REAL list computation — exactly what the My Shoots page renders, run
+  // in THIS deployment. Proves whether prod emits thumbnails (vs. a stale
+  // page cached in someone's browser). Key redacted from any URL.
+  const { listMyShoots } = await import("@/lib/shoot");
+  const rows = await listMyShoots(null);
+  const redact = (u: string | null) => (u ? u.replace(/key=[^&]+/, "key=REDACTED").slice(0, 110) : null);
+  const withThumb = rows.filter((r) => r.thumbUrl);
+
   return NextResponse.json({
     keyConfigured: true,
     serverToServer: noReferer,
     browserStyleWithOurReferer: ourReferer,
+    listComputation: {
+      totalRows: rows.length,
+      withThumb: withThumb.length,
+      aryeoThumbs: rows.filter((r) => r.thumbKind === "aryeo").length,
+      streetViewThumbs: rows.filter((r) => r.thumbKind === "street").length,
+      samples: rows
+        .filter((r) => r.thumbKind === "street")
+        .slice(0, 3)
+        .map((r) => ({ street: r.street, thumb: redact(r.thumbUrl) })),
+    },
     upcomingCards: upcoming.map((p) => ({
       street: p.title.split(",")[0],
       hasCoords: p.lat != null && p.lng != null,
-      wouldRenderStreetView: p.lat != null && p.lng != null,
     })),
   });
 }
