@@ -912,6 +912,10 @@ model AppUser {
   role         String    @default("PHOTOGRAPHER") // OWNER | ADMIN | EDITOR | PHOTOGRAPHER
   permissions  String? // JSON: per-page overrides, e.g. {"billing":true,"clients":false}
   status       String    @default("INVITED") // INVITED | ACTIVE | DISABLED
+  // scrypt hash (salt:hash) for email+password login — an ALTERNATIVE to Google
+  // sign-in so contractors on personal emails don't need a Workspace account.
+  // Never plaintext; set by the user themselves via the set-password link.
+  passwordHash String?
   inviteToken  String?   @unique
   invitedAt    DateTime?
   lastLoginAt  DateTime?

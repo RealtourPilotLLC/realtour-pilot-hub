@@ -173,9 +173,17 @@ function UserCard({ u }: { u: UserView }) {
             <Shield className="size-3.5" /> Access <ChevronDown className={`size-3.5 transition-transform ${expanded ? "rotate-180" : ""}`} />
           </button>
         )}
-        {neverLoggedIn && (
-          <button onClick={getLink} disabled={pending} className="inline-flex items-center gap-1 rounded-lg bg-brand/10 px-2.5 py-1.5 text-xs font-medium text-brand hover:bg-brand/20">
-            <Copy className="size-3.5" /> Invite link
+        {/* One link serves both jobs: for someone who's never signed in it's the
+            INVITE (set a password or use Google); for an existing user it's a
+            PASSWORD RESET (a fresh set-password link to send them). */}
+        {!u.isSelf && (
+          <button
+            onClick={getLink}
+            disabled={pending}
+            title={neverLoggedIn ? "Copy an invite link (they set a password or use Google)" : "Generate a set-password link to send them"}
+            className="inline-flex items-center gap-1 rounded-lg bg-brand/10 px-2.5 py-1.5 text-xs font-medium text-brand hover:bg-brand/20"
+          >
+            <Copy className="size-3.5" /> {neverLoggedIn ? "Invite link" : "Reset password"}
           </button>
         )}
         {!u.isSelf && u.status === "ACTIVE" && (

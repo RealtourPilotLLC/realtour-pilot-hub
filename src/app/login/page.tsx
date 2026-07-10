@@ -1,3 +1,5 @@
+import { PasswordLoginForm } from "@/components/auth/PasswordLoginForm";
+
 export const dynamic = "force-dynamic";
 
 const ERRORS: Record<string, string> = {
@@ -47,6 +49,14 @@ export default async function LoginPage({
           </svg>
           Continue with Google
         </a>
+
+        {/* Email + password — for team members on personal emails that a
+            Workspace-"Internal" Google app rejects. Owners/admins can use
+            either; a set-password link makes the account. */}
+        <div className="my-5 flex items-center gap-3 text-[11px] text-muted-2">
+          <span className="h-px flex-1 bg-border" /> or <span className="h-px flex-1 bg-border" />
+        </div>
+        <PasswordLoginForm next={next} />
 
         <p className="mt-4 text-[11px] text-muted-2">Access is invite-only.</p>
       </div>
