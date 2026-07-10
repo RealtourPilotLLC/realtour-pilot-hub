@@ -19,7 +19,8 @@ function pathKey(pathname: string): PageKey | null {
 // the pages/DAL, not here. PUBLIC paths below must never be gated — they include
 // the auth + OAuth callbacks, inbound webhooks, cron jobs, and the client-facing
 // feedback form.
-const PUBLIC_PREFIXES = ["/login", "/invite", "/api/auth", "/api/google", "/api/webhooks", "/api/cron"];
+// /api/health = read-only integration diagnostics (no secrets in responses).
+const PUBLIC_PREFIXES = ["/login", "/invite", "/api/auth", "/api/google", "/api/webhooks", "/api/cron", "/api/health"];
 
 function isPublic(pathname: string): boolean {
   if (PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"))) return true;
