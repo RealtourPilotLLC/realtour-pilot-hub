@@ -46,8 +46,8 @@ export async function ScriptStudioCard({ projectId }: { projectId: string }) {
       <div className="space-y-3 p-4">
         <p className="text-xs leading-relaxed text-muted">
           {linked
-            ? "Linked to the agent's script generator. Pull the latest hooks + script into the reel recipe above once the Studio has generated them."
-            : "Create this job in the script generator to send the agent an intake link and start the hook + script pipeline. It syncs back into the reel recipe automatically."}
+            ? "Linked to Script Studio — the source of truth for this reel's script. It syncs here automatically (webhook); use Sync to pull the latest right now."
+            : "Create this job in Script Studio to send the agent an intake link and start the hook + script pipeline. The finished script syncs back here automatically."}
         </p>
         <ScriptStudioActions projectId={projectId} linked={linked} url={p.scriptingUrl} />
       </div>

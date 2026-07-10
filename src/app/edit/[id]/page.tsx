@@ -10,7 +10,7 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { parseClientProfile } from "@/lib/clientProfile";
 import { ClientProfileCard } from "@/components/clients/ClientProfileCard";
 import { ProjectMessages } from "@/components/project/ProjectMessages";
-import { ReelRecipeCard } from "@/components/project/ReelRecipeCard";
+import { ReelScriptCard } from "@/components/project/ReelScriptCard";
 import { ScriptStudioCard } from "@/components/project/ScriptStudioCard";
 import { AocPlaybookCard } from "@/components/project/AocPlaybookCard";
 import { FrameioButton } from "@/components/project/FrameioButton";
@@ -125,18 +125,27 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
             </div>
           </Section>
 
-          {/* Reel recipe — the creative plan (video jobs only) */}
+          {/* The locked script — READ-ONLY, straight from Script Studio (the
+              API/webhook sync owns these fields; scripts are never written in
+              the hub). The editor pastes overlay text from here — re-typing is
+              the #1 typo/revision driver. */}
           {videoDeliverables.length > 0 && (
             <>
-              <ReelRecipeCard
-                projectId={project.id}
-                hook={project.reelHook}
-                script={project.reelScript}
-                song={project.reelSong}
-                shotList={project.reelShotList}
-                scriptUrl={project.reelScriptUrl}
-                updatedAt={project.reelRecipeUpdatedAt ? formatDistanceToNow(project.reelRecipeUpdatedAt, { addSuffix: true }) : null}
-              />
+              {(project.reelHook || project.reelScript) ? (
+                <ReelScriptCard
+                  hook={project.reelHook}
+                  script={project.reelScript}
+                  song={project.reelSong}
+                  shotList={project.reelShotList}
+                  updatedAt={project.reelRecipeUpdatedAt ? project.reelRecipeUpdatedAt.toISOString() : null}
+                  studioUrl={isOwnerAdmin ? (project.scriptingUrl ?? project.reelScriptUrl) : null}
+                />
+              ) : (
+                <div className="rounded-2xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-foreground/85">
+                  <span className="font-semibold">No script on file yet.</span> Scripts are written in Script Studio
+                  and sync here automatically — use the Script Studio card below to link the job or pull the latest.
+                </div>
+              )}
               <ScriptStudioCard projectId={project.id} />
             </>
           )}

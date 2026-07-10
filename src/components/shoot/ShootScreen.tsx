@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { BackLink } from "@/components/ui/BackLink";
-import { ReelRecipeCard } from "@/components/project/ReelRecipeCard";
+import { ReelScriptCard } from "@/components/project/ReelScriptCard";
 import { AocPlaybookCard } from "@/components/project/AocPlaybookCard";
 import { Badge } from "@/components/ui/Badge";
 import { Section } from "@/components/ui/Section";
@@ -125,17 +125,25 @@ export function ShootScreen({
         <CustomerCard client={client} segment={segment} profile={profile} />
         <BriefCard view={view} flash={flash} />
         {isVideo && <AocPlaybookCard context="shoot" />}
-        {isVideo && (
-          <ReelRecipeCard
-            projectId={project.id}
-            hook={project.reelHook}
-            script={project.reelScript}
-            song={project.reelSong}
-            shotList={project.reelShotList}
-            scriptUrl={project.reelScriptUrl}
-            updatedAt={project.reelRecipeUpdatedAt ? new Date(project.reelRecipeUpdatedAt).toLocaleDateString() : null}
-          />
-        )}
+        {/* The locked script from Script Studio — READ-ONLY. Scripts are written
+            in the Studio (the API/webhook sync keeps this fresh); the
+            photographer directs the agent from it in the field. */}
+        {isVideo &&
+          (project.reelHook || project.reelScript ? (
+            <ReelScriptCard
+              hook={project.reelHook}
+              script={project.reelScript}
+              song={project.reelSong}
+              shotList={project.reelShotList}
+              updatedAt={project.reelRecipeUpdatedAt}
+            />
+          ) : (
+            <div className="rounded-2xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-foreground/85">
+              <span className="font-semibold">No script yet.</span> This reel&rsquo;s script is written in Script
+              Studio and shows up here automatically once it&rsquo;s ready — check back before you press record, or
+              ask Jordan.
+            </div>
+          ))}
         {view.zillowTourUrl && <ZillowCta url={view.zillowTourUrl} />}
         <Checklist deliverables={captureables} captured={captured} onToggle={toggleCapture} mustGets={mustGets} agentNotes={agentNotes} staging={stagingOrdered} photoTarget={photoTarget} />
         {pay}
