@@ -21,9 +21,21 @@ export function ShootRouteMap({
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (cancelled || !el.current || mapRef.current) return;
       const L = (await import("leaflet")).default;
-      const map = L.map(el.current, { zoomControl: false, scrollWheelZoom: false });
+      // Guard AFTER the await (mirrors ProjectMap): a cancelled run must not
+      // resume past its import and build a map on a container the next run
+      // already claimed — that race threw Leaflet's "Map container is already
+      // initialized" on Fast Refresh / React's dev double-invoke.
+      const node = el.current;
+      if (cancelled || !node || mapRef.current) return;
+      // Orphan recovery: if a crashed/hot-reloaded pass left Leaflet's stamp on
+      // the node with no tracked instance, reset the container instead of
+      // throwing on it.
+      if ((node as unknown as { _leaflet_id?: number })._leaflet_id) {
+        delete (node as unknown as { _leaflet_id?: number })._leaflet_id;
+        node.innerHTML = "";
+      }
+      const map = L.map(node, { zoomControl: false, scrollWheelZoom: false });
       map.attributionControl.setPrefix(false);
       mapRef.current = map;
       // Satellite imagery (Esri) + street labels — matches the main map page.
