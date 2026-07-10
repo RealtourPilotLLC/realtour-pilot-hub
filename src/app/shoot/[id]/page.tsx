@@ -1,6 +1,5 @@
 import { notFound, redirect } from "next/navigation";
 import { Suspense } from "react";
-import { prisma } from "@/lib/prisma";
 import { getShoot, photographerMemberId, photographerOwnsShoot } from "@/lib/shoot";
 import { getPhotographerFeedback } from "@/lib/review";
 import { getCurrentUser } from "@/lib/auth/user";
@@ -9,8 +8,6 @@ import { ShootScreen } from "@/components/shoot/ShootScreen";
 import { ShootPayCard, ShootPayCardSkeleton } from "@/components/shoot/ShootPayCard";
 import { ShootMapCard, ShootMapCardSkeleton } from "@/components/shoot/ShootMapCard";
 import { ShootFeedback } from "@/components/shoot/ShootFeedback";
-import { PropertyGlimpse } from "@/components/shoot/PropertyGlimpse";
-import { ReelScriptCard } from "@/components/project/ReelScriptCard";
 import { ListingMedia, ListingMediaSkeleton } from "@/components/project/ListingMedia";
 
 export const dynamic = "force-dynamic";
@@ -41,20 +38,11 @@ export default async function ShootDetailPage({
   // pay); owner/admin (and ?as= previews) see the assigned photographer's.
   const payMemberId = viewerMemberId ?? view.photographer?.id ?? null;
 
-  // Capture feedback (review-room PHOTOGRAPHER lane, scoped to this member) +
-  // the property's coordinates for the satellite glimpse. ShootView is the
-  // money-free on-site model and doesn't carry lat/lng, so a lean select
-  // fetches just the pin. Both are cheap — fetched in parallel, no Suspense.
-  const [feedback, geo] = await Promise.all([
-    payMemberId ? getPhotographerFeedback(id, payMemberId) : Promise.resolve([]),
-    // Also pull the locked reel recipe: the photographer directs the agent on
-    // camera from this script, so it belongs on the shoot screen (content only
-    // — the external Studio link stays owner/admin-side on the project page).
-    prisma.project.findUnique({
-      where: { id },
-      select: { lat: true, lng: true, reelHook: true, reelScript: true, reelSong: true, reelShotList: true, reelRecipeUpdatedAt: true },
-    }),
-  ]);
+  // Capture feedback (review-room PHOTOGRAPHER lane, scoped to this member).
+  // The reel script renders inside ShootScreen (ShootView carries the fields),
+  // and the old satellite glimpse is gone — the property look now lives on the
+  // My Shoots list as Street View → first Aryeo photo.
+  const feedback = payMemberId ? await getPhotographerFeedback(id, payMemberId) : [];
   // Only the photographer the feedback is addressed to can reply / mark fixed;
   // owner-admin previews (including "view as") are read-only here, matching
   // the server-side authz in reviewActions.
@@ -83,27 +71,17 @@ export default async function ShootDetailPage({
   ) : null;
 
   // Day's shoots + driving route — streams in (one OSRM call) so the screen
-  // paints first. ShootScreen owns the page layout, so the two new cards ride
-  // this top slot: review feedback FIRST (when it exists the shoot is past and
-  // the feedback is why they're here — the bell deep-links to this page), then
-  // the route, then the satellite glimpse — the "what am I walking into"
-  // moment right before the access brief.
+  // paints first. ShootScreen owns the page layout; this top slot carries
+  // review feedback FIRST (when it exists the shoot is past and the feedback
+  // is why they're here — the bell deep-links to this page), then the route.
   const map = (
     <>
       {feedback.length > 0 && (
         <ShootFeedback notes={feedback} readOnly={feedbackReadOnly} photographerName={view.photographer?.name ?? null} />
       )}
-      <ReelScriptCard
-        hook={geo?.reelHook ?? null}
-        script={geo?.reelScript ?? null}
-        song={geo?.reelSong ?? null}
-        shotList={geo?.reelShotList ?? null}
-        updatedAt={geo?.reelRecipeUpdatedAt ? geo.reelRecipeUpdatedAt.toISOString() : null}
-      />
       <Suspense fallback={<ShootMapCardSkeleton />}>
         <ShootMapCard projectId={id} memberId={payMemberId} />
       </Suspense>
-      <PropertyGlimpse lat={geo?.lat ?? null} lng={geo?.lng ?? null} address={view.project.addressFull} />
     </>
   );
 

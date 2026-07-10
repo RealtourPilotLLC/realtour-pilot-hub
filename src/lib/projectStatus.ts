@@ -143,6 +143,7 @@ export type AryeoMediaSignal = {
   floorPlans: number;
   interactive: number;
   delivery: string | null; // listing delivery_status: DELIVERED | UNDELIVERED
+  cover: string | null; // first live listing image (thumb) — the My Shoots card swap
 };
 
 export type DropboxSignal = {
@@ -321,12 +322,17 @@ export function computeStatus(sig: StatusSignals): StatusResult {
 async function aryeoMedia(listingId: string): Promise<AryeoMediaSignal | null> {
   try {
     const l = await Aryeo.listing(listingId);
+    // First gallery image (same preference order getListingMedia uses) — the
+    // My Shoots card swaps its Street View for this once photos land.
+    const gallery = (l.images ?? []).filter((i) => i.display_in_gallery !== false);
+    const first = gallery[0] as { thumbnail_url?: string; large_url?: string; original_url?: string } | undefined;
     return {
       photos: l.images?.length ?? 0,
       videos: l.videos?.length ?? 0,
       floorPlans: l.floor_plans?.length ?? 0,
       interactive: l.interactive_content?.length ?? 0,
       delivery: l.delivery_status ?? null,
+      cover: l.thumbnail_url ?? first?.thumbnail_url ?? first?.large_url ?? null,
     };
   } catch {
     return null;
@@ -353,6 +359,7 @@ type StatusProject = {
   aryeoListingId: string | null;
   deliveredAt: Date | null;
   uploadedAt: Date | null;
+  coverImageUrl: string | null;
   shootDate: Date | null;
   addressLine: string | null;
   createdAt: Date;
@@ -490,6 +497,7 @@ export async function syncProjectStatuses(
       aryeoListingId: true,
       deliveredAt: true,
       uploadedAt: true,
+      coverImageUrl: true,
       shootDate: true,
       addressLine: true,
       createdAt: true,
@@ -614,6 +622,8 @@ export async function syncProjectStatuses(
         ...(deliveryDue ? { deliveryDue } : {}),
         ...(final === "DELIVERED" && !p.deliveredAt ? { deliveredAt: new Date() } : {}),
         ...(rawsDetected && !p.uploadedAt ? { uploadedAt: new Date() } : {}),
+        // First live Aryeo image → the My Shoots thumbnail (refresh if it changes).
+        ...(sig.aryeo?.cover && sig.aryeo.cover !== p.coverImageUrl ? { coverImageUrl: sig.aryeo.cover } : {}),
       },
     });
 

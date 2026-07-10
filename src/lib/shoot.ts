@@ -454,7 +454,23 @@ export type MyShootRow = {
   photographerName: string | null;
   photographerId: string | null;
   photographerColor: string | null;
+  // Card thumbnail: Google Street View of the address until the photos are
+  // live on Aryeo, then the listing's first image (the status sweep keeps
+  // Project.coverImageUrl fresh). null = no key configured + no photos yet.
+  thumbUrl: string | null;
+  thumbKind: "aryeo" | "street" | null;
 };
+
+// Street View Static frame of the property — the "what am I walking into?"
+// look for a shoot that hasn't been photographed yet. Needs GOOGLE_MAPS_API_KEY
+// (Jordan adds it in Vercel; never in source). Without it we render no
+// thumbnail, and the card upgrades itself the moment the key exists or the
+// photos land on Aryeo.
+function streetViewSrc(address: string | null): string | null {
+  const key = process.env.GOOGLE_MAPS_API_KEY;
+  if (!key || !address) return null;
+  return `https://maps.googleapis.com/maps/api/streetview?size=320x200&location=${encodeURIComponent(address)}&fov=75&key=${key}`;
+}
 
 // A photographer's shoots (or all, for owner/admin previews): recent + upcoming,
 // soonest-relevant first. `memberId = null` = no scoping (owner/admin view).
@@ -486,10 +502,14 @@ export async function listMyShoots(memberId: string | null): Promise<MyShootRow[
   return rows.map((p) => {
     const appt = p.appointments[0];
     const when = appt?.startAt ?? p.shootDate;
+    // Photos live on Aryeo → the real cover shot; until then, Street View.
+    const sv = p.coverImageUrl ? null : streetViewSrc(p.addressLine ?? p.title);
     return {
       id: p.id,
       title: p.title,
       street: streetOf(p.title) || p.title,
+      thumbUrl: p.coverImageUrl ?? sv,
+      thumbKind: p.coverImageUrl ? ("aryeo" as const) : sv ? ("street" as const) : null,
       whenISO: when?.toISOString() ?? null,
       status: p.status,
       clientName: p.client.name,

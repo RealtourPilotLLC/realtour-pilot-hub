@@ -277,8 +277,19 @@ function ShootRowCard({ r, showWho, as }: { r: MyShootRow; showWho: boolean; as:
   return (
     <Link
       href={as ? `/shoot/${r.id}?as=${as}` : `/shoot/${r.id}`}
-      className="flex items-center gap-3 rounded-2xl border bg-surface p-4 transition-colors hover:border-brand/40 hover:bg-surface-2/50"
+      className="flex items-center gap-3 rounded-2xl border bg-surface p-3 transition-colors hover:border-brand/40 hover:bg-surface-2/50 sm:p-4"
     >
+      {/* Property thumbnail: Street View of the address until the photos are
+          live on Aryeo, then the listing's first image (server-side swap). */}
+      {r.thumbUrl && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={r.thumbUrl}
+          alt={r.thumbKind === "aryeo" ? `First listing photo of ${r.street}` : `Street View of ${r.street}`}
+          loading="lazy"
+          className="h-16 w-24 shrink-0 rounded-xl border border-border object-cover sm:h-[4.5rem] sm:w-28"
+        />
+      )}
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium text-brand">{r.whenISO ? etTime(r.whenISO) : "—"}</span>

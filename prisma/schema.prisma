@@ -260,6 +260,10 @@ model Project {
   // The status engine flags raw drops that blow past ~3.3× this (bracket ratio)
   // and Kyle's deliver card warns when the gallery ships over it.
   photoTarget Int?
+  // First live Aryeo listing image (thumbnail URL), captured by the status
+  // sweep the moment photos land. Drives the My Shoots card thumbnail: Street
+  // View of the address until the photos are in, then the real cover shot.
+  coverImageUrl String?
   packageName String? // ordered package label
   price       Float? // order total
   // Eligible services invoice for creative pay = sum of non-canceled order items
