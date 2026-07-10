@@ -19,6 +19,7 @@ import {
   Upload,
   MessageSquare,
   MessageSquarePlus,
+  MonitorPlay,
   Plug,
   LogOut,
   PenLine,
@@ -61,6 +62,8 @@ const SECTIONS: NavSection[] = [
       // Today + Daily Tasks + Task History merged into the one Tasks hub
       // (tabs: Today / Board / Done) — Jordan: "the toolbar has too many things".
       { label: "Tasks", href: "/tasks", icon: ListTodo, key: "tasks" },
+      // The owner's quality desk — cuts to review, photo QC, feedback loops.
+      { label: "Review Room", href: "/review", icon: MonitorPlay, key: "review" },
       { label: "Project Tracker", href: "/pipeline", icon: KanbanSquare, key: "pipeline" },
       // Schedule now carries the Map as its ?view=map tab (List | Map toggle in
       // the header), so the standalone "Map" item is gone — one appointment

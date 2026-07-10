@@ -75,13 +75,17 @@ export type NotifyTarget = { roles: Role[]; userKey?: string; href?: string }; /
 // doesn't wake anyone); only fires when the bell row was NEWLY created, so a
 // deduped re-announcement can't re-text.
 // ---------------------------------------------------------------------------
-const SMS_KINDS = new Set(["appointment_change", "order_canceled", "mention", "review_feedback", "cull"]);
+const SMS_KINDS = new Set(["appointment_change", "order_canceled", "mention", "review_feedback", "cull", "raws_missing"]);
 // The video editors (Kim/Remar) have no push either, and the whole point of the
 // editor platform is that raws-landed / a revision / a review-back actually
 // REACH them — in Manila. These kinds bridge an `editor:<key>` bell row to their
 // channel (Slack DM if we have their id, else SMS via their TeamMember phone),
 // gated by quiet hours in THEIR timezone (see channelForEditor).
-const EDITOR_CHANNEL_KINDS = new Set(["raws_landed", "revision_raised", "mention", "edit_finished"]);
+const EDITOR_CHANNEL_KINDS = new Set([
+  "raws_landed", "revision_raised", "mention", "edit_finished",
+  // Review Room round-trips: changes requested on a cut / cut approved.
+  "review_changes", "review_approved",
+]);
 
 // Quiet hours in a SPECIFIC timezone (7:00–22:00 local). Photographer texting
 // stays ET via the default; editor texting passes the recipient's tz so a

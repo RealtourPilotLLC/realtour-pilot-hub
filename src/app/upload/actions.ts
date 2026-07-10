@@ -139,13 +139,52 @@ export async function submitAppointmentFeedback(
  */
 export async function finalizeUpload(
   projectId: string,
-  data: { editorBrief: string; itemNotes?: Record<string, string> },
-) {
+  data: { editorBrief: string; itemNotes?: Record<string, string>; force?: boolean },
+): Promise<{ pdfPath?: string; needsConfirm?: boolean; warning?: string }> {
   await requireShootAccess(projectId);
   // First finalize or a re-submit? The raws-landed handoff below only fires on
   // the FIRST completed upload (the transition), never on edits/re-submits.
-  const prior = await prisma.project.findUnique({ where: { id: projectId }, select: { uploadedAt: true } });
+  const prior = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      uploadedAt: true,
+      title: true,
+      addressLine: true,
+      shootDate: true,
+      createdAt: true,
+      client: { select: { name: true } },
+      deliverables: { select: { type: true } },
+    },
+  });
   const firstFinalize = !prior?.uploadedAt;
+
+  // SERVER-SIDE completeness check against the ORDER (the old client-side
+  // confirm was honor-system only — July 2026 audit: "photos-only upload reads
+  // as raws-in for a video job"). Compare what was ordered against what's
+  // actually in the raw folders; a mismatch bounces back for an explicit
+  // confirm instead of silently handing editors an empty folder. Dropbox
+  // unreadable → don't block (unknown is not proof of absence).
+  if (!data.force && prior) {
+    try {
+      const { projectFolderPaths, folderFileCount } = await import("@/lib/dropboxFolders");
+      const paths = projectFolderPaths(prior);
+      const wantsVideo = prior.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+      const wantsPhotos = prior.deliverables.some((d) => d.type === "PHOTOS" || d.type === "DRONE");
+      const [rawPhotos, rawVideo] = await Promise.all([
+        wantsPhotos ? folderFileCount(paths.rawPhotos) : Promise.resolve(null),
+        wantsVideo ? folderFileCount(paths.rawVideo) : Promise.resolve(null),
+      ]);
+      const missing: string[] = [];
+      if (wantsPhotos && rawPhotos === 0) missing.push("the RAW-Photos folder is empty");
+      if (wantsVideo && rawVideo === 0) missing.push("the RAW-Video folder is empty (a video is ordered!)");
+      if (missing.length > 0) {
+        return {
+          needsConfirm: true,
+          warning: `Hold on — ${missing.join(" and ")}. If you already uploaded, give Dropbox a minute and re-check the folder name. Submit anyway?`,
+        };
+      }
+    } catch { /* can't check → don't block the submit */ }
+  }
   // Persist per-deliverable notes when provided (the simplified checklist portal
   // doesn't send these, but other callers may).
   for (const [deliverableId, note] of Object.entries(data.itemNotes ?? {})) {
@@ -198,14 +237,24 @@ export async function finalizeUpload(
     },
   });
 
-  // Raws are in → tell the editors (Slack ops ping) and, for a premium reel,
-  // mint the "Send raws + brief to Luma" dispatch task. Flipping to SHOT used
-  // to notify no one (audit crack #19). Best-effort — never block the submit.
+  // Raws are in → refresh the evidence and run the FULL editor handoff now
+  // (bench ping + edit_video task + Luma dispatch + editorId), instead of
+  // waiting up to an hour for the cron. The old wiring only pinged Slack and
+  // never minted the editor's work item (July 2026 audit: "both photographer
+  // 'done' buttons suppress the editor handoff"). syncProjectStatuses re-reads
+  // Aryeo/Dropbox and calls the idempotent ensureEditorHandoff inside.
   if (firstFinalize) {
     try {
-      const { notifyRawsLanded } = await import("@/lib/tasks");
-      await notifyRawsLanded(projectId);
-    } catch { /* non-fatal */ }
+      const { syncProjectStatuses } = await import("@/lib/projectStatus");
+      await syncProjectStatuses({ projectId });
+    } catch {
+      // Evidence sync failed (Dropbox blip?) — at least announce the raws; the
+      // hourly sweep will complete the handoff.
+      try {
+        const { notifyRawsLanded } = await import("@/lib/tasks");
+        await notifyRawsLanded(projectId);
+      } catch { /* non-fatal */ }
+    }
   }
 
   // Auto-create the Frame.io review project for VIDEO jobs (editors upload their

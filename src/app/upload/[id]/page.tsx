@@ -186,12 +186,19 @@ function DropboxFolders({
                 <div className="flex items-center gap-1.5 text-xs font-medium">
                   {r.label}
                   {state.connected && (
+                    // count null = the Dropbox read FAILED — show "couldn't
+                    // check", never "empty" (a photographer verifying their
+                    // 300-raw drop must not be told the folder is empty).
                     <span
                       className={`rounded-full px-1.5 text-[10px] font-semibold ${
-                        r.count > 0 ? "bg-success/15 text-success" : "bg-surface-2 text-muted-2"
+                        (r.count ?? 0) > 0 ? "bg-success/15 text-success" : "bg-surface-2 text-muted-2"
                       }`}
                     >
-                      {r.count > 0 ? `${r.count} file${r.count === 1 ? "" : "s"}` : "empty"}
+                      {r.count === null
+                        ? "couldn't check"
+                        : r.count > 0
+                        ? `${r.count} file${r.count === 1 ? "" : "s"}`
+                        : "empty"}
                     </span>
                   )}
                 </div>

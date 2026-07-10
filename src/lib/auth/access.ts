@@ -7,7 +7,7 @@ export type PageKey =
   | "dashboard" | "tasks" | "pipeline" | "schedule" | "map"
   | "communications" | "clients" | "team" | "upload" | "editing" | "sales"
   | "billing" | "catalog" | "payouts" | "marketing" | "resources" | "assistant"
-  | "training" | "feedback" | "connections" | "users" | "shoot" | "mypay";
+  | "training" | "feedback" | "connections" | "users" | "shoot" | "mypay" | "review";
 // NOTE: "map", "billing", "payouts", "team" survive in this type only so stored
 // per-user permission JSON keeps resolving and so canAccess() can treat them as
 // legacy grants on the pages they merged into (see canAccess). They no longer
@@ -29,6 +29,10 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   // deliberately have NO PageKey: any signed-in user may take the redirect hop,
   // and the destination page enforces access itself.
   { key: "tasks", label: "Tasks", href: "/tasks" },
+  // The Review Room — the owner's quality desk: cuts editors submitted, photo
+  // sets in QC, and open feedback follow-through. Owner/admin by default;
+  // creatives receive their feedback on their own surfaces (/shoot, /edit).
+  { key: "review", label: "Review Room", href: "/review" },
   { key: "pipeline", label: "Project Tracker", href: "/pipeline" },
   // Schedule now owns both the day-list and the Map (the ?view=map tab). /map is
   // a redirect stub → /schedule?view=map, so "map" no longer needs its own key.
@@ -72,7 +76,7 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
   // "payouts"/"team" here: those merged away and canAccess() maps their legacy
   // grants onto schedule/sales/users below.
   ADMIN: [
-    "dashboard", "tasks", "pipeline", "schedule", "shoot",
+    "dashboard", "tasks", "review", "pipeline", "schedule", "shoot",
     "communications", "clients", "users", "upload", "editing", "sales",
     "catalog", "resources", "training", "assistant", "feedback",
   ],

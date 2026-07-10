@@ -112,8 +112,16 @@ export function UploadPortal({
     setErr(null);
     startTransition(async () => {
       try {
-        const res = await finalizeUpload(project.id, { editorBrief });
-        setPdfPath(res.pdfPath);
+        // The server cross-checks the ORDER against the raw folders (a video
+        // job with an empty RAW-Video folder bounces back here) — one explicit
+        // confirm, then force through.
+        let res = await finalizeUpload(project.id, { editorBrief });
+        if (res.needsConfirm) {
+          const proceed = window.confirm(res.warning ?? "Some ordered items look missing. Submit anyway?");
+          if (!proceed) return;
+          res = await finalizeUpload(project.id, { editorBrief, force: true });
+        }
+        if (res.pdfPath) setPdfPath(res.pdfPath);
         setDone(true);
         window.scrollTo({ top: 0, behavior: "smooth" });
       } catch {

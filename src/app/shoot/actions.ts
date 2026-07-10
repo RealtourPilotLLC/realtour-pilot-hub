@@ -200,6 +200,15 @@ export async function completeShoot(projectId: string): Promise<{ ok: boolean; m
   // Captured → advance to SHOT (unless already further along the pipeline).
   if (project.status === "BOOKED" || project.status === "SCHEDULED") {
     await prisma.project.update({ where: { id: projectId }, data: { status: "SHOT" } });
+    // Refresh the evidence + run the editor handoff NOW instead of waiting up
+    // to an hour for the cron. The old button set SHOT and told no one — the
+    // sweep saw no transition, so the editor's task never minted (July 2026
+    // audit). syncProjectStatuses({projectId}) re-reads Aryeo/Dropbox and its
+    // stage-independent ensureEditorHandoff does the rest, all idempotent.
+    try {
+      const { syncProjectStatuses } = await import("@/lib/projectStatus");
+      await syncProjectStatuses({ projectId });
+    } catch { /* the hourly sweep is the backstop */ }
   }
 
   const who = project.photographer?.name ?? "The photographer";

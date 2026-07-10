@@ -17,6 +17,10 @@ import { FrameioButton } from "@/components/project/FrameioButton";
 import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { getVideoSlaStatus } from "@/lib/projectStatus";
 import { SlaCountdown } from "@/components/editing/SlaCountdown";
+import { SubmitCutCard } from "@/components/editing/EditorActions";
+import { EditFeedback } from "@/components/editing/EditFeedback";
+import { getEditorFeedback } from "@/lib/reviewRoom";
+import { slugForName } from "@/lib/assignees";
 import { refinedDeliverableLabel } from "@/lib/pipeline";
 import { ActivityType } from "@prisma/client";
 import { formatDistanceToNow } from "date-fns";
@@ -38,6 +42,12 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
   if (!project) notFound();
 
   const isOwnerAdmin = !viewer || viewer.role === "OWNER" || viewer.role === "ADMIN";
+
+  // Review Room feedback addressed to this editor (owner/admin see all lanes'
+  // editor notes read-only — their interactive desk is /review).
+  const editorScope =
+    viewer?.role === "EDITOR" ? (viewer.editorKey || (viewer.name ? slugForName(viewer.name) : null)) : null;
+  const feedback = await getEditorFeedback(id, isOwnerAdmin ? null : editorScope).catch(() => []);
   const profile = parseClientProfile(project.client.profileJson);
   const folders = projectFolderPaths(project);
   const rawUrl = dropboxWebUrl(folders.rawVideo);
@@ -92,6 +102,9 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
       <div className="grid gap-6 p-4 sm:p-6 lg:grid-cols-3">
         {/* LEFT — the brief */}
         <div className="space-y-6 lg:col-span-2">
+          {/* Feedback from the Review Room — first, it's the most actionable */}
+          <EditFeedback notes={feedback} canFix={!isOwnerAdmin} viewerName={viewer?.name} />
+
           {/* What to make */}
           <Section icon={Film} title="What to make">
             <div className="flex flex-wrap gap-2">
@@ -171,10 +184,16 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
                 </a>
               )}
             </div>
-            <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-[#5b53ff]/25 bg-[#5b53ff]/5 p-3">
-              <Clapperboard className="size-4 text-[#5b53ff]" />
-              <span className="text-sm text-foreground/85">When the cut is ready, upload it to Frame.io and click <strong>“Send to RealTour for review.”</strong></span>
-              <span className="ml-auto"><FrameioButton projectId={project.id} viewUrl={project.frameioViewUrl} /></span>
+            <div className="mt-3 space-y-2 rounded-lg border border-[#5b53ff]/25 bg-[#5b53ff]/5 p-3">
+              <div className="flex items-start gap-2">
+                <Clapperboard className="mt-0.5 size-4 shrink-0 text-[#5b53ff]" />
+                <span className="text-sm text-foreground/85">
+                  When the cut is ready: <strong>1)</strong> drop the finished file in the <strong>Final footage</strong> folder
+                  above, <strong>2)</strong> hit <strong>Done — send to review</strong>. It goes straight to the Review Room
+                  with a player — Jordan gets pinged the moment you send it.
+                </span>
+              </div>
+              <SubmitCutCard projectId={project.id} />
             </div>
           </Section>
 

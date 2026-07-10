@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { dropboxListFolder, dropboxConfigured } from "@/lib/integrations/dropbox";
+import { dropboxListFolder, dropboxConfigured, DropboxError } from "@/lib/integrations/dropbox";
 import { getSecret } from "@/lib/integrations/connections";
 import { generateTasksForActiveProjects } from "@/lib/tasks";
 
@@ -32,12 +32,28 @@ type FolderProject = {
   client: { name: string };
 };
 
+// Year/month of a date IN EASTERN TIME. The Zap names folders by the shoot's
+// local (ET) date; getFullYear()/getMonth() run in SERVER time — UTC on Vercel —
+// so an ET evening shoot near a month/quarter boundary computed a DIFFERENT
+// folder than the one the files actually live in, and every count read zero
+// (July 2026 audit: "folder paths are guessed … UTC month boundary").
+function etYearMonth(date: Date): { year: number; monthIdx: number } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "numeric",
+  }).formatToParts(date);
+  const year = Number(parts.find((x) => x.type === "year")?.value ?? date.getFullYear());
+  const monthIdx = Number(parts.find((x) => x.type === "month")?.value ?? date.getMonth() + 1) - 1;
+  return { year, monthIdx };
+}
+
 // Build the folder paths for a project following the Zap's naming.
 export function projectFolderPaths(p: FolderProject): ProjectFolders {
   const date = p.shootDate ?? p.createdAt;
-  const year = date.getFullYear();
-  const month = MONTHS[date.getMonth()];
-  const quarter = `Q${Math.floor(date.getMonth() / 3) + 1}`;
+  const { year, monthIdx } = etYearMonth(date);
+  const month = MONTHS[monthIdx];
+  const quarter = `Q${Math.floor(monthIdx / 3) + 1}`;
   const street = (p.addressLine || p.title.split(",")[0] || "Listing").trim();
   const listingName = `${street} (${p.client.name})`;
   const base = `/AutoHDR/${year}/${quarter}/${month}/${listingName}`;
@@ -50,12 +66,18 @@ export function projectFolderPaths(p: FolderProject): ProjectFolders {
   };
 }
 
-async function folderFileCount(path: string): Promise<number> {
+// A missing folder is a trustworthy ZERO (nothing was uploaded there). Any
+// OTHER failure — auth, rate limit, network — is UNKNOWN, not zero: an expired
+// token used to render every folder "empty" to a photographer double-checking
+// their 300-raw drop (July 2026 audit). Same null semantics as the status
+// sweep's folderCount.
+export async function folderFileCount(path: string): Promise<number | null> {
   try {
     const entries = await dropboxListFolder(path);
     return entries.filter((e) => e.tag === "file").length;
-  } catch {
-    return 0; // folder missing / not yet created
+  } catch (e) {
+    if (e instanceof DropboxError && /not_found|path_lookup/i.test(e.message)) return 0;
+    return null; // couldn't look — the caller must not treat this as "empty"
   }
 }
 
@@ -69,9 +91,12 @@ export function dropboxWebUrl(path: string): string {
 // Returns null when Dropbox isn't connected so the UI can degrade gracefully.
 export async function getProjectFolderState(p: FolderProject): Promise<{
   connected: boolean;
-  folders: { key: keyof ProjectFolders; label: string; path: string; url: string; count: number; raw: boolean }[];
+  // count null = the read FAILED (auth/rate-limit/network) — render "?", never
+  // "empty". A photographer double-checking a 300-raw drop must not see 0.
+  folders: { key: keyof ProjectFolders; label: string; path: string; url: string; count: number | null; raw: boolean }[];
   hasRaw: boolean;
   hasFinal: boolean;
+  readFailed: boolean;
 } | null> {
   const f = projectFolderPaths(p);
   const defs: { key: keyof ProjectFolders; label: string; raw: boolean }[] = [
@@ -94,9 +119,10 @@ export async function getProjectFolderState(p: FolderProject): Promise<{
     count: counts[i],
     raw: d.raw,
   }));
-  const hasRaw = folders.filter((x) => x.raw).some((x) => x.count > 0);
-  const hasFinal = folders.filter((x) => !x.raw).some((x) => x.count > 0);
-  return { connected, folders, hasRaw, hasFinal };
+  const hasRaw = folders.filter((x) => x.raw).some((x) => (x.count ?? 0) > 0);
+  const hasFinal = folders.filter((x) => !x.raw).some((x) => (x.count ?? 0) > 0);
+  const readFailed = connected && counts.some((c) => c === null);
+  return { connected, folders, hasRaw, hasFinal, readFailed };
 }
 
 // Raw-photo folder count for ONE project (a single Dropbox call), for the upload
@@ -110,7 +136,10 @@ export async function rawPhotoCounts(
   const out = new Map<FolderProject, number>();
   await Promise.all(
     projects.map(async (p) => {
-      out.set(p, await folderFileCount(projectFolderPaths(p).rawPhotos));
+      const n = await folderFileCount(projectFolderPaths(p).rawPhotos);
+      // A failed read is unknown, not zero — omit the row so the over-budget
+      // chip simply doesn't render rather than silently vanishing as "0 raws".
+      if (n !== null) out.set(p, n);
     }),
   );
   return out;
@@ -138,12 +167,14 @@ export async function syncDropboxFolderStatus(): Promise<{
 
   for (const p of projects) {
     const f = projectFolderPaths(p);
-    const [rawP, rawV, finP, finV] = await Promise.all([
-      folderFileCount(f.rawPhotos),
-      folderFileCount(f.rawVideo),
-      folderFileCount(f.finalPhotos),
-      folderFileCount(f.finalVideo),
-    ]);
+    const [rawP, rawV, finP, finV] = (
+      await Promise.all([
+        folderFileCount(f.rawPhotos),
+        folderFileCount(f.rawVideo),
+        folderFileCount(f.finalPhotos),
+        folderFileCount(f.finalVideo),
+      ])
+    ).map((n) => n ?? 0); // legacy manual sweep: unknown reads as 0 (advance-only logic)
     const hasRaw = rawP + rawV > 0;
     const hasFinal = finP + finV > 0;
 

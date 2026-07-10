@@ -787,12 +787,46 @@ export async function closeObsoleteTasks(projectId: string, projectStatus: strin
     return r.count;
   }
   if (projectStatus === "DELIVERED") {
+    // Kyle delivers on Aryeo directly, so this sweep — not the guided checklist
+    // — is how most media_qa cards actually die. Snapshot each one into a
+    // QcRecord FIRST (missCount = whatever was still unticked, completedBy
+    // "auto:delivered") so a bypassed QC pass is measurable instead of
+    // invisible: 30 of 30 deliveries had closed this way with ZERO QcRecords,
+    // and the owner's quality dial read empty (July 2026 audit). Analytics
+    // only — a record failure never blocks the close.
+    try {
+      const qcCards = await prisma.smartTask.findMany({
+        where: { projectId, taskType: "media_qa", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        select: { checklist: true },
+      });
+      if (qcCards.length > 0) {
+        const segment = await prisma.project.findUnique({
+          where: { id: projectId },
+          select: { client: { select: { segment: true } } },
+        });
+        for (const card of qcCards) {
+          await recordQcCompletion({
+            projectId,
+            items: parseChecklist(card.checklist),
+            clientSegment: segment?.client?.segment ?? null,
+            completedBy: "auto:delivered",
+          });
+        }
+      }
+    } catch { /* QC snapshot is best-effort */ }
     const r = await prisma.smartTask.updateMany({
       where: {
         projectId,
         taskType: { in: DELIVERED_CLOSE_TYPES },
         status: { notIn: ["COMPLETED", "CANCELLED"] },
       },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    });
+    // The cull nudge (taskType "todo", dedupeKey cull-<id>) is moot once the
+    // gallery shipped — the raws can't be thinned retroactively. Close it so it
+    // doesn't rot as noise (todo-type tasks are swept by nothing else).
+    await prisma.smartTask.updateMany({
+      where: { projectId, dedupeKey: `cull-${projectId}`, status: { notIn: ["COMPLETED", "CANCELLED"] } },
       data: { status: "COMPLETED", completedAt: new Date() },
     });
     await createDeliveryTextTask(projectId);
@@ -1193,7 +1227,8 @@ export async function mintEditTask(projectId: string): Promise<void> {
         "Open the RAW video folder",
         "Read the brief (reel recipe, editing notes, brand)",
         "Cut the video to the brief",
-        "Upload to Frame.io and send to RealTour for review",
+        "Drop the finished cut in 05-Final-Video",
+        "Hit “Done — send to review” on your queue",
       ]),
       source: "system",
       priority,
@@ -1205,6 +1240,259 @@ export async function mintEditTask(projectId: string): Promise<void> {
       dedupeKey: key,
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// ENSURE the editor handoff — idempotent, stage-independent, called by the
+// hourly sweep for EVERY job in SHOT/EDITING/REVIEW (and by the photographer
+// "done" buttons). Replaces the old transition-only wiring that had two fatal
+// holes (July 2026 audit): jobs that skip SHOT (photos deliver fast →
+// SCHEDULED→REVIEW) never got an editor task, and button-flipped SHOT never
+// re-transitioned so the handoff was skipped. Everything inside is deduped
+// (activity marker / dedupeKeys), so hourly re-calls are safe.
+//   1. raws in            → notifyRawsLanded (bench ping + Luma dispatch, once)
+//   2. video job          → persist Project.editorId for the tracker/reassign
+//   3. cut submitted/live → clear any raw-video nudge, done
+//   4. raw video missing  → ONE "find the raw video" task (folder mismatch or
+//                           forgotten card — either way a human must look)
+//   5. otherwise          → mint the edit_video work item; resurrect one that
+//                           was falsely auto-completed with no cut anywhere
+// ---------------------------------------------------------------------------
+export async function ensureEditorHandoff(projectId: string): Promise<void> {
+  const p = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      title: true,
+      clientId: true,
+      status: true,
+      statusEvidence: true,
+      editorId: true,
+      photographerId: true,
+      photographer: { select: { name: true } },
+      client: { select: { socialClient: true } },
+      deliverables: { select: { type: true, label: true } },
+    },
+  });
+  if (!p) return;
+
+  let ev: { present?: string[]; dropbox?: { rawPhotos?: number; rawVideo?: number; finalVideo?: number } | null } = {};
+  try {
+    ev = p.statusEvidence ? JSON.parse(p.statusEvidence) : {};
+  } catch { /* unreadable evidence → treat as unknown */ }
+  const dropbox = ev.dropbox ?? null;
+  const anyRaw = !!dropbox && (dropbox.rawPhotos ?? 0) + (dropbox.rawVideo ?? 0) > 0;
+
+  // 1. Announce the raws once (marker-idempotent inside notifyRawsLanded).
+  if (anyRaw) await notifyRawsLanded(projectId);
+
+  const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  if (!v) return; // photos-only → AutoHDR, no human editor
+
+  // 2. Persist the routed editor for the tracker + one-click reassign (in-house only).
+  try {
+    const { editorForDeliverable, editorTeamMemberId } = await import("@/lib/editors");
+    const key = editorForDeliverable(v.type, v.label, p.client?.socialClient ?? false);
+    const tmId = await editorTeamMemberId(key);
+    if (tmId && p.editorId !== tmId) {
+      await prisma.project.update({ where: { id: projectId }, data: { editorId: tmId } });
+    }
+  } catch { /* editor link is best-effort */ }
+
+  const NUDGE_KEY = `raw-video-missing-${projectId}`;
+  const clearNudge = () =>
+    prisma.smartTask.updateMany({
+      where: { dedupeKey: NUDGE_KEY, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    });
+
+  // 3. The cut is already in the owner's hands (Review Room submission) or
+  // verifiably live (Aryeo/final folder) → nothing to mint; clear stale nudges.
+  const submitted = await prisma.reviewSubmission.count({ where: { projectId } });
+  const videoPresent = (ev.present ?? []).includes("Video") || (dropbox?.finalVideo ?? 0) > 0;
+  if (submitted > 0 || videoPresent) {
+    await clearNudge();
+    return;
+  }
+
+  // 4. Raw video KNOWN missing (folders readable, zero video files) — the edit
+  // can't start. Either the photographer forgot the video card or the files
+  // live in a differently-named folder the hub can't see. ONE deduped task so
+  // a human finds out TODAY instead of when the video runs overdue; the
+  // photographer also gets a bell+SMS pointing at their upload page.
+  if (dropbox && (dropbox.rawVideo ?? 0) === 0) {
+    const street = (p.title || "this job").split(",")[0].trim();
+    const first = (p.photographer?.name || "the photographer").split(/\s+/)[0];
+    const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: NUDGE_KEY } });
+    if (!existing) {
+      const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
+      await prisma.smartTask.create({
+        data: {
+          taskType: "todo", // swept by nothing; ensureEditorHandoff clears it when footage appears
+          title: `Find the raw video — ${street}`.slice(0, 120),
+          summary: `A video is ordered for ${street} but the RAW-Video folder shows no files. Either ${first} hasn't uploaded the footage yet, or it's sitting in a folder the hub isn't watching (naming mismatch). The edit can't start until this is found.`,
+          description: `Check the Dropbox listing folder for ${street}. If the footage is there under a different name, move it into 02-RAW-Video. If it isn't, chase ${first} — the video clock is running.`,
+          reasonCreated: "Video ordered, raw footage not found",
+          checklist: JSON.stringify([
+            "Open the listing's Dropbox folder",
+            `If missing: text ${first} for the footage`,
+            "Confirm files land in 02-RAW-Video",
+          ]),
+          source: "system",
+          priority: "HIGH",
+          dueAt: new Date(Date.now() + 4 * HOUR),
+          assignedKey: "kyle",
+          projectId,
+          clientId: p.clientId,
+          propertyAddress: p.title,
+          ownerId: kyle?.id ?? null,
+          dedupeKey: NUDGE_KEY,
+        },
+      });
+      try {
+        const { notifyInApp } = await import("@/lib/notify");
+        const targets: import("@/lib/notify").NotifyTarget[] = [{ roles: ["ADMIN"] }];
+        if (p.photographerId) {
+          targets.push({ roles: ["PHOTOGRAPHER"], userKey: `tm:${p.photographerId}`, href: `/upload/${projectId}` });
+        }
+        await notifyInApp({
+          kind: "raws_missing",
+          title: `Video files needed — ${street}`,
+          href: `/projects/${projectId}`,
+          targets,
+          dedupeKey: `raw-video-missing-bell-${projectId}`,
+        });
+      } catch { /* nudge bell is best-effort */ }
+    }
+    return; // hold the edit task until footage is findable
+  }
+
+  // Footage is in (or Dropbox unreadable — don't block on unknown): clear the
+  // nudge and make sure the editor's accountable work item exists.
+  await clearNudge();
+  if (!anyRaw) return; // nothing detected at all → nothing to hand off yet
+
+  await mintEditTask(projectId); // creates if absent; refreshes if open; skips completed
+
+  // 5. Resurrect a falsely-completed work item: task COMPLETED but no cut
+  // anywhere (no submission, no video evidence — checked above) and no open
+  // revision carrying the work instead. This is how the 5-Nathaniel-Ct class of
+  // silent losses self-heals: the sweep notices the video is still owed and
+  // puts the job back on the editor's Do-now.
+  try {
+    const t = await prisma.smartTask.findUnique({
+      where: { dedupeKey: `edit-video-${projectId}` },
+      select: { id: true, status: true },
+    });
+    if (t?.status === "COMPLETED") {
+      const openRevision = await prisma.smartTask.count({
+        where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      });
+      if (openRevision === 0) {
+        await prisma.smartTask.update({
+          where: { id: t.id },
+          data: { status: "OPEN", completedAt: null },
+        });
+        await prisma.activity.create({
+          data: {
+            projectId,
+            type: "SYSTEM",
+            body: "Edit task reopened — the video is still owed but its work item had been closed with no cut on file.",
+          },
+        });
+      }
+    }
+  } catch { /* resurrection is best-effort */ }
+}
+
+// ---------------------------------------------------------------------------
+// RAWS MISSING watchdog — the "shoot happened, nothing ever landed" alarm the
+// system never had (877 S York sat SCHEDULED for 11 days with nobody told —
+// July 2026 audit). Called by the sweep for BOOKED/SCHEDULED jobs whose shoot
+// is in the past. Mints ONE deduped chase task on Kyle + bell/SMS to the
+// photographer once the raws are 18+ hours late; self-clears when files land.
+// ---------------------------------------------------------------------------
+const RAWS_MISSING_AFTER_MS = 18 * HOUR;
+
+export async function reconcileRawsMissing(
+  projectId: string,
+  sig: { rawsKnownEmpty: boolean; anyAryeoMedia: boolean },
+): Promise<void> {
+  const key = `raws-missing-${projectId}`;
+  // Raws showed up (or Aryeo already has media, or Dropbox was unreadable —
+  // unknown is not proof of absence): close any open watchdog task and stop.
+  if (!sig.rawsKnownEmpty || sig.anyAryeoMedia) {
+    await prisma.smartTask.updateMany({
+      where: { dedupeKey: key, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    });
+    return;
+  }
+  if (await prisma.smartTask.findUnique({ where: { dedupeKey: key } })) return; // one nag per project
+
+  const p = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      title: true,
+      clientId: true,
+      shootDate: true,
+      photographerId: true,
+      photographer: { select: { name: true } },
+      appointments: { select: { status: true, startAt: true } },
+    },
+  });
+  if (!p) return;
+
+  // When did the shoot actually happen? Latest PAST non-canceled appointment
+  // leg, else the (past) shootDate — same semantics as the sweep's shootHappened.
+  const now = Date.now();
+  const legs = p.appointments
+    .filter((a) => (a.status || "").toUpperCase() !== "CANCELED" && a.startAt && a.startAt.getTime() < now)
+    .map((a) => a.startAt!.getTime());
+  if (p.shootDate && p.shootDate.getTime() < now) legs.push(p.shootDate.getTime());
+  const shotAt = legs.length ? Math.max(...legs) : null;
+  if (!shotAt || now - shotAt < RAWS_MISSING_AFTER_MS) return; // give them the evening
+
+  const street = (p.title || "this job").split(",")[0].trim();
+  const first = (p.photographer?.name || "the photographer").split(/\s+/)[0];
+  const hoursLate = Math.round((now - shotAt) / HOUR);
+  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
+  await prisma.smartTask.create({
+    data: {
+      taskType: "todo", // swept by nothing; this watchdog clears it itself when raws land
+      title: `No raws uploaded — ${street}`.slice(0, 120),
+      summary: `${first} shot ${street} ~${hoursLate}h ago and the raw folders are still empty. Nothing downstream (editing, QC, delivery) can start until the files land — chase it now.`,
+      description: `If ${first} uploaded somewhere else, move the files into the listing's 01-RAW-Photos / 02-RAW-Video folders. If not, get an ETA. The delivery clock started at the shoot.`,
+      reasonCreated: "Shoot happened, no raw files ever landed",
+      checklist: JSON.stringify([
+        `Text ${first} — where are the files?`,
+        "Check the Dropbox folder naming matches the listing",
+        "Confirm the raws land",
+      ]),
+      source: "system",
+      priority: "HIGH",
+      dueAt: new Date(now + 4 * HOUR),
+      assignedKey: "kyle",
+      projectId,
+      clientId: p.clientId,
+      propertyAddress: p.title,
+      ownerId: kyle?.id ?? null,
+      dedupeKey: key,
+    },
+  });
+  try {
+    const { notifyInApp } = await import("@/lib/notify");
+    const targets: import("@/lib/notify").NotifyTarget[] = [{ roles: ["OWNER", "ADMIN"] }];
+    if (p.photographerId) {
+      targets.push({ roles: ["PHOTOGRAPHER"], userKey: `tm:${p.photographerId}`, href: `/upload/${projectId}` });
+    }
+    await notifyInApp({
+      kind: "raws_missing",
+      title: `Upload needed — ${street}`,
+      href: `/projects/${projectId}`,
+      targets,
+      dedupeKey: `raws-missing-bell-${projectId}`,
+    });
+  } catch { /* watchdog bell is best-effort */ }
 }
 
 // Generate (idempotently) the expected tasks for every ACTIVE project.
@@ -1287,13 +1575,18 @@ async function syncOneProjectTasks(
   // edit_video is externally-minted (mintEditTask, off the →SHOT hook), so it's
   // NOT in `specs` and the spec-based sweep never touches it (edit-video- is in
   // EXTERNAL_KEY_PREFIXES). Close it here on EVIDENCE the cut landed — the final
-  // video is on Aryeo/Dropbox (present.Video / dropbox.finalVideo) OR the job
-  // advanced past editing (REVIEW/DELIVERED). Mirrors how media_qa auto-closes
+  // video is on Aryeo/Dropbox (present.Video / dropbox.finalVideo), the editor
+  // submitted it through the Review Room, or the job is DELIVERED. Status REVIEW
+  // alone is deliberately NOT evidence: the status engine derives REVIEW for
+  // PARTIAL deliveries too (photos live, video explicitly missing — the NORMAL
+  // staged flow), and using it here auto-completed the editor's only work item
+  // within the hour of photo delivery while the reel was still unmade (July
+  // 2026 audit, proven live on 5 Nathaniel Ct). Mirrors how media_qa auto-closes
   // on positive evidence: an editor's finished cut shouldn't sit open forever.
   // REVISION deliberately does NOT close it — a bounced reel is back on the
   // editor's plate. Best-effort; wrapped so a stray parse can't break the sync.
   try {
-    let finalVideoLanded = ["REVIEW", "DELIVERED"].includes(p.status);
+    let finalVideoLanded = p.status === "DELIVERED";
     if (!finalVideoLanded && p.statusEvidence) {
       const ev = JSON.parse(p.statusEvidence) as {
         present?: string[];
@@ -1301,6 +1594,13 @@ async function syncOneProjectTasks(
       };
       finalVideoLanded =
         (ev.present ?? []).includes("Video") || (ev.dropbox?.finalVideo ?? 0) > 0;
+    }
+    // The editor said "done" through the Review Room — the cut is with the owner
+    // (any round, any verdict state) and their work item was already completed
+    // by submitCutForReview; treat as landed so nothing here fights that flow.
+    if (!finalVideoLanded) {
+      finalVideoLanded =
+        (await prisma.reviewSubmission.count({ where: { projectId: p.id } })) > 0;
     }
     if (finalVideoLanded) {
       await prisma.smartTask.updateMany({

@@ -358,6 +358,7 @@ model Project {
   mediaNotes   MediaNote[]
   mediaVerdicts MediaVerdict[]
   qcRecords    QcRecord[]
+  reviewSubmissions ReviewSubmission[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -706,7 +707,7 @@ model MediaNote {
   x         Float? // normalized 0..1 pin position (photos)
   y         Float?
   timeSec   Float? // video timestamp (seconds)
-  lane      String  @default("EDIT") // EDIT | PHOTOGRAPHER
+  lane      String  @default("EDIT") // EDIT | PHOTOGRAPHER | EDITOR
   kind      String  @default("fix") // fix | coaching
   body      String
   status    String  @default("OPEN") // OPEN | FIXED | RESOLVED
@@ -715,6 +716,10 @@ model MediaNote {
   // PHOTOGRAPHER-lane notes: whose capture feedback this is (scopes their view).
   photographer   TeamMember? @relation(fields: [photographerId], references: [id])
   photographerId String?
+  // EDITOR-lane notes: whose edit feedback this is (kim/remar/… — the same
+  // scoping keys /queue and /editing use). Scopes an editor's view exactly like
+  // photographerId scopes a photographer's.
+  editorKey String?
   parent   MediaNote?  @relation("Thread", fields: [parentId], references: [id], onDelete: Cascade)
   parentId String?
   replies  MediaNote[] @relation("Thread")
@@ -723,6 +728,36 @@ model MediaNote {
 
   @@index([projectId, status])
   @@index([photographerId, status])
+}
+
+// One submitted cut awaiting the owner's verdict in the Review Room. Created
+// when an editor hits "Done — send to review": we scan the project's FINAL
+// Dropbox folder for the newest video, mint a direct streaming link, and park
+// it here. The owner reviews at /review/<projectId> (timestamped MediaNotes on
+// the same assetUrl), then APPROVES (Kyle delivers) or REQUESTS CHANGES (the
+// open EDITOR-lane notes bundle into ONE revision task back on the editor's
+// plate). A re-submission after changes is a NEW row with round+1 — rows are
+// an audit trail of every cut, never overwritten.
+model ReviewSubmission {
+  id        String  @id @default(cuid())
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String
+  kind      String  @default("video") // video | photos (photos reserved for later)
+  assetUrl  String? // direct-streamable URL (Dropbox raw link); null = link the folder instead
+  assetPath String? // Dropbox path of the cut file
+  fileName  String?
+  round     Int     @default(1) // 1 = first cut, +1 per re-submission
+  status    String  @default("PENDING") // PENDING | CHANGES_REQUESTED | APPROVED
+  submittedByKey  String? // editor key (kim/remar/…)
+  submittedByName String?
+  note      String? // editor's note to the reviewer ("music was client's pick", …)
+  decidedAt DateTime?
+  decidedBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([projectId, round])
 }
 
 // Per-photo quick verdict while arrowing through a gallery in review mode.

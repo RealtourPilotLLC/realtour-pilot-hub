@@ -349,6 +349,7 @@ type StatusProject = {
   status: ProjectStatus;
   aryeoListingId: string | null;
   deliveredAt: Date | null;
+  uploadedAt: Date | null;
   shootDate: Date | null;
   addressLine: string | null;
   createdAt: Date;
@@ -485,6 +486,7 @@ export async function syncProjectStatuses(
       status: true,
       aryeoListingId: true,
       deliveredAt: true,
+      uploadedAt: true,
       shootDate: true,
       addressLine: true,
       createdAt: true,
@@ -547,6 +549,11 @@ export async function syncProjectStatuses(
     // Don't demote a manually-advanced EDITING project back to SHOT.
     let final = status;
     if (p.status === "EDITING" && status === "SHOT") final = "EDITING";
+    // Same for REVIEW: an editor's "send to review" is a human signal the cut
+    // exists (in the Review Room or Frame.io) that the evidence engine can't
+    // see — recomputing raws-in/no-Aryeo-media as SHOT must not silently undo
+    // it (July 2026 audit: REVIEW→SHOT was written unconditionally).
+    if (p.status === "REVIEW" && status === "SHOT") final = "REVIEW";
     // A job whose shoot already happened can NEVER go back to Scheduled/Booked.
     // Zero detected media there means either a transient Aryeo/Dropbox failure or
     // raws not uploaded yet — un-shooting the job is always wrong, and the demotion
@@ -589,6 +596,12 @@ export async function syncProjectStatuses(
     const deliveryDue = p.shootDate
       ? standardDeliveryDue(p.shootDate, p.deliverables, p.client?.socialClient ?? false)
       : null;
+    // Raws detected in Dropbox → stamp uploadedAt (first time only). This sweep
+    // is the path that ACTUALLY detects uploads in prod, but it never wrote the
+    // timestamp — so /upload kept showing "Upload" CTAs on jobs whose raws were
+    // fully in, and photographers got no confirmation their drop registered
+    // (July 2026 audit).
+    const rawsDetected = !!sig.dropbox && sig.dropbox.rawPhotos + sig.dropbox.rawVideo > 0;
     await prisma.project.update({
       where: { id: p.id },
       data: {
@@ -597,6 +610,7 @@ export async function syncProjectStatuses(
         statusCheckedAt: new Date(),
         ...(deliveryDue ? { deliveryDue } : {}),
         ...(final === "DELIVERED" && !p.deliveredAt ? { deliveredAt: new Date() } : {}),
+        ...(rawsDetected && !p.uploadedAt ? { uploadedAt: new Date() } : {}),
       },
     });
 
@@ -635,40 +649,43 @@ export async function syncProjectStatuses(
       } catch { /* chase is best-effort */ }
     }
 
+    // RAWS LANDED / EDITOR HANDOFF — idempotent and STAGE-INDEPENDENT. The old
+    // wiring only fired inside `statusChanged && final === "SHOT"`, which had
+    // two fatal holes (July 2026 audit, both proven live in prod): (1) a job
+    // whose photos deliver fast jumps SCHEDULED→REVIEW without ever landing on
+    // SHOT — its video got NO editor task, NO notification, NO Luma dispatch
+    // (4 of 5 video-owing REVIEW jobs had none); (2) the photographer "done"
+    // buttons set SHOT directly, so the sweep saw no transition and skipped the
+    // handoff. ensureEditorHandoff re-checks every pass and is deduped inside
+    // (activity marker + dedupeKeys), so calling it every hour is safe.
+    if (["SHOT", "EDITING", "REVIEW"].includes(final)) {
+      try {
+        const { ensureEditorHandoff } = await import("@/lib/tasks");
+        await ensureEditorHandoff(p.id);
+      } catch { /* handoff is best-effort — never break the sweep */ }
+    }
+
+    // RAWS MISSING watchdog — the counterpart alarm. Shoot happened, 18+ hours
+    // passed, and the raw folders are KNOWN empty (not unknown — Dropbox errors
+    // don't count): the job is silently rotting in SCHEDULED (877 S York sat 11
+    // days with nobody told — July 2026 audit). Mint ONE deduped chase task +
+    // ring/SMS the photographer. Auto-clears inside when raws land.
+    if (["BOOKED", "SCHEDULED"].includes(final) && shootHappened) {
+      try {
+        const { reconcileRawsMissing } = await import("@/lib/tasks");
+        await reconcileRawsMissing(p.id, {
+          rawsKnownEmpty: !!sig.dropbox && sig.dropbox.rawPhotos + sig.dropbox.rawVideo === 0,
+          anyAryeoMedia: !!sig.aryeo && sig.aryeo.photos + sig.aryeo.videos > 0,
+        });
+      } catch { /* watchdog is best-effort */ }
+    }
+
     if (statusChanged) {
       changed++;
       // Delivered/cancelled jobs shouldn't keep open production tasks.
       if (final === "DELIVERED" || final === "CANCELLED") {
         const { closeObsoleteTasks } = await import("@/lib/tasks");
         await closeObsoleteTasks(p.id, final);
-      }
-      // RAWS LANDED — the real handoff. This IS the status path (the only place
-      // that TruthfulLY detects a job entering SHOT); notifyRawsLanded had never
-      // fired in prod because it was only wired to the unused upload-portal +
-      // legacy Dropbox sweep. On (anything)→SHOT: ping the editor bench, mint the
-      // routed editor's edit_video work item, and persist Project.editorId when
-      // the route maps to an in-house TeamMember (Kim/Remar) so /editing shows a
-      // name and one-click reassign has something to update. All best-effort and
-      // idempotent (activity-marker + dedupeKeys) — a throw here must NEVER break
-      // the sweep, and re-entering SHOT must not re-announce.
-      if (final === "SHOT") {
-        try {
-          const { notifyRawsLanded, mintEditTask } = await import("@/lib/tasks");
-          await notifyRawsLanded(p.id);
-          await mintEditTask(p.id);
-          // Persist the editor for the tracker + reassign, only for a video job
-          // whose route maps to a linkable person (externals/vendors stay null).
-          const hasVideo = p.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
-          if (hasVideo) {
-            const { editorForDeliverable, editorTeamMemberId } = await import("@/lib/editors");
-            const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
-            const key = editorForDeliverable(v?.type, v?.label, p.client?.socialClient ?? false);
-            const tmId = await editorTeamMemberId(key);
-            if (tmId) {
-              await prisma.project.update({ where: { id: p.id }, data: { editorId: tmId } });
-            }
-          }
-        } catch { /* raws-landed handoff is best-effort */ }
       }
       await prisma.activity.create({
         data: {

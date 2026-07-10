@@ -131,7 +131,29 @@ export async function setSmartTaskStatus(taskId: string, status: string) {
     data: { status, completedAt: status === "COMPLETED" ? new Date() : null },
   });
   if (updated.count === 0) return; // task no longer exists — no-op instead of throw
-  const t = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { projectId: true, taskType: true } });
+  const t = await prisma.smartTask.findUnique({
+    where: { id: taskId },
+    select: { projectId: true, taskType: true, checklist: true, assignedKey: true },
+  });
+  // Completing the QC card via the status button (not the checklist) must still
+  // write the QcRecord — this was the third no-record completion path the July
+  // 2026 audit found (30 deliveries, 0 QcRecords, owner quality dial empty).
+  if (status === "COMPLETED" && t?.taskType === "media_qa" && t.projectId) {
+    try {
+      const { recordQcCompletion } = await import("@/lib/tasks");
+      const { parseChecklist } = await import("@/lib/checklist");
+      const seg = await prisma.project.findUnique({
+        where: { id: t.projectId },
+        select: { client: { select: { segment: true } } },
+      });
+      await recordQcCompletion({
+        projectId: t.projectId,
+        items: parseChecklist(t.checklist),
+        clientSegment: seg?.client?.segment ?? null,
+        completedBy: t.assignedKey ?? "kyle",
+      });
+    } catch { /* analytics only — never block the completion */ }
+  }
   // Completing a revision task from the queue (Kyle's habit) must ALSO clear the
   // project's revision flag — only the project-page button called resolveRevision,
   // so the hourly sync re-pinned the job as REVISION forever (audit crack #10).
