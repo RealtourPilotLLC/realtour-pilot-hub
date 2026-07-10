@@ -62,7 +62,7 @@ async function projectEditorKey(projectId: string): Promise<string | null> {
   const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL") ?? p.deliverables[0];
   // PROJECT-level monthly test — see isMonthlyContentJob (client flag alone
   // routed social clients' LISTING reels to the monthly-content lane).
-  return editorForDeliverable(v?.type, v?.label, isMonthlyContentJob(p.client?.socialClient, p.deliverables));
+  return editorForDeliverable(v?.type, v?.label, isMonthlyContentJob(p.deliverables));
 }
 
 // Owner/admin, OR the editor an EDITOR-lane root note belongs to (they may

@@ -284,7 +284,7 @@ export async function raiseRevision(opts: {
   const assignedKey = editorForDeliverable(
     primary?.type,
     primary?.label,
-    isMonthlyContentJob(project.client?.socialClient, project.deliverables),
+    isMonthlyContentJob(project.deliverables),
   );
 
   const note = opts.note.slice(0, 300);

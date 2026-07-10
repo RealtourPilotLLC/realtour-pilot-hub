@@ -199,25 +199,23 @@ export const DELIVERABLE_STATUS_META: Record<
 
 // ---------------------------------------------------------------------------
 // Is THIS project a monthly personal-branding / social-content job (7–10
-// business-day turnaround, Kim's lane), or a normal listing shoot that happens
-// to belong to a social-plan client? `Client.socialClient` is a CLIENT
-// attribute — using it alone branded every listing shoot those agents booked
-// as "monthly content" (wrong QC copy, wrong SLA, wrong editor routing —
-// caught live on 523 S Coventry / 238 Hudson / 419 Riverview, July 2026).
-// Ground truth from the data: real monthly-content orders are video/reel-ONLY
-// (e.g. an office-address reel); listing shoots always carry listing media
-// (photos / floor plan / drone / 3D / twilight / staging).
+// business-day turnaround, Kim's lane), or a normal listing shoot?
+// `Client.socialClient` is a CLIENT attribute — using it alone branded every
+// listing shoot those agents booked as "monthly content" (wrong QC copy,
+// wrong SLA, wrong editor routing — caught live on 523 S Coventry / 238
+// Hudson / 419 Riverview, July 2026). Jordan's definitive rule: monthly
+// content is one of the three PLANS — Video Starter, Video Accelerator, or
+// Video Pro — and those names appear right on the order item ("Video Starter
+// - 2h session", "Video Accelerator - 4HR Content Session", …). Anything else
+// — including a one-off "Premium Social Reel" at an office address — is NOT
+// monthly. (\b after "pro" keeps "Video Production" from matching.)
 // ---------------------------------------------------------------------------
-const LISTING_MEDIA_TYPES = new Set<string>([
-  "PHOTOS", "FLOORPLAN", "DRONE", "TWILIGHT", "MATTERPORT_3D", "ZILLOW_3D", "VIRTUAL_STAGING",
-]);
+const MONTHLY_PLAN_RE = /video\s*[-–]?\s*(starter|accelerator|pro)\b|monthly\s*content|personal[-\s]*brand/i;
 
 export function isMonthlyContentJob(
-  socialClient: boolean | null | undefined,
-  deliverables: { type: string }[],
+  deliverables: { type?: string; label?: string | null }[],
+  packageName?: string | null,
 ): boolean {
-  if (!socialClient || deliverables.length === 0) return false;
-  const hasVideo = deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
-  const hasListingMedia = deliverables.some((d) => LISTING_MEDIA_TYPES.has(d.type));
-  return hasVideo && !hasListingMedia;
+  if (packageName && MONTHLY_PLAN_RE.test(packageName)) return true;
+  return deliverables.some((d) => !!d.label && MONTHLY_PLAN_RE.test(d.label));
 }
