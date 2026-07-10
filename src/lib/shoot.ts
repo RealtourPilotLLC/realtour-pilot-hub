@@ -465,11 +465,15 @@ export type MyShootRow = {
 // look for a shoot that hasn't been photographed yet. Needs GOOGLE_MAPS_API_KEY
 // (Jordan adds it in Vercel; never in source). Without it we render no
 // thumbnail, and the card upgrades itself the moment the key exists or the
-// photos land on Aryeo.
-function streetViewSrc(address: string | null): string | null {
+// photos land on Aryeo. Location: exact lat/lng from the Aryeo listing when we
+// have it (unambiguous — a bare "1429 N 62nd St" with no city geocodes to grey
+// "no imagery" frames), else the FULL title (street + city + state).
+function streetViewSrc(lat: number | null, lng: number | null, fullAddress: string | null): string | null {
   const key = process.env.GOOGLE_MAPS_API_KEY;
-  if (!key || !address) return null;
-  return `https://maps.googleapis.com/maps/api/streetview?size=320x200&location=${encodeURIComponent(address)}&fov=75&key=${key}`;
+  if (!key) return null;
+  const location = lat != null && lng != null ? `${lat},${lng}` : fullAddress;
+  if (!location) return null;
+  return `https://maps.googleapis.com/maps/api/streetview?size=320x200&location=${encodeURIComponent(location)}&fov=75&key=${key}`;
 }
 
 // A photographer's shoots (or all, for owner/admin previews): recent + upcoming,
@@ -503,7 +507,7 @@ export async function listMyShoots(memberId: string | null): Promise<MyShootRow[
     const appt = p.appointments[0];
     const when = appt?.startAt ?? p.shootDate;
     // Photos live on Aryeo → the real cover shot; until then, Street View.
-    const sv = p.coverImageUrl ? null : streetViewSrc(p.addressLine ?? p.title);
+    const sv = p.coverImageUrl ? null : streetViewSrc(p.lat, p.lng, p.title);
     return {
       id: p.id,
       title: p.title,
