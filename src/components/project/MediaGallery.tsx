@@ -531,7 +531,7 @@ export function MediaGallery({ media, slug, projectId, flags = [], review }: { m
 
       {/* Simple full-screen view for a flagged image */}
       {zoom && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 p-4 backdrop-blur-sm" onClick={() => setZoom(null)}>
+        <div className="fixed inset-0 z-[1450] flex items-center justify-center bg-black/90 p-4 backdrop-blur-sm" onClick={() => setZoom(null)}>
           <button aria-label="Close" className="absolute right-4 top-4 flex size-9 items-center justify-center rounded-lg text-white hover:bg-white/10"><X className="size-5" /></button>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={zoom} alt="flagged" className="max-h-full max-w-full rounded-lg object-contain" onClick={(e) => e.stopPropagation()} />
@@ -540,7 +540,7 @@ export function MediaGallery({ media, slug, projectId, flags = [], review }: { m
 
       {/* Lightbox */}
       {idx != null && (
-        <div className="fixed inset-0 z-[100] flex flex-col bg-black/90 backdrop-blur-sm" onClick={close}>
+        <div className="fixed inset-0 z-[1450] flex flex-col bg-black/90 backdrop-blur-sm" onClick={close}>
           {/* Top bar */}
           <div className="flex items-center justify-between gap-2 px-4 py-3 text-white" onClick={(e) => e.stopPropagation()}>
             <span className="text-sm text-white/70">{idx + 1} / {count}</span>
