@@ -287,6 +287,9 @@ function ShootRowCard({ r, showWho, as }: { r: MyShootRow; showWho: boolean; as:
           src={r.thumbUrl}
           alt={r.thumbKind === "aryeo" ? `First listing photo of ${r.street}` : `Street View of ${r.street}`}
           loading="lazy"
+          // Street View misses return a real 404 (return_error_code) — hide the
+          // frame instead of showing a broken-image icon.
+          onError={(e) => { e.currentTarget.style.display = "none"; }}
           className="h-16 w-24 shrink-0 rounded-xl border border-border object-cover sm:h-[4.5rem] sm:w-28"
         />
       )}

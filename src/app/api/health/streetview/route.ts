@@ -38,6 +38,30 @@ export async function GET() {
     take: 6,
   });
 
+  // Per-property truth: does a pano actually EXIST for each upcoming shoot?
+  // The (free) metadata endpoint answers OK / ZERO_RESULTS without an image.
+  // Tested BOTH ways — full address vs parcel-centroid coords — because coords
+  // sit mid-lot and Google's default point search misses the road on big lots.
+  const meta = async (location: string) => {
+    try {
+      const r = await fetch(
+        `https://maps.googleapis.com/maps/api/streetview/metadata?location=${encodeURIComponent(location)}&source=outdoor&key=${key}`,
+        { cache: "no-store" },
+      );
+      const j = (await r.json()) as { status?: string };
+      return j.status ?? `http-${r.status}`;
+    } catch (e) {
+      return (e as Error).message.slice(0, 80);
+    }
+  };
+  const panoChecks = await Promise.all(
+    upcoming.map(async (p) => ({
+      street: p.title.split(",")[0],
+      byFullAddress: await meta(p.title),
+      byCoords: p.lat != null && p.lng != null ? await meta(`${p.lat},${p.lng}`) : "no-coords",
+    })),
+  );
+
   const [noReferer, ourReferer] = await Promise.all([
     probe(),
     probe("https://realtour-pilot-hub.vercel.app/shoot"),
@@ -65,9 +89,6 @@ export async function GET() {
         .slice(0, 3)
         .map((r) => ({ street: r.street, thumb: redact(r.thumbUrl) })),
     },
-    upcomingCards: upcoming.map((p) => ({
-      street: p.title.split(",")[0],
-      hasCoords: p.lat != null && p.lng != null,
-    })),
+    panoChecks,
   });
 }
