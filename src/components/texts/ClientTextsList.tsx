@@ -39,15 +39,22 @@ function dueLabel(row: ClientTextRow): { text: string; danger: boolean } {
   return { text: isToday ? `by ${t}` : day, danger: false };
 }
 
-function Btn({ children, onClick, primary, disabled, busy }: {
-  children: React.ReactNode; onClick?: () => void; primary?: boolean; disabled?: boolean; busy?: boolean;
+// Same color language as the Today feed (Kyle's feedback — Done and Send were
+// both orange in the same spot): GREEN = Done/complete, leftmost; ORANGE =
+// outbound send; neutral = everything else.
+function Btn({ children, onClick, primary, success, disabled, busy }: {
+  children: React.ReactNode; onClick?: () => void; primary?: boolean; success?: boolean; disabled?: boolean; busy?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
       disabled={disabled || busy}
       className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-semibold transition-colors disabled:opacity-50 ${
-        primary ? "bg-brand text-white hover:opacity-90" : "border border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground"
+        success
+          ? "bg-success text-white hover:opacity-90"
+          : primary
+          ? "bg-brand text-white hover:opacity-90"
+          : "border border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground"
       }`}
     >
       {busy && <Loader2 className="size-4 animate-spin" />}
@@ -147,11 +154,13 @@ function TextCard({ row, onGone }: { row: ClientTextRow; onGone: (id: string, no
         {err && <p className="text-xs font-medium text-danger">{err}</p>}
 
         <div className="flex flex-wrap items-center gap-2 pt-0.5">
+          <Btn success onClick={done} busy={busy}>
+            <CheckCircle2 className="size-4" /> Done
+          </Btn>
           <Btn primary onClick={send} busy={busy} disabled={!row.hasPhone}>
             <Send className="size-4" /> Send text
           </Btn>
           <Btn onClick={copy}>{copied ? "Copied ✓" : <><Copy className="size-4" /> Copy</>}</Btn>
-          <Btn onClick={done} busy={busy}>Done</Btn>
           {!row.hasPhone && <span className="text-[11px] text-warning">No phone on file</span>}
           {row.projectId && (
             <Link href={`/projects/${row.projectId}`} className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">

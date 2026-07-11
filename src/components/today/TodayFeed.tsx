@@ -65,15 +65,24 @@ function dueLabel(card: TodayCard): { text: string; danger: boolean } {
   return { text: isToday ? `by ${t}` : day, danger: false };
 }
 
-function Btn({ children, onClick, primary, disabled, busy }: {
-  children: React.ReactNode; onClick?: () => void; primary?: boolean; disabled?: boolean; busy?: boolean;
+// Button color language (Kyle's feedback — Done and Send were the same orange
+// in the same spot on different cards, so muscle memory misfired):
+//   · success (GREEN)  = "Done / complete" — always the LEFTMOST action
+//   · primary (ORANGE) = outbound sends & drafts (texts leave the building)
+//   · default          = secondary/neutral
+function Btn({ children, onClick, primary, success, disabled, busy }: {
+  children: React.ReactNode; onClick?: () => void; primary?: boolean; success?: boolean; disabled?: boolean; busy?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
       disabled={disabled || busy}
       className={`inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-semibold transition-colors disabled:opacity-50 ${
-        primary ? "bg-brand text-white hover:opacity-90" : "border border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground"
+        success
+          ? "bg-success text-white hover:opacity-90"
+          : primary
+          ? "bg-brand text-white hover:opacity-90"
+          : "border border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground"
       }`}
     >
       {busy && <Loader2 className="size-4 animate-spin" />}
@@ -263,16 +272,21 @@ function ActionCard({ card, assignees, onGone }: {
         <div className="flex flex-wrap items-center gap-2 pt-0.5">
           {card.verb === "send" && (
             <>
+              <Btn success onClick={() => done("Marked done")}>
+                <CheckCircle2 className="size-4" /> Done
+              </Btn>
               <Btn primary onClick={sendPredrafted} busy={busy} disabled={!card.hasPhone}>
                 <Send className="size-4" /> Send text
               </Btn>
               <Btn onClick={copyDraft}>{copied ? "Copied ✓" : <><Copy className="size-4" /> Copy</>}</Btn>
-              <Btn onClick={() => done("Marked done")}>Done</Btn>
               {!card.hasPhone && <span className="text-[11px] text-warning">No phone on file</span>}
             </>
           )}
           {card.verb === "reply" && (
             <>
+              <Btn success onClick={() => done("Marked done")}>
+                <CheckCircle2 className="size-4" /> Done
+              </Btn>
               {!compose && (
                 <>
                   <Btn primary onClick={aiDraft} busy={drafting}>
@@ -287,7 +301,6 @@ function ActionCard({ card, assignees, onGone }: {
                 </Btn>
               )}
               {compose && !card.hasPhone && <span className="text-[11px] text-warning">No phone on file — reply from Gmail/OpenPhone directly</span>}
-              <Btn onClick={() => done("Marked done")}>Done</Btn>
               {card.clientId && (
                 <Link href={`/clients/${card.clientId}`} className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">
                   Open client <ArrowRight className="size-3" />
@@ -305,7 +318,7 @@ function ActionCard({ card, assignees, onGone }: {
           )}
           {(card.verb === "do" || card.verb === "check") && !isTextsRollup && (
             <>
-              <Btn primary onClick={() => done("Done")} busy={busy}>
+              <Btn success onClick={() => done("Done")} busy={busy}>
                 <CheckCircle2 className="size-4" /> Done
               </Btn>
               {/* Revisions come from a client message — let Kyle acknowledge it

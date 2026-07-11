@@ -505,7 +505,7 @@ ${tasksBlock}
 Decide and respond as STRICT JSON only:
 {"actionable": <bool>, "title": "<one clear to-do for the whole thing>", "detail": "<1-2 sentences or short ordered steps>", "priority": "<URGENT|HIGH|MEDIUM|LOW>", "clientId": <"client id" or null>, "projectId": <"order id" or null>, "mergeIntoTaskId": <"task id" or null>, "flags": ["<short note>", ...], "reason": "<one sentence>"}
 
-Team roster (get roles RIGHT in titles/details): Jordan = owner, Kyle = ops manager/VA. Harrison Wells and James Livingston are the PHOTOGRAPHERS (they shoot/film on site). Kim and Remar are video/photo EDITORS — they edit only and NEVER shoot or film; "get Remar/Kim X done" or "schedule Remar/Kim for X" means line up or finish the EDIT of X, not a shoot. Luma Visuals / AutoHDR / CubiCasa / ReadyPost are external editing vendors.
+Team roster (get roles RIGHT in titles/details): Jordan = owner, Kyle = ops manager/VA. Harrison Wells and James Livingston are the PHOTOGRAPHERS (they shoot/film on site). Kim and Remar are video/photo EDITORS — they edit only and NEVER shoot or film; "get Remar/Kim X done" or "schedule Remar/Kim for X" means line up or finish the EDIT of X, not a shoot. Luma Visuals / AutoHDR / CubiCasa / ReadyPost are external editing vendors. These are the ONLY team names - messages are often dictated, so when a name is a near-miss of a roster name (e.g. "Omar"/"Raymar" = Remar, "Kym" = Kim, "Cyle" = Kyle), ALWAYS write the correct roster spelling in your title/detail, never the typo.
 
 Rules:
 - actionable = false for chatter/acknowledgements ("got it", "thanks", "sounds good") or anything that needs no action from us.

@@ -30,6 +30,17 @@ export async function submitPlatformFeedback(input: {
   if (!title) return { ok: false, message: "Add a short title." };
   const kind = ["feature", "bug", "feedback"].includes(input.kind) ? input.kind : "feature";
 
+  // WHO filed it — everyone is logged in now, so stamp the SESSION identity
+  // instead of trusting the widget's optional free-text name (which was left
+  // blank; Jordan couldn't tell who asked for what). The typed name survives
+  // as a fallback for local dev with enforcement off.
+  let submittedBy = input.submittedBy?.trim()?.slice(0, 120) || null;
+  try {
+    const { getCurrentUser } = await import("@/lib/auth/user");
+    const u = await getCurrentUser();
+    if (u) submittedBy = u.name ?? u.email;
+  } catch { /* sessionless local dev — keep the typed name */ }
+
   // Only keep a reasonable image (cap ~3MB of data URL) so the row stays sane.
   const screenshot =
     input.screenshot && /^data:image\/(png|jpeg);base64,/.test(input.screenshot) && input.screenshot.length < 3_500_000
@@ -41,7 +52,7 @@ export async function submitPlatformFeedback(input: {
       kind,
       title: title.slice(0, 200),
       body: input.body?.trim()?.slice(0, 4000) || null,
-      submittedBy: input.submittedBy?.trim()?.slice(0, 120) || null,
+      submittedBy,
       page: input.page?.slice(0, 200) || null,
       screenshot,
     },
@@ -52,7 +63,7 @@ export async function submitPlatformFeedback(input: {
   const emailed = await notifyOwnerEmail(
     `${label}: ${title}`,
     [
-      `${label} submitted to the RealTour hub${input.submittedBy ? ` by ${input.submittedBy}` : ""}.`,
+      `${label} submitted to the RealTour hub${submittedBy ? ` by ${submittedBy}` : ""}.`,
       "",
       `Title: ${title}`,
       input.body ? `\nDetails:\n${input.body}` : "",
