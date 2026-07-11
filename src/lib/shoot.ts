@@ -466,18 +466,17 @@ export type MyShootRow = {
 // (Jordan adds it in Vercel; never in source). Without it we render no
 // thumbnail, and the card upgrades itself the moment the key exists or the
 // photos land on Aryeo.
-// Location choice matters: Aryeo lat/lng is the PARCEL CENTROID, and Google
-// only hunts ~50m around a point for a pano — on suburban lots the road is
-// farther, so coords alone returned grey "no imagery" tiles. A FULL address
-// (street + city, i.e. the title) makes Google pick the pano FACING the house.
-// Coords are the fallback for junk titles, with a widened radius. outdoor-only
-// (no inside-the-business panos) + return_error_code so a miss is a real 404
-// the <img> can hide, not a grey placeholder.
+// Location: COORDS FIRST (radius=250) — Google finds the nearest outdoor pano
+// within 250m and auto-aims the camera at the point, i.e. at the house.
+// Verified against the live pipeline: coords resolved 6/6 upcoming shoots
+// (full-address lookups failed on unit/suite-style addresses). Address is the
+// fallback for unmapped listings. outdoor-only skips inside-the-business
+// panos; return_error_code turns a genuine miss into a 404 the <img> hides,
+// instead of a grey "no imagery" placeholder.
 function streetViewSrc(lat: number | null, lng: number | null, fullAddress: string | null): string | null {
   const key = process.env.GOOGLE_MAPS_API_KEY;
   if (!key) return null;
-  const addressLooksFull = !!fullAddress && fullAddress.includes(",");
-  const location = addressLooksFull ? fullAddress! : lat != null && lng != null ? `${lat},${lng}` : fullAddress;
+  const location = lat != null && lng != null ? `${lat},${lng}` : fullAddress;
   if (!location) return null;
   return `https://maps.googleapis.com/maps/api/streetview?size=320x200&location=${encodeURIComponent(location)}&fov=75&radius=250&source=outdoor&return_error_code=true&key=${key}`;
 }
