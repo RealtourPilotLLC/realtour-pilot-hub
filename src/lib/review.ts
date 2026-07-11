@@ -35,7 +35,7 @@ const asKind = (v: string): "fix" | "coaching" => (v === "coaching" ? "coaching"
 const asStatus = (v: string): "OPEN" | "FIXED" | "RESOLVED" =>
   v === "FIXED" ? "FIXED" : v === "RESOLVED" ? "RESOLVED" : "OPEN";
 
-type NoteRow = {
+export type NoteRow = {
   id: string;
   assetUrl: string;
   thumbUrl: string | null;
@@ -52,7 +52,9 @@ type NoteRow = {
   replies: { id: string; body: string; authorName: string | null; createdAt: Date }[];
 };
 
-function toReviewNote(n: NoteRow): ReviewNote {
+// Exported for the cross-shoot feedback hub (src/lib/photographerFeedback.ts),
+// which maps the same rows into the same view shape.
+export function toReviewNote(n: NoteRow): ReviewNote {
   return {
     id: n.id,
     assetUrl: n.assetUrl,

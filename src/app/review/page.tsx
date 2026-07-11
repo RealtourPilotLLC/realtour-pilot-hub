@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { formatDistanceToNow } from "date-fns";
 import {
-  Camera, CheckCircle2, Clapperboard, ClipboardCheck, Hourglass, MessageSquare, Pencil, PlayCircle,
+  Camera, CheckCircle2, Clapperboard, ClipboardCheck, Flag, Hourglass, MessageSquare, Pencil, PlayCircle,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
@@ -10,6 +10,7 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
 import { homeFor } from "@/lib/auth/access";
 import { getReviewQueue, type QueueSubmission } from "@/lib/reviewRoom";
+import { getFixPatterns, getQcStats } from "@/lib/qc";
 
 export const dynamic = "force-dynamic";
 
@@ -72,7 +73,7 @@ export default async function ReviewRoomPage() {
   const ownerDesk = me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
   if (!ownerDesk) redirect(homeFor(me?.role));
 
-  const q = await getReviewQueue();
+  const [q, patterns, qcStats] = await Promise.all([getReviewQueue(), getFixPatterns(60), getQcStats(30)]);
   const laneMeta = {
     EDIT: { label: "Kyle — delivery fixes", icon: Pencil },
     PHOTOGRAPHER: { label: "Photographer — capture", icon: Camera },
@@ -170,6 +171,82 @@ export default async function ReviewRoomPage() {
         {q.recentlyApproved.length > 0 && (
           <Section icon={CheckCircle2} title="Approved — last 14 days" count={q.recentlyApproved.length}>
             <ul className="space-y-2.5">{q.recentlyApproved.map((s) => <CutRow key={s.id} s={s} decided />)}</ul>
+          </Section>
+        )}
+
+        {/* What's slipping through — the recurring-miss scoreboard, so Kyle and
+            the owner see the SAME "most commonly missed" list, not anecdotes. */}
+        {(patterns.flagsTotal > 0 || qcStats.byMiss.length > 0 || patterns.captureByPhotographer.length > 0) && (
+          <Section icon={Flag} title="What's slipping through">
+            <div className="grid gap-5 sm:grid-cols-2">
+              <div>
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-2">
+                  Photo fix reasons — last {patterns.windowDays} days
+                </h3>
+                {patterns.byTag.length === 0 ? (
+                  <p className="mt-2 text-sm text-muted">No photos flagged for fixes. 🎉</p>
+                ) : (
+                  <ul className="mt-2 space-y-1.5">
+                    {patterns.byTag.slice(0, 6).map((t) => (
+                      <li key={t.label} className="flex items-center justify-between gap-3 text-sm">
+                        <span className="min-w-0 truncate">{t.label}</span>
+                        <span className="shrink-0 rounded-full bg-warning/10 px-2 py-0.5 text-xs font-semibold tabular-nums text-warning">
+                          {t.count}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <p className="mt-2 text-[11px] text-muted-2">
+                  {patterns.flagsTotal} photo{patterns.flagsTotal === 1 ? "" : "s"} flagged
+                  {patterns.flagsOpen > 0 ? ` · ${patterns.flagsOpen} still open` : ""}
+                  {patterns.editNotes > 0 ? ` · +${patterns.editNotes} review fix note${patterns.editNotes === 1 ? "" : "s"}` : ""}
+                </p>
+              </div>
+              <div>
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-2">
+                  QC checklist misses — last {qcStats.windowDays} days
+                </h3>
+                {qcStats.byMiss.length === 0 ? (
+                  <p className="mt-2 text-sm text-muted">No checklist items missed across {qcStats.qcPasses} QC passes.</p>
+                ) : (
+                  <ul className="mt-2 space-y-1.5">
+                    {qcStats.byMiss.slice(0, 6).map((m) => (
+                      <li key={m.label} className="flex items-center justify-between gap-3 text-sm">
+                        <span className="min-w-0 truncate">{m.label}</span>
+                        <span className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-xs font-semibold tabular-nums text-muted">
+                          {m.count}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {qcStats.qcPasses > 0 && (
+                  <p className="mt-2 text-[11px] text-muted-2">
+                    {qcStats.qcPasses} QC pass{qcStats.qcPasses === 1 ? "" : "es"} · {qcStats.reopenedRate}% later
+                    reopened by a revision
+                  </p>
+                )}
+              </div>
+            </div>
+            {patterns.captureByPhotographer.length > 0 && (
+              <div className="mt-4 border-t border-border pt-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-2">
+                  Capture notes by photographer — last {patterns.windowDays} days
+                </h3>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {patterns.captureByPhotographer.map((p) => (
+                    <span key={p.name} className="inline-flex items-center gap-1.5 rounded-full bg-surface-2 px-2.5 py-1 text-xs font-medium">
+                      <Camera className="size-3 text-muted-2" /> {p.name}
+                      <span className="tabular-nums text-muted">{p.count}</span>
+                    </span>
+                  ))}
+                  <Link href="/shoot/feedback" className="inline-flex items-center rounded-full border border-border px-2.5 py-1 text-xs font-medium text-brand hover:bg-surface-2">
+                    Photographer scoreboard →
+                  </Link>
+                </div>
+              </div>
+            )}
           </Section>
         )}
       </div>

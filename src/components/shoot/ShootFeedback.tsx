@@ -100,7 +100,9 @@ export function ShootFeedback({ notes: initial, readOnly, photographerName }: {
 
 // ---------------------------------------------------------------------------
 
-function NoteCard({ note, readOnly, patch }: {
+// Exported for the cross-shoot feedback hub (/shoot/feedback), which renders
+// the same note rows grouped by shoot.
+export function NoteCard({ note, readOnly, patch }: {
   note: ReviewNote;
   readOnly: boolean;
   patch: (id: string, fn: (n: ReviewNote) => ReviewNote) => void;

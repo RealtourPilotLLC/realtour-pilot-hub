@@ -3,13 +3,14 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronLeft, ChevronRight, MapPin, CheckCircle2, Upload as UploadIcon, Camera, X, Eye } from "lucide-react";
+import { ChevronLeft, ChevronRight, MapPin, CheckCircle2, Upload as UploadIcon, Camera, X, Eye, GraduationCap, Target, Wrench } from "lucide-react";
 import { etDayKey, etTime, etFullDate } from "@/lib/datetime";
 import { DELIVERABLE_META } from "@/lib/pipeline";
 import { Badge } from "@/components/ui/Badge";
 import { PALETTE } from "@/lib/palette";
 import { cn } from "@/lib/utils";
 import type { MyShootRow } from "@/lib/shoot";
+import type { NextShootFocus } from "@/lib/photographerFeedback";
 
 const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = [
@@ -25,11 +26,16 @@ export function MyShootsView({
   showWho,
   meId,
   viewAs,
+  focus,
+  focusHref,
 }: {
   rows: MyShootRow[];
   showWho: boolean;
   meId: string | null;
   viewAs: { id: string; name: string } | null;
+  /** Open capture-feedback reminders for the scoped photographer (null when unscoped). */
+  focus?: NextShootFocus | null;
+  focusHref?: string;
 }) {
   const router = useRouter();
   // Owner/admin photographer filter — toggle each photographer's shoots on/off
@@ -126,6 +132,39 @@ export function MyShootsView({
           >
             Exit
           </Link>
+        </div>
+      )}
+
+      {/* Work-ons — the photographer's open capture feedback, front and center
+          so the next shoot starts with last shoot's lessons. */}
+      {focus && focus.items.length > 0 && (
+        <div className="rounded-2xl border border-warning/30 bg-warning/5 p-4">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="flex items-center gap-2 text-sm font-semibold">
+              <Target className="size-4 text-warning" /> Work-ons for your next shoot
+            </h2>
+            <Link href={focusHref ?? "/shoot/feedback"} className="shrink-0 text-xs font-medium text-brand hover:underline">
+              All feedback &amp; stats →
+            </Link>
+          </div>
+          <ul className="mt-2.5 space-y-2">
+            {focus.items.map((it) => (
+              <li key={it.id} className="flex items-start gap-2 text-sm">
+                {it.kind === "fix" ? (
+                  <Wrench className="mt-0.5 size-3.5 shrink-0 text-warning" />
+                ) : (
+                  <GraduationCap className="mt-0.5 size-3.5 shrink-0 text-sky-400 light:text-sky-600" />
+                )}
+                <span className="min-w-0 flex-1 leading-snug text-foreground/90">
+                  {it.body}
+                  {it.street && <span className="text-muted-2"> — {it.street}</span>}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {focus.openCount > focus.items.length && (
+            <p className="mt-2 text-xs text-muted">+{focus.openCount - focus.items.length} more open</p>
+          )}
         </div>
       )}
 

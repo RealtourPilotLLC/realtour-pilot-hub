@@ -52,6 +52,7 @@ const KIND_ICON: Record<string, LucideIcon> = {
   edit_finished: Clapperboard,
   shoot_completed: Camera,
   client_feedback: MessageSquareHeart,
+  review_feedback: MessageSquareHeart, // capture/edit feedback from the owner's review
   mention: AtSign,
   system: AlertTriangle,
 };

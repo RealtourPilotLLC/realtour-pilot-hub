@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo, useRef, useCallback, useTransition } from
 import { useRouter } from "next/navigation";
 import {
   Images, Video as VideoIcon, Map as MapIcon, Download, X, ChevronLeft, ChevronRight, Play, DownloadCloud,
-  Flag, Check, Loader2, MessageSquarePlus, Pencil,
+  Flag, Check, Loader2, MessageSquarePlus, Pencil, Camera,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ListingMedia, MediaImage, MediaVideo, MediaFloorPlan } from "@/lib/integrations/aryeo";
@@ -681,6 +681,17 @@ export function MediaGallery({ media, slug, projectId, flags = [], review }: { m
                   </button>
                   {lbMsg && <span className="text-xs text-muted">{lbMsg}</span>}
                 </div>
+                {/* A flag is "Kyle fixes the file"; a capture problem belongs to
+                    whoever shot it — hop straight into Review mode where pins
+                    carry the photographer/coaching lanes. */}
+                {reviewable && (
+                  <button
+                    onClick={() => { setLbPanel(false); setReviewOn(true); }}
+                    className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-sky-400 hover:underline light:text-sky-600"
+                  >
+                    <Camera className="size-3.5" /> Capture issue? Pin it for the photographer instead
+                  </button>
+                )}
               </div>
             )}
           </div>
