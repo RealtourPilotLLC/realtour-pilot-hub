@@ -85,6 +85,8 @@ const EDITOR_CHANNEL_KINDS = new Set([
   "raws_landed", "revision_raised", "mention", "edit_finished",
   // Review Room round-trips: changes requested on a cut / cut approved.
   "review_changes", "review_approved",
+  // Owner/admin manually put a job in this editor's queue (/editing → Add a job).
+  "edit_assigned",
 ]);
 
 // Quiet hours in a SPECIFIC timezone (7:00–22:00 local). Photographer texting

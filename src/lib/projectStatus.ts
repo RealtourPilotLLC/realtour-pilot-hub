@@ -557,9 +557,12 @@ export async function syncProjectStatuses(
       await prisma.project.update({ where: { id: p.id }, data: { statusCheckedAt: new Date() } });
       continue;
     }
-    // Don't demote a manually-advanced EDITING project back to SHOT.
+    // Don't demote a manually-advanced EDITING project back to SHOT — and a
+    // manually-QUEUED job (owner's "Add a job" on /editing) may have no media
+    // evidence at all, so block the Scheduled/Booked recompute too. "In
+    // editing" is a human signal; only a human may undo it (pipeline board).
     let final = status;
-    if (p.status === "EDITING" && status === "SHOT") final = "EDITING";
+    if (p.status === "EDITING" && ["SHOT", "SCHEDULED", "BOOKED"].includes(status)) final = "EDITING";
     // Same for REVIEW: an editor's "send to review" is a human signal the cut
     // exists (in the Review Room or Frame.io) that the evidence engine can't
     // see — recomputing raws-in/no-Aryeo-media as SHOT must not silently undo

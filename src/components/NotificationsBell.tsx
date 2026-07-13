@@ -50,6 +50,7 @@ const KIND_ICON: Record<string, LucideIcon> = {
   new_lead: UserPlus,
   raws_landed: Film,
   edit_finished: Clapperboard,
+  edit_assigned: Clapperboard,
   shoot_completed: Camera,
   client_feedback: MessageSquareHeart,
   review_feedback: MessageSquareHeart, // capture/edit feedback from the owner's review

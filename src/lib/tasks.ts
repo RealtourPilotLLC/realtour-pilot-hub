@@ -1214,7 +1214,14 @@ export async function mintEditTask(projectId: string): Promise<void> {
     if (existing.status === "COMPLETED" || existing.status === "CANCELLED") return;
     await prisma.smartTask.update({
       where: { id: existing.id },
-      data: { assignedKey, dueAt, priority, summary: summary.slice(0, 500) },
+      data: {
+        // A human's editor choice (reassign / manual queue-add) outlives every
+        // automatic refresh — only route when nobody picked by hand.
+        ...(existing.assignedManually ? {} : { assignedKey }),
+        dueAt,
+        priority,
+        summary: summary.slice(0, 500),
+      },
     });
     return;
   }
@@ -1289,15 +1296,25 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
   const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
   if (!v) return; // photos-only → AutoHDR, no human editor
 
+  // A human hand-picked this job's editor (owner reassign / manual queue-add):
+  // don't overwrite their routing, and don't chase raw video — the owner just
+  // looked at the job (old footage / externally-held files are expected there).
+  const manualTask = await prisma.smartTask.findFirst({
+    where: { projectId, taskType: "edit_video", assignedManually: true, status: { notIn: ["CANCELLED"] } },
+    select: { id: true },
+  });
+
   // 2. Persist the routed editor for the tracker + one-click reassign (in-house only).
-  try {
-    const { editorForDeliverable, editorTeamMemberId } = await import("@/lib/editors");
-    const key = editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.deliverables));
-    const tmId = await editorTeamMemberId(key);
-    if (tmId && p.editorId !== tmId) {
-      await prisma.project.update({ where: { id: projectId }, data: { editorId: tmId } });
-    }
-  } catch { /* editor link is best-effort */ }
+  if (!manualTask) {
+    try {
+      const { editorForDeliverable, editorTeamMemberId } = await import("@/lib/editors");
+      const key = editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.deliverables));
+      const tmId = await editorTeamMemberId(key);
+      if (tmId && p.editorId !== tmId) {
+        await prisma.project.update({ where: { id: projectId }, data: { editorId: tmId } });
+      }
+    } catch { /* editor link is best-effort */ }
+  }
 
   const NUDGE_KEY = `raw-video-missing-${projectId}`;
   const clearNudge = () =>
@@ -1320,7 +1337,10 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
   // live in a differently-named folder the hub can't see. ONE deduped task so
   // a human finds out TODAY instead of when the video runs overdue; the
   // photographer also gets a bell+SMS pointing at their upload page.
-  if (dropbox && (dropbox.rawVideo ?? 0) === 0) {
+  // Skipped for manually-queued jobs: no footage in the folder is EXPECTED for
+  // old-footage / externally-shot work, and the wrong "upload your video" text
+  // would chase a photographer who owes nothing.
+  if (!manualTask && dropbox && (dropbox.rawVideo ?? 0) === 0) {
     const street = (p.title || "this job").split(",")[0].trim();
     const first = (p.photographer?.name || "the photographer").split(/\s+/)[0];
     const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: NUDGE_KEY } });
@@ -1609,6 +1629,11 @@ async function syncOneProjectTasks(
           projectId: p.id,
           taskType: "edit_video",
           status: { notIn: ["COMPLETED", "CANCELLED"] },
+          // A manually-(re)opened edit is NEW work a human just asked for — the
+          // "landed" evidence here is the PREVIOUS cut (old finalVideo file, a
+          // past ReviewSubmission, a live listing video), so it must not close
+          // it. Manual edits close only via the editor's "send to review".
+          assignedManually: false,
         },
         data: { status: "COMPLETED", completedAt: new Date() },
       });

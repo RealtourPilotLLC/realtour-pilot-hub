@@ -339,7 +339,9 @@ export async function raiseRevision(opts: {
   if (existing) {
     await prisma.smartTask.update({
       where: { id: existing.id },
-      data: { ...data, status: "OPEN", completedAt: null },
+      // A hand-picked editor (owner reassign / manual queue-add) survives a
+      // re-raise — only the automatic routing suggestion gets overwritten.
+      data: { ...data, ...(existing.assignedManually ? { assignedKey: existing.assignedKey } : {}), status: "OPEN", completedAt: null },
     });
     taskId = existing.id;
   } else {

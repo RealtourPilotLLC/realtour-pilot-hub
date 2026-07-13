@@ -7,6 +7,7 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { slugForName } from "@/lib/assignees";
 import { EditorDay } from "@/components/editing/EditorDay";
 import { VideoSlaPanel } from "@/components/editing/VideoSlaPanel";
+import { AddToQueue } from "@/components/editing/AddToQueue";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +24,20 @@ export default async function EditorQueuePage() {
   // EDITOR: their own guided day, DB-scoped to their assignedKey.
   if (me?.role === "EDITOR" && editorScope) {
     return <EditorDay editorScope={editorScope} editorName={me.name ?? "there"} />;
+  }
+  // An EDITOR whose login has no editorKey AND no name can't be scoped — that
+  // must NOT fall through to the owner/admin accountability view below (it
+  // carries every job + the add-to-queue control). Fail closed with a nudge.
+  if (me?.role === "EDITOR") {
+    return (
+      <div>
+        <PageHeader eyebrow="Video projects only" title="Editor Queue" />
+        <p className="m-4 rounded-2xl border border-dashed border-border bg-surface p-6 text-sm text-muted sm:m-6">
+          Your login isn&rsquo;t linked to an editor profile yet — ask Jordan to set your editor key and your
+          queue will show up here.
+        </p>
+      </div>
+    );
   }
 
   // OWNER / ADMIN: recently-delivered jobs power the "Delivered" tab (bounded to
@@ -56,6 +71,11 @@ export default async function EditorQueuePage() {
         title="Editor Queue"
         subtitle={`${inProduction} video job${inProduction === 1 ? "" : "s"} in production · ${waiting} ready to start`}
       />
+      {/* Manual add — the human override for jobs the automatic handoff never
+          picks up (video added after booking, old footage, non-Aryeo work). */}
+      <div className="px-4 pt-4 sm:px-6">
+        <AddToQueue />
+      </div>
       {inflightVideo.length > 0 && (
         <div className="px-4 pt-4 sm:px-6">
           <VideoSlaPanel projects={inflightVideo} />
