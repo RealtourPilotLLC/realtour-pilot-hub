@@ -26,6 +26,22 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
     }
   }, [pathname]);
 
+  // Usage beacon → the owner-only Activity trail. Identity comes from the
+  // SESSION server-side; "view as" previews are skipped there too (belt) and
+  // here (suspenders) so a preview never pollutes the previewed person's trail.
+  useEffect(() => {
+    if (!user || user.impersonating) return;
+    if (pathname === "/login" || pathname.startsWith("/invite")) return;
+    fetch("/api/activity", {
+      method: "POST",
+      keepalive: true,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: pathname }),
+    }).catch(() => { /* tracking must never break navigation */ });
+    // Only re-fire on real path changes — user identity is stable per session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
+
   const bare = pathname === "/login" || pathname.startsWith("/invite");
 
   if (bare) return <>{children}</>;

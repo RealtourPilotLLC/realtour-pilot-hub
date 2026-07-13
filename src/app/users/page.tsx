@@ -4,6 +4,7 @@ import { canAccess } from "@/lib/auth/access";
 import { authEnforced } from "@/lib/auth/guards";
 import { TeamTab } from "@/components/people/TeamTab";
 import { LoginsTab } from "@/components/people/LoginsTab";
+import { ActivityTab } from "@/components/people/ActivityTab";
 import type { PeopleTab } from "@/components/people/PeopleTabs";
 
 export const dynamic = "force-dynamic";
@@ -37,18 +38,20 @@ export default async function PeoplePage({
   const sp = await searchParams;
   const requested = sp.tab;
 
-  // Which tabs this viewer may see (owner: both; admin: Team only).
-  const show: PeopleTab[] = isOwner ? ["team", "logins"] : ["team"];
+  // Which tabs this viewer may see (owner: all; admin: Team only).
+  const show: PeopleTab[] = isOwner ? ["team", "logins", "activity"] : ["team"];
 
   let tab: PeopleTab;
   if (requested === "logins") tab = "logins";
+  else if (requested === "activity") tab = "activity";
   else tab = "team"; // default (and the only tab admins get)
 
-  // Owner-only tab: bounce a non-owner who asked for Logins to the Team tab.
-  if (!isOwner && tab === "logins") {
+  // Owner-only tabs: bounce a non-owner who asked for Logins/Activity to Team.
+  if (!isOwner && tab !== "team") {
     redirect("/users?tab=team");
   }
 
   if (tab === "logins") return <LoginsTab show={show} me={me} />;
+  if (tab === "activity") return <ActivityTab show={show} />;
   return <TeamTab show={show} />;
 }

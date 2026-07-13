@@ -20,7 +20,10 @@ function pathKey(pathname: string): PageKey | null {
 // the auth + OAuth callbacks, inbound webhooks, cron jobs, and the client-facing
 // feedback form.
 // /api/health = read-only integration diagnostics (no secrets in responses).
-const PUBLIC_PREFIXES = ["/login", "/invite", "/api/auth", "/api/google", "/api/webhooks", "/api/cron", "/api/health"];
+// /api/activity = the usage beacon: it self-authenticates (204 on no session),
+// and gating it here would 307 stale-cookie beacons into pointless /login
+// renders on every navigation.
+const PUBLIC_PREFIXES = ["/login", "/invite", "/api/auth", "/api/google", "/api/webhooks", "/api/cron", "/api/health", "/api/activity"];
 
 function isPublic(pathname: string): boolean {
   if (PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"))) return true;

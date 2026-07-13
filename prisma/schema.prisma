@@ -497,6 +497,23 @@ model TrainingLesson {
 
 // Listener-first operations: a tracked, auto-generated task in Kyle's queue.
 // status/taskType/priority are strings (the spec has many values) to stay flexible.
+// One row per in-app page visit — the OWNER-ONLY usage trail (People →
+// Activity tab). Written by /api/activity from the SESSION identity (never the
+// client's claims); "view as" previews are skipped so they can't pollute the
+// person being previewed. Pruned to ~90 days on read.
+model UsageEvent {
+  id        String   @id @default(cuid())
+  userId    String // AppUser.id (denormalized — survives user edits)
+  email     String
+  name      String?
+  role      String
+  path      String // in-app pathname, e.g. "/shoot/abc123"
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+}
+
 model SmartTask {
   id            String   @id @default(cuid())
   status        String   @default("OPEN") // OPEN | IN_PROGRESS | WAITING_* | BLOCKED | COMPLETED | CANCELLED
