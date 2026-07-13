@@ -161,12 +161,16 @@ export async function saveShootNote(projectId: string, note: string): Promise<{ 
 }
 
 // Flag an on-site problem (lockbox, access, hazard…). Lands on the project
-// timeline + the upload portal's flag list for the team.
+// timeline + the upload portal's flag list for the team, AND on the Feedback &
+// requests board so it enters Jordan's review queue instead of dying on a
+// timeline nobody opens.
 export async function flagShootIssue(projectId: string, body: string): Promise<{ ok: boolean }> {
   await requireShootAccess(projectId);
   const text = (body || "").trim();
   if (!text) return { ok: false };
   await prisma.activity.create({ data: { projectId, type: "FLAG", body: text } });
+  const { fileFieldIssue } = await import("@/lib/fieldIssues");
+  await fileFieldIssue({ projectId, note: text, page: `/shoot/${projectId}`, label: "Shoot issue" });
   revalShoot(projectId);
   return { ok: true };
 }

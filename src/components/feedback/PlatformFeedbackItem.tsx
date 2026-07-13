@@ -1,7 +1,8 @@
 "use client";
 
 import { useTransition } from "react";
-import { Bug, Sparkles, MessageSquare, Check, X, RotateCcw, Loader2, CheckCircle2 } from "lucide-react";
+import Link from "next/link";
+import { Bug, Sparkles, MessageSquare, Check, X, RotateCcw, Loader2, CheckCircle2, Flag } from "lucide-react";
 import { decidePlatformFeedback } from "@/app/feedback/actions";
 import { etDateTime } from "@/lib/datetime";
 
@@ -21,6 +22,8 @@ const KIND_META: Record<string, { icon: typeof Bug; label: string; cls: string }
   bug: { icon: Bug, label: "Bug", cls: "text-danger bg-danger/10" },
   feature: { icon: Sparkles, label: "Feature", cls: "text-brand bg-brand-soft" },
   feedback: { icon: MessageSquare, label: "Feedback", cls: "text-muted bg-surface-2" },
+  // Flags raised from the field — shoot screen, upload portal, debrief.
+  field_issue: { icon: Flag, label: "Field issue", cls: "text-warning bg-warning/10" },
 };
 
 export function PlatformFeedbackItem({ row }: { row: FeedbackRow }) {
@@ -46,7 +49,19 @@ export function PlatformFeedbackItem({ row }: { row: FeedbackRow }) {
           )}
           <div className="mt-1 text-[11px] text-muted-2">
             {row.submittedBy ? `${row.submittedBy} · ` : ""}{etDateTime(row.createdAt)}
-            {row.page ? ` · ${row.page}` : ""}
+            {row.page &&
+              // In-app paths only — "//host" would be a protocol-relative
+              // external URL, so it stays plain text like full https:// values.
+              (row.page.startsWith("/") && !row.page.startsWith("//") ? (
+                <>
+                  {" · "}
+                  <Link href={row.page} className="text-brand hover:underline">
+                    {row.kind === "field_issue" ? "Open where it was flagged →" : "Open page →"}
+                  </Link>
+                </>
+              ) : (
+                ` · ${row.page}`
+              ))}
           </div>
         </div>
         {pending && <Loader2 className="size-4 shrink-0 animate-spin text-muted" />}

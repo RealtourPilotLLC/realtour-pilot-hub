@@ -88,6 +88,9 @@ export async function flagIssue(projectId: string, body: string) {
   await prisma.activity.create({
     data: { projectId, type: ActivityType.FLAG, body: trimmed },
   });
+  // Mirror onto the Feedback & requests board — Jordan's review queue.
+  const { fileFieldIssue } = await import("@/lib/fieldIssues");
+  await fileFieldIssue({ projectId, note: trimmed, page: `/upload/${projectId}`, label: "Upload issue" });
   revalidatePath(`/upload/${projectId}`);
   revalidatePath(`/projects/${projectId}`);
 }
@@ -125,6 +128,17 @@ export async function submitAppointmentFeedback(
         dedupeKey: `shoot-issue-${projectId}`,
       },
       update: { status: "OPEN", completedAt: null, description: trimmed.slice(0, 400) || "Photographer flagged an issue." },
+    });
+    // Also into Jordan's review queue on the Feedback & requests board. The
+    // debrief card re-renders on every portal visit, so re-submits refresh the
+    // one open row (dedupe) instead of stacking duplicates.
+    const { fileFieldIssue } = await import("@/lib/fieldIssues");
+    await fileFieldIssue({
+      projectId,
+      note: trimmed || "Photographer flagged an issue on the shoot.",
+      page: `/upload/${projectId}`,
+      label: "Shoot debrief",
+      dedupe: true,
     });
   }
   revalidatePath(`/upload/${projectId}`);
