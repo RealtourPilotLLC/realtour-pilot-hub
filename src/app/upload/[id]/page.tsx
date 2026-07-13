@@ -124,7 +124,8 @@ function DropboxFolders({
   const iconFor = (label: string) => (/video/i.test(label) ? Video : ImageIcon);
 
   // Live raw-photo count vs this home's budget. Amber past the bracket budget
-  // (target × 3), red past the overage ceiling (target × 3.3 → over-shot).
+  // (target × BRACKET_RATIO), red past the overage ceiling (× RAW_OVERAGE_FACTOR
+  // → over-shot even accounting for the 5-bracket JPG sets).
   const rawPhotoCount = state.folders.find((f) => f.key === "rawPhotos")?.count ?? 0;
   const rawBudget = rawBudgetFor(photoTarget);
   const overage = rawOverageCeiling(photoTarget);

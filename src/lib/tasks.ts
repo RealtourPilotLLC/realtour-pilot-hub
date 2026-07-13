@@ -1007,14 +1007,14 @@ export async function mintCullTask(opts: {
   await prisma.smartTask.create({
     data: {
       taskType: "todo",
-      title: `Cull before edit — ${street}: ${rawPhotos} raws ≈ ${estFinals} finals vs ~${target} target`.slice(0, 120),
-      summary: `This shoot uploaded ${rawPhotos} raw photos — roughly ${estFinals} finals once AutoHDR blends the brackets, against a ~${target}-photo budget for this home (${overBy > 0 ? `~${overBy} raws over` : "over budget"}). Cull the raw folder before it goes to editing: keep the best ONE of each room/composition and drop the near-duplicates. Culling here saves editing money and gives the client a tighter gallery.`.slice(0, 500),
-      reasonCreated: `Raw upload (${rawPhotos}) far exceeds the ~${target}-photo budget (× bracket ratio) — over-shot`,
+      title: `Cull before edit — ${street}: ${rawPhotos} JPGs ≈ ${estFinals} finals vs ~${target} target`.slice(0, 120),
+      summary: `This shoot uploaded ${rawPhotos} bracketed JPGs — roughly ${estFinals} finals once AutoHDR blends each ${BRACKET_RATIO}-exposure set, against a ~${target}-photo budget for this home (${overBy > 0 ? `~${overBy} JPGs over` : "over budget"}). Cull the raw folder before it goes to editing: keep the best ONE ${BRACKET_RATIO}-bracket set per room/composition and drop the near-duplicates. Culling here saves editing money and gives the client a tighter gallery.`.slice(0, 500),
+      reasonCreated: `Raw upload (${rawPhotos} JPGs) far exceeds the ~${target}-photo budget (× ${BRACKET_RATIO}-bracket ratio) — over-shot`,
       checklist: JSON.stringify([
         "Open the 01-RAW-Photos folder for this shoot",
-        "Keep the best single frame of each room / composition",
-        "Delete the near-duplicates and machine-gunned extras",
-        `Aim to land near ~${target} finals (~${target * BRACKET_RATIO} bracketed raws)`,
+        `Keep the best single ${BRACKET_RATIO}-bracket set per room / composition`,
+        "Delete the near-duplicate sets and machine-gunned extras",
+        `Aim to land near ~${target} finals (~${target * BRACKET_RATIO} JPGs at ${BRACKET_RATIO} brackets each)`,
       ]),
       source: "system",
       priority: "HIGH",
@@ -1034,7 +1034,9 @@ export async function mintCullTask(opts: {
       const { notifyInApp } = await import("@/lib/notify");
       await notifyInApp({
         kind: "cull",
-        title: `Cull before edit — ${street}: ${rawPhotos} raws vs ~${target} target`,
+        // SMS = this title + a link, so the bracket math rides along: the
+        // photographer sees files ≈ finals vs target, not a bare file count.
+        title: `Cull before edit — ${street}: ${rawPhotos} JPGs ≈ ${estFinals} finals vs ~${target} target`.slice(0, 90),
         href: `/upload/${projectId}`,
         targets: [{ roles: ["PHOTOGRAPHER"], userKey: `tm:${opts.photographerId}`, href: `/upload/${projectId}` }],
         dedupeKey: `cull-notify-${projectId}`,
