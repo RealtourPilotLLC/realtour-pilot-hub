@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Camera, Loader2, MessageSquarePlus, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { MentionTextarea } from "@/components/mentions/MentionTextarea";
 import { LANE_CHOICES, parseClock, type ReviewKind, type ReviewLane } from "./types";
 
 // Compact note composer shared by the image pin flow and video timestamps.
@@ -58,12 +59,12 @@ export function NoteComposer({
         <MessageSquarePlus className="size-3.5" /> {heading}
         {timeLabel && <span className="rounded bg-brand-soft px-1.5 py-0.5 tabular-nums">{timeLabel}</span>}
       </div>
-      <textarea
+      <MentionTextarea
         autoFocus
         value={body}
-        onChange={(e) => setBody(e.target.value)}
+        onChange={setBody}
         rows={2}
-        placeholder="What needs to change here…"
+        placeholder="What needs to change here… (@ to tag someone)"
         className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
       />
       {/* One tap picks who this goes to AND what kind of note it is. */}

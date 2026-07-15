@@ -265,6 +265,10 @@ export async function addCutNote(input: {
       photographerId,
     },
   });
+  {
+    const { notifyMentions } = await import("@/lib/mentions");
+    await notifyMentions({ text: body, projectId: input.projectId, authorName, context: "a cut note" });
+  }
   refresh(input.projectId);
   return { ok: true };
 }
@@ -301,6 +305,10 @@ export async function replyCutNote(noteId: string, body: string): Promise<{ ok: 
       parentId: root.id,
     },
   });
+  {
+    const { notifyMentions } = await import("@/lib/mentions");
+    await notifyMentions({ text, projectId: root.projectId, authorName, context: "a cut-note comment" });
+  }
   refresh(root.projectId);
   return { ok: true };
 }

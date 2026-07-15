@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Check, CornerDownRight, Loader2, MessageSquare, Send } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { MentionTextarea } from "@/components/mentions/MentionTextarea";
 import { replyCutNote, setCutNoteStatus } from "@/app/review/actions";
 import type { CutNote } from "@/lib/reviewRoom";
 
@@ -114,11 +115,13 @@ export function EditFeedback({ notes, canFix, viewerName }: { notes: CutNote[]; 
                   </div>
                 ))}
                 <div className="flex items-center gap-2">
-                  <input
+                  <MentionTextarea
                     value={reply}
-                    onChange={(e) => setReply(e.target.value)}
-                    placeholder="Reply…"
-                    className="min-w-0 flex-1 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-sm outline-none focus:border-brand"
+                    onChange={setReply}
+                    onEnter={() => { if (reply.trim() && !pending) run(() => replyCutNote(n.id, reply), () => setReply("")); }}
+                    rows={1}
+                    placeholder="Reply… (@ to tag)"
+                    className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-sm outline-none focus:border-brand"
                   />
                   <button
                     onClick={() => run(() => replyCutNote(n.id, reply), () => setReply(""))}

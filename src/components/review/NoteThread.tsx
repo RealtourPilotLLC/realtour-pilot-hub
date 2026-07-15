@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Camera, Check, CheckCheck, Loader2, Pencil, RotateCcw, Send, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { MentionTextarea } from "@/components/mentions/MentionTextarea";
 import { etDateTime } from "@/lib/datetime";
 import { STATUS_BG, STATUS_CHIP, STATUS_LABEL, fmtClock, type ReviewNote, type ReviewStatus } from "./types";
 
@@ -105,12 +106,13 @@ export function NoteThread({
 
       <div className="border-t border-border p-2.5">
         <div className="flex items-center gap-1.5">
-          <input
+          <MentionTextarea
             value={reply}
-            onChange={(e) => setReply(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && sendReply()}
-            placeholder="Reply…"
-            className="min-w-0 flex-1 rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-sm outline-none focus:border-brand"
+            onChange={setReply}
+            onEnter={sendReply}
+            rows={1}
+            placeholder="Reply… (@ to tag)"
+            className="w-full resize-none rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-sm outline-none focus:border-brand"
           />
           <button
             onClick={sendReply}

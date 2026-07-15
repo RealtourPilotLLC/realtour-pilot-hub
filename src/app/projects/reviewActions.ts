@@ -135,6 +135,8 @@ export async function addMediaNote(input: {
       photographerId,
     },
   });
+  const { notifyMentions } = await import("@/lib/mentions");
+  await notifyMentions({ text: body, projectId: input.projectId, authorName, context: "a review note" });
   refresh(input.projectId);
   return { ok: true, id: note.id };
 }
@@ -176,6 +178,8 @@ export async function replyMediaNote(noteId: string, body: string): Promise<{ ok
       parentId: root.id,
     },
   });
+  const { notifyMentions } = await import("@/lib/mentions");
+  await notifyMentions({ text, projectId: root.projectId, authorName, context: "a note comment" });
   refresh(root.projectId);
   return { ok: true };
 }

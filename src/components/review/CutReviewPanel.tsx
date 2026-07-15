@@ -6,6 +6,7 @@ import {
   Camera, Check, CornerDownRight, Loader2, MessageSquarePlus, Pencil, RotateCcw, Send, ThumbsUp, Undo2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { MentionTextarea } from "@/components/mentions/MentionTextarea";
 import { addCutNote, approveCut, replyCutNote, requestCutChanges, setCutNoteStatus } from "@/app/review/actions";
 import type { CutNote, CutSubmission } from "@/lib/reviewRoom";
 import { fmtClock, parseClock } from "./types";
@@ -172,12 +173,12 @@ export function CutReviewPanel({
             <MessageSquarePlus className="size-3.5" /> Cut note
             {capturedAt != null && <span className="rounded bg-brand-soft px-1.5 py-0.5 tabular-nums">at {fmtClock(capturedAt)}</span>}
           </div>
-          <textarea
+          <MentionTextarea
             autoFocus
             value={body}
-            onChange={(e) => setBody(e.target.value)}
+            onChange={setBody}
             rows={2}
-            placeholder="What needs to change here…"
+            placeholder="What needs to change here… (@ to tag someone)"
             className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
           />
           <div className="mt-2 flex flex-wrap gap-1.5">
@@ -306,11 +307,13 @@ export function CutReviewPanel({
                     </div>
                   ))}
                   <div className="flex items-center gap-2">
-                    <input
+                    <MentionTextarea
                       value={reply}
-                      onChange={(e) => setReply(e.target.value)}
-                      placeholder="Reply…"
-                      className="min-w-0 flex-1 rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-sm outline-none focus:border-brand"
+                      onChange={setReply}
+                      onEnter={() => { if (reply.trim() && !pending) run(() => replyCutNote(n.id, reply), () => setReply("")); }}
+                      rows={1}
+                      placeholder="Reply… (@ to tag)"
+                      className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-1.5 text-sm outline-none focus:border-brand"
                     />
                     <button
                       onClick={() => run(() => replyCutNote(n.id, reply), () => setReply(""))}

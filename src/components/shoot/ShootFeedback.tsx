@@ -8,6 +8,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Section } from "@/components/ui/Section";
 import { Badge } from "@/components/ui/Badge";
+import { MentionTextarea } from "@/components/mentions/MentionTextarea";
 import { PALETTE } from "@/lib/palette";
 import { etDate } from "@/lib/datetime";
 import { replyMediaNote, setMediaNoteStatus } from "@/app/projects/reviewActions";
@@ -250,12 +251,12 @@ function ReplyBox({ noteId, onAdded }: { noteId: string; onAdded: (body: string)
 
   return (
     <div className="w-full space-y-1.5">
-      <textarea
+      <MentionTextarea
         value={text}
-        onChange={(e) => setText(e.target.value)}
+        onChange={setText}
         rows={2}
-        placeholder="e.g. Got it — I’ll grab that angle on the reshoot…"
-        className="w-full rounded-xl border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
+        placeholder="e.g. Got it — I’ll grab that angle on the reshoot… (@ to tag someone)"
+        className="w-full resize-none rounded-xl border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
       />
       <div className="flex items-center gap-2">
         <button
