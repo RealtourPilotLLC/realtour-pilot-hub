@@ -13,6 +13,7 @@ import { addTaskNote } from "@/app/projects/messageActions";
 import { etDateTime, etMonthDay, etDaysAgo } from "@/lib/datetime";
 import { sourceMeta, SOURCE_CHIP, type SourceKey } from "@/lib/taskSource";
 import { editorMeta, isDelegated, DELEGATE_KEYS, EDITORS } from "@/lib/editors";
+import { TaskFullView } from "@/components/queue/TaskFullView";
 
 // Friendly display label per task type (QA → QC, etc.).
 const TYPE_LABEL: Record<string, string> = {
@@ -474,10 +475,17 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
           )}
 
           {/* The actual inbound message (not for predrafted-send tasks — those show
-              their drafted text below instead). */}
-          {task.description && !predrafted && !summary?.includes(task.description.slice(0, 40)) && (
-            <p className="whitespace-pre-line break-words border-t border-border pt-2 text-xs text-muted">{task.description}</p>
-          )}
+              their drafted text below instead). Legacy rows stored the AI summary as
+              the description's head — render only the part not already shown above,
+              and hide it only when the summary contains the WHOLE remainder (a
+              summary that merely QUOTES the opening must not hide the rest). */}
+          {(() => {
+            if (!task.description || predrafted) return null;
+            const desc = task.description.trim();
+            const rest = summary && desc.startsWith(summary.trim()) ? desc.slice(summary.trim().length).trim() : desc;
+            if (!rest || summary?.includes(rest)) return null;
+            return <p className="whitespace-pre-line break-words border-t border-border pt-2 text-xs text-muted">{rest}</p>;
+          })()}
 
           {task.reasonCreated && summary !== task.reasonCreated && (
             <p className="text-[11px] text-muted-2">Why: {task.reasonCreated}</p>
@@ -587,6 +595,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
               Draft
             </button>
           )}
+          <TaskFullView task={task} editorView={editorView} />
           {task.projectId && (
             <button
               onClick={() => setNoteOpen((v) => !v)}

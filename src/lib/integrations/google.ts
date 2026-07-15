@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { getSecret } from "./connections";
+import { cleanText, clip, stripQuotedReply } from "@/lib/text";
 
 // ---------------------------------------------------------------------------
 // Google / Gmail integration (OAuth2 with offline refresh tokens, read-only).
@@ -178,6 +179,13 @@ function parseFrom(from: string): { name: string; email: string } {
 // account, so unknown senders there are usually personal mail, not leads.
 const CLIENTS_ONLY_MAILBOXES = ["info@realtourpilot.com"];
 
+// Jordan's personal mailbox — its comms are OWNER-tier (logComm stamps unknown
+// senders minRole OWNER). The task full-view must not live-fetch its threads
+// for ADMIN viewers; exported so the action can apply the same boundary.
+export function isPersonalMailbox(email: string): boolean {
+  return CLIENTS_ONLY_MAILBOXES.includes(email.toLowerCase());
+}
+
 // Automated / non-human sender local-parts (the part before @).
 const AUTOMATED_LOCAL = /^(noreply|no-reply|donotreply|do-not-reply|notify|notification|notifications|mailer|mailer-daemon|bounce|bounces|postmaster|news|newsletter|marketing|promo|promotions|billing|invoice|invoices|invoicing|receipt|receipts|payments?|orders?|alerts?|updates?|system|automated|auto|do_not_reply|noticed|team|hello|info|support|help|account|accounts|email|mail|members?|notices?|reply)$/i;
 
@@ -269,16 +277,6 @@ function decodeB64Url(data?: string): string {
   }
 }
 
-// Decode HTML entities so bodies/snippets read naturally (Gmail HTML-encodes
-// snippets — apostrophes show up as &#39; etc).
-function decodeEntities(s: string): string {
-  return s
-    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(parseInt(d, 10)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
-    .replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
-}
-
 // Pull a readable plain-text body out of a (possibly multipart) Gmail payload.
 // Prefers text/plain; falls back to a crude HTML strip.
 function extractBody(payload?: GmailPart): string {
@@ -294,10 +292,11 @@ function extractBody(payload?: GmailPart): string {
   walk(payload);
   let text = plain.join("\n").trim();
   if (!text) {
-    text = html.join("\n").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ");
+    text = html.join("\n").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ");
   }
-  // Collapse excess blank lines + decode entities so the panel stays readable.
-  return decodeEntities(text.replace(/\r/g, "").replace(/\n{3,}/g, "\n\n")).trim();
+  // Entities decoded + zero-widths stripped + blank lines collapsed (cleanText)
+  // so what lands in tasks/comms reads like the email, not like its source.
+  return cleanText(text);
 }
 
 // Load recent email messages involving any of a client's addresses, across all
@@ -340,13 +339,39 @@ export async function clientEmailThreads(
         fromEmail: email,
         date: (isNaN(ts.getTime()) ? new Date() : ts).toISOString(),
         subject: header(msg, "Subject"),
-        snippet: msg.snippet ?? "",
+        snippet: cleanText(msg.snippet ?? ""),
         body: extractBody(msg.payload).slice(0, 4000),
         fromUs: email.endsWith("@" + OUR_DOMAIN),
       });
     }
   }
   return out.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+}
+
+// Fetch ONE Gmail thread in full — the task full-view's "original conversation"
+// panel. sourceDetail on email tasks is "gmail-thread:<mailbox>:<threadId>";
+// this turns it back into the actual messages, chronological.
+export async function fetchGmailThread(
+  mailbox: string,
+  threadId: string,
+): Promise<{ from: string; fromUs: boolean; date: string; body: string }[]> {
+  const accounts = await gmailAccounts();
+  const account = accounts.find((a) => a.email === mailbox) ?? accounts[0];
+  if (!account) return [];
+  const token = await accessTokenFor(account.refreshToken);
+  const thread = await gmail<GmailThread>(`/threads/${threadId}?format=full`, token);
+  return (thread.messages ?? []).map((m) => {
+    const { name, email } = parseFrom(header(m, "From"));
+    const dateHdr = header(m, "Date");
+    const ts = dateHdr ? new Date(dateHdr) : new Date(Number(m.internalDate ?? 0));
+    return {
+      from: name || email,
+      fromUs: email.endsWith("@" + OUR_DOMAIN),
+      date: (isNaN(ts.getTime()) ? new Date() : ts).toISOString(),
+      // Own words only — each message in the thread already shows its history.
+      body: clip(stripQuotedReply(extractBody(m.payload)), 4000),
+    };
+  });
 }
 
 // Scan recent inbound emails across all connected mailboxes (hello@ + info@),
@@ -434,14 +459,22 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
       const dedupe = `${account.email}:${id}`;
       const prior = seenByExt.get(dedupe);
       if (prior?.status === "PROCESSED") continue;
-      const msg = await gmail<GmailMsg>(
-        `/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=List-Unsubscribe`,
-        token,
-      );
+      // format=full so we read the MESSAGE, not the ~200-char HTML-encoded
+      // preview. The old metadata fetch fed the raw snippet to the classifier,
+      // the AI triage, and the task text itself — tasks showed "&#39;" artifacts,
+      // quotes cut mid-word, and the brain literally couldn't see what the
+      // client asked for past the first two sentences.
+      const msg = await gmail<GmailMsg>(`/messages/${id}?format=full`, token);
       const { name, email } = parseFrom(header(msg, "From"));
       const subject = header(msg, "Subject");
       const listUnsub = header(msg, "List-Unsubscribe");
-      const text = `${subject ? subject + " — " : ""}${msg.snippet ?? ""}`.trim();
+      const snippet = cleanText(msg.snippet ?? "");
+      const fullBody = extractBody(msg.payload);
+      // The sender's own words (quoted thread history stripped) — what the
+      // classifier/brain/task text should reason over. Snippet is the fallback
+      // for bodies we couldn't parse.
+      const ownWords = stripQuotedReply(fullBody) || snippet;
+      const text = `${subject ? subject + " — " : ""}${clip(ownWords, 2000)}`.trim();
       const threadId = msg.threadId ?? id;
       const threadRef = `gmail-thread:${account.email}:${threadId}`;
       const domain = email.includes("@") ? email.split("@")[1] : "";
@@ -523,9 +556,9 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
               ? `Download + QC the finished Luma reel — ${street}`
               : `Answer Luma's editor — ${street}`,
             summary: isDone
-              ? `Luma says the edit is finished: “${text.slice(0, 180)}”. Download it from the tracker, QC it, deliver to the client, and update the job.`.slice(0, 500)
-              : `Luma's editor wrote us: “${text.slice(0, 200)}”. Read it in the tracker and answer so the edit keeps moving.`.slice(0, 500),
-            description: text.slice(0, 400),
+              ? `Luma says the edit is finished: “${clip(text, 180)}”. Download it from the tracker, QC it, deliver to the client, and update the job.`.slice(0, 500)
+              : `Luma's editor wrote us: “${clip(text, 200)}”. Read it in the tracker and answer so the edit keeps moving.`.slice(0, 500),
+            description: clip(text, 1200),
             reasonCreated: isDone ? "Luma Visuals: edit finished" : "Luma Visuals: message from the editor",
             checklist: JSON.stringify(
               isDone
@@ -611,7 +644,9 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
           projectId: project?.id ?? null,
           contactName: name || resolvedClientName || null,
           subject,
-          body: msg.snippet || text,
+          // Full body (logComm caps at 6000) so the Hub + the task full-view
+          // recall what was actually said, not a preview of it.
+          body: fullBody || snippet || text,
           source: "gmail",
           externalId: `gmail-${dedupe}`,
         });
@@ -670,8 +705,8 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
           const data = {
             taskType: "lead",
             title: `New lead: ${name || email}`.slice(0, 120),
-            summary: `New inbound inquiry to ${account.email} from ${name || email}: “${text.slice(0, 200)}”. Qualify (listing, timeline, budget) and reply / book a strategy call.`.slice(0, 500),
-            description: text.slice(0, 400),
+            summary: `New inbound inquiry to ${account.email} from ${name || email}: “${clip(text, 200)}”. Qualify (listing, timeline, budget) and reply / book a strategy call.`.slice(0, 500),
+            description: clip(text, 1200),
             reasonCreated: `New inbound email to ${account.email}`,
             checklist: JSON.stringify(["Read the email", "Qualify (listing, timeline, budget)", "Reply / book a strategy call", "Add to CRM"]),
             source: "gmail",

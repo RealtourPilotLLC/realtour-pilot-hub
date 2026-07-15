@@ -67,7 +67,11 @@ export async function POST(req: NextRequest) {
 export async function processSlackEvent(event: Record<string, unknown>) {
   if (event.type !== "message") return;
   if (event.bot_id || event.subtype) return; // skip bots + edits/joins
-  const text = ((event.text as string) || "").trim();
+  // Slack HTML-escapes the user's own &/</> and wraps links/mentions in <…>
+  // tokens — decode BEFORE storing: the externalId dedupe makes whatever this
+  // path writes permanent (the hourly cron can never overwrite it clean).
+  const { resolveSlackText } = await import("@/lib/integrations/slackSync");
+  const text = resolveSlackText(((event.text as string) || "")).trim();
   if (!text) return;
 
   const ts = (event.ts as string) || "";

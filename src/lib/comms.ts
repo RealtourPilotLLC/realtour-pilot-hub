@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { createCommTask, mergeIntoExistingTask, closeObsoleteTasks } from "@/lib/tasks";
 import { routeCommTask } from "@/lib/brain";
 import type { NotifyTarget } from "@/lib/notify";
+import { clip } from "@/lib/text";
 
 // ---------------------------------------------------------------------------
 // Communications cross-check for the smart-status engine.
@@ -128,7 +129,7 @@ export async function recordClientCommunication(opts: {
         projectId: opts.projectId,
         sentiment: "NEGATIVE",
         category: "communication",
-        body: opts.text.slice(0, 300),
+        body: clip(opts.text, 300),
         authorName: opts.clientName,
         source: opts.kind === "email" ? "email" : "text",
       },
@@ -238,6 +239,7 @@ export async function recordClientCommunication(opts: {
         propertyAddress: effPropertyAddress ?? null,
         note: opts.text,
         source: opts.source ?? "comms",
+        threadRef: opts.threadRef,
       });
     } else {
       // In-flight job: capture the ask as a special request, no status churn.
@@ -245,7 +247,7 @@ export async function recordClientCommunication(opts: {
         data: {
           projectId: effProjectId,
           type: "SPECIAL_REQUEST",
-          body: `Client request (${opts.source ?? "comms"}): ${opts.text.slice(0, 220)}`,
+          body: `Client request (${opts.source ?? "comms"}): ${clip(opts.text, 280)}`,
         },
       });
     }
@@ -263,6 +265,8 @@ export async function raiseRevision(opts: {
   propertyAddress?: string | null;
   note: string;
   source: string;
+  /** Where the request came from (e.g. "gmail-thread:<mailbox>:<threadId>") — lets the task full-view pull the real conversation. */
+  threadRef?: string | null;
   qcCategories?: string[]; // QC labels to reopen for re-QC, e.g. ["Reel"]
 }): Promise<boolean> {
   const project = await prisma.project.findUnique({
@@ -287,7 +291,14 @@ export async function raiseRevision(opts: {
     isMonthlyContentJob(project.deliverables),
   );
 
-  const note = opts.note.slice(0, 300);
+  // The client's request IS the work order — keep it whole (word-boundary clip,
+  // generous cap) so the editor isn't guessing past "can we make a few cha…".
+  const note = clip(opts.note, 1500);
+  // The task lands on an EDITOR's board when it's their deliverable — creatives
+  // never see pricing, so money talk is dropped from THEIR copy (the full note
+  // stays on revisionNote/activity, which are admin surfaces).
+  const { stripMoneySentences } = await import("@/lib/text");
+  const taskNote = (assignedKey && assignedKey !== "kyle" ? stripMoneySentences(note) : note) || clip(note, 240);
   await prisma.project.update({
     where: { id: project.id },
     data: {
@@ -312,8 +323,8 @@ export async function raiseRevision(opts: {
   const data = {
     taskType: "revision",
     title: `Revision — ${project.title}`,
-    summary: `Client asked for changes after delivery: “${note.slice(0, 220)}” — confirm exactly what needs to change, make the edits/reshoot, then re-upload to Aryeo and re-deliver.`,
-    description: note,
+    summary: `Client asked for changes after delivery: “${clip(taskNote, 240)}” — confirm exactly what needs to change, make the edits/reshoot, then re-upload to Aryeo and re-deliver.`,
+    description: taskNote,
     reasonCreated: `Client requested changes via ${opts.source} after delivery`,
     checklist: JSON.stringify([
       // "…in Communications" pointed editors at a page their role can't open
@@ -325,6 +336,7 @@ export async function raiseRevision(opts: {
       "Mark the revision resolved",
     ]),
     source: opts.source,
+    sourceDetail: opts.threadRef ?? null,
     priority: "URGENT" as const,
     dueAt: new Date(),
     clientId: opts.clientId ?? project.clientId,
@@ -355,13 +367,13 @@ export async function raiseRevision(opts: {
   if (!wasAlreadyOpen) {
     try {
       const { notifyUrgent, notifyInApp } = await import("@/lib/notify");
-      await notifyUrgent(`${data.title}: “${note.slice(0, 140)}”`);
+      await notifyUrgent(`${data.title}: “${clip(note, 140)}”`);
       const targets: NotifyTarget[] = [{ roles: ["OWNER", "ADMIN"] }];
       if (assignedKey) targets.push({ roles: ["EDITOR"], userKey: `editor:${assignedKey}` });
       await notifyInApp({
         kind: "revision_raised",
         title: `Revision — ${project.title.split(",")[0].trim()}`,
-        body: note.slice(0, 140),
+        body: clip(taskNote, 140),
         href: `/projects/${project.id}`,
         targets,
         dedupeKey: `rev-${taskId}`,

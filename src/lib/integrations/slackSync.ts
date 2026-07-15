@@ -1,6 +1,7 @@
 import "server-only";
 import { getSecret } from "./connections";
 import { logComm } from "@/lib/commLog";
+import { clip, stripInvisible } from "@/lib/text";
 
 // Keep Slack comms memory fresh. A USER token can't receive webhooks, so the
 // hourly cron calls this to pull RECENT history (default last 48h) for the
@@ -39,7 +40,7 @@ export async function maybeCreateSlackTask(opts: { text: string; ts: string; cha
   const { matchProjectFromText } = await import("@/lib/matchProject");
   const match = await matchProjectFromText(text);
 
-  let title = text.length > 90 ? text.slice(0, 88) + "…" : text;
+  let title = clip(text, 90);
   let detail = text;
   let priority: "URGENT" | "HIGH" | "MEDIUM" | "LOW" = "MEDIUM";
   let projectId = match?.id ?? null;
@@ -98,7 +99,7 @@ export async function maybeCreateSlackTask(opts: { text: string; ts: string; cha
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
   const summary = (usedBrain && detail && detail !== text)
     ? detail
-    : `${opts.senderName || "A teammate"} in Slack: “${text.slice(0, 220)}”`;
+    : `${opts.senderName || "A teammate"} in Slack: “${clip(text, 260)}”`;
   // Slack notes land on Kyle to triage — he assigns to the right person in one
   // click. (Keyword auto-routing mis-fired constantly: any message mentioning
   // "reel"/"video"/"social" got shoved at Remar/Kim even when it wasn't theirs.)
@@ -146,13 +147,26 @@ async function su(token: string, method: string, query: Record<string, string> =
   return { ok: false, error: "ratelimited" };
 }
 
+// Same cleanup for callers outside this file (the real-time webhook logs
+// channel messages FIRST, and its externalId dedupe blocks the cron from
+// re-writing them — so the webhook must store CLEAN text too).
+export function resolveSlackText(text: string, userMap: Record<string, string> = {}): string {
+  return resolver(userMap)(text);
+}
+
 function resolver(userMap: Record<string, string>) {
+  // Token unwrap FIRST (Slack's real <@U…>/<url> tokens use literal angle
+  // brackets), THEN entity decode — Slack HTML-escapes the user's own &, <, >.
+  // Without the decode, tasks read "photos &amp; video".
   return (text: string) =>
-    (text || "")
-      .replace(/<@(U\w+)>/g, (_m, id) => "@" + (userMap[id] || id))
-      .replace(/<#C\w+\|([^>]+)>/g, "#$1")
-      .replace(/<(https?:[^|>]+)\|([^>]+)>/g, "$2")
-      .replace(/<(https?:[^>]+)>/g, "$1");
+    stripInvisible(
+      (text || "")
+        .replace(/<@(U\w+)>/g, (_m, id) => "@" + (userMap[id] || id))
+        .replace(/<#C\w+\|([^>]+)>/g, "#$1")
+        .replace(/<(https?:[^|>]+)\|([^>]+)>/g, "$2")
+        .replace(/<(https?:[^>]+)>/g, "$1")
+        .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"),
+    );
 }
 
 async function recentHistory(token: string, channel: string, oldest: string): Promise<any[]> {

@@ -7,6 +7,7 @@ import { etDayStartUtc } from "@/lib/datetime";
 import { slugForName } from "@/lib/assignees";
 import { BRACKET_RATIO, photoTargetFor } from "@/lib/culling";
 import { isMonthlyContentJob } from "@/lib/pipeline";
+import { clip } from "@/lib/text";
 
 // ---------------------------------------------------------------------------
 // Phase 1 of the listener-first platform: turnaround rules + due-date/priority
@@ -416,12 +417,16 @@ export async function createCommTask(opts: {
       : opts.kind === "voicemail"
         ? "Return the voicemail"
         : "Return the missed call";
-  const description = [opts.aiDetail, opts.snippet?.slice(0, 280)].filter(Boolean).join("\n\n") || null;
+  // Keep the MESSAGE itself on the task (word-boundary clip, generous cap) —
+  // "read the full context" shouldn't require leaving the card. aiDetail is NOT
+  // prefixed here: it already IS the summary, and prefixing rendered the same
+  // paragraph twice on the card and in the full view.
+  const description = (opts.snippet ? clip(opts.snippet, 1200) : opts.aiDetail?.trim()) || null;
   // "What happened" summary for the card: the brain's read of the ask, else the
   // message itself.
   const summary =
     opts.aiDetail?.trim() ||
-    (opts.snippet ? `${opts.clientName} ${opts.kind === "text" ? "wrote in" : "reached out"}: “${opts.snippet.slice(0, 200)}”` : `${verb} ${opts.clientName}.`);
+    (opts.snippet ? `${opts.clientName} ${opts.kind === "text" ? "wrote in" : "reached out"}: “${clip(opts.snippet, 240)}”` : `${verb} ${opts.clientName}.`);
 
   const data = {
     taskType: "client_reply",
@@ -491,9 +496,10 @@ export async function createProjectFollowupTask(opts: {
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
   const street = (opts.propertyAddress ?? "this job").split(",")[0];
   const title = (opts.aiTitle || `${opts.senderName} re ${street}`).slice(0, 120);
-  const description = [opts.aiDetail, opts.text.slice(0, 300)].filter(Boolean).join("\n\n") || null;
+  // Message only — aiDetail already lives in the summary (no double render).
+  const description = clip(opts.text, 1200) || null;
   const summary =
-    opts.aiDetail?.trim() || `${opts.senderName} messaged about ${street}: “${opts.text.slice(0, 200)}”`;
+    opts.aiDetail?.trim() || `${opts.senderName} messaged about ${street}: “${clip(opts.text, 240)}”`;
   const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
   const data = {
     taskType: "comms_followup",
@@ -604,11 +610,16 @@ export async function mergeIntoExistingTask(taskId: string, opts: {
   // delivery text) — that would overwrite its title/summary. Refuse so the caller
   // falls back to creating a proper reply task.
   if (["media_qa", "delivery", "confirmation_text", "delivery_text", "feedback_review", "image_fixes"].includes(existing.taskType)) return false;
-  const addition = [opts.detail, opts.snippet?.slice(0, 280)].filter(Boolean).join(" — ");
-  const description = [existing.description, addition ? `Update: ${addition}` : null].filter(Boolean).join("\n\n").slice(0, 2000);
+  // The MESSAGE is the update; detail (the brain's read) refreshes the summary
+  // below — repeating it in the description doubled the same paragraph.
+  const addition = opts.snippet ? clip(opts.snippet, 800) : opts.detail ?? "";
+  // Keep the LATEST updates when the log outgrows the cap — the newest message
+  // is the one being acted on (the old head-slice silently ate new updates).
+  let description = [existing.description, addition ? `Update: ${addition}` : null].filter(Boolean).join("\n\n");
+  if (description.length > 4000) description = "…" + description.slice(-4000);
   const titled = opts.title ? opts.title.slice(0, 120) : undefined;
   // Refresh the "what happened" summary to the latest read when we have one.
-  const summary = (opts.detail?.trim() || opts.snippet?.trim()) ? (opts.detail?.trim() || `New message: “${opts.snippet!.slice(0, 200)}”`) : undefined;
+  const summary = (opts.detail?.trim() || opts.snippet?.trim()) ? (opts.detail?.trim() || `New message: “${clip(opts.snippet!, 240)}”`) : undefined;
   await prisma.smartTask.update({
     where: { id: taskId },
     data: {

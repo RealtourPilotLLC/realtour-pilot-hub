@@ -187,7 +187,7 @@ ${ctx.note ? `Context: ${ctx.note}` : ""}
 
 Their message:
 """
-${ctx.message.slice(0, 1500)}
+${ctx.message.slice(0, 2400)}
 """
 
 Write only the reply, ready to copy and send. Do not add notes or options.`;
@@ -389,7 +389,7 @@ A ${ctx.channel} message came in from ${ctx.senderName} (${ctx.senderIsClient ? 
 
 Message:
 """
-${ctx.message.slice(0, 1500)}
+${ctx.message.slice(0, 2400)}
 """
 
 This client's orders (id | address | status | due | delivered | revision):
@@ -490,7 +490,7 @@ export async function decideSlackTask(ctx: SlackBrainContext, key?: string): Pro
 
 New Slack message from ${ctx.senderName}:
 """
-${ctx.message.slice(0, 1200)}
+${ctx.message.slice(0, 2400)}
 """
 
 Recent Slack conversation in this channel (oldest first):
@@ -691,7 +691,7 @@ Rules:
 
 Message:
 """
-${ctx.message.slice(0, 1500)}
+${ctx.message.slice(0, 2400)}
 """
 
 Respond as strict JSON: {"title": "<imperative action, max 8 words>", "detail": "<1 sentence on what they need>"}. No other text.`;
