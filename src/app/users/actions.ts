@@ -35,16 +35,37 @@ export async function inviteUser(input: { email: string; name?: string; role: st
     const role = validRole(input.role) ? input.role : "PHOTOGRAPHER";
     const token = randomUUID();
 
+    // An EDITOR login is useless without its editorKey — that key scopes their
+    // board, brief actions, and person-addressed bells. Derive it from the
+    // roster by first name (Kim → "kim", Remar → "remar") so day-one logins
+    // work instead of landing with dead buttons (audit critical).
+    let editorKey: string | null = null;
+    if (role === "EDITOR") {
+      const { TEAM_MEMBER_EDITOR_KEYS, EDITORS } = await import("@/lib/editors");
+      const first = (input.name ?? "").trim().split(/\s+/)[0]?.toLowerCase();
+      editorKey =
+        (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).find(
+          (k) => k === first || EDITORS[k as keyof typeof EDITORS]?.name.split(/\s+/)[0]?.toLowerCase() === first,
+        ) ?? null;
+    }
+
     const existing = await prisma.appUser.findUnique({ where: { email } });
     if (existing) {
       // Re-invite: refresh role + token, keep them able to sign in.
       await prisma.appUser.update({
         where: { id: existing.id },
-        data: { role, name: input.name?.trim() || existing.name, inviteToken: token, invitedAt: new Date(), status: existing.status === "DISABLED" ? "INVITED" : existing.status },
+        data: {
+          role,
+          name: input.name?.trim() || existing.name,
+          ...(editorKey ? { editorKey } : {}),
+          inviteToken: token,
+          invitedAt: new Date(),
+          status: existing.status === "DISABLED" ? "INVITED" : existing.status,
+        },
       });
     } else {
       await prisma.appUser.create({
-        data: { email, name: input.name?.trim() || null, role, status: "INVITED", inviteToken: token, invitedAt: new Date() },
+        data: { email, name: input.name?.trim() || null, role, editorKey, status: "INVITED", inviteToken: token, invitedAt: new Date() },
       });
     }
     revalidatePath("/users");

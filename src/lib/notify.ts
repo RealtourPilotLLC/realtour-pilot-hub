@@ -75,7 +75,7 @@ export type NotifyTarget = { roles: Role[]; userKey?: string; href?: string }; /
 // doesn't wake anyone); only fires when the bell row was NEWLY created, so a
 // deduped re-announcement can't re-text.
 // ---------------------------------------------------------------------------
-const SMS_KINDS = new Set(["appointment_change", "order_canceled", "mention", "review_feedback", "cull", "raws_missing"]);
+const SMS_KINDS = new Set(["appointment_change", "order_canceled", "mention", "review_feedback", "cull", "raws_missing", "task_assigned"]);
 // The video editors (Kim/Remar) have no push either, and the whole point of the
 // editor platform is that raws-landed / a revision / a review-back actually
 // REACH them — in Manila. These kinds bridge an `editor:<key>` bell row to their
@@ -140,10 +140,15 @@ async function channelForEditor(editorKey: string, title: string, href: string):
     }
     // Fall back to SMS via their TeamMember phone.
     const tmId = await editorTeamMemberId(editorKey);
-    if (!tmId) return; // no linkable person / no phone yet (e.g. Remar)
-    const member = await prisma.teamMember.findUnique({ where: { id: tmId }, select: { phone: true } });
+    const member = tmId ? await prisma.teamMember.findUnique({ where: { id: tmId }, select: { phone: true } }) : null;
     const phone = member?.phone?.replace(/[^\d+]/g, "");
-    if (!phone) return;
+    if (!phone) {
+      // NO reachable channel (no Slack id, no phone — e.g. Remar today). The
+      // old silent return meant editor-addressed work landed NOWHERE a human
+      // saw (audit critical) — make it loud so ops relays it by hand.
+      await opsAlert(`⚠️ Couldn't reach ${meta.name} (no Slack/phone on file) — relay this: ${title} → ${link}`);
+      return;
+    }
     const { OpenPhone, defaultOpenPhoneNumber, phoneKey } = await import("@/lib/integrations/openphone");
     const from = await defaultOpenPhoneNumber();
     if (!from) return;

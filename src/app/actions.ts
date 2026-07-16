@@ -242,14 +242,61 @@ export async function setTaskAssignee(taskId: string, key: string) {
   // Owner/admin, or the editor this task is currently assigned to (so an editor
   // can hand a task back to Kyle) — audit crack #28.
   await requireTaskAccess(taskId);
-  const { listAssignees } = await import("@/lib/assignees");
+  const { listAssignees, slugForName } = await import("@/lib/assignees");
   const validKeys = new Set((await listAssignees()).map((a) => a.key));
   const assignedKey = key && validKeys.has(key) ? key : null;
+  const prev = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { assignedKey: true } });
   const t = await prisma.smartTask.update({
     where: { id: taskId },
     data: { assignedKey },
-    select: { projectId: true },
+    select: { projectId: true, title: true },
   });
+  // Work must never move onto someone's plate SILENTLY (audit critical: tasks
+  // assigned to Jordan/photographers vanished with no ping). Editors get their
+  // channel row; everyone else a person-addressed bell (photographers also get
+  // the SMS bridge via the task_assigned kind). Vendors have no channel — the
+  // human dispatch task is the handoff there.
+  if (assignedKey && assignedKey !== prev?.assignedKey && assignedKey !== "kyle") {
+    try {
+      const { notifyInApp } = await import("@/lib/notify");
+      const { TEAM_MEMBER_EDITOR_KEYS } = await import("@/lib/editors");
+      const VENDOR_KEYS = new Set(["luma", "autohdr", "cubicasa"]);
+      const title = `Task for you — ${t.title}`.slice(0, 90);
+      if ((TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(assignedKey)) {
+        await notifyInApp({
+          kind: "edit_assigned",
+          title,
+          href: t.projectId ? `/edit/${t.projectId}` : "/tasks",
+          targets: [{ roles: ["EDITOR"], userKey: `editor:${assignedKey}`, href: t.projectId ? `/edit/${t.projectId}` : "/tasks" }],
+          dedupeKey: `assign-${taskId}-${assignedKey}`,
+        });
+      } else if (!VENDOR_KEYS.has(assignedKey)) {
+        const members = await prisma.teamMember.findMany({ where: { active: true }, select: { id: true, name: true, role: true } });
+        const m = members.find((x) => slugForName(x.name) === assignedKey);
+        if (m) {
+          const href =
+            m.role === "PHOTOGRAPHER"
+              ? t.projectId ? `/shoot/${t.projectId}` : "/shoot"
+              : t.projectId ? `/projects/${t.projectId}` : "/tasks?tab=board";
+          await notifyInApp({
+            kind: "task_assigned",
+            title,
+            href,
+            // PHOTOGRAPHER in the audience arms the SMS bridge — only actual
+            // photographers should be texted; Jordan/admins get the bell.
+            targets: [
+              {
+                roles: m.role === "PHOTOGRAPHER" ? ["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"] : ["OWNER", "ADMIN", "EDITOR"],
+                userKey: `tm:${m.id}`,
+                href,
+              },
+            ],
+            dedupeKey: `assign-${taskId}-${assignedKey}`,
+          });
+        }
+      }
+    } catch { /* notification is best-effort — the assignment itself stands */ }
+  }
   revalidatePath("/queue");
   if (t.projectId) revalidatePath(`/projects/${t.projectId}`);
 }

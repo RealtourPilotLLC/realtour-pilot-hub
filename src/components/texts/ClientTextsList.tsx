@@ -7,7 +7,8 @@ import {
   AlertTriangle, ArrowRight, CalendarCheck2, CheckCircle2, Copy, Loader2,
   MapPin, PackageCheck, Send, User, type LucideIcon,
 } from "lucide-react";
-import { sendConfirmationText, sendDeliveryText, setSmartTaskStatus } from "@/app/actions";
+import { setSmartTaskStatus } from "@/app/actions";
+import { sendDraftText } from "@/app/tasks/sendAllActions";
 
 // The /texts review list. Every row is a drafted client text: review the message,
 // tap Send (the SAME server actions the /today cards used — a human tap is the
@@ -77,15 +78,13 @@ function TextCard({ row, onGone }: { row: ClientTextRow; onGone: (id: string, no
   const [text, setText] = useState(row.draft ?? "");
   const [copied, setCopied] = useState(false);
   const due = dueLabel(row);
-  // The send actions re-render the message fresh server-side (live shoot time /
-  // delivered items), so edits in the review box can't ride along on Send —
-  // surface that instead of silently sending something else.
-  const edited = text.trim() !== (row.draft ?? "").trim();
 
+  // Sends EXACTLY what's in the box — the review box is the message (the old
+  // per-type actions re-rendered server-side and silently discarded edits).
   const send = () =>
     start(async () => {
       setErr(null);
-      const r = row.taskType === "confirmation_text" ? await sendConfirmationText(row.id) : await sendDeliveryText(row.id);
+      const r = await sendDraftText(row.id, text);
       if (r.ok) onGone(row.id, `Text sent${row.clientName ? ` to ${row.clientName}` : ""}`);
       else setErr(r.message);
     });
@@ -143,13 +142,8 @@ function TextCard({ row, onGone }: { row: ClientTextRow; onGone: (id: string, no
           className="w-full rounded-xl border border-border bg-surface-2/50 p-3 text-sm"
         />
         <p className="text-[11px] text-muted-2">
-          Sends via OpenPhone — nothing goes out until you tap Send. Send re-renders the message with live job details.
+          Sends via OpenPhone — nothing goes out until you tap Send. What&rsquo;s in the box is exactly what gets sent, edits included.
         </p>
-        {edited && (
-          <Warn>
-            Send always sends the freshly rendered message — your edits here won&apos;t go out with it. Copy your version and send it from OpenPhone if you need custom wording.
-          </Warn>
-        )}
         {row.summary && <p className="text-xs text-muted-2">{row.summary}</p>}
         {err && <p className="text-xs font-medium text-danger">{err}</p>}
 

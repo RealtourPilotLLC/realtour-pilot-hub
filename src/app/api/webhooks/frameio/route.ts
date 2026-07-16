@@ -173,7 +173,11 @@ export async function processFrameioEvent(
       (body.id as string) ||
       createHash("sha1").update(JSON.stringify(body)).digest("hex").slice(0, 12);
     const targets: NotifyTarget[] = [{ roles: ["OWNER"] }];
-    if (editorKey) targets.push({ roles: ["EDITOR"], userKey: `editor:${editorKey}` });
+    // In-house editors only (luma is external — no channel/login), and the
+    // href must be their brief: /projects bounces the EDITOR role.
+    if (editorKey === "kim" || editorKey === "remar") {
+      targets.push({ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${project.id}` });
+    }
     await notifyInApp({
       kind: "edit_finished",
       title: `Edit ready for review — ${street}`,

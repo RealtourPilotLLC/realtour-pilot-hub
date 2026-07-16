@@ -783,7 +783,10 @@ const PRODUCTION_TASK_TYPES = ["confirmation_text", "appointment_prep", "media_q
 // once the gallery shipped: outstanding photo-flag fixes (a real re-do comes back
 // as a client revision, which is left open) and teammate job-prep instructions.
 // NOT delivery_text — that's created below and closes on its own timer/send.
-const DELIVERED_CLOSE_TYPES = [...PRODUCTION_TASK_TYPES, "image_fixes", "comms_followup", "edit_video"];
+// vendor_update ("download + QC the finished Luma reel") is delivery work by
+// definition — once the job is DELIVERED it happened; nothing else closes it
+// (audit: no close path, tasks rotted open forever).
+const DELIVERED_CLOSE_TYPES = [...PRODUCTION_TASK_TYPES, "image_fixes", "comms_followup", "edit_video", "vendor_update"];
 
 // Close out a project's now-obsolete open tasks when it reaches a terminal
 // state, so Daily Tasks doesn't show ghost work on finished/cancelled jobs.
@@ -841,6 +844,16 @@ export async function closeObsoleteTasks(projectId: string, projectStatus: strin
       where: { projectId, dedupeKey: `cull-${projectId}`, status: { notIn: ["COMPLETED", "CANCELLED"] } },
       data: { status: "COMPLETED", completedAt: new Date() },
     });
+    // Closing the image_fixes task without resolving its ImageFlag rows left
+    // the Flags tab lying ("3 open flags" on a delivered gallery) — and ONE new
+    // flag resurrected every stale one into Kyle's 24h fix task (audit). The
+    // delivery IS the resolution: fixed or shipped-as-is, the round is over.
+    await prisma.imageFlag
+      .updateMany({
+        where: { projectId, status: "OPEN" },
+        data: { status: "FIXED", resolvedAt: new Date() },
+      })
+      .catch(() => {});
     await createDeliveryTextTask(projectId);
     return r.count;
   }
@@ -1106,7 +1119,8 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
         // Only in-house editors have a reachable channel; Luma (external) has no
         // bell/DM — its dispatch is the Kyle task below.
         if (key === "kim" || key === "remar") {
-          targets.push({ roles: ["EDITOR"], userKey: `editor:${key}` });
+          // Their brief — the one page the EDITOR role can act from.
+          targets.push({ roles: ["EDITOR"], userKey: `editor:${key}`, href: `/edit/${projectId}` });
         }
       }
       await notifyInApp({
@@ -1678,10 +1692,7 @@ async function syncOneProjectTasks(
   await prisma.smartTask.updateMany({
     where: {
       projectId: p.id,
-      // confirmation_text is included so it auto-closes once the shoot day has
-      // passed or the job moves past SCHEDULED (specsForProject stops emitting
-      // it, so it's no longer in expectedKeys). The send button also closes it.
-      taskType: { in: ["media_qa", "delivery", "finish_delivery", "confirmation_text"] },
+      taskType: { in: ["media_qa", "delivery", "finish_delivery"] },
       status: { notIn: ["COMPLETED", "CANCELLED"] },
       NOT: [
         { dedupeKey: { in: [...expectedKeys] } },
@@ -1691,6 +1702,24 @@ async function syncOneProjectTasks(
       ],
     },
     data: { status: "COMPLETED", completedAt: new Date() },
+  });
+  // A confirmation whose spec vanished (shoot day passed / job moved past
+  // SCHEDULED) was never sent through the hub — it's MOOT, not done. Stamp it
+  // CANCELLED so the Done ledger stops crediting never-sent confirmations as
+  // sent (audit: ~40% of "completed" confirmations were these). The
+  // follow-the-shoot reopen below already handles CANCELLED → OPEN when the
+  // spec re-emits with a fresh shoot date.
+  await prisma.smartTask.updateMany({
+    where: {
+      projectId: p.id,
+      taskType: "confirmation_text",
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
+      NOT: [
+        { dedupeKey: { in: [...expectedKeys] } },
+        ...EXTERNAL_KEY_PREFIXES.map((pfx) => ({ dedupeKey: { startsWith: pfx } })),
+      ],
+    },
+    data: { status: "CANCELLED" },
   });
   for (const s of specs) {
     const key = dedupe([p.id, s.taskType, s.deliverableType]);

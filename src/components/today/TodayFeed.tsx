@@ -60,10 +60,13 @@ function dueLabel(card: TodayCard): { text: string; danger: boolean } {
   if (card.overdue) return { text: "overdue", danger: true };
   if (!card.dueAt) return { text: "", danger: false };
   const d = new Date(card.dueAt);
-  const isToday = d.getTime() - Date.now() < 24 * 3600_000;
+  // ET CALENDAR day, not a rolling 24h delta — "by 9:00 AM" with no date on a
+  // card due TOMORROW morning read as today's deadline (audit).
+  const dayKey = (x: Date) => x.toLocaleDateString("en-US", { timeZone: "America/New_York" });
+  const isToday = dayKey(d) === dayKey(new Date());
   const t = d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
   const day = d.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
-  return { text: isToday ? `by ${t}` : day, danger: false };
+  return { text: isToday ? `by ${t}` : `${day}, ${t}`, danger: false };
 }
 
 // Button color language (Kyle's feedback — Done and Send were the same orange
@@ -177,8 +180,15 @@ function ActionCard({ card, assignees, onGone }: {
     start(async () => {
       setErr(null);
       const r = await sendEmailReply(card.id, draftText, emailTo ? { expectedTo: emailTo } : undefined);
-      if (r.ok && isRevision) { setCompose(false); setDraftText(""); setSentNote(r.message); }
-      else if (r.ok) onGone(card.id, r.message);
+      if (r.ok) onGone(card.id, r.message);
+      else setErr(r.message);
+    });
+  // Revision ack: the reply goes out but the edit work (and card) stay open.
+  const sendEmailKeepOpen = () =>
+    start(async () => {
+      setErr(null);
+      const r = await sendEmailReply(card.id, draftText, { ...(emailTo ? { expectedTo: emailTo } : {}), keepOpen: true });
+      if (r.ok) { setCompose(false); setDraftText(""); setSentNote(r.message); }
       else setErr(r.message);
     });
 
@@ -257,7 +267,7 @@ function ActionCard({ card, assignees, onGone }: {
           <div className="rounded-xl border border-warning/30 bg-warning/5 p-2.5">
             <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-warning">Who owns this?</p>
             <div className="flex flex-wrap gap-1.5">
-              {assignees.slice(0, 8).map((a) => (
+              {assignees.slice(0, 12).map((a) => (
                 <button
                   key={a.key}
                   onClick={() => assign(a.key, a.name)}
@@ -359,10 +369,24 @@ function ActionCard({ card, assignees, onGone }: {
                   <Btn onClick={() => setCompose(true)}>Write my own</Btn>
                 </>
               )}
-              {isRevision && compose && card.hasPhone && (
+              {/* Channel-honest send: an emailed revision gets an EMAIL ack in
+                  its thread; a texted one gets the SMS — never cross channels
+                  (audit: gmail revisions promised email, sent a text). */}
+              {isRevision && compose && isEmail && (
+                <Btn primary onClick={sendEmailKeepOpen} busy={busy} disabled={!draftText.trim() || !emailTo}>
+                  <Send className="size-4" /> Send email
+                </Btn>
+              )}
+              {isRevision && compose && isEmail && !emailTo && (
+                <span className="text-[11px] text-warning">Can&rsquo;t resolve the email thread — reply from Gmail directly</span>
+              )}
+              {isRevision && compose && !isEmail && card.hasPhone && (
                 <Btn primary onClick={sendReply} busy={busy} disabled={!draftText.trim()}>
                   <Send className="size-4" /> Send
                 </Btn>
+              )}
+              {isRevision && compose && !isEmail && !card.hasPhone && (
+                <span className="text-[11px] text-warning">No phone on file — reply from Gmail/OpenPhone directly</span>
               )}
               {card.projectId && (
                 <Link href={`/projects/${card.projectId}`} className="inline-flex items-center gap-1 rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">

@@ -23,6 +23,8 @@ export type DraftedText = {
   body: string;
   /** Why this row can't send (no phone / invalid) — shown, excluded from batch. */
   blocked: string | null;
+  /** Confirmation for a shoot that already started — loads UNTICKED with a warning. */
+  warnStale: boolean;
   dueAt: string | null;
   overdue: boolean;
 };
@@ -91,6 +93,10 @@ export async function listDraftedTexts(): Promise<{ ok: boolean; message?: strin
       street: p.title.split(",")[0].trim(),
       body,
       blocked,
+      // "Confirming your shoot at 10 AM" sent at 2pm reads insane — the
+      // per-card surface warns about this; the BATCH (one tap, many texts)
+      // must too, and load these unticked.
+      warnStale: t.taskType === "confirmation_text" && !!p.shootDate && p.shootDate.getTime() < Date.now(),
       dueAt: t.dueAt?.toISOString() ?? null,
       overdue: !!t.dueAt && t.dueAt.getTime() < Date.now(),
     });

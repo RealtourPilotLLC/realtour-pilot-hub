@@ -7,6 +7,11 @@ import { PlatformFeedbackItem, type FeedbackRow } from "@/components/feedback/Pl
 export const dynamic = "force-dynamic";
 
 export default async function FeedbackPage() {
+  // Approve/Decline are OWNER decisions (the actions enforce it) — don't render
+  // buttons that silently fail for ADMIN (audit).
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const viewer = await getCurrentUser().catch(() => null);
+  const canModerate = !viewer || viewer.role === "OWNER";
   const all = await prisma.platformFeedback.findMany({ orderBy: { createdAt: "desc" } });
   const rows: FeedbackRow[] = all.map((f) => ({
     id: f.id,
@@ -48,7 +53,7 @@ export default async function FeedbackPage() {
                 </h2>
                 <div className="space-y-2">
                   {g.rows.map((r) => (
-                    <PlatformFeedbackItem key={r.id} row={r} />
+                    <PlatformFeedbackItem key={r.id} row={r} canModerate={canModerate} />
                   ))}
                 </div>
               </section>

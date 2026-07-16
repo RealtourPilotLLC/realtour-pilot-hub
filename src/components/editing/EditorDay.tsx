@@ -63,6 +63,10 @@ export async function EditorDay({ editorScope, editorName }: { editorScope: stri
         tier: tier === "premium" ? "Premium" : "Standard",
         premium: tier === "premium",
         dueISO: t.dueAt ? t.dueAt.toISOString() : null,
+        // The ASK itself — a revision card that just says "Revision" gives the
+        // editor nothing to act on (audit). description holds the client's own
+        // words; summary is the brain's read.
+        ask: t.taskType === "revision" ? (t.description?.trim() || t.summary?.trim() || null) : null,
         rawUrl,
         briefUrl: `/edit/${p.id}`,
         frameio: p.frameioViewUrl,
@@ -146,6 +150,11 @@ export async function EditorDay({ editorScope, editorName }: { editorScope: stri
                         <SlaCountdown dueISO={j.dueISO} />
                       </div>
                       {j.client && <div className="mt-0.5 text-xs text-muted">{j.client}</div>}
+                      {j.ask && (
+                        <p className="mt-1.5 whitespace-pre-line break-words rounded-lg border border-danger/20 bg-danger/5 p-2 text-xs text-foreground/85">
+                          {j.ask}
+                        </p>
+                      )}
                       <div className="mt-2.5 flex flex-wrap gap-2">
                         <a href={j.rawUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-2.5 py-1 text-xs font-medium hover:bg-surface-2">
                           <FolderOpen className="size-3.5 text-muted" /> RAW folder <ExternalLink className="size-3 text-muted-2" />

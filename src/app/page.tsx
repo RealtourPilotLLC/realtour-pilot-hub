@@ -112,8 +112,8 @@ export default async function DashboardPage() {
                 "to assign" chip only exists while something actually needs an
                 owner (routine work defaults to Kyle and isn't triage). */}
             <div className="flex flex-wrap gap-2">
-              <CountChip label="waiting on reply" count={counts.replies} tone="#38bdf8" href="/today?focus=reply" />
-              <CountChip label="in QC" count={counts.qc} tone="#a78bfa" href="/today?focus=check" />
+              <CountChip label="waiting on reply" count={counts.replies} tone="#38bdf8" href="/tasks" />
+              <CountChip label="in QC" count={counts.qc} tone="#a78bfa" href="/tasks?tab=board" />
               <CountChip label="running late" count={counts.late} tone="var(--danger)" href="/today" />
               {counts.toAssign > 0 && (
                 <CountChip label="to assign" count={counts.toAssign} tone="var(--warning)" href="/queue" />

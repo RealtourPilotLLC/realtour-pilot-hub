@@ -58,10 +58,14 @@ export async function requireTaskAccess(taskId: string): Promise<void> {
     throw new Error("You're previewing another user — exit the preview to make changes.");
   }
   if (u.realRole === "OWNER" || u.realRole === "ADMIN") return;
-  if (u.realRole === "EDITOR") {
+  if (u.realRole === "EDITOR" || u.realRole === "PHOTOGRAPHER") {
+    // The person a task is assigned to may act on THEIR OWN task, whatever
+    // their role — a photographer with work moved onto their plate must be
+    // able to complete it (audit: assigned-away tasks were act-on-able by
+    // nobody but admins).
     const { prisma } = await import("@/lib/prisma");
     const { slugForName } = await import("@/lib/assignees");
-    const myKey = u.editorKey || (u.name ? slugForName(u.name) : null);
+    const myKey = (u.realRole === "EDITOR" ? u.editorKey : null) || (u.name ? slugForName(u.name) : null);
     if (myKey) {
       const t = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { assignedKey: true } });
       if (t?.assignedKey === myKey) return;

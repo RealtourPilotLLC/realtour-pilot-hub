@@ -158,7 +158,16 @@ export type NextShootFocus = {
 // The open capture notes worth re-reading before the next shoot: fixes first,
 // then coaching, newest first — capped for the card.
 export async function getNextShootFocus(memberId: string): Promise<NextShootFocus> {
-  const where = { photographerId: memberId, lane: "PHOTOGRAPHER", parentId: null, status: "OPEN" } as const;
+  // "Got it" retires a coaching note from the work-ons card — acknowledged
+  // notes sat there forever with nothing the photographer could do (audit).
+  // Open FIXES always stay (they're work, not reading).
+  const where: import("@prisma/client").Prisma.MediaNoteWhereInput = {
+    photographerId: memberId,
+    lane: "PHOTOGRAPHER",
+    parentId: null,
+    status: "OPEN",
+    OR: [{ kind: "fix" }, { acknowledgedAt: null }],
+  };
   const [openCount, openFixes, rows] = await Promise.all([
     prisma.mediaNote.count({ where }),
     prisma.mediaNote.count({ where: { ...where, kind: "fix" } }),

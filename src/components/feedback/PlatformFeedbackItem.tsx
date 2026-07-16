@@ -26,7 +26,7 @@ const KIND_META: Record<string, { icon: typeof Bug; label: string; cls: string }
   field_issue: { icon: Flag, label: "Field issue", cls: "text-warning bg-warning/10" },
 };
 
-export function PlatformFeedbackItem({ row }: { row: FeedbackRow }) {
+export function PlatformFeedbackItem({ row, canModerate = true }: { row: FeedbackRow; canModerate?: boolean }) {
   const [pending, start] = useTransition();
   const meta = KIND_META[row.kind] ?? KIND_META.feature;
   const Icon = meta.icon;
@@ -68,7 +68,7 @@ export function PlatformFeedbackItem({ row }: { row: FeedbackRow }) {
       </div>
 
       <div className="mt-2.5 flex flex-wrap items-center gap-2 border-t border-border pt-2.5">
-        {row.status === "NEW" && (
+        {row.status === "NEW" && (canModerate ? (
           <>
             <button onClick={() => decide("APPROVED")} disabled={pending} className="inline-flex items-center gap-1 rounded-lg bg-success/10 px-2.5 py-1 text-xs font-medium text-success hover:bg-success/20 disabled:opacity-50">
               <Check className="size-3.5" /> Approve
@@ -77,7 +77,9 @@ export function PlatformFeedbackItem({ row }: { row: FeedbackRow }) {
               <X className="size-3.5" /> Decline
             </button>
           </>
-        )}
+        ) : (
+          <span className="text-xs text-muted-2">Waiting on Jordan&rsquo;s review</span>
+        ))}
         {row.status === "APPROVED" && (
           <>
             <span className="inline-flex items-center gap-1 text-xs font-medium text-success"><Check className="size-3.5" /> Approved — queued for build</span>

@@ -89,7 +89,15 @@ export async function flagImages(
   note: string,
   tags: string[],
 ): Promise<FlagResult> {
-  await requireStaff();
+  // Staff, OR the photographer flagging media on THEIR OWN shoot — the
+  // lightbox shows them the Flag button, and the old staff-only guard made
+  // every tap error (audit). requireShootAccess is exactly that boundary.
+  try {
+    await requireStaff();
+  } catch {
+    const { requireShootAccess } = await import("@/lib/auth/guards");
+    await requireShootAccess(projectId);
+  }
   const imgs = images.filter((i) => i.url);
   if (imgs.length === 0) return { ok: false, message: "Select at least one photo." };
   const cleanTags = tags.filter((t) => (IMAGE_FLAG_TAGS as readonly string[]).includes(t));

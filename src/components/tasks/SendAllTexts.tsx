@@ -39,7 +39,7 @@ export function SendAllTexts({ count }: { count: number }) {
     void listDraftedTexts()
       .then((r) => {
         if (!r.ok || !r.rows) { setLoadErr(r.message ?? "Couldn't load the drafts."); return; }
-        setRows(r.rows.map((d) => ({ ...d, checked: !d.blocked, text: d.body, state: "idle" })));
+        setRows(r.rows.map((d) => ({ ...d, checked: !d.blocked && !d.warnStale, text: d.body, state: "idle" })));
       })
       .catch(() => setLoadErr("Couldn't load the drafts — try again."));
   }, [open]);
@@ -140,6 +140,11 @@ export function SendAllTexts({ count }: { count: number }) {
                       {r.blocked && r.state === "idle" && <span className="inline-flex items-center gap-1 text-warning"><AlertTriangle className="size-3.5" /> {r.blocked}</span>}
                     </span>
                   </div>
+                  {r.warnStale && r.state !== "sent" && (
+                    <p className="mt-1.5 text-[11px] font-medium text-warning">
+                      This confirmation may be out of date — the shoot time may have already passed. Tick it only if you really want it sent.
+                    </p>
+                  )}
                   <textarea
                     value={r.text}
                     onChange={(e) => setRows((rs) => rs!.map((x, j) => (j === i ? { ...x, text: e.target.value } : x)))}

@@ -251,6 +251,37 @@ export async function setMediaNoteStatus(
     }
   }
 
+  // Same loop-closer for the PHOTOGRAPHER lane: when the photographer marks
+  // the LAST open capture fix done, close the "Capture fixes" follow-up task
+  // (review-photog-*) — it had NO closer at all (audit) — and ping the owner
+  // for the re-review pass.
+  if (status === "FIXED" && note.lane === "PHOTOGRAPHER") {
+    try {
+      const stillOpen = await prisma.mediaNote.count({
+        where: { projectId: note.projectId, parentId: null, lane: "PHOTOGRAPHER", kind: "fix", status: "OPEN" },
+      });
+      if (stillOpen === 0) {
+        await prisma.smartTask.updateMany({
+          where: { dedupeKey: `review-photog-${note.projectId}`, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+          data: { status: "COMPLETED", completedAt: new Date() },
+        });
+        const [project, fixedCount] = await Promise.all([
+          prisma.project.findUnique({ where: { id: note.projectId }, select: { title: true } }),
+          prisma.mediaNote.count({ where: { projectId: note.projectId, parentId: null, lane: "PHOTOGRAPHER", status: "FIXED" } }),
+        ]);
+        await notifyInApp({
+          kind: "review_ready",
+          title: `Capture fixes marked done — ${streetOf(project?.title)}`,
+          href: `/shoot/${note.projectId}`,
+          targets: [{ roles: ["OWNER"] }],
+          dedupeKey: `review-photog-ready-${note.projectId}-${fixedCount}`,
+        });
+      }
+    } catch (e) {
+      console.warn("photographer fix rollup failed", e);
+    }
+  }
+
   refresh(note.projectId);
   return { ok: true };
 }

@@ -282,7 +282,14 @@ export async function raiseRevision(opts: {
   // stays with Kyle to triage.
   const { editorForDeliverable } = await import("@/lib/editors");
   const { isMonthlyContentJob } = await import("@/lib/pipeline");
-  const primary = project.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL") ?? project.deliverables[0];
+  const videoDeliv = project.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  const hasNonVideo = project.deliverables.some((d) => d.type !== "VIDEO" && d.type !== "SOCIAL_REEL");
+  // Route by WHAT THE CLIENT ASKED, not just what the job contains: "fix the
+  // front-lawn photo" on a photos+reel job went to the video editor (audit).
+  // Video terms in the ask (or a video-only job) → the video lane; otherwise
+  // Kyle triages it like any photo/3D/floor-plan revision.
+  const VIDEO_ASK = /\b(video|reel|clip|footage|cut|music|audio|song|caption|subtitle|intro|outro|walk-?through|transition|b-?roll)\b/i;
+  const primary = videoDeliv && (VIDEO_ASK.test(opts.note) || !hasNonVideo) ? videoDeliv : project.deliverables.find((d) => d.type !== "VIDEO" && d.type !== "SOCIAL_REEL") ?? project.deliverables[0];
   // PROJECT-level monthly test — a listing-shoot revision for a social-plan
   // client routes like any listing job, not to the monthly-content lane.
   const assignedKey = editorForDeliverable(
@@ -349,11 +356,20 @@ export async function raiseRevision(opts: {
   const wasAlreadyOpen = !!existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED";
   let taskId: string;
   if (existing) {
+    // A second ask must ADD to the work order, not replace it — overwriting
+    // description with only the newest message made earlier asks vanish from
+    // every editor-visible surface (audit). Append while the round is open;
+    // a task re-raised after completion starts a fresh list.
+    let description = data.description;
+    if (wasAlreadyOpen && existing.description && !existing.description.includes(taskNote)) {
+      description = `${existing.description}\n\nNew request: ${taskNote}`;
+      if (description.length > 4000) description = "…" + description.slice(-4000);
+    }
     await prisma.smartTask.update({
       where: { id: existing.id },
       // A hand-picked editor (owner reassign / manual queue-add) survives a
       // re-raise — only the automatic routing suggestion gets overwritten.
-      data: { ...data, ...(existing.assignedManually ? { assignedKey: existing.assignedKey } : {}), status: "OPEN", completedAt: null },
+      data: { ...data, description, ...(existing.assignedManually ? { assignedKey: existing.assignedKey } : {}), status: "OPEN", completedAt: null },
     });
     taskId = existing.id;
   } else {
@@ -369,7 +385,15 @@ export async function raiseRevision(opts: {
       const { notifyUrgent, notifyInApp } = await import("@/lib/notify");
       await notifyUrgent(`${data.title}: “${clip(note, 140)}”`);
       const targets: NotifyTarget[] = [{ roles: ["OWNER", "ADMIN"] }];
-      if (assignedKey) targets.push({ roles: ["EDITOR"], userKey: `editor:${assignedKey}` });
+      // Editor row: ONLY in-house editors (kim/remar) have a channel + login,
+      // and their href must be the editor workspace — /projects bounces the
+      // EDITOR role, and the Slack/SMS bridge ships whatever href this row has.
+      {
+        const { TEAM_MEMBER_EDITOR_KEYS } = await import("@/lib/editors");
+        if (assignedKey && (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(assignedKey)) {
+          targets.push({ roles: ["EDITOR"], userKey: `editor:${assignedKey}`, href: `/edit/${project.id}` });
+        }
+      }
       await notifyInApp({
         kind: "revision_raised",
         title: `Revision — ${project.title.split(",")[0].trim()}`,
@@ -438,7 +462,12 @@ export async function resolveRevision(projectId: string): Promise<void> {
   try {
     const { notifyInApp } = await import("@/lib/notify");
     const targets: NotifyTarget[] = [{ roles: ["OWNER", "ADMIN"] }];
-    if (revTask?.assignedKey) targets.push({ roles: ["EDITOR"], userKey: `editor:${revTask.assignedKey}` });
+    {
+      const { TEAM_MEMBER_EDITOR_KEYS } = await import("@/lib/editors");
+      if (revTask?.assignedKey && (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(revTask.assignedKey)) {
+        targets.push({ roles: ["EDITOR"], userKey: `editor:${revTask.assignedKey}`, href: `/edit/${projectId}` });
+      }
+    }
     await notifyInApp({
       kind: "revision_resolved",
       title: `Revision resolved — ${(project?.title || "this job").split(",")[0].trim()}`,

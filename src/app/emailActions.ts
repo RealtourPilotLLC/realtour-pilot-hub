@@ -12,7 +12,7 @@ import { requireAdmin } from "@/lib/auth/guards";
 export async function sendEmailReply(
   taskId: string,
   body: string,
-  opts?: { expectedTo?: string },
+  opts?: { expectedTo?: string; /** Revision acks: reply goes out but the edit work remains open. */ keepOpen?: boolean },
 ): Promise<{ ok: boolean; message: string; to?: string }> {
   await requireAdmin();
   const text = body.trim();
@@ -33,18 +33,26 @@ export async function sendEmailReply(
 
   // Atomically CLAIM the task before sending — a stale second tab / double
   // press must never email the client twice. Reverted if the send fails.
-  const claimed = await prisma.smartTask.updateMany({
-    where: { id: task.id, status: { notIn: ["COMPLETED", "CANCELLED"] } },
-    data: { status: "COMPLETED", completedAt: new Date() },
-  });
-  if (claimed.count === 0) return { ok: false, message: "Already handled — this reply was sent (or the task was closed)." };
+  // keepOpen (revision acknowledgements — the edit work remains) skips the
+  // claim; its double-press guard is the button's busy state.
+  if (!opts?.keepOpen) {
+    const claimed = await prisma.smartTask.updateMany({
+      where: { id: task.id, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    });
+    if (claimed.count === 0) return { ok: false, message: "Already handled — this reply was sent (or the task was closed)." };
+  } else if (task.status === "COMPLETED" || task.status === "CANCELLED") {
+    return { ok: false, message: "Already handled." };
+  }
 
   const { sendGmailReply } = await import("@/lib/integrations/google");
   const sent = await sendGmailReply({ mailbox, threadId, body: text, expectedTo: opts?.expectedTo });
   if (!sent.ok) {
-    await prisma.smartTask
-      .updateMany({ where: { id: task.id }, data: { status: "OPEN", completedAt: null } })
-      .catch(() => {});
+    if (!opts?.keepOpen) {
+      await prisma.smartTask
+        .updateMany({ where: { id: task.id }, data: { status: "OPEN", completedAt: null } })
+        .catch(() => {});
+    }
     return { ok: false, message: sent.error };
   }
 

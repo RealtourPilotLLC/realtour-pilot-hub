@@ -156,10 +156,14 @@ export async function dedupeClients(
 
     const loserIds = losers.map((l) => l.id);
     await prisma.$transaction(async (tx) => {
-      // Re-point all children to the survivor.
+      // Re-point all children to the survivor — including comms memory and the
+      // assistant→agent folding, which the original merge missed (a merged-away
+      // twin referenced as someone's parentClientId orphaned that folding).
       await tx.project.updateMany({ where: { clientId: { in: loserIds } }, data: { clientId: survivor.id } });
       await tx.smartTask.updateMany({ where: { clientId: { in: loserIds } }, data: { clientId: survivor.id } });
       await tx.contact.updateMany({ where: { clientId: { in: loserIds } }, data: { clientId: survivor.id } });
+      await tx.commLog.updateMany({ where: { clientId: { in: loserIds } }, data: { clientId: survivor.id } });
+      await tx.client.updateMany({ where: { parentClientId: { in: loserIds } }, data: { parentClientId: survivor.id } });
       // Delete the duplicates first so their unique aryeoCustomerId frees up.
       await tx.client.deleteMany({ where: { id: { in: loserIds } } });
       // Then apply the merged record to the survivor.
@@ -169,4 +173,66 @@ export async function dedupeClients(
   }
 
   return { clustersFound: clusters.length, clientsMerged, previews };
+}
+
+/**
+ * Merge a SPECIFIC set of client rows the automatic rule can't safely infer
+ * (same person under a team inbox / a second brokerage email — verified by a
+ * human or an audit). Reuses the cluster-merge semantics: survivor = most
+ * projects, priority email = the one with the most projects behind it.
+ */
+export async function mergeClientsById(ids: string[]): Promise<{ ok: boolean; survivor?: string; message?: string }> {
+  if (ids.length < 2) return { ok: false, message: "Need at least two clients to merge." };
+  const select = {
+    id: true, name: true, email: true, backupEmail: true, phone: true, company: true,
+    licenseNumber: true, generalNotes: true, editingPreferences: true, clientPreferences: true,
+    brandColors: true, brandAssetsPath: true, socialClient: true, socialPlan: true,
+    aryeoCustomerId: true, updatedAt: true,
+    _count: { select: { projects: true } },
+  } as const;
+  const cluster = (await prisma.client.findMany({ where: { id: { in: ids } }, select })) as DedupeClient[];
+  if (cluster.length !== ids.length) return { ok: false, message: "Some of those clients no longer exist." };
+
+  const sorted = [...cluster].sort(
+    (a, b) => b._count.projects - a._count.projects || b.updatedAt.getTime() - a.updatedAt.getTime(),
+  );
+  const survivor = sorted[0];
+  const losers = sorted.slice(1);
+  const ranked = sorted.filter((c) => norm(c.email));
+  const priorityEmail = ranked[0]?.email ?? survivor.email ?? null;
+  const backupEmail =
+    ranked.map((c) => c.email).find((e) => norm(e) && norm(e) !== norm(priorityEmail)) ?? survivor.backupEmail ?? null;
+  const pick = <K extends keyof DedupeClient>(key: K): DedupeClient[K] => {
+    if (survivor[key]) return survivor[key];
+    for (const l of losers) if (l[key]) return l[key];
+    return survivor[key];
+  };
+  const loserIds = losers.map((l) => l.id);
+  await prisma.$transaction(async (tx) => {
+    await tx.project.updateMany({ where: { clientId: { in: loserIds } }, data: { clientId: survivor.id } });
+    await tx.smartTask.updateMany({ where: { clientId: { in: loserIds } }, data: { clientId: survivor.id } });
+    await tx.contact.updateMany({ where: { clientId: { in: loserIds } }, data: { clientId: survivor.id } });
+    await tx.commLog.updateMany({ where: { clientId: { in: loserIds } }, data: { clientId: survivor.id } });
+    await tx.client.updateMany({ where: { parentClientId: { in: loserIds } }, data: { parentClientId: survivor.id } });
+    await tx.client.deleteMany({ where: { id: { in: loserIds } } });
+    await tx.client.update({
+      where: { id: survivor.id },
+      data: {
+        email: priorityEmail,
+        backupEmail,
+        phone: pick("phone"),
+        company: pick("company"),
+        licenseNumber: pick("licenseNumber"),
+        generalNotes: pick("generalNotes"),
+        editingPreferences: pick("editingPreferences"),
+        clientPreferences: pick("clientPreferences"),
+        brandColors: pick("brandColors"),
+        brandAssetsPath: pick("brandAssetsPath"),
+        socialClient: survivor.socialClient || losers.some((l) => l.socialClient),
+        socialPlan: pick("socialPlan"),
+        aryeoCustomerId: pick("aryeoCustomerId"),
+      },
+    });
+  });
+  return { ok: true, survivor: survivor.id };
 }

@@ -217,9 +217,44 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
       const { closeReplyForOutbound, closeReplyForOutboundCall } = await import("@/lib/tasks");
       if (!isCall) {
         await closeReplyForOutbound(clientId, text);
+        // Kyle often sends the "your gallery is ready" text straight from his
+        // phone — that outbound text to a client with a queued delivery_text
+        // IS the delivery text. Close it (audit: delivery_texts were 36% of
+        // all overdue, only ever swept by a 7-day timer).
+        await prisma.smartTask
+          .updateMany({
+            where: { clientId, taskType: "delivery_text", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+            data: { status: "COMPLETED", completedAt: new Date() },
+          })
+          .catch(() => {});
       } else if (type === "call.completed") {
         const dur = Number(data.duration ?? 0);
         if (!!data.answeredAt || dur > 0) await closeReplyForOutboundCall(clientId, effProject?.id ?? null);
+      }
+    }
+  }
+
+  // --- Phone-lead follow-up: an OUTBOUND text/answered call to a number that
+  // has an open lead task means we replied — the callback happened. Leads have
+  // no client match, so the client-scoped close above never reaches them
+  // (audit: phone-lead tasks could never auto-close).
+  if (!match && (direction.toLowerCase().startsWith("out") || fromUs)) {
+    const toRaw = Array.isArray(data.to) ? (data.to[0] as string) : (data.to as string) || "";
+    const toKey = phoneKey(toRaw);
+    const counterpart = fromUs ? toKey : fromPhone;
+    if (counterpart.length === 10 && !ourNumbers.has(counterpart)) {
+      const answeredCall = isCall && type === "call.completed" && (!!data.answeredAt || Number(data.duration ?? 0) > 0);
+      if (!isCall || answeredCall) {
+        await prisma.smartTask
+          .updateMany({
+            where: {
+              taskType: "lead",
+              status: { notIn: ["COMPLETED", "CANCELLED"] },
+              OR: [{ dedupeKey: { contains: counterpart } }, { sourceDetail: { contains: prettyPhone(counterpart) } }],
+            },
+            data: { status: "COMPLETED", completedAt: new Date() },
+          })
+          .catch(() => {});
       }
     }
   }

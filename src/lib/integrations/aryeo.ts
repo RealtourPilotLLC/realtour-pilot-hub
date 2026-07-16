@@ -685,7 +685,7 @@ export async function syncAryeoOrders(
           photographerId: true, // cancel bell targets the assigned photographer
         },
       }),
-      prisma.client.findMany({ select: { id: true, aryeoCustomerId: true, email: true } }),
+      prisma.client.findMany({ select: { id: true, aryeoCustomerId: true, email: true, phone: true, name: true, company: true } }),
     ]);
     const seenOrders = new Set(existingProjects.map((p) => p.aryeoOrderId!));
     const projByOrder = new Map(existingProjects.map((p) => [p.aryeoOrderId!, p]));
@@ -699,9 +699,22 @@ export async function syncAryeoOrders(
 
     const clientByAryeoId = new Map<string, string>();
     const clientByEmail = new Map<string, string>();
+    // Same-person signals beyond id/email — the identity rule the merge tool
+    // (src/lib/clientDedupe.ts) uses: matching phone, or matching name+company.
+    // Without these, an Aryeo order under a NEW email (assistant books it, agent
+    // changes address) minted a duplicate client and moved live jobs onto the
+    // twin, cut off from history/segment/open tasks (audit critical).
+    const { phoneKey } = await import("@/lib/integrations/openphone");
+    const normId = (s: string | null | undefined) => (s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+    const clientByPhone = new Map<string, { id: string; name: string }>();
+    const clientByNameCo = new Map<string, string>();
     for (const c of existingClients) {
       if (c.aryeoCustomerId) clientByAryeoId.set(c.aryeoCustomerId, c.id);
       if (c.email) clientByEmail.set(c.email.toLowerCase(), c.id);
+      const pk = phoneKey(c.phone);
+      if (pk.length === 10 && !clientByPhone.has(pk)) clientByPhone.set(pk, { id: c.id, name: c.name });
+      const nc = normId(c.name) && normId(c.company) ? `${normId(c.name)}|${normId(c.company)}` : null;
+      if (nc && !clientByNameCo.has(nc)) clientByNameCo.set(nc, c.id);
     }
 
     const resolveClient = async (cust?: AryeoCustomer): Promise<string> => {
@@ -709,6 +722,31 @@ export async function syncAryeoOrders(
       if (byId) return byId;
       const byEmail = cust?.email ? clientByEmail.get(cust.email.toLowerCase()) : undefined;
       if (byEmail) return byEmail;
+      // Phone / name+company hit → this is an EXISTING person under a new
+      // email or Aryeo customer id: adopt onto the existing row (stash the new
+      // email as backupEmail) instead of minting a twin. A phone match ALSO
+      // requires the same name — two agents sharing an office line must not
+      // get collapsed into one client.
+      const pk = phoneKey(cust?.phone);
+      const phoneHit = pk.length === 10 ? clientByPhone.get(pk) : undefined;
+      const samePersonByPhone = phoneHit && normId(phoneHit.name) === normId(customerName(cust)) ? phoneHit.id : undefined;
+      const nameCo =
+        normId(customerName(cust)) && normId(cust?.office_name) ? `${normId(customerName(cust))}|${normId(cust?.office_name)}` : null;
+      const bySignal = samePersonByPhone ?? (nameCo ? clientByNameCo.get(nameCo) : undefined);
+      if (bySignal) {
+        await prisma.client
+          .update({
+            where: { id: bySignal },
+            data: {
+              ...(cust?.id ? { aryeoCustomerId: cust.id } : {}),
+              ...(cust?.email ? { backupEmail: cust.email } : {}),
+            },
+          })
+          .catch(() => {});
+        if (cust?.id) clientByAryeoId.set(cust.id, bySignal);
+        if (cust?.email) clientByEmail.set(cust.email.toLowerCase(), bySignal);
+        return bySignal;
+      }
       const created = await prisma.client.create({
         data: {
           name: customerName(cust),
@@ -723,6 +761,8 @@ export async function syncAryeoOrders(
       clientsCreated++;
       if (cust?.id) clientByAryeoId.set(cust.id, created.id);
       if (cust?.email) clientByEmail.set(cust.email.toLowerCase(), created.id);
+      const cpk = phoneKey(cust?.phone);
+      if (cpk.length === 10) clientByPhone.set(cpk, { id: created.id, name: created.name });
       return created.id;
     };
 

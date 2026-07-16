@@ -119,8 +119,19 @@ export async function submitCutForReview(
   projectId: string,
   note?: string,
 ): Promise<{ ok: boolean; message: string }> {
+  // Scope to the SUBMITTING editor's own task: authorizing off the oldest open
+  // task regardless of assignee let one editor's submit close ANOTHER editor's
+  // work item (audit). Owner/admin submit-on-behalf keeps the wide net.
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const myEditorKey = me?.role === "EDITOR" ? me.editorKey ?? null : null;
   const task = await prisma.smartTask.findFirst({
-    where: { projectId, taskType: { in: ["edit_video", "revision"] }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    where: {
+      projectId,
+      taskType: { in: ["edit_video", "revision"] },
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
+      ...(myEditorKey ? { assignedKey: myEditorKey } : {}),
+    },
     orderBy: { createdAt: "asc" },
     select: { id: true },
   });
@@ -171,9 +182,15 @@ export async function submitCutForReview(
   });
 
   // Close out the editor's open work item (first submit = edit_video; a
-  // re-submit after changes = the bundled revision task).
+  // re-submit after changes = the bundled revision task). An editor's submit
+  // closes ONLY their own tasks — never a co-editor's parallel work item.
   await prisma.smartTask.updateMany({
-    where: { projectId, taskType: { in: ["edit_video", "revision"] }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    where: {
+      projectId,
+      taskType: { in: ["edit_video", "revision"] },
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
+      ...(myEditorKey ? { assignedKey: myEditorKey } : {}),
+    },
     data: { status: "COMPLETED", completedAt: new Date() },
   });
 

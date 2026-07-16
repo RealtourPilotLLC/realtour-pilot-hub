@@ -75,6 +75,7 @@ export async function notifyMentions(opts: {
     // Resolution is EXACT (editor key → its TeamMember id), never a name
     // substring — a future "Kimberly" must not ring editor Kim's channel.
     const { TEAM_MEMBER_EDITOR_KEYS, editorTeamMemberId } = await import("@/lib/editors");
+    const { slugForName } = await import("@/lib/assignees");
     const editorTmIds = new Map<string, string>(); // TeamMember id → editor key
     for (const key of TEAM_MEMBER_EDITOR_KEYS) {
       const tmId = await editorTeamMemberId(key);
@@ -107,6 +108,9 @@ export async function notifyMentions(opts: {
         projectId: opts.projectId,
         clientId: project?.clientId ?? null,
         ownerId: t.id,
+        // On the tagged person's OWN board — ownerId alone shows on no surface
+        // (editor boards filter by editor key, everyone else by name slug).
+        assignedKey: editorKey ?? slugForName(t.name),
         dedupeKey: `mention-${opts.projectId}-${t.id}`,
       };
       const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: data.dedupeKey } });

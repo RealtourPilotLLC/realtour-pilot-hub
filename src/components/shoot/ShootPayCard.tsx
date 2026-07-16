@@ -16,7 +16,7 @@ export async function ShootPayCard({ projectId, memberId }: { projectId: string;
     return (
       <Section icon={DollarSign} title="Your pay">
         <p className="text-sm text-muted">
-          Your pay rates aren’t set up yet. Once they’re added on the team page, your earnings for each shoot show here.
+          Your pay rates aren’t set up yet — text Jordan and he’ll add them. Then your earnings for each shoot show here.
         </p>
       </Section>
     );
@@ -38,7 +38,7 @@ export async function ShootPayCard({ projectId, memberId }: { projectId: string;
             ) : earnings.hasHome ? (
               <div className="flex items-center gap-2 text-muted-2"><Car className="size-3.5" /> Within your free travel radius</div>
             ) : (
-              <div className="flex items-center gap-2 text-muted-2"><Car className="size-3.5" /> Add your home address for mileage</div>
+              <div className="flex items-center gap-2 text-muted-2"><Car className="size-3.5" /> Text Jordan your home address to turn on mileage pay</div>
             )}
           </div>
         </div>

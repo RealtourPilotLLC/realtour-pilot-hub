@@ -8,7 +8,7 @@ import { recentProjectWhere } from "@/lib/recency";
 import { etDayStartUtc } from "@/lib/datetime";
 import { isNeedsAssigning } from "@/lib/triage";
 import { listAssignees } from "@/lib/assignees";
-import { DELEGATE_KEYS, editorMeta, isDelegated } from "@/lib/editors";
+import { editorMeta, isDelegated } from "@/lib/editors";
 
 // One finish-able stack: everything that needs Kyle TODAY, as action cards —
 // work down, tap, done. Everything the system handles on its own stays hidden
@@ -25,10 +25,10 @@ const REPLY_TYPES = ["client_reply", "lead"];
 function stackWhere(startToday: Date): Prisma.SmartTaskWhereInput {
   return {
     status: { in: ACTIVE },
-    // Kyle's own + unassigned work, PLUS anything delegated to an editor/
-    // vendor (Kim/Remar/Luma/…) — they never log in, so delegated tasks
-    // surface in Kyle's "Do" stack with a "→ Kim" chip instead of vanishing.
-    OR: [{ assignedKey: null }, { assignedKey: "kyle" }, { assignedKey: { in: [...DELEGATE_KEYS] } }],
+    // EVERY assignee stays visible — Kyle's own + unassigned work, plus
+    // anything delegated to ANYONE (editors, vendors, Jordan, photographers)
+    // with a "→ Name" chip. Scoping to kyle+DELEGATE_KEYS made tasks assigned
+    // to jordan/photographer keys vanish from every surface (audit critical).
     AND: [{
       OR: [
         // Messages/replies: always surface while open (someone is waiting).
@@ -91,7 +91,13 @@ export async function TodayView({ sp, tabs }: { sp: { guided?: string }; tabs: R
   const cards: TodayCard[] = tasks.map((t) => {
     // Delegated work lands in "Do these" — Kyle's action is to check on the
     // person it's with, not to reply/send/QC himself.
-    const delegatedTo = isDelegated(t.assignedKey) ? editorMeta(t.assignedKey)?.name ?? t.assignedKey : null;
+    // "→ Name" for ANY non-Kyle assignee (editor roster name when it's an
+    // editor/vendor; capitalized slug otherwise — jordan, james, …).
+    const delegatedTo = isDelegated(t.assignedKey)
+      ? editorMeta(t.assignedKey)?.name ?? t.assignedKey
+      : t.assignedKey && t.assignedKey !== "kyle"
+        ? t.assignedKey.charAt(0).toUpperCase() + t.assignedKey.slice(1)
+        : null;
     const verb = delegatedTo ? "do" : verbFor(t.taskType);
     return {
       id: t.id,

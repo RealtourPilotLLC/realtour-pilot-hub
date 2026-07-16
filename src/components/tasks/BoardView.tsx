@@ -58,8 +58,10 @@ export async function boardOpenCount(): Promise<number> {
 function category(taskType: string): "confirmations" | "deliveries" | "comms" | "revisions" | "qc" {
   if (["confirmation_text", "appointment_prep"].includes(taskType)) return "confirmations";
   if (taskType === "delivery_text") return "deliveries";
-  if (taskType === "revision") return "revisions";
-  if (["media_qa", "image_fixes", "delivery", "feedback_review", "finish_delivery"].includes(taskType)) return "qc";
+  // Edits live with revisions — an editor's edit_video card filed under
+  // "Replies & admin — messages to reply to" made no sense on their board.
+  if (taskType === "revision" || taskType === "edit_video") return "revisions";
+  if (["media_qa", "image_fixes", "delivery", "feedback_review", "finish_delivery", "vendor_update"].includes(taskType)) return "qc";
   return "comms"; // replies, instructions, leads, decisions
 }
 
@@ -193,7 +195,7 @@ export async function BoardView({ sp, tabs }: { sp: { who?: string }; tabs: Reac
             blurb="The “your gallery is ready” text to the client after delivery — pre-drafted, just review and send." />
         )}
         {revisions.length > 0 && (
-          <GroupCard icon={PencilLine} title="Revisions" accent="#fb7185" items={revisions} overdue={oc(revisions)} assignees={assigneeChips} editorView={!!editorScope}
+          <GroupCard icon={PencilLine} title="Edits & revisions" accent="#fb7185" items={revisions} overdue={oc(revisions)} assignees={assigneeChips} editorView={!!editorScope}
             blurb="Client change requests after delivery — auto-routed to the deliverable's editor; reassign if it should go to someone else." />
         )}
         {qc.length > 0 && (

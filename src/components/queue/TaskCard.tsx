@@ -35,7 +35,7 @@ const TYPE_LABEL: Record<string, string> = {
 };
 const typeLabel = (t: string) => TYPE_LABEL[t] ?? t.replace(/_/g, " ");
 
-const DRAFTABLE = ["client_reply", "revision", "feedback_review", "delivery_text"];
+const DRAFTABLE = ["client_reply", "revision", "feedback_review", "delivery_text", "lead"];
 const LUMA_TRACKER_URL = "https://portal.lumavisuals.co/";
 // Task types that carry a pre-written message (in `description`) ready to send.
 const PREDRAFTED = ["confirmation_text", "delivery_text"];
@@ -359,6 +359,12 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
       : `/projects/${task.projectId}`
     : null;
   const isLuma = task.taskType === "vendor_update" && /luma/i.test(task.title);
+  // Phone leads carry their number in sourceDetail ("phone:(610) 555-1234") —
+  // give the card a real way to act (audit: lead cards had nothing to do).
+  const leadPhone =
+    task.taskType === "lead" && task.sourceDetail?.startsWith("phone:")
+      ? task.sourceDetail.slice(6).replace(/[^\d+]/g, "")
+      : null;
   const src = sourceMeta(task.source);
   const SrcIcon = SOURCE_ICON[src.key];
   const summary = summaryText(task);
@@ -592,6 +598,24 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
             >
               <ExternalLink className="size-3.5" /> Luma tracker
             </a>
+          )}
+          {!done && leadPhone && (
+            <>
+              <a
+                href={`tel:${leadPhone.startsWith("+") ? leadPhone : `+1${leadPhone}`}`}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-medium text-white hover:opacity-90"
+                title="Call this lead back"
+              >
+                <Phone className="size-3.5" /> Call back
+              </a>
+              <a
+                href={`sms:${leadPhone.startsWith("+") ? leadPhone : `+1${leadPhone}`}`}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-brand/10 px-2.5 py-1.5 text-xs font-medium text-brand hover:bg-brand/20"
+                title="Text this lead"
+              >
+                <MessageSquarePlus className="size-3.5" /> Text
+              </a>
+            </>
           )}
           {!done && canSend && (
             <button

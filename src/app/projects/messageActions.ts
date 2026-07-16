@@ -47,9 +47,24 @@ export async function postProjectMessage(
   // refreshes it (and reopens if they'd closed it) instead of piling up dupes.
   if (mentions.length) {
     const project = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true, clientId: true } });
-    const tagged = await prisma.teamMember.findMany({ where: { id: { in: mentions } }, select: { id: true } });
+    const tagged = await prisma.teamMember.findMany({ where: { id: { in: mentions } }, select: { id: true, name: true, role: true } });
     const street = project?.title?.split(",")[0] ?? "a project";
+    // Editor resolution + role-aware routing — the SAME shape as the note-comment
+    // mentions (src/lib/mentions.ts): an editor's tm: row must drop PHOTOGRAPHER
+    // (that role in the audience arms the ET-quiet-hours SMS bridge → 3am Manila
+    // texts) and they're reached via their editor:<key> channel row instead,
+    // with an href their role can actually open.
+    const { TEAM_MEMBER_EDITOR_KEYS, editorTeamMemberId } = await import("@/lib/editors");
+    const { slugForName } = await import("@/lib/assignees");
+    const editorTmIds = new Map<string, string>();
+    for (const key of TEAM_MEMBER_EDITOR_KEYS) {
+      const tmId = await editorTeamMemberId(key);
+      if (tmId) editorTmIds.set(tmId, key);
+    }
     for (const t of tagged) {
+      const editorKey = editorTmIds.get(t.id) ?? null;
+      const href =
+        t.role === "PHOTOGRAPHER" ? `/shoot/${projectId}` : editorKey ? `/edit/${projectId}` : `/projects/${projectId}`;
       const data = {
         taskType: "internal_instruction",
         title: `${authorName ?? "Team"} tagged you — ${street}`.slice(0, 120),
@@ -62,6 +77,10 @@ export async function postProjectMessage(
         projectId,
         clientId: project?.clientId ?? null,
         ownerId: t.id,
+        // On the tagged person's OWN board (editor boards filter by editor key;
+        // everyone else by name slug) — ownerId alone is write-only and shows
+        // on no surface (audit: invisible @mention tasks).
+        assignedKey: editorKey ?? slugForName(t.name),
         dedupeKey: `mention-${projectId}-${t.id}`,
       };
       const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: data.dedupeKey } });
@@ -72,12 +91,20 @@ export async function postProjectMessage(
       // money clamp strips the body for creative roles automatically.
       try {
         const { notifyInApp } = await import("@/lib/notify");
+        const targets: import("@/lib/notify").NotifyTarget[] = [
+          {
+            roles: editorKey ? ["OWNER", "ADMIN", "EDITOR"] : ["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"],
+            userKey: `tm:${t.id}`,
+            href,
+          },
+        ];
+        if (editorKey) targets.push({ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${projectId}` });
         await notifyInApp({
           kind: "mention",
           title: `${authorName ?? "Team"} mentioned you — ${street}`,
           body: text.slice(0, 140),
-          href: `/projects/${projectId}`,
-          targets: [{ roles: ["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"], userKey: `tm:${t.id}` }],
+          href,
+          targets,
           dedupeKey: `mention-${msg.id}-${t.id}`,
         });
       } catch { /* bell is best-effort */ }

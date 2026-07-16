@@ -137,8 +137,9 @@ export function CullUploader({ projectId, photoTarget, bracket }: { projectId: s
       return [...ss.slice(0, i), merged, ...ss.slice(i + 2)];
     });
 
-  async function upload() {
-    const files = kept.flatMap((s) => s.files);
+  const [failedList, setFailedList] = useState<File[]>([]);
+
+  async function uploadFiles(files: File[]) {
     if (files.length === 0) return;
     setPhase("uploading");
     setErr(null);
@@ -152,7 +153,7 @@ export function CullUploader({ projectId, photoTarget, bracket }: { projectId: s
     }
     // Pair POSITIONALLY (the server preserves input order): two cards can both
     // have an IMG_0001.jpg, and each one-time link is good for exactly one file.
-    let failed = 0;
+    const failures: File[] = [];
     const queue = files.map((f, i) => ({ f, url: linkRes.links![i].url }));
     const putOne = async ({ f, url }: { f: File; url: string }) => {
       const attempt = () =>
@@ -165,10 +166,10 @@ export function CullUploader({ projectId, photoTarget, bracket }: { projectId: s
         try {
           await attempt(); // one retry
         } catch {
-          failed++;
+          failures.push(f);
         }
       }
-      setProgress((p) => ({ ...p, done: p.done + 1, failed }));
+      setProgress((p) => ({ ...p, done: p.done + 1, failed: failures.length }));
     };
     await Promise.all(
       Array.from({ length: UPLOAD_CONCURRENCY }, async () => {
@@ -180,16 +181,18 @@ export function CullUploader({ projectId, photoTarget, bracket }: { projectId: s
       }),
     );
 
+    setFailedList(failures);
     await finalizeCullUpload(projectId, {
       keptSets: kept.length,
       totalSets: sets.length,
-      uploadedFiles: files.length - failed,
+      uploadedFiles: files.length - failures.length,
       droppedFiles,
-      failedFiles: failed,
+      failedFiles: failures.length,
     }).catch(() => {});
-    setProgress((p) => ({ ...p, failed }));
+    setProgress((p) => ({ ...p, failed: failures.length }));
     setPhase("done");
   }
+  const upload = () => uploadFiles(kept.flatMap((s) => s.files));
 
   const viewerSet = viewer != null ? sets.find((s) => s.id === viewer) ?? null : null;
 
@@ -295,10 +298,21 @@ export function CullUploader({ projectId, photoTarget, bracket }: { projectId: s
           <p className="flex items-center gap-1.5 text-sm font-semibold text-success">
             <Check className="size-4" /> {progress.total - progress.failed} JPGs uploaded — culled {droppedFiles} before upload.
           </p>
-          {progress.failed > 0 && (
-            <p className="text-xs text-danger">{progress.failed} files failed — tap &ldquo;Start over&rdquo;, re-pick just those, and upload again.</p>
+          {failedList.length > 0 && (
+            <div className="rounded-lg border border-danger/30 bg-danger/5 p-2">
+              <p className="text-xs font-medium text-danger">
+                {failedList.length} failed: {failedList.slice(0, 6).map((f) => f.name).join(", ")}
+                {failedList.length > 6 ? "…" : ""}
+              </p>
+              <button
+                onClick={() => uploadFiles(failedList)}
+                className="mt-1.5 inline-flex items-center gap-1.5 rounded-lg bg-danger px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+              >
+                <Upload className="size-3.5" /> Retry just those {failedList.length}
+              </button>
+            </div>
           )}
-          <button onClick={() => { setSets([]); setPhase("pick"); setProgress({ done: 0, total: 0, failed: 0 }); }} className="text-xs text-muted hover:text-foreground">
+          <button onClick={() => { setSets([]); setFailedList([]); setPhase("pick"); setProgress({ done: 0, total: 0, failed: 0 }); }} className="text-xs text-muted hover:text-foreground">
             Upload more
           </button>
         </div>

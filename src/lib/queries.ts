@@ -2,7 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { ProjectStatus } from "@prisma/client";
 import { recentProjectWhere, isProjectRecent } from "@/lib/recency";
 import { etDayStartUtc, etAddDays, etDayKey } from "@/lib/datetime";
-import { DELEGATE_KEYS } from "@/lib/editors";
+
 import { TRIAGE_TYPES } from "@/lib/triage";
 import { getVideoSlaStatus } from "@/lib/projectStatus";
 import { getQcStats, type QcStats } from "@/lib/qc";
@@ -284,7 +284,7 @@ export async function getClientTextTasks() {
       taskType: { in: CLIENT_TEXT_TYPES },
       dueAt: { lte: endToday },
       AND: [
-        { OR: [{ assignedKey: null }, { assignedKey: "kyle" }, { assignedKey: { in: [...DELEGATE_KEYS] } }] },
+        {}, // every assignee visible — jordan/photographer keys must not vanish (audit critical)
         { OR: [{ projectId: null }, { project: recentProjectWhere() }] },
       ],
     },
@@ -352,7 +352,7 @@ export async function getMorningBrief(): Promise<BriefTask[]> {
       // (audit crack #4: an URGENT client-ETA task sat overdue addressed to a
       // vendor). Kyle stays the human checkpoint on all delegated work.
       AND: [
-        { OR: [{ assignedKey: null }, { assignedKey: "kyle" }, { assignedKey: { in: [...DELEGATE_KEYS] } }] },
+        {}, // every assignee visible — jordan/photographer keys must not vanish (audit critical)
         { OR: [
         // Messages/replies (email, text, Slack, lead, revision): always surface
         // in "Check your messages" while open — any due date, any project age.
@@ -442,7 +442,7 @@ export async function getTodayCardCount(): Promise<number> {
     prisma.smartTask.count({
       where: {
         status: { in: BRIEF_ACTIVE },
-        OR: [{ assignedKey: null }, { assignedKey: "kyle" }, { assignedKey: { in: [...DELEGATE_KEYS] } }],
+        // every assignee visible — jordan/photographer keys must not vanish (audit critical)
         AND: [{
           OR: [
             // Messages/replies: always surface while open (someone is waiting).
