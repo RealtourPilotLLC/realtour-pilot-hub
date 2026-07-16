@@ -13,10 +13,11 @@ import { BackLink } from "@/components/ui/BackLink";
 import { prisma } from "@/lib/prisma";
 import { cn } from "@/lib/utils";
 import { CullingReminder } from "@/components/upload/CullingReminder";
+import { CullUploader } from "@/components/upload/CullUploader";
 import { UploadPortal } from "@/components/upload/UploadPortal";
 import { AppointmentFeedback } from "@/components/upload/AppointmentFeedback";
 import { getProjectFolderState } from "@/lib/dropboxFolders";
-import { photoTargetFor, rawBudgetFor, rawOverageCeiling } from "@/lib/culling";
+import { BRACKET_RATIO, photoTargetFor, rawBudgetFor, rawOverageCeiling } from "@/lib/culling";
 import { ActivityType } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
@@ -63,6 +64,12 @@ export default async function UploadProjectPage({
       {/* Always visible at the drop point — this home's budget + the pay policy. */}
       <div className="mt-4">
         <CullingReminder compact target={photoTarget} />
+      </div>
+
+      {/* Cull FIRST, upload only the keepers (photos; video still goes via the
+          Dropbox folders below). */}
+      <div className="mt-4">
+        <CullUploader projectId={project.id} photoTarget={photoTarget} bracket={BRACKET_RATIO} />
       </div>
 
       <UploadPortal

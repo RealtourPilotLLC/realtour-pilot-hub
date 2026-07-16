@@ -42,11 +42,18 @@ export default async function ShootDetailPage({
   // The reel script renders inside ShootScreen (ShootView carries the fields),
   // and the old satellite glimpse is gone — the property look now lives on the
   // My Shoots list as Street View → first Aryeo photo.
-  const feedback = payMemberId ? await getPhotographerFeedback(id, payMemberId) : [];
   // Only the photographer the feedback is addressed to can reply / mark fixed;
   // owner-admin previews (including "view as") are read-only here, matching
   // the server-side authz in reviewActions.
   const feedbackReadOnly = !(user?.role === "PHOTOGRAPHER" && !user.impersonating);
+  // Read receipt: the real photographer opening their own shoot marks the
+  // feedback SEEN (before the load below, so the receipts they see are fresh).
+  // Previews never stamp — Jordan looking isn't Harrison reading.
+  if (!feedbackReadOnly && payMemberId) {
+    const { markFeedbackSeen } = await import("@/lib/review");
+    await markFeedbackSeen(payMemberId, id);
+  }
+  const feedback = payMemberId ? await getPhotographerFeedback(id, payMemberId) : [];
 
   // Pay (this viewer's earnings for this shoot) streams in via Suspense so the
   // screen paints immediately instead of blocking on mileage.
@@ -77,7 +84,7 @@ export default async function ShootDetailPage({
   const map = (
     <>
       {feedback.length > 0 && (
-        <ShootFeedback notes={feedback} readOnly={feedbackReadOnly} photographerName={view.photographer?.name ?? null} />
+        <ShootFeedback notes={feedback} readOnly={feedbackReadOnly} photographerName={view.photographer?.name ?? null} projectId={id} />
       )}
       <Suspense fallback={<ShootMapCardSkeleton />}>
         <ShootMapCard projectId={id} memberId={payMemberId} />

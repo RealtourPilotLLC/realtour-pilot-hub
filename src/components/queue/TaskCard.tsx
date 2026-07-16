@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { setSmartTaskStatus, setTaskAssignee, draftTaskReply, sendDeliveryText, sendConfirmationText, toggleTaskChecklistItem } from "@/app/actions";
+import { resolveEmailRecipient, sendEmailReply } from "@/app/emailActions";
 import { addTaskNote } from "@/app/projects/messageActions";
 import { etDateTime, etMonthDay, etDaysAgo } from "@/lib/datetime";
 import { sourceMeta, SOURCE_CHIP, type SourceKey } from "@/lib/taskSource";
@@ -326,6 +327,9 @@ function QcClientStrip({ qcClient }: { qcClient?: QcClientContext | null }) {
 export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: QueueTask; assignees?: { key: string; name: string }[]; assignPrompt?: boolean; editorView?: boolean }) {
   const [pending, start] = useTransition();
   const [draft, setDraft] = useState<{ text?: string; error?: string } | null>(null);
+  const [draftText, setDraftText] = useState("");
+  const [emailMsg, setEmailMsg] = useState<string | null>(null);
+  const [emailing, startEmail] = useTransition();
   const [drafting, startDraft] = useTransition();
   const [copied, setCopied] = useState(false);
   const [sendMsg, setSendMsg] = useState<string | null>(null);
@@ -382,11 +386,27 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
         : await sendDeliveryText(task.id);
       setSendMsg(r.message);
     });
+  // Email tasks can send the reviewed draft straight back into the thread.
+  const canEmailSend = task.source === "gmail" && !!task.sourceDetail?.startsWith("gmail-thread:") && !editorView;
+  const [emailTo, setEmailTo] = useState<string | null>(null);
   const makeDraft = () =>
     startDraft(async () => {
       setCopied(false);
+      setEmailMsg(null);
       if (!open) setOpen(true);
-      setDraft(await draftTaskReply(task.id));
+      const [d, rcpt] = await Promise.all([
+        draftTaskReply(task.id),
+        canEmailSend ? resolveEmailRecipient(task.id) : Promise.resolve(null),
+      ]);
+      setDraft(d);
+      setDraftText(d.text ?? "");
+      setEmailTo(rcpt?.ok ? rcpt.to ?? null : null);
+    });
+  const sendEmail = () =>
+    startEmail(async () => {
+      // Recipient shown = recipient sent-to; the server re-verifies (expectedTo).
+      const r = await sendEmailReply(task.id, draftText, emailTo ? { expectedTo: emailTo } : undefined);
+      setEmailMsg(r.message);
     });
   const saveNote = () =>
     startNote(async () => {
@@ -649,10 +669,10 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
           ) : (
             <>
               <div className="mb-1.5 flex items-center justify-between">
-                <span className="text-[11px] font-semibold uppercase tracking-wide text-brand">Suggested reply</span>
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-brand">Suggested reply — edit freely</span>
                 <button
                   onClick={() => {
-                    navigator.clipboard?.writeText(draft.text ?? "").catch(() => {});
+                    navigator.clipboard?.writeText(draftText).catch(() => {});
                     setCopied(true);
                   }}
                   className="inline-flex items-center gap-1 text-[11px] text-muted hover:text-foreground"
@@ -660,8 +680,32 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
                   <Copy className="size-3" /> {copied ? "Copied" : "Copy"}
                 </button>
               </div>
-              <p className="whitespace-pre-line break-words text-sm text-foreground/90">{draft.text}</p>
-              <p className="mt-2 text-[10px] text-muted-2">Review before sending. The hub never sends on its own.</p>
+              <textarea
+                value={draftText}
+                onChange={(e) => setDraftText(e.target.value)}
+                rows={Math.min(10, Math.max(3, draftText.split("\n").length + 1))}
+                className="w-full resize-y rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand"
+              />
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                {canEmailSend && (
+                  <button
+                    onClick={sendEmail}
+                    disabled={emailing || !draftText.trim()}
+                    title="Send this reply into the email thread (from the mailbox it arrived on)"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+                  >
+                    {emailing ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />} Send email
+                  </button>
+                )}
+                <p className="text-[10px] text-muted-2">
+                  {canEmailSend
+                    ? emailTo
+                      ? `Replying to ${emailTo} — sends only when you press the button.`
+                      : "Sends only when you press the button — review first."
+                    : "Review before sending. The hub never sends on its own."}
+                </p>
+              </div>
+              {emailMsg && <p className="mt-1.5 text-xs font-medium text-foreground/85">{emailMsg}</p>}
             </>
           )}
         </div>

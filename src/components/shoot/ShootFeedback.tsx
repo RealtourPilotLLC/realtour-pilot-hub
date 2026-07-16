@@ -12,7 +12,7 @@ import { MentionTextarea } from "@/components/mentions/MentionTextarea";
 import { NotePreview, clockLabel, videoSrcAt } from "@/components/shoot/NotePreview";
 import { PALETTE } from "@/lib/palette";
 import { etDate } from "@/lib/datetime";
-import { replyMediaNote, setMediaNoteStatus } from "@/app/projects/reviewActions";
+import { acknowledgeMediaNote, replyMediaNote, setMediaNoteStatus, shareShootFeedback } from "@/app/projects/reviewActions";
 import type { ReviewNote } from "@/lib/review";
 
 // "Feedback on this shoot" — the photographer's lane of the media review room.
@@ -33,17 +33,21 @@ const rank = (n: ReviewNote) => (n.kind === "fix" ? (n.status === "OPEN" ? 0 : 1
 
 const timeLabel = clockLabel;
 
-export function ShootFeedback({ notes: initial, readOnly, photographerName }: {
+export function ShootFeedback({ notes: initial, readOnly, photographerName, projectId }: {
   notes: ReviewNote[];
   /** Owner/admin (and "view as") previews are look-don't-touch — the server
       actions would reject their writes anyway, so don't offer the buttons. */
   readOnly: boolean;
   photographerName: string | null;
+  /** When set (shoot page), the owner preview gets the "text them the link" share button. */
+  projectId?: string;
 }) {
   // Local mirror so replies / "mark fixed" land instantly on a phone in the
   // field; the actions revalidate the route behind us, so a refresh reconverges.
   const [notes, setNotes] = useState(initial);
   const [showResolved, setShowResolved] = useState(false);
+  const [shareMsg, setShareMsg] = useState<string | null>(null);
+  const [sharing, startShare] = useTransition();
 
   const active = notes.filter((n) => n.status !== "RESOLVED").sort((a, b) => rank(a) - rank(b));
   const resolved = notes.filter((n) => n.status === "RESOLVED");
@@ -51,6 +55,19 @@ export function ShootFeedback({ notes: initial, readOnly, photographerName }: {
 
   const patch = (id: string, fn: (n: ReviewNote) => ReviewNote) =>
     setNotes((ns) => ns.map((n) => (n.id === id ? fn(n) : n)));
+
+  // Receipts for the owner's preview: has the creative actually READ this?
+  const lastShared = notes.reduce<string | null>((m, n) => (n.sharedAt && (!m || n.sharedAt > m) ? n.sharedAt : m), null);
+  const lastSeen = notes.reduce<string | null>((m, n) => (n.seenAt && (!m || n.seenAt > m) ? n.seenAt : m), null);
+  const firstName = photographerName?.split(/\s+/)[0] ?? "the photographer";
+
+  const share = () =>
+    startShare(async () => {
+      if (!projectId) return;
+      setShareMsg(null);
+      const r = await shareShootFeedback(projectId);
+      setShareMsg(r.message);
+    });
 
   return (
     <Section
@@ -61,9 +78,33 @@ export function ShootFeedback({ notes: initial, readOnly, photographerName }: {
     >
       <p className="text-xs text-muted">
         {readOnly
-          ? `Previewing ${photographerName?.split(/\s+/)[0] ?? "the photographer"}’s capture feedback — read-only.`
+          ? `Previewing ${firstName}’s capture feedback — read-only.`
           : "Notes from the review of your delivered media — quick wins for this job and the next one. Reply if anything’s unclear, and tick fixes off once they’re handled."}
       </p>
+
+      {/* Owner's loop-closer: text them the link, then watch the receipts. */}
+      {readOnly && projectId && notes.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface-2/40 p-2.5">
+          <button
+            onClick={share}
+            disabled={sharing}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+            title={`Text ${firstName} a link to this feedback`}
+          >
+            {sharing ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />} Text {firstName} the feedback
+          </button>
+          <span className="text-[11px] text-muted-2">
+            {lastShared ? `Shared ${etDate(lastShared)}` : "Not shared yet"}
+            {" · "}
+            {lastSeen ? (
+              <span className="font-medium text-success">Seen {etDate(lastSeen)}</span>
+            ) : (
+              <span className="text-warning">Not opened yet</span>
+            )}
+          </span>
+          {shareMsg && <span className="w-full text-[11px] font-medium text-foreground/85 sm:w-auto">{shareMsg}</span>}
+        </div>
+      )}
 
       {active.map((n) => (
         <NoteCard key={n.id} note={n} readOnly={readOnly} patch={patch} />
@@ -120,6 +161,15 @@ export function NoteCard({ note, readOnly, patch }: {
     });
   }
 
+  function acknowledge() {
+    startFix(async () => {
+      setErr(null);
+      const r = await acknowledgeMediaNote(note.id);
+      if (r.ok) patch(note.id, (n) => ({ ...n, acknowledgedAt: new Date().toISOString() }));
+      else setErr(r.message ?? "Couldn’t save — try again.");
+    });
+  }
+
   return (
     <div className="rounded-xl border bg-surface-2/30 p-3">
       <div className="flex gap-3">
@@ -131,7 +181,16 @@ export function NoteCard({ note, readOnly, patch }: {
             ) : (
               <Badge color={PALETTE.blue}><GraduationCap className="size-3" /> Coaching</Badge>
             )}
-            <StatusChip status={note.status} />
+            {!fix && note.acknowledgedAt ? (
+              <Badge color={PALETTE.green}>Got it ✓</Badge>
+            ) : (
+              fix && <StatusChip status={note.status} />
+            )}
+            {readOnly && note.seenAt && (
+              <span className="text-[10px] font-medium text-success" title="They opened this feedback">
+                Seen {etDate(note.seenAt)}
+              </span>
+            )}
           </div>
           <p className="mt-1.5 text-sm leading-snug text-foreground/90">{note.body}</p>
           <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-2">
@@ -169,6 +228,16 @@ export function NoteCard({ note, readOnly, patch }: {
                 className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
               >
                 {fixing ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Mark fixed
+              </button>
+            )}
+            {!fix && !note.acknowledgedAt && (
+              <button
+                onClick={acknowledge}
+                disabled={fixing}
+                title="Tell the reviewer you've read this and you're on it"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-success/10 px-3 py-1.5 text-xs font-semibold text-success hover:bg-success/20 disabled:opacity-50"
+              >
+                {fixing ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Got it
               </button>
             )}
             <ReplyBox

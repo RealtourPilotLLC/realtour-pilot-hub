@@ -1,10 +1,12 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/user";
 import { canAccess } from "@/lib/auth/access";
+import { prisma } from "@/lib/prisma";
 import { TasksTabs, type TasksTab } from "@/components/tasks/TasksTabs";
 import { TodayView, todayCardCount } from "@/components/tasks/TodayView";
 import { BoardView, boardOpenCount } from "@/components/tasks/BoardView";
 import { DoneView, doneTodayCount } from "@/components/tasks/DoneView";
+import { SendAllTexts } from "@/components/tasks/SendAllTexts";
 
 export const dynamic = "force-dynamic";
 
@@ -28,13 +30,33 @@ export default async function TasksHubPage({ searchParams }: {
   const boardOnly = me?.role === "EDITOR";
   const tab: TasksTab = boardOnly ? "board" : sp.tab === "board" || sp.tab === "done" ? sp.tab : "today";
 
-  const [todayN, boardN, doneN] = await Promise.all([
+  const [todayN, boardN, doneN, draftedN] = await Promise.all([
     boardOnly ? 0 : todayCardCount(),
     boardOpenCount(),
     boardOnly ? 0 : doneTodayCount(),
+    // Drafted client texts DUE BY END OF TODAY (ET) — same filter as the panel,
+    // so the count never advertises confirmations for shoots weeks out.
+    boardOnly
+      ? 0
+      : import("@/lib/datetime").then(({ etDayStartUtc }) =>
+          prisma.smartTask.count({
+            where: {
+              taskType: { in: ["confirmation_text", "delivery_text"] },
+              status: { notIn: ["COMPLETED", "CANCELLED"] },
+              projectId: { not: null },
+              OR: [
+                { dueAt: { lte: new Date(etDayStartUtc(new Date()).getTime() + 24 * 3600_000 - 1) } },
+                { dueAt: null },
+              ],
+            },
+          }),
+        ),
   ]);
   const tabs = boardOnly ? null : (
-    <TasksTabs tab={tab} todayCount={todayN} boardCount={boardN} doneCount={doneN} />
+    <div className="flex flex-wrap items-center gap-2">
+      <TasksTabs tab={tab} todayCount={todayN} boardCount={boardN} doneCount={doneN} />
+      <SendAllTexts count={draftedN} />
+    </div>
   );
 
   if (tab === "board") return <BoardView sp={sp} tabs={tabs} />;

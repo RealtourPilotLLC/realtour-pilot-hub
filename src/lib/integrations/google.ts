@@ -50,6 +50,96 @@ export async function notifyOwnerEmail(subject: string, body: string): Promise<b
   }
 }
 
+// Send a real threaded REPLY from one of our mailboxes — the human-reviewed
+// draft behind the task "Send email" button. Loads the thread, replies to the
+// latest message that isn't ours (proper In-Reply-To/References + Re: subject,
+// same threadId) so it lands inside the conversation in everyone's inbox.
+async function gmailReplyTarget(
+  mailbox: string,
+  threadId: string,
+): Promise<
+  | { ok: true; token: string; acctEmail: string; to: string; subject: string; msgId: string }
+  | { ok: false; error: string; needsReconnect?: boolean }
+> {
+  const accounts = await gmailAccounts();
+  const acct = accounts.find((a) => a.email === mailbox);
+  if (!acct) return { ok: false, error: `Mailbox ${mailbox} isn't connected.` };
+  let token: string;
+  try {
+    token = await accessTokenFor(acct.refreshToken);
+  } catch {
+    return { ok: false, error: "Google token expired — reconnect Gmail in Connections.", needsReconnect: true };
+  }
+  let thread: GmailThread;
+  try {
+    thread = await gmail<GmailThread>(
+      `/threads/${threadId}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Message-ID&metadataHeaders=Reply-To`,
+      token,
+    );
+  } catch {
+    return { ok: false, error: "Couldn't load the email thread." };
+  }
+  const msgs = thread.messages ?? [];
+  // Reply to the newest message from THEM (fall back to the newest at all).
+  const target =
+    [...msgs].reverse().find((m) => !parseFrom(header(m, "From")).email.endsWith("@" + OUR_DOMAIN)) ??
+    msgs[msgs.length - 1];
+  if (!target) return { ok: false, error: "The thread has no messages to reply to." };
+  const replyTo = header(target, "Reply-To") || header(target, "From");
+  const to = parseFrom(replyTo).email;
+  if (!to) return { ok: false, error: "Couldn't work out who to reply to." };
+  const origSubject = header(target, "Subject");
+  const subject = /^re:/i.test(origSubject) ? origSubject : `Re: ${origSubject}`;
+  return { ok: true, token, acctEmail: acct.email, to, subject, msgId: header(target, "Message-ID") };
+}
+
+// Who a reply to this thread would go to — the UI shows it before Send.
+export async function resolveGmailReplyTarget(
+  mailbox: string,
+  threadId: string,
+): Promise<{ ok: true; to: string } | { ok: false; error: string }> {
+  const t = await gmailReplyTarget(mailbox, threadId);
+  return t.ok ? { ok: true, to: t.to } : { ok: false, error: t.error };
+}
+
+export async function sendGmailReply(opts: {
+  mailbox: string;
+  threadId: string;
+  body: string;
+  /** The recipient the human confirmed — abort if the thread changed under them. */
+  expectedTo?: string;
+}): Promise<{ ok: true; to: string; subject: string } | { ok: false; error: string; needsReconnect?: boolean }> {
+  const t = await gmailReplyTarget(opts.mailbox, opts.threadId);
+  if (!t.ok) return t;
+  const { token, acctEmail, to, subject, msgId } = t;
+  if (opts.expectedTo && opts.expectedTo.toLowerCase() !== to.toLowerCase()) {
+    return { ok: false, error: `The thread changed — the reply would now go to ${to}, not ${opts.expectedTo}. Re-open and confirm.` };
+  }
+
+  const mime = [
+    `To: ${to}`,
+    `From: ${acctEmail}`,
+    // RFC 2047-encode so names/subjects with non-ASCII survive.
+    `Subject: =?UTF-8?B?${Buffer.from(subject).toString("base64")}?=`,
+    ...(msgId ? [`In-Reply-To: ${msgId}`, `References: ${msgId}`] : []),
+    "Content-Type: text/plain; charset=UTF-8",
+    "MIME-Version: 1.0",
+    "",
+    opts.body,
+  ].join("\r\n");
+  const raw = Buffer.from(mime).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ raw, threadId: opts.threadId }),
+  });
+  if (res.status === 403) {
+    return { ok: false, error: "Gmail can read but not send yet — reconnect Google in Connections to grant sending.", needsReconnect: true };
+  }
+  if (!res.ok) return { ok: false, error: `Gmail send failed (${res.status}).` };
+  return { ok: true, to, subject };
+}
+
 export function googleConfigured() {
   return Boolean(CLIENT_ID && CLIENT_SECRET);
 }

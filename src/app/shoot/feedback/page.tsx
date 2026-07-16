@@ -56,8 +56,14 @@ export default async function QualityFeedbackPage({
 
   // One photographer's hub — their own, or an owner/admin preview.
   if (scoped) {
-    const hub = await getFeedbackHub(scoped);
     const readOnly = !isPhotographer || Boolean(user?.impersonating);
+    // Read receipt: their own hub visit marks ALL their feedback seen (stamp
+    // before loading so the page reflects it). Previews never stamp.
+    if (!readOnly) {
+      const { markFeedbackSeen } = await import("@/lib/review");
+      await markFeedbackSeen(scoped);
+    }
+    const hub = await getFeedbackHub(scoped);
     return (
       <div>
         <PageHeader

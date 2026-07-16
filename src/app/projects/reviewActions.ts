@@ -401,3 +401,92 @@ export async function sendReviewToLane(projectId: string, lane: NoteLane): Promi
   refresh(projectId);
   return { ok: true, message: `Sent ${open.length} note${s} to ${first}.` };
 }
+
+// ---------------------------------------------------------------------------
+// Feedback-loop receipts (Jordan, Jul 2026): share the feedback by TEXT with a
+// link, know when the creative actually OPENED it, and let them say "Got it"
+// on coaching. Fixes already have Mark-fixed; this closes the loop on the rest.
+// ---------------------------------------------------------------------------
+
+// The creative's explicit thumbs-up on a coaching note.
+export async function acknowledgeMediaNote(noteId: string): Promise<{ ok: boolean; message?: string }> {
+  const note = await prisma.mediaNote.findUnique({
+    where: { id: noteId },
+    select: { id: true, parentId: true, lane: true, kind: true, photographerId: true, projectId: true, acknowledgedAt: true },
+  });
+  if (!note || note.parentId) return { ok: false, message: "That note no longer exists." };
+  if (note.lane !== "PHOTOGRAPHER") return { ok: false, message: "Only capture feedback can be acknowledged." };
+  try {
+    await requireNoteAccess(note.photographerId);
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  if (!note.acknowledgedAt) {
+    await prisma.mediaNote.update({ where: { id: note.id }, data: { acknowledgedAt: new Date() } });
+  }
+  refresh(note.projectId);
+  return { ok: true };
+}
+
+// Text the photographer their feedback link — "Jordan left feedback on your
+// shoot for 238 Hudson Dr — check it out here: …/shoot/<id>". Owner presses
+// the button; the hub sends exactly that. Stamps sharedAt on the lane's root
+// notes so the review side shows Shared/Seen receipts.
+export async function shareShootFeedback(projectId: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  const notes = await prisma.mediaNote.findMany({
+    where: { projectId, parentId: null, lane: "PHOTOGRAPHER" },
+    select: { id: true, photographerId: true },
+  });
+  if (notes.length === 0) return { ok: false, message: "No capture feedback on this shoot yet." };
+  const memberId = notes.find((n) => n.photographerId)?.photographerId ?? (await projectPhotographerId(projectId));
+  if (!memberId) return { ok: false, message: "No photographer is linked to this feedback." };
+
+  const [member, project, me] = await Promise.all([
+    prisma.teamMember.findUnique({ where: { id: memberId }, select: { name: true, phone: true } }),
+    prisma.project.findUnique({ where: { id: projectId }, select: { title: true } }),
+    getCurrentUser().catch(() => null),
+  ]);
+  if (!member?.phone) return { ok: false, message: `${member?.name ?? "The photographer"} has no phone on file.` };
+  const street = project?.title.split(",")[0].trim() ?? "your shoot";
+  const author = me?.name?.split(/\s+/)[0] ?? "Jordan";
+
+  const base =
+    process.env.NEXT_PUBLIC_APP_URL ||
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
+  const body = `Hey ${member.name?.split(/\s+/)[0] ?? "there"} — ${author} left some feedback on your shoot for ${street}. Check it out here: ${base}/shoot/${projectId}`;
+
+  const { phoneKey, OpenPhone, defaultOpenPhoneNumber } = await import("@/lib/integrations/openphone");
+  const k = phoneKey(member.phone);
+  if (k.length !== 10) return { ok: false, message: "The photographer's phone number looks invalid." };
+  const from = await defaultOpenPhoneNumber();
+  if (!from) return { ok: false, message: "OpenPhone isn't connected." };
+  try {
+    await OpenPhone.sendMessage(from, `+1${k}`, body);
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Text failed to send." };
+  }
+
+  const now = new Date();
+  await prisma.mediaNote.updateMany({
+    where: { projectId, parentId: null, lane: "PHOTOGRAPHER", photographerId: memberId },
+    data: { sharedAt: now },
+  });
+  // Bell too (their own person-addressed row), deduped per share round.
+  // Kind "feedback_shared" is deliberately NOT in SMS_KINDS — the custom-worded
+  // text above is the one SMS; the bridge must not send a second one.
+  await notifyInApp({
+    kind: "feedback_shared",
+    title: `${author} left feedback — ${street}`,
+    body: "Tap to see what to fix and what to keep doing.",
+    href: `/shoot/${projectId}`,
+    targets: [{ roles: ["OWNER", "ADMIN", "PHOTOGRAPHER"], userKey: `tm:${memberId}`, href: `/shoot/${projectId}` }],
+    dedupeKey: `fb-share-${projectId}-${now.toISOString().slice(0, 10)}`,
+  }).catch(() => {});
+  refresh(projectId);
+  return { ok: true, message: `Texted ${member.name?.split(/\s+/)[0] ?? "them"} the feedback link.` };
+}

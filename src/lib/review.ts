@@ -24,6 +24,10 @@ export type ReviewNote = {
   status: "OPEN" | "FIXED" | "RESOLVED";
   authorName: string | null;
   createdAt: string;
+  // Feedback-loop receipts (photographer lane): texted / opened / "got it".
+  sharedAt: string | null;
+  seenAt: string | null;
+  acknowledgedAt: string | null;
   replies: { id: string; body: string; authorName: string | null; createdAt: string }[];
 };
 
@@ -49,6 +53,9 @@ export type NoteRow = {
   status: string;
   authorName: string | null;
   createdAt: Date;
+  sharedAt?: Date | null;
+  seenAt?: Date | null;
+  acknowledgedAt?: Date | null;
   replies: { id: string; body: string; authorName: string | null; createdAt: Date }[];
 };
 
@@ -69,6 +76,9 @@ export function toReviewNote(n: NoteRow): ReviewNote {
     status: asStatus(n.status),
     authorName: n.authorName,
     createdAt: n.createdAt.toISOString(),
+    sharedAt: n.sharedAt?.toISOString() ?? null,
+    seenAt: n.seenAt?.toISOString() ?? null,
+    acknowledgedAt: n.acknowledgedAt?.toISOString() ?? null,
     replies: n.replies.map((r) => ({
       id: r.id,
       body: r.body,
@@ -96,6 +106,20 @@ export async function getProjectReview(
     if (v.verdict === "APPROVED" || v.verdict === "NEEDS_WORK") verdicts[v.assetUrl] = v.verdict;
   }
   return { notes: notes.map(toReviewNote), verdicts };
+}
+
+// Read receipt: the photographer THEMSELVES opened their feedback — stamp
+// every unseen root note in their lane. Callers must pass this only for the
+// real photographer's own page load (owner/"view as" previews never stamp;
+// a preview isn't the creative reading it).
+export async function markFeedbackSeen(memberId: string, projectId?: string): Promise<void> {
+  if (!memberId) return;
+  await prisma.mediaNote
+    .updateMany({
+      where: { lane: "PHOTOGRAPHER", photographerId: memberId, parentId: null, seenAt: null, ...(projectId ? { projectId } : {}) },
+      data: { seenAt: new Date() },
+    })
+    .catch(() => {});
 }
 
 // A photographer's slice of the review: only PHOTOGRAPHER-lane notes addressed

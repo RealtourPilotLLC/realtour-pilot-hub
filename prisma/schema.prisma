@@ -747,6 +747,13 @@ model MediaNote {
   // scoping keys /queue and /editing use). Scopes an editor's view exactly like
   // photographerId scopes a photographer's.
   editorKey String?
+  // Feedback-loop receipts (photographer lane): when the feedback was texted
+  // to the creative, when THEY actually opened it (stamped server-side on
+  // their own page load — never by an owner/view-as preview), and their
+  // explicit "Got it" on coaching notes.
+  sharedAt       DateTime?
+  seenAt         DateTime?
+  acknowledgedAt DateTime?
   parent   MediaNote?  @relation("Thread", fields: [parentId], references: [id], onDelete: Cascade)
   parentId String?
   replies  MediaNote[] @relation("Thread")

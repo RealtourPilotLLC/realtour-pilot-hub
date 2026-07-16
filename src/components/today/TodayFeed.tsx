@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -8,6 +8,7 @@ import {
   AlertTriangle, Sparkles, Copy, Camera, ArrowRight, User, MapPin, type LucideIcon,
 } from "lucide-react";
 import { setSmartTaskStatus, setTaskAssignee, draftTaskReply, sendDeliveryText, sendConfirmationText } from "@/app/actions";
+import { resolveEmailRecipient, sendEmailReply } from "@/app/emailActions";
 import { sendReplyForTask } from "@/app/today/actions";
 import { sourceMeta } from "@/lib/taskSource";
 
@@ -161,6 +162,26 @@ function ActionCard({ card, assignees, onGone }: {
       else setErr(r.message);
     });
 
+  // Email-sourced cards reply IN the email thread (from the mailbox it arrived
+  // on) instead of switching channels to a text. The recipient resolves when
+  // the composer opens so the human sees WHO gets it before pressing Send —
+  // and the send pins that address (server aborts if the thread changed).
+  const isEmail = card.source === "gmail";
+  const [emailTo, setEmailTo] = useState<string | null>(null);
+  useEffect(() => {
+    if (!compose || !isEmail || emailTo) return;
+    void resolveEmailRecipient(card.id).then((r) => setEmailTo(r.ok ? r.to ?? null : null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compose, isEmail]);
+  const sendEmail = () =>
+    start(async () => {
+      setErr(null);
+      const r = await sendEmailReply(card.id, draftText, emailTo ? { expectedTo: emailTo } : undefined);
+      if (r.ok && isRevision) { setCompose(false); setDraftText(""); setSentNote(r.message); }
+      else if (r.ok) onGone(card.id, r.message);
+      else setErr(r.message);
+    });
+
   const aiDraft = () =>
     startDraft(async () => {
       setErr(null);
@@ -261,7 +282,11 @@ function ActionCard({ card, assignees, onGone }: {
               placeholder="Write your reply…"
               className="w-full rounded-xl border border-border bg-surface-2/50 p-3 text-sm"
             />
-            <p className="text-[11px] text-muted-2">Sends as a text via OpenPhone — nothing goes out until you tap Send.</p>
+            <p className="text-[11px] text-muted-2">
+              {isEmail
+                ? `${emailTo ? `Replying to ${emailTo} — ` : ""}sends as an email in the same thread. Nothing goes out until you tap Send.`
+                : "Sends as a text via OpenPhone — nothing goes out until you tap Send."}
+            </p>
           </div>
         )}
 
@@ -295,12 +320,17 @@ function ActionCard({ card, assignees, onGone }: {
                   <Btn onClick={() => setCompose(true)}>Write my own</Btn>
                 </>
               )}
-              {compose && card.hasPhone && (
+              {compose && isEmail && (
+                <Btn primary onClick={sendEmail} busy={busy} disabled={!draftText.trim()}>
+                  <Send className="size-4" /> Send email
+                </Btn>
+              )}
+              {compose && !isEmail && card.hasPhone && (
                 <Btn primary onClick={sendReply} busy={busy} disabled={!draftText.trim()}>
                   <Send className="size-4" /> Send
                 </Btn>
               )}
-              {compose && !card.hasPhone && <span className="text-[11px] text-warning">No phone on file — reply from Gmail/OpenPhone directly</span>}
+              {compose && !isEmail && !card.hasPhone && <span className="text-[11px] text-warning">No phone on file — reply from Gmail/OpenPhone directly</span>}
               {card.clientId && (
                 <Link href={`/clients/${card.clientId}`} className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">
                   Open client <ArrowRight className="size-3" />
