@@ -1,14 +1,15 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import {
   CheckCircle2, ChevronDown, ChevronUp, GraduationCap, Loader2,
-  MessageSquare, Reply, Send, Video, Wrench,
+  MessageSquare, Play, Reply, Send, Video, Wrench,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Section } from "@/components/ui/Section";
 import { Badge } from "@/components/ui/Badge";
 import { MentionTextarea } from "@/components/mentions/MentionTextarea";
+import { NotePreview, clockLabel, videoSrcAt } from "@/components/shoot/NotePreview";
 import { PALETTE } from "@/lib/palette";
 import { etDate } from "@/lib/datetime";
 import { replyMediaNote, setMediaNoteStatus } from "@/app/projects/reviewActions";
@@ -30,10 +31,7 @@ const WARNING_HEX = "#fbbf24";
 // collapsed history below.) Stable sort keeps newest-first inside each bucket.
 const rank = (n: ReviewNote) => (n.kind === "fix" ? (n.status === "OPEN" ? 0 : 1) : 2);
 
-const timeLabel = (sec: number) => {
-  const t = Math.max(0, Math.round(sec));
-  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
-};
+const timeLabel = clockLabel;
 
 export function ShootFeedback({ notes: initial, readOnly, photographerName }: {
   notes: ReviewNote[];
@@ -109,6 +107,7 @@ export function NoteCard({ note, readOnly, patch }: {
   patch: (id: string, fn: (n: ReviewNote) => ReviewNote) => void;
 }) {
   const [err, setErr] = useState<string | null>(null);
+  const [preview, setPreview] = useState(false);
   const [fixing, startFix] = useTransition();
   const fix = note.kind === "fix";
 
@@ -124,7 +123,7 @@ export function NoteCard({ note, readOnly, patch }: {
   return (
     <div className="rounded-xl border bg-surface-2/30 p-3">
       <div className="flex gap-3">
-        <Thumb note={note} />
+        <Thumb note={note} onOpen={() => setPreview(true)} />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             {fix ? (
@@ -135,11 +134,18 @@ export function NoteCard({ note, readOnly, patch }: {
             <StatusChip status={note.status} />
           </div>
           <p className="mt-1.5 text-sm leading-snug text-foreground/90">{note.body}</p>
-          <div className="mt-1 text-[11px] text-muted-2">
-            {note.authorName ?? "RealTour"} · {etDate(note.createdAt)}
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-2">
+            <span>{note.authorName ?? "RealTour"} · {etDate(note.createdAt)}</span>
+            <button onClick={() => setPreview(true)} className="font-medium text-brand hover:underline">
+              {note.assetType === "video"
+                ? note.timeSec != null ? `Watch at ${timeLabel(note.timeSec)} →` : "Watch the video →"
+                : "See the spot →"}
+            </button>
           </div>
         </div>
       </div>
+
+      {preview && <NotePreview note={note} onClose={() => setPreview(false)} />}
 
       {note.replies.length > 0 && (
         <div className="mt-2.5 space-y-2 border-t pt-2.5">
@@ -186,17 +192,58 @@ export function NoteCard({ note, readOnly, patch }: {
 
 // The photo the note was pinned on, with the reviewer's pin dot overlaid at
 // the same normalized 0..1 coords the review room saved. Video notes show the
-// timestamp instead of a pin.
-function Thumb({ note }: { note: ReviewNote }) {
+// FRAME AT THE NOTED TIMESTAMP (a paused <video> parked on "#t=<sec>") so the
+// thumbnail previews the exact moment. Tapping opens the full preview.
+function Thumb({ note, onOpen }: { note: ReviewNote; onOpen: () => void }) {
+  const [frameBroken, setFrameBroken] = useState(false);
+  // The frame preview costs real bytes per note (video metadata + one frame) —
+  // on the cross-shoot hub that's dozens of videos, so only mount each <video>
+  // once its thumb nears the viewport (photographers open this on cell data).
+  const ref = useRef<HTMLButtonElement>(null);
+  const [inView, setInView] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || note.assetType !== "video") return;
+    const io = new IntersectionObserver(
+      (entries) => entries[0]?.isIntersecting && setInView(true),
+      { rootMargin: "300px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [note.assetType]);
   const src = note.thumbUrl ?? (note.assetType === "image" ? note.assetUrl : null);
+  const videoFrame = note.assetType === "video" && !frameBroken && inView;
   return (
-    <div className="relative w-[120px] shrink-0 self-start overflow-hidden rounded-lg border bg-surface-2">
-      {src ? (
+    <button
+      ref={ref}
+      type="button"
+      onClick={onOpen}
+      title={note.assetType === "video" ? "Open the video at this moment" : "Open the photo at this spot"}
+      className="group relative w-[120px] shrink-0 self-start overflow-hidden rounded-lg border bg-surface-2 transition-shadow hover:ring-2 hover:ring-brand/60"
+    >
+      {videoFrame ? (
+        <video
+          src={videoSrcAt(note.assetUrl, note.timeSec)}
+          preload="metadata"
+          muted
+          playsInline
+          tabIndex={-1}
+          onError={() => setFrameBroken(true)}
+          className="pointer-events-none aspect-[3/2] w-full object-cover"
+        />
+      ) : src ? (
         <img src={src} alt="" loading="lazy" className="aspect-[3/2] w-full object-cover" />
       ) : (
         <div className="flex aspect-[3/2] w-full items-center justify-center text-muted-2">
           <Video className="size-5" />
         </div>
+      )}
+      {note.assetType === "video" && (
+        <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <span className="rounded-full bg-black/50 p-1.5 text-white transition-transform group-hover:scale-110">
+            <Play className="size-4 fill-current" />
+          </span>
+        </span>
       )}
       {note.x != null && note.y != null && (
         <span
@@ -213,7 +260,7 @@ function Thumb({ note }: { note: ReviewNote }) {
           {timeLabel(note.timeSec)}
         </span>
       )}
-    </div>
+    </button>
   );
 }
 
