@@ -1,13 +1,14 @@
 import { notFound, redirect } from "next/navigation";
 import { Suspense } from "react";
 import { getShoot, photographerMemberId, photographerOwnsShoot } from "@/lib/shoot";
-import { getPhotographerFeedback } from "@/lib/review";
+import { getClientFeedback, getPhotographerFeedback } from "@/lib/review";
 import { getCurrentUser } from "@/lib/auth/user";
 import { etDateTime, etDaysAgo } from "@/lib/datetime";
 import { ShootScreen } from "@/components/shoot/ShootScreen";
 import { ShootPayCard, ShootPayCardSkeleton } from "@/components/shoot/ShootPayCard";
 import { ShootMapCard, ShootMapCardSkeleton } from "@/components/shoot/ShootMapCard";
 import { ShootFeedback } from "@/components/shoot/ShootFeedback";
+import { ClientPraiseCard } from "@/components/shoot/ClientPraiseCard";
 import { ListingMedia, ListingMediaSkeleton } from "@/components/project/ListingMedia";
 
 export const dynamic = "force-dynamic";
@@ -53,7 +54,12 @@ export default async function ShootDetailPage({
     const { markFeedbackSeen } = await import("@/lib/review");
     await markFeedbackSeen(payMemberId, id);
   }
-  const feedback = payMemberId ? await getPhotographerFeedback(id, payMemberId) : [];
+  // Capture feedback + client praise for the same pay-scoped member. Praise is
+  // creative-safe by construction (getClientFeedback: POSITIVE/NEUTRAL only,
+  // money-scrubbed) — negative client feedback never reaches this page.
+  const [feedback, praise] = payMemberId
+    ? await Promise.all([getPhotographerFeedback(id, payMemberId), getClientFeedback(id, payMemberId)])
+    : [[], []];
 
   // Pay (this viewer's earnings for this shoot) streams in via Suspense so the
   // screen paints immediately instead of blocking on mileage.
@@ -79,10 +85,12 @@ export default async function ShootDetailPage({
 
   // Day's shoots + driving route — streams in (one OSRM call) so the screen
   // paints first. ShootScreen owns the page layout; this top slot carries
-  // review feedback FIRST (when it exists the shoot is past and the feedback
-  // is why they're here — the bell deep-links to this page), then the route.
+  // client praise, then review feedback (when either exists the shoot is past
+  // and the feedback is why they're here — the bell deep-links to this page),
+  // then the route. Praise leads: the win lands before the punch list.
   const map = (
     <>
+      {praise.length > 0 && <ClientPraiseCard items={praise} />}
       {feedback.length > 0 && (
         <ShootFeedback notes={feedback} readOnly={feedbackReadOnly} photographerName={view.photographer?.name ?? null} projectId={id} />
       )}

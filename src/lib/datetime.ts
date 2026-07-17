@@ -40,6 +40,11 @@ function etOffsetMs(d: Date): number {
 }
 export function etDayStartUtc(d: Date = new Date()): Date {
   const utcMidnightOfEtDate = Date.parse(etDayKey(d) + "T00:00:00Z");
-  return new Date(utcMidnightOfEtDate + etOffsetMs(d));
+  // Refine once: DST flips at 2am, never midnight, so the offset AT the
+  // guessed midnight (within ±1h of the true one) is always the right one.
+  // Sampling only at `d` was an hour off whenever d sat on the other side of
+  // a transition from the midnight it was deriving (every DST eve/day).
+  const guess = new Date(utcMidnightOfEtDate + etOffsetMs(d));
+  return new Date(utcMidnightOfEtDate + etOffsetMs(guess));
 }
 export const etAddDays = (d: Date, days: number) => new Date(d.getTime() + days * 86400000);

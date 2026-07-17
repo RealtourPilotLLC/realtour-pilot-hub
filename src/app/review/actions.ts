@@ -6,7 +6,8 @@ import { authEnforced, requireAdmin, requireTaskAccess } from "@/lib/auth/guards
 import { getCurrentUser } from "@/lib/auth/user";
 import { dbx, dropboxSharedLink, DropboxError } from "@/lib/integrations/dropbox";
 import { projectFolderPaths } from "@/lib/dropboxFolders";
-import { editorForDeliverable, editorMeta, type EditorKey } from "@/lib/editors";
+import { editorForDeliverable, editorMeta, TEAM_MEMBER_EDITOR_KEYS, type EditorKey } from "@/lib/editors";
+import { slugForName } from "@/lib/assignees";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { notifyInApp, type NotifyTarget } from "@/lib/notify";
 
@@ -34,7 +35,10 @@ function refresh(projectId: string) {
   revalidatePath(`/edit/${projectId}`);
 }
 
-// Who's writing (same convention as reviewActions.sessionAuthor).
+// Who's writing (same convention as reviewActions.sessionAuthor): resolve a
+// photographer through the live roster-email fallback, and never alias a
+// signed-in NON-owner to "owner" — that key is an identity in the thread-reply
+// notifier (it suppresses Jordan's ping and can self-ping the addressee).
 async function sessionAuthor(): Promise<{ authorKey: string; authorName: string | null }> {
   const u = await getCurrentUser().catch(() => null);
   if (!u) return { authorKey: "owner", authorName: "Jordan" };
@@ -42,7 +46,14 @@ async function sessionAuthor(): Promise<{ authorKey: string; authorName: string 
   if (u.role === "OWNER") return { authorKey: "owner", authorName: name };
   if (u.teamMemberId) return { authorKey: `tm:${u.teamMemberId}`, authorName: name };
   if (u.editorKey) return { authorKey: `editor:${u.editorKey}`, authorName: name };
-  return { authorKey: "owner", authorName: name };
+  if (u.role === "PHOTOGRAPHER") {
+    try {
+      const { photographerMemberId } = await import("@/lib/shoot");
+      const mid = await photographerMemberId(u);
+      if (mid) return { authorKey: `tm:${mid}`, authorName: name };
+    } catch { /* fall through to the neutral key */ }
+  }
+  return { authorKey: `user:${u.id}`, authorName: name };
 }
 
 // Which editor a project's video work routes to — prefer who actually
@@ -68,17 +79,33 @@ async function projectEditorKey(projectId: string): Promise<string | null> {
 // Owner/admin, OR the editor an EDITOR-lane root note belongs to (they may
 // reply + mark-fixed on their OWN feedback only). Mirrors requireNoteAccess in
 // reviewActions.ts, with editorKey standing in for photographerId.
-async function requireCutNoteAccess(root: { lane: string; editorKey: string | null; photographerId: string | null }): Promise<void> {
+// `allowMentioned` widens the REPLY path only: a photographer @-tagged on the
+// thread got a ping saying "reply on the note", whatever the note's lane — but
+// status flips stay with the note's own addressee (callers don't pass it).
+async function requireCutNoteAccess(
+  root: { id: string; lane: string; editorKey: string | null; photographerId: string | null },
+  opts?: { allowMentioned?: boolean },
+): Promise<void> {
   if (!authEnforced()) return;
   const u = await getCurrentUser();
   if (!u) throw new Error("Please sign in to do that.");
   if (u.impersonating) throw new Error("You're previewing another user — exit the preview to make changes.");
   if (u.realRole === "OWNER" || u.realRole === "ADMIN") return;
   if (u.realRole === "EDITOR" && root.lane === "EDITOR" && u.editorKey && u.editorKey === root.editorKey) return;
-  if (u.realRole === "PHOTOGRAPHER" && root.lane === "PHOTOGRAPHER" && root.photographerId) {
+  if (u.realRole === "PHOTOGRAPHER") {
     const { photographerMemberId } = await import("@/lib/shoot");
     const mid = await photographerMemberId(u);
-    if (mid && mid === root.photographerId) return;
+    if (mid && root.lane === "PHOTOGRAPHER" && root.photographerId && mid === root.photographerId) return;
+    if (mid && opts?.allowMentioned) {
+      // isMentionedIn runs the SAME roster-aware matcher that minted the ping,
+      // so the guard admits exactly the people who were told to come here.
+      const thread = await prisma.mediaNote.findMany({
+        where: { OR: [{ id: root.id }, { parentId: root.id }] },
+        select: { body: true },
+      });
+      const { isMentionedIn } = await import("@/lib/mentions");
+      if (await isMentionedIn(thread.map((n) => n.body), mid)) return;
+    }
   }
   throw new Error("You don't have access to do that.");
 }
@@ -124,7 +151,12 @@ export async function submitCutForReview(
   // work item (audit). Owner/admin submit-on-behalf keeps the wide net.
   const { getCurrentUser } = await import("@/lib/auth/user");
   const me = await getCurrentUser().catch(() => null);
-  const myEditorKey = me?.role === "EDITOR" ? me.editorKey ?? null : null;
+  // An EDITOR with no editorKey mapped still needs scoping — their tasks are
+  // assigned under their name slug (same fallback requireTaskAccess uses). A
+  // bare null here would UNSCOPE the close below and let their submit complete
+  // a co-editor's work item.
+  const myEditorKey =
+    me?.role === "EDITOR" ? (me.editorKey ?? (me.name ? slugForName(me.name) : null)) : null;
   const task = await prisma.smartTask.findFirst({
     where: {
       projectId,
@@ -264,7 +296,7 @@ export async function addCutNote(input: {
   }
   const { authorKey, authorName } = await sessionAuthor();
 
-  await prisma.mediaNote.create({
+  const note = await prisma.mediaNote.create({
     data: {
       projectId: input.projectId,
       // Cuts with no minted link thread notes under a synthetic key so
@@ -284,7 +316,7 @@ export async function addCutNote(input: {
   });
   {
     const { notifyMentions } = await import("@/lib/mentions");
-    await notifyMentions({ text: body, projectId: input.projectId, authorName, context: "a cut note" });
+    await notifyMentions({ text: body, projectId: input.projectId, authorName, context: "a cut note", noteId: note.id });
   }
   refresh(input.projectId);
   return { ok: true };
@@ -300,12 +332,14 @@ export async function replyCutNote(noteId: string, body: string): Promise<{ ok: 
   const root = note.parentId ? await prisma.mediaNote.findUnique({ where: { id: note.parentId } }) : note;
   if (!root) return { ok: false, message: "That note no longer exists." };
   try {
-    await requireCutNoteAccess(root);
+    // Replies also open to photographers @-tagged on the thread — their
+    // mention ping says "reply on the note", so the guard must let them.
+    await requireCutNoteAccess(root, { allowMentioned: true });
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
   const { authorKey, authorName } = await sessionAuthor();
-  await prisma.mediaNote.create({
+  const reply = await prisma.mediaNote.create({
     data: {
       projectId: root.projectId,
       assetUrl: root.assetUrl,
@@ -322,9 +356,28 @@ export async function replyCutNote(noteId: string, body: string): Promise<{ ok: 
       parentId: root.id,
     },
   });
+  // Reply is saved — everything below is best-effort notification fan-out.
+  // Mentions ring first (they carry the note deep-link); whoever they reached
+  // is excluded from the thread-participant ping so nobody hears it twice.
   {
-    const { notifyMentions } = await import("@/lib/mentions");
-    await notifyMentions({ text, projectId: root.projectId, authorName, context: "a cut-note comment" });
+    const { notifyMentions, notifyThreadReply } = await import("@/lib/mentions");
+    const excludeTmIds = await notifyMentions({
+      text,
+      projectId: root.projectId,
+      authorName,
+      context: "a cut-note comment",
+      noteId: root.id,
+    });
+    await notifyThreadReply({
+      rootId: root.id,
+      replyId: reply.id,
+      replierKey: authorKey,
+      replierName: authorName,
+      text,
+      projectId: root.projectId,
+      surface: "cut",
+      excludeTmIds,
+    });
   }
   refresh(root.projectId);
   return { ok: true };
@@ -384,7 +437,13 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
 
   try {
     const targets: NotifyTarget[] = [{ roles: ["ADMIN"] }];
-    if (submission.submittedByKey && editorMeta(submission.submittedByKey)) {
+    // Only Kim/Remar have logins that can see an editor:<key> row — a Luma/
+    // vendor (or "editor:kyle") key would mint a row visible to NOBODY. The
+    // ADMIN row above already keeps dispatch-managed cuts humanly visible.
+    if (
+      submission.submittedByKey &&
+      (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(submission.submittedByKey)
+    ) {
       targets.push({ roles: ["EDITOR"], userKey: `editor:${submission.submittedByKey}`, href: `/edit/${submission.projectId}` });
     }
     await notifyInApp({
@@ -476,12 +535,20 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
   });
 
   try {
+    // Kim/Remar see their own editor:<key> row; a Luma/vendor key has no login
+    // or channel, so the news goes to ADMIN instead — Kyle dispatches vendor
+    // changes (same split as the manual-queue bell in editing/actions.ts).
+    const isTeamEditor = (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(editorKey);
     await notifyInApp({
       kind: "review_changes",
-      title: `Changes requested — ${street}`,
+      title: isTeamEditor
+        ? `Changes requested — ${street}`
+        : `Relay cut changes to ${editorMeta(editorKey)?.name ?? editorKey} — ${street}`,
       body: `${open.length} note${s}: ${open[0].body}`.slice(0, 140),
       href: `/edit/${submission.projectId}`,
-      targets: [{ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${submission.projectId}` }],
+      targets: isTeamEditor
+        ? [{ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${submission.projectId}` }]
+        : [{ roles: ["ADMIN"] }],
       dedupeKey: `review-changes-${submissionId}-${open[open.length - 1].id}`,
     });
   } catch { /* bell is best-effort */ }

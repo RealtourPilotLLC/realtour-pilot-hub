@@ -234,6 +234,14 @@ export async function addToEditorQueue(
         ...(project.status === "DELIVERED" ? { status: "REVISION" } : {}),
       },
     });
+    // Reopen the QC card WITH revision framing (HIGH, due now, re-QC row) —
+    // the comms revision path does this via raiseRevision; without it the
+    // reconciler hands Kyle back a weeks-overdue delivery-era "QC & deliver"
+    // card with no re-QC gate.
+    try {
+      const { reflectRevisionInQc } = await import("@/lib/tasks");
+      await reflectRevisionInQc(projectId, [], revNote);
+    } catch { /* framing is best-effort — the revision task below is the work item */ }
 
     // One open revision per project — same dedupeKey scheme as comms.ts.
     const crypto = await import("crypto");

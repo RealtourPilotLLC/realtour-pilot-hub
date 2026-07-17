@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { etDayStartUtc } from "@/lib/datetime";
 import type { ProjectStatus } from "@prisma/client";
 import {
   allOpenPhoneContacts,
@@ -93,10 +94,51 @@ const RECENT_PROJECT_ORDER = [
   { createdAt: "desc" },
 ] as const;
 
-// Resolve a client id to the EFFECTIVE comms target + their most recent project.
-// If the client is a folded team assistant (parentClientId set — e.g. Kelly on
-// Jamie's team), hop to the agent so the order/task/activity lands on the agent
-// (that's where the projects live). Otherwise it's the client themselves.
+// The project a client's message is most likely ABOUT, absent any street match:
+// their next upcoming shoot, else the most recent still-active job, else the
+// most recent overall. "Most recent overall" alone (the old rule) pinned a
+// client's new ask to a job delivered months ago while their live shoots sat
+// unmentioned (audit: Jesse's Zillow ask on a 133-day-old delivery).
+export async function mostRelevantProject(clientId: string): Promise<
+  { id: string; title: string; status: string } | null
+> {
+  const rows = await prisma.project.findMany({
+    where: { clientId },
+    orderBy: [...RECENT_PROJECT_ORDER],
+    select: { id: true, title: true, status: true, shootDate: true },
+  });
+  if (rows.length === 0) return null;
+  const todayEt = etDayStartUtc();
+  const upcoming = rows
+    .filter((p) => p.status !== "CANCELLED" && p.shootDate && p.shootDate >= todayEt)
+    .sort((a, b) => a.shootDate!.getTime() - b.shootDate!.getTime())[0];
+  const pick =
+    upcoming ??
+    rows.find((p) => (ACTIVE_PROJECT_STATUSES as string[]).includes(p.status)) ??
+    rows[0];
+  return { id: pick.id, title: pick.title, status: pick.status };
+}
+
+// The client's newest job that can actually RECEIVE a revision (delivered or
+// already in the review/revision loop). A revision-classified message must
+// anchor here, never to an upcoming shoot: the DELIVERED_ISH gates downstream
+// silently DROP the revision when the anchored project is pre-delivery
+// (mostRelevantProject prefers the next shoot — right for scheduling chatter,
+// wrong for "can you brighten the kitchen photos?").
+export async function mostRecentDeliveredIsh(clientId: string): Promise<
+  { id: string; title: string; status: string } | null
+> {
+  return prisma.project.findFirst({
+    where: { clientId, status: { in: ["DELIVERED", "REVISION", "REVIEW"] } },
+    orderBy: [...RECENT_PROJECT_ORDER],
+    select: { id: true, title: true, status: true },
+  });
+}
+
+// Resolve a client id to the EFFECTIVE comms target + their most relevant
+// project. If the client is a folded team assistant (parentClientId set — e.g.
+// Kelly on Jamie's team), hop to the agent so the order/task/activity lands on
+// the agent (that's where the projects live). Otherwise it's the client themselves.
 async function effectiveClientWithProject(clientId: string): Promise<{
   clientId: string;
   clientName: string;
@@ -113,11 +155,7 @@ async function effectiveClientWithProject(clientId: string): Promise<{
     const parent = await prisma.client.findUnique({ where: { id: c.parentClientId }, select: { name: true } });
     if (parent) targetName = parent.name;
   }
-  const project = await prisma.project.findFirst({
-    where: { clientId: targetId },
-    orderBy: [...RECENT_PROJECT_ORDER],
-    select: { id: true, title: true, status: true },
-  });
+  const project = await mostRelevantProject(targetId);
   return { clientId: targetId, clientName: targetName, project };
 }
 
@@ -133,13 +171,19 @@ export async function resolveClientByPhones(phones: string[]): Promise<{
   const keys = new Set(phones.map((p) => phoneKey(p)).filter((k) => k.length === 10));
   if (keys.size === 0) return null;
 
-  // 1) Direct client phone match.
+  // 1) Direct client phone match — collect EVERY row that matches, then rank.
+  // A phone can legitimately hit more than one row (a re-minted twin, or two
+  // rows pending a merge); the old unordered .find() picked whichever Postgres
+  // returned first, which could dodge the clientId-scoped task auto-close.
   const clientCandidates = await prisma.client.findMany({
     where: { phone: { not: null } },
     select: {
       id: true,
       name: true,
       phone: true,
+      parentClientId: true,
+      aryeoCustomerId: true,
+      createdAt: true,
       projects: {
         // Most-RECENT real order, not import order. createdAt is the backfill
         // time (≈same for all), so order by the Aryeo order date / shoot date.
@@ -149,28 +193,74 @@ export async function resolveClientByPhones(phones: string[]): Promise<{
           { createdAt: "desc" },
         ],
         take: 1,
-        select: { id: true, title: true, status: true },
+        select: { orderedAt: true, shootDate: true, createdAt: true },
       },
     },
   });
-  let hit = clientCandidates.find((c) => keys.has(phoneKey(c.phone)));
+  const matches = clientCandidates.filter((c) => keys.has(phoneKey(c.phone)));
+  const hit = rankClientRows(matches)[0];
+  if (hit) return effectiveClientWithProject(hit.id);
 
-  // 2) Fall back to a synced contact's alternate number linked to a client.
-  if (!hit) {
-    const linked = await prisma.contact.findMany({
-      where: { clientId: { not: null } },
-      select: { phones: true, clientId: true },
-    });
-    let clientId: string | undefined;
-    for (const ct of linked) {
-      const nums: string[] = ct.phones ? JSON.parse(ct.phones) : [];
-      if (nums.some((n) => keys.has(phoneKey(n)))) { clientId = ct.clientId!; break; }
-    }
-    if (clientId) return effectiveClientWithProject(clientId);
+  // 2) Fall back to a synced contact's alternate number linked to a client —
+  // again collecting all matches before ranking.
+  const linked = await prisma.contact.findMany({
+    where: { clientId: { not: null } },
+    select: { phones: true, clientId: true },
+  });
+  const linkedIds = new Set<string>();
+  for (const ct of linked) {
+    let nums: string[] = [];
+    try { nums = ct.phones ? (JSON.parse(ct.phones) as string[]) : []; } catch { nums = []; }
+    if (nums.some((n) => keys.has(phoneKey(n)))) linkedIds.add(ct.clientId!);
   }
+  if (linkedIds.size === 1) return effectiveClientWithProject([...linkedIds][0]);
+  if (linkedIds.size > 1) {
+    const rows = await prisma.client.findMany({
+      where: { id: { in: [...linkedIds] } },
+      select: {
+        id: true, name: true, parentClientId: true, aryeoCustomerId: true, createdAt: true,
+        projects: {
+          orderBy: [
+            { orderedAt: { sort: "desc", nulls: "last" } },
+            { shootDate: { sort: "desc", nulls: "last" } },
+            { createdAt: "desc" },
+          ],
+          take: 1,
+          select: { orderedAt: true, shootDate: true, createdAt: true },
+        },
+      },
+    });
+    const best = rankClientRows(rows)[0];
+    if (best) return effectiveClientWithProject(best.id);
+  }
+  return null;
+}
 
-  if (!hit) return null;
-  return effectiveClientWithProject(hit.id);
+// Deterministic pick among client rows that all matched the same signal:
+// prefer the agent over a folded assistant, then the row with the freshest
+// project activity, then a row with an Aryeo identity, then the OLDEST row
+// (the canonical original beats a freshly-minted twin).
+function rankClientRows<T extends {
+  id: string;
+  parentClientId: string | null;
+  aryeoCustomerId: string | null;
+  createdAt: Date;
+  projects: { orderedAt: Date | null; shootDate: Date | null; createdAt: Date }[];
+}>(rows: T[]): T[] {
+  const activity = (r: T) => {
+    const p = r.projects[0];
+    if (!p) return 0;
+    return Math.max(p.orderedAt?.getTime() ?? 0, p.shootDate?.getTime() ?? 0, p.createdAt.getTime());
+  };
+  return [...rows].sort((a, b) => {
+    const child = Number(a.parentClientId !== null) - Number(b.parentClientId !== null);
+    if (child !== 0) return child;
+    const act = activity(b) - activity(a);
+    if (act !== 0) return act;
+    const aryeo = Number(b.aryeoCustomerId !== null) - Number(a.aryeoCustomerId !== null);
+    if (aryeo !== 0) return aryeo;
+    return a.createdAt.getTime() - b.createdAt.getTime();
+  });
 }
 
 // Who is this single phone number? Checks team members, then clients, then

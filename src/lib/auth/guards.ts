@@ -62,13 +62,23 @@ export async function requireTaskAccess(taskId: string): Promise<void> {
     // The person a task is assigned to may act on THEIR OWN task, whatever
     // their role — a photographer with work moved onto their plate must be
     // able to complete it (audit: assigned-away tasks were act-on-able by
-    // nobody but admins).
+    // nobody but admins). Match against EVERY key this human is addressable
+    // by — editor key, AppUser display-name slug, AND their roster
+    // (TeamMember) name's slug — so an AppUser renamed away from the roster
+    // spelling doesn't lose the ability to act on their own work.
     const { prisma } = await import("@/lib/prisma");
     const { slugForName } = await import("@/lib/assignees");
-    const myKey = (u.realRole === "EDITOR" ? u.editorKey : null) || (u.name ? slugForName(u.name) : null);
-    if (myKey) {
+    const myKeys = new Set<string>();
+    if (u.realRole === "EDITOR" && u.editorKey) myKeys.add(u.editorKey);
+    if (u.name) myKeys.add(slugForName(u.name));
+    if (u.teamMemberId) {
+      const tm = await prisma.teamMember.findUnique({ where: { id: u.teamMemberId }, select: { name: true } });
+      if (tm?.name) myKeys.add(slugForName(tm.name));
+    }
+    myKeys.delete("");
+    if (myKeys.size > 0) {
       const t = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { assignedKey: true } });
-      if (t?.assignedKey === myKey) return;
+      if (t?.assignedKey && myKeys.has(t.assignedKey)) return;
     }
   }
   throw new Error("You don't have access to do that.");

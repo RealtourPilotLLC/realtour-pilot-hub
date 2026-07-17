@@ -53,6 +53,10 @@ export type ConnState = {
   lastError: string | null;
 };
 
+// Per-mailbox Gmail scope probe result (null canSend = the check itself failed,
+// so the card says nothing rather than something wrong).
+export type GmailSendHealth = { email: string; canSend: boolean | null };
+
 export function ProviderCard({
   provider,
   conn,
@@ -60,6 +64,7 @@ export function ProviderCard({
   dropboxAuthorizeUrl,
   googleAuthorizeUrl,
   frameioReady,
+  gmailSendHealth,
 }: {
   provider: ProviderDef;
   conn: ConnState | null;
@@ -67,6 +72,7 @@ export function ProviderCard({
   dropboxAuthorizeUrl?: string;
   googleAuthorizeUrl?: string;
   frameioReady?: boolean;
+  gmailSendHealth?: GmailSendHealth[] | null;
 }) {
   const Icon = ICONS[provider.icon] ?? Circle;
   const connected = conn?.status === "CONNECTED";
@@ -102,6 +108,31 @@ export function ProviderCard({
       )}
       {errored && conn?.lastError && (
         <div className="mt-2 rounded-lg bg-danger-soft px-2 py-1 text-xs text-danger">{conn.lastError}</div>
+      )}
+
+      {/* Gmail: what each mailbox's token can actually DO. "Connected" hid a
+          token that could read but not send (finding #41) — surface the send
+          scope per mailbox so a silent-failure state is visible at a glance. */}
+      {provider.id === "gmail" && connected && !!gmailSendHealth?.length && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {gmailSendHealth.map((m) =>
+            m.canSend === null ? null : m.canSend ? (
+              <span
+                key={m.email}
+                className="inline-flex items-center gap-1 rounded-full bg-success-soft px-2 py-0.5 text-[11px] font-medium text-success"
+              >
+                <CheckCircle2 className="size-3" /> {m.email} · read ✓ · send ✓
+              </span>
+            ) : (
+              <span
+                key={m.email}
+                className="inline-flex items-center gap-1 rounded-full bg-warning-soft px-2 py-0.5 text-[11px] font-medium text-warning"
+              >
+                <AlertCircle className="size-3" /> {m.email} · read ✓ · send ✗ — reconnect to grant sending
+              </span>
+            ),
+          )}
+        </div>
       )}
 
       {/* Capabilities */}

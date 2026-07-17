@@ -33,11 +33,13 @@ const rank = (n: ReviewNote) => (n.kind === "fix" ? (n.status === "OPEN" ? 0 : 1
 
 const timeLabel = clockLabel;
 
-export function ShootFeedback({ notes: initial, readOnly, photographerName, projectId }: {
+export function ShootFeedback({ notes: initial, readOnly, replyOnly, photographerName, projectId }: {
   notes: ReviewNote[];
   /** Owner/admin (and "view as") previews are look-don't-touch — the server
       actions would reject their writes anyway, so don't offer the buttons. */
   readOnly: boolean;
+  /** @-mentioned viewer (not the addressee): thread + reply box only. */
+  replyOnly?: boolean;
   photographerName: string | null;
   /** When set (shoot page), the owner preview gets the "text them the link" share button. */
   projectId?: string;
@@ -107,7 +109,7 @@ export function ShootFeedback({ notes: initial, readOnly, photographerName, proj
       )}
 
       {active.map((n) => (
-        <NoteCard key={n.id} note={n} readOnly={readOnly} patch={patch} />
+        <NoteCard key={n.id} note={n} readOnly={readOnly} replyOnly={replyOnly} patch={patch} />
       ))}
 
       {active.length === 0 && resolved.length > 0 && (
@@ -128,7 +130,7 @@ export function ShootFeedback({ notes: initial, readOnly, photographerName, proj
           {showResolved && (
             <div className="mt-2 space-y-3 opacity-75">
               {resolved.map((n) => (
-                <NoteCard key={n.id} note={n} readOnly={readOnly} patch={patch} />
+                <NoteCard key={n.id} note={n} readOnly={readOnly} replyOnly={replyOnly} patch={patch} />
               ))}
             </div>
           )}
@@ -142,9 +144,13 @@ export function ShootFeedback({ notes: initial, readOnly, photographerName, proj
 
 // Exported for the cross-shoot feedback hub (/shoot/feedback), which renders
 // the same note rows grouped by shoot.
-export function NoteCard({ note, readOnly, patch }: {
+export function NoteCard({ note, readOnly, replyOnly, patch }: {
   note: ReviewNote;
   readOnly: boolean;
+  /** A viewer admitted by @-mention (not the note's addressee): they can reply
+   *  on the thread, but Mark-fixed / Got-it belong to the addressee alone —
+   *  the server rejects them anyway, so don't offer buttons that only error. */
+  replyOnly?: boolean;
   patch: (id: string, fn: (n: ReviewNote) => ReviewNote) => void;
 }) {
   const [err, setErr] = useState<string | null>(null);
@@ -221,7 +227,7 @@ export function NoteCard({ note, readOnly, patch }: {
       {!readOnly && (
         <div className="mt-2.5 space-y-1.5">
           <div className="flex flex-wrap items-center gap-3">
-            {fix && note.status === "OPEN" && (
+            {!replyOnly && fix && note.status === "OPEN" && (
               <button
                 onClick={markFixed}
                 disabled={fixing}
@@ -230,7 +236,7 @@ export function NoteCard({ note, readOnly, patch }: {
                 {fixing ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Mark fixed
               </button>
             )}
-            {!fix && !note.acknowledgedAt && (
+            {!replyOnly && !fix && !note.acknowledgedAt && (
               <button
                 onClick={acknowledge}
                 disabled={fixing}

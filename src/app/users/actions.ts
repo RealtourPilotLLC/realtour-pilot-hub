@@ -27,6 +27,22 @@ function appBase(): string {
 
 const validRole = (r: string) => (ROLES as string[]).includes(r);
 
+// An EDITOR login is useless without its editorKey — that key scopes their
+// board, brief actions, and person-addressed bells. Derive it from the roster
+// by first name (Kim → "kim", Remar → "remar"), falling back to the email's
+// local part (kim@…) so a blank invite name can't mint a dead login.
+async function deriveEditorKey(name: string | null | undefined, email?: string | null): Promise<string | null> {
+  const { TEAM_MEMBER_EDITOR_KEYS, EDITORS } = await import("@/lib/editors");
+  const matchKey = (candidate: string | undefined): string | null =>
+    candidate
+      ? (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).find(
+          (k) => k === candidate || EDITORS[k as keyof typeof EDITORS]?.name.split(/\s+/)[0]?.toLowerCase() === candidate,
+        ) ?? null
+      : null;
+  const first = (name ?? "").trim().split(/\s+/)[0]?.toLowerCase();
+  return matchKey(first) ?? matchKey((email ?? "").split("@")[0]?.trim().toLowerCase() || undefined);
+}
+
 export async function inviteUser(input: { email: string; name?: string; role: string }): Promise<Res> {
   try {
     await requireOwnerActor();
@@ -35,19 +51,7 @@ export async function inviteUser(input: { email: string; name?: string; role: st
     const role = validRole(input.role) ? input.role : "PHOTOGRAPHER";
     const token = randomUUID();
 
-    // An EDITOR login is useless without its editorKey — that key scopes their
-    // board, brief actions, and person-addressed bells. Derive it from the
-    // roster by first name (Kim → "kim", Remar → "remar") so day-one logins
-    // work instead of landing with dead buttons (audit critical).
-    let editorKey: string | null = null;
-    if (role === "EDITOR") {
-      const { TEAM_MEMBER_EDITOR_KEYS, EDITORS } = await import("@/lib/editors");
-      const first = (input.name ?? "").trim().split(/\s+/)[0]?.toLowerCase();
-      editorKey =
-        (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).find(
-          (k) => k === first || EDITORS[k as keyof typeof EDITORS]?.name.split(/\s+/)[0]?.toLowerCase() === first,
-        ) ?? null;
-    }
+    const editorKey = role === "EDITOR" ? await deriveEditorKey(input.name, email) : null;
 
     const existing = await prisma.appUser.findUnique({ where: { email } });
     if (existing) {
@@ -94,7 +98,12 @@ export async function setUserRole(id: string, role: string): Promise<Res> {
     const actor = await requireOwnerActor();
     if (id === actor.id && role !== "OWNER") return { ok: false, message: "You can't change your own role." };
     if (!validRole(role)) return { ok: false, message: "Unknown role." };
-    await prisma.appUser.update({ where: { id }, data: { role } });
+    const u = await prisma.appUser.findUnique({ where: { id }, select: { name: true, email: true, editorKey: true } });
+    if (!u) return { ok: false, message: "User not found." };
+    // Flipping someone TO editor needs the same key wiring an invite gets —
+    // without it their board/brief/bells are all dead on arrival.
+    const editorKey = role === "EDITOR" && !u.editorKey ? await deriveEditorKey(u.name, u.email) : null;
+    await prisma.appUser.update({ where: { id }, data: { role, ...(editorKey ? { editorKey } : {}) } });
     revalidatePath("/users");
     return { ok: true, message: "Role updated." };
   } catch (e) {

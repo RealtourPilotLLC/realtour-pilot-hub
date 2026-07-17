@@ -4,9 +4,10 @@ import { parseClientProfile } from "@/lib/clientProfile";
 
 // One place that turns a SmartTask row (with its client) into the shape the
 // TaskCard renders — used by both the Daily Tasks queue and the project page so
-// they never drift. For a QC (media_qa) task the checklist JSON becomes the
-// interactive tick list on the card, plus a read-only "know this client" strip
-// built from the client's segment / editing prefs / working profile so QC is no
+// they never drift. EVERY task type surfaces its checklist JSON as the card's
+// tick list (the operational steps live there for all types, not just QC). A QC
+// (media_qa) task additionally gets a read-only "know this client" strip built
+// from the client's segment / editing prefs / working profile so QC is no
 // longer client-blind (38% of deliveries are VIP-segment).
 export type TaskRow = {
   id: string;
@@ -63,8 +64,7 @@ function qcClientContext(client: TaskRow["client"]): QcClientContext | null {
 
 export function taskToView(t: TaskRow): QueueTask {
   const isQc = t.taskType === "media_qa";
-  const deliverables: DeliverableStatus[] =
-    isQc ? parseChecklist(t.checklist).map((i) => ({ label: i.label, done: i.done })) : [];
+  const deliverables: DeliverableStatus[] = parseChecklist(t.checklist).map((i) => ({ label: i.label, done: i.done }));
   return {
     id: t.id,
     title: t.title,

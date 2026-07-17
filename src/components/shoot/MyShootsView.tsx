@@ -9,7 +9,8 @@ import { DELIVERABLE_META } from "@/lib/pipeline";
 import { Badge } from "@/components/ui/Badge";
 import { PALETTE } from "@/lib/palette";
 import { cn } from "@/lib/utils";
-import type { MyShootRow } from "@/lib/shoot";
+import { YourTasksCard } from "@/components/shoot/YourTasksCard";
+import type { MyShootRow, PhotographerTaskRow } from "@/lib/shoot";
 import type { NextShootFocus } from "@/lib/photographerFeedback";
 
 const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -28,6 +29,8 @@ export function MyShootsView({
   viewAs,
   focus,
   focusHref,
+  tasks,
+  tasksReadOnly,
 }: {
   rows: MyShootRow[];
   showWho: boolean;
@@ -36,6 +39,10 @@ export function MyShootsView({
   /** Open capture-feedback reminders for the scoped photographer (null when unscoped). */
   focus?: NextShootFocus | null;
   focusHref?: string;
+  /** The scoped photographer's own open tasks (empty/omitted when unscoped). */
+  tasks?: PhotographerTaskRow[];
+  /** Owner/admin ?as= previews can't complete someone else's tasks. */
+  tasksReadOnly?: boolean;
 }) {
   const router = useRouter();
   // Owner/admin photographer filter — toggle each photographer's shoots on/off
@@ -134,6 +141,11 @@ export function MyShootsView({
           </Link>
         </div>
       )}
+
+      {/* The photographer's own open tasks — mention pings, callbacks, moved
+          work — above the work-ons: do-this-now beats read-this-later. The card
+          renders nothing when there's nothing open. */}
+      {tasks && <YourTasksCard tasks={tasks} readOnly={tasksReadOnly} />}
 
       {/* Work-ons — the photographer's open capture feedback, front and center
           so the next shoot starts with last shoot's lessons. */}

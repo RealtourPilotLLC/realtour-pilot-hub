@@ -49,6 +49,7 @@ export type QueueFollowUp = {
   lane: "EDIT" | "PHOTOGRAPHER" | "EDITOR";
   open: number;
   awaitingReReview: number; // FIXED, waiting on the owner to approve
+  awaitingReply: number; // threads where a CREATIVE spoke last — the owner owes an answer
 };
 
 export type ReviewQueue = {
@@ -61,7 +62,7 @@ export type ReviewQueue = {
 
 export async function getReviewQueue(): Promise<ReviewQueue> {
   const since = new Date(Date.now() - 14 * 24 * 3600_000);
-  const [subs, qcTasks, noteRollup] = await Promise.all([
+  const [subs, qcTasks, noteRollup, threadReplies] = await Promise.all([
     prisma.reviewSubmission.findMany({
       where: {
         OR: [
@@ -97,6 +98,18 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
       by: ["projectId", "lane", "status"],
       where: { parentId: null, status: { in: ["OPEN", "FIXED"] } },
       _count: true,
+    }),
+    // Thread replies on still-live roots — a creative's "which bathroom do you
+    // mean?" otherwise rots invisibly once the owner stops opening the thread.
+    // Bounded: replies only exist under review notes (a handful of rows).
+    prisma.mediaNote.findMany({
+      where: { parentId: { not: null }, parent: { status: { not: "RESOLVED" } } },
+      select: {
+        parentId: true,
+        authorKey: true,
+        createdAt: true,
+        parent: { select: { projectId: true, lane: true } },
+      },
     }),
   ]);
 
@@ -134,6 +147,24 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
   }
   const latest = [...latestByProject.values()];
 
+  // Unanswered creative replies: per thread, whoever spoke LAST holds the
+  // floor — if that's not the owner, the owner owes an answer. Only live
+  // (non-RESOLVED) roots count; a root's status lives in [OPEN, FIXED] then,
+  // so every counted thread already has a follow-up row to hang the chip on.
+  const lastReplyByRoot = new Map<string, (typeof threadReplies)[number]>();
+  for (const r of threadReplies) {
+    if (!r.parentId) continue;
+    const cur = lastReplyByRoot.get(r.parentId);
+    if (!cur || r.createdAt > cur.createdAt) lastReplyByRoot.set(r.parentId, r);
+  }
+  const awaitingReplyByKey = new Map<string, number>(); // "<projectId>:<lane>" → count
+  for (const r of lastReplyByRoot.values()) {
+    if (!r.parent || r.authorKey === "owner") continue;
+    const lane = (["EDIT", "PHOTOGRAPHER", "EDITOR"].includes(r.parent.lane) ? r.parent.lane : "EDIT") as QueueFollowUp["lane"];
+    const key = `${r.parent.projectId}:${lane}`;
+    awaitingReplyByKey.set(key, (awaitingReplyByKey.get(key) ?? 0) + 1);
+  }
+
   // Feedback follow-through: projects with review notes still open (someone owes
   // a fix) or FIXED (the owner owes a re-review). Rollup by project+lane.
   const followMap = new Map<string, QueueFollowUp>();
@@ -151,6 +182,7 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
       lane,
       open: 0,
       awaitingReReview: 0,
+      awaitingReply: awaitingReplyByKey.get(key) ?? 0,
     };
     if (r.status === "OPEN") cur.open += r._count;
     else cur.awaitingReReview += r._count;

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Loader2, Mail, Maximize2, MessageSquare, Phone, Hash, X } from "lucide-react";
+import { CheckSquare, Loader2, Mail, Maximize2, MessageSquare, Phone, Hash, Square, X } from "lucide-react";
 import { etDateTime } from "@/lib/datetime";
 import { getTaskConversation, type SourceMessage } from "@/app/queue/fullViewActions";
 import type { QueueTask } from "@/components/queue/TaskCard";
@@ -144,6 +144,25 @@ export function TaskFullView({ task, editorView }: { task: QueueTask; editorView
                 <section>
                   <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">The message</h3>
                   <p className="whitespace-pre-line break-words rounded-xl border border-border bg-surface-2/40 p-3 text-sm text-foreground/85">{message}</p>
+                </section>
+              )}
+              {/* The task's checklist — read-only here (ticking lives on the card;
+                  this modal is purely a reading surface). */}
+              {task.deliverables.length > 0 && (
+                <section>
+                  <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">Steps</h3>
+                  <ul className="space-y-1">
+                    {task.deliverables.map((d, i) => (
+                      <li key={i} className="flex items-start gap-2 text-sm text-foreground/85">
+                        {d.done ? (
+                          <CheckSquare className="mt-0.5 size-4 shrink-0 text-success" />
+                        ) : (
+                          <Square className="mt-0.5 size-4 shrink-0 text-muted-2" />
+                        )}
+                        <span className={d.done ? "text-muted line-through decoration-muted-2/60" : ""}>{d.label}</span>
+                      </li>
+                    ))}
+                  </ul>
                 </section>
               )}
               {task.reasonCreated && (

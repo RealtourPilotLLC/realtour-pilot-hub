@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { stripMoneySentences } from "@/lib/text";
 
 // ---------------------------------------------------------------------------
 // Read layer for the in-house media review room (Frame.io-style). Root notes
@@ -132,6 +133,43 @@ export async function getPhotographerFeedback(projectId: string, memberId: strin
     include: { replies: { orderBy: { createdAt: "asc" } } },
   });
   return notes.map(toReviewNote);
+}
+
+// What the CLIENT said about a shoot, safe for the photographer who shot it.
+// The sentiment-in filter deliberately fails closed: NEGATIVE and null-sentiment
+// rows never match, because negative client feedback NEVER reaches creatives
+// (playbook rule — Jordan handles it, then briefs them himself). Bodies are
+// money-scrubbed server-side too: clients mention price in praise all the time.
+export type ClientFeedbackRow = {
+  id: string;
+  rating: number | null;
+  body: string;
+  authorName: string | null;
+  createdAt: string;
+};
+
+export async function getClientFeedback(projectId: string, memberId: string): Promise<ClientFeedbackRow[]> {
+  if (!memberId) return [];
+  const rows = await prisma.feedback.findMany({
+    where: { projectId, photographerId: memberId, sentiment: { in: ["POSITIVE", "NEUTRAL"] } },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, rating: true, body: true, authorName: true, createdAt: true },
+  });
+  const { hasNegativeCues } = await import("@/lib/feedback");
+  return rows
+    .map((r) => ({
+      id: r.id,
+      rating: r.rating,
+      // The sentiment column trusts stars over words (4★ + "please redo the
+      // yard" is POSITIVE) — the criticism itself must never render for the
+      // photographer. Mixed reviews show their stars only; Jordan relays the
+      // notes himself.
+      body: hasNegativeCues(r.body) ? "" : stripMoneySentences(r.body),
+      authorName: r.authorName,
+      createdAt: r.createdAt.toISOString(),
+    }))
+    // A row whose body scrubbed away entirely still shows if it carries stars.
+    .filter((r) => r.body || r.rating != null);
 }
 
 // Badge counts for the project page — root notes only (replies never count).

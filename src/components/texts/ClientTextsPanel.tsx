@@ -40,7 +40,9 @@ export async function ClientTextsPanel() {
     dueAt: t.dueAt ? t.dueAt.toISOString() : null,
     overdue: !!t.dueAt && t.dueAt < startToday,
     // Overdue confirmation = the shoot may already have happened; double-check.
-    warnStale: t.taskType === "confirmation_text" && !!t.dueAt && t.dueAt < now,
+    // No due date at all = no shoot date on the job — nothing to confirm yet,
+    // so it warns the same way instead of reading as safely sendable.
+    warnStale: t.taskType === "confirmation_text" && (!t.dueAt || t.dueAt < now),
     warnQcOpen: t.taskType === "delivery_text" && !!t.projectId && qcOpenSet.has(t.projectId),
   }));
 

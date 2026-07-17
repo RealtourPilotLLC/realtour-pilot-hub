@@ -63,8 +63,18 @@ export async function postProjectMessage(
     }
     for (const t of tagged) {
       const editorKey = editorTmIds.get(t.id) ?? null;
+      // A tagged photographer who doesn't own this shoot gets bounced off
+      // /shoot/<id> to the bare list — send them to the list directly (their
+      // tag task carries the context); the owning shooter still deep-links.
+      let photogHref = `/shoot/${projectId}`;
+      if (t.role === "PHOTOGRAPHER") {
+        try {
+          const { photographerOwnsShoot } = await import("@/lib/shoot");
+          if (!(await photographerOwnsShoot(projectId, t.id))) photogHref = "/shoot";
+        } catch { /* keep the deep link on lookup hiccups */ }
+      }
       const href =
-        t.role === "PHOTOGRAPHER" ? `/shoot/${projectId}` : editorKey ? `/edit/${projectId}` : `/projects/${projectId}`;
+        t.role === "PHOTOGRAPHER" ? photogHref : editorKey ? `/edit/${projectId}` : `/projects/${projectId}`;
       const data = {
         taskType: "internal_instruction",
         title: `${authorName ?? "Team"} tagged you — ${street}`.slice(0, 120),

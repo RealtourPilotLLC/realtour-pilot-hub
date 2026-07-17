@@ -7,6 +7,15 @@ import type { NotifyTarget } from "@/lib/notify";
 const NEG = /\b(bad|terrible|awful|disappointed|unhappy|not happy|wrong|blurry|dark|reflection|issue|problem|redo|fix|mistake|poor|sloppy|rushed|late)\b/i;
 const POS = /\b(love|loved|great|amazing|awesome|perfect|beautiful|excellent|fantastic|wonderful|happy|impressed|stunning)\b/i;
 
+// Does this feedback text carry criticism, regardless of the star rating?
+// The creative-facing praise surfaces use this as a second gate: a 4-star
+// "love it, but the video was shaky — please redo" is POSITIVE by rating yet
+// must NOT render for the photographer (negative client feedback never reaches
+// creatives — Jordan reads it first and briefs them himself).
+export function hasNegativeCues(body: string | null | undefined): boolean {
+  return !!body && NEG.test(body);
+}
+
 function deriveSentiment(body: string, rating: number | null): "POSITIVE" | "NEUTRAL" | "NEGATIVE" {
   if (rating != null) return rating <= 2 ? "NEGATIVE" : rating === 3 ? "NEUTRAL" : "POSITIVE";
   if (NEG.test(body)) return "NEGATIVE";
@@ -104,7 +113,10 @@ export async function recordFeedback(opts: {
     const { notifyInApp } = await import("@/lib/notify");
     const targets: NotifyTarget[] = negative ? [{ roles: ["OWNER"] }] : [{ roles: ["OWNER", "ADMIN"] }];
     if (!negative && project.photographerId) {
-      targets.push({ roles: ["PHOTOGRAPHER"], userKey: `tm:${project.photographerId}` });
+      // Per-target href: photographers can't open /projects/<id> (the default
+      // below) — middleware bounces them and the praise evaporates. Their row
+      // deep-links the shoot page, where the client-praise card renders it.
+      targets.push({ roles: ["PHOTOGRAPHER"], userKey: `tm:${project.photographerId}`, href: `/shoot/${project.id}` });
     }
     await notifyInApp({
       kind: "client_feedback",

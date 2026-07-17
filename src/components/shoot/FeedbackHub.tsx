@@ -143,6 +143,28 @@ export function FeedbackHubView({ hub, readOnly }: { hub: FeedbackHub; readOnly:
         />
       </div>
 
+      {/* Recent client praise — the wins, right under the numbers. Rows arrive
+          creative-safe from getFeedbackHub (POSITIVE/NEUTRAL only, money-
+          scrubbed) — negative client feedback never reaches this page. */}
+      {hub.recentPraise.length > 0 && (
+        <div className="rounded-2xl border border-success/30 bg-success/5 p-4">
+          <h2 className="flex items-center gap-2 text-sm font-semibold">
+            <Star className="size-4 fill-current text-warning" /> What clients are saying
+          </h2>
+          <ul className="mt-2.5 space-y-2.5">
+            {hub.recentPraise.map((p, i) => (
+              <li key={i} className="text-sm leading-snug">
+                <p className="text-foreground/90">&ldquo;{p.body}&rdquo;</p>
+                <p className="mt-0.5 text-[11px] text-muted-2">
+                  {p.rating != null && <>{p.rating}/5 · </>}
+                  {p.authorName ?? "Client"} · {p.street} · {etFullDate(p.createdAt)}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Open feedback, grouped by shoot */}
       {hub.active.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-border bg-surface p-8 text-center">

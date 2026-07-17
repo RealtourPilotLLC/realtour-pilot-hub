@@ -40,11 +40,13 @@ const LUMA_TRACKER_URL = "https://portal.lumavisuals.co/";
 // Task types that carry a pre-written message (in `description`) ready to send.
 const PREDRAFTED = ["confirmation_text", "delivery_text"];
 
-// One checklist row for a QC (media_qa) task, parsed server-side from the task's
-// checklist JSON. Two kinds share this shape: auto-check EVIDENCE rows (category
-// "QC <x>" + the deliver row + the cull line — done state comes from Aryeo, not
-// Kyle, so they render non-interactive) and Kyle's manual failure-mode TICKS
-// (clickable → toggleTaskChecklistItem, and they gate the card's auto-close).
+// One checklist row, parsed server-side from the task's checklist JSON. Every
+// task type carries these (the guidance steps live on all types, not just QC).
+// On a QC (media_qa) task two kinds share this shape: auto-check EVIDENCE rows
+// (category "QC <x>" + the deliver row + the cull line — done state comes from
+// Aryeo, not Kyle, so they render non-interactive) and Kyle's manual
+// failure-mode TICKS (clickable → toggleTaskChecklistItem, and they gate the
+// card's auto-close). Every other type renders the flat "Steps" list.
 export type DeliverableStatus = { label: string; done: boolean };
 
 // The read-only "know this client" context shown under a QC checklist so QC
@@ -319,6 +321,70 @@ function QcClientStrip({ qcClient }: { qcClient?: QcClientContext | null }) {
   );
 }
 
+// The checklist on every NON-QC task type: a flat, compact "Steps" list. Same
+// one-tap tick as QcChecklist (optimistic flip, the server action reconciles;
+// ticking every step auto-completes the task, unticking a completed one reopens
+// it) — but none of QC's evidence/VIP/client partitioning, which is QC-only.
+function StepsChecklist({ taskId, items, interactive }: {
+  taskId: string; items: DeliverableStatus[]; interactive: boolean;
+}) {
+  // Optimistic local copy so a tick flips immediately; the server action reconciles.
+  const [local, setLocal] = useState(items);
+  const [busy, setBusy] = useState<number | null>(null);
+  // Keep in sync if the parent re-renders with fresh server data.
+  const itemsKey = items.map((i) => `${i.label}:${i.done ? 1 : 0}`).join("|");
+  const [lastKey, setLastKey] = useState(itemsKey);
+  if (itemsKey !== lastKey) { setLocal(items); setLastKey(itemsKey); }
+
+  const toggle = (index: number) => {
+    if (!interactive || busy !== null) return;
+    const before = local;
+    // Optimistic flip.
+    setLocal((prev) => prev.map((it, i) => (i === index ? { ...it, done: !it.done } : it)));
+    setBusy(index);
+    void (async () => {
+      try {
+        const r = await toggleTaskChecklistItem(taskId, index);
+        // Failure must not leave the tick lying: the server returns the real
+        // rows on a refused toggle (deleted task / drifted index) — adopt
+        // them; a thrown rejection reverts to the pre-flip state.
+        setLocal(r.ok ? r.items : r.items.length ? r.items : before);
+      } catch {
+        setLocal(before);
+      } finally {
+        setBusy(null);
+      }
+    })();
+  };
+
+  return (
+    <div>
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">Steps</div>
+      <ul className="space-y-0.5">
+        {local.map((it, i) => (
+          <li key={i}>
+            <button
+              type="button"
+              onClick={() => toggle(i)}
+              disabled={!interactive || busy !== null}
+              className={`flex w-full items-start gap-2 rounded-md px-1.5 py-1 text-left text-sm transition-colors ${interactive ? "hover:bg-surface-2" : "cursor-default"} ${it.done ? "text-muted" : "text-foreground/90"}`}
+            >
+              {busy === i ? (
+                <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin text-muted-2" />
+              ) : it.done ? (
+                <CheckSquare className="mt-0.5 size-4 shrink-0 text-success" />
+              ) : (
+                <Square className="mt-0.5 size-4 shrink-0 text-muted-2" />
+              )}
+              <span className={it.done ? "line-through decoration-muted-2/60" : ""}>{it.label}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // editorView: the viewer is an EDITOR — their role can't open /projects or
 // /clients (those redirect non-admins home), so the card's links point at their
 // own surfaces instead: the project goes to /edit/<id> (the editor brief), and
@@ -498,6 +564,13 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
               admin-only, and it's not their surface). */}
           {task.taskType === "media_qa" && task.deliverables.length > 0 && (
             <QcChecklist taskId={task.id} items={task.deliverables} qcClient={task.qcClient} interactive={!editorView && !done} />
+          )}
+
+          {/* Every other type: the checklist as a flat "Steps" list — same tick
+              action (all-ticked auto-completes; unticking reopens), same
+              interactivity rule as QC. */}
+          {task.taskType !== "media_qa" && task.deliverables.length > 0 && (
+            <StepsChecklist taskId={task.id} items={task.deliverables} interactive={!editorView && !done} />
           )}
 
           {/* The actual inbound message (not for predrafted-send tasks — those show

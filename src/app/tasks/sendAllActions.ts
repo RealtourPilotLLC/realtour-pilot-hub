@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth/guards";
+import { clientTextWhere } from "@/lib/clientTexts";
 
 // ---------------------------------------------------------------------------
 // "Send all" for the drafted client texts (confirmation + delivery). The hub
@@ -23,7 +24,7 @@ export type DraftedText = {
   body: string;
   /** Why this row can't send (no phone / invalid) — shown, excluded from batch. */
   blocked: string | null;
-  /** Confirmation for a shoot that already started — loads UNTICKED with a warning. */
+  /** Confirmation for a shoot that already started (or has no date yet) — loads UNTICKED with a warning. */
   warnStale: boolean;
   dueAt: string | null;
   overdue: boolean;
@@ -36,18 +37,10 @@ export async function listDraftedTexts(): Promise<{ ok: boolean; message?: strin
     return { ok: false, message: e instanceof Error ? e.message : "Not allowed." };
   }
 
-  // Due by END OF TODAY (ET) only — confirmation texts exist from booking day
-  // with dueAt = shoot-1d, and "send all" must not blast a confirmation for a
-  // shoot that's still weeks out.
-  const { etDayStartUtc } = await import("@/lib/datetime");
-  const endOfTodayEt = new Date(etDayStartUtc(new Date()).getTime() + 24 * 3600_000 - 1);
+  // ONE membership rule for every client-text surface (panel, badge, /today
+  // rollup, this batch) — see clientTextWhere for why each clause exists.
   const tasks = await prisma.smartTask.findMany({
-    where: {
-      taskType: { in: ["confirmation_text", "delivery_text"] },
-      status: { notIn: ["COMPLETED", "CANCELLED"] },
-      projectId: { not: null },
-      OR: [{ dueAt: { lte: endOfTodayEt } }, { dueAt: null }],
-    },
+    where: clientTextWhere(),
     select: { id: true, taskType: true, projectId: true, dueAt: true },
     orderBy: [{ taskType: "asc" }, { dueAt: "asc" }],
   });
@@ -95,8 +88,14 @@ export async function listDraftedTexts(): Promise<{ ok: boolean; message?: strin
       blocked,
       // "Confirming your shoot at 10 AM" sent at 2pm reads insane — the
       // per-card surface warns about this; the BATCH (one tap, many texts)
-      // must too, and load these unticked.
-      warnStale: t.taskType === "confirmation_text" && !!p.shootDate && p.shootDate.getTime() < Date.now(),
+      // must too, and load these unticked. NO shoot date is just as unsendable:
+      // the draft has no time to confirm, so it warns + loads unticked too.
+      // A null dueAt is unsendable-by-default too: the task minted before the
+      // shoot was scheduled, and the reconciler may not have caught up with a
+      // freshly-set shootDate yet — one tap on "Send all" must never fire a
+      // confirmation days early. (The Outbox panel warns on the same signal.)
+      warnStale:
+        t.taskType === "confirmation_text" && (!t.dueAt || !p.shootDate || p.shootDate.getTime() < Date.now()),
       dueAt: t.dueAt?.toISOString() ?? null,
       overdue: !!t.dueAt && t.dueAt.getTime() < Date.now(),
     });

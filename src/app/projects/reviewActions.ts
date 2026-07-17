@@ -44,6 +44,11 @@ function refresh(projectId: string) {
 // Who's writing — authorKey follows the MediaNote convention ("owner" |
 // "tm:<teamMemberId>" | "editor:<key>"). Sessionless local dev (enforcement
 // off, no cookie) falls back to the owner so the room still works pre-login.
+// A photographer whose AppUser row hasn't linked its teamMemberId yet resolves
+// through the live roster-email fallback (same one the page guards use) — and
+// no signed-in NON-owner is ever aliased to "owner": that key is an identity
+// in the thread-reply notifier (it suppresses Jordan's ping and can self-ping
+// the addressee), so an unresolvable user gets a neutral key instead.
 async function sessionAuthor(): Promise<{ authorKey: string; authorName: string | null }> {
   const u = await getCurrentUser().catch(() => null);
   if (!u) return { authorKey: "owner", authorName: "Jordan" };
@@ -51,7 +56,14 @@ async function sessionAuthor(): Promise<{ authorKey: string; authorName: string 
   if (u.role === "OWNER") return { authorKey: "owner", authorName: name };
   if (u.teamMemberId) return { authorKey: `tm:${u.teamMemberId}`, authorName: name };
   if (u.editorKey) return { authorKey: `editor:${u.editorKey}`, authorName: name };
-  return { authorKey: "owner", authorName: name };
+  if (u.role === "PHOTOGRAPHER") {
+    try {
+      const { photographerMemberId } = await import("@/lib/shoot");
+      const mid = await photographerMemberId(u);
+      if (mid) return { authorKey: `tm:${mid}`, authorName: name };
+    } catch { /* fall through to the neutral key */ }
+  }
+  return { authorKey: `user:${u.id}`, authorName: name };
 }
 
 // Whose capture feedback a PHOTOGRAPHER-lane note is: the project's assigned
@@ -71,7 +83,14 @@ async function projectPhotographerId(projectId: string): Promise<string | null> 
 // Owner/admin, OR the photographer the ROOT note is addressed to (they may
 // only touch their own capture feedback). Mirrors requireShootAccess: no-op
 // until enforcement is on, fail-closed after, "view as" is read-only.
-async function requireNoteAccess(rootPhotographerId: string | null): Promise<string | null> {
+// `allowMentionedRootId` widens the REPLY path only: a photographer @-tagged
+// anywhere on that thread got a ping saying "reply on the note" — the door has
+// to open for them. Status/acknowledge callers must NOT pass it, so a mention
+// never lets someone flip another photographer's fix status.
+async function requireNoteAccess(
+  rootPhotographerId: string | null,
+  allowMentionedRootId?: string,
+): Promise<string | null> {
   if (!authEnforced()) return null;
   const u = await getCurrentUser();
   if (!u) throw new Error("Please sign in to do that.");
@@ -81,6 +100,16 @@ async function requireNoteAccess(rootPhotographerId: string | null): Promise<str
     const { photographerMemberId } = await import("@/lib/shoot");
     const mid = await photographerMemberId(u);
     if (mid && rootPhotographerId && mid === rootPhotographerId) return mid;
+    if (mid && allowMentionedRootId) {
+      // isMentionedIn runs the SAME roster-aware matcher that minted the ping,
+      // so the guard admits exactly the people who were told to come here.
+      const thread = await prisma.mediaNote.findMany({
+        where: { OR: [{ id: allowMentionedRootId }, { parentId: allowMentionedRootId }] },
+        select: { body: true },
+      });
+      const { isMentionedIn } = await import("@/lib/mentions");
+      if (await isMentionedIn(thread.map((n) => n.body), mid)) return mid;
+    }
   }
   throw new Error("You don't have access to do that.");
 }
@@ -136,7 +165,7 @@ export async function addMediaNote(input: {
     },
   });
   const { notifyMentions } = await import("@/lib/mentions");
-  await notifyMentions({ text: body, projectId: input.projectId, authorName, context: "a review note" });
+  await notifyMentions({ text: body, projectId: input.projectId, authorName, context: "a review note", noteId: note.id });
   refresh(input.projectId);
   return { ok: true, id: note.id };
 }
@@ -156,13 +185,15 @@ export async function replyMediaNote(noteId: string, body: string): Promise<{ ok
   if (!root) return { ok: false, message: "That note no longer exists." };
 
   try {
-    await requireNoteAccess(root.photographerId);
+    // Replies also open to photographers @-tagged on the thread — their
+    // mention ping says "reply on the note", so the guard must let them.
+    await requireNoteAccess(root.photographerId, root.id);
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
   const { authorKey, authorName } = await sessionAuthor();
 
-  await prisma.mediaNote.create({
+  const reply = await prisma.mediaNote.create({
     data: {
       projectId: root.projectId,
       assetUrl: root.assetUrl,
@@ -178,8 +209,27 @@ export async function replyMediaNote(noteId: string, body: string): Promise<{ ok
       parentId: root.id,
     },
   });
-  const { notifyMentions } = await import("@/lib/mentions");
-  await notifyMentions({ text, projectId: root.projectId, authorName, context: "a note comment" });
+  // Reply is saved — everything below is best-effort notification fan-out.
+  // Mentions ring first (they carry the note deep-link); whoever they reached
+  // is excluded from the thread-participant ping so nobody hears it twice.
+  const { notifyMentions, notifyThreadReply } = await import("@/lib/mentions");
+  const excludeTmIds = await notifyMentions({
+    text,
+    projectId: root.projectId,
+    authorName,
+    context: "a note comment",
+    noteId: root.id,
+  });
+  await notifyThreadReply({
+    rootId: root.id,
+    replyId: reply.id,
+    replierKey: authorKey,
+    replierName: authorName,
+    text,
+    projectId: root.projectId,
+    surface: "gallery",
+    excludeTmIds,
+  });
   refresh(root.projectId);
   return { ok: true };
 }

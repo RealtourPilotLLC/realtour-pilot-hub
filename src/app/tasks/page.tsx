@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/user";
 import { canAccess } from "@/lib/auth/access";
 import { prisma } from "@/lib/prisma";
+import { clientTextWhere } from "@/lib/clientTexts";
 import { TasksTabs, type TasksTab } from "@/components/tasks/TasksTabs";
 import { TodayView, todayCardCount } from "@/components/tasks/TodayView";
 import { BoardView, boardOpenCount } from "@/components/tasks/BoardView";
@@ -34,23 +35,9 @@ export default async function TasksHubPage({ searchParams }: {
     boardOnly ? 0 : todayCardCount(),
     boardOpenCount(),
     boardOnly ? 0 : doneTodayCount(),
-    // Drafted client texts DUE BY END OF TODAY (ET) — same filter as the panel,
-    // so the count never advertises confirmations for shoots weeks out.
-    boardOnly
-      ? 0
-      : import("@/lib/datetime").then(({ etDayStartUtc }) =>
-          prisma.smartTask.count({
-            where: {
-              taskType: { in: ["confirmation_text", "delivery_text"] },
-              status: { notIn: ["COMPLETED", "CANCELLED"] },
-              projectId: { not: null },
-              OR: [
-                { dueAt: { lte: new Date(etDayStartUtc(new Date()).getTime() + 24 * 3600_000 - 1) } },
-                { dueAt: null },
-              ],
-            },
-          }),
-        ),
+    // Drafted client texts — the ONE shared membership rule (clientTextWhere),
+    // so this badge can never advertise texts the panel/batch won't show.
+    boardOnly ? 0 : prisma.smartTask.count({ where: clientTextWhere() }),
   ]);
   const tabs = boardOnly ? null : (
     <div className="flex flex-wrap items-center gap-2">

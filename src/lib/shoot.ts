@@ -1,6 +1,8 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etDayStartUtc, etTime } from "@/lib/datetime";
+import { slugForName } from "@/lib/assignees";
+import { clip, stripMoneySentences } from "@/lib/text";
 import { parseClientProfile, type ClientProfile } from "@/lib/clientProfile";
 import { segmentMeta, type SegmentMeta } from "@/lib/segments";
 import { phoneKey } from "@/lib/integrations/openphone";
@@ -531,4 +533,59 @@ export async function listMyShoots(memberId: string | null): Promise<MyShootRow[
       photographerColor: p.photographer?.avatarColor ?? null,
     };
   });
+}
+
+export type PhotographerTaskRow = {
+  id: string;
+  title: string;
+  summary: string | null;
+  taskType: string;
+  priority: string;
+  dueAtISO: string | null;
+  projectId: string | null;
+  street: string | null;
+};
+
+// The photographer's OWN open tasks, for the "Your tasks" card on My Shoots —
+// mention pings, work moved onto their plate, callbacks. Tasks address people
+// by assignedKey (first-name slug, src/lib/assignees.ts), so resolve the
+// roster name first; an unresolvable member fails CLOSED to no tasks.
+// Money scrub is server-side and unconditional: task text is minted from client
+// comms and can carry pricing, and description/sourceDetail (the raw message /
+// URL) never cross to the field at all.
+export async function listPhotographerTasks(memberId: string): Promise<PhotographerTaskRow[]> {
+  if (!memberId) return [];
+  const tm = await prisma.teamMember.findUnique({ where: { id: memberId }, select: { name: true } });
+  const key = tm?.name ? slugForName(tm.name) : "";
+  if (!key) return [];
+  const fetched = await prisma.smartTask.findMany({
+    where: { assignedKey: key, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    orderBy: [{ dueAt: { sort: "asc", nulls: "last" } }, { createdAt: "desc" }],
+    take: 30,
+    select: {
+      id: true, title: true, summary: true, taskType: true, priority: true,
+      dueAt: true, projectId: true, propertyAddress: true,
+    },
+  });
+  // Priority is a string enum — DB "asc" ranks URGENT LAST alphabetically, so
+  // an urgent undated task could fall off the take-10 card while LOW rows
+  // rendered. Rank in JS (same order every other surface uses), then cap.
+  const PRIORITY_RANK: Record<string, number> = { URGENT: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+  const rows = [...fetched]
+    .sort((a, b) => {
+      const due = (a.dueAt?.getTime() ?? Infinity) - (b.dueAt?.getTime() ?? Infinity);
+      if (due !== 0) return due;
+      return (PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9);
+    })
+    .slice(0, 10);
+  return rows.map((t) => ({
+    id: t.id,
+    title: stripMoneySentences(t.title) || "Task for you",
+    summary: clip(stripMoneySentences(t.summary ?? ""), 200) || null,
+    taskType: t.taskType,
+    priority: t.priority,
+    dueAtISO: t.dueAt?.toISOString() ?? null,
+    projectId: t.projectId,
+    street: t.propertyAddress ? streetOf(t.propertyAddress) || null : null,
+  }));
 }

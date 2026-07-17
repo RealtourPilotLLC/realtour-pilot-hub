@@ -53,8 +53,24 @@ export async function sendEmailReply(
         .updateMany({ where: { id: task.id }, data: { status: "OPEN", completedAt: null } })
         .catch(() => {});
     }
+    if (sent.needsReconnect) {
+      // Only Jordan can fix a missing send scope (/connections is owner-only):
+      // ping him + mint the reconnect task, and don't tell an ADMIN to go do
+      // something they can't open (audit finding #41). AWAITED — a floating
+      // write gets killed by the serverless freeze right after this action
+      // returns, which would silently lose the only ping this fix exists for.
+      const { reportGmailSendBroken } = await import("@/lib/gmailHealth");
+      await reportGmailSendBroken(`reply re: ${task.client?.name ?? "email task"}`, mailbox);
+      const { getCurrentUser } = await import("@/lib/auth/user");
+      const me = await getCurrentUser().catch(() => null);
+      if (me && me.realRole !== "OWNER") {
+        return { ok: false, message: "Gmail can't send yet — Jordan's been pinged to reconnect it. Reply from Gmail directly for now." };
+      }
+    }
     return { ok: false, message: sent.error };
   }
+  // A send went through → this mailbox's scope is granted; retire its task.
+  await (await import("@/lib/gmailHealth")).reportGmailSendWorking(mailbox);
 
   // Comms memory + project trail + close the to-do (same shape as a manual
   // reply the poller would have detected).

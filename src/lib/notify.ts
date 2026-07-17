@@ -75,18 +75,26 @@ export type NotifyTarget = { roles: Role[]; userKey?: string; href?: string }; /
 // doesn't wake anyone); only fires when the bell row was NEWLY created, so a
 // deduped re-announcement can't re-text.
 // ---------------------------------------------------------------------------
-const SMS_KINDS = new Set(["appointment_change", "order_canceled", "mention", "review_feedback", "cull", "raws_missing", "task_assigned"]);
+const SMS_KINDS = new Set([
+  "appointment_change", "order_canceled", "mention", "review_feedback", "cull", "raws_missing", "task_assigned",
+  // Someone answered on a note thread the photographer is part of — their
+  // question finally has a reply; reach the field. (feedback_shared stays
+  // NON-SMS: the share-text flow already sends its own text.)
+  "note_reply",
+]);
 // The video editors (Kim/Remar) have no push either, and the whole point of the
 // editor platform is that raws-landed / a revision / a review-back actually
 // REACH them — in Manila. These kinds bridge an `editor:<key>` bell row to their
 // channel (Slack DM if we have their id, else SMS via their TeamMember phone),
 // gated by quiet hours in THEIR timezone (see channelForEditor).
 const EDITOR_CHANNEL_KINDS = new Set([
-  "raws_landed", "revision_raised", "mention", "edit_finished",
+  "raws_landed", "revision_raised", "revision_resolved", "mention", "edit_finished",
   // Review Room round-trips: changes requested on a cut / cut approved.
   "review_changes", "review_approved",
   // Owner/admin manually put a job in this editor's queue (/editing → Add a job).
   "edit_assigned",
+  // A reply landed on a note thread this editor is part of.
+  "note_reply",
 ]);
 
 // Quiet hours in a SPECIFIC timezone (7:00–22:00 local). Photographer texting
@@ -118,6 +126,10 @@ async function smsPhotographer(teamMemberId: string, title: string, href: string
   }
 }
 
+// What actually happened when we tried to reach an editor — callers use this
+// to log the truth ("texted" vs "relayed to ops") instead of assuming Slack.
+export type EditorChannel = "slack" | "sms" | "relay" | "quiet" | "none";
+
 // Reach an editor addressed by `editor:<key>` (Kim/Remar) on THEIR channel:
 //   · Slack DM if the roster carries a slackUserId (preferred — same path as
 //     Kyle's DM, no phone dependency, no quiet-hours phone leak);
@@ -125,18 +137,19 @@ async function smsPhotographer(teamMemberId: string, title: string, href: string
 //     hers — the lookup no-ops cleanly when absent).
 // Quiet hours are checked in the EDITOR's timezone (default Asia/Manila) so an
 // offshore editor isn't pinged at 3am. Title + deep link only (money clamp —
-// same as photographer SMS). Best-effort; never throws.
-async function channelForEditor(editorKey: string, title: string, href: string): Promise<void> {
+// same as photographer SMS). Best-effort; never throws — returns which channel
+// actually carried the ping.
+async function channelForEditor(editorKey: string, title: string, href: string): Promise<EditorChannel> {
   try {
     const { editorMeta, editorTeamMemberId, DEFAULT_EDITOR_TZ } = await import("@/lib/editors");
     const meta = editorMeta(editorKey);
-    if (!meta) return;
-    if (!withinTextingHours(meta.tz ?? DEFAULT_EDITOR_TZ)) return; // bell row still landed
+    if (!meta) return "none";
+    if (!withinTextingHours(meta.tz ?? DEFAULT_EDITOR_TZ)) return "quiet"; // bell row still landed
     const link = `${appBase()}${href}`;
     // Prefer a Slack DM when we have the id (opening the bot's DM with them).
     if (meta.slackUserId) {
-      await slackNotify(meta.slackUserId, `⚙️ RealTour Hub: ${title}\n${link}`);
-      return;
+      const ok = await slackNotify(meta.slackUserId, `⚙️ RealTour Hub: ${title}\n${link}`);
+      return ok ? "slack" : "none";
     }
     // Fall back to SMS via their TeamMember phone.
     const tmId = await editorTeamMemberId(editorKey);
@@ -146,18 +159,20 @@ async function channelForEditor(editorKey: string, title: string, href: string):
       // NO reachable channel (no Slack id, no phone — e.g. Remar today). The
       // old silent return meant editor-addressed work landed NOWHERE a human
       // saw (audit critical) — make it loud so ops relays it by hand.
-      await opsAlert(`⚠️ Couldn't reach ${meta.name} (no Slack/phone on file) — relay this: ${title} → ${link}`);
-      return;
+      const relayed = await opsAlert(`⚠️ Couldn't reach ${meta.name} (no Slack/phone on file) — relay this: ${title} → ${link}`);
+      return relayed ? "relay" : "none";
     }
     const { OpenPhone, defaultOpenPhoneNumber, phoneKey } = await import("@/lib/integrations/openphone");
     const from = await defaultOpenPhoneNumber();
-    if (!from) return;
+    if (!from) return "none";
     // Editors are offshore — keep an explicit + international number as-is; only
     // bare 10-digit US numbers get the +1 prefix.
     const to = phone.startsWith("+") ? phone : `+1${phoneKey(phone)}`;
     await OpenPhone.sendMessage(from, to, `⚙️ RealTour Hub: ${title}\n${link}`);
+    return "sms";
   } catch (e) {
     console.warn("channelForEditor failed", e);
+    return "none";
   }
 }
 
@@ -168,7 +183,8 @@ export async function notifyInApp(n: {
   href: string; // default deep link; a target's href wins for its row
   targets: NotifyTarget[]; // ONE Notification row per target
   dedupeKey?: string; // suffixed "-0","-1",… per target index so multi-target events insert every row
-}): Promise<void> {
+}): Promise<{ bridged: Array<{ userKey: string; channel: EditorChannel }> }> {
+  const bridged: Array<{ userKey: string; channel: EditorChannel }> = [];
   try {
     const title = n.title.slice(0, 90);
     for (let i = 0; i < n.targets.length; i++) {
@@ -206,7 +222,16 @@ export async function notifyInApp(n: {
         // …and bridge person-addressed EDITOR rows (editor:<key>) to Slack/SMS so
         // raws-landed / a revision / a review-back reaches Kim/Remar in Manila.
         if (EDITOR_CHANNEL_KINDS.has(n.kind) && t.userKey?.startsWith("editor:") && roles.includes("EDITOR")) {
-          await channelForEditor(t.userKey.slice(7), title, href);
+          const channel = await channelForEditor(t.userKey.slice(7), title, href);
+          bridged.push({ userKey: t.userKey, channel });
+        }
+        // A NEW editor-addressed bell row with no login to see it → nudge Jordan
+        // once (deduped inside) to send that editor their Hub invite.
+        if (t.userKey?.startsWith("editor:")) {
+          try {
+            const { ensureEditorLoginNudge } = await import("@/lib/tasks");
+            await ensureEditorLoginNudge(t.userKey.slice(7));
+          } catch { /* the nudge must never break the bell */ }
         }
       } catch (e) {
         // Unique violation on dedupeKey = this event was already announced —
@@ -220,6 +245,7 @@ export async function notifyInApp(n: {
   } catch (e) {
     console.warn("notifyInApp failed", n.kind, e);
   }
+  return { bridged };
 }
 
 // Ping the team about a just-created task that shouldn't wait for a hub visit

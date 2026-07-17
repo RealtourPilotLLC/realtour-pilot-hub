@@ -239,12 +239,15 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
   // no client match, so the client-scoped close above never reaches them
   // (audit: phone-lead tasks could never auto-close).
   if (!match && (direction.toLowerCase().startsWith("out") || fromUs)) {
-    const toRaw = Array.isArray(data.to) ? (data.to[0] as string) : (data.to as string) || "";
-    const toKey = phoneKey(toRaw);
-    const counterpart = fromUs ? toKey : fromPhone;
-    if (counterpart.length === 10 && !ourNumbers.has(counterpart)) {
-      const answeredCall = isCall && type === "call.completed" && (!!data.answeredAt || Number(data.duration ?? 0) > 0);
-      if (!isCall || answeredCall) {
+    // EVERY external recipient counts — a group text's lead can sit anywhere in
+    // the `to` list (the old to[0]-only pick missed them; a comma-joined string
+    // resolved to whichever number phoneKey's last-10 happened to keep).
+    const counterparts = fromUs
+      ? [...new Set(collectPhones(data.to).map((p) => phoneKey(p)).filter((k) => k.length === 10 && !ourNumbers.has(k)))]
+      : fromPhone.length === 10 && !ourNumbers.has(fromPhone) ? [fromPhone] : [];
+    const answeredCall = isCall && type === "call.completed" && (!!data.answeredAt || Number(data.duration ?? 0) > 0);
+    if (!isCall || answeredCall) {
+      for (const counterpart of counterparts) {
         await prisma.smartTask
           .updateMany({
             where: {

@@ -1,5 +1,8 @@
 import { redirect } from "next/navigation";
-import { listMyShoots, photographerMemberId, getShootPhotographer } from "@/lib/shoot";
+import {
+  listMyShoots, listPhotographerTasks, photographerMemberId, getShootPhotographer,
+  type PhotographerTaskRow,
+} from "@/lib/shoot";
 import { getNextShootFocus, type NextShootFocus } from "@/lib/photographerFeedback";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
@@ -33,11 +36,18 @@ export default async function MyShootsPage({
     ? ((await photographerMemberId(user)) ?? "__none__")
     : viewAs?.id ?? null;
 
-  // The shoots list + the "work on this next shoot" reminder (that photographer's
-  // open capture notes — only meaningful when scoped to one person), in parallel.
-  const [rows, focus]: [Awaited<ReturnType<typeof listMyShoots>>, NextShootFocus | null] = await Promise.all([
+  // The shoots list + the "work on this next shoot" reminder + the person's own
+  // open tasks (both only meaningful when scoped to one person — covers the
+  // photographer themselves AND an owner/admin ?as= preview), in parallel.
+  const personScoped = scoped && scoped !== "__none__" ? scoped : null;
+  const [rows, focus, tasks]: [
+    Awaited<ReturnType<typeof listMyShoots>>,
+    NextShootFocus | null,
+    PhotographerTaskRow[],
+  ] = await Promise.all([
     listMyShoots(scoped),
-    scoped && scoped !== "__none__" ? getNextShootFocus(scoped) : Promise.resolve(null),
+    personScoped ? getNextShootFocus(personScoped) : Promise.resolve(null),
+    personScoped ? listPhotographerTasks(personScoped) : Promise.resolve([]),
   ]);
 
   // Owner/admin (not already scoped): their own photographer id for "only mine".
@@ -65,6 +75,10 @@ export default async function MyShootsPage({
           viewAs={viewAs}
           focus={focus}
           focusHref={viewAs ? `/shoot/feedback?as=${viewAs.id}` : "/shoot/feedback"}
+          tasks={tasks}
+          // Previews (?as= and owner "view as") are look-don't-touch — the done
+          // button would fail requireTaskAccess anyway, so don't offer it.
+          tasksReadOnly={Boolean(viewAs) || Boolean(user?.impersonating)}
         />
       </div>
     </div>

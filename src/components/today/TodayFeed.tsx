@@ -214,6 +214,17 @@ function ActionCard({ card, assignees, onGone }: {
     setTimeout(() => setCopied(false), 1500);
   };
 
+  // Copy what's typed in the composer — the way out of the dead-ends where the
+  // hub can't send (no phone on file / unresolvable email thread): copy the
+  // reply and send it from Gmail/OpenPhone by hand. Reuses `copied` safely — a
+  // card is either verb "send" (copyDraft) or reply/do (copyCompose), never both.
+  const copyCompose = async () => {
+    if (!draftText.trim()) return;
+    await navigator.clipboard.writeText(draftText).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
   return (
     <div className="rounded-2xl border border-border bg-surface p-4">
       {/* Title row */}
@@ -330,8 +341,10 @@ function ActionCard({ card, assignees, onGone }: {
                   <Btn onClick={() => setCompose(true)}>Write my own</Btn>
                 </>
               )}
+              {/* Same gate as the revision branch: no resolved recipient, no send
+                  (emailTo is briefly null while it resolves — the button wakes up). */}
               {compose && isEmail && (
-                <Btn primary onClick={sendEmail} busy={busy} disabled={!draftText.trim()}>
+                <Btn primary onClick={sendEmail} busy={busy} disabled={!draftText.trim() || !emailTo}>
                   <Send className="size-4" /> Send email
                 </Btn>
               )}
@@ -340,7 +353,14 @@ function ActionCard({ card, assignees, onGone }: {
                   <Send className="size-4" /> Send
                 </Btn>
               )}
-              {compose && !isEmail && !card.hasPhone && <span className="text-[11px] text-warning">No phone on file — reply from Gmail/OpenPhone directly</span>}
+              {/* Copy-out for the compose dead-ends (and a plain convenience otherwise). */}
+              {compose && (
+                <Btn onClick={copyCompose} disabled={!draftText.trim()}>{copied ? "Copied ✓" : <><Copy className="size-4" /> Copy</>}</Btn>
+              )}
+              {compose && isEmail && !emailTo && (
+                <span className="text-[11px] text-warning">Can&rsquo;t resolve the email thread — reply from Gmail directly — Copy your reply and send it from there.</span>
+              )}
+              {compose && !isEmail && !card.hasPhone && <span className="text-[11px] text-warning">No phone on file — reply from Gmail/OpenPhone directly — Copy your reply and send it from there.</span>}
               {card.clientId && (
                 <Link href={`/clients/${card.clientId}`} className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">
                   Open client <ArrowRight className="size-3" />
@@ -377,16 +397,20 @@ function ActionCard({ card, assignees, onGone }: {
                   <Send className="size-4" /> Send email
                 </Btn>
               )}
-              {isRevision && compose && isEmail && !emailTo && (
-                <span className="text-[11px] text-warning">Can&rsquo;t resolve the email thread — reply from Gmail directly</span>
-              )}
               {isRevision && compose && !isEmail && card.hasPhone && (
                 <Btn primary onClick={sendReply} busy={busy} disabled={!draftText.trim()}>
                   <Send className="size-4" /> Send
                 </Btn>
               )}
+              {/* Copy-out for the compose dead-ends (and a plain convenience otherwise). */}
+              {isRevision && compose && (
+                <Btn onClick={copyCompose} disabled={!draftText.trim()}>{copied ? "Copied ✓" : <><Copy className="size-4" /> Copy</>}</Btn>
+              )}
+              {isRevision && compose && isEmail && !emailTo && (
+                <span className="text-[11px] text-warning">Can&rsquo;t resolve the email thread — reply from Gmail directly — Copy your reply and send it from there.</span>
+              )}
               {isRevision && compose && !isEmail && !card.hasPhone && (
-                <span className="text-[11px] text-warning">No phone on file — reply from Gmail/OpenPhone directly</span>
+                <span className="text-[11px] text-warning">No phone on file — reply from Gmail/OpenPhone directly — Copy your reply and send it from there.</span>
               )}
               {card.projectId && (
                 <Link href={`/projects/${card.projectId}`} className="inline-flex items-center gap-1 rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground">

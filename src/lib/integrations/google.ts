@@ -44,10 +44,55 @@ export async function notifyOwnerEmail(subject: string, body: string): Promise<b
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ raw }),
     });
+    // 403 = the token can read but not send (scope missing) — silently
+    // returning false here left every owner notification vanishing with no
+    // trace (finding #41). Route it to the one person who can reconnect.
+    // AWAITED (still never-throws): a floating write dies with the serverless
+    // freeze right after the caller returns, silently losing the ping.
+    if (res.status === 403) {
+      await import("@/lib/gmailHealth")
+        .then(({ reportGmailSendBroken }) => reportGmailSendBroken("owner notification: " + subject.slice(0, 60), acct.email))
+        .catch(() => {});
+    } else if (res.ok) {
+      await import("@/lib/gmailHealth")
+        .then(({ reportGmailSendWorking }) => reportGmailSendWorking(acct.email))
+        .catch(() => {});
+    }
     return res.ok;
   } catch {
     return false;
   }
+}
+
+// Can each connected mailbox SEND (not just read)? Checks the live token's
+// granted scopes via Google's read-only tokeninfo endpoint — the stored scope
+// list can lie (the user can untick send on the consent screen), the token
+// can't. null = couldn't check (network/refresh failure), distinct from "no".
+// Never logs or returns token values.
+export async function gmailSendHealth(): Promise<Array<{ email: string; canSend: boolean | null }>> {
+  const accounts = await gmailAccounts();
+  const out: Array<{ email: string; canSend: boolean | null }> = [];
+  for (const acct of accounts) {
+    try {
+      const token = await accessTokenFor(acct.refreshToken);
+      const res = await fetch(
+        `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(token)}`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) {
+        out.push({ email: acct.email, canSend: null });
+        continue;
+      }
+      const info = (await res.json().catch(() => ({}))) as { scope?: string };
+      out.push({
+        email: acct.email,
+        canSend: typeof info.scope === "string" ? info.scope.includes("gmail.send") : null,
+      });
+    } catch {
+      out.push({ email: acct.email, canSend: null });
+    }
+  }
+  return out;
 }
 
 // Send a real threaded REPLY from one of our mailboxes — the human-reviewed
@@ -664,6 +709,9 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
             // the title; assigning to "luma" hid it from every human surface.
             assignedKey: null,
             clientId: matchedClient?.id ?? null,
+            // A finished edit is definitionally about an ALREADY-SHOT job —
+            // never the client's upcoming shoot, so no mostRelevantProject
+            // here: most-recent-overall is the job whose edit was in flight.
             projectId: lumaProject?.id ?? matchedClient?.projects[0]?.id ?? null,
             dedupeKey: key,
           };
@@ -695,7 +743,7 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
         // within the sender's OWN orders; otherwise match it GLOBALLY (a coordinator
         // or executive assistant emailing about another agent's property) and route
         // to THAT property's order + owner, not the sender's most-recent job.
-        const { findClientProjectByText, findProjectByText } = await import("@/lib/contacts");
+        const { findClientProjectByText, findProjectByText, mostRelevantProject } = await import("@/lib/contacts");
         let resolvedClientId: string | null = senderClient?.id ?? null;
         let resolvedClientName: string | null = senderClient?.name ?? null;
         let project: { id: string; title: string; status: string } | null = null;
@@ -717,7 +765,19 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
             resolvedClientName = clients.find((c) => c.id === gp.clientId)?.name ?? null;
           }
         }
-        if (!project && senderClient) project = senderClient.projects[0] ?? null;
+        // No street named anywhere → the sender's most RELEVANT job (next
+        // upcoming shoot, else newest active, else newest overall) — not the
+        // most recent overall, which pinned new asks to months-old deliveries.
+        // EXCEPT a revision-shaped message: "brighten the kitchen photos" is
+        // about the newest delivered/in-review job, and the DELIVERED_ISH
+        // gates downstream silently drop the revision if we hand them the
+        // client's upcoming shoot instead.
+        if (!project && senderClient) {
+          const { classifyComm } = await import("@/lib/comms");
+          const { mostRecentDeliveredIsh } = await import("@/lib/contacts");
+          project = classifyComm(text).isRevision ? await mostRecentDeliveredIsh(senderClient.id) : null;
+          if (!project) project = await mostRelevantProject(senderClient.id);
+        }
 
         // Comms memory: log EVERY inbound human email so the Hub can recall it —
         // even answered ones and leads. Unknown senders on info@ (Jordan's
@@ -758,6 +818,9 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
                 propertyAddress: project.title,
                 note: text,
                 source: "gmail",
+                // Carry the thread so the revision's email-ack path can reply
+                // in-thread (a NULL sourceDetail makes sendEmailReply reject).
+                threadRef,
               });
               return raised ? 1 : 0;
             }

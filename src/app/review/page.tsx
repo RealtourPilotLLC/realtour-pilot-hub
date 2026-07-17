@@ -156,6 +156,11 @@ export default async function ReviewRoomPage() {
                         <span className="text-xs text-muted">{m.label}</span>
                       </div>
                       <span className="shrink-0 text-xs">
+                        {f.awaitingReply > 0 && (
+                          <span className="mr-2 rounded-md bg-warning/10 px-1.5 py-0.5 text-[11px] font-medium text-warning">
+                            {f.awaitingReply} unanswered {f.awaitingReply === 1 ? "reply" : "replies"}
+                          </span>
+                        )}
                         {f.open > 0 && <span className="font-medium text-brand">{f.open} open</span>}
                         {f.open > 0 && f.awaitingReReview > 0 && <span className="text-muted-2"> · </span>}
                         {f.awaitingReReview > 0 && <span className="font-medium text-success">{f.awaitingReReview} fixed</span>}

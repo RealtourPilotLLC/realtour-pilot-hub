@@ -133,7 +133,7 @@ export async function setSmartTaskStatus(taskId: string, status: string) {
   if (updated.count === 0) return; // task no longer exists — no-op instead of throw
   const t = await prisma.smartTask.findUnique({
     where: { id: taskId },
-    select: { projectId: true, taskType: true, checklist: true, assignedKey: true },
+    select: { projectId: true, taskType: true, checklist: true, assignedKey: true, dedupeKey: true, title: true, propertyAddress: true },
   });
   // Completing the QC card via the status button (not the checklist) must still
   // write the QcRecord — this was the third no-record completion path the July
@@ -164,8 +164,41 @@ export async function setSmartTaskStatus(taskId: string, status: string) {
     revalidatePath("/pipeline");
     revalidatePath("/");
   }
+  // Closing an @mention companion task rings the TAGGER's bell (bell-only —
+  // "mention_done" is deliberately not in SMS_KINDS): the loop that opened with
+  // "@James check this" closes with "James finished your tag".
+  if (status === "COMPLETED" && t?.dedupeKey?.startsWith("mention-")) {
+    try {
+      const { notifyInApp } = await import("@/lib/notify");
+      const { getCurrentUser } = await import("@/lib/auth/user");
+      const u = await getCurrentUser();
+      const completer = (u?.name ?? "They").split(/\s+/)[0];
+      const street = t.propertyAddress?.split(",")[0]?.trim() ?? t.title.split("—").pop()?.trim() ?? "a job";
+      const targets: import("@/lib/notify").NotifyTarget[] = [{ roles: ["OWNER", "ADMIN"] }];
+      // The tagger's name is embedded in the title ("<author> tagged you — …");
+      // an exact roster match adds their personal row on top of the desk row.
+      const author = t.title.split(" tagged you")[0]?.trim();
+      if (author) {
+        const tagger = await prisma.teamMember.findFirst({ where: { name: author, active: true }, select: { id: true } });
+        if (tagger) targets.push({ roles: ["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"], userKey: `tm:${tagger.id}` });
+      }
+      await notifyInApp({
+        kind: "mention_done",
+        title: `${completer} finished your tag — ${street}`,
+        href: t.projectId ? `/projects/${t.projectId}` : "/tasks",
+        targets,
+        // Minute-bucketed: a re-tagged task completes again later and must
+        // ring again (the companion task deliberately reopens under ONE
+        // dedupeKey, so a taskId-only key would silence every round but the
+        // first); double-submits within the same minute still collapse.
+        dedupeKey: `mention-done-${taskId}-${new Date().toISOString().slice(0, 16)}`,
+      });
+    } catch { /* the close itself must never fail on a ping */ }
+  }
   revalidatePath("/queue");
   revalidatePath("/history");
+  // Photographers complete their assigned tasks from the My Shoots card.
+  revalidatePath("/shoot");
   if (t?.projectId) revalidatePath(`/projects/${t.projectId}`);
 }
 
@@ -350,6 +383,15 @@ export async function toggleTaskChecklistItem(
           : {}),
     },
   });
+  // Ticking the last step of a REVISION task ("Mark the revision resolved") is
+  // a completion — it must run the same side effects as the Complete button,
+  // or the project stays pinned in REVISION with its re-QC card frozen open
+  // and the editor never gets the resolved ping.
+  if (completed && t.status !== "COMPLETED" && t.taskType === "revision" && t.projectId) {
+    await resolveRevision(t.projectId);
+    revalidatePath("/pipeline");
+    revalidatePath("/");
+  }
   revalidatePath("/queue");
   revalidatePath("/history");
   revalidatePath("/tasks");

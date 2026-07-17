@@ -685,7 +685,7 @@ export async function syncAryeoOrders(
           photographerId: true, // cancel bell targets the assigned photographer
         },
       }),
-      prisma.client.findMany({ select: { id: true, aryeoCustomerId: true, email: true, phone: true, name: true, company: true } }),
+      prisma.client.findMany({ select: { id: true, aryeoCustomerId: true, email: true, backupEmail: true, phone: true, name: true, company: true } }),
     ]);
     const seenOrders = new Set(existingProjects.map((p) => p.aryeoOrderId!));
     const projByOrder = new Map(existingProjects.map((p) => [p.aryeoOrderId!, p]));
@@ -708,20 +708,46 @@ export async function syncAryeoOrders(
     const normId = (s: string | null | undefined) => (s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
     const clientByPhone = new Map<string, { id: string; name: string }>();
     const clientByNameCo = new Map<string, string>();
+    // Rows that already own an Aryeo customer id — adoption must never steal
+    // the unique slot from them (an agent with TWO live Aryeo customer records
+    // would otherwise thrash the id back and forth every sync).
+    const hasAryeoId = new Set<string>();
     for (const c of existingClients) {
-      if (c.aryeoCustomerId) clientByAryeoId.set(c.aryeoCustomerId, c.id);
+      if (c.aryeoCustomerId) { clientByAryeoId.set(c.aryeoCustomerId, c.id); hasAryeoId.add(c.id); }
       if (c.email) clientByEmail.set(c.email.toLowerCase(), c.id);
       const pk = phoneKey(c.phone);
       if (pk.length === 10 && !clientByPhone.has(pk)) clientByPhone.set(pk, { id: c.id, name: c.name });
       const nc = normId(c.name) && normId(c.company) ? `${normId(c.name)}|${normId(c.company)}` : null;
       if (nc && !clientByNameCo.has(nc)) clientByNameCo.set(nc, c.id);
     }
+    // Second pass: backupEmail (a merged-away twin's old address) also resolves
+    // to the surviving row. Kept in its OWN map: backup addresses are often
+    // shared team inboxes (that's how they got stashed), so a backup hit must
+    // be corroborated by the customer's NAME before it counts — otherwise agent
+    // Bob's order lands on Jane because both once booked through team@acme.com.
+    // Primary emails always win on collision.
+    const clientByBackupEmail = new Map<string, { id: string; name: string }>();
+    for (const c of existingClients) {
+      const be = c.backupEmail?.toLowerCase();
+      if (be && !clientByEmail.has(be) && !clientByBackupEmail.has(be)) {
+        clientByBackupEmail.set(be, { id: c.id, name: c.name });
+      }
+    }
+    // Rows whose backupEmail slot is already occupied — the stash below must
+    // never overwrite it (after a twin merge that address is the load-bearing
+    // identity key; losing it re-arms the twin re-mint).
+    const hasBackupEmail = new Set(existingClients.filter((c) => c.backupEmail).map((c) => c.id));
 
     const resolveClient = async (cust?: AryeoCustomer): Promise<string> => {
       const byId = cust?.id ? clientByAryeoId.get(cust.id) : undefined;
       if (byId) return byId;
       const byEmail = cust?.email ? clientByEmail.get(cust.email.toLowerCase()) : undefined;
-      if (byEmail) return byEmail;
+      if (byEmail) {
+        // Learn this Aryeo customer id for the rest of the run (in-memory only —
+        // the DB slot stays with whichever id the row already owns).
+        if (cust?.id && !clientByAryeoId.has(cust.id)) clientByAryeoId.set(cust.id, byEmail);
+        return byEmail;
+      }
       // Phone / name+company hit → this is an EXISTING person under a new
       // email or Aryeo customer id: adopt onto the existing row (stash the new
       // email as backupEmail) instead of minting a twin. A phone match ALSO
@@ -732,19 +758,36 @@ export async function syncAryeoOrders(
       const samePersonByPhone = phoneHit && normId(phoneHit.name) === normId(customerName(cust)) ? phoneHit.id : undefined;
       const nameCo =
         normId(customerName(cust)) && normId(cust?.office_name) ? `${normId(customerName(cust))}|${normId(cust?.office_name)}` : null;
-      const bySignal = samePersonByPhone ?? (nameCo ? clientByNameCo.get(nameCo) : undefined);
+      // backupEmail ranks BELOW phone+name and name+company and needs the same
+      // name corroboration — backup addresses can be shared team inboxes.
+      const backupHit = cust?.email ? clientByBackupEmail.get(cust.email.toLowerCase()) : undefined;
+      const sameByBackup = backupHit && normId(backupHit.name) === normId(customerName(cust)) ? backupHit.id : undefined;
+      const byStrongSignal = samePersonByPhone ?? (nameCo ? clientByNameCo.get(nameCo) : undefined);
+      const bySignal = byStrongSignal ?? sameByBackup;
       if (bySignal) {
         await prisma.client
           .update({
             where: { id: bySignal },
             data: {
-              ...(cust?.id ? { aryeoCustomerId: cust.id } : {}),
-              ...(cust?.email ? { backupEmail: cust.email } : {}),
+              // Take the unique Aryeo-id slot only if the row has none yet.
+              ...(cust?.id && !hasAryeoId.has(bySignal) ? { aryeoCustomerId: cust.id } : {}),
+              // Stash the new address only into an EMPTY slot — an occupied
+              // backupEmail is an identity key (often the merged twin's old
+              // address) and must never be clobbered.
+              ...(cust?.email && !hasBackupEmail.has(bySignal) ? { backupEmail: cust.email } : {}),
             },
           })
           .catch(() => {});
-        if (cust?.id) clientByAryeoId.set(cust.id, bySignal);
-        if (cust?.email) clientByEmail.set(cust.email.toLowerCase(), bySignal);
+        if (cust?.id) {
+          hasAryeoId.add(bySignal);
+          // Learn the id in-memory only for the STRONG signals; a backup-email
+          // hit must not teach the update-pass re-linker to move projects.
+          if (byStrongSignal) clientByAryeoId.set(cust.id, bySignal);
+        }
+        if (cust?.email) {
+          clientByEmail.set(cust.email.toLowerCase(), bySignal);
+          if (!hasBackupEmail.has(bySignal)) hasBackupEmail.add(bySignal);
+        }
         return bySignal;
       }
       const created = await prisma.client.create({
@@ -759,7 +802,7 @@ export async function syncAryeoOrders(
         },
       });
       clientsCreated++;
-      if (cust?.id) clientByAryeoId.set(cust.id, created.id);
+      if (cust?.id) { clientByAryeoId.set(cust.id, created.id); hasAryeoId.add(created.id); }
       if (cust?.email) clientByEmail.set(cust.email.toLowerCase(), created.id);
       const cpk = phoneKey(cust?.phone);
       if (cpk.length === 10) clientByPhone.set(cpk, { id: created.id, name: created.name });
@@ -1119,22 +1162,84 @@ export async function syncAryeoCustomers(): Promise<{ enriched: number }> {
 }
 
 // Import the FULL Aryeo client roster (every customer-user), not just the ones
-// who placed a recent order. Matches existing clients by email; creates the
-// rest. Idempotent — only creates the missing ones.
+// who placed a recent order. Matches existing clients with the SAME identity
+// signals as the order sync's resolveClient — email/backupEmail, then phone +
+// same name, then name+company — and ADOPTS onto a hit instead of creating.
+// Without those signals this daily sweep was the second twin-minting door: a
+// merged-away address (living on only as backupEmail) re-created the twin the
+// merge had just repaired. Idempotent — only creates true strangers.
 export async function syncAllAryeoClients(): Promise<{ created: number; scanned: number }> {
   const { prisma } = await import("@/lib/prisma");
+  const { phoneKey } = await import("@/lib/integrations/openphone");
   const customers = await Aryeo.customerUsers();
-  const existing = await prisma.client.findMany({ select: { email: true, aryeoCustomerId: true } });
-  const haveEmail = new Set(existing.map((c) => (c.email ?? "").toLowerCase()).filter(Boolean));
+  const existing = await prisma.client.findMany({
+    select: { id: true, email: true, backupEmail: true, phone: true, name: true, company: true, aryeoCustomerId: true },
+  });
+  const normId = (s: string | null | undefined) => (s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  const byEmail = new Map<string, string>();
+  const byBackupEmail = new Map<string, { id: string; name: string }>();
+  const byPhone = new Map<string, { id: string; name: string }>();
+  const byNameCo = new Map<string, string>();
+  const byAryeoId = new Map<string, string>();
+  const hasAryeoId = new Set<string>();
+  const hasBackupEmail = new Set<string>();
   const usedAryeoId = new Set(existing.map((c) => c.aryeoCustomerId).filter(Boolean) as string[]);
+  for (const c of existing) {
+    if (c.email) byEmail.set(c.email.toLowerCase(), c.id);
+    if (c.aryeoCustomerId) { byAryeoId.set(c.aryeoCustomerId, c.id); hasAryeoId.add(c.id); }
+    if (c.backupEmail) hasBackupEmail.add(c.id);
+    const pk = phoneKey(c.phone);
+    if (pk.length === 10 && !byPhone.has(pk)) byPhone.set(pk, { id: c.id, name: c.name });
+    const nc = normId(c.name) && normId(c.company) ? `${normId(c.name)}|${normId(c.company)}` : null;
+    if (nc && !byNameCo.has(nc)) byNameCo.set(nc, c.id);
+  }
+  for (const c of existing) {
+    const be = c.backupEmail?.toLowerCase();
+    if (be && !byEmail.has(be) && !byBackupEmail.has(be)) byBackupEmail.set(be, { id: c.id, name: c.name });
+  }
 
   let created = 0;
   for (const cu of customers) {
     const email = (cu.email ?? "").toLowerCase();
-    if (!email || haveEmail.has(email)) continue;
-    haveEmail.add(email);
+    if (!email || byEmail.has(email)) continue;
     const name = cu.full_name || [cu.first_name, cu.last_name].filter(Boolean).join(" ") || cu.email!;
-    await prisma.client.create({
+    // Strongest signal first, exactly like the order sync's resolveClient: a
+    // row that already OWNS this customer-user's Aryeo id is this person —
+    // without this check a row whose emails have drifted minted an empty twin.
+    const ownRow = cu.id ? byAryeoId.get(cu.id) : undefined;
+    // Same-person signals: phone (only with a matching name — shared office
+    // lines must not collapse two agents), name+company, or a name-corroborated
+    // backupEmail hit (backup addresses can be shared team inboxes).
+    const pk = phoneKey(cu.phone);
+    const phoneHit = pk.length === 10 ? byPhone.get(pk) : undefined;
+    const samePersonByPhone = phoneHit && normId(phoneHit.name) === normId(name) ? phoneHit.id : undefined;
+    const nc = normId(name) && normId(cu.agent_company_name) ? `${normId(name)}|${normId(cu.agent_company_name)}` : null;
+    const backupHit = byBackupEmail.get(email);
+    const sameByBackup = backupHit && normId(backupHit.name) === normId(name) ? backupHit.id : undefined;
+    const bySignal = ownRow ?? samePersonByPhone ?? (nc ? byNameCo.get(nc) : undefined) ?? sameByBackup;
+    if (bySignal) {
+      // No-clobber on BOTH identity slots: an occupied backupEmail is a
+      // load-bearing key (often the merged twin's old address), and the
+      // in-memory marks only flip when the write actually carried the field.
+      const writeBackup = !hasBackupEmail.has(bySignal);
+      const writeAryeoId = !!cu.id && !hasAryeoId.has(bySignal) && !usedAryeoId.has(cu.id);
+      if (writeBackup || writeAryeoId) {
+        await prisma.client
+          .update({
+            where: { id: bySignal },
+            data: {
+              ...(writeBackup ? { backupEmail: cu.email } : {}),
+              ...(writeAryeoId ? { aryeoCustomerId: cu.id! } : {}),
+            },
+          })
+          .catch(() => {});
+      }
+      byEmail.set(email, bySignal);
+      if (writeBackup) hasBackupEmail.add(bySignal);
+      if (writeAryeoId) { hasAryeoId.add(bySignal); usedAryeoId.add(cu.id!); byAryeoId.set(cu.id!, bySignal); }
+      continue;
+    }
+    const createdRow = await prisma.client.create({
       data: {
         name,
         email: cu.email!,
@@ -1146,7 +1251,10 @@ export async function syncAllAryeoClients(): Promise<{ created: number; scanned:
         aryeoCustomerId: cu.id && !usedAryeoId.has(cu.id) ? cu.id : null,
       },
     });
+    byEmail.set(email, createdRow.id);
     if (cu.id) usedAryeoId.add(cu.id);
+    const cpk = phoneKey(cu.phone);
+    if (cpk.length === 10 && !byPhone.has(cpk)) byPhone.set(cpk, { id: createdRow.id, name });
     created++;
   }
   return { created, scanned: customers.length };

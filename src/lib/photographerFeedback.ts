@@ -1,6 +1,8 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { toReviewNote, type ReviewNote } from "@/lib/review";
+import { stripMoneySentences } from "@/lib/text";
+import { hasNegativeCues } from "@/lib/feedback";
 
 // ---------------------------------------------------------------------------
 // Read layer for the photographer QUALITY FEEDBACK hub (/shoot/feedback) — the
@@ -41,10 +43,22 @@ export type HubGroup = {
   notes: ReviewNote[];
 };
 
+// A recent piece of client praise, creative-safe: POSITIVE/NEUTRAL only (the
+// sentiment-in filter fails closed on NEGATIVE/null — negative client feedback
+// never reaches creatives) and money-scrubbed (clients mention price in praise).
+export type HubPraise = {
+  rating: number | null;
+  body: string;
+  authorName: string | null;
+  createdAt: string;
+  street: string;
+};
+
 export type FeedbackHub = {
   memberId: string;
   memberName: string;
   kpis: HubKpis;
+  recentPraise: HubPraise[]; // latest client praise, capped for the card
   active: HubGroup[]; // shoots with unresolved notes, newest note first
   resolved: HubGroup[]; // fully-resolved history (capped)
 };
@@ -56,7 +70,7 @@ export async function getFeedbackHub(memberId: string): Promise<FeedbackHub | nu
   const reviewLag = new Date(now - 3 * 24 * 3600_000); // shoots newer than this likely aren't reviewed yet
   const rootNotes = { photographerId: memberId, lane: "PHOTOGRAPHER", parentId: null } as const;
 
-  const [member, notes, statusRoll, inWindow, inPrev, shoots, prevShoots, ratingAgg, recentShoots] =
+  const [member, notes, statusRoll, inWindow, inPrev, shoots, prevShoots, ratingAgg, recentShoots, praiseRows] =
     await Promise.all([
       prisma.teamMember.findUnique({ where: { id: memberId }, select: { id: true, name: true } }),
       prisma.mediaNote.findMany({
@@ -88,6 +102,13 @@ export async function getFeedbackHub(memberId: string): Promise<FeedbackHub | nu
         orderBy: { shootDate: "desc" },
         take: 25,
         select: { id: true, shootDate: true },
+      }),
+      // Latest client praise, creative-safe (see HubPraise).
+      prisma.feedback.findMany({
+        where: { photographerId: memberId, sentiment: { in: ["POSITIVE", "NEUTRAL"] }, body: { not: "" } },
+        orderBy: { createdAt: "desc" },
+        take: 3,
+        select: { rating: true, body: true, authorName: true, createdAt: true, project: { select: { title: true } } },
       }),
     ]);
   if (!member) return null;
@@ -142,6 +163,20 @@ export async function getFeedbackHub(memberId: string): Promise<FeedbackHub | nu
     memberId: member.id,
     memberName: member.name,
     kpis,
+    recentPraise: praiseRows
+      // Stars outrank words in the sentiment column, so a 4★ "please redo the
+      // yard" reads POSITIVE — but the criticism must never render here. The
+      // quote IS this card, so mixed reviews are dropped outright.
+      .filter((p) => !hasNegativeCues(p.body))
+      .map((p) => ({
+        rating: p.rating,
+        body: stripMoneySentences(p.body),
+        authorName: p.authorName,
+        createdAt: p.createdAt.toISOString(),
+        street: streetOf(p.project?.title),
+      }))
+      // The quote IS the card — drop a row whose body scrubbed away entirely.
+      .filter((p) => p.body),
     active: all.filter((g) => g.openCount > 0),
     resolved: all.filter((g) => g.openCount === 0).slice(0, 8),
   };

@@ -4,7 +4,7 @@ import { ProviderCard, type ConnState } from "@/components/connections/ProviderC
 import { PROVIDERS, SEGMENTS } from "@/lib/integrations/registry";
 import { getAllConnections } from "@/lib/integrations/connections";
 import { dropboxAuthorizeUrl, dropboxConfigured } from "@/lib/integrations/dropbox";
-import { googleAuthorizeUrl, googleConfigured } from "@/lib/integrations/google";
+import { googleAuthorizeUrl, googleConfigured, gmailSendHealth } from "@/lib/integrations/google";
 import { frameioConfigured } from "@/lib/integrations/frameio";
 import { webhookErrorCount, webhookHealthByProvider } from "@/lib/webhookRetry";
 import { SyncHealth, type CronJobHealth } from "@/components/connections/SyncHealth";
@@ -51,10 +51,17 @@ async function cronHealth(): Promise<{ crons: CronJobHealth[]; ready: boolean }>
 export default async function ConnectionsPage() {
   const connections = await getAllConnections();
   const byProvider = new Map(connections.map((c) => [c.provider, c]));
-  const [webhookErrors, webhookHealth, { crons, ready: cronLogReady }] = await Promise.all([
+  const [webhookErrors, webhookHealth, { crons, ready: cronLogReady }, gmailSend] = await Promise.all([
     webhookErrorCount(),
     webhookHealthByProvider().catch(() => []),
     cronHealth(),
+    // Live per-mailbox send-scope probe (finding #41: "connected" hid a token
+    // that could read but not send). Capped so a slow Google can't hold the
+    // whole page hostage — null = unknown, the card simply omits the chips.
+    Promise.race([
+      gmailSendHealth().catch(() => null),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
+    ]),
   ]);
 
   // Receivers currently accepting UNSIGNED posts: connected providers whose
@@ -147,6 +154,7 @@ export default async function ConnectionsPage() {
                       googleAuthorizeUrl={
                         provider.id === "gmail" && googleConfigured() ? googleAuthorizeUrl() : undefined
                       }
+                      gmailSendHealth={provider.id === "gmail" ? gmailSend : undefined}
                       frameioReady={provider.id === "frameio" ? frameioReady : undefined}
                     />
                   );

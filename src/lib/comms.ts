@@ -231,12 +231,36 @@ export async function recordClientCommunication(opts: {
   const revisionSignal = decision ? decision.isRevisionRequest : cls.isRevision;
   let revision = false;
   if (revisionSignal && effProjectId) {
-    if (effProjectStatus && DELIVERED_ISH.has(effProjectStatus)) {
+    // A revision ask anchored to a PRE-delivery job is usually a mis-anchor,
+    // not an in-flight special request: the relevance-based project pick
+    // prefers the client's upcoming shoot, but "redo the kitchen photos" is
+    // about their newest delivered/in-review job. Re-anchor before the gate
+    // decides — without this the revision silently degrades to an activity
+    // line on the wrong project (audit crack #33's silent-loss class). Two
+    // anchors we TRUST and never override: the Smart Brain's explicit pick,
+    // and a project whose street the client actually named in the message.
+    let revProjectId = effProjectId;
+    let revStatus = effProjectStatus;
+    let revAddress = effPropertyAddress ?? null;
+    const brainPicked = !!decision?.projectId && decision.projectId === effProjectId && decision.projectId !== opts.projectId;
+    const streetNamed = (() => {
+      const core = (revAddress ?? "").split(",")[0].trim().replace(/^\d+\s+/, "").replace(/\s+\S+$/, "");
+      if (core.length < 5) return false;
+      return new RegExp(`\\b${core.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(opts.text);
+    })();
+    if (!(revStatus && DELIVERED_ISH.has(revStatus)) && opts.clientId && !brainPicked && !streetNamed) {
+      try {
+        const { mostRecentDeliveredIsh } = await import("@/lib/contacts");
+        const d = await mostRecentDeliveredIsh(opts.clientId);
+        if (d) { revProjectId = d.id; revStatus = d.status; revAddress = d.title; }
+      } catch { /* fall through to the in-flight branch */ }
+    }
+    if (revStatus && DELIVERED_ISH.has(revStatus)) {
       revision = await raiseRevision({
-        projectId: effProjectId,
+        projectId: revProjectId,
         clientId: opts.clientId,
         clientName: opts.clientName,
-        propertyAddress: effPropertyAddress ?? null,
+        propertyAddress: revAddress,
         note: opts.text,
         source: opts.source ?? "comms",
         threadRef: opts.threadRef,
@@ -288,7 +312,10 @@ export async function raiseRevision(opts: {
   // front-lawn photo" on a photos+reel job went to the video editor (audit).
   // Video terms in the ask (or a video-only job) → the video lane; otherwise
   // Kyle triages it like any photo/3D/floor-plan revision.
-  const VIDEO_ASK = /\b(video|reel|clip|footage|cut|music|audio|song|caption|subtitle|intro|outro|walk-?through|transition|b-?roll)\b/i;
+  // "cut" only counts as a video word when it names a CUT (rough/final/new
+  // cut, re-cut) — "cut out the trash can" is a photo retouch ask and bare
+  // \bcut\b was misrouting those to the video editor on mixed jobs.
+  const VIDEO_ASK = /\b(video|reel|clip|footage|(?:rough|final|first|new)\s+cut|re-?cut|music|audio|song|caption|subtitle|intro|outro|walk-?through|transition|b-?roll)\b/i;
   const primary = videoDeliv && (VIDEO_ASK.test(opts.note) || !hasNonVideo) ? videoDeliv : project.deliverables.find((d) => d.type !== "VIDEO" && d.type !== "SOCIAL_REEL") ?? project.deliverables[0];
   // PROJECT-level monthly test — a listing-shoot revision for a social-plan
   // client routes like any listing job, not to the monthly-content lane.

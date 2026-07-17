@@ -15,8 +15,10 @@ import { prisma } from "@/lib/prisma";
 // ---------------------------------------------------------------------------
 
 // Match "@Full Name" (as the composer inserts) plus hand-typed "@FirstName"
-// when that first name is unambiguous on the roster.
-function matchMentions<T extends { id: string; name: string }>(text: string, people: T[]): T[] {
+// when that first name is unambiguous on the roster. Exported so surfaces that
+// gate on "was this person tagged?" (the note page guard) use EXACTLY the
+// matching semantics that minted the ping.
+export function matchMentions<T extends { id: string; name: string }>(text: string, people: T[]): T[] {
   const hit = new Set<string>();
   const out: T[] = [];
   // Longest names first so "@Kim Miguel" wins before a bare "@Kim" pass.
@@ -48,21 +50,42 @@ function matchMentions<T extends { id: string; name: string }>(text: string, peo
   return out;
 }
 
+// Was this person @-tagged anywhere in these texts? Runs the same roster-aware
+// matcher (ambiguous first names require the full name), so page guards agree
+// with the pings. Best-effort false on any error.
+export async function isMentionedIn(texts: string[], teamMemberId: string): Promise<boolean> {
+  try {
+    const joined = texts.filter(Boolean).join("\n");
+    if (!joined.includes("@")) return false;
+    const people = await prisma.teamMember.findMany({
+      where: { active: true },
+      select: { id: true, name: true },
+    });
+    return matchMentions(joined, people).some((p) => p.id === teamMemberId);
+  } catch {
+    return false;
+  }
+}
+
 export async function notifyMentions(opts: {
   text: string;
   projectId: string;
   authorName?: string | null;
   /** Short context for the ping, e.g. "a review note" | "a cut note". */
   context?: string;
-}): Promise<void> {
+  /** ROOT note id when the mention lives on a media-note thread — photographer
+   *  pings then deep-link the note itself (readable even on a shoot they don't
+   *  own) instead of a shoot page that bounces non-owners. */
+  noteId?: string;
+}): Promise<string[]> {
   try {
-    if (!opts.text.includes("@")) return;
+    if (!opts.text.includes("@")) return [];
     const people = await prisma.teamMember.findMany({
       where: { active: true },
       select: { id: true, name: true, role: true },
     });
     const tagged = matchMentions(opts.text, people);
-    if (tagged.length === 0) return;
+    if (tagged.length === 0) return [];
 
     const project = await prisma.project.findUnique({
       where: { id: opts.projectId },
@@ -86,12 +109,23 @@ export async function notifyMentions(opts: {
     const { notifyInApp } = await import("@/lib/notify");
     for (const t of tagged) {
       const editorKey = editorKeyFor(t.id);
-      const href =
-        t.role === "PHOTOGRAPHER"
-          ? `/shoot/${opts.projectId}`
-          : editorKey
-            ? `/edit/${opts.projectId}`
-            : `/projects/${opts.projectId}`;
+      let href: string;
+      if (t.role === "PHOTOGRAPHER") {
+        // A tagged photographer may NOT own this shoot — /shoot/<id> bounces
+        // non-owners to the bare list and the mention evaporates. The note page
+        // admits anyone tagged on the thread; without a note, fall back to the
+        // shoot page only when it will actually open for them.
+        if (opts.noteId) href = `/shoot/note/${opts.noteId}`;
+        else {
+          const { photographerOwnsShoot } = await import("@/lib/shoot");
+          href = (await photographerOwnsShoot(opts.projectId, t.id)) ? `/shoot/${opts.projectId}` : "/shoot";
+        }
+      } else if (editorKey) href = `/edit/${opts.projectId}`;
+      else href = `/projects/${opts.projectId}`;
+
+      // The companion task must carry the note link too — a photographer's
+      // task board can't deep-link a note it doesn't know about.
+      const noteLink = opts.noteId ? ` Open the note: /shoot/note/${opts.noteId}` : "";
 
       // Same open-tag task per (project, person) the team-message tags use —
       // deliberately the SAME dedupeKey so one person has ONE "you were
@@ -99,7 +133,7 @@ export async function notifyMentions(opts: {
       const data = {
         taskType: "internal_instruction",
         title: `${author} tagged you — ${street}`.slice(0, 120),
-        summary: `${author} tagged you in ${opts.context ?? "a note"} on ${street}: “${opts.text.slice(0, 200)}”. Take any needed action and reply on the note.`.slice(0, 500),
+        summary: `${author} tagged you in ${opts.context ?? "a note"} on ${street}: “${opts.text.slice(0, 200)}”. Take any needed action and reply on the note.${noteLink}`.slice(0, 500),
         description: opts.text.slice(0, 400),
         reasonCreated: `You were tagged in ${opts.context ?? "a note"}`,
         source: "team",
@@ -142,13 +176,148 @@ export async function notifyMentions(opts: {
         body: opts.text.slice(0, 140),
         href,
         targets,
-        // Random-free uniqueness: one ring per (project, person, comment text
-        // hash) — re-saving identical text won't re-ring, new words will.
-        dedupeKey: `mention-note-${opts.projectId}-${t.id}-${simpleHash(opts.text)}`,
+        // Random-free uniqueness: one ring per (project, note, person, comment
+        // text hash) — re-saving identical text on the SAME note won't
+        // re-ring, but "@Kim done" on a different thread must (a suppressed
+        // ring here also lands the person in excludeTmIds downstream, which
+        // would silence the thread-reply fallback ping too).
+        dedupeKey: `mention-note-${opts.projectId}-${opts.noteId ?? "x"}-${t.id}-${simpleHash(opts.text)}`,
       });
     }
+    return tagged.map((t) => t.id);
   } catch (e) {
     console.warn("notifyMentions failed (comment already saved)", e);
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Thread-reply notifications. A reply on a note used to notify NOBODY unless
+// it hand-typed an @mention — a photographer's "which bathroom do you mean?"
+// rotted invisibly (audit #31). On every saved reply, ping the thread's OTHER
+// participants (root author + prior repliers + the note's implicit addressee),
+// minus the replier, minus anyone the reply already @-mentioned. Same contract
+// as notifyMentions: best-effort, never fails the saved reply.
+// ---------------------------------------------------------------------------
+export async function notifyThreadReply(opts: {
+  rootId: string;
+  replyId: string;
+  replierKey: string; // "owner" | "tm:<id>" | "editor:<key>"
+  replierName?: string | null;
+  text: string;
+  projectId: string;
+  surface: "gallery" | "cut";
+  excludeTmIds: string[]; // already pinged via @mention on this reply
+}): Promise<void> {
+  try {
+    const [thread, project] = await Promise.all([
+      prisma.mediaNote.findMany({
+        where: { OR: [{ id: opts.rootId }, { parentId: opts.rootId }] },
+        select: { id: true, authorKey: true, lane: true, photographerId: true, editorKey: true },
+      }),
+      prisma.project.findUnique({ where: { id: opts.projectId }, select: { title: true } }),
+    ]);
+    const root = thread.find((n) => n.id === opts.rootId);
+    if (!root) return;
+    const street = project?.title?.split(",")[0]?.trim() || "a job";
+    const firstName = (opts.replierName ?? "A teammate").split(/\s+/)[0];
+
+    const { TEAM_MEMBER_EDITOR_KEYS, editorTeamMemberId } = await import("@/lib/editors");
+    const editorTmIds = new Map<string, string>(); // TeamMember id → editor key
+    for (const key of TEAM_MEMBER_EDITOR_KEYS) {
+      const tmId = await editorTeamMemberId(key);
+      if (tmId) editorTmIds.set(tmId, key);
+    }
+
+    // Participants: every distinct authorKey on the thread, plus the implicit
+    // addressee of the root note (the photographer/editor it's addressed to).
+    const keys = new Set<string>();
+    for (const n of thread) if (n.authorKey) keys.add(n.authorKey);
+    if (root.lane === "PHOTOGRAPHER" && root.photographerId) keys.add(`tm:${root.photographerId}`);
+    if (root.lane === "EDITOR" && root.editorKey) keys.add(`editor:${root.editorKey}`);
+    keys.delete(opts.replierKey);
+    // A replier identified by tm: id that maps to an editor key (or vice versa)
+    // is the same human — drop both spellings of them.
+    if (opts.replierKey.startsWith("tm:")) {
+      const ek = editorTmIds.get(opts.replierKey.slice(3));
+      if (ek) keys.delete(`editor:${ek}`);
+    } else if (opts.replierKey.startsWith("editor:")) {
+      for (const [tmId, ek] of editorTmIds) if (`editor:${ek}` === opts.replierKey) keys.delete(`tm:${tmId}`);
+    }
+
+    const { notifyInApp } = await import("@/lib/notify");
+    const excluded = new Set(opts.excludeTmIds);
+    const targets: import("@/lib/notify").NotifyTarget[] = [];
+    let ownerAdded = false;
+    const seenHumans = new Set<string>(); // tm ids / editor keys already targeted
+    for (const key of keys) {
+      if (key === "owner") {
+        if (!ownerAdded) {
+          targets.push({
+            roles: ["OWNER"],
+            href: opts.surface === "cut" ? `/review/${opts.projectId}` : `/projects/${opts.projectId}`,
+          });
+          ownerAdded = true;
+        }
+        continue;
+      }
+      if (key.startsWith("editor:")) {
+        const ek = key.slice(7);
+        if (!(TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(ek)) continue; // vendors have no bell/channel
+        if (seenHumans.has(`e:${ek}`)) continue;
+        seenHumans.add(`e:${ek}`);
+        const tmId = await editorTeamMemberId(ek);
+        if (tmId) {
+          if (excluded.has(tmId)) continue;
+          seenHumans.add(`t:${tmId}`);
+          // Visibility row (tm:, no PHOTOGRAPHER role → SMS bridge stays cold).
+          targets.push({ roles: ["OWNER", "ADMIN", "EDITOR"], userKey: `tm:${tmId}`, href: `/edit/${opts.projectId}` });
+        }
+        // Channel row → Slack DM/SMS in the editor's timezone.
+        targets.push({ roles: ["EDITOR"], userKey: `editor:${ek}`, href: `/edit/${opts.projectId}` });
+        continue;
+      }
+      if (key.startsWith("tm:")) {
+        const tmId = key.slice(3);
+        if (excluded.has(tmId) || seenHumans.has(`t:${tmId}`)) continue;
+        const ek = editorTmIds.get(tmId);
+        if (ek) {
+          // This human is an editor — route through their editor channel instead.
+          if (seenHumans.has(`e:${ek}`)) continue;
+          seenHumans.add(`e:${ek}`);
+          seenHumans.add(`t:${tmId}`);
+          targets.push({ roles: ["OWNER", "ADMIN", "EDITOR"], userKey: `tm:${tmId}`, href: `/edit/${opts.projectId}` });
+          targets.push({ roles: ["EDITOR"], userKey: `editor:${ek}`, href: `/edit/${opts.projectId}` });
+          continue;
+        }
+        seenHumans.add(`t:${tmId}`);
+        const member = await prisma.teamMember.findUnique({ where: { id: tmId }, select: { role: true } });
+        if (member?.role === "PHOTOGRAPHER") {
+          // PHOTOGRAPHER in roles arms the tm: SMS bridge (note_reply ∈ SMS_KINDS);
+          // the note page admits the thread's participants, so link it directly.
+          targets.push({
+            roles: ["OWNER", "ADMIN", "PHOTOGRAPHER"],
+            userKey: `tm:${tmId}`,
+            href: `/shoot/note/${opts.rootId}`,
+          });
+        } else {
+          // Kyle/staff: bell only, never SMS.
+          targets.push({ roles: ["OWNER", "ADMIN"], userKey: `tm:${tmId}`, href: `/projects/${opts.projectId}` });
+        }
+      }
+    }
+    if (targets.length === 0) return;
+    await notifyInApp({
+      kind: "note_reply",
+      title: `${firstName} replied — ${street}`,
+      body: opts.text.slice(0, 140), // auto-nulled by the money clamp on creative rows
+      href: `/projects/${opts.projectId}`,
+      targets,
+      // One bell per person per reply; retries collapse on P2002.
+      dedupeKey: `note-reply-${opts.replyId}`,
+    });
+  } catch (e) {
+    console.warn("notifyThreadReply failed (reply already saved)", e);
   }
 }
 

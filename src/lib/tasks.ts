@@ -277,7 +277,10 @@ function specsForProject(p: {
     });
   }
 
-  if (p.status === "SHOT" || p.status === "EDITING" || p.status === "REVIEW") {
+  // REVISION included: the reopened QC card must keep receiving evidence
+  // merges (re-ticked auto rows when the corrected media lands) instead of
+  // freezing until a human resolves the revision.
+  if (p.status === "SHOT" || p.status === "EDITING" || p.status === "REVIEW" || p.status === "REVISION") {
     const anchor = shoot ?? new Date();
     // ONE consolidated QC task per project: a checkbox per deliverable category,
     // pre-checked for anything already live on Aryeo. Replaces the old per-item
@@ -729,7 +732,12 @@ export async function reflectRevisionInQc(projectId: string, categories: string[
   const markRevised = (items: ChecklistItem[]): ChecklistItem[] => {
     const out = [...items];
     if (categories.length === 0) {
-      if (!out.some((i) => /re-?qc after revision/i.test(i.label))) out.push({ label: "Re-QC after revision", done: false });
+      // A SECOND generic revision must re-arm the gate: the row from round one
+      // is already ticked done, and leaving it done meant the reconciler saw
+      // an all-done card and auto-completed the re-QC within the hour.
+      const idx = out.findIndex((i) => /re-?qc after revision/i.test(i.label));
+      if (idx >= 0) out[idx] = { label: out[idx].label, done: false };
+      else out.push({ label: "Re-QC after revision", done: false });
       return out;
     }
     for (const c of categories) {
@@ -1100,12 +1108,17 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
     select: { id: true },
   });
   if (!already) {
-    await prisma.activity.create({
-      data: { projectId, type: "SYSTEM", body: `${MARKER} — editors notified via Slack.` },
+    // Marker row FIRST (crash-safe idempotence: a re-run after a mid-flight
+    // crash must not re-ping) with neutral wording; the concrete outcome is
+    // stamped on after we know what channelForEditor actually did — the old
+    // hard-coded "notified via Slack" claimed delivery that often never
+    // happened (Remar has no Slack/phone; audit #33 honesty residue).
+    const marker = await prisma.activity.create({
+      data: { projectId, type: "SYSTEM", body: `${MARKER} — announced to the editor bench.` },
     });
     try {
       const { notifyUrgent, notifyInApp } = await import("@/lib/notify");
-      const { editorForDeliverable } = await import("@/lib/editors");
+      const { editorForDeliverable, editorMeta } = await import("@/lib/editors");
       await notifyUrgent(`Raws in for ${street} — ready for editing`, "/editing");
       // Bell mirror: ops + the whole editor bench (raws are pull-work — whoever
       // it routes to sees it in /editing either way) + a PERSON-ADDRESSED row for
@@ -1114,22 +1127,37 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
       // editor:key row is only added for a real video route (kim/remar/luma).
       const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
       const targets: import("@/lib/notify").NotifyTarget[] = [{ roles: ["ADMIN"] }, { roles: ["EDITOR"] }];
+      let routedKey: string | null = null;
       if (v) {
         const key = editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.deliverables));
         // Only in-house editors have a reachable channel; Luma (external) has no
         // bell/DM — its dispatch is the Kyle task below.
         if (key === "kim" || key === "remar") {
+          routedKey = key;
           // Their brief — the one page the EDITOR role can act from.
           targets.push({ roles: ["EDITOR"], userKey: `editor:${key}`, href: `/edit/${projectId}` });
         }
       }
-      await notifyInApp({
+      const { bridged } = await notifyInApp({
         kind: "raws_landed",
         title: `Raws in — ${street}`,
         href: "/editing",
         targets,
         dedupeKey: `raws-${projectId}`,
       });
+      // Stamp the truth onto the timeline row.
+      let outcome = "— posted to the editor bench (bell) + ops Slack.";
+      if (routedKey) {
+        const name = editorMeta(routedKey)?.name ?? routedKey;
+        const channel = bridged.find((b) => b.userKey === `editor:${routedKey}`)?.channel ?? "none";
+        outcome =
+          channel === "slack" ? `— ${name} pinged by Slack DM.`
+          : channel === "sms" ? `— ${name} texted (SMS).`
+          : channel === "relay" ? `— ${name} has no Slack/phone on file; relayed to ops Slack to pass along by hand.`
+          : channel === "quiet" ? `— bell posted for ${name}; ping held for their overnight quiet hours.`
+          : `— bell posted for ${name}; no direct ping went out.`;
+      }
+      await prisma.activity.update({ where: { id: marker.id }, data: { body: `${MARKER} ${outcome}` } }).catch(() => {});
     } catch { /* never let a ping break the upload flow */ }
   }
 
@@ -1162,6 +1190,43 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
       dedupeKey: key,
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Editor-addressed work just landed on a bell that NO login can see (no
+// AppUser carries this editorKey) — nudge Jordan once to send that editor
+// their invite. Called from the notify bridge on every new editor: row;
+// deduped hard: the dedupeKey row (open OR completed) permanently blocks
+// re-creation, so once Jordan completes it the nudge never comes back —
+// and once the login exists the AppUser check short-circuits first.
+// Best-effort: a nudge failure must never break the bell that triggered it.
+// ---------------------------------------------------------------------------
+export async function ensureEditorLoginNudge(editorKey: string): Promise<void> {
+  try {
+    const { TEAM_MEMBER_EDITOR_KEYS, editorMeta } = await import("@/lib/editors");
+    if (!(TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(editorKey)) return; // vendors have no login
+    const hasLogin = await prisma.appUser.count({ where: { editorKey, status: { not: "DISABLED" } } });
+    if (hasLogin > 0) return;
+    const key = `editor-login-${editorKey}`;
+    if (await prisma.smartTask.findUnique({ where: { dedupeKey: key } })) return;
+    const name = editorMeta(editorKey)?.name ?? editorKey;
+    await prisma.smartTask.create({
+      data: {
+        taskType: "todo",
+        title: `Send ${name} their Hub login — need their email`.slice(0, 120),
+        summary:
+          `Work keeps getting pinged to ${name}'s bell, but no Hub login exists for editor key "${editorKey}" — everything addressed to them is invisible in-app (they're reached only by Slack/SMS/ops relay for now). ` +
+          `Invite them on /users with role EDITOR and first name "${name}" so their editor key wires up automatically` +
+          (editorKey === "remar" ? ", and add Remar's phone to her Team row so texts can reach her too." : "."),
+        reasonCreated: "Editor-addressed notification landed with no editor login to see it",
+        source: "system",
+        priority: "HIGH",
+        dueAt: new Date(Date.now() + 24 * HOUR),
+        assignedKey: "jordan",
+        dedupeKey: key,
+      },
+    });
+  } catch { /* nudge is best-effort */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -1561,7 +1626,7 @@ export async function generateTasksForActiveProjects(): Promise<{ created: numbe
     data: { status: "CANCELLED" },
   });
   const projects = await prisma.project.findMany({
-    where: { status: { in: ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW"] } },
+    where: { status: { in: ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW", "REVISION"] } },
     include: {
       deliverables: { select: { type: true, label: true } },
       // segment drives the VIP extra-pass ticks on the guided QC checklist.
@@ -1575,7 +1640,11 @@ export async function generateTasksForActiveProjects(): Promise<{ created: numbe
   return { created, projects: projects.length };
 }
 
-const ACTIVE_TASK_STATUSES = ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW"];
+// REVISION is included so a QC card reopened by reflectRevisionInQc keeps
+// getting evidence merges + the moot sweeps keep running — a REVISION-stage
+// job used to be invisible to this reconciler and its tasks froze until a
+// human resolved the revision (audit #17).
+const ACTIVE_TASK_STATUSES = ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW", "REVISION"];
 
 // Regenerate/reconcile a SINGLE project's tasks right now. The Aryeo webhook
 // calls this so a new order / delivery / appointment change produces or clears
@@ -1633,7 +1702,12 @@ async function syncOneProjectTasks(
   // on positive evidence: an editor's finished cut shouldn't sit open forever.
   // REVISION deliberately does NOT close it — a bounced reel is back on the
   // editor's plate. Best-effort; wrapped so a stray parse can't break the sync.
-  try {
+  // During REVISION every "landed" signal (present.Video, dropbox.finalVideo,
+  // a past ReviewSubmission) describes the PREVIOUS, bounced cut — closing the
+  // editor's work item off that evidence would erase the redo. The comment
+  // above always declared this; now that REVISION projects actually reach this
+  // reconciler, enforce it by skipping the evidence-close entirely.
+  if (p.status !== "REVISION") try {
     let finalVideoLanded = p.status === "DELIVERED";
     if (!finalVideoLanded && p.statusEvidence) {
       const ev = JSON.parse(p.statusEvidence) as {
@@ -1692,7 +1766,13 @@ async function syncOneProjectTasks(
   await prisma.smartTask.updateMany({
     where: {
       projectId: p.id,
-      taskType: { in: ["media_qa", "delivery", "finish_delivery"] },
+      // During REVISION the QC card is a reflectRevisionInQc-reopened row whose
+      // spec may not be emitted at all (everything reads "live" — the OLD cut
+      // is what's live, that's why it's in revision). "No longer expected" must
+      // never complete media_qa mid-revision; its closes are the human re-QC
+      // tick or resolveRevision. delivery/finish_delivery still retire (that's
+      // how frozen legacy cards on REVISION jobs finally clear).
+      taskType: { in: p.status === "REVISION" ? ["delivery", "finish_delivery"] : ["media_qa", "delivery", "finish_delivery"] },
       status: { notIn: ["COMPLETED", "CANCELLED"] },
       NOT: [
         { dedupeKey: { in: [...expectedKeys] } },
@@ -1792,12 +1872,20 @@ async function syncOneProjectTasks(
         // dedupe key is never re-minted, so the work would vanish forever
         // (audit crack #2). If everything IS live, leave the completion alone.
         if (exists.status === "COMPLETED" && allDone) continue;
+        // During REVISION this reconciler must never flip the card COMPLETED —
+        // every "done" signal describes the PREVIOUS accepted cut (the old
+        // media is what's live on Aryeo), so a stale ticked re-QC row would
+        // close the gate with zero human re-look. Mid-revision closes belong
+        // to the human tick path (toggleTaskChecklistItem) or resolveRevision
+        // ONLY. It also keeps reflectRevisionInQc's framing (HIGH, dueAt=raise
+        // time, revision copy) instead of the spec's shoot-anchored values.
+        const inRevision = p.status === "REVISION";
         // A real completion this run: everything (incl. Kyle's failure-mode ticks)
         // is done and the task wasn't already closed. Log the QC pass for the
         // owner dial. Best-effort + deduped so the interactive-toggle path (which
         // also logs) can't double-write. Do it BEFORE the status flip so a throw
         // can't leave a completed task with no record — recordQcCompletion swallows.
-        const nowCompleting = allDone && exists.status !== "COMPLETED";
+        const nowCompleting = allDone && !inRevision && exists.status !== "COMPLETED";
         if (nowCompleting) {
           try {
             await recordQcCompletion({
@@ -1812,14 +1900,28 @@ async function syncOneProjectTasks(
           where: { id: exists.id },
           data: {
             checklist: serializeChecklist(merged),
-            ...(s.summary ? { summary: s.summary } : {}),
+            ...(s.summary && !inRevision ? { summary: s.summary } : {}),
             // Post-shoot QC: priced by its turnaround due date, NOT shoot proximity
             // (a 7–10 day monthly job shouldn't read URGENT because it shot today).
-            ...(s.dueAt ? { dueAt: s.dueAt, priority: computePriority({ dueAt: s.dueAt, status: p.status }) } : {}),
-            ...(allDone
+            ...(s.dueAt && !inRevision ? { dueAt: s.dueAt, priority: computePriority({ dueAt: s.dueAt, status: p.status }) } : {}),
+            ...(allDone && !inRevision
               ? { status: "COMPLETED", completedAt: new Date() }
               : exists.status === "COMPLETED"
-                ? { status: "OPEN", completedAt: null }
+                ? {
+                    status: "OPEN",
+                    completedAt: null,
+                    // Reopening a delivered-era card mid-revision (the manual
+                    // prior-cut rail flips a job to REVISION without going
+                    // through reflectRevisionInQc): stamp the revision framing
+                    // so Kyle doesn't get a weeks-overdue "QC & deliver" card.
+                    ...(inRevision
+                      ? {
+                          priority: "HIGH",
+                          dueAt: new Date(),
+                          summary: "Back into revision — re-QC the fixed items before they go back to the client.",
+                        }
+                      : {}),
+                  }
                 : {}),
           },
         });

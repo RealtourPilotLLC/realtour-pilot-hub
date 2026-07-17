@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { ProjectStatus } from "@prisma/client";
 import { recentProjectWhere, isProjectRecent } from "@/lib/recency";
+import { clientTextWhere, CLIENT_TEXT_TYPES } from "@/lib/clientTexts";
 import { etDayStartUtc, etAddDays, etDayKey } from "@/lib/datetime";
 
 import { TRIAGE_TYPES } from "@/lib/triage";
@@ -269,29 +270,21 @@ export const DELIVER_TASK_TYPES = ["media_qa", "delivery", "delivery_text", "fee
 // ready" delivery text. Jordan wants these off the /today stack and on their own
 // review tab (/texts, owner/admin only), with /today carrying a single
 // "check today's client texts" rollup instead of one card per text.
-export const CLIENT_TEXT_TYPES = ["confirmation_text", "delivery_text"];
+// The type list now lives with the canonical filter in @/lib/clientTexts;
+// re-exported here so existing consumers (TodayView etc.) keep importing it.
+export { CLIENT_TEXT_TYPES };
 
 // Everything the /texts tab lists — and exactly what the /today rollup counts.
-// One query serves both so the rollup number can never drift from the tab.
-// The filters match what the /today feed applied back when these rendered as
-// individual send cards: Kyle's own/unassigned + delegated work, due by end of
-// today INCLUDING overdue, on a recent (or unlinked) job.
+// Membership comes from the ONE shared rule (clientTextWhere) that the badge
+// and the send-all batch also use, so no surface can drift from another.
 export async function getClientTextTasks() {
-  const endToday = new Date(etDayStartUtc(etAddDays(new Date(), 1)).getTime() - 1);
   return prisma.smartTask.findMany({
-    where: {
-      status: { in: BRIEF_ACTIVE },
-      taskType: { in: CLIENT_TEXT_TYPES },
-      dueAt: { lte: endToday },
-      AND: [
-        {}, // every assignee visible — jordan/photographer keys must not vanish (audit critical)
-        { OR: [{ projectId: null }, { project: recentProjectWhere() }] },
-      ],
-    },
+    where: clientTextWhere(),
     // Phone decides whether Send is even possible; the client name feeds chips.
     include: { client: { select: { name: true, phone: true } } },
-    // Soonest due first — overdue confirmations naturally float to the top.
-    orderBy: { dueAt: "asc" },
+    // Soonest due first; no-date confirmations (a shoot date still to chase)
+    // surface on top rather than sinking below every dated row.
+    orderBy: { dueAt: { sort: "asc", nulls: "first" } },
   });
 }
 export type ClientTextTask = Awaited<ReturnType<typeof getClientTextTasks>>[number];
