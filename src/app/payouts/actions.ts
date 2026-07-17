@@ -220,11 +220,71 @@ export async function creativeStatementHtml(
   return { ok: true, html };
 }
 
+// Set (or clear) the owner's mileage correction for one creative's day. The
+// override becomes the figure pay is computed from; the routed figure stays on
+// the row for reference. Clearing goes back to fully automatic.
+export async function setMileageOverride(
+  teamMemberId: string,
+  dayKey: string,
+  miles: number | string | null,
+  note?: string | null,
+): Promise<ActionResult> {
+  await requireOwner();
+  // A real calendar date, not just the shape of one.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dayKey) || isNaN(new Date(dayKey + "T12:00:00Z").getTime()) ||
+      new Date(dayKey + "T12:00:00Z").toISOString().slice(0, 10) !== dayKey) {
+    return { ok: false, message: "Bad day key." };
+  }
+  const member = await prisma.teamMember.findUnique({ where: { id: teamMemberId }, select: { id: true } });
+  if (!member) return { ok: false, message: "Unknown team member." };
+
+  // Clearing is EXPLICIT (the reset arrow sends null). A blank string from the
+  // Save button is a mistake, not a clear — silently reverting pay to the
+  // routed figure on an empty input bit the review.
+  if (miles === null) {
+    try {
+      await prisma.mileageDay.update({
+        where: { teamMemberId_dayKey: { teamMemberId, dayKey } },
+        data: { overrideMiles: null, overrideNote: null },
+      });
+    } catch (e) {
+      // No row = nothing was adjusted; anything else is a real failure.
+      if ((e as { code?: string })?.code !== "P2025") return { ok: false, message: "Couldn't reset that day — try again." };
+    }
+    revalidatePath("/sales");
+    return { ok: true, message: "Back to computed mileage." };
+  }
+  if (String(miles).trim() === "") {
+    return { ok: false, message: "Enter the miles — or use the reset arrow to go back to automatic." };
+  }
+
+  // Parse the raw value — no character stripping ("-50" and "1e3" must be
+  // rejected or parsed honestly, never mangled into a different number).
+  const n = typeof miles === "number" ? miles : Number(String(miles).trim());
+  if (!isFinite(n) || n < 0 || n > 2000) return { ok: false, message: "Enter miles between 0 and 2000." };
+  const rounded = Math.round(n * 10) / 10;
+  const cleanNote = (note ?? "").trim().slice(0, 200) || null;
+  // The row may not exist yet (day never routed) — create it with a zero
+  // computed figure and no sig, so the next payout load fills in the computed
+  // value while the override already applies.
+  await prisma.mileageDay.upsert({
+    where: { teamMemberId_dayKey: { teamMemberId, dayKey } },
+    create: { teamMemberId, dayKey, miles: 0, stops: 0, sig: null, overrideMiles: rounded, overrideNote: cleanNote },
+    update: { overrideMiles: rounded, overrideNote: cleanNote },
+  });
+  revalidatePath("/sales");
+  return { ok: true, message: `Mileage set to ${rounded} mi for that day.` };
+}
+
 // Recompute cached mileage for a date range (or everyone) — forces a fresh route
-// computation on the next payout load.
+// computation on the next payout load. Owner corrections SURVIVE a recompute:
+// override rows just get their route signature cleared so the computed figure
+// refreshes underneath the override.
 export async function recomputeMileage(memberId?: string): Promise<ActionResult> {
   await requireOwner();
-  await prisma.mileageDay.deleteMany({ where: memberId ? { teamMemberId: memberId } : {} });
+  const scope = memberId ? { teamMemberId: memberId } : {};
+  await prisma.mileageDay.deleteMany({ where: { ...scope, overrideMiles: null } });
+  await prisma.mileageDay.updateMany({ where: { ...scope, overrideMiles: { not: null } }, data: { sig: null } });
   revalidatePath("/sales");
-  return { ok: true, message: "Mileage cleared — will recompute on reload." };
+  return { ok: true, message: "Mileage cleared — will recompute on reload (your adjustments kept)." };
 }

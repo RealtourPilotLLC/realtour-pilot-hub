@@ -80,7 +80,10 @@ export async function savePaySettings(
 
   await prisma.teamMember.update({ where: { id: memberId }, data });
   // Pay settings affect mileage radius → clear cached mileage for this member.
-  await prisma.mileageDay.deleteMany({ where: { teamMemberId: memberId } });
+  // Jordan's per-day mileage corrections survive: those rows just lose their
+  // route signature so the computed figure refreshes under the override.
+  await prisma.mileageDay.deleteMany({ where: { teamMemberId: memberId, overrideMiles: null } });
+  await prisma.mileageDay.updateMany({ where: { teamMemberId: memberId, overrideMiles: { not: null } }, data: { sig: null } });
   revalidatePath(`/team/${memberId}`);
   revalidatePath("/payouts");
   return { ok: true, message: "Pay settings saved." };

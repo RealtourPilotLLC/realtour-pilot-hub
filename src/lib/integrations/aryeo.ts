@@ -1451,6 +1451,14 @@ export async function syncAryeoTeam(): Promise<{ team: number }> {
       shootsAsPhotographer: { none: {} },
       projectsAsEditor: { none: {} },
       projectsAsVa: { none: {} },
+      // Payroll history blocks the sweep — these all cascade on delete, and a
+      // manually-paid member (addShootToPayroll) has no photographer links, so
+      // without this guard one "Sync team" could silently erase pay overrides,
+      // adjustments, and Jordan's mileage corrections.
+      jobPayOverrides: { none: {} },
+      payoutAdjustments: { none: {} },
+      mileageDays: { none: {} },
+      assignedAppointments: { none: {} },
     },
     select: { id: true },
   });

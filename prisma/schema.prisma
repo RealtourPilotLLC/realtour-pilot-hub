@@ -692,6 +692,12 @@ model MileageDay {
   miles        Float
   stops        Int        @default(0) // shoots that day (for the route)
   sig          String?    // signature of the stop coords — recompute when it changes
+  // Owner correction: the miles ACTUALLY driven that day (detour, closed road,
+  // multi-stop errand the router can't see). When set it wins over the computed
+  // figure everywhere pay is calculated; `miles` keeps the computed value for
+  // reference. Cleared = back to automatic.
+  overrideMiles Float?
+  overrideNote  String?
   computedAt   DateTime   @default(now())
 
   @@unique([teamMemberId, dayKey])

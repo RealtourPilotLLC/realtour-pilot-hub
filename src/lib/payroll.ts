@@ -97,13 +97,34 @@ async function routeMiles(home: { lat: number; lng: number }, stops: Stop[]): Pr
   return r2(miles);
 }
 
-// Cached daily miles (recomputes if the day's stop count changed).
+export type DayMiles = {
+  miles: number; // the EFFECTIVE figure pay is computed from (override ?? computed)
+  computedMiles: number; // what the router said (kept for reference under an override)
+  overrideMiles: number | null; // owner correction, when set
+  overrideNote: string | null;
+};
+
+// Cached daily miles (recomputes if the day's stop count changed). An owner
+// override (MileageDay.overrideMiles) always wins over the computed figure;
+// the computed value is still maintained alongside it so the payout UI can
+// show "adjusted from X". With no home on file there's nothing to route, but
+// an override still applies (e.g. a member whose address won't geocode).
 async function dailyMiles(
   memberId: string,
   dayKey: string,
-  home: { lat: number; lng: number },
+  home: { lat: number; lng: number } | null,
   stops: Stop[],
-): Promise<number> {
+): Promise<DayMiles> {
+  const cached = await prisma.mileageDay.findUnique({
+    where: { teamMemberId_dayKey: { teamMemberId: memberId, dayKey } },
+  });
+  const withOverride = (computed: number): DayMiles => ({
+    miles: cached?.overrideMiles ?? computed,
+    computedMiles: computed,
+    overrideMiles: cached?.overrideMiles ?? null,
+    overrideNote: cached?.overrideNote ?? null,
+  });
+  if (!home) return withOverride(0);
   // Signature of the day's route (home + the stop coords, order-independent). ANY
   // change — a shoot reassigned to or from this person — invalidates the cache.
   // Keying on the stop COUNT alone missed reassignments that kept the count equal.
@@ -111,17 +132,16 @@ async function dailyMiles(
     `h:${home.lat.toFixed(5)},${home.lng.toFixed(5)}`,
     ...stops.map((s) => `${s.lat.toFixed(5)},${s.lng.toFixed(5)}`).sort(),
   ].join("|");
-  const cached = await prisma.mileageDay.findUnique({
-    where: { teamMemberId_dayKey: { teamMemberId: memberId, dayKey } },
-  });
-  if (cached && cached.sig === sig) return cached.miles;
+  if (cached && cached.sig === sig) return withOverride(cached.miles);
   const miles = await routeMiles(home, stops);
+  // The upsert never touches the override columns — a recompute (route change,
+  // cache clear) must not eat an owner correction.
   await prisma.mileageDay.upsert({
     where: { teamMemberId_dayKey: { teamMemberId: memberId, dayKey } },
     create: { teamMemberId: memberId, dayKey, miles, stops: stops.length, sig },
     update: { miles, stops: stops.length, sig, computedAt: new Date() },
   });
-  return miles;
+  return withOverride(miles);
 }
 
 export type PayrollJob = {
@@ -144,7 +164,10 @@ export type PayrollJob = {
 
 export type PayrollDay = {
   dayKey: string;
-  miles: number;
+  miles: number; // effective (override ?? computed) — what pay is based on
+  computedMiles: number; // the router's figure, for the "adjusted from" display
+  overrideMiles: number | null; // owner correction, when set
+  overrideNote: string | null;
   freeMiles: number;
   payableMiles: number;
   mileagePay: number;
@@ -444,19 +467,50 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
     for (const dayKey of dayKeys) {
       const dayJobs = built.filter((b) => b.dayKey === dayKey);
       const mileageJobs = dayJobs.filter((b) => !b.override?.noMileage);
-      let miles = 0;
-      if (home) {
-        const stops: Stop[] = dayJobs
-          .filter((b) => b.hasCoords)
-          .map((b) => { const c = coordsByProject.get(b.projectId)!; return { lat: c!.lat, lng: c!.lng, at: b._at }; });
-        miles = await dailyMiles(memberId, dayKey, home, stops);
-      }
-      const payableMiles = Math.max(miles - freeMiles, 0);
-      const mileagePay = r2(payableMiles * (m?.mileageRate ?? 0.65));
-      const share = mileageJobs.length > 0 ? r2(mileagePay / mileageJobs.length) : 0;
+      const stops: Stop[] = home
+        ? dayJobs
+            .filter((b) => b.hasCoords)
+            .map((b) => { const c = coordsByProject.get(b.projectId)!; return { lat: c!.lat, lng: c!.lng, at: b._at }; })
+        : [];
+      const dm = await dailyMiles(memberId, dayKey, home, stops);
+      const payableMiles = Math.max(dm.miles - freeMiles, 0);
+      const share = mileageJobs.length > 0 ? r2((payableMiles * (m?.mileageRate ?? 0.65)) / mileageJobs.length) : 0;
       for (const b of mileageJobs) { b.mileageShare = share; b.jobTotal = r2(b.shootPay + share); }
-      days.push({ dayKey, miles, freeMiles, payableMiles: r2(payableMiles), mileagePay, jobs: mileageJobs.length });
+      days.push({
+        dayKey,
+        miles: dm.miles,
+        computedMiles: dm.computedMiles,
+        overrideMiles: dm.overrideMiles,
+        overrideNote: dm.overrideNote,
+        freeMiles,
+        payableMiles: r2(payableMiles),
+        // The day figure is exactly what the jobs receive — share × jobs, and $0
+        // when no job takes mileage — so the row can never show unpaid dollars.
+        mileagePay: r2(share * mileageJobs.length),
+        jobs: mileageJobs.length,
+      });
     }
+
+    // Owner mileage corrections whose day has NO pay lines this period (shoot
+    // rescheduled/reassigned/cancelled after the adjustment): surface them as
+    // zero-job rows so they're visible and resettable — an invisible override
+    // would silently re-apply if a shoot ever lands back on that day.
+    const orphanOverrides = await prisma.mileageDay.findMany({
+      where: {
+        teamMemberId: memberId,
+        overrideMiles: { not: null },
+        dayKey: { gte: etDayKey(start), lte: etDayKey(end), notIn: dayKeys },
+      },
+      select: { dayKey: true, miles: true, overrideMiles: true, overrideNote: true },
+    });
+    for (const o of orphanOverrides) {
+      days.push({
+        dayKey: o.dayKey, miles: o.overrideMiles!, computedMiles: o.miles,
+        overrideMiles: o.overrideMiles, overrideNote: o.overrideNote,
+        freeMiles, payableMiles: 0, mileagePay: 0, jobs: 0,
+      });
+    }
+    days.sort((a, b) => a.dayKey.localeCompare(b.dayKey));
 
     // ---- Discrepancy detection ------------------------------------------
     const issues: PayrollIssue[] = [];
@@ -464,7 +518,14 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
       issues.push({ level: "warn", message: "Pay rates not set — shoot pay shows $0. Set them on the team page." });
     }
     if (built.length > 0 && m?.payPercent != null && !home) {
-      issues.push({ level: "warn", message: "No home address — mileage can't be calculated. Add it on the team page." });
+      // Downgrade when Jordan already hand-set every day's miles — the mileage
+      // IS calculated (by him); a standing warn would nag about corrected days.
+      const allDaysOverridden = days.length > 0 && days.every((d) => d.overrideMiles != null);
+      issues.push(
+        allDaysOverridden
+          ? { level: "info", message: "No home address on file — mileage is running on your manual adjustments." }
+          : { level: "warn", message: "No home address — mileage can't be calculated. Add it on the team page." },
+      );
     }
     const noCoords = built.filter((b) => !b.hasCoords);
     if (home && noCoords.length > 0) {
@@ -475,10 +536,22 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
       });
     }
     for (const d of days) {
+      const dayLabel = new Date(d.dayKey + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      // A hand-adjusted day IS the verification — never nag about the owner's
+      // own figure. Instead, surface adjustments stranded on shoot-less days.
+      if (d.overrideMiles != null) {
+        if (d.jobs === 0) {
+          issues.push({
+            level: "warn",
+            message: `Mileage adjustment on ${dayLabel} (${d.overrideMiles} mi) has no shoots this period — it pays nothing. Reset it if the shoot moved.`,
+          });
+        }
+        continue;
+      }
       if (d.miles > 350 || (d.jobs > 0 && d.miles / d.jobs > 200)) {
         issues.push({
           level: "warn",
-          message: `Unusually high mileage on ${new Date(d.dayKey + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric" })}: ${d.miles.toFixed(0)} mi for ${d.jobs} shoot${d.jobs === 1 ? "" : "s"} — verify the locations.`,
+          message: `Unusually high mileage on ${dayLabel}: ${d.miles.toFixed(0)} mi for ${d.jobs} shoot${d.jobs === 1 ? "" : "s"} — verify the locations.`,
         });
       }
     }

@@ -4,12 +4,12 @@ import { useState, useEffect, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  Camera, Car, SlidersHorizontal, ChevronDown, AlertTriangle, Loader2, Plus, X, RefreshCw, FileDown, RotateCcw, Search, Receipt,
+  Camera, Car, SlidersHorizontal, ChevronDown, AlertTriangle, Loader2, Pencil, Plus, X, RefreshCw, FileDown, RotateCcw, Search, Receipt,
 } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { usd, parseMoney } from "@/lib/money";
-import type { PayrollPerson, PayrollJob } from "@/lib/payroll";
-import { setJobOverride, addAdjustment, removeAdjustment, recomputeMileage, creativeStatementHtml, restoreJob, searchPayableProjects, addShootToPayroll } from "@/app/payouts/actions";
+import type { PayrollPerson, PayrollJob, PayrollDay } from "@/lib/payroll";
+import { setJobOverride, addAdjustment, removeAdjustment, recomputeMileage, setMileageOverride, creativeStatementHtml, restoreJob, searchPayableProjects, addShootToPayroll } from "@/app/payouts/actions";
 
 function fmtDay(iso: string | null): string {
   if (!iso) return "—";
@@ -179,13 +179,13 @@ export function PayoutCard({ person, periodStartISO }: { person: PayrollPerson; 
           </summary>
           <div className="mt-2 space-y-1">
             {person.days.map((d) => (
-              <div key={d.dayKey} className="flex items-center justify-between gap-2 text-xs">
-                <span className="text-muted">{new Date(d.dayKey + "T12:00:00Z").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}</span>
-                <span className="text-muted-2">
-                  {d.miles.toFixed(1)} mi − {d.freeMiles} free = <span className="text-foreground">{d.payableMiles.toFixed(1)} paid</span> · {d.jobs} job{d.jobs === 1 ? "" : "s"}
-                </span>
-                <span className="font-medium">{usd(d.mileagePay)}</span>
-              </div>
+              <MileageDayRow
+                key={d.dayKey}
+                day={d}
+                memberId={person.member.id}
+                busy={busy}
+                run={(fn) => start(async () => { await fn(); refresh(); })}
+              />
             ))}
           </div>
         </details>
@@ -359,6 +359,122 @@ function AddShoot({ memberId, busy, run }: { memberId: string; busy: boolean; ru
             </button>
           ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+// One day in the mileage breakdown — with Jordan's inline correction. The
+// computed (routed) figure stays visible under an override so "adjusted from
+// what" is never a mystery, and Reset returns the day to fully automatic.
+function MileageDayRow({ day: d, memberId, busy, run }: {
+  day: PayrollDay; memberId: string; busy: boolean; run: (fn: () => Promise<unknown>) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [miles, setMiles] = useState("");
+  const [note, setNote] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const adjusted = d.overrideMiles != null;
+  const orphan = adjusted && d.jobs === 0; // adjustment survives, but no shoots pay out of this day
+  const dayLabel = new Date(d.dayKey + "T12:00:00Z").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+
+  const beginEdit = () => {
+    if (busy) return; // a Recompute/refresh is in flight — don't capture a stale prefill
+    // Prefill with the figure being edited — the override when one exists
+    // (0 is a real value: "carpooled, no drive"), else the computed miles.
+    setMiles(String(adjusted ? d.overrideMiles : d.miles));
+    setNote(d.overrideNote ?? "");
+    setErr(null);
+    setEditing(true);
+  };
+  const save = () => {
+    if (busy) return;
+    if (miles.trim() === "") {
+      setErr("Enter the miles — or use the reset arrow to go back to automatic.");
+      return;
+    }
+    setErr(null);
+    // Editor stays open until the server confirms — a rejected value must
+    // never look saved.
+    run(() =>
+      setMileageOverride(memberId, d.dayKey, miles, note).then((r) => {
+        if (r.ok) setEditing(false);
+        else setErr(r.message);
+      }),
+    );
+  };
+
+  if (editing) {
+    return (
+      <div className="rounded-lg bg-surface-2/60 px-2 py-1.5 text-xs">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-muted">{dayLabel}</span>
+          <input
+            type="number" inputMode="decimal" min={0} step={0.1} value={miles} autoFocus
+            onChange={(e) => setMiles(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") setEditing(false); }}
+            className="w-20 rounded-md border border-border bg-surface px-2 py-1 text-xs"
+            placeholder="miles" aria-label="Miles driven that day"
+          />
+          <span className="text-muted-2">mi</span>
+          <input
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") setEditing(false); }}
+            className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2 py-1 text-xs"
+            placeholder="why? (optional — e.g. detour on Rt 30)" aria-label="Reason for the adjustment"
+          />
+          <button onClick={save} disabled={busy} className="rounded-md bg-brand px-2 py-1 font-semibold text-white disabled:opacity-50">
+            {busy ? <Loader2 className="size-3 animate-spin" /> : "Save"}
+          </button>
+          <button onClick={() => setEditing(false)} aria-label="Cancel" className="text-muted-2 hover:text-foreground"><X className="size-3.5" /></button>
+        </div>
+        {err && <p className="mt-1 font-medium text-danger">{err}</p>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="group text-xs">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-muted">{dayLabel}</span>
+        <span className="min-w-0 flex-1 text-right text-muted-2">
+          {adjusted && (
+            <span
+              title={`${d.overrideNote ? `${d.overrideNote} · ` : ""}router said ${d.computedMiles.toFixed(1)} mi`}
+              className="mr-1.5 rounded bg-warning/10 px-1 py-0.5 text-[10px] font-semibold text-warning"
+            >
+              adjusted · was {d.computedMiles.toFixed(1)}
+            </span>
+          )}
+          {orphan ? (
+            <span className="text-warning">{d.miles.toFixed(1)} mi — no shoots this day anymore; pays nothing</span>
+          ) : (
+            <>
+              {d.miles.toFixed(1)} mi − {d.freeMiles} free = <span className="text-foreground">{d.payableMiles.toFixed(1)} paid</span> · {d.jobs} job{d.jobs === 1 ? "" : "s"}
+            </>
+          )}
+        </span>
+        <span className="font-medium">{usd(d.mileagePay)}</span>
+        <span className="flex shrink-0 items-center gap-1">
+          <button onClick={beginEdit} aria-label={`Adjust miles for ${dayLabel}`} title="Adjust this day's miles" className="text-muted-2 opacity-60 transition-opacity hover:text-foreground group-hover:opacity-100">
+            <Pencil className="size-3" />
+          </button>
+          {adjusted && (
+            <button
+              onClick={() => run(() => setMileageOverride(memberId, d.dayKey, null))}
+              disabled={busy}
+              aria-label={`Reset ${dayLabel} to computed mileage`}
+              title="Back to the computed figure"
+              className="text-muted-2 opacity-60 transition-opacity hover:text-danger group-hover:opacity-100"
+            >
+              <RotateCcw className="size-3" />
+            </button>
+          )}
+        </span>
+      </div>
+      {adjusted && d.overrideNote && (
+        <p className="pl-2 text-right text-[10px] italic text-muted-2">“{d.overrideNote}”</p>
       )}
     </div>
   );
