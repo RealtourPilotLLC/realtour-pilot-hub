@@ -16,12 +16,14 @@ import { AocPlaybookCard } from "@/components/project/AocPlaybookCard";
 import { FrameioButton } from "@/components/project/FrameioButton";
 import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { getVideoSlaStatus } from "@/lib/projectStatus";
-import { SlaCountdown } from "@/components/editing/SlaCountdown";
 import { SubmitCutCard } from "@/components/editing/EditorActions";
 import { EditFeedback } from "@/components/editing/EditFeedback";
+import { EditTracker, deriveEditStage, type RoundRow } from "@/components/editing/EditTracker";
 import { getEditorFeedback } from "@/lib/reviewRoom";
 import { slugForName } from "@/lib/assignees";
 import { refinedDeliverableLabel } from "@/lib/pipeline";
+import { stripMoneySentences } from "@/lib/text";
+import { prisma } from "@/lib/prisma";
 import { ActivityType } from "@prisma/client";
 import { formatDistanceToNow } from "date-fns";
 
@@ -38,7 +40,15 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
   // Photographers get their own field view; everyone else (owner/admin/editor) sees this.
   if (viewer && viewer.role === "PHOTOGRAPHER") redirect(`/shoot/${id}`);
 
-  const [project, team] = await Promise.all([getProject(id), getTeam()]);
+  const [project, team, submissions] = await Promise.all([
+    getProject(id),
+    getTeam(),
+    prisma.reviewSubmission.findMany({
+      where: { projectId: id },
+      orderBy: { round: "asc" },
+      select: { round: true, status: true, submittedByName: true, note: true, createdAt: true, decidedAt: true },
+    }),
+  ]);
   if (!project) notFound();
 
   const isOwnerAdmin = !viewer || viewer.role === "OWNER" || viewer.role === "ADMIN";
@@ -71,6 +81,66 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
   const specialRequests = project.activities.filter((a) => a.type === ActivityType.SPECIAL_REQUEST);
   const deliverableNotes = project.deliverables.filter((d) => d.notes?.trim());
 
+  // ---- The tracker: stage + rounds + revision asks, all from hard state ----
+  // VIDEO-lane revision tasks only: a photo retouch routed to Kyle also flips
+  // the project to REVISION, but it is NOT this editor's work order — it must
+  // never flip the video tracker or render as their ask (review finding).
+  const VIDEO_REVISION_KEYS = new Set(["kim", "remar", "luma"]);
+  const videoRevisionTasks = project.smartTasks.filter(
+    (t) => t.taskType === "revision" && VIDEO_REVISION_KEYS.has(t.assignedKey ?? ""),
+  );
+  const revisionOpen = videoRevisionTasks.length > 0;
+  let rawsLanded = false;
+  try {
+    const ev = project.statusEvidence ? (JSON.parse(project.statusEvidence) as { dropbox?: { rawVideo?: number } | null }) : null;
+    rawsLanded = (ev?.dropbox?.rawVideo ?? 0) > 0;
+  } catch { /* evidence is best-effort */ }
+  const latestRound = submissions.length ? submissions[submissions.length - 1] : null;
+  // A stale flag must not resurrect "changes requested" on an approved cut:
+  // only a video revision RAISED AFTER the approval outranks it.
+  const approvedAt = latestRound?.status === "APPROVED" ? latestRound.decidedAt : null;
+  const revisionAfterApproval =
+    revisionOpen && (!approvedAt || videoRevisionTasks.some((t) => t.createdAt > approvedAt));
+  const { stage, label: statusLine } = deriveEditStage({
+    projectStatus: project.status,
+    revisionOpen,
+    revisionAfterApproval,
+    latestRoundStatus: latestRound?.status ?? null,
+    rawsLanded: rawsLanded || submissions.length > 0,
+  });
+  const hadRevision =
+    revisionOpen ||
+    (!!project.revisionRequestedAt && project.status === "REVISION") ||
+    submissions.some((s) => s.status === "CHANGES_REQUESTED");
+  // The client's asks: raiseRevision APPENDS later rounds onto the open task's
+  // description ("\n\nNew request: …"). Money never reaches an editor's screen
+  // — and the gate is STRICT (an unknown/expired session scrubs too; only a
+  // live OWNER/ADMIN sees raw text). Scrubbed-empty asks become placeholders,
+  // never dropped, so the round labels stay on the right ask.
+  const canSeeRaw = viewer?.role === "OWNER" || viewer?.role === "ADMIN";
+  const rawAsks = videoRevisionTasks
+    .flatMap((t) => (t.description ?? t.summary ?? "").split(/\n\nNew request: /))
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const revisionAsks = canSeeRaw
+    ? rawAsks
+    : rawAsks.map((a) => stripMoneySentences(a) || "(a note was held back — ask Jordan)");
+  const revisionAtISO =
+    videoRevisionTasks.length > 0
+      ? new Date(Math.max(...videoRevisionTasks.map((t) => t.createdAt.getTime()))).toISOString()
+      : null;
+  const rounds: RoundRow[] = submissions.map((s) => ({
+    round: s.round,
+    status: s.status,
+    submittedByName: s.submittedByName,
+    note: s.note,
+    createdAtISO: s.createdAt.toISOString(),
+    decidedAtISO: s.decidedAt ? s.decidedAt.toISOString() : null,
+  }));
+  // The tracker narrates a VIDEO edit — a photos-only or cancelled job has no
+  // edit lifecycle to track (the brief below still renders for reference).
+  const showTracker = videoDeliverables.length > 0 && project.status !== "CANCELLED";
+
   return (
     <div>
       <PageHeader
@@ -89,13 +159,26 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
         }
       />
 
-      {sla && (
-        <div className="flex flex-wrap items-center gap-2 px-4 pt-3 text-sm text-muted sm:px-6">
-          <span>
-            Due {sla.due.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
-          </span>
-          <span className="text-muted-2">·</span>
-          <SlaCountdown dueISO={sla.due.toISOString()} />
+      {/* The tracker — where this edit stands, at a glance (stage timeline,
+          order facts incl. the deadline + live countdown, the client's
+          revision asks, every round sent to review). Video jobs only — a
+          photos-only or cancelled job has no edit lifecycle to narrate. */}
+      {showTracker && (
+        <div className="px-4 pt-4 sm:px-6">
+          <EditTracker
+            stage={stage}
+            statusLine={statusLine}
+            hadRevision={hadRevision}
+            editType={editDeliverables.map((d) => refinedDeliverableLabel(d.type, d.label)).join(" · ") || "Video edit"}
+            dueISO={sla ? sla.due.toISOString() : null}
+            shootDateISO={project.shootDate ? project.shootDate.toISOString() : null}
+            photographerName={project.photographer?.name ?? null}
+            song={project.reelSong}
+            rounds={rounds}
+            revisionAsks={revisionAsks}
+            revisionAtISO={revisionAtISO}
+            showSubmitAnchor={!isOwnerAdmin}
+          />
         </div>
       )}
 
@@ -193,7 +276,7 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
                 </a>
               )}
             </div>
-            <div className="mt-3 space-y-2 rounded-lg border border-[#5b53ff]/25 bg-[#5b53ff]/5 p-3">
+            <div id="submit-cut" className="mt-3 space-y-2 scroll-mt-20 rounded-lg border border-[#5b53ff]/25 bg-[#5b53ff]/5 p-3">
               <div className="flex items-start gap-2">
                 <Clapperboard className="mt-0.5 size-4 shrink-0 text-[#5b53ff]" />
                 <span className="text-sm text-foreground/85">
