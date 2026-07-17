@@ -6,6 +6,7 @@ import { PayFlag } from "@/components/mypay/PayFlag";
 import { prisma } from "@/lib/prisma";
 import { usd } from "@/lib/money";
 import { computePayroll, payPeriodFor, shiftPeriod, periodBounds } from "@/lib/payroll";
+import { etDayKey } from "@/lib/datetime";
 import { getCurrentUser } from "@/lib/auth/user";
 import { homeFor } from "@/lib/auth/access";
 
@@ -15,8 +16,11 @@ export const dynamic = "force-dynamic";
 // period totals; no other people, no client pricing. The invoice shown per job
 // is the ELIGIBLE-services invoice their % is applied to (payableInvoice —
 // virtual/AI add-ons like staging, twilight, declutter are already excluded),
-// so pay × % visibly lines up. Only the CURRENT and NEXT pay periods (history
-// stays on Jordan's /payouts). Anything off gets flagged straight to Jordan.
+// so pay × % visibly lines up. Periods offered: the CLOSED one still awaiting
+// its payday ("Getting paid" — the default, because on/before payday the money
+// landing in their account is the number they came to check), the CURRENT
+// accruing one, and a peek at NEXT. Older history stays on Jordan's /payouts.
+// Anything off gets flagged straight to Jordan.
 
 const fmtDay = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : "—";
@@ -68,12 +72,18 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
     );
   }
 
-  // Current or next period only — never past ones.
+  // The last CLOSED period stays visible until its payday has passed — that's
+  // the check that's actually being paid. After payday it drops off (history
+  // lives on /payouts), and the accruing period becomes the default again.
   const current = payPeriodFor();
+  const prev = shiftPeriod(current.startKey, -1);
   const next = shiftPeriod(current.startKey, 1);
-  const showNext = sp.p === "1";
-  const period = showNext ? next : current;
+  const todayKey = etDayKey(new Date());
+  const prevAwaitingPayout = prev.payoutKey >= todayKey;
+  const p = sp.p ?? (prevAwaitingPayout ? "-1" : "0");
+  const period = p === "-1" && prevAwaitingPayout ? prev : p === "1" ? next : current;
   const { start, end } = periodBounds(period);
+  const paysToday = period.payoutKey === todayKey;
 
   const [people, member, flags] = await Promise.all([
     computePayroll(start, end, { memberId }),
@@ -98,25 +108,27 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
         subtitle={`${member?.name ? member.name.split(" ")[0] + "'s" : "Your"} shoot pay + mileage — flag anything that looks off`}
       />
       <div className="mx-auto max-w-3xl space-y-4 p-4 sm:p-6">
-        {/* Period switch: current + next only */}
+        {/* Period switch: the payout awaiting its payday (when there is one),
+            the accruing period, and a peek at next. */}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 text-sm">
-            <Link
-              href={`/my-pay?p=0${asSuffix}`}
-              className={`rounded-lg px-3 py-1.5 font-medium ${!showNext ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2"}`}
-            >
-              Current
-            </Link>
-            <Link
-              href={`/my-pay?p=1${asSuffix}`}
-              className={`rounded-lg px-3 py-1.5 font-medium ${showNext ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2"}`}
-            >
-              Next
-            </Link>
+            {[
+              ...(prevAwaitingPayout ? [{ key: "-1", label: "Getting paid" }] : []),
+              { key: "0", label: prevAwaitingPayout ? "Current period" : "Current" },
+              { key: "1", label: "Next" },
+            ].map((t) => (
+              <Link
+                key={t.key}
+                href={`/my-pay?p=${t.key}${asSuffix}`}
+                className={`rounded-lg px-3 py-1.5 font-medium ${p === t.key ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2"}`}
+              >
+                {t.label}
+              </Link>
+            ))}
             <span className="ml-2 text-muted">{fmtKey(period.startKey)} – {fmtKey(period.endKey)}</span>
           </div>
-          <span className="rounded-full bg-success/10 px-2.5 py-1 text-xs font-medium text-success">
-            Pays {fmtKey(period.payoutKey, { weekday: "short", month: "short", day: "numeric" })}
+          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${paysToday ? "bg-success text-white" : "bg-success/10 font-medium text-success"}`}>
+            {paysToday ? "Pays TODAY" : `Pays ${fmtKey(period.payoutKey, { weekday: "short", month: "short", day: "numeric" })}`}
           </span>
         </div>
 
