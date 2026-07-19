@@ -490,6 +490,11 @@ model TrainingLesson {
   summaryMd String? // AI-formatted, summarized markdown (headings + bullets) — the default reading view
   videoUrl  String? // 910 Academy Vimeo watch URL (embedded in the lesson view)
   source    String   @default("910-academy")
+  // Public share: an unguessable token → the lesson is viewable at /learn/<token>
+  // WITHOUT a login (video + summary only, never the verbatim transcript).
+  // Owner mints it on demand; clearing the token revokes the link.
+  shareToken String? @unique
+  sharedAt  DateTime?
   createdAt DateTime @default(now())
 
   @@index([volumeNo, orderNo])

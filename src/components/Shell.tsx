@@ -42,7 +42,9 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname]);
 
-  const bare = pathname === "/login" || pathname.startsWith("/invite");
+  // Bare (no sidebar/chrome): auth pages + the PUBLIC training share link, which
+  // an unauthenticated visitor opens — they must never see the app's nav.
+  const bare = pathname === "/login" || pathname.startsWith("/invite") || pathname.startsWith("/learn/");
 
   if (bare) return <>{children}</>;
 

@@ -1,6 +1,7 @@
 import { ChevronDown, GraduationCap } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Markdown } from "@/components/ui/Markdown";
+import { ShareLessonButton } from "@/components/training/ShareLessonButton";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
 import { contentTier } from "@/lib/auth/access";
@@ -37,23 +38,25 @@ function vimeoEmbed(url: string): string | null {
 export default async function TrainingPage() {
   const me = await getCurrentUser().catch(() => null);
   const creative = !!me && contentTier(me.role) === "CREATIVE";
+  // Only the owner can mint a PUBLIC share link (it bypasses login).
+  const canShare = !me || me.role === "OWNER";
   const allLessons = await prisma.trainingLesson.findMany({
     orderBy: [{ volumeNo: "asc" }, { courseNo: "asc" }, { orderNo: "asc" }],
-    select: { volumeNo: true, volume: true, courseNo: true, course: true, title: true, body: true, summaryMd: true, videoUrl: true },
+    select: { id: true, volumeNo: true, volume: true, courseNo: true, course: true, title: true, body: true, summaryMd: true, videoUrl: true, shareToken: true },
   });
   const lessons = creative
     ? allLessons.filter((l) => l.volume === "Agent on Camera" || CREATIVE_VOL2_COURSES.has(l.course))
     : allLessons;
 
   // Group: volume → course → lessons (input is already ordered).
-  type L = { title: string; body: string; summaryMd: string | null; videoUrl: string | null };
+  type L = { id: string; title: string; body: string; summaryMd: string | null; videoUrl: string | null; shareToken: string | null };
   const volumes: { volumeNo: number; volume: string; courses: { course: string; lessons: L[] }[] }[] = [];
   for (const l of lessons) {
     let v = volumes.find((x) => x.volumeNo === l.volumeNo);
     if (!v) { v = { volumeNo: l.volumeNo, volume: l.volume, courses: [] }; volumes.push(v); }
     let c = v.courses.find((x) => x.course === l.course);
     if (!c) { c = { course: l.course, lessons: [] }; v.courses.push(c); }
-    c.lessons.push({ title: l.title, body: l.body, summaryMd: l.summaryMd, videoUrl: l.videoUrl });
+    c.lessons.push({ id: l.id, title: l.title, body: l.body, summaryMd: l.summaryMd, videoUrl: l.videoUrl, shareToken: l.shareToken });
   }
 
   return (
@@ -92,7 +95,12 @@ export default async function TrainingPage() {
                           <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2.5 pl-6 hover:bg-surface-2">
                             <ChevronDown className="size-3.5 shrink-0 -rotate-90 text-muted-2 transition-transform group-open/l:rotate-0" />
                             <span className="text-sm text-foreground/90">{l.title}</span>
-                            {embed && <span className="ml-auto rounded-full bg-brand-soft px-1.5 text-[10px] font-medium text-brand">Video</span>}
+                            {embed && <span className="rounded-full bg-brand-soft px-1.5 text-[10px] font-medium text-brand">Video</span>}
+                            {canShare && (
+                              <span className="ml-auto">
+                                <ShareLessonButton lessonId={l.id} initialToken={l.shareToken} />
+                              </span>
+                            )}
                           </summary>
                           <div className="px-4 pb-4 pl-12">
                             {embed && (

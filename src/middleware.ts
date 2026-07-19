@@ -23,7 +23,9 @@ function pathKey(pathname: string): PageKey | null {
 // /api/activity = the usage beacon: it self-authenticates (204 on no session),
 // and gating it here would 307 stale-cookie beacons into pointless /login
 // renders on every navigation.
-const PUBLIC_PREFIXES = ["/login", "/invite", "/api/auth", "/api/google", "/api/webhooks", "/api/cron", "/api/health", "/api/activity"];
+// /learn/<token> = public training-lesson share (unguessable token is the gate;
+// the page shows video + summary only, never the verbatim transcript).
+const PUBLIC_PREFIXES = ["/login", "/invite", "/learn", "/api/auth", "/api/google", "/api/webhooks", "/api/cron", "/api/health", "/api/activity"];
 
 function isPublic(pathname: string): boolean {
   if (PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"))) return true;
