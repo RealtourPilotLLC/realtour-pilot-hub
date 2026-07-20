@@ -1,13 +1,14 @@
 import Link from "next/link";
-import { TrendingUp, Receipt, Banknote } from "lucide-react";
+import { TrendingUp, Receipt, Banknote, Wallet } from "lucide-react";
 
-// Tab bar for the merged Finance page (Revenue | Unpaid | Payroll), styled to
-// match CommsTabs: brand pill = active, bordered pill = idle. Which tabs render
-// depends on the viewer's role — Revenue + Payroll are owner-only, Unpaid is
-// admin-visible — so the caller passes the tabs it's allowed to show.
-export type FinanceTab = "revenue" | "unpaid" | "payroll";
+// Tab bar for the merged Finance page (Money | Revenue | Unpaid | Payroll),
+// styled to match CommsTabs: brand pill = active, bordered pill = idle. Which
+// tabs render depends on the viewer's role — Money/Revenue/Payroll are
+// owner-only, Unpaid is admin-visible — so the caller passes the allowed tabs.
+export type FinanceTab = "money" | "revenue" | "unpaid" | "payroll";
 
 const TABS: { key: FinanceTab; label: string; href: string; icon: typeof Receipt }[] = [
+  { key: "money", label: "Money", href: "/sales?tab=money", icon: Wallet },
   { key: "revenue", label: "Revenue", href: "/sales", icon: TrendingUp },
   { key: "unpaid", label: "Unpaid", href: "/sales?tab=unpaid", icon: Receipt },
   { key: "payroll", label: "Payroll", href: "/sales?tab=payroll", icon: Banknote },

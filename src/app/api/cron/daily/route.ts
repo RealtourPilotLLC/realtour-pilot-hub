@@ -77,6 +77,13 @@ export async function GET(req: NextRequest) {
   // (July 5's profile refreshes ran zero times because this step ran mid-list).
   await step("ordersFullReconcile", () => syncAryeoOrders({ full: true }));
 
+  // Stripe money-in (balance transactions → real collected + fees for the P&L).
+  // No-ops cleanly when Stripe isn't connected.
+  await step("stripe", async () => {
+    const { syncStripe } = await import("@/lib/integrations/stripe");
+    return syncStripe();
+  });
+
   // Persist this run (CronRun) + Slack-ping on a NEW failure/skip. Best-effort.
   await finish();
 

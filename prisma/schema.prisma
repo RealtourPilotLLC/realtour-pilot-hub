@@ -104,6 +104,12 @@ model TeamMember {
   payFloor    Float?  // dollar minimum per shoot, e.g. 100
   mileageRate Float   @default(0.65) // $/mile beyond the home radius
   homeRadiusMi Int    @default(35)   // free radius each way (daily free miles = ×2)
+  // How this person is paid — photographers earn PER_SHOOT (the % engine above);
+  // editors/ops are MONTHLY_FLAT (Kim $2,500/mo) or HOURLY (Remar, Kyle). These
+  // costs were only ever in Jordan's bank account; PayrollEntry brings them in.
+  payType     PayType @default(PER_SHOOT)
+  monthlyPay  Float?  // MONTHLY_FLAT: the fixed monthly wage
+  hourlyRate  Float?  // HOURLY: $/hour
   // Aryeo linkage
   aryeoUserId       String? @unique // /users id
   aryeoTeamMemberId String? @unique // /company-team-members id (appointment assignee)
@@ -122,6 +128,88 @@ model TeamMember {
   jobPayOverrides      JobPayOverride[]
   payoutAdjustments    PayoutAdjustment[]
   mileageDays          MileageDay[]
+  payrollEntries       PayrollEntry[]
+}
+
+// How a team member is paid — see TeamMember.payType.
+enum PayType {
+  PER_SHOOT    // photographers: % of eligible invoice (computePayroll owns these)
+  MONTHLY_FLAT // fixed monthly wage (Kim)
+  HOURLY       // hours × rate (Remar, Kyle)
+  NONE         // not paid through payroll
+}
+
+// One recorded pay-out to a non-photographer (editor / ops) for one pay period —
+// the bridge from "only in my bank account" into the Hub's P&L. `amount` is the
+// single source of truth (dollars actually paid); hours/rate are just how it was
+// derived for HOURLY. Photographers are NOT here (computePayroll handles them).
+model PayrollEntry {
+  id           String     @id @default(cuid())
+  teamMember   TeamMember @relation(fields: [teamMemberId], references: [id], onDelete: Cascade)
+  teamMemberId String
+  periodStart  String     // yyyy-mm-dd bi-weekly period key (MONTHLY_FLAT: one per month)
+  payDate      DateTime   // when the money left the bank — drives the P&L month
+  basis        String     // "MONTHLY_FLAT" | "HOURLY"
+  hours        Float?     // HOURLY only
+  rate         Float?     // snapshot of hourlyRate/monthlyPay at entry time
+  amount       Float      // dollars actually paid — the source of truth
+  note         String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@unique([teamMemberId, periodStart]) // one entry per person per period
+  @@index([payDate])
+}
+
+// A business (or personal) expense — the cost side of the P&L that lived nowhere
+// before. `personal` flags draws / mixed-account spend so the P&L can separate
+// business from personal (Jordan's stated need). Dollars, like price/payableInvoice.
+model Expense {
+  id         String   @id @default(cuid())
+  spentAt    DateTime // when it was paid
+  amount     Float    // dollars
+  category   String   @default("other") // software | subscriptions | gear | travel | fees | contractor | owner_draw | other
+  vendor     String?
+  note       String?
+  personal   Boolean  @default(false) // true = personal/owner draw, excluded from business P&L
+  recurring  Boolean  @default(false) // marks a known monthly cost (rent, software) for the runway forecast
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([spentAt])
+}
+
+// A manual bank-balance reading so the runway/cash-position hero has a real cash
+// number to anchor on (Aryeo/Stripe only know revenue, not what's in the account).
+model CashSnapshot {
+  id        String   @id @default(cuid())
+  asOf      DateTime // date the balance was true
+  balance   Float    // dollars in the business checking account
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([asOf])
+}
+
+// A Stripe balance transaction — the authoritative money-in record: gross charged,
+// Stripe's fee, and the net that actually lands in the bank. Synced read-only from
+// the connected Stripe account; reconciled to a project best-effort.
+model StripeTransaction {
+  id           String    @id // Stripe's txn id (txn_…) — natural key, upsert on it
+  type         String    // charge | payment | refund | payout | adjustment | …
+  gross        Float     // dollars (amount, sign per direction)
+  fee          Float     // Stripe fee in dollars
+  net          Float     // gross − fee, dollars
+  currency     String    @default("usd")
+  createdAt    DateTime  // Stripe `created`
+  description  String?
+  customerName String?
+  projectId    String?   // best-effort reconcile to an Aryeo project
+  matchNote    String?
+  syncedAt     DateTime  @default(now())
+
+  @@index([createdAt])
+  @@index([type])
 }
 
 // A shoot appointment, synced from Aryeo /appointments (with assigned user).

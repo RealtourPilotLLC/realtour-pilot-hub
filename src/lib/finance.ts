@@ -1,17 +1,193 @@
-// Contractor payout rules. Today these are simple percentage-of-order splits;
-// when Stripe is wired in, these become editable rules per contractor and drive
-// real transfers. Centralized here so the logic has one home.
+import "server-only";
+import { cache } from "react";
+import { prisma } from "@/lib/prisma";
+import { computePayroll, payPeriodFor, shiftPeriod, periodBounds } from "@/lib/payroll";
+import { etDayStartUtc, etDayKey } from "@/lib/datetime";
+import { getBillingRows } from "@/lib/queries";
 
-export const PAYOUT_RULES = {
-  // Share of the order total paid to each role for their part of the job.
-  photographerPct: 0.3,
-  editorPct: 0.12,
-};
+// ---------------------------------------------------------------------------
+// The real MONEY engine — the P&L Jordan never had: revenue in, minus EVERYONE
+// he pays (photographers via computePayroll + editors/ops via PayrollEntry) and
+// every cost, = actual profit. CASH BASIS throughout — "what left / entered my
+// account this month" — because that's the number a cash-strapped owner watches.
+// Every figure reads from the same trusted sources as the drill-down tabs so
+// nothing can contradict.
+// ---------------------------------------------------------------------------
 
-export function photographerPayout(orderTotal: number | null | undefined) {
-  return Math.round((orderTotal ?? 0) * PAYOUT_RULES.photographerPct);
+const round2 = (n: number) => Math.round(n * 100) / 100;
+const round4 = (n: number) => Math.round(n * 10000) / 10000;
+
+// ET month boundaries [start, end] in UTC for a month `back` months before now.
+// Anchor the "current" month on the ET calendar day, not UTC — otherwise late on
+// the last of the month (ET) it would already read as next month.
+export function monthBounds(back = 0): { start: Date; end: Date; label: string; key: string } {
+  const [ey, em] = etDayKey(new Date()).split("-").map(Number); // ET year, month (1-based)
+  const y = ey;
+  const m = em - 1 - back; // 0-based month index, shifted back
+  const start = etDayStartUtc(new Date(Date.UTC(y, m, 1, 12)));
+  const end = new Date(etDayStartUtc(new Date(Date.UTC(y, m + 1, 1, 12))).getTime() - 1);
+  const label = new Date(Date.UTC(y, m, 1, 12)).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "long", year: "numeric" });
+  const key = etDayKey(new Date(Date.UTC(y, m, 1, 12))).slice(0, 7);
+  return { start, end, label, key };
 }
 
-export function editorPayout(orderTotal: number | null | undefined) {
-  return Math.round((orderTotal ?? 0) * PAYOUT_RULES.editorPct);
+// The bi-weekly pay periods whose PAYOUT (period end + 6 days) lands in [start,end]
+// — i.e. the periods whose cash actually left the account during this month.
+function periodsPayingIn(start: Date, end: Date): string[] {
+  const out: string[] = [];
+  let p = payPeriodFor(etDayKey(start));
+  p = shiftPeriod(p.startKey, -2); // back up so we can't miss an early-month payout
+  for (let i = 0; i < 8; i++) {
+    const payout = new Date(p.payoutKey + "T12:00:00Z");
+    if (payout >= start && payout <= end) out.push(p.startKey);
+    if (payout > end) break;
+    p = shiftPeriod(p.startKey, 1);
+  }
+  return out;
+}
+
+// Photographer cost paid out during the month (the % engine, summed over periods).
+async function photographerCost(start: Date, end: Date): Promise<number> {
+  let total = 0;
+  for (const startKey of periodsPayingIn(start, end)) {
+    const b = periodBounds(payPeriodFor(startKey));
+    const people = await computePayroll(b.start, b.end);
+    total += people.reduce((s, x) => s + x.total, 0);
+  }
+  return round2(total);
+}
+
+// Editor/ops cost paid during the month (Kim, Remar, Kyle — the invisible half).
+async function teamCost(start: Date, end: Date): Promise<number> {
+  const agg = await prisma.payrollEntry.aggregate({
+    where: { payDate: { gte: start, lte: end } },
+    _sum: { amount: true },
+  });
+  return round2(agg._sum.amount ?? 0);
+}
+
+// Money IN. Stripe is the truth once its data covers the month; older months fall
+// back to Aryeo delivered revenue, flagged as an estimate. We sum GROSS for the
+// top line and fees SEPARATELY, so the P&L subtracts the card fee exactly once
+// (revenue = gross; profit = gross − fees − payroll − expenses). Refunds carry a
+// negative gross, so summing gross nets them out automatically.
+async function revenueForMonth(start: Date, end: Date) {
+  // A month is "Stripe-covered" once the synced window reaches it — so a real $0
+  // collected month reads as $0, but months BEFORE Stripe was ever synced fall
+  // back to the Aryeo estimate instead of a false authoritative $0.
+  const earliest = await prisma.stripeTransaction.aggregate({ _min: { createdAt: true } });
+  const firstTxn = earliest._min.createdAt;
+  const stripeConnected = firstTxn != null && end >= firstTxn;
+
+  const txns = await prisma.stripeTransaction.findMany({
+    where: {
+      createdAt: { gte: start, lte: end },
+      // Money in + its reversals (charge/payment) and refunds for both integration
+      // styles; payouts/transfers/fees are excluded so we never double-count.
+      type: { in: ["charge", "payment", "refund", "payment_refund", "adjustment"] },
+    },
+    select: { gross: true, fee: true },
+  });
+  const stripeGross = round2(txns.reduce((s, t) => s + t.gross, 0));
+  const stripeFees = round2(txns.reduce((s, t) => s + t.fee, 0));
+
+  const delivered = await prisma.project.findMany({
+    where: { status: "DELIVERED", deliveredAt: { gte: start, lte: end } },
+    select: { payableInvoice: true, price: true },
+  });
+  const aryeoDelivered = round2(delivered.reduce((s, p) => s + (p.payableInvoice ?? p.price ?? 0), 0));
+
+  return { stripeConnected, stripeGross, stripeFees, aryeoDelivered };
+}
+
+export type MonthlyPnl = {
+  key: string;
+  label: string;
+  revenue: number; // the trusted top line (Stripe net if connected, else Aryeo delivered)
+  revenueIsEstimate: boolean; // true = Aryeo fallback (connect Stripe for actual)
+  invoiced: number; // Aryeo booked this month (a "booked vs collected" secondary line)
+  photographerPay: number;
+  teamPay: number;
+  allPayroll: number;
+  cardFees: number;
+  expenses: number; // business expenses (personal excluded)
+  profit: number;
+  margin: number | null; // profit / revenue
+  payrollPctOfRevenue: number | null;
+};
+
+// Request-memoized: MoneyTab + getCashPosition + getPayrollTrend all ask for the
+// same months in one render, so cache() collapses the repeated (heavy) computes.
+export const getMonthlyPnl = cache(async (back = 0): Promise<MonthlyPnl> => {
+  const { start, end, label, key } = monthBounds(back);
+  const [rev, photographerPay, teamPay, expAgg] = await Promise.all([
+    revenueForMonth(start, end),
+    photographerCost(start, end),
+    teamCost(start, end),
+    prisma.expense.aggregate({ where: { personal: false, spentAt: { gte: start, lte: end } }, _sum: { amount: true } }),
+  ]);
+  // Top line is GROSS collected (Stripe) so the fee is subtracted ONCE below.
+  const revenue = rev.stripeConnected ? rev.stripeGross : rev.aryeoDelivered;
+  const allPayroll = round2(photographerPay + teamPay);
+  const expenses = round2(expAgg._sum.amount ?? 0);
+  const cardFees = rev.stripeConnected ? rev.stripeFees : 0;
+  const profit = round2(revenue - allPayroll - cardFees - expenses);
+  return {
+    key, label, revenue,
+    revenueIsEstimate: !rev.stripeConnected,
+    invoiced: rev.aryeoDelivered,
+    photographerPay, teamPay, allPayroll, cardFees, expenses, profit,
+    margin: revenue > 0 ? round4(profit / revenue) : null,
+    payrollPctOfRevenue: revenue > 0 ? round4(allPayroll / revenue) : null,
+  };
+});
+
+export type CashPosition = {
+  bankBalance: number | null;
+  bankAsOf: string | null;
+  stripeAvailable: number | null;
+  stripePending: number | null;
+  arOutstanding: number; // delivered + unpaid (money owed to us)
+  goingOut30: number; // rough next-30d outflow: ~last month's payroll + recurring expenses
+  projected: number | null; // bank + AR + stripe pending − going out
+};
+
+export async function getCashPosition(): Promise<CashPosition> {
+  const [snap, ar, prevPnl, recurring] = await Promise.all([
+    // Latest reading; createdAt breaks ties so a same-day correction wins.
+    prisma.cashSnapshot.findFirst({ orderBy: [{ asOf: "desc" }, { createdAt: "desc" }], select: { balance: true, asOf: true } }),
+    getBillingRows().then((b) => b.totalOutstanding).catch(() => 0),
+    getMonthlyPnl(1), // last full month's all-in payroll ≈ next month's outflow
+    prisma.expense.aggregate({ where: { personal: false, recurring: true }, _sum: { amount: true } }),
+  ]);
+  let stripeAvailable: number | null = null;
+  let stripePending: number | null = null;
+  try {
+    const { stripeBalance } = await import("@/lib/integrations/stripe");
+    const bal = await stripeBalance();
+    if (bal) { stripeAvailable = bal.available; stripePending = bal.pending; }
+  } catch { /* not connected — degrade */ }
+
+  const goingOut30 = round2(prevPnl.allPayroll + (recurring._sum.amount ?? 0));
+  const bankBalance = snap?.balance ?? null;
+  const projected =
+    bankBalance != null ? round2(bankBalance + ar + (stripePending ?? 0) - goingOut30) : null;
+  return {
+    bankBalance,
+    bankAsOf: snap?.asOf ? etDayKey(snap.asOf) : null,
+    stripeAvailable, stripePending,
+    arOutstanding: round2(ar),
+    goingOut30,
+    projected,
+  };
+}
+
+// Payroll-as-%-of-revenue trend — the "am I overpaying?" answer, a few months back.
+export async function getPayrollTrend(months = 4): Promise<{ key: string; label: string; revenue: number; allPayroll: number; pct: number | null }[]> {
+  const out: { key: string; label: string; revenue: number; allPayroll: number; pct: number | null }[] = [];
+  for (let b = months - 1; b >= 0; b--) {
+    const p = await getMonthlyPnl(b);
+    out.push({ key: p.key, label: p.label, revenue: p.revenue, allPayroll: p.allPayroll, pct: p.payrollPctOfRevenue });
+  }
+  return out;
 }

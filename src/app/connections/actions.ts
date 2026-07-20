@@ -5,6 +5,7 @@ import { requireOwner } from "@/lib/auth/guards";
 import { revalidatePath } from "next/cache";
 import { saveSecret, disconnect as disconnectConn } from "@/lib/integrations/connections";
 import { testOpenPhoneKey, registerOpenPhoneWebhooks } from "@/lib/integrations/openphone";
+import { testStripeKey, syncStripe } from "@/lib/integrations/stripe";
 import { exchangeDropboxCode, testDropboxRefreshToken } from "@/lib/integrations/dropbox";
 import { testSlackKey, testSlackUserKey } from "@/lib/integrations/slack";
 import { testAiKey } from "@/lib/integrations/ai";
@@ -73,7 +74,22 @@ const TESTERS: Record<string, (key: string) => Promise<{ ok: true; label: string
   slack: testSlackKey,
   slack_user: testSlackUserKey,
   ai: testAiKey,
+  stripe: testStripeKey,
 };
+
+// Pull the latest Stripe money-in (balance transactions) on demand — the "Sync
+// payments" button on the Stripe card. Daily cron does this automatically too.
+export async function syncStripeNow(): Promise<ActionResult> {
+  await requireOwner();
+  try {
+    const r = await syncStripe();
+    revalidatePath("/connections");
+    revalidatePath("/sales");
+    return { ok: true, message: `Synced — ${r.imported} Stripe transaction${r.imported === 1 ? "" : "s"} pulled in.` };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Stripe sync failed." };
+  }
+}
 
 export async function syncGmailNow(): Promise<ActionResult> {
   await requireOwner();
