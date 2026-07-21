@@ -238,6 +238,49 @@ export async function categoriseBooks(opts: { sinceKey?: string } = {}): Promise
   return { scanned: rows.length, flagged, byCategory };
 }
 
+// ---------------------------------------------------------------------------
+// VENMO — the one rail with no API and no reliable record anywhere.
+//
+// Stephen Kennedy is the only client who pays this way, into Jordan's PERSONAL
+// Venmo. It reaches QuickBooks only as a bank deposit, and only while the bank
+// feed is alive — which it has not been since the end of 2025. Aryeo invoice
+// totals are a decent proxy but ran ~5% light ($12,425 vs the real $13,125).
+//
+// So this list is transcribed from Venmo itself and is AUTHORITATIVE for the
+// window it covers. It is manual by necessity, not by choice: add new charges
+// here, or the Venmo rail silently under-reports.
+//
+// Covers 2026-01-01 onward. Before that, bank-feed deposits are used instead
+// (2025 = $22,698), and the two must never both be counted.
+// ---------------------------------------------------------------------------
+export const VENMO_COVERAGE_FROM = "2026-01-01";
+
+export const VENMO_CHARGES: { date: string; amount: number; note: string }[] = [
+  { date: "2026-01-05", amount: 600, note: "2308 Christian St — photos, video, drone" },
+  { date: "2026-01-12", amount: 600, note: "449 Delmar + 7331 E Walnut" },
+  { date: "2026-01-26", amount: 775, note: "5449 Malcom, 5612 Haddington, 1971 Ashley" },
+  // No February charges — a genuine gap, not missing data.
+  { date: "2026-03-05", amount: 300, note: "7413 Sommers Rd — pics + 3 virtual staging" },
+  { date: "2026-03-13", amount: 275, note: "1526 S LeCount — pics + 2 staging" },
+  { date: "2026-03-20", amount: 400, note: "317 N Carlisle + 244 E Sydney" },
+  { date: "2026-03-28", amount: 225, note: "1725 W Berks — pics" },
+  { date: "2026-04-06", amount: 1050, note: "Mohican, Rugby, Provident, Spruce" },
+  { date: "2026-04-13", amount: 825, note: "2210 Hobson, 5430 Addison, 1406 S Allison" },
+  { date: "2026-04-17", amount: 225, note: "7529 Forrest — pics" },
+  { date: "2026-04-19", amount: 575, note: "1722 N Redfield + 723 S 53rd" },
+  { date: "2026-05-04", amount: 1300, note: "437 S 50th, 6028 Osage, 7109 Broad, 5754 W Oxford" },
+  { date: "2026-05-08", amount: 225, note: "6128 Grays Ferry" },
+  { date: "2026-05-18", amount: 2000, note: "2155 66th Ave, 1128 E Upsal, 2822 Maxwell, 512 S Yewdall" },
+  { date: "2026-06-03", amount: 500, note: "1719 N 62nd + 5430 Addison St" },
+  { date: "2026-06-08", amount: 825, note: "1609 S 18th (photo/video/drone) + 865 N 47th" },
+  { date: "2026-06-12", amount: 225, note: "236 Stearly — pics + 2 staging" },
+  { date: "2026-06-19", amount: 300, note: "4150 Terrace — pics + 3 virtual" },
+  { date: "2026-06-22", amount: 275, note: "6332 Limekiln Pike — pics + 2 virtual" },
+  { date: "2026-06-24", amount: 850, note: "5753 Catharine + 5130 N Carlisle" },
+  { date: "2026-07-04", amount: 500, note: "5540 Windsor St + 1201 W Chelten Ave" },
+  { date: "2026-07-16", amount: 275, note: "1429 N 62nd — pics + 2 staging" },
+];
+
 /**
  * Revenue counted AT THE PROCESSOR, which is the only place it is unambiguous.
  *
@@ -273,20 +316,28 @@ export async function revenueByProcessor(startKey: string, endKey: string) {
   const stripe = stripeRows.reduce((s, r) => s + r.gross, 0);
   const stripeFees = stripeRows.reduce((s, r) => s + r.fee, 0);
 
-  // Rail 3 — Venmo. Reaches no API. It shows up as a bank deposit only while the
-  // bank feed is alive, so when the feed is down this reads 0 and the caller must
-  // fall back to Stephen Kennedy's Aryeo invoice totals (which Jordan confirms
-  // are accurate and paid up to date).
-  const venmoRows = await prisma.qboTransaction.findMany({
-    where: { type: "Deposit", txnDate: { gte: from, lte: to } },
-  });
-  const venmo = venmoRows.filter((d) => /VENMO/i.test(d.memo ?? "")).reduce((s, d) => s + d.amount, 0);
+  // Rail 3 — Venmo. Two sources that must NEVER both be counted for the same
+  // day: the transcribed VENMO_CHARGES list (authoritative from its coverage
+  // date) and bank-feed deposits (the only record before that).
+  const coverFrom = new Date(`${VENMO_COVERAGE_FROM}T00:00:00Z`);
+  const listed = VENMO_CHARGES
+    .map((c) => ({ at: new Date(`${c.date}T12:00:00Z`), amount: c.amount }))
+    .filter((c) => c.at >= from && c.at <= to);
+  const venmoListed = listed.reduce((s, c) => s + c.amount, 0);
 
+  // Bank-feed Venmo, but only for the part of the window the list does not cover.
+  const feedTo = to < coverFrom ? to : new Date(coverFrom.getTime() - 1);
+  const venmoRows = feedTo >= from
+    ? await prisma.qboTransaction.findMany({ where: { type: "Deposit", txnDate: { gte: from, lte: feedTo } } })
+    : [];
+  const venmoFeed = venmoRows.filter((d) => /VENMO/i.test(d.memo ?? "")).reduce((s, d) => s + d.amount, 0);
+
+  const venmo = venmoListed + venmoFeed;
   return {
     start: startKey, end: endKey,
     quickbooks, stripe, venmo, stripeFees,
+    venmoListed, venmoFeed, venmoCharges: listed.length,
     total: quickbooks + stripe + venmo,
-    venmoFromBankFeed: venmo > 0,
   };
 }
 
