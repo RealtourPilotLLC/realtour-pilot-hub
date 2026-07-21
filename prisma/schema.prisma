@@ -783,13 +783,25 @@ model PayoutAdjustment {
 model QboTransaction {
   id           String   @id @default(cuid())
   qboId        String
-  type         String // Invoice | Payment | Purchase
+  type         String // Invoice | Payment | Purchase | Deposit | SalesReceipt
   txnDate      DateTime
   amount       Float
   balance      Float    @default(0)
   customerName String?
   accountName  String? // QuickBooks' own account/category name
   docNumber    String?
+
+  // Bank-feed text (deposit line descriptions / memo). This is the ONLY signal
+  // that distinguishes an owner draw from revenue that detoured through the
+  // personal ...0942 account, so it has to be queryable, not buried in `raw`.
+  memo        String?
+  // How many customer Payments/SalesReceipts this deposit settles. A deposit
+  // with zero links and bank-feed text is the shape of a transfer or a duplicate
+  // twin; one with links is a genuine settlement.
+  linkedCount Int     @default(0)
+  // Set when this row is the second copy of a dollar already counted elsewhere
+  // (auto-generated receipt + its bank-feed twin). Points at the row we keep.
+  duplicateOf String?
 
   // --- Bookkeeping automation ---
   // Our normalized category, plus how sure we are. needsReview is the flag that

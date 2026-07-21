@@ -311,17 +311,47 @@ export async function profitAndLoss(startKey: string, endKey: string): Promise<Q
  * Gated on the SECRET being present rather than status === CONNECTED, so one
  * transient error can't freeze sync forever.
  */
+/**
+ * Flatten a transaction's line array into one searchable string. For a Deposit
+ * this is the raw bank-feed text ("ONLINE TRANSFER FROM XXXXX0942", "VENMO*…",
+ * "RTP Received STRIPE …") which is the only thing that tells an owner draw
+ * apart from revenue. Trimmed hard — this is a signal, not an archive.
+ */
+function lineText(r: Record<string, unknown>): string | null {
+  const lines = (r.Line as Record<string, unknown>[] | undefined) ?? [];
+  const parts: string[] = [];
+  for (const L of lines) {
+    const d = L as {
+      Description?: string;
+      DepositLineDetail?: { Entity?: { name?: string }; AccountRef?: { name?: string } };
+      SalesItemLineDetail?: { ItemRef?: { name?: string } };
+    };
+    for (const s of [
+      d.Description,
+      d.SalesItemLineDetail?.ItemRef?.name,
+      d.DepositLineDetail?.Entity?.name,
+      d.DepositLineDetail?.AccountRef?.name,
+    ]) {
+      if (s && !parts.includes(s)) parts.push(s);
+    }
+  }
+  const memo = typeof r.PrivateNote === "string" ? r.PrivateNote : null;
+  if (memo && !parts.includes(memo)) parts.push(memo);
+  const out = parts.join(" | ").trim();
+  return out ? out.slice(0, 500) : null;
+}
+
 export async function syncQuickBooks(opts: { sinceKey?: string } = {}): Promise<{
-  invoices: number; payments: number; purchases: number;
+  invoices: number; payments: number; purchases: number; salesReceipts: number; deposits: number;
 }> {
   const { prisma } = await import("@/lib/prisma");
   try {
     const conn = await getConnection("quickbooks");
     if (!conn || conn.status === "DISCONNECTED" || !conn.secretEncrypted) {
-      return { invoices: 0, payments: 0, purchases: 0 };
+      return { invoices: 0, payments: 0, purchases: 0, salesReceipts: 0, deposits: 0 };
     }
     const since = opts.sinceKey ?? new Date(Date.now() - 400 * 864e5).toISOString().slice(0, 10);
-    let invoices = 0, payments = 0, purchases = 0;
+    let invoices = 0, payments = 0, purchases = 0, salesReceipts = 0, deposits = 0;
 
     // Invoices (what we billed, including everything not in Stripe)
     for (let start = 1; start < 4000; start += 200) {
@@ -402,8 +432,82 @@ export async function syncQuickBooks(opts: { sinceKey?: string } = {}): Promise<
       if (rows.length < 200) break;
     }
 
+    // Sales receipts (paid at point of sale — bundles, deals, prepaid packages).
+    // These never appear as an Invoice, so without them the bundle revenue that
+    // Aryeo also cannot see is invisible to the Hub entirely.
+    for (let start = 1; start < 4000; start += 200) {
+      const { rows } = await qboQuery<Record<string, unknown>>(
+        `select * from SalesReceipt where TxnDate >= '${since}' startposition ${start} maxresults 200`,
+      );
+      if (!rows.length) break;
+      for (const r of rows) {
+        const id = String(r.Id ?? "");
+        if (!id) continue;
+        const txnDate = String(r.TxnDate ?? "");
+        await prisma.qboTransaction.upsert({
+          where: { qboId_type: { qboId: id, type: "SalesReceipt" } },
+          create: {
+            qboId: id, type: "SalesReceipt", txnDate: new Date(`${txnDate}T12:00:00Z`),
+            amount: Number(r.TotalAmt ?? 0), balance: 0,
+            customerName: (r.CustomerRef as { name?: string } | undefined)?.name ?? null,
+            accountName: (r.DepositToAccountRef as { name?: string } | undefined)?.name ?? null,
+            memo: lineText(r), docNumber: String(r.DocNumber ?? "") || null,
+            raw: JSON.stringify(r).slice(0, 8000),
+          },
+          update: {
+            amount: Number(r.TotalAmt ?? 0), memo: lineText(r),
+            accountName: (r.DepositToAccountRef as { name?: string } | undefined)?.name ?? null,
+            syncedAt: new Date(),
+          },
+        });
+        salesReceipts++;
+      }
+      if (rows.length < 200) break;
+    }
+
+    // Deposits — the most important type for bookkeeping, and the one the Hub was
+    // blind to. Everything ambiguous lives here: transfers through the personal
+    // ...0942 account, Stripe payouts, Venmo, and the bank-feed twins that
+    // double-count a dollar already booked as a SalesReceipt or Payment.
+    // `memo` carries the raw bank text and `linkedCount` says whether the deposit
+    // settles real customer transactions — together those decide the category.
+    for (let start = 1; start < 4000; start += 200) {
+      const { rows } = await qboQuery<Record<string, unknown>>(
+        `select * from Deposit where TxnDate >= '${since}' startposition ${start} maxresults 200`,
+      );
+      if (!rows.length) break;
+      for (const r of rows) {
+        const id = String(r.Id ?? "");
+        if (!id) continue;
+        const txnDate = String(r.TxnDate ?? "");
+        const lines = (r.Line as Record<string, unknown>[] | undefined) ?? [];
+        // A line that points back at a Payment/SalesReceipt is a real settlement;
+        // a bare bank-feed line is not.
+        const linked = lines.filter((L) => Array.isArray((L as { LinkedTxn?: unknown[] }).LinkedTxn)
+          && ((L as { LinkedTxn: unknown[] }).LinkedTxn.length > 0)).length;
+        await prisma.qboTransaction.upsert({
+          where: { qboId_type: { qboId: id, type: "Deposit" } },
+          create: {
+            qboId: id, type: "Deposit", txnDate: new Date(`${txnDate}T12:00:00Z`),
+            amount: Number(r.TotalAmt ?? 0), balance: 0,
+            customerName: null,
+            accountName: (r.DepositToAccountRef as { name?: string } | undefined)?.name ?? null,
+            memo: lineText(r), linkedCount: linked, docNumber: null,
+            raw: JSON.stringify(r).slice(0, 8000),
+          },
+          update: {
+            amount: Number(r.TotalAmt ?? 0), memo: lineText(r), linkedCount: linked,
+            accountName: (r.DepositToAccountRef as { name?: string } | undefined)?.name ?? null,
+            syncedAt: new Date(),
+          },
+        });
+        deposits++;
+      }
+      if (rows.length < 200) break;
+    }
+
     await markSynced("quickbooks");
-    return { invoices, payments, purchases };
+    return { invoices, payments, purchases, salesReceipts, deposits };
   } catch (e) {
     await markError("quickbooks", e instanceof Error ? e.message : "QuickBooks sync failed").catch(() => {});
     throw e;

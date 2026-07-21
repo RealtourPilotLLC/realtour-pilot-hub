@@ -89,7 +89,7 @@ export async function syncQuickBooksNow(): Promise<ActionResult> {
     revalidatePath("/sales");
     return {
       ok: true,
-      message: `Synced — ${r.invoices} invoices, ${r.payments} payments, ${r.purchases} expenses.`,
+      message: `Synced — ${r.invoices} invoices, ${r.payments} payments, ${r.salesReceipts} sales receipts, ${r.deposits} deposits, ${r.purchases} expenses.`,
     };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "QuickBooks sync failed." };
