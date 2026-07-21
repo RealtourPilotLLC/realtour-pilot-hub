@@ -44,7 +44,12 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
 
   // Bare (no sidebar/chrome): auth pages + the PUBLIC training share link, which
   // an unauthenticated visitor opens — they must never see the app's nav.
-  const bare = pathname === "/login" || pathname.startsWith("/invite") || pathname.startsWith("/learn/");
+  const bare =
+    pathname === "/login" ||
+    pathname.startsWith("/invite") ||
+    pathname.startsWith("/learn/") ||
+    pathname === "/privacy" ||
+    pathname === "/terms";
 
   if (bare) return <>{children}</>;
 
