@@ -20,13 +20,29 @@ const TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer";
 // Accounting scope only. We deliberately do NOT request payments/payroll write.
 const SCOPES = "com.intuit.quickbooks.accounting";
 
-const CLIENT_ID = process.env.QBO_CLIENT_ID ?? "";
-const CLIENT_SECRET = process.env.QBO_CLIENT_SECRET ?? "";
-// Intuit has separate hosts for sandbox and production companies.
-const API_BASE =
-  process.env.QBO_ENV === "sandbox"
-    ? "https://sandbox-quickbooks.api.intuit.com"
-    : "https://quickbooks.api.intuit.com";
+// Two environments, one switch. Intuit issues SEPARATE credentials for the
+// Development (sandbox) and Production apps, and they are not interchangeable:
+// a sandbox refresh token replayed against the production host fails with a
+// misleading auth error. So QBO_ENV picks the credential pair AND the host
+// together, and the environment is stamped on the connection (see assertEnv).
+//
+// Workflow: test end-to-end against a sandbox company on Development keys,
+// then flip QBO_ENV to "production" and reconnect once for real.
+export const IS_SANDBOX = process.env.QBO_ENV === "sandbox";
+
+const CLIENT_ID =
+  (IS_SANDBOX ? process.env.QBO_SANDBOX_CLIENT_ID : process.env.QBO_CLIENT_ID) ?? "";
+const CLIENT_SECRET =
+  (IS_SANDBOX ? process.env.QBO_SANDBOX_CLIENT_SECRET : process.env.QBO_CLIENT_SECRET) ?? "";
+
+const API_BASE = IS_SANDBOX
+  ? "https://sandbox-quickbooks.api.intuit.com"
+  : "https://quickbooks.api.intuit.com";
+
+/** Which Intuit environment this deploy talks to. Surfaced on /connections. */
+export function quickbooksEnv(): "sandbox" | "production" {
+  return IS_SANDBOX ? "sandbox" : "production";
+}
 
 export class QuickBooksError extends Error {
   constructor(message: string, readonly status = 500) {
@@ -99,27 +115,45 @@ export async function exchangeQuickBooksCode(
   if (!res.ok || !json.refresh_token) {
     return { ok: false, error: json.error_description || json.error || `Intuit token ${res.status}` };
   }
+  const env = quickbooksEnv();
   await saveSecret("quickbooks", json.refresh_token, {
-    accountLabel: "QuickBooks",
-    metadata: { realmId, refreshedAt: new Date().toISOString() },
+    accountLabel: `QuickBooks${IS_SANDBOX ? " (sandbox)" : ""}`,
+    metadata: { realmId, env, refreshedAt: new Date().toISOString() },
   });
   // Best-effort: name the connection after the actual company.
   try {
     const info = await companyInfo();
     if (info?.CompanyName) {
       await saveSecret("quickbooks", json.refresh_token, {
-        accountLabel: `QuickBooks · ${info.CompanyName}`,
-        metadata: { realmId, refreshedAt: new Date().toISOString() },
+        accountLabel: `QuickBooks · ${info.CompanyName}${IS_SANDBOX ? " (sandbox)" : ""}`,
+        metadata: { realmId, env, refreshedAt: new Date().toISOString() },
       });
     }
   } catch { /* label is cosmetic */ }
   return { ok: true };
 }
 
-async function readMeta(): Promise<{ realmId?: string }> {
+type QboMeta = { realmId?: string; env?: "sandbox" | "production"; lastTxnCreated?: number };
+
+async function readMeta(): Promise<QboMeta> {
   const conn = await getConnection("quickbooks");
   if (!conn?.metadata) return {};
-  try { return JSON.parse(conn.metadata) as { realmId?: string }; } catch { return {}; }
+  try { return JSON.parse(conn.metadata) as QboMeta; } catch { return {}; }
+}
+
+/**
+ * Refuse to use a token minted in the other environment. Without this you get a
+ * generic 401 that looks like a broken integration, when the real cause is
+ * "QBO_ENV was flipped and nobody reconnected".
+ */
+function assertEnv(meta: QboMeta) {
+  const current = quickbooksEnv();
+  if (meta.env && meta.env !== current) {
+    throw new QuickBooksError(
+      `This QuickBooks connection was made against the ${meta.env} environment, but the app is now set to ${current}. Disconnect and reconnect QuickBooks to continue.`,
+      409,
+    );
+  }
 }
 
 /**
@@ -131,6 +165,7 @@ async function readMeta(): Promise<{ realmId?: string }> {
 async function accessToken(): Promise<string> {
   const refresh = await getSecret("quickbooks");
   if (!refresh) throw new QuickBooksError("QuickBooks is not connected.", 401);
+  assertEnv(await readMeta());
   const res = await fetch(TOKEN_URL, {
     method: "POST",
     headers: {
