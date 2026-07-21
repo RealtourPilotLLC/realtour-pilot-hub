@@ -6,6 +6,7 @@ import { RevenueTab } from "@/components/finance/RevenueTab";
 import { UnpaidTab } from "@/components/finance/UnpaidTab";
 import { PayrollTab } from "@/components/finance/PayrollTab";
 import { MoneyTab } from "@/components/finance/MoneyTab";
+import { OverviewTab } from "@/components/finance/OverviewTab";
 import type { FinanceTab } from "@/components/finance/FinanceTabs";
 
 export const dynamic = "force-dynamic";
@@ -43,26 +44,28 @@ export default async function FinancePage({
   const requested = sp.tab;
 
   // Which tabs this viewer may see (owner: all; admin: Unpaid only).
-  const show: FinanceTab[] = isOwner ? ["money", "revenue", "unpaid", "payroll"] : ["unpaid"];
-  // Where non-owners land: their only tab, Unpaid. Owners default to Money (the
-  // executive summary — cash, P&L, where the money's actually going).
-  const fallback: FinanceTab = isOwner ? "money" : "unpaid";
+  const show: FinanceTab[] = isOwner ? ["overview", "money", "revenue", "unpaid", "payroll"] : ["unpaid"];
+  // Where non-owners land: their only tab, Unpaid. Owners land on Overview (the
+  // command center — true P&L, cash, where the money's actually going).
+  const fallback: FinanceTab = isOwner ? "overview" : "unpaid";
 
   let tab: FinanceTab;
   if (requested === "unpaid") tab = "unpaid";
   else if (requested === "payroll") tab = "payroll";
   else if (requested === "revenue") tab = "revenue";
   else if (requested === "money") tab = "money";
+  else if (requested === "overview") tab = "overview";
   else tab = fallback; // no/unknown ?tab= → role default
 
   // Owner-only tabs: bounce a non-owner who asked for them to their default tab
   // (mirrors the old owner-only route gate, now per-tab).
-  if (!isOwner && (tab === "revenue" || tab === "payroll" || tab === "money")) {
+  if (!isOwner && (tab === "revenue" || tab === "payroll" || tab === "money" || tab === "overview")) {
     redirect("/sales?tab=unpaid");
   }
 
   if (tab === "unpaid") return <UnpaidTab show={show} />;
   if (tab === "payroll") return <PayrollTab show={show} start={sp.start} />;
   if (tab === "money") return <MoneyTab show={show} />;
+  if (tab === "overview") return <OverviewTab show={show} />;
   return <RevenueTab show={show} />;
 }

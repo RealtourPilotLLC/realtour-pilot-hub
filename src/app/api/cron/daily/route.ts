@@ -34,6 +34,22 @@ export async function GET(req: NextRequest) {
     return syncStripe();
   });
 
+  // Books: pull the recent QuickBooks ledger, then re-run the classification
+  // engine so the Finance → Overview true P&L stays current without anyone
+  // clicking anything. Bounded (45-day sync window, 2026-only classify) to stay
+  // cheap, and under the same budget as every other step — if a slow day starves
+  // it, it's picked up next run. categoriseBooks MUST follow the sync: it persists
+  // the `category` that trueProfitAndLoss / the Overview read.
+  await step("booksSync", async () => {
+    const { syncQuickBooks } = await import("@/lib/integrations/quickbooks");
+    const sinceKey = new Date(Date.now() - 45 * 864e5).toISOString().slice(0, 10);
+    return syncQuickBooks({ sinceKey });
+  });
+  await step("booksClassify", async () => {
+    const { categoriseBooks } = await import("@/lib/bookkeeping");
+    return categoriseBooks({ sinceKey: "2026-01-01" });
+  });
+
   await step("clients", () => syncAllAryeoClients());
   await step("dedupe", () => dedupeClients());
   await step("segments", () => syncClientSegments());
