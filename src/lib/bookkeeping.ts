@@ -238,6 +238,58 @@ export async function categoriseBooks(opts: { sinceKey?: string } = {}): Promise
   return { scanned: rows.length, flagged, byCategory };
 }
 
+/**
+ * Revenue counted AT THE PROCESSOR, which is the only place it is unambiguous.
+ *
+ * Money reaches this business on exactly three rails: QuickBooks Payments,
+ * Stripe, and Venmo (one client, Stephen Kennedy). Counting at the processor
+ * makes the entire bank-deposit problem disappear — duplicates, personal-account
+ * detours through ...0942, and payout deposits are all just MOVEMENT of money
+ * already counted, so they are never counted at all.
+ *
+ * Deliberately does NOT read Deposits or Invoices. A deposit is cash arriving
+ * somewhere it already was; an invoice is a bill, not money.
+ *
+ * Verified no overlap between rails: of 12 manually-recorded "Credit Card"
+ * payments in QuickBooks, ZERO matched a Stripe charge within 5 days.
+ */
+export async function revenueByProcessor(startKey: string, endKey: string) {
+  const from = new Date(`${startKey}T00:00:00Z`);
+  const to = new Date(`${endKey}T23:59:59Z`);
+
+  // Rail 1 — QuickBooks Payments: customer money recorded in QuickBooks itself.
+  // Payment = settles an invoice, SalesReceipt = paid at point of sale (bundles,
+  // prepaid packages). Together they are every dollar QuickBooks collected.
+  const qboRows = await prisma.qboTransaction.findMany({
+    where: { type: { in: ["Payment", "SalesReceipt"] }, txnDate: { gte: from, lte: to } },
+  });
+  const quickbooks = qboRows.reduce((s, r) => s + r.amount, 0);
+
+  // Rail 2 — Stripe: charges net of refunds, GROSS of fees. Fees are a cost and
+  // belong in expenses; netting them here would understate the top line.
+  const stripeRows = await prisma.stripeTransaction.findMany({
+    where: { type: { in: ["charge", "payment", "refund"] }, createdAt: { gte: from, lte: to } },
+  });
+  const stripe = stripeRows.reduce((s, r) => s + r.gross, 0);
+  const stripeFees = stripeRows.reduce((s, r) => s + r.fee, 0);
+
+  // Rail 3 — Venmo. Reaches no API. It shows up as a bank deposit only while the
+  // bank feed is alive, so when the feed is down this reads 0 and the caller must
+  // fall back to Stephen Kennedy's Aryeo invoice totals (which Jordan confirms
+  // are accurate and paid up to date).
+  const venmoRows = await prisma.qboTransaction.findMany({
+    where: { type: "Deposit", txnDate: { gte: from, lte: to } },
+  });
+  const venmo = venmoRows.filter((d) => /VENMO/i.test(d.memo ?? "")).reduce((s, d) => s + d.amount, 0);
+
+  return {
+    start: startKey, end: endKey,
+    quickbooks, stripe, venmo, stripeFees,
+    total: quickbooks + stripe + venmo,
+    venmoFromBankFeed: venmo > 0,
+  };
+}
+
 /** True revenue / expense / profit, with the noise removed. */
 export async function trueProfitAndLoss(startKey: string, endKey: string) {
   const rows = await prisma.qboTransaction.findMany({
