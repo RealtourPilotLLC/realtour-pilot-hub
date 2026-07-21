@@ -341,6 +341,30 @@ function lineText(r: Record<string, unknown>): string | null {
   return out ? out.slice(0, 500) : null;
 }
 
+/**
+ * The expense category a Purchase was actually coded to. Lives on the line
+ * (AccountBasedExpenseLineDetail), NOT on the transaction's AccountRef, which is
+ * merely the funding account. Takes the largest line when a purchase is split,
+ * since that is the one that characterises the spend.
+ */
+export function expenseAccount(r: Record<string, unknown>): string | null {
+  const lines = (r.Line as Record<string, unknown>[] | undefined) ?? [];
+  let best: { name: string; amt: number } | null = null;
+  for (const L of lines) {
+    const d = L as {
+      Amount?: number;
+      AccountBasedExpenseLineDetail?: { AccountRef?: { name?: string } };
+      ItemBasedExpenseLineDetail?: { ItemRef?: { name?: string } };
+    };
+    const name = d.AccountBasedExpenseLineDetail?.AccountRef?.name
+      ?? d.ItemBasedExpenseLineDetail?.ItemRef?.name;
+    if (!name) continue;
+    const amt = Math.abs(Number(d.Amount ?? 0));
+    if (!best || amt > best.amt) best = { name, amt };
+  }
+  return best?.name ?? null;
+}
+
 export async function syncQuickBooks(opts: { sinceKey?: string } = {}): Promise<{
   invoices: number; payments: number; purchases: number; salesReceipts: number; deposits: number;
 }> {
@@ -415,7 +439,12 @@ export async function syncQuickBooks(opts: { sinceKey?: string } = {}): Promise<
         const id = String(r.Id ?? "");
         if (!id) continue;
         const txnDate = String(r.TxnDate ?? "");
-        const acct = (r.AccountRef as { name?: string } | undefined)?.name ?? null;
+        // The TOP-LEVEL AccountRef on a Purchase is the account the money came
+        // OUT of ("Business Checking") — not what it was spent on. The real
+        // expense category lives on the line. Using the top-level ref left 2,312
+        // of 2,363 expenses uncategorised and hid the fact that over a thousand
+        // lines are coded to "Owner Draw".
+        const acct = expenseAccount(r) ?? (r.AccountRef as { name?: string } | undefined)?.name ?? null;
         const entity = (r.EntityRef as { name?: string } | undefined)?.name ?? null;
         await prisma.qboTransaction.upsert({
           where: { qboId_type: { qboId: id, type: "Purchase" } },
