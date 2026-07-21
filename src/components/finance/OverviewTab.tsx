@@ -7,7 +7,7 @@ import type { LucideIcon } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { FinanceTabs, type FinanceTab } from "@/components/finance/FinanceTabs";
 import { revenueByProcessor, trueProfitAndLoss } from "@/lib/bookkeeping";
-import { getCashPosition, getMonthlyPnl } from "@/lib/finance";
+import { getCashPosition, getMonthlyPnl, monthBounds } from "@/lib/finance";
 import { prisma } from "@/lib/prisma";
 import { etDate } from "@/lib/datetime";
 
@@ -47,13 +47,18 @@ async function booksHealth() {
 export async function OverviewTab({ show }: { show: FinanceTab[] }) {
   const now = new Date();
   const endKey = now.toISOString().slice(0, 10);
+  const monthStartKey = `${monthBounds(0).key}-01`; // yyyy-mm-01 for the current ET month
 
-  const [rev, prevYear, pnl, cash, month, health] = await Promise.all([
+  const [rev, prevYear, pnl, cash, month, monthRev, health] = await Promise.all([
     revenueByProcessor(YEAR_START, endKey),
     revenueByProcessor("2025-01-01", "2025-12-31"),
     trueProfitAndLoss(YEAR_START, endKey),
     getCashPosition(),
     getMonthlyPnl(0),
+    // This-month revenue must count ALL THREE processor rails — the cash-basis
+    // getMonthlyPnl counts Stripe alone, which silently drops every QuickBooks
+    // Payments sale (e.g. the $9k SalesReceipt) and understates the month badly.
+    revenueByProcessor(monthStartKey, endKey),
     booksHealth(),
   ]);
 
@@ -67,6 +72,12 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
   const daysElapsed = Math.max(1, (now.getTime() - new Date(`${YEAR_START}T00:00:00Z`).getTime()) / 864e5);
   const annualized = (revenue / daysElapsed) * 365;
   const growth = prevYear.total > 0 ? (annualized - prevYear.total) / prevYear.total : null;
+
+  // This month, all three rails — then re-base the month's profit and payroll
+  // ratio on the correct revenue (the payroll/fees come from getMonthlyPnl).
+  const monthRevenue = monthRev.total;
+  const monthProfit = monthRevenue - month.allPayroll - month.cardFees - month.expenses;
+  const monthPayrollPct = monthRevenue > 0 ? month.allPayroll / monthRevenue : null;
 
   const rails = [
     { key: "quickbooks", amount: rev.quickbooks, ...RAIL.quickbooks },
@@ -246,10 +257,10 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
             <Wallet className="size-4 text-brand" /> This month &amp; where to go next
           </div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <Stat label={`${month.label} revenue`} value={m0(month.revenue)} sub={month.revenueIsEstimate ? "estimated" : "collected"} />
+            <Stat label={`${month.label} revenue`} value={m0(monthRevenue)} sub="collected · all 3 rails" tone="success" />
             <Stat label="This month payroll" value={m0(month.allPayroll)} sub="everyone paid" tone="muted" />
-            <Stat label={`${month.label} profit`} value={m0(month.profit)} tone={month.profit < 0 ? "danger" : "success"} />
-            <Stat label="Payroll % of rev" value={month.payrollPctOfRevenue == null ? "—" : `${Math.round(month.payrollPctOfRevenue * 100)}%`} sub="~30–45% normal" tone="muted" />
+            <Stat label={`${month.label} profit`} value={m0(monthProfit)} sub="after team + fees" tone={monthProfit < 0 ? "danger" : "success"} />
+            <Stat label="Payroll % of rev" value={monthPayrollPct == null ? "—" : `${Math.round(monthPayrollPct * 100)}%`} sub="~30–45% normal" tone={monthPayrollPct != null && monthPayrollPct > 0.5 ? "warning" : "muted"} />
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
             <JumpLink href="/sales?tab=money" icon={Wallet} label="Money — record cash, expenses, pay" />
