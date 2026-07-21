@@ -205,7 +205,13 @@ async function qbo<T>(path: string, opts: { query?: Record<string, string> } = {
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new QuickBooksError(`QuickBooks ${res.status}: ${body.slice(0, 300)}`, res.status);
+    // intuit_tid is Intuit's own request-correlation id. Capturing it turns a
+    // support ticket from "it failed sometime Tuesday" into a single lookup on
+    // their side, so it goes into both the thrown message and the server log.
+    const tid = res.headers.get("intuit_tid") ?? res.headers.get("Intuit_Tid") ?? "";
+    const suffix = tid ? ` [intuit_tid: ${tid}]` : "";
+    console.error(`[quickbooks] ${res.status} ${path}${suffix} ${body.slice(0, 500)}`);
+    throw new QuickBooksError(`QuickBooks ${res.status}: ${body.slice(0, 300)}${suffix}`, res.status);
   }
   return res.json() as Promise<T>;
 }
