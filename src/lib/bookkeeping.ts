@@ -73,6 +73,74 @@ const EXPENSE_MAP: [RegExp, Category][] = [
   [/loan|financing|capital/i, "FINANCING"],
 ];
 
+// ---------------------------------------------------------------------------
+// Vendor intelligence. Matched against the FULL bank description (payee +
+// PrivateNote + line text) — which is where the vendor actually lives, because
+// the `memo` column is frequently empty. This is where "what is this
+// transaction" gets decided for the recurring vendors a person recognises on
+// sight. Ordered: first match wins, so high-signal rules come first. Vendor
+// identities tagged (researched) were confirmed by web lookup on 2026-07-21.
+// ---------------------------------------------------------------------------
+type VendorRule = { rx: RegExp; category: Category; personal?: boolean; review?: boolean; note?: string };
+const VENDOR_RULES: VendorRule[] = [
+  // Not a P&L item — credit-card payments + money moved between own accounts.
+  { rx: /crcardpmt|cardmember serv|card ?payment|cardpmt|capital one.*(crcard|pmt|payment)/i,
+    category: "TRANSFER", review: true,
+    note: "Credit-card payment — pays down a card balance, not itself an expense. Confirm whether the card is a BUSINESS card (its charges belong in the P&L) or personal (an owner draw)." },
+  // NOTE: "money transfer" / "visa direct" are deliberately NOT here — on a
+  // Purchase those strings are Venmo contractor payouts ("VENMO *<name> Visa
+  // Direct"), which are real COST_OF_SALES, not transfers. Only genuine
+  // account-to-account moves belong here.
+  { rx: /\bonline transfer\b|book transfer|wire transfer/i,
+    category: "TRANSFER", review: true,
+    note: "Transfer between accounts — not income or expense on its own until the other side is identified." },
+  // Financing / cash-advance / BNPL — only the fee is deductible, never principal.
+  { rx: /\bempower\b|\btilt\b|sunbit|affirm|klarna|afterpay|\bsezzle\b|stripe capital|cash advance/i,
+    category: "FINANCING", review: true,
+    note: "Loan / cash-advance / buy-now-pay-later repayment (researched: Empower→Tilt and Sunbit are consumer lenders). Principal is NOT deductible — only the fee. Confirm what was financed." },
+  // Contractors & editing — per-shoot production cost.
+  { rx: /cliffside cuts|nguyen|cameron barr|harrison wells|katie ?macintyre|matthew bertsch|bertsch|\bphotographer\b|photography|\bgostaff\b|staffify|\bupwork\b|\bfiverr\b|\beditor\b|editing|post[- ]?production|retouch|virtual stag/i,
+    category: "COST_OF_SALES",
+    note: "Contractor / editing / photographer — a per-shoot production cost (researched: Cliffside Cuts is a real-estate video-editing service; Nguyen is an editor; Harrison/Katie/Matthew are shooters paid via Venmo)." },
+  { rx: /\bwise\b|transferwise/i, category: "COST_OF_SALES", review: true,
+    note: "Wise transfer — usually a contractor payment (the bank note often names the shoot). Confirm the payee." },
+  // Business software / SaaS the agency runs on.
+  { rx: /anthropic|openai|chatgpt|midjourney|eleven ?labs|elevenlabs|seaart|star cluster|descript|runwayml|\bkling\b|topaz|adobe|dropbox|\bvercel\b|github|\bcanva\b|matterport|cubicasa|aryeo|frame\.?io|\bslack\b|\bzoom\b|\bnotion\b|\bfigma\b|godaddy|namecheap|squarespace|mailchimp|calendly|brookssolutions|intuit \*?q|quickbooks/i,
+    category: "OPERATING",
+    note: "Business software / subscription (AI content, editing, or ops tooling)." },
+  // Vehicle / travel to shoots.
+  { rx: /\bpspt\b|parking|\bprk\b|\btolls?\b|e-?zpass|\buber\b|\blyft\b|enterprise rent|\bhertz\b|\bavis\b|exxon|\bshell\b|sunoco|\bmobil\b|\bgulf\b|marathon|turkey hill/i,
+    category: "VEHICLE",
+    note: "Auto / fuel / parking / travel to shoots." },
+  // Personal spending — the big bucket miscoded as Owner Draw.
+  { rx: /doordash|grubhub|uber ?eats|postmates|\bdd \*|ezcater/i, category: "OWNER_DRAW", personal: true, note: "Food delivery — personal." },
+  { rx: /netflix|\bhulu\b|disney ?\+?|hbo ?max|\bhbo\b|prime video|spotify|youtube ?premium|paramount|peacock|apple\.com\/bill|\bitunes\b|audible/i, category: "OWNER_DRAW", personal: true, note: "Streaming / personal media subscription." },
+  { rx: /taco bell|mcdonald|wendy|burger king|chick-?fil|\bpanera\b|starbucks|dunkin|chipotle|\bsubway\b|\bkfc\b|popeyes|chophouse|steakhouse|\bgrill\b|\bpizza\b|\bcafe\b|\bdiner\b|restaurant|\btst\*|bombergers/i, category: "OWNER_DRAW", personal: true, note: "Restaurant / prepared food — personal." },
+  { rx: /amazon|\bamzn\b|\btarget\b|wal-?mart|walmart|costco|\bbj'?s\b|dollar general|dollar tree|\bikea\b|best buy|home depot|lowe'?s/i, category: "OWNER_DRAW", personal: true, note: "General retail — treated as a personal owner draw unless it was a specific business purchase." },
+  { rx: /sheetz|\bwawa\b|city convenience|convenience|circle k|\b7-?eleven\b|quiktrip|royal farms/i, category: "OWNER_DRAW", personal: true, note: "Convenience store / snacks / drinks — personal." },
+  { rx: /stauffers|reiff|farm market|\baldi\b|\bgiant\b|\bweis\b|whole foods|trader joe|wegmans|\bkroger\b|grocery/i, category: "OWNER_DRAW", personal: true, note: "Groceries — personal." },
+  { rx: /barber|\bsalon\b|haircut|\bnails\b|\bcarpe\b|mycarpe|rythm ?health|good ?and ?beautiful|goodandbeautiful|littlepoppyco|little poppy|pmusa|\bsmoke\b|\bvape\b|dispensary|brick llc|getbrick|whitetail disposal|pathkeepers/i, category: "OWNER_DRAW", personal: true, note: "Personal care / household / family / lifestyle (researched: Carpe, Rythm Health, Good & Beautiful, Little Poppy Co, Brick, Whitetail are personal)." },
+  { rx: /atm withdrawal|atm transaction fee|cash withdrawal|\batm fee\b/i, category: "OWNER_DRAW", personal: true, note: "Cash withdrawal — recorded as an owner draw." },
+  // Handwritten checks — no payee in the bank feed, must be identified by the owner.
+  { rx: /^\s*check\s*#?\s*\d|\bcheck\s+\d{3,}\b/i, category: "UNCATEGORISED", review: true,
+    note: "Handwritten check with no payee in the bank feed — tell me who each check was written to and I'll categorize it." },
+];
+
+// Best-available human description of a stored row: payee + bank memo (PrivateNote)
+// + line descriptions. The classifier reads THIS, not the frequently-empty `memo`.
+function describe(r: { raw: string | null; memo: string | null }): string {
+  let payee = "", note = "", lines = "";
+  try {
+    const raw = JSON.parse(r.raw ?? "null");
+    if (raw) {
+      payee = raw.EntityRef?.name ?? "";
+      note = raw.PrivateNote ?? "";
+      lines = (Array.isArray(raw.Line) ? raw.Line : []).map((l: { Description?: string }) => l?.Description).filter(Boolean).join(" ");
+    }
+  } catch { /* malformed raw — fall back to memo */ }
+  return [payee, note, lines, r.memo ?? ""].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+}
+
 type Row = {
   qboId: string; type: string; txnDate: Date; amount: number;
   memo: string | null; accountName: string | null; customerName: string | null;
@@ -95,6 +163,26 @@ export function classify(
   // ---- Expenses -----------------------------------------------------------
   if (r.type === "Purchase") {
     const acct = r.accountName ?? "";
+    // `memo` here is the FULL description (payee + PrivateNote + line text),
+    // assembled by describe() before classify runs — so the vendor is visible
+    // even when QuickBooks left the memo column blank.
+    const hay = `${memo} ${acct}`;
+
+    // Vendor intelligence FIRST: a recognised vendor is classified with
+    // confidence (personal OR business), which is what lets the huge "Owner
+    // Draw" pile resolve into real owner draws vs. hidden business costs instead
+    // of all being flagged. Only unrecognised rows fall through to review.
+    for (const vr of VENDOR_RULES) {
+      if (vr.rx.test(hay)) {
+        return {
+          category: vr.category,
+          confidence: vr.review ? 0.55 : 0.85,
+          needsReview: !!vr.review,
+          personal: vr.personal,
+          reviewNote: vr.note,
+        };
+      }
+    }
 
     // "Owner Draw" is the biggest bucket in the file (1,031 lines) and it is NOT
     // trustworthy. Real business spend is sitting in it — a $10.60 Midjourney
@@ -145,6 +233,17 @@ export function classify(
     if (RX.feeish.test(memo) && !RX.stripe.test(memo)) {
       return { category: "FEE_REFUND", confidence: 0.85, needsReview: false,
         reviewNote: "Bank fee reversal or refund — not customer revenue." };
+    }
+
+    // Account-to-account money movement dressed up as a deposit (a QuickBooks/
+    // Intuit instant transfer, a VISA Direct, an online transfer) is NOT a new
+    // customer sale — counting it as revenue double-books money already earned.
+    // A Stripe or Venmo instant payout also arrives as a "VISA MONEY TRANSFER",
+    // but those are handled below (Stripe → already counted, Venmo → revenue),
+    // so exclude them here or they'd be mislabeled as generic transfers.
+    if (/money transfer|visa direct|book transfer/i.test(memo) && r.linkedCount === 0 && !RX.stripe.test(memo) && !RX.venmo.test(memo)) {
+      return { category: "TRANSFER", confidence: 0.5, needsReview: true,
+        reviewNote: "Looks like an account-to-account transfer (e.g. a QuickBooks/Intuit instant transfer or VISA Direct), not a new customer sale. Confirm before counting as revenue." };
     }
 
     // Personal-account movement. Per Jordan: this is EITHER a payout that landed
@@ -216,7 +315,10 @@ export async function categoriseBooks(opts: { sinceKey?: string } = {}): Promise
   let flagged = 0;
 
   for (const r of rows) {
-    const v = classify(r as Row, peers, payouts);
+    // Feed the classifier the FULL bank description (payee + PrivateNote + line
+    // text), not the often-empty memo column, so vendors are actually visible.
+    const text = describe(r);
+    const v = classify({ ...r, memo: text || r.memo } as Row, peers, payouts);
     byCategory[v.category] ||= { n: 0, amount: 0 };
     byCategory[v.category].n++;
     byCategory[v.category].amount += r.amount;
