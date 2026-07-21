@@ -23,6 +23,17 @@ export async function GET(req: NextRequest) {
   }
   const { step, out, finish } = cronBudget(250_000, Date.now(), "daily"); // ~50s headroom under maxDuration
 
+  // Stripe money-in FIRST. It is cheap (one or two pages off a cursor) and it is
+  // the only source for a third of revenue, so it must never be the step that gets
+  // starved. It used to run LAST, behind ordersFullReconcile — which the comment
+  // below admits can eat the entire budget — and as a result it had not run from
+  // cron in weeks while every CronRun died with finishedAt=null. That single
+  // ordering bug is why the books showed a 32% revenue collapse that never happened.
+  await step("stripe", async () => {
+    const { syncStripe } = await import("@/lib/integrations/stripe");
+    return syncStripe();
+  });
+
   await step("clients", () => syncAllAryeoClients());
   await step("dedupe", () => dedupeClients());
   await step("segments", () => syncClientSegments());
@@ -76,13 +87,6 @@ export async function GET(req: NextRequest) {
   // does it must starve only itself — never the cheap safety-net steps above
   // (July 5's profile refreshes ran zero times because this step ran mid-list).
   await step("ordersFullReconcile", () => syncAryeoOrders({ full: true }));
-
-  // Stripe money-in (balance transactions → real collected + fees for the P&L).
-  // No-ops cleanly when Stripe isn't connected.
-  await step("stripe", async () => {
-    const { syncStripe } = await import("@/lib/integrations/stripe");
-    return syncStripe();
-  });
 
   // Persist this run (CronRun) + Slack-ping on a NEW failure/skip. Best-effort.
   await finish();

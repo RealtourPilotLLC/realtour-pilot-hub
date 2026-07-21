@@ -79,6 +79,13 @@ export async function stripeBalance(): Promise<{ available: number; pending: num
 
 // Sync balance transactions since the high-water mark (first run: last 120 days),
 // upserting StripeTransaction. Fee-accurate: gross/fee/net straight from Stripe.
+//
+// BACKFILL: pass an explicit `fullDays` to ignore the high-water mark and re-scan
+// that whole window. Without this the cursor is a one-way ratchet — once set, the
+// floor is always `lastTxnCreated`, so history EARLIER than the first run can never
+// be reached. That is exactly how 2025 went missing: the connection was made in
+// 2026, the first run reached back 120 days, and every run since has only moved
+// forward. Upserts are keyed on Stripe's own txn id, so a re-scan is idempotent.
 export async function syncStripe(opts: { fullDays?: number } = {}): Promise<{ imported: number }> {
   const { prisma } = await import("@/lib/prisma");
   try {
@@ -89,14 +96,19 @@ export async function syncStripe(opts: { fullDays?: number } = {}): Promise<{ im
     if (!conn || conn.status === "DISCONNECTED" || !conn.secretEncrypted) return { imported: 0 };
     let meta: { lastTxnCreated?: number } = {};
     try { meta = conn.metadata ? JSON.parse(conn.metadata) : {}; } catch { /* fresh */ }
-    const floor = meta.lastTxnCreated
+    const backfill = typeof opts.fullDays === "number";
+    const floor = !backfill && meta.lastTxnCreated
       ? meta.lastTxnCreated - 3 * 86400 // small overlap so nothing straddling the cursor is missed
       : Math.floor(Date.now() / 1000) - (opts.fullDays ?? 120) * 86400;
 
     let imported = 0;
     let startingAfter: string | undefined;
-    let maxCreated = meta.lastTxnCreated ?? 0;
-    for (let page = 0; page < 40; page++) {
+    let maxCreated = meta.lastTxnCreated ?? 0; // never rewinds — a backfill must not move the cursor back
+    // 100 rows/page. The old 40-page cap silently truncated at 4,000 rows, which a
+    // multi-year backfill blows straight through; incremental runs still exit on
+    // `has_more` after one or two pages.
+    const maxPages = backfill ? 400 : 40;
+    for (let page = 0; page < maxPages; page++) {
       // No expand[] — data.source expansion can 403 under a narrow restricted
       // key; customerName enrichment isn't worth failing the whole sync over.
       const q: Record<string, string | number | string[]> = { limit: 100, "created[gte]": floor };
