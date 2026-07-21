@@ -37,6 +37,7 @@ import {
   syncOpenPhoneContactsNow,
   syncDropboxFoldersNow,
   syncGmailNow,
+  syncQuickBooksNow,
   recheckStatusesNow,
   disconnectProvider,
   type ActionResult,
@@ -152,6 +153,8 @@ export function ProviderCard({
           <GmailActions connected={connected} authorizeUrl={googleAuthorizeUrl} deployed={deployed} />
         ) : provider.id === "frameio" ? (
           <FrameioActions connected={connected} ready={!!frameioReady} deployed={deployed} />
+        ) : provider.id === "quickbooks" ? (
+          <QuickBooksActions connected={connected} deployed={deployed} />
         ) : provider.id === "dropbox" && provider.ready ? (
           <GenericApiKeyActions
             provider={provider}
@@ -423,6 +426,51 @@ function GmailActions({
       )}
       {msg && <p className={`text-xs ${msg.ok ? "text-success" : "text-danger"}`}>{msg.message}</p>}
     </div>
+  );
+}
+
+// QuickBooks uses Intuit OAuth. App credentials (QBO_CLIENT_ID/SECRET) live in
+// env, so there's no secret form here — just Connect, then Sync. Jordan signs in
+// on Intuit's own screen; we never handle his QuickBooks password.
+function QuickBooksActions({ connected, deployed }: { connected: boolean; deployed: boolean }) {
+  const [pending, startTransition] = useTransition();
+  const [msg, setMsg] = useState<ActionResult | null>(null);
+
+  if (connected) {
+    return (
+      <div className="space-y-2">
+        <button
+          onClick={() => startTransition(async () => setMsg(await syncQuickBooksNow()))}
+          disabled={pending}
+          className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+        >
+          {pending ? <Loader2 className="size-4 animate-spin" /> : "Sync the books"}
+        </button>
+        <button
+          onClick={() => startTransition(async () => setMsg(await disconnectProvider("quickbooks")))}
+          disabled={pending}
+          className="flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-60"
+        >
+          Disconnect
+        </button>
+        {msg && <p className={`text-xs ${msg.ok ? "text-success" : "text-danger"}`}>{msg.message}</p>}
+      </div>
+    );
+  }
+  if (!deployed) {
+    return (
+      <button disabled title="Deploy first, then connect" className="w-full cursor-not-allowed rounded-lg border bg-surface px-3 py-2 text-sm font-medium opacity-60">
+        Connect QuickBooks (after deploy)
+      </button>
+    );
+  }
+  return (
+    <a
+      href="/api/quickbooks/connect"
+      className="block w-full rounded-lg bg-brand px-3 py-2 text-center text-sm font-medium text-brand-fg hover:opacity-90"
+    >
+      Connect QuickBooks
+    </a>
   );
 }
 

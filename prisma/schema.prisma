@@ -129,6 +129,7 @@ model TeamMember {
   payoutAdjustments    PayoutAdjustment[]
   mileageDays          MileageDay[]
   payrollEntries       PayrollEntry[]
+  bonusAwards          BonusAward[]
 }
 
 // How a team member is paid — see TeamMember.payType.
@@ -773,6 +774,122 @@ model PayoutAdjustment {
 
   @@index([teamMemberId])
   @@index([date])
+}
+
+// A transaction pulled from QuickBooks Online. This is the half of the money
+// picture the Hub never had: revenue processed outside Stripe, and the real
+// expense ledger. Categorization is automated but never silently guessed --
+// anything under the confidence bar lands in the review queue instead.
+model QboTransaction {
+  id           String   @id @default(cuid())
+  qboId        String
+  type         String // Invoice | Payment | Purchase
+  txnDate      DateTime
+  amount       Float
+  balance      Float    @default(0)
+  customerName String?
+  accountName  String? // QuickBooks' own account/category name
+  docNumber    String?
+
+  // --- Bookkeeping automation ---
+  // Our normalized category, plus how sure we are. needsReview is the flag that
+  // puts a row in front of Jordan rather than quietly filing it wrong.
+  category    String?
+  confidence  Float?
+  needsReview Boolean   @default(false)
+  reviewNote  String?
+  reviewedAt  DateTime?
+  // Business vs personal — the split Jordan has never been able to see.
+  personal    Boolean   @default(false)
+
+  raw       String? // trimmed source payload, for auditing a bad categorization
+  syncedAt  DateTime @default(now())
+  createdAt DateTime @default(now())
+
+  @@unique([qboId, type])
+  @@index([txnDate])
+  @@index([needsReview])
+  @@index([type])
+  @@index([category])
+}
+
+// ---------------------------------------------------------------------------
+// QUARTERLY PERFORMANCE BONUS
+//
+// Two hard rules the engine must never break:
+//  1. SELF-FUNDING. The pool is a share of the quarter's SURPLUS above a
+//     threshold the owner sets. A quarter that didn't clear the bar funds a
+//     $0 pool. The bonus can never manufacture another December.
+//  2. NOTHING PAYS WITHOUT THE OWNER. Scores compute automatically; money only
+//     moves when the owner approves, which emits a PayoutAdjustment so the
+//     bonus flows through computePayroll into the real P&L like every other cost.
+// ---------------------------------------------------------------------------
+
+model BonusPeriod {
+  id        String @id @default(cuid())
+  // Calendar quarter key, e.g. "2026-Q4". One row per quarter.
+  quarter   String @unique
+  startKey  String // yyyy-mm-dd, ET
+  endKey    String // yyyy-mm-dd, ET
+
+  // --- Funding gate (owner-set, snapshotted when the pool is locked) ---
+  // Collected revenue and all-in cost for the quarter, as measured at lock time.
+  revenue     Float?
+  cost        Float?
+  // Surplus must exceed this before ANY pool exists.
+  threshold   Float  @default(0)
+  // Share of surplus-above-threshold that funds the pool (0.03 = 3%).
+  poolPercent Float  @default(0.03)
+  // The funded pool. Null until computed; 0 is a legitimate, meaningful value.
+  poolAmount  Float?
+  // Hard ceiling so a blowout quarter can't overcommit cash.
+  poolCap     Float?
+
+  status    String   @default("OPEN") // OPEN | LOCKED | PAID
+  note      String?
+  lockedAt  DateTime?
+  paidAt    DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  awards BonusAward[]
+
+  @@index([status])
+}
+
+model BonusAward {
+  id          String      @id @default(cuid())
+  period      BonusPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  periodId    String
+  teamMember  TeamMember  @relation(fields: [teamMemberId], references: [id], onDelete: Cascade)
+  teamMemberId String
+
+  // OWN = scored on this person's shoots. TEAM = scored on the whole team's
+  // results (the manager lane — James is accountable for everyone now).
+  basis String @default("OWN") // OWN | TEAM
+
+  // 0..100. Null when the quarter had too little signal to score fairly.
+  score      Float?
+  // Per-metric breakdown as JSON: [{key,label,weight,value,points,detail,thin}]
+  breakdown  String?
+  // Shoots in the window — the denominator behind every rate, kept for audit.
+  shoots     Int    @default(0)
+
+  // Computed share of the pool (score-weighted), then what the owner actually
+  // approved. amount is the source of truth for money; suggested is advisory.
+  suggested  Float?
+  amount     Float?
+  note       String?
+
+  // Set when approved -> PayoutAdjustment, so we never double-pay on re-run.
+  payoutAdjustmentId String?
+  paidAt             DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([periodId, teamMemberId])
+  @@index([teamMemberId])
 }
 
 // Cached daily drive mileage for a creative (home → that day's shoots → home),

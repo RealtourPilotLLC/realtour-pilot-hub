@@ -68,8 +68,8 @@ export const PROVIDERS: ProviderDef[] = [
     authType: "oauth",
     icon: "Calculator",
     color: "#2ca01c",
-    capabilities: ["Sync invoices & payments", "Push revenue to the books", "Expense tracking"],
-    ready: false,
+    capabilities: ["Real P&L (incl. non-Stripe revenue)", "Invoices, payments & expenses", "Auto-categorized books with a review queue"],
+    ready: true,
   },
   {
     id: "dropbox",

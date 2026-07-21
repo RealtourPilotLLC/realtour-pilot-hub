@@ -77,6 +77,25 @@ const TESTERS: Record<string, (key: string) => Promise<{ ok: true; label: string
   stripe: testStripeKey,
 };
 
+// Pull the real books from QuickBooks on demand. This is the number that has
+// been missing everywhere else: revenue processed outside Stripe, plus the
+// expense ledger the Hub has never seen.
+export async function syncQuickBooksNow(): Promise<ActionResult> {
+  await requireOwner();
+  try {
+    const { syncQuickBooks } = await import("@/lib/integrations/quickbooks");
+    const r = await syncQuickBooks();
+    revalidatePath("/connections");
+    revalidatePath("/sales");
+    return {
+      ok: true,
+      message: `Synced — ${r.invoices} invoices, ${r.payments} payments, ${r.purchases} expenses.`,
+    };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "QuickBooks sync failed." };
+  }
+}
+
 // Pull the latest Stripe money-in (balance transactions) on demand — the "Sync
 // payments" button on the Stripe card. Daily cron does this automatically too.
 export async function syncStripeNow(): Promise<ActionResult> {
