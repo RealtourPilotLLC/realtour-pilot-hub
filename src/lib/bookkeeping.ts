@@ -315,6 +315,16 @@ export async function categoriseBooks(opts: { sinceKey?: string } = {}): Promise
   let flagged = 0;
 
   for (const r of rows) {
+    // A row the owner has explicitly reviewed is FINAL — its category is a human
+    // decision (e.g. "those checks are rent") and must survive every re-run.
+    // Only tally it; never re-classify or overwrite it.
+    if (r.reviewedAt) {
+      const cat = r.category ?? "UNCATEGORISED";
+      byCategory[cat] ||= { n: 0, amount: 0 };
+      byCategory[cat].n++;
+      byCategory[cat].amount += r.amount;
+      continue;
+    }
     // Feed the classifier the FULL bank description (payee + PrivateNote + line
     // text), not the often-empty memo column, so vendors are actually visible.
     const text = describe(r);
@@ -328,9 +338,7 @@ export async function categoriseBooks(opts: { sinceKey?: string } = {}): Promise
       data: {
         category: v.category,
         confidence: v.confidence,
-        // Never re-flag something already reviewed — an owner decision is final
-        // until the underlying row changes.
-        needsReview: r.reviewedAt ? false : v.needsReview,
+        needsReview: v.needsReview,
         reviewNote: v.reviewNote ?? null,
         personal: v.personal ?? false,
         duplicateOf: v.duplicateOf ?? null,
