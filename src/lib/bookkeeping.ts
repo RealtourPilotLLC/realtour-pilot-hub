@@ -180,6 +180,18 @@ export function classify(
     // even when QuickBooks left the memo column blank.
     const hay = `${memo} ${acct}`;
 
+    // Staffify is really Remar & Kyle's editing labor (cost of sales) — EXCEPT
+    // the recurring $1,500, which is Jordan's monthly consulting calls with Paul
+    // (Staffify's owner), an operating cost, not editing. Split by that amount.
+    if (/staffify/i.test(hay)) {
+      if (Math.abs(r.amount - 1500) < 0.01) {
+        return { category: "OPERATING", confidence: 0.7, needsReview: false,
+          reviewNote: "Staffify $1,500 — monthly consulting with Paul (Staffify's owner), not editing labor." };
+      }
+      return { category: "COST_OF_SALES", confidence: 0.85, needsReview: false,
+        reviewNote: "Staffify — Remar & Kyle editing labor." };
+    }
+
     // Vendor intelligence FIRST: a recognised vendor is classified with
     // confidence (personal OR business), which is what lets the huge "Owner
     // Draw" pile resolve into real owner draws vs. hidden business costs instead
@@ -535,15 +547,23 @@ export function paymentChannel(text: string): string {
   return "Other";
 }
 
+// Friendly identity for vendor entities that are really our people. Applied in
+// resolvePayee so every surface (People tab, per-job) reads the same name.
+const PAYEE_ALIASES: [RegExp, string][] = [
+  [/cliffside cuts/i, "Kim · Cliffside Cuts"],
+  [/staffify/i, "Remar & Kyle · Staffify"],
+];
+
 // What KIND of payee this is, so "who I pay" can group creatives vs editors vs
 // software vs staff. Ordered: first match wins.
 export const PAYEE_GROUPS = ["Photographers", "Editors", "Software & tools", "Staff & VA", "Marketing", "Other"] as const;
 export function payeeGroup(text: string, payee: string): string {
   const t = `${payee} ${text}`.toLowerCase();
   if (/harrison|matthew bertsch|james livingston|\bphotographer\b|photography/.test(t)) return "Photographers";
-  if (/luma|cliffside|nguyen|ta thi|dawar|eric visuals|\bwise\b|\beditor\b|editing|post[- ]?production|retouch|autohdr|pixlmob|pixel film|final cut|capcut|\bpop\b/.test(t)) return "Editors";
+  // Editors incl. our people: Kim (Cliffside), Remar & Kyle (Staffify).
+  if (/luma|cliffside|\bkim\b|staffify|\bremar\b|\bkyle\b|nguyen|ta thi|dawar|eric visuals|\bwise\b|\beditor\b|editing|post[- ]?production|retouch|autohdr|pixlmob|pixel film|final cut|capcut|\bpop\b/.test(t)) return "Editors";
   if (/base44|cardinal camera|flylisted|adobe|dropbox|anthropic|openai|midjourney|elevenlabs|seaart|matterport|cubicasa|aryeo|frame\.?io|\bcanva\b|topaz|descript|software|subscription|\bapp\b/.test(t)) return "Software & tools";
-  if (/staffify|\bva\b|virtual assistant|\bstaff\b/.test(t)) return "Staff & VA";
+  if (/\bva\b|virtual assistant|\bstaff\b/.test(t)) return "Staff & VA";
   if (/social pros|social media|marketing|\bads\b|\bseo\b/.test(t)) return "Marketing";
   return "Other";
 }
@@ -564,6 +584,8 @@ function normalizePayee(name: string): string {
 /** Best-effort person/vendor for a contractor payment: QBO payee, else the note. */
 export function resolvePayee(raw: { EntityRef?: { name?: string } } | null, text: string): string {
   const entity = raw?.EntityRef?.name;
+  const hay = `${entity ?? ""} ${text}`;
+  for (const [rx, alias] of PAYEE_ALIASES) if (rx.test(hay)) return alias;
   if (entity) return normalizePayee(entity) || entity;
   let m = text.match(/VENMO \*?(.+?) Visa Direct/i); if (m) return normalizePayee(m[1]) || m[1];
   m = text.match(/ZEL(?:LE)? TO ([A-Za-z0-9 .'&-]+?)(?:\s{2,}|$)/i); if (m) return normalizePayee(m[1]) || m[1];
