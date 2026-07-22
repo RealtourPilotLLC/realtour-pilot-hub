@@ -7,9 +7,15 @@ import { UnpaidTab } from "@/components/finance/UnpaidTab";
 import { PayrollTab } from "@/components/finance/PayrollTab";
 import { MoneyTab } from "@/components/finance/MoneyTab";
 import { OverviewTab } from "@/components/finance/OverviewTab";
+import { PersonalTab } from "@/components/finance/PersonalTab";
+import { PeopleTab } from "@/components/finance/PeopleTab";
+import { JobsTab } from "@/components/finance/JobsTab";
 import type { FinanceTab } from "@/components/finance/FinanceTabs";
 
 export const dynamic = "force-dynamic";
+// The Jobs tab runs the payroll engine (mileage routing) over a 60-day window;
+// give the whole hub headroom so a cold mileage cache can't time the page out.
+export const maxDuration = 60;
 
 // Finance = the merged Revenue (old /sales) | Unpaid (old /billing) | Payroll
 // (old /payouts) hub. Each tab early-returns loading ONLY its own data (the
@@ -44,7 +50,9 @@ export default async function FinancePage({
   const requested = sp.tab;
 
   // Which tabs this viewer may see (owner: all; admin: Unpaid only).
-  const show: FinanceTab[] = isOwner ? ["overview", "money", "revenue", "unpaid", "payroll"] : ["unpaid"];
+  const show: FinanceTab[] = isOwner
+    ? ["overview", "jobs", "people", "personal", "money", "revenue", "unpaid", "payroll"]
+    : ["unpaid"];
   // Where non-owners land: their only tab, Unpaid. Owners land on Overview (the
   // command center — true P&L, cash, where the money's actually going).
   const fallback: FinanceTab = isOwner ? "overview" : "unpaid";
@@ -55,11 +63,15 @@ export default async function FinancePage({
   else if (requested === "revenue") tab = "revenue";
   else if (requested === "money") tab = "money";
   else if (requested === "overview") tab = "overview";
+  else if (requested === "personal") tab = "personal";
+  else if (requested === "people") tab = "people";
+  else if (requested === "jobs") tab = "jobs";
   else tab = fallback; // no/unknown ?tab= → role default
 
   // Owner-only tabs: bounce a non-owner who asked for them to their default tab
   // (mirrors the old owner-only route gate, now per-tab).
-  if (!isOwner && (tab === "revenue" || tab === "payroll" || tab === "money" || tab === "overview")) {
+  if (!isOwner && (tab === "revenue" || tab === "payroll" || tab === "money" || tab === "overview"
+    || tab === "personal" || tab === "people" || tab === "jobs")) {
     redirect("/sales?tab=unpaid");
   }
 
@@ -67,5 +79,8 @@ export default async function FinancePage({
   if (tab === "payroll") return <PayrollTab show={show} start={sp.start} />;
   if (tab === "money") return <MoneyTab show={show} />;
   if (tab === "overview") return <OverviewTab show={show} />;
+  if (tab === "personal") return <PersonalTab show={show} />;
+  if (tab === "people") return <PeopleTab show={show} />;
+  if (tab === "jobs") return <JobsTab show={show} />;
   return <RevenueTab show={show} />;
 }

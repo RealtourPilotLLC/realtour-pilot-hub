@@ -1,14 +1,16 @@
 import Link from "next/link";
-import { TrendingUp, Receipt, Banknote, Wallet, LayoutDashboard } from "lucide-react";
+import { TrendingUp, Receipt, Banknote, Wallet, LayoutDashboard, User, Users, Briefcase } from "lucide-react";
 
-// Tab bar for the merged Finance page (Overview | Money | Revenue | Unpaid |
-// Payroll), styled to match CommsTabs: brand pill = active, bordered pill = idle.
-// Which tabs render depends on the viewer's role — Overview/Money/Revenue/Payroll
-// are owner-only, Unpaid is admin-visible — so the caller passes the allowed tabs.
-export type FinanceTab = "overview" | "money" | "revenue" | "unpaid" | "payroll";
+// Tab bar for the merged Finance page, styled to match CommsTabs: brand pill =
+// active, bordered pill = idle. Which tabs render depends on the viewer's role —
+// everything except Unpaid is owner-only — so the caller passes the allowed tabs.
+export type FinanceTab = "overview" | "money" | "personal" | "people" | "jobs" | "revenue" | "unpaid" | "payroll";
 
 const TABS: { key: FinanceTab; label: string; href: string; icon: typeof Receipt }[] = [
   { key: "overview", label: "Overview", href: "/sales?tab=overview", icon: LayoutDashboard },
+  { key: "jobs", label: "Jobs", href: "/sales?tab=jobs", icon: Briefcase },
+  { key: "people", label: "People", href: "/sales?tab=people", icon: Users },
+  { key: "personal", label: "Personal", href: "/sales?tab=personal", icon: User },
   { key: "money", label: "Money", href: "/sales?tab=money", icon: Wallet },
   { key: "revenue", label: "Revenue", href: "/sales", icon: TrendingUp },
   { key: "unpaid", label: "Unpaid", href: "/sales?tab=unpaid", icon: Receipt },

@@ -94,6 +94,12 @@ const VENDOR_RULES: VendorRule[] = [
   { rx: /\bonline transfer\b|book transfer|wire transfer/i,
     category: "TRANSFER", review: true,
     note: "Transfer between accounts — not income or expense on its own until the other side is identified." },
+  // Funding your own Stripe balance to run payroll (bank → Stripe). This is
+  // money in transit, NOT a cost — the actual contractor pay is counted on the
+  // Stripe transfers OUT to James/Harrison, so counting this too would double it.
+  { rx: /realtour ?pilo|www\.realtour/i,
+    category: "TRANSFER", review: false,
+    note: "Top-up of your own Stripe balance to fund contractor payroll. Funding, not an expense — the real cost is the Stripe payout to the contractor." },
   // Financing / cash-advance / BNPL — only the fee is deductible, never principal.
   { rx: /\bempower\b|\btilt\b|sunbit|affirm|klarna|afterpay|\bsezzle\b|stripe capital|cash advance/i,
     category: "FINANCING", review: true,
@@ -479,7 +485,15 @@ export async function trueProfitAndLoss(startKey: string, endKey: string) {
   const revenue = qboRevenue + stripeRevenue;
 
   const qboExpenses = sum(["COST_OF_SALES", "OPERATING", "VEHICLE"], ["Purchase"]);
-  const expenses = qboExpenses + stripeFees;
+  // Contractor pay routed through Stripe (transfers OUT to James/Harrison's
+  // Stripe balances) is a real cost that never touches the QuickBooks ledger, so
+  // it must be added here or it's silently free labor. The bank top-up that funds
+  // it is classified TRANSFER (not a cost) precisely so this isn't double-counted.
+  const stripeTransfers = await prisma.stripeTransaction.findMany({
+    where: { type: "transfer", createdAt: { gte: new Date(`${startKey}T00:00:00Z`), lte: new Date(`${endKey}T23:59:59Z`) } },
+  });
+  const stripeContractorPay = stripeTransfers.reduce((s, r) => s + Math.abs(r.gross), 0);
+  const expenses = qboExpenses + stripeFees + stripeContractorPay;
   const ownerDraws = sum(["OWNER_DRAW"], ["Purchase"]);
   const excluded = sum(["DUPLICATE", "TRANSFER", "FEE_REFUND"]);
   // What we genuinely cannot see yet — quoted so no one mistakes this for final.
@@ -489,8 +503,178 @@ export async function trueProfitAndLoss(startKey: string, endKey: string) {
   return {
     start: startKey, end: endKey,
     revenue, qboRevenue, stripeRevenue,
-    expenses, stripeFees, uncategorisedExpenses: unknown,
+    expenses, stripeFees, stripeContractorPay, uncategorisedExpenses: unknown,
     profit: revenue - expenses,
     ownerDraws, excludedFromIncome: excluded, needsReview,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// WHO YOU PAY — resolve the person + the rail for each contractor payment.
+// The bank text carries both; the P2P rails (Venmo/Zelle/Wise/PayPal) ride ON
+// TOP of a debit-card/ACH line, so they must be tested BEFORE the generic
+// card/ACH catch-alls or every Venmo payout reads as "debit card".
+// ---------------------------------------------------------------------------
+export function paymentChannel(text: string): string {
+  const t = text.toUpperCase();
+  if (/\bVENMO\b/.test(t)) return "Venmo";
+  if (/\bZEL(LE)?\b|ZEL TO/.test(t)) return "Zelle";
+  if (/\bWISE\b|TRANSFERWISE/.test(t)) return "Wise";
+  if (/\bPAYPAL\b/.test(t)) return "PayPal";
+  if (/RECURRING DEBIT CARD|DEBIT CARD PURCHASE|POS DEBIT|POS PURCHASE/.test(t)) return "Debit card";
+  if (/CORPORATE ACH|ACH WEB|\bACH\b/.test(t)) return "ACH";
+  if (/\bCHECK\s*#?\s*\d/.test(t)) return "Check";
+  if (/WITHDRAWAL/.test(t)) return "Cash";
+  if (/\bWIRE\b/.test(t)) return "Wire";
+  return "Other";
+}
+
+// Merge "Harrison Wells Photographer" ≈ "VENMO *Harrison Wells" → "Harrison Wells".
+function normalizePayee(name: string): string {
+  const cleaned = name
+    .replace(/\bvisa direct\b.*$/i, "")
+    .replace(/\b(photographer|photography|videographer|video ?editor|editor|editing)\b/gi, "")
+    .replace(/\b(llc|inc\.?|co\.?)\b/gi, "")
+    .replace(/\s+(new york|ny|pa|nj|ca|md|de|va)\s*$/i, "")
+    .replace(/[^a-z0-9 &'.-]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned;
+}
+
+/** Best-effort person/vendor for a contractor payment: QBO payee, else the note. */
+export function resolvePayee(raw: { EntityRef?: { name?: string } } | null, text: string): string {
+  const entity = raw?.EntityRef?.name;
+  if (entity) return normalizePayee(entity) || entity;
+  let m = text.match(/VENMO \*?(.+?) Visa Direct/i); if (m) return normalizePayee(m[1]) || m[1];
+  m = text.match(/ZEL(?:LE)? TO ([A-Za-z0-9 .'&-]+?)(?:\s{2,}|$)/i); if (m) return normalizePayee(m[1]) || m[1];
+  m = text.match(/ACH WEB \S+ (.+?) (?:IAT|NGUYE|PAYPAL)/i); if (m) return normalizePayee(m[1]) || m[1];
+  m = text.match(/DEBIT CARD PURCHASE x+\d{2,} (.+?) [A-Z]{2}\b/i); if (m) return normalizePayee(m[1]) || m[1];
+  if (/\bWISE\b/i.test(text)) return "Wise (editing)";
+  const snippet = normalizePayee(text.slice(0, 24));
+  return snippet || "Unknown";
+}
+
+export type PayeeRow = {
+  payee: string; total: number; count: number;
+  channels: Record<string, number>; primaryChannel: string;
+  months: Record<string, number>; lastAt: Date;
+};
+
+/** Every person/vendor paid as a cost of sales, grouped by payee and channel. */
+export async function peoplePayments(startKey: string, endKey: string): Promise<{
+  list: PayeeRow[]; total: number; count: number;
+  channelTotals: Record<string, number>; monthTotals: Record<string, number>;
+}> {
+  const rows = await prisma.qboTransaction.findMany({
+    where: {
+      type: "Purchase", category: "COST_OF_SALES",
+      txnDate: { gte: new Date(`${startKey}T00:00:00Z`), lte: new Date(`${endKey}T23:59:59Z`) },
+    },
+  });
+  const people: Record<string, PayeeRow> = {};
+  const channelTotals: Record<string, number> = {};
+  const monthTotals: Record<string, number> = {};
+  for (const r of rows) {
+    let raw: { EntityRef?: { name?: string } } | null = null;
+    try { raw = JSON.parse(r.raw ?? "null"); } catch { /* ignore */ }
+    const text = describe(r);
+    const payee = resolvePayee(raw, text);
+    const channel = paymentChannel(text);
+    const mKey = r.txnDate.toISOString().slice(0, 7);
+    const p = (people[payee] ||= { payee, total: 0, count: 0, channels: {}, primaryChannel: channel, months: {}, lastAt: r.txnDate });
+    p.total += r.amount; p.count++;
+    p.channels[channel] = (p.channels[channel] || 0) + r.amount;
+    p.months[mKey] = (p.months[mKey] || 0) + r.amount;
+    if (r.txnDate > p.lastAt) p.lastAt = r.txnDate;
+    channelTotals[channel] = (channelTotals[channel] || 0) + r.amount;
+    monthTotals[mKey] = (monthTotals[mKey] || 0) + r.amount;
+  }
+  // Stripe payouts to James & Harrison (transfers to their Stripe balances) never
+  // hit the QuickBooks ledger, so add them as their own line. The transfer rows
+  // carry no name, so they can't yet be split per-person — shown combined.
+  const stripeTransfers = await prisma.stripeTransaction.findMany({
+    where: { type: "transfer", createdAt: { gte: new Date(`${startKey}T00:00:00Z`), lte: new Date(`${endKey}T23:59:59Z`) } },
+  });
+  if (stripeTransfers.length) {
+    const months: Record<string, number> = {};
+    let total = 0, lastAt = stripeTransfers[0].createdAt;
+    for (const r of stripeTransfers) {
+      const a = Math.abs(r.gross);
+      total += a;
+      months[r.createdAt.toISOString().slice(0, 7)] = (months[r.createdAt.toISOString().slice(0, 7)] || 0) + a;
+      if (r.createdAt > lastAt) lastAt = r.createdAt;
+      channelTotals["Stripe"] = (channelTotals["Stripe"] || 0) + a;
+      monthTotals[r.createdAt.toISOString().slice(0, 7)] = (monthTotals[r.createdAt.toISOString().slice(0, 7)] || 0) + a;
+    }
+    people["James & Harrison · Stripe"] = {
+      payee: "James & Harrison · Stripe", total, count: stripeTransfers.length,
+      channels: { Stripe: total }, primaryChannel: "Stripe", months, lastAt,
+    };
+  }
+
+  const list = Object.values(people).sort((a, b) => b.total - a.total);
+  for (const p of list) p.primaryChannel = Object.entries(p.channels).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "—";
+  return { list, total: list.reduce((s, p) => s + p.total, 0), count: list.length, channelTotals, monthTotals };
+}
+
+// ---------------------------------------------------------------------------
+// PERSONAL SPENDING — the owner-draw side, bucketed into human categories.
+// ---------------------------------------------------------------------------
+const PERSONAL_BUCKETS: [RegExp, string][] = [
+  [/doordash|grubhub|uber ?eats|postmates|taco bell|mcdonald|wendy|burger king|chick-?fil|\bpanera\b|starbucks|dunkin|chipotle|\bsubway\b|\bkfc\b|popeyes|chophouse|steakhouse|\bgrill\b|\bpizza\b|\bcafe\b|\bdiner\b|restaurant|\btst\*|kole/i, "Dining & delivery"],
+  [/stauffers|reiff|farm market|\baldi\b|\bgiant\b|\bweis\b|whole foods|trader joe|wegmans|\bkroger\b|grocery/i, "Groceries"],
+  [/sheetz|\bwawa\b|city convenience|convenience|circle k|7-?eleven|turkey hill/i, "Convenience & snacks"],
+  [/amazon|\bamzn\b|\btarget\b|wal-?mart|walmart|costco|dollar general|dollar tree|best buy|home depot|lowe'?s|\bikea\b/i, "Shopping"],
+  [/netflix|\bhulu\b|disney|hbo|prime video|spotify|youtube|paramount|peacock|apple\.com\/bill|audible|elevenlabs|seaart|anthropic|openai/i, "Subscriptions & streaming"],
+  [/\bcheck\s*#?\s*\d|\brent\b/i, "Rent & housing"],
+  [/barber|\bsalon\b|haircut|\bnails\b|carpe|rythm ?health|dentist|pharmacy|\bcvs\b|walgreens/i, "Personal care & health"],
+  [/good ?and ?beautiful|goodandbeautiful|little ?poppy|littlepoppyco/i, "Family & kids"],
+  [/atm withdrawal|cash withdrawal|\batm\b/i, "Cash & ATM"],
+  [/sunbit|\btilt\b|empower|affirm|klarna|afterpay/i, "Loans & financing"],
+  [/exxon|\bshell\b|sunoco|\bmobil\b|\bgulf\b|\bfuel\b|\bpspt\b|parking/i, "Fuel & auto"],
+];
+function personalBucket(text: string): string {
+  for (const [rx, b] of PERSONAL_BUCKETS) if (rx.test(text)) return b;
+  return "Other";
+}
+
+/** Personal (owner-draw) spending bucketed by category, month, and top vendor. */
+export async function personalSpending(startKey: string, endKey: string): Promise<{
+  total: number; count: number;
+  byBucket: { bucket: string; amount: number; count: number }[];
+  byMonth: Record<string, number>;
+  topVendors: { vendor: string; amount: number; count: number }[];
+}> {
+  const rows = await prisma.qboTransaction.findMany({
+    where: {
+      type: "Purchase",
+      txnDate: { gte: new Date(`${startKey}T00:00:00Z`), lte: new Date(`${endKey}T23:59:59Z`) },
+      OR: [{ personal: true }, { category: "OWNER_DRAW" }],
+    },
+  });
+  const buckets: Record<string, { amount: number; count: number }> = {};
+  const byMonth: Record<string, number> = {};
+  const vendors: Record<string, { amount: number; count: number }> = {};
+  let total = 0;
+  for (const r of rows) {
+    let raw: { EntityRef?: { name?: string } } | null = null;
+    try { raw = JSON.parse(r.raw ?? "null"); } catch { /* ignore */ }
+    const text = describe(r);
+    const bucket = personalBucket(text);
+    (buckets[bucket] ||= { amount: 0, count: 0 }).amount += r.amount;
+    buckets[bucket].count++;
+    byMonth[r.txnDate.toISOString().slice(0, 7)] = (byMonth[r.txnDate.toISOString().slice(0, 7)] || 0) + r.amount;
+    const vend = raw?.EntityRef?.name ? normalizePayee(raw.EntityRef.name) || raw.EntityRef.name
+      : /\bcheck\s*#?\s*\d/i.test(text) ? "Rent (check)" : bucket;
+    (vendors[vend] ||= { amount: 0, count: 0 }).amount += r.amount;
+    vendors[vend].count++;
+    total += r.amount;
+  }
+  return {
+    total, count: rows.length,
+    byBucket: Object.entries(buckets).map(([bucket, v]) => ({ bucket, ...v })).sort((a, b) => b.amount - a.amount),
+    byMonth,
+    topVendors: Object.entries(vendors).map(([vendor, v]) => ({ vendor, ...v })).sort((a, b) => b.amount - a.amount).slice(0, 12),
   };
 }
