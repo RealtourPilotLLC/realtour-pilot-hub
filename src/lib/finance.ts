@@ -148,17 +148,33 @@ export type CashPosition = {
   stripeAvailable: number | null;
   stripePending: number | null;
   arOutstanding: number; // delivered + unpaid (money owed to us)
-  goingOut30: number; // rough next-30d outflow: ~last month's payroll + recurring expenses
-  projected: number | null; // bank + AR + stripe pending − going out
+  comingIn30: number; // typical monthly money IN (trailing 3-mo actual bank deposits)
+  goingOut30: number; // typical monthly money OUT (trailing 3-mo actual bank outflow)
+  projected: number | null; // bank + comingIn30 − goingOut30 (a typical month from here)
 };
 
 export async function getCashPosition(): Promise<CashPosition> {
-  const [snap, ar, prevPnl, recurring] = await Promise.all([
+  // Trailing three FULL months — a stable read of the real monthly rhythm.
+  const m1 = monthBounds(1);
+  const m3 = monthBounds(3);
+  const [snap, ar, prevPnl, recurring, outflow, inflowAgg] = await Promise.all([
     // Latest reading; createdAt breaks ties so a same-day correction wins.
     prisma.cashSnapshot.findFirst({ orderBy: [{ asOf: "desc" }, { createdAt: "desc" }], select: { balance: true, asOf: true } }),
     getBillingRows().then((b) => b.totalOutstanding).catch(() => 0),
-    getMonthlyPnl(1), // last full month's all-in payroll ≈ next month's outflow
+    getMonthlyPnl(1), // fallback only, if the ledger is empty
     prisma.expense.aggregate({ where: { personal: false, recurring: true }, _sum: { amount: true } }),
+    // Real money OUT of the bank: EVERY Purchase posted over the last 3 full
+    // months — contractors, software, vehicle, financing, rent, owner draws —
+    // the actual burn, not just payroll. This is the fix for a "going out" that
+    // read an (empty) manual-expense table and so wildly under-counted.
+    prisma.qboTransaction.aggregate({ where: { type: "Purchase", txnDate: { gte: m3.start, lte: m1.end } }, _sum: { amount: true } }),
+    // Real money IN to the bank: every Deposit over the same 3 full months —
+    // the cash that actually LANDS in checking. Deliberately NOT revenue, which
+    // counts Venmo (lands in a personal account) and is gross of processor fees,
+    // so revenue overstates what the business bank truly receives. For this
+    // business the gap is large (~$56k earned vs ~$42k banked) because of Venmo +
+    // Stripe detours through the personal ...0942 account.
+    prisma.qboTransaction.aggregate({ where: { type: "Deposit", txnDate: { gte: m3.start, lte: m1.end } }, _sum: { amount: true } }),
   ]);
   let stripeAvailable: number | null = null;
   let stripePending: number | null = null;
@@ -168,15 +184,19 @@ export async function getCashPosition(): Promise<CashPosition> {
     if (bal) { stripeAvailable = bal.available; stripePending = bal.pending; }
   } catch { /* not connected — degrade */ }
 
-  const goingOut30 = round2(prevPnl.allPayroll + (recurring._sum.amount ?? 0));
+  const burn = (outflow._sum.amount ?? 0) / 3;
+  const inflow = (inflowAgg._sum.amount ?? 0) / 3;
+  const goingOut30 = round2(burn > 0 ? burn : prevPnl.allPayroll + (recurring._sum.amount ?? 0));
+  const comingIn30 = round2(inflow > 0 ? inflow : prevPnl.revenue);
   const bankBalance = snap?.balance ?? null;
-  const projected =
-    bankBalance != null ? round2(bankBalance + ar + (stripePending ?? 0) - goingOut30) : null;
+  // A typical month starting from today's bank: what comes in, less what goes out.
+  const projected = bankBalance != null ? round2(bankBalance + comingIn30 - goingOut30) : null;
   return {
     bankBalance,
     bankAsOf: snap?.asOf ? etDayKey(snap.asOf) : null,
     stripeAvailable, stripePending,
     arOutstanding: round2(ar),
+    comingIn30,
     goingOut30,
     projected,
   };

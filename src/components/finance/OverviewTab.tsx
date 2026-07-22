@@ -92,6 +92,7 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
   const profitTone = profit < 0 ? "danger" : "success";
   const runwayTone = cash.projected == null ? "muted" : cash.projected < 0 ? "danger" : cash.projected < 5000 ? "warning" : "success";
   const bankTone = cash.bankBalance == null ? "muted" : cash.bankBalance < 0 ? "danger" : "muted";
+  const netFlow = cash.comingIn30 - cash.goingOut30; // typical monthly cash flow
 
   return (
     <div>
@@ -132,28 +133,32 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
           <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
             <Wallet className="size-4 text-brand" /> Cash &amp; runway
           </div>
-          {cash.bankBalance == null ? (
-            <div className="rounded-xl border border-dashed border-border bg-surface-2/40 p-4 text-center text-sm text-muted">
-              Add your business checking balance on the <Link href="/sales?tab=money" className="font-medium text-brand hover:underline">Money</Link> tab to see your runway.
-            </div>
-          ) : (
+          {cash.bankBalance != null ? (
             <div className={`rounded-xl p-4 ${runwayTone === "danger" ? "bg-danger-soft/40" : "bg-surface-2/50"}`}>
-              <div className="text-[11px] font-medium uppercase tracking-wide text-muted-2">Projected balance at month-end</div>
+              <div className="text-[11px] font-medium uppercase tracking-wide text-muted-2">Projected balance after a typical month</div>
               <div className={`text-3xl font-bold ${runwayTone === "danger" ? "text-danger" : runwayTone === "warning" ? "text-warning" : runwayTone === "success" ? "text-success" : "text-foreground"}`}>
                 {m0(cash.projected)}
               </div>
               <p className="mt-1 text-xs text-muted">
-                {cash.projected != null && cash.projected < 0
-                  ? "Tight — collecting what you're owed is the fastest fix."
-                  : "Bank + money owed to you + Stripe pending, minus your usual monthly outgoings."}
+                Starting from your bank, a typical month brings in about {m0(cash.comingIn30)} and spends {m0(cash.goingOut30)} — a net of {netFlow >= 0 ? "+" : ""}{m0(netFlow)}.
+              </p>
+            </div>
+          ) : (
+            <div className="rounded-xl bg-surface-2/50 p-4">
+              <div className="text-[11px] font-medium uppercase tracking-wide text-muted-2">Typical monthly cash flow</div>
+              <div className={`text-3xl font-bold ${netFlow < 0 ? "text-danger" : "text-success"}`}>
+                {netFlow >= 0 ? "+" : ""}{m0(netFlow)}<span className="ml-1 text-base font-medium text-muted-2">/mo</span>
+              </div>
+              <p className="mt-1 text-xs text-muted">
+                About {m0(cash.comingIn30)} comes in and {m0(cash.goingOut30)} goes out in a typical month. Add your bank balance on the <Link href="/sales?tab=money" className="font-medium text-brand hover:underline">Money</Link> tab for a full month-end projection.
               </p>
             </div>
           )}
           <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <Stat label="In the bank" value={m0(cash.bankBalance)} tone={bankTone} />
-            <Stat label="Owed to you (AR)" value={m0(cash.arOutstanding)} tone={cash.arOutstanding > 0 ? "success" : "muted"} />
-            <Stat label="Stripe pending" value={cash.stripePending == null ? "—" : m0(cash.stripePending)} sub={cash.stripePending == null ? "connect Stripe" : "about to land"} />
-            <Stat label="Going out ~30d" value={m0(cash.goingOut30)} sub="payroll + recurring" tone="muted" />
+            <Stat label="In the bank" value={m0(cash.bankBalance)} sub={cash.bankAsOf ? `as of ${etDate(cash.bankAsOf)}` : "not set"} tone={bankTone} />
+            <Stat label="Money in ~30d" value={m0(cash.comingIn30)} sub="lands in checking" tone="success" />
+            <Stat label="Money out ~30d" value={m0(cash.goingOut30)} sub="out of checking" tone="muted" />
+            <Stat label="Owed to you (AR)" value={m0(cash.arOutstanding)} sub="delivered, unpaid" tone={cash.arOutstanding > 0 ? "success" : "muted"} />
           </div>
           {cash.arOutstanding > 0 && (
             <Link href="/sales?tab=unpaid" className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">

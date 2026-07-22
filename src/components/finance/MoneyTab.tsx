@@ -73,22 +73,22 @@ export async function MoneyTab({ show }: { show: FinanceTab[] }) {
             </div>
           ) : (
             <div className="rounded-xl bg-surface-2/50 p-4">
-              <div className="text-[11px] font-medium uppercase tracking-wide text-muted-2">Projected balance at month-end</div>
+              <div className="text-[11px] font-medium uppercase tracking-wide text-muted-2">Projected balance after a typical month</div>
               <div className={`text-3xl font-bold ${projTone === "danger" ? "text-danger" : projTone === "success" ? "text-success" : "text-foreground"}`}>
                 {m0(cash.projected)}
               </div>
               <p className="mt-1 text-xs text-muted">
                 {cash.projected != null && cash.projected < 0
                   ? "Tight — collecting the money you're owed below is the fastest fix."
-                  : "Bank + money owed to you + Stripe pending, minus your usual monthly outgoings."}
+                  : `A typical month brings in about ${m0(cash.comingIn30)} and spends ${m0(cash.goingOut30)}.`}
               </p>
             </div>
           )}
           <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
             <Stat label="In the bank" value={m0(cash.bankBalance)} sub={cash.bankAsOf ? `as of ${etDate(cash.bankAsOf)}` : "not set"} tone={cash.bankBalance != null && cash.bankBalance < 0 ? "danger" : "muted"} />
             <Stat label="Owed to you (AR)" value={m0(cash.arOutstanding)} sub="delivered, unpaid" tone={cash.arOutstanding > 0 ? "success" : "muted"} />
-            <Stat label="Stripe pending" value={cash.stripePending == null ? "—" : m0(cash.stripePending)} sub={cash.stripePending == null ? "connect Stripe" : "about to land"} />
-            <Stat label="Going out ~30d" value={m0(cash.goingOut30)} sub="payroll + recurring" tone="muted" />
+            <Stat label="Money in ~30d" value={m0(cash.comingIn30)} sub="typical month" tone="success" />
+            <Stat label="Going out ~30d" value={m0(cash.goingOut30)} sub="typical month" tone="muted" />
           </div>
           {cash.arOutstanding > 0 && (
             <Link href="/sales?tab=unpaid" className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">
