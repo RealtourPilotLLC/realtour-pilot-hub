@@ -88,9 +88,12 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
     { key: "venmo", amount: rev.venmo, ...RAIL.venmo },
   ].filter((r) => r.amount > 0);
 
-  const cos = health.cat.COST_OF_SALES?.amount ?? 0;
-  const operating = health.cat.OPERATING?.amount ?? 0;
-  const vehicle = health.cat.VEHICLE?.amount ?? 0;
+  // From the P&L engine (Purchase-only, reconciles to pnl.expenses) — not the
+  // all-type booksHealth groupBy — so the itemized rows foot to Net profit.
+  const cos = pnl.costOfSales;
+  const operating = pnl.operating;
+  const vehicle = pnl.vehicle;
+  const stripeContractor = pnl.stripeContractorPay;
 
   const profitTone = profit < 0 ? "danger" : "success";
   const runwayTone = cash.projected == null ? "muted" : cash.projected < 0 ? "danger" : cash.projected < 5000 ? "warning" : "success";
@@ -199,6 +202,7 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
           <div className="divide-y divide-border/60 text-sm">
             <Row label="Revenue (all 3 processors)" value={m0(revenue)} strong />
             <Row label="− Contractors & editing" value={m0(cos)} icon={<Users className="size-3.5 text-muted-2" />} neg />
+            {stripeContractor > 0 && <Row label="− Contractors paid via Stripe" value={m0(stripeContractor)} icon={<Users className="size-3.5 text-muted-2" />} neg />}
             <Row label="− Software, fees & operating" value={m0(operating + pnl.stripeFees)} icon={<Receipt className="size-3.5 text-muted-2" />} neg />
             <Row label="− Auto, fuel & travel" value={m0(vehicle)} icon={<TrendingUp className="size-3.5 text-muted-2" />} neg />
             <Row label={profit < 0 ? "= Net loss" : "= Net profit"} value={m0(profit)} strong tone={profitTone}

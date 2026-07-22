@@ -77,7 +77,10 @@ export async function jobProfitability(start: Date, end: Date): Promise<JobProfi
   });
 
   const jobs: JobRow[] = projects.map((pr) => {
-    const revenue = pr.payableInvoice ?? pr.price ?? 0;
+    // Revenue = the order total (what the client paid). payableInvoice is the
+    // photographer PAY basis (excludes virtual/AI add-ons) and understates job
+    // revenue, so it's used only inside the cost calc, never as the top line.
+    const revenue = pr.price ?? pr.payableInvoice ?? 0;
     const photographerCost = costByProject[pr.id] ?? 0;
     const { lumaVideos, lumaCost } = lumaEditing(pr.deliverables);
     const editingCost = lumaCost;

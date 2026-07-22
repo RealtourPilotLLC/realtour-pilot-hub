@@ -22,9 +22,12 @@ export async function JobsTab({ show }: { show: FinanceTab[] }) {
   const start = new Date(now.getTime() - WINDOW_DAYS * 864e5);
   const data = await jobProfitability(start, now);
 
-  const withRev = data.jobs.filter((j) => j.revenue > 0);
-  const best = [...withRev].sort((a, b) => (b.marginPct ?? -9) - (a.marginPct ?? -9))[0];
-  const worst = [...withRev].sort((a, b) => (a.marginPct ?? 9) - (b.marginPct ?? 9))[0];
+  // Best/worst only over jobs with a cost actually booked — a $0-cost job (owner
+  // shot it, payout excluded, or rates unconfigured) shows a fake 100% margin and
+  // would falsely crown "most profitable."
+  const rated = data.jobs.filter((j) => j.revenue > 0 && (j.photographerCost > 0 || j.editingCost > 0));
+  const best = [...rated].sort((a, b) => (b.marginPct ?? -9) - (a.marginPct ?? -9))[0];
+  const worst = [...rated].sort((a, b) => (a.marginPct ?? 9) - (b.marginPct ?? 9))[0];
 
   return (
     <div>

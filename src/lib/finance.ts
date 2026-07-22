@@ -120,21 +120,34 @@ export type MonthlyPnl = {
 // same months in one render, so cache() collapses the repeated (heavy) computes.
 export const getMonthlyPnl = cache(async (back = 0): Promise<MonthlyPnl> => {
   const { start, end, label, key } = monthBounds(back);
-  const [rev, photographerPay, teamPay, expAgg] = await Promise.all([
-    revenueForMonth(start, end),
+  // Revenue at the PROCESSOR across all three rails — same canonical source as
+  // the YTD P&L. The old code counted Stripe alone, which dropped every
+  // QuickBooks Payments sale and Venmo shoot and could flip a profitable month
+  // into a shown loss with an impossible >100% payroll ratio.
+  const { revenueByProcessor } = await import("@/lib/bookkeeping");
+  const startKey = `${key}-01`;
+  const endKey = etDayKey(new Date(end.getTime() - 1000));
+  const [rp, rev, photographerPay, teamPay, ledgerExp] = await Promise.all([
+    revenueByProcessor(startKey, endKey),
+    revenueForMonth(start, end), // kept only for the Aryeo "invoiced/delivered" line
     photographerCost(start, end),
     teamCost(start, end),
-    prisma.expense.aggregate({ where: { personal: false, spentAt: { gte: start, lte: end } }, _sum: { amount: true } }),
+    // Operating + vehicle spend from the CLASSIFIED ledger (not the empty manual
+    // Expense table). COST_OF_SALES is deliberately excluded — that's the
+    // contractor pay the payroll engine (photographerCost/teamCost) already counts.
+    prisma.qboTransaction.aggregate({
+      where: { type: "Purchase", category: { in: ["OPERATING", "VEHICLE"] }, txnDate: { gte: start, lte: end } },
+      _sum: { amount: true },
+    }),
   ]);
-  // Top line is GROSS collected (Stripe) so the fee is subtracted ONCE below.
-  const revenue = rev.stripeConnected ? rev.stripeGross : rev.aryeoDelivered;
+  const revenue = round2(rp.total);
   const allPayroll = round2(photographerPay + teamPay);
-  const expenses = round2(expAgg._sum.amount ?? 0);
-  const cardFees = rev.stripeConnected ? rev.stripeFees : 0;
+  const expenses = round2(ledgerExp._sum.amount ?? 0);
+  const cardFees = round2(rp.stripeFees);
   const profit = round2(revenue - allPayroll - cardFees - expenses);
   return {
     key, label, revenue,
-    revenueIsEstimate: !rev.stripeConnected,
+    revenueIsEstimate: false, // counted at the processor, no longer an estimate
     invoiced: rev.aryeoDelivered,
     photographerPay, teamPay, allPayroll, cardFees, expenses, profit,
     margin: revenue > 0 ? round4(profit / revenue) : null,

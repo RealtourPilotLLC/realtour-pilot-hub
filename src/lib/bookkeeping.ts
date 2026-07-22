@@ -83,8 +83,19 @@ const EXPENSE_MAP: [RegExp, Category][] = [
 // ---------------------------------------------------------------------------
 type VendorRule = { rx: RegExp; category: Category; personal?: boolean; review?: boolean; note?: string };
 const VENDOR_RULES: VendorRule[] = [
+  // QuickBooks Payments' own "system-recorded fee" is a duplicate of the bank
+  // ACH debit to Intuit that actually moves the money — count each fee once.
+  { rx: /system-recorded fee for quickbooks/i, category: "DUPLICATE", review: false,
+    note: "QuickBooks' internal fee record; the same fee is also the bank ACH debit to Intuit (the one counted). Excluded so the processing fee isn't double-counted." },
+  // Personal income tax (IRS, PA individual) + consumer tax prep = owner draws,
+  // NOT deductible business expenses, even when routed through QB Payments.
+  { rx: /usataxpymt|\birs\b|paindivltx|commwlthofpa|dept.*revenue|\btreasury\b|turbotax/i,
+    category: "OWNER_DRAW", personal: true, review: true,
+    note: "Income-tax payment or personal tax prep — a personal owner draw, not a deductible business expense. Confirm with your accountant." },
   // Not a P&L item — credit-card payments + money moved between own accounts.
-  { rx: /crcardpmt|cardmember serv|card ?payment|cardpmt|capital one.*(crcard|pmt|payment)/i,
+  // Anchor to bank-feed fee signals only; do NOT match the literal account name
+  // "Credit Card Payments" (which would sweep unrelated rows into TRANSFER).
+  { rx: /crcardpmt|cardmember serv|cardpmt|capital one.*(crcard|pmt|payment)/i,
     category: "TRANSFER", review: true,
     note: "Credit-card payment — pays down a card balance, not itself an expense. Confirm whether the card is a BUSINESS card (its charges belong in the P&L) or personal (an owner draw)." },
   // NOTE: "money transfer" / "visa direct" are deliberately NOT here — on a
@@ -491,18 +502,22 @@ export async function trueProfitAndLoss(startKey: string, endKey: string) {
   // the Stripe rail — which means the Stripe rail has to be ADDED here or a third
   // of revenue silently disappears. Charges net of refunds, gross of fees: fees
   // are a real cost and belong in expenses, not netted out of the top line.
-  const qboRevenue = sum(["REVENUE"], ["Deposit", "SalesReceipt"]);
-  const stripeRows = await prisma.stripeTransaction.findMany({
-    where: {
-      createdAt: { gte: new Date(`${startKey}T00:00:00Z`), lte: new Date(`${endKey}T23:59:59Z`) },
-      type: { in: ["charge", "payment", "refund"] },
-    },
-  });
-  const stripeRevenue = stripeRows.reduce((s, r) => s + r.gross, 0);
-  const stripeFees = stripeRows.reduce((s, r) => s + r.fee, 0);
-  const revenue = qboRevenue + stripeRevenue;
+  // Revenue MUST be the ONE canonical processor number, or this engine and
+  // revenueByProcessor never reconcile. Counting REVENUE on Deposit AND
+  // SalesReceipt double-counted the QuickBooks rail (the deposits already settle
+  // those receipts) and dropped Venmo entirely. So reuse revenueByProcessor
+  // verbatim: QuickBooks Payments (Payment + SalesReceipt, once) + Stripe + Venmo.
+  const rp = await revenueByProcessor(startKey, endKey);
+  const revenue = rp.total;
+  const qboRevenue = rp.quickbooks;
+  const stripeRevenue = rp.stripe;
+  const venmoRevenue = rp.venmo;
+  const stripeFees = rp.stripeFees;
 
-  const qboExpenses = sum(["COST_OF_SALES", "OPERATING", "VEHICLE"], ["Purchase"]);
+  const costOfSales = sum(["COST_OF_SALES"], ["Purchase"]);
+  const operating = sum(["OPERATING"], ["Purchase"]);
+  const vehicle = sum(["VEHICLE"], ["Purchase"]);
+  const qboExpenses = costOfSales + operating + vehicle;
   // Contractor pay routed through Stripe (transfers OUT to James/Harrison's
   // Stripe balances) is a real cost that never touches the QuickBooks ledger, so
   // it must be added here or it's silently free labor. The bank top-up that funds
@@ -520,8 +535,8 @@ export async function trueProfitAndLoss(startKey: string, endKey: string) {
 
   return {
     start: startKey, end: endKey,
-    revenue, qboRevenue, stripeRevenue,
-    expenses, stripeFees, stripeContractorPay, uncategorisedExpenses: unknown,
+    revenue, qboRevenue, stripeRevenue, venmoRevenue,
+    expenses, costOfSales, operating, vehicle, stripeFees, stripeContractorPay, uncategorisedExpenses: unknown,
     profit: revenue - expenses,
     ownerDraws, excludedFromIncome: excluded, needsReview,
   };
@@ -552,6 +567,9 @@ export function paymentChannel(text: string): string {
 const PAYEE_ALIASES: [RegExp, string][] = [
   [/cliffside cuts/i, "Kim · Cliffside Cuts"],
   [/staffify/i, "Remar & Kyle · Staffify"],
+  [/nguyen ?cao|nguyencaong/i, "Nguyen Cao (editor)"],
+  [/auto ?hdr/i, "AutoHDR"],
+  [/\bwise\b|transferwise/i, "Wise (editing)"],
 ];
 
 // What KIND of payee this is, so "who I pay" can group creatives vs editors vs
@@ -559,7 +577,8 @@ const PAYEE_ALIASES: [RegExp, string][] = [
 export const PAYEE_GROUPS = ["Photographers", "Editors", "Software & tools", "Staff & VA", "Marketing", "Other"] as const;
 export function payeeGroup(text: string, payee: string): string {
   const t = `${payee} ${text}`.toLowerCase();
-  if (/harrison|matthew bertsch|james livingston|\bphotographer\b|photography/.test(t)) return "Photographers";
+  // "livingsto" (not "livingston") — the bank feed truncates the last name.
+  if (/harrison|matthew bertsch|livingsto|katie ?macintyre|\bphotographer\b|photography/.test(t)) return "Photographers";
   // Editors incl. our people: Kim (Cliffside), Remar & Kyle (Staffify).
   if (/luma|cliffside|\bkim\b|staffify|\bremar\b|\bkyle\b|nguyen|ta thi|dawar|eric visuals|\bwise\b|\beditor\b|editing|post[- ]?production|retouch|autohdr|pixlmob|pixel film|final cut|capcut|\bpop\b/.test(t)) return "Editors";
   if (/base44|cardinal camera|flylisted|adobe|dropbox|anthropic|openai|midjourney|elevenlabs|seaart|matterport|cubicasa|aryeo|frame\.?io|\bcanva\b|topaz|descript|software|subscription|\bapp\b/.test(t)) return "Software & tools";
@@ -659,6 +678,10 @@ export async function peoplePayments(startKey: string, endKey: string): Promise<
   const groupTotals: Record<string, number> = {};
   for (const p of list) {
     p.primaryChannel = Object.entries(p.channels).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "—";
+    // Recompute the group from the CANONICAL (aliased) payee name rather than the
+    // first row's raw text, so a truncated/ambiguous first transaction can't
+    // freeze a payee in the wrong group.
+    p.group = payeeGroup("", p.payee);
     groupTotals[p.group] = (groupTotals[p.group] || 0) + p.total;
   }
   return { list, total: list.reduce((s, p) => s + p.total, 0), count: list.length, channelTotals, monthTotals, groupTotals };
@@ -673,9 +696,10 @@ const PERSONAL_BUCKETS: [RegExp, string][] = [
   [/sheetz|\bwawa\b|city convenience|convenience|circle k|7-?eleven|turkey hill/i, "Convenience & snacks"],
   [/amazon|\bamzn\b|\btarget\b|wal-?mart|walmart|costco|dollar general|dollar tree|best buy|home depot|lowe'?s|\bikea\b/i, "Shopping"],
   [/netflix|\bhulu\b|disney|hbo|prime video|spotify|youtube|paramount|peacock|apple\.com\/bill|audible|elevenlabs|seaart|anthropic|openai/i, "Subscriptions & streaming"],
-  [/\bcheck\s*#?\s*\d|\brent\b/i, "Rent & housing"],
+  [/\bcheck\s*#?\s*\d|\brent\b|mortgage/i, "Rent & housing"],
   [/barber|\bsalon\b|haircut|\bnails\b|carpe|rythm ?health|dentist|pharmacy|\bcvs\b|walgreens/i, "Personal care & health"],
-  [/good ?and ?beautiful|goodandbeautiful|little ?poppy|littlepoppyco/i, "Family & kids"],
+  [/katie ?macintyre|lauren spackman|laurie spackman|\bnanny\b|good ?and ?beautiful|goodandbeautiful|little ?poppy|littlepoppyco/i, "Family & childcare"],
+  [/whitetail|disposal|verizon|comcast|\bpeco\b|\bppl\b|electric|water authority|\butilit/i, "Utilities"],
   [/atm withdrawal|cash withdrawal|\batm\b/i, "Cash & ATM"],
   [/sunbit|\btilt\b|empower|affirm|klarna|afterpay/i, "Loans & financing"],
   [/exxon|\bshell\b|sunoco|\bmobil\b|\bgulf\b|\bfuel\b|\bpspt\b|parking/i, "Fuel & auto"],
@@ -711,8 +735,9 @@ export async function personalSpending(startKey: string, endKey: string): Promis
     (buckets[bucket] ||= { amount: 0, count: 0 }).amount += r.amount;
     buckets[bucket].count++;
     byMonth[r.txnDate.toISOString().slice(0, 7)] = (byMonth[r.txnDate.toISOString().slice(0, 7)] || 0) + r.amount;
-    const vend = raw?.EntityRef?.name ? normalizePayee(raw.EntityRef.name) || raw.EntityRef.name
-      : /\bcheck\s*#?\s*\d/i.test(text) ? "Rent (check)" : bucket;
+    // Real vendor/person name (surfaces the nanny, retailers, etc.) — same
+    // resolver the People tab uses — instead of collapsing to the bucket label.
+    const vend = /\bcheck\s*#?\s*\d/i.test(text) ? "Rent (check)" : resolvePayee(raw, text);
     (vendors[vend] ||= { amount: 0, count: 0 }).amount += r.amount;
     vendors[vend].count++;
     total += r.amount;
