@@ -104,10 +104,16 @@ const VENDOR_RULES: VendorRule[] = [
   { rx: /\bempower\b|\btilt\b|sunbit|affirm|klarna|afterpay|\bsezzle\b|stripe capital|cash advance/i,
     category: "FINANCING", review: true,
     note: "Loan / cash-advance / buy-now-pay-later repayment (researched: Empower→Tilt and Sunbit are consumer lenders). Principal is NOT deductible — only the fee. Confirm what was financed." },
+  // Household / family paid via Venmo — PERSONAL, not business contractors.
+  // Must come before the contractor rule so a family name isn't read as a shooter.
+  { rx: /katie ?macintyre/i, category: "OWNER_DRAW", personal: true,
+    note: "The family nanny — personal, not a business cost (confirmed by Jordan)." },
+  { rx: /lauren spackman|laurie spackman/i, category: "OWNER_DRAW", personal: true, review: true,
+    note: "Spackman family member paid via Venmo — treated as personal/family. If this is real paid business work, tell me and I'll move it to contractors." },
   // Contractors & editing — per-shoot production cost.
-  { rx: /cliffside cuts|nguyen|cameron barr|harrison wells|katie ?macintyre|matthew bertsch|bertsch|\bphotographer\b|photography|\bgostaff\b|staffify|\bupwork\b|\bfiverr\b|\beditor\b|editing|post[- ]?production|retouch|virtual stag/i,
+  { rx: /cliffside cuts|nguyen|cameron barr|harrison wells|matthew bertsch|bertsch|james livingston|\bphotographer\b|photography|\bgostaff\b|staffify|\bupwork\b|\bfiverr\b|\beditor\b|editing|post[- ]?production|retouch|virtual stag/i,
     category: "COST_OF_SALES",
-    note: "Contractor / editing / photographer — a per-shoot production cost (researched: Cliffside Cuts is a real-estate video-editing service; Nguyen is an editor; Harrison/Katie/Matthew are shooters paid via Venmo)." },
+    note: "Contractor / editing / photographer — a per-shoot production cost (researched: Cliffside Cuts is a real-estate video-editing service; Nguyen is an editor; Harrison/Matthew/James are shooters paid via Venmo)." },
   { rx: /\bwise\b|transferwise/i, category: "COST_OF_SALES", review: true,
     note: "Wise transfer — usually a contractor payment (the bank note often names the shoot). Confirm the payee." },
   // Business software / SaaS the agency runs on.
@@ -115,7 +121,7 @@ const VENDOR_RULES: VendorRule[] = [
     category: "OPERATING",
     note: "Business software / subscription (AI content, editing, or ops tooling)." },
   // Vehicle / travel to shoots.
-  { rx: /\bpspt\b|parking|\bprk\b|\btolls?\b|e-?zpass|\buber\b|\blyft\b|enterprise rent|\bhertz\b|\bavis\b|exxon|\bshell\b|sunoco|\bmobil\b|\bgulf\b|marathon|turkey hill/i,
+  { rx: /\bpspt\b|parking|\bprk\b|\btolls?\b|e-?zpass|\buber\b|\blyft\b|enterprise rent|\bhertz\b|\bavis\b|exxon|\bshell\b|sunoco|\bmobil\b|\bgulf\b|marathon|turkey hill|autozone|auto zone|advance auto|napa auto|o'?reilly auto/i,
     category: "VEHICLE",
     note: "Auto / fuel / parking / travel to shoots." },
   // Personal spending — the big bucket miscoded as Owner Draw.
@@ -529,6 +535,19 @@ export function paymentChannel(text: string): string {
   return "Other";
 }
 
+// What KIND of payee this is, so "who I pay" can group creatives vs editors vs
+// software vs staff. Ordered: first match wins.
+export const PAYEE_GROUPS = ["Photographers", "Editors", "Software & tools", "Staff & VA", "Marketing", "Other"] as const;
+export function payeeGroup(text: string, payee: string): string {
+  const t = `${payee} ${text}`.toLowerCase();
+  if (/harrison|matthew bertsch|james livingston|\bphotographer\b|photography/.test(t)) return "Photographers";
+  if (/luma|cliffside|nguyen|ta thi|dawar|eric visuals|\bwise\b|\beditor\b|editing|post[- ]?production|retouch|autohdr|pixlmob|pixel film|final cut|capcut|\bpop\b/.test(t)) return "Editors";
+  if (/base44|cardinal camera|flylisted|adobe|dropbox|anthropic|openai|midjourney|elevenlabs|seaart|matterport|cubicasa|aryeo|frame\.?io|\bcanva\b|topaz|descript|software|subscription|\bapp\b/.test(t)) return "Software & tools";
+  if (/staffify|\bva\b|virtual assistant|\bstaff\b/.test(t)) return "Staff & VA";
+  if (/social pros|social media|marketing|\bads\b|\bseo\b/.test(t)) return "Marketing";
+  return "Other";
+}
+
 // Merge "Harrison Wells Photographer" ≈ "VENMO *Harrison Wells" → "Harrison Wells".
 function normalizePayee(name: string): string {
   const cleaned = name
@@ -556,7 +575,7 @@ export function resolvePayee(raw: { EntityRef?: { name?: string } } | null, text
 }
 
 export type PayeeRow = {
-  payee: string; total: number; count: number;
+  payee: string; group: string; total: number; count: number;
   channels: Record<string, number>; primaryChannel: string;
   months: Record<string, number>; lastAt: Date;
 };
@@ -565,6 +584,7 @@ export type PayeeRow = {
 export async function peoplePayments(startKey: string, endKey: string): Promise<{
   list: PayeeRow[]; total: number; count: number;
   channelTotals: Record<string, number>; monthTotals: Record<string, number>;
+  groupTotals: Record<string, number>;
 }> {
   const rows = await prisma.qboTransaction.findMany({
     where: {
@@ -582,7 +602,7 @@ export async function peoplePayments(startKey: string, endKey: string): Promise<
     const payee = resolvePayee(raw, text);
     const channel = paymentChannel(text);
     const mKey = r.txnDate.toISOString().slice(0, 7);
-    const p = (people[payee] ||= { payee, total: 0, count: 0, channels: {}, primaryChannel: channel, months: {}, lastAt: r.txnDate });
+    const p = (people[payee] ||= { payee, group: payeeGroup(text, payee), total: 0, count: 0, channels: {}, primaryChannel: channel, months: {}, lastAt: r.txnDate });
     p.total += r.amount; p.count++;
     p.channels[channel] = (p.channels[channel] || 0) + r.amount;
     p.months[mKey] = (p.months[mKey] || 0) + r.amount;
@@ -608,14 +628,18 @@ export async function peoplePayments(startKey: string, endKey: string): Promise<
       monthTotals[r.createdAt.toISOString().slice(0, 7)] = (monthTotals[r.createdAt.toISOString().slice(0, 7)] || 0) + a;
     }
     people["James & Harrison · Stripe"] = {
-      payee: "James & Harrison · Stripe", total, count: stripeTransfers.length,
+      payee: "James & Harrison · Stripe", group: "Photographers", total, count: stripeTransfers.length,
       channels: { Stripe: total }, primaryChannel: "Stripe", months, lastAt,
     };
   }
 
   const list = Object.values(people).sort((a, b) => b.total - a.total);
-  for (const p of list) p.primaryChannel = Object.entries(p.channels).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "—";
-  return { list, total: list.reduce((s, p) => s + p.total, 0), count: list.length, channelTotals, monthTotals };
+  const groupTotals: Record<string, number> = {};
+  for (const p of list) {
+    p.primaryChannel = Object.entries(p.channels).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "—";
+    groupTotals[p.group] = (groupTotals[p.group] || 0) + p.total;
+  }
+  return { list, total: list.reduce((s, p) => s + p.total, 0), count: list.length, channelTotals, monthTotals, groupTotals };
 }
 
 // ---------------------------------------------------------------------------

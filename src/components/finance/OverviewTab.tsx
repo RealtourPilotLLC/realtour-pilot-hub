@@ -18,6 +18,9 @@ const YEAR_START = "2026-01-01";
 // Rounded-dollar money format. Negative → en-dash prefix. Null → em-dash.
 const m0 = (n: number | null | undefined) =>
   n == null ? "—" : `${n < 0 ? "−" : ""}$${Math.abs(Math.round(n)).toLocaleString("en-US")}`;
+// Compact form for tight spots (donut center): $324,295 → $324k.
+const abbr = (n: number) =>
+  Math.abs(n) >= 1000 ? `$${Math.round(n / 1000).toLocaleString("en-US")}k` : `$${Math.round(n)}`;
 const pct = (n: number | null | undefined) => (n == null ? "—" : `${n < 0 ? "−" : "+"}${Math.abs(Math.round(n * 100))}%`);
 
 // Rail colors (from the shared PALETTE family) — kept consistent with the donut.
@@ -357,8 +360,8 @@ function Donut({ total, rails }: { total: number; rails: { key: string; label: s
     <div className="flex flex-col items-center gap-5 sm:flex-row sm:items-center sm:gap-7">
       <svg viewBox="0 0 120 120" className="size-40 shrink-0">
         {arcs}
-        <text x={cx} y={cy - 4} textAnchor="middle" className="fill-foreground" style={{ fontSize: 15, fontWeight: 700 }}>
-          {m0(total)}
+        <text x={cx} y={cy - 2} textAnchor="middle" className="fill-foreground" style={{ fontSize: 17, fontWeight: 700 }}>
+          {abbr(total)}
         </text>
         <text x={cx} y={cy + 12} textAnchor="middle" className="fill-muted" style={{ fontSize: 7, letterSpacing: 0.5 }}>
           2026 YTD
