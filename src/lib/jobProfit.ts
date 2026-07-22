@@ -2,6 +2,22 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { computePayroll } from "@/lib/payroll";
 
+// Editing rates (owner-supplied). Luma edits only PREMIUM video-type deliverables
+// ($299 each); standard videos/reels are edited in-house (Remar/Kim). AutoHDR is
+// $0.50 per raw photo (added once raw-photo counts are snapshotted per project).
+const LUMA_PER_VIDEO = 299;
+const VIDEO_TYPES = new Set(["VIDEO", "SOCIAL_REEL"]);
+const PREMIUM_RE = /premium|influencer/i;
+
+function lumaEditing(deliverables: { type: string; label: string | null; quantity: number }[]) {
+  let lumaVideos = 0;
+  for (const d of deliverables) {
+    if (!VIDEO_TYPES.has(d.type)) continue;
+    if (PREMIUM_RE.test(d.label ?? "")) lumaVideos += d.quantity ?? 1;
+  }
+  return { lumaVideos, lumaCost: lumaVideos * LUMA_PER_VIDEO };
+}
+
 export type JobRow = {
   id: string;
   title: string;
@@ -10,9 +26,11 @@ export type JobRow = {
   shootDate: Date | null;
   status: string;
   paymentStatus: string | null;
-  revenue: number;        // eligible invoice (payableInvoice) or order price
+  revenue: number;          // eligible invoice (payableInvoice) or order price
   photographerCost: number; // exact: base shoot pay + mileage share
-  margin: number;         // revenue − photographer cost
+  lumaVideos: number;       // premium videos/reels routed to Luma
+  editingCost: number;      // Luma (exact); AutoHDR + in-house added as they land
+  margin: number;           // revenue − photographer − editing
   marginPct: number | null;
 };
 
@@ -21,6 +39,7 @@ export type JobProfit = {
   count: number;
   revenue: number;
   photographerCost: number;
+  editingCost: number;
   margin: number;
   avgMarginPct: number | null;
   start: Date;
@@ -28,15 +47,13 @@ export type JobProfit = {
 };
 
 /**
- * Per-job P&L over a window. Revenue is the eligible invoice; photographer cost
- * is the EXACT payroll number (base % pay + that day's mileage share), taken
- * from a single computePayroll pass over the range and keyed back to each
- * project. Editing is NOT included per-job — editors bill monthly/hourly, so
- * their cost is a business-level line, not a per-shoot one. This margin is
- * therefore "revenue minus the photographer who shot it."
+ * Per-job P&L over a window. Revenue = eligible invoice. Costs, to the penny:
+ *  • photographer — exact payroll (base % + mileage) from one computePayroll pass.
+ *  • editing — Luma at $299 per PREMIUM video/reel (from the deliverable data).
+ * AutoHDR ($0.50/raw photo) and the in-house editor pool are added as their data
+ * sources come online; margin here is "revenue minus shooter and Luma."
  */
 export async function jobProfitability(start: Date, end: Date): Promise<JobProfit> {
-  // One payroll pass → per-project photographer cost (summed across any legs).
   const people = await computePayroll(start, end);
   const costByProject: Record<string, number> = {};
   const shooterByProject: Record<string, string> = {};
@@ -54,6 +71,7 @@ export async function jobProfitability(start: Date, end: Date): Promise<JobProfi
       paymentStatus: true, shootDate: true, status: true,
       photographer: { select: { name: true } },
       client: { select: { name: true } },
+      deliverables: { select: { type: true, label: true, quantity: true } },
     },
     orderBy: { shootDate: "desc" },
   });
@@ -61,7 +79,9 @@ export async function jobProfitability(start: Date, end: Date): Promise<JobProfi
   const jobs: JobRow[] = projects.map((pr) => {
     const revenue = pr.payableInvoice ?? pr.price ?? 0;
     const photographerCost = costByProject[pr.id] ?? 0;
-    const margin = revenue - photographerCost;
+    const { lumaVideos, lumaCost } = lumaEditing(pr.deliverables);
+    const editingCost = lumaCost;
+    const margin = revenue - photographerCost - editingCost;
     return {
       id: pr.id,
       title: pr.title,
@@ -72,6 +92,8 @@ export async function jobProfitability(start: Date, end: Date): Promise<JobProfi
       paymentStatus: pr.paymentStatus,
       revenue,
       photographerCost,
+      lumaVideos,
+      editingCost,
       margin,
       marginPct: revenue > 0 ? margin / revenue : null,
     };
@@ -79,13 +101,15 @@ export async function jobProfitability(start: Date, end: Date): Promise<JobProfi
 
   const revenue = jobs.reduce((s, j) => s + j.revenue, 0);
   const photographerCost = jobs.reduce((s, j) => s + j.photographerCost, 0);
+  const editingCost = jobs.reduce((s, j) => s + j.editingCost, 0);
   return {
     jobs,
     count: jobs.length,
     revenue,
     photographerCost,
-    margin: revenue - photographerCost,
-    avgMarginPct: revenue > 0 ? (revenue - photographerCost) / revenue : null,
+    editingCost,
+    margin: revenue - photographerCost - editingCost,
+    avgMarginPct: revenue > 0 ? (revenue - photographerCost - editingCost) / revenue : null,
     start,
     end,
   };
