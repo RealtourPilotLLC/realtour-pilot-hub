@@ -1,0 +1,274 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { prisma } from "@/lib/prisma";
+import { requireOwner } from "@/lib/auth/guards";
+import { etDayKey } from "@/lib/datetime";
+import { buildDayPlan, ownerMemberId, etInstant } from "@/lib/ownerDay";
+import { createBlock, updateBlock, deleteBlock, CalendarNotConnected } from "@/lib/integrations/googleCalendar";
+
+// Owner-only throughout: this is one person's private list, and the guard is
+// what keeps it out of the shared ops queue in both directions.
+
+export type QuickAddInput = {
+  title: string;
+  notes?: string;
+  priority?: string; // NOW | NEXT | LATER
+  energy?: string; // DEEP | SHALLOW
+  estimateMin?: number;
+  dueAt?: string | null; // yyyy-mm-dd
+  planToday?: boolean;
+  projectId?: string | null;
+  clientId?: string | null;
+  commLogId?: string | null;
+  gmailThreadId?: string | null;
+  gmailMailbox?: string | null;
+  sourceNote?: string | null;
+};
+
+const PRIORITIES = new Set(["NOW", "NEXT", "LATER"]);
+const ENERGIES = new Set(["DEEP", "SHALLOW"]);
+
+export async function addOwnerTodo(input: QuickAddInput): Promise<{ id?: string; error?: string }> {
+  await requireOwner();
+  const title = (input.title ?? "").trim();
+  if (!title) return { error: "Give it a name." };
+
+  const priority = PRIORITIES.has(input.priority ?? "") ? input.priority! : "NEXT";
+  const energy = ENERGIES.has(input.energy ?? "") ? input.energy! : "SHALLOW";
+  const estimateMin = Math.min(Math.max(Number(input.estimateMin) || 30, 5), 480);
+  const due = input.dueAt && /^\d{4}-\d{2}-\d{2}$/.test(input.dueAt) ? new Date(`${input.dueAt}T17:00:00Z`) : null;
+
+  const row = await prisma.ownerTodo.create({
+    data: {
+      title: title.slice(0, 200),
+      notes: input.notes?.trim()?.slice(0, 2000) || null,
+      priority,
+      energy,
+      estimateMin,
+      dueAt: due,
+      // "NOW" means today by definition — no second decision about when.
+      plannedFor: input.planToday || priority === "NOW" ? etDayKey(new Date()) : null,
+      projectId: input.projectId || null,
+      clientId: input.clientId || null,
+      commLogId: input.commLogId || null,
+      gmailThreadId: input.gmailThreadId || null,
+      gmailMailbox: input.gmailMailbox || null,
+      sourceNote: input.sourceNote?.slice(0, 300) || null,
+    },
+    select: { id: true },
+  });
+  revalidatePath("/day");
+  return { id: row.id };
+}
+
+/**
+ * Take the block off the calendar and out of the row, in that order.
+ *
+ * Called whenever a to-do stops needing its time — finished, dropped, or moved
+ * to another day. Leaving the event behind is the failure that matters: Calendly
+ * would go on refusing bookings for work that is already done.
+ *
+ * Best-effort by design. If Google is unreachable the local fields are still
+ * cleared, because a to-do you can't complete because an API is down is worse
+ * than a stale event you can delete by hand.
+ */
+async function releaseBlock(id: string): Promise<void> {
+  const row = await prisma.ownerTodo.findUnique({
+    where: { id },
+    select: { calendarEventId: true },
+  });
+  if (row?.calendarEventId) {
+    try {
+      await deleteBlock(row.calendarEventId);
+    } catch {
+      /* keep going — the row must not get stuck behind Google */
+    }
+  }
+  await prisma.ownerTodo.update({
+    where: { id },
+    data: { calendarEventId: null, blockStart: null, blockEnd: null },
+  });
+}
+
+export async function completeOwnerTodo(id: string, done = true): Promise<void> {
+  await requireOwner();
+  await prisma.ownerTodo.update({
+    where: { id },
+    data: { status: done ? "DONE" : "OPEN", doneAt: done ? new Date() : null },
+  });
+  if (done) await releaseBlock(id);
+  revalidatePath("/day");
+}
+
+export async function dropOwnerTodo(id: string): Promise<void> {
+  await requireOwner();
+  await prisma.ownerTodo.update({ where: { id }, data: { status: "DROPPED", doneAt: new Date() } });
+  await releaseBlock(id);
+  revalidatePath("/day");
+}
+
+/** Move a to-do onto (or off) a given ET day. Null clears the plan. */
+export async function planOwnerTodo(id: string, dayKey: string | null): Promise<void> {
+  await requireOwner();
+  const valid = dayKey && /^\d{4}-\d{2}-\d{2}$/.test(dayKey) ? dayKey : null;
+  const before = await prisma.ownerTodo.findUnique({ where: { id }, select: { plannedFor: true } });
+  await prisma.ownerTodo.update({ where: { id }, data: { plannedFor: valid } });
+  // Any change of day invalidates the block — a held hour on Tuesday is wrong
+  // the moment the work moves to Wednesday, and wrong is worse than absent.
+  if (before?.plannedFor !== valid) await releaseBlock(id);
+  revalidatePath("/day");
+}
+
+export async function updateOwnerTodo(
+  id: string,
+  patch: { priority?: string; energy?: string; estimateMin?: number; title?: string; notes?: string | null },
+): Promise<void> {
+  await requireOwner();
+  const data: Record<string, unknown> = {};
+  if (patch.title !== undefined) data.title = patch.title.trim().slice(0, 200);
+  if (patch.notes !== undefined) data.notes = patch.notes?.trim()?.slice(0, 2000) || null;
+  if (patch.priority && PRIORITIES.has(patch.priority)) data.priority = patch.priority;
+  if (patch.energy && ENERGIES.has(patch.energy)) data.energy = patch.energy;
+  if (patch.estimateMin !== undefined) data.estimateMin = Math.min(Math.max(Number(patch.estimateMin) || 30, 5), 480);
+  if (Object.keys(data).length === 0) return;
+  await prisma.ownerTodo.update({ where: { id }, data });
+  revalidatePath("/day");
+}
+
+// ---------------------------------------------------------------------------
+// CALENDAR BLOCKING.
+//
+// Blocks go on the PRIMARY calendar deliberately: Calendly reads that calendar
+// to decide when Jordan is bookable, so a block anywhere else would not stop a
+// client booking straight over his focus time.
+//
+// Every block is written once and then PINNED — the planner holds it at the
+// time it was given rather than re-deriving it. Without that, the plan would
+// drift a few minutes on every render and the hub would spend the day rewriting
+// events in Google. It moves when he moves it, and not otherwise.
+// ---------------------------------------------------------------------------
+
+/** Push today's plan onto the calendar. Idempotent: already-blocked rows are skipped. */
+export async function blockDayOnCalendar(
+  dayKey: string,
+): Promise<{ created: number; failed: number; error?: string }> {
+  await requireOwner();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dayKey)) return { created: 0, failed: 0, error: "Bad day." };
+
+  const plan = await buildDayPlan(dayKey, { memberId: await ownerMemberId() });
+  // Pinned rows already hold the right hour and must not be touched. Everything
+  // else needs writing — including the rare row that carries an event id but no
+  // pinned time (a crash between the Google write and the database write): that
+  // one gets PATCHED to the planned time rather than duplicated.
+  const todo = plan.planned.filter((p) => !p.pinned);
+  if (todo.length === 0) return { created: 0, failed: 0 };
+
+  const existing = new Map(
+    (
+      await prisma.ownerTodo.findMany({
+        where: { id: { in: todo.map((p) => p.id) } },
+        select: { id: true, calendarEventId: true },
+      })
+    ).map((r) => [r.id, r.calendarEventId]),
+  );
+
+  let created = 0;
+  let failed = 0;
+  for (const p of todo) {
+    try {
+      const stale = existing.get(p.id);
+      let eventId: string;
+      if (stale) {
+        await updateBlock(stale, { start: p.start, end: p.end, title: p.title });
+        eventId = stale;
+      } else {
+        eventId = await createBlock({ todoId: p.id, title: p.title, start: p.start, end: p.end });
+      }
+      await prisma.ownerTodo.update({
+        where: { id: p.id },
+        data: { calendarEventId: eventId, blockStart: p.start, blockEnd: p.end },
+      });
+      created++;
+    } catch (e) {
+      // Not connected is a whole-run problem, not a per-row one — stop rather
+      // than hammering Google once per to-do with a token that cannot work.
+      if (e instanceof CalendarNotConnected) {
+        revalidatePath("/day");
+        return { created, failed, error: e.message };
+      }
+      failed++;
+    }
+  }
+  revalidatePath("/day");
+  return { created, failed };
+}
+
+/**
+ * Move one block to a new time. Writes the same change to Google.
+ *
+ * Takes an ET day plus a wall-clock "09:30" rather than an instant: the browser
+ * shows Eastern regardless of where it is, so it must not be the thing that
+ * decides what "9:30" means.
+ */
+export async function rescheduleBlock(
+  id: string,
+  dayKey: string,
+  hhmm: string,
+  minutes?: number,
+): Promise<{ ok: boolean; error?: string }> {
+  await requireOwner();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dayKey)) return { ok: false, error: "Bad day." };
+  const start = etInstant(dayKey, hhmm);
+  if (!start) return { ok: false, error: "Bad time." };
+
+  const row = await prisma.ownerTodo.findUnique({
+    where: { id },
+    select: { title: true, estimateMin: true, calendarEventId: true },
+  });
+  if (!row) return { ok: false, error: "Gone." };
+
+  const len = Math.min(Math.max(minutes ?? row.estimateMin, 5), 480);
+  const end = new Date(start.getTime() + len * 60_000);
+
+  try {
+    if (row.calendarEventId) {
+      await updateBlock(row.calendarEventId, { start, end, title: row.title });
+    } else {
+      const eventId = await createBlock({ todoId: id, title: row.title, start, end });
+      await prisma.ownerTodo.update({ where: { id }, data: { calendarEventId: eventId } });
+    }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Couldn't update the calendar." };
+  }
+
+  await prisma.ownerTodo.update({
+    where: { id },
+    // The block IS the plan for this row now, so keep the day in step with it.
+    data: { blockStart: start, blockEnd: end, plannedFor: etDayKey(start), estimateMin: len },
+  });
+  revalidatePath("/day");
+  return { ok: true };
+}
+
+/** Take one block off the calendar. The to-do stays; only the held time goes. */
+export async function unblockTodo(id: string): Promise<{ ok: boolean }> {
+  await requireOwner();
+  await releaseBlock(id);
+  revalidatePath("/day");
+  return { ok: true };
+}
+
+/** Search projects to attach a to-do to — used by the quick-add box. */
+export async function searchProjectsForTodo(q: string): Promise<{ id: string; label: string }[]> {
+  await requireOwner();
+  const term = q.trim();
+  if (term.length < 2) return [];
+  const rows = await prisma.project.findMany({
+    where: { OR: [{ title: { contains: term, mode: "insensitive" } }, { client: { name: { contains: term, mode: "insensitive" } } }] },
+    select: { id: true, title: true, client: { select: { name: true } } },
+    orderBy: { shootDate: "desc" },
+    take: 8,
+  });
+  return rows.map((r) => ({ id: r.id, label: `${(r.title || "").split(",")[0]}${r.client?.name ? ` · ${r.client.name}` : ""}` }));
+}

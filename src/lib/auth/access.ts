@@ -7,7 +7,7 @@ export type PageKey =
   | "dashboard" | "tasks" | "pipeline" | "schedule" | "map"
   | "communications" | "clients" | "team" | "upload" | "editing" | "sales"
   | "billing" | "catalog" | "payouts" | "marketing" | "resources" | "assistant"
-  | "training" | "feedback" | "connections" | "users" | "shoot" | "mypay" | "review" | "trends";
+  | "training" | "feedback" | "connections" | "users" | "shoot" | "mypay" | "review" | "trends" | "day";
 // NOTE: "map", "billing", "payouts", "team" survive in this type only so stored
 // per-user permission JSON keeps resolving and so canAccess() can treat them as
 // legacy grants on the pages they merged into (see canAccess). They no longer
@@ -50,6 +50,9 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   { key: "sales", label: "Finance", href: "/sales" },
   // Leading indicators: bookings by ORDER date, service mix, client spend trend.
   { key: "trends", label: "Trends", href: "/trends" },
+  // The owner's own command centre: his day plan + his personal to-dos.
+  // ownerOnly — it is one person's private list, not a shared queue.
+  { key: "day", label: "My Day", href: "/day", ownerOnly: true },
   { key: "catalog", label: "Service Catalog", href: "/catalog" },
   { key: "marketing", label: "Campaigns", href: "/marketing" },
   { key: "resources", label: "Resources & SOPs", href: "/resources" },

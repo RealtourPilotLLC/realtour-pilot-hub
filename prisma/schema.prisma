@@ -85,66 +85,66 @@ enum ActivityType {
 // ---------------------------------------------------------------------------
 
 model TeamMember {
-  id          String   @id @default(cuid())
-  name        String
-  email       String   @unique
-  role        Role     @default(VA)
-  phone       String?
-  avatarColor String   @default("#6366f1") // for UI avatars
+  id                String    @id @default(cuid())
+  name              String
+  email             String    @unique
+  role              Role      @default(VA)
+  phone             String?
+  avatarColor       String    @default("#6366f1") // for UI avatars
   // "Work-ons for your next shoot" — the AI-summarized THEMES of this person's
   // open capture feedback, cached so the page never waits on a model call.
   // focusSummaryKey fingerprints the notes it was built from; when the notes
   // change the key stops matching and the summary is rebuilt (on note write,
   // with the daily cron as the backstop).
-  focusSummary    String? // JSON string array of bullets
-  focusSummaryKey String?
-  focusSummaryAt  DateTime?
-  active      Boolean  @default(true)
+  focusSummary      String? // JSON string array of bullets
+  focusSummaryKey   String?
+  focusSummaryAt    DateTime?
+  active            Boolean   @default(true)
   // The Creative Manager sees EVERY creative's field alerts (forgotten uploads,
   // missing raws), not just their own — they are accountable for the whole
   // creative lane. A flag rather than a hard-coded name so a promotion or a
   // change of hands is one toggle, and so nothing silently keeps texting
   // someone who no longer holds the role.
-  creativeManager Boolean @default(false)
+  creativeManager   Boolean   @default(false)
   // Gets operational ALERT TEXTS (photos still not delivered, etc). An explicit
   // flag, not a role: the Role enum does not identify these people — Kyle is
   // MANAGER, and so is Kim, an editor in Manila who must never get ops pages.
   // Jordan is PHOTOGRAPHER because he shoots. Roles describe what someone does;
   // this describes who to wake up.
-  opsAlerts   Boolean @default(false)
-  title       String? // free-form role label, e.g. "Lead Photographer"
-  isServiceProvider Boolean @default(false) // shoots/edits (from Aryeo)
+  opsAlerts         Boolean   @default(false)
+  title             String? // free-form role label, e.g. "Lead Photographer"
+  isServiceProvider Boolean   @default(false) // shoots/edits (from Aryeo)
   // Home base for the mileage radius (creatives are paid per mile beyond a radius).
-  homeAddress String?
-  homeLat     Float?
-  homeLng     Float?
+  homeAddress       String?
+  homeLat           Float?
+  homeLng           Float?
   // Payout settings (manually set per creative; drive automatic payroll).
   // Shoot pay = max(eligible services invoice × payPercent, payFloor).
-  payPercent  Float?  // e.g. 0.35 = 35% of the eligible invoice
-  payFloor    Float?  // dollar minimum per shoot, e.g. 100
-  mileageRate Float   @default(0.65) // $/mile beyond the home radius
-  homeRadiusMi Int    @default(35)   // free radius each way (daily free miles = ×2)
+  payPercent        Float? // e.g. 0.35 = 35% of the eligible invoice
+  payFloor          Float? // dollar minimum per shoot, e.g. 100
+  mileageRate       Float     @default(0.65) // $/mile beyond the home radius
+  homeRadiusMi      Int       @default(35) // free radius each way (daily free miles = ×2)
   // How this person is paid — photographers earn PER_SHOOT (the % engine above);
   // editors/ops are MONTHLY_FLAT (Kim $2,500/mo) or HOURLY (Remar, Kyle). These
   // costs were only ever in Jordan's bank account; PayrollEntry brings them in.
-  payType     PayType @default(PER_SHOOT)
-  monthlyPay  Float?  // MONTHLY_FLAT: the fixed monthly wage
-  hourlyRate  Float?  // HOURLY: $/hour
+  payType           PayType   @default(PER_SHOOT)
+  monthlyPay        Float? // MONTHLY_FLAT: the fixed monthly wage
+  hourlyRate        Float? // HOURLY: $/hour
   // Aryeo linkage
-  aryeoUserId       String? @unique // /users id
-  aryeoTeamMemberId String? @unique // /company-team-members id (appointment assignee)
-  createdAt   DateTime @default(now())
+  aryeoUserId       String?   @unique // /users id
+  aryeoTeamMemberId String?   @unique // /company-team-members id (appointment assignee)
+  createdAt         DateTime  @default(now())
 
   // Work assigned to this person
-  shootsAsPhotographer Project[]      @relation("Photographer")
-  projectsAsEditor     Project[]      @relation("Editor")
-  projectsAsVa         Project[]      @relation("VA")
+  shootsAsPhotographer Project[]          @relation("Photographer")
+  projectsAsEditor     Project[]          @relation("Editor")
+  projectsAsVa         Project[]          @relation("VA")
   authoredActivities   Activity[]
   mediaNotes           MediaNote[]
   assignedChecklist    ChecklistItem[]
   uploadedFiles        UploadedFile[]
   assignedAppointments Appointment[]
-  smartTasks           SmartTask[]    @relation("TaskOwner")
+  smartTasks           SmartTask[]        @relation("TaskOwner")
   jobPayOverrides      JobPayOverride[]
   payoutAdjustments    PayoutAdjustment[]
   mileageDays          MileageDay[]
@@ -154,10 +154,10 @@ model TeamMember {
 
 // How a team member is paid — see TeamMember.payType.
 enum PayType {
-  PER_SHOOT    // photographers: % of eligible invoice (computePayroll owns these)
+  PER_SHOOT // photographers: % of eligible invoice (computePayroll owns these)
   MONTHLY_FLAT // fixed monthly wage (Kim)
-  HOURLY       // hours × rate (Remar, Kyle)
-  NONE         // not paid through payroll
+  HOURLY // hours × rate (Remar, Kyle)
+  NONE // not paid through payroll
 }
 
 // One recorded pay-out to a non-photographer (editor / ops) for one pay period —
@@ -168,12 +168,12 @@ model PayrollEntry {
   id           String     @id @default(cuid())
   teamMember   TeamMember @relation(fields: [teamMemberId], references: [id], onDelete: Cascade)
   teamMemberId String
-  periodStart  String     // yyyy-mm-dd bi-weekly period key (MONTHLY_FLAT: one per month)
-  payDate      DateTime   // when the money left the bank — drives the P&L month
-  basis        String     // "MONTHLY_FLAT" | "HOURLY"
-  hours        Float?     // HOURLY only
-  rate         Float?     // snapshot of hourlyRate/monthlyPay at entry time
-  amount       Float      // dollars actually paid — the source of truth
+  periodStart  String // yyyy-mm-dd bi-weekly period key (MONTHLY_FLAT: one per month)
+  payDate      DateTime // when the money left the bank — drives the P&L month
+  basis        String // "MONTHLY_FLAT" | "HOURLY"
+  hours        Float? // HOURLY only
+  rate         Float? // snapshot of hourlyRate/monthlyPay at entry time
+  amount       Float // dollars actually paid — the source of truth
   note         String?
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
@@ -186,16 +186,16 @@ model PayrollEntry {
 // before. `personal` flags draws / mixed-account spend so the P&L can separate
 // business from personal (Jordan's stated need). Dollars, like price/payableInvoice.
 model Expense {
-  id         String   @id @default(cuid())
-  spentAt    DateTime // when it was paid
-  amount     Float    // dollars
-  category   String   @default("other") // software | subscriptions | gear | travel | fees | contractor | owner_draw | other
-  vendor     String?
-  note       String?
-  personal   Boolean  @default(false) // true = personal/owner draw, excluded from business P&L
-  recurring  Boolean  @default(false) // marks a known monthly cost (rent, software) for the runway forecast
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id        String   @id @default(cuid())
+  spentAt   DateTime // when it was paid
+  amount    Float // dollars
+  category  String   @default("other") // software | subscriptions | gear | travel | fees | contractor | owner_draw | other
+  vendor    String?
+  note      String?
+  personal  Boolean  @default(false) // true = personal/owner draw, excluded from business P&L
+  recurring Boolean  @default(false) // marks a known monthly cost (rent, software) for the runway forecast
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@index([spentAt])
 }
@@ -205,7 +205,7 @@ model Expense {
 model CashSnapshot {
   id        String   @id @default(cuid())
   asOf      DateTime // date the balance was true
-  balance   Float    // dollars in the business checking account
+  balance   Float // dollars in the business checking account
   note      String?
   createdAt DateTime @default(now())
 
@@ -216,19 +216,19 @@ model CashSnapshot {
 // Stripe's fee, and the net that actually lands in the bank. Synced read-only from
 // the connected Stripe account; reconciled to a project best-effort.
 model StripeTransaction {
-  id           String    @id // Stripe's txn id (txn_…) — natural key, upsert on it
-  type         String    // charge | payment | refund | payout | adjustment | …
-  gross        Float     // dollars (amount, sign per direction)
-  fee          Float     // Stripe fee in dollars
-  net          Float     // gross − fee, dollars
-  currency     String    @default("usd")
-  createdAt    DateTime  // Stripe `created`
+  id           String   @id // Stripe's txn id (txn_…) — natural key, upsert on it
+  type         String // charge | payment | refund | payout | adjustment | …
+  gross        Float // dollars (amount, sign per direction)
+  fee          Float // Stripe fee in dollars
+  net          Float // gross − fee, dollars
+  currency     String   @default("usd")
+  createdAt    DateTime // Stripe `created`
   description  String?
   customerName String?
   destination  String? // Connect transfers: destination acct id (who got paid)
-  projectId    String?   // best-effort reconcile to an Aryeo project
+  projectId    String? // best-effort reconcile to an Aryeo project
   matchNote    String?
-  syncedAt     DateTime  @default(now())
+  syncedAt     DateTime @default(now())
 
   @@index([createdAt])
   @@index([type])
@@ -236,20 +236,20 @@ model StripeTransaction {
 
 // A shoot appointment, synced from Aryeo /appointments (with assigned user).
 model Appointment {
-  id          String      @id @default(cuid())
-  aryeoId     String      @unique
-  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  projectId   String
-  startAt     DateTime?
-  endAt       DateTime?
-  durationMin Int?
-  status      String? // SCHEDULED | CANCELED | UNSCHEDULED
-  title       String?
-  description String? // rich brief: customer, lockbox code, special instructions
+  id                   String      @id @default(cuid())
+  aryeoId              String      @unique
+  project              Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId            String
+  startAt              DateTime?
+  endAt                DateTime?
+  durationMin          Int?
+  status               String? // SCHEDULED | CANCELED | UNSCHEDULED
+  title                String?
+  description          String? // rich brief: customer, lockbox code, special instructions
   preferenceType       String?
-  requiresConfirmation Boolean  @default(false)
-  canCancel            Boolean  @default(false)
-  canReschedule        Boolean  @default(false)
+  requiresConfirmation Boolean     @default(false)
+  canCancel            Boolean     @default(false)
+  canReschedule        Boolean     @default(false)
   rescheduledAt        DateTime?
   postponedAt          DateTime?
   previousStartAt      DateTime?
@@ -257,10 +257,10 @@ model Appointment {
   // Photographer marked the shoot complete in the field (guided /shoot flow).
   // Distinct from the Aryeo `status`; drives the on-site experience + team feed.
   completedAt          DateTime?
-  assignedTo  TeamMember? @relation(fields: [assignedToId], references: [id])
-  assignedToId String?
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt @default(now())
+  assignedTo           TeamMember? @relation(fields: [assignedToId], references: [id])
+  assignedToId         String?
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @default(now()) @updatedAt
 
   @@index([projectId])
   @@index([startAt])
@@ -274,8 +274,8 @@ model Client {
   backupEmail String? // secondary email kept when duplicate contacts are merged
   phone       String?
   company     String? // brokerage / team name
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   // Free-form, smart-notes-ready fields (CRM milestone fills these out)
   editingPreferences String? // e.g. "Bright & airy, blue skies, no HDR halos"
@@ -302,9 +302,9 @@ model Client {
   // Customer segmentation (computed from lifetime spend + completed-order count).
   // Mirrors the HubSpot segment model so the label is consistent everywhere a
   // client name is shown. Persisted so it's queryable + saved for later use.
-  segment          String? // never_converted | one_timer | casual_repeat | regular | heavy | vip
+  segment            String? // never_converted | one_timer | casual_repeat | regular | heavy | vip
   lifetimeSpendCents Int?
-  transactionCount   Int     @default(0)
+  transactionCount   Int       @default(0)
   segmentUpdatedAt   DateTime?
 
   // Monthly social-content subscription, synced from Aryeo customer custom
@@ -325,6 +325,7 @@ model Client {
   projects   Project[]
   smartTasks SmartTask[]
   contacts   Contact[]
+  ownerTodos OwnerTodo[]
 
   @@index([email])
   @@index([parentClientId])
@@ -352,30 +353,30 @@ model Contact {
 }
 
 model Project {
-  id        String        @id @default(cuid())
-  title     String // usually the property address
-  status    ProjectStatus @default(BOOKED)
-  priority  Priority      @default(NORMAL)
+  id       String        @id @default(cuid())
+  title    String // usually the property address
+  status   ProjectStatus @default(BOOKED)
+  priority Priority      @default(NORMAL)
 
   // Property / order detail
-  addressLine String?
-  city        String?
-  state       String?
-  zip         String?
-  lat         Float? // from Aryeo listing.address.latitude — drives the map pins
-  lng         Float? // from Aryeo listing.address.longitude
-  squareFeet  Int?
+  addressLine    String?
+  city           String?
+  state          String?
+  zip            String?
+  lat            Float? // from Aryeo listing.address.latitude — drives the map pins
+  lng            Float? // from Aryeo listing.address.longitude
+  squareFeet     Int?
   // Culling budget: target FINAL delivered photo count. Defaulted in code from
   // squareFeet (≥3500 → 80, else 50) unless the owner overrides on the project.
   // The status engine flags raw drops that blow past ~3.3× this (bracket ratio)
   // and Kyle's deliver card warns when the gallery ships over it.
-  photoTarget Int?
+  photoTarget    Int?
   // First live Aryeo listing image (thumbnail URL), captured by the status
   // sweep the moment photos land. Drives the My Shoots card thumbnail: Street
   // View of the address until the photos are in, then the real cover shot.
-  coverImageUrl String?
-  packageName String? // ordered package label
-  price       Float? // order total
+  coverImageUrl  String?
+  packageName    String? // ordered package label
+  price          Float? // order total
   // Eligible services invoice for creative pay = sum of non-canceled order items
   // EXCLUDING virtual/AI add-ons (virtual twilight/staging/declutter, AI renders).
   // Drives the percentage-of-invoice shoot pay. In dollars, like `price`.
@@ -397,23 +398,23 @@ model Project {
   lastNudgedAt  DateTime?
 
   // Relations / assignment
-  client         Client      @relation(fields: [clientId], references: [id])
-  clientId       String
-  photographer   TeamMember? @relation("Photographer", fields: [photographerId], references: [id])
-  photographerId String?
+  client             Client      @relation(fields: [clientId], references: [id])
+  clientId           String
+  photographer       TeamMember? @relation("Photographer", fields: [photographerId], references: [id])
+  photographerId     String?
   // Set when the owner assigns the photographer by hand — the Aryeo sync then
   // stops auto-filling photographerId from appointment assignees, so a manual
   // assignment isn't silently reverted an hour later.
-  photographerManual Boolean @default(false)
-  editor         TeamMember? @relation("Editor", fields: [editorId], references: [id])
-  editorId       String?
-  va             TeamMember? @relation("VA", fields: [vaId], references: [id])
-  vaId           String?
+  photographerManual Boolean     @default(false)
+  editor             TeamMember? @relation("Editor", fields: [editorId], references: [id])
+  editorId           String?
+  va                 TeamMember? @relation("VA", fields: [vaId], references: [id])
+  vaId               String?
 
   // External system linkage
-  source        String  @default("MANUAL") // MANUAL | ARYEO | ...
-  aryeoId       String? // legacy/general Aryeo ref
-  aryeoOrderId  String? @unique
+  source         String  @default("MANUAL") // MANUAL | ARYEO | ...
+  aryeoId        String? // legacy/general Aryeo ref
+  aryeoOrderId   String? @unique
   aryeoListingId String?
 
   notes String?
@@ -431,7 +432,7 @@ model Project {
   revisionNote        String?
 
   // Photographer's brief to the editor, captured at upload time.
-  editorBrief String?
+  editorBrief     String?
   // Per-job photo-editing inputs (AutoHDR $0.50/finished photo). Counted from
   // the Dropbox 01-RAW-Photos folder: drone shots are single JPGs (DJI_*),
   // everything else is 5-bracket sets. finished = (raw−drone)/5 + drone.
@@ -439,9 +440,9 @@ model Project {
   dronePhotoCount Int?
   photoCountedAt  DateTime?
   // When the photographer finished the guided upload.
-  uploadedAt  DateTime?
+  uploadedAt      DateTime?
   // Relative path to the generated editor-brief PDF, if any.
-  editorPdfPath String?
+  editorPdfPath   String?
 
   // Frame.io V4 review project (editors upload finals + we review there).
   frameioProjectId String?
@@ -451,11 +452,11 @@ model Project {
   // Captured pre-shoot, carried to the editor. reelScriptUrl bridges to Jordan's
   // external script generator/tracker; the reelScripting* fields below are the
   // LIVE link to it (Script Studio API v1).
-  reelHook         String?
-  reelScript       String?
-  reelSong         String?
-  reelShotList     String?
-  reelScriptUrl    String?
+  reelHook            String?
+  reelScript          String?
+  reelSong            String?
+  reelShotList        String?
+  reelScriptUrl       String?
   reelRecipeUpdatedAt DateTime?
 
   // Live link to the external Script Studio (scripting platform API v1). external_id
@@ -465,24 +466,25 @@ model Project {
   scriptingUrl      String? // best link to open there (agent intake or review)
   scriptingSyncedAt DateTime?
 
-  deliverables Deliverable[]
-  orderItems   OrderItem[] // the real Aryeo line items (commercial truth)
-  checklist    ChecklistItem[]
-  activities   Activity[]
-  uploads      UploadedFile[]
-  appointments Appointment[]
-  smartTasks   SmartTask[]
-  feedback     Feedback[]
-  messages     ProjectMessage[]
-  payOverrides JobPayOverride[]
-  imageFlags   ImageFlag[]
-  mediaNotes   MediaNote[]
-  mediaVerdicts MediaVerdict[]
-  qcRecords    QcRecord[]
+  deliverables      Deliverable[]
+  orderItems        OrderItem[] // the real Aryeo line items (commercial truth)
+  checklist         ChecklistItem[]
+  activities        Activity[]
+  uploads           UploadedFile[]
+  appointments      Appointment[]
+  smartTasks        SmartTask[]
+  feedback          Feedback[]
+  messages          ProjectMessage[]
+  payOverrides      JobPayOverride[]
+  imageFlags        ImageFlag[]
+  mediaNotes        MediaNote[]
+  mediaVerdicts     MediaVerdict[]
+  qcRecords         QcRecord[]
   reviewSubmissions ReviewSubmission[]
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  ownerTodos OwnerTodo[]
 
   @@index([status])
   @@index([clientId])
@@ -493,14 +495,14 @@ model Project {
 }
 
 model Deliverable {
-  id        String            @id @default(cuid())
-  project   Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  projectId String
-  type      DeliverableType
-  label     String? // optional override label
-  quantity  Int               @default(1)
-  status    DeliverableStatus @default(PENDING)
-  notes     String?
+  id         String            @id @default(cuid())
+  project    Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId  String
+  type       DeliverableType
+  label      String? // optional override label
+  quantity   Int               @default(1)
+  status     DeliverableStatus @default(PENDING)
+  notes      String?
   // Photographer ticked this off on-site (guided /shoot capture checklist).
   // Lets the team see what was confirmed captured before files are uploaded.
   capturedAt DateTime?
@@ -508,7 +510,7 @@ model Deliverable {
   // They upload to Dropbox directly — this is the accountability signal that the
   // raw files for this item are in, so editors aren't chasing ETAs.
   uploadedAt DateTime?
-  createdAt DateTime          @default(now())
+  createdAt  DateTime          @default(now())
 
   uploads UploadedFile[]
 
@@ -518,34 +520,34 @@ model Deliverable {
 // A file uploaded through the photographer portal. The actual bytes live in
 // local storage today; this maps cleanly onto a Dropbox file later.
 model UploadedFile {
-  id           String       @id @default(cuid())
-  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  projectId    String
-  deliverable  Deliverable? @relation(fields: [deliverableId], references: [id], onDelete: SetNull)
+  id            String       @id @default(cuid())
+  project       Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId     String
+  deliverable   Deliverable? @relation(fields: [deliverableId], references: [id], onDelete: SetNull)
   deliverableId String?
-  originalName String
-  storedPath   String // relative path within the storage root
-  size         Int
-  mimeType     String
-  uploadedBy   TeamMember?  @relation(fields: [uploadedById], references: [id])
-  uploadedById String?
-  createdAt    DateTime     @default(now())
+  originalName  String
+  storedPath    String // relative path within the storage root
+  size          Int
+  mimeType      String
+  uploadedBy    TeamMember?  @relation(fields: [uploadedById], references: [id])
+  uploadedById  String?
+  createdAt     DateTime     @default(now())
 
   @@index([projectId])
 }
 
 model ChecklistItem {
-  id           String      @id @default(cuid())
-  project      Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  projectId    String
-  label        String
-  done         Boolean     @default(false)
-  forRole      Role? // which team role this is for
-  assignee     TeamMember? @relation(fields: [assigneeId], references: [id])
-  assigneeId   String?
-  dueAt        DateTime?
-  sortOrder    Int         @default(0)
-  createdAt    DateTime    @default(now())
+  id         String      @id @default(cuid())
+  project    Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId  String
+  label      String
+  done       Boolean     @default(false)
+  forRole    Role? // which team role this is for
+  assignee   TeamMember? @relation(fields: [assigneeId], references: [id])
+  assigneeId String?
+  dueAt      DateTime?
+  sortOrder  Int         @default(0)
+  createdAt  DateTime    @default(now())
 
   @@index([projectId])
 }
@@ -596,23 +598,23 @@ model Sop {
 // Academy). Kept separate from KnowledgeItem: these are long-form (some 200k+
 // chars) for READING, while the Hub searches concise/chunked KnowledgeItems.
 model TrainingLesson {
-  id        String   @id @default(cuid())
-  volumeNo  Int      @default(1) // 1 = Agent on Camera, 2 = All Courses
-  volume    String // display name of the volume
-  courseNo  Int      @default(0) // order of the course within the volume
-  course    String // course / module grouping within the volume
-  orderNo   Int // lesson order within the volume
-  title     String
-  body      String // full transcript (verbatim)
-  summaryMd String? // AI-formatted, summarized markdown (headings + bullets) — the default reading view
-  videoUrl  String? // 910 Academy Vimeo watch URL (embedded in the lesson view)
-  source    String   @default("910-academy")
+  id         String    @id @default(cuid())
+  volumeNo   Int       @default(1) // 1 = Agent on Camera, 2 = All Courses
+  volume     String // display name of the volume
+  courseNo   Int       @default(0) // order of the course within the volume
+  course     String // course / module grouping within the volume
+  orderNo    Int // lesson order within the volume
+  title      String
+  body       String // full transcript (verbatim)
+  summaryMd  String? // AI-formatted, summarized markdown (headings + bullets) — the default reading view
+  videoUrl   String? // 910 Academy Vimeo watch URL (embedded in the lesson view)
+  source     String    @default("910-academy")
   // Public share: an unguessable token → the lesson is viewable at /learn/<token>
   // WITHOUT a login (video + summary only, never the verbatim transcript).
   // Owner mints it on demand; clearing the token revokes the link.
-  shareToken String? @unique
-  sharedAt  DateTime?
-  createdAt DateTime @default(now())
+  shareToken String?   @unique
+  sharedAt   DateTime?
+  createdAt  DateTime  @default(now())
 
   @@index([volumeNo, orderNo])
 }
@@ -637,26 +639,26 @@ model UsageEvent {
 }
 
 model SmartTask {
-  id            String   @id @default(cuid())
-  status        String   @default("OPEN") // OPEN | IN_PROGRESS | WAITING_* | BLOCKED | COMPLETED | CANCELLED
-  taskType      String // appointment_prep | media_qa | delivery | client_reply | reschedule_confirmation | ...
-  priority      String   @default("MEDIUM") // URGENT | HIGH | MEDIUM | LOW
-  title         String
-  summary       String? // human "what happened + what's needed" — shown in the card's expandable section
-  description   String?
-  reasonCreated String?
-  checklist     String? // JSON: string[] — retained for the consolidated QC task's auto-close (no longer a UI checklist)
-  source        String   @default("system") // aryeo | openphone | gmail | slack | manual | system
-  sourceDetail  String? // url / message id / note
-  assignedKey   String? // editor this work is delegated to (see src/lib/editors.ts): kim|remar|luma|autohdr|cubicasa|kyle
+  id               String    @id @default(cuid())
+  status           String    @default("OPEN") // OPEN | IN_PROGRESS | WAITING_* | BLOCKED | COMPLETED | CANCELLED
+  taskType         String // appointment_prep | media_qa | delivery | client_reply | reschedule_confirmation | ...
+  priority         String    @default("MEDIUM") // URGENT | HIGH | MEDIUM | LOW
+  title            String
+  summary          String? // human "what happened + what's needed" — shown in the card's expandable section
+  description      String?
+  reasonCreated    String?
+  checklist        String? // JSON: string[] — retained for the consolidated QC task's auto-close (no longer a UI checklist)
+  source           String    @default("system") // aryeo | openphone | gmail | slack | manual | system
+  sourceDetail     String? // url / message id / note
+  assignedKey      String? // editor this work is delegated to (see src/lib/editors.ts): kim|remar|luma|autohdr|cubicasa|kyle
   // A HUMAN picked assignedKey (owner reassign / "Add a job to the queue"). The
   // automatic engines respect it: mintEditTask's refresh keeps the editor,
   // ensureEditorHandoff skips its editorId/raw-chase overrides, and the
   // evidence-based auto-close leaves the task alone (stale "video delivered"
   // evidence must not kill work a human just reopened on purpose).
-  assignedManually Boolean @default(false)
-  dueAt         DateTime?
-  completedAt   DateTime?
+  assignedManually Boolean   @default(false)
+  dueAt            DateTime?
+  completedAt      DateTime?
 
   // Links
   owner           TeamMember? @relation("TaskOwner", fields: [ownerId], references: [id])
@@ -712,8 +714,8 @@ model Feedback {
 // Author is a free String (selected from the team in the UI) so editors who
 // aren't full app users can still be attributed.
 model ProjectMessage {
-  id         String   @id @default(cuid())
-  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  id         String           @id @default(cuid())
+  project    Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
   projectId  String
   authorId   String? // TeamMember id, if picked from the roster
   authorName String? // display name
@@ -723,7 +725,7 @@ model ProjectMessage {
   replyToId  String?
   replyTo    ProjectMessage?  @relation("MsgReplies", fields: [replyToId], references: [id], onDelete: SetNull)
   replies    ProjectMessage[] @relation("MsgReplies")
-  createdAt  DateTime @default(now())
+  createdAt  DateTime         @default(now())
 
   @@index([projectId])
 }
@@ -744,8 +746,8 @@ model OrderItem {
   id         String   @id @default(cuid())
   project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   projectId  String
-  aryeoId    String?  // Aryeo's order-item id, when it gives us one
-  title      String   // the real product name, verbatim
+  aryeoId    String? // Aryeo's order-item id, when it gives us one
+  title      String // the real product name, verbatim
   quantity   Int      @default(1)
   amount     Float    @default(0) // line total in DOLLARS (Aryeo sends cents)
   isCanceled Boolean  @default(false)
@@ -783,35 +785,35 @@ model Product {
 // Secrets are stored encrypted-at-rest (see lib/integrations/crypto.ts) and are
 // never sent to the client.
 model Connection {
-  id                String    @id @default(cuid())
-  provider          String    @unique // "aryeo", "stripe", "dropbox", …
-  status            String    @default("DISCONNECTED") // DISCONNECTED | CONNECTED | ERROR
-  secretEncrypted   String? // encrypted API key / token blob
-  accountLabel      String? // human label, e.g. the connected account name
-  metadata          String? // JSON blob for provider-specific config
-  lastSyncedAt      DateTime?
-  lastError         String?
-  webhookSecret     String? // for verifying inbound webhooks
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  id              String    @id @default(cuid())
+  provider        String    @unique // "aryeo", "stripe", "dropbox", …
+  status          String    @default("DISCONNECTED") // DISCONNECTED | CONNECTED | ERROR
+  secretEncrypted String? // encrypted API key / token blob
+  accountLabel    String? // human label, e.g. the connected account name
+  metadata        String? // JSON blob for provider-specific config
+  lastSyncedAt    DateTime?
+  lastError       String?
+  webhookSecret   String? // for verifying inbound webhooks
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 }
 
 // Per-job pay override for a creative on one project (covers the manual cases:
 // "$75 flat, no mileage", remove a canceled job, flat partial-completion amount).
 model JobPayOverride {
-  id           String     @id @default(cuid())
-  project      Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  projectId    String
-  teamMember   TeamMember @relation(fields: [teamMemberId], references: [id], onDelete: Cascade)
-  teamMemberId String
-  invoiceOverride Float?  // correct the eligible invoice the % is applied to
-  flatAmount   Float?     // override shoot pay to this flat dollar amount (wins over %)
-  noMileage    Boolean    @default(false) // exclude this job from the day's mileage split
-  excluded     Boolean    @default(false) // drop this job from payout entirely
-  manualAdd    Boolean    @default(false) // pay this member for this job even if they aren't the appt shooter (manually added)
-  note         String?
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt @default(now())
+  id              String     @id @default(cuid())
+  project         Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId       String
+  teamMember      TeamMember @relation(fields: [teamMemberId], references: [id], onDelete: Cascade)
+  teamMemberId    String
+  invoiceOverride Float? // correct the eligible invoice the % is applied to
+  flatAmount      Float? // override shoot pay to this flat dollar amount (wins over %)
+  noMileage       Boolean    @default(false) // exclude this job from the day's mileage split
+  excluded        Boolean    @default(false) // drop this job from payout entirely
+  manualAdd       Boolean    @default(false) // pay this member for this job even if they aren't the appt shooter (manually added)
+  note            String?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @default(now()) @updatedAt
 
   @@unique([projectId, teamMemberId])
   @@index([teamMemberId])
@@ -822,9 +824,9 @@ model PayoutAdjustment {
   id           String     @id @default(cuid())
   teamMember   TeamMember @relation(fields: [teamMemberId], references: [id], onDelete: Cascade)
   teamMemberId String
-  date         DateTime   // the date it applies to (falls inside a pay period)
+  date         DateTime // the date it applies to (falls inside a pay period)
   label        String
-  amount       Float      // dollars; negative to subtract (e.g. camera payback)
+  amount       Float // dollars; negative to subtract (e.g. camera payback)
   createdAt    DateTime   @default(now())
 
   @@index([teamMemberId])
@@ -893,11 +895,11 @@ model QboTransaction {
 // ---------------------------------------------------------------------------
 
 model BonusPeriod {
-  id        String @id @default(cuid())
+  id       String @id @default(cuid())
   // Calendar quarter key, e.g. "2026-Q4". One row per quarter.
-  quarter   String @unique
-  startKey  String // yyyy-mm-dd, ET
-  endKey    String // yyyy-mm-dd, ET
+  quarter  String @unique
+  startKey String // yyyy-mm-dd, ET
+  endKey   String // yyyy-mm-dd, ET
 
   // --- Funding gate (owner-set, snapshotted when the pool is locked) ---
   // Collected revenue and all-in cost for the quarter, as measured at lock time.
@@ -912,12 +914,12 @@ model BonusPeriod {
   // Hard ceiling so a blowout quarter can't overcommit cash.
   poolCap     Float?
 
-  status    String   @default("OPEN") // OPEN | LOCKED | PAID
+  status    String    @default("OPEN") // OPEN | LOCKED | PAID
   note      String?
   lockedAt  DateTime?
   paidAt    DateTime?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
   awards BonusAward[]
 
@@ -925,10 +927,10 @@ model BonusPeriod {
 }
 
 model BonusAward {
-  id          String      @id @default(cuid())
-  period      BonusPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
-  periodId    String
-  teamMember  TeamMember  @relation(fields: [teamMemberId], references: [id], onDelete: Cascade)
+  id           String      @id @default(cuid())
+  period       BonusPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  periodId     String
+  teamMember   TeamMember  @relation(fields: [teamMemberId], references: [id], onDelete: Cascade)
   teamMemberId String
 
   // OWN = scored on this person's shoots. TEAM = scored on the whole team's
@@ -936,17 +938,17 @@ model BonusAward {
   basis String @default("OWN") // OWN | TEAM
 
   // 0..100. Null when the quarter had too little signal to score fairly.
-  score      Float?
+  score     Float?
   // Per-metric breakdown as JSON: [{key,label,weight,value,points,detail,thin}]
-  breakdown  String?
+  breakdown String?
   // Shoots in the window — the denominator behind every rate, kept for audit.
-  shoots     Int    @default(0)
+  shoots    Int     @default(0)
 
   // Computed share of the pool (score-weighted), then what the owner actually
   // approved. amount is the source of truth for money; suggested is advisory.
-  suggested  Float?
-  amount     Float?
-  note       String?
+  suggested Float?
+  amount    Float?
+  note      String?
 
   // Set when approved -> PayoutAdjustment, so we never double-pay on re-run.
   payoutAdjustmentId String?
@@ -962,20 +964,20 @@ model BonusAward {
 // Cached daily drive mileage for a creative (home → that day's shoots → home),
 // so the payout view doesn't re-route every load. Recomputable on demand.
 model MileageDay {
-  id           String     @id @default(cuid())
-  teamMember   TeamMember @relation(fields: [teamMemberId], references: [id], onDelete: Cascade)
-  teamMemberId String
-  dayKey       String     // yyyy-mm-dd in ET
-  miles        Float
-  stops        Int        @default(0) // shoots that day (for the route)
-  sig          String?    // signature of the stop coords — recompute when it changes
+  id            String     @id @default(cuid())
+  teamMember    TeamMember @relation(fields: [teamMemberId], references: [id], onDelete: Cascade)
+  teamMemberId  String
+  dayKey        String // yyyy-mm-dd in ET
+  miles         Float
+  stops         Int        @default(0) // shoots that day (for the route)
+  sig           String? // signature of the stop coords — recompute when it changes
   // Owner correction: the miles ACTUALLY driven that day (detour, closed road,
   // multi-stop errand the router can't see). When set it wins over the computed
   // figure everywhere pay is calculated; `miles` keeps the computed value for
   // reference. Cleared = back to automatic.
   overrideMiles Float?
   overrideNote  String?
-  computedAt   DateTime   @default(now())
+  computedAt    DateTime   @default(now())
 
   @@unique([teamMemberId, dayKey])
   @@index([teamMemberId])
@@ -988,11 +990,11 @@ model ImageFlag {
   id         String    @id @default(cuid())
   project    Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
   projectId  String
-  imageUrl   String    // canonical (full-res) image URL
-  thumbUrl   String?   // thumbnail for display
+  imageUrl   String // canonical (full-res) image URL
+  thumbUrl   String? // thumbnail for display
   caption    String?
   note       String?
-  tags       String    // JSON array of tag labels
+  tags       String // JSON array of tag labels
   status     String    @default("OPEN") // OPEN | FIXED
   createdAt  DateTime  @default(now())
   resolvedAt DateTime?
@@ -1008,28 +1010,28 @@ model ImageFlag {
 // carry no pin). ImageFlag stays for the legacy Flags tab; this supersedes it
 // for review workflows.
 model MediaNote {
-  id        String  @id @default(cuid())
-  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  projectId String
-  assetUrl  String // canonical media URL (full-res image or video source)
-  thumbUrl  String?
-  assetType String  @default("image") // image | video
-  x         Float? // normalized 0..1 pin position (photos)
-  y         Float?
-  timeSec   Float? // video timestamp (seconds)
-  lane      String  @default("EDIT") // EDIT | PHOTOGRAPHER | EDITOR
-  kind      String  @default("fix") // fix | coaching
-  body      String
-  status    String  @default("OPEN") // OPEN | FIXED | RESOLVED
-  authorKey  String? // "owner" | "tm:<teamMemberId>" | "editor:<key>"
-  authorName String?
+  id             String      @id @default(cuid())
+  project        Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId      String
+  assetUrl       String // canonical media URL (full-res image or video source)
+  thumbUrl       String?
+  assetType      String      @default("image") // image | video
+  x              Float? // normalized 0..1 pin position (photos)
+  y              Float?
+  timeSec        Float? // video timestamp (seconds)
+  lane           String      @default("EDIT") // EDIT | PHOTOGRAPHER | EDITOR
+  kind           String      @default("fix") // fix | coaching
+  body           String
+  status         String      @default("OPEN") // OPEN | FIXED | RESOLVED
+  authorKey      String? // "owner" | "tm:<teamMemberId>" | "editor:<key>"
+  authorName     String?
   // PHOTOGRAPHER-lane notes: whose capture feedback this is (scopes their view).
   photographer   TeamMember? @relation(fields: [photographerId], references: [id])
   photographerId String?
   // EDITOR-lane notes: whose edit feedback this is (kim/remar/… — the same
   // scoping keys /queue and /editing use). Scopes an editor's view exactly like
   // photographerId scopes a photographer's.
-  editorKey String?
+  editorKey      String?
   // Feedback-loop receipts (photographer lane): when the feedback was texted
   // to the creative, when THEY actually opened it (stamped server-side on
   // their own page load — never by an owner/view-as preview), and their
@@ -1037,11 +1039,11 @@ model MediaNote {
   sharedAt       DateTime?
   seenAt         DateTime?
   acknowledgedAt DateTime?
-  parent   MediaNote?  @relation("Thread", fields: [parentId], references: [id], onDelete: Cascade)
-  parentId String?
-  replies  MediaNote[] @relation("Thread")
-  createdAt  DateTime  @default(now())
-  resolvedAt DateTime?
+  parent         MediaNote?  @relation("Thread", fields: [parentId], references: [id], onDelete: Cascade)
+  parentId       String?
+  replies        MediaNote[] @relation("Thread")
+  createdAt      DateTime    @default(now())
+  resolvedAt     DateTime?
 
   @@index([projectId, status])
   @@index([photographerId, status])
@@ -1056,22 +1058,22 @@ model MediaNote {
 // plate). A re-submission after changes is a NEW row with round+1 — rows are
 // an audit trail of every cut, never overwritten.
 model ReviewSubmission {
-  id        String  @id @default(cuid())
-  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  projectId String
-  kind      String  @default("video") // video | photos (photos reserved for later)
-  assetUrl  String? // direct-streamable URL (Dropbox raw link); null = link the folder instead
-  assetPath String? // Dropbox path of the cut file
-  fileName  String?
-  round     Int     @default(1) // 1 = first cut, +1 per re-submission
-  status    String  @default("PENDING") // PENDING | CHANGES_REQUESTED | APPROVED
+  id              String    @id @default(cuid())
+  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId       String
+  kind            String    @default("video") // video | photos (photos reserved for later)
+  assetUrl        String? // direct-streamable URL (Dropbox raw link); null = link the folder instead
+  assetPath       String? // Dropbox path of the cut file
+  fileName        String?
+  round           Int       @default(1) // 1 = first cut, +1 per re-submission
+  status          String    @default("PENDING") // PENDING | CHANGES_REQUESTED | APPROVED
   submittedByKey  String? // editor key (kim/remar/…)
   submittedByName String?
-  note      String? // editor's note to the reviewer ("music was client's pick", …)
-  decidedAt DateTime?
-  decidedBy String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  note            String? // editor's note to the reviewer ("music was client's pick", …)
+  decidedAt       DateTime?
+  decidedBy       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   @@index([status])
   @@index([projectId, round])
@@ -1079,8 +1081,8 @@ model ReviewSubmission {
 
 // Per-photo quick verdict while arrowing through a gallery in review mode.
 model MediaVerdict {
-  id        String  @id @default(cuid())
-  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  id        String   @id @default(cuid())
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   projectId String
   assetUrl  String
   verdict   String // APPROVED | NEEDS_WORK
@@ -1095,14 +1097,14 @@ model MediaVerdict {
 // and, if a revision later reopens the QC, when + why (that IS the QC-miss
 // event). Read-only analytics; never gates anything.
 model QcRecord {
-  id            String   @id @default(cuid())
-  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  projectId     String
-  clientSegment String?
-  itemsChecked  String // JSON snapshot: [{label, done}]
-  missCount     Int      @default(0) // items unticked at completion
-  completedBy   String? // assignee key / name
-  completedAt   DateTime @default(now())
+  id                   String    @id @default(cuid())
+  project              Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId            String
+  clientSegment        String?
+  itemsChecked         String // JSON snapshot: [{label, done}]
+  missCount            Int       @default(0) // items unticked at completion
+  completedBy          String? // assignee key / name
+  completedAt          DateTime  @default(now())
   reopenedByRevisionAt DateTime?
   revisionReason       String?
 
@@ -1260,24 +1262,24 @@ model HubMessage {
 // `permissions` JSON overrides specific pages per person.
 // ---------------------------------------------------------------------------
 model AppUser {
-  id           String    @id @default(cuid())
-  email        String    @unique // Google login email, lowercased
-  name         String?
-  role         String    @default("PHOTOGRAPHER") // OWNER | ADMIN | EDITOR | PHOTOGRAPHER
-  permissions  String? // JSON: per-page overrides, e.g. {"billing":true,"clients":false}
-  status       String    @default("INVITED") // INVITED | ACTIVE | DISABLED
+  id                  String    @id @default(cuid())
+  email               String    @unique // Google login email, lowercased
+  name                String?
+  role                String    @default("PHOTOGRAPHER") // OWNER | ADMIN | EDITOR | PHOTOGRAPHER
+  permissions         String? // JSON: per-page overrides, e.g. {"billing":true,"clients":false}
+  status              String    @default("INVITED") // INVITED | ACTIVE | DISABLED
   // scrypt hash (salt:hash) for email+password login — an ALTERNATIVE to Google
   // sign-in so contractors on personal emails don't need a Workspace account.
   // Never plaintext; set by the user themselves via the set-password link.
-  passwordHash String?
-  inviteToken  String?   @unique
-  invitedAt    DateTime?
-  lastLoginAt  DateTime?
+  passwordHash        String?
+  inviteToken         String?   @unique
+  invitedAt           DateTime?
+  lastLoginAt         DateTime?
   notificationsSeenAt DateTime? // bell "unread" watermark; null = never opened
-  teamMemberId String? // optional link → TeamMember (a photographer's shoots)
-  editorKey    String? // optional link → editor roster (kim/remar/…) for "delegated to me"
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  teamMemberId        String? // optional link → TeamMember (a photographer's shoots)
+  editorKey           String? // optional link → editor roster (kim/remar/…) for "delegated to me"
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   @@index([status])
 }
@@ -1322,16 +1324,16 @@ model Notification {
 // cost-optimization audit). Owner ticks items off on the Overview; done items
 // sum into "reclaimed $/mo". Additive, seeded once, owner-editable via toggle.
 model SavingsItem {
-  id           String    @id @default(cuid())
-  rank         Int
-  title        String
-  detail       String?
+  id            String    @id @default(cuid())
+  rank          Int
+  title         String
+  detail        String?
   savesPerMonth Float // conservative $/mo
-  tier         String // "instant" | "setting" | "habit" | "decision"
-  status       String    @default("PENDING") // PENDING | DONE | SKIPPED
-  doneAt       DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  tier          String // "instant" | "setting" | "habit" | "decision"
+  status        String    @default("PENDING") // PENDING | DONE | SKIPPED
+  doneAt        DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 }
 
 model PlaidItem {
@@ -1353,10 +1355,10 @@ model PlaidItem {
 }
 
 model PlaidAccount {
-  id               String   @id @default(cuid())
+  id               String    @id @default(cuid())
   item             PlaidItem @relation(fields: [plaidItemId], references: [id], onDelete: Cascade)
   plaidItemId      String
-  accountId        String   @unique // Plaid account_id
+  accountId        String    @unique // Plaid account_id
   name             String? // e.g. "Business Checking"
   officialName     String?
   mask             String? // last 4, e.g. "0942"
@@ -1369,8 +1371,8 @@ model PlaidAccount {
   // spend counts as a business cost or an owner draw in the finance engine.
   // null = untagged (surfaced for the owner to classify).
   isBusiness       Boolean?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   transactions PlaidTransaction[]
 
@@ -1378,30 +1380,30 @@ model PlaidAccount {
 }
 
 model PlaidTransaction {
-  id             String   @id // Plaid transaction_id (natural key; upsert on it)
-  account        PlaidAccount @relation(fields: [accountId], references: [accountId], onDelete: Cascade)
-  accountId      String // Plaid account_id
+  id              String       @id // Plaid transaction_id (natural key; upsert on it)
+  account         PlaidAccount @relation(fields: [accountId], references: [accountId], onDelete: Cascade)
+  accountId       String // Plaid account_id
   // Plaid sign convention: POSITIVE = money OUT of the account (debit/spend),
   // NEGATIVE = money IN (deposit/credit). The finance layer must honor this.
-  amount         Float
-  isoCurrency    String?
-  date           DateTime // posted date
-  authorizedDate DateTime?
-  name           String?
-  merchantName   String?
-  category       String? // Plaid personal_finance_category.primary
-  categoryDetail String? // personal_finance_category.detailed
-  paymentChannel String? // online | in store | other
-  pending        Boolean  @default(false)
+  amount          Float
+  isoCurrency     String?
+  date            DateTime // posted date
+  authorizedDate  DateTime?
+  name            String?
+  merchantName    String?
+  category        String? // Plaid personal_finance_category.primary
+  categoryDetail  String? // personal_finance_category.detailed
+  paymentChannel  String? // online | in store | other
+  pending         Boolean      @default(false)
   // --- Our finance categorization (financeCategories.ts) ---
   // financeKind: BUSINESS | PERSONAL | EXCLUDE (self-transfer / card paydown /
   // topup — money movement, not spend) | REVIEW (needs a human call).
   financeKind     String? // null = not yet categorized
   financeCategory String? // human label, e.g. "Restaurants & food delivery"
   // Owner re-tagged this row by hand — the auto-categorizer must NOT overwrite it.
-  financeLocked   Boolean @default(false)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  financeLocked   Boolean      @default(false)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
 
   @@index([accountId])
   @@index([date])
@@ -1439,6 +1441,92 @@ model BudgetTarget {
 // focus on and what to fix. One live row ("default"). `snapKey` hashes the
 // business numbers it was built from, so it rebuilds when the business actually
 // moves rather than rewording itself on every page load.
+// ---------------------------------------------------------------------------
+// THE OWNER'S OWN TO-DOS. Deliberately NOT SmartTask.
+//
+// SmartTask is the shared ops queue: ~1,080 machine-minted rows, no per-user
+// privacy, and several sweeps that bulk-mutate status. Two of them would eat a
+// personal to-do outright — closeObsoleteTasks cancels EVERY open task on a
+// project when Aryeo cancels the order, and the Gmail reply sweep completes any
+// task carrying a gmail thread once we answer that thread. Neither filters on
+// taskType or source. A personal list that silently loses items is worse than
+// no list, so this lives in its own table where nothing automated touches it.
+//
+// It also needs fields SmartTask has no business carrying: which part of the
+// day the work belongs in, how long to block, and the Google Calendar event id
+// once that block exists.
+// ---------------------------------------------------------------------------
+model OwnerTodo {
+  id          String    @id @default(cuid())
+  title       String
+  notes       String?
+  status      String    @default("OPEN") // OPEN | DONE | DROPPED
+  // NOW = today's must-do, NEXT = this week, LATER = someday. Three buckets on
+  // purpose: a long flat list is the thing that stops getting looked at.
+  priority    String    @default("NEXT")
+  // DEEP work wants the protected morning; SHALLOW (admin, calls, errands)
+  // fills the afternoon. Drives where the day planner places it.
+  energy      String    @default("SHALLOW")
+  estimateMin Int       @default(30) // how much calendar time to block
+  dueAt       DateTime?
+  doneAt      DateTime?
+
+  // What it is ABOUT — any or none of these.
+  project       Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  projectId     String?
+  client        Client?  @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  clientId      String?
+  // A text or call thread (CommLog.id) and/or an email thread. Stored as plain
+  // ids rather than a `source` string so no sweep can pattern-match them.
+  commLogId     String?
+  gmailThreadId String?
+  gmailMailbox  String?
+  sourceNote    String? // free-text "where this came from"
+
+  // Scheduling. plannedFor is an ET day key (YYYY-MM-DD) — the day it is slotted
+  // into. blockStart/End + calendarEventId are filled once it is on the calendar.
+  plannedFor      String?
+  blockStart      DateTime?
+  blockEnd        DateTime?
+  calendarEventId String?
+
+  // Set when this to-do came out of a meeting transcript.
+  meeting   OwnerMeeting? @relation(fields: [meetingId], references: [id], onDelete: SetNull)
+  meetingId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, plannedFor])
+  @@index([projectId])
+  @@index([meetingId])
+}
+
+// A meeting whose transcript was read into a summary + proposed action items.
+// The action items are REVIEWED, not auto-created: an auto-filled list you stop
+// believing is worse than no list. Accepting the card mints its OwnerTodos.
+model OwnerMeeting {
+  id         String    @id @default(cuid())
+  title      String
+  heldAt     DateTime
+  source     String    @default("google_meet")
+  sourceId   String?   @unique // Drive file id, so a re-scan cannot duplicate it
+  summary    String? // the detailed recap
+  transcript String? // trimmed source text, for auditing a bad action item
+  // Proposed action items awaiting review: JSON [{title, notes, dueAt, energy}].
+  proposed   String?
+  draftEmail String? // AI-drafted follow-up, owner sends it or doesn't
+  status     String    @default("REVIEW") // REVIEW | ACCEPTED | DISMISSED
+  reviewedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  todos OwnerTodo[]
+
+  @@index([heldAt])
+  @@index([status])
+}
+
 // Per-package margin, precomputed. Costing a year of shoots runs the whole
 // payroll engine, which reaches the PUBLIC OSRM router over the network for
 // mileage — fine in a nightly cron, fatal in a page request (it timed out a

@@ -12,11 +12,53 @@ import { cleanText, clip, stripQuotedReply } from "@/lib/text";
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? "";
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? "";
+// ONE consent grants all of these. gmail.send has been declared here for a
+// while but was never actually approved — the live tokens carry only
+// gmail.readonly + userinfo.email — so the reconnect that fixes sending is the
+// same reconnect that turns on the day planner's calendar blocking and the
+// meeting-transcript reader. Adding scopes here changes nothing until the owner
+// re-consents; `prompt=consent` in googleAuthorizeUrl then returns a fresh
+// refresh token carrying the whole set.
 const SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.send", // lets the hub email Jordan (e.g. new feedback)
   "https://www.googleapis.com/auth/userinfo.email",
+  // My Day: read what is already on the calendar (so shoots and meetings are
+  // planned around, with travel time respected) and write the time blocks back
+  // onto the MAIN calendar — Calendly reads that calendar for availability, so
+  // a block has to live there to actually stop a double-booking.
+  "https://www.googleapis.com/auth/calendar.events",
+  // Google Meet transcripts land in Drive as Docs. Read-only, and only files
+  // this app is pointed at.
+  "https://www.googleapis.com/auth/drive.readonly",
 ];
+
+/** Which of the extra scopes a stored token actually carries, per mailbox. */
+export async function googleScopeHealth(): Promise<
+  { email: string; canSend: boolean | null; canCalendar: boolean | null; canDrive: boolean | null }[]
+> {
+  const accounts = await gmailAccounts();
+  return Promise.all(
+    accounts.map(async ({ email, refreshToken }) => {
+      try {
+        const token = await accessTokenFor(refreshToken);
+        const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(token)}`, {
+          cache: "no-store",
+        });
+        const info = (await res.json().catch(() => ({}))) as { scope?: string };
+        const s = typeof info.scope === "string" ? info.scope : null;
+        return {
+          email,
+          canSend: s === null ? null : s.includes("gmail.send"),
+          canCalendar: s === null ? null : s.includes("calendar"),
+          canDrive: s === null ? null : s.includes("drive"),
+        };
+      } catch {
+        return { email, canSend: null, canCalendar: null, canDrive: null };
+      }
+    }),
+  );
+}
 
 // Owner's address — where platform notifications (new feedback, etc.) go.
 const OWNER_EMAIL = "info@realtourpilot.com";
@@ -250,6 +292,26 @@ async function gmailAccounts(): Promise<{ email: string; refreshToken: string }[
     return [{ email: "account", refreshToken: raw }]; // legacy single-token
   }
 }
+
+/**
+ * A live access token for the OWNER's Google account (info@) — the identity
+ * whose calendar and Drive the hub acts on. Returns null when that mailbox
+ * isn't connected, so callers degrade to "not connected" instead of throwing.
+ *
+ * Deliberately does NOT fall back to another mailbox: writing a block onto the
+ * wrong calendar is worse than writing none.
+ */
+export async function ownerGoogleToken(): Promise<string | null> {
+  const acct = (await gmailAccounts()).find((a) => a.email === OWNER_EMAIL);
+  if (!acct) return null;
+  try {
+    return await accessTokenFor(acct.refreshToken);
+  } catch {
+    return null;
+  }
+}
+
+export const GOOGLE_OWNER_EMAIL = OWNER_EMAIL;
 
 // Add (or refresh) a mailbox after the user authorizes it.
 export async function addGmailAccount(refreshToken: string): Promise<string> {

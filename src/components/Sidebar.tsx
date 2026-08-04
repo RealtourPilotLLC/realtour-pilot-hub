@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
+  Sun,
   ListTodo,
   KanbanSquare,
   CalendarDays,
@@ -60,6 +61,8 @@ const SECTIONS: NavSection[] = [
     title: "Operations",
     items: [
       { label: "Dashboard", href: "/", icon: LayoutDashboard, key: "dashboard" },
+      // Owner-only (ownerOnly in PAGES) — his day plan and personal to-dos.
+      { label: "My Day", href: "/day", icon: Sun, key: "day" },
       // Today + Daily Tasks + Task History merged into the one Tasks hub
       // (tabs: Today / Board / Done) — Jordan: "the toolbar has too many things".
       { label: "Tasks", href: "/tasks", icon: ListTodo, key: "tasks" },
