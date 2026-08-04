@@ -86,7 +86,7 @@ async function extract(title: string, heldAt: Date, text: string): Promise<Extra
  * Deliberately scoped to the current month — Jordan asked for "only backfilling
  * this month", and a wider sweep would bury the real ones under history.
  */
-export async function scanMeetTranscripts(opts?: { since?: Date; limit?: number }): Promise<{
+export async function scanMeetTranscripts(opts?: { since?: Date; until?: Date; limit?: number }): Promise<{
   found: number;
   created: number;
   skipped: number;
@@ -97,7 +97,9 @@ export async function scanMeetTranscripts(opts?: { since?: Date; limit?: number 
   // window at 8pm ET on the last day of the previous month and sweep in a call
   // that belongs to it.
   const since = opts?.since ?? etAt(`${etDayKey(now).slice(0, 7)}-01`, 0);
-  const files = await listMeetTranscripts(since, now);
+  // `until` exists so an older call can be pulled in on its own, without
+  // dragging every meeting since alongside it.
+  const files = await listMeetTranscripts(since, opts?.until ?? now);
 
   // Everything we already hold, in one query — one round trip, not one per file.
   const known = new Set(
