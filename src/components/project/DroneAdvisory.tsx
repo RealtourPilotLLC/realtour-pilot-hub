@@ -4,6 +4,7 @@ import { useEffect, useState, useTransition } from "react";
 import { Plane, ShieldAlert, ShieldCheck, Loader2, Send, Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { projectAirspace, sendDroneAdvisory, type AirspaceResult } from "@/app/projects/droneActions";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 // Drone-operations panel on a project: auto-checks FAA airspace for the address
 // and, when controlled/restricted, drafts an advisory text for the assigned
@@ -56,11 +57,11 @@ export function DroneAdvisory({ projectId }: { projectId: string }) {
                 <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted">
                   Advisory to {data?.photographer?.firstName ?? "the creative"}
                 </label>
-                <textarea
+                <AutoTextarea
                   value={body}
                   onChange={(e) => setBody(e.target.value)}
-                  rows={4}
-                  className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+                  minRows={4}
+                  className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
                 />
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   {data?.photographer?.hasPhone ? (

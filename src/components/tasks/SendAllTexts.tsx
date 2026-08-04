@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, CheckCircle2, Clock, Loader2, MessageSquareText, Send, X } from "lucide-react";
 import { listDraftedTexts, sendDraftText, type DraftedText } from "@/app/tasks/sendAllActions";
 import { etDateTime } from "@/lib/datetime";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 // One sitting for the day's client texts. The panel loads every drafted
 // confirmation/delivery text freshly rendered, lets Jordan/Kyle EDIT any
@@ -145,12 +146,12 @@ export function SendAllTexts({ count }: { count: number }) {
                       This confirmation may be out of date — the shoot time may have already passed. Tick it only if you really want it sent.
                     </p>
                   )}
-                  <textarea
+                  <AutoTextarea
                     value={r.text}
                     onChange={(e) => setRows((rs) => rs!.map((x, j) => (j === i ? { ...x, text: e.target.value } : x)))}
                     disabled={r.state === "sent" || sending}
-                    rows={3}
-                    className="mt-2 w-full resize-y rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand disabled:opacity-70"
+                    minRows={3}
+                    className="mt-2 w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand disabled:opacity-70"
                   />
                   {r.dueAt && r.state !== "sent" && (
                     <p className="mt-1 text-[10px] text-muted-2">Due {etDateTime(new Date(r.dueAt))}</p>

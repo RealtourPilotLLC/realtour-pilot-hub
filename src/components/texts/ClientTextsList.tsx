@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { setSmartTaskStatus } from "@/app/actions";
 import { sendDraftText } from "@/app/tasks/sendAllActions";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 // The /texts review list. Every row is a drafted client text: review the message,
 // tap Send (the SAME server actions the /today cards used — a human tap is the
@@ -134,10 +135,10 @@ function TextCard({ row, onGone }: { row: ClientTextRow; onGone: (id: string, no
         {row.warnQcOpen && <Warn>QC is still open on this job — the content may not all be delivered yet. Finish the check before telling the client it&apos;s all sent.</Warn>}
 
         {/* Review box: preloaded with the drafted message off the task. */}
-        <textarea
+        <AutoTextarea
           value={text}
           onChange={(e) => setText(e.target.value)}
-          rows={4}
+          minRows={4}
           placeholder="No draft on this task — Send composes the message fresh from the job."
           className="w-full rounded-xl border border-border bg-surface-2/50 p-3 text-sm"
         />

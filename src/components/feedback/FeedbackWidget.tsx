@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { submitPlatformFeedback } from "@/app/feedback/actions";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 const KINDS = [
   { key: "feature", label: "Idea", icon: Sparkles },
@@ -185,12 +186,12 @@ export function FeedbackWidget() {
               placeholder={kind === "bug" ? "What's broken?" : "What would you like?"}
               className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
             />
-            <textarea
+            <AutoTextarea
               value={body}
               onChange={(e) => setBody(e.target.value)}
-              rows={3}
+              minRows={3}
               placeholder="Details — and paste a screenshot (⌘/Ctrl+V) if it helps."
-              className="w-full resize-y rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+              className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
             />
 
             {/* Screenshot controls */}

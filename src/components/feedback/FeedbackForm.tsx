@@ -3,6 +3,7 @@
 import { useActionState, useState } from "react";
 import { Star, Loader2, CheckCircle2 } from "lucide-react";
 import { submitFeedback } from "@/app/feedback/[id]/actions";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 export function FeedbackForm({
   projectId,
@@ -59,9 +60,9 @@ export function FeedbackForm({
         ))}
       </div>
 
-      <textarea
+      <AutoTextarea
         name="body"
-        rows={4}
+        minRows={4}
         placeholder="Tell us what you loved, or anything we can improve…"
         className="w-full rounded-xl border bg-surface px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
       />

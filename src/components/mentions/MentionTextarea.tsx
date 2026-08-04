@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AtSign } from "lucide-react";
 import { listMentionablePeople, type MentionPerson } from "@/app/mentions/actions";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 // Shared @mention composer for note comments — a controlled textarea that pops
 // a teammate picker when you type "@" (same UX as the project team thread).
@@ -158,7 +159,7 @@ export function MentionTextarea({
 
   return (
     <div className="relative min-w-0 flex-1">
-      <textarea
+      <AutoTextarea
         ref={taRef}
         value={value}
         onChange={handleChange}
@@ -169,7 +170,7 @@ export function MentionTextarea({
         placeholder={placeholder}
         autoFocus={autoFocus}
         disabled={disabled}
-        className={className ?? "w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"}
+        className={className ?? "w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"}
       />
       {dropdown}
     </div>

@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { Mail, Save, Sparkles, Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { draftClientReply, saveClientNotes } from "@/app/clients/actions";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 type Props = {
   clientId: string;
@@ -52,12 +53,12 @@ function EmailComposer({ clientId, email, lastInbound }: Props) {
   const [pending, start] = useTransition();
   return (
     <div>
-      <textarea
+      <AutoTextarea
         value={body}
         onChange={(e) => setBody(e.target.value)}
-        rows={5}
+        minRows={5}
         placeholder="Draft an email reply… (use AI draft, then review and send from your mail app)"
-        className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+        className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
       />
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <button
@@ -106,22 +107,22 @@ function NotesEditor({ clientId, editingPreferences, generalNotes }: Props) {
     <div className="space-y-3">
       <div>
         <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-brand">Editing preferences</label>
-        <textarea
+        <AutoTextarea
           value={prefs}
           onChange={(e) => setPrefs(e.target.value)}
-          rows={2}
+          minRows={2}
           placeholder="e.g. Bright & airy, blue skies, no HDR halos"
-          className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+          className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
         />
       </div>
       <div>
         <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted">General notes</label>
-        <textarea
+        <AutoTextarea
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
-          rows={4}
+          minRows={4}
           placeholder="Anything the team should know about this client…"
-          className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+          className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
         />
       </div>
       <button

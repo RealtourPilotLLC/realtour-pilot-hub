@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { Check, X, Loader2, Mail, ChevronDown, Plus, Copy } from "lucide-react";
 import { Markdown } from "@/components/ui/Markdown";
 import { acceptMeeting, dismissMeeting, addMeetingItem, scanMeetings } from "@/app/day/actions";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 // A meeting recap awaiting a decision. Jordan's shape: "one task with multiple
 // tasks in it… tap to accept". So everything is ticked by default and Accept is
@@ -171,11 +172,11 @@ export function MeetingCard({ m }: { m: MeetingCardData }) {
           {/* A draft, and only a draft — the hub does not send it. Copy it into
               your mail client when you're happy with the words. */}
           <p className="mb-1 text-[10px] uppercase tracking-wide text-muted-2">Draft — nothing is sent from here</p>
-          <textarea
+          <AutoTextarea
             readOnly
             value={m.draftEmail}
-            rows={8}
-            className="w-full resize-y rounded border border-border bg-surface-2 p-2 text-[11px] leading-relaxed outline-none"
+            minRows={8}
+            className="w-full rounded border border-border bg-surface-2 p-2 text-[11px] leading-relaxed outline-none"
           />
         </div>
       )}

@@ -15,6 +15,7 @@ import { ReviewBar } from "@/components/review/ReviewBar";
 import { ImageReview } from "@/components/review/ImageReview";
 import { VideoReview } from "@/components/review/VideoReview";
 import type { ReviewData, ReviewNote, ReviewVerdict } from "@/components/review/types";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 export type ImageFlagView = FlaggedImage;
 
@@ -664,12 +665,12 @@ export function MediaGallery({ media, slug, projectId, flags = [], review }: { m
                     </button>
                   ))}
                 </div>
-                <textarea
+                <AutoTextarea
                   value={lbNote}
                   onChange={(e) => setLbNote(e.target.value)}
-                  rows={2}
+                  minRows={2}
                   placeholder="Note for Kyle — what needs fixing on this photo…"
-                  className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-warning"
+                  className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-warning"
                 />
                 <div className="mt-2 flex items-center gap-2">
                   <button

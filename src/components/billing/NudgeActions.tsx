@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { Sparkles, Loader2, Copy, Send, CheckCircle2, BellRing } from "lucide-react";
 import { draftPaymentNudge, sendPaymentNudge, markBillingNudged } from "@/app/billing/actions";
 import { etDaysAgo } from "@/lib/datetime";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 // Per-row AR follow-up actions for /billing: AI-draft a friendly payment
 // reminder (review → copy or send via OpenPhone — a human always taps send),
@@ -85,11 +86,11 @@ export function NudgeActions({ projectId, lastNudgedAt }: { projectId: string; l
                   <Copy className="size-3" /> {copied ? "Copied" : "Copy"}
                 </button>
               </div>
-              <textarea
+              <AutoTextarea
                 value={text}
                 onChange={(e) => setText(e.target.value)}
-                rows={4}
-                className="w-full resize-y rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand"
+                minRows={4}
+                className="w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand"
               />
               <div className="mt-2 flex items-center gap-2">
                 <button

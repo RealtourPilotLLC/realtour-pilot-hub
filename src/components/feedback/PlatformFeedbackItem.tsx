@@ -1,8 +1,8 @@
 "use client";
 
-import { useTransition } from "react";
+import { useState, useTransition } from "react";
 import Link from "next/link";
-import { Bug, Sparkles, MessageSquare, Check, X, RotateCcw, Loader2, CheckCircle2, Flag } from "lucide-react";
+import { Bug, Sparkles, MessageSquare, Check, X, RotateCcw, Undo2, Loader2, CheckCircle2, Flag } from "lucide-react";
 import { decidePlatformFeedback } from "@/app/feedback/actions";
 import { etDateTime } from "@/lib/datetime";
 
@@ -28,9 +28,20 @@ const KIND_META: Record<string, { icon: typeof Bug; label: string; cls: string }
 
 export function PlatformFeedbackItem({ row, canModerate = true }: { row: FeedbackRow; canModerate?: boolean }) {
   const [pending, start] = useTransition();
+  const [err, setErr] = useState<string | null>(null);
   const meta = KIND_META[row.kind] ?? KIND_META.feature;
   const Icon = meta.icon;
-  const decide = (s: "APPROVED" | "DECLINED" | "DONE" | "NEW") => start(async () => decidePlatformFeedback(row.id, s));
+  // Every decision is owner-only in the action. Swallowing the rejection made
+  // these buttons look like they worked for anyone else — say so instead.
+  const decide = (s: "APPROVED" | "DECLINED" | "DONE" | "NEW") =>
+    start(async () => {
+      setErr(null);
+      try {
+        await decidePlatformFeedback(row.id, s);
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : "That didn't save.");
+      }
+    });
 
   return (
     <div className="rounded-xl border border-border bg-surface p-3">
@@ -82,22 +93,66 @@ export function PlatformFeedbackItem({ row, canModerate = true }: { row: Feedbac
         ))}
         {row.status === "APPROVED" && (
           <>
-            <span className="inline-flex items-center gap-1 text-xs font-medium text-success"><Check className="size-3.5" /> Approved — queued for build</span>
-            <button onClick={() => decide("DONE")} disabled={pending} className="ml-auto inline-flex items-center gap-1 rounded-lg bg-brand/10 px-2.5 py-1 text-xs font-medium text-brand hover:bg-brand/20 disabled:opacity-50">
-              <CheckCircle2 className="size-3.5" /> Mark shipped
-            </button>
+            <span className="inline-flex items-center gap-1 text-xs font-medium text-success">
+              <Check className="size-3.5" /> Approved — queued for build
+            </span>
+            {canModerate && (
+              <div className="ml-auto flex items-center gap-2">
+                {/* Approving was a one-way door: the only way out was to declare
+                    it shipped, which is a lie about work nobody did. */}
+                <button
+                  onClick={() => decide("NEW")}
+                  disabled={pending}
+                  className="inline-flex items-center gap-1 text-xs text-muted hover:text-foreground disabled:opacity-50"
+                >
+                  <Undo2 className="size-3.5" /> Un-approve
+                </button>
+                <button
+                  onClick={() => decide("DECLINED")}
+                  disabled={pending}
+                  className="inline-flex items-center gap-1 text-xs text-muted hover:text-danger disabled:opacity-50"
+                >
+                  <X className="size-3.5" /> Decline
+                </button>
+                <button
+                  onClick={() => decide("DONE")}
+                  disabled={pending}
+                  className="inline-flex items-center gap-1 rounded-lg bg-brand/10 px-2.5 py-1 text-xs font-medium text-brand hover:bg-brand/20 disabled:opacity-50"
+                >
+                  <CheckCircle2 className="size-3.5" /> Mark shipped
+                </button>
+              </div>
+            )}
           </>
         )}
-        {row.status === "DONE" && <span className="inline-flex items-center gap-1 text-xs text-muted"><CheckCircle2 className="size-3.5 text-success" /> Shipped</span>}
+        {row.status === "DONE" && (
+          <>
+            <span className="inline-flex items-center gap-1 text-xs text-muted">
+              <CheckCircle2 className="size-3.5 text-success" /> Shipped
+            </span>
+            {canModerate && (
+              <button
+                onClick={() => decide("APPROVED")}
+                disabled={pending}
+                className="ml-auto inline-flex items-center gap-1 text-xs text-muted hover:text-foreground disabled:opacity-50"
+              >
+                <RotateCcw className="size-3.5" /> Back to building
+              </button>
+            )}
+          </>
+        )}
         {row.status === "DECLINED" && (
           <>
             <span className="text-xs text-muted-2">Declined</span>
-            <button onClick={() => decide("NEW")} disabled={pending} className="ml-auto inline-flex items-center gap-1 text-xs text-muted hover:text-foreground disabled:opacity-50">
-              <RotateCcw className="size-3.5" /> Reopen
-            </button>
+            {canModerate && (
+              <button onClick={() => decide("NEW")} disabled={pending} className="ml-auto inline-flex items-center gap-1 text-xs text-muted hover:text-foreground disabled:opacity-50">
+                <RotateCcw className="size-3.5" /> Reopen
+              </button>
+            )}
           </>
         )}
       </div>
+      {err && <p className="mt-1.5 text-xs text-danger">{err}</p>}
     </div>
   );
 }

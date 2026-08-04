@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { etFullDate } from "@/lib/datetime";
 import { EDITORS, type EditorKey } from "@/lib/editors";
 import { addToEditorQueue, searchQueueCandidates, type QueueCandidate } from "@/app/editing/actions";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 // Owner/admin "Add a job to the editor queue" — the human override for jobs the
 // automatic handoff never picks up (video added after booking, old footage,
@@ -212,10 +213,10 @@ export function AddToQueue() {
             </div>
           </div>
 
-          <textarea
+          <AutoTextarea
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            rows={2}
+            minRows={2}
             placeholder="Optional note for the editor — what this cut needs…"
             className="w-full rounded-xl border border-border bg-surface-2/50 px-3 py-2 text-sm outline-none focus:border-brand"
           />

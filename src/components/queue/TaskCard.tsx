@@ -15,6 +15,7 @@ import { etDateTime, etMonthDay, etDaysAgo } from "@/lib/datetime";
 import { sourceMeta, SOURCE_CHIP, type SourceKey } from "@/lib/taskSource";
 import { editorMeta, isDelegated, DELEGATE_KEYS, EDITORS } from "@/lib/editors";
 import { TaskFullView } from "@/components/queue/TaskFullView";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 // Friendly display label per task type (QA → QC, etc.).
 const TYPE_LABEL: Record<string, string> = {
@@ -736,13 +737,13 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
 
       {noteOpen && (
         <div className="mt-3 rounded-xl border bg-surface-2/60 p-3">
-          <textarea
+          <AutoTextarea
             value={noteText}
             onChange={(e) => setNoteText(e.target.value)}
-            rows={2}
+            minRows={2}
             autoFocus
             placeholder="Leave a note for the crew on this job…"
-            className="w-full resize-y rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand"
+            className="w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand"
           />
           <div className="mt-2 flex items-center gap-2">
             <button
@@ -777,11 +778,11 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
                   <Copy className="size-3" /> {copied ? "Copied" : "Copy"}
                 </button>
               </div>
-              <textarea
+              <AutoTextarea
                 value={draftText}
                 onChange={(e) => setDraftText(e.target.value)}
                 rows={Math.min(10, Math.max(3, draftText.split("\n").length + 1))}
-                className="w-full resize-y rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand"
+                className="w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand"
               />
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 {canEmailSend && (

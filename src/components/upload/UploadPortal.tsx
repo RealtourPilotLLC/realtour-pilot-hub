@@ -17,6 +17,7 @@ import { markDeliverableUploaded, flagIssue, finalizeUpload } from "@/app/upload
 import { cn } from "@/lib/utils";
 import type { DeliverableType, DeliverableStatus } from "@prisma/client";
 import { etDateTime } from "@/lib/datetime";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 type Deliverable = {
   id: string;
@@ -279,12 +280,12 @@ export function UploadPortal({
         <p className="mb-2 text-xs text-muted">
           Anything the editor should know about this edit — goes on the brief. (Optional.)
         </p>
-        <textarea
+        <AutoTextarea
           value={editorBrief}
           onChange={(e) => setEditorBrief(e.target.value)}
-          rows={3}
+          minRows={3}
           placeholder="e.g. House faces west so exteriors are backlit — recover sky. Seller wants the pool emphasized. Skip the cluttered office. Best reel clips at 0:10–0:40."
-          className="w-full resize-none rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
+          className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
         />
       </div>
 

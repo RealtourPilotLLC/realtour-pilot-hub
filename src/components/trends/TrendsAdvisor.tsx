@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { Loader2, Send, Sparkles } from "lucide-react";
 import { Markdown } from "@/components/ui/Markdown";
 import { askTrendsAdvisor, type AdvisorTurn } from "@/app/trends/advisorActions";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 const SUGGESTIONS = [
   "How do I get my average order up next month?",
@@ -85,7 +86,7 @@ export function TrendsAdvisor() {
       </div>
 
       <div className="flex items-end gap-2 border-t border-border p-3">
-        <textarea
+        <AutoTextarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
@@ -94,9 +95,9 @@ export function TrendsAdvisor() {
               send();
             }
           }}
-          rows={1}
+          minRows={1}
           placeholder="Ask about growth, pricing, packages, clients…"
-          className="max-h-32 min-h-[2.4rem] flex-1 resize-y rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+          className="max-h-32 min-h-[2.4rem] flex-1 rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
         />
         <button
           onClick={() => send()}

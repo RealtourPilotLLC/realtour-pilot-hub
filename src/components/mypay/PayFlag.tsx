@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { Flag, Loader2, CheckCircle2 } from "lucide-react";
 import { flagPay } from "@/app/my-pay/actions";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 // "Something look off?" — a photographer flags a pay line (or asks a general
 // question). Goes straight to Jordan; nothing here changes any numbers.
@@ -52,10 +53,10 @@ export function PayFlag({ projectId, street, periodStartKey, already, general }:
       )}
       {open && (
         <span className="mt-1.5 block space-y-1.5">
-          <textarea
+          <AutoTextarea
             value={text}
             onChange={(e) => setText(e.target.value)}
-            rows={2}
+            minRows={2}
             placeholder={general ? "What's your question about this period's pay?" : "What looks off about this one?"}
             className="w-full rounded-xl border border-border bg-surface-2/50 p-2.5 text-sm"
           />

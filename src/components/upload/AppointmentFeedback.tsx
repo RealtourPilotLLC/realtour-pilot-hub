@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { ThumbsUp, TriangleAlert, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { submitAppointmentFeedback } from "@/app/upload/actions";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 export function AppointmentFeedback({ projectId }: { projectId: string }) {
   const [choice, setChoice] = useState<"smooth" | "issue" | null>(null);
@@ -47,12 +48,12 @@ export function AppointmentFeedback({ projectId }: { projectId: string }) {
       </div>
       {choice && (
         <div className="mt-3">
-          <textarea
+          <AutoTextarea
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            rows={3}
+            minRows={3}
             placeholder={choice === "issue" ? "What happened? (lockbox, access, lighting, client no-show…)" : "Anything worth noting? (optional)"}
-            className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+            className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
           />
           <button
             disabled={pending || (choice === "issue" && !note.trim())}

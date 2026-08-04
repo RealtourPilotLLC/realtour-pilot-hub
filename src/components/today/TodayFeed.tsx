@@ -11,6 +11,7 @@ import { setSmartTaskStatus, setTaskAssignee, draftTaskReply, sendDeliveryText, 
 import { resolveEmailRecipient, sendEmailReply } from "@/app/emailActions";
 import { sendReplyForTask } from "@/app/today/actions";
 import { sourceMeta } from "@/lib/taskSource";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 // One card = one action. The stack is finish-able: every card ends in a tap
 // that makes it disappear, and the page ends at "All clear".
@@ -296,10 +297,10 @@ function ActionCard({ card, assignees, onGone }: {
             incoming client email too, so it gets the same draft-and-send) */}
         {(card.verb === "reply" || isRevision) && compose && (
           <div className="space-y-2">
-            <textarea
+            <AutoTextarea
               value={draftText}
               onChange={(e) => setDraftText(e.target.value)}
-              rows={4}
+              minRows={4}
               placeholder="Write your reply…"
               className="w-full rounded-xl border border-border bg-surface-2/50 p-3 text-sm"
             />

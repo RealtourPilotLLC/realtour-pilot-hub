@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { FileText, Loader2, Trash2 } from "lucide-react";
 import { generateReportAction, deleteReportAction } from "@/app/sales/advisorActions";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 type SavedReport = { id: string; title: string; startKey: string; endKey: string; createdAt: string };
 
@@ -91,9 +92,9 @@ export function ReportBuilder({ reports }: { reports: SavedReport[] }) {
         )}
         <label className="block text-xs">
           <span className="mb-1 block font-medium text-muted">{type === "custom" ? "Describe the report you want" : "Extra instructions (optional)"}</span>
-          <textarea value={custom} onChange={(e) => setCustom(e.target.value)} rows={2}
+          <AutoTextarea value={custom} onChange={(e) => setCustom(e.target.value)} minRows={2}
             placeholder={type === "custom" ? "e.g. Compare Q1 vs Q2 revenue and payroll, and tell me if my margin is improving" : "e.g. focus on editing costs"}
-            className="w-full resize-y rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm outline-none focus:border-brand" />
+            className="w-full rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-sm outline-none focus:border-brand" />
         </label>
         <button onClick={go} disabled={busy || (type === "custom" && !custom.trim())} className="inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2 text-sm font-medium text-white disabled:opacity-40">
           {busy ? <><Loader2 className="size-4 animate-spin" /> building your statement…</> : <>Generate report</>}

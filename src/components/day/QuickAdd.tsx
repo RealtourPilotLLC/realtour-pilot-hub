@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { Plus, Loader2, Link2, X } from "lucide-react";
 import { addOwnerTodo, searchProjectsForTodo } from "@/app/day/actions";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 // Capture has to be FASTER than the thought. One field, Enter, done — the
 // options only appear if you reach for them, and every one of them has a
@@ -135,12 +136,12 @@ export function QuickAdd() {
             </div>
           )}
 
-          <textarea
+          <AutoTextarea
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            rows={2}
+            minRows={2}
             placeholder="Anything you'd forget by tomorrow (optional)"
-            className="w-full resize-y rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs outline-none focus:border-brand"
+            className="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-xs outline-none focus:border-brand"
           />
           <button onClick={reset} className="text-[11px] text-muted-2 hover:text-foreground">Close</button>
         </div>

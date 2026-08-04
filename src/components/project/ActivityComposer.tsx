@@ -5,6 +5,7 @@ import { Send, StickyNote, Star, Flag } from "lucide-react";
 import { addNote } from "@/app/actions";
 import { ActivityType } from "@prisma/client";
 import { cn } from "@/lib/utils";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 const TYPES = [
   { type: ActivityType.NOTE, label: "Note", icon: StickyNote, color: "#64748b" },
@@ -51,16 +52,16 @@ export function ActivityComposer({ projectId }: { projectId: string }) {
           );
         })}
       </div>
-      <textarea
+      <AutoTextarea
         ref={ref}
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
           if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submit();
         }}
-        rows={2}
+        minRows={2}
         placeholder="Add a note, request, or flag…  (⌘/Ctrl + Enter to post)"
-        className="w-full resize-none rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
+        className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
       />
       <div className="mt-2 flex justify-end">
         <button

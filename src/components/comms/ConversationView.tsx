@@ -13,6 +13,7 @@ import { SocialBadge } from "@/components/clients/SocialBadge";
 import { stageMeta } from "@/lib/pipeline";
 import { cn, stripHtml } from "@/lib/utils";
 import { sendThreadText, draftThreadReply, uploadCommAttachment } from "@/app/communications/threadActions";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 export type ChatItem = {
   kind: "message" | "call";
@@ -151,11 +152,11 @@ export function ChatPanel({
             className="flex size-9 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50">
             {uploading ? <Loader2 className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
           </button>
-          <textarea
-            value={body} onChange={(e) => setBody(e.target.value)} rows={1}
+          <AutoTextarea
+            value={body} onChange={(e) => setBody(e.target.value)} minRows={1}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); } }}
             placeholder="Type a message…"
-            className="max-h-32 min-h-[36px] flex-1 resize-none rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+            className="max-h-32 min-h-[36px] flex-1 rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
           />
           <button onClick={() => startDraft(async () => {
             const transcript = msgs.map((m) => ({ kind: m.kind, direction: m.direction, text: m.text, at: m.at, from: m.from }));

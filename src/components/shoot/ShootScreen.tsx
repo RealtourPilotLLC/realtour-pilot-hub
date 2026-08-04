@@ -24,6 +24,7 @@ import {
   sendShootStatusText, draftClientMessage, sendClientMessage,
   setDeliverableCaptured, saveShootNote, flagShootIssue, completeShoot,
 } from "@/app/shoot/actions";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 const STATUS_ORDER: ShootStatusKind[] = ["on_my_way", "arrived", "complete"];
 
@@ -309,13 +310,13 @@ function MessageSheet({
             <AlertTriangle className="size-3.5" /> No phone number on file for this client — texts can’t be sent.
           </div>
         )}
-        <textarea
+        <AutoTextarea
           autoFocus
           value={msg}
           onChange={(e) => { setMsg(e.target.value); setPolished(false); }}
-          rows={3}
+          minRows={3}
           placeholder="Type a quick note — e.g. running 10 min late, gate code didn’t work…"
-          className="w-full resize-none rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
+          className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
         />
         {polished && (
           <div className="mt-1 flex items-center gap-1 text-[11px] text-brand"><Sparkles className="size-3" /> AI polished — edit as needed before sending</div>
@@ -357,11 +358,11 @@ function SendSheet({
           <button onClick={onCancel} className="text-muted-2 hover:text-foreground"><X className="size-4" /></button>
         </div>
         <p className="mb-2 text-xs text-muted">This goes to the client as a text. Edit anything before sending.</p>
-        <textarea
+        <AutoTextarea
           value={text}
           onChange={(e) => onChange(e.target.value)}
-          rows={4}
-          className="w-full resize-none rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
+          minRows={4}
+          className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
         />
         <div className="mt-3 flex items-center gap-2">
           <button onClick={onCancel} className="rounded-lg border bg-surface px-3 py-2 text-sm font-medium hover:bg-surface-2">Cancel</button>
@@ -723,12 +724,12 @@ function NotesCard({ projectId, initial, flash }: { projectId: string; initial: 
   return (
     <Section icon={StickyNote} title="Notes for the editor">
       <p className="mb-2 text-xs text-muted">Anything the editor should know — these flow straight into your upload, so you won’t retype them.</p>
-      <textarea
+      <AutoTextarea
         value={note}
         onChange={(e) => setNote(e.target.value)}
-        rows={3}
+        minRows={3}
         placeholder="e.g. House faces west so exteriors are backlit, recover sky. Seller wants the pool emphasized. Skip the cluttered office."
-        className="w-full resize-none rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
+        className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30"
       />
       <div className="mt-2 flex items-center justify-end">
         <button

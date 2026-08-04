@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { Plus, Loader2, X } from "lucide-react";
 import { createManualTask } from "@/app/actions";
 import { DELEGATE_KEYS, EDITORS } from "@/lib/editors";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 const ADD_FALLBACK = [
   { key: "kyle", name: "Kyle" },
@@ -64,12 +65,12 @@ export function AddTask({ assignees }: { assignees?: { key: string; name: string
           onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submit(); }}
           className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand"
         />
-        <textarea
+        <AutoTextarea
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
-          rows={2}
+          minRows={2}
           placeholder="Notes / details (optional)"
-          className="w-full resize-y rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand"
+          className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand"
         />
         <input
           value={link}

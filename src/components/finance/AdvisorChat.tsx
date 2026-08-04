@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { Loader2, Send, Sparkles } from "lucide-react";
 import { Markdown } from "@/components/ui/Markdown";
 import { askAdvisor, type AdvisorTurn } from "@/app/sales/advisorActions";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 const SUGGESTIONS = [
   "How profitable was June, really?",
@@ -76,13 +77,13 @@ export function AdvisorChat() {
       </div>
 
       <div className="flex items-end gap-2 border-t border-border p-3">
-        <textarea
+        <AutoTextarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-          rows={1}
+          minRows={1}
           placeholder="Ask about your finances…"
-          className="max-h-32 min-h-[2.4rem] flex-1 resize-y rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+          className="max-h-32 min-h-[2.4rem] flex-1 rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
         />
         <button onClick={() => send()} disabled={busy || !input.trim()} className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand text-white disabled:opacity-40">
           <Send className="size-4" />

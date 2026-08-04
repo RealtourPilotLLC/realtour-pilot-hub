@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { Send, Sun } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { sendTeamText } from "@/app/team/actions";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 // Texting box for one teammate. Includes a one-click "morning well-wish" that
 // references their next shoot today, when there is one. Nothing auto-sends —
@@ -33,12 +34,12 @@ export function TeamTextComposer({
 
   return (
     <div>
-      <textarea
+      <AutoTextarea
         value={body}
         onChange={(e) => setBody(e.target.value)}
-        rows={3}
+        minRows={3}
         placeholder={`Text ${firstName} via OpenPhone…`}
-        className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+        className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
       />
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <button

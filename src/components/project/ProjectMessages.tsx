@@ -5,6 +5,7 @@ import { Send, Reply, X } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { cn } from "@/lib/utils";
 import { postProjectMessage } from "@/app/projects/messageActions";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 export type ProjectMsg = {
   id: string;
@@ -144,14 +145,14 @@ export function ProjectMessages({
           </div>
         )}
         <div className="relative">
-          <textarea
+          <AutoTextarea
             ref={taRef}
             value={body}
             onChange={onChange}
             onKeyDown={(e) => { if (e.key === "Escape") setMentionQuery(null); }}
-            rows={2}
+            minRows={2}
             placeholder="Leave a note for the team… (@ to tag)"
-            className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+            className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
           />
           {suggestions.length > 0 && (
             <ul className="absolute bottom-full left-0 z-[1200] mb-1 max-h-44 w-56 overflow-auto rounded-lg border border-border bg-surface py-1 shadow-lg">

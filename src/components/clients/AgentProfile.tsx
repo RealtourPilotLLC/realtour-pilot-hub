@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { Palette, Save, Check, FolderOpen, Plus, ExternalLink, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { saveAgentProfile, setupBrandFolder } from "@/app/clients/actions";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 // Pull hex codes out of free text so we can render swatches next to the field.
 function extractColors(s: string): string[] {
@@ -69,12 +70,12 @@ export function AgentProfile({
           <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted">
             Client preferences
           </label>
-          <textarea
+          <AutoTextarea
             value={prefs}
             onChange={(e) => setPrefs(e.target.value)}
-            rows={4}
+            minRows={4}
             placeholder="How they like to work — scheduling (e.g. morning shoots), comms (text not call), must-haves, things to avoid…"
-            className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+            className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
           />
         </div>
 

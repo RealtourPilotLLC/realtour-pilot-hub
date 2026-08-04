@@ -6,6 +6,7 @@ import { Send, Sparkles, BookOpen, Database, User, ShieldCheck, Phone, Copy, Che
 import { askHub, type HubAnswer, type HubTurn, type HubRole, type HubDraft, type HubTaskCard, type HubMemoryCard } from "@/app/assistant/actions";
 import { sendClientText } from "@/app/clients/actions";
 import { ink } from "@/components/ui/Badge";
+import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 const PRIORITY_COLOR: Record<string, string> = { URGENT: "#f87171", HIGH: "#fb923c", MEDIUM: "#fbbf24", LOW: "#94a3b8" };
 
@@ -158,12 +159,13 @@ function DraftCard({ draft }: { draft: HubDraft }) {
         Draft {draft.channel} to {draft.clientName}
         <span className="ml-auto font-normal text-muted">review before sending</span>
       </div>
-      <textarea
+      <AutoTextarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        rows={Math.min(8, Math.max(3, text.split("\n").length + 1))}
+        minRows={3}
+        maxRows={16}
         disabled={status === "sent"}
-        className="w-full resize-y rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-brand/40 disabled:opacity-70"
+        className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-brand/40 disabled:opacity-70"
       />
       <div className="mt-2 flex items-center gap-2">
         {draft.channel === "text" && draft.canText && status !== "sent" && (
@@ -460,7 +462,7 @@ export function AskHub({ initial, tier }: { initial?: string; tier: HubRole }) {
           >
             <Paperclip className="size-4" />
           </button>
-          <textarea
+          <AutoTextarea
             value={value}
             onChange={(e) => setValue(e.target.value)}
             onPaste={onPaste}
@@ -470,9 +472,10 @@ export function AskHub({ initial, tier }: { initial?: string; tier: HubRole }) {
                 send(value);
               }
             }}
-            rows={1}
+            minRows={1}
+            maxRows={12}
             placeholder={files.length ? "Ask about the attached file(s)…" : "Ask about shoots, clients, schedule, to-dos, billing… (paste or drop images)"}
-            className="flex-1 resize-none bg-transparent px-2 py-1.5 text-sm focus:outline-none"
+            className="flex-1 bg-transparent px-2 py-1.5 text-sm focus:outline-none"
           />
           <button
             onClick={() => send(value)}
