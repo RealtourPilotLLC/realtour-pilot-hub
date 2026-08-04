@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { aiJson } from "@/lib/integrations/ai";
 import { listMeetTranscripts, readTranscript } from "@/lib/integrations/googleDrive";
-import { etDayKey } from "@/lib/datetime";
+import { etDayKey, etAt } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // MEET TRANSCRIPTS → A REVIEW CARD.
@@ -93,7 +93,10 @@ export async function scanMeetTranscripts(opts?: { since?: Date; limit?: number 
   failed: number;
 }> {
   const now = new Date();
-  const since = opts?.since ?? new Date(`${etDayKey(now).slice(0, 7)}-01T00:00:00Z`);
+  // Midnight EASTERN on the 1st. Anchoring at midnight UTC would start the
+  // window at 8pm ET on the last day of the previous month and sweep in a call
+  // that belongs to it.
+  const since = opts?.since ?? etAt(`${etDayKey(now).slice(0, 7)}-01`, 0);
   const files = await listMeetTranscripts(since, now);
 
   // Everything we already hold, in one query — one round trip, not one per file.

@@ -48,3 +48,23 @@ export function etDayStartUtc(d: Date = new Date()): Date {
   return new Date(utcMidnightOfEtDate + etOffsetMs(guess));
 }
 export const etAddDays = (d: Date, days: number) => new Date(d.getTime() + days * 86400000);
+
+/**
+ * A wall-clock ET time on an ET day, as a real instant. DST-safe.
+ *
+ * Use this instead of writing an offset into a date string. `"...T17:00:00-04:00"`
+ * is 5pm Eastern for eight months of the year and 4pm for the other four, and
+ * `"...T17:00:00Z"` is 1pm Eastern in summer and noon in winter — both silently
+ * drift when the clocks change. This derives the offset from the day itself.
+ *
+ * @param dayKey ET calendar day, "YYYY-MM-DD" (as produced by etDayKey)
+ */
+export function etAt(dayKey: string, hour: number, minute = 0): Date {
+  // Noon UTC is 7-8am ET — the same ET day as dayKey either side of a DST flip,
+  // which is all etDayStartUtc needs to resolve the correct midnight.
+  const midnight = etDayStartUtc(new Date(`${dayKey}T12:00:00Z`));
+  return new Date(midnight.getTime() + (hour * 60 + minute) * 60_000);
+}
+
+/** End of the working day (5pm ET) — the default when a due date has no time. */
+export const etEndOfDay = (dayKey: string) => etAt(dayKey, 17);

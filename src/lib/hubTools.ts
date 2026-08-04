@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getBillingRows } from "@/lib/queries";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { refinedDeliverableLabel } from "@/lib/pipeline";
-import { etDateTime, etDate, etDayKey, etDayStartUtc, etAddDays, etFullDate } from "@/lib/datetime";
+import { etDateTime, etDate, etDayKey, etDayStartUtc, etAddDays, etFullDate, etEndOfDay } from "@/lib/datetime";
 import type { HubTool } from "@/lib/integrations/ai";
 
 // ---------------------------------------------------------------------------
@@ -661,7 +661,7 @@ export async function execHubTool(
       // Due date: explicit YYYY-MM-DD (ET, ~5pm) or default to tomorrow.
       let dueAt: Date;
       const dd = typeof input.dueDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(input.dueDate) ? input.dueDate : "";
-      if (dd) dueAt = new Date(`${dd}T17:00:00-04:00`);
+      if (dd) dueAt = etEndOfDay(dd); // 5pm ET, DST-safe
       else dueAt = etAddDays(etDayStartUtc(new Date()), 1);
 
       // Don't duplicate: if the same assistant to-do (same title, same order) is

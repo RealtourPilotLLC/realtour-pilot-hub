@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { etDayKey, etDayStartUtc } from "@/lib/datetime";
+import { etDayKey, etDayStartUtc, etAt } from "@/lib/datetime";
 import { listCalendarEvents, type CalEvent } from "@/lib/integrations/googleCalendar";
 
 // ---------------------------------------------------------------------------
@@ -90,20 +90,14 @@ export type DayPlan = {
   calendarError: string | null;
 };
 
-function atHour(dayKey: string, hour: number): Date {
-  // ET-anchored: etDayStartUtc gives midnight ET as a UTC instant, and the day's
-  // hours are offsets from it. Hand-rolling this with local time is the bug that
-  // has bitten every date helper in this codebase.
-  return new Date(etDayStartUtc(new Date(`${dayKey}T12:00:00Z`)).getTime() + hour * 60 * MIN);
-}
+const atHour = (dayKey: string, hour: number): Date => etAt(dayKey, hour);
 
 /**
  * A wall-clock ET time on a given day, as a real instant.
  *
  * Used when the browser hands back "09:30" from a time picker: the conversion
  * happens HERE, on a server that knows the day is Eastern, rather than in a
- * browser that might be anywhere. Working hours never straddle the 2am DST
- * shift, so the offset-from-midnight arithmetic is safe.
+ * browser that might be anywhere.
  */
 export function etInstant(dayKey: string, hhmm: string): Date | null {
   const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
@@ -111,7 +105,7 @@ export function etInstant(dayKey: string, hhmm: string): Date | null {
   const h = Number(m[1]);
   const min = Number(m[2]);
   if (h < 0 || h > 23 || min < 0 || min > 59) return null;
-  return new Date(atHour(dayKey, h).getTime() + min * MIN);
+  return etAt(dayKey, h, min);
 }
 
 /** How much a meeting really costs, either side of the time on the invite. */

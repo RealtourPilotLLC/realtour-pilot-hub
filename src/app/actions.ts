@@ -15,6 +15,7 @@ import { Aryeo } from "@/lib/integrations/aryeo";
 import { getSecret } from "@/lib/integrations/connections";
 import { resolveRevision } from "@/lib/comms";
 import { closeObsoleteTasks } from "@/lib/tasks";
+import { etEndOfDay } from "@/lib/datetime";
 
 export type ApptResult = { ok: boolean; message: string };
 
@@ -243,7 +244,9 @@ export async function createManualTask(input: {
 
   let dueAt: Date | null = null;
   const dd = (input.dueDate || "").trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(dd)) dueAt = new Date(`${dd}T17:00:00-04:00`);
+  // 5pm ET on that day. A literal -04:00 is only right for eight months of
+  // the year; in winter it silently becomes a 4pm deadline.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dd)) dueAt = etEndOfDay(dd);
 
   const notes = input.notes?.trim() || null;
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } }, select: { id: true } });

@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireOwner } from "@/lib/auth/guards";
-import { etDayKey } from "@/lib/datetime";
+import { etDayKey, etEndOfDay } from "@/lib/datetime";
 import { buildDayPlan, ownerMemberId, etInstant } from "@/lib/ownerDay";
 import { createBlock, updateBlock, deleteBlock, CalendarNotConnected } from "@/lib/integrations/googleCalendar";
 import { scanMeetTranscripts, parseProposed } from "@/lib/meetings";
@@ -38,7 +38,9 @@ export async function addOwnerTodo(input: QuickAddInput): Promise<{ id?: string;
   const priority = PRIORITIES.has(input.priority ?? "") ? input.priority! : "NEXT";
   const energy = ENERGIES.has(input.energy ?? "") ? input.energy! : "SHALLOW";
   const estimateMin = Math.min(Math.max(Number(input.estimateMin) || 30, 5), 480);
-  const due = input.dueAt && /^\d{4}-\d{2}-\d{2}$/.test(input.dueAt) ? new Date(`${input.dueAt}T17:00:00Z`) : null;
+  // 5pm Eastern on that day. A bare "…T17:00:00Z" would be 1pm ET in summer and
+  // noon in winter — the day still lands right, but the time on the card lies.
+  const due = input.dueAt && /^\d{4}-\d{2}-\d{2}$/.test(input.dueAt) ? etEndOfDay(input.dueAt) : null;
 
   const row = await prisma.ownerTodo.create({
     data: {
