@@ -1,7 +1,7 @@
 "use server";
 
 import { getSecret } from "@/lib/integrations/connections";
-import { runHubAgent } from "@/lib/integrations/ai";
+import { runHubAgent, type HubAttachment } from "@/lib/integrations/ai";
 import { HUB_TOOLS, execHubTool } from "@/lib/hubTools";
 import { etFullDate } from "@/lib/datetime";
 import { getCurrentUser } from "@/lib/auth/user";
@@ -107,9 +107,33 @@ Learning (memory): you get smarter over time by remembering what you are told. C
 Critical boundary: aside from drafting client messages (proposed for a human to send), creating internal to-dos when asked, and saving facts you are taught, you do not send anything to clients or change external records on your own. The human always stays on the Send button.`;
 }
 
-export async function askHub(question: string, history: HubTurn[] = [], chatId?: string): Promise<HubAnswer> {
+// Attachment guardrails: a few files per question, phone-photo sized. Base64 is
+// ~4/3 of raw bytes, so 5.5M chars ≈ 4MB of file.
+const MAX_ATTACHMENTS = 4;
+const MAX_B64_CHARS = 5_500_000;
+const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+
+function sanitizeAttachments(raw: unknown): HubAttachment[] {
+  if (!Array.isArray(raw)) return [];
+  const out: HubAttachment[] = [];
+  for (const a of raw.slice(0, MAX_ATTACHMENTS)) {
+    const att = a as { kind?: string; mediaType?: string; dataBase64?: string; text?: string; name?: string };
+    const name = typeof att.name === "string" ? att.name.slice(0, 120) : undefined;
+    if (att.kind === "image" && typeof att.dataBase64 === "string" && att.dataBase64.length <= MAX_B64_CHARS && IMAGE_TYPES.has(att.mediaType ?? "")) {
+      out.push({ kind: "image", mediaType: att.mediaType!, dataBase64: att.dataBase64, name });
+    } else if (att.kind === "pdf" && typeof att.dataBase64 === "string" && att.dataBase64.length <= MAX_B64_CHARS) {
+      out.push({ kind: "pdf", dataBase64: att.dataBase64, name });
+    } else if (att.kind === "text" && typeof att.text === "string" && att.text.trim()) {
+      out.push({ kind: "text", text: att.text.slice(0, 60_000), name });
+    }
+  }
+  return out;
+}
+
+export async function askHub(question: string, history: HubTurn[] = [], chatId?: string, attachments?: HubAttachment[]): Promise<HubAnswer> {
   const q = question.trim();
-  if (!q) return { answer: "Ask me anything about your projects, clients, schedule, to-dos, billing, or how the business runs.", sources: [] };
+  const files = sanitizeAttachments(attachments);
+  if (!q && files.length === 0) return { answer: "Ask me anything about your projects, clients, schedule, to-dos, billing, or how the business runs.", sources: [] };
 
   // The viewer's content tier is derived from the SIGNED-IN user, never trusted
   // from the client. A creative (photographer/editor) only ever gets CREATIVE-tier
@@ -165,9 +189,14 @@ export async function askHub(question: string, history: HubTurn[] = [], chatId?:
 
   try {
     const { answer, toolsUsed } = await runHubAgent({
-      system: hubSystemPrompt(viewerRole),
+      system:
+        hubSystemPrompt(viewerRole) +
+        (files.length
+          ? "\n\nATTACHMENTS: the user attached photo(s)/file(s) to this message. Look at them carefully and use what you see — describe, extract, cross-reference against hub data as the question requires. If a photo shows a property, document, screenshot, or message, ground your answer in its actual contents."
+          : ""),
       history: history.slice(-8),
-      question: q,
+      question: q || "Take a look at the attached file(s) and tell me what's relevant.",
+      attachments: files.length ? files : undefined,
       tools: HUB_TOOLS,
       exec,
       maxSteps: 7,
@@ -187,7 +216,11 @@ export async function askHub(question: string, history: HubTurn[] = [], chatId?:
     let newChatId: string | undefined = chatId;
     try {
       const { recordHubTurn } = await import("@/lib/hubChats");
-      const saved = await recordHubTurn({ chatId, role: viewerRole, question: q, answer, toolsUsed: toolsUsed.map((t) => t.name) });
+      const saved = await recordHubTurn({
+        chatId, role: viewerRole, question: q, answer, toolsUsed: toolsUsed.map((t) => t.name),
+        userEmail: me?.email ?? null,
+        userName: me ? (me.impersonating ? `${me.name ?? me.email} (owner viewing as)` : me.name) : null,
+      });
       if (saved) newChatId = saved;
     } catch {
       /* ignore */

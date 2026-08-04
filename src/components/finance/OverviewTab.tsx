@@ -6,7 +6,10 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { FinanceTabs, type FinanceTab } from "@/components/finance/FinanceTabs";
-import { revenueByProcessor, trueProfitAndLoss } from "@/lib/bookkeeping";
+import { KpiCards } from "@/components/finance/KpiCards";
+import { revenueByProcessor } from "@/lib/bookkeeping";
+import { categoryBreakdown } from "@/lib/financeCategories";
+import { SavingsPlan, type SavingsItemView } from "@/components/finance/SavingsPlan";
 import { getCashPosition, getMonthlyPnl, monthBounds } from "@/lib/finance";
 import { prisma } from "@/lib/prisma";
 import { etDate } from "@/lib/datetime";
@@ -52,10 +55,13 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
   const endKey = now.toISOString().slice(0, 10);
   const monthStartKey = `${monthBounds(0).key}-01`; // yyyy-mm-01 for the current ET month
 
-  const [rev, prevYear, pnl, cash, month, monthRev, health] = await Promise.all([
+  const [rev, prevYear, cats, monthCats, cash, month, monthRev, health] = await Promise.all([
     revenueByProcessor(YEAR_START, endKey),
     revenueByProcessor("2025-01-01", "2025-12-31"),
-    trueProfitAndLoss(YEAR_START, endKey),
+    // ONE SOURCE OF TRUTH: the audited bank+card+Venmo ledger the Categories
+    // tab uses — Overview, Personal and Categories all show the SAME numbers.
+    categoryBreakdown(YEAR_START, endKey),
+    categoryBreakdown(monthStartKey, endKey),
     getCashPosition(),
     getMonthlyPnl(0),
     // This-month revenue must count ALL THREE processor rails — the cash-basis
@@ -64,22 +70,26 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
     revenueByProcessor(monthStartKey, endKey),
     booksHealth(),
   ]);
+  // The $5k/mo savings checklist (best-effort: table may not exist pre-push).
+  const savingsItems: SavingsItemView[] = await prisma.savingsItem
+    .findMany({ orderBy: { rank: "asc" } })
+    .then((rows) => rows.map((r) => ({ id: r.id, rank: r.rank, title: r.title, detail: r.detail, savesPerMonth: r.savesPerMonth, tier: r.tier, status: r.status })))
+    .catch(() => []);
 
   // Revenue is the processor-counted total (the trustworthy top line); expenses
-  // come from the classified ledger. Profit pairs the two so the number is
-  // internally consistent no matter which engine moved.
+  // come from the audited categorized ledger. Profit pairs the two so every
+  // finance page agrees.
   const revenue = rev.total;
-  const businessExpenses = pnl.expenses;
+  const businessExpenses = cats.businessTotal;
   const profit = revenue - businessExpenses;
 
   const daysElapsed = Math.max(1, (now.getTime() - new Date(`${YEAR_START}T00:00:00Z`).getTime()) / 864e5);
   const annualized = (revenue / daysElapsed) * 365;
   const growth = prevYear.total > 0 ? (annualized - prevYear.total) / prevYear.total : null;
 
-  // This month, all three rails — then re-base the month's profit and payroll
-  // ratio on the correct revenue (the payroll/fees come from getMonthlyPnl).
+  // This month, all three rails — profit from the same audited ledger.
   const monthRevenue = monthRev.total;
-  const monthProfit = monthRevenue - month.allPayroll - month.cardFees - month.expenses;
+  const monthProfit = monthRevenue - monthCats.businessTotal;
   const monthPayrollPct = monthRevenue > 0 ? month.allPayroll / monthRevenue : null;
 
   const rails = [
@@ -88,12 +98,16 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
     { key: "venmo", amount: rev.venmo, ...RAIL.venmo },
   ].filter((r) => r.amount > 0);
 
-  // From the P&L engine (Purchase-only, reconciles to pnl.expenses) — not the
-  // all-type booksHealth groupBy — so the itemized rows foot to Net profit.
-  const cos = pnl.costOfSales;
-  const operating = pnl.operating;
-  const vehicle = pnl.vehicle;
-  const stripeContractor = pnl.stripeContractorPay;
+  // Itemize from the audited categories, grouped for glance-ability. A
+  // catch-all "other" row guarantees the lines always foot to Net profit.
+  const catSum = (...names: string[]) =>
+    cats.business.filter((r) => names.includes(r.category)).reduce((s, r) => s + r.sum, 0);
+  const gEditing = catSum("Video editing", "Photo editing");
+  const gPeople = catSum("Creative specialist pay", "Consulting (Paul)");
+  const gSoftware = catSum("Software & subscriptions", "Social media mgmt (resold)", "Marketing & networking");
+  const gFees = catSum("Stripe processing fees", "QuickBooks Payments fees", "Bank, card & overdraft fees");
+  const gGear = catSum("Gear & equipment", "Floorplans (CubiCasa)", "Travel & tolls (business)");
+  const gOther = businessExpenses - gEditing - gPeople - gSoftware - gFees - gGear;
 
   const profitTone = profit < 0 ? "danger" : "success";
   const runwayTone = cash.projected == null ? "muted" : cash.projected < 0 ? "danger" : cash.projected < 5000 ? "warning" : "success";
@@ -111,28 +125,52 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
         <FinanceTabs tab="overview" show={show} />
 
         {/* HERO — the four numbers that matter most, 2026 year-to-date */}
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <Kpi
-            icon={CircleDollarSign} accent="#5cb98a"
-            label="Revenue · 2026 YTD" value={m0(revenue)}
-            sub={growth != null ? `${pct(growth)} vs 2025 · ${m0(annualized)} annualized` : `${m0(annualized)} annualized`}
-          />
-          <Kpi
-            icon={profit < 0 ? TrendingDown : TrendingUp} accent={profit < 0 ? "#ec6a6a" : "#5cb98a"}
-            label="Net profit · YTD" value={m0(profit)} tone={profitTone}
-            sub={revenue > 0 ? `${Math.round((profit / revenue) * 100)}% margin · provisional` : "provisional"}
-          />
-          <Kpi
-            icon={Landmark} accent="#6ba3d6"
-            label="In the bank" value={m0(cash.bankBalance)} tone={bankTone}
-            sub={cash.bankAsOf ? `as of ${etDate(cash.bankAsOf)}` : "not set — add on Money"}
-          />
-          <Kpi
-            icon={HandCoins} accent="#d4a95f"
-            label="Owed to you" value={m0(cash.arOutstanding)}
-            sub="delivered, unpaid (AR)"
-          />
-        </div>
+        <KpiCards
+          items={[
+            {
+              key: "revenue", icon: <CircleDollarSign className="size-4" />, accent: "#5cb98a",
+              label: "Revenue · 2026 YTD", value: m0(revenue),
+              sub: growth != null ? `${pct(growth)} vs 2025 · ${m0(annualized)} annualized` : `${m0(annualized)} annualized`,
+              detailTitle: "Revenue by processor rail",
+              details: [
+                { label: "Stripe (per-shoot card payments)", value: m0(rev.stripe) },
+                { label: "QuickBooks Payments (bundles + social)", value: m0(rev.quickbooks) },
+                { label: "Venmo (Stephen Kennedy)", value: m0(rev.venmo) },
+                { label: "This month so far", value: m0(monthRevenue), sub: "all rails" },
+              ],
+            },
+            {
+              key: "profit", icon: profit < 0 ? <TrendingDown className="size-4" /> : <TrendingUp className="size-4" />,
+              accent: profit < 0 ? "#ec6a6a" : "#5cb98a",
+              label: "Net profit · YTD", value: m0(profit), tone: profitTone,
+              sub: revenue > 0 ? `${Math.round((profit / revenue) * 100)}% margin · provisional` : "provisional",
+              detailTitle: "How the profit is built",
+              details: [
+                { label: "Revenue (all 3 processors)", value: m0(revenue) },
+                { label: "− Editing (video + photo)", value: m0(gEditing) },
+                { label: "− Photographers, contractors & consulting", value: m0(gPeople) },
+                { label: "− Software, marketing & resold services", value: m0(gSoftware) },
+                { label: "− Processing, bank & overdraft fees", value: m0(gFees) },
+                { label: "− Gear, floorplans & tolls", value: m0(gGear) },
+                { label: "− Other business", value: m0(gOther) },
+                { label: "= Net profit", value: m0(profit), sub: revenue > 0 ? `${Math.round((profit / revenue) * 100)}% margin` : undefined },
+              ],
+            },
+            {
+              key: "bank", icon: <Landmark className="size-4" />, accent: "#6ba3d6",
+              label: "In the bank", value: m0(cash.bankBalance), tone: bankTone,
+              sub: cash.bankAsOf ? `as of ${etDate(cash.bankAsOf)}` : "not set — add on Money",
+            },
+            {
+              key: "ar", icon: <HandCoins className="size-4" />, accent: "#d4a95f",
+              label: "Owed to you", value: m0(cash.arOutstanding),
+              sub: "delivered, unpaid (AR)",
+            },
+          ]}
+        />
+
+        {/* SAVINGS PLAN — the $5k/mo cut checklist, tick-off-able */}
+        {savingsItems.length > 0 && <SavingsPlan items={savingsItems} />}
 
         {/* CASH & RUNWAY */}
         <section className="rounded-2xl border border-border bg-surface p-4 sm:p-5">
@@ -201,17 +239,19 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
           </div>
           <div className="divide-y divide-border/60 text-sm">
             <Row label="Revenue (all 3 processors)" value={m0(revenue)} strong />
-            <Row label="− Contractors & editing" value={m0(cos)} icon={<Users className="size-3.5 text-muted-2" />} neg />
-            {stripeContractor > 0 && <Row label="− Contractors paid via Stripe" value={m0(stripeContractor)} icon={<Users className="size-3.5 text-muted-2" />} neg />}
-            <Row label="− Software, fees & operating" value={m0(operating + pnl.stripeFees)} icon={<Receipt className="size-3.5 text-muted-2" />} neg />
-            <Row label="− Auto, fuel & travel" value={m0(vehicle)} icon={<TrendingUp className="size-3.5 text-muted-2" />} neg />
+            <Row label="− Editing (video + photo)" value={m0(gEditing)} icon={<Users className="size-3.5 text-muted-2" />} neg />
+            <Row label="− Photographers, contractors & consulting" value={m0(gPeople)} icon={<Users className="size-3.5 text-muted-2" />} neg />
+            <Row label="− Software, marketing & resold services" value={m0(gSoftware)} icon={<Receipt className="size-3.5 text-muted-2" />} neg />
+            <Row label="− Processing, bank & overdraft fees" value={m0(gFees)} icon={<Receipt className="size-3.5 text-muted-2" />} neg />
+            <Row label="− Gear, floorplans & tolls" value={m0(gGear)} icon={<TrendingUp className="size-3.5 text-muted-2" />} neg />
+            {Math.abs(gOther) >= 1 && <Row label="− Other business" value={m0(gOther)} neg />}
             <Row label={profit < 0 ? "= Net loss" : "= Net profit"} value={m0(profit)} strong tone={profitTone}
               sub={revenue > 0 ? `${Math.round((profit / revenue) * 100)}% margin` : undefined} />
           </div>
-          {pnl.uncategorisedExpenses > 0 && (
+          {cats.reviewTotal > 100 && (
             <p className="mt-3 flex items-start gap-1.5 text-[11px] text-warning">
               <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-              {m0(pnl.uncategorisedExpenses)} in expenses still need a category — the profit above will firm up once they&apos;re sorted.
+              {m0(cats.reviewTotal)} still uncategorized (see Categories → To review) — the profit above firms up as they&apos;re tagged.
             </p>
           )}
         </section>
@@ -221,17 +261,17 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
           <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
             <PiggyBank className="size-4 text-brand" /> Business vs. personal
           </div>
-          <p className="mb-3 text-xs text-muted">Some of the money out of your account was business cost; some was personal (owner draws). Sorting the flagged items below is what pins down your real profit.</p>
+          <p className="mb-3 text-xs text-muted">Same audited ledger as the Categories tab — every account, card and Venmo, each dollar tagged business or personal.</p>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="rounded-xl border border-border bg-surface-2/40 p-4">
-              <div className="text-[11px] font-medium uppercase tracking-wide text-muted-2">Recorded business cost · YTD</div>
+              <div className="text-[11px] font-medium uppercase tracking-wide text-muted-2">Business cost · YTD</div>
               <div className="mt-0.5 text-2xl font-bold text-foreground">{m0(businessExpenses)}</div>
-              <p className="mt-1 text-xs text-muted">Contractors, editing, software, fees, vehicle — categorized from the ledger.</p>
+              <p className="mt-1 text-xs text-muted">Editing, photographers, software, fees, gear — audited across every account.</p>
             </div>
             <div className="rounded-xl border border-border bg-surface-2/40 p-4">
-              <div className="text-[11px] font-medium uppercase tracking-wide text-muted-2">Still to sort</div>
-              <div className="mt-0.5 text-2xl font-bold text-warning">{m0(pnl.uncategorisedExpenses)}</div>
-              <p className="mt-1 text-xs text-muted">{health.needsReview.toLocaleString("en-US")} flagged items — each still to be split between a business cost and a personal draw. This is what firms up the profit.</p>
+              <div className="text-[11px] font-medium uppercase tracking-wide text-muted-2">Personal spending · YTD</div>
+              <div className="mt-0.5 text-2xl font-bold text-warning">{m0(cats.personalTotal)}</div>
+              <p className="mt-1 text-xs text-muted">Housing, family, nanny, food, cards — the full breakdown lives on the Personal tab.</p>
             </div>
           </div>
         </section>
@@ -271,7 +311,7 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <Stat label={`${month.label} revenue`} value={m0(monthRevenue)} sub="collected · all 3 rails" tone="success" />
             <Stat label="This month payroll" value={m0(month.allPayroll)} sub="everyone paid" tone="muted" />
-            <Stat label={`${month.label} profit`} value={m0(monthProfit)} sub="after team + fees" tone={monthProfit < 0 ? "danger" : "success"} />
+            <Stat label={`${month.label} profit`} value={m0(monthProfit)} sub="after all business costs" tone={monthProfit < 0 ? "danger" : "success"} />
             <Stat label="Payroll % of rev" value={monthPayrollPct == null ? "—" : `${Math.round(monthPayrollPct * 100)}%`} sub="~30–45% normal" tone={monthPayrollPct != null && monthPayrollPct > 0.5 ? "warning" : "muted"} />
           </div>
           <div className="mt-4 flex flex-wrap gap-2">

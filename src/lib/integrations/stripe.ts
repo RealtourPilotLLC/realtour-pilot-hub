@@ -134,6 +134,27 @@ export async function syncStripe(opts: { fullDays?: number } = {}): Promise<{ im
       if (!res.has_more || res.data.length === 0) break;
       startingAfter = res.data[res.data.length - 1].id;
     }
+    // Stamp Connect-transfer DESTINATIONS (who got paid). Balance transactions
+    // don't carry them; /v1/transfers does, and its balance_transaction field is
+    // exactly our row id. Best-effort — the per-person People/vendor split falls
+    // back to a combined line for any row left unstamped, never a guess.
+    try {
+      const tFloor = Math.floor(Date.now() / 1000) - 60 * 86400;
+      let after: string | undefined;
+      for (let page = 0; page < 5; page++) {
+        const q: Record<string, string | number> = { limit: 100, "created[gte]": tFloor };
+        if (after) q.starting_after = after;
+        const res = await stripeGet<{ data: { id: string; destination?: string; balance_transaction?: string }[]; has_more: boolean }>("/transfers", { query: q });
+        for (const t of res.data) {
+          if (t.destination && t.balance_transaction) {
+            await prisma.stripeTransaction.updateMany({ where: { id: t.balance_transaction }, data: { destination: t.destination } });
+          }
+        }
+        if (!res.has_more || res.data.length === 0) break;
+        after = res.data[res.data.length - 1].id;
+      }
+    } catch { /* destination stamping must never fail the sync */ }
+
     // Persist the high-water mark on the connection, then mark synced.
     await prisma.connection.update({
       where: { provider: "stripe" },

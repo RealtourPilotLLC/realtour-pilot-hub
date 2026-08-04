@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState, useRef, useEffect, useTransition } from "react";
-import { Send, Sparkles, BookOpen, Database, User, ShieldCheck, Phone, Copy, Check, Mail, ListChecks, ArrowUpRight, Brain, Lock } from "lucide-react";
+import { Send, Sparkles, BookOpen, Database, User, ShieldCheck, Phone, Copy, Check, Mail, ListChecks, ArrowUpRight, Brain, Lock, Paperclip, X, FileText } from "lucide-react";
 import { askHub, type HubAnswer, type HubTurn, type HubRole, type HubDraft, type HubTaskCard, type HubMemoryCard } from "@/app/assistant/actions";
 import { sendClientText } from "@/app/clients/actions";
 import { ink } from "@/components/ui/Badge";
@@ -66,8 +66,60 @@ const ROLES: { value: HubRole; label: string; hint: string }[] = [
 ];
 
 type Msg =
-  | { role: "user"; text: string }
+  | { role: "user"; text: string; attachments?: string[] }
   | { role: "hub"; text: string; sources: HubAnswer["sources"]; drafts?: HubDraft[]; tasks?: HubTaskCard[]; memories?: HubMemoryCard[] };
+
+// A file staged for the next question. Images are downscaled client-side so a
+// phone photo doesn't blow the server-action payload limit.
+type StagedFile = {
+  name: string;
+  kind: "image" | "pdf" | "text";
+  mediaType?: string;
+  dataBase64?: string;
+  text?: string;
+  preview?: string; // object URL for image thumbnails
+};
+
+const MAX_FILES = 4;
+
+async function stageFile(f: File): Promise<StagedFile | { error: string }> {
+  if (f.type.startsWith("image/")) {
+    // Downscale to ≤1568px JPEG — plenty for the model, tiny on the wire.
+    const url = URL.createObjectURL(f);
+    try {
+      const img = await new Promise<HTMLImageElement>((res, rej) => {
+        const i = new Image();
+        i.onload = () => res(i);
+        i.onerror = () => rej(new Error("bad image"));
+        i.src = url;
+      });
+      const scale = Math.min(1, 1568 / Math.max(img.width, img.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(img.width * scale));
+      canvas.height = Math.max(1, Math.round(img.height * scale));
+      canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+      return { name: f.name, kind: "image", mediaType: "image/jpeg", dataBase64: dataUrl.split(",")[1], preview: dataUrl };
+    } catch {
+      return { error: `Couldn't read ${f.name}` };
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+  if (f.type === "application/pdf" || /\.pdf$/i.test(f.name)) {
+    if (f.size > 4 * 1024 * 1024) return { error: `${f.name} is over 4MB — export a smaller PDF and try again.` };
+    const buf = await f.arrayBuffer();
+    let bin = "";
+    const bytes = new Uint8Array(buf);
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return { name: f.name, kind: "pdf", dataBase64: btoa(bin) };
+  }
+  if (f.type.startsWith("text/") || /\.(txt|csv|md|json|log)$/i.test(f.name)) {
+    if (f.size > 512 * 1024) return { error: `${f.name} is too big for a text file — trim it under 500KB.` };
+    return { name: f.name, kind: "text", text: await f.text() };
+  }
+  return { error: `${f.name}: photos, PDFs, and text/CSV files are supported.` };
+}
 
 const SUGGESTIONS = [
   "What's shooting today?",
@@ -167,10 +219,61 @@ function renderText(text: string) {
 export function AskHub({ initial, tier }: { initial?: string; tier: HubRole }) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [value, setValue] = useState("");
+  const [files, setFiles] = useState<StagedFile[]>([]);
+  const [fileErr, setFileErr] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const seeded = useRef(false);
   const chatId = useRef<string | undefined>(undefined);
+
+  async function addFiles(list: FileList | File[] | null) {
+    if (!list) return;
+    setFileErr(null);
+    const room = MAX_FILES - files.length;
+    if (room <= 0) { setFileErr(`Up to ${MAX_FILES} files per question.`); return; }
+    const staged: StagedFile[] = [];
+    for (const f of Array.from(list).slice(0, room)) {
+      const r = await stageFile(f);
+      if ("error" in r) setFileErr(r.error);
+      else staged.push(r);
+    }
+    if (staged.length) setFiles((cur) => [...cur, ...staged].slice(0, MAX_FILES));
+  }
+
+  // Drag & drop anywhere on the chat. Depth counter stops child dragleave flicker.
+  const [dragOver, setDragOver] = useState(false);
+  const dragDepth = useRef(0);
+  const dragHandlers = {
+    onDragEnter: (e: React.DragEvent) => {
+      if (![...e.dataTransfer.types].includes("Files")) return;
+      e.preventDefault();
+      dragDepth.current++;
+      setDragOver(true);
+    },
+    onDragOver: (e: React.DragEvent) => {
+      if ([...e.dataTransfer.types].includes("Files")) e.preventDefault();
+    },
+    onDragLeave: () => {
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (dragDepth.current === 0) setDragOver(false);
+    },
+    onDrop: (e: React.DragEvent) => {
+      e.preventDefault();
+      dragDepth.current = 0;
+      setDragOver(false);
+      addFiles(e.dataTransfer.files);
+    },
+  };
+
+  // Paste a screenshot/photo (or a copied file) straight into the chat.
+  function onPaste(e: React.ClipboardEvent) {
+    const pasted = Array.from(e.clipboardData?.files ?? []);
+    if (pasted.length) {
+      e.preventDefault();
+      addFiles(pasted);
+    }
+  }
 
   // Auto-ask a seeded question (e.g. from an "Ask the Hub" deep link on a client page).
   useEffect(() => {
@@ -183,16 +286,25 @@ export function AskHub({ initial, tier }: { initial?: string; tier: HubRole }) {
 
   function send(text: string) {
     const q = text.trim();
-    if (!q || isPending) return;
+    if ((!q && files.length === 0) || isPending) return;
     // Build history from the conversation so far (before this question).
     const history: HubTurn[] = messages.map((m) => ({
       role: m.role === "user" ? "user" : "assistant",
       content: m.text,
     }));
-    setMessages((m) => [...m, { role: "user", text: q }]);
+    const outgoing = files.map((f) =>
+      f.kind === "image"
+        ? { kind: "image" as const, mediaType: f.mediaType!, dataBase64: f.dataBase64!, name: f.name }
+        : f.kind === "pdf"
+          ? { kind: "pdf" as const, dataBase64: f.dataBase64!, name: f.name }
+          : { kind: "text" as const, text: f.text!, name: f.name },
+    );
+    setMessages((m) => [...m, { role: "user", text: q || "(attached files)", attachments: files.map((f) => f.name) }]);
     setValue("");
+    setFiles([]);
+    setFileErr(null);
     startTransition(async () => {
-      const res = await askHub(q, history, chatId.current);
+      const res = await askHub(q, history, chatId.current, outgoing.length ? outgoing : undefined);
       if (res.chatId) chatId.current = res.chatId;
       setMessages((m) => [...m, { role: "hub", text: res.answer, sources: res.sources, drafts: res.drafts, tasks: res.tasks, memories: res.memories }]);
       requestAnimationFrame(() =>
@@ -202,7 +314,14 @@ export function AskHub({ initial, tier }: { initial?: string; tier: HubRole }) {
   }
 
   return (
-    <div className="mx-auto flex h-[calc(100vh-8.5rem)] max-w-3xl flex-col p-6">
+    <div className="relative mx-auto flex h-[calc(100vh-8.5rem)] max-w-3xl flex-col p-6" {...dragHandlers}>
+      {dragOver && (
+        <div className="pointer-events-none absolute inset-3 z-20 flex items-center justify-center rounded-3xl border-2 border-dashed border-brand bg-brand/10">
+          <div className="flex items-center gap-2 rounded-2xl bg-surface px-4 py-2.5 text-sm font-medium text-brand shadow-lg">
+            <Paperclip className="size-4" /> Drop photos or files to attach
+          </div>
+        </div>
+      )}
       <div className="mb-3 flex items-center justify-end gap-2">
         <span
           className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-2.5 py-1 text-xs font-medium text-muted"
@@ -243,6 +362,15 @@ export function AskHub({ initial, tier }: { initial?: string; tier: HubRole }) {
               <div className="flex max-w-[80%] items-start gap-2">
                 <div className="rounded-2xl rounded-tr-sm bg-brand px-4 py-2.5 text-sm text-brand-fg">
                   {m.text}
+                  {m.attachments && m.attachments.length > 0 && (
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {m.attachments.map((n, j) => (
+                        <span key={j} className="inline-flex items-center gap-1 rounded-full bg-white/20 px-2 py-0.5 text-[11px]">
+                          <Paperclip className="size-3" /> {n}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <span className="mt-1 flex size-7 shrink-0 items-center justify-center rounded-full bg-surface-2 text-muted">
                   <User className="size-4" />
@@ -290,28 +418,71 @@ export function AskHub({ initial, tier }: { initial?: string; tier: HubRole }) {
         )}
       </div>
 
-      <div className="mt-3 flex items-end gap-2 rounded-2xl border bg-surface p-2">
-        <textarea
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send(value);
-            }
-          }}
-          rows={1}
-          placeholder="Ask about shoots, clients, schedule, to-dos, billing…"
-          className="flex-1 resize-none bg-transparent px-2 py-1.5 text-sm focus:outline-none"
-        />
-        <button
-          onClick={() => send(value)}
-          disabled={isPending || !value.trim()}
-          aria-label="Send"
-          className="flex size-9 items-center justify-center rounded-xl bg-brand text-brand-fg disabled:opacity-50"
-        >
-          <Send className="size-4" />
-        </button>
+      <div className="mt-3 rounded-2xl border bg-surface p-2">
+        {(files.length > 0 || fileErr) && (
+          <div className="mb-1.5 flex flex-wrap items-center gap-1.5 px-1">
+            {files.map((f, i) => (
+              <span key={i} className="inline-flex items-center gap-1.5 rounded-lg border bg-surface-2 py-1 pl-1.5 pr-1 text-xs">
+                {f.preview ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={f.preview} alt={f.name} className="size-6 rounded object-cover" />
+                ) : (
+                  <FileText className="size-3.5 text-muted" />
+                )}
+                <span className="max-w-36 truncate">{f.name}</span>
+                <button
+                  onClick={() => setFiles((cur) => cur.filter((_, j) => j !== i))}
+                  aria-label={`Remove ${f.name}`}
+                  className="rounded p-0.5 text-muted-2 hover:text-danger"
+                >
+                  <X className="size-3" />
+                </button>
+              </span>
+            ))}
+            {fileErr && <span className="text-[11px] text-danger">{fileErr}</span>}
+          </div>
+        )}
+        <div className="flex items-end gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept="image/*,.pdf,.txt,.csv,.md,.json,.log"
+            className="hidden"
+            onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isPending}
+            aria-label="Attach photos or files"
+            title="Attach photos or files (images, PDFs, CSV/text)"
+            className="flex size-9 shrink-0 items-center justify-center rounded-xl border bg-surface-2 text-muted hover:text-foreground disabled:opacity-50"
+          >
+            <Paperclip className="size-4" />
+          </button>
+          <textarea
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onPaste={onPaste}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send(value);
+              }
+            }}
+            rows={1}
+            placeholder={files.length ? "Ask about the attached file(s)…" : "Ask about shoots, clients, schedule, to-dos, billing… (paste or drop images)"}
+            className="flex-1 resize-none bg-transparent px-2 py-1.5 text-sm focus:outline-none"
+          />
+          <button
+            onClick={() => send(value)}
+            disabled={isPending || (!value.trim() && files.length === 0)}
+            aria-label="Send"
+            className="flex size-9 items-center justify-center rounded-xl bg-brand text-brand-fg disabled:opacity-50"
+          >
+            <Send className="size-4" />
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -14,7 +14,11 @@ export const maxDuration = 300;
 // Steps run under a time budget so a slow one degrades gracefully (the rest are
 // reported as `skipped` and picked up next run) instead of being hard-killed.
 export async function GET(req: NextRequest) {
+  // FAIL CLOSED: in prod/Vercel a missing CRON_SECRET must refuse, not open the
+  // door — same rule as the auth gate (losing an env var never fails open).
   const secret = process.env.CRON_SECRET;
+  const enforced = process.env.NODE_ENV === "production" || Boolean(process.env.VERCEL);
+  if (!secret && enforced) return NextResponse.json({ error: "CRON_SECRET not configured" }, { status: 401 });
   if (secret) {
     const auth = req.headers.get("authorization");
     if (auth !== `Bearer ${secret}`) {
@@ -48,6 +52,23 @@ export async function GET(req: NextRequest) {
   await step("booksClassify", async () => {
     const { categoriseBooks } = await import("@/lib/bookkeeping");
     return categoriseBooks({ sinceKey: "2026-01-01" });
+  });
+  // Pull fresh transactions + balances from every connected Plaid bank/card.
+  // No-op (returns 0 items) until Jordan links accounts — safe to always run.
+  await step("plaidSync", async () => {
+    const { syncAllPlaid } = await import("@/lib/integrations/plaid");
+    return syncAllPlaid();
+  });
+  // Tag any freshly-synced bank/card rows business/personal by category
+  // (skips rows the owner hand-locked). Powers the Categories tab.
+  await step("plaidCategorize", async () => {
+    const { categorizeAllPlaid } = await import("@/lib/financeCategories");
+    return categorizeAllPlaid();
+  });
+  // Count raw photos in recent shoots' Dropbox folders → per-job AutoHDR cost.
+  await step("photoCounts", async () => {
+    const { sweepPhotoCounts } = await import("@/lib/photoCount");
+    return sweepPhotoCounts({ days: 21, max: 80 });
   });
 
   await step("clients", () => syncAllAryeoClients());
@@ -102,7 +123,51 @@ export async function GET(req: NextRequest) {
   // LAST on purpose: measured at 130-330s it can eat the whole budget, and when it
   // does it must starve only itself — never the cheap safety-net steps above
   // (July 5's profile refreshes ran zero times because this step ran mid-list).
-  await step("ordersFullReconcile", () => syncAryeoOrders({ full: true }));
+  // HARD-CAPPED at 150s: measured 130-330s, it kept blowing past maxDuration and
+  // killing the function BEFORE finish() — so every CronRun died with
+  // finishedAt=null and monitoring was blind since inception (final-audit find).
+  // A timed-out reconcile resumes next run; a dead finish() never does.
+  await step("ordersFullReconcile", () =>
+    Promise.race([
+      syncAryeoOrders({ full: true }),
+      new Promise((resolve) => setTimeout(() => resolve({ timedOut: true, note: "capped at 150s so finish() always records the run" }), 150_000)),
+    ]),
+  );
+
+  // Second-chance Plaid sync for items that FAILED the morning sweep — runs
+  // minutes after plaidSync, comfortably past minute-scale 429 rate limits (a
+  // single 429 used to freeze an item for a full day; PNC sat stuck 2 days).
+  await step("plaidRetryErrored", async () => {
+    const { retryErroredPlaidItems } = await import("@/lib/integrations/plaid");
+    return retryErroredPlaidItems();
+  });
+
+  // Re-summarize every photographer's "work-ons for your next shoot" themes so
+  // acknowledged/resolved notes drop out overnight (the share action rebuilds
+  // on demand; this is the backstop).
+  await step("shootFocusSummaries", async () => {
+    const { rebuildAllShootFocusSummaries } = await import("@/lib/photographerFeedback");
+    return rebuildAllShootFocusSummaries();
+  });
+
+  // Cost every shoot for the Trends margin table. This runs the payroll engine,
+  // which resolves mileage through the public OSRM router — far too slow and too
+  // network-dependent for a page request (it took a 60s serverless function down
+  // in production). Done here once a night; the page just reads the row.
+  await step("packageMargins", async () => {
+    const { rebuildPackageMargins } = await import("@/lib/packageMargin");
+    return rebuildPackageMargins();
+  });
+
+  // Rebuild the Trends growth plan (new packages, promotions, what to focus on
+  // and fix) so it reflects last night's bookings. It is cached against a hash
+  // of the business numbers, so on a day nothing moved this is a no-op and
+  // costs nothing — the model is only called when the picture actually changed.
+  await step("growthPlan", async () => {
+    const { rebuildGrowthPlan } = await import("@/lib/growthPlan");
+    const r = await rebuildGrowthPlan();
+    return { rebuilt: !!r.plan && !r.error, error: r.error ?? null };
+  });
 
   // Persist this run (CronRun) + Slack-ping on a NEW failure/skip. Best-effort.
   await finish();

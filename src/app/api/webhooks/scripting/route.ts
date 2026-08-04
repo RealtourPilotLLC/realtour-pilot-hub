@@ -82,7 +82,12 @@ export async function processScriptingEvent(
     (data.id ? await prisma.project.findFirst({ where: { scriptingId: String(data.id) }, select: { id: true, title: true, clientId: true } }) : null);
 
   if (!project) {
-    throw new Error(`No linked hub project (external_id=${hubId ?? "none"}, studio id=${data.id ?? "none"}).`);
+    // Studio-NATIVE projects (created inside Studio, external_id never set) can
+    // never link to a hub job — skip them cleanly instead of erroring forever
+    // into the /connections badge and the hourly retry loop. Only an event that
+    // CARRIES a hub id is a real linkage failure worth retrying.
+    if (!hubId) return;
+    throw new Error(`No linked hub project (external_id=${hubId}, studio id=${data.id ?? "none"}).`);
   }
 
   // Unlink on delete — never delete the hub job, just drop the Studio link.

@@ -12,6 +12,7 @@ export type ChatListItem = {
   categoryLabel: string;
   categoryColor: string;
   role: string;
+  person: string | null; // who specifically had the conversation
   questions: number;
   when: string;
 };
@@ -61,7 +62,8 @@ function ChatRow({ chat }: { chat: ChatListItem }) {
           {chat.categoryLabel}
         </span>
         <span className="ml-auto inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium" style={{ backgroundColor: `${role.color}22`, color: ink(role.color) }}>
-          {role.label}
+          <User className="size-2.5" />
+          {chat.person ?? role.label}
         </span>
         <span className="text-xs text-muted-2">{chat.when}</span>
       </div>

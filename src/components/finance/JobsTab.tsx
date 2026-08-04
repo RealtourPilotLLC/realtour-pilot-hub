@@ -38,8 +38,8 @@ export async function JobsTab({ show }: { show: FinanceTab[] }) {
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <Kpi icon={Briefcase} accent="#6ba3d6" label="Jobs shot" value={String(data.count)} sub={`last ${WINDOW_DAYS} days`} />
           <Kpi icon={DollarSign} accent="#5cb98a" label="Revenue" value={m0(data.revenue)} sub="eligible invoice" />
-          <Kpi icon={Camera} accent="#d4a95f" label="Shooter + editing" value={m0(data.photographerCost + data.editingCost)} sub={`${m0(data.photographerCost)} shoot · ${m0(data.editingCost)} Luma`} />
-          <Kpi icon={Percent} accent={data.avgMarginPct != null && data.avgMarginPct < 0.3 ? "#ec6a6a" : "#5cb98a"} label="Avg margin" value={pctOf(data.avgMarginPct)} sub={`${m0(data.margin)} after shooter + Luma`} />
+          <Kpi icon={Camera} accent="#d4a95f" label="Shooter + editing" value={m0(data.photographerCost + data.editingCost)} sub={`${m0(data.photographerCost)} shoot · ${m0(data.editingCost)} editing`} />
+          <Kpi icon={Percent} accent={data.avgMarginPct != null && data.avgMarginPct < 0.3 ? "#ec6a6a" : "#5cb98a"} label="Avg margin" value={pctOf(data.avgMarginPct)} sub={`${m0(data.margin)} after shooter + editing`} />
         </div>
 
         {/* best / worst */}
@@ -88,7 +88,7 @@ export async function JobsTab({ show }: { show: FinanceTab[] }) {
                     <td className="px-3 py-2.5 text-muted-2">{j.shootDate ? etDate(j.shootDate) : "—"}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums">{m2(j.revenue)}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums text-muted">{m2(j.photographerCost)}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums text-muted" title={j.lumaVideos ? `${j.lumaVideos} premium video/reel × $299 (Luma)` : "no Luma editing"}>{j.editingCost ? m2(j.editingCost) : "—"}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-muted" title={[j.premiumVideos ? `${j.premiumVideos}× premium @ $299 (Luma)` : "", j.monthlyVideos ? `${j.monthlyVideos}× monthly social @ $120` : "", j.standardVideos ? `${j.standardVideos}× standard @ $40` : "", j.finishedPhotos != null ? `${j.finishedPhotos} finished photos @ $0.50 (AutoHDR)` : "photos not counted yet"].filter(Boolean).join(" · ") || "no editing"}>{j.editingCost ? m2(j.editingCost) : "—"}</td>
                     <td className={`px-3 py-2.5 text-right font-semibold tabular-nums ${j.margin < 0 ? "text-danger" : "text-foreground"}`}>{m2(j.margin)}</td>
                     <td className={`px-5 py-2.5 text-right tabular-nums ${j.marginPct != null && j.marginPct < 0.3 ? "text-warning" : "text-muted"}`}>{pctOf(j.marginPct)}</td>
                   </tr>
@@ -103,7 +103,7 @@ export async function JobsTab({ show }: { show: FinanceTab[] }) {
 
         <p className="flex items-start gap-1.5 px-1 text-[11px] text-muted-2">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" />
-          Margin = revenue − the <span className="font-medium text-muted">photographer</span> (exact base + mileage) − <span className="font-medium text-muted">Luma editing</span> ($299 per premium video/reel, exact). Still to fold in per-job: AutoHDR ($0.50 × raw-photo count, pulling from Dropbox) and the in-house editors (Remar/Kim/Kyle — a monthly pool allocated across jobs). Card fees live on the Overview.
+          Margin = revenue − the <span className="font-medium text-muted">photographer</span> (exact base + mileage) − <span className="font-medium text-muted">video editing</span> ($299 premium/Luma · $120 monthly social · $40 standard) − <span className="font-medium text-muted">photo editing</span> ($0.50 × finished photo = bracket sets ÷ 5 + drone singles, counted nightly from each job&apos;s Dropbox raw folder — hover the Editing cell for the math). Card fees live on the Overview.
         </p>
       </div>
     </div>

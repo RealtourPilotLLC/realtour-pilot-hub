@@ -7,6 +7,13 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: path.resolve(__dirname),
   },
+  // Ask-the-Hub photo/file attachments ride through a server action as base64;
+  // the 1MB default would reject a single phone photo.
+  experimental: {
+    serverActions: {
+      bodySizeLimit: "8mb",
+    },
+  },
   // Baseline security headers (the app sets auth cookies + proxies media).
   async headers() {
     return [

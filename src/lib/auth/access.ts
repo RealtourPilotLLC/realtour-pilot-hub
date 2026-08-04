@@ -7,7 +7,7 @@ export type PageKey =
   | "dashboard" | "tasks" | "pipeline" | "schedule" | "map"
   | "communications" | "clients" | "team" | "upload" | "editing" | "sales"
   | "billing" | "catalog" | "payouts" | "marketing" | "resources" | "assistant"
-  | "training" | "feedback" | "connections" | "users" | "shoot" | "mypay" | "review";
+  | "training" | "feedback" | "connections" | "users" | "shoot" | "mypay" | "review" | "trends";
 // NOTE: "map", "billing", "payouts", "team" survive in this type only so stored
 // per-user permission JSON keeps resolving and so canAccess() can treat them as
 // legacy grants on the pages they merged into (see canAccess). They no longer
@@ -48,6 +48,8 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   // are redirect stubs, so "billing"/"payouts" no longer need their own keys.
   // Per-tab gating lives on the page: Unpaid = admin-visible, Payroll = owner-only.
   { key: "sales", label: "Finance", href: "/sales" },
+  // Leading indicators: bookings by ORDER date, service mix, client spend trend.
+  { key: "trends", label: "Trends", href: "/trends" },
   { key: "catalog", label: "Service Catalog", href: "/catalog" },
   { key: "marketing", label: "Campaigns", href: "/marketing" },
   { key: "resources", label: "Resources & SOPs", href: "/resources" },
@@ -78,7 +80,7 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
   ADMIN: [
     "dashboard", "tasks", "review", "pipeline", "schedule", "shoot",
     "communications", "clients", "users", "upload", "editing", "sales",
-    "catalog", "resources", "training", "assistant", "feedback",
+    "catalog", "resources", "training", "assistant", "feedback", "trends",
   ],
   // No "dashboard": the overview page carries ops counts + owner money strips
   // that aren't an editor's business — middleware bounces them to /editing.

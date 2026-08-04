@@ -106,8 +106,10 @@ export type MonthlyPnl = {
   revenue: number; // the trusted top line (Stripe net if connected, else Aryeo delivered)
   revenueIsEstimate: boolean; // true = Aryeo fallback (connect Stripe for actual)
   invoiced: number; // Aryeo booked this month (a "booked vs collected" secondary line)
-  photographerPay: number;
-  teamPay: number;
+  photographerPay: number; // from the LEDGER — what actually left the accounts
+  teamPay: number; // ditto (editors, Kim, Remar, Paul)
+  accruedPhotographerPay: number; // what the payroll engine says they EARNED
+  accruedTeamPay: number;
   allPayroll: number;
   cardFees: number;
   expenses: number; // business expenses (personal excluded)
@@ -127,29 +129,47 @@ export const getMonthlyPnl = cache(async (back = 0): Promise<MonthlyPnl> => {
   const { revenueByProcessor } = await import("@/lib/bookkeeping");
   const startKey = `${key}-01`;
   const endKey = etDayKey(new Date(end.getTime() - 1000));
-  const [rp, rev, photographerPay, teamPay, ledgerExp] = await Promise.all([
+  const { categoryBreakdown } = await import("@/lib/financeCategories");
+  const [rp, rev, photographerPay, teamPay, monthCats] = await Promise.all([
     revenueByProcessor(startKey, endKey),
     revenueForMonth(start, end), // kept only for the Aryeo "invoiced/delivered" line
     photographerCost(start, end),
     teamCost(start, end),
-    // Operating + vehicle spend from the CLASSIFIED ledger (not the empty manual
-    // Expense table). COST_OF_SALES is deliberately excluded — that's the
-    // contractor pay the payroll engine (photographerCost/teamCost) already counts.
-    prisma.qboTransaction.aggregate({
-      where: { type: "Purchase", category: { in: ["OPERATING", "VEHICLE"] }, txnDate: { gte: start, lte: end } },
-      _sum: { amount: true },
-    }),
+    // The audited bank-truth ledger — the SAME source as the Overview and
+    // Categories tabs, so every finance page shows the same month profit.
+    categoryBreakdown(startKey, endKey),
   ]);
   const revenue = round2(rp.total);
-  const allPayroll = round2(photographerPay + teamPay);
-  const expenses = round2(ledgerExp._sum.amount ?? 0);
-  const cardFees = round2(rp.stripeFees);
-  const profit = round2(revenue - allPayroll - cardFees - expenses);
+  // EVERY itemized row now comes from the SAME audited ledger that produces
+  // profit, so the rows foot exactly and describe money that actually moved.
+  //
+  // They used to be sourced from the payroll ENGINE (what creatives were owed)
+  // while profit came from the bank — two different worlds. The July 2026 audit
+  // measured the damage: "Photographers" overstated by $48,316 YTD, "Editors &
+  // team" printed $0.00 every month while $76,164 was genuinely paid, card fees
+  // understated by $6,086, and the "Other expenses" plug silently absorbed a
+  // $33,934 error — with the plug heading for a NEGATIVE number once payroll
+  // plus fees exceeded the ledger total (July had $7,519 of headroom left).
+  // Profit itself was always right; only the story it told was wrong.
+  const catSum = (cats: string[]) =>
+    round2(monthCats.business.filter((b) => cats.includes(b.category)).reduce((a, b) => a + b.sum, 0));
+  const ledgerPhotographerPay = catSum(["Creative specialist pay"]);
+  const ledgerTeamPay = catSum(["Video editing", "Photo editing", "Consulting (Paul)"]);
+  const cardFees = catSum(["Stripe processing fees", "QuickBooks Payments fees"]);
+  const allPayroll = round2(ledgerPhotographerPay + ledgerTeamPay);
+  const profit = round2(revenue - monthCats.businessTotal);
+  const expenses = round2(monthCats.businessTotal - allPayroll - cardFees);
   return {
     key, label, revenue,
     revenueIsEstimate: false, // counted at the processor, no longer an estimate
     invoiced: rev.aryeoDelivered,
-    photographerPay, teamPay, allPayroll, cardFees, expenses, profit,
+    photographerPay: ledgerPhotographerPay,
+    teamPay: ledgerTeamPay,
+    // What the payroll engine says creatives EARNED this month — shown as
+    // context, never mixed into the cost arithmetic above.
+    accruedPhotographerPay: photographerPay,
+    accruedTeamPay: teamPay,
+    allPayroll, cardFees, expenses, profit,
     margin: revenue > 0 ? round4(profit / revenue) : null,
     payrollPctOfRevenue: revenue > 0 ? round4(allPayroll / revenue) : null,
   };
@@ -158,6 +178,7 @@ export const getMonthlyPnl = cache(async (back = 0): Promise<MonthlyPnl> => {
 export type CashPosition = {
   bankBalance: number | null;
   bankAsOf: string | null;
+  bankLive: boolean; // true = read straight from the connected bank (Plaid), not hand-typed
   stripeAvailable: number | null;
   stripePending: number | null;
   arOutstanding: number; // delivered + unpaid (money owed to us)
@@ -170,7 +191,7 @@ export async function getCashPosition(): Promise<CashPosition> {
   // Trailing three FULL months — a stable read of the real monthly rhythm.
   const m1 = monthBounds(1);
   const m3 = monthBounds(3);
-  const [snap, ar, prevPnl, recurring, outflow, inflowAgg] = await Promise.all([
+  const [snap, ar, prevPnl, recurring, outflow, inflowAgg, plaidBiz] = await Promise.all([
     // Latest reading; createdAt breaks ties so a same-day correction wins.
     prisma.cashSnapshot.findFirst({ orderBy: [{ asOf: "desc" }, { createdAt: "desc" }], select: { balance: true, asOf: true } }),
     getBillingRows().then((b) => b.totalOutstanding).catch(() => 0),
@@ -187,7 +208,26 @@ export async function getCashPosition(): Promise<CashPosition> {
     // so revenue overstates what the business bank truly receives. For this
     // business the gap is large (~$56k earned vs ~$42k banked) because of Venmo +
     // Stripe detours through the personal ...0942 account.
-    prisma.qboTransaction.aggregate({ where: { type: "Deposit", txnDate: { gte: m3.start, lte: m1.end } }, _sum: { amount: true } }),
+    // BORROWED MONEY IS NOT INCOMING REVENUE. A Stripe Capital drawdown lands as
+    // a bank Deposit exactly like a customer settlement, and QuickBooks even
+    // labels it "Stripe Capital | Loans" — counting it made a typical month look
+    // $5,178 richer than it is (Jul 2026 audit, one $15,533.56 advance). Owner
+    // contributions from the personal account are likewise not sales.
+    prisma.qboTransaction.aggregate({
+      where: {
+        type: "Deposit",
+        txnDate: { gte: m3.start, lte: m1.end },
+        NOT: { memo: { contains: "capital", mode: "insensitive" } },
+      },
+      _sum: { amount: true },
+    }),
+    // LIVE business-bank balance straight from Plaid (checking/savings tagged
+    // Business on /connections/banks) — refreshed by the daily sync, so the
+    // owner never has to hand-type a number the hub already knows.
+    prisma.plaidAccount.findMany({
+      where: { isBusiness: true, type: "depository", currentBalance: { not: null } },
+      select: { currentBalance: true, item: { select: { lastSyncedAt: true } } },
+    }),
   ]);
   let stripeAvailable: number | null = null;
   let stripePending: number | null = null;
@@ -201,12 +241,21 @@ export async function getCashPosition(): Promise<CashPosition> {
   const inflow = (inflowAgg._sum.amount ?? 0) / 3;
   const goingOut30 = round2(burn > 0 ? burn : prevPnl.allPayroll + (recurring._sum.amount ?? 0));
   const comingIn30 = round2(inflow > 0 ? inflow : prevPnl.revenue);
-  const bankBalance = snap?.balance ?? null;
+  // Live Plaid balance wins over the hand-typed snapshot; the manual entry
+  // remains the fallback for accounts that aren't connected.
+  const liveBank = plaidBiz.length > 0 ? round2(plaidBiz.reduce((s, a) => s + (a.currentBalance ?? 0), 0)) : null;
+  const liveAsOf = plaidBiz.reduce<Date | null>(
+    (m, a) => (a.item.lastSyncedAt && (!m || a.item.lastSyncedAt > m) ? a.item.lastSyncedAt : m),
+    null,
+  );
+  const bankLive = liveBank != null;
+  const bankBalance = liveBank ?? snap?.balance ?? null;
   // A typical month starting from today's bank: what comes in, less what goes out.
   const projected = bankBalance != null ? round2(bankBalance + comingIn30 - goingOut30) : null;
   return {
     bankBalance,
-    bankAsOf: snap?.asOf ? etDayKey(snap.asOf) : null,
+    bankAsOf: bankLive ? (liveAsOf ? etDayKey(liveAsOf) : null) : snap?.asOf ? etDayKey(snap.asOf) : null,
+    bankLive,
     stripeAvailable, stripePending,
     arOutstanding: round2(ar),
     comingIn30,

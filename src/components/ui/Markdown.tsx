@@ -22,6 +22,52 @@ export function Markdown({ content, className }: { content: string; className?: 
     const t = lines[i].trim();
     if (!t) { i++; continue; }
 
+    // Horizontal rule.
+    if (/^(-{3,}|_{3,}|\*{3,})$/.test(t)) {
+      blocks.push(<hr key={k++} className="my-3 border-border" />);
+      i++; continue;
+    }
+
+    // Blockquote (e.g. an executive summary callout).
+    if (/^>\s?/.test(t)) {
+      const quote: string[] = [];
+      while (i < lines.length && /^>\s?/.test(lines[i].trim())) { quote.push(lines[i].trim().replace(/^>\s?/, "")); i++; }
+      blocks.push(
+        <blockquote key={k++} className="my-2 border-l-2 border-brand/50 bg-surface-2/50 px-3 py-2 text-sm leading-relaxed text-foreground/85">
+          {inline(quote.join(" "))}
+        </blockquote>,
+      );
+      continue;
+    }
+
+    // Pipe table: header row, |---| separator, data rows.
+    if (t.startsWith("|") && i + 1 < lines.length && /^\|?[\s:|-]+\|?$/.test(lines[i + 1].trim()) && lines[i + 1].includes("-")) {
+      const cells = (row: string) => row.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+      const header = cells(t);
+      i += 2; // skip separator
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].trim().startsWith("|")) { rows.push(cells(lines[i].trim())); i++; }
+      blocks.push(
+        <div key={k++} className="my-2 overflow-x-auto scroll-thin">
+          <table className="w-full min-w-[20rem] text-sm">
+            <thead>
+              <tr className="border-b border-border text-left text-xs text-muted-2">
+                {header.map((c, j) => <th key={j} className={`px-2 py-1.5 font-medium ${j > 0 ? "text-right" : ""}`}>{inline(c)}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, ri) => (
+                <tr key={ri} className="border-b border-border/50 last:border-0">
+                  {r.map((c, j) => <td key={j} className={`px-2 py-1.5 tabular-nums ${j > 0 ? "text-right" : ""} text-foreground/85`}>{inline(c)}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
+      continue;
+    }
+
     const h = t.match(/^(#{1,6})\s+(.*)$/);
     if (h) {
       const cls = h[1].length <= 2

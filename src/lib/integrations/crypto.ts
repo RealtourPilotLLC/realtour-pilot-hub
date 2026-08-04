@@ -1,3 +1,5 @@
+import "server-only";
+
 import crypto from "crypto";
 
 // AES-256-GCM encryption for secrets at rest. The master key comes from the

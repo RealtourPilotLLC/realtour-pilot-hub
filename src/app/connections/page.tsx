@@ -1,4 +1,5 @@
-import { Plug, ShieldCheck, AlertTriangle } from "lucide-react";
+import Link from "next/link";
+import { Plug, ShieldCheck, AlertTriangle, Landmark, ChevronRight } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { ProviderCard, type ConnState } from "@/components/connections/ProviderCard";
 import { PROVIDERS, SEGMENTS } from "@/lib/integrations/registry";
@@ -121,6 +122,30 @@ export default async function ConnectionsPage() {
             </p>
           </div>
         </div>
+
+        {/* Plaid — bank & card connections live on their own screen (Link flow). */}
+        <Link
+          href="/connections/banks"
+          className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-surface p-4 hover:border-brand/50 hover:bg-surface-2"
+        >
+          <div className="flex items-start gap-3">
+            <span className="grid size-10 shrink-0 place-items-center rounded-xl" style={{ backgroundColor: "#00b8951a", color: "#00b895" }}>
+              <Landmark className="size-5" />
+            </span>
+            <div>
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                Bank &amp; card accounts <span className="rounded-full bg-brand/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-brand">Plaid</span>
+                {byProvider.get("plaid")?.status === "CONNECTED" && (
+                  <span className="rounded-full bg-success/15 px-2 py-0.5 text-[10px] font-medium text-success">Connected</span>
+                )}
+              </div>
+              <p className="mt-0.5 text-xs text-muted">
+                Link your personal account (…0942), Venmo &amp; Capital One card — read-only — to complete the money picture the audit found missing.
+              </p>
+            </div>
+          </div>
+          <ChevronRight className="size-5 shrink-0 text-muted-2" />
+        </Link>
 
         {SEGMENTS.map((segment) => {
           const items = PROVIDERS.filter((p) => p.segment === segment);

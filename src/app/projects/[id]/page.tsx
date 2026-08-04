@@ -42,6 +42,7 @@ import { SegmentBadge } from "@/components/clients/SegmentBadge";
 import { SocialBadge } from "@/components/clients/SocialBadge";
 import { VendorBadge } from "@/components/editing/VendorBadge";
 import { StageSelector } from "@/components/project/StageSelector";
+import { RefreshFromAryeo } from "@/components/projects/RefreshFromAryeo";
 import { Checklist } from "@/components/project/Checklist";
 import { ActivityComposer } from "@/components/project/ActivityComposer";
 import { ProjectMessages } from "@/components/project/ProjectMessages";
@@ -147,7 +148,8 @@ export default async function ProjectPage({
             </div>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-start justify-end gap-2">
+          {(project.aryeoOrderId || project.aryeoListingId) && <RefreshFromAryeo projectId={project.id} />}
           {project.aryeoOrderId && (
             <a
               href={`https://app.aryeo.com/orders/${project.aryeoOrderId}`}

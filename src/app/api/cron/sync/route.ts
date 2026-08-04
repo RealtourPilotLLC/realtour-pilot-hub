@@ -11,7 +11,11 @@ export const maxDuration = 300;
 // time budget so a slow one degrades gracefully (the rest are reported as
 // `skipped` and picked up next run) instead of being hard-killed mid-write.
 export async function GET(req: NextRequest) {
+  // FAIL CLOSED: in prod/Vercel a missing CRON_SECRET must refuse, not open the
+  // door — same rule as the auth gate (losing an env var never fails open).
   const secret = process.env.CRON_SECRET;
+  const enforced = process.env.NODE_ENV === "production" || Boolean(process.env.VERCEL);
+  if (!secret && enforced) return NextResponse.json({ error: "CRON_SECRET not configured" }, { status: 401 });
   if (secret) {
     const auth = req.headers.get("authorization");
     if (auth !== `Bearer ${secret}`) {
@@ -29,6 +33,17 @@ export async function GET(req: NextRequest) {
   await step("statuses", async () => {
     const { syncProjectStatuses } = await import("@/lib/projectStatus");
     return syncProjectStatuses();
+  });
+  // Photos shot yesterday that still haven't been released to the client on
+  // Aryeo → bell + a text to Kyle and Jordan. Hosted here, not in `daily`,
+  // because daily fires 3-4am ET: inside SMS quiet hours (the text would be
+  // silently dropped while the dedupe key was still consumed) and hours before
+  // anyone could act. This self-gates to a late-afternoon ET window, so on
+  // every other hourly tick it is a no-op. Runs straight after `statuses` so
+  // the Aryeo evidence it reads was refreshed moments ago.
+  await step("photosUndelivered", async () => {
+    const { sweepUndeliveredPhotos } = await import("@/lib/deliveryWatch");
+    return sweepUndeliveredPhotos();
   });
   await step("tasks", async () => {
     const { generateTasksForActiveProjects } = await import("@/lib/tasks");

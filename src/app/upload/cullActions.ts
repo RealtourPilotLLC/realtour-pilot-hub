@@ -13,7 +13,9 @@ import { projectFolderPaths } from "@/lib/dropboxFolders";
 // ---------------------------------------------------------------------------
 
 const MAX_FILES_PER_BATCH = 400;
-const LINK_CHUNK = 25; // Dropbox RPC friendliness
+const LINK_CONCURRENCY = 12; // parallel link mints — gentle on Dropbox burst limits
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // Only what a filename is allowed to look like once it hits the shared folder.
 function safeName(name: string): string | null {
@@ -44,7 +46,7 @@ export async function createUploadLinks(
   if (!project) return { ok: false, message: "Project not found." };
   const rawPhotos = projectFolderPaths(project).rawPhotos;
 
-  const { dbx, dropboxAccessToken, dropboxCreateFolder } = await import("@/lib/integrations/dropbox");
+  const { dbx, dropboxAccessToken, dropboxCreateFolder, DropboxError } = await import("@/lib/integrations/dropbox");
   let token: string;
   try {
     token = await dropboxAccessToken();
@@ -58,20 +60,38 @@ export async function createUploadLinks(
   const bad = cleaned.filter((c) => !c.safe);
   if (bad.length > 0) return { ok: false, message: `Only JPGs can be culled here (${bad[0].original} isn't one).` };
 
-  for (let i = 0; i < cleaned.length; i += LINK_CHUNK) {
-    const chunk = cleaned.slice(i, i + LINK_CHUNK);
+  for (let i = 0; i < cleaned.length; i += LINK_CONCURRENCY) {
+    const chunk = cleaned.slice(i, i + LINK_CONCURRENCY);
     const results = await Promise.all(
       chunk.map(async (c) => {
-        const r = await dbx<{ link: string }>(
-          "files/get_temporary_upload_link",
-          { commit_info: { path: `${rawPhotos}/${c.safe}`, mode: "add", autorename: true, mute: true } },
-          token,
-        );
-        return { name: c.original, url: r.link };
+        // Ride out 429s / 5xx / network blips with backoff — one flaky call out
+        // of hundreds used to reject the whole Promise.all and abort the entire
+        // upload with a blind "Dropbox refused the upload links".
+        for (let attempt = 0; ; attempt++) {
+          try {
+            const r = await dbx<{ link: string }>(
+              "files/get_temporary_upload_link",
+              { commit_info: { path: `${rawPhotos}/${c.safe}`, mode: "add", autorename: true, mute: true } },
+              token,
+            );
+            return { ok: true as const, name: c.original, url: r.link };
+          } catch (e) {
+            const status = e instanceof DropboxError ? e.status : undefined; // undefined = network hiccup
+            const retriable = status === undefined || status === 429 || (status ?? 0) >= 500;
+            if (retriable && attempt < 3) {
+              await sleep(500 * (attempt + 1));
+              continue;
+            }
+            return { ok: false as const, error: e instanceof Error ? e.message : "unknown error" };
+          }
+        }
       }),
-    ).catch(() => null);
-    if (!results) return { ok: false, message: "Dropbox refused the upload links — try again in a minute." };
-    links.push(...results);
+    );
+    const bad = results.find((r) => !r.ok);
+    if (bad && !bad.ok) {
+      return { ok: false, message: `Dropbox said: ${bad.error.slice(0, 120)} — nothing was lost, press Upload again in a minute.` };
+    }
+    for (const r of results) if (r.ok) links.push({ name: r.name, url: r.url });
   }
   return { ok: true, links };
 }

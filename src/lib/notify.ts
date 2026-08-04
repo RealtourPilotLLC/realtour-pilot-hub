@@ -126,6 +126,75 @@ async function smsPhotographer(teamMemberId: string, title: string, href: string
   }
 }
 
+// ---------------------------------------------------------------------------
+// INTERNAL STAFF SMS. For alerts that must reach a named person's phone rather
+// than a role's bell — "photos still not delivered", the kind of thing that has
+// to interrupt someone.
+//
+// Numbers come ONLY from TeamMember rows, resolved from ids the caller passes.
+// It deliberately accepts no raw phone string: the one thing separating a staff
+// text from a client text in this codebase is which table the number came out
+// of, so that boundary is enforced by the signature, not by a comment.
+//
+// It also refuses to text OUR OWN OpenPhone line. That is not hypothetical —
+// Kyle's TeamMember.phone is currently the company number (215) 645-4889, so a
+// naive send would text the office line from itself and echo back through the
+// inbound webhook as a fake client message. When that happens the alert is
+// relayed to Slack instead of being silently dropped, because a missed alert is
+// the failure this whole feature exists to prevent.
+// ---------------------------------------------------------------------------
+export type StaffSmsResult = { teamMemberId: string; name: string; outcome: "sent" | "no-phone" | "own-line" | "quiet-hours" | "failed" };
+
+export async function notifyStaffSms(teamMemberIds: string[], text: string): Promise<StaffSmsResult[]> {
+  const ids = [...new Set(teamMemberIds.filter(Boolean))];
+  if (ids.length === 0) return [];
+  const out: StaffSmsResult[] = [];
+  try {
+    const members = await prisma.teamMember.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, phone: true } });
+    const quiet = !withinTextingHours();
+    const { OpenPhone, defaultOpenPhoneNumber, phoneKey, ourOpenPhoneNumberKeys } = await import("@/lib/integrations/openphone");
+    const ours = await ourOpenPhoneNumberKeys().catch(() => new Set<string>());
+    // Resolved ONCE — defaultOpenPhoneNumber is a live API round trip.
+    const from = ids.length ? await defaultOpenPhoneNumber() : null;
+    const body = `⚙️ RealTour Hub: ${text}`;
+
+    for (const m of members) {
+      const digits = m.phone?.replace(/[^\d+]/g, "") ?? "";
+      const key = digits ? phoneKey(digits) : "";
+      if (!digits || key.length !== 10) {
+        out.push({ teamMemberId: m.id, name: m.name, outcome: "no-phone" });
+        continue;
+      }
+      if (ours.has(key)) {
+        // Loud, not silent: this is a data problem someone has to fix.
+        console.warn(`notifyStaffSms: ${m.name}'s number is our own OpenPhone line — cannot text, relaying to ops`);
+        out.push({ teamMemberId: m.id, name: m.name, outcome: "own-line" });
+        continue;
+      }
+      if (quiet) {
+        out.push({ teamMemberId: m.id, name: m.name, outcome: "quiet-hours" });
+        continue;
+      }
+      try {
+        if (!from) throw new Error("no OpenPhone number");
+        await OpenPhone.sendMessage(from, digits.startsWith("+") ? digits : `+1${key}`, body);
+        out.push({ teamMemberId: m.id, name: m.name, outcome: "sent" });
+      } catch (e) {
+        console.warn("notifyStaffSms send failed", m.name, e);
+        out.push({ teamMemberId: m.id, name: m.name, outcome: "failed" });
+      }
+    }
+    // Anyone we could not reach by text still gets the alert — via Slack ops.
+    const unreached = out.filter((r) => r.outcome !== "sent" && r.outcome !== "quiet-hours");
+    if (unreached.length) {
+      await opsAlert(`⚠️ Couldn't text ${unreached.map((r) => `${r.name} (${r.outcome})`).join(", ")} — relaying: ${text}`);
+    }
+  } catch (e) {
+    console.warn("notifyStaffSms failed", e);
+  }
+  return out;
+}
+
 // What actually happened when we tried to reach an editor — callers use this
 // to log the truth ("texted" vs "relayed to ops") instead of assuming Slack.
 export type EditorChannel = "slack" | "sms" | "relay" | "quiet" | "none";

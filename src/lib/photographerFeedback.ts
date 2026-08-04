@@ -187,8 +187,82 @@ export async function getFeedbackHub(memberId: string): Promise<FeedbackHub | nu
 export type NextShootFocus = {
   openCount: number; // all OPEN root notes (fix + coaching)
   openFixes: number; // OPEN fix notes only — the tab badge, matching the hub's "To fix"
+  // The THEMES to work on — Jordan's per-photo feedback rolled into a handful of
+  // habits, so the card reads like a coach's reminder instead of a list of
+  // individual critiques. Empty until the summary is built (see rebuild below);
+  // `items` is the verbatim fallback so the card is never blank.
+  bullets: string[];
   items: { id: string; body: string; kind: "fix" | "coaching"; street: string | null; projectId: string }[];
 };
+
+// Fingerprint of the notes a summary was built from — when a note is added,
+// resolved or acknowledged this stops matching and the summary is rebuilt.
+function focusKey(ids: string[]): string {
+  return `${ids.length}:${[...ids].sort().join(",")}`.slice(0, 900);
+}
+
+// Rebuild one photographer's work-on themes. Called on note WRITE and from the
+// daily cron — never from a page render, so /shoot never waits on the model.
+export async function rebuildShootFocusSummary(memberId: string): Promise<{ bullets: string[] }> {
+  const notes = await prisma.mediaNote.findMany({
+    where: {
+      photographerId: memberId, lane: "PHOTOGRAPHER", parentId: null, status: "OPEN",
+      OR: [{ kind: "fix" }, { acknowledgedAt: null }],
+    },
+    orderBy: { createdAt: "desc" },
+    take: 40,
+    select: { id: true, body: true, kind: true, project: { select: { title: true } } },
+  });
+  const key = focusKey(notes.map((n) => n.id));
+  const member = await prisma.teamMember.findUnique({
+    where: { id: memberId },
+    select: { focusSummary: true, focusSummaryKey: true },
+  });
+  if (member?.focusSummaryKey === key && member.focusSummary) {
+    try { return { bullets: JSON.parse(member.focusSummary) as string[] }; } catch { /* rebuild */ }
+  }
+  if (notes.length === 0) {
+    await prisma.teamMember.update({
+      where: { id: memberId },
+      data: { focusSummary: "[]", focusSummaryKey: key, focusSummaryAt: new Date() },
+    }).catch(() => {});
+    return { bullets: [] };
+  }
+  const { summarizeShootFocus } = await import("@/lib/integrations/ai");
+  const bullets = await summarizeShootFocus({
+    notes: notes.map((n) => ({
+      body: n.body,
+      kind: n.kind === "coaching" ? ("coaching" as const) : ("fix" as const),
+      street: n.project ? streetOf(n.project.title) : null,
+    })),
+  });
+  // A failed/empty model call must NOT poison the cache — leave the old summary
+  // (and the verbatim fallback) in place and try again next time.
+  if (bullets.length === 0) return { bullets: [] };
+  await prisma.teamMember.update({
+    where: { id: memberId },
+    data: { focusSummary: JSON.stringify(bullets), focusSummaryKey: key, focusSummaryAt: new Date() },
+  }).catch(() => {});
+  return { bullets };
+}
+
+// Every photographer with open capture feedback — the daily-cron backstop.
+export async function rebuildAllShootFocusSummaries(): Promise<{ rebuilt: number }> {
+  const rows = await prisma.mediaNote.groupBy({
+    by: ["photographerId"],
+    where: {
+      lane: "PHOTOGRAPHER", parentId: null, status: "OPEN",
+      photographerId: { not: null },
+      OR: [{ kind: "fix" }, { acknowledgedAt: null }],
+    },
+  });
+  let rebuilt = 0;
+  for (const r of rows) {
+    if (!r.photographerId) continue;
+    try { await rebuildShootFocusSummary(r.photographerId); rebuilt++; } catch { /* keep going */ }
+  }
+  return { rebuilt };
+}
 
 // The open capture notes worth re-reading before the next shoot: fixes first,
 // then coaching, newest first — capped for the card.
@@ -203,7 +277,7 @@ export async function getNextShootFocus(memberId: string): Promise<NextShootFocu
     status: "OPEN",
     OR: [{ kind: "fix" }, { acknowledgedAt: null }],
   };
-  const [openCount, openFixes, rows] = await Promise.all([
+  const [openCount, openFixes, rows, member, allIds] = await Promise.all([
     prisma.mediaNote.count({ where }),
     prisma.mediaNote.count({ where: { ...where, kind: "fix" } }),
     prisma.mediaNote.findMany({
@@ -213,10 +287,28 @@ export async function getNextShootFocus(memberId: string): Promise<NextShootFocu
       take: 4,
       select: { id: true, body: true, kind: true, projectId: true, project: { select: { title: true } } },
     }),
+    prisma.teamMember.findUnique({ where: { id: memberId }, select: { focusSummary: true, focusSummaryKey: true } }),
+    prisma.mediaNote.findMany({ where, orderBy: { createdAt: "desc" }, take: 40, select: { id: true } }),
   ]);
+
+  // Show the themes whenever we have them — a slightly stale summary still
+  // reads far better than a wall of per-photo critiques, and the rebuild (note
+  // share + daily cron) catches up. `focusKey` only decides WHETHER to rebuild,
+  // never whether to display. Verbatim notes are the fallback for a photographer
+  // who has no summary yet.
+  void focusKey(allIds.map((n) => n.id));
+  let bullets: string[] = [];
+  if (member?.focusSummary) {
+    try {
+      const parsed = JSON.parse(member.focusSummary) as unknown;
+      if (Array.isArray(parsed)) bullets = parsed.filter((b): b is string => typeof b === "string");
+    } catch { /* fall back to verbatim */ }
+  }
+
   return {
     openCount,
     openFixes,
+    bullets,
     items: rows.map((r) => ({
       id: r.id,
       body: r.body.length > 120 ? `${r.body.slice(0, 117)}…` : r.body,

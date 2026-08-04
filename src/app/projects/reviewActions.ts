@@ -557,6 +557,13 @@ export async function shareShootFeedback(projectId: string): Promise<{ ok: boole
     where: { projectId, parentId: null, lane: "PHOTOGRAPHER", photographerId: memberId },
     data: { sharedAt: now },
   });
+  // Re-summarize their "work-ons" NOW, so the themed bullets are fresh the
+  // moment they tap the link in that text. Best-effort: a model hiccup must
+  // never fail a send that already went out.
+  try {
+    const { rebuildShootFocusSummary } = await import("@/lib/photographerFeedback");
+    await rebuildShootFocusSummary(memberId);
+  } catch { /* the daily cron rebuilds as the backstop */ }
   // Bell too (their own person-addressed row), deduped per share round.
   // Kind "feedback_shared" is deliberately NOT in SMS_KINDS — the custom-worded
   // text above is the one SMS; the bridge must not send a second one.

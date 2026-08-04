@@ -149,7 +149,7 @@ export function MyShootsView({
 
       {/* Work-ons — the photographer's open capture feedback, front and center
           so the next shoot starts with last shoot's lessons. */}
-      {focus && focus.items.length > 0 && (
+      {focus && (focus.bullets.length > 0 || focus.items.length > 0) && (
         <div className="rounded-2xl border border-warning/30 bg-warning/5 p-4">
           <div className="flex items-center justify-between gap-2">
             <h2 className="flex items-center gap-2 text-sm font-semibold">
@@ -159,23 +159,47 @@ export function MyShootsView({
               All feedback &amp; stats →
             </Link>
           </div>
-          <ul className="mt-2.5 space-y-2">
-            {focus.items.map((it) => (
-              <li key={it.id} className="flex items-start gap-2 text-sm">
-                {it.kind === "fix" ? (
-                  <Wrench className="mt-0.5 size-3.5 shrink-0 text-warning" />
-                ) : (
-                  <GraduationCap className="mt-0.5 size-3.5 shrink-0 text-sky-400 light:text-sky-600" />
-                )}
-                <span className="min-w-0 flex-1 leading-snug text-foreground/90">
-                  {it.body}
-                  {it.street && <span className="text-muted-2"> — {it.street}</span>}
-                </span>
-              </li>
-            ))}
-          </ul>
-          {focus.openCount > focus.items.length && (
-            <p className="mt-2 text-xs text-muted">+{focus.openCount - focus.items.length} more open</p>
+          {/* THEMES, not a transcript. The per-photo feedback is rolled into a
+              few habits to carry into the next shoot; the exact notes (with the
+              photo each one is pinned to) stay one tap away under "All
+              feedback". Falls back to the verbatim notes until the summary
+              exists, so the card is never empty. */}
+          {focus.bullets.length > 0 ? (
+            <>
+              <ul className="mt-2.5 space-y-1.5">
+                {focus.bullets.map((b, i) => (
+                  <li key={i} className="flex items-start gap-2 text-sm">
+                    <span aria-hidden className="mt-[7px] size-1.5 shrink-0 rounded-full bg-warning" />
+                    <span className="min-w-0 flex-1 leading-snug text-foreground/90">{b}</span>
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 text-xs text-muted">
+                From {focus.openCount} open note{focus.openCount === 1 ? "" : "s"}
+                {focus.openFixes > 0 && ` · ${focus.openFixes} still to fix`}
+              </p>
+            </>
+          ) : (
+            <>
+              <ul className="mt-2.5 space-y-2">
+                {focus.items.map((it) => (
+                  <li key={it.id} className="flex items-start gap-2 text-sm">
+                    {it.kind === "fix" ? (
+                      <Wrench className="mt-0.5 size-3.5 shrink-0 text-warning" />
+                    ) : (
+                      <GraduationCap className="mt-0.5 size-3.5 shrink-0 text-sky-400 light:text-sky-600" />
+                    )}
+                    <span className="min-w-0 flex-1 leading-snug text-foreground/90">
+                      {it.body}
+                      {it.street && <span className="text-muted-2"> — {it.street}</span>}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {focus.openCount > focus.items.length && (
+                <p className="mt-2 text-xs text-muted">+{focus.openCount - focus.items.length} more open</p>
+              )}
+            </>
           )}
         </div>
       )}

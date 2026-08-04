@@ -15,7 +15,11 @@ export const maxDuration = 120;
 // webhooks; this covers Gmail (no push) + the answered-thread sweep. It's light
 // on the DB (no full-table scans — those run in /api/cron/daily).
 export async function GET(req: NextRequest) {
+  // FAIL CLOSED: in prod/Vercel a missing CRON_SECRET must refuse, not open the
+  // door — same rule as the auth gate (losing an env var never fails open).
   const secret = process.env.CRON_SECRET;
+  const enforced = process.env.NODE_ENV === "production" || Boolean(process.env.VERCEL);
+  if (!secret && enforced) return NextResponse.json({ error: "CRON_SECRET not configured" }, { status: 401 });
   if (secret) {
     const auth = req.headers.get("authorization");
     if (auth !== `Bearer ${secret}`) {

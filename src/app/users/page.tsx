@@ -29,6 +29,7 @@ export default async function PeoplePage({
   // bounce a signed-in user who lacks "users" access (owner + admin have it;
   // creatives are already stopped by middleware). No user ⇒ owner-view default.
   const me = await getCurrentUser().catch(() => null);
+  if (!me && authEnforced()) redirect("/login?next=/users"); // transient null never renders logins/roles
   if (me && !canAccess(me, "users")) redirect("/");
   // A real user → their role decides. No user → owner ONLY when auth is off
   // (local dev). In prod a null user is unauthenticated OR a revoked/disabled

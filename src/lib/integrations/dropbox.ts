@@ -1,4 +1,5 @@
 import "server-only";
+
 import { getSecret } from "./connections";
 
 // ---------------------------------------------------------------------------
@@ -152,10 +153,17 @@ export async function dropboxCreateFolder(path: string): Promise<void> {
 }
 
 export async function dropboxListFolder(path: string): Promise<{ name: string; tag: string; path: string }[]> {
-  const res = await dbx<{ entries: { name: string; [".tag"]: string; path_display?: string }[] }>("files/list_folder", {
-    path: path === "/" ? "" : path,
-  });
-  return (res.entries ?? []).map((e) => ({ name: e.name, tag: e[".tag"], path: e.path_display ?? "" }));
+  type Page = { entries: { name: string; [".tag"]: string; path_display?: string }[]; has_more?: boolean; cursor?: string };
+  // PAGINATED: a 400-raw shoot folder exceeds one page and used to be silently
+  // truncated, which under-counted photos (and photo-editing cost).
+  let res = await dbx<Page>("files/list_folder", { path: path === "/" ? "" : path });
+  const all = [...(res.entries ?? [])];
+  let guard = 0;
+  while (res.has_more && res.cursor && guard++ < 50) {
+    res = await dbx<Page>("files/list_folder/continue", { cursor: res.cursor });
+    all.push(...(res.entries ?? []));
+  }
+  return all.map((e) => ({ name: e.name, tag: e[".tag"], path: e.path_display ?? "" }));
 }
 
 // Turn a Dropbox share URL into a direct/raw URL that OpenPhone can fetch.

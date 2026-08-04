@@ -585,6 +585,36 @@ function isPremiumProduct(name: string): boolean {
 // Turn ONE ordered item into one or more deliverables. Uses the authoritative
 // per-product map first (exact, hand-verified from descriptions); falls back to
 // description parsing only for products not in the map.
+// Aryeo line items → OrderItem rows. Keeps the product name EXACTLY as sold
+// ("Standard Reel with Agent Intro", "GOLD BUNDLE …") and the real line total,
+// which itemToDeliverables below deliberately discards when it maps a product
+// down to the media types we have to capture.
+export function orderItemRows(items: AryeoOrderItem[]): {
+  aryeoId: string | null; title: string; quantity: number; amount: number; isCanceled: boolean;
+}[] {
+  return (items ?? [])
+    .filter((it) => (it.title || it.sub_title || it.subtitle))
+    .map((it) => ({
+      aryeoId: it.id ?? null,
+      title: (it.title || it.sub_title || it.subtitle || "Item").trim().slice(0, 200),
+      quantity: it.quantity || 1,
+      // gross_total_amount is after discounts and is the truer figure; fall back
+      // to the list amount. Aryeo sends cents.
+      amount: Math.round((it.gross_total_amount ?? it.amount ?? 0)) / 100,
+      isCanceled: !!it.is_canceled,
+    }));
+}
+
+/**
+ * Deliverables implied by a STORED OrderItem row, which keeps only the product
+ * title and quantity. The authoritative product map is keyed on the title, so
+ * every catalogued product resolves exactly; unmapped one-offs fall through to
+ * the keyword parser with less to go on than a live sync has.
+ */
+export function deliverablesForTitle(title: string, quantity = 1): ParsedDeliverable[] {
+  return itemToDeliverables({ title, quantity } as AryeoOrderItem);
+}
+
 export function itemToDeliverables(item: AryeoOrderItem): ParsedDeliverable[] {
   const title = (item.title || item.subtitle || item.sub_title || "Item").trim();
   const qty = item.quantity || 1;
@@ -666,7 +696,12 @@ export async function testAryeoKey(key: string): Promise<{ ok: true; label: stri
 // Live status/fulfillment changes are handled by webhooks, not this path.
 // ---------------------------------------------------------------------------
 export async function syncAryeoOrders(
-  opts: { full?: boolean } = {},
+  // `orderId` scopes the whole sweep to ONE order — the per-project "Refresh
+  // from Aryeo" button. It reuses this function's entire per-order body (money
+  // mirroring, cancel mapping, customer re-link, deliverable rebuild) instead
+  // of a parallel implementation that would drift, but skips pagination and the
+  // recent-window floor, so an old job can be refreshed on demand in ~1 call.
+  opts: { full?: boolean; orderId?: string } = {},
 ): Promise<{ imported: number; updated: number; clients: number; scanned: number }> {
   let imported = 0;
   let updated = 0;
@@ -822,18 +857,29 @@ export async function syncAryeoOrders(
     let page = 1;
     let stop = false;
     for (let i = 0; i < 200 && !stop; i++) {
-      const res = await aryeoRequest<{ data: AryeoOrder[]; meta?: { last_page?: number } }>("/orders", {
-        query: { include: ORDER_INCLUDES, page, per_page: perPage },
-      });
-      const batch = res?.data ?? [];
+      let batch: AryeoOrder[];
+      let lastPage: number | undefined;
+      if (opts.orderId) {
+        // Single-order mode: one fetch, one pass, no pagination.
+        const one = await Aryeo.order(opts.orderId).catch(() => null);
+        batch = one ? [one] : [];
+        stop = true;
+      } else {
+        const res = await aryeoRequest<{ data: AryeoOrder[]; meta?: { last_page?: number } }>("/orders", {
+          query: { include: ORDER_INCLUDES, page, per_page: perPage },
+        });
+        batch = res?.data ?? [];
+        lastPage = res?.meta?.last_page;
+      }
       if (batch.length === 0) break;
 
       for (const order of batch) {
         if (!order.id) continue;
         scanned++;
         // Newest-first: once we pass the window floor (full = all history,
-        // incremental = the recent window), stop entirely.
-        if (order.created_at && new Date(order.created_at) < floorDate) {
+        // incremental = the recent window), stop entirely. An explicit
+        // single-order refresh ignores the floor — the owner asked for THIS job.
+        if (!opts.orderId && order.created_at && new Date(order.created_at) < floorDate) {
           stop = true;
           break;
         }
@@ -1011,6 +1057,10 @@ export async function syncAryeoOrders(
             deliverables: {
               create: dedupeParsedDeliverables(items.filter((it) => !it.is_canceled).flatMap(itemToDeliverables)),
             },
+            // The real line items, kept verbatim beside the production view —
+            // this is the only place the actual product names and per-item
+            // prices survive (see the OrderItem model comment).
+            orderItems: { create: orderItemRows(items) },
             activities: {
               create: { type: "SYSTEM", body: `Imported from Aryeo (order #${order.number ?? order.id}).` },
             },
@@ -1033,7 +1083,8 @@ export async function syncAryeoOrders(
         } catch { /* bell is best-effort */ }
       }
 
-      const last = res?.meta?.last_page;
+      if (opts.orderId) break; // single-order mode already has everything
+      const last = lastPage;
       if (last ? page >= last : batch.length < perPage) break;
       page++;
     }
@@ -1050,6 +1101,44 @@ export async function syncAryeoOrders(
 // Backfill payableInvoice on existing projects by re-reading each order's items
 // (excludes canceled + virtual/AI). Run once after adding the field; cheap going
 // forward since new orders set it at import.
+// Backfill OrderItem rows for orders imported before the table existed (and
+// refresh any that changed). One Aryeo call per order, so it is scoped by date
+// and safe to re-run — items are replaced wholesale per project, never merged.
+// Deliverables are NOT touched: production status stays exactly as it is.
+export async function backfillOrderItems(opts: { since?: Date; limit?: number } = {}): Promise<{
+  scanned: number; withItems: number; itemsWritten: number; failed: number;
+}> {
+  const { prisma } = await import("@/lib/prisma");
+  const projects = await prisma.project.findMany({
+    where: {
+      aryeoOrderId: { not: null },
+      ...(opts.since ? { orderedAt: { gte: opts.since } } : {}),
+    },
+    select: { id: true, aryeoOrderId: true, _count: { select: { orderItems: true } } },
+    orderBy: { orderedAt: "desc" },
+    ...(opts.limit ? { take: opts.limit } : {}),
+  });
+
+  let scanned = 0, withItems = 0, itemsWritten = 0, failed = 0;
+  for (const p of projects) {
+    scanned++;
+    try {
+      const order = await Aryeo.order(p.aryeoOrderId!);
+      const rows = orderItemRows(order?.items ?? []);
+      if (rows.length === 0) continue;
+      await prisma.$transaction([
+        prisma.orderItem.deleteMany({ where: { projectId: p.id } }),
+        prisma.orderItem.createMany({ data: rows.map((r) => ({ ...r, projectId: p.id })) }),
+      ]);
+      withItems++;
+      itemsWritten += rows.length;
+    } catch {
+      failed++;
+    }
+  }
+  return { scanned, withItems, itemsWritten, failed };
+}
+
 export async function backfillPayableInvoice(): Promise<{ updated: number; scanned: number }> {
   let page = 1;
   const perPage = 50;
@@ -1475,7 +1564,15 @@ export async function syncAryeoTeam(): Promise<{ team: number }> {
 // user comes from ?include=users (reliable: 100% filled), not the sparse
 // initial_assigned_company_team_member_id. Also assigns the VA (Kyle).
 // ---------------------------------------------------------------------------
-export async function syncAryeoAppointments(opts: { recentOnlyDays?: number } = {}): Promise<{
+export async function syncAryeoAppointments(
+  // `orderId` scopes to ONE order's appointments — the per-project "Refresh
+  // from Aryeo" button. GET /appointments ignores every order filter (see the
+  // probe notes below), and walking the bounded list costs ~53s, far too slow
+  // for a button. The ORDER payload already carries its appointments, so we
+  // read those ids and fetch each in full (users included) — 2-4 calls, ~1s —
+  // then run them through this function's normal body.
+  opts: { recentOnlyDays?: number; orderId?: string } = {},
+): Promise<{
   appointments: number;
   photographerAssigned: number;
 }> {
@@ -1529,10 +1626,20 @@ export async function syncAryeoAppointments(opts: { recentOnlyDays?: number } = 
     //     are all silently ignored (same totals as unfiltered).
     // Full (nightly) runs keep the plain unbounded pagination to reconcile all
     // of history.
-    const res = await aryeoRequest<{ data: AryeoAppointment[]; meta?: { last_page?: number } }>("/appointments", {
-      query: { include: "users,order", page, per_page: perPage, ...(windowAgoTs !== null ? { sort: "-start_at" } : {}) },
-    });
-    const batch = res?.data ?? [];
+    let batch: AryeoAppointment[];
+    let lastPage: number | undefined;
+    if (opts.orderId) {
+      const order = await Aryeo.order(opts.orderId).catch(() => null);
+      const ids = (order?.appointments ?? []).map((a) => a.id).filter((id): id is string => !!id);
+      const full = await Promise.all(ids.map((id) => Aryeo.appointment(id).catch(() => null)));
+      batch = full.filter((a): a is AryeoAppointment => !!a);
+    } else {
+      const res = await aryeoRequest<{ data: AryeoAppointment[]; meta?: { last_page?: number } }>("/appointments", {
+        query: { include: "users,order", page, per_page: perPage, ...(windowAgoTs !== null ? { sort: "-start_at" } : {}) },
+      });
+      batch = res?.data ?? [];
+      lastPage = res?.meta?.last_page;
+    }
     if (batch.length === 0) break;
 
     // Pre-read this page's stored rows in ONE query, so after each upsert we can
@@ -1706,7 +1813,8 @@ export async function syncAryeoAppointments(opts: { recentOnlyDays?: number } = 
       if (starts.length > 0 && Math.min(...starts) < windowAgoTs) break;
     }
 
-    const last = res?.meta?.last_page;
+    if (opts.orderId) break; // single-order mode fetched everything up front
+    const last = lastPage;
     if (last ? page >= last : batch.length < perPage) break;
     page++;
   }

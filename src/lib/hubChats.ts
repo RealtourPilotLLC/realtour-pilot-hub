@@ -60,17 +60,26 @@ export async function recordHubTurn(input: {
   question: string;
   answer: string;
   toolsUsed: string[];
+  userEmail?: string | null;
+  userName?: string | null;
 }): Promise<string | null> {
   try {
     const category = classifyCategory(input.toolsUsed);
     let chatId = input.chatId ?? null;
     if (chatId) {
-      const exists = await prisma.hubChat.findUnique({ where: { id: chatId }, select: { id: true } });
+      const exists = await prisma.hubChat.findUnique({ where: { id: chatId }, select: { id: true, userEmail: true } });
       if (!exists) chatId = null;
+      // Older chats predate identity tracking — backfill on the next turn.
+      else if (!exists.userEmail && input.userEmail) {
+        await prisma.hubChat.update({ where: { id: chatId }, data: { userEmail: input.userEmail, userName: input.userName ?? null } });
+      }
     }
     if (!chatId) {
       const chat = await prisma.hubChat.create({
-        data: { role: normRole(input.role), title: heuristicTitle(input.question), category },
+        data: {
+          role: normRole(input.role), title: heuristicTitle(input.question), category,
+          userEmail: input.userEmail ?? null, userName: input.userName ?? null,
+        },
         select: { id: true },
       });
       chatId = chat.id;
@@ -95,6 +104,7 @@ export async function recordHubTurn(input: {
 export type HubChatRow = {
   id: string;
   role: string;
+  person: string | null; // "Kyle (kyle@…)" — null on chats older than identity tracking
   title: string;
   summary: string | null;
   category: HubCategoryKey;
@@ -104,15 +114,19 @@ export type HubChatRow = {
   lastMessageAt: Date;
 };
 
+const personLabel = (name: string | null, email: string | null): string | null =>
+  name && email ? `${name}` : name || email;
+
 export async function listHubChats(limit = 100): Promise<HubChatRow[]> {
   const rows = await prisma.hubChat.findMany({
     orderBy: { lastMessageAt: "desc" },
     take: Math.min(limit, 300),
-    select: { id: true, role: true, title: true, summary: true, summaryAtCount: true, category: true, messageCount: true, createdAt: true, lastMessageAt: true },
+    select: { id: true, role: true, userEmail: true, userName: true, title: true, summary: true, summaryAtCount: true, category: true, messageCount: true, createdAt: true, lastMessageAt: true },
   });
   return rows.map((r) => ({
     id: r.id,
     role: r.role,
+    person: personLabel(r.userName, r.userEmail),
     title: r.title || "Conversation",
     summary: r.summary,
     category: (r.category && r.category in CATEGORY_META ? r.category : "general") as HubCategoryKey,
@@ -121,6 +135,28 @@ export async function listHubChats(limit = 100): Promise<HubChatRow[]> {
     createdAt: r.createdAt,
     lastMessageAt: r.lastMessageAt,
   }));
+}
+
+export type HubUserStat = { person: string; email: string | null; role: string; chats: number; questions: number; lastAt: Date };
+
+/** Who is actually using the brain — chats + questions per signed-in person. */
+export async function hubUserStats(): Promise<HubUserStat[]> {
+  const rows = await prisma.hubChat.findMany({
+    select: { userEmail: true, userName: true, role: true, messageCount: true, lastMessageAt: true },
+  });
+  const by = new Map<string, HubUserStat>();
+  for (const r of rows) {
+    const key = r.userEmail ?? `__role:${r.role}`;
+    const cur = by.get(key) ?? {
+      person: personLabel(r.userName, r.userEmail) ?? `Earlier chats (${r.role.toLowerCase()} view)`,
+      email: r.userEmail, role: r.role, chats: 0, questions: 0, lastAt: r.lastMessageAt,
+    };
+    cur.chats++;
+    cur.questions += Math.max(1, Math.round(r.messageCount / 2));
+    if (r.lastMessageAt > cur.lastAt) cur.lastAt = r.lastMessageAt;
+    by.set(key, cur);
+  }
+  return [...by.values()].sort((a, b) => b.questions - a.questions);
 }
 
 export async function getHubChatDetail(id: string): Promise<{ id: string; role: string; messages: { role: string; content: string; createdAt: Date }[] } | null> {

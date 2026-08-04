@@ -10,6 +10,9 @@ import { OverviewTab } from "@/components/finance/OverviewTab";
 import { PersonalTab } from "@/components/finance/PersonalTab";
 import { PeopleTab } from "@/components/finance/PeopleTab";
 import { JobsTab } from "@/components/finance/JobsTab";
+import { SpendingTab } from "@/components/finance/SpendingTab";
+import { AdvisorTab } from "@/components/finance/AdvisorTab";
+import { BudgetTab } from "@/components/finance/BudgetTab";
 import type { FinanceTab } from "@/components/finance/FinanceTabs";
 
 export const dynamic = "force-dynamic";
@@ -39,6 +42,10 @@ export default async function FinancePage({
   // bounce a signed-in user who lacks "sales" access (owner + admin have it;
   // creatives are already stopped by middleware). No user ⇒ owner-view default.
   const me = await getCurrentUser().catch(() => null);
+  // Transient session/DB failure must not render owner finance to a stale tab —
+  // bounce to login (middleware guarantees a session exists in prod, so a null
+  // here is a hiccup, and a healthy reload lands right back).
+  if (!me && authEnforced()) redirect("/login?next=/sales");
   if (me && !canAccess(me, "sales")) redirect("/");
   // A real user → their role decides. No user → owner ONLY when auth is off
   // (local dev). getCurrentUser also returns null for a DISABLED/deleted
@@ -51,7 +58,7 @@ export default async function FinancePage({
 
   // Which tabs this viewer may see (owner: all; admin: Unpaid only).
   const show: FinanceTab[] = isOwner
-    ? ["overview", "jobs", "people", "personal", "money", "revenue", "unpaid", "payroll"]
+    ? ["overview", "advisor", "jobs", "people", "personal", "budget", "spending", "money", "revenue", "unpaid", "payroll"]
     : ["unpaid"];
   // Where non-owners land: their only tab, Unpaid. Owners land on Overview (the
   // command center — true P&L, cash, where the money's actually going).
@@ -66,12 +73,15 @@ export default async function FinancePage({
   else if (requested === "personal") tab = "personal";
   else if (requested === "people") tab = "people";
   else if (requested === "jobs") tab = "jobs";
+  else if (requested === "spending") tab = "spending";
+  else if (requested === "advisor") tab = "advisor";
+  else if (requested === "budget") tab = "budget";
   else tab = fallback; // no/unknown ?tab= → role default
 
   // Owner-only tabs: bounce a non-owner who asked for them to their default tab
   // (mirrors the old owner-only route gate, now per-tab).
   if (!isOwner && (tab === "revenue" || tab === "payroll" || tab === "money" || tab === "overview"
-    || tab === "personal" || tab === "people" || tab === "jobs")) {
+    || tab === "personal" || tab === "people" || tab === "jobs" || tab === "spending" || tab === "advisor" || tab === "budget")) {
     redirect("/sales?tab=unpaid");
   }
 
@@ -82,5 +92,8 @@ export default async function FinancePage({
   if (tab === "personal") return <PersonalTab show={show} />;
   if (tab === "people") return <PeopleTab show={show} />;
   if (tab === "jobs") return <JobsTab show={show} />;
+  if (tab === "spending") return <SpendingTab show={show} />;
+  if (tab === "advisor") return <AdvisorTab show={show} />;
+  if (tab === "budget") return <BudgetTab show={show} />;
   return <RevenueTab show={show} />;
 }

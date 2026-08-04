@@ -270,14 +270,22 @@ export function computeStatus(sig: StatusSignals): StatusResult {
   } else if (satisfied && !fulfilled) {
     status = "REVIEW";
     reason = "All media is present but the order isn't marked delivered on Aryeo yet — ready to deliver.";
-  } else if ((fulfilled || anyFinalDropbox || anyAryeoMedia) && verifiable && missing.length > 0) {
+  } else if ((fulfilled || anyFinalDropbox || present.has("PHOTOS") || present.has("VIDEO")) && verifiable && missing.length > 0) {
+    // Partial delivery — but ONLY when CORE content (photos/video, i.e. work
+    // that flowed through the shoot→edit pipeline) is out, or a human marked
+    // the order fulfilled. Floor plans / 3D tours arrive on their own from
+    // vendors (CubiCasa auto-syncs to Aryeo hours after the scan) — treating
+    // those as "delivery started" jumped fresh shoots SCHEDULED → REVIEW
+    // before the photographer even uploaded raws, which hid the job from the
+    // upload portal (3188 Thornapple, Jul 2026).
     status = "REVIEW";
     const others = missing.filter((c) => c !== "VIDEO").map((c) => CATEGORY_LABEL[c]);
     if (missing.includes("VIDEO") && videoDue) {
       const tier = sig.videoTier === "premium" ? "Premium" : "Standard";
+      const lead = present.has("PHOTOS") ? "Photos delivered." : "Delivery underway.";
       reason = videoOverdue
         ? `Video overdue — was due ${fmtDate(videoDue)}. Confirm it was delivered to the client, or upload it.`
-        : `Photos delivered. ${tier} video in production — due ${fmtDate(videoDue)}.`;
+        : `${lead} ${tier} video in production — due ${fmtDate(videoDue)}.`;
       if (others.length) reason += ` Also missing ${others.join(", ")}.`;
     } else {
       reason = `Partial delivery — still missing ${missing.map((m) => CATEGORY_LABEL[m as MediaCategory]).join(", ")}.`;
@@ -686,7 +694,13 @@ export async function syncProjectStatuses(
     // don't count): the job is silently rotting in SCHEDULED (877 S York sat 11
     // days with nobody told — July 2026 audit). Mint ONE deduped chase task +
     // ring/SMS the photographer. Auto-clears inside when raws land.
-    if (["BOOKED", "SCHEDULED"].includes(final) && shootHappened) {
+    // SHOT is included deliberately. A photographer pressing "Mark shoot
+    // complete" in the field flips the job to SHOT, and the old gate of
+    // BOOKED/SCHEDULED meant exactly the people who told us they had finished
+    // were the ones never chased for their files — the hole this watchdog was
+    // built to close. Marking it shot is a claim about the camera, not about
+    // Dropbox.
+    if (["BOOKED", "SCHEDULED", "SHOT"].includes(final) && shootHappened) {
       try {
         const { reconcileRawsMissing } = await import("@/lib/tasks");
         await reconcileRawsMissing(p.id, {

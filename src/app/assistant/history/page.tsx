@@ -1,12 +1,12 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { PieChart, MessagesSquare, ShieldCheck, ArrowLeft } from "lucide-react";
+import { PieChart, MessagesSquare, ShieldCheck, ArrowLeft, Users } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { HubPie } from "@/components/assistant/HubPie";
 import { ChatHistoryList, type ChatListItem } from "@/components/assistant/ChatHistoryList";
 import { isOwnerView } from "@/lib/access";
-import { listHubChats, hubQuestionStats, summarizeHubChat, CATEGORY_META } from "@/lib/hubChats";
+import { listHubChats, hubQuestionStats, hubUserStats, summarizeHubChat, CATEGORY_META } from "@/lib/hubChats";
 import { etDateTime } from "@/lib/datetime";
 
 export const dynamic = "force-dynamic";
@@ -21,7 +21,7 @@ export default async function HubHistoryPage() {
   const toFill = recent.filter((c) => c.messageCount >= 2 && !c.fresh).slice(0, 12);
   await Promise.all(toFill.map((c) => summarizeHubChat(c.id).catch(() => null)));
 
-  const [stats, chats] = await Promise.all([hubQuestionStats(), listHubChats(100)]);
+  const [stats, chats, people] = await Promise.all([hubQuestionStats(), listHubChats(100), hubUserStats()]);
 
   const items: ChatListItem[] = chats.map((c) => ({
     id: c.id,
@@ -30,6 +30,7 @@ export default async function HubHistoryPage() {
     categoryLabel: CATEGORY_META[c.category].label,
     categoryColor: CATEGORY_META[c.category].color,
     role: c.role,
+    person: c.person,
     questions: Math.max(1, Math.round(c.messageCount / 2)),
     when: etDateTime(c.lastMessageAt),
   }));
@@ -81,6 +82,23 @@ export default async function HubHistoryPage() {
               ))}
             </div>
           )}
+        </Section>
+
+        <Section icon={Users} title="Who's asking" count={people.length || null} flush>
+          <div className="divide-y">
+            {people.map((p) => (
+              <div key={p.email ?? p.person} className="flex items-center justify-between gap-3 px-5 py-2.5 text-sm">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-medium text-foreground">{p.person}</div>
+                  {p.email && <div className="truncate text-xs text-muted-2">{p.email}</div>}
+                </div>
+                <span className="shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-medium text-muted">{p.role}</span>
+                <span className="shrink-0 tabular-nums text-xs text-muted">{p.questions} questions · {p.chats} chats</span>
+                <span className="shrink-0 text-xs text-muted-2">last {etDateTime(p.lastAt)}</span>
+              </div>
+            ))}
+            {people.length === 0 && <div className="px-5 py-6 text-center text-sm text-muted">No conversations yet.</div>}
+          </div>
         </Section>
 
         <Section icon={MessagesSquare} title="Conversations" count={chats.length || null}>

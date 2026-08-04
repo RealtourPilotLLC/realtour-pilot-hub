@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { vendorName, STRIPE_CONNECT_ACCOUNTS } from "@/lib/financeCategories";
 
 // ---------------------------------------------------------------------------
 // Bookkeeping engine — turn the raw QuickBooks ledger into a P&L you can trust.
@@ -387,9 +388,11 @@ export async function categoriseBooks(opts: { sinceKey?: string } = {}): Promise
 // VENMO — the one rail with no API and no reliable record anywhere.
 //
 // Stephen Kennedy is the only client who pays this way, into Jordan's PERSONAL
-// Venmo. It reaches QuickBooks only as a bank deposit, and only while the bank
-// feed is alive — which it has not been since the end of 2025. Aryeo invoice
-// totals are a decent proxy but ran ~5% light ($12,425 vs the real $13,125).
+// Venmo — which is NOT connected to the business QuickBooks. (The business
+// checking feed IS live: 110 deposits, $244,513, through 2026-07. But ZERO of
+// them carry a VENMO memo — the money lands in a personal account the business
+// books never see.) Aryeo invoice totals are a decent proxy but ran ~5% light
+// ($12,425 vs the real $13,125).
 //
 // So this list is transcribed from Venmo itself and is AUTHORITATIVE for the
 // window it covers. It is manual by necessity, not by choice: add new charges
@@ -451,7 +454,13 @@ export async function revenueByProcessor(startKey: string, endKey: string) {
   const qboRows = await prisma.qboTransaction.findMany({
     where: { type: { in: ["Payment", "SalesReceipt"] }, txnDate: { gte: from, lte: to } },
   });
-  const quickbooks = qboRows.reduce((s, r) => s + r.amount, 0);
+  let quickbooks = qboRows.reduce((s, r) => s + r.amount, 0);
+  // 2026-02-13 VIDEO PRO $1,999 payment was clawed back on 2026-05-07 (bank
+  // shows "*7828 DEPOSIT INTUIT" debit; owner confirmed it was a refund). The
+  // QBO Payment row still exists, so subtract it whenever the window covers it.
+  if (from <= new Date("2026-02-13T23:59:59Z") && to >= new Date("2026-02-13T00:00:00Z")) {
+    quickbooks -= 1999;
+  }
 
   // Rail 2 — Stripe: charges net of refunds, GROSS of fees. Fees are a cost and
   // belong in expenses; netting them here would understate the top line.
@@ -461,16 +470,47 @@ export async function revenueByProcessor(startKey: string, endKey: string) {
   const stripe = stripeRows.reduce((s, r) => s + r.gross, 0);
   const stripeFees = stripeRows.reduce((s, r) => s + r.fee, 0);
 
-  // Rail 3 — Venmo. Two sources that must NEVER both be counted for the same
-  // day: the transcribed VENMO_CHARGES list (authoritative from its coverage
-  // date) and bank-feed deposits (the only record before that).
+  // Rail 3 — Venmo, counted at RECEIPT from the statement pseudo-account's
+  // client-inflow rows (imported from Jordan's Venmo statements, category
+  // "Venmo revenue (client)"). This is the complete truth: it includes client
+  // money spent straight from the Venmo balance that never cashed out to a
+  // bank, and it's gross (the ~1.75% instant-transfer fee is a cost, not a
+  // revenue reduction). The old method counted bank cash-out credits — the
+  // July 2026 crosscheck showed that missed every balance-funded dollar and
+  // recorded the rest net of fees. Bank cash-outs are just the settlement leg
+  // of money already counted here, so they are no longer summed. Fallbacks
+  // (bank credits, then the transcribed list) only fire in a fresh env with no
+  // statement import.
   const coverFrom = new Date(`${VENMO_COVERAGE_FROM}T00:00:00Z`);
-  const listed = VENMO_CHARGES
-    .map((c) => ({ at: new Date(`${c.date}T12:00:00Z`), amount: c.amount }))
-    .filter((c) => c.at >= from && c.at <= to);
-  const venmoListed = listed.reduce((s, c) => s + c.amount, 0);
+  const VENMO_EXCLUDED_CENTS = new Set([297500, 124322]);
+  let venmoListed = 0;
+  if (to >= coverFrom) {
+    const bankFrom = from > coverFrom ? from : coverFrom;
+    const inflows = await prisma.plaidTransaction.findMany({
+      where: { date: { gte: bankFrom, lte: to }, amount: { lt: 0 }, account: { mask: "venmo" }, financeCategory: "Venmo revenue (client)" },
+      select: { amount: true },
+    });
+    if (inflows.length > 0) {
+      venmoListed = inflows.reduce((s, c) => s + Math.abs(c.amount), 0);
+    } else {
+      const credits = await prisma.plaidTransaction.findMany({
+        where: { date: { gte: bankFrom, lte: to }, amount: { lt: 0 }, pending: false, name: { contains: "venmo", mode: "insensitive" } },
+        select: { amount: true },
+      });
+      if (credits.length > 0) {
+        venmoListed = credits
+          .filter((c) => !VENMO_EXCLUDED_CENTS.has(Math.round(Math.abs(c.amount) * 100)))
+          .reduce((s, c) => s + Math.abs(c.amount), 0);
+      } else {
+        venmoListed = VENMO_CHARGES
+          .map((c) => ({ at: new Date(`${c.date}T12:00:00Z`), amount: c.amount }))
+          .filter((c) => c.at >= from && c.at <= to)
+          .reduce((s, c) => s + c.amount, 0);
+      }
+    }
+  }
 
-  // Bank-feed Venmo, but only for the part of the window the list does not cover.
+  // Bank-feed Venmo (QBO memos), only for the pre-coverage part of the window.
   const feedTo = to < coverFrom ? to : new Date(coverFrom.getTime() - 1);
   const venmoRows = feedTo >= from
     ? await prisma.qboTransaction.findMany({ where: { type: "Deposit", txnDate: { gte: from, lte: feedTo } } })
@@ -481,7 +521,7 @@ export async function revenueByProcessor(startKey: string, endKey: string) {
   return {
     start: startKey, end: endKey,
     quickbooks, stripe, venmo, stripeFees,
-    venmoListed, venmoFeed, venmoCharges: listed.length,
+    venmoListed, venmoFeed, venmoCharges: VENMO_CHARGES.length,
     total: quickbooks + stripe + venmo,
   };
 }
@@ -574,7 +614,7 @@ const PAYEE_ALIASES: [RegExp, string][] = [
 
 // What KIND of payee this is, so "who I pay" can group creatives vs editors vs
 // software vs staff. Ordered: first match wins.
-export const PAYEE_GROUPS = ["Photographers", "Editors", "Software & tools", "Staff & VA", "Marketing", "Other"] as const;
+export const PAYEE_GROUPS = ["Creative specialists", "Editors", "Software & tools", "Staff & VA", "Marketing", "Other"] as const;
 export function payeeGroup(text: string, payee: string): string {
   const t = `${payee} ${text}`.toLowerCase();
   // "livingsto" (not "livingston") — the bank feed truncates the last name.
@@ -622,66 +662,110 @@ export type PayeeRow = {
 };
 
 /** Every person/vendor paid as a cost of sales, grouped by payee and channel. */
+// Categories that represent paying a person or production vendor, mapped to the
+// People-tab group they belong to. Fees, gear-store runs, insurance and tolls
+// are business costs but not "people" — they stay on the Categories tab only.
+const PEOPLE_CATS: Record<string, string> = {
+  "Creative specialist pay": "Creative specialists",
+  "Video editing": "Editors",
+  "Photo editing": "Editors",
+  "Consulting (Paul)": "Staff & VA",
+  "Social media mgmt (resold)": "Marketing",
+  "Marketing & networking": "Marketing",
+  "Software & subscriptions": "Software & tools",
+  "Floorplans (CubiCasa)": "Other",
+};
+
+// One person = one row. The audited ledger names Venmo payouts per recipient and
+// Stripe transfers per split, so the same human's rails merge here.
+const PERSON_CANON: [RegExp, string][] = [
+  [/harrison/i, "Harrison Wells"],
+  [/james livingston/i, "James Livingston"],
+];
+
+function payChannel(name: string, mask: string | null | undefined): string {
+  if (mask === "venmo") return "Venmo";
+  const hay = name || "";
+  if (/paypal/i.test(hay)) return "PayPal";
+  if (/\bwise\b|invoice wise/i.test(hay)) return "Wise";
+  if (/corporate ach|ach web|ach pmt|\bach\b/i.test(hay)) return "ACH";
+  if (/\bcheck\b/i.test(hay)) return "Check";
+  if (mask === "9323" || mask === "1686" || mask === "6526") return "Credit card";
+  return "Debit card";
+}
+
+// Who you actually paid, across EVERY account — the same audited Plaid ledger
+// the Categories tab sums, so the two tabs agree by construction. The old
+// version read only QuickBooks (= business checking) + Stripe and silently
+// missed anything funded from personal accounts, cards, or the Venmo balance —
+// the July 2026 crosscheck found Harrison $10.9k short and Paul absent.
 export async function peoplePayments(startKey: string, endKey: string): Promise<{
   list: PayeeRow[]; total: number; count: number;
   channelTotals: Record<string, number>; monthTotals: Record<string, number>;
   groupTotals: Record<string, number>;
 }> {
-  const rows = await prisma.qboTransaction.findMany({
+  const from = new Date(`${startKey}T00:00:00Z`);
+  const to = new Date(`${endKey}T23:59:59Z`);
+  const rows = await prisma.plaidTransaction.findMany({
     where: {
-      type: "Purchase", category: "COST_OF_SALES",
-      txnDate: { gte: new Date(`${startKey}T00:00:00Z`), lte: new Date(`${endKey}T23:59:59Z`) },
+      date: { gte: from, lte: to }, amount: { gt: 0 },
+      financeKind: "BUSINESS", financeCategory: { in: Object.keys(PEOPLE_CATS) },
     },
+    select: { amount: true, date: true, name: true, merchantName: true, financeCategory: true, account: { select: { mask: true } } },
   });
+
   const people: Record<string, PayeeRow> = {};
   const channelTotals: Record<string, number> = {};
   const monthTotals: Record<string, number> = {};
+  const add = (payee: string, group: string, channel: string, amount: number, at: Date) => {
+    const p = (people[payee] ||= { payee, group, total: 0, count: 0, channels: {}, primaryChannel: channel, months: {}, lastAt: at });
+    p.total += amount; p.count++;
+    p.channels[channel] = (p.channels[channel] || 0) + amount;
+    const m = at.toISOString().slice(0, 7);
+    p.months[m] = (p.months[m] || 0) + amount;
+    if (at > p.lastAt) p.lastAt = at;
+    channelTotals[channel] = (channelTotals[channel] || 0) + amount;
+    monthTotals[m] = (monthTotals[m] || 0) + amount;
+  };
+
   for (const r of rows) {
-    let raw: { EntityRef?: { name?: string } } | null = null;
-    try { raw = JSON.parse(r.raw ?? "null"); } catch { /* ignore */ }
-    const text = describe(r);
-    const payee = resolvePayee(raw, text);
-    const channel = paymentChannel(text);
-    const mKey = r.txnDate.toISOString().slice(0, 7);
-    const p = (people[payee] ||= { payee, group: payeeGroup(text, payee), total: 0, count: 0, channels: {}, primaryChannel: channel, months: {}, lastAt: r.txnDate });
-    p.total += r.amount; p.count++;
-    p.channels[channel] = (p.channels[channel] || 0) + r.amount;
-    p.months[mKey] = (p.months[mKey] || 0) + r.amount;
-    if (r.txnDate > p.lastAt) p.lastAt = r.txnDate;
-    channelTotals[channel] = (channelTotals[channel] || 0) + r.amount;
-    monthTotals[mKey] = (monthTotals[mKey] || 0) + r.amount;
-  }
-  // Stripe payouts to James & Harrison (transfers to their Stripe balances) never
-  // hit the QuickBooks ledger, so add them as their own line. The transfer rows
-  // carry no name, so they can't yet be split per-person — shown combined.
-  const stripeTransfers = await prisma.stripeTransaction.findMany({
-    where: { type: "transfer", createdAt: { gte: new Date(`${startKey}T00:00:00Z`), lte: new Date(`${endKey}T23:59:59Z`) } },
-  });
-  if (stripeTransfers.length) {
-    const months: Record<string, number> = {};
-    let total = 0, lastAt = stripeTransfers[0].createdAt;
-    for (const r of stripeTransfers) {
-      const a = Math.abs(r.gross);
-      total += a;
-      months[r.createdAt.toISOString().slice(0, 7)] = (months[r.createdAt.toISOString().slice(0, 7)] || 0) + a;
-      if (r.createdAt > lastAt) lastAt = r.createdAt;
-      channelTotals["Stripe"] = (channelTotals["Stripe"] || 0) + a;
-      monthTotals[r.createdAt.toISOString().slice(0, 7)] = (monthTotals[r.createdAt.toISOString().slice(0, 7)] || 0) + a;
-    }
-    people["James & Harrison · Stripe"] = {
-      payee: "James & Harrison · Stripe", group: "Photographers", total, count: stripeTransfers.length,
-      channels: { Stripe: total }, primaryChannel: "Stripe", months, lastAt,
-    };
+    let payee = r.financeCategory === "Consulting (Paul)"
+      ? "Paul — consulting"
+      : vendorName(r.name || r.merchantName || "");
+    for (const [rx, canon] of PERSON_CANON) if (rx.test(payee)) { payee = canon; break; }
+    add(payee, PEOPLE_CATS[r.financeCategory!] ?? "Other", payChannel(r.name || "", r.account?.mask), r.amount, r.date);
   }
 
-  const list = Object.values(people).sort((a, b) => b.total - a.total);
+  // Stripe Connect transfers (off the bank rail) — attributed EXACTLY per
+  // transfer via the destination account (stamped by syncStripe) and MERGED
+  // into each person's row. Unstamped rows show combined, never guessed.
+  const stripeTransfers = await prisma.stripeTransaction.findMany({
+    where: { type: "transfer", createdAt: { gte: from, lte: to } },
+  });
+  for (const r of stripeTransfers) {
+    const person = (r.destination && STRIPE_CONNECT_ACCOUNTS[r.destination]) || "James & Harrison (Stripe, unattributed)";
+    add(person, "Creative specialists", "Stripe", Math.abs(r.gross), r.createdAt);
+  }
+
+  // Keep the roster readable: sub-$100 software vendors roll into one line.
+  const list: PayeeRow[] = [];
+  const rollup: PayeeRow = { payee: "Smaller subscriptions (rolled up)", group: "Software & tools", total: 0, count: 0, channels: {}, primaryChannel: "Debit card", months: {}, lastAt: from };
+  for (const p of Object.values(people)) {
+    if (p.group === "Software & tools" && p.total < 100) {
+      rollup.total += p.total; rollup.count += p.count;
+      for (const [ch, amt] of Object.entries(p.channels)) rollup.channels[ch] = (rollup.channels[ch] || 0) + amt;
+      for (const [m, amt] of Object.entries(p.months)) rollup.months[m] = (rollup.months[m] || 0) + amt;
+      if (p.lastAt > rollup.lastAt) rollup.lastAt = p.lastAt;
+      continue;
+    }
+    list.push(p);
+  }
+  if (rollup.total > 0) list.push(rollup);
+  list.sort((a, b) => b.total - a.total);
+
   const groupTotals: Record<string, number> = {};
   for (const p of list) {
     p.primaryChannel = Object.entries(p.channels).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "—";
-    // Recompute the group from the CANONICAL (aliased) payee name rather than the
-    // first row's raw text, so a truncated/ambiguous first transaction can't
-    // freeze a payee in the wrong group.
-    p.group = payeeGroup("", p.payee);
     groupTotals[p.group] = (groupTotals[p.group] || 0) + p.total;
   }
   return { list, total: list.reduce((s, p) => s + p.total, 0), count: list.length, channelTotals, monthTotals, groupTotals };

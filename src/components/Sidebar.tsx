@@ -11,6 +11,7 @@ import {
   MessageCircle,
   Users,
   DollarSign,
+  TrendingUp,
   Wallet,
   Package,
   Palette,
@@ -98,6 +99,7 @@ const SECTIONS: NavSection[] = [
     title: "Finance",
     items: [
       { label: "Finance", href: "/sales", icon: DollarSign, key: "sales" },
+      { label: "Trends", href: "/trends", icon: TrendingUp, key: "trends" },
     ],
   },
   {

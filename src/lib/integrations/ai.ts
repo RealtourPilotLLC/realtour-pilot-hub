@@ -81,6 +81,40 @@ async function anthropic(opts: {
   return (json.content?.find((b) => b.type === "text")?.text ?? json.content?.[0]?.text ?? "").trim();
 }
 
+/**
+ * Structured output, guaranteed to match a schema. Forces a single tool call
+ * whose input schema IS the shape you want, so the model cannot answer with
+ * prose, a code fence, or a near-miss key name — the failure modes the
+ * regex-a-JSON-blob-out-of-the-text approach elsewhere in this file has to
+ * defend against. Throws if the AI is unreachable; the caller decides what a
+ * missing answer looks like.
+ */
+export async function aiJson<T>(opts: {
+  system: string;
+  prompt: string;
+  schema: Record<string, unknown>;
+  maxTokens?: number;
+  model?: string;
+  key?: string;
+}): Promise<T> {
+  const key = opts.key ?? (await getSecret("ai"));
+  if (!key) throw new Error("AI is not connected.");
+  const json = await callMessages(
+    {
+      model: opts.model ?? SMART,
+      max_tokens: opts.maxTokens ?? 4000,
+      system: opts.system,
+      messages: [{ role: "user", content: opts.prompt }],
+      tools: [{ name: "emit", description: "Return the result.", input_schema: opts.schema }],
+      tool_choice: { type: "tool", name: "emit" },
+    },
+    key,
+  );
+  const call = json.content?.find((b) => b.type === "tool_use" && b.name === "emit");
+  if (!call?.input) throw new Error("The AI did not return a usable answer.");
+  return call.input as T;
+}
+
 // ---------------------------------------------------------------------------
 // Tool-using agent ("Ask the Hub"). Runs a multi-step loop: Claude calls
 // read-only data tools, we execute them and feed the results back, until it
@@ -89,30 +123,53 @@ async function anthropic(opts: {
 export type HubTool = { name: string; description: string; input_schema: Record<string, unknown> };
 export type HubToolCall = { name: string; input: Record<string, unknown> };
 
+// A file the user attached to their question. Images and PDFs go to the model
+// as native vision/document blocks; plain-text files are inlined as text.
+export type HubAttachment =
+  | { kind: "image"; mediaType: string; dataBase64: string; name?: string }
+  | { kind: "pdf"; dataBase64: string; name?: string }
+  | { kind: "text"; text: string; name?: string };
+
 export async function runHubAgent(opts: {
   system: string;
   history?: { role: "user" | "assistant"; content: string }[];
   question: string;
+  attachments?: HubAttachment[];
   tools: HubTool[];
   exec: (name: string, input: Record<string, unknown>) => Promise<unknown>;
   model?: string;
   maxSteps?: number;
+  maxTokens?: number; // raise for long outputs (formal reports blow the 1600 default)
 }): Promise<{ answer: string; toolsUsed: HubToolCall[] }> {
   const key = await getSecret("ai");
   if (!key) throw new Error("AI is not connected.");
   const model = opts.model ?? SMART;
   const maxSteps = opts.maxSteps ?? 6;
+  const maxTokens = opts.maxTokens ?? 1600;
+
+  const userContent = opts.attachments?.length
+    ? [
+        ...opts.attachments.map((a) =>
+          a.kind === "image"
+            ? { type: "image", source: { type: "base64", media_type: a.mediaType, data: a.dataBase64 } }
+            : a.kind === "pdf"
+              ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: a.dataBase64 } }
+              : { type: "text", text: `[Attached file${a.name ? ` "${a.name}"` : ""}]\n${a.text}` },
+        ),
+        { type: "text", text: opts.question },
+      ]
+    : opts.question;
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const messages: any[] = [
     ...(opts.history ?? []).map((m) => ({ role: m.role, content: m.content })),
-    { role: "user", content: opts.question },
+    { role: "user", content: userContent },
   ];
   const toolsUsed: HubToolCall[] = [];
 
   for (let step = 0; step < maxSteps; step++) {
     const json = await callMessages(
-      { model, max_tokens: 1600, system: opts.system, tools: opts.tools, messages },
+      { model, max_tokens: maxTokens, system: opts.system, tools: opts.tools, messages },
       key,
     );
     const blocks = json.content ?? [];
@@ -548,6 +605,49 @@ Rules:
 
 // Title + detailed recap of one "Ask the Hub" conversation, for the owner-only
 // chat-history view. Factual, skimmable; names the real subjects discussed.
+// Turn a photographer's open capture feedback into a few THEMES to work on,
+// instead of a wall of per-photo critiques. Jordan's ask: "summarize the things
+// to work on and bullet point them instead of giving the exact feedback I gave
+// on the individual photos." Written TO the photographer, plainly, so it reads
+// like a coach's pre-shoot reminder rather than a list of their mistakes.
+export async function summarizeShootFocus(input: {
+  notes: { body: string; kind: "fix" | "coaching"; street: string | null }[];
+}): Promise<string[]> {
+  const lines = input.notes
+    .filter((n) => n.body && n.body.trim())
+    .slice(0, 40)
+    .map((n) => `- (${n.kind}${n.street ? `, ${n.street}` : ""}) ${n.body.trim().slice(0, 400)}`)
+    .join("\n");
+  if (!lines) return [];
+  const user = `A real estate photographer got this feedback on individual photos and videos from recent shoots:
+"""
+${lines.slice(0, 7000)}
+"""
+
+Summarize it into the FEWEST distinct things they should work on at their next shoot. Group repeats into one theme (five notes about crooked verticals is ONE bullet). Order by how often it came up.
+
+Rules:
+- 2 to 5 bullets, at most. Fewer is better.
+- Each bullet is ONE short imperative sentence, max 14 words, telling them what to DO next time ("Keep verticals straight - level the tripod before each room").
+- Describe the habit, never a specific photo, address, client, or date.
+- Plain language a working photographer uses. No jargon, no praise, no preamble, no emojis, no em dashes, no bold.
+
+Respond as strict JSON: {"bullets": ["...", "..."]}. No other text.`;
+  try {
+    const raw = await anthropic({ model: FAST, system: "You output only strict JSON.", user, maxTokens: 400 });
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (!m) return [];
+    const parsed = JSON.parse(m[0]) as { bullets?: unknown };
+    if (!Array.isArray(parsed.bullets)) return [];
+    return parsed.bullets
+      .filter((b): b is string => typeof b === "string" && b.trim().length > 0)
+      .map((b) => b.trim().replace(/^[-•*]\s*/, "").slice(0, 160))
+      .slice(0, 5);
+  } catch {
+    return [];
+  }
+}
+
 export async function summarizeHubConversation(input: {
   transcript: { role: "user" | "assistant"; text: string }[];
 }): Promise<{ title: string; summary: string }> {

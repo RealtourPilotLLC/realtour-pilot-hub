@@ -1463,10 +1463,7 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
       });
       try {
         const { notifyInApp } = await import("@/lib/notify");
-        const targets: import("@/lib/notify").NotifyTarget[] = [{ roles: ["ADMIN"] }];
-        if (p.photographerId) {
-          targets.push({ roles: ["PHOTOGRAPHER"], userKey: `tm:${p.photographerId}`, href: `/upload/${projectId}` });
-        }
+        const targets = await creativeAlertTargets(p.photographerId, `/upload/${projectId}`);
         await notifyInApp({
           kind: "raws_missing",
           title: `Video files needed — ${street}`,
@@ -1525,6 +1522,27 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
 // photographer once the raws are 18+ hours late; self-clears when files land.
 // ---------------------------------------------------------------------------
 const RAWS_MISSING_AFTER_MS = 18 * HOUR;
+
+// Who hears about a creative's field problem, beyond the person themselves.
+// ADMIN is a role broadcast (Kyle) so it survives a rename; the Creative
+// Manager is addressed personally because they need it on their phone, and the
+// roles list is deliberately broad so the row stays visible on the day their
+// AppUser role changes (a tm: row is invisible unless its audience contains the
+// recipient's CURRENT role — a promotion would otherwise silently mute them).
+async function creativeAlertTargets(
+  shooterId: string | null | undefined,
+  href: string,
+): Promise<import("@/lib/notify").NotifyTarget[]> {
+  const targets: import("@/lib/notify").NotifyTarget[] = [{ roles: ["OWNER", "ADMIN"] }];
+  const manager = await prisma.teamMember
+    .findFirst({ where: { creativeManager: true, active: true }, select: { id: true } })
+    .catch(() => null);
+  if (manager && manager.id !== shooterId) {
+    targets.push({ roles: ["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"], userKey: `tm:${manager.id}`, href });
+  }
+  if (shooterId) targets.push({ roles: ["PHOTOGRAPHER"], userKey: `tm:${shooterId}`, href });
+  return targets;
+}
 
 export async function reconcileRawsMissing(
   projectId: string,
@@ -1594,10 +1612,7 @@ export async function reconcileRawsMissing(
   });
   try {
     const { notifyInApp } = await import("@/lib/notify");
-    const targets: import("@/lib/notify").NotifyTarget[] = [{ roles: ["OWNER", "ADMIN"] }];
-    if (p.photographerId) {
-      targets.push({ roles: ["PHOTOGRAPHER"], userKey: `tm:${p.photographerId}`, href: `/upload/${projectId}` });
-    }
+    const targets = await creativeAlertTargets(p.photographerId, `/upload/${projectId}`);
     await notifyInApp({
       kind: "raws_missing",
       title: `Upload needed — ${street}`,

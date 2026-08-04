@@ -91,7 +91,27 @@ model TeamMember {
   role        Role     @default(VA)
   phone       String?
   avatarColor String   @default("#6366f1") // for UI avatars
+  // "Work-ons for your next shoot" — the AI-summarized THEMES of this person's
+  // open capture feedback, cached so the page never waits on a model call.
+  // focusSummaryKey fingerprints the notes it was built from; when the notes
+  // change the key stops matching and the summary is rebuilt (on note write,
+  // with the daily cron as the backstop).
+  focusSummary    String? // JSON string array of bullets
+  focusSummaryKey String?
+  focusSummaryAt  DateTime?
   active      Boolean  @default(true)
+  // The Creative Manager sees EVERY creative's field alerts (forgotten uploads,
+  // missing raws), not just their own — they are accountable for the whole
+  // creative lane. A flag rather than a hard-coded name so a promotion or a
+  // change of hands is one toggle, and so nothing silently keeps texting
+  // someone who no longer holds the role.
+  creativeManager Boolean @default(false)
+  // Gets operational ALERT TEXTS (photos still not delivered, etc). An explicit
+  // flag, not a role: the Role enum does not identify these people — Kyle is
+  // MANAGER, and so is Kim, an editor in Manila who must never get ops pages.
+  // Jordan is PHOTOGRAPHER because he shoots. Roles describe what someone does;
+  // this describes who to wake up.
+  opsAlerts   Boolean @default(false)
   title       String? // free-form role label, e.g. "Lead Photographer"
   isServiceProvider Boolean @default(false) // shoots/edits (from Aryeo)
   // Home base for the mileage radius (creatives are paid per mile beyond a radius).
@@ -205,6 +225,7 @@ model StripeTransaction {
   createdAt    DateTime  // Stripe `created`
   description  String?
   customerName String?
+  destination  String? // Connect transfers: destination acct id (who got paid)
   projectId    String?   // best-effort reconcile to an Aryeo project
   matchNote    String?
   syncedAt     DateTime  @default(now())
@@ -411,6 +432,12 @@ model Project {
 
   // Photographer's brief to the editor, captured at upload time.
   editorBrief String?
+  // Per-job photo-editing inputs (AutoHDR $0.50/finished photo). Counted from
+  // the Dropbox 01-RAW-Photos folder: drone shots are single JPGs (DJI_*),
+  // everything else is 5-bracket sets. finished = (raw−drone)/5 + drone.
+  rawPhotoCount   Int?
+  dronePhotoCount Int?
+  photoCountedAt  DateTime?
   // When the photographer finished the guided upload.
   uploadedAt  DateTime?
   // Relative path to the generated editor-brief PDF, if any.
@@ -439,6 +466,7 @@ model Project {
   scriptingSyncedAt DateTime?
 
   deliverables Deliverable[]
+  orderItems   OrderItem[] // the real Aryeo line items (commercial truth)
   checklist    ChecklistItem[]
   activities   Activity[]
   uploads      UploadedFile[]
@@ -701,6 +729,33 @@ model ProjectMessage {
 }
 
 // Service catalogue synced from Aryeo /products.
+// The LINE ITEMS of an Aryeo order, exactly as the client bought them.
+//
+// Deliverable is our internal production view: itemToDeliverables() maps a
+// product down to the media types we have to capture ("Standard Reel with Agent
+// Intro" becomes a generic SOCIAL_REEL), and dedupeParsedDeliverables() then
+// collapses to one row per type. That is right for QC and delivery, but it
+// destroys the product mix — you can't tell a $350 Standard Video Highlight Reel
+// from a $2,000 Premium Social Media Reel, or see a GOLD BUNDLE at all.
+//
+// This table keeps the commercial truth alongside it: what was ordered, how
+// many, and for how much. Purely additive — nothing reads it for production.
+model OrderItem {
+  id         String   @id @default(cuid())
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId  String
+  aryeoId    String?  // Aryeo's order-item id, when it gives us one
+  title      String   // the real product name, verbatim
+  quantity   Int      @default(1)
+  amount     Float    @default(0) // line total in DOLLARS (Aryeo sends cents)
+  isCanceled Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([projectId])
+  @@index([title])
+}
+
 model Product {
   id          String   @id @default(cuid())
   aryeoId     String   @unique
@@ -1168,6 +1223,8 @@ model CommLog {
 model HubChat {
   id             String       @id @default(cuid())
   role           String       @default("OWNER") // OWNER | ADMIN | CREATIVE (who was asking)
+  userEmail      String? // the signed-in person who had this conversation
+  userName       String? // display name at the time (denormalized for history)
   title          String? // short heuristic/AI title
   summary        String? // detailed recap, lazy-generated + cached
   summaryAtCount Int          @default(0) // messageCount when the summary was last built
@@ -1246,4 +1303,162 @@ model Notification {
   createdAt DateTime @default(now())
 
   @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// PLAID — read-only bank/card connections. This is the OTHER missing half of
+// the money picture the forensic audit exposed: the business QuickBooks only
+// sees business checking + Stripe, while real business costs also flow through
+// Jordan's PERSONAL account (...0942), personal Venmo, and credit cards — none
+// of which QuickBooks can see. Plaid pulls transaction history + balances from
+// those accounts (read-only; Plaid cannot move money). The per-bank access
+// token is the sensitive credential and lives ENCRYPTED here, never in the
+// browser. Jordan authenticates each bank inside Plaid Link — we never see the
+// bank login. `isBusiness` lets the owner tag each account so the finance
+// engine can separate true business cost from personal, and net the two-way
+// transfers the audit found between checking and ...0942.
+// ---------------------------------------------------------------------------
+// The $5k/month savings plan as a living checklist (from the 2026-07-22
+// cost-optimization audit). Owner ticks items off on the Overview; done items
+// sum into "reclaimed $/mo". Additive, seeded once, owner-editable via toggle.
+model SavingsItem {
+  id           String    @id @default(cuid())
+  rank         Int
+  title        String
+  detail       String?
+  savesPerMonth Float // conservative $/mo
+  tier         String // "instant" | "setting" | "habit" | "decision"
+  status       String    @default("PENDING") // PENDING | DONE | SKIPPED
+  doneAt       DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model PlaidItem {
+  id                   String    @id @default(cuid())
+  itemId               String    @unique // Plaid item_id (one per connected institution login)
+  accessTokenEncrypted String // AES-GCM blob (see integrations/crypto.ts) — the read-only access token
+  institutionId        String?
+  institutionName      String? // e.g. "Capital One", "Chase"
+  cursor               String? // /transactions/sync incremental cursor
+  status               String    @default("ACTIVE") // ACTIVE | ERROR | DISCONNECTED
+  lastError            String?
+  lastSyncedAt         DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  accounts PlaidAccount[]
+
+  @@index([status])
+}
+
+model PlaidAccount {
+  id               String   @id @default(cuid())
+  item             PlaidItem @relation(fields: [plaidItemId], references: [id], onDelete: Cascade)
+  plaidItemId      String
+  accountId        String   @unique // Plaid account_id
+  name             String? // e.g. "Business Checking"
+  officialName     String?
+  mask             String? // last 4, e.g. "0942"
+  type             String? // depository | credit | loan | investment
+  subtype          String? // checking | savings | credit card | …
+  currentBalance   Float?
+  availableBalance Float?
+  isoCurrency      String?
+  // Owner-tagged: is this a BUSINESS account or PERSONAL? Drives whether its
+  // spend counts as a business cost or an owner draw in the finance engine.
+  // null = untagged (surfaced for the owner to classify).
+  isBusiness       Boolean?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  transactions PlaidTransaction[]
+
+  @@index([plaidItemId])
+}
+
+model PlaidTransaction {
+  id             String   @id // Plaid transaction_id (natural key; upsert on it)
+  account        PlaidAccount @relation(fields: [accountId], references: [accountId], onDelete: Cascade)
+  accountId      String // Plaid account_id
+  // Plaid sign convention: POSITIVE = money OUT of the account (debit/spend),
+  // NEGATIVE = money IN (deposit/credit). The finance layer must honor this.
+  amount         Float
+  isoCurrency    String?
+  date           DateTime // posted date
+  authorizedDate DateTime?
+  name           String?
+  merchantName   String?
+  category       String? // Plaid personal_finance_category.primary
+  categoryDetail String? // personal_finance_category.detailed
+  paymentChannel String? // online | in store | other
+  pending        Boolean  @default(false)
+  // --- Our finance categorization (financeCategories.ts) ---
+  // financeKind: BUSINESS | PERSONAL | EXCLUDE (self-transfer / card paydown /
+  // topup — money movement, not spend) | REVIEW (needs a human call).
+  financeKind     String? // null = not yet categorized
+  financeCategory String? // human label, e.g. "Restaurants & food delivery"
+  // Owner re-tagged this row by hand — the auto-categorizer must NOT overwrite it.
+  financeLocked   Boolean @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([accountId])
+  @@index([date])
+  @@index([financeKind])
+  @@index([pending])
+}
+
+// AI-generated financial reports/statements (Advisor tab) — rendered at
+// /sales/report/[id] as a printable statement the owner exports to PDF.
+model FinanceReport {
+  id        String   @id @default(cuid())
+  title     String
+  type      String // pnl | spending | people | personal | monthly | custom
+  startKey  String // YYYY-MM-DD period covered
+  endKey    String
+  markdown  String // the statement body (markdown)
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+// Personal budget targets (Budget tab) — one row per personal category. Set by
+// the owner inline or by the AI Advisor (set_budget tool). Compared monthly
+// against personalTruth actuals.
+model BudgetTarget {
+  id            String   @id @default(cuid())
+  category      String   @unique // personal category label, e.g. "Groceries"
+  monthlyTarget Float
+  note          String? // advisor's one-line reasoning for this number
+  updatedAt     DateTime @updatedAt
+  createdAt     DateTime @default(now())
+}
+
+// The AI growth plan behind the Trends page — new packages, promotions, what to
+// focus on and what to fix. One live row ("default"). `snapKey` hashes the
+// business numbers it was built from, so it rebuilds when the business actually
+// moves rather than rewording itself on every page load.
+// Per-package margin, precomputed. Costing a year of shoots runs the whole
+// payroll engine, which reaches the PUBLIC OSRM router over the network for
+// mileage — fine in a nightly cron, fatal in a page request (it timed out a
+// 60-second serverless function while taking 3s against a warm local cache).
+// The page reads this row and never computes.
+model MarginSnapshot {
+  id        String   @id @default(cuid())
+  scope     String   @unique // "ytd"
+  startKey  String // YYYY-MM-DD window covered
+  endKey    String
+  json      String // PackageMargins
+  builtAt   DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model GrowthPlan {
+  id        String   @id @default(cuid())
+  scope     String   @unique // "default" — room for per-segment plans later
+  snapKey   String // hash of the snapshot the plan was built from
+  json      String // GrowthPlanData
+  builtAt   DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

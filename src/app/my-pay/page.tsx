@@ -1,16 +1,22 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { Camera, Car, Wallet, ChevronRight, SlidersHorizontal, Receipt } from "lucide-react";
+import { Camera, Car, Wallet, ChevronRight, SlidersHorizontal, Receipt, History, TrendingUp } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { PayFlag } from "@/components/mypay/PayFlag";
 import { prisma } from "@/lib/prisma";
 import { usd } from "@/lib/money";
-import { computePayroll, payPeriodFor, shiftPeriod, periodBounds } from "@/lib/payroll";
+import { payPeriodFor, shiftPeriod } from "@/lib/payroll";
+import { payHistoryFor } from "@/lib/payHistory";
 import { etDayKey } from "@/lib/datetime";
 import { getCurrentUser } from "@/lib/auth/user";
 import { homeFor } from "@/lib/auth/access";
+import { authEnforced } from "@/lib/auth/guards";
 
 export const dynamic = "force-dynamic";
+// Payroll resolves mileage through the public OSRM router, so a cold day costs a
+// network round trip. Bounded generously — /trends learned the hard way what the
+// platform default does to a page that touches this engine.
+export const maxDuration = 60;
 
 // A photographer's OWN pay — nothing else. Shoot pay + mileage per job with
 // period totals; no other people, no client pricing. The invoice shown per job
@@ -20,7 +26,8 @@ export const dynamic = "force-dynamic";
 // its payday ("Getting paid" — the default, because on/before payday the money
 // landing in their account is the number they came to check), the CURRENT
 // accruing one, and a peek at NEXT. Older history stays on Jordan's /payouts.
-// Anything off gets flagged straight to Jordan.
+// Anything off gets flagged straight to Jordan. Every closed period back to the
+// start of their work is browsable, and the year-to-date total sits on top.
 
 const fmtDay = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : "—";
@@ -41,22 +48,35 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
   const sp = await searchParams;
   const me = await getCurrentUser().catch(() => null);
 
-  // Photographers see THEIR pay; owner/admin belong on /payouts (but can
-  // preview a specific member with ?as= — read-only, the flag action refuses
-  // for unlinked callers). Editors have no payroll here.
+  // Photographers see THEIR pay. Owner/admin who ALSO shoot (a linked
+  // TeamMember with a pay rate — Jordan shoots at his own 40%) see THEIR OWN
+  // pay here too; the whole-team payroll stays on Finance → Payroll. Owner/
+  // admin without a shoot rate belong on /payouts. ?as=<memberId> is an
+  // EXPLICIT owner/admin preview (read-only, the flag action refuses for
+  // unlinked callers). Editors have no payroll here.
+  //
+  // NOBODY's pay ever renders as a guess: the old "first photographer"
+  // local-dev fallback put James's page in front of the owner twice and is
+  // gone for good. No session → login (prod) or the empty state (open dev).
   let memberId: string | null = null;
+  let showTeamLink = false;
   if (me?.role === "PHOTOGRAPHER") {
     memberId = me.teamMemberId;
   } else if (me?.role === "EDITOR") {
     redirect(homeFor(me.role));
-  } else if (sp.as) {
-    memberId = sp.as; // owner/admin (or open local dev) preview
+  } else if (sp.as && (me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced())) {
+    memberId = sp.as; // explicit preview — owner/admin (or open local dev)
   } else if (me) {
-    redirect("/payouts");
-  } else {
-    // Open local dev: first configured photographer so the page renders.
-    const m = await prisma.teamMember.findFirst({ where: { payPercent: { not: null } }, select: { id: true } });
-    memberId = m?.id ?? null;
+    const tm = me.teamMemberId
+      ? await prisma.teamMember.findUnique({ where: { id: me.teamMemberId }, select: { payPercent: true } })
+      : null;
+    if (tm?.payPercent == null) redirect("/payouts");
+    memberId = me.teamMemberId;
+    showTeamLink = true;
+  } else if (authEnforced()) {
+    // Unauthenticated or a transient session/DB failure — bounce to login; a
+    // healthy session lands right back here on the next request.
+    redirect("/login?next=/my-pay");
   }
 
   if (!memberId) {
@@ -72,33 +92,41 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
     );
   }
 
-  // The last CLOSED period stays visible until its payday has passed — that's
-  // the check that's actually being paid. After payday it drops off (history
-  // lives on /payouts), and the accruing period becomes the default again.
+  // ONE payroll pass covers the whole year: the selected period's detail, every
+  // past period they can look back at, and the year-to-date total all come out
+  // of it. Running the engine per period would multiply a network-bound job.
   const current = payPeriodFor();
   const prev = shiftPeriod(current.startKey, -1);
   const next = shiftPeriod(current.startKey, 1);
   const todayKey = etDayKey(new Date());
   const prevAwaitingPayout = prev.payoutKey >= todayKey;
-  const p = sp.p ?? (prevAwaitingPayout ? "-1" : "0");
-  const period = p === "-1" && prevAwaitingPayout ? prev : p === "1" ? next : current;
-  const { start, end } = periodBounds(period);
-  const paysToday = period.payoutKey === todayKey;
 
-  const [people, member, flags] = await Promise.all([
-    computePayroll(start, end, { memberId }),
+  const [history, member, flags] = await Promise.all([
+    payHistoryFor(memberId),
     prisma.teamMember.findUnique({ where: { id: memberId }, select: { name: true } }),
     prisma.smartTask.findMany({
       where: { dedupeKey: { startsWith: `payflag-${memberId}-` }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
       select: { dedupeKey: true },
     }),
   ]);
-  const person = people.find((p) => p.member.id === memberId) ?? null;
+  const person = history.person;
+
+  // `p` is a period start key. The old -1 / 0 / 1 links still resolve so a
+  // bookmarked or texted link never lands on the wrong period.
+  const legacy: Record<string, string> = { "-1": prev.startKey, "0": current.startKey, "1": next.startKey };
+  const wanted = sp.p ? (legacy[sp.p] ?? sp.p) : prevAwaitingPayout ? prev.startKey : current.startKey;
+  const selected = history.periods.find((x) => x.startKey === wanted) ?? history.periods.find((x) => x.startKey === current.startKey) ?? history.periods[0];
+  const period = { startKey: selected.startKey, endKey: selected.endKey, payoutKey: selected.payoutKey };
+  const paysToday = period.payoutKey === todayKey;
+
+  const inPeriod = (k: string) => k >= period.startKey && k <= period.endKey;
   const flagged = new Set(flags.map((f) => f.dedupeKey));
-  const jobs = person?.jobs ?? [];
-  const days = person?.days ?? [];
-  const adjustments = person?.adjustments ?? [];
+  const jobs = (person?.jobs ?? []).filter((j) => inPeriod(j.dayKey));
+  const days = (person?.days ?? []).filter((d) => inPeriod(d.dayKey));
+  const adjustments = (person?.adjustments ?? []).filter((a) => inPeriod(etDayKey(new Date(a.dateISO))));
   const asSuffix = sp.as ? `&as=${sp.as}` : "";
+  // Everything already closed and browsable, newest first.
+  const pastPeriods = history.periods.filter((x) => !x.isFuture);
 
   return (
     <div>
@@ -106,21 +134,51 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
         eyebrow="Eastern time"
         title="My Pay"
         subtitle={`${member?.name ? member.name.split(" ")[0] + "'s" : "Your"} shoot pay + mileage — flag anything that looks off`}
+        actions={showTeamLink ? (
+          <Link href="/sales?tab=payroll" className="inline-flex items-center gap-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2">
+            Team payroll <ChevronRight className="size-3.5" />
+          </Link>
+        ) : undefined}
       />
       <div className="mx-auto max-w-3xl space-y-4 p-4 sm:p-6">
+        {/* TOTAL PAY THIS YEAR — the number they came to check when they are not
+            checking a single period. Counts work through today, so a shoot
+            already on the calendar for next week is not in it yet. */}
+        <div className="panel-shadow rounded-2xl border border-brand/30 bg-brand/[0.04] p-4">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
+                <TrendingUp className="size-3.5 text-brand" /> Total pay {history.year}
+              </div>
+              <div className="mt-0.5 text-3xl font-bold tabular-nums text-brand">{usd(history.ytd.total)}</div>
+              <div className="mt-0.5 text-[11px] text-muted-2">
+                {history.ytd.jobs} shoot{history.ytd.jobs === 1 ? "" : "s"} across {history.ytd.periodsWorked} pay period
+                {history.ytd.periodsWorked === 1 ? "" : "s"} · through today
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Chip icon={<Camera className="size-3.5" />} label="Shoot pay" value={usd(history.ytd.shootPay)} />
+              <Chip icon={<Car className="size-3.5" />} label="Mileage" value={usd(history.ytd.mileage)} />
+              {history.ytd.adjustments !== 0 && (
+                <Chip icon={<SlidersHorizontal className="size-3.5" />} label="Adjustments" value={usd(history.ytd.adjustments)} />
+              )}
+            </div>
+          </div>
+        </div>
+
         {/* Period switch: the payout awaiting its payday (when there is one),
             the accruing period, and a peek at next. */}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-1.5 text-sm">
             {[
-              ...(prevAwaitingPayout ? [{ key: "-1", label: "Getting paid" }] : []),
-              { key: "0", label: prevAwaitingPayout ? "Current period" : "Current" },
-              { key: "1", label: "Next" },
+              ...(prevAwaitingPayout ? [{ key: prev.startKey, label: "Getting paid" }] : []),
+              { key: current.startKey, label: prevAwaitingPayout ? "Current period" : "Current" },
+              { key: next.startKey, label: "Next" },
             ].map((t) => (
               <Link
                 key={t.key}
                 href={`/my-pay?p=${t.key}${asSuffix}`}
-                className={`rounded-lg px-3 py-1.5 font-medium ${p === t.key ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2"}`}
+                className={`rounded-lg px-3 py-1.5 font-medium ${period.startKey === t.key ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2"}`}
               >
                 {t.label}
               </Link>
@@ -137,15 +195,15 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap gap-2">
               <Chip icon={<Receipt className="size-3.5" />} label="Invoices" value={usd(jobs.reduce((s, j) => s + j.invoice, 0))} />
-              <Chip icon={<Camera className="size-3.5" />} label="Shoot pay" value={usd(person?.shootPayTotal ?? 0)} />
-              <Chip icon={<Car className="size-3.5" />} label="Mileage" value={usd(person?.mileageTotal ?? 0)} />
-              {(person?.adjustmentTotal ?? 0) !== 0 && (
-                <Chip icon={<SlidersHorizontal className="size-3.5" />} label="Adjustments" value={usd(person?.adjustmentTotal ?? 0)} />
+              <Chip icon={<Camera className="size-3.5" />} label="Shoot pay" value={usd(selected.shootPay)} />
+              <Chip icon={<Car className="size-3.5" />} label="Mileage" value={usd(selected.mileage)} />
+              {selected.adjustments !== 0 && (
+                <Chip icon={<SlidersHorizontal className="size-3.5" />} label="Adjustments" value={usd(selected.adjustments)} />
               )}
             </div>
             <div className="text-right">
               <div className="text-[11px] text-muted">Period total</div>
-              <div className="text-xl font-semibold text-success">{usd(person?.total ?? 0)}</div>
+              <div className="text-xl font-semibold text-success">{usd(selected.total)}</div>
             </div>
           </div>
         </div>
@@ -223,6 +281,47 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
           </div>
         )}
 
+        {/* EVERY past period, newest first. Tapping one loads it above. */}
+        {pastPeriods.length > 1 && (
+          <div className="panel-shadow rounded-2xl border border-border bg-surface">
+            <div className="flex items-center gap-2 border-b border-border px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-muted">
+              <History className="size-3.5" /> Pay history
+              <span className="ml-auto text-[11px] font-normal normal-case text-muted-2">
+                {pastPeriods.length} periods · tap one to open it
+              </span>
+            </div>
+            <div className="divide-y divide-border/60">
+              {pastPeriods.map((x) => {
+                const isOpen = x.startKey === period.startKey;
+                return (
+                  <Link
+                    key={x.startKey}
+                    href={`/my-pay?p=${x.startKey}${asSuffix}`}
+                    className={`flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-surface-2 ${isOpen ? "bg-brand/[0.06]" : ""}`}
+                  >
+                    <span className={`min-w-0 truncate ${isOpen ? "font-semibold" : ""}`}>
+                      {fmtKey(x.startKey)} – {fmtKey(x.endKey)}
+                    </span>
+                    {x.isCurrent ? (
+                      <span className="shrink-0 rounded-full bg-brand/15 px-1.5 py-0.5 text-[10px] font-medium text-brand">accruing</span>
+                    ) : x.isPaid ? (
+                      <span className="shrink-0 text-[10px] text-muted-2">paid {fmtKey(x.payoutKey)}</span>
+                    ) : (
+                      <span className="shrink-0 rounded-full bg-success/15 px-1.5 py-0.5 text-[10px] font-medium text-success">
+                        pays {fmtKey(x.payoutKey)}
+                      </span>
+                    )}
+                    <span className="ml-auto shrink-0 text-[11px] text-muted-2">
+                      {x.jobs} shoot{x.jobs === 1 ? "" : "s"}
+                    </span>
+                    <span className="w-20 shrink-0 text-right font-semibold tabular-nums">{usd(x.total)}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* General question */}
         <div className="panel-shadow rounded-2xl border border-border bg-surface p-4">
           <p className="mb-2 flex items-center gap-2 text-sm font-semibold"><Wallet className="size-4 text-brand" /> Something not adding up?</p>
@@ -231,7 +330,8 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
         </div>
 
         <p className="px-1 text-[11px] text-muted-2">
-          Pay periods run two weeks and pay out the Friday after they close. <ChevronRight className="inline size-3" /> Questions about an older period? Ask Jordan directly.
+          Pay periods run two weeks and pay out the Friday after they close. Every past period is listed above — open any one to see the
+          shoots behind it. <ChevronRight className="inline size-3" /> Something still not right? Flag it and Jordan gets it.
         </p>
       </div>
     </div>

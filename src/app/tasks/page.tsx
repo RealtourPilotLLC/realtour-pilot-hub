@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/user";
+import { authEnforced } from "@/lib/auth/guards";
 import { canAccess } from "@/lib/auth/access";
 import { prisma } from "@/lib/prisma";
 import { clientTextWhere } from "@/lib/clientTexts";
@@ -23,6 +24,7 @@ export default async function TasksHubPage({ searchParams }: {
 }) {
   const sp = await searchParams;
   const me = await getCurrentUser().catch(() => null);
+  if (!me && authEnforced()) redirect("/login?next=/tasks"); // transient null never renders the ops queue
   if (me && !canAccess(me, "tasks")) redirect("/");
 
   // Editors only ever get their own scoped board (exactly the old /queue view) —

@@ -2,6 +2,7 @@ import { Users, CreditCard, UserCheck, CalendarDays, Camera, Scissors, MonitorSm
 import type { LucideIcon } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { FinanceTabs, type FinanceTab } from "@/components/finance/FinanceTabs";
+import { KpiCards } from "@/components/finance/KpiCards";
 import { peoplePayments, PAYEE_GROUPS, type PayeeRow } from "@/lib/bookkeeping";
 
 export const dynamic = "force-dynamic";
@@ -18,7 +19,7 @@ const CHANNEL_COLOR: Record<string, string> = {
 const chColor = (c: string) => CHANNEL_COLOR[c] ?? "#6a6a6a";
 
 const GROUP_META: Record<string, { icon: LucideIcon; color: string }> = {
-  "Photographers": { icon: Camera, color: "#6ba3d6" },
+  "Creative specialists": { icon: Camera, color: "#6ba3d6" },
   "Editors": { icon: Scissors, color: "#8b93e6" },
   "Software & tools": { icon: MonitorSmartphone, color: "#d4a95f" },
   "Staff & VA": { icon: Headset, color: "#5cb98a" },
@@ -49,12 +50,43 @@ export async function PeopleTab({ show }: { show: FinanceTab[] }) {
       <div className="mx-auto max-w-5xl space-y-5 p-4 sm:p-6">
         <FinanceTabs tab="people" show={show} />
 
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <Kpi icon={Users} accent="#5cb98a" label="Paid to people · YTD" value={m0(data.total)} sub={`${data.count} people & vendors`} />
-          <Kpi icon={CalendarDays} accent="#6ba3d6" label="This month" value={m0(thisMonth)} sub="paid out so far" />
-          <Kpi icon={UserCheck} accent="#8b93e6" label="Top recipient" value={top ? m0(top.total) : "—"} sub={top?.payee ?? "—"} />
-          <Kpi icon={CreditCard} accent="#d4a95f" label="Payment channels" value={String(channels.length)} sub={channels.slice(0, 3).map((c) => c.channel).join(", ")} />
-        </div>
+        <KpiCards
+          items={[
+            {
+              key: "ytd", icon: <Users className="size-4" />, accent: "#5cb98a",
+              label: "Paid to people · YTD", value: m0(data.total), sub: `${data.count} people & vendors`,
+              detailTitle: "Who got paid · year to date",
+              details: data.list.slice(0, 18).map((p) => ({ label: p.payee, value: m0(p.total), sub: `${p.count}× · ${p.group}` })),
+            },
+            {
+              key: "month", icon: <CalendarDays className="size-4" />, accent: "#6ba3d6",
+              label: "This month", value: m0(thisMonth), sub: "paid out so far",
+              detailTitle: "Who got paid this month",
+              details: data.list
+                .map((p) => ({ p, mv: p.months[monthKey] ?? 0 }))
+                .filter((x) => x.mv > 0)
+                .sort((a, b) => b.mv - a.mv)
+                .map((x) => ({ label: x.p.payee, value: m0(x.mv), sub: x.p.group })),
+            },
+            {
+              key: "top", icon: <UserCheck className="size-4" />, accent: "#8b93e6",
+              label: "Top recipient", value: top ? m0(top.total) : "—", sub: top?.payee ?? "—",
+              detailTitle: top ? `${top.payee} — by rail and by month` : undefined,
+              details: top
+                ? [
+                    ...Object.entries(top.channels).sort((a, b) => b[1] - a[1]).map(([ch, amt]) => ({ label: ch, value: m0(amt), sub: "rail" })),
+                    ...Object.entries(top.months).sort((a, b) => b[0].localeCompare(a[0])).slice(0, 6).map(([mk, amt]) => ({ label: mk, value: m0(amt), sub: "month" })),
+                  ]
+                : undefined,
+            },
+            {
+              key: "channels", icon: <CreditCard className="size-4" />, accent: "#d4a95f",
+              label: "Payment channels", value: String(channels.length), sub: channels.slice(0, 3).map((c) => c.channel).join(", "),
+              detailTitle: "Paid out by rail",
+              details: channels.map((c) => ({ label: c.channel, value: m0(c.amount) })),
+            },
+          ]}
+        />
 
         {/* BY TYPE + HOW YOU PAY, side by side */}
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">

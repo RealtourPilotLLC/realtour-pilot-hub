@@ -85,7 +85,12 @@ export async function MoneyTab({ show }: { show: FinanceTab[] }) {
             </div>
           )}
           <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <Stat label="In the bank" value={m0(cash.bankBalance)} sub={cash.bankAsOf ? `as of ${etDate(cash.bankAsOf)}` : "not set"} tone={cash.bankBalance != null && cash.bankBalance < 0 ? "danger" : "muted"} />
+            <Stat
+              label="In the bank"
+              value={m0(cash.bankBalance)}
+              sub={cash.bankAsOf ? `${cash.bankLive ? "live from your bank · " : "as of "}${etDate(cash.bankAsOf)}` : "not set"}
+              tone={cash.bankBalance != null && cash.bankBalance < 0 ? "danger" : "muted"}
+            />
             <Stat label="Owed to you (AR)" value={m0(cash.arOutstanding)} sub="delivered, unpaid" tone={cash.arOutstanding > 0 ? "success" : "muted"} />
             <Stat label="Money in ~30d" value={m0(cash.comingIn30)} sub="typical month" tone="success" />
             <Stat label="Going out ~30d" value={m0(cash.goingOut30)} sub="typical month" tone="muted" />
@@ -115,9 +120,10 @@ export async function MoneyTab({ show }: { show: FinanceTab[] }) {
           )}
           <div className="divide-y divide-border/60 text-sm">
             <Row label="Money collected" value={m0(pnl.revenue)} strong sub={`delivered this month: ${m0(pnl.invoiced)}`} />
-            <Row label="− Photographers" value={m0(pnl.photographerPay)} icon={<Camera className="size-3.5 text-muted-2" />} neg />
-            <Row label="− Editors & team (Kim / Remar / Kyle)" value={m0(pnl.teamPay)} icon={<Users className="size-3.5 text-muted-2" />} neg
-              hint={pnl.teamPay === 0 ? "record their pay below to see true profit" : undefined} />
+            <Row label="− Photographers" value={m0(pnl.photographerPay)} icon={<Camera className="size-3.5 text-muted-2" />} neg
+              sub={pnl.accruedPhotographerPay > 0 ? `${m0(pnl.accruedPhotographerPay)} earned this month` : undefined} />
+            <Row label="− Editors & team" value={m0(pnl.teamPay)} icon={<Users className="size-3.5 text-muted-2" />} neg
+              sub="Luma · Kim · Staffify · AutoHDR · Paul" />
             <Row label="− Card processing fees" value={m0(pnl.cardFees)} icon={<CreditCard className="size-3.5 text-muted-2" />} neg />
             <Row label="− Other expenses" value={m0(pnl.expenses)} icon={<Receipt className="size-3.5 text-muted-2" />} neg />
             <Row label={pnl.profit < 0 ? "= Net loss" : "= Net profit"} value={m0(pnl.profit)} strong tone={profitTone}

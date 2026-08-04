@@ -1,21 +1,44 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { computePayroll } from "@/lib/payroll";
+import { finishedPhotos } from "@/lib/photoCount";
 
-// Editing rates (owner-supplied). Luma edits only PREMIUM video-type deliverables
-// ($299 each); standard videos/reels are edited in-house (Remar/Kim). AutoHDR is
-// $0.50 per raw photo (added once raw-photo counts are snapshotted per project).
-const LUMA_PER_VIDEO = 299;
+const RATE_PER_PHOTO = 0.5; // AutoHDR, per FINISHED photo
+
+// Editing rates (owner-supplied, 2026-07-22):
+//   • Premium reels / premium cinematic (Luma)  → $299 each (tips of ~$50 on
+//     big projects are NOT modeled — actual tips land in the ledger anyway).
+//   • Monthly social content videos (Kim)        → ~$120 each (Starter/
+//     Accelerator/Pro content sessions).
+//   • Standard videos & reels (Remar, in-house)  → ~$40 each.
+//   • Photos (AutoHDR): $0.50 per FINISHED photo = (5-bracket sets ÷ 5) +
+//     single drone JPGs — needs the per-job Dropbox raw-file count (next build).
+const RATE_PREMIUM = 299;
+const RATE_MONTHLY_SOCIAL = 120;
+const RATE_STANDARD = 40;
 const VIDEO_TYPES = new Set(["VIDEO", "SOCIAL_REEL"]);
 const PREMIUM_RE = /premium|influencer/i;
+const MONTHLY_RE = /starter|accelerator|content (session|day)|video pro\b/i;
 
-function lumaEditing(deliverables: { type: string; label: string | null; quantity: number }[]) {
-  let lumaVideos = 0;
+/**
+ * Editing cost implied by a set of deliverables, at the real per-video rates.
+ * Exported so the per-PACKAGE margin engine can weight the same way this
+ * weights per job — one rate table, so the two can never disagree.
+ */
+export function videoEditingCost(deliverables: { type: string; label: string | null; quantity: number }[]) {
+  let premium = 0, monthly = 0, standard = 0;
   for (const d of deliverables) {
     if (!VIDEO_TYPES.has(d.type)) continue;
-    if (PREMIUM_RE.test(d.label ?? "")) lumaVideos += d.quantity ?? 1;
+    const q = d.quantity ?? 1;
+    const label = d.label ?? "";
+    if (PREMIUM_RE.test(label)) premium += q;
+    else if (MONTHLY_RE.test(label)) monthly += q;
+    else standard += q;
   }
-  return { lumaVideos, lumaCost: lumaVideos * LUMA_PER_VIDEO };
+  return {
+    premium, monthly, standard,
+    cost: premium * RATE_PREMIUM + monthly * RATE_MONTHLY_SOCIAL + standard * RATE_STANDARD,
+  };
 }
 
 export type JobRow = {
@@ -28,8 +51,12 @@ export type JobRow = {
   paymentStatus: string | null;
   revenue: number;          // eligible invoice (payableInvoice) or order price
   photographerCost: number; // exact: base shoot pay + mileage share
-  lumaVideos: number;       // premium videos/reels routed to Luma
-  editingCost: number;      // Luma (exact); AutoHDR + in-house added as they land
+  premiumVideos: number;    // $299 Luma premium reels/cinematics
+  monthlyVideos: number;    // $120 monthly-social videos (Kim)
+  standardVideos: number;   // $40 standard videos/reels (in-house)
+  finishedPhotos: number | null; // (brackets ÷ 5) + drone singles — null until counted
+  photoCost: number;        // finished × $0.50 (AutoHDR)
+  editingCost: number;      // tiered video editing + photo editing
   margin: number;           // revenue − photographer − editing
   marginPct: number | null;
 };
@@ -69,6 +96,7 @@ export async function jobProfitability(start: Date, end: Date): Promise<JobProfi
     select: {
       id: true, title: true, price: true, payableInvoice: true,
       paymentStatus: true, shootDate: true, status: true,
+      rawPhotoCount: true, dronePhotoCount: true,
       photographer: { select: { name: true } },
       client: { select: { name: true } },
       deliverables: { select: { type: true, label: true, quantity: true } },
@@ -82,8 +110,14 @@ export async function jobProfitability(start: Date, end: Date): Promise<JobProfi
     // revenue, so it's used only inside the cost calc, never as the top line.
     const revenue = pr.price ?? pr.payableInvoice ?? 0;
     const photographerCost = costByProject[pr.id] ?? 0;
-    const { lumaVideos, lumaCost } = lumaEditing(pr.deliverables);
-    const editingCost = lumaCost;
+    const v = videoEditingCost(pr.deliverables);
+    // Photo editing: from the persisted Dropbox raw-folder counts (null until
+    // the sweep has visited this job — shown as "—", never a fake zero).
+    const fin = pr.rawPhotoCount != null
+      ? finishedPhotos(pr.rawPhotoCount, pr.dronePhotoCount ?? 0)
+      : null;
+    const photoCost = fin != null ? fin * RATE_PER_PHOTO : 0;
+    const editingCost = v.cost + photoCost;
     const margin = revenue - photographerCost - editingCost;
     return {
       id: pr.id,
@@ -95,7 +129,11 @@ export async function jobProfitability(start: Date, end: Date): Promise<JobProfi
       paymentStatus: pr.paymentStatus,
       revenue,
       photographerCost,
-      lumaVideos,
+      premiumVideos: v.premium,
+      monthlyVideos: v.monthly,
+      standardVideos: v.standard,
+      finishedPhotos: fin,
+      photoCost,
       editingCost,
       margin,
       marginPct: revenue > 0 ? margin / revenue : null,
