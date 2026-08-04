@@ -2,13 +2,15 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import {
   Sun, Camera, Brain, Coffee, CalendarClock, AlertTriangle, Inbox, TrendingUp,
-  Wallet, Landmark, Package, CheckCircle2, Users2, Video, CalendarOff,
+  Wallet, Landmark, Package, CheckCircle2, Users2, Video, CalendarOff, Mic,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { QuickAdd } from "@/components/day/QuickAdd";
 import { TodoRow } from "@/components/day/TodoRow";
 import { BlockDayButton, BlockRowControls } from "@/components/day/BlockControls";
+import { MeetingCard, ScanMeetingsButton } from "@/components/day/MeetingCard";
+import { meetingsForReview } from "@/lib/meetings";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
 import { buildDayPlan, ownerTodoLists, ownerMemberId, DAY_SHAPE } from "@/lib/ownerDay";
@@ -50,10 +52,11 @@ export default async function MyDayPage() {
 
   const todayKey = etDayKey(new Date());
   const myMemberId = await ownerMemberId(me?.teamMemberId);
-  const [plan, lists, pulse] = await Promise.all([
+  const [plan, lists, pulse, meetings] = await Promise.all([
     buildDayPlan(todayKey, { memberId: myMemberId }),
     ownerTodoLists(),
     ownerPulse().catch(() => null),
+    meetingsForReview().catch(() => []),
   ]);
 
   // The plan and the fixed commitments, merged into one chronological column —
@@ -197,17 +200,59 @@ export default async function MyDayPage() {
           ) : (
             <div className="mt-3 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-[11px] leading-relaxed text-muted">
               <span className="inline-flex items-center gap-1.5 font-semibold text-warning">
-                <CalendarOff className="size-3.5" /> Google Calendar isn&rsquo;t connected.
+                <CalendarOff className="size-3.5" /> Google Calendar isn&rsquo;t readable yet.
               </span>{" "}
-              This plan is built from shoots only — meetings and Calendly bookings aren&rsquo;t in it yet, and nothing is being blocked
-              off. One reconnect fixes it:{" "}
-              <Link href="/connections" className="font-medium text-brand hover:underline">
-                Connections → Gmail → Reconnect
-              </Link>
-              , signing in as info@realtourpilot.com.
+              This plan is built from shoots only — meetings and Calendly bookings aren&rsquo;t in it, and nothing is being blocked off.
+              {/* Two different failures, two different fixes. Show Google's own
+                  words when the problem is on their side, and only send him back
+                  to the consent screen when consent is actually the problem. */}
+              {plan.calendarError && /has not been used in project|is disabled/i.test(plan.calendarError) ? (
+                <>
+                  {" "}
+                  The Calendar API is switched off in your Google Cloud project — permission is granted, the service just isn&rsquo;t
+                  enabled. Turn it on in Cloud Console and this fills in on the next load.
+                  <span className="mt-1 block text-muted-2">{plan.calendarError}</span>
+                </>
+              ) : (
+                <>
+                  {" "}
+                  One reconnect fixes it:{" "}
+                  <Link href="/connections" className="font-medium text-brand hover:underline">
+                    Connections → Gmail → Reconnect
+                  </Link>
+                  , signing in as info@realtourpilot.com.
+                  {plan.calendarError && <span className="mt-1 block text-muted-2">{plan.calendarError}</span>}
+                </>
+              )}
             </div>
           )}
         </Section>
+
+        {/* CALL RECAPS — above the lists, because an unreviewed meeting is the
+            thing most likely to be hiding a commitment he's forgotten. */}
+        {(meetings.length > 0 || plan.calendarOk) && (
+          <Section
+            icon={Mic}
+            title="From your calls"
+            action={meetings.length > 0 ? <span className="text-[11px] text-muted-2">{meetings.length} to review</span> : undefined}
+          >
+            {meetings.length === 0 ? (
+              <div className="py-2">
+                <p className="mb-2 text-center text-sm text-muted-2">No call recaps waiting.</p>
+                <div className="flex justify-center">
+                  <ScanMeetingsButton />
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {meetings.map((m) => (
+                  <MeetingCard key={m.id} m={m} />
+                ))}
+                <ScanMeetingsButton />
+              </div>
+            )}
+          </Section>
+        )}
 
         {lists.overdue.length > 0 && (
           <Section icon={AlertTriangle} title="Overdue" tone="warning" action={<span className="text-[11px] text-muted-2">{lists.overdue.length}</span>}>

@@ -86,6 +86,8 @@ export type DayPlan = {
   fullyBooked: boolean;
   /** False when Google Calendar couldn't be read — the plan sees shoots only. */
   calendarOk: boolean;
+  /** Google's own words for why, so the fix shown matches the actual problem. */
+  calendarError: string | null;
 };
 
 function atHour(dayKey: string, hour: number): Date {
@@ -137,7 +139,7 @@ const overlapMs = (a: Interval, b: Interval) =>
 export async function fixedBlocksFor(
   dayKey: string,
   opts?: { memberId?: string | null },
-): Promise<{ blocks: FixedBlock[]; calendarOk: boolean }> {
+): Promise<{ blocks: FixedBlock[]; calendarOk: boolean; calendarError: string | null }> {
   const start = atHour(dayKey, 0);
   const end = new Date(start.getTime() + 24 * 60 * MIN);
 
@@ -156,8 +158,16 @@ export async function fixedBlocksFor(
       orderBy: { startAt: "asc" },
     }),
     listCalendarEvents(start, end).then(
-      (items) => ({ ok: true, items }),
-      () => ({ ok: false, items: [] as CalEvent[] }),
+      (items) => ({ ok: true, items, error: null as string | null }),
+      // Keep Google's own wording. "Reconnect Google" is the right advice for a
+      // scope problem and the WRONG advice for an API that's switched off in
+      // Cloud Console — one generic message would send him round the consent
+      // screen on a problem consent cannot fix.
+      (e: unknown) => ({
+        ok: false,
+        items: [] as CalEvent[],
+        error: e instanceof Error ? e.message : "Couldn't read Google Calendar.",
+      }),
     ),
   ]);
 
@@ -214,7 +224,7 @@ export async function fixedBlocksFor(
   }
 
   const blocks = [...shoots, ...meetings].sort((a, b) => a.start.getTime() - b.start.getTime());
-  return { blocks, calendarOk: cal.ok };
+  return { blocks, calendarOk: cal.ok, calendarError: cal.error };
 }
 
 /** Free windows inside the working day, once the given busy spans are removed. */
@@ -246,7 +256,7 @@ export async function buildDayPlan(dayKey: string, opts?: { memberId?: string | 
   const dayEnd = atHour(dayKey, DAY_END_HOUR);
   const deepUntil = atHour(dayKey, DEEP_UNTIL_HOUR);
 
-  const [{ blocks: fixed, calendarOk }, todos] = await Promise.all([
+  const [{ blocks: fixed, calendarOk, calendarError }, todos] = await Promise.all([
     fixedBlocksFor(dayKey, opts),
     prisma.ownerTodo.findMany({
       where: { status: "OPEN", plannedFor: dayKey },
@@ -353,6 +363,7 @@ export async function buildDayPlan(dayKey: string, opts?: { memberId?: string | 
     deepMinutesFree,
     fullyBooked: freeMinutes < MIN_USABLE_GAP_MIN,
     calendarOk,
+    calendarError,
   };
 }
 

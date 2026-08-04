@@ -43,10 +43,16 @@ async function call<T>(path: string, init?: RequestInit & { token?: string }): P
   const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
     const err = json.error as { message?: string; status?: string } | undefined;
-    // 403 with an insufficient-scope status means the token predates the
-    // calendar scope — the fix is a reconnect, not a retry.
-    if (res.status === 401 || res.status === 403) throw new CalendarNotConnected();
-    throw new Error(err?.message || `Google Calendar ${res.status}`);
+    const msg = err?.message || "";
+    // A 403 has two very different causes and they need different fixes:
+    // a missing SCOPE means reconnect Google, while "API has not been used in
+    // project … or it is disabled" means the Calendar API is switched off in
+    // Cloud Console. Collapsing both into "not connected" sends you round the
+    // consent screen forever on a problem consent cannot fix, so keep Google's
+    // own wording for anything that isn't genuinely a scope/auth failure.
+    const scopeProblem = /insufficient (authentication scopes|permission)|invalid credentials/i.test(msg);
+    if (res.status === 401 || (res.status === 403 && (scopeProblem || !msg))) throw new CalendarNotConnected();
+    throw new Error(msg || `Google Calendar ${res.status}`);
   }
   return json as T;
 }
@@ -200,12 +206,21 @@ async function assertOurs(eventId: string, opts?: { missingIsFine?: boolean }): 
   return true;
 }
 
-/** Cheap connected/not check for the UI. */
+/**
+ * Cheap connected/not check for the UI.
+ *
+ * Probes the EVENTS collection, not the calendar resource. We hold
+ * `calendar.events`, which is exactly the permission to read and write events
+ * and deliberately nothing more — it does NOT grant `Calendars.Get` or
+ * `CalendarList.List`. Checking either of those would report "not connected"
+ * forever while blocking worked perfectly.
+ */
 export async function calendarConnected(): Promise<boolean> {
   const token = await ownerGoogleToken();
   if (!token) return false;
   try {
-    await call(`/calendars/${CAL}?fields=id`, { token });
+    const now = new Date().toISOString();
+    await call(`/calendars/${CAL}/events?maxResults=1&timeMin=${encodeURIComponent(now)}`, { token });
     return true;
   } catch {
     return false;

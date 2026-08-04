@@ -6,6 +6,7 @@ import { requireOwner } from "@/lib/auth/guards";
 import { etDayKey } from "@/lib/datetime";
 import { buildDayPlan, ownerMemberId, etInstant } from "@/lib/ownerDay";
 import { createBlock, updateBlock, deleteBlock, CalendarNotConnected } from "@/lib/integrations/googleCalendar";
+import { scanMeetTranscripts, parseProposed } from "@/lib/meetings";
 
 // Owner-only throughout: this is one person's private list, and the guard is
 // what keeps it out of the shared ops queue in both directions.
@@ -255,6 +256,93 @@ export async function rescheduleBlock(
 export async function unblockTodo(id: string): Promise<{ ok: boolean }> {
   await requireOwner();
   await releaseBlock(id);
+  revalidatePath("/day");
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// MEETING RECAPS.
+//
+// One card, many proposed items, nothing created until Accept. He can drop the
+// ones he doesn't want first — the whole point of a review step is that it can
+// say no.
+// ---------------------------------------------------------------------------
+
+/** Pull this month's Meet transcripts into review cards. */
+export async function scanMeetings(): Promise<{ created: number; found: number; error?: string }> {
+  await requireOwner();
+  try {
+    const r = await scanMeetTranscripts();
+    revalidatePath("/day");
+    return { created: r.created, found: r.found };
+  } catch (e) {
+    return { created: 0, found: 0, error: e instanceof Error ? e.message : "Couldn't read Drive." };
+  }
+}
+
+/**
+ * Accept a recap: mint the chosen action items as real to-dos.
+ *
+ * `skip` carries the indexes he unticked, so accepting is one tap when the list
+ * is right and still precise when it isn't.
+ */
+export async function acceptMeeting(id: string, skip: number[] = []): Promise<{ created: number; error?: string }> {
+  await requireOwner();
+  const meeting = await prisma.ownerMeeting.findUnique({
+    where: { id },
+    select: { id: true, title: true, heldAt: true, proposed: true, status: true },
+  });
+  if (!meeting) return { created: 0, error: "Gone." };
+  if (meeting.status === "ACCEPTED") return { created: 0, error: "Already accepted." };
+
+  const drop = new Set(skip);
+  const items = parseProposed(meeting.proposed).filter((_, i) => !drop.has(i));
+
+  if (items.length > 0) {
+    await prisma.ownerTodo.createMany({
+      data: items.map((it) => ({
+        title: String(it.title ?? "").slice(0, 200) || "Follow up",
+        notes: String(it.notes ?? "").slice(0, 2000) || null,
+        priority: "NEXT",
+        energy: it.energy === "DEEP" ? "DEEP" : "SHALLOW",
+        estimateMin: Math.min(Math.max(Number(it.estimateMin) || 30, 5), 480),
+        // Deadlines are counted from when the meeting HAPPENED, not from when
+        // he got round to reviewing it — a week is a week from the promise.
+        dueAt: new Date(meeting.heldAt.getTime() + Math.max(Number(it.dueInDays) || 7, 0) * 86_400_000),
+        sourceNote: `From the ${meeting.title} call`.slice(0, 300),
+        meetingId: meeting.id,
+      })),
+    });
+  }
+
+  await prisma.ownerMeeting.update({
+    where: { id },
+    data: { status: "ACCEPTED", reviewedAt: new Date() },
+  });
+  revalidatePath("/day");
+  return { created: items.length };
+}
+
+/** Not worth any to-dos. The recap stays readable; it just leaves the queue. */
+export async function dismissMeeting(id: string): Promise<void> {
+  await requireOwner();
+  await prisma.ownerMeeting.update({
+    where: { id },
+    data: { status: "DISMISSED", reviewedAt: new Date() },
+  });
+  revalidatePath("/day");
+}
+
+/** Add one more item to a recap by hand before accepting it. */
+export async function addMeetingItem(id: string, title: string): Promise<{ ok: boolean; error?: string }> {
+  await requireOwner();
+  const clean = title.trim();
+  if (!clean) return { ok: false, error: "Give it a name." };
+  const meeting = await prisma.ownerMeeting.findUnique({ where: { id }, select: { proposed: true } });
+  if (!meeting) return { ok: false, error: "Gone." };
+  const items = parseProposed(meeting.proposed);
+  items.push({ title: clean.slice(0, 200), notes: "Added by hand", dueInDays: 7, energy: "SHALLOW", estimateMin: 30 });
+  await prisma.ownerMeeting.update({ where: { id }, data: { proposed: JSON.stringify(items) } });
   revalidatePath("/day");
   return { ok: true };
 }
