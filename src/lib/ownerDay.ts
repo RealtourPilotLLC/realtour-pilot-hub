@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { etDayKey, etDayStartUtc, etAt } from "@/lib/datetime";
+import { etDayKey, etDayStartUtc, etAt, etAddDays } from "@/lib/datetime";
 import { listCalendarEvents, type CalEvent } from "@/lib/integrations/googleCalendar";
 
 // ---------------------------------------------------------------------------
@@ -388,20 +388,36 @@ export async function ownerMemberId(loginMemberId?: string | null): Promise<stri
   return row?.id ?? null;
 }
 
-/** The lists either side of the plan: what is queued, and what is overdue. */
+/** How far back the finished list reaches. Long enough to undo a mis-tap weeks later. */
+const HISTORY_DAYS = 60;
+
+const TODO_FIELDS = {
+  id: true, title: true, notes: true, priority: true, energy: true, estimateMin: true,
+  dueAt: true, plannedFor: true, projectId: true, clientId: true, commLogId: true,
+  gmailThreadId: true, sourceNote: true, calendarEventId: true,
+  project: { select: { id: true, title: true } },
+  client: { select: { id: true, name: true } },
+} as const;
+
+/** The lists either side of the plan: what is queued, what is overdue, what is finished. */
 export async function ownerTodoLists() {
   const today = etDayKey(new Date());
-  const [open, doneToday] = await Promise.all([
+  const [open, finished, doneToday] = await Promise.all([
     prisma.ownerTodo.findMany({
       where: { status: "OPEN" },
       orderBy: [{ dueAt: { sort: "asc", nulls: "last" } }, { createdAt: "desc" }],
-      select: {
-        id: true, title: true, notes: true, priority: true, energy: true, estimateMin: true,
-        dueAt: true, plannedFor: true, projectId: true, clientId: true, commLogId: true,
-        gmailThreadId: true, sourceNote: true, calendarEventId: true,
-        project: { select: { id: true, title: true } },
-        client: { select: { id: true, name: true } },
+      select: TODO_FIELDS,
+      take: 200,
+    }),
+    // Finished AND dropped: both are reversible decisions, and "not doing this"
+    // gets mis-tapped exactly as often as "done".
+    prisma.ownerTodo.findMany({
+      where: {
+        status: { in: ["DONE", "DROPPED"] },
+        doneAt: { gte: etAddDays(etDayStartUtc(), -HISTORY_DAYS) },
       },
+      orderBy: { doneAt: "desc" },
+      select: { ...TODO_FIELDS, status: true, doneAt: true },
       take: 200,
     }),
     prisma.ownerTodo.count({ where: { status: "DONE", doneAt: { gte: etDayStartUtc() } } }),
@@ -409,10 +425,16 @@ export async function ownerTodoLists() {
 
   const overdue = open.filter((t) => t.dueAt && etDayKey(t.dueAt) < today);
   const todayList = open.filter((t) => t.plannedFor === today && !overdue.includes(t));
-  const unscheduled = open.filter((t) => !t.plannedFor && !overdue.includes(t));
+  // A day that has already been and gone is not a plan. Anything still open and
+  // planned for the past rolls back into "not scheduled yet" — without this it
+  // belonged to no list at all and vanished off the page while still open,
+  // which is exactly what happens to a restored to-do.
+  const unscheduled = open.filter(
+    (t) => (!t.plannedFor || t.plannedFor < today) && !overdue.includes(t),
+  );
   const later = open.filter((t) => t.plannedFor && t.plannedFor > today && !overdue.includes(t));
 
-  return { open, overdue, today: todayList, unscheduled, later, doneToday };
+  return { open, overdue, today: todayList, unscheduled, later, finished, doneToday };
 }
 
 export const DAY_SHAPE = {

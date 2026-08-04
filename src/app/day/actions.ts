@@ -111,6 +111,32 @@ export async function dropOwnerTodo(id: string): Promise<void> {
   revalidatePath("/day");
 }
 
+/**
+ * Put a finished (or dropped) to-do back on the list.
+ *
+ * Undoing a mis-tap has to be as cheap as the tap was, or the checkbox becomes
+ * something you hesitate over. The calendar block is NOT restored — completing
+ * it gave that hour back, and silently re-taking time on his calendar days later
+ * would be a worse surprise than re-blocking it himself.
+ */
+export async function restoreOwnerTodo(id: string): Promise<{ ok: boolean }> {
+  await requireOwner();
+  const row = await prisma.ownerTodo.findUnique({ where: { id }, select: { plannedFor: true } });
+  const today = etDayKey(new Date());
+  await prisma.ownerTodo.update({
+    where: { id },
+    data: {
+      status: "OPEN",
+      doneAt: null,
+      // A day that has already passed is not a plan. Clearing it puts the row
+      // back in "not scheduled yet" rather than into a day that is over.
+      ...(row?.plannedFor && row.plannedFor < today ? { plannedFor: null } : {}),
+    },
+  });
+  revalidatePath("/day");
+  return { ok: true };
+}
+
 /** Move a to-do onto (or off) a given ET day. Null clears the plan. */
 export async function planOwnerTodo(id: string, dayKey: string | null): Promise<void> {
   await requireOwner();

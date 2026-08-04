@@ -10,6 +10,7 @@ import { QuickAdd } from "@/components/day/QuickAdd";
 import { TodoRow } from "@/components/day/TodoRow";
 import { BlockDayButton, BlockRowControls } from "@/components/day/BlockControls";
 import { MeetingCard, ScanMeetingsButton } from "@/components/day/MeetingCard";
+import { FinishedList } from "@/components/day/FinishedList";
 import { meetingsForReview } from "@/lib/meetings";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
@@ -280,6 +281,10 @@ export default async function MyDayPage() {
           )}
         </Section>
 
+        {/* Finished + dropped, collapsed, with one tap back onto the list. The
+            checkbox is the most-used control here, so undoing a mis-tap has to
+            be as cheap as the tap was. */}
+        <FinishedList rows={lists.finished} />
         {lists.doneToday > 0 && (
           <p className="flex items-center justify-center gap-1.5 text-[11px] text-muted-2">
             <CheckCircle2 className="size-3.5 text-success" /> {lists.doneToday} finished today
