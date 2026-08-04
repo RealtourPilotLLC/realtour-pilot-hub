@@ -115,13 +115,23 @@ export function etInstant(dayKey: string, hhmm: string): Date | null {
 }
 
 /** How much a meeting really costs, either side of the time on the invite. */
-function buffersFor(e: { virtual: boolean; where: string | null }): { before: number; after: number } {
+function buffersFor(e: { virtual: boolean; where: string | null; buffer: boolean }): { before: number; after: number } {
+  // Calendly already pads his calls, and writes that padding onto the calendar
+  // as its own event. Adding ours on top would charge the same buffer twice.
+  if (e.buffer) return { before: 0, after: 0 };
   // Somewhere to drive to: hold the drive on both ends.
   if (!e.virtual && e.where) return { before: TRAVEL_BUFFER_MIN, after: TRAVEL_BUFFER_MIN };
   // A call: nothing before, a short beat after to write it down. An event with
   // no location and no link is treated as a call — the cautious read, since
   // over-holding an hour a day for a phone call is its own kind of wrong.
   return { before: 0, after: RECOVERY_BUFFER_MIN };
+}
+
+/** "[2-hour buffer before Discovery Call event]" reads badly on a timeline. */
+function tidyTitle(e: CalEvent): string {
+  if (!e.buffer) return e.title;
+  const m = /buffer\s+(before|after)\s+(.*?)\s*event\s*\]/i.exec(e.title);
+  return m ? `Buffer ${m[1].toLowerCase()} ${m[2].trim()}` : "Calendly buffer";
 }
 
 const overlapMs = (a: Interval, b: Interval) =>
@@ -210,7 +220,7 @@ export async function fixedBlocksFor(
     const { before, after } = buffersFor(e);
     meetings.push({
       kind: "meeting",
-      title: e.title,
+      title: tidyTitle(e),
       where: e.where,
       start: e.start,
       end: e.end,

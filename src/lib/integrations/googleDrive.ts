@@ -50,23 +50,70 @@ async function driveFetch(url: string, token: string): Promise<Response> {
 export type TranscriptFile = {
   id: string;
   name: string;
-  /** When the meeting happened — the recording's creation time. */
+  /** When the meeting actually happened (see heldAtFromTitle). */
   createdAt: Date;
 };
 
-/** Meet transcript Docs created inside [since, until]. Newest first. */
+/**
+ * The real meeting time, read out of the file NAME.
+ *
+ * Gemini titles its notes "<people> - 2026/08/03 15:57 EDT - Notes by Gemini",
+ * and that stamp is when the call STARTED. Drive's own createdTime is when the
+ * notes were finalised — on Jordan's files that runs about ninety minutes late,
+ * which would file a 4pm call under 5:25pm and land every deadline a day out.
+ * The title wins; createdTime is only the fallback.
+ */
+export function heldAtFromTitle(name: string, fallback: Date): Date {
+  const m = /(\d{4})\/(\d{2})\/(\d{2})\s+(\d{1,2}):(\d{2})\s*([A-Z]{2,4})?/.exec(name);
+  if (!m) return fallback;
+  const [, y, mo, d, h, min, zone] = m;
+  // The title states its own zone. EDT/EST are the only ones these ever carry;
+  // anything else falls back rather than guessing an offset.
+  const offset = zone === "EDT" ? "-04:00" : zone === "EST" ? "-05:00" : null;
+  if (!offset) return fallback;
+  const parsed = new Date(`${y}-${mo}-${d}T${h.padStart(2, "0")}:${min}:00${offset}`);
+  return Number.isNaN(parsed.getTime()) ? fallback : parsed;
+}
+
+/** Strip the machine noise so the card is headed with who the call was with. */
+function cleanTitle(name: string): string {
+  return (
+    name
+      .replace(/\s*-\s*Notes by Gemini\s*$/i, "")
+      // The stamp trails the name, with or without its own dash — Gemini titles
+      // a call with no named attendees "Meeting started 2026/06/16 14:40 EDT".
+      .replace(/\s*-?\s*\d{4}\/\d{2}\/\d{2}\s+\d{1,2}:\d{2}\s*[A-Z]{2,4}\s*$/, "")
+      .replace(/\s*\bMeeting started\s*$/i, "Meeting")
+      .replace(/\s*-\s*transcript\s*$/i, "")
+      .replace(/\s+and Jordan Spackman\s*$/i, "")
+      .trim() || "Meeting"
+  );
+}
+
+/**
+ * Meeting notes for calls held inside [since, until]. Newest first.
+ *
+ * Matches BOTH shapes Google produces: raw Meet transcripts, and the "Notes by
+ * Gemini" documents that Jordan's account actually generates — his Drive holds
+ * no file named "Transcript" at all, so a transcript-only filter finds nothing.
+ *
+ * The window is applied to the MEETING time, not the file's createdTime, so a
+ * call late on the last day of a month doesn't get filed into the next one.
+ */
 export async function listMeetTranscripts(since: Date, until: Date): Promise<TranscriptFile[]> {
   const token = await ownerGoogleToken();
   if (!token) throw new DriveNotConnected();
 
+  // Query a little wider than asked, because notes are written AFTER the call
+  // and a meeting can be inside the window while its file isn't yet.
+  const pad = 2 * 86_400_000;
   const q = [
     "mimeType = 'application/vnd.google-apps.document'",
     "'me' in owners",
     "trashed = false",
-    `createdTime >= '${since.toISOString()}'`,
-    `createdTime <= '${until.toISOString()}'`,
-    // Google localises the suffix, so match the stem rather than an exact name.
-    "(name contains 'Transcript' or name contains 'transcript')",
+    `createdTime >= '${new Date(since.getTime() - pad).toISOString()}'`,
+    `createdTime <= '${new Date(until.getTime() + pad).toISOString()}'`,
+    "(name contains 'Notes by Gemini' or name contains 'Transcript' or name contains 'transcript')",
   ].join(" and ");
 
   const out: TranscriptFile[] = [];
@@ -86,13 +133,16 @@ export async function listMeetTranscripts(since: Date, until: Date): Promise<Tra
     };
     for (const f of data.files ?? []) {
       if (!f.id || !f.createdTime) continue;
-      out.push({ id: f.id, name: (f.name || "Meeting").replace(/\s*-\s*transcript\s*$/i, "").trim(), createdAt: new Date(f.createdTime) });
+      const heldAt = heldAtFromTitle(f.name || "", new Date(f.createdTime));
+      // Now filter on when the MEETING was, which is what was actually asked for.
+      if (heldAt < since || heldAt > until) continue;
+      out.push({ id: f.id, name: cleanTitle(f.name || "Meeting"), createdAt: heldAt });
     }
     pageToken = data.nextPageToken;
     // A month of meetings is never 500 files; the cap is a runaway guard.
   } while (pageToken && out.length < 500);
 
-  return out;
+  return out.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 }
 
 /** The transcript text. Exported as plain text — we only ever read the words. */

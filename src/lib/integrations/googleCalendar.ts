@@ -69,6 +69,8 @@ export type CalEvent = {
   todoId: string | null;
   /** A Meet/Zoom link means no drive time is needed. */
   virtual: boolean;
+  /** Calendly's own padding, e.g. "[2-hour buffer before Discovery Call event]". */
+  buffer: boolean;
 };
 
 type RawEvent = {
@@ -85,6 +87,10 @@ type RawEvent = {
 };
 
 const VIRTUAL = /\b(meet\.google|zoom\.us|teams\.microsoft|whereby|hangout|google meet|phone|call)\b/i;
+// Calendly writes its own padding onto the calendar as real events, titled like
+// "[2-hour buffer before Discovery Call event]". They are genuinely busy time,
+// but they ARE the buffer — adding our own on top would double-count it.
+const CALENDLY_BUFFER = /^\s*\[.*\bbuffer\s+(before|after)\b.*\]\s*$/i;
 
 /**
  * Everything on the primary calendar between two instants.
@@ -119,17 +125,22 @@ export async function listCalendarEvents(timeMin: Date, timeMax: Date): Promise<
     if (!(start.getTime() < end.getTime())) continue;
 
     const todoId = e.extendedProperties?.private?.[TAG] ?? null;
+    const title = (e.summary || "Busy").trim();
     const text = `${e.summary ?? ""} ${e.location ?? ""}`;
+    const buffer = CALENDLY_BUFFER.test(title);
     out.push({
       id: e.id,
-      title: (e.summary || "Busy").trim(),
+      title,
       where: e.location?.trim() || null,
       start,
       end,
       allDay,
       ours: !!todoId,
       todoId,
-      virtual: !!e.hangoutLink || VIRTUAL.test(text),
+      // A Calendly buffer has no location and no Meet link, but it is padding
+      // around a call, not a thing to drive to.
+      virtual: buffer || !!e.hangoutLink || VIRTUAL.test(text),
+      buffer,
     });
   }
   return out;
