@@ -146,35 +146,52 @@ export async function fixedBlocksFor(
 ): Promise<{ blocks: FixedBlock[]; calendarOk: boolean; calendarError: string | null }> {
   const start = atHour(dayKey, 0);
   const end = new Date(start.getTime() + 24 * 60 * MIN);
+  const [appts, cal] = await Promise.all([fetchAppointments(start, end, opts?.memberId), fetchCalendar(start, end)]);
+  return { blocks: assemble(appts, cal.items), calendarOk: cal.ok, calendarError: cal.error };
+}
 
-  const [appts, cal] = await Promise.all([
-    prisma.appointment.findMany({
-      where: {
-        startAt: { gte: start, lt: end },
-        ...(opts?.memberId ? { assignedToId: opts.memberId } : {}),
-      },
-      select: {
-        startAt: true,
-        endAt: true,
-        project: { select: { id: true, title: true, addressLine: true } },
-        status: true,
-      },
-      orderBy: { startAt: "asc" },
+type ApptRow = {
+  startAt: Date | null;
+  endAt: Date | null;
+  status: string | null;
+  project: { id: string; title: string | null; addressLine: string | null } | null;
+};
+
+const fetchAppointments = (start: Date, end: Date, memberId?: string | null) =>
+  prisma.appointment.findMany({
+    where: {
+      startAt: { gte: start, lt: end },
+      ...(memberId ? { assignedToId: memberId } : {}),
+    },
+    select: {
+      startAt: true,
+      endAt: true,
+      project: { select: { id: true, title: true, addressLine: true } },
+      status: true,
+    },
+    orderBy: { startAt: "asc" },
+  });
+
+/**
+ * Read the calendar, or say why not.
+ *
+ * Keeps Google's own wording. "Reconnect Google" is the right advice for a scope
+ * problem and the WRONG advice for an API switched off in Cloud Console — one
+ * generic message sends you round the consent screen on a problem consent
+ * cannot fix.
+ */
+const fetchCalendar = (start: Date, end: Date) =>
+  listCalendarEvents(start, end).then(
+    (items) => ({ ok: true, items, error: null as string | null }),
+    (e: unknown) => ({
+      ok: false,
+      items: [] as CalEvent[],
+      error: e instanceof Error ? e.message : "Couldn't read Google Calendar.",
     }),
-    listCalendarEvents(start, end).then(
-      (items) => ({ ok: true, items, error: null as string | null }),
-      // Keep Google's own wording. "Reconnect Google" is the right advice for a
-      // scope problem and the WRONG advice for an API that's switched off in
-      // Cloud Console — one generic message would send him round the consent
-      // screen on a problem consent cannot fix.
-      (e: unknown) => ({
-        ok: false,
-        items: [] as CalEvent[],
-        error: e instanceof Error ? e.message : "Couldn't read Google Calendar.",
-      }),
-    ),
-  ]);
+  );
 
+/** Turn raw appointments + calendar events into the day's fixed blocks. */
+function assemble(appts: ApptRow[], calItems: CalEvent[]): FixedBlock[] {
   const shoots: FixedBlock[] = appts
     .filter((a) => (a.status || "").toUpperCase() !== "CANCELED" && a.startAt)
     .map((a) => {
@@ -197,7 +214,7 @@ export async function fixedBlocksFor(
     });
 
   const meetings: FixedBlock[] = [];
-  for (const e of cal.items) {
+  for (const e of calItems) {
     // All-day rows are context (a holiday, a trip), not an hour of the day.
     if (e.allDay) continue;
     // Our own focus blocks are the OUTPUT of this planner. Counting them as
@@ -227,8 +244,88 @@ export async function fixedBlocksFor(
     });
   }
 
-  const blocks = [...shoots, ...meetings].sort((a, b) => a.start.getTime() - b.start.getTime());
-  return { blocks, calendarOk: cal.ok, calendarError: cal.error };
+  return [...shoots, ...meetings].sort((a, b) => a.start.getTime() - b.start.getTime());
+}
+
+export type CalendarDay = {
+  dayKey: string;
+  isToday: boolean;
+  isWeekend: boolean;
+  blocks: FixedBlock[];
+  /** All-day rows — a holiday, a trip. Context, not hours. */
+  allDay: string[];
+  /** Minutes of the 8-5 working day left after commitments and their buffers. */
+  freeMinutes: number;
+  /** To-dos already planned onto this day. */
+  plannedCount: number;
+};
+
+/**
+ * The next N days of the real calendar, for looking rather than planning.
+ *
+ * ONE Google call and ONE appointment query for the whole span, then bucketed by
+ * ET day. Looping buildDayPlan per day would be seven round trips to Google on
+ * every page load — the shape of mistake that took /trends down.
+ */
+export async function calendarAhead(
+  days = 7,
+  opts?: { memberId?: string | null },
+): Promise<{ days: CalendarDay[]; calendarOk: boolean; calendarError: string | null }> {
+  const todayKey = etDayKey(new Date());
+  const keys = Array.from({ length: Math.max(1, Math.min(days, 31)) }, (_, i) =>
+    etDayKey(etAddDays(atHour(todayKey, 12), i)),
+  );
+  const spanStart = atHour(keys[0], 0);
+  const spanEnd = atHour(keys[keys.length - 1], 24);
+
+  const [appts, cal, planned] = await Promise.all([
+    fetchAppointments(spanStart, spanEnd, opts?.memberId),
+    fetchCalendar(spanStart, spanEnd),
+    prisma.ownerTodo.findMany({
+      where: { status: "OPEN", plannedFor: { in: keys } },
+      select: { plannedFor: true },
+    }),
+  ]);
+
+  const plannedBy = new Map<string, number>();
+  for (const p of planned) {
+    if (p.plannedFor) plannedBy.set(p.plannedFor, (plannedBy.get(p.plannedFor) ?? 0) + 1);
+  }
+
+  // Bucket once by ET day rather than re-scanning the whole span per day.
+  const apptsBy = new Map<string, ApptRow[]>();
+  for (const a of appts) {
+    if (!a.startAt) continue;
+    const k = etDayKey(a.startAt);
+    (apptsBy.get(k) ?? apptsBy.set(k, []).get(k)!).push(a);
+  }
+  const calBy = new Map<string, CalEvent[]>();
+  for (const e of cal.items) {
+    const k = etDayKey(e.start);
+    (calBy.get(k) ?? calBy.set(k, []).get(k)!).push(e);
+  }
+
+  const out: CalendarDay[] = keys.map((dayKey) => {
+    const dayItems = calBy.get(dayKey) ?? [];
+    const blocks = assemble(apptsBy.get(dayKey) ?? [], dayItems);
+    const windows = openWindows(
+      atHour(dayKey, DAY_START_HOUR),
+      atHour(dayKey, DAY_END_HOUR),
+      blocks.map((b) => ({ start: b.guardStart, end: b.guardEnd })),
+    );
+    const dow = new Date(`${dayKey}T12:00:00Z`).getUTCDay();
+    return {
+      dayKey,
+      isToday: dayKey === todayKey,
+      isWeekend: dow === 0 || dow === 6,
+      blocks,
+      allDay: dayItems.filter((e) => e.allDay && !e.ours).map((e) => e.title),
+      freeMinutes: Math.round(windows.reduce((s, w) => s + (w.end.getTime() - w.start.getTime()), 0) / MIN),
+      plannedCount: plannedBy.get(dayKey) ?? 0,
+    };
+  });
+
+  return { days: out, calendarOk: cal.ok, calendarError: cal.error };
 }
 
 /** Free windows inside the working day, once the given busy spans are removed. */

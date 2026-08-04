@@ -14,7 +14,8 @@ import { FinishedList } from "@/components/day/FinishedList";
 import { meetingsForReview } from "@/lib/meetings";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
-import { buildDayPlan, ownerTodoLists, ownerMemberId, DAY_SHAPE } from "@/lib/ownerDay";
+import { buildDayPlan, ownerTodoLists, ownerMemberId, calendarAhead, DAY_SHAPE } from "@/lib/ownerDay";
+import { WeekCalendar } from "@/components/day/WeekCalendar";
 import { ownerPulse } from "@/lib/ownerPulse";
 import { etDayKey } from "@/lib/datetime";
 
@@ -53,11 +54,12 @@ export default async function MyDayPage() {
 
   const todayKey = etDayKey(new Date());
   const myMemberId = await ownerMemberId(me?.teamMemberId);
-  const [plan, lists, pulse, meetings] = await Promise.all([
+  const [plan, lists, pulse, meetings, week] = await Promise.all([
     buildDayPlan(todayKey, { memberId: myMemberId }),
     ownerTodoLists(),
     ownerPulse().catch(() => null),
     meetingsForReview().catch(() => []),
+    calendarAhead(7, { memberId: myMemberId }).catch(() => null),
   ]);
 
   // The plan and the fixed commitments, merged into one chronological column —
@@ -228,6 +230,36 @@ export default async function MyDayPage() {
             </div>
           )}
         </Section>
+
+        {/* THE WEEK — straight after today's plan, because "what's coming" is
+            the next question after "what now". Read-only on purpose: nothing
+            here asks for a decision. */}
+        {week?.calendarOk && (
+          <WeekCalendar
+            calendarOk
+            days={week.days.map((d) => ({
+              dayKey: d.dayKey,
+              isToday: d.isToday,
+              isWeekend: d.isWeekend,
+              allDay: d.allDay,
+              freeMinutes: d.freeMinutes,
+              plannedCount: d.plannedCount,
+              // Dates cross to the client as ISO strings; the component renders
+              // them back in ET so a laptop in another zone still reads right.
+              blocks: d.blocks.map((b) => ({
+                kind: b.kind,
+                title: b.title,
+                where: b.where,
+                start: b.start.toISOString(),
+                end: b.end.toISOString(),
+                virtual: b.virtual,
+                projectId: b.projectId,
+                bufferBeforeMin: b.bufferBeforeMin,
+                bufferAfterMin: b.bufferAfterMin,
+              })),
+            }))}
+          />
+        )}
 
         {/* CALL RECAPS — above the lists, because an unreviewed meeting is the
             thing most likely to be hiding a commitment he's forgotten. */}

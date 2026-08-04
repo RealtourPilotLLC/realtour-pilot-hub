@@ -275,9 +275,29 @@ export async function exchangeGoogleCode(code: string): Promise<{ refreshToken: 
   return { refreshToken };
 }
 
+// Access tokens last an hour, so minting a fresh one for every single API call
+// spends a network round trip to Google before every network round trip to
+// Google. One page that reads the calendar twice paid for four. Cached per
+// refresh token, in-process only (a serverless instance holds it for as long as
+// it lives, and nothing sensitive is written down), retired early so a token can
+// never expire mid-flight.
+const TOKEN_TTL_MS = 45 * 60_000;
+const tokenCache = new Map<string, { token: string; expires: number }>();
+
 async function accessTokenFor(refreshToken: string): Promise<string> {
+  const hit = tokenCache.get(refreshToken);
+  if (hit && hit.expires > Date.now()) return hit.token;
   const json = await tokenRequest({ refresh_token: refreshToken, grant_type: "refresh_token" });
-  return json.access_token as string;
+  const token = json.access_token as string;
+  // Honour Google's own expiry when it gives one, minus a safety margin.
+  const ttl = typeof json.expires_in === "number" ? Math.max(60, json.expires_in - 300) * 1000 : TOKEN_TTL_MS;
+  tokenCache.set(refreshToken, { token, expires: Date.now() + Math.min(ttl, TOKEN_TTL_MS) });
+  return token;
+}
+
+/** Drop a cached token — call when a request comes back 401 so the retry re-mints. */
+export function forgetGoogleToken(refreshToken: string): void {
+  tokenCache.delete(refreshToken);
 }
 
 // We support multiple mailboxes (hello@ + info@). The "gmail" secret holds an

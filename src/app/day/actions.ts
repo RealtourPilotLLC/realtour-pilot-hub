@@ -335,8 +335,12 @@ export async function acceptMeeting(id: string, skip: number[] = []): Promise<{ 
         energy: it.energy === "DEEP" ? "DEEP" : "SHALLOW",
         estimateMin: Math.min(Math.max(Number(it.estimateMin) || 30, 5), 480),
         // Deadlines are counted from when the meeting HAPPENED, not from when
-        // he got round to reviewing it — a week is a week from the promise.
-        dueAt: new Date(meeting.heldAt.getTime() + Math.max(Number(it.dueInDays) || 7, 0) * 86_400_000),
+        // he got round to reviewing it — a week is a week from the promise. The
+        // result lands at 5pm Eastern like every other due date, rather than
+        // inheriting whatever time of day the call happened to start.
+        dueAt: etEndOfDay(
+          etDayKey(new Date(meeting.heldAt.getTime() + Math.max(Number(it.dueInDays) || 7, 0) * 86_400_000)),
+        ),
         sourceNote: `From the ${meeting.title} call`.slice(0, 300),
         meetingId: meeting.id,
       })),
