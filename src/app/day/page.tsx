@@ -1,21 +1,20 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import {
-  Sun, Camera, Brain, Coffee, CalendarClock, AlertTriangle, Inbox, TrendingUp,
-  Wallet, Landmark, Package, CheckCircle2, Users2, Video, CalendarOff, Mic,
+  Camera, Brain, Coffee, AlertTriangle, Inbox, TrendingUp, Users2, Video,
+  CalendarOff, Mic, ChevronRight, Clock, Sun,
 } from "lucide-react";
-import { PageHeader } from "@/components/PageHeader";
-import { Section } from "@/components/ui/Section";
 import { QuickAdd } from "@/components/day/QuickAdd";
 import { TodoRow } from "@/components/day/TodoRow";
 import { BlockDayButton, BlockRowControls } from "@/components/day/BlockControls";
 import { MeetingCard, ScanMeetingsButton } from "@/components/day/MeetingCard";
 import { FinishedList } from "@/components/day/FinishedList";
+import { DayAssistant } from "@/components/day/DayAssistant";
+import { WeekCalendar } from "@/components/day/WeekCalendar";
 import { meetingsForReview } from "@/lib/meetings";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
-import { buildDayPlan, ownerTodoLists, ownerMemberId, calendarAhead, DAY_SHAPE } from "@/lib/ownerDay";
-import { WeekCalendar } from "@/components/day/WeekCalendar";
+import { buildDayPlan, ownerTodoLists, ownerMemberId, calendarAhead } from "@/lib/ownerDay";
 import { ownerPulse } from "@/lib/ownerPulse";
 import { etDayKey } from "@/lib/datetime";
 
@@ -23,27 +22,58 @@ export const dynamic = "force-dynamic";
 
 // MY DAY — the owner's command centre.
 //
-// Built to answer "what am I doing next?" without asking anything of the reader.
-// The plan comes first because that is the question; the lists come second
-// because they are the raw material; the business numbers come last because
-// they are context, not an action. Nothing here is a wall of text and nothing
-// requires a decision to be useful on first glance.
+// REBUILT for readability. The first version was correct and unreadable: every
+// line was 11px and the same grey, so the page had no shape and you had to read
+// all of it to find any of it. Jordan: "too much of the text looks the same and
+// is same color, it's just hard to read."
+//
+// So the rules now are:
+//  · SIZE CARRIES RANK. The one thing he's doing next is large; the list is
+//    normal; only labels are small. Nothing below 12px.
+//  · COLOUR MEANS SOMETHING. Red is late, amber is a warning, brand is deep
+//    work, accent is a real commitment. Everything else is plain foreground —
+//    grey is for labels, never for content he has to read.
+//  · ONE QUESTION PER BLOCK, with a heading that answers it in plain words.
+//  · Reference material (the week, the money) sits at the bottom and stays out
+//    of the way of the doing.
 
 const usd0 = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 const hhmm = (d: Date) =>
   d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
 
-function Stat({ icon, label, value, sub, tone }: { icon: React.ReactNode; label: string; value: string; sub?: string; tone?: "good" | "bad" }) {
+/** A section that looks like a section: one clear heading, real spacing. */
+function Block({
+  title, icon: Icon, count, tone = "plain", action, children,
+}: {
+  title: string;
+  icon: React.ElementType;
+  count?: number;
+  tone?: "plain" | "danger";
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
-    <div className="rounded-xl border border-border bg-surface p-3">
-      <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-2">
-        {icon} {label}
+    <section
+      className={`rounded-2xl border bg-surface p-4 sm:p-5 ${
+        tone === "danger" ? "border-danger/40 bg-danger/[0.04]" : "border-border"
+      }`}
+    >
+      <div className="mb-3 flex items-center gap-2">
+        <Icon className={`size-5 ${tone === "danger" ? "text-danger" : "text-muted"}`} />
+        <h2 className={`text-base font-semibold ${tone === "danger" ? "text-danger" : ""}`}>{title}</h2>
+        {count !== undefined && count > 0 && (
+          <span
+            className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+              tone === "danger" ? "bg-danger text-white" : "bg-surface-2 text-muted"
+            }`}
+          >
+            {count}
+          </span>
+        )}
+        {action && <div className="ml-auto">{action}</div>}
       </div>
-      <div className={`mt-0.5 text-xl font-bold tabular-nums ${tone === "good" ? "text-success" : tone === "bad" ? "text-danger" : ""}`}>
-        {value}
-      </div>
-      {sub && <div className="text-[11px] text-muted-2">{sub}</div>}
-    </div>
+      {children}
+    </section>
   );
 }
 
@@ -62,179 +92,274 @@ export default async function MyDayPage() {
     calendarAhead(7, { memberId: myMemberId }).catch(() => null),
   ]);
 
-  // The plan and the fixed commitments, merged into one chronological column —
-  // one timeline, not two lists to reconcile in your head.
+  const now = new Date();
   const timeline = [
     ...plan.fixed.map((f) => ({ kind: "fixed" as const, start: f.start, end: f.end, f })),
     ...plan.planned.map((p) => ({ kind: "todo" as const, start: p.start, end: p.end, p })),
   ].sort((a, b) => a.start.getTime() - b.start.getTime());
 
+  // The headline: what he is in the middle of, or what is next. One thing, not
+  // a list — the whole point of the card is that it needs no reading.
+  const current = timeline.find((r) => r.start <= now && r.end > now);
+  const next = timeline.find((r) => r.start > now);
+  const hero = current ?? next;
+  const heroTitle = hero ? (hero.kind === "fixed" ? hero.f.title : hero.p.title) : null;
+  const minsLeft = current ? Math.round((current.end.getTime() - now.getTime()) / 60000) : null;
+  const minsUntil = !current && next ? Math.round((next.start.getTime() - now.getTime()) / 60000) : null;
+
   const hours = Math.floor(plan.freeMinutes / 60);
   const mins = plan.freeMinutes % 60;
   const unblocked = plan.planned.filter((p) => !p.onCalendar).length;
-  // The picker hands back Eastern wall-clock; the server turns it into a real
-  // instant. Formatting it here keeps the two ends speaking the same language.
   const hhmm24 = (d: Date) =>
     d.toLocaleTimeString("en-GB", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit" });
 
+  const dayLabel = now.toLocaleDateString("en-US", {
+    timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric",
+  });
+
   return (
-    <div>
-      <PageHeader
-        eyebrow="Eastern time"
-        title="My Day"
-        subtitle={`${DAY_SHAPE.startHour}am–${DAY_SHAPE.endHour - 12}pm · mornings kept for deep work`}
-      />
-      <div className="mx-auto max-w-3xl space-y-4 p-4 sm:p-6">
-        <QuickAdd />
+    <div className="mx-auto max-w-3xl space-y-4 p-4 pb-16 sm:p-6">
+      {/* ── RIGHT NOW ──────────────────────────────────────────────────────
+          The reason the page exists. Big enough to read from across the desk,
+          and it says one thing. */}
+      <div className="rounded-2xl border border-brand/30 bg-gradient-to-br from-brand/[0.10] to-brand/[0.02] p-5 sm:p-6">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-sm font-medium text-muted">{dayLabel}</span>
+          <span className="text-sm text-muted-2">
+            {plan.freeMinutes > 0 ? `${hours ? `${hours}h ` : ""}${mins}m free` : "fully booked"}
+          </span>
+        </div>
 
-        {/* THE PLAN — the answer to "what now", above everything else. */}
-        <Section
-          icon={Sun}
-          title="Today"
-          action={
-            <span className="text-[11px] text-muted-2">
-              {plan.freeMinutes > 0 ? `${hours ? `${hours}h ` : ""}${mins}m free` : "fully booked"}
-              {plan.deepMinutesFree > 0 ? ` · ${Math.floor(plan.deepMinutesFree / 60)}h deep` : ""}
-            </span>
-          }
-        >
-          {timeline.length === 0 ? (
-            <p className="py-4 text-center text-sm text-muted">
-              Nothing scheduled. Add something above and hit <span className="font-medium">Today</span> — it will find a slot.
-            </p>
-          ) : (
-            <div className="space-y-1.5">
-              {timeline.map((row, i) =>
-                row.kind === "fixed" ? (
-                  <div key={`f${i}`} className="flex items-start gap-3 rounded-xl border border-accent/30 bg-accent/[0.06] px-3 py-2">
-                    <span className="w-16 shrink-0 pt-0.5 text-[11px] font-medium tabular-nums text-muted">{hhmm(row.start)}</span>
-                    {row.f.kind === "shoot" ? (
-                      <Camera className="mt-0.5 size-4 shrink-0 text-accent" />
-                    ) : row.f.virtual ? (
-                      <Video className="mt-0.5 size-4 shrink-0 text-accent" />
-                    ) : (
-                      <Users2 className="mt-0.5 size-4 shrink-0 text-accent" />
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-medium">
-                        {row.f.projectId ? (
-                          <Link href={`/projects/${row.f.projectId}`} className="hover:underline">{row.f.title}</Link>
-                        ) : (
-                          row.f.title
-                        )}
-                      </div>
-                      <div className="text-[11px] text-muted-2">
-                        {hhmm(row.start)}–{hhmm(row.end)}
-                        {row.f.where ? ` · ${row.f.where}` : ""}
-                        {/* Say exactly what was held, and why — a plan that hides
-                            its own assumptions is one you stop believing. */}
-                        {row.f.bufferBeforeMin > 0
-                          ? ` · ${row.f.bufferBeforeMin}m drive held each side`
-                          : row.f.bufferAfterMin > 0
-                            ? ` · ${row.f.bufferAfterMin}m after to write it up`
-                            : ""}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div key={`t${i}`} className="flex items-start gap-3 rounded-xl border border-border bg-surface-2/50 px-3 py-2">
-                    <span className="w-16 shrink-0 pt-0.5 text-[11px] font-medium tabular-nums text-muted">{hhmm(row.start)}</span>
-                    {row.p.energy === "DEEP" ? (
-                      <Brain className="mt-0.5 size-4 shrink-0 text-brand" />
-                    ) : (
-                      <Coffee className="mt-0.5 size-4 shrink-0 text-muted-2" />
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-baseline gap-x-2">
-                        <span className="text-sm">{row.p.title}</span>
-                        {row.p.onCalendar && (
-                          <span className="rounded bg-success/12 px-1 text-[10px] font-medium text-success">on calendar</span>
-                        )}
-                      </div>
-                      <div className="text-[11px] text-muted-2">
-                        {hhmm(row.start)}–{hhmm(row.end)} · {row.p.energy === "DEEP" ? "deep work" : "admin"}
-                      </div>
-                    </div>
-                    {plan.calendarOk && (
-                      <BlockRowControls
-                        id={row.p.id}
-                        dayKey={todayKey}
-                        onCalendar={row.p.onCalendar}
-                        hhmm={hhmm24(row.start)}
-                        minutes={Math.round((row.end.getTime() - row.start.getTime()) / 60000)}
-                      />
-                    )}
-                  </div>
-                ),
-              )}
-            </div>
-          )}
-
-          {plan.unplaced.length > 0 && (
-            <p className="mt-3 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-[11px] leading-relaxed text-muted">
-              <span className="font-semibold text-warning">{plan.unplaced.length} didn&rsquo;t fit today</span> —{" "}
-              {plan.unplaced.map((u) => u.title).slice(0, 3).join(", ")}
-              {plan.unplaced.length > 3 ? "…" : ""}. They stay on the list rather than being squeezed in; a day you can finish is worth
-              more than one that looks productive.
-            </p>
-          )}
-
-          {/* Something real landed on a block we'd already written to Google —
-              almost always a Calendly booking. Never moved silently: the hub and
-              the calendar would then disagree about where the hour went. */}
-          {plan.conflicts.length > 0 && (
-            <div className="mt-3 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-[11px] leading-relaxed text-muted">
-              <span className="font-semibold text-danger">Double-booked.</span>{" "}
-              {plan.conflicts.map((c) => `“${c.title}” now overlaps ${c.clashesWith}`).join("; ")}. Use the clock icon to move the block,
-              or the calendar icon to give the time back.
-            </div>
-          )}
-
-          {plan.calendarOk ? (
-            unblocked > 0 && (
-              <div className="mt-3">
-                <BlockDayButton dayKey={todayKey} pending={unblocked} />
-                <p className="mt-1.5 text-[11px] leading-relaxed text-muted-2">
-                  Blocks go on your main calendar on purpose — that&rsquo;s the one Calendly reads, so this is what actually stops a
-                  client booking over your focus time.
-                </p>
-              </div>
-            )
-          ) : (
-            <div className="mt-3 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-[11px] leading-relaxed text-muted">
-              <span className="inline-flex items-center gap-1.5 font-semibold text-warning">
-                <CalendarOff className="size-3.5" /> Google Calendar isn&rsquo;t readable yet.
-              </span>{" "}
-              This plan is built from shoots only — meetings and Calendly bookings aren&rsquo;t in it, and nothing is being blocked off.
-              {/* Two different failures, two different fixes. Show Google's own
-                  words when the problem is on their side, and only send him back
-                  to the consent screen when consent is actually the problem. */}
-              {plan.calendarError && /has not been used in project|is disabled/i.test(plan.calendarError) ? (
+        {heroTitle ? (
+          <div className="mt-3">
+            <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-brand">
+              {current ? (
                 <>
-                  {" "}
-                  The Calendar API is switched off in your Google Cloud project — permission is granted, the service just isn&rsquo;t
-                  enabled. Turn it on in Cloud Console and this fills in on the next load.
-                  <span className="mt-1 block text-muted-2">{plan.calendarError}</span>
+                  <Clock className="size-4" /> Right now
                 </>
               ) : (
                 <>
-                  {" "}
-                  One reconnect fixes it:{" "}
-                  <Link href="/connections" className="font-medium text-brand hover:underline">
-                    Connections → Gmail → Reconnect
-                  </Link>
-                  , signing in as info@realtourpilot.com.
-                  {plan.calendarError && <span className="mt-1 block text-muted-2">{plan.calendarError}</span>}
+                  <ChevronRight className="size-4" /> Next up · {hhmm(hero!.start)}
                 </>
               )}
             </div>
-          )}
-        </Section>
+            <h1 className="mt-1 text-2xl font-bold leading-tight sm:text-3xl">{heroTitle}</h1>
+            <p className="mt-1.5 text-base text-muted">
+              {hhmm(hero!.start)}–{hhmm(hero!.end)}
+              {minsLeft !== null && ` · ${minsLeft} min left`}
+              {minsUntil !== null && ` · in ${minsUntil < 60 ? `${minsUntil} min` : `${Math.round(minsUntil / 60)}h`}`}
+              {hero!.kind === "fixed" && hero!.f.where ? ` · ${hero!.f.where}` : ""}
+            </p>
+          </div>
+        ) : (
+          <div className="mt-3">
+            <h1 className="text-2xl font-bold leading-tight sm:text-3xl">Nothing scheduled.</h1>
+            <p className="mt-1.5 text-base text-muted">
+              {lists.unscheduled.length > 0
+                ? `${lists.unscheduled.length} waiting to be planned — add one to today below, or ask me what to start with.`
+                : "The day is yours. Capture something below and it'll find a slot."}
+            </p>
+          </div>
+        )}
+      </div>
 
-        {/* THE WEEK — straight after today's plan, because "what's coming" is
-            the next question after "what now". Read-only on purpose: nothing
-            here asks for a decision. */}
-        {week?.calendarOk && (
+      {/* Capture, always within reach. */}
+      <QuickAdd />
+
+      {/* ── LATE ───────────────────────────────────────────────────────────
+          Loud on purpose, and above everything except what he's doing now. */}
+      {lists.overdue.length > 0 && (
+        <Block title="Late" icon={AlertTriangle} count={lists.overdue.length} tone="danger">
+          <div className="divide-y divide-border/60">
+            {lists.overdue.map((t) => (
+              <TodoRow key={t.id} t={t} todayKey={todayKey} overdue />
+            ))}
+          </div>
+        </Block>
+      )}
+
+      {/* ── THE ASSISTANT ──────────────────────────────────────────────────
+          High on the page: it's faster to ask than to scan. */}
+      <DayAssistant />
+
+      {/* ── TODAY'S PLAN ───────────────────────────────────────────────────── */}
+      <Block
+        title="Today's plan"
+        icon={Sun}
+        action={
+          plan.deepMinutesFree > 0 ? (
+            <span className="text-sm text-muted-2">{Math.floor(plan.deepMinutesFree / 60)}h deep left</span>
+          ) : undefined
+        }
+      >
+        {timeline.length === 0 ? (
+          <p className="py-4 text-center text-base text-muted">
+            Nothing on the calendar and nothing planned. Add something above and hit{" "}
+            <span className="font-semibold text-foreground">Today</span>.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {timeline.map((row, i) => {
+              const isNow = row === current;
+              const past = row.end <= now;
+              return row.kind === "fixed" ? (
+                <div
+                  key={`f${i}`}
+                  className={`flex items-start gap-3 rounded-xl border-l-4 border-accent bg-accent/[0.07] py-2.5 pl-3 pr-3 ${
+                    isNow ? "ring-2 ring-accent/40" : ""
+                  } ${past ? "opacity-45" : ""}`}
+                >
+                  <span className="w-[4.5rem] shrink-0 pt-0.5 text-sm font-semibold tabular-nums">{hhmm(row.start)}</span>
+                  {row.f.kind === "shoot" ? (
+                    <Camera className="mt-0.5 size-5 shrink-0 text-accent" />
+                  ) : row.f.virtual ? (
+                    <Video className="mt-0.5 size-5 shrink-0 text-accent" />
+                  ) : (
+                    <Users2 className="mt-0.5 size-5 shrink-0 text-accent" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="text-base font-semibold leading-snug">
+                      {row.f.projectId ? (
+                        <Link href={`/projects/${row.f.projectId}`} className="hover:underline">{row.f.title}</Link>
+                      ) : (
+                        row.f.title
+                      )}
+                    </div>
+                    <div className="text-sm text-muted">
+                      until {hhmm(row.end)}
+                      {row.f.where ? ` · ${row.f.where}` : ""}
+                      {row.f.bufferBeforeMin > 0
+                        ? ` · ${row.f.bufferBeforeMin}m drive held each side`
+                        : row.f.bufferAfterMin > 0
+                          ? ` · ${row.f.bufferAfterMin}m after to write it up`
+                          : ""}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  key={`t${i}`}
+                  className={`flex items-start gap-3 rounded-xl border-l-4 py-2.5 pl-3 pr-3 ${
+                    row.p.energy === "DEEP" ? "border-brand bg-brand/[0.06]" : "border-border bg-surface-2/40"
+                  } ${isNow ? "ring-2 ring-brand/40" : ""} ${past ? "opacity-45" : ""}`}
+                >
+                  <span className="w-[4.5rem] shrink-0 pt-0.5 text-sm font-semibold tabular-nums">{hhmm(row.start)}</span>
+                  {row.p.energy === "DEEP" ? (
+                    <Brain className="mt-0.5 size-5 shrink-0 text-brand" />
+                  ) : (
+                    <Coffee className="mt-0.5 size-5 shrink-0 text-muted" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="text-base leading-snug">{row.p.title}</div>
+                    <div className="flex flex-wrap items-center gap-x-2 text-sm text-muted">
+                      <span>until {hhmm(row.end)}</span>
+                      <span className={row.p.energy === "DEEP" ? "font-medium text-brand" : ""}>
+                        {row.p.energy === "DEEP" ? "deep work" : "admin"}
+                      </span>
+                      {row.p.onCalendar && <span className="font-medium text-success">on your calendar</span>}
+                    </div>
+                  </div>
+                  {plan.calendarOk && (
+                    <BlockRowControls
+                      id={row.p.id}
+                      dayKey={todayKey}
+                      onCalendar={row.p.onCalendar}
+                      hhmm={hhmm24(row.start)}
+                      minutes={Math.round((row.end.getTime() - row.start.getTime()) / 60000)}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {plan.unplaced.length > 0 && (
+          <p className="mt-3 rounded-xl border border-warning/40 bg-warning/[0.07] px-3 py-2.5 text-sm leading-relaxed">
+            <span className="font-semibold text-warning">{plan.unplaced.length} didn&rsquo;t fit today</span> —{" "}
+            {plan.unplaced.map((u) => u.title).slice(0, 3).join(", ")}
+            {plan.unplaced.length > 3 ? "…" : ""}. They stay on the list rather than being squeezed in.
+          </p>
+        )}
+
+        {plan.conflicts.length > 0 && (
+          <p className="mt-3 rounded-xl border border-danger/40 bg-danger/[0.07] px-3 py-2.5 text-sm leading-relaxed">
+            <span className="font-semibold text-danger">Double-booked.</span>{" "}
+            {plan.conflicts.map((c) => `“${c.title}” overlaps ${c.clashesWith}`).join("; ")}. Use the clock icon to move it.
+          </p>
+        )}
+
+        {plan.calendarOk ? (
+          unblocked > 0 && (
+            <div className="mt-3">
+              <BlockDayButton dayKey={todayKey} pending={unblocked} />
+              <p className="mt-2 text-sm text-muted-2">
+                Blocks go on your main calendar — the one Calendly reads, so this is what stops a client booking over your focus time.
+              </p>
+            </div>
+          )
+        ) : (
+          <div className="mt-3 rounded-xl border border-warning/40 bg-warning/[0.07] px-3 py-2.5 text-sm leading-relaxed">
+            <span className="inline-flex items-center gap-1.5 font-semibold text-warning">
+              <CalendarOff className="size-4" /> Google Calendar isn&rsquo;t readable.
+            </span>{" "}
+            This plan is shoots only — meetings and Calendly bookings aren&rsquo;t in it.
+            {plan.calendarError && /has not been used in project|is disabled/i.test(plan.calendarError) ? (
+              <span className="mt-1 block text-muted">
+                The Calendar API is switched off in your Google Cloud project. {plan.calendarError}
+              </span>
+            ) : (
+              <>
+                {" "}
+                <Link href="/connections" className="font-semibold text-brand hover:underline">
+                  Reconnect Google
+                </Link>
+                .
+              </>
+            )}
+          </div>
+        )}
+      </Block>
+
+      {/* ── CALL RECAPS ────────────────────────────────────────────────────── */}
+      {(meetings.length > 0 || plan.calendarOk) && (
+        <Block title="From your calls" icon={Mic} count={meetings.length}>
+          {meetings.length === 0 ? (
+            <div className="flex flex-col items-center gap-3 py-2">
+              <p className="text-base text-muted">No call recaps waiting.</p>
+              <ScanMeetingsButton />
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {meetings.map((m) => (
+                <MeetingCard key={m.id} m={m} />
+              ))}
+              <ScanMeetingsButton />
+            </div>
+          )}
+        </Block>
+      )}
+
+      {/* ── THE BACKLOG ────────────────────────────────────────────────────── */}
+      <Block title="Not scheduled yet" icon={Inbox} count={lists.unscheduled.length}>
+        {lists.unscheduled.length === 0 ? (
+          <p className="py-3 text-center text-base text-muted">Everything you&rsquo;ve captured has a day.</p>
+        ) : (
+          <div className="divide-y divide-border/60">
+            {lists.unscheduled.slice(0, 20).map((t) => (
+              <TodoRow key={t.id} t={t} todayKey={todayKey} />
+            ))}
+          </div>
+        )}
+      </Block>
+
+      <FinishedList rows={lists.finished} />
+
+      {/* ── REFERENCE ──────────────────────────────────────────────────────
+          The week and the money. Deliberately last and deliberately quiet —
+          neither is something to act on right now. */}
+      {week?.calendarOk && (
+        <div className="rounded-2xl border border-border bg-surface p-4 sm:p-5">
           <WeekCalendar
             calendarOk
             days={week.days.map((d) => ({
@@ -244,8 +369,6 @@ export default async function MyDayPage() {
               allDay: d.allDay,
               freeMinutes: d.freeMinutes,
               plannedCount: d.plannedCount,
-              // Dates cross to the client as ISO strings; the component renders
-              // them back in ET so a laptop in another zone still reads right.
               blocks: d.blocks.map((b) => ({
                 kind: b.kind,
                 title: b.title,
@@ -259,118 +382,56 @@ export default async function MyDayPage() {
               })),
             }))}
           />
-        )}
+        </div>
+      )}
 
-        {/* CALL RECAPS — above the lists, because an unreviewed meeting is the
-            thing most likely to be hiding a commitment he's forgotten. */}
-        {(meetings.length > 0 || plan.calendarOk) && (
-          <Section
-            icon={Mic}
-            title="From your calls"
-            action={meetings.length > 0 ? <span className="text-[11px] text-muted-2">{meetings.length} to review</span> : undefined}
-          >
-            {meetings.length === 0 ? (
-              <div className="py-2">
-                <p className="mb-2 text-center text-sm text-muted-2">No call recaps waiting.</p>
-                <div className="flex justify-center">
-                  <ScanMeetingsButton />
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-2.5">
-                {meetings.map((m) => (
-                  <MeetingCard key={m.id} m={m} />
-                ))}
-                <ScanMeetingsButton />
-              </div>
-            )}
-          </Section>
-        )}
-
-        {lists.overdue.length > 0 && (
-          <Section icon={AlertTriangle} title="Overdue" tone="warning" action={<span className="text-[11px] text-muted-2">{lists.overdue.length}</span>}>
-            <div className="divide-y divide-border/60">
-              {lists.overdue.map((t) => (
-                <TodoRow key={t.id} t={t} todayKey={todayKey} overdue />
-              ))}
-            </div>
-          </Section>
-        )}
-
-        <Section
-          icon={Inbox}
-          title="Not scheduled yet"
-          action={<span className="text-[11px] text-muted-2">{lists.unscheduled.length} waiting</span>}
+      {pulse && (
+        <Block
+          title="Where the business is"
+          icon={TrendingUp}
+          action={<span className="text-sm text-muted-2">{pulse.monthLabel}</span>}
         >
-          {lists.unscheduled.length === 0 ? (
-            <p className="py-3 text-center text-sm text-muted-2">Nothing waiting. Everything you&rsquo;ve captured has a day.</p>
-          ) : (
-            <div className="divide-y divide-border/60">
-              {lists.unscheduled.slice(0, 20).map((t) => (
-                <TodoRow key={t.id} t={t} todayKey={todayKey} />
-              ))}
-            </div>
-          )}
-        </Section>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <Stat label="Revenue" value={usd0(pulse.revenueMonth)} sub={`${usd0(pulse.revenueYtd)} this year`} />
+            <Stat
+              label="Profit"
+              value={usd0(pulse.profitMonth)}
+              sub={pulse.marginPct != null ? `${Math.round(pulse.marginPct)}% margin` : undefined}
+              tone={pulse.profitMonth >= 0 ? "good" : "bad"}
+            />
+            <Stat
+              label="In the bank"
+              value={pulse.bankBalance == null ? "—" : usd0(pulse.bankBalance)}
+              sub={pulse.bankLabel ?? "not connected"}
+              tone={pulse.bankBalance != null && pulse.bankBalance < 0 ? "bad" : undefined}
+            />
+            <Stat label="Owed to you" value={usd0(pulse.owedToYou)} sub={`${pulse.owedCount} unpaid`} tone={pulse.owedToYou > 0 ? "bad" : undefined} />
+            <Stat label="Shoots this week" value={String(pulse.shootsThisWeek)} sub={`${pulse.deliveredThisMonth} delivered`} />
+            <Stat
+              label="Team tasks"
+              value={String(pulse.openTasks)}
+              sub={`${pulse.overdueTasks} overdue`}
+              tone={pulse.overdueTasks > 0 ? "bad" : undefined}
+            />
+          </div>
+          <div className="mt-3 flex gap-4 text-sm">
+            <Link href="/trends" className="font-medium text-brand hover:underline">Trends →</Link>
+            <Link href="/sales" className="font-medium text-brand hover:underline">Finance →</Link>
+          </div>
+        </Block>
+      )}
+    </div>
+  );
+}
 
-        {/* Finished + dropped, collapsed, with one tap back onto the list. The
-            checkbox is the most-used control here, so undoing a mis-tap has to
-            be as cheap as the tap was. */}
-        <FinishedList rows={lists.finished} />
-        {lists.doneToday > 0 && (
-          <p className="flex items-center justify-center gap-1.5 text-[11px] text-muted-2">
-            <CheckCircle2 className="size-3.5 text-success" /> {lists.doneToday} finished today
-          </p>
-        )}
-
-        {/* WHERE THE BUSINESS IS — context, deliberately last. */}
-        {pulse && (
-          <Section icon={TrendingUp} title="Where the business is" action={<span className="text-[11px] text-muted-2">{pulse.monthLabel} so far</span>}>
-            <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-              <Stat icon={<Wallet className="size-3" />} label="Revenue" value={usd0(pulse.revenueMonth)} sub={`${usd0(pulse.revenueYtd)} this year`} />
-              <Stat
-                icon={<TrendingUp className="size-3" />}
-                label="Profit"
-                value={usd0(pulse.profitMonth)}
-                sub={pulse.marginPct != null ? `${Math.round(pulse.marginPct)}% margin` : undefined}
-                tone={pulse.profitMonth >= 0 ? "good" : "bad"}
-              />
-              <Stat
-                icon={<Landmark className="size-3" />}
-                label="In the bank"
-                value={pulse.bankBalance == null ? "—" : usd0(pulse.bankBalance)}
-                sub={
-                  pulse.bankLabel
-                    ? `${pulse.bankLabel}${pulse.bankAsOf ? ` · ${pulse.bankAsOf.toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}`
-                    : "not connected"
-                }
-                tone={pulse.bankBalance != null && pulse.bankBalance < 0 ? "bad" : undefined}
-              />
-              <Stat
-                icon={<Wallet className="size-3" />}
-                label="Owed to you"
-                value={usd0(pulse.owedToYou)}
-                sub={`${pulse.owedCount} unpaid`}
-                tone={pulse.owedToYou > 0 ? "bad" : undefined}
-              />
-              <Stat icon={<Camera className="size-3" />} label="Shoots this week" value={String(pulse.shootsThisWeek)} />
-              <Stat icon={<Package className="size-3" />} label="Delivered" value={String(pulse.deliveredThisMonth)} sub="this month" />
-              <Stat icon={<CalendarClock className="size-3" />} label="Team tasks open" value={String(pulse.openTasks)} sub={`${pulse.overdueTasks} overdue`} tone={pulse.overdueTasks > 0 ? "bad" : undefined} />
-              <div className="rounded-xl border border-border bg-surface p-3">
-                <div className="text-[11px] uppercase tracking-wide text-muted-2">Go deeper</div>
-                <div className="mt-1 flex flex-col gap-0.5 text-xs">
-                  <Link href="/trends" className="text-brand hover:underline">Trends →</Link>
-                  <Link href="/sales" className="text-brand hover:underline">Finance →</Link>
-                </div>
-              </div>
-            </div>
-            <p className="mt-3 text-[11px] leading-relaxed text-muted-2">
-              Revenue is cash across all three rails; profit is that minus categorised business spend — the same arithmetic as Finance →
-              Overview, so the two screens can never disagree. Monthly retainers billed in QuickBooks are included.
-            </p>
-          </Section>
-        )}
+function Stat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: "good" | "bad" }) {
+  return (
+    <div className="rounded-xl border border-border bg-surface-2/40 p-3">
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-2">{label}</div>
+      <div className={`mt-1 text-2xl font-bold tabular-nums ${tone === "good" ? "text-success" : tone === "bad" ? "text-danger" : ""}`}>
+        {value}
       </div>
+      {sub && <div className="mt-0.5 text-sm text-muted">{sub}</div>}
     </div>
   );
 }

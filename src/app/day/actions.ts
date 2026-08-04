@@ -7,6 +7,8 @@ import { etDayKey, etEndOfDay } from "@/lib/datetime";
 import { buildDayPlan, ownerMemberId, etInstant } from "@/lib/ownerDay";
 import { createBlock, updateBlock, deleteBlock, CalendarNotConnected } from "@/lib/integrations/googleCalendar";
 import { scanMeetTranscripts, parseProposed } from "@/lib/meetings";
+import { runHubAgent } from "@/lib/integrations/ai";
+import { DAY_TOOLS, daySystem, execDayTool, proposalsFrom, type DayProposal } from "@/lib/dayTools";
 
 // Owner-only throughout: this is one person's private list, and the guard is
 // what keeps it out of the shared ops queue in both directions.
@@ -377,6 +379,87 @@ export async function addMeetingItem(id: string, title: string): Promise<{ ok: b
   await prisma.ownerMeeting.update({ where: { id }, data: { proposed: JSON.stringify(items) } });
   revalidatePath("/day");
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// THE DAY ASSISTANT.
+//
+// It works on Jordan's own list directly, and can only ever PROPOSE anything
+// that reaches Kyle. The two send paths below are separate actions fired by his
+// click — the model has no route to either.
+// ---------------------------------------------------------------------------
+
+export type DayChatTurn = { role: "user" | "assistant"; content: string };
+
+export async function askMyDay(
+  question: string,
+  history: DayChatTurn[] = [],
+): Promise<{ answer: string; proposals: DayProposal[]; error?: string }> {
+  await requireOwner();
+  const q = question.trim();
+  if (!q) return { answer: "", proposals: [], error: "Ask me something." };
+
+  try {
+    const { answer, toolsUsed } = await runHubAgent({
+      system: daySystem(),
+      // Enough to follow a thread, not enough to drown the context.
+      history: history.slice(-8).map((h) => ({ role: h.role, content: h.content.slice(0, 4000) })),
+      question: q.slice(0, 4000),
+      tools: DAY_TOOLS,
+      exec: execDayTool,
+      maxSteps: 8,
+      maxTokens: 1600,
+    });
+    revalidatePath("/day");
+    return { answer, proposals: proposalsFrom(toolsUsed) };
+  } catch (e) {
+    return { answer: "", proposals: [], error: e instanceof Error ? e.message : "The assistant is unavailable." };
+  }
+}
+
+/** Jordan pressed Send on a drafted Slack message. Only his click reaches Kyle. */
+export async function sendSlackToKyle(text: string): Promise<{ ok: boolean; error?: string }> {
+  await requireOwner();
+  const body = text.trim();
+  if (!body) return { ok: false, error: "Nothing to send." };
+  const { opsAlert } = await import("@/lib/notify");
+  const sent = await opsAlert(body.slice(0, 3000));
+  return sent ? { ok: true } : { ok: false, error: "Slack didn't accept it — check the connection." };
+}
+
+/** Jordan pressed Create on a drafted task for Kyle's queue. */
+export async function createTaskForKyle(input: {
+  title: string;
+  detail?: string;
+  dueDate?: string;
+}): Promise<{ ok: boolean; id?: string; error?: string }> {
+  await requireOwner();
+  const title = input.title.trim();
+  if (!title) return { ok: false, error: "A task needs a title." };
+  const kyle = await prisma.teamMember.findFirst({
+    where: { name: { contains: "Kyle" }, active: true },
+    select: { id: true },
+  });
+  const row = await prisma.smartTask.create({
+    data: {
+      taskType: "internal_instruction",
+      title: title.slice(0, 140),
+      summary: (input.detail || `From Jordan's day assistant: ${title}`).slice(0, 500),
+      description: input.detail || null,
+      reasonCreated: "Asked for by Jordan on My Day",
+      source: "assistant",
+      priority: "MEDIUM",
+      dueAt: input.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(input.dueDate) ? etEndOfDay(input.dueDate) : null,
+      ownerId: kyle?.id ?? null,
+    },
+    select: { id: true },
+  });
+  try {
+    const { opsAlert } = await import("@/lib/notify");
+    await opsAlert(`📋 Jordan added a task for you: “${title}”`);
+  } catch { /* the task is what matters */ }
+  revalidatePath("/day");
+  return { ok: true, id: row.id };
 }
 
 /** Search projects to attach a to-do to — used by the quick-add box. */
