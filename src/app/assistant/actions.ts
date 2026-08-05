@@ -31,12 +31,16 @@ export type HubMemoryCard = {
   minRole: string;
   superseded: number;
 };
+/** A document the assistant wrote and saved, rendered as a link card. */
+export type HubDocCard = { id: string; title: string; kind: string; href: string };
+
 export type HubAnswer = {
   answer: string;
   sources: HubSource[];
   drafts?: HubDraft[];
   tasks?: HubTaskCard[];
   memories?: HubMemoryCard[];
+  docs?: HubDocCard[];
   chatId?: string;
 };
 
@@ -164,11 +168,16 @@ export async function askHub(question: string, history: HubTurn[] = [], chatId?:
   const drafts: HubDraft[] = [];
   const tasks: HubTaskCard[] = [];
   const memories: HubMemoryCard[] = [];
+  const docs: HubDocCard[] = [];
   const exec = async (name: string, input: Record<string, unknown>) => {
     // Impersonation state rides along so write tools (create_task, remember_fact)
     // stay read-only while the owner is previewing someone else ("view as").
-    const out = await execHubTool(name, input, { role: viewerRole, impersonating: me?.impersonating ?? false });
-    const o = out as { drafted?: boolean; client_id?: string; client_name?: string; channel?: string; message?: string; can_text?: boolean; created_task?: boolean; id?: string; title?: string; priority?: string; due?: string; project?: string | null; href?: string; remembered?: boolean; category?: string; min_role?: string; superseded?: number };
+    const out = await execHubTool(name, input, {
+      role: viewerRole,
+      impersonating: me?.impersonating ?? false,
+      who: me?.name ?? me?.email ?? null,
+    });
+    const o = out as { drafted?: boolean; client_id?: string; client_name?: string; channel?: string; message?: string; can_text?: boolean; created_task?: boolean; id?: string; title?: string; priority?: string; due?: string; project?: string | null; href?: string; remembered?: boolean; category?: string; min_role?: string; superseded?: number; document_saved?: boolean; kind?: string };
     if (name === "draft_client_message" && o?.drafted && o.message && o.client_id) {
       drafts.push({
         clientId: o.client_id,
@@ -180,6 +189,9 @@ export async function askHub(question: string, history: HubTurn[] = [], chatId?:
     }
     if (name === "create_task" && o?.created_task && o.id && o.title) {
       tasks.push({ id: o.id, title: o.title, priority: o.priority ?? "MEDIUM", due: o.due ?? "", project: o.project ?? null, href: o.href ?? "/queue" });
+    }
+    if (name === "save_document" && o?.document_saved && o.id && o.title) {
+      docs.push({ id: o.id, title: o.title, kind: o.kind ?? "report", href: o.href ?? `/assistant/docs/${o.id}` });
     }
     if (name === "remember_fact" && o?.remembered && o.id && o.title) {
       memories.push({ id: o.id, title: o.title, category: o.category ?? "preference", minRole: o.min_role ?? "ADMIN", superseded: o.superseded ?? 0 });
@@ -226,11 +238,22 @@ export async function askHub(question: string, history: HubTurn[] = [], chatId?:
       /* ignore */
     }
 
-    return { answer, sources, drafts: drafts.length ? drafts : undefined, tasks: tasks.length ? tasks : undefined, memories: memories.length ? memories : undefined, chatId: newChatId };
+    return { answer, sources, drafts: drafts.length ? drafts : undefined, tasks: tasks.length ? tasks : undefined, memories: memories.length ? memories : undefined, docs: docs.length ? docs : undefined, chatId: newChatId };
   } catch (e) {
     return {
       answer: e instanceof Error ? e.message : "Something went wrong answering that. Please try again.",
       sources: [],
     };
   }
+}
+
+/** Bin a saved document. Owner/admin only, same gate as the assistant itself. */
+export async function deleteHubDocument(id: string): Promise<{ ok: boolean }> {
+  const { requireAdmin } = await import("@/lib/auth/guards");
+  const { prisma } = await import("@/lib/prisma");
+  const { revalidatePath } = await import("next/cache");
+  await requireAdmin();
+  await prisma.hubDocument.delete({ where: { id } }).catch(() => null);
+  revalidatePath("/assistant/docs");
+  return { ok: true };
 }

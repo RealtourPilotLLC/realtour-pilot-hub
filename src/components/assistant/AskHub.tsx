@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState, useRef, useEffect, useTransition } from "react";
 import { Send, Sparkles, BookOpen, Database, User, ShieldCheck, Phone, Copy, Check, Mail, ListChecks, ArrowUpRight, Brain, Lock, Paperclip, X, FileText } from "lucide-react";
+import type { HubDocCard } from "@/app/assistant/actions";
 import { askHub, type HubAnswer, type HubTurn, type HubRole, type HubDraft, type HubTaskCard, type HubMemoryCard } from "@/app/assistant/actions";
 import { sendClientText } from "@/app/clients/actions";
 import { ink } from "@/components/ui/Badge";
@@ -68,7 +69,7 @@ const ROLES: { value: HubRole; label: string; hint: string }[] = [
 
 type Msg =
   | { role: "user"; text: string; attachments?: string[] }
-  | { role: "hub"; text: string; sources: HubAnswer["sources"]; drafts?: HubDraft[]; tasks?: HubTaskCard[]; memories?: HubMemoryCard[] };
+  | { role: "hub"; text: string; sources: HubAnswer["sources"]; drafts?: HubDraft[]; tasks?: HubTaskCard[]; memories?: HubMemoryCard[]; docs?: HubDocCard[] };
 
 // A file staged for the next question. Images are downscaled client-side so a
 // phone photo doesn't blow the server-action payload limit.
@@ -218,6 +219,23 @@ function renderText(text: string) {
   });
 }
 
+
+/** A document the assistant wrote and saved — a link, not a wall of text. */
+function DocCard({ doc }: { doc: HubDocCard }) {
+  return (
+    <Link
+      href={doc.href}
+      className="mt-2 flex items-center gap-3 rounded-xl border border-brand/30 bg-brand/[0.05] p-3 transition hover:border-brand"
+    >
+      <FileText className="size-5 shrink-0 text-brand" />
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-semibold leading-snug">{doc.title}</div>
+        <div className="text-xs text-muted">Saved to Documents — tap to open, print or download</div>
+      </div>
+    </Link>
+  );
+}
+
 export function AskHub({ initial, tier }: { initial?: string; tier: HubRole }) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [value, setValue] = useState("");
@@ -308,7 +326,7 @@ export function AskHub({ initial, tier }: { initial?: string; tier: HubRole }) {
     startTransition(async () => {
       const res = await askHub(q, history, chatId.current, outgoing.length ? outgoing : undefined);
       if (res.chatId) chatId.current = res.chatId;
-      setMessages((m) => [...m, { role: "hub", text: res.answer, sources: res.sources, drafts: res.drafts, tasks: res.tasks, memories: res.memories }]);
+      setMessages((m) => [...m, { role: "hub", text: res.answer, sources: res.sources, drafts: res.drafts, tasks: res.tasks, memories: res.memories, docs: res.docs }]);
       requestAnimationFrame(() =>
         scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }),
       );
@@ -388,6 +406,7 @@ export function AskHub({ initial, tier }: { initial?: string; tier: HubRole }) {
                 <div className="rounded-2xl rounded-tl-sm border bg-surface px-4 py-3 text-sm text-foreground/90">
                   <div className="space-y-0.5">{renderText(m.text)}</div>
                   {m.memories?.map((mem, j) => <MemoryCard key={`m${j}`} memory={mem} />)}
+                  {m.docs?.map((d, j) => <DocCard key={`d${j}`} doc={d} />)}
                   {m.tasks?.map((t, j) => <TaskCard key={`t${j}`} task={t} />)}
                   {m.drafts?.map((d, j) => <DraftCard key={j} draft={d} />)}
                   {m.sources.length > 0 && (

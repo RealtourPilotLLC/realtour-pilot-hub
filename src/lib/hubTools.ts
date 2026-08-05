@@ -171,6 +171,27 @@ export const HUB_TOOLS: HubTool[] = [
       required: ["title", "fact"],
     },
   },
+  {
+    name: "save_document",
+    description:
+      "SAVE a document so it survives the conversation — a report, an SOP, a brief, a plan, a written summary. Use this whenever the answer is something Jordan will want to come back to, print, or hand to someone, rather than a couple of sentences in chat. Compose the COMPLETE document in markdown and pass it as `markdown`; that text IS the document, so no 'here's your report' preamble inside it. Use markdown tables for any figures. Say plainly afterwards that you saved it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "What it is, as a person would name a file. Max 120 chars." },
+        kind: {
+          type: "string",
+          description: "report | sop | brief | plan | summary | doc. Pick the closest.",
+        },
+        markdown: {
+          type: "string",
+          description:
+            "The whole document in markdown. Open with a one-line summary of the finding, then the sections. Every figure must come from the tools — never estimated. Close with what the numbers do NOT cover.",
+        },
+      },
+      required: ["title", "markdown"],
+    },
+  },
 ];
 
 // Role tiers map onto the future per-user RBAC. A viewer sees an item only if
@@ -207,7 +228,7 @@ export async function execHubTool(
   input: Record<string, unknown>,
   // Least privilege if a caller forgets; `impersonating` = the owner is in the
   // read-only "view as" preview, so write tools must refuse.
-  ctx: { role: string; impersonating?: boolean } = { role: "CREATIVE" },
+  ctx: { role: string; impersonating?: boolean; who?: string | null } = { role: "CREATIVE" },
 ): Promise<unknown> {
   switch (name) {
     case "current_datetime": {
@@ -735,6 +756,39 @@ export async function execHubTool(
         category: res.category,
         min_role: res.minRole,
         superseded: res.superseded,
+      };
+    }
+
+    case "save_document": {
+      if (ctx.impersonating) return { error: "Read-only preview — documents can't be saved from 'view as'." };
+      const title = String(input.title ?? "").trim();
+      const markdown = String(input.markdown ?? "").trim();
+      if (!title) return { error: "A document needs a title." };
+      // Refuse to save meta-chatter as a document. The finance advisor hit this:
+      // the model would answer "let me compose that" and the answer got saved as
+      // the report body. A stub with a title is worse than no document, because
+      // it looks like the work was done.
+      if (markdown.length < 200) {
+        return { error: "That's too short to be a document — compose the full markdown and call save_document again." };
+      }
+      const KINDS = ["report", "sop", "brief", "plan", "summary", "doc"];
+      const kind = KINDS.includes(String(input.kind)) ? String(input.kind) : "report";
+      const row = await prisma.hubDocument.create({
+        data: {
+          title: title.slice(0, 160),
+          kind,
+          markdown: markdown.slice(0, 120_000),
+          createdBy: ctx.who ?? null,
+        },
+        select: { id: true, title: true, kind: true },
+      });
+      return {
+        document_saved: true,
+        id: row.id,
+        title: row.title,
+        kind: row.kind,
+        href: `/assistant/docs/${row.id}`,
+        note: "Saved. Tell Jordan it's saved and that he can open it from Documents — do not paste the whole document back into the chat.",
       };
     }
 

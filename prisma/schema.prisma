@@ -1550,3 +1550,22 @@ model GrowthPlan {
   builtAt   DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
+// A document Ask the Hub wrote and SAVED — a report, an SOP, a brief, a plan.
+// The finance advisor could already do this (FinanceReport), but only for
+// formal financial statements over a date range. This is the general case: any
+// question that deserves a document rather than a chat bubble that scrolls away.
+model HubDocument {
+  id        String   @id @default(cuid())
+  title     String
+  kind      String   @default("report") // report | sop | brief | plan | summary | doc
+  markdown  String // the document body — this IS the document
+  // What was asked for, so a stale doc can be regenerated without guessing.
+  prompt    String?
+  createdBy String? // the signed-in name/email that asked for it
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([createdAt])
+  @@index([kind])
+}
