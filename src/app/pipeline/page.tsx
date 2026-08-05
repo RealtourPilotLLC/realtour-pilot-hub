@@ -1,23 +1,39 @@
 import { PageHeader } from "@/components/PageHeader";
-import { ProjectTracker } from "@/components/tracker/ProjectTracker";
-import { getPipelineProjects } from "@/lib/queries";
-import { buildTrackerRows } from "@/lib/tracker";
+import { DeliveryBoardView } from "@/components/tracker/DeliveryBoardView";
+import { deliveryBoard } from "@/lib/deliveryBoard";
 
 export const dynamic = "force-dynamic";
 
+// PROJECT TRACKER — rebuilt as a delivery board.
+//
+// Jordan: "I want a screen that our content delivery / quality checking person
+// AKA Kyle can come in to and see what projects we have due today, what is
+// holding them up, and what is upcoming."
+//
+// The old page was a sortable spreadsheet of every job in the last fortnight.
+// It could answer any question if you knew which column to read — which is the
+// same as answering none of them at a glance. This one answers three, and the
+// tabs ARE the three questions.
+//
+// Due dates come from the real per-product promises in src/lib/turnaround.ts,
+// not one flat SLA: photos and floor plans next day, standard video in 48h,
+// premium reels in 3-4 days, the monthly social packages in 7-10 BUSINESS days.
+
 export default async function PipelinePage() {
-  const projects = await getPipelineProjects();
-  const rows = buildTrackerRows(projects);
-  const active = rows.filter((r) => r.status !== "DELIVERED" && r.status !== "CANCELLED").length;
+  const board = await deliveryBoard();
+  const live = board.today.length + board.tomorrow.length + board.upcoming.length;
 
   return (
-    <div className="flex h-full flex-col">
+    <div>
       <PageHeader
-        eyebrow="Last 2 weeks"
         title="Project Tracker"
-        subtitle={`${active} active · sort by shoot or due date, set status inline`}
+        subtitle={`${live} in production · ${board.today.length} due today${
+          board.overdueCount ? ` · ${board.overdueCount} past due` : ""
+        }`}
       />
-      <ProjectTracker rows={rows} showBoards assignee="photographer" emptyLabel="No projects in the last two weeks." />
+      <div className="mx-auto max-w-4xl p-4 pb-16 sm:p-6">
+        <DeliveryBoardView board={board} />
+      </div>
     </div>
   );
 }
