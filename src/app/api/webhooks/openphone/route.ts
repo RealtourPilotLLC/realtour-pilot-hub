@@ -153,12 +153,21 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
   // their number, so an unknown texter still leaves an identifiable trace), and
   // robo-texts are skipped entirely — they'd read as fake client messages.
   if (!isCall && text.trim() && !robo) {
+    // The number a reply goes back to: whoever wrote in, or (on our own
+    // outbound) whoever we texted. Our own lines are excluded so a group
+    // thread resolves to a real person rather than to us.
+    const counterparty = effIncoming
+      ? fromPhone
+      : [...new Set(collectPhones(data.to).map((p) => phoneKey(p)))].find(
+          (k) => k.length === 10 && !ourNumbers.has(k),
+        ) ?? "";
     await logComm({
       channel: "text",
       direction: effIncoming ? "in" : "out",
       clientId: match?.clientId ?? null,
       clientName: match?.clientName ?? null,
       projectId: effProject?.id ?? null,
+      fromPhone: counterparty || null,
       contactName: fromUs
         ? "Us"
         : effIncoming

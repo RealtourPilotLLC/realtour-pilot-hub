@@ -1,0 +1,197 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { requireAdmin } from "@/lib/auth/guards";
+import { prisma } from "@/lib/prisma";
+import { replyCardFor, type ReplyCard } from "@/lib/replyQueue";
+import { OpenPhone, defaultOpenPhoneNumber } from "@/lib/integrations/openphone";
+import { closeReplyForOutbound } from "@/lib/tasks";
+import { logComm } from "@/lib/commLog";
+
+export type DraftResult = { ok: boolean; message: string; draft?: string };
+
+// Words the 30-day comms review found doing the damage — a promise with no time
+// in it. The model is told not to use them; this catches the cases where it does
+// anyway, so the rule holds even on a bad generation.
+const VAGUE = /\b(should be|shortly|soon|asap|as soon as possible|in a bit|in a few|at some point|when it'?s ready)\b/i;
+
+// Generate (or re-generate) the reply for one conversation.
+//
+// `instruction` is the whole point of the feature: Kyle types what he actually
+// wants to say — "tell her Saturday morning works but I need the lockbox code" —
+// and gets it back written properly, with the client's history, their open jobs,
+// our real availability and our policies already folded in. Without it, the draft
+// is the model's own best read of the thread.
+//
+// DRAFT ONLY. Nothing here sends anything.
+export async function generateReply(key: string, instruction?: string | null): Promise<DraftResult> {
+  await requireAdmin();
+  const { getSecret } = await import("@/lib/integrations/connections");
+  if (!(await getSecret("ai"))) return { ok: false, message: "Add an AI key in Connections to generate replies." };
+
+  const card = await replyCardFor(key);
+  if (!card) return { ok: false, message: "That conversation has already been answered." };
+  return draftFor(card, instruction);
+}
+
+// The actual generation, taking a card that's already been loaded. Split out so
+// the batch path can build the queue ONCE instead of re-scanning three weeks of
+// comms for every message it drafts.
+async function draftFor(card: ReplyCard, instruction?: string | null): Promise<DraftResult> {
+  const ask = card.lastInbound + " " + (instruction ?? "");
+
+  // Their recent jobs, so the draft can talk about the right listing.
+  let projects: { title: string; status: string }[] = [];
+  if (card.clientId) {
+    projects = await prisma.project.findMany({
+      where: { clientId: card.clientId },
+      orderBy: { orderedAt: { sort: "desc", nulls: "last" } },
+      take: 6,
+      select: { title: true, status: true },
+    });
+  }
+
+  // Real open shoot dates from Aryeo when they're asking about scheduling, so
+  // the draft offers dates we can actually keep instead of inventing them.
+  let availability: string | null = null;
+  if (/\b(availab|when can|what (day|days|time|times)|schedul|book|come out|opening|calendar|times? work|soonest|reschedul)\b/i.test(ask)) {
+    try {
+      const { getSchedulingAvailability } = await import("@/lib/integrations/aryeo");
+      const { etDate } = await import("@/lib/datetime");
+      const slots = await getSchedulingAvailability({ limit: 6 });
+      if (slots?.length) availability = slots.map((s) => etDate(new Date(`${s.date}T12:00:00Z`))).join(", ");
+    } catch {
+      /* draft without availability rather than failing the whole generation */
+    }
+  }
+
+  try {
+    const { relevantPolicies } = await import("@/lib/policies");
+    const { draftReplyWithContext } = await import("@/lib/integrations/ai");
+    const draft = await draftReplyWithContext({
+      channel: "text",
+      clientName: card.clientName ?? card.displayName,
+      segment: card.segment,
+      socialPlan: card.socialPlan,
+      propertyAddress: card.propertyAddress ?? projects[0]?.title ?? null,
+      projects,
+      transcript: card.turns.map((t) => ({ role: t.role, text: t.text, at: t.at })),
+      availability,
+      policies: await relevantPolicies(ask),
+      instruction: instruction?.trim() || null,
+      // Who we're talking to matters for tone: a photographer asking about a
+      // lockbox isn't a customer, and shouldn't be written to like one.
+      note: card.isTeam ? "This is one of our own team members, not a customer. Reply like a colleague." : null,
+    });
+
+    if (/^\s*NO_REPLY_NEEDED\s*$/i.test(draft)) {
+      return { ok: false, message: "This one looks handled — nothing to answer. Use \"Tell it what to say\" if you still want to write." };
+    }
+
+    const warn = VAGUE.test(draft)
+      ? "Draft ready — but it still has a vague time in it. Put a real one in before sending."
+      : "Draft ready. Read it before sending.";
+    return { ok: true, message: warn, draft };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Could not generate a reply." };
+  }
+}
+
+// Generate drafts for a whole batch of conversations in one go, so Kyle opens
+// the page to a queue that is already written rather than one he has to prompt
+// card by card. Runs them concurrently but in small waves — the AI provider
+// rate-limits, and one 429 shouldn't take the other nine drafts down with it.
+export async function generateAllReplies(
+  keys: string[],
+): Promise<{ ok: boolean; message: string; drafts: Record<string, string> }> {
+  await requireAdmin();
+  const { getSecret } = await import("@/lib/integrations/connections");
+  if (!(await getSecret("ai"))) return { ok: false, message: "Add an AI key in Connections to generate replies.", drafts: {} };
+
+  // ONE queue build for the whole batch.
+  const { replyQueue } = await import("@/lib/replyQueue");
+  const q = await replyQueue();
+  const byKey = new Map([...q.cards, ...q.handled].map((c) => [c.key, c]));
+  const cards = keys.map((k) => byKey.get(k)).filter((c): c is ReplyCard => !!c);
+
+  const drafts: Record<string, string> = {};
+  const WAVE = 4;
+  let failed = 0;
+  for (let i = 0; i < cards.length; i += WAVE) {
+    const wave = cards.slice(i, i + WAVE);
+    const results = await Promise.all(wave.map((c) => draftFor(c).catch(() => null)));
+    results.forEach((r, j) => {
+      if (r?.ok && r.draft) drafts[wave[j].key] = r.draft;
+      else failed++;
+    });
+  }
+  const made = Object.keys(drafts).length;
+  return {
+    ok: made > 0,
+    message: made === 0 ? "Couldn't generate any drafts." : failed ? `Drafted ${made}. ${failed} need a look.` : `Drafted ${made}.`,
+    drafts,
+  };
+}
+
+// Send the reviewed text. A HUMAN clicks this — nothing in the reply queue
+// ever sends on its own, which is the same rule every other client-facing
+// message in the hub follows.
+export async function sendReply(key: string, text: string): Promise<{ ok: boolean; message: string }> {
+  await requireAdmin();
+  const body = text.trim();
+  if (!body) return { ok: false, message: "Write something first." };
+
+  const card = await replyCardFor(key);
+  if (!card) return { ok: false, message: "That conversation has already been answered." };
+  if (!card.phone) {
+    return { ok: false, message: "No number on file for this conversation — reply from the Inbox tab instead." };
+  }
+
+  const from = await defaultOpenPhoneNumber();
+  if (!from) return { ok: false, message: "OpenPhone isn't connected." };
+
+  try {
+    await OpenPhone.sendMessage(from, `+1${card.phone}`, body);
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Failed to send." };
+  }
+
+  // Log it ourselves rather than waiting on the delivery webhook. The queue's
+  // "newest row is inbound" rule is what clears the card, so if the webhook is
+  // slow or drops the event the message would otherwise sit there looking
+  // unanswered and get sent twice. logComm dedupes on externalId, so the
+  // webhook's own row later is a no-op.
+  await logComm({
+    channel: "text",
+    direction: "out",
+    clientId: card.clientId,
+    clientName: card.clientName,
+    projectId: card.projectId,
+    contactName: "Us",
+    fromPhone: card.phone,
+    body,
+    source: "openphone",
+  }).catch(() => { /* the text is already sent; a log failure must not report failure */ });
+
+  if (card.clientId) {
+    await closeReplyForOutbound(card.clientId, body).catch(() => {});
+    if (card.projectId) {
+      await prisma.activity
+        .create({ data: { projectId: card.projectId, type: "SYSTEM", body: `Text sent: ${body.slice(0, 200)}` } })
+        .catch(() => {});
+    }
+  }
+
+  revalidatePath("/communications");
+  revalidatePath("/queue");
+  return { ok: true, message: `Sent to ${card.displayName}.` };
+}
+
+// Refresh the queue after work happens elsewhere (someone replied in
+// Communications, or on their phone) without a full page reload.
+export async function refreshReplyQueue(): Promise<{ cards: ReplyCard[] }> {
+  await requireAdmin();
+  const { replyQueue } = await import("@/lib/replyQueue");
+  const q = await replyQueue();
+  return { cards: q.cards };
+}

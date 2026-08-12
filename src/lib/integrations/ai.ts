@@ -297,6 +297,10 @@ export async function draftReplyWithContext(ctx: {
   note?: string | null;
   availability?: string | null; // real open shoot dates (from Aryeo scheduling)
   policies?: string | null; // agency policies the reply must follow (fees, weather, scheduling)
+  // What the human actually wants to say, in their own rough words ("tell her
+  // Saturday works but I need the lockbox code"). This OUTRANKS the model's own
+  // read of the thread: the person knows things the transcript doesn't.
+  instruction?: string | null;
 }): Promise<string> {
   const turns = ctx.transcript.filter((t) => t.text && t.text.trim()).slice(-24);
   const lines = turns.map((t) => {
@@ -329,14 +333,25 @@ Conversation so far (oldest first):
 ${lines.join("\n")}
 """
 ${lastClient ? `\nThe message to reply to:\n"""\n${lastClient.text!.trim().slice(0, 1200)}\n"""` : ""}
-
+${
+  ctx.instruction?.trim()
+    ? `\nWHAT WE WANT TO SAY (from the person on our team who is sending this — their rough words, follow them):\n"""\n${ctx.instruction.trim().slice(0, 800)}\n"""\nSay exactly this, written properly in our voice. Their intent and every fact they give you (times, dates, answers, requests) are correct and OUTRANK your own read of the thread — they know things the transcript doesn't. Do not water it down, do not add commitments they didn't make, and do not refuse to say it. Still obey the agency policies above.\n`
+    : ""
+}
 Rules:
 - Use the conversation for context. If a question was already answered or a time already proposed, do not repeat it; move things forward.
+- NEVER say "should be", "shortly", "soon", "in a bit", "as soon as possible" or any other vague timing. Every time you mention when something will happen, give a specific one ("by 6pm tonight", "tomorrow morning", "Thursday"). If you genuinely don't know the time, ask for it or say we'll confirm the exact time — do not fill the gap with a vague word.
+- NEVER give the client an internal reason. Do not name a teammate, an editor, a vendor, or a mistake on our end ("the editor is behind", "Kyle forgot", "our photographer is running late"). State what WE will do and when. What went wrong inside the business is not the client's problem.
+- Spell the client's name exactly as it appears in the profile above. If you're not certain of their name, don't use one.
+- Write like a professional running a business, not a friend texting. No "lol", no "haha", no slang, no emoji.
 - Only state facts present in the thread, profile, or policies above. Do NOT invent dates, prices, delivery times, fees, or commitments. If you need info we have not stated, ask for it or say we will confirm.
 - Follow the agency policies above exactly. When a policy answers the client's question, explain it plainly in the reply instead of saying you will "confirm" or "check" it. Never promise a free reschedule, refund, waived fee, or "no additional cost" unless a policy explicitly allows it; if a fee or condition may apply, say so plainly and kindly.
 - If the client is asking about availability / when we can shoot and "open shoot availability" is listed above, offer 2-4 of those exact open dates and ask which works (you MAY use those dates — they're real). Never offer a date that isn't listed.
-- If the latest message needs no reply (a thank-you, a confirmation, an emoji), respond with exactly: NO_REPLY_NEEDED
-${ctx.isGroup ? "- This is a group thread; address the group naturally, not one person.\n" : ""}
+${
+  ctx.instruction?.trim()
+    ? "- We have decided to send something, so ALWAYS write a message. Never answer NO_REPLY_NEEDED.\n"
+    : "- If the latest message needs no reply (a thank-you, a confirmation, an emoji), respond with exactly: NO_REPLY_NEEDED\n"
+}${ctx.isGroup ? "- This is a group thread; address the group naturally, not one person.\n" : ""}
 Write only the reply, ready to copy and send. No preamble, no options, no signature unless it reads like a full email.`;
   return anthropic({ model: SMART, system: STYLE, user, maxTokens: 500 });
 }

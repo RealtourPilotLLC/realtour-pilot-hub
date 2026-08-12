@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Mail, MessageCircle, Phone, Send, User, Users } from "lucide-react";
+import { Mail, MessageCircle, Phone, Reply, Send, User, Users } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { Avatar } from "@/components/ui/Avatar";
@@ -11,6 +11,8 @@ import { ClientTextsPanel } from "@/components/texts/ClientTextsPanel";
 import { getEmailThreads } from "@/components/comms/emailThreads";
 import { EmailThreadList } from "@/components/comms/EmailThreadList";
 import { TeamMessagesPanel } from "@/components/comms/TeamMessagesPanel";
+import { ReplyQueue } from "@/components/comms/ReplyQueue";
+import { replyQueue, replyWaitingCount } from "@/lib/replyQueue";
 import { formatDistanceToNow } from "date-fns";
 
 export const dynamic = "force-dynamic";
@@ -20,15 +22,15 @@ function fmtPhone(p: string) {
   return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : p;
 }
 
-// One comms surface, four tabs (Jordan: "keep comms all in one tab" → "sick
-// messaging and comms hub"): the live OpenPhone inbox, client email threads,
-// internal team messaging, and the Outbox — today's drafted confirmation +
-// delivery texts waiting for a human to review and send. Every tab is
-// shareable via ?tab= and loads ONLY its own data (the heavy OpenPhone pull
-// never runs for the other three).
-type CommsTab = "inbox" | "email" | "team" | "outbox";
+// One comms surface, five tabs (Jordan: "keep comms all in one tab" → "sick
+// messaging and comms hub"): the live OpenPhone inbox, Replies (inbound texts
+// still owed an answer, each pre-drafted), client email threads, internal team
+// messaging, and the Outbox — today's drafted confirmation + delivery texts
+// waiting for a human to review and send. Every tab is shareable via ?tab= and
+// loads ONLY its own data (the heavy OpenPhone pull never runs for the others).
+type CommsTab = "inbox" | "replies" | "email" | "team" | "outbox";
 
-function CommsTabs({ tab, pending, emailFresh = 0 }: { tab: CommsTab; pending: number; emailFresh?: number }) {
+function CommsTabs({ tab, pending, emailFresh = 0, waiting = 0 }: { tab: CommsTab; pending: number; emailFresh?: number; waiting?: number }) {
   const active = "rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white";
   const idle = "rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted hover:bg-surface-2";
   return (
@@ -36,6 +38,17 @@ function CommsTabs({ tab, pending, emailFresh = 0 }: { tab: CommsTab; pending: n
       <Link href="/communications" className={tab === "inbox" ? active : idle}>
         <MessageCircle className="mr-1.5 inline size-3.5" />
         Inbox
+      </Link>
+      {/* Replies: every inbound text still waiting on an answer, each with a
+          draft already written. The one tab that's a to-do list, not an archive. */}
+      <Link href="/communications?tab=replies" className={tab === "replies" ? active : idle}>
+        <Reply className="mr-1.5 inline size-3.5" />
+        Replies
+        {waiting > 0 && (
+          <span className={`ml-1.5 rounded-full px-1.5 text-xs font-semibold ${tab === "replies" ? "bg-white/20" : "bg-danger-soft text-danger"}`}>
+            {waiting}
+          </span>
+        )}
       </Link>
       <Link href="/communications?tab=email" className={tab === "email" ? active : idle}>
         <Mail className="mr-1.5 inline size-3.5" />
@@ -68,8 +81,43 @@ function CommsTabs({ tab, pending, emailFresh = 0 }: { tab: CommsTab; pending: n
 
 export default async function CommunicationsPage({ searchParams }: { searchParams: Promise<{ tab?: string }> }) {
   const sp = await searchParams;
-  const tab: CommsTab = sp.tab === "outbox" || sp.tab === "email" || sp.tab === "team" ? sp.tab : "inbox";
-  const pendingTexts = (await getClientTextTasks()).length;
+  const tab: CommsTab =
+    sp.tab === "outbox" || sp.tab === "email" || sp.tab === "team" || sp.tab === "replies" ? sp.tab : "inbox";
+  const [pendingTexts, waiting] = await Promise.all([
+    getClientTextTasks().then((t) => t.length),
+    replyWaitingCount(),
+  ]);
+
+  // REPLIES — every inbound text still waiting on an answer, each with a draft
+  // ready to read. Jordan: "a generate response engine for Kyle so he can have
+  // responses generated to all inbound text messages, and then give him the
+  // ability to explain what he wants to say to be able to tailor the message."
+  //
+  // The 30-day comms review found the two habits that cost us: messages that go
+  // unanswered, and answers with no real time in them ("should be" was the most
+  // used phrase). This tab attacks both — the queue can't hide a message, and
+  // every draft is written under a rule that bans vague timing.
+  if (tab === "replies") {
+    const { cards, handled } = await replyQueue();
+    const oldest = cards[0];
+    return (
+      <div>
+        <PageHeader
+          eyebrow="Eastern time"
+          title="Replies"
+          subtitle={
+            cards.length === 0
+              ? "Nothing is waiting on an answer."
+              : `${cards.length} waiting${oldest && oldest.hoursWaiting >= 24 ? ` · oldest has been ${Math.round(oldest.hoursWaiting / 24)} day(s)` : ""}`
+          }
+        />
+        <div className="mx-auto max-w-3xl p-4 pb-16 sm:p-6">
+          <CommsTabs tab="replies" pending={pendingTexts} waiting={waiting} />
+          <ReplyQueue cards={cards} handled={handled} />
+        </div>
+      </div>
+    );
+  }
 
   // The Outbox renders without the (slow) OpenPhone conversation pull — drafts
   // come from SmartTasks; OpenPhone is only involved when a human hits Send.
@@ -82,7 +130,7 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
           subtitle="Today's confirmation and delivery texts — review each draft, then send."
         />
         <div className="p-4 sm:p-6">
-          <CommsTabs tab="outbox" pending={pendingTexts} />
+          <CommsTabs tab="outbox" pending={pendingTexts} waiting={waiting} />
           <ClientTextsPanel />
         </div>
       </div>
@@ -101,7 +149,7 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
           actions={<Badge soft="var(--surface-2)">Synced from Gmail</Badge>}
         />
         <div className="p-4 sm:p-6">
-          <CommsTabs tab="email" pending={pendingTexts} emailFresh={fresh} />
+          <CommsTabs tab="email" pending={pendingTexts} emailFresh={fresh} waiting={waiting} />
           <EmailThreadList threads={threads} />
         </div>
       </div>
@@ -118,7 +166,7 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
           subtitle="Team messages across all projects — click a thread to reply on the project page."
         />
         <div className="p-4 sm:p-6">
-          <CommsTabs tab="team" pending={pendingTexts} />
+          <CommsTabs tab="team" pending={pendingTexts} waiting={waiting} />
           <TeamMessagesPanel />
         </div>
       </div>
@@ -227,7 +275,7 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
         actions={<Badge soft="var(--surface-2)">Live from OpenPhone</Badge>}
       />
       <div className="p-6">
-        <CommsTabs tab="inbox" pending={pendingTexts} />
+        <CommsTabs tab="inbox" pending={pendingTexts} waiting={waiting} />
         {error && <div className="mb-4 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">{error}</div>}
         {rows.length === 0 && !error ? (
           <p className="text-sm text-muted">No conversations found.</p>

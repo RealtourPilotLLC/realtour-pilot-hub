@@ -16,6 +16,7 @@ export async function logComm(input: {
   clientName?: string | null;
   projectId?: string | null;
   contactName?: string | null;
+  fromPhone?: string | null; // the OTHER party's number — what a reply gets sent to
   subject?: string | null;
   body: string;
   occurredAt?: Date | null;
@@ -35,6 +36,12 @@ export async function logComm(input: {
     clientName: input.clientName ?? null,
     projectId: input.projectId ?? null,
     contactName: input.contactName ?? null,
+    // Normalize to the same 10-digit key everything else compares on, so a row
+    // logged as "+1 (610) 555-0100" still matches a lookup for "6105550100".
+    fromPhone: (() => {
+      const k = (input.fromPhone ?? "").replace(/\D/g, "").slice(-10);
+      return k.length === 10 ? k : null;
+    })(),
     subject: input.subject?.slice(0, 300) ?? null,
     body: body.slice(0, 6000),
     occurredAt: input.occurredAt ?? new Date(),

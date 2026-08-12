@@ -1205,6 +1205,12 @@ model CommLog {
   clientName  String?
   projectId   String?
   contactName String? // who sent/received (sender label)
+  // The OTHER party's phone, 10-digit key (inbound: who wrote in; outbound: who
+  // we texted). Without it a logged text can be read but not replied to — the
+  // reply queue needs a number to send back on, and CommLog is the only complete
+  // record of every text. Null on email/slack rows and on texts logged before
+  // this column existed (those fall back to the client's number on file).
+  fromPhone   String?
   subject     String? // email subject, if any
   body        String // full message text / transcript
   occurredAt  DateTime
@@ -1216,6 +1222,9 @@ model CommLog {
   @@index([projectId])
   @@index([occurredAt])
   @@index([minRole])
+  // The reply queue scans recent texts newest-first; without this it table-scans.
+  @@index([channel, occurredAt])
+  @@index([fromPhone])
 }
 
 // Persisted "Ask the Hub" conversations. Powers the owner-only chat-history +
