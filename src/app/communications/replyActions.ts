@@ -150,17 +150,23 @@ export async function sendReply(key: string, text: string): Promise<{ ok: boolea
   const from = await defaultOpenPhoneNumber();
   if (!from) return { ok: false, message: "OpenPhone isn't connected." };
 
+  let sentId: string | null = null;
   try {
-    await OpenPhone.sendMessage(from, `+1${card.phone}`, body);
+    const res = await OpenPhone.sendMessage(from, `+1${card.phone}`, body);
+    sentId = res?.data?.id ?? null;
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Failed to send." };
   }
 
   // Log it ourselves rather than waiting on the delivery webhook. The queue's
   // "newest row is inbound" rule is what clears the card, so if the webhook is
-  // slow or drops the event the message would otherwise sit there looking
-  // unanswered and get sent twice. logComm dedupes on externalId, so the
-  // webhook's own row later is a no-op.
+  // slow or drops the event the message would sit there looking unanswered and
+  // get sent twice.
+  //
+  // Stamped with the SAME externalId the webhook will use (`op-<message id>`),
+  // so when message.delivered arrives a moment later logComm recognises it as
+  // already-logged and swallows it. Without that id the two rows are different
+  // records and comms memory ends up holding every sent reply twice.
   await logComm({
     channel: "text",
     direction: "out",
@@ -171,6 +177,7 @@ export async function sendReply(key: string, text: string): Promise<{ ok: boolea
     fromPhone: card.phone,
     body,
     source: "openphone",
+    externalId: sentId ? `op-${sentId}` : undefined,
   }).catch(() => { /* the text is already sent; a log failure must not report failure */ });
 
   if (card.clientId) {
