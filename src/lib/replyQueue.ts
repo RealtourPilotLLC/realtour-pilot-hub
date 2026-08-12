@@ -219,10 +219,13 @@ export async function replyQueue(): Promise<ReplyQueue> {
   };
 }
 
-// Just the number, for the tab badge. Same grouping rule as the full queue but
-// it pulls only the four fields the rule needs and skips every enrichment
-// lookup — the other comms tabs shouldn't pay for a badge.
-export async function replyWaitingCount(): Promise<number> {
+// How many texts are owed an answer, and how long the oldest has been sitting.
+// Same grouping rule as the full queue, but it pulls only the fields that rule
+// needs and skips every enrichment lookup — the dashboard, the Tasks header and
+// the other comms tabs all read this, and none of them should pay for the full
+// build. `oldestHours` is the number that actually makes someone act: seven
+// unanswered is a queue, one of them sitting three days is a problem.
+export async function replyWaitingSummary(): Promise<{ count: number; oldestHours: number }> {
   const me = await getCurrentUser().catch(() => null);
   const tier = contentTier(me?.role ?? "OWNER");
   const allowed = Object.keys(ROLE_RANK).filter((r) => ROLE_RANK[r] <= ROLE_RANK[tier]);
@@ -235,22 +238,29 @@ export async function replyWaitingCount(): Promise<number> {
     },
     orderBy: { occurredAt: "desc" },
     take: SCAN_CAP,
-    select: { direction: true, clientId: true, fromPhone: true, contactName: true, body: true },
+    select: { direction: true, clientId: true, fromPhone: true, contactName: true, body: true, occurredAt: true },
   });
 
   // First row seen per conversation is its newest (rows are newest-first).
   const seen = new Set<string>();
-  let waiting = 0;
+  let count = 0;
+  let oldest: Date | null = null;
   for (const r of rows) {
     const phone = r.fromPhone && r.fromPhone.length === 10 ? r.fromPhone : null;
     const key = r.clientId ? `c:${r.clientId}` : phone ? `p:${phone}` : r.contactName ? `n:${r.contactName}` : null;
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    // Matches the queue's own split — the badge must never claim work the tab
+    // Matches the queue's own split — a badge must never claim work the tab
     // then files under "probably done".
-    if (r.direction === "in" && !looksHandled(r.body)) waiting++;
+    if (r.direction === "in" && !looksHandled(r.body)) {
+      count++;
+      if (!oldest || r.occurredAt < oldest) oldest = r.occurredAt;
+    }
   }
-  return waiting;
+  return {
+    count,
+    oldestHours: oldest ? Math.max(0, Math.round((Date.now() - oldest.getTime()) / 3_600_000)) : 0,
+  };
 }
 
 // Rebuild ONE card after something changes (a send, a regenerate) without

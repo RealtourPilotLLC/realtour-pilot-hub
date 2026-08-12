@@ -12,7 +12,7 @@ import { getEmailThreads } from "@/components/comms/emailThreads";
 import { EmailThreadList } from "@/components/comms/EmailThreadList";
 import { TeamMessagesPanel } from "@/components/comms/TeamMessagesPanel";
 import { ReplyQueue } from "@/components/comms/ReplyQueue";
-import { replyQueue, replyWaitingCount } from "@/lib/replyQueue";
+import { replyQueue, replyWaitingSummary } from "@/lib/replyQueue";
 import { formatDistanceToNow } from "date-fns";
 
 export const dynamic = "force-dynamic";
@@ -85,7 +85,7 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
     sp.tab === "outbox" || sp.tab === "email" || sp.tab === "team" || sp.tab === "replies" ? sp.tab : "inbox";
   const [pendingTexts, waiting] = await Promise.all([
     getClientTextTasks().then((t) => t.length),
-    replyWaitingCount(),
+    replyWaitingSummary().then((s) => s.count),
   ]);
 
   // REPLIES — every inbound text still waiting on an answer, each with a draft

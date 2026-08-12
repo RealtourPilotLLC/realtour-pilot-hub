@@ -9,6 +9,8 @@ import { TodayView, todayCardCount } from "@/components/tasks/TodayView";
 import { BoardView, boardOpenCount } from "@/components/tasks/BoardView";
 import { DoneView, doneTodayCount } from "@/components/tasks/DoneView";
 import { SendAllTexts } from "@/components/tasks/SendAllTexts";
+import { UnansweredPill } from "@/components/tasks/UnansweredPill";
+import { replyWaitingSummary } from "@/lib/replyQueue";
 
 export const dynamic = "force-dynamic";
 
@@ -33,18 +35,23 @@ export default async function TasksHubPage({ searchParams }: {
   const boardOnly = me?.role === "EDITOR";
   const tab: TasksTab = boardOnly ? "board" : sp.tab === "board" || sp.tab === "done" ? sp.tab : "today";
 
-  const [todayN, boardN, doneN, draftedN] = await Promise.all([
+  const [todayN, boardN, doneN, draftedN, replies] = await Promise.all([
     boardOnly ? 0 : todayCardCount(),
     boardOpenCount(),
     boardOnly ? 0 : doneTodayCount(),
     // Drafted client texts — the ONE shared membership rule (clientTextWhere),
     // so this badge can never advertise texts the panel/batch won't show.
     boardOnly ? 0 : prisma.smartTask.count({ where: clientTextWhere() }),
+    // Inbound texts still owed an answer. Counted from the comms log, not from
+    // reply TASKS, so the texts nobody ever filed a task for still show up —
+    // those are the ones that get forgotten. Editors never see client comms.
+    boardOnly ? { count: 0, oldestHours: 0 } : replyWaitingSummary(),
   ]);
   const tabs = boardOnly ? null : (
     <div className="flex flex-wrap items-center gap-2">
       <TasksTabs tab={tab} todayCount={todayN} boardCount={boardN} doneCount={doneN} />
       <SendAllTexts count={draftedN} />
+      {replies.count > 0 && <UnansweredPill count={replies.count} oldestHours={replies.oldestHours} />}
     </div>
   );
 

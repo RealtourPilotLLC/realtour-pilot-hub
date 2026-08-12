@@ -11,6 +11,7 @@ import {
   getTodayCardCount, getActionCounts, getStuckJobs, getShootWindow,
   getProactiveFlags, getHandledToday, getOwnerStats, getOwnerPulse, getOwnerDials,
 } from "@/lib/queries";
+import { replyWaitingSummary } from "@/lib/replyQueue";
 import { getCurrentUser } from "@/lib/auth/user";
 import { contentTier, homeFor } from "@/lib/auth/access";
 import { formatMoney } from "@/lib/utils";
@@ -48,7 +49,7 @@ export default async function DashboardPage() {
   if (me && contentTier(me.role) === "CREATIVE") redirect(homeFor(me.role));
   const isOwner = !me || me.role === "OWNER";
 
-  const [todayCount, counts, stuck, shoots, radar, handledToday, ownerStats, pulse, dials] = await Promise.all([
+  const [todayCount, counts, stuck, shoots, radar, handledToday, ownerStats, pulse, dials, unanswered] = await Promise.all([
     getTodayCardCount(), // = the card count /today renders, so the button never lies
     getActionCounts(),
     getStuckJobs(),
@@ -59,12 +60,22 @@ export default async function DashboardPage() {
     isOwner ? getOwnerPulse() : Promise.resolve(null),
     // Owner-only quality dials (video-SLA roll-up + QC health) — same gate.
     isOwner ? getOwnerDials() : Promise.resolve(null),
+    // Inbound texts still owed an answer, counted off the comms log rather than
+    // off reply tasks — so the ones from senders we never matched to a client
+    // (new leads, an assistant, an unsaved number) are included. They're the
+    // ones that go unanswered, and no task ever existed to represent them.
+    replyWaitingSummary(),
   ]);
 
   const firstName = me?.name?.split(" ")[0] ?? (isOwner ? "Jordan" : "there");
-  // All clear = nothing to work, nothing stuck, nothing shooting today. The
-  // pulse + money strips still render below — trends matter on quiet days too.
-  const allClear = todayCount === 0 && stuck.length === 0 && shoots.today.length === 0;
+  // All clear = nothing to work, nothing stuck, nothing shooting today, and
+  // nobody left hanging on a text. That last clause matters: unanswered texts
+  // are counted from the comms log, so a message from someone we never matched
+  // to a client contributes no task and no todayCount — without it the page
+  // could tell you you're clear while seven people wait on a reply. The pulse +
+  // money strips still render below; trends matter on quiet days too.
+  const allClear =
+    todayCount === 0 && stuck.length === 0 && shoots.today.length === 0 && unanswered.count === 0;
   const nextShoot = shoots.week[0] ?? null;
 
   return (
@@ -112,7 +123,20 @@ export default async function DashboardPage() {
                 "to assign" chip only exists while something actually needs an
                 owner (routine work defaults to Kyle and isn't triage). */}
             <div className="flex flex-wrap gap-2">
-              <CountChip label="waiting on reply" count={counts.replies} tone="#38bdf8" href="/tasks" />
+              {/* Unanswered TEXTS — counted off the comms log, so it sees the
+                  messages no task was ever made for. Distinct from "message
+                  to-dos" beside it, which counts open SmartTasks of every
+                  message kind (replies, instructions, leads, vendor chases).
+                  Goes red once someone has waited a full day. */}
+              {unanswered.count > 0 && (
+                <CountChip
+                  label={unanswered.oldestHours >= 24 ? `unanswered · oldest ${Math.round(unanswered.oldestHours / 24)}d` : "texts unanswered"}
+                  count={unanswered.count}
+                  tone={unanswered.oldestHours >= 24 ? "var(--danger)" : "#38bdf8"}
+                  href="/communications?tab=replies"
+                />
+              )}
+              <CountChip label="message to-dos" count={counts.replies} tone="#38bdf8" href="/tasks" />
               <CountChip label="in QC" count={counts.qc} tone="#a78bfa" href="/tasks?tab=board" />
               <CountChip label="running late" count={counts.late} tone="var(--danger)" href="/today" />
               {counts.toAssign > 0 && (
