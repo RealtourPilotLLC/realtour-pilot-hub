@@ -1,8 +1,10 @@
 import Link from "next/link";
 import {
-  AlertTriangle, ArrowLeft, Clapperboard, Clock, ExternalLink, Film, ListMusic,
-  Mic, MonitorPlay, Music, Palette, PlayCircle, Sparkles, Timer, Wand2, Wrench,
+  AlertTriangle, ArrowLeft, Clapperboard, Clock, ExternalLink, Film, FolderDown,
+  GraduationCap, ListMusic, Mic, MonitorPlay, Music, Palette, PlayCircle,
+  Sparkles, Timer, Wand2, Wrench,
 } from "lucide-react";
+import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
 import { Section } from "@/components/ui/Section";
@@ -141,6 +143,12 @@ const PLAYLISTS = [
 
 const TOOLS = [
   {
+    name: "Editing assets — LUTs, SFX & Ryan Nangle plugins",
+    url: "https://www.dropbox.com/scl/fo/6u6kpe2ja9ve2y0h1n5nj/AOA24-gNmQqxtpmRWyAV3M4?rlkey=1lfnhinvlgsep59inepz5251u&st=p4movele&dl=0",
+    icon: FolderDown,
+    what: "The shared \"Video Editing Assets\" Dropbox: LUTs for the color grade, our SFX library, and the Ryan Nangle transition plugins. Download once and install locally.",
+  },
+  {
     name: "Adobe Podcast AI — Enhance Speech",
     url: "https://podcast.adobe.com/enhance",
     icon: Mic,
@@ -229,7 +237,22 @@ function ExampleCarousel({ examples }: { examples: Resolved[] }) {
   );
 }
 
+// The 910 Academy courses that are EDITING training. Matches the creative
+// allowlist in src/app/training/page.tsx — everything listed here is visible
+// to editors on /training (summaries + full transcripts; the 910 Vimeo links
+// are down at the source, so the written material is the value today).
+const EDITING_COURSES = ["Editing", "AI Editing", "Viral Editing Masterclass (2025)", "Viral Editing Masterclass (2024)"];
+
 export default async function VideoStylesPage() {
+  const trainingLessons = await prisma.trainingLesson.findMany({
+    where: { course: { in: EDITING_COURSES } },
+    orderBy: [{ courseNo: "asc" }, { orderNo: "asc" }],
+    select: { course: true, title: true },
+  });
+  const modules = EDITING_COURSES
+    .map((c) => ({ course: c, lessons: trainingLessons.filter((l) => l.course === c).map((l) => l.title) }))
+    .filter((m) => m.lessons.length > 0);
+
   // Resolve every example to its Mux playback source, concurrently, ISR-cached.
   const resolved = new Map<string, Resolved>(
     (await Promise.all(TYPES.flatMap((t) => t.examples).map(resolveExample))).map((r) => [r.url, r]),
@@ -330,6 +353,39 @@ export default async function VideoStylesPage() {
             </Section>
           );
         })}
+
+        {/* Editing training — the 910 Academy modules, live from the hub's
+            training library. Links into /training, where every lesson has an
+            AI summary + full transcript. */}
+        {modules.length > 0 && (
+          <Section icon={GraduationCap} title="Editing training">
+            <p className="text-sm leading-relaxed text-muted">
+              The 910 Academy editing modules — summaries and full transcripts live on the{" "}
+              <Link href="/training" className="text-brand hover:underline">Training</Link> page.
+              The Viral Editing Masterclass is the closest thing we have to a course on the
+              premium/Studio-910 style.
+            </p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              {modules.map((m) => (
+                <Link
+                  key={m.course}
+                  href="/training"
+                  className="rounded-xl border border-border bg-surface-2/40 p-3 transition hover:border-brand"
+                >
+                  <span className="flex items-center justify-between gap-2 text-sm font-semibold">
+                    {m.course}
+                    <span className="rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">
+                      {m.lessons.length} lesson{m.lessons.length === 1 ? "" : "s"}
+                    </span>
+                  </span>
+                  <span className="mt-1 block text-xs leading-relaxed text-muted">
+                    {m.lessons.join(" · ")}
+                  </span>
+                </Link>
+              ))}
+            </div>
+          </Section>
+        )}
 
         {/* Music — the premium/personal-branding sound. */}
         <Section icon={ListMusic} title="Music">
