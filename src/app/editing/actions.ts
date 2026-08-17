@@ -350,3 +350,44 @@ export async function saveEditSpec(
   revalidatePath(`/edit/${projectId}`);
   return { ok: true, message: "Instructions saved." };
 }
+
+
+// The Slack tracker's status click. "Waiting" and "Ready for editing" are NOT
+// settable — evidence flips them (that is the fix for "Kyle forgets to update
+// the tracker"). The middle of the ladder is human: the editor clicks In
+// editing when they start and Ready for review when done, exactly like Slack.
+// Owner/admin may set any selectable status; an EDITOR only on a job whose
+// open edit task is theirs (requireTaskAccess does that matching).
+const QUEUE_STATUS: Record<string, "EDITING" | "REVIEW" | "REVISION" | "DELIVERED"> = {
+  "In editing": "EDITING",
+  "Ready for review": "REVIEW",
+  Revisions: "REVISION",
+  Completed: "DELIVERED",
+};
+
+export async function setQueueStatus(projectId: string, label: string): Promise<{ ok: boolean; message: string }> {
+  const status = QUEUE_STATUS[label];
+  if (!status) return { ok: false, message: "That status is set automatically from upload/delivery evidence." };
+  try {
+    const task = await prisma.smartTask.findFirst({
+      where: { projectId, taskType: { in: ["edit_video", "revision"] }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      select: { id: true },
+    });
+    const { requireTaskAccess, requireAdmin: reqAdmin } = await import("@/lib/auth/guards");
+    if (task) await requireTaskAccess(task.id);
+    else await reqAdmin();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  await prisma.project.update({
+    where: { id: projectId },
+    data: { status, ...(status === "DELIVERED" ? { deliveredAt: new Date() } : {}) },
+  });
+  await prisma.activity.create({
+    data: { projectId, type: "SYSTEM", body: `Queue status set: ${label}` },
+  }).catch(() => {});
+  const { revalidatePath } = await import("next/cache");
+  revalidatePath("/editing");
+  revalidatePath(`/edit/${projectId}`);
+  return { ok: true, message: "Status updated." };
+}

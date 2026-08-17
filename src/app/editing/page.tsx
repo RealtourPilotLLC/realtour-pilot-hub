@@ -22,12 +22,13 @@ export const dynamic = "force-dynamic";
 //     it set up in Slack"): Queue | Upcoming edits | Delivered, one row per
 //     job. The old SLA-panel + tracker-spreadsheet stack is gone — per-job
 //     controls (reassign, review, chat) live on /edit/<id>.
-const STATUS_LABEL: Record<string, QueueRow["status"]> = {
-  SHOT: "Ready to edit",
+// Project status → the Slack ladder's words, verbatim from the Loom.
+const STATUS_LABEL: Record<string, string> = {
+  SHOT: "Ready for editing",
   EDITING: "In editing",
-  REVIEW: "In review",
+  REVIEW: "Ready for review",
   REVISION: "Revisions",
-  DELIVERED: "Delivered",
+  DELIVERED: "Completed",
 };
 
 export default async function EditorQueuePage() {
@@ -80,15 +81,24 @@ export default async function EditorQueuePage() {
   // (reassignments land there) — the routing rules only PREDICT for jobs with
   // no task yet. Without this, every row showed the current rule's editor and
   // misattributed Kim's and Luma's in-flight work to John Mark.
-  const openTasks = await prisma.smartTask.findMany({
-    where: {
-      projectId: { in: inflight.map((p) => p.id) },
-      taskType: { in: ["edit_video", "revision"] },
-      status: { notIn: ["COMPLETED", "CANCELLED"] },
-    },
-    select: { projectId: true, assignedKey: true },
-  });
+  const allIds = [...inflight, ...scheduled, ...deliveredRaw].map((p) => p.id);
+  const [openTasks, msgCounts] = await Promise.all([
+    prisma.smartTask.findMany({
+      where: {
+        projectId: { in: inflight.map((p) => p.id) },
+        taskType: { in: ["edit_video", "revision"] },
+        status: { notIn: ["COMPLETED", "CANCELLED"] },
+      },
+      select: { projectId: true, assignedKey: true, taskType: true },
+    }),
+    // The Slack messages column → the job's own chat. Revisions live THERE now,
+    // not in channel dumps.
+    prisma.projectMessage.groupBy({ by: ["projectId"], where: { projectId: { in: allIds } }, _count: true }),
+  ]);
   const taskEditor = new Map(openTasks.filter((t) => t.assignedKey).map((t) => [t.projectId!, t.assignedKey!]));
+  const revisionCount = new Map<string, number>();
+  for (const t of openTasks) if (t.taskType === "revision" && t.projectId) revisionCount.set(t.projectId, (revisionCount.get(t.projectId) ?? 0) + 1);
+  const comments = new Map(msgCounts.map((m) => [m.projectId, m._count]));
 
   type P = (typeof inflight)[number];
   const hasVideo = (p: P) => p.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
@@ -98,37 +108,49 @@ export default async function EditorQueuePage() {
     const tier: QueueRow["tier"] = monthly ? "branding" : videoTier(p.deliverables) === "premium" ? "premium" : "standard";
     const assigned = taskEditor.get(p.id) ?? null;
     const routeKey = assigned ?? editorForDeliverable(v?.type, v?.label, monthly, rules);
+    const videos = p.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+    const folders = projectFolderPaths(p);
     return {
       id: p.id,
       street: (p.addressLine || p.title.split(",")[0] || "Job").trim(),
       client: p.client.name,
       tier,
+      typeDetail: videos.map((d) => d.label || d.type).join(" · "),
       status: upcoming ? "Waiting" : STATUS_LABEL[p.status] ?? p.status,
       editor: (assigned ? editorMeta(assigned)?.name ?? assigned : null) ?? p.editor?.name ?? (routeKey ? editorMeta(routeKey)?.name ?? routeKey : null),
       auto: !assigned && !p.editor && !!routeKey,
       dueISO: upcoming ? p.shootDate?.toISOString() ?? null : p.deliveryDue?.toISOString() ?? null,
       late: !upcoming && p.status !== "DELIVERED" && !!p.deliveryDue && p.deliveryDue < now,
-      rawUrl: dropboxWebUrl(projectFolderPaths(p).rawVideo),
+      priority: p.priority,
+      customerNotes: p.client.editingPreferences ?? null,
+      photographerNotes: p.editorBrief ?? null,
+      videos: videos.length,
+      hasScript: !!(p.reelScript || p.reelHook),
+      comments: comments.get(p.id) ?? 0,
+      rawUrl: dropboxWebUrl(folders.rawVideo),
+      finalUrl: dropboxWebUrl(folders.finalVideo),
+      shootISO: p.shootDate?.toISOString() ?? null,
       photographer: p.photographer?.name ?? null,
+      openRevisions: revisionCount.get(p.id) ?? 0,
     };
   };
 
-  const queue = inflight.filter(hasVideo).map((p) => toRow(p));
-  const upcoming = scheduled.filter(hasVideo).map((p) => toRow(p, true));
-  const delivered = deliveredRaw.filter(hasVideo).map((p) => toRow(p));
+  const notDone = inflight.filter(hasVideo).map((p) => toRow(p));
+  const upcomingRows = scheduled.filter(hasVideo).map((p) => toRow(p, true));
+  const done = deliveredRaw.filter(hasVideo).map((p) => toRow(p));
 
   return (
     <div>
       <PageHeader
         eyebrow="Video projects only"
         title="Editor Queue"
-        subtitle={`${queue.length} in the queue · ${upcoming.length} upcoming`}
+        subtitle={`${notDone.length} open · ${upcomingRows.length} upcoming`}
       />
       <div className="mx-auto max-w-4xl space-y-4 p-4 pb-16 sm:p-6">
         {/* Manual add — the human override for jobs the automatic handoff never
             picks up (video added after booking, old footage, non-Aryeo work). */}
         <AddToQueue />
-        <SimpleQueue queue={queue} upcoming={upcoming} delivered={delivered} />
+        <SimpleQueue notDone={notDone} upcoming={upcomingRows} done={done} />
       </div>
     </div>
   );
