@@ -1093,6 +1093,8 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
     select: {
       title: true,
       clientId: true,
+      editorManual: true,
+      editor: { select: { name: true } },
       client: { select: { socialClient: true } },
       deliverables: { select: { type: true, label: true } },
     },
@@ -1130,7 +1132,11 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
       let routedKey: string | null = null;
       if (v) {
         const { editorRouting } = await import("@/lib/settings");
-        const key = editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.deliverables), await editorRouting());
+        const { editorKeyForTeamName } = await import("@/lib/editors");
+        // The owner's pinned editor gets the DM — same precedence as mintEditTask,
+        // so the person who's pinged is the person whose queue the task lands in.
+        const pinned = p.editorManual ? editorKeyForTeamName(p.editor?.name) : null;
+        const key = pinned ?? editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.deliverables), await editorRouting());
         // Only in-house editors have a reachable channel; Luma (external) has no
         // bell/DM — its dispatch is the Kyle task below.
         if (key === "kim" || key === "john") {
@@ -1256,6 +1262,8 @@ export async function mintEditTask(projectId: string): Promise<void> {
       addressLine: true,
       createdAt: true,
       frameioViewUrl: true,
+      editorManual: true,
+      editor: { select: { name: true } },
       client: { select: { name: true, socialClient: true } },
       deliverables: { select: { type: true, label: true } },
     },
@@ -1266,7 +1274,7 @@ export async function mintEditTask(projectId: string): Promise<void> {
   if (!v) return;
 
   const { videoTier } = await import("@/lib/projectStatus");
-  const { editorForDeliverable, editorMeta } = await import("@/lib/editors");
+  const { editorForDeliverable, editorMeta, editorKeyForTeamName } = await import("@/lib/editors");
   const { dropboxWebUrl, projectFolderPaths } = await import("@/lib/dropboxFolders");
 
   const monthly = isMonthlyContentJob(p.deliverables);
@@ -1275,7 +1283,12 @@ export async function mintEditTask(projectId: string): Promise<void> {
   // null = personal branding: deliberately unrouted (Jordan assigns by hand);
   // edit_video is in TRIAGE_TYPES so the unassigned task sits in "Needs assigning".
   const { editorRouting } = await import("@/lib/settings");
-  const assignedKey = editorForDeliverable(v.type, v.label, monthly, await editorRouting()); // per /settings rules; null = manual
+  // A hand-picked editor on the PROJECT (queue-row reassign while the job was
+  // still upcoming, before any task existed) beats the routing rules — that's
+  // the whole point of editorManual. Falls through to the rules when the pinned
+  // person doesn't map to an editor key.
+  const pinnedKey = p.editorManual ? editorKeyForTeamName(p.editor?.name) : null;
+  const assignedKey = pinnedKey ?? editorForDeliverable(v.type, v.label, monthly, await editorRouting()); // per /settings rules; null = manual
   const editorName = assignedKey ? editorMeta(assignedKey)?.name ?? assignedKey : "manual assignment";
   const street = (p.title || "this job").split(",")[0].trim();
 
@@ -1315,7 +1328,9 @@ export async function mintEditTask(projectId: string): Promise<void> {
         // automatic refresh — only route when nobody picked by hand. And the
         // auto-router may IMPROVE a route but never STRIP one: a null route
         // (personal branding) must not un-assign work someone already owns.
-        ...(existing.assignedManually || !assignedKey ? {} : { assignedKey }),
+        // A project-level pin (editorManual) is a human pick too — carry it
+        // onto the task as assignedManually so every downstream engine sees it.
+        ...(existing.assignedManually || !assignedKey ? {} : { assignedKey, ...(pinnedKey ? { assignedManually: true } : {}) }),
         dueAt,
         priority,
         summary: summary.slice(0, 500),
@@ -1342,6 +1357,9 @@ export async function mintEditTask(projectId: string): Promise<void> {
       priority,
       dueAt,
       assignedKey,
+      // The owner picked this editor on the project before the task existed —
+      // the task inherits that as a manual assignment, not an auto route.
+      assignedManually: !!pinnedKey,
       projectId,
       clientId: p.clientId,
       propertyAddress: p.title,
@@ -1375,6 +1393,7 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
       status: true,
       statusEvidence: true,
       editorId: true,
+      editorManual: true,
       photographerId: true,
       photographer: { select: { name: true } },
       client: { select: { socialClient: true } },
@@ -1404,8 +1423,10 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
     select: { id: true },
   });
 
-  // 2. Persist the routed editor for the tracker + one-click reassign (in-house only).
-  if (!manualTask) {
+  // 2. Persist the routed editor for the tracker + one-click reassign (in-house
+  // only). editorManual = the owner picked this job's editor by hand (queue-row
+  // reassign) — never auto-revert their choice, same deal as photographerManual.
+  if (!manualTask && !p.editorManual) {
     try {
       const { editorForDeliverable, editorTeamMemberId } = await import("@/lib/editors");
       const { editorRouting: er } = await import("@/lib/settings");

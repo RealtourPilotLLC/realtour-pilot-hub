@@ -1,10 +1,19 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { Fragment, useState, useTransition } from "react";
 import Link from "next/link";
-import { ChevronDown, ExternalLink, FileText, FolderOpen, FolderUp, Loader2, MessageSquare } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  FileText,
+  FolderOpen,
+  FolderUp,
+  Loader2,
+  MessageSquare,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
-import { setQueueStatus } from "@/app/editing/actions";
+import { setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
 
 // THE SLACK TRACKER, replicated — Jordan: "I want the editor queue to look
 // just like our Slack. It's been working, so I don't want to fix what isn't
@@ -19,6 +28,10 @@ import { setQueueStatus } from "@/app/editing/actions";
 // photographer notes + customer notes + script fill their columns from the
 // job itself, and revisions live on the job's own chat instead of channel
 // dumps and screenshots.
+//
+// On top of the Slack surface (Jordan, Aug 17): click a row and the whole
+// project opens right there (full notes, every link labeled, shoot facts);
+// the Editor cell is a live select so reassigning doesn't need the edit page.
 
 export type QueueRow = {
   id: string;
@@ -28,6 +41,7 @@ export type QueueRow = {
   typeDetail: string; // the actual video deliverable labels, like Slack's "video type details"
   status: string;
   editor: string | null;
+  editorKey: string | null; // key behind the name, drives the reassign select
   auto: boolean;
   dueISO: string | null;
   late: boolean;
@@ -60,30 +74,54 @@ const STATUSES: Record<string, { color: string; selectable: boolean }> = {
   Completed: { color: "#34d399", selectable: true },
 };
 
+// The queue's assignable video editors (matches VIDEO_EDITOR_KEYS server-side).
+const VIDEO_EDITORS = [
+  { key: "john", name: "John Mark" },
+  { key: "kim", name: "Kim" },
+] as const;
+
 const fmtDay = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : "—";
 
+// Height of the 6-option menu — used to flip it above the pill near the
+// viewport bottom, since it renders position:fixed (see below).
+const MENU_H = 212;
+
 function StatusPill({ row }: { row: QueueRow }) {
-  const [open, setOpen] = useState(false);
+  // The menu is position:fixed, NOT absolute: the table wrapper is an
+  // overflow-x-auto scroll container, which clips absolutely-positioned
+  // children — on the bottom row (and short queues are all bottom rows) the
+  // menu was cut off below the table edge. Fixed positioning escapes the clip;
+  // the invisible fixed backdrop gives outside-click dismissal for free.
+  const [menu, setMenu] = useState<{ top: number; left: number } | null>(null);
   const [status, setStatus] = useState(row.status);
   const [pending, start] = useTransition();
   const meta = STATUSES[status] ?? { color: "#94a3b8", selectable: false };
 
+  const toggle = (e: React.MouseEvent<HTMLButtonElement>) => {
+    if (menu) return setMenu(null);
+    const r = e.currentTarget.getBoundingClientRect();
+    const flipUp = window.innerHeight - r.bottom < MENU_H + 16;
+    setMenu({ left: r.left, top: flipUp ? r.top - MENU_H - 4 : r.bottom + 4 });
+  };
+
   const pick = (next: string) => {
-    setOpen(false);
+    setMenu(null);
     if (next === status) return;
     const prev = status;
     setStatus(next);
     start(async () => {
-      const r = await setQueueStatus(row.id, next);
+      // .catch too: a rejected action (DB hiccup, deleted project) must snap
+      // back like a refusal, not crash the whole queue view.
+      const r = await setQueueStatus(row.id, next).catch(() => ({ ok: false }));
       if (!r.ok) setStatus(prev); // server refused — snap back, no silent lie
     });
   };
 
   return (
-    <div className="relative">
+    <>
       <button
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggle}
         className="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold"
         style={{ backgroundColor: `${meta.color}26`, color: meta.color }}
       >
@@ -91,26 +129,82 @@ function StatusPill({ row }: { row: QueueRow }) {
         {status}
         <ChevronDown className="size-3 opacity-70" />
       </button>
-      {open && (
-        <div className="absolute left-0 top-7 z-20 w-44 rounded-xl border border-border bg-surface p-1 shadow-xl">
-          {Object.entries(STATUSES).map(([name, m]) => (
-            <button
-              key={name}
-              disabled={!m.selectable}
-              onClick={() => pick(name)}
-              title={m.selectable ? undefined : "Set automatically from upload/delivery evidence"}
-              className={cn(
-                "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs font-medium",
-                m.selectable ? "hover:bg-surface-2" : "cursor-not-allowed opacity-40",
-              )}
-            >
-              <span className="size-2 rounded-full" style={{ backgroundColor: m.color }} />
-              {name}
-            </button>
-          ))}
-        </div>
+      {menu && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setMenu(null)} />
+          <div className="fixed z-40 w-44 rounded-xl border border-border bg-surface p-1 shadow-xl" style={menu}>
+            {Object.entries(STATUSES).map(([name, m]) => (
+              <button
+                key={name}
+                disabled={!m.selectable}
+                onClick={() => pick(name)}
+                title={m.selectable ? undefined : "Set automatically from upload/delivery evidence"}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs font-medium",
+                  m.selectable ? "hover:bg-surface-2" : "cursor-not-allowed opacity-40",
+                )}
+              >
+                <span className="size-2 rounded-full" style={{ backgroundColor: m.color }} />
+                {name}
+              </button>
+            ))}
+          </div>
+        </>
       )}
-    </div>
+    </>
+  );
+}
+
+// The Editor cell IS the reassign control — pick a name and the job moves
+// (open task repointed + bell, or pinned on the project for an upcoming shoot).
+// Optimistic with snap-back, same contract as the status pill.
+function EditorSelect({ row }: { row: QueueRow }) {
+  const [key, setKey] = useState(row.editorKey ?? "");
+  const [pending, start] = useTransition();
+  const known = VIDEO_EDITORS.some((e) => e.key === key);
+
+  const pick = (next: string) => {
+    if (!next || next === key) return;
+    const prev = key;
+    setKey(next);
+    start(async () => {
+      const r = await setEditVideoEditor(row.id, next).catch(() => ({ ok: false }));
+      if (!r.ok) setKey(prev); // server refused — snap back
+    });
+  };
+
+  return (
+    <span className="inline-flex items-center gap-1">
+      {pending && <Loader2 className="size-3 animate-spin text-muted" />}
+      <select
+        aria-label="Assign editor"
+        value={key}
+        disabled={pending}
+        onChange={(e) => pick(e.target.value)}
+        className={cn(
+          "cursor-pointer rounded-md border border-transparent bg-transparent py-0.5 pl-1 pr-5 text-xs font-medium",
+          "hover:border-border hover:bg-surface-2 disabled:opacity-60",
+          key ? "text-foreground" : "text-muted-2",
+        )}
+      >
+        <option value="" disabled>
+          Assign…
+        </option>
+        {/* A historical editor (Luma / Remar) still shows by name, but new work
+            can only go to the current video editors. */}
+        {!known && key && <option value={key} disabled>{row.editor ?? key}</option>}
+        {VIDEO_EDITORS.map((o) => (
+          <option key={o.key} value={o.key}>
+            {o.name}
+          </option>
+        ))}
+      </select>
+      {row.auto && key === (row.editorKey ?? "") && (
+        <span className="text-[10px] text-muted-2" title="Assigned by the routing rules — pick a name to override">
+          auto
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -123,21 +217,156 @@ function NoteCell({ text, title }: { text: string | null; title: string }) {
   );
 }
 
+// A labeled link chip — the fix for "the links section is confusing": words
+// instead of bare icons, so RAW vs Final vs script is legible at a glance.
+function LinkChip({
+  href,
+  icon: Icon,
+  label,
+  title,
+  brand = false,
+}: {
+  href: string;
+  icon: typeof FolderOpen;
+  label: string;
+  title: string;
+  brand?: boolean;
+}) {
+  const external = href.startsWith("http");
+  const classes = cn(
+    "inline-flex items-center gap-1 whitespace-nowrap rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
+    brand
+      ? "border-brand/30 bg-brand-soft text-brand hover:bg-brand/15"
+      : "border-border text-muted hover:bg-surface-2 hover:text-foreground",
+  );
+  return external ? (
+    <a href={href} target="_blank" rel="noopener noreferrer" title={title} className={classes}>
+      <Icon className="size-3" />
+      {label}
+    </a>
+  ) : (
+    <Link href={href} title={title} className={classes}>
+      <Icon className="size-3" />
+      {label}
+    </Link>
+  );
+}
+
+// The expanded project panel — Jordan: "open the project details by clicking
+// it but having it all right there." Full notes, every link labeled, shoot
+// facts, and the door to the full edit workspace.
+function DetailPanel({ row, upcoming }: { row: QueueRow; upcoming: boolean }) {
+  const t = TIER[row.tier];
+  return (
+    <div className="space-y-4 px-4 py-4 sm:px-6">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-semibold">{row.street}</span>
+        <span className="text-sm text-muted">· {row.client}</span>
+        <span className="inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold" style={{ backgroundColor: `${t.color}26`, color: t.color }}>
+          {t.label}
+        </span>
+        {row.priority !== "NORMAL" && row.priority !== "LOW" && (
+          <span className="rounded bg-danger-soft px-1.5 py-0.5 text-[10px] font-semibold text-danger">{row.priority}</span>
+        )}
+        {row.openRevisions > 0 && (
+          <span className="rounded bg-warning-soft px-1.5 py-0.5 text-[10px] font-semibold text-warning">
+            {row.openRevisions} open revision ask{row.openRevisions === 1 ? "" : "s"}
+          </span>
+        )}
+        <Link
+          href={`/edit/${row.id}`}
+          className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+        >
+          Open edit page
+          <ExternalLink className="size-3.5" />
+        </Link>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-3">
+        <div className="rounded-xl border border-border bg-surface p-3">
+          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-2">Job</div>
+          <dl className="space-y-1.5 text-xs">
+            <div className="flex justify-between gap-2">
+              <dt className="text-muted">Shoot</dt>
+              <dd className="text-right font-medium">
+                {fmtDay(row.shootISO)}
+                {row.photographer ? ` · ${row.photographer}` : ""}
+              </dd>
+            </div>
+            <div className="flex justify-between gap-2">
+              <dt className="text-muted">{upcoming ? "Shoots" : "Due"}</dt>
+              <dd className={cn("text-right font-medium", row.late && "text-danger")}>
+                {fmtDay(upcoming ? row.shootISO : row.dueISO)}
+                {row.late ? " · late" : ""}
+              </dd>
+            </div>
+            <div className="flex justify-between gap-2">
+              <dt className="text-muted">Videos</dt>
+              <dd className="text-right font-medium">{row.videos}</dd>
+            </div>
+            {row.typeDetail && (
+              <div className="pt-1">
+                <dt className="text-muted">Deliverables</dt>
+                <dd className="mt-1 space-y-0.5">
+                  {row.typeDetail.split(" · ").map((d, i) => (
+                    <div key={i} className="text-foreground/85">{d}</div>
+                  ))}
+                </dd>
+              </div>
+            )}
+          </dl>
+        </div>
+
+        <div className="rounded-xl border border-border bg-surface p-3">
+          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-2">Customer notes</div>
+          <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/85">
+            {row.customerNotes || <span className="text-muted-2">None on file — cut it to the Style Guide.</span>}
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-border bg-surface p-3">
+          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-2">Shoot notes</div>
+          <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/85">
+            {row.photographerNotes || <span className="text-muted-2">None from the photographer.</span>}
+          </p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        {row.rawUrl && <LinkChip href={row.rawUrl} icon={FolderOpen} label="RAW footage" title="Open the RAW footage folder in Dropbox" />}
+        {row.finalUrl && <LinkChip href={row.finalUrl} icon={FolderUp} label="Final footage — upload here" title="The finished cut goes in this Dropbox folder" />}
+        {row.hasScript && <LinkChip href={`/edit/${row.id}`} icon={FileText} label="View script" title="A script is on file — view it on the edit page" brand />}
+        <LinkChip
+          href={`/edit/${row.id}`}
+          icon={MessageSquare}
+          label={`Project chat${row.comments > 0 ? ` (${row.comments})` : ""}`}
+          title="Revisions and questions live on the job's own chat"
+          brand={row.comments > 0}
+        />
+      </div>
+    </div>
+  );
+}
+
 export function SimpleQueue({ notDone, upcoming, done }: { notDone: QueueRow[]; upcoming: QueueRow[]; done: QueueRow[] }) {
   const [view, setView] = useState<"notdone" | "upcoming" | "done">("notdone");
+  const [openId, setOpenId] = useState<string | null>(null);
   const rows = view === "notdone" ? notDone : view === "upcoming" ? upcoming : done;
   const VIEWS = [
     { key: "notdone" as const, label: "Not Done", n: notDone.length },
     { key: "upcoming" as const, label: "Upcoming", n: upcoming.length },
     { key: "done" as const, label: "Done", n: done.length },
   ];
+  // Keeps click-to-expand from firing when the click was really for a control
+  // inside the row (status pill, editor select, a link).
+  const swallow = (e: React.MouseEvent) => e.stopPropagation();
 
   return (
     <div>
       {/* Slack's saved views, as pills. */}
       <div className="mb-3 flex flex-wrap items-center gap-1.5">
         {VIEWS.map((v) => (
-          <button key={v.key} onClick={() => setView(v.key)}
+          <button key={v.key} onClick={() => { setView(v.key); setOpenId(null); }}
             className={cn("rounded-lg px-3 py-1.5 text-sm font-medium",
               view === v.key ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2")}>
             {v.label}
@@ -172,57 +401,88 @@ export function SimpleQueue({ notDone, upcoming, done }: { notDone: QueueRow[]; 
             <tbody className="divide-y divide-border">
               {rows.map((r) => {
                 const t = TIER[r.tier];
+                const open = openId === r.id;
                 return (
-                  <tr key={r.id} className="align-top hover:bg-surface-2/50">
-                    <td className="px-3 py-2.5">
-                      <Link href={`/edit/${r.id}`} className="font-semibold hover:underline">{r.street}</Link>
-                      <span className="block text-xs text-muted">{r.client}</span>
-                      {r.priority !== "NORMAL" && r.priority !== "LOW" && (
-                        <span className="mt-0.5 inline-block rounded bg-danger-soft px-1.5 text-[10px] font-semibold text-danger">{r.priority}</span>
-                      )}
-                      {r.openRevisions > 0 && (
-                        <span className="mt-0.5 ml-1 inline-block rounded bg-warning-soft px-1.5 text-[10px] font-semibold text-warning">
-                          {r.openRevisions} revision ask{r.openRevisions === 1 ? "" : "s"}
+                  <Fragment key={r.id}>
+                    <tr
+                      onClick={() => setOpenId(open ? null : r.id)}
+                      title={open ? undefined : "Click for the full project"}
+                      className={cn("cursor-pointer align-top", open ? "bg-surface-2/60" : "hover:bg-surface-2/50")}
+                    >
+                      <td className="min-w-44 px-3 py-2.5">
+                        <span className="flex items-start gap-1">
+                          <ChevronRight className={cn("mt-0.5 size-3.5 shrink-0 text-muted-2 transition-transform", open && "rotate-90")} />
+                          <span>
+                            <span className="font-semibold">{r.street}</span>
+                            <span className="block text-xs text-muted">{r.client}</span>
+                            {r.priority !== "NORMAL" && r.priority !== "LOW" && (
+                              <span className="mt-0.5 inline-block rounded bg-danger-soft px-1.5 text-[10px] font-semibold text-danger">{r.priority}</span>
+                            )}
+                            {r.openRevisions > 0 && (
+                              <span className="mt-0.5 ml-1 inline-block rounded bg-warning-soft px-1.5 text-[10px] font-semibold text-warning">
+                                {r.openRevisions} revision ask{r.openRevisions === 1 ? "" : "s"}
+                              </span>
+                            )}
+                          </span>
                         </span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <span className="inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold" style={{ backgroundColor: `${t.color}26`, color: t.color }}>
-                        {t.label}
-                      </span>
-                      {r.typeDetail && <span title={r.typeDetail} className="mt-0.5 block max-w-40 truncate text-[11px] text-muted">{r.typeDetail}</span>}
-                    </td>
-                    <td className="px-3 py-2.5">
-                      {view === "upcoming" ? (
-                        <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold" style={{ backgroundColor: "#94a3b826", color: "#94a3b8" }}>
-                          Waiting
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <span className="inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold" style={{ backgroundColor: `${t.color}26`, color: t.color }}>
+                          {t.label}
                         </span>
-                      ) : (
-                        <StatusPill row={r} />
-                      )}
-                    </td>
-                    <td className={cn("whitespace-nowrap px-3 py-2.5 text-xs font-medium", r.late ? "text-danger" : "")}>
-                      {view === "upcoming" ? `Shoots ${fmtDay(r.shootISO)}` : fmtDay(r.dueISO)}{r.late ? " · late" : ""}
-                      {view === "upcoming" && r.photographer && <span className="block text-muted">📷 {r.photographer}</span>}
-                    </td>
-                    <td className="whitespace-nowrap px-3 py-2.5 text-xs">{r.editor ? `${r.editor}${r.auto ? " (auto)" : ""}` : "—"}</td>
-                    <td className="px-3 py-2.5"><NoteCell text={r.customerNotes} title="Customer notes" /></td>
-                    <td className="px-3 py-2.5"><NoteCell text={r.photographerNotes} title="Shoot notes" /></td>
-                    <td className="px-3 py-2.5 text-center text-xs">{r.videos}</td>
-                    <td className="whitespace-nowrap px-3 py-2.5">
-                      <span className="inline-flex items-center gap-1">
-                        {r.rawUrl && <a href={r.rawUrl} target="_blank" rel="noopener noreferrer" title="RAW footage" className="rounded p-1 text-muted hover:bg-surface-2 hover:text-foreground"><FolderOpen className="size-4" /></a>}
-                        {r.finalUrl && <a href={r.finalUrl} target="_blank" rel="noopener noreferrer" title="Final footage (upload here)" className="rounded p-1 text-muted hover:bg-surface-2 hover:text-foreground"><FolderUp className="size-4" /></a>}
-                        {r.hasScript && <Link href={`/edit/${r.id}`} title="Script on file — view on the edit page" className="rounded p-1 text-brand hover:bg-surface-2"><FileText className="size-4" /></Link>}
-                        <Link href={`/edit/${r.id}`} title="Open the edit workspace" className="rounded p-1 text-muted hover:bg-surface-2 hover:text-foreground"><ExternalLink className="size-4" /></Link>
-                      </span>
-                    </td>
-                    <td className="px-3 py-2.5 text-center">
-                      <Link href={`/edit/${r.id}`} title="Project chat — revisions and questions live HERE, not in the Slack channel" className={cn("text-xs font-semibold", r.comments > 0 ? "text-brand" : "text-muted-2")}>
-                        {r.comments}
-                      </Link>
-                    </td>
-                  </tr>
+                        {r.typeDetail && <span title={r.typeDetail} className="mt-0.5 block max-w-40 truncate text-[11px] text-muted">{r.typeDetail}</span>}
+                      </td>
+                      <td className="px-3 py-2.5" onClick={swallow}>
+                        {view === "upcoming" ? (
+                          <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold" style={{ backgroundColor: "#94a3b826", color: "#94a3b8" }}>
+                            Waiting
+                          </span>
+                        ) : (
+                          // key = server truth: when a revalidation streams a
+                          // status this component didn't set (evidence flip,
+                          // another admin), remount so the pill can't go stale.
+                          <StatusPill key={r.status} row={r} />
+                        )}
+                      </td>
+                      <td className={cn("whitespace-nowrap px-3 py-2.5 text-xs font-medium", r.late ? "text-danger" : "")}>
+                        {view === "upcoming" ? `Shoots ${fmtDay(r.shootISO)}` : fmtDay(r.dueISO)}{r.late ? " · late" : ""}
+                        {view === "upcoming" && r.photographer && <span className="block text-muted">📷 {r.photographer}</span>}
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2.5" onClick={swallow}>
+                        {view === "done" ? (
+                          // Delivered = credit, not live work — no reassign here
+                          // (the server refuses too). A new cut on a finished
+                          // job goes through "Add a job to the queue".
+                          <span className="text-xs font-medium">{r.editor ?? "—"}</span>
+                        ) : (
+                          // key = server truth, same deal as the status pill.
+                          <EditorSelect key={r.editorKey ?? "none"} row={r} />
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5"><NoteCell text={r.customerNotes} title="Customer notes" /></td>
+                      <td className="px-3 py-2.5"><NoteCell text={r.photographerNotes} title="Shoot notes" /></td>
+                      <td className="px-3 py-2.5 text-center text-xs">{r.videos}</td>
+                      <td className="whitespace-nowrap px-3 py-2.5" onClick={swallow}>
+                        <span className="inline-flex items-center gap-1">
+                          {r.rawUrl && <LinkChip href={r.rawUrl} icon={FolderOpen} label="RAW" title="Open the RAW footage folder in Dropbox" />}
+                          {r.finalUrl && <LinkChip href={r.finalUrl} icon={FolderUp} label="Final" title="Upload the finished cut to this Dropbox folder" />}
+                          {r.hasScript && <LinkChip href={`/edit/${r.id}`} icon={FileText} label="Script" title="A script is on file — view it on the edit page" brand />}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2.5 text-center" onClick={swallow}>
+                        <Link href={`/edit/${r.id}`} title="Project chat — revisions and questions live HERE, not in the Slack channel" className={cn("text-xs font-semibold", r.comments > 0 ? "text-brand" : "text-muted-2")}>
+                          {r.comments}
+                        </Link>
+                      </td>
+                    </tr>
+                    {open && (
+                      <tr className="bg-surface-2/30">
+                        <td colSpan={10} className="p-0">
+                          <DetailPanel row={r} upcoming={view === "upcoming"} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>

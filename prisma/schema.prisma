@@ -408,6 +408,12 @@ model Project {
   photographerManual Boolean     @default(false)
   editor             TeamMember? @relation("Editor", fields: [editorId], references: [id])
   editorId           String?
+  // Set when the owner assigns the editor by hand (queue-row reassign). Mirrors
+  // photographerManual: ensureEditorHandoff stops auto-filling editorId from
+  // the routing rules, and mintEditTask routes the job to THIS editor when the
+  // task first mints — so a pick made while the job is still upcoming (no task
+  // yet) survives the shoot happening.
+  editorManual       Boolean     @default(false)
   va                 TeamMember? @relation("VA", fields: [vaId], references: [id])
   vaId               String?
 

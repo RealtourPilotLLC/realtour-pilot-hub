@@ -295,7 +295,7 @@ export async function raiseRevision(opts: {
 }): Promise<boolean> {
   const project = await prisma.project.findUnique({
     where: { id: opts.projectId },
-    select: { id: true, status: true, title: true, clientId: true, revisionRequestedAt: true, deliverables: { select: { type: true, label: true } }, client: { select: { socialClient: true } } },
+    select: { id: true, status: true, title: true, clientId: true, revisionRequestedAt: true, editorManual: true, editor: { select: { name: true } }, deliverables: { select: { type: true, label: true } }, client: { select: { socialClient: true } } },
   });
   if (!project) return false;
 
@@ -320,7 +320,13 @@ export async function raiseRevision(opts: {
   // PROJECT-level monthly test — a listing-shoot revision for a social-plan
   // client routes like any listing job, not to the monthly-content lane.
   const { editorRouting } = await import("@/lib/settings");
-  const assignedKey = editorForDeliverable(
+  // The owner's pinned editor (queue-row / project-page pick) made this cut —
+  // a VIDEO revision goes back to them, not to whoever the rules route to
+  // today. Photo/3D/floor-plan asks keep their Kyle lane regardless of pin.
+  const { editorKeyForTeamName } = await import("@/lib/editors");
+  const primaryIsVideo = primary?.type === "VIDEO" || primary?.type === "SOCIAL_REEL";
+  const pinnedKey = primaryIsVideo && project.editorManual ? editorKeyForTeamName(project.editor?.name) : null;
+  const assignedKey = pinnedKey ?? editorForDeliverable(
     primary?.type,
     primary?.label,
     isMonthlyContentJob(project.deliverables),

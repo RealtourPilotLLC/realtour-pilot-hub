@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth/guards";
-import { editorTeamMemberId, EDITOR_KEYS, type EditorKey } from "@/lib/editors";
+import { editorTeamMemberId, type EditorKey } from "@/lib/editors";
 
 // ---------------------------------------------------------------------------
 // Server actions for the editor platform's /editing surface.
@@ -16,31 +16,84 @@ import { editorTeamMemberId, EDITOR_KEYS, type EditorKey } from "@/lib/editors";
 // Fail-closed once auth is enforced (no-op in local dev).
 // ---------------------------------------------------------------------------
 
-// Reassign a video job to a different editor. Owner/admin only.
-export async function setEditVideoEditor(projectId: string, editorKey: string): Promise<void> {
-  await requireAdmin();
-  if (!(EDITOR_KEYS as string[]).includes(editorKey)) throw new Error("Unknown editor.");
+// Reassign a video job to a different editor, right from the queue row.
+// Owner/admin only. Works at ANY stage of the job's life:
+//   · open edit/revision task → repoint it (assignedManually pins it) + bell
+//     the new editor so the handoff is actually communicated;
+//   · upcoming job, no task yet → pin the pick on the Project (editorManual);
+//     mintEditTask honours the pin when the task mints at shoot time, and
+//     ensureEditorHandoff stops auto-reverting editorId to the rules.
+export async function setEditVideoEditor(projectId: string, editorKey: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  if (!(VIDEO_EDITOR_KEYS as string[]).includes(editorKey)) {
+    return { ok: false, message: "Pick a video editor (Kim or John Mark)." };
+  }
   const key = editorKey as EditorKey;
+  const { editorMeta } = await import("@/lib/editors");
+  const editorName = editorMeta(key)?.name ?? key;
 
-  // Re-route the open edit_video task to the new editor (there's one per project,
-  // deduped edit-video-<projectId>). If none is open (e.g. already delivered),
-  // this is a no-op — we still repoint the Project link below. assignedManually
-  // makes the choice stick: the hourly handoff/mint refresh won't route it back.
-  await prisma.smartTask.updateMany({
-    where: { projectId, taskType: "edit_video", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { title: true, status: true },
+  });
+  if (!project) return { ok: false, message: "That project no longer exists." };
+  // A DELIVERED job has no live work to hand off — repointing it would only
+  // rewrite the finished job's editor credit and lie "Assigned to X." with no
+  // task and no ping. New cuts on finished jobs ride the revision rail.
+  if (project.status === "DELIVERED") {
+    return { ok: false, message: "This job is delivered — use “Add a job to the queue” to order a new cut." };
+  }
+
+  // Re-route the open VIDEO work: the edit task, plus revision tasks that are
+  // in the video lane. Scoped on purpose — a mixed job's photo-retouch revision
+  // is Kyle's and must not be hijacked onto a video editor.
+  const VIDEO_LANE: string[] = ["kim", "john", "luma", "remar"];
+  const moved = await prisma.smartTask.updateMany({
+    where: {
+      projectId,
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
+      OR: [{ taskType: "edit_video" }, { taskType: "revision", assignedKey: { in: VIDEO_LANE } }],
+    },
     data: { assignedKey: key, assignedManually: true },
   });
 
-  // Persist Project.editorId when the new editor is a linkable person; clear it
-  // for externals/vendors (Luma) so the tracker doesn't show a stale name.
+  // Persist + pin the pick on the Project so every engine treats it as manual.
+  // No TeamMember row AND no task moved = the pick would vanish (mint reads the
+  // pin through Project.editor) — say so instead of pretending it stuck.
   const tmId = await editorTeamMemberId(key);
-  await prisma.project.update({ where: { id: projectId }, data: { editorId: tmId } });
+  if (tmId) {
+    await prisma.project.update({ where: { id: projectId }, data: { editorId: tmId, editorManual: true } });
+  } else if (moved.count === 0) {
+    return { ok: false, message: `Couldn't link ${editorName} — their Team row is missing. Add them on the People page first.` };
+  }
 
   await prisma.activity.create({
-    data: { projectId, type: "SYSTEM", body: `Video edit reassigned to ${key}.` },
-  });
+    data: { projectId, type: "SYSTEM", body: `Video edit reassigned to ${editorName} from the queue.` },
+  }).catch(() => {});
+
+  // Live work changed hands → tell the new editor. An upcoming job's pick is
+  // silent on purpose: there's nothing to edit yet, the bell comes with raws.
+  if (moved.count > 0) {
+    try {
+      const { notifyInApp } = await import("@/lib/notify");
+      const street = (project.title || "a job").split(",")[0].trim();
+      await notifyInApp({
+        kind: "edit_assigned",
+        title: `Reassigned to you — ${street}`,
+        body: "This edit was moved to your queue.",
+        href: `/edit/${projectId}`,
+        targets: [{ roles: ["EDITOR"], userKey: `editor:${key}`, href: `/edit/${projectId}` }],
+      });
+    } catch { /* bell is best-effort */ }
+  }
 
   revalidatePath("/editing");
+  revalidatePath(`/edit/${projectId}`);
+  return { ok: true, message: `Assigned to ${editorName}.` };
 }
 
 // The editor's "Done — send to review" now lives in src/app/review/actions.ts
@@ -314,7 +367,10 @@ export async function addToEditorQueue(
   await mintEditTask(projectId);
 
   const tmId = await editorTeamMemberId(key);
-  await prisma.project.update({ where: { id: projectId }, data: { editorId: tmId } });
+  // A manual queue-add is a human pick — pin it (editorManual) so the hourly
+  // handoff can't revert it to the routing rules. Pin only with a real link:
+  // a null editorId + pin would block the engines from ever filling it back in.
+  await prisma.project.update({ where: { id: projectId }, data: { editorId: tmId, editorManual: !!tmId } });
   await prisma.activity.create({
     data: {
       projectId,

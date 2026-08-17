@@ -425,6 +425,11 @@ export async function assignMember(
       ...(role === "photographer" && project?.source === "ARYEO"
         ? { photographerManual: memberId != null }
         : {}),
+      // Same contract for the editor: a hand pick pins (the hourly handoff and
+      // mint stop re-routing to the rules editor), clearing it unpins so the
+      // automatic routing takes back over. Without this, the project-page pick
+      // silently reverted within the hour while the queue-row pick stuck.
+      ...(role === "editor" ? { editorManual: memberId != null } : {}),
     },
   });
   await prisma.activity.create({

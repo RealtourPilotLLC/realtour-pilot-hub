@@ -6,7 +6,7 @@ import { EditorDay } from "@/components/editing/EditorDay";
 import { AddToQueue } from "@/components/editing/AddToQueue";
 import { SimpleQueue, type QueueRow } from "@/components/editing/SimpleQueue";
 import { editorRouting } from "@/lib/settings";
-import { editorForDeliverable, editorMeta } from "@/lib/editors";
+import { editorForDeliverable, editorKeyForTeamName, editorMeta } from "@/lib/editors";
 import { videoTier } from "@/lib/projectStatus";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
@@ -107,7 +107,7 @@ export default async function EditorQueuePage() {
     const monthly = isMonthlyContentJob(p.deliverables);
     const tier: QueueRow["tier"] = monthly ? "branding" : videoTier(p.deliverables) === "premium" ? "premium" : "standard";
     const assigned = taskEditor.get(p.id) ?? null;
-    const routeKey = assigned ?? editorForDeliverable(v?.type, v?.label, monthly, rules);
+    const routeKey = assigned ?? editorKeyForTeamName(p.editor?.name) ?? editorForDeliverable(v?.type, v?.label, monthly, rules);
     const videos = p.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
     const folders = projectFolderPaths(p);
     return {
@@ -118,6 +118,9 @@ export default async function EditorQueuePage() {
       typeDetail: videos.map((d) => d.label || d.type).join(" · "),
       status: upcoming ? "Waiting" : STATUS_LABEL[p.status] ?? p.status,
       editor: (assigned ? editorMeta(assigned)?.name ?? assigned : null) ?? p.editor?.name ?? (routeKey ? editorMeta(routeKey)?.name ?? routeKey : null),
+      // The key behind the name, for the row's reassign select. Same truth
+      // ladder as the display: open task → Project.editor → routing rules.
+      editorKey: routeKey,
       auto: !assigned && !p.editor && !!routeKey,
       dueISO: upcoming ? p.shootDate?.toISOString() ?? null : p.deliveryDue?.toISOString() ?? null,
       late: !upcoming && p.status !== "DELIVERED" && !!p.deliveryDue && p.deliveryDue < now,
@@ -146,7 +149,9 @@ export default async function EditorQueuePage() {
         title="Editor Queue"
         subtitle={`${notDone.length} open · ${upcomingRows.length} upcoming`}
       />
-      <div className="mx-auto max-w-4xl space-y-4 p-4 pb-16 sm:p-6">
+      {/* Wide on purpose — the Slack List is a wide table; max-w-4xl squeezed
+          every column into a horizontal scroll. */}
+      <div className="mx-auto max-w-7xl space-y-4 p-4 pb-16 sm:p-6">
         {/* Manual add — the human override for jobs the automatic handoff never
             picks up (video added after booking, old footage, non-Aryeo work). */}
         <AddToQueue />

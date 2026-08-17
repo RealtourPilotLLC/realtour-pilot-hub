@@ -96,6 +96,18 @@ export async function editorTeamMemberId(key: EditorKey | string | null | undefi
   }
 }
 
+// Reverse of editorTeamMemberId: a TeamMember's name → the editor key it
+// represents (Kim Miguel → "kim"). Used to read Project.editor back into the
+// key space the routing/tasks engines speak. Null for non-editor team members.
+export function editorKeyForTeamName(name: string | null | undefined): EditorKey | null {
+  if (!name) return null;
+  const n = name.toLowerCase();
+  for (const meta of Object.values(EDITORS)) {
+    if (meta.teamMemberName && n.includes(meta.teamMemberName.toLowerCase())) return meta.key;
+  }
+  return null;
+}
+
 export const EDITOR_KEYS = Object.keys(EDITORS) as EditorKey[];
 // The in-house "operators" who work the daily queue (vs. editors we delegate to).
 // Their tasks show under "Needs <name>", not the delegated-editor groups.
