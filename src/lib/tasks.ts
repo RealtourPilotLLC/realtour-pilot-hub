@@ -1217,7 +1217,7 @@ export async function ensureEditorLoginNudge(editorKey: string): Promise<void> {
         summary:
           `Work keeps getting pinged to ${name}'s bell, but no Hub login exists for editor key "${editorKey}" — everything addressed to them is invisible in-app (they're reached only by Slack/SMS/ops relay for now). ` +
           `Invite them on /users with role EDITOR and first name "${name}" so their editor key wires up automatically` +
-          (editorKey === "john" ? ", and add John's phone to his Team row so texts can reach him too." : "."),
+          (editorKey === "john" ? ", and add John Mark's phone to his Team row so texts can reach him too." : "."),
         reasonCreated: "Editor-addressed notification landed with no editor login to see it",
         source: "system",
         priority: "HIGH",

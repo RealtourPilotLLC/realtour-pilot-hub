@@ -55,9 +55,9 @@ export const EDITORS: Record<EditorKey, EditorMeta> = {
   creative_director: { key: "creative_director", name: "Creative Director", kind: "in_house", does: "video scripting + creative direction", tz: "America/New_York" },
   // Kim Miguel — Manila. Has a TeamMember row with a phone → SMS reaches her.
   kim: { key: "kim", name: "Kim", kind: "in_house", does: "personal-branding / monthly social content", teamMemberName: "Kim", tz: "Asia/Manila" },
-  // John — Manila. Took over Remar's lane (standard reels + horizontal video)
+  // John Mark — Manila. Took over Remar's lane (standard reels + horizontal video)
   // in Aug 2026. Needs a phone on his Team row before SMS can reach him.
-  john: { key: "john", name: "John", kind: "in_house", does: "standard reels + horizontal video", teamMemberName: "John", tz: "Asia/Manila" },
+  john: { key: "john", name: "John Mark", kind: "in_house", does: "standard reels + horizontal video", teamMemberName: "John Mark", tz: "Asia/Manila" },
   // Remar — DEPARTED Aug 2026, replaced by John. The key is retained ONLY so his
   // finished work still resolves to his name: 12 completed tasks and 8 delivered
   // jobs carry it, and re-pointing those at John would credit his work to someone

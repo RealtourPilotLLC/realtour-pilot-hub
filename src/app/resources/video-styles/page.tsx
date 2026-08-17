@@ -1,7 +1,7 @@
 import Link from "next/link";
 import {
   AlertTriangle, ArrowLeft, Clapperboard, Clock, ExternalLink, Film, ListMusic,
-  Mic, Music, Palette, PlayCircle, Sparkles, Timer, Wand2, Wrench,
+  Mic, MonitorPlay, Music, Palette, PlayCircle, Sparkles, Timer, Wand2, Wrench,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
@@ -271,6 +271,35 @@ export default async function VideoStylesPage() {
             The premium turnaround here (3 days) is our internal bar — the client is promised 3–4, and
             finishing on day 3 is what keeps that promise safe.
           </p>
+        </Section>
+
+        {/* Editor training walkthrough — Jordan's Loom covering the Project
+            Tracker, Dropbox, and how the workflow fits together. Loom's /embed
+            path is officially iframeable (verified: no frame-blocking headers;
+            oEmbed reports 1280×960, hence the 4:3 box). */}
+        <Section icon={MonitorPlay} title="How we work — walkthrough">
+          <p className="text-sm leading-relaxed text-muted">
+            Jordan&rsquo;s walkthrough for editors: the Project Tracker, our Dropbox setup, and how a
+            job moves through the system. Watch this before your first edit.
+          </p>
+          <div className="mt-3 aspect-[4/3] overflow-hidden rounded-xl border border-border bg-black">
+            <iframe
+              src="https://www.loom.com/embed/afdf72bee6f747bda671a385105d7e20"
+              className="size-full"
+              loading="lazy"
+              title="Editor walkthrough — Project Tracker, Dropbox & workflow"
+              allow="fullscreen"
+              allowFullScreen
+            />
+          </div>
+          <a
+            href="https://www.loom.com/share/afdf72bee6f747bda671a385105d7e20"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-2 inline-flex items-center gap-1.5 text-xs text-muted hover:text-foreground"
+          >
+            Open in Loom <ExternalLink className="size-3" />
+          </a>
         </Section>
 
         {/* One card per video type. */}

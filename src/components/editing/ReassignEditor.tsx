@@ -9,7 +9,7 @@ import { setEditVideoEditor } from "@/app/editing/actions";
 // task + Project.editorId server-side, then the page revalidates.
 const VIDEO_EDITORS: { key: string; name: string }[] = [
   { key: "kim", name: "Kim" },
-  { key: "john", name: "John" },
+  { key: "john", name: "John Mark" },
   { key: "luma", name: "Luma" },
 ];
 

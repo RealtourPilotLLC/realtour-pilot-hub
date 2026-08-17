@@ -16,7 +16,7 @@ export type Assignee = { key: string; name: string; kind: AssigneeKind; teamMemb
 // Editors / vendors / roles that are NOT in the TeamMember table.
 const NON_TEAM: Assignee[] = [
   { key: "creative_director", name: "Creative Director", kind: "editor" },
-  { key: "john", name: "John", kind: "editor" },
+  { key: "john", name: "John Mark", kind: "editor" },
   { key: "luma", name: "Luma", kind: "vendor" },
   { key: "autohdr", name: "AutoHDR", kind: "vendor" },
   { key: "cubicasa", name: "CubiCasa", kind: "vendor" },
