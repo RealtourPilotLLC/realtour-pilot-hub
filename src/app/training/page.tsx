@@ -24,16 +24,24 @@ const CREATIVE_VOL2_COURSES = new Set([
   "Viral Editing Masterclass (2025)",
 ]);
 
-// These lessons are Studio 910 PB's videos on THEIR Vimeo, and they are embed-
-// restricted: player.vimeo.com 404s ("Sorry, this video does not exist") for
-// every one of them from any domain but their own — with or without the share
-// hash, with or without app_id. The videos are fine; oEmbed still returns their
-// real titles. It is Vimeo's per-video "where can this be embedded" privacy
-// setting, which only Studio 910 can change.
+// These lessons are Studio 910 PB's videos on THEIR Vimeo. As of 14 Aug 2026
+// they are UNAVAILABLE AT THE SOURCE — not embed-restricted, not an access
+// problem on our side. Jordan confirmed the same "Sorry, this video does not
+// exist" on 910's own Skool and website, from a different network.
 //
-// The watch pages DO work (200), so we link out instead of rendering a player
-// that is guaranteed to show an error. If Studio 910 ever whitelists the hub's
-// domain, swap this back for an iframe on player.vimeo.com/video/<id>?h=<hash>.
+// Verified here: player.vimeo.com 404s for every video (with the share hash,
+// without it, and with app_id); the watch pages return a 200 that is an empty
+// 7,588-byte shell rendering the error client-side; and vimeo.com/api/oembed
+// went from returning real titles ("MODULE 1 INTRO", author Studio 910 PB) to
+// 404 for the same ids within minutes. Their library appears to have been
+// removed or the account lapsed. Only Studio 910 can restore it.
+//
+// So we link out rather than render a player. A link degrades honestly and
+// starts working the moment they fix it, with no redeploy. If it comes back AND
+// embedding turns out to be allowed, an iframe on
+// player.vimeo.com/video/<id>?h=<hash> is the nicer UI — but do not assume
+// embedding works until it is actually tested, because that was my wrong first
+// diagnosis here.
 function vimeoWatchUrl(url: string): string | null {
   return /vimeo\.com\/\d+/.test(url) ? url : null;
 }
