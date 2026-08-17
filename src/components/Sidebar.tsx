@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  Clapperboard,
   LayoutDashboard,
   Sun,
   ListTodo,
@@ -89,6 +90,12 @@ const SECTIONS: NavSection[] = [
       { label: "My Pay", href: "/my-pay", icon: Wallet, key: "mypay" },
       { label: "Upload Portal", href: "/upload", icon: Upload, key: "upload" },
       { label: "Editor Queue", href: "/editing", icon: Palette, key: "editing" },
+      // The editors' reference: video types, style specs, example players,
+      // music + tools. Jordan: "everything all in one spot for the editors."
+      // Rides the `resources` PageKey (every role has it), so no new
+      // permission — the page lives at /resources/video-styles and middleware
+      // already resolves that path to `resources`.
+      { label: "Style Guide", href: "/resources/video-styles", icon: Clapperboard, key: "resources" },
     ],
   },
   {
@@ -139,7 +146,9 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
   const creative = !!user && (user.role === "EDITOR" || user.role === "PHOTOGRAPHER");
   const sections = SECTIONS.map((s) => {
     let items = s.items.filter(can);
-    if (creative) items = items.map((i) => (i.key === "resources" ? { ...i, label: "SOP Center" } : i));
+    // Match on href, not key: the Creative "Style Guide" item also carries the
+    // `resources` key (it rides that permission) and must keep its own label.
+    if (creative) items = items.map((i) => (i.href === "/resources" ? { ...i, label: "SOP Center" } : i));
     // "My Pay" is the photographer's own payout view — owner/admin use /payouts,
     // so keep it out of their nav even though canAccess(OWNER) allows everything.
     if (user && user.role !== "PHOTOGRAPHER") items = items.filter((i) => i.key !== "mypay");
@@ -175,10 +184,19 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
             </div>
             <div className="space-y-0.5">
               {section.items.map((item) => {
+                // Longest-prefix wins: "Style Guide" (/resources/video-styles)
+                // and "Resources & SOPs" (/resources) share a prefix, and both
+                // lighting up reads as a bug. The item is active only if no
+                // sibling nav item matches the path more specifically.
+                const matches = (href: string) =>
+                  href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/");
                 const active =
-                  item.href === "/"
-                    ? pathname === "/"
-                    : pathname.startsWith(item.href);
+                  matches(item.href) &&
+                  !sections.some((sec) =>
+                    sec.items.some(
+                      (o) => o.href.length > item.href.length && matches(o.href),
+                    ),
+                  );
                 const Icon = item.icon;
                 const content = (
                   <>
