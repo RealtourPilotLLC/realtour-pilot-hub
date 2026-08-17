@@ -69,11 +69,33 @@ export async function middleware(req: NextRequest) {
   // the permissions claim). Owner sees everything; others are bounced home from a
   // page they can't open.
   const key = pathKey(pathname);
-  if (key && !canAccess({ role: session.role, permissions: session.permissions }, key)) {
+  const viewer = { role: session.role, permissions: session.permissions };
+  if (key && !canAccess(viewer, key)) {
     const home = homeFor(session.role);
-    // Avoid redirecting onto the same path (defensive — homeFor never points at a
-    // page the role can't open).
-    return NextResponse.redirect(new URL(home === pathname ? "/shoot" : home, req.url));
+    const homeKey = pathKey(home);
+    // Bounce home — but ONLY if they can actually open it. The old code assumed
+    // "homeFor never points at a page the role can't open", which is false the
+    // moment a per-user override revokes it: an EDITOR whose `editing` override
+    // was set to false got /editing -> denied -> home is /editing -> same path ->
+    // the old fallback punted to /shoot -> editors can't open /shoot either ->
+    // back to /editing. ERR_TOO_MANY_REDIRECTS, and the account is unusable.
+    // (Hit live while onboarding an editor whose three default pages had all been
+    // revoked.) /shoot was a bad fallback for exactly the same reason it looped:
+    // most roles can't open it.
+    if (homeKey && canAccess(viewer, homeKey) && home !== pathname) {
+      return NextResponse.redirect(new URL(home, req.url));
+    }
+    // Their own home is closed to them. Find any page they CAN open rather than
+    // ping-ponging between two closed doors.
+    const fallback = PAGES.find((p) => p.href !== pathname && canAccess(viewer, p.key));
+    if (fallback) return NextResponse.redirect(new URL(fallback.href, req.url));
+    // Nothing at all is open: send them to /login with a reason instead of a
+    // redirect loop. /login is public, so this always terminates.
+    const url = req.nextUrl.clone();
+    url.pathname = "/login";
+    url.search = "";
+    url.searchParams.set("error", "noaccess");
+    return NextResponse.redirect(url);
   }
   return NextResponse.next();
 }

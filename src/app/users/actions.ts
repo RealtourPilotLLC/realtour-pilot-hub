@@ -4,7 +4,7 @@ import { randomUUID } from "crypto";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
-import { ROLES, PAGES, type PageKey, parsePermissions } from "@/lib/auth/access";
+import { ROLES, PAGES, type PageKey, parsePermissions, roleHasByDefault } from "@/lib/auth/access";
 
 type Res = { ok: boolean; message: string; link?: string };
 
@@ -98,12 +98,36 @@ export async function setUserRole(id: string, role: string): Promise<Res> {
     const actor = await requireOwnerActor();
     if (id === actor.id && role !== "OWNER") return { ok: false, message: "You can't change your own role." };
     if (!validRole(role)) return { ok: false, message: "Unknown role." };
-    const u = await prisma.appUser.findUnique({ where: { id }, select: { name: true, email: true, editorKey: true } });
+    const u = await prisma.appUser.findUnique({
+      where: { id },
+      select: { name: true, email: true, editorKey: true, permissions: true },
+    });
     if (!u) return { ok: false, message: "User not found." };
     // Flipping someone TO editor needs the same key wiring an invite gets —
     // without it their board/brief/bells are all dead on arrival.
     const editorKey = role === "EDITOR" && !u.editorKey ? await deriveEditorKey(u.name, u.email) : null;
-    await prisma.appUser.update({ where: { id }, data: { role, ...(editorKey ? { editorKey } : {}) } });
+
+    // Page overrides were tailored to the OLD role, and a `false` written against
+    // one role's page set can silently revoke a core page of the new one. That
+    // bricked a new editor on his onboarding call: his account carried
+    // {"editing":false,"tasks":false,"upload":false} — which is every page an
+    // EDITOR has — so every door was shut and the middleware bounced him between
+    // two of them until the browser gave up (ERR_TOO_MANY_REDIRECTS).
+    //
+    // So on a role change, drop the REVOCATIONS that collide with the new role's
+    // defaults. Grants (`true`) are kept: they're additive, they can't lock
+    // anyone out, and they're usually a deliberate exception (a photographer
+    // given `clients`, say) that shouldn't silently vanish.
+    const perms = parsePermissions(u.permissions);
+    for (const k of Object.keys(perms)) {
+      if (perms[k] === false && roleHasByDefault(role, k as PageKey)) delete perms[k];
+    }
+    const nextPerms = Object.keys(perms).length ? JSON.stringify(perms) : null;
+
+    await prisma.appUser.update({
+      where: { id },
+      data: { role, permissions: nextPerms, ...(editorKey ? { editorKey } : {}) },
+    });
     revalidatePath("/users");
     return { ok: true, message: "Role updated." };
   } catch (e) {
