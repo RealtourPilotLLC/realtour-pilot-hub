@@ -10,7 +10,7 @@ import { editorTeamMemberId, EDITOR_KEYS, type EditorKey } from "@/lib/editors";
 //   · setEditVideoEditor — owner/admin reassign a video job to a different
 //     editor (one-click select on the tracker row). Updates the edit_video
 //     task's assignedKey AND Project.editorId when the new editor maps to a
-//     TeamMember (Kim/Remar); externals (Luma) clear the link.
+//     TeamMember (Kim/John); externals (Luma) clear the link.
 // The editor's "Done — send to review" action moved to
 // src/app/review/actions.ts (submitCutForReview) — see the note at the bottom.
 // Fail-closed once auth is enforced (no-op in local dev).
@@ -59,7 +59,7 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
 // ---------------------------------------------------------------------------
 
 const QUEUE_STATUSES = ["SHOT", "EDITING", "REVIEW", "REVISION"];
-const VIDEO_EDITOR_KEYS: EditorKey[] = ["kim", "remar", "luma"];
+const VIDEO_EDITOR_KEYS: EditorKey[] = ["kim", "john", "luma"];
 
 export type QueueCandidate = {
   id: string;
@@ -151,7 +151,7 @@ export async function addToEditorQueue(
     return { ok: false, message: (e as Error).message };
   }
   if (!(VIDEO_EDITOR_KEYS as string[]).includes(editorKey)) {
-    return { ok: false, message: "Pick a video editor (Kim, Remar or Luma)." };
+    return { ok: false, message: "Pick a video editor (Kim, John or Luma)." };
   }
   const key = editorKey as EditorKey;
 
@@ -195,7 +195,7 @@ export async function addToEditorQueue(
   } catch { /* unreadable evidence → treat as none */ }
   const priorCut = project.status === "DELIVERED" || project._count.reviewSubmissions > 0 || videoEvidence;
 
-  // Who gets pinged: Kim/Remar directly (their channel bridge); Luma is an
+  // Who gets pinged: Kim/John directly (their channel bridge); Luma is an
   // external vendor with no login/phone — Kyle dispatches Luma work, so the
   // bell goes to ADMIN instead of a row nobody can see.
   const notifyQueued = async (kind: string, title: string) => {

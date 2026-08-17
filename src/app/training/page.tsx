@@ -1,4 +1,4 @@
-import { ChevronDown, GraduationCap } from "lucide-react";
+import { ChevronDown, ExternalLink, GraduationCap, PlayCircle } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Markdown } from "@/components/ui/Markdown";
 import { ShareLessonButton } from "@/components/training/ShareLessonButton";
@@ -24,12 +24,18 @@ const CREATIVE_VOL2_COURSES = new Set([
   "Viral Editing Masterclass (2025)",
 ]);
 
-// A 910 Academy Vimeo watch URL (e.g. https://vimeo.com/1206234728/43eb0c934b?share=copy)
-// → the player embed src (https://player.vimeo.com/video/1206234728?h=43eb0c934b).
-function vimeoEmbed(url: string): string | null {
-  const m = url.match(/vimeo\.com\/(\d+)(?:\/([a-zA-Z0-9]+))?/);
-  if (!m) return null;
-  return `https://player.vimeo.com/video/${m[1]}${m[2] ? `?h=${m[2]}` : ""}`;
+// These lessons are Studio 910 PB's videos on THEIR Vimeo, and they are embed-
+// restricted: player.vimeo.com 404s ("Sorry, this video does not exist") for
+// every one of them from any domain but their own — with or without the share
+// hash, with or without app_id. The videos are fine; oEmbed still returns their
+// real titles. It is Vimeo's per-video "where can this be embedded" privacy
+// setting, which only Studio 910 can change.
+//
+// The watch pages DO work (200), so we link out instead of rendering a player
+// that is guaranteed to show an error. If Studio 910 ever whitelists the hub's
+// domain, swap this back for an iframe on player.vimeo.com/video/<id>?h=<hash>.
+function vimeoWatchUrl(url: string): string | null {
+  return /vimeo\.com\/\d+/.test(url) ? url : null;
 }
 
 // Browsable course library (910 Academy) — full transcripts from TrainingLesson,
@@ -89,13 +95,13 @@ export default async function TrainingPage() {
                     </summary>
                     <div className="divide-y divide-border border-t border-border">
                       {c.lessons.map((l, i) => {
-                        const embed = l.videoUrl ? vimeoEmbed(l.videoUrl) : null;
+                        const watch = l.videoUrl ? vimeoWatchUrl(l.videoUrl) : null;
                         return (
                         <details key={i} className="group/l">
                           <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2.5 pl-6 hover:bg-surface-2">
                             <ChevronDown className="size-3.5 shrink-0 -rotate-90 text-muted-2 transition-transform group-open/l:rotate-0" />
                             <span className="text-sm text-foreground/90">{l.title}</span>
-                            {embed && <span className="rounded-full bg-brand-soft px-1.5 text-[10px] font-medium text-brand">Video</span>}
+                            {watch && <span className="rounded-full bg-brand-soft px-1.5 text-[10px] font-medium text-brand">Video</span>}
                             {canShare && (
                               <span className="ml-auto">
                                 <ShareLessonButton lessonId={l.id} initialToken={l.shareToken} />
@@ -103,17 +109,17 @@ export default async function TrainingPage() {
                             )}
                           </summary>
                           <div className="px-4 pb-4 pl-12">
-                            {embed && (
-                              <div className="mb-3 aspect-video overflow-hidden rounded-xl border border-border bg-black">
-                                <iframe
-                                  src={embed}
-                                  className="size-full"
-                                  loading="lazy"
-                                  title={l.title}
-                                  allow="autoplay; fullscreen; picture-in-picture; clipboard-write"
-                                  allowFullScreen
-                                />
-                              </div>
+                            {watch && (
+                              <a
+                                href={watch}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="mb-3 inline-flex items-center gap-2 rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm font-medium text-brand transition hover:border-brand"
+                              >
+                                <PlayCircle className="size-4" />
+                                Watch this lesson
+                                <ExternalLink className="size-3.5 opacity-70" />
+                              </a>
                             )}
                             {l.summaryMd
                               ? <Markdown content={l.summaryMd} />

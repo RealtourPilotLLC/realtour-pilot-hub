@@ -29,7 +29,7 @@ const validRole = (r: string) => (ROLES as string[]).includes(r);
 
 // An EDITOR login is useless without its editorKey — that key scopes their
 // board, brief actions, and person-addressed bells. Derive it from the roster
-// by first name (Kim → "kim", Remar → "remar"), falling back to the email's
+// by first name (Kim → "kim", John → "john"), falling back to the email’s
 // local part (kim@…) so a blank invite name can't mint a dead login.
 async function deriveEditorKey(name: string | null | undefined, email?: string | null): Promise<string | null> {
   const { TEAM_MEMBER_EDITOR_KEYS, EDITORS } = await import("@/lib/editors");

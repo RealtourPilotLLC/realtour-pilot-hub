@@ -3,11 +3,11 @@ import { prisma } from "@/lib/prisma";
 
 // The people a task can be assigned to, for the Daily Tasks filter + the assign
 // dropdown. Built from the real TeamMember roster (Kyle, Jordan, James, Kim,
-// Harrison, …) PLUS the editors/vendors that aren't team members (Remar in-house,
+// Harrison, …) PLUS the editors/vendors that aren't team members (John in-house,
 // Luma/AutoHDR/CubiCasa external, the Creative Director role).
 //
 // A task's `assignedKey` is a stable slug = the person's FIRST name (lowercased),
-// which already matches the legacy keys in use (kyle/kim/remar/luma), so no data
+// which already matches the legacy keys in use (kyle/kim/john/luma), so no data
 // migration is needed. Vendors/roles keep their fixed keys.
 
 export type AssigneeKind = "owner" | "manager" | "photographer" | "editor" | "vendor";
@@ -16,7 +16,7 @@ export type Assignee = { key: string; name: string; kind: AssigneeKind; teamMemb
 // Editors / vendors / roles that are NOT in the TeamMember table.
 const NON_TEAM: Assignee[] = [
   { key: "creative_director", name: "Creative Director", kind: "editor" },
-  { key: "remar", name: "Remar", kind: "editor" },
+  { key: "john", name: "John", kind: "editor" },
   { key: "luma", name: "Luma", kind: "vendor" },
   { key: "autohdr", name: "AutoHDR", kind: "vendor" },
   { key: "cubicasa", name: "CubiCasa", kind: "vendor" },

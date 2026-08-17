@@ -14,7 +14,7 @@
 // virtual/digital STAGING direction — is the ADMIN's (Kyle), even "for the video".
 // ---------------------------------------------------------------------------
 
-export type EditorKey = "kyle" | "jordan" | "creative_director" | "kim" | "remar" | "luma" | "autohdr" | "cubicasa";
+export type EditorKey = "kyle" | "jordan" | "creative_director" | "kim" | "john" | "remar" | "luma" | "autohdr" | "cubicasa";
 
 export type EditorMeta = {
   key: EditorKey;
@@ -36,10 +36,14 @@ export type EditorMeta = {
   teamMemberName?: string;
   slackUserId?: string;
   tz?: string;
+  // No longer with us. The entry stays so their finished work still renders with
+  // their name; they are excluded from every picker and routing rule, so nothing
+  // new can be assigned to them.
+  departed?: boolean;
 };
 
 // Quiet-hours default when an editor has no explicit tz. The in-house video
-// editors (Kim, Remar) are in the Philippines.
+// editors (Kim, John) are in the Philippines.
 export const DEFAULT_EDITOR_TZ = "Asia/Manila";
 
 export const EDITORS: Record<EditorKey, EditorMeta> = {
@@ -51,8 +55,15 @@ export const EDITORS: Record<EditorKey, EditorMeta> = {
   creative_director: { key: "creative_director", name: "Creative Director", kind: "in_house", does: "video scripting + creative direction", tz: "America/New_York" },
   // Kim Miguel — Manila. Has a TeamMember row with a phone → SMS reaches her.
   kim: { key: "kim", name: "Kim", kind: "in_house", does: "personal-branding / monthly social content", teamMemberName: "Kim", tz: "Asia/Manila" },
-  // Remar — Manila. No TeamMember/phone yet (Jordan to add), so SMS no-ops until then.
-  remar: { key: "remar", name: "Remar", kind: "in_house", does: "standard reels + horizontal video", teamMemberName: "Remar", tz: "Asia/Manila" },
+  // John — Manila. Took over Remar's lane (standard reels + horizontal video)
+  // in Aug 2026. Needs a phone on his Team row before SMS can reach him.
+  john: { key: "john", name: "John", kind: "in_house", does: "standard reels + horizontal video", teamMemberName: "John", tz: "Asia/Manila" },
+  // Remar — DEPARTED Aug 2026, replaced by John. The key is retained ONLY so his
+  // finished work still resolves to his name: 12 completed tasks and 8 delivered
+  // jobs carry it, and re-pointing those at John would credit his work to someone
+  // who never did it. He is absent from every picker and routing rule below, so
+  // nothing new can land on him.
+  remar: { key: "remar", name: "Remar", kind: "in_house", does: "standard reels + horizontal video (departed)", teamMemberName: "Remar", tz: "Asia/Manila", departed: true },
   luma: { key: "luma", name: "Luma", kind: "external", does: "premium social reels" },
   autohdr: { key: "autohdr", name: "AutoHDR", kind: "external", does: "AI photo editing" },
   cubicasa: { key: "cubicasa", name: "CubiCasa", kind: "external", does: "floor plans" },
@@ -61,7 +72,9 @@ export const EDITORS: Record<EditorKey, EditorMeta> = {
 // The editor keys that map to an actual person we persist on Project.editorId
 // (an in-house TeamMember). Externals (Luma) and vendors stay Kyle-dispatch and
 // never get a TeamMember link — their work is tracked by the edit_video task.
-export const TEAM_MEMBER_EDITOR_KEYS: EditorKey[] = ["kim", "remar"];
+// Includes `remar` so his historical jobs still resolve to a TeamMember. New
+// work never routes to him — see DELEGATE_KEYS and the routing rules below.
+export const TEAM_MEMBER_EDITOR_KEYS: EditorKey[] = ["kim", "john", "remar"];
 
 // Resolve an editor key → its TeamMember id (for the phone / Project.editorId),
 // or null when the editor isn't a linkable person (external/vendor) or has no
@@ -87,7 +100,7 @@ export const EDITOR_KEYS = Object.keys(EDITORS) as EditorKey[];
 export const OPERATOR_KEYS: EditorKey[] = ["kyle", "jordan"];
 // The ones you delegate editing work to (everyone except the operators). Order =
 // how they list.
-export const DELEGATE_KEYS: EditorKey[] = ["creative_director", "kim", "remar", "luma", "autohdr", "cubicasa"];
+export const DELEGATE_KEYS: EditorKey[] = ["creative_director", "kim", "john", "luma", "autohdr", "cubicasa"];
 
 export function editorMeta(key: string | null | undefined): EditorMeta | null {
   return key && key in EDITORS ? EDITORS[key as EditorKey] : null;
@@ -125,15 +138,15 @@ export function routeEditWork(text: string): EditorKey | null {
   if (/(premium|influencer)/.test(t) && /(reel|video|social|bundle)/.test(t)) return "luma";
   // Personal-branding / monthly social, plus logo + animation work → Kim.
   if (/personal ?brand|\bbranding\b|monthly|social (media )?(content|post)|\blogo\b|animat/.test(t)) return "kim";
-  // Standard reels + horizontal video → Remar.
-  if (/\breel\b|horizontal video|b-?roll|lo-?fi|cross dissolve|text spacing|lengthen (the )?clip|\bvideo\b/.test(t)) return "remar";
+  // Standard reels + horizontal video → John (took this lane over from Remar).
+  if (/\breel\b|horizontal video|b-?roll|lo-?fi|cross dissolve|text spacing|lengthen (the )?clip|\bvideo\b/.test(t)) return "john";
   if (/\bphoto|saturation|orange|\bhdr\b|brighten|darken|unedited/.test(t)) return "kyle";
   return null;
 }
 
 // Who edits a given deliverable (used to delegate a revision to the right person
 // by what's being revised). Mirrors vendors.ts production routing but resolves
-// in-house to the actual editor (Remar standard video, Kim social, Kyle QC).
+// in-house to the actual editor (John standard video, Kim social, Kyle QC).
 export function editorForDeliverable(type: string | null | undefined, label?: string | null, monthly = false): EditorKey {
   const t = (type || "").toUpperCase();
   const premium = /premium|influencer/i.test(label ?? "");
@@ -142,7 +155,7 @@ export function editorForDeliverable(type: string | null | undefined, label?: st
     if (premium) return "luma";
     // Monthly social-plan content (7–10 business-day turnaround) is Kim's.
     if (monthly || /monthly|brand|social/i.test(label ?? "")) return "kim";
-    return "remar";
+    return "john";
   }
   // Photos / drone / twilight / headshots / staging / 3D → Kyle handles the QC
   // + corrections in-house (AutoHDR does the base AI pass automatically).

@@ -1112,7 +1112,7 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
     // crash must not re-ping) with neutral wording; the concrete outcome is
     // stamped on after we know what channelForEditor actually did — the old
     // hard-coded "notified via Slack" claimed delivery that often never
-    // happened (Remar has no Slack/phone; audit #33 honesty residue).
+    // happened (John has no Slack/phone yet; audit #33 honesty residue).
     const marker = await prisma.activity.create({
       data: { projectId, type: "SYSTEM", body: `${MARKER} — announced to the editor bench.` },
     });
@@ -1124,7 +1124,7 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
       // it routes to sees it in /editing either way) + a PERSON-ADDRESSED row for
       // the routed video editor (editor:<key>) so the notify bridge can DM/text
       // them in Manila. Photos-only jobs route to Kyle (not a bench editor) — the
-      // editor:key row is only added for a real video route (kim/remar/luma).
+      // editor:key row is only added for a real video route (kim/john/luma).
       const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
       const targets: import("@/lib/notify").NotifyTarget[] = [{ roles: ["ADMIN"] }, { roles: ["EDITOR"] }];
       let routedKey: string | null = null;
@@ -1132,7 +1132,7 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
         const key = editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.deliverables));
         // Only in-house editors have a reachable channel; Luma (external) has no
         // bell/DM — its dispatch is the Kyle task below.
-        if (key === "kim" || key === "remar") {
+        if (key === "kim" || key === "john") {
           routedKey = key;
           // Their brief — the one page the EDITOR role can act from.
           targets.push({ roles: ["EDITOR"], userKey: `editor:${key}`, href: `/edit/${projectId}` });
@@ -1217,7 +1217,7 @@ export async function ensureEditorLoginNudge(editorKey: string): Promise<void> {
         summary:
           `Work keeps getting pinged to ${name}'s bell, but no Hub login exists for editor key "${editorKey}" — everything addressed to them is invisible in-app (they're reached only by Slack/SMS/ops relay for now). ` +
           `Invite them on /users with role EDITOR and first name "${name}" so their editor key wires up automatically` +
-          (editorKey === "remar" ? ", and add Remar's phone to her Team row so texts can reach her too." : "."),
+          (editorKey === "john" ? ", and add John's phone to his Team row so texts can reach him too." : "."),
         reasonCreated: "Editor-addressed notification landed with no editor login to see it",
         source: "system",
         priority: "HIGH",
@@ -1271,7 +1271,7 @@ export async function mintEditTask(projectId: string): Promise<void> {
   const monthly = isMonthlyContentJob(p.deliverables);
   const tier = videoTier(p.deliverables); // standard | premium | null
   const isPremium = tier === "premium";
-  const assignedKey = editorForDeliverable(v.type, v.label, monthly); // kim | remar | luma
+  const assignedKey = editorForDeliverable(v.type, v.label, monthly); // kim | john | luma
   const editorName = editorMeta(assignedKey)?.name ?? assignedKey;
   const street = (p.title || "this job").split(",")[0].trim();
 

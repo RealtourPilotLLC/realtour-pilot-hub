@@ -5,11 +5,11 @@ import { Loader2 } from "lucide-react";
 import { setEditVideoEditor } from "@/app/editing/actions";
 
 // One-click reassign for owner/admin on a video tracker row. A tiny select of
-// the video editors (Kim / Remar / Luma); picking one repoints the edit_video
+// the video editors (Kim / John / Luma); picking one repoints the edit_video
 // task + Project.editorId server-side, then the page revalidates.
 const VIDEO_EDITORS: { key: string; name: string }[] = [
   { key: "kim", name: "Kim" },
-  { key: "remar", name: "Remar" },
+  { key: "john", name: "John" },
   { key: "luma", name: "Luma" },
 ];
 

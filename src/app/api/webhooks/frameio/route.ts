@@ -175,7 +175,7 @@ export async function processFrameioEvent(
     const targets: NotifyTarget[] = [{ roles: ["OWNER"] }];
     // In-house editors only (luma is external — no channel/login), and the
     // href must be their brief: /projects bounces the EDITOR role.
-    if (editorKey === "kim" || editorKey === "remar") {
+    if (editorKey === "kim" || editorKey === "john" || editorKey === "remar") {
       targets.push({ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${project.id}` });
     }
     await notifyInApp({

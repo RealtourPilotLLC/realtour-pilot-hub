@@ -85,7 +85,9 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
   // VIDEO-lane revision tasks only: a photo retouch routed to Kyle also flips
   // the project to REVISION, but it is NOT this editor's work order — it must
   // never flip the video tracker or render as their ask (review finding).
-  const VIDEO_REVISION_KEYS = new Set(["kim", "remar", "luma"]);
+  // Remar departed Aug 2026 (John took the lane) but stays here: his last
+  // in-production job still needs its revision lane to render.
+  const VIDEO_REVISION_KEYS = new Set(["kim", "john", "remar", "luma"]);
   const videoRevisionTasks = project.smartTasks.filter(
     (t) => t.taskType === "revision" && VIDEO_REVISION_KEYS.has(t.assignedKey ?? ""),
   );
