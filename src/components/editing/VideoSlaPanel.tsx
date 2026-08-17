@@ -2,7 +2,7 @@ import Link from "next/link";
 import { AlertTriangle, Clapperboard } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import { getVideoSlaStatus } from "@/lib/projectStatus";
-import { editorForDeliverable, editorMeta } from "@/lib/editors";
+import { editorForDeliverable, editorMeta, type VideoRoutingRules } from "@/lib/editors";
 import { SlaCountdown } from "./SlaCountdown";
 import { ReassignEditor } from "./ReassignEditor";
 
@@ -22,13 +22,13 @@ type Row = {
   deliverables: { type: string; label: string | null }[];
 };
 
-export function VideoSlaPanel({ projects }: { projects: Row[] }) {
+export function VideoSlaPanel({ projects, rules }: { projects: Row[]; rules?: VideoRoutingRules }) {
   const rows = projects
     .map((p) => {
       const sla = getVideoSlaStatus({ shootDate: p.shootDate, status: p.status, deliverables: p.deliverables, client: p.client });
       if (!sla) return null;
       const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
-      const routeKey = editorForDeliverable(v?.type, v?.label, !!p.client?.socialClient);
+      const routeKey = editorForDeliverable(v?.type, v?.label, !!p.client?.socialClient, rules);
       const editorLabel = p.editor?.name ?? editorMeta(routeKey)?.name ?? routeKey;
       return {
         id: p.id,

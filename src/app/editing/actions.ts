@@ -82,6 +82,8 @@ export async function searchQueueCandidates(q: string): Promise<QueueCandidate[]
 
   const { editorForDeliverable } = await import("@/lib/editors");
   const { isMonthlyContentJob } = await import("@/lib/pipeline");
+  const { editorRouting } = await import("@/lib/settings");
+  const rules = await editorRouting();
 
   const projects = await prisma.project.findMany({
     where: {
@@ -125,7 +127,7 @@ export async function searchQueueCandidates(q: string): Promise<QueueCandidate[]
       hasVideo: !!v,
       inQueue: !!v && QUEUE_STATUSES.includes(p.status),
       priorCut: p.status === "DELIVERED" || p._count.reviewSubmissions > 0 || videoEvidence,
-      suggestedEditor: editorForDeliverable(v?.type ?? "VIDEO", v?.label, monthly),
+      suggestedEditor: editorForDeliverable(v?.type ?? "VIDEO", v?.label, monthly, rules),
     };
   });
 }
@@ -322,4 +324,29 @@ export async function addToEditorQueue(
   });
   await notifyQueued("edit_assigned", `New edit — ${street}`);
   return done(`${street} is in the queue — ${editorName} has it.`);
+}
+
+
+// Per-job edit instructions (the Luma-form fields) — owner/admin write, the
+// editor reads. Stored as JSON on Project.editSpec.
+export async function saveEditSpec(
+  projectId: string,
+  spec: { musicType?: string; colorProfile?: string; desiredLength?: string; instructions?: string },
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  const clean = {
+    musicType: (spec.musicType ?? "").trim().slice(0, 120) || undefined,
+    colorProfile: (spec.colorProfile ?? "").trim().slice(0, 120) || undefined,
+    desiredLength: (spec.desiredLength ?? "").trim().slice(0, 60) || undefined,
+    instructions: (spec.instructions ?? "").trim().slice(0, 4000) || undefined,
+  };
+  const hasAny = Object.values(clean).some(Boolean);
+  await prisma.project.update({ where: { id: projectId }, data: { editSpec: hasAny ? JSON.stringify(clean) : null } });
+  const { revalidatePath } = await import("next/cache");
+  revalidatePath(`/edit/${projectId}`);
+  return { ok: true, message: "Instructions saved." };
 }

@@ -157,12 +157,29 @@ export function routeEditWork(text: string): EditorKey | null {
 // is gone with it: "Standard Social Media Reel" matches /social/, and the
 // heuristic was quietly routing one-off standard reels into the monthly lane.
 // isMonthlyContentJob(deliverables) is the real signal — trust only it.
-export function editorForDeliverable(type: string | null | undefined, label?: string | null, monthly = false): EditorKey | null {
+// The video rules are OWNER-EDITABLE on /settings (src/lib/settings.ts
+// overlays these code defaults). Callers on a routing path fetch the rules
+// once via editorRouting() and pass them; omitting `rules` applies the
+// defaults, so nothing breaks if a caller skips the fetch.
+export type VideoRoutingRules = {
+  standardVideo: EditorKey | null;
+  premiumVideo: EditorKey | null;
+  personalBranding: EditorKey | null; // null = manual (Needs assigning)
+};
+const CODE_DEFAULT_ROUTING: VideoRoutingRules = { standardVideo: "john", premiumVideo: "john", personalBranding: null };
+
+export function editorForDeliverable(
+  type: string | null | undefined,
+  label?: string | null,
+  monthly = false,
+  rules: VideoRoutingRules = CODE_DEFAULT_ROUTING,
+): EditorKey | null {
   const t = (type || "").toUpperCase();
   if (t === "FLOORPLAN") return "cubicasa";
   if (t === "SOCIAL_REEL" || t === "VIDEO") {
-    if (monthly) return null; // personal branding — manual assignment, by design
-    return "john"; // standard AND premium
+    if (monthly) return rules.personalBranding;
+    if (/premium|influencer/i.test(label ?? "")) return rules.premiumVideo;
+    return rules.standardVideo;
   }
   // Photos / drone / twilight / headshots / staging / 3D → Kyle handles the QC
   // + corrections in-house (AutoHDR does the base AI pass automatically).

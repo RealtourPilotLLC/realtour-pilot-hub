@@ -319,10 +319,12 @@ export async function raiseRevision(opts: {
   const primary = videoDeliv && (VIDEO_ASK.test(opts.note) || !hasNonVideo) ? videoDeliv : project.deliverables.find((d) => d.type !== "VIDEO" && d.type !== "SOCIAL_REEL") ?? project.deliverables[0];
   // PROJECT-level monthly test — a listing-shoot revision for a social-plan
   // client routes like any listing job, not to the monthly-content lane.
+  const { editorRouting } = await import("@/lib/settings");
   const assignedKey = editorForDeliverable(
     primary?.type,
     primary?.label,
     isMonthlyContentJob(project.deliverables),
+    await editorRouting(),
   );
 
   // The client's request IS the work order — keep it whole (word-boundary clip,

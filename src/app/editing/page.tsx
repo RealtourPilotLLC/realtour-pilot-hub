@@ -7,6 +7,7 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { slugForName } from "@/lib/assignees";
 import { EditorDay } from "@/components/editing/EditorDay";
 import { VideoSlaPanel } from "@/components/editing/VideoSlaPanel";
+import { editorRouting } from "@/lib/settings";
 import { AddToQueue } from "@/components/editing/AddToQueue";
 
 export const dynamic = "force-dynamic";
@@ -78,7 +79,7 @@ export default async function EditorQueuePage() {
       </div>
       {inflightVideo.length > 0 && (
         <div className="px-4 pt-4 sm:px-6">
-          <VideoSlaPanel projects={inflightVideo} />
+          <VideoSlaPanel projects={inflightVideo} rules={await editorRouting()} />
         </div>
       )}
       <ProjectTracker

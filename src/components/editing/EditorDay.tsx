@@ -22,6 +22,8 @@ import { SendToReviewButton } from "./EditorActions";
 // `editorScope` is the caller's resolved editor key (me.editorKey || slug).
 // ---------------------------------------------------------------------------
 export async function EditorDay({ editorScope, editorName }: { editorScope: string; editorName: string }) {
+  const { editorRouting } = await import("@/lib/settings");
+  const rules = await editorRouting();
   // DO NOW — the editor's open work items on video jobs, scoped at the DB level
   // to their own assignedKey so the view can't even load someone else's.
   const tasks = await prisma.smartTask.findMany({
@@ -97,7 +99,7 @@ export async function EditorDay({ editorScope, editorName }: { editorScope: stri
     .map((p) => {
       const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
       if (!v) return null;
-      const key = editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.deliverables));
+      const key = editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.deliverables), rules);
       if (key !== editorScope) return null;
       const tier = videoTier(p.deliverables);
       return {

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Clapperboard,
+  SlidersHorizontal,
   LayoutDashboard,
   Sun,
   ListTodo,
@@ -126,6 +127,7 @@ const SECTIONS: NavSection[] = [
     title: "System",
     items: [
       { label: "Feedback & requests", href: "/feedback", icon: MessageSquarePlus, key: "feedback" },
+      { label: "Settings", href: "/settings", icon: SlidersHorizontal, key: "settings" },
       { label: "Connections", href: "/connections", icon: Plug, key: "connections" },
     ],
   },

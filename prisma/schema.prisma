@@ -439,6 +439,10 @@ model Project {
 
   // Photographer's brief to the editor, captured at upload time.
   editorBrief     String?
+  // Edit instructions for THIS job, set by owner/admin on /edit/<id> and shown
+  // read-only to the editor (mirrors the Luma order form Jordan likes):
+  // JSON { musicType, colorProfile, desiredLength, instructions }
+  editSpec        String?
   // Per-job photo-editing inputs (AutoHDR $0.50/finished photo). Counted from
   // the Dropbox 01-RAW-Photos folder: drone shots are single JPGs (DJI_*),
   // everything else is 5-bracket sets. finished = (raw−drone)/5 + drone.
@@ -1570,6 +1574,17 @@ model GrowthPlan {
 // The finance advisor could already do this (FinanceReport), but only for
 // formal financial statements over a date range. This is the general case: any
 // question that deserves a document rather than a chat bubble that scrolls away.
+// Owner/admin-editable platform settings (/settings). One row per key, value
+// is JSON. Read through src/lib/settings.ts (cached, code-default fallback) so
+// a missing row never breaks anything — the code default IS the setting until
+// someone changes it in the UI.
+model AppSetting {
+  key       String   @id
+  value     String // JSON
+  updatedAt DateTime @updatedAt
+  updatedBy String? // email of who last changed it
+}
+
 model HubDocument {
   id        String   @id @default(cuid())
   title     String

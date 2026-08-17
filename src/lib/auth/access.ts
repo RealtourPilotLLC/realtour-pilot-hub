@@ -7,7 +7,7 @@ export type PageKey =
   | "dashboard" | "tasks" | "pipeline" | "schedule" | "map"
   | "communications" | "clients" | "team" | "upload" | "editing" | "sales"
   | "billing" | "catalog" | "payouts" | "marketing" | "resources" | "assistant"
-  | "training" | "feedback" | "connections" | "users" | "shoot" | "mypay" | "review" | "trends" | "day";
+  | "training" | "feedback" | "connections" | "users" | "shoot" | "mypay" | "review" | "trends" | "day" | "settings";
 // NOTE: "map", "billing", "payouts", "team" survive in this type only so stored
 // per-user permission JSON keeps resolving and so canAccess() can treat them as
 // legacy grants on the pages they merged into (see canAccess). They no longer
@@ -59,6 +59,9 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   { key: "training", label: "Training", href: "/training" },
   { key: "assistant", label: "Ask the Hub", href: "/assistant" },
   { key: "feedback", label: "Feedback & requests", href: "/feedback" },
+  // Platform rules the business runs on (editor routing today, more to come).
+  // Owner + Kyle: "a full settings page … for me Owner and the Admin (kyle)".
+  { key: "settings", label: "Settings", href: "/settings" },
   { key: "connections", label: "Connections", href: "/connections", ownerOnly: true },
   // "users" is the merged People hub — Team (old /team, admin-visible) + Logins &
   // access (old /users AppUser allowlist, owner-only). It can no longer be
@@ -83,7 +86,7 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
   ADMIN: [
     "dashboard", "tasks", "review", "pipeline", "schedule", "shoot",
     "communications", "clients", "users", "upload", "editing", "sales",
-    "catalog", "resources", "training", "assistant", "feedback", "trends",
+    "catalog", "resources", "training", "assistant", "feedback", "trends", "settings",
   ],
   // No "dashboard": the overview page carries ops counts + owner money strips
   // that aren't an editor's business — middleware bounces them to /editing.

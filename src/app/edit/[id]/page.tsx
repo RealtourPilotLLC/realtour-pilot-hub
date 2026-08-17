@@ -12,6 +12,7 @@ import { ClientProfileCard } from "@/components/clients/ClientProfileCard";
 import { ProjectMessages } from "@/components/project/ProjectMessages";
 import { ReelScriptCard } from "@/components/project/ReelScriptCard";
 import { ScriptStudioCard } from "@/components/project/ScriptStudioCard";
+import { EditInstructionsCard } from "@/components/editing/EditInstructionsCard";
 import { AocPlaybookCard } from "@/components/project/AocPlaybookCard";
 import { FrameioButton } from "@/components/project/FrameioButton";
 import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
@@ -210,6 +211,14 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
             </div>
           </Section>
 
+          {/* Edit instructions (Luma-form fields): owner/admin set them, the
+              editor reads them. Sits above the script — the spec before the words. */}
+          <EditInstructionsCard
+            projectId={project.id}
+            spec={project.editSpec ? JSON.parse(project.editSpec) : {}}
+            canEdit={isOwnerAdmin}
+          />
+
           {/* The locked script — READ-ONLY, straight from Script Studio (the
               API/webhook sync owns these fields; scripts are never written in
               the hub). The editor pastes overlay text from here — re-typing is
@@ -227,11 +236,15 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
                 />
               ) : (
                 <div className="rounded-2xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-foreground/85">
-                  <span className="font-semibold">No script on file yet.</span> Scripts are written in Script Studio
-                  and sync here automatically — use the Script Studio card below to link the job or pull the latest.
+                  <span className="font-semibold">No script on file yet.</span>{" "}
+                  {isOwnerAdmin
+                    ? "Scripts are written in Script Studio and sync here automatically — use the Script Studio card below to link the job or pull the latest."
+                    : "Check the script PDF in the project files folder, or ask in the chat."}
                 </div>
               )}
-              <ScriptStudioCard projectId={project.id} />
+              {/* Studio management is owner/admin-only — Jordan: "the editor can
+                  just view the script so they know the structure of the video". */}
+              {isOwnerAdmin && <ScriptStudioCard projectId={project.id} />}
             </>
           )}
 

@@ -167,7 +167,8 @@ export async function processFrameioEvent(
     const { editorForDeliverable } = await import("@/lib/editors");
     const { createHash } = await import("crypto");
     const v = project.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL") ?? project.deliverables[0];
-    const editorKey = editorForDeliverable(v?.type, v?.label, !!project.client?.socialClient);
+    const { editorRouting } = await import("@/lib/settings");
+    const editorKey = editorForDeliverable(v?.type, v?.label, !!project.client?.socialClient, await editorRouting());
     const eventId =
       (g(body, "resource", "id") as string) ||
       (body.id as string) ||

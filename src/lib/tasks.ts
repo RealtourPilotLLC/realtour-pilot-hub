@@ -1129,7 +1129,8 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
       const targets: import("@/lib/notify").NotifyTarget[] = [{ roles: ["ADMIN"] }, { roles: ["EDITOR"] }];
       let routedKey: string | null = null;
       if (v) {
-        const key = editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.deliverables));
+        const { editorRouting } = await import("@/lib/settings");
+        const key = editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.deliverables), await editorRouting());
         // Only in-house editors have a reachable channel; Luma (external) has no
         // bell/DM — its dispatch is the Kyle task below.
         if (key === "kim" || key === "john") {
@@ -1273,7 +1274,8 @@ export async function mintEditTask(projectId: string): Promise<void> {
   const isPremium = tier === "premium";
   // null = personal branding: deliberately unrouted (Jordan assigns by hand);
   // edit_video is in TRIAGE_TYPES so the unassigned task sits in "Needs assigning".
-  const assignedKey = editorForDeliverable(v.type, v.label, monthly); // "john" | null (+kyle/cubicasa for non-video)
+  const { editorRouting } = await import("@/lib/settings");
+  const assignedKey = editorForDeliverable(v.type, v.label, monthly, await editorRouting()); // per /settings rules; null = manual
   const editorName = assignedKey ? editorMeta(assignedKey)?.name ?? assignedKey : "manual assignment";
   const street = (p.title || "this job").split(",")[0].trim();
 
@@ -1406,7 +1408,8 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
   if (!manualTask) {
     try {
       const { editorForDeliverable, editorTeamMemberId } = await import("@/lib/editors");
-      const key = editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.deliverables));
+      const { editorRouting: er } = await import("@/lib/settings");
+      const key = editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.deliverables), await er());
       const tmId = await editorTeamMemberId(key);
       if (tmId && p.editorId !== tmId) {
         await prisma.project.update({ where: { id: projectId }, data: { editorId: tmId } });
