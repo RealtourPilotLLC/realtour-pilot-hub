@@ -1,34 +1,44 @@
 import { PageHeader } from "@/components/PageHeader";
-import { ProjectTracker } from "@/components/tracker/ProjectTracker";
-import { buildTrackerRows } from "@/lib/tracker";
-import { etAddDays } from "@/lib/datetime";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
 import { slugForName } from "@/lib/assignees";
 import { EditorDay } from "@/components/editing/EditorDay";
-import { VideoSlaPanel } from "@/components/editing/VideoSlaPanel";
-import { editorRouting } from "@/lib/settings";
 import { AddToQueue } from "@/components/editing/AddToQueue";
+import { SimpleQueue, type QueueRow } from "@/components/editing/SimpleQueue";
+import { editorRouting } from "@/lib/settings";
+import { editorForDeliverable, editorMeta } from "@/lib/editors";
+import { videoTier } from "@/lib/projectStatus";
+import { isMonthlyContentJob } from "@/lib/pipeline";
+import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
+import { etAddDays } from "@/lib/datetime";
 
 export const dynamic = "force-dynamic";
 
 // The Editor dashboard is VIDEO-ONLY — photos are edited by AI, so editors only
 // touch video/reel jobs.
-//   · EDITOR (Kim / Remar) → a guided personal worklist (EditorDay): their open
-//     edits + revisions sorted by SLA, plus the week's incoming shoots.
-//   · OWNER / ADMIN → the accountability view: a live Video-SLA panel (past-due
-//     jobs surfaced, one-click reassign) ABOVE the preserved tracker spreadsheet.
+//   · EDITOR (Kim / John Mark) → their guided personal worklist (EditorDay).
+//   · OWNER / ADMIN → the Slack-tracker view, rebuilt in-hub (Jordan: "make
+//     this editor queue as simple as possible … I really like the way we have
+//     it set up in Slack"): Queue | Upcoming edits | Delivered, one row per
+//     job. The old SLA-panel + tracker-spreadsheet stack is gone — per-job
+//     controls (reassign, review, chat) live on /edit/<id>.
+const STATUS_LABEL: Record<string, QueueRow["status"]> = {
+  SHOT: "Ready to edit",
+  EDITING: "In editing",
+  REVIEW: "In review",
+  REVISION: "Revisions",
+  DELIVERED: "Delivered",
+};
+
 export default async function EditorQueuePage() {
   const me = await getCurrentUser().catch(() => null);
   const editorScope = me?.role === "EDITOR" ? (me.editorKey || (me.name ? slugForName(me.name) : null)) : null;
 
-  // EDITOR: their own guided day, DB-scoped to their assignedKey.
   if (me?.role === "EDITOR" && editorScope) {
     return <EditorDay editorScope={editorScope} editorName={me.name ?? "there"} />;
   }
-  // An EDITOR whose login has no editorKey AND no name can't be scoped — that
-  // must NOT fall through to the owner/admin accountability view below (it
-  // carries every job + the add-to-queue control). Fail closed with a nudge.
+  // An EDITOR whose login has no editorKey AND no name can't be scoped — fail
+  // closed with a nudge, never fall through to the all-jobs view below.
   if (me?.role === "EDITOR") {
     return (
       <div>
@@ -41,55 +51,85 @@ export default async function EditorQueuePage() {
     );
   }
 
-  // OWNER / ADMIN: recently-delivered jobs power the "Delivered" tab (bounded to
-  // 60 days so the query stays small).
-  const deliveredCutoff = etAddDays(new Date(), -60);
-  const projects = await prisma.project.findMany({
+  const rules = await editorRouting();
+  const now = new Date();
+  const deliveredCutoff = etAddDays(now, -60);
+  const [inflight, scheduled, deliveredRaw] = await Promise.all([
+    prisma.project.findMany({
+      where: { status: { in: ["SHOT", "EDITING", "REVIEW", "REVISION"] } },
+      orderBy: [{ deliveryDue: { sort: "asc", nulls: "last" } }, { shootDate: { sort: "asc", nulls: "last" } }],
+      include: { client: true, editor: true, photographer: true, deliverables: true },
+    }),
+    // Upcoming edits — Jordan: "any shoot on the schedule upcoming should be in
+    // an upcoming edits tab". Every future-dated booked/scheduled job with a
+    // video deliverable, however far out.
+    prisma.project.findMany({
+      where: { status: { in: ["BOOKED", "SCHEDULED"] }, shootDate: { gte: now } },
+      orderBy: { shootDate: "asc" },
+      include: { client: true, editor: true, photographer: true, deliverables: true },
+    }),
+    prisma.project.findMany({
+      where: { status: "DELIVERED", deliveredAt: { gte: deliveredCutoff } },
+      orderBy: { deliveredAt: "desc" },
+      take: 60,
+      include: { client: true, editor: true, photographer: true, deliverables: true },
+    }),
+  ]);
+
+  // The truth about WHO has an in-flight edit is the open task's assignedKey
+  // (reassignments land there) — the routing rules only PREDICT for jobs with
+  // no task yet. Without this, every row showed the current rule's editor and
+  // misattributed Kim's and Luma's in-flight work to John Mark.
+  const openTasks = await prisma.smartTask.findMany({
     where: {
-      OR: [
-        { status: { in: ["SHOT", "EDITING", "REVIEW", "REVISION"] } },
-        { status: "DELIVERED", deliveredAt: { gte: deliveredCutoff } },
-      ],
+      projectId: { in: inflight.map((p) => p.id) },
+      taskType: { in: ["edit_video", "revision"] },
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
     },
-    orderBy: [{ deliveryDue: { sort: "asc", nulls: "last" } }, { shootDate: { sort: "asc", nulls: "last" } }],
-    include: { client: true, photographer: true, editor: true, deliverables: true },
+    select: { projectId: true, assignedKey: true },
   });
+  const taskEditor = new Map(openTasks.filter((t) => t.assignedKey).map((t) => [t.projectId!, t.assignedKey!]));
 
-  const rows = buildTrackerRows(projects).filter((r) => r.kind === "video");
-  const inProduction = rows.filter((r) => r.status !== "DELIVERED").length;
-  const waiting = rows.filter((r) => r.status === "SHOT").length;
+  type P = (typeof inflight)[number];
+  const hasVideo = (p: P) => p.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  const toRow = (p: P, upcoming = false): QueueRow => {
+    const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+    const monthly = isMonthlyContentJob(p.deliverables);
+    const tier: QueueRow["tier"] = monthly ? "branding" : videoTier(p.deliverables) === "premium" ? "premium" : "standard";
+    const assigned = taskEditor.get(p.id) ?? null;
+    const routeKey = assigned ?? editorForDeliverable(v?.type, v?.label, monthly, rules);
+    return {
+      id: p.id,
+      street: (p.addressLine || p.title.split(",")[0] || "Job").trim(),
+      client: p.client.name,
+      tier,
+      status: upcoming ? "Waiting" : STATUS_LABEL[p.status] ?? p.status,
+      editor: (assigned ? editorMeta(assigned)?.name ?? assigned : null) ?? p.editor?.name ?? (routeKey ? editorMeta(routeKey)?.name ?? routeKey : null),
+      auto: !assigned && !p.editor && !!routeKey,
+      dueISO: upcoming ? p.shootDate?.toISOString() ?? null : p.deliveryDue?.toISOString() ?? null,
+      late: !upcoming && p.status !== "DELIVERED" && !!p.deliveryDue && p.deliveryDue < now,
+      rawUrl: dropboxWebUrl(projectFolderPaths(p).rawVideo),
+      photographer: p.photographer?.name ?? null,
+    };
+  };
 
-  // SLA panel: only the in-flight (non-delivered) video jobs — a live countdown
-  // + reassign per row, past-due surfaced red.
-  const inflightVideo = projects.filter(
-    (p) => p.status !== "DELIVERED" && p.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL"),
-  );
+  const queue = inflight.filter(hasVideo).map((p) => toRow(p));
+  const upcoming = scheduled.filter(hasVideo).map((p) => toRow(p, true));
+  const delivered = deliveredRaw.filter(hasVideo).map((p) => toRow(p));
 
   return (
-    <div className="flex h-full flex-col">
+    <div>
       <PageHeader
         eyebrow="Video projects only"
         title="Editor Queue"
-        subtitle={`${inProduction} video job${inProduction === 1 ? "" : "s"} in production · ${waiting} ready to start`}
+        subtitle={`${queue.length} in the queue · ${upcoming.length} upcoming`}
       />
-      {/* Manual add — the human override for jobs the automatic handoff never
-          picks up (video added after booking, old footage, non-Aryeo work). */}
-      <div className="px-4 pt-4 sm:px-6">
+      <div className="mx-auto max-w-4xl space-y-4 p-4 pb-16 sm:p-6">
+        {/* Manual add — the human override for jobs the automatic handoff never
+            picks up (video added after booking, old footage, non-Aryeo work). */}
         <AddToQueue />
+        <SimpleQueue queue={queue} upcoming={upcoming} delivered={delivered} />
       </div>
-      {inflightVideo.length > 0 && (
-        <div className="px-4 pt-4 sm:px-6">
-          <VideoSlaPanel projects={inflightVideo} rules={await editorRouting()} />
-        </div>
-      )}
-      <ProjectTracker
-        rows={rows}
-        showBoards={false}
-        defaultStatus="editing"
-        assignee="editor"
-        hrefBase="/edit"
-        emptyLabel="No video jobs in production right now."
-      />
     </div>
   );
 }

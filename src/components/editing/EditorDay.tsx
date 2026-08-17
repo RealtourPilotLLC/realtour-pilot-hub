@@ -16,7 +16,7 @@ import { SendToReviewButton } from "./EditorActions";
 //   · DO NOW — their open edit_video + revision tasks, sorted by dueAt, each with
 //     a live SLA countdown + the three links they need (RAW / Brief / Frame.io)
 //     and the "Done — send to review" action.
-//   · UP NEXT — booked/scheduled shoots with a video deliverable in the next 7
+//   · UP NEXT — booked/scheduled shoots with a video deliverable coming up (60d
 //     days, so they see the week's load coming.
 // Creative-safe: NO money anywhere (they're creative tier).
 // `editorScope` is the caller's resolved editor key (me.editorKey || slug).
@@ -79,7 +79,7 @@ export async function EditorDay({ editorScope, editorName }: { editorScope: stri
   // next 7 days. Not scoped to the editor (a shoot has no editor yet — it hasn't
   // been shot), but filtered to video jobs whose route would be this editor, so
   // the VA sees their own incoming load, not the whole company's calendar.
-  const soon = etAddDays(new Date(), 7);
+  const soon = etAddDays(new Date(), 60); // Jordan: ANY upcoming shoot, not just the week
   const upcomingRaw = await prisma.project.findMany({
     where: {
       status: { in: ["BOOKED", "SCHEDULED"] },
@@ -187,7 +187,7 @@ export async function EditorDay({ editorScope, editorName }: { editorScope: stri
           )}
         </Section>
 
-        <Section icon={CalendarClock} title="Up next — this week" count={upNext.length || null}>
+        <Section icon={CalendarClock} title="Up next — on the schedule" count={upNext.length || null}>
           {upNext.length === 0 ? (
             <p className="text-sm text-muted">No video shoots booked for you in the next 7 days.</p>
           ) : (
