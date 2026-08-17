@@ -1271,8 +1271,10 @@ export async function mintEditTask(projectId: string): Promise<void> {
   const monthly = isMonthlyContentJob(p.deliverables);
   const tier = videoTier(p.deliverables); // standard | premium | null
   const isPremium = tier === "premium";
-  const assignedKey = editorForDeliverable(v.type, v.label, monthly); // kim | john | luma
-  const editorName = editorMeta(assignedKey)?.name ?? assignedKey;
+  // null = personal branding: deliberately unrouted (Jordan assigns by hand);
+  // edit_video is in TRIAGE_TYPES so the unassigned task sits in "Needs assigning".
+  const assignedKey = editorForDeliverable(v.type, v.label, monthly); // "john" | null (+kyle/cubicasa for non-video)
+  const editorName = assignedKey ? editorMeta(assignedKey)?.name ?? assignedKey : "manual assignment";
   const street = (p.title || "this job").split(",")[0].trim();
 
   // Video delivery-due = shootDate + the SAME SLA the status card uses, then a
@@ -1308,8 +1310,10 @@ export async function mintEditTask(projectId: string): Promise<void> {
       where: { id: existing.id },
       data: {
         // A human's editor choice (reassign / manual queue-add) outlives every
-        // automatic refresh — only route when nobody picked by hand.
-        ...(existing.assignedManually ? {} : { assignedKey }),
+        // automatic refresh — only route when nobody picked by hand. And the
+        // auto-router may IMPROVE a route but never STRIP one: a null route
+        // (personal branding) must not un-assign work someone already owns.
+        ...(existing.assignedManually || !assignedKey ? {} : { assignedKey }),
         dueAt,
         priority,
         summary: summary.slice(0, 500),
@@ -1322,7 +1326,9 @@ export async function mintEditTask(projectId: string): Promise<void> {
       taskType: "edit_video",
       title: `Edit — ${street}`.slice(0, 120),
       summary: summary.slice(0, 500),
-      reasonCreated: `Raws landed — ${tierLabel} reel routed to ${editorName}`,
+      reasonCreated: assignedKey
+        ? `Raws landed — ${tierLabel} reel routed to ${editorName}`
+        : `Raws landed — personal-branding reel, needs an editor assigned`,
       checklist: JSON.stringify([
         "Open the RAW video folder",
         "Read the brief (reel recipe, editing notes, brand)",

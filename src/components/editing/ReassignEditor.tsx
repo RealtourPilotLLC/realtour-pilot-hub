@@ -10,7 +10,6 @@ import { setEditVideoEditor } from "@/app/editing/actions";
 const VIDEO_EDITORS: { key: string; name: string }[] = [
   { key: "kim", name: "Kim" },
   { key: "john", name: "John Mark" },
-  { key: "luma", name: "Luma" },
 ];
 
 export function ReassignEditor({ projectId, current }: { projectId: string; current: string | null }) {

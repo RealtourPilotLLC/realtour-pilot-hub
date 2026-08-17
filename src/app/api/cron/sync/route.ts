@@ -65,10 +65,10 @@ export async function GET(req: NextRequest) {
   });
   // Ensure in-production video jobs have a Frame.io review project (covers raw
   // that skipped the in-app upload). No-op if Frame.io isn't connected.
-  await step("frameioProjects", async () => {
-    const { ensureFrameioProjectsForActiveVideoJobs } = await import("@/lib/integrations/frameio");
-    return ensureFrameioProjectsForActiveVideoJobs(5);
-  });
+  // frameioProjects step REMOVED Aug 14 2026 — Jordan: "we don't need Frame.io
+  // anymore", review runs through the in-hub Review Room ("just like how it is
+  // in the review room"). Existing frameioViewUrl links on old jobs still
+  // render; nothing new is created.
 
   // Persist this run (CronRun) + Slack-ping on a NEW failure/skip. Best-effort.
   await finish();

@@ -48,7 +48,8 @@ export function routeDeliverable(type: DeliverableType, label?: string | null): 
     case DeliverableType.VIDEO: {
       // Premium reels/video go to Luma; standard reels & Monthly content are in-house.
       const refined = refinedDeliverableLabel(type, label);
-      if (/premium/i.test(refined) || /premium/i.test(label ?? "")) return VENDOR_META.luma;
+      // Premium moved in-house Aug 2026 (John Mark) — Luma engagement ended.
+      if (/premium/i.test(refined) || /premium/i.test(label ?? "")) return VENDOR_META.in_house;
       return VENDOR_META.in_house;
     }
     case DeliverableType.MATTERPORT_3D:

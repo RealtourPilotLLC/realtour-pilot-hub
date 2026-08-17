@@ -59,7 +59,7 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
 // ---------------------------------------------------------------------------
 
 const QUEUE_STATUSES = ["SHOT", "EDITING", "REVIEW", "REVISION"];
-const VIDEO_EDITOR_KEYS: EditorKey[] = ["kim", "john", "luma"];
+const VIDEO_EDITOR_KEYS: EditorKey[] = ["kim", "john"];
 
 export type QueueCandidate = {
   id: string;
@@ -71,7 +71,7 @@ export type QueueCandidate = {
   hasVideo: boolean;
   inQueue: boolean; // already visible on the owner tracker (queue status + video)
   priorCut: boolean; // a cut already exists → the add rides the revision rail
-  suggestedEditor: EditorKey; // where the routing rules would send it
+  suggestedEditor: EditorKey | null; // where the routing rules would send it (null = manual, e.g. personal branding)
 };
 
 // Find projects to add — by street or client name. Owner/admin only.
@@ -151,7 +151,7 @@ export async function addToEditorQueue(
     return { ok: false, message: (e as Error).message };
   }
   if (!(VIDEO_EDITOR_KEYS as string[]).includes(editorKey)) {
-    return { ok: false, message: "Pick a video editor (Kim, John or Luma)." };
+    return { ok: false, message: "Pick a video editor (Kim or John Mark)." };
   }
   const key = editorKey as EditorKey;
 

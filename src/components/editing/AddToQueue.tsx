@@ -16,7 +16,7 @@ import { AutoTextarea } from "@/components/ui/AutoTextarea";
 // the routing rules would send it) → optional note → it's in the queue and the
 // editor gets pinged.
 
-const EDITOR_CHOICES: EditorKey[] = ["kim", "john", "luma"];
+const EDITOR_CHOICES: EditorKey[] = ["kim", "john"];
 
 const STATUS_CHIP: Record<string, string> = {
   BOOKED: "bg-surface-2 text-muted",
@@ -74,7 +74,7 @@ export function AddToQueue() {
 
   const pick = (c: QueueCandidate) => {
     setPicked(c);
-    setEditor(EDITOR_CHOICES.includes(c.suggestedEditor) ? c.suggestedEditor : "john");
+    setEditor(c.suggestedEditor && EDITOR_CHOICES.includes(c.suggestedEditor) ? c.suggestedEditor : "john");
     setErr(null);
     setDone(null);
   };

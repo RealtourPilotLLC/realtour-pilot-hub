@@ -64,7 +64,9 @@ export const EDITORS: Record<EditorKey, EditorMeta> = {
   // who never did it. He is absent from every picker and routing rule below, so
   // nothing new can land on him.
   remar: { key: "remar", name: "Remar", kind: "in_house", does: "standard reels + horizontal video (departed)", teamMemberName: "Remar", tz: "Asia/Manila", departed: true },
-  luma: { key: "luma", name: "Luma", kind: "external", does: "premium social reels" },
+  // Luma — engagement ENDED Aug 2026 (premium moved in-house to John Mark).
+  // Key retained so historical tasks/jobs still render; absent from all pickers.
+  luma: { key: "luma", name: "Luma", kind: "external", does: "premium social reels (no longer used)" },
   autohdr: { key: "autohdr", name: "AutoHDR", kind: "external", does: "AI photo editing" },
   cubicasa: { key: "cubicasa", name: "CubiCasa", kind: "external", does: "floor plans" },
 };
@@ -134,8 +136,8 @@ export function routeEditWork(text: string): EditorKey | null {
   if (/\bscript(ing|s)?\b|storyboard/.test(t)) return "creative_director";
 
   if (/floor ?plan/.test(t)) return "cubicasa";
-  // Premium / influencer social reels → Luma (external).
-  if (/(premium|influencer)/.test(t) && /(reel|video|social|bundle)/.test(t)) return "luma";
+  // Premium / influencer social reels → John Mark (Luma engagement ended Aug 2026).
+  if (/(premium|influencer)/.test(t) && /(reel|video|social|bundle)/.test(t)) return "john";
   // Personal-branding / monthly social, plus logo + animation work → Kim.
   if (/personal ?brand|\bbranding\b|monthly|social (media )?(content|post)|\blogo\b|animat/.test(t)) return "kim";
   // Standard reels + horizontal video → John (took this lane over from Remar).
@@ -147,15 +149,20 @@ export function routeEditWork(text: string): EditorKey | null {
 // Who edits a given deliverable (used to delegate a revision to the right person
 // by what's being revised). Mirrors vendors.ts production routing but resolves
 // in-house to the actual editor (John standard video, Kim social, Kyle QC).
-export function editorForDeliverable(type: string | null | undefined, label?: string | null, monthly = false): EditorKey {
+// Jordan, Aug 14 2026 (Luma engagement ended): "John gets standard reels,
+// premium, and we can manually assign John the personal branding reels."
+// So: every one-off video auto-routes to John Mark; monthly personal-branding
+// content returns NULL on purpose — it lands in "Needs assigning" and a human
+// picks the editor per batch. The old label heuristic (/monthly|brand|social/)
+// is gone with it: "Standard Social Media Reel" matches /social/, and the
+// heuristic was quietly routing one-off standard reels into the monthly lane.
+// isMonthlyContentJob(deliverables) is the real signal — trust only it.
+export function editorForDeliverable(type: string | null | undefined, label?: string | null, monthly = false): EditorKey | null {
   const t = (type || "").toUpperCase();
-  const premium = /premium|influencer/i.test(label ?? "");
   if (t === "FLOORPLAN") return "cubicasa";
   if (t === "SOCIAL_REEL" || t === "VIDEO") {
-    if (premium) return "luma";
-    // Monthly social-plan content (7–10 business-day turnaround) is Kim's.
-    if (monthly || /monthly|brand|social/i.test(label ?? "")) return "kim";
-    return "john";
+    if (monthly) return null; // personal branding — manual assignment, by design
+    return "john"; // standard AND premium
   }
   // Photos / drone / twilight / headshots / staging / 3D → Kyle handles the QC
   // + corrections in-house (AutoHDR does the base AI pass automatically).
