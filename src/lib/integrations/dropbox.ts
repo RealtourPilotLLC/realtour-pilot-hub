@@ -152,6 +152,19 @@ export async function dropboxCreateFolder(path: string): Promise<void> {
   }
 }
 
+// Move/rename a folder. Distinguishes "destination already exists" (returns
+// false — caller decides) from real failures (throws). Used by the folder
+// engine for reschedules (month changed) and cancellations (archive).
+export async function dropboxMoveFolder(fromPath: string, toPath: string): Promise<boolean> {
+  try {
+    await dbx("files/move_v2", { from_path: fromPath, to_path: toPath, autorename: false });
+    return true;
+  } catch (e) {
+    if (e instanceof DropboxError && /conflict/i.test(e.message)) return false;
+    throw e;
+  }
+}
+
 export async function dropboxListFolder(path: string): Promise<{ name: string; tag: string; path: string }[]> {
   type Page = { entries: { name: string; [".tag"]: string; path_display?: string }[]; has_more?: boolean; cursor?: string };
   // PAGINATED: a 400-raw shoot folder exceeds one page and used to be silently

@@ -27,6 +27,14 @@ export async function GET(req: NextRequest) {
   await step("orders", () => syncAryeoOrders({ full: false }));
   // Recent + future only, so the hourly run stays well under the time limit.
   await step("appointments", () => syncAryeoAppointments({ recentOnlyDays: 21 }));
+
+  // Dropbox folder creation — took over from the broken Zapier Zap (Aug 2026).
+  // Runs after appointments so a fresh booking's shootDate is already on the
+  // project, and before statuses so the evidence sweep finds the folders.
+  await step("dropboxFolders", async () => {
+    const { ensureFoldersForUpcomingShoots } = await import("@/lib/dropboxFolders");
+    return ensureFoldersForUpcomingShoots();
+  });
   // Re-evaluate project statuses (Aryeo has no media-upload webhook, so this is
   // how a shoot's media gets detected → SHOT/REVIEW) and (re)generate the QC /
   // delivery tasks for active jobs. Bounded to the active set, so it stays cheap.

@@ -228,6 +228,16 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
         }
         try { await restatusProject(appt.projectId); } catch { /* non-fatal */ }
         await retaskProject(appt.projectId);
+        // Dropbox folders the moment the booking lands (took over from the
+        // broken Zapier Zap) — the hourly sweep is the net if this misses.
+        try {
+          const { ensureProjectFolders } = await import("@/lib/dropboxFolders");
+          const proj = await prisma.project.findUnique({
+            where: { id: appt.projectId },
+            select: { id: true, title: true, addressLine: true, shootDate: true, createdAt: true, status: true, dropboxFolder: true, client: { select: { name: true } } },
+          });
+          if (proj) await ensureProjectFolders(proj); // handles create, reschedule-move, AND cancel-archive
+        } catch { /* non-fatal — hourly sweep covers it */ }
       }
     }
     return;

@@ -423,6 +423,12 @@ model Project {
   // (expected vs present deliverables, Aryeo media counts, Dropbox files,
   // missing items, fulfillment mismatch) + when it was last cross-checked.
   statusEvidence  String?
+  // Where this job's Dropbox listing folder actually IS. Written by the folder
+  // engine (src/lib/dropboxFolders.ts) when it creates or moves the folder —
+  // the Zap could never handle reschedules because nothing remembered the old
+  // path; this is that memory. Null = engine hasn't touched it (pre-Aug-2026
+  // jobs, or Dropbox disconnected).
+  dropboxFolder   String?
   statusCheckedAt DateTime?
 
   // Comms cross-check: set when a client communication (text/call/email) on a

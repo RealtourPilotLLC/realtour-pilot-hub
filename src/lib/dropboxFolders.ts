@@ -1,7 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
-import { dropboxListFolder, dropboxConfigured, DropboxError } from "@/lib/integrations/dropbox";
+import { dropboxCreateFolder, dropboxListFolder, dropboxMoveFolder, dropboxConfigured, DropboxError } from "@/lib/integrations/dropbox";
 import { getSecret } from "@/lib/integrations/connections";
 import { generateTasksForActiveProjects } from "@/lib/tasks";
 
@@ -65,6 +65,145 @@ export function projectFolderPaths(p: FolderProject): ProjectFolders {
     finalPhotos: `${base}/04-Final-Photos`,
     finalVideo: `${base}/05-Final-Video`,
   };
+}
+
+// ---------------------------------------------------------------------------
+// FOLDER ENGINE — the hub took this over from Zapier (Aug 2026, the Zap broke
+// and new bookings stopped getting folders; the backfill sweep found ELEVEN
+// upcoming shoots with no folder). Jordan's ask, beyond what the Zap did:
+// "it doesn't change the folder location when it's rescheduled or canceled."
+//
+// So the engine has three moves, and Project.dropboxFolder is its memory —
+// the Zap could never handle reschedules because nothing remembered where the
+// folder was put:
+//   CREATE   no folder anywhere → listing + the four numbered subfolders
+//   MOVE     stored path ≠ path computed from the CURRENT shoot date (a
+//            reschedule crossed a month/quarter/year) → files/move_v2, files
+//            ride along
+//   ARCHIVE  job cancelled with a folder → move under /AutoHDR/Canceled/{Year}/
+//            — never delete; a cancelled shoot can carry uploaded raws
+//
+// Triggers: the Aryeo webhook's APPOINTMENT branch (seconds after booking /
+// reschedule / cancel) + the hourly cron sweep as the net. Idempotent at every
+// layer: create swallows conflicts, move refuses to clobber an existing
+// destination (returns "conflict" and leaves both for a human), archive skips
+// anything already under /Canceled/.
+// ---------------------------------------------------------------------------
+
+const SUBFOLDERS: (keyof ProjectFolders)[] = ["rawPhotos", "rawVideo", "finalPhotos", "finalVideo"];
+
+export type EnsureResult = "created" | "repaired" | "exists" | "moved" | "archived" | "conflict" | "skipped";
+
+type EnsureProject = FolderProject & { id: string; status: string; dropboxFolder: string | null };
+
+async function listingSubfolders(path: string): Promise<Set<string> | null> {
+  try {
+    return new Set((await dropboxListFolder(path)).filter((e) => e.tag === "folder").map((e) => e.name));
+  } catch (e) {
+    if (e instanceof DropboxError && /not_found|path_lookup/i.test(e.message)) return null;
+    throw e; // auth/rate-limit — the caller must not mistake this for "absent"
+  }
+}
+
+async function rememberPath(projectId: string, path: string, note?: string): Promise<void> {
+  await prisma.project.update({ where: { id: projectId }, data: { dropboxFolder: path } });
+  if (note) {
+    await prisma.activity.create({ data: { projectId, type: "SYSTEM", body: note } }).catch(() => {});
+  }
+}
+
+// Make sure ONE project's Dropbox presence matches reality. Verified against
+// the live Dropbox before building: the Zap's actual output is exactly
+// 01-RAW-Photos / 02-RAW-Video / 04-Final-Photos / 05-Final-Video (no 03 —
+// the numbering gap is real, don't "fix" it).
+export async function ensureProjectFolders(p: EnsureProject): Promise<EnsureResult> {
+  if (!dropboxConfigured() || !(await getSecret("dropbox"))) return "skipped";
+
+  // CANCELLED → archive the folder if we know where it is (or can compute it).
+  if (p.status === "CANCELLED") {
+    const from = p.dropboxFolder ?? (p.shootDate ? projectFolderPaths(p).listing : null);
+    if (!from || from.includes("/Canceled/")) return "skipped"; // nothing to do / already archived
+    if ((await listingSubfolders(from)) === null) return "skipped"; // no folder exists — nothing to archive
+    const year = from.match(/^\/AutoHDR\/(\d{4})\//)?.[1] ?? "0000";
+    const to = `/AutoHDR/Canceled/${year}/${from.split("/").pop()}`;
+    const ok = await dropboxMoveFolder(from, to);
+    await rememberPath(p.id, ok ? to : from, ok ? `Dropbox folder archived (job cancelled): ${to}` : undefined);
+    return ok ? "archived" : "conflict";
+  }
+
+  // No shoot date yet → the path (year/quarter/month) isn't knowable. The
+  // webhook/sweep runs again once the appointment lands.
+  if (!p.shootDate) return "skipped";
+
+  const f = projectFolderPaths(p);
+
+  // RESCHEDULE — we know where the folder was, and it isn't where the current
+  // shoot date says it should be. Move it (files ride along), then fall
+  // through to verify the subfolders at the new location.
+  if (p.dropboxFolder && p.dropboxFolder !== f.listing && !p.dropboxFolder.includes("/Canceled/")) {
+    const oldExists = (await listingSubfolders(p.dropboxFolder)) !== null;
+    if (oldExists) {
+      const ok = await dropboxMoveFolder(p.dropboxFolder, f.listing);
+      if (!ok) return "conflict"; // both old and new exist — a human must merge; do NOT clobber
+      await rememberPath(p.id, f.listing, `Dropbox folder moved (reschedule): ${p.dropboxFolder} → ${f.listing}`);
+      return "moved";
+    }
+    // Old location is gone (someone moved it by hand) — treat as fresh below.
+  }
+
+  const existing = await listingSubfolders(f.listing);
+  if (existing) {
+    const missing = SUBFOLDERS.filter((k) => !existing.has(f[k].split("/").pop()!));
+    for (const k of missing) await dropboxCreateFolder(f[k]);
+    if (p.dropboxFolder !== f.listing) await rememberPath(p.id, f.listing);
+    return missing.length ? "repaired" : "exists";
+  }
+
+  await dropboxCreateFolder(f.listing);
+  for (const k of SUBFOLDERS) await dropboxCreateFolder(f[k]);
+  await rememberPath(p.id, f.listing, `Dropbox folders created: ${f.listing}`);
+  return "created";
+}
+
+const ENSURE_SELECT = {
+  id: true, title: true, addressLine: true, shootDate: true, createdAt: true,
+  status: true, dropboxFolder: true, client: { select: { name: true } },
+} as const;
+
+// The hourly net: upcoming shoots get created/moved, freshly-cancelled jobs
+// with a known folder get archived. One list call per project; sequential so
+// a burst of bookings can't trip Dropbox rate limits.
+export async function ensureFoldersForUpcomingShoots(): Promise<{
+  checked: number; created: number; moved: number; archived: number; repaired: number; conflicts: string[]; failed: string[];
+}> {
+  const out = { checked: 0, created: 0, moved: 0, archived: 0, repaired: 0, conflicts: [] as string[], failed: [] as string[] };
+  if (!dropboxConfigured() || !(await getSecret("dropbox"))) return out;
+  const windowStart = new Date(Date.now() - 86_400_000);
+  const [upcoming, cancelled] = await Promise.all([
+    prisma.project.findMany({
+      where: { shootDate: { gte: windowStart, lte: new Date(Date.now() + 60 * 86_400_000) }, status: { notIn: ["CANCELLED"] } },
+      orderBy: { shootDate: "asc" }, take: 80, select: ENSURE_SELECT,
+    }),
+    // Cancelled jobs whose folder we created/tracked and haven't archived yet.
+    prisma.project.findMany({
+      where: { status: "CANCELLED", dropboxFolder: { not: null, notIn: [] } },
+      take: 20, select: ENSURE_SELECT,
+    }).then((rows) => rows.filter((r) => r.dropboxFolder && !r.dropboxFolder.includes("/Canceled/"))),
+  ]);
+  for (const p of [...upcoming, ...cancelled]) {
+    out.checked++;
+    try {
+      const r = await ensureProjectFolders(p);
+      if (r === "created") out.created++;
+      if (r === "moved") out.moved++;
+      if (r === "archived") out.archived++;
+      if (r === "repaired") out.repaired++;
+      if (r === "conflict") out.conflicts.push(p.title.split(",")[0]);
+    } catch {
+      out.failed.push(p.title.split(",")[0]);
+    }
+  }
+  return out;
 }
 
 // A missing folder is a trustworthy ZERO (nothing was uploaded there). Any
