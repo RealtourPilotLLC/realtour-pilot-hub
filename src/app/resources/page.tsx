@@ -1,4 +1,6 @@
+import Link from "next/link";
 import {
+  Clapperboard,
   ExternalLink,
   Phone,
   Calendar,
@@ -99,6 +101,25 @@ export default async function ResourcesPage() {
         subtitle={creative ? "How we shoot, edit, and deliver — the standards for every job" : "Links, tools, and standard operating procedures for the team"}
       />
       <div className="space-y-8 p-6">
+        {/* Pinned: the Video Style Guide — every role sees this card (it's the
+            one reference page the editors live by, and photographers/admin
+            benefit from knowing the bar too). */}
+        <Link
+          href="/resources/video-styles"
+          className="flex items-center gap-3 rounded-2xl border border-border bg-surface p-4 transition hover:border-brand"
+        >
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-brand/15 text-brand">
+            <Clapperboard className="size-5" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-semibold">Video Style Guide</span>
+            <span className="block text-xs text-muted">
+              Every video type we edit — style specs, linked examples, edit-time budgets and turnarounds
+            </span>
+          </span>
+          <ExternalLink className="size-4 shrink-0 text-muted-2" />
+        </Link>
+
         {/* Booking forms (live from Aryeo) */}
         {forms.length > 0 && (
           <section className="space-y-3">
