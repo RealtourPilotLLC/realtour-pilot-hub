@@ -3,7 +3,8 @@
 import { requireAdmin } from "@/lib/auth/guards";
 
 import { prisma } from "@/lib/prisma";
-import { OpenPhone, defaultOpenPhoneNumber, defaultOpenPhoneNumberId, phoneKey, conversationThread, recentOpenPhoneConversations } from "@/lib/integrations/openphone";
+import { OpenPhone, defaultOpenPhoneNumber, defaultOpenPhoneNumberId, phoneKey, recentOpenPhoneConversations } from "@/lib/integrations/openphone";
+import { loadConversation } from "@/lib/commsThread";
 import { resolveParticipants } from "@/lib/queries";
 import { closeReplyForOutbound } from "@/lib/tasks";
 import type { ChatItem, ConvoClient, ChatMember } from "@/components/comms/ConversationView";
@@ -95,19 +96,10 @@ export async function loadThreadItems(
   if (!numId) return { ok: false, message: "OpenPhone isn't connected." };
   const parts = participantsCsv.split(",").map((s) => s.trim()).filter(Boolean);
   if (parts.length === 0) return { ok: false, message: "No recipients." };
-  try {
-    const thread = await conversationThread(numId, parts);
-    const items: ChatItem[] = thread.reverse().map((t) => ({
-      kind: t.kind, id: t.id, at: t.at, direction: t.direction,
-      text: t.kind === "message" ? t.text : undefined,
-      from: t.kind === "message" ? t.from : undefined,
-      duration: t.kind === "call" ? t.duration : undefined,
-      status: t.kind === "call" ? t.status : undefined,
-    }));
-    return { ok: true, message: "ok", items };
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message : "Couldn't load the conversation." };
-  }
+  const { items, note } = await loadConversation(numId, parts);
+  // Nothing live AND nothing saved → report the failure rather than an empty room.
+  if (note && items.length === 0) return { ok: false, message: note };
+  return { ok: true, message: note ?? "ok", items };
 }
 
 // Load a client's live OpenPhone thread + header info, for the embedded chat on
@@ -126,19 +118,9 @@ export async function loadClientThread(
   const numId = await defaultOpenPhoneNumberId();
   if (!numId) return { ok: false, message: "OpenPhone isn't connected." };
 
-  let items: ChatItem[] = [];
-  try {
-    const thread = await conversationThread(numId, `+1${k}`);
-    items = thread.reverse().map((t) => ({
-      kind: t.kind, id: t.id, at: t.at, direction: t.direction,
-      text: t.kind === "message" ? t.text : undefined,
-      duration: t.kind === "call" ? t.duration : undefined,
-      status: t.kind === "call" ? t.status : undefined,
-    }));
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message : "Couldn't load the conversation." };
-  }
-  return { ok: true, message: "ok", toPhone: `+1${k}`, items, client: c };
+  const { items, note } = await loadConversation(numId, [`+1${k}`]);
+  if (note && items.length === 0) return { ok: false, message: note };
+  return { ok: true, message: note ?? "ok", toPhone: `+1${k}`, items, client: c };
 }
 
 // Send a text/MMS in a conversation. Human-initiated (a person clicks Send).

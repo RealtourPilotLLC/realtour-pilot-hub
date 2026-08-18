@@ -133,6 +133,23 @@ export interface OpTranscript {
 
 type Paged<T> = { data: T[]; nextPageToken?: string | null; totalItems?: number };
 
+// Follow nextPageToken until the list runs out (or `cap` rows / 10 pages, so a
+// pathological thread can't stall a request). Errors propagate — callers decide
+// what a failure means.
+async function pageAll<T>(path: string, query: Query, cap: number): Promise<T[]> {
+  const out: T[] = [];
+  let pageToken: string | undefined;
+  for (let page = 0; page < 10; page++) {
+    const r = await openphoneRequest<Paged<T>>(path, {
+      query: { ...query, maxResults: 100, ...(pageToken ? { pageToken } : {}) },
+    });
+    out.push(...(r.data ?? []));
+    pageToken = r.nextPageToken ?? undefined;
+    if (!pageToken || out.length >= cap) break;
+  }
+  return out;
+}
+
 export const OpenPhone = {
   request: openphoneRequest,
   phoneNumbers: () => openphoneRequest<Paged<OpPhoneNumber>>("/phone-numbers").then((r) => r.data ?? []),
@@ -141,15 +158,17 @@ export const OpenPhone = {
   conversations: (q?: Query) => openphoneRequest<Paged<OpConversation>>("/conversations", { query: q }),
   callTranscript: (callId: string) =>
     openphoneRequest<{ data: OpTranscript }>(`/call-transcripts/${callId}`).then((r) => r.data),
-  // NB: OpenPhone wants the participants as the array param `participants[]`.
-  messages: (phoneNumberId: string, participants: string[], maxResults = 30) =>
-    openphoneRequest<Paged<OpMessage>>("/messages", {
-      query: { phoneNumberId, "participants[]": participants, maxResults },
-    }).then((r) => r.data ?? []),
-  calls: (phoneNumberId: string, participants: string[], maxResults = 30) =>
-    openphoneRequest<Paged<OpCall>>("/calls", {
-      query: { phoneNumberId, "participants[]": participants, maxResults },
-    }).then((r) => r.data ?? []),
+  // NB: the participants filter is the plain key `participants`, REPEATED once
+  // per number — NOT `participants[]`. The bracketed form is rejected with
+  // "/participants: Expected array" (400), and because the old thread loader
+  // swallowed that error, every conversation in the inbox rendered as "No
+  // messages yet" instead of the real texts (Aug 18: Janice Pigga's thread).
+  // Both endpoints page (100/page) so a long thread loads in full, not just
+  // its newest 30.
+  messages: (phoneNumberId: string, participants: string[], cap = 300) =>
+    pageAll<OpMessage>("/messages", { phoneNumberId, participants }, cap),
+  calls: (phoneNumberId: string, participants: string[], cap = 100) =>
+    pageAll<OpCall>("/calls", { phoneNumberId, participants }, cap),
   // Send an SMS/MMS. `from` is one of our OpenPhone numbers (E.164). CLIENT
   // texts are human-initiated only (a person clicks Send) — never auto-sent.
   // Sole automated caller: the internal TEAM SMS bridge in notify.ts, which
@@ -339,8 +358,12 @@ export async function conversationThread(
   participant: string | string[],
 ): Promise<ThreadItem[]> {
   const participants = Array.isArray(participant) ? participant : [participant];
+  // The MESSAGES error propagates on purpose: texts are the thread, and a
+  // swallowed failure here reads to the user as "this client never wrote us"
+  // — which is how a broken query param went unnoticed. Calls stay
+  // best-effort; a missing call log shouldn't blank out the texts.
   const [msgs, calls] = await Promise.all([
-    OpenPhone.messages(phoneNumberId, participants).catch(() => [] as OpMessage[]),
+    OpenPhone.messages(phoneNumberId, participants),
     OpenPhone.calls(phoneNumberId, participants).catch(() => [] as OpCall[]),
   ]);
   const items: ThreadItem[] = [

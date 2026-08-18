@@ -1,6 +1,6 @@
 import { BackLink } from "@/components/ui/BackLink";
 import { getSecret } from "@/lib/integrations/connections";
-import { conversationThread } from "@/lib/integrations/openphone";
+import { loadConversation } from "@/lib/commsThread";
 import { getConversationContext, resolveParticipants } from "@/lib/queries";
 import { ConversationView, type ChatItem } from "@/components/comms/ConversationView";
 
@@ -24,21 +24,14 @@ export default async function ThreadPage({
   const connected = !!(await getSecret("openphone"));
   let items: ChatItem[] = [];
   let error: string | null = null;
+  let note: string | null = null;
   if (!connected) error = "OpenPhone is not connected.";
   else if (pn && participants.length) {
-    try {
-      // conversationThread returns newest-first; reverse to oldest→newest (chat order).
-      const thread = await conversationThread(pn, participants);
-      items = thread.reverse().map((t) => ({
-        kind: t.kind, id: t.id, at: t.at, direction: t.direction,
-        text: t.kind === "message" ? t.text : undefined,
-        from: t.kind === "message" ? t.from : undefined,
-        duration: t.kind === "call" ? t.duration : undefined,
-        status: t.kind === "call" ? t.status : undefined,
-      }));
-    } catch (e) {
-      error = e instanceof Error ? e.message : "Could not load this conversation.";
-    }
+    // Live thread, backed by our own logged texts — a provider hiccup shows the
+    // saved history with a banner instead of an empty "No messages yet."
+    const loaded = await loadConversation(pn, participants);
+    items = loaded.items;
+    note = loaded.note;
   } else error = "Missing conversation details.";
 
   const members = isGroup ? await resolveParticipants(participants) : [];
@@ -57,6 +50,7 @@ export default async function ThreadPage({
           toPhone={participants.join(",")}
           title={title}
           items={items}
+          note={note}
           client={ctx.client}
           members={isGroup ? members : undefined}
           projects={ctx.projects.map((pr) => ({ ...pr, shootDate: pr.shootDate ? pr.shootDate.toISOString() : null }))}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { Fragment, useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import {
   Send, Paperclip, Sparkles, Loader2, Phone, PhoneMissed, X, Building2, Mail, Image as ImageIcon,
@@ -40,13 +40,27 @@ function fmtTime(iso: string): string {
   return new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 function isOut(d?: string) { return (d || "").toLowerCase().startsWith("out"); }
+// ET calendar day, so the separators match the day the message actually landed.
+function dayKey(iso: string): string {
+  if (!iso) return "";
+  return new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York" });
+}
+function dayLabel(iso: string): string {
+  const key = dayKey(iso);
+  const today = dayKey(new Date().toISOString());
+  const yest = dayKey(new Date(Date.now() - 86_400_000).toISOString());
+  if (key === today) return "Today";
+  if (key === yest) return "Yesterday";
+  return new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", year: "numeric" });
+}
 
 // The reusable chat box (header + bottom-up messages + composer). Used on both
 // the Communications page and embedded on the client detail page.
 export function ChatPanel({
-  toPhone, title, items, client, members, heightClass = "h-[calc(100vh-9rem)]",
+  toPhone, title, items, client, members, banner, heightClass = "h-[calc(100vh-9rem)]",
 }: {
-  toPhone: string; title: string; items: ChatItem[]; client: ConvoClient; members?: ChatMember[]; heightClass?: string;
+  toPhone: string; title: string; items: ChatItem[]; client: ConvoClient; members?: ChatMember[];
+  banner?: string | null; heightClass?: string;
 }) {
   const isGroup = !!members && members.length > 1;
   const nameByKey = new Map((members ?? []).map((m) => [m.key, m.name]));
@@ -100,24 +114,41 @@ export function ChatPanel({
         </div>
       </div>
 
+      {banner && (
+        <div className="border-b border-border bg-warning-soft px-4 py-2 text-[11px] text-warning">{banner}</div>
+      )}
+
       <div className="flex-1 space-y-2.5 overflow-y-auto scroll-thin px-4 py-4">
         {msgs.length === 0 && <p className="text-center text-sm text-muted">No messages yet.</p>}
-        {msgs.map((it) => {
+        {msgs.map((it, i) => {
           const out = isOut(it.direction);
+          // Date separator whenever the calendar day changes, so a months-long
+          // thread reads like a normal texting app instead of one wall.
+          const newDay = i === 0 || dayKey(it.at) !== dayKey(msgs[i - 1].at);
+          const daySep = newDay ? (
+            <div key={`d-${it.id}`} className="flex justify-center pt-1">
+              <span className="rounded-full bg-surface-2 px-2.5 py-0.5 text-[10px] font-medium text-muted-2">{dayLabel(it.at)}</span>
+            </div>
+          ) : null;
           if (it.kind === "call") {
             const missed = /missed|no-answer|declined/i.test(it.status || "");
             return (
-              <div key={it.id} className="flex justify-center">
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-surface-2 px-2.5 py-1 text-[11px] text-muted">
-                  {missed ? <PhoneMissed className="size-3 text-danger" /> : <Phone className="size-3" />}
-                  {out ? "Outgoing" : "Incoming"} call{it.duration ? ` · ${Math.round(it.duration / 60)}m` : ""} · {fmtTime(it.at)}
-                </span>
-              </div>
+              <Fragment key={it.id}>
+                {daySep}
+                <div className="flex justify-center">
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-surface-2 px-2.5 py-1 text-[11px] text-muted">
+                    {missed ? <PhoneMissed className="size-3 text-danger" /> : <Phone className="size-3" />}
+                    {out ? "Outgoing" : "Incoming"} call{it.duration ? ` · ${Math.round(it.duration / 60)}m` : ""} · {fmtTime(it.at)}
+                  </span>
+                </div>
+              </Fragment>
             );
           }
           const senderName = isGroup && !out ? (nameByKey.get(phoneKey10(it.from)) ?? null) : null;
           return (
-            <div key={it.id} className={cn("flex", out ? "justify-end" : "justify-start")}>
+            <Fragment key={it.id}>
+            {daySep}
+            <div className={cn("flex", out ? "justify-end" : "justify-start")}>
               <div className={cn("max-w-[80%] rounded-2xl px-3 py-2 text-sm", out ? "rounded-br-sm bg-brand text-white" : "rounded-bl-sm bg-surface-2 text-foreground")}>
                 {senderName && <div className="mb-0.5 text-[11px] font-semibold text-brand">{senderName}</div>}
                 {it.media?.map((m, i) => (
@@ -128,6 +159,7 @@ export function ChatPanel({
                 <div className={cn("mt-1 text-[10px]", out ? "text-white/70" : "text-muted-2")}>{fmtTime(it.at)}</div>
               </div>
             </div>
+            </Fragment>
           );
         })}
         <div ref={endRef} />
@@ -181,16 +213,17 @@ export function ChatPanel({
 
 // Full Communications conversation page: chat + a Details/Activity sidebar.
 export function ConversationView({
-  toPhone, title, items, client, projects, activities, members,
+  toPhone, title, items, client, projects, activities, members, note,
 }: {
   toPhone: string; title: string; items: ChatItem[];
   client: ConvoClient; projects: ConvoProject[]; activities: ConvoActivity[]; members?: ChatMember[];
+  note?: string | null;
 }) {
   const [tab, setTab] = useState<"details" | "activity">("details");
   const isGroup = !!members && members.length > 1;
   return (
     <div className="grid gap-4 p-4 sm:p-6 lg:grid-cols-[1fr_340px]">
-      <ChatPanel toPhone={toPhone} title={title} items={items} client={client} members={members} />
+      <ChatPanel toPhone={toPhone} title={title} items={items} client={client} members={members} banner={note} />
       <div className="space-y-4">
         <div className="rounded-2xl border bg-surface">
           <div className="flex border-b border-border text-sm">
