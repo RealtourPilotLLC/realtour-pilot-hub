@@ -62,7 +62,31 @@ async function accessTokenFrom(refreshToken: string): Promise<string> {
 }
 
 // Load a valid access token using the stored refresh token.
+// Access tokens live ~4h; minting one per API call meant every page that
+// touches several files paid a full OAuth grant (Neon secret read + POST
+// /oauth2/token) PER CALL — ~40 parallel grants on an asset-heavy render
+// (adversarial review). Cache per lambda for 10 minutes.
+let tokenCache: { token: string; at: number } | null = null;
+let tokenInflight: Promise<string> | null = null;
+const TOKEN_TTL = 10 * 60_000;
+
 export async function dropboxAccessToken(): Promise<string> {
+  if (tokenCache && Date.now() - tokenCache.at < TOKEN_TTL) return tokenCache.token;
+  // Single-flight: a burst of parallel calls shares ONE grant.
+  if (!tokenInflight) {
+    tokenInflight = mintAccessToken()
+      .then((token) => {
+        tokenCache = { token, at: Date.now() };
+        return token;
+      })
+      .finally(() => {
+        tokenInflight = null;
+      });
+  }
+  return tokenInflight;
+}
+
+async function mintAccessToken(): Promise<string> {
   const refreshToken = await getSecret("dropbox");
   if (!refreshToken) throw new DropboxError("Dropbox is not connected.", 401);
   return accessTokenFrom(refreshToken);

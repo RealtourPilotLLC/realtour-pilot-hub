@@ -28,6 +28,7 @@ export type QueueSubmission = {
   status: string;
   submittedByName: string | null;
   note: string | null;
+  fileName: string | null; // labels the row when a project has several cuts in flight
   hasAsset: boolean;
   createdAt: string;
   decidedAt: string | null;
@@ -96,7 +97,9 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
     }),
     prisma.mediaNote.groupBy({
       by: ["projectId", "lane", "status"],
-      where: { parentId: null, status: { in: ["OPEN", "FIXED"] } },
+      // Editor-authored notes are context for the reviewer, not owed fixes —
+      // they must not inflate "open notes" badges or the follow-up tallies.
+      where: { parentId: null, status: { in: ["OPEN", "FIXED"] }, NOT: { authorKey: { startsWith: "editor:" } } },
       _count: true,
     }),
     // Thread replies on still-live roots — a creative's "which bathroom do you
@@ -132,20 +135,24 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
     status: s.status,
     submittedByName: s.submittedByName,
     note: s.note,
+    fileName: s.fileName,
     hasAsset: !!s.assetUrl,
     createdAt: s.createdAt.toISOString(),
     decidedAt: s.decidedAt ? s.decidedAt.toISOString() : null,
     openEditorNotes: editorOpenByProject.get(s.projectId) ?? 0,
   });
 
-  // Only the LATEST round per project belongs in the queue lists — older rounds
-  // are history and live in the workspace timeline instead.
-  const latestByProject = new Map<string, (typeof subs)[number]>();
+  // Only the LATEST round per CUT belongs in the queue lists — older rounds
+  // are history and live in the workspace timeline instead. A cut = one file
+  // (assetPath): monthly packages send several videos one by one, and EACH
+  // pending video gets its own row so it can be reviewed individually.
+  const latestByCut = new Map<string, (typeof subs)[number]>();
   for (const s of subs) {
-    const cur = latestByProject.get(s.projectId);
-    if (!cur || s.round > cur.round) latestByProject.set(s.projectId, s);
+    const key = `${s.projectId}:${s.assetPath ?? s.id}`;
+    const cur = latestByCut.get(key);
+    if (!cur || s.round > cur.round) latestByCut.set(key, s);
   }
-  const latest = [...latestByProject.values()];
+  const latest = [...latestByCut.values()];
 
   // Unanswered creative replies: per thread, whoever spoke LAST holds the
   // floor — if that's not the owner, the owner owes an answer. Only live
@@ -212,6 +219,7 @@ export type CutSubmission = {
   round: number;
   status: string;
   assetUrl: string | null;
+  assetPath: string | null; // groups rounds of the SAME video (multi-cut jobs)
   fileName: string | null;
   note: string | null;
   submittedByKey: string | null;
@@ -285,7 +293,9 @@ export async function getEditorFeedback(projectId: string, editorKey: string | n
   }));
 }
 
-export async function getCutWorkspace(projectId: string): Promise<CutWorkspace | null> {
+// `cutId` opens a SPECIFIC submission (the queue's per-video rows link with
+// ?cut=<id>); omitted → the newest pending cut, else the newest round.
+export async function getCutWorkspace(projectId: string, cutId?: string | null): Promise<CutWorkspace | null> {
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: {
@@ -309,6 +319,7 @@ export async function getCutWorkspace(projectId: string): Promise<CutWorkspace |
     round: s.round,
     status: s.status,
     assetUrl: s.assetUrl,
+    assetPath: s.assetPath,
     fileName: s.fileName,
     note: s.note,
     submittedByKey: s.submittedByKey,
@@ -317,7 +328,11 @@ export async function getCutWorkspace(projectId: string): Promise<CutWorkspace |
     decidedAt: s.decidedAt ? s.decidedAt.toISOString() : null,
     decidedBy: s.decidedBy,
   }));
-  const active = submissions[0] ?? null;
+  const active =
+    (cutId ? submissions.find((s) => s.id === cutId) : null) ??
+    submissions.find((s) => s.status === "PENDING") ??
+    submissions[0] ??
+    null;
 
   // Notes for the active cut. Cuts with no minted link store notes under the
   // synthetic cut:<submissionId> asset key so feedback still threads correctly.

@@ -31,13 +31,18 @@ function CutRow({ s, decided }: { s: QueueSubmission; decided?: boolean }) {
   return (
     <li>
       <Link
-        href={`/review/${s.projectId}`}
+        // ?cut= opens THIS submission — a monthly package's videos each get
+        // their own row here and are reviewed one by one.
+        href={`/review/${s.projectId}?cut=${s.id}`}
         className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border bg-surface p-3.5 hover:border-brand/40"
       >
         <PlayCircle className="size-5 shrink-0 text-brand" />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate text-sm font-semibold">{s.street}</span>
+            {s.fileName && (
+              <span className="max-w-48 truncate rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] font-medium text-muted">{s.fileName}</span>
+            )}
             {s.premium && (
               <span className="rounded-md px-1.5 py-0.5 text-[11px] font-medium" style={{ backgroundColor: "#a78bfa1a", color: "#a78bfa" }}>
                 Premium

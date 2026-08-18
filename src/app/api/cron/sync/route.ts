@@ -35,6 +35,12 @@ export async function GET(req: NextRequest) {
     const { ensureFoldersForUpcomingShoots } = await import("@/lib/dropboxFolders");
     return ensureFoldersForUpcomingShoots();
   });
+  // Every client with a video order gets a brand-assets folder (logos,
+  // endcards) — feeds the Assets-available badge on /edit and /clients/assets.
+  await step("clientAssetFolders", async () => {
+    const { ensureVideoClientAssetFolders } = await import("@/lib/clientAssets");
+    return ensureVideoClientAssetFolders();
+  });
   // Re-evaluate project statuses (Aryeo has no media-upload webhook, so this is
   // how a shoot's media gets detected → SHOT/REVIEW) and (re)generate the QC /
   // delivery tasks for active jobs. Bounded to the active set, so it stays cheap.

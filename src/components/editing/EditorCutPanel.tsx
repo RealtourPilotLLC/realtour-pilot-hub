@@ -1,10 +1,17 @@
 "use client";
 
-import { useRef } from "react";
-import { Clapperboard, FolderOpen, ExternalLink } from "lucide-react";
+import { useRef, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
+import { Clapperboard, FolderOpen, ExternalLink, Loader2, MessageSquarePlus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { EditFeedback } from "@/components/editing/EditFeedback";
+import { addCutNote } from "@/app/review/actions";
 import type { CutNote } from "@/lib/reviewRoom";
+
+const fmtClock = (sec: number) => {
+  const s = Math.max(0, Math.floor(sec));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
 
 // ---------------------------------------------------------------------------
 // The EDITOR'S side of the in-hub review — Frame.io rebuilt to mirror the
@@ -25,6 +32,8 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
 };
 
 export function EditorCutPanel({
+  projectId,
+  submissionId,
   round,
   status,
   assetUrl,
@@ -34,6 +43,8 @@ export function EditorCutPanel({
   canFix,
   viewerName,
 }: {
+  projectId: string;
+  submissionId: string;
   round: number;
   status: string;
   assetUrl: string | null;
@@ -43,8 +54,16 @@ export function EditorCutPanel({
   canFix: boolean;
   viewerName?: string | null;
 }) {
+  const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
   const meta = STATUS_META[status] ?? { label: status, cls: "bg-surface-2 text-muted" };
+  // The editor's own note — Jordan: "I also want the video editor to be able
+  // to leave feedback." Captures the paused timestamp like the owner's desk.
+  const [composing, setComposing] = useState(false);
+  const [noteAt, setNoteAt] = useState<number | null>(null);
+  const [noteBody, setNoteBody] = useState("");
+  const [pending, start] = useTransition();
+  const [err, setErr] = useState<string | null>(null);
 
   const seek = (sec: number) => {
     const el = videoRef.current;
@@ -52,6 +71,28 @@ export function EditorCutPanel({
     el.currentTime = Math.max(0, sec);
     el.pause();
     el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  };
+
+  const startNote = () => {
+    const el = videoRef.current;
+    if (el) el.pause();
+    setNoteAt(el ? Math.round(el.currentTime * 10) / 10 : null);
+    setComposing(true);
+  };
+
+  const saveNote = () => {
+    const body = noteBody.trim();
+    if (!body || pending) return;
+    start(async () => {
+      setErr(null);
+      const r = await addCutNote({ projectId, submissionId, body, lane: "EDITOR", kind: "fix", timeSec: noteAt }).catch(() => ({ ok: false as const, message: "That didn't work — try again." }));
+      if (!r.ok) setErr(r.message ?? "That didn't work — try again.");
+      else {
+        setComposing(false);
+        setNoteBody("");
+        router.refresh();
+      }
+    });
   };
 
   return (
@@ -83,6 +124,45 @@ export function EditorCutPanel({
           </a>
           .
         </p>
+      )}
+
+      {canFix && (
+        <div className="border-b border-border px-4 py-2.5 sm:px-5">
+          {composing ? (
+            <div className="space-y-2">
+              <textarea
+                value={noteBody}
+                onChange={(e) => setNoteBody(e.target.value)}
+                rows={2}
+                autoFocus
+                placeholder={noteAt != null ? `Your note at ${fmtClock(noteAt)}…` : "Your note for the reviewer…"}
+                className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+              />
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={saveNote}
+                  disabled={pending || !noteBody.trim()}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                >
+                  {pending ? <Loader2 className="size-3.5 animate-spin" /> : <MessageSquarePlus className="size-3.5" />}
+                  {noteAt != null ? `Note at ${fmtClock(noteAt)}` : "Add note"}
+                </button>
+                <button onClick={() => setComposing(false)} className="text-xs font-medium text-muted hover:text-foreground">
+                  Cancel
+                </button>
+                {err && <span className="text-xs text-danger">{err}</span>}
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={startNote}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+            >
+              <MessageSquarePlus className="size-3.5" />
+              {assetUrl ? "Add a note at the current moment" : "Add a note for the reviewer"}
+            </button>
+          )}
+        </div>
       )}
 
       {notes.length > 0 ? (

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Building2, Mail, Phone, Sparkles } from "lucide-react";
+import { Building2, Mail, Palette, Phone, Sparkles } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
@@ -29,6 +29,16 @@ export default async function ClientsPage() {
       <PageHeader
         title="Clients"
         subtitle={`${clients.length} clients · grouped by segment`}
+        // Client Assets lives as a TAB here (Jordan: "client assets should be
+        // in the clients tab"), not its own nav item.
+        actions={
+          <Link
+            href="/clients/assets"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+          >
+            <Palette className="size-4 text-brand" /> Client Assets
+          </Link>
+        }
       />
       <div className="space-y-8 p-4 sm:p-6">
         {groups.map((g) => (

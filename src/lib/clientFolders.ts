@@ -5,10 +5,14 @@ import { dropboxWebUrl } from "@/lib/dropboxFolders";
 import { getSecret } from "@/lib/integrations/connections";
 
 // Per-client brand-assets folder convention. One home for each client's logo,
-// fonts, brand colors and any brand kit, so editors/photographers always know
+// endcards, fonts and any brand kit, so editors/photographers always know
 // where to look:
-//   /RealTour Pilot/Clients/<Client Name>/Brand Assets
-const CLIENTS_ROOT = "/RealTour Pilot/Clients";
+//   /AutoHDR/Client Assets/<Client Name>
+// Under /AutoHDR because that's the tree the Dropbox app can WRITE — the old
+// "/RealTour Pilot/Clients" root answered path/no_write_permission for every
+// create (verified live Aug 17), so no folder was ever actually made there.
+// Clients whose brandAssetsPath already points somewhere custom keep it.
+const CLIENTS_ROOT = "/AutoHDR/Client Assets";
 
 function safeName(name: string): string {
   // Dropbox disallows / \ : ? * " < > | — strip them, collapse whitespace.
@@ -16,7 +20,7 @@ function safeName(name: string): string {
 }
 
 export function brandFolderPath(clientName: string): string {
-  return `${CLIENTS_ROOT}/${safeName(clientName)}/Brand Assets`;
+  return `${CLIENTS_ROOT}/${safeName(clientName)}`;
 }
 
 export async function dropboxConnected(): Promise<boolean> {
@@ -39,8 +43,9 @@ export async function ensureClientBrandFolder(
 
   const path = client.brandAssetsPath || brandFolderPath(client.name);
   try {
-    // create_folder_v2 needs each level; create the parent client folder first.
-    await dropboxCreateFolder(`${CLIENTS_ROOT}/${safeName(client.name)}`);
+    // Only build the canonical parent when we're on the canonical path — a
+    // custom stored path must not spawn a stray empty canonical folder.
+    if (!client.brandAssetsPath) await dropboxCreateFolder(CLIENTS_ROOT);
     await dropboxCreateFolder(path);
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Could not create the folder." };

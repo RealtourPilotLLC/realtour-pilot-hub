@@ -552,6 +552,10 @@ const PRODUCT_DELIVERABLES_RAW: [string, DeliverableType[]][] = [
   ["STR Photography | Video | Drone Aerial Photos | Real Twilight", ["PHOTOS", "VIDEO", "DRONE", "TWILIGHT"]],
   // Bundles
   ["SILVER BUNDLE - Effortless Essentials for Everyday Listings", ["PHOTOS", "DRONE", "FLOORPLAN"]],
+  // Photos + drone photos + 2D floor plan, NO video — the keyword parser was
+  // minting a phantom VIDEO off an upsell mention in the description (Barb
+  // Matyszczak / 1066 Hackney Cir, Aug 17 — Jordan: "didn't have video").
+  ["Essentials Package", ["PHOTOS", "DRONE", "FLOORPLAN"]],
   ["AERIAL BUNDLE - Highlight Your Listing's Best Features", ["PHOTOS", "DRONE", "FLOORPLAN", "VIDEO"]],
   ["STR GOLD BUNDLE", ["PHOTOS", "VIDEO", "DRONE"]],
   ["STR PRO BUNDLE", ["PHOTOS", "VIDEO", "DRONE", "FLOORPLAN", "TWILIGHT"]],

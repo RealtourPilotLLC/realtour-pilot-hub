@@ -1,8 +1,11 @@
 import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import {
-  Film, FolderOpen, Palette, Clapperboard, MessageSquare, Star, ExternalLink, PenLine,
+  Film, FolderOpen, Palette, Clapperboard, MessageSquare, Star, ExternalLink, PenLine, PlayCircle,
 } from "lucide-react";
+import { VIDEO_TIER, videoTypeForDeliverable } from "@/lib/videoStyles";
+import { listClientAssets } from "@/lib/clientAssets";
+import { ClientAssetsCard } from "@/components/clients/ClientAssetsCard";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { getProject, getTeam } from "@/lib/queries";
@@ -22,7 +25,7 @@ import { EditFeedback } from "@/components/editing/EditFeedback";
 import { EditTracker, deriveEditStage, type RoundRow } from "@/components/editing/EditTracker";
 import { getEditorFeedback } from "@/lib/reviewRoom";
 import { slugForName } from "@/lib/assignees";
-import { refinedDeliverableLabel } from "@/lib/pipeline";
+import { refinedDeliverableLabel, isMonthlyContentJob } from "@/lib/pipeline";
 import { stripMoneySentences } from "@/lib/text";
 import { prisma } from "@/lib/prisma";
 import { ActivityType } from "@prisma/client";
@@ -34,8 +37,15 @@ export const dynamic = "force-dynamic";
 // the photographer's editing notes, the agent's branding/style profile, the edit
 // type, the RAW folder, the Frame.io project to upload finals to, and a per-job
 // message thread. Creative-safe (no pricing/financials).
-export default async function EditBriefPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function EditBriefPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ cut?: string }>;
+}) {
   const { id } = await params;
+  const { cut } = await searchParams;
 
   const viewer = await getCurrentUser();
   // Photographers get their own field view; everyone else (owner/admin/editor) sees this.
@@ -52,7 +62,7 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
     prisma.reviewSubmission.findMany({
       where: { projectId: id },
       orderBy: { round: "asc" },
-      select: { id: true, round: true, status: true, assetUrl: true, fileName: true, submittedByName: true, note: true, createdAt: true, decidedAt: true },
+      select: { id: true, round: true, status: true, assetUrl: true, assetPath: true, fileName: true, submittedByName: true, note: true, createdAt: true, decidedAt: true },
     }),
   ]);
   if (!project) notFound();
@@ -64,6 +74,9 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
   const editorScope =
     viewer?.role === "EDITOR" ? (viewer.editorKey || (viewer.name ? slugForName(viewer.name) : null)) : null;
   const feedback = await getEditorFeedback(id, isOwnerAdmin ? null : editorScope).catch(() => []);
+  // The client's asset shelf (logos, endcards, brand kit) — folder truth from
+  // Dropbox; editors upload here too.
+  const assets = await listClientAssets(project.client.id).catch(() => null);
   const profile = parseClientProfile(project.client.profileJson);
   const folders = projectFolderPaths(project);
   const rawUrl = dropboxWebUrl(folders.rawVideo);
@@ -106,10 +119,18 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
     rawsLanded = (ev?.dropbox?.rawVideo ?? 0) > 0;
   } catch { /* evidence is best-effort */ }
   const latestRound = submissions.length ? submissions[submissions.length - 1] : null;
-  // The cut panel (editor's side of the review): the ACTIVE round + its notes.
-  // Notes key on the cut's assetUrl (or the synthetic cut:<id> when no link
-  // was minted) — same convention as the owner's /review workspace.
-  const activeSub = latestRound;
+  // The cut panel (editor's side of the review): pick the active cut like the
+  // owner's workspace does — ?cut=<id> wins, else the newest PENDING/bounced
+  // one, else the latest round. Multi-video jobs get a switcher (one chip per
+  // video file, latest round each) so the editor works each cut's notes with
+  // its own player — same convention as /review/[id].
+  const latestPerCut = new Map<string, (typeof submissions)[number]>();
+  for (const s of submissions) latestPerCut.set(s.assetPath ?? s.id, s); // round-asc → latest wins
+  const currentCuts = [...latestPerCut.values()];
+  const activeSub =
+    (cut ? submissions.find((s) => s.id === cut) : null) ??
+    [...currentCuts].reverse().find((s) => s.status === "CHANGES_REQUESTED" || s.status === "PENDING") ??
+    latestRound;
   const activeAssetKey = activeSub ? (activeSub.assetUrl ?? `cut:${activeSub.id}`) : null;
   const activeNotes = activeAssetKey ? feedback.filter((n) => n.assetUrl === activeAssetKey) : [];
   const otherNotes = activeAssetKey ? feedback.filter((n) => n.assetUrl !== activeAssetKey) : feedback;
@@ -206,8 +227,29 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
               it — tap a time to jump the player, reply, mark fixed. Notes on
               the ACTIVE round live in the panel; anything else falls through
               to the flat feedback list below. */}
+          {currentCuts.length > 1 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {currentCuts.map((c, i) => (
+                <Link
+                  key={c.id}
+                  href={`/edit/${project.id}?cut=${c.id}`}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${
+                    activeSub?.id === c.id ? "border-brand bg-brand-soft text-brand" : "border-border bg-surface text-muted hover:text-foreground"
+                  }`}
+                >
+                  <span
+                    className="size-2 rounded-full"
+                    style={{ backgroundColor: c.status === "APPROVED" ? "#34d399" : c.status === "CHANGES_REQUESTED" ? "#f87171" : "#f59e0b" }}
+                  />
+                  <span className="max-w-40 truncate">{c.fileName ?? `Video ${i + 1}`}</span>
+                </Link>
+              ))}
+            </div>
+          )}
           {activeSub && (
             <EditorCutPanel
+              projectId={project.id}
+              submissionId={activeSub.id}
               round={activeSub.round}
               status={activeSub.status}
               assetUrl={activeSub.assetUrl}
@@ -221,23 +263,54 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
           {/* Feedback from the Review Room — first, it's the most actionable */}
           <EditFeedback notes={otherNotes} canFix={!isOwnerAdmin} viewerName={viewer?.name} />
 
-          {/* What to make */}
+          {/* What to make — each deliverable with ITS type's style notes and
+              live examples (same data as the Style Guide, so they can't
+              drift). Jordan: "notes about the type of video should be on the
+              editing page in the What to make section, with examples." */}
           <Section icon={Film} title="What to make">
-            <div className="flex flex-wrap gap-2">
+            {editDeliverables.length === 0 && <span className="text-sm text-muted">No deliverables listed.</span>}
+            <div className="space-y-4">
               {editDeliverables.map((d) => {
-                const premium = /premium|influencer/i.test(d.label ?? "");
-                const color = premium ? "#a78bfa" : "#64748b";
+                const vt = videoTypeForDeliverable(d.label, isMonthlyContentJob(project.deliverables));
+                const tierMeta = VIDEO_TIER[vt.tier];
                 return (
-                  <span
-                    key={d.id}
-                    className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-sm font-medium"
-                    style={{ backgroundColor: `${color}1a`, color }}
-                  >
-                    <Film className="size-3.5" /> {refinedDeliverableLabel(d.type, d.label)}
-                  </span>
+                  <div key={d.id} className="rounded-xl border border-border bg-surface-2/40 p-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-sm font-medium"
+                        style={{ backgroundColor: `${tierMeta.color}1a`, color: tierMeta.color }}
+                      >
+                        <Film className="size-3.5" /> {refinedDeliverableLabel(d.type, d.label)}
+                      </span>
+                      <span className="text-xs text-muted">{vt.name} · {tierMeta.edit}</span>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {vt.style.map((s) => (
+                        <span key={s} className="rounded-md border border-border bg-surface px-1.5 py-0.5 text-[11px] font-medium text-foreground/80">
+                          {s}
+                        </span>
+                      ))}
+                    </div>
+                    {vt.note && <p className="mt-2 text-xs leading-relaxed text-muted">{vt.note}</p>}
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      {vt.examples.map((e) => (
+                        <a
+                          key={e.url}
+                          href={e.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[11px] font-medium text-brand hover:border-brand"
+                        >
+                          <PlayCircle className="size-3" /> {e.label}
+                        </a>
+                      ))}
+                      <Link href="/resources/video-styles" className="text-[11px] font-medium text-muted hover:text-foreground">
+                        Full Style Guide →
+                      </Link>
+                    </div>
+                  </div>
                 );
               })}
-              {editDeliverables.length === 0 && <span className="text-sm text-muted">No deliverables listed.</span>}
             </div>
           </Section>
 
@@ -352,6 +425,19 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
 
         {/* RIGHT — the agent's brand + working profile */}
         <div className="space-y-6">
+          {/* Client assets — logos, endcards, brand kit. "Assets available"
+              vs "No assets" is the Dropbox folder truth; editors, admin and
+              owner can all upload (Jordan's spec). */}
+          {assets && (
+            <Section icon={Palette} title="Client assets">
+              <ClientAssetsCard
+                clientId={assets.clientId}
+                files={assets.files.map((f) => ({ name: f.name, url: f.url }))}
+                folderUrl={assets.folderUrl}
+                canUpload
+              />
+            </Section>
+          )}
           {videoDeliverables.length > 0 && <AocPlaybookCard context="edit" />}
           {brandColors.length > 0 && (
             <Section icon={Palette} title="Brand colors">

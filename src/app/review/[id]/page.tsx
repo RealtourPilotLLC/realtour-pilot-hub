@@ -21,16 +21,29 @@ export const dynamic = "force-dynamic";
 // gallery; the header links straight to it.
 // ---------------------------------------------------------------------------
 
-export default async function CutReviewPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function CutReviewPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ cut?: string }>;
+}) {
   const { id } = await params;
+  const { cut } = await searchParams;
   const me = await getCurrentUser().catch(() => null);
   const ownerDesk = me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
   if (!ownerDesk) redirect(homeFor(me?.role));
 
-  const w = await getCutWorkspace(id);
+  const w = await getCutWorkspace(id, cut ?? null);
   if (!w) notFound();
 
   const active = w.active;
+  // The job's CURRENT cuts — latest round per video file. One video job = one
+  // chip (hidden); a monthly package = a switcher so each video is reviewed
+  // individually (Jordan: "review each one individually in a timely manner").
+  const latestPerCut = new Map<string, (typeof w.submissions)[number]>();
+  for (const s of [...w.submissions].sort((a, b) => a.round - b.round)) latestPerCut.set(s.assetPath ?? s.id, s);
+  const currentCuts = [...latestPerCut.values()].sort((a, b) => a.round - b.round);
   const editorLabel =
     active?.submittedByName ??
     (active?.submittedByKey ? (editorMeta(active.submittedByKey)?.name ?? active.submittedByKey) : "the editor");
@@ -49,16 +62,6 @@ export default async function CutReviewPage({ params }: { params: Promise<{ id: 
             >
               <Images className="size-3.5" /> Photo review & project <ExternalLink className="size-3.5" />
             </Link>
-            {w.frameioViewUrl && (
-              <a
-                href={w.frameioViewUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 rounded-lg border bg-surface px-2.5 py-1.5 text-xs font-medium text-muted hover:text-foreground"
-              >
-                <Clapperboard className="size-3.5" /> Frame.io <ExternalLink className="size-3.5" />
-              </a>
-            )}
           </div>
         }
       />
@@ -66,6 +69,25 @@ export default async function CutReviewPage({ params }: { params: Promise<{ id: 
       <div className="grid gap-6 p-4 sm:p-6 lg:grid-cols-3">
         {/* LEFT — the cut */}
         <div className="space-y-4 lg:col-span-2">
+          {currentCuts.length > 1 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {currentCuts.map((c, i) => (
+                <Link
+                  key={c.id}
+                  href={`/review/${w.projectId}?cut=${c.id}`}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${
+                    active?.id === c.id ? "border-brand bg-brand-soft text-brand" : "border-border bg-surface text-muted hover:text-foreground"
+                  }`}
+                >
+                  <span
+                    className="size-2 rounded-full"
+                    style={{ backgroundColor: c.status === "APPROVED" ? "#34d399" : c.status === "CHANGES_REQUESTED" ? "#f87171" : "#f59e0b" }}
+                  />
+                  <span className="max-w-40 truncate">{c.fileName ?? `Video ${i + 1}`}</span>
+                </Link>
+              ))}
+            </div>
+          )}
           {active ? (
             <>
               <div className="flex flex-wrap items-center gap-2 text-sm text-muted">
@@ -98,7 +120,7 @@ export default async function CutReviewPage({ params }: { params: Promise<{ id: 
           {w.submissions.length > 1 && (
             <Section icon={History} title="Earlier rounds">
               <ul className="divide-y divide-border">
-                {w.submissions.slice(1).map((s) => (
+                {w.submissions.filter((s) => s.id !== active?.id).map((s) => (
                   <li key={s.id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
                     <span className="font-medium">Round {s.round}</span>
                     <span className="text-xs text-muted">

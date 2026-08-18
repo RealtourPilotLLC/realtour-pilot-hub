@@ -76,6 +76,8 @@ const SECTIONS: NavSection[] = [
       // window, two views that can't drift apart.
       { label: "Schedule", href: "/schedule", icon: CalendarDays, key: "schedule" },
       { label: "Communications", href: "/communications", icon: MessageCircle, key: "communications" },
+      // Client Assets is a TAB on the Clients page (header action), not a nav
+      // item — Jordan: "client assets should be in the clients tab".
       { label: "Clients", href: "/clients", icon: Users, key: "clients" },
       // People = the merged Team (workload cards, admin-visible) + Logins &
       // access (AppUser allowlist, owner-only) hub. Lives in Operations next to

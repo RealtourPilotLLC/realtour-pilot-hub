@@ -1769,6 +1769,26 @@ async function syncOneProjectTasks(
       finalVideoLanded =
         (await prisma.reviewSubmission.count({ where: { projectId: p.id } })) > 0;
     }
+    // MULTI-VIDEO packages (monthly personal branding: 2–5 videos) submit one
+    // video at a time, and submitCutForReview deliberately keeps the edit task
+    // OPEN until the whole set is in. "A submission exists / a file is in the
+    // Final folder" is NOT done for those jobs — require every owed video to
+    // have been through review before this evidence-close may fire.
+    if (finalVideoLanded) {
+      const vids = await prisma.deliverable.findMany({
+        where: { projectId: p.id, type: { in: ["VIDEO", "SOCIAL_REEL"] } },
+        select: { quantity: true },
+      });
+      const videosOwed = vids.reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
+      if (videosOwed > 1) {
+        const paths = await prisma.reviewSubmission.findMany({
+          where: { projectId: p.id, assetPath: { not: null } },
+          select: { assetPath: true },
+          distinct: ["assetPath"],
+        });
+        if (paths.length < videosOwed) finalVideoLanded = false;
+      }
+    }
     if (finalVideoLanded) {
       await prisma.smartTask.updateMany({
         where: {

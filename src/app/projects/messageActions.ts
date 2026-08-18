@@ -11,11 +11,15 @@ export type MsgResult = { ok: boolean; message: string };
 // roles (photographers use the shoot-app messaging instead).
 const requireStaff = () => requireRole(["OWNER", "ADMIN", "EDITOR"]);
 
-// Post a message to a project's team thread. Author is picked from the roster
-// in the UI (or left as a free name) so editors get attribution.
+// Post a message to a project's team thread. The author is WHOEVER IS LOGGED
+// IN — Jordan: "the project chat should not have the name selector and just be
+// the name of the person who is logged in." The session name resolves to a
+// TeamMember for the avatar/mention machinery; a session with no Team row
+// still posts under their own name. The client-passed authorId only matters
+// in sessionless local dev (auth off), where there's no identity to derive.
 export async function postProjectMessage(
   projectId: string,
-  authorId: string | null,
+  clientAuthorId: string | null,
   body: string,
   mentionIds: string[] = [],
   replyToId?: string | null,
@@ -24,9 +28,36 @@ export async function postProjectMessage(
   const text = body.trim();
   if (!text) return { ok: false, message: "Write a message first." };
 
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const { authEnforced } = await import("@/lib/auth/guards");
+  const me = await getCurrentUser().catch(() => null);
+  let authorId: string | null = null;
   let authorName: string | null = null;
-  if (authorId) {
-    const m = await prisma.teamMember.findUnique({ where: { id: authorId }, select: { name: true } });
+  const myName = me?.name?.trim();
+  if (myName) {
+    const first = myName.split(/\s+/)[0];
+    const tm =
+      (await prisma.teamMember.findFirst({
+        where: { name: { equals: myName, mode: "insensitive" } },
+        select: { id: true, name: true },
+      })) ??
+      (first
+        ? await prisma.teamMember.findFirst({
+            where: { name: { contains: first, mode: "insensitive" } },
+            select: { id: true, name: true },
+          })
+        : null);
+    authorId = tm?.id ?? null;
+    authorName = tm?.name ?? myName;
+  } else if (me) {
+    // A logged-in user with no display name still posts as THEMSELVES (their
+    // email), never as a client-chosen TeamMember — the passed authorId is a
+    // spoof vector once a session exists (adversarial review).
+    authorName = me.email ?? "Team";
+  } else if (!authEnforced() && clientAuthorId) {
+    // Sessionless local dev only — no identity exists to derive.
+    const m = await prisma.teamMember.findUnique({ where: { id: clientAuthorId }, select: { name: true } });
+    authorId = m ? clientAuthorId : null;
     authorName = m?.name ?? null;
   }
 

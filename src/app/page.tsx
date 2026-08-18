@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ArrowRight, Camera, CheckCircle2, Sun } from "lucide-react";
+import { ArrowRight, Camera, CheckCircle2, PlayCircle, Sun } from "lucide-react";
+import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/PageHeader";
 import { ProactiveFlags } from "@/components/dashboard/ProactiveFlags";
 import { StuckJobs } from "@/components/dashboard/StuckJobs";
@@ -49,7 +50,7 @@ export default async function DashboardPage() {
   if (me && contentTier(me.role) === "CREATIVE") redirect(homeFor(me.role));
   const isOwner = !me || me.role === "OWNER";
 
-  const [todayCount, counts, stuck, shoots, radar, handledToday, ownerStats, pulse, dials, unanswered] = await Promise.all([
+  const [todayCount, counts, stuck, shoots, radar, handledToday, ownerStats, pulse, dials, unanswered, cutsToReview] = await Promise.all([
     getTodayCardCount(), // = the card count /today renders, so the button never lies
     getActionCounts(),
     getStuckJobs(),
@@ -65,6 +66,9 @@ export default async function DashboardPage() {
     // (new leads, an assistant, an unsaved number) are included. They're the
     // ones that go unanswered, and no task ever existed to represent them.
     replyWaitingSummary(),
+    // Cuts waiting on a review verdict — owner AND admin both review now, so
+    // the count shows for both and links straight into the Review Room.
+    prisma.reviewSubmission.count({ where: { status: "PENDING" } }),
   ]);
 
   const firstName = me?.name?.split(" ")[0] ?? (isOwner ? "Jordan" : "there");
@@ -75,7 +79,7 @@ export default async function DashboardPage() {
   // could tell you you're clear while seven people wait on a reply. The pulse +
   // money strips still render below; trends matter on quiet days too.
   const allClear =
-    todayCount === 0 && stuck.length === 0 && shoots.today.length === 0 && unanswered.count === 0;
+    todayCount === 0 && stuck.length === 0 && shoots.today.length === 0 && unanswered.count === 0 && cutsToReview === 0;
   const nextShoot = shoots.week[0] ?? null;
 
   return (
@@ -117,6 +121,23 @@ export default async function DashboardPage() {
             <Link href="/today?guided=1" className="-mt-2 block px-1 text-xs font-medium text-muted hover:text-foreground">
               or walk me through it one at a time →
             </Link>
+
+            {/* Videos waiting on a review verdict — straight into the Review
+                Room. Shows for owner AND admin (both review now). */}
+            {cutsToReview > 0 && (
+              <Link
+                href="/review"
+                className="flex w-full items-center justify-between rounded-2xl border border-brand/30 bg-brand-soft px-5 py-3.5 transition hover:border-brand"
+              >
+                <span className="flex items-center gap-2.5 text-sm font-semibold text-brand">
+                  <PlayCircle className="size-5" />
+                  {cutsToReview} video{cutsToReview === 1 ? "" : "s"} to review
+                </span>
+                <span className="flex items-center gap-1.5 text-xs font-medium text-brand/80">
+                  Review Room <ArrowRight className="size-3.5" />
+                </span>
+              </Link>
+            )}
 
             {/* 3 · The numbers without the walls — system-wide truth, each one a
                 deep link into the surface where that pile gets worked. The amber

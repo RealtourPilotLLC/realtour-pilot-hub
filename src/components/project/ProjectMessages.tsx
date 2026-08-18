@@ -54,7 +54,6 @@ export function ProjectMessages({
   compact?: boolean;
 }) {
   const [body, setBody] = useState("");
-  const [authorId, setAuthorId] = useState<string>(team[0]?.id ?? "");
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<{ id: string; authorName: string | null; body: string } | null>(null);
   const [pending, start] = useTransition();
@@ -90,7 +89,8 @@ export function ProjectMessages({
     // Resolve @mentions to team ids by name match.
     const mentionIds = team.filter((m) => text.includes(`@${m.name}`)).map((m) => m.id);
     start(async () => {
-      const r = await postProjectMessage(projectId, authorId || null, text, mentionIds, replyTo?.id ?? null);
+      // Author = the logged-in person, derived server-side from the session.
+      const r = await postProjectMessage(projectId, null, text, mentionIds, replyTo?.id ?? null);
       if (r.ok) { setBody(""); setReplyTo(null); }
     });
   }
@@ -170,19 +170,10 @@ export function ProjectMessages({
             </ul>
           )}
         </div>
-        <div className="mt-2 flex items-center gap-2">
-          {team.length > 0 && (
-            <select
-              value={authorId}
-              onChange={(e) => setAuthorId(e.target.value)}
-              title="Posting as"
-              className="rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-xs outline-none focus:border-brand"
-            >
-              {team.map((m) => (
-                <option key={m.id} value={m.id}>{m.name}</option>
-              ))}
-            </select>
-          )}
+        <div className="mt-2 flex items-center justify-end gap-2">
+          {/* No "posting as" selector — messages post under the logged-in
+              person's own name (server-derived; a picked name was a lie
+              waiting to happen). */}
           <button
             disabled={pending || !body.trim()}
             onClick={submit}

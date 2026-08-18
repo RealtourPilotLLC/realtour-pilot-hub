@@ -1,5 +1,6 @@
 "use server";
 
+import crypto from "crypto";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { authEnforced, requireAdmin, requireTaskAccess } from "@/lib/auth/guards";
@@ -26,7 +27,14 @@ import { notifyInApp, type NotifyTarget } from "@/lib/notify";
 // ---------------------------------------------------------------------------
 
 const streetOf = (title?: string | null) => (title || "this job").split(",")[0].trim();
-const CUT_CHANGES_KEY = (projectId: string) => `cut-changes-${projectId}`;
+// Per-CUT, not per-project: monthly packages have several cuts in flight, and
+// a per-project key made "request changes on video 2" OVERWRITE video 1's
+// still-open change list (adversarial review). Keyed by assetPath so a redo of
+// the same video reuses (reopens) its own task; submission id when no file.
+const CUT_CHANGES_KEY = (projectId: string, cutKey: string) => {
+  const h = crypto.createHash("sha1").update(cutKey).digest("hex").slice(0, 10);
+  return `cut-changes-${projectId}-${h}`;
+};
 
 function refresh(projectId: string) {
   revalidatePath("/review");
@@ -114,13 +122,24 @@ async function requireCutNoteAccess(
 // Scan the project's FINAL video folder for the newest cut and mint a direct
 // streaming link. Best-effort: Dropbox down / folder empty → nulls, and the
 // review room degrades to folder links + manual-timestamp notes.
-async function findLatestCut(project: {
-  title: string;
-  addressLine: string | null;
-  shootDate: Date | null;
-  createdAt: Date;
-  client: { name: string };
-}): Promise<{ assetUrl: string | null; assetPath: string | null; fileName: string | null }> {
+// The NEXT cut to submit: the newest video in the Final folder that isn't
+// already sitting in review (or approved). Monthly personal-branding packages
+// carry 2–5 videos, and Jordan wants them sent ONE BY ONE — so each "send to
+// review" picks up the next new file, and a file whose review came back
+// CHANGES_REQUESTED is eligible again (that's the re-submit). `nothingNew` =
+// every video present is already pending/approved, so a second click can't
+// double-submit the same cut.
+async function findNextCut(
+  project: {
+    title: string;
+    addressLine: string | null;
+    shootDate: Date | null;
+    createdAt: Date;
+    client: { name: string };
+  },
+  projectId: string,
+): Promise<{ assetUrl: string | null; assetPath: string | null; fileName: string | null; isRedo: boolean; nothingNew: boolean }> {
+  const none = { assetUrl: null, assetPath: null, fileName: null, isRedo: false, nothingNew: false };
   try {
     const path = projectFolderPaths(project).finalVideo;
     const res = await dbx<{ entries: { ".tag": string; name: string; path_display?: string; server_modified?: string }[] }>(
@@ -130,13 +149,34 @@ async function findLatestCut(project: {
     const vids = (res.entries ?? [])
       .filter((e) => e[".tag"] === "file" && /\.(mp4|mov|m4v|webm)$/i.test(e.name))
       .sort((a, b) => (b.server_modified ?? "").localeCompare(a.server_modified ?? ""));
-    const newest = vids[0];
-    if (!newest?.path_display) return { assetUrl: null, assetPath: null, fileName: null };
+    if (vids.length === 0) return none;
+
+    const prior = await prisma.reviewSubmission.findMany({
+      where: { projectId, assetPath: { not: null } },
+      orderBy: { round: "asc" },
+      select: { assetPath: true, status: true },
+    });
+    const latestByPath = new Map<string, string>(); // path → latest status
+    for (const p of prior) latestByPath.set(p.assetPath!, p.status);
+
+    const eligible = vids.filter((v) => {
+      const st = v.path_display ? latestByPath.get(v.path_display) : undefined;
+      return !st || st === "CHANGES_REQUESTED";
+    });
+    if (eligible.length === 0) return { ...none, nothingNew: true };
+    const newest = eligible[0];
+    if (!newest.path_display) return none;
     const url = await dropboxSharedLink(newest.path_display);
-    return { assetUrl: url, assetPath: newest.path_display, fileName: newest.name };
+    return {
+      assetUrl: url,
+      assetPath: newest.path_display,
+      fileName: newest.name,
+      isRedo: latestByPath.has(newest.path_display),
+      nothingNew: false,
+    };
   } catch (e) {
-    if (!(e instanceof DropboxError)) console.warn("findLatestCut failed", e);
-    return { assetUrl: null, assetPath: null, fileName: null };
+    if (!(e instanceof DropboxError)) console.warn("findNextCut failed", e);
+    return none;
   }
 }
 
@@ -182,7 +222,7 @@ export async function submitCutForReview(
     select: {
       id: true, title: true, status: true, addressLine: true, shootDate: true, createdAt: true,
       client: { select: { name: true, socialClient: true } },
-      deliverables: { select: { type: true, label: true } },
+      deliverables: { select: { type: true, label: true, quantity: true } },
     },
   });
   if (!project) return { ok: false, message: "That project no longer exists." };
@@ -191,8 +231,39 @@ export async function submitCutForReview(
   const { authorKey, authorName } = await sessionAuthor();
   const editorKey = authorKey.startsWith("editor:") ? authorKey.slice("editor:".length) : await projectEditorKey(projectId);
 
-  // The cut itself — newest video in the FINAL folder, direct-streamable.
-  const cut = await findLatestCut(project);
+  // The cut itself — the next UNSUBMITTED video in the Final folder (monthly
+  // packages carry several; they go to review one at a time).
+  const cut = await findNextCut(project, projectId);
+  if (cut.nothingNew) {
+    return {
+      ok: false,
+      message: "Every video in the Final folder is already in review (or approved). Drop the next finished file in 05-Final-Video, then send again.",
+    };
+  }
+
+  // How many videos this job owes (deliverable quantities), and how many
+  // distinct files have been through review — drives whether this submit
+  // closes the editor's work item or leaves it open for the next video.
+  const videosOwed = project.deliverables
+    .filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL")
+    .reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
+  const priorPaths = new Set(
+    (
+      await prisma.reviewSubmission.findMany({
+        where: { projectId, assetPath: { not: null } },
+        select: { assetPath: true },
+      })
+    ).map((s) => s.assetPath!),
+  );
+  const distinctAfter = priorPaths.size + (cut.assetPath && !priorPaths.has(cut.assetPath) ? 1 : 0);
+  // TYPE-SCOPED closes (adversarial review): a REDO closes the revision task
+  // (the bounce is answered) but must NOT close the edit_video item still
+  // covering unmade videos; completing the SET closes edit_video but must not
+  // eat an outstanding revision on a different cut. Single-video jobs and
+  // no-file submits keep the legacy close-everything behavior.
+  const legacyClose = !cut.assetPath || videosOwed <= 1;
+  const closeEdit = legacyClose || distinctAfter >= videosOwed;
+  const closeRevision = legacyClose || cut.isRedo;
 
   const lastRound = await prisma.reviewSubmission.findFirst({
     where: { projectId },
@@ -217,15 +288,20 @@ export async function submitCutForReview(
   // Close out the editor's open work item (first submit = edit_video; a
   // re-submit after changes = the bundled revision task). An editor's submit
   // closes ONLY their own tasks — never a co-editor's parallel work item.
-  await prisma.smartTask.updateMany({
-    where: {
-      projectId,
-      taskType: { in: ["edit_video", "revision"] },
-      status: { notIn: ["COMPLETED", "CANCELLED"] },
-      ...(myEditorKey ? { assignedKey: myEditorKey } : {}),
-    },
-    data: { status: "COMPLETED", completedAt: new Date() },
-  });
+  // On a multi-video package the edit task stays OPEN until the last video of
+  // the set is in — sending video 1 of 4 is progress, not done.
+  const closeTypes = [...(closeEdit ? ["edit_video"] : []), ...(closeRevision ? ["revision"] : [])];
+  if (closeTypes.length) {
+    await prisma.smartTask.updateMany({
+      where: {
+        projectId,
+        taskType: { in: closeTypes },
+        status: { notIn: ["COMPLETED", "CANCELLED"] },
+        ...(myEditorKey ? { assignedKey: myEditorKey } : {}),
+      },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    });
+  }
 
   // EDITING/SHOT → REVIEW (never demote a job already past review).
   if (project.status === "EDITING" || project.status === "SHOT") {
@@ -251,16 +327,23 @@ export async function submitCutForReview(
   } catch { /* bell is best-effort */ }
 
   refresh(projectId);
+  const multiProgress =
+    !closeEdit && cut.assetPath
+      ? ` That's video ${distinctAfter} of ${videosOwed} — send the next one when it's ready.`
+      : "";
   return {
     ok: true,
     message: cut.assetUrl
-      ? "Sent for review — the cut is queued in the Review Room."
+      ? `Sent for review — ${cut.fileName ?? "the cut"} is queued in the Review Room.${multiProgress}`
       : "Sent for review. Heads up: no video file was found in the Final folder yet, so upload it there if you haven't.",
   };
 }
 
-// Drop one timestamped note on the active cut. Owner/admin only (the review
-// desk); the editor responds via reply / re-submission.
+// Drop one timestamped note on the active cut. Owner/admin from the review
+// desk — and the EDITOR on their OWN cut (Jordan: "I also want the video
+// editor to be able to leave feedback"): they flag things for the reviewer
+// ("music was the client's pick", "0:12 jump is intentional") right on the
+// timeline, EDITOR lane only.
 export async function addCutNote(input: {
   projectId: string;
   submissionId: string;
@@ -271,8 +354,27 @@ export async function addCutNote(input: {
 }): Promise<{ ok: boolean; message?: string }> {
   try {
     await requireAdmin();
-  } catch (e) {
-    return { ok: false, message: (e as Error).message };
+  } catch {
+    const me = await getCurrentUser().catch(() => null);
+    // "View as" is strictly READ-ONLY platform-wide — an owner previewing an
+    // editor must not write notes under that editor's name. Gate on the REAL
+    // role, never the impersonated one (adversarial review).
+    if (!me || me.impersonating) {
+      return { ok: false, message: me?.impersonating ? "You're previewing another user — exit the preview to make changes." : "Only the crew can note a cut." };
+    }
+    const myKey = me.realRole === "EDITOR" && me.role === "EDITOR" ? (me.editorKey ?? (me.name ? slugForName(me.name) : null)) : null;
+    if (!myKey || input.lane !== "EDITOR") {
+      return { ok: false, message: "Only the crew can note a cut." };
+    }
+    const sub = await prisma.reviewSubmission.findUnique({
+      where: { id: input.submissionId },
+      select: { projectId: true, submittedByKey: true },
+    });
+    const ownsCut =
+      !!sub &&
+      sub.projectId === input.projectId &&
+      (sub.submittedByKey ?? (await projectEditorKey(input.projectId))) === myKey;
+    if (!ownsCut) return { ok: false, message: "You can only note your own cut." };
   }
   const body = (input.body ?? "").trim();
   if (!body) return { ok: false, message: "Write the note first." };
@@ -479,7 +581,17 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
 
   const assetKey = submission.assetUrl ?? `cut:${submission.id}`;
   const open = await prisma.mediaNote.findMany({
-    where: { projectId: submission.projectId, parentId: null, lane: "EDITOR", status: "OPEN", assetUrl: assetKey },
+    where: {
+      projectId: submission.projectId,
+      parentId: null,
+      lane: "EDITOR",
+      status: "OPEN",
+      assetUrl: assetKey,
+      // The EDITOR's own notes are context for the reviewer ("the 0:12 jump is
+      // intentional") — they are NOT change requests and must not be bundled
+      // into the work order sent back to them (adversarial review).
+      NOT: { authorKey: { startsWith: "editor:" } },
+    },
     orderBy: { createdAt: "asc" },
   });
   if (open.length === 0) {
@@ -494,7 +606,7 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
   const fmtT = (t: number | null) =>
     t == null ? "" : `[${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}] `;
   const lines = open.map((n) => `• ${fmtT(n.timeSec)}${n.body.trim()}`);
-  const key = CUT_CHANGES_KEY(submission.projectId);
+  const key = CUT_CHANGES_KEY(submission.projectId, submission.assetPath ?? submission.id);
   const data = {
     taskType: "revision",
     title: `Cut changes — ${street}`.slice(0, 120),
