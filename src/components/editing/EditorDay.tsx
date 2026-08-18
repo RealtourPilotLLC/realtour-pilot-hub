@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Clapperboard, FolderOpen, FileText, CalendarClock, ExternalLink, Undo2 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
+import { FloatingStyleGuide } from "@/components/editing/FloatingStyleGuide";
 import { Section } from "@/components/ui/Section";
 import { prisma } from "@/lib/prisma";
 import { etAddDays } from "@/lib/datetime";
@@ -124,14 +125,10 @@ export async function EditorDay({ editorScope, editorName }: { editorScope: stri
             ? `${doNow.length} to edit${overdue ? ` · ${overdue} overdue` : ""}`
             : "Nothing waiting — you're all caught up."
         }
-        actions={
-          <Link
-            href="/resources/video-styles"
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-brand transition hover:border-brand hover:bg-surface-2"
-          >
-            <Clapperboard className="size-4" /> Style guide
-          </Link>
-        }
+        // The Style Guide pops up as a draggable floating window now (Jordan),
+        // so the editor can keep it beside the job they're cutting — the full
+        // page stays one click away from the window's title bar.
+        actions={<FloatingStyleGuide />}
       />
 
       <div className="space-y-6 p-4 sm:p-6">

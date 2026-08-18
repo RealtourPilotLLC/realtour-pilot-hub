@@ -4,6 +4,7 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { slugForName } from "@/lib/assignees";
 import { EditorDay } from "@/components/editing/EditorDay";
 import { AddToQueue } from "@/components/editing/AddToQueue";
+import { FloatingStyleGuide } from "@/components/editing/FloatingStyleGuide";
 import { SimpleQueue, type QueueRow } from "@/components/editing/SimpleQueue";
 import { editorRouting } from "@/lib/settings";
 import { editorForDeliverable, editorKeyForTeamName, editorMeta } from "@/lib/editors";
@@ -148,6 +149,9 @@ export default async function EditorQueuePage() {
         eyebrow="Video projects only"
         title="Editor Queue"
         subtitle={`${notDone.length} open · ${upcomingRows.length} upcoming`}
+        // Pop-up Style Guide — a draggable floating window (remembers where
+        // you put it), so the guide can sit beside the queue while working.
+        actions={<FloatingStyleGuide />}
       />
       {/* Wide on purpose — the Slack List is a wide table; max-w-4xl squeezed
           every column into a horizontal scroll. */}

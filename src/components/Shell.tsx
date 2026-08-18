@@ -43,11 +43,14 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
   }, [pathname]);
 
   // Bare (no sidebar/chrome): auth pages + the PUBLIC training share link, which
-  // an unauthenticated visitor opens — they must never see the app's nav.
+  // an unauthenticated visitor opens — they must never see the app's nav. The
+  // style-guide /embed is the Editor Queue's floating-window iframe: chrome
+  // inside a 440px popup would be chrome inside chrome.
   const bare =
     pathname === "/login" ||
     pathname.startsWith("/invite") ||
     pathname.startsWith("/learn/") ||
+    pathname === "/resources/video-styles/embed" ||
     pathname === "/privacy" ||
     pathname === "/terms";
 
