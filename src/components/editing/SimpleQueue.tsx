@@ -11,9 +11,10 @@ import {
   FolderUp,
   Loader2,
   MessageSquare,
+  Pencil,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
+import { saveJobNotes, setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
 
 // THE SLACK TRACKER, replicated — Jordan: "I want the editor queue to look
 // just like our Slack. It's been working, so I don't want to fix what isn't
@@ -46,7 +47,9 @@ export type QueueRow = {
   dueISO: string | null;
   late: boolean;
   priority: string; // LOW | NORMAL | HIGH | URGENT
-  customerNotes: string | null; // client style prefs (fonts/colors/style)
+  orderNotes: string | null; // the customer's OWN words from the Aryeo order (read-only)
+  customerNotes: string | null; // our per-job note about this customer (editable)
+  clientPrefs: string | null; // the client's standing style prefs (edited on the client page)
   photographerNotes: string | null; // editor brief from the shoot
   videos: number; // deliverable count
   hasScript: boolean;
@@ -252,10 +255,90 @@ function LinkChip({
   );
 }
 
+// An editable note box. Reads as plain text until you click it, so the panel
+// stays a briefing and only becomes a form when someone means to change
+// something. Read-only for anyone without permission (editors).
+function NoteEditor({
+  projectId, field, value, canEdit, label, placeholder, empty,
+}: {
+  projectId: string;
+  field: "customer" | "shoot";
+  value: string | null;
+  canEdit: boolean;
+  label: string;
+  placeholder: string;
+  empty: string;
+}) {
+  const [text, setText] = useState(value ?? "");
+  const [saved, setSaved] = useState<string | null>(value);
+  const [open, setOpen] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [saving, startSave] = useTransition();
+
+  function save() {
+    const next = text.trim();
+    startSave(async () => {
+      const r = await saveJobNotes(projectId, { [field]: next });
+      if (r.ok) { setSaved(next || null); setOpen(false); setErr(null); }
+      else setErr(r.message);
+    });
+  }
+
+  if (!open) {
+    return (
+      <div className="group">
+        {label && saved && <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">{label}</div>}
+        <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/85">
+          {saved || <span className="text-muted-2">{empty}</span>}
+        </p>
+        {canEdit && (
+          <button
+            onClick={() => { setText(saved ?? ""); setOpen(true); }}
+            className="mt-1.5 inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[10px] font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+          >
+            <Pencil className="size-2.5" />
+            {saved ? "Edit" : "Add a note"}
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <textarea
+        autoFocus
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder={placeholder}
+        rows={5}
+        className="w-full rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-xs leading-relaxed outline-none focus:border-brand"
+      />
+      <div className="mt-1.5 flex items-center gap-1.5">
+        <button
+          onClick={save}
+          disabled={saving}
+          className="inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
+        >
+          {saving && <Loader2 className="size-3 animate-spin" />}
+          Save
+        </button>
+        <button
+          onClick={() => { setOpen(false); setText(saved ?? ""); setErr(null); }}
+          className="rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted hover:bg-surface-2"
+        >
+          Cancel
+        </button>
+      </div>
+      {err && <p className="mt-1 text-[10px] text-danger">{err}</p>}
+    </div>
+  );
+}
+
 // The expanded project panel — Jordan: "open the project details by clicking
 // it but having it all right there." Full notes, every link labeled, shoot
 // facts, and the door to the full edit workspace.
-function DetailPanel({ row, upcoming }: { row: QueueRow; upcoming: boolean }) {
+function DetailPanel({ row, upcoming, canEdit }: { row: QueueRow; upcoming: boolean; canEdit: boolean }) {
   const t = TIER[row.tier];
   return (
     <div className="space-y-4 px-4 py-4 sm:px-6">
@@ -319,16 +402,49 @@ function DetailPanel({ row, upcoming }: { row: QueueRow; upcoming: boolean }) {
 
         <div className="rounded-xl border border-border bg-surface p-3">
           <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-2">Customer notes</div>
-          <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/85">
-            {row.customerNotes || <span className="text-muted-2">None on file — cut it to the Style Guide.</span>}
-          </p>
+
+          {/* What the customer actually asked for on the order. Read-only: it's
+              Aryeo's record and the next sync would overwrite an edit — the
+              editable note below is where a correction goes. */}
+          {row.orderNotes && (
+            <div className="mb-3 rounded-lg border-l-2 border-brand/50 bg-surface-2/60 px-2.5 py-2">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-brand">From their order</div>
+              <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/85">{row.orderNotes}</p>
+            </div>
+          )}
+          {row.clientPrefs && (
+            <div className="mb-3">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">Their usual style</div>
+              <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/85">{row.clientPrefs}</p>
+            </div>
+          )}
+
+          <NoteEditor
+            projectId={row.id}
+            field="customer"
+            value={row.customerNotes}
+            canEdit={canEdit}
+            label="Note for this job"
+            placeholder="Anything the editor should know about this customer or job…"
+            empty={
+              row.orderNotes || row.clientPrefs
+                ? "Nothing added."
+                : "None on file — cut it to the Style Guide."
+            }
+          />
         </div>
 
         <div className="rounded-xl border border-border bg-surface p-3">
           <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-2">Shoot notes</div>
-          <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/85">
-            {row.photographerNotes || <span className="text-muted-2">None from the photographer.</span>}
-          </p>
+          <NoteEditor
+            projectId={row.id}
+            field="shoot"
+            value={row.photographerNotes}
+            canEdit={canEdit}
+            label="What the photographer left the editor"
+            placeholder="What the editor needs to know from the shoot…"
+            empty="None from the photographer."
+          />
         </div>
       </div>
 
@@ -348,7 +464,11 @@ function DetailPanel({ row, upcoming }: { row: QueueRow; upcoming: boolean }) {
   );
 }
 
-export function SimpleQueue({ notDone, upcoming, done }: { notDone: QueueRow[]; upcoming: QueueRow[]; done: QueueRow[] }) {
+export function SimpleQueue({
+  notDone, upcoming, done, canEditNotes = false,
+}: {
+  notDone: QueueRow[]; upcoming: QueueRow[]; done: QueueRow[]; canEditNotes?: boolean;
+}) {
   const [view, setView] = useState<"notdone" | "upcoming" | "done">("notdone");
   const [openId, setOpenId] = useState<string | null>(null);
   const rows = view === "notdone" ? notDone : view === "upcoming" ? upcoming : done;
@@ -459,7 +579,12 @@ export function SimpleQueue({ notDone, upcoming, done }: { notDone: QueueRow[]; 
                           <EditorSelect key={r.editorKey ?? "none"} row={r} />
                         )}
                       </td>
-                      <td className="px-3 py-2.5"><NoteCell text={r.customerNotes} title="Customer notes" /></td>
+                      {/* The customer's own order request outranks our note and
+                          their standing prefs in the one-line cell — it's the
+                          thing that changes what this edit should be. */}
+                      <td className="px-3 py-2.5">
+                        <NoteCell text={r.orderNotes ?? r.customerNotes ?? r.clientPrefs} title="Customer notes" />
+                      </td>
                       <td className="px-3 py-2.5"><NoteCell text={r.photographerNotes} title="Shoot notes" /></td>
                       <td className="px-3 py-2.5 text-center text-xs">{r.videos}</td>
                       <td className="whitespace-nowrap px-3 py-2.5" onClick={swallow}>
@@ -478,7 +603,7 @@ export function SimpleQueue({ notDone, upcoming, done }: { notDone: QueueRow[]; 
                     {open && (
                       <tr className="bg-surface-2/30">
                         <td colSpan={10} className="p-0">
-                          <DetailPanel row={r} upcoming={view === "upcoming"} />
+                          <DetailPanel row={r} upcoming={view === "upcoming"} canEdit={canEditNotes} />
                         </td>
                       </tr>
                     )}

@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { requireAdmin } from "@/lib/auth/guards";
+import { requireAdmin, requireRole } from "@/lib/auth/guards";
 import { editorTeamMemberId, type EditorKey } from "@/lib/editors";
 
 // ---------------------------------------------------------------------------
@@ -382,6 +382,42 @@ export async function addToEditorQueue(
   return done(`${street} is in the queue — ${editorName} has it.`);
 }
 
+
+// The queue's two note boxes, made editable. Jordan (Aug 18): "we should also
+// be able to adjust anything like customer notes and everything. Editors can
+// not, but admins, owners, and photographers / creatives can."
+//
+// WHERE each one lands:
+//   · customer → Project.notes, the per-JOB customer note. The Aryeo order
+//     text shown beside it is NOT edited here — it's their system's record and
+//     the next sync would overwrite any local change, so this is the note that
+//     corrects or adds to it. Project.notes also feeds Kyle's delivery board
+//     and the Hub's job context, so a correction travels with the job.
+//   · shoot → Project.editorBrief, the same field the photographer writes at
+//     upload, so fixing a garbled brief here is the same note, not a rival one.
+export async function saveJobNotes(
+  projectId: string,
+  notes: { customer?: string; shoot?: string },
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    // Editors are deliberately absent: they READ the brief, they don't rewrite
+    // what the customer or the photographer said.
+    await requireRole(["OWNER", "ADMIN", "PHOTOGRAPHER"]);
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  const data: { notes?: string | null; editorBrief?: string | null } = {};
+  if (notes.customer !== undefined) data.notes = notes.customer.trim().slice(0, 4000) || null;
+  if (notes.shoot !== undefined) data.editorBrief = notes.shoot.trim().slice(0, 4000) || null;
+  if (Object.keys(data).length === 0) return { ok: true, message: "Nothing to save." };
+
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true } });
+  if (!p) return { ok: false, message: "That job no longer exists." };
+  await prisma.project.update({ where: { id: projectId }, data });
+  revalidatePath("/editing");
+  revalidatePath(`/edit/${projectId}`);
+  return { ok: true, message: "Saved." };
+}
 
 // Per-job edit instructions (the Luma-form fields) — owner/admin write, the
 // editor reads. Stored as JSON on Project.editSpec.
