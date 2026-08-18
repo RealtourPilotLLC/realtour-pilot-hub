@@ -96,9 +96,23 @@ export default async function EditorQueuePage() {
     // not in channel dumps.
     prisma.projectMessage.groupBy({ by: ["projectId"], where: { projectId: { in: allIds } }, _count: true }),
   ]);
-  const taskEditor = new Map(openTasks.filter((t) => t.assignedKey).map((t) => [t.projectId!, t.assignedKey!]));
+  // This queue narrates the VIDEO lane only. A photo-retouch revision (Kyle's)
+  // also lives on the project — it must not flip the video row to "Revisions",
+  // pad the revision-ask chip, or show Kyle as the editor (Janice's "remove
+  // the closets photos" ask did all three before this scoping).
+  const VIDEO_LANE = new Set(["kim", "john", "remar", "luma"]);
+  const taskEditor = new Map<string, string>();
+  for (const t of openTasks) if (t.projectId && t.assignedKey && t.taskType === "edit_video") taskEditor.set(t.projectId, t.assignedKey);
+  for (const t of openTasks)
+    if (t.projectId && t.assignedKey && t.taskType === "revision" && VIDEO_LANE.has(t.assignedKey) && !taskEditor.has(t.projectId))
+      taskEditor.set(t.projectId, t.assignedKey);
+  // A NULL-key revision counts as video-lane too: personal-branding routing is
+  // manual by design, so its revision task sits unassigned in "Needs assigning"
+  // — it's still a video revision and must keep the row on "Revisions".
   const revisionCount = new Map<string, number>();
-  for (const t of openTasks) if (t.taskType === "revision" && t.projectId) revisionCount.set(t.projectId, (revisionCount.get(t.projectId) ?? 0) + 1);
+  for (const t of openTasks)
+    if (t.taskType === "revision" && t.projectId && (t.assignedKey == null || VIDEO_LANE.has(t.assignedKey)))
+      revisionCount.set(t.projectId, (revisionCount.get(t.projectId) ?? 0) + 1);
   const comments = new Map(msgCounts.map((m) => [m.projectId, m._count]));
 
   type P = (typeof inflight)[number];
@@ -111,13 +125,24 @@ export default async function EditorQueuePage() {
     const routeKey = assigned ?? editorKeyForTeamName(p.editor?.name) ?? editorForDeliverable(v?.type, v?.label, monthly, rules);
     const videos = p.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
     const folders = projectFolderPaths(p);
+    // A REVISION project with no open VIDEO-lane revision was flipped by a
+    // photo ask — show the video's own state instead (cut in the final folder
+    // → Ready for review; otherwise still In editing).
+    let effectiveStatus = p.status;
+    if (!upcoming && p.status === "REVISION" && (revisionCount.get(p.id) ?? 0) === 0) {
+      let finalVideo = 0;
+      try {
+        finalVideo = (JSON.parse(p.statusEvidence ?? "{}") as { dropbox?: { finalVideo?: number } })?.dropbox?.finalVideo ?? 0;
+      } catch { /* unreadable evidence → assume still editing */ }
+      effectiveStatus = finalVideo > 0 ? "REVIEW" : "EDITING";
+    }
     return {
       id: p.id,
       street: (p.addressLine || p.title.split(",")[0] || "Job").trim(),
       client: p.client.name,
       tier,
       typeDetail: videos.map((d) => d.label || d.type).join(" · "),
-      status: upcoming ? "Waiting" : STATUS_LABEL[p.status] ?? p.status,
+      status: upcoming ? "Waiting" : STATUS_LABEL[effectiveStatus] ?? effectiveStatus,
       editor: (assigned ? editorMeta(assigned)?.name ?? assigned : null) ?? p.editor?.name ?? (routeKey ? editorMeta(routeKey)?.name ?? routeKey : null),
       // The key behind the name, for the row's reassign select. Same truth
       // ladder as the display: open task → Project.editor → routing rules.

@@ -39,7 +39,7 @@ export function ReelScriptCard({
             rel="noopener noreferrer"
             className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline"
           >
-            Script Studio <ExternalLink className="size-3" />
+            Script Writing <ExternalLink className="size-3" />
           </a>
         )}
       </div>

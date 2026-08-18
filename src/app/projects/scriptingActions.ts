@@ -6,9 +6,7 @@ import { revalidatePath } from "next/cache";
 import {
   scriptingConfigured,
   scriptingCreateProject,
-  scriptingGetByExternalId,
   scriptingListSince,
-  studioToRecipe,
   studioBestLink,
   ScriptingError,
 } from "@/lib/integrations/scripting";
@@ -81,29 +79,21 @@ export async function createScriptProject(projectId: string): Promise<Result> {
   }
 }
 
-// Pull the latest hooks/script/song from Script Studio into this job's reel
-// recipe (Studio is the source of truth for those fields).
+// Pull the latest hooks/script/song from the Script Writing platform into this
+// job's reel recipe. Scripts now sync AUTOMATICALLY (src/lib/scriptSync.ts:
+// edit-page render + hourly cron + webhook) — this action remains as the
+// manual "pull right now" for anywhere that still offers one.
 export async function syncScriptFromStudio(projectId: string): Promise<Result> {
   await requireRole(["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"]);
-  if (!scriptingConfigured()) return { ok: false, message: "Script Studio isn't connected yet." };
+  if (!scriptingConfigured()) return { ok: false, message: "The Script Writing platform isn't connected yet." };
   try {
-    const detail = await scriptingGetByExternalId(projectId);
-    const r = studioToRecipe(detail);
-    const data: Record<string, unknown> = { scriptingSyncedAt: new Date() };
-    if (detail.id) data.scriptingId = String(detail.id);
-    if (r.status) data.scriptingStatus = r.status;
-    if (r.url) data.scriptingUrl = r.url;
-    if (r.hook) data.reelHook = r.hook;
-    if (r.script) data.reelScript = r.script;
-    if (r.song) data.reelSong = r.song;
-    if (r.url) data.reelScriptUrl = r.url;
-    if (r.hook || r.script) data.reelRecipeUpdatedAt = new Date();
-    await prisma.project.update({ where: { id: projectId }, data });
+    const { pullScriptFromStudio } = await import("@/lib/scriptSync");
+    const r = await pullScriptFromStudio(projectId);
     revalidatePath(`/edit/${projectId}`);
     revalidatePath(`/projects/${projectId}`);
-    const got = [r.hook && "hook", r.script && "script", r.song && "song"].filter(Boolean).join(" · ");
-    return { ok: true, message: got ? `Synced ${got} from Script Studio.` : `Studio status: ${r.status ?? "unknown"} — nothing to pull yet.`, url: r.url };
+    const got = r.got.join(" · ");
+    return { ok: true, message: got ? `Synced ${got}.` : `Status: ${r.status ?? "no script project for this shoot"} — nothing to pull yet.`, url: r.url };
   } catch (e) {
-    return { ok: false, message: e instanceof ScriptingError ? e.message : "Couldn't reach Script Studio." };
+    return { ok: false, message: e instanceof ScriptingError ? e.message : "Couldn't reach the Script Writing platform." };
   }
 }

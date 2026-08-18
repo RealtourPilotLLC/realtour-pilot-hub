@@ -57,6 +57,14 @@ export async function GET(req: NextRequest) {
     const { generateTasksForActiveProjects } = await import("@/lib/tasks");
     return generateTasksForActiveProjects();
   });
+  // Pull missing scripts from the Script Writing platform (by external_id) so
+  // the queue's Script chip and the shoot screen fill themselves — Jordan:
+  // "Script studio should just get the script from the shoot on our script
+  // writing platform via api." Pull-only; the signed webhook is the fast path.
+  await step("scripts", async () => {
+    const { sweepMissingScripts } = await import("@/lib/scriptSync");
+    return sweepMissingScripts();
+  });
   // Retry webhook events that errored on first receipt (transient blips) so a
   // dropped delivered/paid/inbound event doesn't silently vanish.
   await step("retryWebhooks", async () => {

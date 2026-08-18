@@ -11,10 +11,10 @@ import { parseClientProfile } from "@/lib/clientProfile";
 import { ClientProfileCard } from "@/components/clients/ClientProfileCard";
 import { ProjectMessages } from "@/components/project/ProjectMessages";
 import { ReelScriptCard } from "@/components/project/ReelScriptCard";
-import { ScriptStudioCard } from "@/components/project/ScriptStudioCard";
 import { EditInstructionsCard } from "@/components/editing/EditInstructionsCard";
 import { AocPlaybookCard } from "@/components/project/AocPlaybookCard";
-import { FrameioButton } from "@/components/project/FrameioButton";
+import { EditorCutPanel } from "@/components/editing/EditorCutPanel";
+import { autoSyncScript } from "@/lib/scriptSync";
 import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { getVideoSlaStatus } from "@/lib/projectStatus";
 import { SubmitCutCard } from "@/components/editing/EditorActions";
@@ -41,13 +41,18 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
   // Photographers get their own field view; everyone else (owner/admin/editor) sees this.
   if (viewer && viewer.role === "PHOTOGRAPHER") redirect(`/shoot/${id}`);
 
+  // Scripts sync THEMSELVES from the Script Writing platform (by this project
+  // id) — cheap freshness gate inside; run before getProject so a just-pulled
+  // script renders on this very load.
+  await autoSyncScript(id);
+
   const [project, team, submissions] = await Promise.all([
     getProject(id),
     getTeam(),
     prisma.reviewSubmission.findMany({
       where: { projectId: id },
       orderBy: { round: "asc" },
-      select: { round: true, status: true, submittedByName: true, note: true, createdAt: true, decidedAt: true },
+      select: { id: true, round: true, status: true, assetUrl: true, fileName: true, submittedByName: true, note: true, createdAt: true, decidedAt: true },
     }),
   ]);
   if (!project) notFound();
@@ -89,8 +94,10 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
   // Remar departed Aug 2026 (John took the lane) but stays here: his last
   // in-production job still needs its revision lane to render.
   const VIDEO_REVISION_KEYS = new Set(["kim", "john", "remar", "luma"]);
+  // Null-key = an unassigned video revision (personal-branding routing is
+  // manual by design) — still this tracker's lane. Kyle's photo asks stay out.
   const videoRevisionTasks = project.smartTasks.filter(
-    (t) => t.taskType === "revision" && VIDEO_REVISION_KEYS.has(t.assignedKey ?? ""),
+    (t) => t.taskType === "revision" && (t.assignedKey == null || VIDEO_REVISION_KEYS.has(t.assignedKey)),
   );
   const revisionOpen = videoRevisionTasks.length > 0;
   let rawsLanded = false;
@@ -99,6 +106,13 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
     rawsLanded = (ev?.dropbox?.rawVideo ?? 0) > 0;
   } catch { /* evidence is best-effort */ }
   const latestRound = submissions.length ? submissions[submissions.length - 1] : null;
+  // The cut panel (editor's side of the review): the ACTIVE round + its notes.
+  // Notes key on the cut's assetUrl (or the synthetic cut:<id> when no link
+  // was minted) — same convention as the owner's /review workspace.
+  const activeSub = latestRound;
+  const activeAssetKey = activeSub ? (activeSub.assetUrl ?? `cut:${activeSub.id}`) : null;
+  const activeNotes = activeAssetKey ? feedback.filter((n) => n.assetUrl === activeAssetKey) : [];
+  const otherNotes = activeAssetKey ? feedback.filter((n) => n.assetUrl !== activeAssetKey) : feedback;
   // A stale flag must not resurrect "changes requested" on an approved cut:
   // only a video revision RAISED AFTER the approval outranks it.
   const approvedAt = latestRound?.status === "APPROVED" ? latestRound.decidedAt : null;
@@ -152,7 +166,6 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
         subtitle={project.client.name}
         actions={
           <div className="flex items-center gap-2">
-            <FrameioButton projectId={project.id} viewUrl={project.frameioViewUrl} />
             {isOwnerAdmin && (
               <Link href={`/projects/${project.id}`} className="inline-flex items-center gap-1 rounded-lg border bg-surface px-2.5 py-1.5 text-xs font-medium text-muted hover:text-foreground">
                 Full details <ExternalLink className="size-3.5" />
@@ -188,8 +201,25 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
       <div className="grid gap-6 p-4 sm:p-6 lg:grid-cols-3">
         {/* LEFT — the brief */}
         <div className="space-y-6 lg:col-span-2">
+          {/* The editor's side of the review (the in-hub Frame.io): the cut
+              they submitted plays here, the owner's timestamped notes under
+              it — tap a time to jump the player, reply, mark fixed. Notes on
+              the ACTIVE round live in the panel; anything else falls through
+              to the flat feedback list below. */}
+          {activeSub && (
+            <EditorCutPanel
+              round={activeSub.round}
+              status={activeSub.status}
+              assetUrl={activeSub.assetUrl}
+              fileName={activeSub.fileName}
+              finalFolderUrl={finalUrl}
+              notes={activeNotes}
+              canFix={!isOwnerAdmin}
+              viewerName={viewer?.name}
+            />
+          )}
           {/* Feedback from the Review Room — first, it's the most actionable */}
-          <EditFeedback notes={feedback} canFix={!isOwnerAdmin} viewerName={viewer?.name} />
+          <EditFeedback notes={otherNotes} canFix={!isOwnerAdmin} viewerName={viewer?.name} />
 
           {/* What to make */}
           <Section icon={Film} title="What to make">
@@ -219,33 +249,29 @@ export default async function EditBriefPage({ params }: { params: Promise<{ id: 
             canEdit={isOwnerAdmin}
           />
 
-          {/* The locked script — READ-ONLY, straight from Script Studio (the
-              API/webhook sync owns these fields; scripts are never written in
-              the hub). The editor pastes overlay text from here — re-typing is
+          {/* The locked script — READ-ONLY, pulled automatically from the
+              Script Writing platform by this project's id (page render +
+              hourly cron + signed webhook; scripts are never written in the
+              hub). The editor pastes overlay text from here — re-typing is
               the #1 typo/revision driver. */}
           {videoDeliverables.length > 0 && (
-            <>
-              {(project.reelHook || project.reelScript) ? (
-                <ReelScriptCard
-                  hook={project.reelHook}
-                  script={project.reelScript}
-                  song={project.reelSong}
-                  shotList={project.reelShotList}
-                  updatedAt={project.reelRecipeUpdatedAt ? project.reelRecipeUpdatedAt.toISOString() : null}
-                  studioUrl={isOwnerAdmin ? (project.scriptingUrl ?? project.reelScriptUrl) : null}
-                />
-              ) : (
-                <div className="rounded-2xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-foreground/85">
-                  <span className="font-semibold">No script on file yet.</span>{" "}
-                  {isOwnerAdmin
-                    ? "Scripts are written in Script Studio and sync here automatically — use the Script Studio card below to link the job or pull the latest."
-                    : "Check the script PDF in the project files folder, or ask in the chat."}
-                </div>
-              )}
-              {/* Studio management is owner/admin-only — Jordan: "the editor can
-                  just view the script so they know the structure of the video". */}
-              {isOwnerAdmin && <ScriptStudioCard projectId={project.id} />}
-            </>
+            (project.reelHook || project.reelScript) ? (
+              <ReelScriptCard
+                hook={project.reelHook}
+                script={project.reelScript}
+                song={project.reelSong}
+                shotList={project.reelShotList}
+                updatedAt={project.reelRecipeUpdatedAt ? project.reelRecipeUpdatedAt.toISOString() : null}
+                studioUrl={isOwnerAdmin ? (project.scriptingUrl ?? project.reelScriptUrl) : null}
+              />
+            ) : (
+              <div className="rounded-2xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-foreground/85">
+                <span className="font-semibold">No script on file yet.</span>{" "}
+                {isOwnerAdmin
+                  ? "The hub checks the Script Writing platform automatically — the script appears here the moment one is written for this shoot."
+                  : "The script appears here automatically once it's written — cut B-roll first, or ask in the chat."}
+              </div>
+            )
           )}
 
           {/* Editing notes from the photographer */}

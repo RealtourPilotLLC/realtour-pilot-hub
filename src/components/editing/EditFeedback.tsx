@@ -35,7 +35,21 @@ function rank(n: CutNote): number {
   return 3; // resolved
 }
 
-export function EditFeedback({ notes, canFix, viewerName }: { notes: CutNote[]; canFix: boolean; viewerName?: string | null }) {
+export function EditFeedback({
+  notes,
+  canFix,
+  viewerName,
+  embedded = false,
+  onSeek,
+}: {
+  notes: CutNote[];
+  canFix: boolean;
+  viewerName?: string | null;
+  // embedded: rendered INSIDE the cut panel (no card chrome of its own) with
+  // onSeek wiring timestamp chips to the panel's player — the Frame.io feel.
+  embedded?: boolean;
+  onSeek?: (sec: number) => void;
+}) {
   const router = useRouter();
   const [openId, setOpenId] = useState<string | null>(null);
   const [reply, setReply] = useState("");
@@ -57,11 +71,12 @@ export function EditFeedback({ notes, canFix, viewerName }: { notes: CutNote[]; 
       }
     });
 
+  const Wrapper = embedded ? "div" : "section";
   return (
-    <section className="rounded-2xl border border-brand/25 bg-surface">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3 sm:px-5">
+    <Wrapper className={embedded ? undefined : "rounded-2xl border border-brand/25 bg-surface"}>
+      <div className={cn("flex items-center justify-between px-4 py-3 sm:px-5", !embedded && "border-b border-border")}>
         <h2 className="flex items-center gap-2 text-sm font-semibold">
-          <MessageSquare className="size-4 text-brand" /> Review feedback
+          <MessageSquare className="size-4 text-brand" /> {embedded ? "Notes on this cut" : "Review feedback"}
           {openCount > 0 && (
             <span className="rounded-full bg-brand-soft px-2 py-0.5 text-[11px] font-semibold text-brand">
               {openCount} to fix
@@ -75,9 +90,21 @@ export function EditFeedback({ notes, canFix, viewerName }: { notes: CutNote[]; 
           <li key={n.id} className="px-4 py-3 sm:px-5">
             <div className="flex flex-wrap items-start gap-2">
               {n.timeSec != null && (
-                <span className="mt-0.5 shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums">
-                  {fmtClock(n.timeSec)}
-                </span>
+                // With a player on screen (embedded), the chip SEEKS to the
+                // moment the note is about — the whole point of timestamps.
+                onSeek ? (
+                  <button
+                    onClick={() => onSeek(n.timeSec!)}
+                    title="Jump the player to this moment"
+                    className="mt-0.5 shrink-0 rounded bg-brand-soft px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-brand hover:bg-brand/20"
+                  >
+                    {fmtClock(n.timeSec)}
+                  </button>
+                ) : (
+                  <span className="mt-0.5 shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums">
+                    {fmtClock(n.timeSec)}
+                  </span>
+                )
               )}
               <button onClick={() => setOpenId((v) => (v === n.id ? null : n.id))} className="min-w-0 flex-1 text-left">
                 <span className="text-sm text-foreground/90">{n.body}</span>
@@ -137,6 +164,6 @@ export function EditFeedback({ notes, canFix, viewerName }: { notes: CutNote[]; 
         ))}
       </ul>
       {err && <p className="px-4 pb-3 text-xs text-danger sm:px-5">{err}</p>}
-    </section>
+    </Wrapper>
   );
 }

@@ -50,7 +50,6 @@ import { ProjectMap } from "@/components/map/ProjectMap";
 import { DroneBadge, hasDroneOps } from "@/components/project/DroneBadge";
 import { DroneAdvisory } from "@/components/project/DroneAdvisory";
 import { DeliverableStatusSelect } from "@/components/project/DeliverableStatusSelect";
-import { FrameioButton } from "@/components/project/FrameioButton";
 import { PRIORITY_META, DELIVERABLE_META, refinedDeliverableLabel, stageMeta } from "@/lib/pipeline";
 import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { photoTargetFor } from "@/lib/culling";
@@ -359,7 +358,6 @@ export default async function ProjectPage({
               title="Uploads & editor brief"
               action={
                 <div className="flex flex-wrap items-center gap-2">
-                  <FrameioButton projectId={project.id} viewUrl={project.frameioViewUrl} />
                   {project.editorPdfPath && (
                     <a
                       href={`/api/projects/${project.id}/editor-brief`}

@@ -48,6 +48,9 @@ async function sc<T = unknown>(path: string, opts: { method?: string; body?: unk
     },
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     cache: "no-store",
+    // The auto-sync runs on edit-page render — a hung Studio must degrade to
+    // "no script yet", never hold the page (or a cron step) hostage.
+    signal: AbortSignal.timeout(6000),
   });
   const text = await res.text();
   let json: unknown;

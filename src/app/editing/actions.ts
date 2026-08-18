@@ -442,6 +442,89 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
   await prisma.activity.create({
     data: { projectId, type: "SYSTEM", body: `Queue status set: ${label}` },
   }).catch(() => {});
+
+  // Flipping to Revisions IS a revision request — in Slack the flip only
+  // recolored a cell; here it mints the video-lane work item, so the label
+  // sticks (the queue narrates the video lane from open revision tasks), the
+  // row grows its revision chip, and the editor gets the task + a bell. Moving
+  // OFF Revisions closes that same work item so the chip can't go stale.
+  const QUEUE_REV_KEY = `queue-revision-${projectId}`;
+  if (status === "REVISION") {
+    try {
+      const proj = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: {
+          title: true,
+          clientId: true,
+          revisionRequestedAt: true,
+          editorManual: true,
+          editor: { select: { name: true } },
+          deliverables: { select: { type: true, label: true } },
+        },
+      });
+      if (proj) {
+        const street = (proj.title || "this job").split(",")[0].trim();
+        // Whose lane: the open edit task's editor → the pinned editor → rules.
+        const openEdit = await prisma.smartTask.findFirst({
+          where: { projectId, taskType: "edit_video", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+          select: { assignedKey: true },
+        });
+        const { editorKeyForTeamName, editorForDeliverable } = await import("@/lib/editors");
+        const { editorRouting } = await import("@/lib/settings");
+        const { isMonthlyContentJob } = await import("@/lib/pipeline");
+        const v = proj.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+        const assignedKey =
+          openEdit?.assignedKey ??
+          (proj.editorManual ? editorKeyForTeamName(proj.editor?.name) : null) ??
+          editorForDeliverable(v?.type, v?.label, isMonthlyContentJob(proj.deliverables), await editorRouting());
+        const taskData = {
+          taskType: "revision",
+          title: `Revisions — ${street}`.slice(0, 120),
+          summary:
+            "The cut was flipped to Revisions on the Editor Queue — check the review notes and the project chat for what to change, re-cut, and send it back to review.",
+          reasonCreated: "Queue status set to Revisions",
+          source: "manual",
+          priority: "HIGH" as const,
+          dueAt: new Date(Date.now() + 24 * 3600_000),
+          assignedKey,
+          projectId,
+          clientId: proj.clientId,
+          propertyAddress: proj.title,
+          dedupeKey: QUEUE_REV_KEY,
+        };
+        const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: QUEUE_REV_KEY } });
+        if (existing) {
+          await prisma.smartTask.update({ where: { id: existing.id }, data: { ...taskData, status: "OPEN", completedAt: null } });
+        } else {
+          await prisma.smartTask.create({ data: taskData });
+        }
+        // revisionRequestedAt keeps the status engine from demoting the manual
+        // REVISION on its next sweep (computeStatus honours an open revision).
+        if (!proj.revisionRequestedAt) {
+          await prisma.project.update({ where: { id: projectId }, data: { revisionRequestedAt: new Date() } });
+        }
+        if (assignedKey === "kim" || assignedKey === "john") {
+          try {
+            const { notifyInApp } = await import("@/lib/notify");
+            await notifyInApp({
+              kind: "revision_raised",
+              title: `Revisions — ${street}`,
+              body: "The cut was flipped to Revisions on the queue — see the review notes.",
+              href: `/edit/${projectId}`,
+              targets: [{ roles: ["EDITOR"], userKey: `editor:${assignedKey}`, href: `/edit/${projectId}` }],
+            });
+          } catch { /* bell is best-effort */ }
+        }
+      }
+    } catch { /* the status write above already landed — the task is best-effort */ }
+  } else {
+    // Any other manual status closes the queue-click revision (the comms-raised
+    // revision task has its own dedupe key and its own lifecycle).
+    await prisma.smartTask.updateMany({
+      where: { dedupeKey: QUEUE_REV_KEY, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    }).catch(() => {});
+  }
   const { revalidatePath } = await import("next/cache");
   revalidatePath("/editing");
   revalidatePath(`/edit/${projectId}`);
