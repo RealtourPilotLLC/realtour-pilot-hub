@@ -469,8 +469,12 @@ export function dedupeParsedDeliverables(parsed: ParsedDeliverable[]): ParsedDel
   // or monthly-plan label must survive a generic "Video" from another line
   // item on the same order (audit: a standard reel add-on was stripping the
   // premium label off the package's reel).
+  // Same premium semantics as isPremiumProduct (the \bstandard\b veto): a raw
+  // title like "Standard Listing Reel w/ Premium Song Licensing" must not
+  // outrank the mapped standard label. Monthly ranks highest — it carries the
+  // SLA + routing signal, which a premium word alone can't restore.
   const rank = (label: string | null | undefined) =>
-    /premium|influencer/i.test(label ?? "") ? 2 : MONTHLY_PLAN_RE.test(label ?? "") ? 2 : 1;
+    MONTHLY_PLAN_RE.test(label ?? "") ? 3 : isPremiumProduct(label ?? "") ? 2 : 1;
   for (const d of parsed) {
     const ex = byType.get(d.type);
     if (!ex) byType.set(d.type, { ...d });
@@ -581,6 +585,32 @@ const PRODUCT_DELIVERABLES_RAW: [string, DeliverableType[]][] = [
 const normProduct = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 const PRODUCT_DELIVERABLES = new Map(PRODUCT_DELIVERABLES_RAW.map(([t, types]) => [normProduct(t), types]));
 
+// Aryeo renames products with marketing suffixes — "Premium Social Media Reel
+// - Most Popular" (Aug 18, 1337 Carolannes) missed the exact map and the
+// keyword fallback stamped a generic "Social Reel", losing the premium tier.
+// After an exact miss, accept the LONGEST map key that word-prefixes the title
+// — but only when the leftover is pure fluff: a suffix that mentions media
+// ("… - Now With Video!"), restricts scope ("… - Interior Only", "… No Drone"),
+// or is a fee line ("… - Reschedule Fee") may change what's delivered, so fall
+// through to the keyword parser instead of stamping the full product set.
+const MEDIA_WORD_RE = /photo|video|reel|drone|aerial|floor|twilight|matterport|zillow|3d|tour|stag|headshot|portrait|virtual|cinematic/i;
+const SUFFIX_VETO_RE = /\bonly\b|\bno\b|\bnot\b|\bwithout\b|\bfee\b|refund|cancel|reschedul/i;
+let productKeysByLength: string[] | null = null;
+function mappedTypesForTitle(title: string): DeliverableType[] | undefined {
+  const norm = normProduct(title);
+  const exact = PRODUCT_DELIVERABLES.get(norm);
+  if (exact) return exact;
+  productKeysByLength ??= [...PRODUCT_DELIVERABLES.keys()].sort((a, b) => b.length - a.length);
+  for (const key of productKeysByLength) {
+    if (!norm.startsWith(key + " ")) continue;
+    const leftover = norm.slice(key.length + 1);
+    if (!MEDIA_WORD_RE.test(leftover) && !SUFFIX_VETO_RE.test(leftover)) {
+      return PRODUCT_DELIVERABLES.get(key);
+    }
+  }
+  return undefined;
+}
+
 // Whether a product's reel/video is PREMIUM (→ Luma, 3–4 day turnaround) vs
 // STANDARD (→ in-house Remar/Kim, 1–2 days). Premium is signalled by the product
 // NAME: explicit Premium/Luxury products and the genuinely high-end tiers
@@ -633,21 +663,24 @@ export function itemToDeliverables(item: AryeoOrderItem): ParsedDeliverable[] {
   const title = (item.title || item.subtitle || item.sub_title || "Item").trim();
   const qty = item.quantity || 1;
 
-  const mapped = PRODUCT_DELIVERABLES.get(normProduct(title));
+  const mapped = mappedTypesForTitle(title);
   if (mapped) {
     const premium = isPremiumProduct(title);
     // A monthly-plan product's TITLE is its identity — "Video Starter - 2HR
     // Session" flattened to a generic "Video" label made isMonthlyContentJob()
     // false everywhere (wrong SLA, wrong routing, wrong tier — Aug 18 audit,
     // 39 live jobs). Keep the plan name on its video deliverables.
+    // Monthly outranks premium: keeping the TITLE preserves both signals (the
+    // premium word stays in it for videoTier), while "Premium Video" would
+    // erase the monthly one — wrong SLA + lane for a premium-worded plan.
     const monthlyPlan = MONTHLY_PLAN_RE.test(title);
     return mapped.map((type) => ({
       type,
       label:
-        premium && (type === "SOCIAL_REEL" || type === "VIDEO")
-          ? `Premium ${TYPE_LABEL[type]}`
-          : monthlyPlan && (type === "SOCIAL_REEL" || type === "VIDEO")
-            ? title
+        monthlyPlan && (type === "SOCIAL_REEL" || type === "VIDEO")
+          ? title
+          : premium && (type === "SOCIAL_REEL" || type === "VIDEO")
+            ? `Premium ${TYPE_LABEL[type]}`
             : (TYPE_LABEL[type] ?? title),
       quantity: qty,
     }));
@@ -687,8 +720,22 @@ export function itemToDeliverables(item: AryeoOrderItem): ParsedDeliverable[] {
   // Single-service item → keep the real product name as the label.
   if (found.length === 1) return [{ type: found[0].type, label: title, quantity: qty }];
 
-  // Multi-service bundle → one deliverable per detected component.
-  return found.map((c) => ({ type: c.type, label: c.label, quantity: qty }));
+  // Multi-service bundle → one deliverable per detected component. The video
+  // components must keep the title's tier signal: a premium/monthly product
+  // whose description ALSO mentions drone splits here, and the generic
+  // "Social Reel" label was erasing the tier (same Carolannes failure).
+  const fbPremium = isPremiumProduct(title);
+  const fbMonthly = MONTHLY_PLAN_RE.test(title);
+  return found.map((c) => ({
+    type: c.type,
+    label:
+      fbMonthly && (c.type === "SOCIAL_REEL" || c.type === "VIDEO")
+        ? title
+        : fbPremium && (c.type === "SOCIAL_REEL" || c.type === "VIDEO")
+          ? `Premium ${TYPE_LABEL[c.type]}`
+          : c.label,
+    quantity: qty,
+  }));
 }
 
 // The live, non-cancelled appointment for an order (if any).

@@ -180,8 +180,12 @@ export function refinedDeliverableLabel(type: DeliverableType, label?: string | 
   if (type === DeliverableType.OTHER) return prettifyLabel(l) || "Add-on";
   const base = DELIVERABLE_META[type]?.label ?? String(type);
   if (type !== DeliverableType.SOCIAL_REEL && type !== DeliverableType.VIDEO) return base;
-  if (/influencer|monthly|video\s*(starter|accelerator|pro)|personal\s*brand/i.test(l)) return "Monthly Content";
-  if (/premium/i.test(l)) return "Premium Reel";
+  // MONTHLY_PLAN_RE is the one shared monthly signal — the old inline regex
+  // missed the broadened wordings it accepts ("Content Day", "Branding Shoot"),
+  // so those chips read "Standard Reel"/"Video" while everything else treated
+  // them as monthly. Premium keeps the \bstandard\b veto for the same reason.
+  if (MONTHLY_PLAN_RE.test(l)) return "Monthly Content";
+  if (/premium|influencer/i.test(l) && !/\bstandard\b/i.test(l)) return "Premium Reel";
   if (/reel|social/i.test(l)) return "Standard Reel";
   return base;
 }

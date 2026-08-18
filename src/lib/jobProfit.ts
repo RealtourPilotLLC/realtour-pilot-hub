@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { computePayroll } from "@/lib/payroll";
 import { finishedPhotos } from "@/lib/photoCount";
+import { MONTHLY_PLAN_RE } from "@/lib/pipeline";
 
 const RATE_PER_PHOTO = 0.5; // AutoHDR, per FINISHED photo
 
@@ -18,7 +19,6 @@ const RATE_MONTHLY_SOCIAL = 120;
 const RATE_STANDARD = 40;
 const VIDEO_TYPES = new Set(["VIDEO", "SOCIAL_REEL"]);
 const PREMIUM_RE = /premium|influencer/i;
-const MONTHLY_RE = /starter|accelerator|content (session|day)|video pro\b/i;
 
 /**
  * Editing cost implied by a set of deliverables, at the real per-video rates.
@@ -31,8 +31,12 @@ export function videoEditingCost(deliverables: { type: string; label: string | n
     if (!VIDEO_TYPES.has(d.type)) continue;
     const q = d.quantity ?? 1;
     const label = d.label ?? "";
-    if (PREMIUM_RE.test(label)) premium += q;
-    else if (MONTHLY_RE.test(label)) monthly += q;
+    // Monthly FIRST, on the shared MONTHLY_PLAN_RE — the old inline regex
+    // missed the branding-session wordings the sync now keeps as labels, and
+    // a premium-worded plan title ("Luxury Personal Branding …") is Kim's
+    // $120 monthly work, not a $299 Luma reel.
+    if (MONTHLY_PLAN_RE.test(label)) monthly += q;
+    else if (PREMIUM_RE.test(label)) premium += q;
     else standard += q;
   }
   return {
