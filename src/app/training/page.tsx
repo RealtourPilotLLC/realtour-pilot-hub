@@ -1,4 +1,4 @@
-import { ChevronDown, ExternalLink, GraduationCap, PlayCircle } from "lucide-react";
+import { ChevronDown, GraduationCap } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Markdown } from "@/components/ui/Markdown";
 import { ShareLessonButton } from "@/components/training/ShareLessonButton";
@@ -24,26 +24,22 @@ const CREATIVE_VOL2_COURSES = new Set([
   "Viral Editing Masterclass (2025)",
 ]);
 
-// These lessons are Studio 910 PB's videos on THEIR Vimeo. As of 14 Aug 2026
-// they are UNAVAILABLE AT THE SOURCE — not embed-restricted, not an access
-// problem on our side. Jordan confirmed the same "Sorry, this video does not
-// exist" on 910's own Skool and website, from a different network.
+// These lessons are Studio 910 PB's videos on THEIR Vimeo. The Aug 14-17 2026
+// outage ("Sorry, this video does not exist" everywhere, including 910's own
+// Skool/site) was NEITHER embed-restriction NOR a deleted library: Studio 910
+// told Jordan (Aug 17) they hit their Vimeo plan's PLAY LIMIT, which nukes the
+// whole library — player 404s, oEmbed 404s, error-shell watch pages — until it
+// resets/upgrades (theirs: expected fixed Aug 18). Embeds worked before the
+// outage and Jordan asked for them back, so the player below is the shipped UI
+// again. If every lesson errors at once in the future, suspect the play limit
+// FIRST — it's account-wide and only Studio 910 can clear it.
 //
-// Verified here: player.vimeo.com 404s for every video (with the share hash,
-// without it, and with app_id); the watch pages return a 200 that is an empty
-// 7,588-byte shell rendering the error client-side; and vimeo.com/api/oembed
-// went from returning real titles ("MODULE 1 INTRO", author Studio 910 PB) to
-// 404 for the same ids within minutes. Their library appears to have been
-// removed or the account lapsed. Only Studio 910 can restore it.
-//
-// So we link out rather than render a player. A link degrades honestly and
-// starts working the moment they fix it, with no redeploy. If it comes back AND
-// embedding turns out to be allowed, an iframe on
-// player.vimeo.com/video/<id>?h=<hash> is the nicer UI — but do not assume
-// embedding works until it is actually tested, because that was my wrong first
-// diagnosis here.
-function vimeoWatchUrl(url: string): string | null {
-  return /vimeo\.com\/\d+/.test(url) ? url : null;
+// A 910 Academy Vimeo watch URL (e.g. https://vimeo.com/1206234728/43eb0c934b)
+// → the player embed src (https://player.vimeo.com/video/1206234728?h=43eb0c934b).
+function vimeoEmbed(url: string): string | null {
+  const m = url.match(/vimeo\.com\/(\d+)(?:\/([a-zA-Z0-9]+))?/);
+  if (!m) return null;
+  return `https://player.vimeo.com/video/${m[1]}${m[2] ? `?h=${m[2]}` : ""}`;
 }
 
 // Browsable course library (910 Academy) — full transcripts from TrainingLesson,
@@ -103,13 +99,13 @@ export default async function TrainingPage() {
                     </summary>
                     <div className="divide-y divide-border border-t border-border">
                       {c.lessons.map((l, i) => {
-                        const watch = l.videoUrl ? vimeoWatchUrl(l.videoUrl) : null;
+                        const embed = l.videoUrl ? vimeoEmbed(l.videoUrl) : null;
                         return (
                         <details key={i} className="group/l">
                           <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-2.5 pl-6 hover:bg-surface-2">
                             <ChevronDown className="size-3.5 shrink-0 -rotate-90 text-muted-2 transition-transform group-open/l:rotate-0" />
                             <span className="text-sm text-foreground/90">{l.title}</span>
-                            {watch && <span className="rounded-full bg-brand-soft px-1.5 text-[10px] font-medium text-brand">Video</span>}
+                            {embed && <span className="rounded-full bg-brand-soft px-1.5 text-[10px] font-medium text-brand">Video</span>}
                             {canShare && (
                               <span className="ml-auto">
                                 <ShareLessonButton lessonId={l.id} initialToken={l.shareToken} />
@@ -117,17 +113,17 @@ export default async function TrainingPage() {
                             )}
                           </summary>
                           <div className="px-4 pb-4 pl-12">
-                            {watch && (
-                              <a
-                                href={watch}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="mb-3 inline-flex items-center gap-2 rounded-xl border border-border bg-surface-2 px-3 py-2 text-sm font-medium text-brand transition hover:border-brand"
-                              >
-                                <PlayCircle className="size-4" />
-                                Watch this lesson
-                                <ExternalLink className="size-3.5 opacity-70" />
-                              </a>
+                            {embed && (
+                              <div className="mb-3 aspect-video overflow-hidden rounded-xl border border-border bg-black">
+                                <iframe
+                                  src={embed}
+                                  className="size-full"
+                                  loading="lazy"
+                                  title={l.title}
+                                  allow="autoplay; fullscreen; picture-in-picture; clipboard-write"
+                                  allowFullScreen
+                                />
+                              </div>
                             )}
                             {l.summaryMd
                               ? <Markdown content={l.summaryMd} />
