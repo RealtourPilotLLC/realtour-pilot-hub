@@ -524,6 +524,18 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
       where: { dedupeKey: QUEUE_REV_KEY, status: { notIn: ["COMPLETED", "CANCELLED"] } },
       data: { status: "COMPLETED", completedAt: new Date() },
     }).catch(() => {});
+    // If NO revision task remains open in any lane, clear the revision stamp —
+    // otherwise the hourly status sweep reads revisionRequestedAt and flips
+    // the job straight back to REVISION, silently reverting this click
+    // (Aug 18 audit).
+    try {
+      const stillOpen = await prisma.smartTask.count({
+        where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      });
+      if (stillOpen === 0) {
+        await prisma.project.update({ where: { id: projectId }, data: { revisionRequestedAt: null } });
+      }
+    } catch { /* stamp clear is best-effort */ }
   }
   const { revalidatePath } = await import("next/cache");
   revalidatePath("/editing");

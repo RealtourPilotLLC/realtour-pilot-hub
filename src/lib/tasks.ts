@@ -76,7 +76,11 @@ export function deliveryDueFrom(anchor: Date, deliverableType?: string | null, o
 // /premium/ only, so an Influencer/Cinematic reel got a 48h SLA here but showed
 // 72h on the status card — a 24h disagreement).
 const isPremiumLabel = (label?: string | null) =>
-  !!label && /premium|influencer|cinematic|luxury|signature|elite|flagship/i.test(label);
+  !!label &&
+  /premium|influencer|cinematic|luxury|signature|elite|flagship/i.test(label) &&
+  // "Standard Cinematic Video" is standard — explicit "standard" vetoes
+  // (aligned with projectStatus.ts + aryeo.ts isPremiumProduct).
+  !/\bstandard\b/i.test(label);
 
 // A project's overall delivery due = shoot date + the LONGEST turnaround among
 // its ordered deliverables (premium reel/video pushes it out, monthly further).
@@ -1168,35 +1172,10 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
     } catch { /* never let a ping break the upload flow */ }
   }
 
-  // Premium reel → the raws + brief go OUT to Luma, and nothing tracked that
-  // dispatch. One deduped task, Kyle-owned (vendor named in the title — vendor
-  // keys route to no human), auto-closed when the job delivers (comms_followup
-  // is in DELIVERED_CLOSE_TYPES).
-  const { videoTier } = await import("@/lib/projectStatus");
-  if (videoTier(p.deliverables) !== "premium") return;
-  const key = `luma-dispatch-${projectId}`;
-  if (await prisma.smartTask.findUnique({ where: { dedupeKey: key } })) return;
-  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
-  await prisma.smartTask.create({
-    data: {
-      taskType: "comms_followup",
-      title: `Send raws + brief to Luma — ${street}`.slice(0, 120),
-      summary: "This job has a premium reel and the raws just landed — send the raw video + editor brief to Luma (ReadyPost) so the edit starts now instead of when the video goes overdue.",
-      reasonCreated: "Premium reel raws landed — dispatch to Luma",
-      checklist: JSON.stringify([
-        "Send the raw video + editor brief to Luma",
-        "Confirm Luma received it and note the ETA",
-      ]),
-      source: "system",
-      priority: "HIGH",
-      dueAt: new Date(Date.now() + 4 * HOUR),
-      projectId,
-      clientId: p.clientId,
-      propertyAddress: p.title,
-      ownerId: kyle?.id ?? null,
-      dedupeKey: key,
-    },
-  });
+  // Luma dispatch task REMOVED (Aug 18 audit): the Luma engagement ended
+  // Aug 14 — premium reels cut in-house (John Mark) through the normal
+  // edit_video mint above; a "Send raws to Luma" card on Kyle's board was
+  // instructing him to ship footage to a vendor we no longer use.
 }
 
 // ---------------------------------------------------------------------------
@@ -1777,16 +1756,23 @@ async function syncOneProjectTasks(
     if (finalVideoLanded) {
       const vids = await prisma.deliverable.findMany({
         where: { projectId: p.id, type: { in: ["VIDEO", "SOCIAL_REEL"] } },
-        select: { quantity: true },
+        select: { quantity: true, label: true, type: true },
       });
-      const videosOwed = vids.reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
-      if (videosOwed > 1) {
-        const paths = await prisma.reviewSubmission.findMany({
-          where: { projectId: p.id, assetPath: { not: null } },
-          select: { assetPath: true },
-          distinct: ["assetPath"],
-        });
-        if (paths.length < videosOwed) finalVideoLanded = false;
+      // MONTHLY jobs deliver an open-ended SET (2–5 videos, stored quantity is
+      // usually 1 — audit) — evidence can never prove the set is done, so the
+      // close is owned by the submit flow / delivery, never by this sweep.
+      if (isMonthlyContentJob(vids)) {
+        finalVideoLanded = p.status === "DELIVERED";
+      } else {
+        const videosOwed = vids.reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
+        if (videosOwed > 1) {
+          const paths = await prisma.reviewSubmission.findMany({
+            where: { projectId: p.id, assetPath: { not: null } },
+            select: { assetPath: true },
+            distinct: ["assetPath"],
+          });
+          if (paths.length < videosOwed) finalVideoLanded = false;
+        }
       }
     }
     if (finalVideoLanded) {

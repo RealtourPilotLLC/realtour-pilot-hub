@@ -57,7 +57,11 @@ export function categoriesForLabel(label: string): MediaCategory[] {
 // the status card, delivery-due, and QA task never disagree.
 export type VideoTier = "standard" | "premium";
 // Premium = the higher-end reel products (longer edit). Tune these keywords.
+// "Standard Cinematic Video" is a STANDARD product — an explicit "standard"
+// vetoes the premium words (matches aryeo.ts isPremiumProduct; the audit
+// caught the two regexes disagreeing on cinematic variants).
 const PREMIUM_VIDEO_RE = /premium|influencer|cinematic|luxury|signature|elite|flagship/i;
+const STANDARD_VETO_RE = /\bstandard\b/i;
 
 // Classify a project's video deliverable as standard vs premium (or null if no
 // video was ordered) — by the order item's product name.
@@ -67,7 +71,7 @@ export function videoTier(deliverables: { type: string; label: string | null }[]
   for (const d of deliverables) {
     if (!expectedCategories([d]).has("VIDEO")) continue;
     hasVideo = true;
-    if (PREMIUM_VIDEO_RE.test(d.label ?? "")) premium = true;
+    if (PREMIUM_VIDEO_RE.test(d.label ?? "") && !STANDARD_VETO_RE.test(d.label ?? "")) premium = true;
   }
   if (!hasVideo) return null;
   return premium ? "premium" : "standard";
@@ -486,7 +490,11 @@ export async function syncProjectStatuses(
   }
 
   const where = opts.projectId
-    ? { id: opts.projectId } // single project (e.g. an Aryeo media-delivered webhook)
+    ? // Single project (e.g. an Aryeo media-delivered webhook) — but the
+      // ON_HOLD/CANCELLED exclusion applies here too: the contract above says
+      // manual holds are never touched, and the bare {id} branch was quietly
+      // re-arming them (Aug 18 audit).
+      { id: opts.projectId, status: { notIn: ["ON_HOLD", "CANCELLED"] as ProjectStatus[] } }
     : opts.full
     ? { source: "ARYEO" as const, status: { notIn: ["ON_HOLD", "CANCELLED"] as ProjectStatus[] } }
     : {

@@ -210,7 +210,14 @@ export const DELIVERABLE_STATUS_META: Record<
 // — including a one-off "Premium Social Reel" at an office address — is NOT
 // monthly. (\b after "pro" keeps "Video Production" from matching.)
 // ---------------------------------------------------------------------------
-const MONTHLY_PLAN_RE = /video\s*[-–]?\s*(starter|accelerator|pro)\b|monthly\s*content|personal[-\s]*brand/i;
+// Exported: the Aryeo sync uses this to KEEP a plan title as the deliverable
+// label (a generic "Video" label destroys the monthly signal — Aug 18 audit:
+// 39 live monthly-plan jobs classified as ordinary listing videos). Also
+// broadened: "Monthly Social Media Content Session" / "August Social Media
+// Content Day" / "Branding Shoot" are monthly-content wordings the old
+// adjacent-words regex missed.
+export const MONTHLY_PLAN_RE =
+  /video\s*[-–]?\s*(starter|accelerator|pro)\b|monthly\s+(social\s+)?(media\s+)?content|social\s+(media\s+)?content|personal[-\s]*brand|content\s+(session|day)\b|branding\s+(shoot|session)\b/i;
 
 export function isMonthlyContentJob(
   deliverables: { type?: string; label?: string | null }[],

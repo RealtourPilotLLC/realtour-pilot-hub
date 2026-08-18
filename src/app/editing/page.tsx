@@ -25,6 +25,9 @@ export const dynamic = "force-dynamic";
 //     controls (reassign, review, chat) live on /edit/<id>.
 // Project status → the Slack ladder's words, verbatim from the Loom.
 const STATUS_LABEL: Record<string, string> = {
+  // Past-shoot BOOKED/SCHEDULED = shot but raws not in yet → Slack's "Waiting".
+  BOOKED: "Waiting",
+  SCHEDULED: "Waiting",
   SHOT: "Ready for editing",
   EDITING: "In editing",
   REVIEW: "Ready for review",
@@ -58,7 +61,17 @@ export default async function EditorQueuePage() {
   const deliveredCutoff = etAddDays(now, -60);
   const [inflight, scheduled, deliveredRaw] = await Promise.all([
     prisma.project.findMany({
-      where: { status: { in: ["SHOT", "EDITING", "REVIEW", "REVISION"] } },
+      // Past-shoot BOOKED/SCHEDULED jobs belong here too (as "Waiting"): the
+      // shoot happened but raws haven't landed — they were falling between
+      // the Not-Done and Upcoming rails and vanishing entirely (Aug 18 audit:
+      // four monthly jobs actively being shot were invisible). 7-day window
+      // so ancient stale bookings don't pile up.
+      where: {
+        OR: [
+          { status: { in: ["SHOT", "EDITING", "REVIEW", "REVISION"] } },
+          { status: { in: ["BOOKED", "SCHEDULED"] }, shootDate: { lt: now, gte: etAddDays(now, -7) } },
+        ],
+      },
       orderBy: [{ deliveryDue: { sort: "asc", nulls: "last" } }, { shootDate: { sort: "asc", nulls: "last" } }],
       include: { client: true, editor: true, photographer: true, deliverables: true },
     }),

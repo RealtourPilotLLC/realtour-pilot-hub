@@ -52,6 +52,10 @@ async function sessionAuthor(): Promise<{ authorKey: string; authorName: string 
   if (!u) return { authorKey: "owner", authorName: "Jordan" };
   const name = u.name ?? u.email;
   if (u.role === "OWNER") return { authorKey: "owner", authorName: name };
+  // An EDITOR is keyed editor:<key> FIRST — tm:<id> winning meant editor-
+  // authored notes dodged every "authored by the editor" filter and their
+  // submissions were credited to a tm: identity (Aug 18 audit).
+  if (u.role === "EDITOR" && u.editorKey) return { authorKey: `editor:${u.editorKey}`, authorName: name };
   if (u.teamMemberId) return { authorKey: `tm:${u.teamMemberId}`, authorName: name };
   if (u.editorKey) return { authorKey: `editor:${u.editorKey}`, authorName: name };
   if (u.role === "PHOTOGRAPHER") {
@@ -138,8 +142,8 @@ async function findNextCut(
     client: { name: string };
   },
   projectId: string,
-): Promise<{ assetUrl: string | null; assetPath: string | null; fileName: string | null; isRedo: boolean; nothingNew: boolean }> {
-  const none = { assetUrl: null, assetPath: null, fileName: null, isRedo: false, nothingNew: false };
+): Promise<{ assetUrl: string | null; assetPath: string | null; fileName: string | null; isRedo: boolean; nothingNew: boolean; folderVideoCount: number }> {
+  const none = { assetUrl: null, assetPath: null, fileName: null, isRedo: false, nothingNew: false, folderVideoCount: 0 };
   try {
     const path = projectFolderPaths(project).finalVideo;
     const res = await dbx<{ entries: { ".tag": string; name: string; path_display?: string; server_modified?: string }[] }>(
@@ -163,7 +167,7 @@ async function findNextCut(
       const st = v.path_display ? latestByPath.get(v.path_display) : undefined;
       return !st || st === "CHANGES_REQUESTED";
     });
-    if (eligible.length === 0) return { ...none, nothingNew: true };
+    if (eligible.length === 0) return { ...none, nothingNew: true, folderVideoCount: vids.length };
     const newest = eligible[0];
     if (!newest.path_display) return none;
     const url = await dropboxSharedLink(newest.path_display);
@@ -173,6 +177,7 @@ async function findNextCut(
       fileName: newest.name,
       isRedo: latestByPath.has(newest.path_display),
       nothingNew: false,
+      folderVideoCount: vids.length,
     };
   } catch (e) {
     if (!(e instanceof DropboxError)) console.warn("findNextCut failed", e);
@@ -244,9 +249,14 @@ export async function submitCutForReview(
   // How many videos this job owes (deliverable quantities), and how many
   // distinct files have been through review — drives whether this submit
   // closes the editor's work item or leaves it open for the next video.
-  const videosOwed = project.deliverables
+  // What the folder SHOWS beats what the order row says: monthly packages are
+  // stored as quantity=1 (audit) yet the editor exports 2–5 videos — if 4
+  // files sit in the Final folder, 4 videos are owed. max() so a listing job
+  // with one file stays a one-video job.
+  const quantityOwed = project.deliverables
     .filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL")
     .reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
+  const videosOwed = Math.max(quantityOwed, cut.folderVideoCount);
   const priorPaths = new Set(
     (
       await prisma.reviewSubmission.findMany({
@@ -538,6 +548,18 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
     data: { projectId: submission.projectId, type: "SYSTEM", body: `Cut approved in review (round ${submission.round}).` },
   });
 
+  // Multi-video sets: "Ready to deliver" is a SET verdict, not a per-cut one
+  // (audit: Kyle was told to deliver on video 1 of 4). Count the cuts still
+  // in flight (latest round per file that isn't APPROVED yet).
+  const siblings = await prisma.reviewSubmission.findMany({
+    where: { projectId: submission.projectId },
+    orderBy: { round: "asc" },
+    select: { id: true, assetPath: true, status: true },
+  });
+  const latestPerCut = new Map<string, string>();
+  for (const s of siblings) latestPerCut.set(s.assetPath ?? s.id, s.status);
+  const inFlight = [...latestPerCut.values()].filter((st) => st !== "APPROVED").length;
+
   try {
     const targets: NotifyTarget[] = [{ roles: ["ADMIN"] }];
     // Only Kim/Remar have logins that can see an editor:<key> row — a Luma/
@@ -551,8 +573,8 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
     }
     await notifyInApp({
       kind: "review_approved",
-      title: `Cut approved — ${street}`,
-      body: "Ready to deliver.",
+      title: `Cut approved — ${street}${submission.fileName ? ` (${submission.fileName})` : ""}`,
+      body: inFlight > 0 ? `${inFlight} more video${inFlight === 1 ? "" : "s"} still in review — not ready to deliver yet.` : "Ready to deliver.",
       href: `/projects/${submission.projectId}`,
       targets,
       dedupeKey: `review-approved-${submissionId}`,
@@ -560,7 +582,13 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
   } catch { /* bell is best-effort */ }
 
   refresh(submission.projectId);
-  return { ok: true, message: `Approved — Kyle's been pinged to deliver ${street}.` };
+  return {
+    ok: true,
+    message:
+      inFlight > 0
+        ? `Approved — ${inFlight} more video${inFlight === 1 ? "" : "s"} still in review on ${street}.`
+        : `Approved — Kyle's been pinged to deliver ${street}.`,
+  };
 }
 
 // REQUEST CHANGES: bundle the open EDITOR-lane notes on this cut into ONE

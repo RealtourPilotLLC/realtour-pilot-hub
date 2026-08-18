@@ -992,6 +992,11 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
       source: "gmail",
       status: { notIn: ["COMPLETED", "CANCELLED"] },
       sourceDetail: { startsWith: "gmail-thread:" },
+      // A REVISION (or edit) raised from an email is a WORK ORDER, not a
+      // "reply to this thread" card — replying "we're on it" must not mark
+      // the re-edit done and strand the project in REVISION (Aug 18 audit:
+      // resolveRevision was bypassed, projects stuck in REVISION forever).
+      taskType: { notIn: ["revision", "edit_video"] },
     },
     select: { id: true, sourceDetail: true },
   });

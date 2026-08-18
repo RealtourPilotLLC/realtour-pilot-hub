@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { MONTHLY_PLAN_RE } from "@/lib/pipeline";
 import { getSecret, markSynced, markError } from "./connections";
 import type { DeliverableType, ProjectStatus } from "@prisma/client";
 import type { NotifyTarget } from "@/lib/notify";
@@ -464,10 +465,19 @@ export type ParsedDeliverable = { type: DeliverableType; label: string; quantity
 // or three times. One deliverable per type is what we QA/deliver/track.
 export function dedupeParsedDeliverables(parsed: ParsedDeliverable[]): ParsedDeliverable[] {
   const byType = new Map<DeliverableType, ParsedDeliverable>();
+  // How much a label TELLS US, so first-wins can't erase the signal: a premium
+  // or monthly-plan label must survive a generic "Video" from another line
+  // item on the same order (audit: a standard reel add-on was stripping the
+  // premium label off the package's reel).
+  const rank = (label: string | null | undefined) =>
+    /premium|influencer/i.test(label ?? "") ? 2 : MONTHLY_PLAN_RE.test(label ?? "") ? 2 : 1;
   for (const d of parsed) {
     const ex = byType.get(d.type);
     if (!ex) byType.set(d.type, { ...d });
-    else ex.quantity = Math.max(ex.quantity, d.quantity);
+    else {
+      ex.quantity = Math.max(ex.quantity, d.quantity);
+      if (rank(d.label) > rank(ex.label)) ex.label = d.label;
+    }
   }
   return [...byType.values()];
 }
@@ -626,9 +636,19 @@ export function itemToDeliverables(item: AryeoOrderItem): ParsedDeliverable[] {
   const mapped = PRODUCT_DELIVERABLES.get(normProduct(title));
   if (mapped) {
     const premium = isPremiumProduct(title);
+    // A monthly-plan product's TITLE is its identity — "Video Starter - 2HR
+    // Session" flattened to a generic "Video" label made isMonthlyContentJob()
+    // false everywhere (wrong SLA, wrong routing, wrong tier — Aug 18 audit,
+    // 39 live jobs). Keep the plan name on its video deliverables.
+    const monthlyPlan = MONTHLY_PLAN_RE.test(title);
     return mapped.map((type) => ({
       type,
-      label: premium && (type === "SOCIAL_REEL" || type === "VIDEO") ? `Premium ${TYPE_LABEL[type]}` : (TYPE_LABEL[type] ?? title),
+      label:
+        premium && (type === "SOCIAL_REEL" || type === "VIDEO")
+          ? `Premium ${TYPE_LABEL[type]}`
+          : monthlyPlan && (type === "SOCIAL_REEL" || type === "VIDEO")
+            ? title
+            : (TYPE_LABEL[type] ?? title),
       quantity: qty,
     }));
   }
@@ -649,10 +669,17 @@ export function itemToDeliverables(item: AryeoOrderItem): ParsedDeliverable[] {
     if (i >= 0) { found.splice(i, 1); seen.delete("VIDEO"); }
   }
 
-  // No media keywords matched. A photo package/bundle (or interior/exterior-only
-  // coverage) is, at its core, photography → PHOTOS (AutoHDR). Fees/travel/misc
-  // fall through to OTHER.
+  // No media keywords matched. A content/branding session IS a video shoot —
+  // "Content Day", "Branding Shoot", monthly plans in freehand wording — and
+  // was falling through to OTHER, leaving 8 live personal-branding shoots with
+  // NO video deliverable at all (Aug 18 audit). Keep the full title as the
+  // label so the monthly detection reads it.
   if (found.length === 0) {
+    if (MONTHLY_PLAN_RE.test(title) || /\bfilm\s*session\b/i.test(title)) {
+      return [{ type: "VIDEO", label: title, quantity: qty }];
+    }
+    // A photo package/bundle (or interior/exterior-only coverage) is, at its
+    // core, photography → PHOTOS (AutoHDR). Fees/travel/misc → OTHER.
     if (/package|bundle|interior|exterior/i.test(title)) return [{ type: "PHOTOS", label: title, quantity: qty }];
     return [{ type: deliverableType(title), label: title, quantity: qty }];
   }
