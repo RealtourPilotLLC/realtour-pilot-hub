@@ -61,6 +61,15 @@ const RULES: Rule[] = [
   // Tilt is a CREDIT CARD — every Tilt bank line is a paydown of purchases we
   // already count on the card, so EXCLUDE (never "debt"). Capital One CARD too.
   { rx: /\btilt\b|tiltfin|capital one card|crcardpmt|\bcrcard\b|card pymt\b/i, category: "Credit-card paydown", kind: "EXCLUDE" },
+  // The SAME Capital One card, paid from the phone, arrives as "MOBILE
+  // PMTCAPITAL ONE CORPORATE ACH CAPITAL PMT" — no "CRCARDPMT", so the rule
+  // above missed it: two rows sat in review and a third was booked as personal
+  // SPEND ($1,013 total, Aug 2026 audit). The auto loan is "DIRECTPAY CAPITAL
+  // ONE AUTO CORPORATE ACH" and must keep its Car payment category, so this
+  // matches the MOBILE PMT wording only.
+  { rx: /mobile pmt\s*capital one/i, category: "Credit-card paydown", kind: "EXCLUDE" },
+  // Rocket Money's savings sweep moves money to his own savings — not spend.
+  { rx: /rocket savings/i, category: "Self-transfer (own accounts)", kind: "EXCLUDE" },
   { rx: /realtourpilo|realtour p\b|www\.realtourpilo/i, category: "Stripe funding / top-up", kind: "EXCLUDE" },
   { rx: /venmo/i, category: "Venmo (see Venmo rows)", kind: "EXCLUDE" },
 
@@ -87,6 +96,8 @@ const RULES: Rule[] = [
   { rx: /real estate social|realestatesocial/i, category: "Social media mgmt (resold)", kind: "BUSINESS" },
   { rx: /cubicasa/i, category: "Floorplans (CubiCasa)", kind: "BUSINESS" },
   { rx: /aryeo|\bpaddle\b|dropbox|openai|anthropic|\bslack\b|sqsp|squarespace|quo |openphone|base44|base vis|adobe|pixel film|intuit|skool|godaddy|namecheap|vercel|frame\.?io|\bcanva\b|capcut|hubspot|higgsfield|zapier|repuso|mailchimp|musicbed|otter\.?ai|grammarly|turboscribe|infinite creator|wix\.?com|\bloom\b|docusign|calendly|epidemic sound|artlist|matterport|google.{0,3}workspace|gsuite|midjourney|topaz|runway|riverside|\bplaud\b|motionvfx|twilio|railway|neon\.tech|\bionos\b/i, category: "Software & subscriptions", kind: "BUSINESS" },
+  // Fly.io — app hosting for the platform, same bucket as Vercel.
+  { rx: /fly\.io/i, category: "Software & subscriptions", kind: "BUSINESS" },
   { rx: /cardinal camera|b&h|bhphoto|adorama|apple stor|best buy|lensrentals|samys|officemax|office depot/i, category: "Gear & equipment", kind: "BUSINESS" },
   { rx: /overdraft|\bnsf\b|returned item|service charge|monthly service|maintenance fee|wire fee|intl purch|int'l purch|foreign trans/i, category: "Bank, card & overdraft fees", kind: "BUSINESS" },
 
@@ -99,12 +110,16 @@ const RULES: Rule[] = [
   { rx: FUEL_MERCHANTS, category: "Fuel & convenience", kind: "PERSONAL" },
   { rx: /doordash|\bdd \*|grubhub|uber ?eats|tequila|taco bell|mcdonald|wendy|chipotle|twocousin|kole|chophouse|panera|starbucks|dunkin|\bcafe\b|coffee|\bgrill\b|\bpizza\b|dominos|buffalo|shakeshac|auntieanne|pretzel|restaurant|\btst\*|chilis|randazzos|infinitos|saltpepp|micksalla|tropicals|greco|daily brew|lynn & gray|linden coffee|joe on the go|cabalar|rooster|kissel/i, category: "Restaurants & food delivery", kind: "PERSONAL" },
   { rx: /\bgiant\b|costco|\baldi\b|\bweis\b|whole foods|trader joe|wegmans|\bkroger\b|grocery|hungryroot|shipt|instacart|fox meadows/i, category: "Groceries", kind: "PERSONAL" },
+  // Bomberger's — local Lititz store; Plaid files it as groceries.
+  { rx: /bomberger/i, category: "Groceries", kind: "PERSONAL" },
   { rx: /amazon|\bamzn\b|\btarget\b|wal-?mart|\bwm supercenter\b|walmart|home ?depot|homegoods|home goods|at home|\bikea\b|\bkohls\b|marshalls|petsmart|minno|foot locker|\bdsw\b|old navy|little ?poppy|littlepoppy/i, category: "Shopping & household", kind: "PERSONAL" },
   { rx: /vzwrlss|verizon|\bat&?t\b|t-mobile|tmobile/i, category: "Phone", kind: "PERSONAL" },
   { rx: /ppl electric|elec bill|utilities|\belectric\b|\bgas co\b|\bwater\b|comcast|xfinity|whitetail disposal|disposal/i, category: "Utilities", kind: "PERSONAL" },
   { rx: /lentegrity/i, category: "Car payment", kind: "PERSONAL" },
   { rx: /progressive|geico|state farm|allstate|\bnjm\b|insurance/i, category: "Vehicle insurance", kind: "PERSONAL" },
   { rx: /enterprise rent|hertz|rock auto|\bcba\b|riptide|car wash|jiffy|valvoline|autozone|advance auto|\bptc\b|ez-?pass|e-zpass|turnpike|parking|city dog/i, category: "Vehicle (repair, rental, tolls)", kind: "PERSONAL" },
+  // Recurring personal apps that kept landing in review each month.
+  { rx: /monarch money|rocket money|pimeyes|kindle unltd|\bkindle\b/i, category: "Subscriptions & entertainment", kind: "PERSONAL" },
   { rx: /apple\.?com|itunes|netflix|hulu|disney|\bhbo\b|spotify|prime video|audible|paramount|peacock|youtube ?prem|ring ?ai|ring\.com/i, category: "Subscriptions & entertainment", kind: "PERSONAL" },
   { rx: /align counsel|\bcvs\b|walgreens|rite aid|pharmacy|\bdental\b|\bmedical\b|\bclinic\b|barber|\bsalon\b|\bnails\b|carpe|good ?and ?beautiful|rythm|dutch test|veneer|pop on|foot ?spa/i, category: "Health & personal care", kind: "PERSONAL" },
   { rx: /atm withdrawal|cash withdrawal|\batm\b|withdrawal/i, category: "Cash / ATM", kind: "PERSONAL" },
@@ -123,7 +138,19 @@ const RULES: Rule[] = [
 ];
 
 /** Classify one bank/card row. Inflows (amount<0) are income/movement, not spend. */
-export function classifyRow(name: string, amount: number, accountMask?: string): { category: string; kind: FinanceKind } {
+// Plaid's own category, used ONLY as a last resort when none of our rules match.
+// Deliberately limited to buckets that can only ever be PERSONAL: a local coffee
+// shop or corner grocery should not sit in review forever waiting to be named,
+// but nothing here may invent a BUSINESS cost (that would create a deduction
+// nobody approved). Anything ambiguous still falls through to REVIEW.
+const PLAID_FALLBACK: [RegExp, string][] = [
+  [/^FOOD_AND_DRINK_(COFFEE|FAST_FOOD|RESTAURANT)/i, "Restaurants & food delivery"],
+  [/^FOOD_AND_DRINK_GROCERIES/i, "Groceries"],
+  [/^ENTERTAINMENT_/i, "Subscriptions & entertainment"],
+  [/^PERSONAL_CARE_/i, "Health & personal care"],
+];
+
+export function classifyRow(name: string, amount: number, accountMask?: string, plaidDetail?: string | null): { category: string; kind: FinanceKind } {
   const hay = name || "";
   // (2026-07-23: Lauren's Venmo statements are now IMPORTED — pseudo-account
   // mask "venmoL" carries her per-payee truth, so her 4284 bank funding debits
@@ -178,6 +205,9 @@ export function classifyRow(name: string, amount: number, accountMask?: string):
     return { category: "Fuel & travel (business)", kind: "BUSINESS" };
   }
   for (const r of RULES) if (r.rx.test(hay)) return { category: r.category, kind: r.kind };
+  if (plaidDetail) {
+    for (const [rx, category] of PLAID_FALLBACK) if (rx.test(plaidDetail)) return { category, kind: "PERSONAL" };
+  }
   return { category: "Other / uncategorized", kind: "REVIEW" };
 }
 
@@ -186,11 +216,11 @@ export function classifyRow(name: string, amount: number, accountMask?: string):
 export async function categorizeAllPlaid(): Promise<{ updated: number }> {
   const rows = await prisma.plaidTransaction.findMany({
     where: { financeLocked: false },
-    select: { id: true, name: true, merchantName: true, amount: true, account: { select: { mask: true } } },
+    select: { id: true, name: true, merchantName: true, amount: true, categoryDetail: true, account: { select: { mask: true } } },
   });
   const groups = new Map<string, { kind: FinanceKind; category: string; ids: string[] }>();
   for (const r of rows) {
-    const { category, kind } = classifyRow(r.name || r.merchantName || "", r.amount, r.account?.mask ?? undefined);
+    const { category, kind } = classifyRow(r.name || r.merchantName || "", r.amount, r.account?.mask ?? undefined, r.categoryDetail);
     const key = `${kind}||${category}`;
     let g = groups.get(key);
     if (!g) { g = { kind, category, ids: [] }; groups.set(key, g); }

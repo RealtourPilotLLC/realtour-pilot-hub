@@ -34,18 +34,41 @@ const RAIL = {
 };
 
 // Books-health snapshot straight off the classified ledger.
+//
+// `lastSynced` is when WE last pulled — it is NOT whether the books are current,
+// and treating it as such is how a two-week hole stayed invisible: the nightly
+// pull kept reporting "synced today" while the newest entry in QuickBooks was
+// Aug 4 (Aug 2026 audit). `newestEntry` is the honest measure — the date of the
+// most recent transaction the books actually contain — and `bankSince` counts
+// the bank lines that have posted after it, i.e. the work still to be entered.
 async function booksHealth() {
   const from = new Date(`${YEAR_START}T00:00:00Z`);
-  const [grouped, needsReview, total, last] = await Promise.all([
+  const [grouped, needsReview, total, last, newest] = await Promise.all([
     prisma.qboTransaction.groupBy({ by: ["category"], where: { txnDate: { gte: from } }, _count: true, _sum: { amount: true } }),
     prisma.qboTransaction.count({ where: { txnDate: { gte: from }, needsReview: true } }),
     prisma.qboTransaction.count({ where: { txnDate: { gte: from } } }),
     prisma.qboTransaction.aggregate({ _max: { syncedAt: true } }),
+    prisma.qboTransaction.aggregate({ _max: { txnDate: true } }),
   ]);
+  const newestEntry = newest._max.txnDate as Date | null;
+  // Only real money movement counts as "waiting to be entered" — internal
+  // transfers and card paydowns aren't bookkeeping work.
+  const bankSince = newestEntry
+    ? await prisma.plaidTransaction.count({
+        where: { date: { gt: newestEntry }, pending: false, financeKind: { in: ["BUSINESS", "INCOME"] } },
+      })
+    : 0;
+  const daysBehind = newestEntry
+    ? Math.floor((Date.now() - newestEntry.getTime()) / 86_400_000)
+    : null;
   const cat: Record<string, { n: number; amount: number }> = {};
   for (const g of grouped) cat[g.category ?? "UNCLASSIFIED"] = { n: g._count, amount: g._sum.amount ?? 0 };
-  return { cat, needsReview, total, lastSynced: last._max.syncedAt as Date | null };
+  return { cat, needsReview, total, lastSynced: last._max.syncedAt as Date | null, newestEntry, daysBehind, bankSince };
 }
+
+// A week is the point where "I'll get to it" has become "the numbers on this
+// page are not the business" — expenses lag, so profit reads high until it lands.
+const BOOKS_STALE_DAYS = 7;
 
 // The owner's financial command center: revenue counted at the processor, the
 // true (categorized) P&L, cash & runway, business-vs-personal, and how clean the
@@ -123,6 +146,35 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
       />
       <div className="mx-auto max-w-5xl space-y-5 p-4 sm:p-6">
         <FinanceTabs tab="overview" show={show} />
+
+        {/* BOOKS BEHIND — the first thing on the page when the ledger has
+            stopped keeping up, because every number below it is then reading
+            high: revenue lands in the bank feed instantly, expenses only once
+            they're entered. Silent until it matters. */}
+        {health.daysBehind != null && health.daysBehind > BOOKS_STALE_DAYS && (
+          <div className="flex items-start gap-3 rounded-2xl border border-warning/40 bg-warning-soft p-4">
+            <AlertTriangle className="mt-0.5 size-5 shrink-0 text-warning" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-warning">
+                Your books are {health.daysBehind} days behind
+              </p>
+              <p className="mt-1 text-xs leading-relaxed text-foreground/85">
+                The last transaction in QuickBooks is dated{" "}
+                <strong>{health.newestEntry ? etDate(health.newestEntry) : "—"}</strong>
+                {health.bankSince > 0 && (
+                  <> and <strong>{health.bankSince}</strong> business transaction{health.bankSince === 1 ? " has" : "s have"} hit the
+                  bank since</>
+                )}
+                . The bank feed on this page is current, so the profit figures below are
+                running high until those are entered — the expenses simply aren&rsquo;t in yet.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-3 text-xs">
+                <Link href="/connections" className="font-medium text-brand hover:underline">Sync QuickBooks now</Link>
+                <Link href="/sales?tab=money" className="font-medium text-brand hover:underline">Review the bank feed</Link>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* HERO — the four numbers that matter most, 2026 year-to-date */}
         <KpiCards
@@ -283,15 +335,28 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
               <ScrollText className="size-4 text-brand" /> Books health
             </div>
             <span className="text-[11px] text-muted-2">
-              {health.lastSynced ? `synced ${etDate(health.lastSynced)}` : "not synced yet"}
+              {health.newestEntry
+                ? `entries through ${etDate(health.newestEntry)}`
+                : health.lastSynced ? `synced ${etDate(health.lastSynced)}` : "not synced yet"}
             </span>
           </div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             <Stat label="Ledger transactions" value={health.total.toLocaleString("en-US")} sub="classified in 2026" />
             <Stat label="Need review" value={health.needsReview.toLocaleString("en-US")}
               tone={health.needsReview > 0 ? "warning" : "success"} sub="flagged, not guessed" />
-            <Stat label="Reconciliation" value={health.needsReview > 0 ? "In progress" : "Clean"}
-              tone={health.needsReview > 0 ? "warning" : "success"} sub="bank feed vs. ledger" />
+            <Stat
+              label="Reconciliation"
+              value={
+                health.daysBehind != null && health.daysBehind > BOOKS_STALE_DAYS
+                  ? `${health.daysBehind}d behind`
+                  : health.needsReview > 0 ? "In progress" : "Clean"
+              }
+              tone={
+                (health.daysBehind != null && health.daysBehind > BOOKS_STALE_DAYS) || health.needsReview > 0
+                  ? "warning" : "success"
+              }
+              sub="bank feed vs. ledger"
+            />
           </div>
           <div className="mt-3 flex items-start gap-1.5 rounded-lg bg-surface-2/50 p-3 text-xs text-muted">
             {health.needsReview > 0 ? <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" /> : <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-success" />}
