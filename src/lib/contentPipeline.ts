@@ -516,7 +516,11 @@ export async function buildAgentProfileFromHistory(clientId: string): Promise<{ 
     },
   });
 
-  const raw = out.sections && typeof out.sections === "object" ? out.sections : {};
+  // The whole sections object can arrive JSON-stringified too (Erica, Aug 24 —
+  // the biggest-evidence client hit it). Coerce at both levels.
+  let raw: Record<string, unknown> = {};
+  if (out.sections && typeof out.sections === "object") raw = out.sections;
+  else if (typeof out.sections === "string") { try { const p = JSON.parse(out.sections); if (p && typeof p === "object") raw = p; } catch { raw = {}; } }
   const profile = await prisma.agentProfile.findUnique({ where: { clientId } });
   let sectionsFilled = 0, keysAdded = 0;
   const data: Record<string, string> = {};
