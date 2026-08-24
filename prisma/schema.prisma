@@ -358,6 +358,10 @@ model Project {
   status   ProjectStatus @default(BOOKED)
   priority Priority      @default(NORMAL)
 
+  // Content Creator Program: which monthly workspace this shoot belongs to.
+  // Plain ref (no FK) — a month record can never cascade into live projects.
+  contentMonthId String?
+
   // Property / order detail
   addressLine    String?
   city           String?
@@ -1604,4 +1608,127 @@ model HubDocument {
 
   @@index([createdAt])
   @@index([kind])
+}
+
+
+// ---------------------------------------------------------------------------
+// CONTENT CREATOR PROGRAM (monthly personal branding). The enrollment signal
+// is Client.socialClient/socialPlan (synced from Aryeo custom fields); these
+// models are the program's operating layer on top of the existing pipeline.
+// Content sessions ARE Aryeo appointments -> Projects (Project.contentMonthId).
+// ---------------------------------------------------------------------------
+
+model ContentEnrollment {
+  id               String    @id @default(cuid())
+  clientId         String    @unique // -> Client (plain ref)
+  package          String // Starter | Accelerator | Pro (display name, configurable)
+  videosPerMonth   Int
+  sessionsPerMonth Int
+  sessionHours     Float // per-session cap (2 or 4)
+  // Per-client workflow overrides (spec §3): the flags every engine must honor.
+  strategyCallRequired Boolean @default(true)
+  clientSuppliesTopics Boolean @default(false)
+  overridesJson        String? // anything rarer, JSON
+  status        String    @default("ACTIVE") // ACTIVE | PAUSED | ENDED
+  startedAt     DateTime?
+  packageSource String    @default("aryeo") // aryeo | manual (who set the package)
+  notes         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([status])
+}
+
+model ContentMonth {
+  id           String @id @default(cuid())
+  enrollmentId String
+  clientId     String // denormalized for cheap client-scoped reads
+  monthKey     String // "2026-08" (ET month)
+  videosOwed   Int
+  status       String  @default("OPEN") // OPEN | COMPLETED | SKIPPED | IMPORTED
+  historical   Boolean @default(false) // backfilled month — never went through the live workflow
+  // Strategy call (spec §16) — richer StrategyCall model arrives in Phase 3;
+  // these fields carry the state the dashboard needs now.
+  strategyCallStatus    String    @default("NOT_SCHEDULED") // NOT_REQUIRED | NOT_SCHEDULED | SCHEDULED | COMPLETED | SKIPPED
+  strategyCallAt        DateTime?
+  transcriptText        String? // manual paste until Meet automation lands
+  transcriptProcessedAt DateTime?
+  notes                 String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@unique([enrollmentId, monthKey])
+  @@index([clientId])
+  @@index([monthKey])
+}
+
+model ContentTopic {
+  id           String  @id @default(cuid())
+  enrollmentId String
+  clientId     String
+  monthId      String? // null = in the bank; set = planned for that month
+  title        String
+  concept      String? // short angle / why it works
+  pillar       String?
+  source       String  @default("staff") // ai | client | strategy_call | staff | import
+  status       String  @default("IDEA") // IDEA | RECOMMENDED | SAVED | SELECTED | SCRIPTED | FILMED | EDITING | DELIVERED | REJECTED | ARCHIVED
+  clientVisible Boolean @default(false) // shown in the portal (server-enforced)
+  scoresJson   String? // {trust, credibility, value, entertainment} High/Med/Low + rationale
+  clientWording String? // the client's original phrasing, preserved (spec §19)
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([clientId])
+  @@index([monthId])
+  @@index([status])
+}
+
+model ContentScript {
+  id           String  @id @default(cuid())
+  enrollmentId String
+  clientId     String
+  monthId      String?
+  topicId      String?
+  title        String
+  body         String // the full spoken script, clean
+  sectionsJson String? // {hook, rehook, buildup, payoff, cta} when structured
+  productionJson String? // optional B-roll/props/overlay ideas (spec §26) — not spoken copy
+  status       String  @default("DRAFT") // DRAFT | INTERNAL_REVIEW | APPROVED | CLIENT_VISIBLE | READY_TO_FILM
+  clientVisible Boolean @default(false)
+  source       String  @default("ai") // ai | manual | import
+  sourceFile   String? // original uploaded filename for backfilled scripts
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([clientId])
+  @@index([monthId])
+}
+
+// The living Agent Profile (spec §6): six editable sections stored as JSON so
+// the shape can evolve without migrations. Forms read/write named keys.
+model AgentProfile {
+  id               String    @id @default(cuid())
+  clientId         String    @unique
+  brandJson        String? // positioning, audience, message, pillars, goals
+  voiceJson        String? // tone dials, phrases, script-format preferences
+  contentPrefsJson String? // topics loved/banned, formats, comfort levels
+  productionJson   String? // locations, days, teleprompter, wardrobe
+  editingJson      String? // persistent edit style (distinct from job notes)
+  storiesJson      String? // stories, POVs, expertise, local knowledge
+  updatedAt        DateTime  @updatedAt
+  createdAt        DateTime  @default(now())
+}
+
+// Chronological program notes. intelligence=true rows feed AI context;
+// ordinary operational notes never pollute prompts (spec §6.10).
+model ContentNote {
+  id           String   @id @default(cuid())
+  clientId     String
+  body         String
+  authorName   String?
+  intelligence Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  @@index([clientId])
 }

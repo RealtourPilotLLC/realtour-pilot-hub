@@ -7,7 +7,7 @@ export type PageKey =
   | "dashboard" | "tasks" | "pipeline" | "schedule" | "map"
   | "communications" | "clients" | "team" | "upload" | "editing" | "sales"
   | "billing" | "catalog" | "payouts" | "marketing" | "resources" | "assistant"
-  | "training" | "feedback" | "connections" | "users" | "shoot" | "mypay" | "review" | "trends" | "day" | "settings";
+  | "training" | "feedback" | "connections" | "users" | "shoot" | "mypay" | "review" | "trends" | "day" | "settings" | "content";
 // NOTE: "map", "billing", "payouts", "team" survive in this type only so stored
 // per-user permission JSON keeps resolving and so canAccess() can treat them as
 // legacy grants on the pages they merged into (see canAccess). They no longer
@@ -41,6 +41,9 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   { key: "mypay", label: "My Pay", href: "/my-pay" },
   { key: "communications", label: "Communications", href: "/communications" },
   { key: "clients", label: "Clients", href: "/clients" },
+  // Content Creator Program — monthly personal-branding clients: enrollment,
+  // month workspaces, topics, scripts, agent profiles. Owner/admin.
+  { key: "content", label: "Content Program", href: "/content" },
   { key: "upload", label: "Upload Portal", href: "/upload" },
   { key: "editing", label: "Editor Queue", href: "/editing" },
   // "sales" is the merged Finance hub — Revenue (old /sales) + Unpaid (old
@@ -85,7 +88,7 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
   // grants onto schedule/sales/users below.
   ADMIN: [
     "dashboard", "tasks", "review", "pipeline", "schedule", "shoot",
-    "communications", "clients", "users", "upload", "editing", "sales",
+    "communications", "clients", "content", "users", "upload", "editing", "sales",
     "catalog", "resources", "training", "assistant", "feedback", "trends", "settings",
   ],
   // No "dashboard": the overview page carries ops counts + owner money strips

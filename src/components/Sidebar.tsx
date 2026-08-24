@@ -79,6 +79,7 @@ const SECTIONS: NavSection[] = [
       // Client Assets is a TAB on the Clients page (header action), not a nav
       // item — Jordan: "client assets should be in the clients tab".
       { label: "Clients", href: "/clients", icon: Users, key: "clients" },
+      { label: "Content Program", href: "/content", icon: Clapperboard, key: "content" },
       // People = the merged Team (workload cards, admin-visible) + Logins &
       // access (AppUser allowlist, owner-only) hub. Lives in Operations next to
       // Clients — both are "who we work with" directories, and it reads cleaner

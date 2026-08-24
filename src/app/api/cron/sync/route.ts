@@ -41,6 +41,13 @@ export async function GET(req: NextRequest) {
     const { ensureVideoClientAssetFolders } = await import("@/lib/clientAssets");
     return ensureVideoClientAssetFolders();
   });
+  // Content Creator Program: enrollments follow the Aryeo social flag, every
+  // active client gets the current month's workspace, and monthly-plan shoots
+  // attach to their month.
+  await step("contentProgram", async () => {
+    const { contentProgramSweep } = await import("@/lib/contentProgram");
+    return contentProgramSweep();
+  });
   // Re-evaluate project statuses (Aryeo has no media-upload webhook, so this is
   // how a shoot's media gets detected → SHOT/REVIEW) and (re)generate the QC /
   // delivery tasks for active jobs. Bounded to the active set, so it stays cheap.
