@@ -195,13 +195,22 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
 // 2. Script generation — Hook → Re-hook → Build-up → Payoff → CTA/Close.
 // One script per SELECTED topic that doesn't have one yet. INTERNAL_REVIEW.
 // ---------------------------------------------------------------------------
+// Jordan's house script format, learned from his real documents (e.g.
+// "Bernadette Rabel August 2026 Social Content Scripts"): numbered title,
+// Category line, then HOOK / TALKING POINT 1 - RE-HOOK / TALKING POINT 2 -
+// SETUP / TALKING POINT 3 - PAYOFF / CALLBACK / CTA — written in short
+// spoken-breath lines, with $[PRICE]-style placeholders for numbers nobody
+// has confirmed yet, and an optional "Production note:" for filming needs.
 const SCRIPT_SYSTEM = (context: string) =>
-  "You write short-form video scripts (20-35 seconds spoken) for a real-estate agent's personal-branding program. " +
-  "Structure EXACTLY: HOOK (scroll-stopping opener — curiosity, tension, contrast, or a strong POV; never 'Hey guys', 'Did you know', 'Here are three tips'), " +
-  "RE-HOOK (deepen the curiosity — escalate, tease the real answer, challenge an assumption; NOT fact #1), " +
-  "BUILD-UP (the context/story/reasoning that develops the argument), " +
-  "PAYOFF (deliver what the hook promised — the insight or lesson), " +
-  "CTA/CLOSE (finish intentionally — callback, takeaway, conversation starter, or soft CTA; no hard sell unless the context demands it). " +
+  "You write short-form video scripts (20-35 seconds spoken) for a real-estate agent's personal-branding program, in Realtour Pilot's exact house format. " +
+  "Sections, in order: " +
+  "HOOK (scroll-stopping opener — curiosity, tension, contrast, or a strong POV; never 'Hey guys', 'Did you know', 'Here are three tips'), " +
+  "TALKING POINT 1 - RE-HOOK (deepen the curiosity — escalate, tease the real answer, challenge an assumption; NOT fact #1), " +
+  "TALKING POINT 2 - SETUP (the context/story/reasoning that develops the argument), " +
+  "TALKING POINT 3 - PAYOFF (deliver what the hook promised — the insight or lesson), " +
+  "CALLBACK / CTA (finish intentionally — callback to the hook, takeaway, conversation starter, or soft CTA; no hard sell unless the context demands it). " +
+  "WRITING STYLE: short spoken-breath lines with a line break after each phrase — the way a person actually talks to camera — not paragraphs. " +
+  "Use bracketed placeholders like $[PRICE], $[PAYMENT], [NEIGHBORHOOD] for any figure or detail that must be confirmed before filming, and mention it in productionIdeas. " +
   "Voice: conversational, confident, direct, specific, easy to say ALOUD — the agent's strongest self, never a copywriter. " +
   "Ground every claim in the agent's real context below; NEVER invent stories, opinions, or numbers. Clarity beats cleverness. " +
   "\n\nAGENT CONTEXT:\n" + context;
@@ -218,8 +227,23 @@ const SCRIPT_SCHEMA = {
 
 type ScriptSections = { hook: string; rehook: string; buildup: string; payoff: string; cta: string; productionIdeas?: string[] };
 
-function sectionsToBody(s: ScriptSections): string {
-  return [s.hook, s.rehook, s.buildup, s.payoff, s.cta].map((x) => x.trim()).filter(Boolean).join("\n\n");
+// Keep an existing "Category:" line through AI revisions.
+function categoryOf(body: string): string | null {
+  const m = body.match(/^Category:\s*(.+)$/m);
+  return m ? m[1].trim() : null;
+}
+
+// Render with the house labels so a draft reads exactly like Jordan's own
+// script documents.
+function sectionsToBody(s: ScriptSections, category?: string | null): string {
+  const parts: string[] = [];
+  if (category) parts.push(`Category: ${category}`);
+  const pairs: [string, string][] = [
+    ["HOOK", s.hook], ["TALKING POINT 1 - RE-HOOK", s.rehook], ["TALKING POINT 2 - SETUP", s.buildup],
+    ["TALKING POINT 3 - PAYOFF", s.payoff], ["CALLBACK / CTA", s.cta],
+  ];
+  for (const [label, text] of pairs) if (text?.trim()) parts.push(`${label}\n${text.trim()}`);
+  return parts.join("\n\n");
 }
 
 export async function generateScriptsForMonth(monthId: string): Promise<{ generated: number; skipped: number }> {
@@ -260,7 +284,7 @@ export async function generateScriptsForMonth(monthId: string): Promise<{ genera
         data: {
           enrollmentId: month.enrollmentId, clientId: month.clientId, monthId, topicId: t.id,
           title: t.title,
-          body: sectionsToBody(s),
+          body: sectionsToBody(s, t.pillar),
           sectionsJson: JSON.stringify({ hook: s.hook, rehook: s.rehook, buildup: s.buildup, payoff: s.payoff, cta: s.cta }),
           productionJson: s.productionIdeas?.length ? JSON.stringify(s.productionIdeas.slice(0, 10)) : null,
           status: "INTERNAL_REVIEW",
@@ -303,7 +327,7 @@ export async function reviseScriptWithInstructions(scriptId: string, instruction
   await prisma.contentScript.update({
     where: { id: scriptId },
     data: {
-      body: sectionsToBody(s),
+      body: sectionsToBody(s, categoryOf(script.body)),
       sectionsJson: JSON.stringify({ hook: s.hook, rehook: s.rehook, buildup: s.buildup, payoff: s.payoff, cta: s.cta }),
       status: "INTERNAL_REVIEW",
     },
