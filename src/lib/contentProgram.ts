@@ -43,10 +43,13 @@ export function monthLabel(monthKey: string): string {
 // longer flagged get PAUSED, never deleted (history stays).
 // ---------------------------------------------------------------------------
 export async function syncEnrollments(): Promise<{ created: number; updated: number; paused: number }> {
-  const social = await prisma.client.findMany({
+  const social = (await prisma.client.findMany({
     where: { socialClient: true },
-    select: { id: true, socialPlan: true },
-  });
+    select: { id: true, socialPlan: true, email: true, name: true },
+  // Jordan's OWN client record carries the Aryeo Social Client flag (testing),
+  // but the owner is not a program client — removed Aug 24 at his request and
+  // excluded here so the sweep can never quietly re-enroll him.
+  })).filter((c) => c.email?.toLowerCase() !== "info@realtourpilot.com" && c.name !== "Jordan Spackman");
   const existing = await prisma.contentEnrollment.findMany({
     select: { id: true, clientId: true, package: true, status: true, packageSource: true, statusManual: true },
   });
