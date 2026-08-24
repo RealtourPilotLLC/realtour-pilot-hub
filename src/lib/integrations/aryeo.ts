@@ -1463,6 +1463,12 @@ export async function syncAryeoSocialPlans(): Promise<{ updated: number; matched
   const { prisma } = await import("@/lib/prisma");
   const inc = "customer_team_memberships.user.custom_field_entries.custom_field";
   const byEmail = new Map<string, { socialClient: boolean; socialPlan: string | null }>();
+  // Every customer-user email the pull saw, social fields or not. REMOVING a
+  // client from the program in Aryeo DELETES their custom-field entries rather
+  // than setting "Social Client" to No (verified Aug 24: Alex/Tony/Matthew
+  // stayed flagged forever because extractSocial returned null and they never
+  // entered byEmail). Present-but-fieldless + previously flagged = removed.
+  const seen = new Set<string>();
 
   for (let page = 1; page <= 30; page++) {
     const r = await aryeoRequest<{ data?: { email?: string }[]; meta?: { last_page?: number } }>(
@@ -1473,6 +1479,7 @@ export async function syncAryeoSocialPlans(): Promise<{ updated: number; matched
     for (const cu of rows) {
       const email = (cu.email ?? "").toLowerCase();
       if (!email) continue;
+      seen.add(email);
       const vals = extractSocial(cu);
       if (vals) byEmail.set(email, vals);
     }
@@ -1481,21 +1488,36 @@ export async function syncAryeoSocialPlans(): Promise<{ updated: number; matched
   }
 
   const clients = await prisma.client.findMany({
-    where: { email: { not: null } },
-    select: { id: true, email: true, socialClient: true, socialPlan: true },
+    where: { OR: [{ email: { not: null } }, { backupEmail: { not: null } }] },
+    select: { id: true, email: true, backupEmail: true, socialClient: true, socialPlan: true },
   });
   let updated = 0;
   let matched = 0;
   for (const cl of clients) {
-    const v = byEmail.get((cl.email ?? "").toLowerCase());
-    if (!v) continue;
-    matched++;
-    if (cl.socialClient === v.socialClient && cl.socialPlan === v.socialPlan) continue;
-    await prisma.client.update({
-      where: { id: cl.id },
-      data: { socialClient: v.socialClient, socialPlan: v.socialPlan },
-    });
-    updated++;
+    // A merged client may live under either address in Aryeo.
+    const emails = [cl.email, cl.backupEmail].filter(Boolean).map((e) => e!.toLowerCase());
+    const v = emails.map((e) => byEmail.get(e)).find(Boolean);
+    if (v) {
+      matched++;
+      if (cl.socialClient === v.socialClient && cl.socialPlan === v.socialPlan) continue;
+      await prisma.client.update({
+        where: { id: cl.id },
+        data: { socialClient: v.socialClient, socialPlan: v.socialPlan },
+      });
+      updated++;
+      continue;
+    }
+    // Flagged with us, present in Aryeo, but no social fields anymore → they
+    // were removed from the program. Deliberately requires POSITIVE presence:
+    // a client absent from the pull entirely is left untouched, so a partial
+    // Aryeo response can never mass-unflag the roster.
+    if (cl.socialClient && emails.some((e) => seen.has(e))) {
+      await prisma.client.update({
+        where: { id: cl.id },
+        data: { socialClient: false, socialPlan: null },
+      });
+      updated++;
+    }
   }
   return { updated, matched };
 }

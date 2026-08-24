@@ -8,12 +8,30 @@ import { contentProgramSweep, PACKAGE_RULES } from "@/lib/contentProgram";
 type Result = { ok: boolean; message: string };
 const fail = (e: unknown): Result => ({ ok: false, message: e instanceof Error ? e.message : "Something went wrong." });
 
-// Re-run enrollment/month/project sync on demand (the cron also runs it nightly).
+// Re-run enrollment/month/project sync on demand. The button pulls the social
+// flags FROM ARYEO first — without that, "Sync now" only re-read our local
+// copy and a client Jordan removed in Aryeo stayed ACTIVE until the daily
+// cron (Aug 24: Alex/Tony/Matthew removals looked like the button was broken).
 export async function runProgramSweep(): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
+  let flagNote = "";
+  try {
+    const { syncAryeoSocialPlans } = await import("@/lib/integrations/aryeo");
+    const f = await syncAryeoSocialPlans();
+    flagNote = f.updated > 0 ? `${f.updated} plan change${f.updated === 1 ? "" : "s"} from Aryeo · ` : "";
+  } catch {
+    flagNote = "Aryeo unreachable — used last-known flags · ";
+  }
   const r = await contentProgramSweep();
   revalidatePath("/content");
-  return { ok: true, message: `Synced — ${r.created} enrolled, ${r.monthsCreated} months created, ${r.projectsAttached} shoots attached.` };
+  const parts = [
+    r.created > 0 ? `${r.created} enrolled` : null,
+    r.paused > 0 ? `${r.paused} paused` : null,
+    r.updated > 0 ? `${r.updated} updated` : null,
+    r.monthsCreated > 0 ? `${r.monthsCreated} months created` : null,
+    r.projectsAttached > 0 ? `${r.projectsAttached} shoots attached` : null,
+  ].filter(Boolean);
+  return { ok: true, message: `${flagNote}${parts.length ? parts.join(" · ") : "everything already in sync"}.` };
 }
 
 // ---------------------------------------------------------------------------
