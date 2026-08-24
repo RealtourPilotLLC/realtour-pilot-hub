@@ -387,3 +387,76 @@ export async function saveStrategyBackfill(
   revalidatePath("/content");
   return { ok: true, message: "Strategy saved as this client's active strategy." };
 }
+
+// ---------------------------------------------------------------------------
+// Transcript → topics/intel, topics → scripts, and the approve/revise loop.
+// Human-review rule: everything the AI makes stays INTERNAL_REVIEW until
+// Jordan approves it; nothing auto-delivers.
+// ---------------------------------------------------------------------------
+export async function analyzeTranscript(monthId: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const { processMonthTranscript, generateScriptsForMonth } = await import("@/lib/contentPipeline");
+    const r = await processMonthTranscript(monthId);
+    const g = await generateScriptsForMonth(monthId);
+    revalidatePath("/content");
+    return {
+      ok: true,
+      message: `${r.confirmedTopics} topic${r.confirmedTopics === 1 ? "" : "s"} confirmed · ${r.futureIdeas} saved for later · ${r.intelNotes} things learned about the client · ${g.generated} script${g.generated === 1 ? "" : "s"} drafted for your review.`,
+    };
+  } catch (e) { return fail(e); }
+}
+
+export async function generateMonthScripts(monthId: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const { generateScriptsForMonth } = await import("@/lib/contentPipeline");
+    const g = await generateScriptsForMonth(monthId);
+    revalidatePath("/content");
+    return { ok: true, message: g.generated ? `${g.generated} script${g.generated === 1 ? "" : "s"} drafted — review below.` : "Every selected topic already has a script." };
+  } catch (e) { return fail(e); }
+}
+
+export async function approveScript(scriptId: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  await prisma.contentScript.update({ where: { id: scriptId }, data: { status: "READY_TO_FILM" } });
+  revalidatePath("/content");
+  return { ok: true, message: "Approved — ready to film." };
+}
+
+export async function reviseScriptAI(scriptId: string, instructions: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  if (!instructions.trim()) return { ok: false, message: "Tell the AI what to change first." };
+  try {
+    const { reviseScriptWithInstructions } = await import("@/lib/contentPipeline");
+    await reviseScriptWithInstructions(scriptId, instructions);
+    revalidatePath("/content");
+    return { ok: true, message: "Revised — take another look." };
+  } catch (e) { return fail(e); }
+}
+
+export async function saveScriptText(scriptId: string, body: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  const text = body.trim().slice(0, 20_000);
+  if (!text) return { ok: false, message: "The script can't be empty." };
+  // A manual edit replaces the body; the section breakdown no longer matches,
+  // so it's cleared rather than left lying about the content.
+  await prisma.contentScript.update({
+    where: { id: scriptId },
+    data: { body: text, sectionsJson: null, source: "manual" },
+  });
+  revalidatePath("/content");
+  return { ok: true, message: "Saved." };
+}
+
+// Pull Calendly bookings + Drive transcripts on demand (cron does both too).
+export async function syncCallsNow(): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  const { syncStrategyCallsFromCalendly, sweepDriveTranscripts } = await import("@/lib/contentCalls");
+  const cal = await syncStrategyCallsFromCalendly().catch((e) => ({ skipped: e instanceof Error ? e.message : "failed" }));
+  const drv = await sweepDriveTranscripts().catch((e) => ({ skipped: e instanceof Error ? e.message : "failed" }));
+  revalidatePath("/content");
+  const calMsg = "skipped" in cal ? `Calendly: ${cal.skipped}` : `Calendly: ${cal.stamped} scheduled, ${cal.completed} completed${cal.canceled ? `, ${cal.canceled} canceled` : ""}`;
+  const drvMsg = "skipped" in drv ? `Drive: ${drv.skipped}` : `Drive: ${drv.ingested} transcript${drv.ingested === 1 ? "" : "s"} pulled in`;
+  return { ok: true, message: `${calMsg} · ${drvMsg}.` };
+}

@@ -48,6 +48,34 @@ export async function GET(req: NextRequest) {
     const { contentProgramSweep } = await import("@/lib/contentProgram");
     return contentProgramSweep();
   });
+  // Strategy calls: Calendly bookings stamp months, Drive transcripts ingest,
+  // fresh transcripts auto-analyze into topics + draft scripts (all of which
+  // wait in INTERNAL_REVIEW — the human-review rule holds), and on the 1st the
+  // booking-link drafts are minted for clients who haven't scheduled.
+  await step("contentCalls", async () => {
+    const { syncStrategyCallsFromCalendly, sweepDriveTranscripts, mintStrategyCallInvites } = await import("@/lib/contentCalls");
+    const cal = await syncStrategyCallsFromCalendly().catch(() => ({ skipped: "error" }));
+    const drv = await sweepDriveTranscripts().catch(() => ({ skipped: "error" }));
+    const inv = await mintStrategyCallInvites().catch(() => ({ minted: 0 }));
+    // Auto-process any transcript that landed without analysis (Drive sweep or
+    // an unanalyzed paste): topics + scripts, all held for review.
+    const { prisma } = await import("@/lib/prisma");
+    const fresh = await prisma.contentMonth.findMany({
+      where: { transcriptText: { not: null }, transcriptProcessedAt: null, historical: false },
+      select: { id: true },
+      take: 5,
+    });
+    let processed = 0;
+    for (const m of fresh) {
+      try {
+        const { processMonthTranscript, generateScriptsForMonth } = await import("@/lib/contentPipeline");
+        await processMonthTranscript(m.id);
+        await generateScriptsForMonth(m.id);
+        processed++;
+      } catch { /* one bad transcript must not stop the rest */ }
+    }
+    return { calendly: cal, drive: drv, invites: inv.minted, processed };
+  });
   // Re-evaluate project statuses (Aryeo has no media-upload webhook, so this is
   // how a shoot's media gets detected → SHOT/REVIEW) and (re)generate the QC /
   // delivery tasks for active jobs. Bounded to the active set, so it stays cheap.

@@ -56,7 +56,22 @@ upload PDF/Word, AI reads it, month confirmed by staff.**
 8. **Later** — publishing metadata, performance loop, content library search.
 
 ## D. Dependencies on Jordan
-- **Google re-consent** (one-time) — gates Meet transcript automation AND magic-link/invite
-  emails (gmail.send). Password login itself works without it.
-- **Calendly link** — the booking URL(s) to embed for strategy calls.
+- **Google re-consent** (one-time) — gates the Drive transcript sweep AND magic-link/invite
+  emails (gmail.send). Password login + transcript paste work without it.
+- **Calendly personal access token** — Connections → Calendly card → paste. (In Calendly:
+  Integrations → API & webhooks → Personal access tokens → Generate.) Booking link itself
+  is already wired: https://calendly.com/realtourpilot-info/content-program-strategy-call
 - Portal invites — per client, when he's ready.
+
+## E. Phase 3-4 status (built 2026-08-24)
+- Calendly client (read-only) + Connections card; booking sweep stamps months
+  SCHEDULED/COMPLETED, honors cancellations, never downgrades hand-set statuses.
+- Drive transcript sweep (owner token, gated on Drive scope): transcript docs → month,
+  matched by client name in title or same-ET-day as the Calendly booking.
+- First-of-month invite drafts (comms_followup task w/ ready-to-send message + link,
+  deduped per month). Draft-then-send preserved.
+- AI pipeline: processMonthTranscript (confirmed topics → SELECTED, future → bank,
+  rejected recorded, profile intel → intelligence notes, location/todos → month note)
+  + generateScriptsForMonth (Hook→Re-hook→Build-up→Payoff→CTA, INTERNAL_REVIEW)
+  + reviseScriptWithInstructions. Cron auto-processes fresh transcripts; everything
+  waits for Jordan's approval (approve / AI-revise / edit-myself loop on the workspace).

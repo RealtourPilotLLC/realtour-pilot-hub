@@ -1651,6 +1651,10 @@ model ContentMonth {
   // these fields carry the state the dashboard needs now.
   strategyCallStatus    String    @default("NOT_SCHEDULED") // NOT_REQUIRED | NOT_SCHEDULED | SCHEDULED | COMPLETED | SKIPPED
   strategyCallAt        DateTime?
+  // Calendly linkage: the booked event's uri (dedupe + cancel detection) and
+  // the transcript source doc, so a call is never ingested twice.
+  calendlyEventUri      String?
+  transcriptSource      String? // drive:<fileId> | paste
   transcriptText        String? // manual paste until Meet automation lands
   transcriptProcessedAt DateTime?
   notes                 String?

@@ -2,13 +2,14 @@
 
 import { useRef, useState, useTransition } from "react";
 import {
-  CalendarClock, Check, Compass, FileUp, Loader2, NotebookPen, Plus, Settings2, Sparkles, Trash2, Upload, X,
+  CalendarClock, Check, Compass, FileText, FileUp, Loader2, NotebookPen, Plus, Settings2, Sparkles, Trash2, Upload, X,
 } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import {
-  addContentNote, addTopic, previewScriptBackfill, previewStrategyBackfill, saveEnrollmentSettings, saveMonthTranscript,
-  saveProfileSection, saveScriptBackfill, saveStrategyBackfill, setStrategyCallStatus, setTopicStatus,
+  addContentNote, addTopic, analyzeTranscript, approveScript, previewScriptBackfill, previewStrategyBackfill,
+  reviseScriptAI, saveEnrollmentSettings, saveMonthTranscript, saveProfileSection, saveScriptBackfill,
+  saveScriptText, saveStrategyBackfill, setStrategyCallStatus, setTopicStatus,
   type BackfillPreview, type StrategyPreview,
 } from "@/app/content/actions";
 
@@ -25,9 +26,10 @@ const CALL_STEPS: { key: string; label: string }[] = [
 ];
 
 export function StrategyCallCard({
-  monthId, status, at, hasTranscript, required,
+  monthId, status, at, hasTranscript, transcriptProcessed, required, bookingUrl,
 }: {
-  monthId: string; status: string; at: string | null; hasTranscript: boolean; required: boolean;
+  monthId: string; status: string; at: string | null; hasTranscript: boolean;
+  transcriptProcessed: boolean; required: boolean; bookingUrl: string;
 }) {
   const [cur, setCur] = useState(status);
   const [showPaste, setShowPaste] = useState(false);
@@ -58,9 +60,37 @@ export function StrategyCallCard({
       </div>
       {at && <p className="mt-2 text-xs text-muted">Booked for {new Date(at).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} ET</p>}
 
+      {/* The client's booking link — copy it into a text, or it goes out
+          automatically as a drafted invite on the 1st. */}
+      <div className="mt-3 flex items-center gap-2 border-t border-border pt-3">
+        <a href={bookingUrl} target="_blank" rel="noopener noreferrer" className="truncate text-xs font-medium text-brand hover:underline">
+          {bookingUrl.replace("https://", "")}
+        </a>
+        <button
+          onClick={() => { navigator.clipboard?.writeText(bookingUrl); setNote("Booking link copied."); }}
+          className="shrink-0 rounded-md border border-border px-2 py-0.5 text-[10px] font-medium text-muted hover:bg-surface-2"
+        >
+          Copy link
+        </button>
+      </div>
+
       <div className="mt-3 border-t border-border pt-3">
         {hasTranscript && !showPaste ? (
-          <p className="text-xs text-success"><Check className="mr-1 inline size-3.5" />Transcript on file — topic extraction arrives in the next build phase.</p>
+          transcriptProcessed ? (
+            <p className="text-xs text-success"><Check className="mr-1 inline size-3.5" />Transcript analyzed — topics and scripts are below.</p>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-xs text-success"><Check className="mr-1 inline size-3.5" />Transcript on file.</p>
+              <button disabled={busy} onClick={() => start(async () => {
+                setNote("Analyzing the call — this takes a moment…");
+                const r = await analyzeTranscript(monthId);
+                setNote(r.message);
+              })} className="inline-flex items-center gap-1 rounded-md bg-brand px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50">
+                {busy ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}
+                Analyze → topics + scripts
+              </button>
+            </div>
+          )
         ) : showPaste ? (
           <div>
             <AutoTextarea value={transcript} onChange={(e) => setTranscript(e.target.value)} minRows={4}
@@ -496,5 +526,121 @@ export function StrategyCard({
       )}
       {note && <p className="mt-2 text-[11px] text-muted">{note}</p>}
     </Section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Script review — Jordan's loop: approve each script, ask the AI to revise
+// with instructions, or edit it by hand. Everything stays internal until
+// approved; the portal (Phase 5) will only ever show approved scripts.
+// ---------------------------------------------------------------------------
+export type ScriptRow = {
+  id: string; title: string; body: string; status: string; source: string;
+  sourceFile: string | null; productionIdeas: string[];
+};
+
+const SCRIPT_STATUS: Record<string, { label: string; tone: "warn" | "ok" | "muted" }> = {
+  DRAFT: { label: "draft", tone: "muted" },
+  INTERNAL_REVIEW: { label: "needs your review", tone: "warn" },
+  APPROVED: { label: "approved", tone: "ok" },
+  CLIENT_VISIBLE: { label: "client visible", tone: "ok" },
+  READY_TO_FILM: { label: "ready to film", tone: "ok" },
+};
+
+export function ScriptReview({ scripts }: { scripts: ScriptRow[] }) {
+  return (
+    <div className="divide-y divide-border">
+      {scripts.map((s) => <ScriptItem key={s.id} script={s} />)}
+      {scripts.length === 0 && <p className="px-5 py-4 text-sm text-muted">No scripts for this month yet — analyze the call transcript or add topics and generate.</p>}
+    </div>
+  );
+}
+
+function ScriptItem({ script }: { script: ScriptRow }) {
+  const [mode, setMode] = useState<"read" | "revise" | "edit">("read");
+  const [body, setBody] = useState(script.body);
+  const [instructions, setInstructions] = useState("");
+  const [note, setNote] = useState<string | null>(null);
+  const [busy, start] = useTransition();
+  const st = SCRIPT_STATUS[script.status] ?? { label: script.status.toLowerCase(), tone: "muted" as const };
+  const needsReview = script.status === "INTERNAL_REVIEW" || script.status === "DRAFT";
+
+  return (
+    <details className="group px-5 py-3" open={needsReview}>
+      <summary className="flex cursor-pointer items-center gap-2 marker:content-none">
+        <FileText className="size-3.5 shrink-0 text-muted-2" />
+        <span className="min-w-0 flex-1 truncate text-sm font-medium">{script.title}</span>
+        <span className={
+          st.tone === "warn" ? "rounded bg-warning-soft px-1.5 py-0.5 text-[10px] font-medium text-warning"
+          : st.tone === "ok" ? "rounded bg-success-soft px-1.5 py-0.5 text-[10px] font-medium text-success"
+          : "rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted"
+        }>{st.label}</span>
+      </summary>
+
+      <div className="mt-2">
+        {mode === "edit" ? (
+          <div>
+            <AutoTextarea value={body} onChange={(e) => setBody(e.target.value)} minRows={6}
+              className="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-xs leading-relaxed outline-none focus:border-brand" />
+            <div className="mt-1.5 flex gap-1.5">
+              <button disabled={busy} onClick={() => start(async () => {
+                const r = await saveScriptText(script.id, body);
+                setNote(r.message); if (r.ok) setMode("read");
+              })} className="rounded-md bg-brand px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50">Save</button>
+              <button onClick={() => { setBody(script.body); setMode("read"); }} className="rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2">Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/85">{body}</p>
+        )}
+
+        {script.productionIdeas.length > 0 && mode === "read" && (
+          <div className="mt-2 rounded-lg bg-surface-2/60 px-2.5 py-1.5">
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-2">Production ideas (not spoken)</div>
+            <ul className="mt-0.5 list-inside list-disc text-[11px] text-muted">
+              {script.productionIdeas.map((p, i) => <li key={i}>{p}</li>)}
+            </ul>
+          </div>
+        )}
+
+        {mode === "revise" && (
+          <div className="mt-2">
+            <AutoTextarea value={instructions} onChange={(e) => setInstructions(e.target.value)} minRows={2}
+              placeholder="Tell the AI what to change — e.g. 'hook is too generic, lead with the 1987 kitchen story' or 'shorter, punchier, drop the stats'…"
+              className="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-xs outline-none focus:border-brand" />
+            <div className="mt-1.5 flex gap-1.5">
+              <button disabled={busy || !instructions.trim()} onClick={() => start(async () => {
+                setNote("Revising…");
+                const r = await reviseScriptAI(script.id, instructions);
+                setNote(r.message);
+                if (r.ok) { setMode("read"); setInstructions(""); }
+              })} className="inline-flex items-center gap-1 rounded-md bg-brand px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50">
+                {busy ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />} Revise
+              </button>
+              <button onClick={() => setMode("read")} className="rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2">Cancel</button>
+            </div>
+          </div>
+        )}
+
+        {mode === "read" && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            {script.status !== "READY_TO_FILM" && (
+              <button disabled={busy} onClick={() => start(async () => { const r = await approveScript(script.id); setNote(r.ok ? null : r.message); })}
+                className="inline-flex items-center gap-1 rounded-md bg-success/15 px-2.5 py-1 text-xs font-semibold text-success hover:bg-success/25 disabled:opacity-50">
+                <Check className="size-3" /> Approve
+              </button>
+            )}
+            <button onClick={() => setMode("revise")} className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
+              <Sparkles className="size-3" /> Ask AI to revise
+            </button>
+            <button onClick={() => setMode("edit")} className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
+              Edit myself
+            </button>
+            {script.sourceFile && <span className="text-[10px] text-muted-2">from {script.sourceFile}</span>}
+          </div>
+        )}
+        {note && <p className="mt-1.5 text-[11px] text-muted">{note}</p>}
+      </div>
+    </details>
   );
 }

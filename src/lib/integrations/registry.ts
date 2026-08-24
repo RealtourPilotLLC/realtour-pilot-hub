@@ -216,6 +216,25 @@ export const PROVIDERS: ProviderDef[] = [
     ],
     ready: true,
   },
+  {
+    id: "calendly",
+    name: "Calendly",
+    blurb: "Strategy-call bookings for the Content Program",
+    segment: "Operations",
+    authType: "apikey",
+    icon: "CalendarClock",
+    color: "#006bff",
+    keyLabel: "Personal access token",
+    keyHelp:
+      "In Calendly: Integrations \u2192 API & webhooks \u2192 Personal access tokens \u2192 Generate. Paste the token.",
+    docsUrl: "https://developer.calendly.com/",
+    capabilities: [
+      "Reads content-program strategy-call bookings",
+      "Stamps each client's month as Scheduled automatically",
+      "Matches the booked Meet to its Drive transcript",
+    ],
+    ready: true,
+  },
 ];
 
 export function getProvider(id: string): ProviderDef | undefined {
@@ -223,3 +242,4 @@ export function getProvider(id: string): ProviderDef | undefined {
 }
 
 export const SEGMENTS: Segment[] = ["Operations", "Communication", "Finance", "Files", "Marketing"];
+

@@ -9,6 +9,7 @@ import { testStripeKey, syncStripe } from "@/lib/integrations/stripe";
 import { exchangeDropboxCode, testDropboxRefreshToken } from "@/lib/integrations/dropbox";
 import { testSlackKey, testSlackUserKey } from "@/lib/integrations/slack";
 import { testAiKey } from "@/lib/integrations/ai";
+import { testCalendlyKey } from "@/lib/integrations/calendly";
 import { syncGmail } from "@/lib/integrations/google";
 import { generateTasksForActiveProjects } from "@/lib/tasks";
 import { syncProjectStatuses } from "@/lib/projectStatus";
@@ -75,6 +76,7 @@ const TESTERS: Record<string, (key: string) => Promise<{ ok: true; label: string
   slack_user: testSlackUserKey,
   ai: testAiKey,
   stripe: testStripeKey,
+  calendly: testCalendlyKey,
 };
 
 // Pull the real books from QuickBooks on demand. This is the number that has

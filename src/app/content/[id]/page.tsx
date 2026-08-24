@@ -15,8 +15,9 @@ import { etMonthKey, monthLabel } from "@/lib/contentProgram";
 import { stageMeta } from "@/lib/pipeline";
 import { Badge } from "@/components/ui/Badge";
 import {
-  EnrollmentSettingsCard, StrategyCallCard, StrategyCard, TopicBank, ScriptBackfillCard, ProfileSections, NotesCard,
+  EnrollmentSettingsCard, StrategyCallCard, StrategyCard, TopicBank, ScriptBackfillCard, ProfileSections, NotesCard, ScriptReview,
 } from "@/components/content/Workspace";
+import { STRATEGY_CALL_BOOKING_URL } from "@/lib/integrations/calendly";
 
 export const dynamic = "force-dynamic";
 
@@ -113,7 +114,9 @@ export default async function ContentClientPage({
               status={month.strategyCallStatus}
               at={month.strategyCallAt?.toISOString() ?? null}
               hasTranscript={!!month.transcriptText}
+              transcriptProcessed={!!month.transcriptProcessedAt}
               required={enrollment.strategyCallRequired}
+              bookingUrl={STRATEGY_CALL_BOOKING_URL}
             />
 
             {/* SESSIONS — the attached shoots (the real pipeline rows) */}
@@ -150,22 +153,14 @@ export default async function ContentClientPage({
               <TopicBank enrollmentId={id} monthId={month.id} topics={topics.map(t => ({ id: t.id, title: t.title, concept: t.concept, pillar: t.pillar, status: t.status, source: t.source }))} mode="month" />
             </Section>
 
-            {/* SCRIPTS */}
-            <Section icon={FileText} title="Scripts" count={scripts.length} flush>
-              <div className="divide-y divide-border">
-                {scripts.map((s) => (
-                  <details key={s.id} className="group px-5 py-3">
-                    <summary className="flex cursor-pointer items-center gap-2 text-sm font-medium marker:content-none">
-                      <FileText className="size-3.5 shrink-0 text-muted-2" />
-                      <span className="min-w-0 flex-1 truncate">{s.title}</span>
-                      <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">{s.source === "import" ? "imported" : s.status.toLowerCase().replace(/_/g, " ")}</span>
-                    </summary>
-                    <p className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-foreground/85">{s.body}</p>
-                    {s.sourceFile && <p className="mt-1.5 text-[10px] text-muted-2">from {s.sourceFile}</p>}
-                  </details>
-                ))}
-                {scripts.length === 0 && <p className="px-5 py-4 text-sm text-muted">No scripts for this month yet.</p>}
-              </div>
+            {/* SCRIPTS — the approve / AI-revise / edit loop */}
+            <Section icon={FileText} title="Scripts" count={scripts.length} flush
+              action={scripts.some((s) => s.status === "INTERNAL_REVIEW") ? <span className="text-[11px] font-medium text-warning">{scripts.filter((s) => s.status === "INTERNAL_REVIEW").length} awaiting your review</span> : undefined}>
+              <ScriptReview scripts={scripts.map((s) => {
+                let prod: string[] = [];
+                try { prod = s.productionJson ? (JSON.parse(s.productionJson) as string[]) : []; } catch { prod = []; }
+                return { id: s.id, title: s.title, body: s.body, status: s.status, source: s.source, sourceFile: s.sourceFile, productionIdeas: prod };
+              })} />
             </Section>
           </div>
         )}
