@@ -364,3 +364,181 @@ export async function reviseScriptWithInstructions(scriptId: string, instruction
     },
   });
 }
+
+// ---------------------------------------------------------------------------
+// 4. Topic bank seeding (spec §10) — built from the client's CONTENT STRATEGY
+// and the ideas raised on calls, against their full topic history so nothing
+// lazy-duplicates what's already been filmed. Ideas land as RECOMMENDED in the
+// bank; humans (or the client, in the portal phase) promote them to months.
+// ---------------------------------------------------------------------------
+export async function seedTopicBank(enrollmentId: string, perPillar = 10): Promise<{ created: number; pillars: string[] }> {
+  const e = await prisma.contentEnrollment.findUnique({
+    where: { id: enrollmentId },
+    select: { clientId: true },
+  });
+  if (!e) throw new Error("Enrollment not found.");
+  const [context, history, bankIdeas] = await Promise.all([
+    clientContext(enrollmentId),
+    topicHistory(enrollmentId),
+    prisma.contentTopic.findMany({
+      where: { enrollmentId, monthId: null, status: { in: ["SAVED", "IDEA"] } },
+      select: { title: true, concept: true },
+      take: 40,
+    }),
+  ]);
+  const { aiJson } = await import("@/lib/integrations/ai");
+  const out = await aiJson<{ pillars: { pillar: string; topics: { title: string; concept: string; scores: string }[] }[] }>({
+    system:
+      "You build a video TOPIC BANK for a real-estate agent's monthly personal-branding program, working strictly from their " +
+      "content strategy, profile, and the ideas they've raised on calls (all below). " +
+      `Generate up to ${perPillar} topics per content pillar (use the strategy's own pillars; if none are defined, derive 3-4 from the material). ` +
+      "Every topic must be SPECIFIC and FILMABLE with the hook direction already apparent — grounded in THIS agent's real market, " +
+      "opinions, stories, and positioning. Strong angles: opinions, misconceptions, client mistakes, surprising truths, real stories, " +
+      "local insight, behind-the-scenes. NEVER generic ('tips for sellers', 'market update', 'why you need a Realtor'). " +
+      "Do not repeat anything in the topic history below — a fresh angle on an old theme is allowed, lazy duplication is not. " +
+      "scores = a short 'Trust/Credibility/Value/Entertainment' judgement like 'Trust: High · Value: Medium'.",
+    prompt:
+      `AGENT CONTEXT:\n${context}\n\nIDEAS ALREADY IN THE BANK (do not duplicate):\n` +
+      bankIdeas.map((b) => `- ${b.title}`).join("\n") +
+      `\n\nFULL TOPIC HISTORY (do not duplicate):\n${history}`,
+    maxTokens: 16_000,
+    schema: {
+      type: "object",
+      properties: {
+        pillars: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              pillar: { type: "string" },
+              topics: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: { title: { type: "string" }, concept: { type: "string" }, scores: { type: "string" } },
+                  required: ["title", "concept"],
+                },
+              },
+            },
+            required: ["pillar", "topics"],
+          },
+        },
+      },
+      required: ["pillars"],
+    },
+  });
+
+  const existing = new Set(
+    (await prisma.contentTopic.findMany({ where: { enrollmentId }, select: { title: true } })).map((t) => t.title.toLowerCase()),
+  );
+  let created = 0;
+  const pillars: string[] = [];
+  for (const p of arr<{ pillar: string; topics: { title: string; concept: string; scores?: string }[] }>(out.pillars)) {
+    if (!p.pillar?.trim()) continue;
+    pillars.push(p.pillar.trim());
+    for (const t of arr<{ title: string; concept: string; scores?: string }>(p.topics)) {
+      if (!t.title?.trim() || existing.has(t.title.toLowerCase())) continue;
+      existing.add(t.title.toLowerCase());
+      await prisma.contentTopic.create({
+        data: {
+          enrollmentId, clientId: e.clientId,
+          title: t.title.trim().slice(0, 200),
+          concept: t.concept?.trim().slice(0, 2000) || null,
+          pillar: p.pillar.trim().slice(0, 120),
+          status: "RECOMMENDED", source: "ai",
+          scoresJson: t.scores ? JSON.stringify({ summary: t.scores.slice(0, 200) }) : null,
+        },
+      });
+      created++;
+    }
+  }
+  return { created, pillars };
+}
+
+// ---------------------------------------------------------------------------
+// 5. Agent profile builder (spec §6) — synthesized from strategy calls,
+// discovery calls (their distilled intel notes), the content strategy, and the
+// scripts actually FILMED (the truest record of their voice). Non-destructive:
+// existing keys in a section are kept; only NEW keys are added, so a hand-
+// written note is never overwritten by AI.
+// ---------------------------------------------------------------------------
+const PROFILE_BUILD_SECTIONS: { key: "brandJson" | "voiceJson" | "contentPrefsJson" | "productionJson" | "editingJson" | "storiesJson"; label: string; guide: string }[] = [
+  { key: "brandJson", label: "Brand & positioning", guide: "Positioning, primary message, target audience, markets, specialties, differentiators, content pillars, goals" },
+  { key: "voiceJson", label: "Voice & scripting style", guide: "Tone, cadence, humor, phrases they actually use (from their filmed scripts), phrases to avoid, script format preference, CTA style" },
+  { key: "contentPrefsJson", label: "Content preferences", guide: "Topics they love / avoid, formats, storytelling comfort, polarization comfort, personal-life comfort" },
+  { key: "productionJson", label: "Production", guide: "Locations, preferred days/times, teleprompter, wardrobe, on-camera notes" },
+  { key: "editingJson", label: "Editing style", guide: "Pacing, captions, music, graphics, recurring revision patterns" },
+  { key: "storiesJson", label: "Stories, POVs & knowledge", guide: "Real stories, strong opinions, expertise areas, local knowledge — each entry concrete and attributable" },
+];
+
+export async function buildAgentProfileFromHistory(clientId: string): Promise<{ sectionsFilled: number; keysAdded: number }> {
+  const e = await prisma.contentEnrollment.findUnique({ where: { clientId }, select: { id: true } });
+  if (!e) throw new Error("No enrollment for this client.");
+  const [client, strategy, intelNotes, scripts] = await Promise.all([
+    prisma.client.findUnique({ where: { id: clientId }, select: { name: true, company: true, editingPreferences: true } }),
+    prisma.contentStrategy.findFirst({ where: { enrollmentId: e.id, status: "ACTIVE" }, select: { sectionsJson: true } }),
+    prisma.contentNote.findMany({ where: { clientId, intelligence: true }, orderBy: { createdAt: "desc" }, take: 60, select: { body: true } }),
+    prisma.contentScript.findMany({ where: { clientId, source: "import" }, orderBy: { createdAt: "desc" }, take: 8, select: { title: true, body: true } }),
+  ]);
+
+  const material: string[] = [];
+  material.push(`AGENT: ${client?.name}${client?.company ? ` (${client.company})` : ""}`);
+  if (strategy?.sectionsJson) {
+    try {
+      const sec = JSON.parse(strategy.sectionsJson) as Record<string, string>;
+      material.push("CONTENT STRATEGY:\n" + Object.entries(sec).map(([k, v]) => `## ${k}\n${v}`).join("\n"));
+    } catch { /* skip */ }
+  }
+  if (intelNotes.length) material.push("FACTS LEARNED ON STRATEGY & DISCOVERY CALLS:\n" + intelNotes.map((n) => `- ${n.body}`).join("\n"));
+  if (scripts.length) material.push("SCRIPTS THEY ACTUALLY FILMED (their real voice):\n" + scripts.map((s) => `### ${s.title}\n${s.body.slice(0, 1200)}`).join("\n\n"));
+  if (client?.editingPreferences) material.push("EXISTING EDITING NOTES:\n" + client.editingPreferences);
+  if (material.length < 2) return { sectionsFilled: 0, keysAdded: 0 };
+
+  const { aiJson } = await import("@/lib/integrations/ai");
+  const out = await aiJson<{ sections: Record<string, Record<string, string>> }>({
+    system:
+      "You are building a real-estate agent's internal working profile for a content-production team, ONLY from the evidence below. " +
+      "Fill these sections (JSON object per section, short labeled entries — a few sentences each):\n" +
+      PROFILE_BUILD_SECTIONS.map((s) => `- ${s.key}: ${s.label} — ${s.guide}`).join("\n") +
+      "\nRULES: never invent — every entry must trace to the material; quote their own phrases where possible (especially voice); " +
+      "omit any section or field the evidence doesn't support. This is internal — candid, useful, specific.",
+    prompt: material.join("\n\n").slice(0, 90_000),
+    maxTokens: 16_000,
+    schema: {
+      type: "object",
+      properties: {
+        sections: {
+          type: "object",
+          properties: Object.fromEntries(PROFILE_BUILD_SECTIONS.map((s) => [s.key, { type: "object", additionalProperties: { type: "string" } }])),
+        },
+      },
+      required: ["sections"],
+    },
+  });
+
+  const raw = out.sections && typeof out.sections === "object" ? out.sections : {};
+  const profile = await prisma.agentProfile.findUnique({ where: { clientId } });
+  let sectionsFilled = 0, keysAdded = 0;
+  const data: Record<string, string> = {};
+  for (const s of PROFILE_BUILD_SECTIONS) {
+    let incoming = raw[s.key];
+    if (typeof incoming === "string") { try { incoming = JSON.parse(incoming); } catch { incoming = undefined as never; } }
+    if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) continue;
+    let existing: Record<string, string> = {};
+    try { existing = profile?.[s.key] ? JSON.parse(profile[s.key]!) : {}; } catch { existing = {}; }
+    let added = 0;
+    for (const [k, v] of Object.entries(incoming)) {
+      const key = k.trim().slice(0, 80);
+      const val = typeof v === "string" ? v.trim().slice(0, 4000) : "";
+      if (!key || !val || val.length < 3) continue;
+      if (existing[key]) continue; // hand-written (or earlier) entries win
+      existing[key] = val;
+      added++;
+    }
+    if (added > 0) { data[s.key] = JSON.stringify(existing); sectionsFilled++; keysAdded += added; }
+  }
+  if (Object.keys(data).length) {
+    await prisma.agentProfile.upsert({ where: { clientId }, create: { clientId, ...data }, update: data });
+  }
+  return { sectionsFilled, keysAdded };
+}

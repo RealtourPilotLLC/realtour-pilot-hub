@@ -15,7 +15,7 @@ import { etMonthKey, monthLabel } from "@/lib/contentProgram";
 import { stageMeta } from "@/lib/pipeline";
 import { Badge } from "@/components/ui/Badge";
 import {
-  EnrollmentSettingsCard, StrategyCallCard, StrategyCard, TopicBank, ScriptBackfillCard, ProfileSections, NotesCard, ScriptReview,
+  EnrollmentSettingsCard, StrategyCallCard, StrategyCard, TopicBank, ScriptBackfillCard, ProfileSections, NotesCard, ScriptReview, TopicSeedButton, ProfileBuildButton,
 } from "@/components/content/Workspace";
 import { STRATEGY_CALL_BOOKING_URL } from "@/lib/integrations/calendly";
 
@@ -167,7 +167,7 @@ export default async function ContentClientPage({
 
         {/* TOPIC BANK (unassigned ideas) */}
         <Section icon={Lightbulb} title="Topic bank" count={bankTopics.length} flush
-          action={<span className="text-[11px] text-muted-2">ideas not yet planned into a month</span>}>
+          action={<TopicSeedButton enrollmentId={id} />}>
           <TopicBank enrollmentId={id} monthId={month?.id ?? null} topics={bankTopics.map(t => ({ id: t.id, title: t.title, concept: t.concept, pillar: t.pillar, status: t.status, source: t.source }))} mode="bank" />
         </Section>
 

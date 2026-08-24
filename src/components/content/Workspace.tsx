@@ -7,7 +7,7 @@ import {
 import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import {
-  addContentNote, addTopic, analyzeTranscript, approveScript, previewScriptBackfill, previewStrategyBackfill,
+  addContentNote, addTopic, analyzeTranscript, approveScript, buildProfile, generateTopicIdeas, previewScriptBackfill, previewStrategyBackfill,
   reviseScriptAI, saveEnrollmentSettings, saveMonthTranscript, saveProfileSection, saveScriptBackfill,
   saveScriptText, saveStrategyBackfill, setStrategyCallStatus, setTopicStatus,
   type BackfillPreview, type StrategyPreview,
@@ -287,7 +287,7 @@ export function ProfileSections({
   editingPreferences: string | null;
 }) {
   return (
-    <Section icon={NotebookPen} title="Agent profile" action={<span className="text-[11px] text-muted-2">the living memory of this relationship</span>}>
+    <Section icon={NotebookPen} title="Agent profile" action={<ProfileBuildButton clientId={clientId} />}>
       <div className="space-y-2">
         {SECTIONS.map((s) => (
           <ProfileSection key={s.key} clientId={clientId} section={s} raw={profile[s.key] ?? null} />
@@ -643,4 +643,28 @@ function ScriptItem({ script }: { script: ScriptRow }) {
       </div>
     </details>
   );
+}
+
+
+// One-click generators with result note — used by the bank + profile headers.
+export function GenerateButton({ label, busyLabel, run }: { label: string; busyLabel: string; run: () => Promise<{ ok: boolean; message: string }> }) {
+  const [note, setNote] = useState<string | null>(null);
+  const [busy, start] = useTransition();
+  return (
+    <span className="flex items-center gap-2">
+      {note && <span className="max-w-64 truncate text-[11px] text-muted" title={note}>{note}</span>}
+      <button disabled={busy} onClick={() => start(async () => { setNote(busyLabel); const r = await run(); setNote(r.message); })}
+        className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border px-2.5 py-1 text-[11px] font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50">
+        {busy ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3 text-brand" />}
+        {label}
+      </button>
+    </span>
+  );
+}
+
+export function TopicSeedButton({ enrollmentId }: { enrollmentId: string }) {
+  return <GenerateButton label="Generate ideas from strategy" busyLabel="Reading their strategy, calls & history…" run={() => generateTopicIdeas(enrollmentId)} />;
+}
+export function ProfileBuildButton({ clientId }: { clientId: string }) {
+  return <GenerateButton label="Build from calls & content" busyLabel="Reading calls, strategy & filmed scripts…" run={() => buildProfile(clientId)} />;
 }

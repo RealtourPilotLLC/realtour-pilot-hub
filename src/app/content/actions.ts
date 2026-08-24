@@ -479,3 +479,27 @@ export async function syncCallsNow(): Promise<Result> {
   const drvMsg = "skipped" in drv ? `Drive: ${drv.skipped}` : `Drive: ${drv.ingested} transcript${drv.ingested === 1 ? "" : "s"}`;
   return { ok: true, message: `${calMsg} · ${ntMsg} · ${drvMsg}.` };
 }
+
+// ---------------------------------------------------------------------------
+// Generators: seed the topic bank from strategy + call ideas; build the agent
+// profile from calls + strategy + filmed content. Both non-destructive.
+// ---------------------------------------------------------------------------
+export async function generateTopicIdeas(enrollmentId: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const { seedTopicBank } = await import("@/lib/contentPipeline");
+    const r = await seedTopicBank(enrollmentId);
+    revalidatePath("/content");
+    return { ok: true, message: r.created ? `${r.created} ideas added across ${r.pillars.length} pillar${r.pillars.length === 1 ? "" : "s"} (${r.pillars.join(", ")}).` : "Nothing new — the bank already covers this ground." };
+  } catch (e) { return fail(e); }
+}
+
+export async function buildProfile(clientId: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const { buildAgentProfileFromHistory } = await import("@/lib/contentPipeline");
+    const r = await buildAgentProfileFromHistory(clientId);
+    revalidatePath("/content");
+    return { ok: true, message: r.keysAdded ? `${r.keysAdded} entries added across ${r.sectionsFilled} section${r.sectionsFilled === 1 ? "" : "s"} — hand-written entries untouched.` : "Not enough call/strategy history to add anything new." };
+  } catch (e) { return fail(e); }
+}
