@@ -151,12 +151,11 @@ export async function addContentNote(clientId: string, body: string, intelligenc
 export type ExtractedScript = { title: string; body: string; hook?: string | null };
 export type BackfillPreview = { ok: boolean; message: string; monthGuess?: string | null; scripts?: ExtractedScript[]; sourceFile?: string };
 
-export async function previewScriptBackfill(form: FormData): Promise<BackfillPreview> {
-  try { await requireAdmin(); } catch (e) { return fail(e); }
+// Shared file→plain-text extraction for the backfill uploads (scripts + strategies).
+async function extractUploadText(form: FormData): Promise<{ ok: true; text: string; name: string } | { ok: false; message: string }> {
   const file = form.get("file");
   if (!(file instanceof File)) return { ok: false, message: "No file." };
   if (file.size > 15 * 1024 * 1024) return { ok: false, message: "File too large (max 15 MB)." };
-
   let text = "";
   const buf = Buffer.from(await file.arrayBuffer());
   try {
@@ -182,6 +181,14 @@ export async function previewScriptBackfill(form: FormData): Promise<BackfillPre
   }
   text = text.trim();
   if (!text) return { ok: false, message: "The file has no readable text." };
+  return { ok: true, text, name: file.name };
+}
+
+export async function previewScriptBackfill(form: FormData): Promise<BackfillPreview> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  const ex = await extractUploadText(form);
+  if (!ex.ok) return ex;
+  const { text, name } = ex;
 
   // AI splits the document into scripts + proposes the month from titles/dates.
   try {
@@ -219,10 +226,10 @@ export async function previewScriptBackfill(form: FormData): Promise<BackfillPre
       .filter((s) => s.body?.trim())
       .map((s) => ({ title: (s.title || s.body.slice(0, 60)).trim().slice(0, 200), hook: s.hook?.trim() || null, body: s.body.trim().slice(0, 20_000) }));
     if (scripts.length === 0) return { ok: false, message: "No scripts found in the document." };
-    return { ok: true, message: `Found ${scripts.length} script${scripts.length === 1 ? "" : "s"}.`, monthGuess: out.monthKey ?? null, scripts, sourceFile: file.name };
+    return { ok: true, message: `Found ${scripts.length} script${scripts.length === 1 ? "" : "s"}.`, monthGuess: out.monthKey ?? null, scripts, sourceFile: name };
   } catch {
     // AI unavailable → the whole document becomes one script; staff set the month.
-    return { ok: true, message: "Imported as one script (AI split unavailable).", monthGuess: null, scripts: [{ title: file.name.replace(/\.[^.]+$/, ""), body: text.slice(0, 20_000), hook: null }], sourceFile: file.name };
+    return { ok: true, message: "Imported as one script (AI split unavailable).", monthGuess: null, scripts: [{ title: name.replace(/\.[^.]+$/, ""), body: text.slice(0, 20_000), hook: null }], sourceFile: name };
   }
 }
 
@@ -273,4 +280,92 @@ export async function saveScriptBackfill(
   }
   revalidatePath("/content");
   return { ok: true, message: `Saved ${scripts.length} script${scripts.length === 1 ? "" : "s"} to ${monthKey}.` };
+}
+
+// ---------------------------------------------------------------------------
+// Strategy backfill — Jordan: "I also want to be able to upload the content
+// strategies I've put together for them."
+//
+// Upload → extract text → AI organizes it into the strategy's structured
+// sections (VERBATIM content, no rewriting) → staff review → save as the
+// client's ACTIVE strategy. Prior strategies archive, never delete.
+// ---------------------------------------------------------------------------
+export type StrategyPreview = {
+  ok: boolean; message: string;
+  sections?: Record<string, string>;
+  rawText?: string;
+  sourceFile?: string;
+};
+
+const STRATEGY_SECTIONS = [
+  "Brand positioning", "Target audience", "Brand message", "Content goals",
+  "Content pillars", "Tone & personality", "Content preferences", "Business context",
+];
+
+export async function previewStrategyBackfill(form: FormData): Promise<StrategyPreview> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  const ex = await extractUploadText(form);
+  if (!ex.ok) return ex;
+  const { text, name } = ex;
+  try {
+    const { aiJson } = await import("@/lib/integrations/ai");
+    const out = await aiJson<{ sections: Record<string, string> }>({
+      system:
+        "You are filing a real-estate agent's existing content strategy document into a structured archive. " +
+        "Sort the document's content into these sections, keeping the author's wording as close to VERBATIM as possible — reorganize, never rewrite: " +
+        STRATEGY_SECTIONS.map((s) => `"${s}"`).join(", ") + ". " +
+        "Omit sections the document doesn't cover. If material fits nowhere, put it under \"Business context\".",
+      prompt: text.slice(0, 100_000),
+      maxTokens: 16_000,
+      schema: {
+        type: "object",
+        properties: {
+          sections: {
+            type: "object",
+            description: "section name -> the document's own content for that section",
+            additionalProperties: { type: "string" },
+          },
+        },
+        required: ["sections"],
+      },
+    });
+    const sections: Record<string, string> = {};
+    for (const [k, v] of Object.entries(out.sections ?? {})) {
+      if (typeof v === "string" && v.trim()) sections[k.slice(0, 80)] = v.trim().slice(0, 12_000);
+    }
+    if (Object.keys(sections).length === 0) return { ok: false, message: "Couldn't find strategy content in the document." };
+    return { ok: true, message: `Organized into ${Object.keys(sections).length} sections.`, sections, rawText: text.slice(0, 200_000), sourceFile: name };
+  } catch {
+    // AI unavailable → keep the whole document under one section; still saveable.
+    return { ok: true, message: "Saved as one block (AI organization unavailable).", sections: { "Business context": text.slice(0, 12_000) }, rawText: text.slice(0, 200_000), sourceFile: name };
+  }
+}
+
+export async function saveStrategyBackfill(
+  enrollmentId: string,
+  sections: Record<string, string>,
+  rawText: string,
+  sourceFile: string,
+): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  if (!Object.keys(sections).length) return { ok: false, message: "Nothing to save." };
+  const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true } });
+  if (!e) return { ok: false, message: "Enrollment not found." };
+  // One ACTIVE strategy at a time — the old one becomes history, not garbage.
+  await prisma.contentStrategy.updateMany({
+    where: { enrollmentId, status: "ACTIVE" },
+    data: { status: "ARCHIVED" },
+  });
+  await prisma.contentStrategy.create({
+    data: {
+      enrollmentId, clientId: e.clientId,
+      sectionsJson: JSON.stringify(sections),
+      rawText: rawText.slice(0, 200_000) || null,
+      status: "ACTIVE",
+      source: "import",
+      sourceFile: sourceFile.slice(0, 200),
+    },
+  });
+  revalidatePath("/content");
+  return { ok: true, message: "Strategy saved as this client's active strategy." };
 }

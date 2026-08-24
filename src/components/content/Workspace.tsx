@@ -2,14 +2,14 @@
 
 import { useRef, useState, useTransition } from "react";
 import {
-  CalendarClock, Check, FileUp, Loader2, NotebookPen, Plus, Settings2, Sparkles, Trash2, Upload, X,
+  CalendarClock, Check, Compass, FileUp, Loader2, NotebookPen, Plus, Settings2, Sparkles, Trash2, Upload, X,
 } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import {
-  addContentNote, addTopic, previewScriptBackfill, saveEnrollmentSettings, saveMonthTranscript,
-  saveProfileSection, saveScriptBackfill, setStrategyCallStatus, setTopicStatus,
-  type BackfillPreview,
+  addContentNote, addTopic, previewScriptBackfill, previewStrategyBackfill, saveEnrollmentSettings, saveMonthTranscript,
+  saveProfileSection, saveScriptBackfill, saveStrategyBackfill, setStrategyCallStatus, setTopicStatus,
+  type BackfillPreview, type StrategyPreview,
 } from "@/app/content/actions";
 
 // ---------------------------------------------------------------------------
@@ -418,6 +418,83 @@ export function EnrollmentSettingsCard({
         {busy && <Loader2 className="size-3.5 animate-spin text-muted" />}
         {note && !busy && <p className="text-[11px] text-muted">{note}</p>}
       </div>
+    </Section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Content strategy — the active strategy's sections + the backfill upload.
+// ---------------------------------------------------------------------------
+export function StrategyCard({
+  enrollmentId, strategy,
+}: {
+  enrollmentId: string;
+  strategy: { sections: Record<string, string>; sourceFile: string | null; updatedAt: string } | null;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [preview, setPreview] = useState<StrategyPreview | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [busy, start] = useTransition();
+
+  return (
+    <Section icon={Compass} title="Content strategy"
+      action={strategy ? <span className="text-[11px] text-muted-2">{strategy.sourceFile ? `from ${strategy.sourceFile}` : "active"}</span> : undefined}>
+      <input ref={fileRef} type="file" accept=".pdf,.docx,.txt,.md" className="hidden" onChange={(e) => {
+        const f = e.target.files?.[0]; if (!f) return;
+        const fd = new FormData(); fd.append("file", f);
+        setNote(null);
+        start(async () => {
+          const p = await previewStrategyBackfill(fd);
+          if (!p.ok) { setNote(p.message); return; }
+          setPreview(p);
+        });
+        e.target.value = "";
+      }} />
+
+      {preview ? (
+        <div className="space-y-3">
+          <p className="text-sm"><Sparkles className="mr-1 inline size-3.5 text-brand" />{preview.message} Review, then save — it becomes the client&rsquo;s active strategy{strategy ? " and the current one is archived" : ""}.</p>
+          <div className="max-h-64 space-y-2 overflow-y-auto rounded-lg border border-border bg-surface-2/40 p-3">
+            {Object.entries(preview.sections!).map(([k, v]) => (
+              <details key={k} open>
+                <summary className="cursor-pointer text-xs font-semibold">{k}</summary>
+                <p className="mt-1 whitespace-pre-wrap text-[11px] leading-relaxed text-foreground/80">{v.slice(0, 2000)}{v.length > 2000 ? "…" : ""}</p>
+              </details>
+            ))}
+          </div>
+          <div className="flex gap-1.5">
+            <button disabled={busy} onClick={() => start(async () => {
+              const r = await saveStrategyBackfill(enrollmentId, preview.sections!, preview.rawText ?? "", preview.sourceFile ?? "upload");
+              setNote(r.message);
+              if (r.ok) setPreview(null);
+            })} className="rounded-md bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+              {busy ? <Loader2 className="inline size-3 animate-spin" /> : "Save as active strategy"}
+            </button>
+            <button onClick={() => setPreview(null)} className="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted hover:bg-surface-2">Discard</button>
+          </div>
+        </div>
+      ) : strategy ? (
+        <div className="space-y-2">
+          {Object.entries(strategy.sections).map(([k, v]) => (
+            <details key={k} className="rounded-xl border border-border px-3 py-2">
+              <summary className="cursor-pointer text-sm font-medium">{k}</summary>
+              <p className="mt-1.5 whitespace-pre-wrap text-xs leading-relaxed text-foreground/85">{v}</p>
+            </details>
+          ))}
+          <button onClick={() => fileRef.current?.click()} disabled={busy}
+            className="mt-1 inline-flex items-center gap-1.5 text-xs font-medium text-brand hover:underline disabled:opacity-50">
+            {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
+            {busy ? "Reading the document…" : "Replace with an uploaded strategy"}
+          </button>
+        </div>
+      ) : (
+        <button onClick={() => fileRef.current?.click()} disabled={busy}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-border px-4 py-2.5 text-sm text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50">
+          {busy ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
+          {busy ? "Reading the document…" : "Upload their content strategy"}
+        </button>
+      )}
+      {note && <p className="mt-2 text-[11px] text-muted">{note}</p>}
     </Section>
   );
 }

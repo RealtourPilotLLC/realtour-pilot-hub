@@ -1732,3 +1732,25 @@ model ContentNote {
 
   @@index([clientId])
 }
+
+// The client's Content Strategy (spec §8) — structured sections, not a PDF.
+// Phase 1 ships the IMPORT path (Jordan's existing strategies, uploaded and
+// parsed); Phase 2 adds AI generation from Brand Discovery + the alignment
+// state ladder. One ACTIVE strategy per client at a time; history preserved.
+model ContentStrategy {
+  id           String  @id @default(cuid())
+  enrollmentId String
+  clientId     String
+  // Structured sections (JSON, keys are section names): positioning, audience,
+  // message, goals, pillars, tone, preferences, businessContext.
+  sectionsJson String
+  rawText      String? // full original text, for provenance + AI context
+  status       String  @default("ACTIVE") // DRAFT | INTERNAL_REVIEW | ALIGNED | ACTIVE | ARCHIVED
+  source       String  @default("import") // import | ai | manual
+  sourceFile   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([clientId])
+  @@index([enrollmentId, status])
+}

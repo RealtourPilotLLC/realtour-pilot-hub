@@ -15,7 +15,7 @@ import { etMonthKey, monthLabel } from "@/lib/contentProgram";
 import { stageMeta } from "@/lib/pipeline";
 import { Badge } from "@/components/ui/Badge";
 import {
-  EnrollmentSettingsCard, StrategyCallCard, TopicBank, ScriptBackfillCard, ProfileSections, NotesCard,
+  EnrollmentSettingsCard, StrategyCallCard, StrategyCard, TopicBank, ScriptBackfillCard, ProfileSections, NotesCard,
 } from "@/components/content/Workspace";
 
 export const dynamic = "force-dynamic";
@@ -51,7 +51,7 @@ export default async function ContentClientPage({
   const activeKey = monthParam && months.some((m) => m.monthKey === monthParam) ? monthParam : etMonthKey();
   const month = months.find((m) => m.monthKey === activeKey) ?? months[0] ?? null;
 
-  const [projects, topics, bankTopics, scripts, profile, notes] = await Promise.all([
+  const [projects, topics, bankTopics, scripts, profile, notes, strategy] = await Promise.all([
     month
       ? prisma.project.findMany({
           where: { contentMonthId: month.id },
@@ -68,7 +68,10 @@ export default async function ContentClientPage({
     month ? prisma.contentScript.findMany({ where: { monthId: month.id }, orderBy: { createdAt: "asc" } }) : Promise.resolve([]),
     prisma.agentProfile.findUnique({ where: { clientId: client.id } }),
     prisma.contentNote.findMany({ where: { clientId: client.id }, orderBy: { createdAt: "desc" }, take: 30 }),
+    prisma.contentStrategy.findFirst({ where: { enrollmentId: id, status: "ACTIVE" }, orderBy: { createdAt: "desc" } }),
   ]);
+  let strategySections: Record<string, string> = {};
+  try { strategySections = strategy ? JSON.parse(strategy.sectionsJson) : {}; } catch { strategySections = {}; }
 
   return (
     <div>
@@ -172,6 +175,12 @@ export default async function ContentClientPage({
           action={<span className="text-[11px] text-muted-2">ideas not yet planned into a month</span>}>
           <TopicBank enrollmentId={id} monthId={month?.id ?? null} topics={bankTopics.map(t => ({ id: t.id, title: t.title, concept: t.concept, pillar: t.pillar, status: t.status, source: t.source }))} mode="bank" />
         </Section>
+
+        {/* CONTENT STRATEGY — active strategy + upload backfill */}
+        <StrategyCard
+          enrollmentId={id}
+          strategy={strategy ? { sections: strategySections, sourceFile: strategy.sourceFile, updatedAt: strategy.updatedAt.toISOString() } : null}
+        />
 
         {/* SCRIPT BACKFILL */}
         <ScriptBackfillCard enrollmentId={id} defaultMonth={month?.monthKey ?? etMonthKey()} />
