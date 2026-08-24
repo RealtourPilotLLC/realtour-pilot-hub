@@ -70,9 +70,18 @@ export type ExtractionResult = {
 export async function processMonthTranscript(monthId: string): Promise<ExtractionResult> {
   const month = await prisma.contentMonth.findUnique({
     where: { id: monthId },
-    select: { id: true, enrollmentId: true, clientId: true, monthKey: true, transcriptText: true, videosOwed: true },
+    select: { id: true, enrollmentId: true, clientId: true, monthKey: true, transcriptText: true, videosOwed: true, transcriptProcessedAt: true },
   });
   if (!month?.transcriptText) throw new Error("No transcript on this month yet.");
+  // ATOMIC CLAIM — the cron and a human's Analyze click can race (Aug 24: two
+  // concurrent extractions gave John Collins 6 topics and duplicate scripts).
+  // Whoever flips transcriptProcessedAt from null wins; everyone else bows out.
+  const claim = await prisma.contentMonth.updateMany({
+    where: { id: monthId, transcriptProcessedAt: null },
+    data: { transcriptProcessedAt: new Date() },
+  });
+  if (claim.count === 0 && !month.transcriptProcessedAt) throw new Error("This transcript is already being analyzed.");
+  if (claim.count === 0) throw new Error("This transcript was already analyzed.");
 
   const [context, history] = await Promise.all([clientContext(month.enrollmentId), topicHistory(month.enrollmentId)]);
   const { aiJson } = await import("@/lib/integrations/ai");
@@ -170,8 +179,6 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
   if (extras.length) {
     await prisma.contentMonth.update({ where: { id: monthId }, data: { notes: extras.join("\n\n").slice(0, 8000) } });
   }
-  await prisma.contentMonth.update({ where: { id: monthId }, data: { transcriptProcessedAt: new Date() } });
-
   return { confirmedTopics: confirmed, futureIdeas: future, rejected: (out.rejectedIdeas ?? []).length, intelNotes: intel, todos: (out.todos ?? []).length };
 }
 
@@ -226,6 +233,13 @@ export async function generateScriptsForMonth(monthId: string): Promise<{ genera
   let generated = 0, skipped = 0;
   for (const t of topics) {
     if (scripted.has(t.id)) { skipped++; continue; }
+    // Claim the topic atomically — a concurrent generator sees count 0 and
+    // skips, so a topic can never get two scripts.
+    const claim = await prisma.contentTopic.updateMany({
+      where: { id: t.id, status: "SELECTED" },
+      data: { status: "SCRIPTED" },
+    });
+    if (claim.count === 0) { skipped++; continue; }
     try {
       const s = await aiJson<ScriptSections>({
         system: SCRIPT_SYSTEM(context),
@@ -244,9 +258,12 @@ export async function generateScriptsForMonth(monthId: string): Promise<{ genera
           source: "ai",
         },
       });
-      await prisma.contentTopic.update({ where: { id: t.id }, data: { status: "SCRIPTED" } });
       generated++;
-    } catch { skipped++; }
+    } catch {
+      // Give the topic back so a retry can script it.
+      await prisma.contentTopic.update({ where: { id: t.id }, data: { status: "SELECTED" } }).catch(() => {});
+      skipped++;
+    }
   }
   return { generated, skipped };
 }

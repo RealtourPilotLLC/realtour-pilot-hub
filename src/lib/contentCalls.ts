@@ -127,59 +127,125 @@ export async function sweepDriveTranscripts(): Promise<{ ingested: number } | { 
   const token = await ownerGoogleToken();
   if (!token) return { skipped: "Google not connected" };
 
+  // Jordan's real artifacts (verified Aug 24): Gemini meeting-notes docs named
+  // "<Client> and Jordan Spackman - 2026/08/07 12:46 EDT - Notes by Gemini",
+  // containing the summary AND the full speaker-attributed transcript inline.
+  // No separate "- Transcript" docs exist, so the notes doc IS the source.
   let files: DriveFile[] = [];
   try {
-    files = await driveSearchTranscripts(token, new Date(Date.now() - 21 * 864e5).toISOString());
+    const q = encodeURIComponent(
+      `name contains 'and Jordan Spackman' and mimeType = 'application/vnd.google-apps.document' and createdTime > '${new Date(Date.now() - 45 * 864e5).toISOString()}' and trashed = false`,
+    );
+    const res = await fetch(
+      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,createdTime)&pageSize=100&orderBy=createdTime desc`,
+      { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
+    );
+    if (!res.ok) throw new Error(`Drive search failed (${res.status})`);
+    files = ((await res.json()) as { files?: DriveFile[] }).files ?? [];
   } catch (e) {
-    // Most likely the Drive scope hasn't been granted yet (needs Jordan's
-    // one-time reconnect) — the paste fallback stays the path until then.
     return { skipped: e instanceof Error ? e.message : "Drive unreachable" };
   }
   if (files.length === 0) return { ingested: 0 };
 
-  // Months that still WANT a transcript: call completed or scheduled-in-past,
-  // no transcript yet. Match by (a) call time ≈ doc createdTime same ET day
-  // when the month has a Calendly booking, then (b) client name in the title.
-  const months = await prisma.contentMonth.findMany({
-    where: { transcriptText: null, strategyCallStatus: { in: ["SCHEDULED", "COMPLETED"] } },
-    select: { id: true, clientId: true, strategyCallAt: true },
+  // Docs already ingested anywhere must never double-ingest.
+  const usedSources = new Set(
+    (await prisma.contentMonth.findMany({
+      where: { transcriptSource: { startsWith: "drive:" } },
+      select: { transcriptSource: true },
+    })).map((m) => m.transcriptSource!.slice(6)),
+  );
+
+  const enrollments = await prisma.contentEnrollment.findMany({
+    where: { status: "ACTIVE" },
+    select: { id: true, clientId: true },
   });
-  if (months.length === 0) return { ingested: 0 };
   const clients = await prisma.client.findMany({
-    where: { id: { in: months.map((m) => m.clientId) } },
+    where: { id: { in: enrollments.map((e) => e.clientId) } },
     select: { id: true, name: true },
   });
-  const nameOf = new Map(clients.map((c) => [c.id, c.name]));
+  const enrollmentOf = new Map(enrollments.map((e) => [e.clientId, e.id]));
+  const norm = (x: string) => x.toLowerCase().replace(/\s+/g, " ").trim();
+
+  // Title prefix before " and Jordan Spackman" is the client identity. It may
+  // be a FIRST NAME only ("Bernadette  and Jordan Spackman"), so match full
+  // name first, then a first name that is unique across enrolled clients.
+  const firstCounts = new Map<string, number>();
+  for (const c of clients) {
+    const f = norm(c.name).split(" ")[0];
+    firstCounts.set(f, (firstCounts.get(f) ?? 0) + 1);
+  }
+  const matchClient = (titlePrefix: string): { clientId: string; enrollmentId: string } | null => {
+    const t = norm(titlePrefix);
+    for (const c of clients) {
+      if (t === norm(c.name) || t.startsWith(norm(c.name))) return { clientId: c.id, enrollmentId: enrollmentOf.get(c.id)! };
+    }
+    const first = t.split(" ")[0];
+    if (first.length > 2 && firstCounts.get(first) === 1) {
+      const c = clients.find((x) => norm(x.name).split(" ")[0] === first);
+      if (c) return { clientId: c.id, enrollmentId: enrollmentOf.get(c.id)! };
+    }
+    return null;
+  };
+
+  // Parse "<prefix> and Jordan Spackman - 2026/08/07 12:46 EDT - Notes by Gemini".
+  const parseTitle = (name: string): { prefix: string; at: Date | null } | null => {
+    const m = name.match(/^(.*?)\s+and\s+jordan\s+spackman/i);
+    if (!m) return null;
+    const d = name.match(/(\d{4})\/(\d{2})\/(\d{2})\s+(\d{1,2}):(\d{2})/);
+    let at: Date | null = null;
+    if (d) {
+      // Title times are ET — build the UTC instant via the ET offset trick used
+      // in datetime.ts (approximate with the date's offset; minute precision).
+      const [y, mo, day, h, min] = [Number(d[1]), Number(d[2]), Number(d[3]), Number(d[4]), Number(d[5])];
+      const guess = new Date(Date.UTC(y, mo - 1, day, h, min));
+      const etHour = Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }).format(guess));
+      at = new Date(guess.getTime() + (h - etHour) * 3600_000);
+    }
+    return { prefix: m[1], at };
+  };
   const dayKey = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
 
+  // Group candidate docs by enrollment+month, newest first.
+  type Candidate = { file: DriveFile; at: Date | null };
+  const byMonth = new Map<string, { enrollmentId: string; clientId: string; monthKey: string; docs: Candidate[] }>();
+  for (const f of files) {
+    if (usedSources.has(f.id)) continue;
+    const parsed = parseTitle(f.name);
+    if (!parsed) continue;
+    const who = matchClient(parsed.prefix);
+    if (!who) continue;
+    const at = parsed.at ?? (f.createdTime ? new Date(f.createdTime) : null);
+    if (!at) continue;
+    const monthKey = etMonthKey(at);
+    const k = `${who.enrollmentId}|${monthKey}`;
+    let g = byMonth.get(k);
+    if (!g) { g = { ...who, monthKey, docs: [] }; byMonth.set(k, g); }
+    g.docs.push({ file: f, at: parsed.at });
+  }
+
   let ingested = 0;
-  const used = new Set<string>();
-  for (const m of months) {
-    const clientName = (nameOf.get(m.clientId) ?? "").toLowerCase();
-    const first = clientName.split(/\s+/)[0] ?? "";
-    const last = clientName.split(/\s+/).slice(-1)[0] ?? "";
-    const f = files.find((file) => {
-      if (used.has(file.id)) return false;
-      const title = file.name.toLowerCase();
-      const sameDay = m.strategyCallAt && file.createdTime
-        ? dayKey(new Date(file.createdTime)) === dayKey(m.strategyCallAt)
-        : false;
-      const nameHit = clientName.length > 3 && (title.includes(clientName) || (first.length > 2 && last.length > 2 && title.includes(first) && title.includes(last)));
-      // Same ET day as the booked call is a strong signal on its own only when
-      // the title ALSO looks like a strategy call; a bare name match works any day.
-      return nameHit || (sameDay && /strategy|content program/i.test(title));
+  for (const g of byMonth.values()) {
+    const month = await prisma.contentMonth.findUnique({
+      where: { enrollmentId_monthKey: { enrollmentId: g.enrollmentId, monthKey: g.monthKey } },
+      select: { id: true, transcriptText: true, strategyCallAt: true },
     });
-    if (!f) continue;
+    if (!month || month.transcriptText) continue;
+    // Several meetings can share a month (Erica: Aug 6 AND Aug 7) — prefer the
+    // doc on the BOOKED call's ET day, else the newest in the month.
+    const pick =
+      (month.strategyCallAt && g.docs.find((d) => d.at && dayKey(d.at) === dayKey(month.strategyCallAt!))) ||
+      g.docs.sort((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0))[0];
+    if (!pick) continue;
     try {
-      const text = (await driveExportText(token, f.id)).trim();
-      if (text.length < 200) continue; // an empty/stub doc is not a call
-      used.add(f.id);
+      const text = (await driveExportText(token, pick.file.id)).trim();
+      if (text.length < 200) continue;
       await prisma.contentMonth.update({
-        where: { id: m.id },
+        where: { id: month.id },
         data: {
           transcriptText: text.slice(0, 500_000),
-          transcriptSource: `drive:${f.id}`,
+          transcriptSource: `drive:${pick.file.id}`,
           strategyCallStatus: "COMPLETED",
+          ...(month.strategyCallAt ? {} : pick.at ? { strategyCallAt: pick.at } : {}),
         },
       });
       ingested++;
