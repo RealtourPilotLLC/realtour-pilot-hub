@@ -63,6 +63,20 @@ upload PDF/Word, AI reads it, month confirmed by staff.**
   is already wired: https://calendly.com/realtourpilot-info/content-program-strategy-call
 - Portal invites — per client, when he's ready.
 
+## F. Backfill (2026-08-24, running)
+Document archive: ~/Downloads/"Social Content Scripts, Strategy Calls, and Discovery
+Calls" — 26 client folders, 119 files. All folders become enrollments; Aryeo flag
+stays the ACTIVE driver, with `statusManual` overrides for hand-set statuses.
+Jordan's directives: Rick Schultz / Ashley Brunner / Sarina Spinelli = ACTIVE
+one-month trials (manual); Alex / Matthew (folder "Mathew") / Tony / Jamie
+Achberger = paused. Import kinds: strategies → ContentStrategy (verbatim
+sections), monthly script docs → ContentScript (Updated>Final>plain>Videos-Shot,
+docx>pdf, one doc per month), topic lists → ContentTopic (month or bank),
+Gemini call docs → month transcripts (concat per month, discovery calls
+included). Then the analysis pass: extraction on every transcript (topic
+history + profile intel); script GENERATION only for active clients' current
+month.
+
 ## E. Phase 3-4 status (built 2026-08-24)
 - Calendly client (read-only) + Connections card; booking sweep stamps months
   SCHEDULED/COMPLETED, honors cancellations, never downgrades hand-set statuses.

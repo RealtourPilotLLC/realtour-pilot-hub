@@ -32,21 +32,22 @@ export default async function ContentProgramPage() {
   // does (enrollments ↔ Aryeo flag, current months, project attachment).
   await contentProgramSweep().catch(() => null);
   const rows = await getProgramRoster();
-  const attention = rows.filter((r) => r.attention.length > 0 && r.status === "ACTIVE");
-  const paused = rows.filter((r) => r.status === "PAUSED");
+  const active = rows.filter((r) => r.status === "ACTIVE");
+  const inactive = rows.filter((r) => r.status !== "ACTIVE");
+  const attention = active.filter((r) => r.attention.length > 0);
 
   return (
     <div>
       <PageHeader
-        eyebrow={monthLabel(etMonthKey())}
+        eyebrow="Monthly content clients"
         title="Content Program"
-        subtitle={`${rows.filter((r) => r.status === "ACTIVE").length} enrolled clients · ${attention.length} need attention`}
+        subtitle={`Tracking ${monthLabel(etMonthKey())} · ${rows.filter((r) => r.status === "ACTIVE").length} active clients · ${attention.length} need attention`}
         actions={<SweepButton />}
       />
       <div className="mx-auto max-w-6xl space-y-5 p-4 pb-16 sm:p-6">
         {/* NEEDS ATTENTION — exceptions outrank healthy work (spec §43) */}
         {attention.length > 0 && (
-          <Section icon={AlertTriangle} title="Needs attention" count={attention.length} tone="warning" flush>
+          <Section icon={AlertTriangle} title={`Needs attention — ${monthLabel(etMonthKey())}`} count={attention.length} tone="warning" flush>
             <div className="divide-y divide-border">
               {attention.map((r) => (
                 <Link key={r.enrollmentId} href={`/content/${r.enrollmentId}`} className="flex items-center gap-3 px-5 py-3 hover:bg-surface-2/60">
@@ -67,7 +68,8 @@ export default async function ContentProgramPage() {
         )}
 
         {/* FULL ROSTER */}
-        <Section icon={Users} title="All clients" count={rows.length} flush>
+        <Section icon={Users} title={`Active clients — ${monthLabel(etMonthKey())}`} count={active.length} flush
+          action={<span className="text-[11px] text-muted-2">calls, sessions, topics &amp; videos below are this month&rsquo;s</span>}>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[760px] text-sm">
               <thead>
@@ -83,13 +85,13 @@ export default async function ContentProgramPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {rows.map((r) => {
+                {active.map((r) => {
                   const call = CALL_LABEL[r.strategyCallStatus] ?? CALL_LABEL.NOT_SCHEDULED;
                   return (
-                    <tr key={r.enrollmentId} className={r.status === "PAUSED" ? "opacity-50" : undefined}>
+                    <tr key={r.enrollmentId}>
                       <td className="px-5 py-3">
                         <Link href={`/content/${r.enrollmentId}`} className="font-medium hover:text-brand">{r.clientName}</Link>
-                        {r.status === "PAUSED" && <span className="ml-2 rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">Paused</span>}
+                        {r.trial && <span className="ml-2 rounded bg-brand-soft px-1.5 py-0.5 text-[10px] font-medium text-brand">Trial</span>}
                       </td>
                       <td className="px-3 py-3"><PkgChip pkg={r.pkg} /></td>
                       <td className="px-3 py-3">
@@ -126,7 +128,27 @@ export default async function ContentProgramPage() {
           </div>
         </Section>
 
-        {paused.length === 0 && attention.length === 0 && (
+        {/* PAUSED & PAST — separated per Jordan (Aug 24): their history stays
+            one click away, but they don't clutter the working month. */}
+        {inactive.length > 0 && (
+          <Section icon={Users} title="Paused & past clients" count={inactive.length} flush
+            action={<span className="text-[11px] text-muted-2">full history inside each</span>}>
+            <div className="divide-y divide-border">
+              {inactive.map((r) => (
+                <Link key={r.enrollmentId} href={`/content/${r.enrollmentId}`} className="flex items-center gap-3 px-5 py-2.5 hover:bg-surface-2/60">
+                  <span className="min-w-0 flex-1 truncate text-sm text-foreground/75">{r.clientName}</span>
+                  <PkgChip pkg={r.pkg} />
+                  <span className="w-32 shrink-0 text-right text-xs text-muted-2">
+                    {r.lastMonthKey ? `last: ${monthLabel(r.lastMonthKey)}` : "no content yet"}
+                  </span>
+                  <span className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">Paused</span>
+                </Link>
+              ))}
+            </div>
+          </Section>
+        )}
+
+        {inactive.length === 0 && attention.length === 0 && (
           <p className="flex items-center gap-2 text-sm text-success"><CheckCircle2 className="size-4" /> Every enrolled client is on track this month.</p>
         )}
         <p className="text-xs text-muted-2">

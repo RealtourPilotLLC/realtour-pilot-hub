@@ -48,7 +48,7 @@ export async function syncEnrollments(): Promise<{ created: number; updated: num
     select: { id: true, socialPlan: true },
   });
   const existing = await prisma.contentEnrollment.findMany({
-    select: { id: true, clientId: true, package: true, status: true, packageSource: true },
+    select: { id: true, clientId: true, package: true, status: true, packageSource: true, statusManual: true },
   });
   const byClient = new Map(existing.map((e) => [e.clientId, e]));
   let created = 0, updated = 0, paused = 0;
@@ -62,7 +62,7 @@ export async function syncEnrollments(): Promise<{ created: number; updated: num
         data: { clientId: c.id, package: plan, ...rules, startedAt: new Date(), packageSource: "aryeo" },
       });
       created++;
-    } else if (cur.status === "PAUSED" || (cur.package !== plan && cur.packageSource === "aryeo")) {
+    } else if (!cur.statusManual && (cur.status === "PAUSED" || (cur.package !== plan && cur.packageSource === "aryeo"))) {
       // Re-flagged in Aryeo → reactivate; plan changed in Aryeo → follow it
       // (manual packages are the admin's override and are left alone).
       await prisma.contentEnrollment.update({
@@ -75,6 +75,7 @@ export async function syncEnrollments(): Promise<{ created: number; updated: num
   // No longer flagged in Aryeo → pause (subscription lapsed), never delete.
   const socialIds = new Set(social.map((c) => c.id));
   for (const e of existing) {
+    if (e.statusManual) continue; // a human owns this status
     if (e.status === "ACTIVE" && !socialIds.has(e.clientId)) {
       await prisma.contentEnrollment.update({ where: { id: e.id }, data: { status: "PAUSED" } });
       paused++;
@@ -200,6 +201,8 @@ export type ProgramRow = {
   topicsSelected: number;
   scriptsReady: number;
   attention: string[]; // human-readable exception flags, worst first
+  trial: boolean; // hand-set ACTIVE on a one-month trial
+  lastMonthKey: string | null; // latest month with any program content
 };
 
 export async function getProgramRoster(): Promise<ProgramRow[]> {
@@ -207,10 +210,18 @@ export async function getProgramRoster(): Promise<ProgramRow[]> {
   const enrollments = await prisma.contentEnrollment.findMany({
     where: { status: { in: ["ACTIVE", "PAUSED"] } },
     select: {
-      id: true, clientId: true, package: true, status: true,
+      id: true, clientId: true, package: true, status: true, statusManual: true, notes: true,
       sessionsPerMonth: true, strategyCallRequired: true, clientSuppliesTopics: true,
     },
   });
+  // Last month that has ANY program content — the "when were they last active"
+  // signal for the paused section.
+  const lastMonths = await prisma.contentMonth.groupBy({
+    by: ["enrollmentId"],
+    where: { enrollmentId: { in: enrollments.map((e) => e.id) } },
+    _max: { monthKey: true },
+  });
+  const lastMonthOf = new Map(lastMonths.map((l) => [l.enrollmentId, l._max.monthKey]));
   const clients = await prisma.client.findMany({
     where: { id: { in: enrollments.map((e) => e.clientId) } },
     select: { id: true, name: true },
@@ -286,6 +297,8 @@ export async function getProgramRoster(): Promise<ProgramRow[]> {
       topicsSelected,
       scriptsReady,
       attention,
+      trial: e.status === "ACTIVE" && e.statusManual && /trial/i.test(e.notes ?? ""),
+      lastMonthKey: lastMonthOf.get(e.id) ?? null,
     });
   }
   // Worst problems first, then by name.

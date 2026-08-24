@@ -1630,6 +1630,9 @@ model ContentEnrollment {
   clientSuppliesTopics Boolean @default(false)
   overridesJson        String? // anything rarer, JSON
   status        String    @default("ACTIVE") // ACTIVE | PAUSED | ENDED
+  // A human set the status (trials that aren't Aryeo-flagged, hand-pauses):
+  // the Aryeo sync must never auto-pause or auto-reactivate these.
+  statusManual  Boolean   @default(false)
   startedAt     DateTime?
   packageSource String    @default("aryeo") // aryeo | manual (who set the package)
   notes         String?

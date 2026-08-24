@@ -51,7 +51,11 @@ export async function saveEnrollmentSettings(
   }
   if (s.strategyCallRequired !== undefined) data.strategyCallRequired = s.strategyCallRequired;
   if (s.clientSuppliesTopics !== undefined) data.clientSuppliesTopics = s.clientSuppliesTopics;
-  if (s.status !== undefined && ["ACTIVE", "PAUSED", "ENDED"].includes(s.status)) data.status = s.status;
+  if (s.status !== undefined && ["ACTIVE", "PAUSED", "ENDED"].includes(s.status)) {
+    // A hand-set status is an override — the Aryeo sweep stops managing it.
+    data.status = s.status;
+    data.statusManual = true;
+  }
   if (s.notes !== undefined) data.notes = s.notes.trim().slice(0, 4000) || null;
   await prisma.contentEnrollment.update({ where: { id: enrollmentId }, data });
   revalidatePath("/content");
