@@ -78,7 +78,7 @@ export type ExtractionResult = {
 export async function processMonthTranscript(monthId: string): Promise<ExtractionResult> {
   const month = await prisma.contentMonth.findUnique({
     where: { id: monthId },
-    select: { id: true, enrollmentId: true, clientId: true, monthKey: true, transcriptText: true, videosOwed: true, transcriptProcessedAt: true },
+    select: { id: true, enrollmentId: true, clientId: true, monthKey: true, transcriptText: true, videosOwed: true, transcriptProcessedAt: true, strategyCallAt: true },
   });
   if (!month?.transcriptText) throw new Error("No transcript on this month yet.");
   // ATOMIC CLAIM — the cron and a human's Analyze click can race (Aug 24: two
@@ -95,6 +95,7 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
   const { aiJson } = await import("@/lib/integrations/ai");
 
   const out = await aiJson<{
+    plannedMonthKey: string | null;
     confirmedTopics: { title: string; concept: string; pillar: string | null }[];
     futureIdeas: { title: string; concept: string; pillar: string | null }[];
     rejectedIdeas: string[];
@@ -103,7 +104,12 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
     todos: string[];
   }>({
     system:
-      "You are processing a monthly content-strategy call transcript for a real-estate agent's video program. " +
+      "You are processing a call transcript for a real-estate agent's monthly video program. " +
+      "FIRST judge what kind of call this is. If it is NOT a monthly content-planning session (e.g. a business proposal, " +
+      "a check-in, a review of finished videos), set plannedMonthKey to null and confirmedTopics to [] — file any content " +
+      "ideas that came up under futureIdeas instead. " +
+      "If it IS a planning session, set plannedMonthKey to the month the topics are FOR: a call in the last third of a month " +
+      "usually plans the NEXT month (Jordan's rhythm — e.g. a July 27 call plans August). Use the call date given in the prompt.\n" +
       "Identify what was actually AGREED, not everything mentioned:\n" +
       "- confirmedTopics: topics the agent and strategist agreed to film THIS month (title = specific, filmable, hook-ready; concept = the angle in 1-2 sentences, grounded in what the agent SAID).\n" +
       "- futureIdeas: ideas raised but saved for later.\n" +
@@ -113,11 +119,12 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
       "- todos: action items either side committed to.\n" +
       `The plan owes ${month.videosOwed} videos this month — do not force the count; report what was agreed.\n` +
       "Topics already in this agent's history (avoid lazy duplicates; a fresh angle on an old theme is fine):\n" + history,
-    prompt: `AGENT CONTEXT:\n${context}\n\nTRANSCRIPT:\n${month.transcriptText.slice(0, 150_000)}`,
+    prompt: `CALL DATE: ${month.strategyCallAt ? month.strategyCallAt.toLocaleDateString("en-US", { timeZone: "America/New_York", year: "numeric", month: "long", day: "numeric" }) : `sometime in ${month.monthKey}`}\n\nAGENT CONTEXT:\n${context}\n\nTRANSCRIPT:\n${month.transcriptText.slice(0, 150_000)}`,
     maxTokens: 8000,
     schema: {
       type: "object",
       properties: {
+        plannedMonthKey: { type: ["string", "null"], description: "YYYY-MM the confirmed topics are FOR, or null if this isn't a planning call" },
         confirmedTopics: { type: "array", items: { type: "object", properties: { title: { type: "string" }, concept: { type: "string" }, pillar: { type: ["string", "null"] } }, required: ["title", "concept"] } },
         futureIdeas: { type: "array", items: { type: "object", properties: { title: { type: "string" }, concept: { type: "string" }, pillar: { type: ["string", "null"] } }, required: ["title", "concept"] } },
         rejectedIdeas: { type: "array", items: { type: "string" } },
@@ -129,16 +136,40 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
     },
   });
 
-  // Confirmed → SELECTED on the month (skip titles that already exist there).
+  // Confirmed topics land on the month the call PLANNED — an end-of-month call
+  // plans the NEXT month (Aug 24: Bernadette's Jul 27 call planned August, and
+  // her Aug 20 tourism-proposal call confirmed nothing). Fall back to the
+  // call's own month when the model can't tell.
+  let targetMonthId = monthId;
+  const planned = typeof out.plannedMonthKey === "string" && /^\d{4}-\d{2}$/.test(out.plannedMonthKey) ? out.plannedMonthKey : null;
+  if (planned && planned !== month.monthKey) {
+    const { etMonthKey } = await import("@/lib/contentProgram");
+    const enr = await prisma.contentEnrollment.findUnique({
+      where: { id: month.enrollmentId },
+      select: { videosPerMonth: true, strategyCallRequired: true },
+    });
+    const target = await prisma.contentMonth.upsert({
+      where: { enrollmentId_monthKey: { enrollmentId: month.enrollmentId, monthKey: planned } },
+      create: {
+        enrollmentId: month.enrollmentId, clientId: month.clientId, monthKey: planned,
+        videosOwed: enr?.videosPerMonth ?? 4,
+        strategyCallStatus: "COMPLETED", // this call WAS its planning call
+        ...(planned < etMonthKey() ? { historical: true, status: "IMPORTED" } : {}),
+      },
+      update: {},
+      select: { id: true },
+    });
+    targetMonthId = target.id;
+  }
   const existing = new Set(
-    (await prisma.contentTopic.findMany({ where: { monthId }, select: { title: true } })).map((t) => t.title.toLowerCase()),
+    (await prisma.contentTopic.findMany({ where: { monthId: targetMonthId }, select: { title: true } })).map((t) => t.title.toLowerCase()),
   );
   let confirmed = 0;
   for (const t of arr<{ title: string; concept: string; pillar: string | null }>(out.confirmedTopics)) {
     if (!t.title?.trim() || existing.has(t.title.toLowerCase())) continue;
     await prisma.contentTopic.create({
       data: {
-        enrollmentId: month.enrollmentId, clientId: month.clientId, monthId,
+        enrollmentId: month.enrollmentId, clientId: month.clientId, monthId: targetMonthId,
         title: t.title.trim().slice(0, 200), concept: t.concept?.trim().slice(0, 2000) || null,
         pillar: t.pillar?.trim().slice(0, 120) || null,
         status: "SELECTED", source: "strategy_call",
