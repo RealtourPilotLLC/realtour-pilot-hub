@@ -60,6 +60,14 @@ async function topicHistory(enrollmentId: string): Promise<string> {
   return topics.map((t) => `- [${t.status}] ${t.title}`).join("\n");
 }
 
+
+// Quote-heavy transcripts can make the model return list fields as JSON-encoded
+// strings — coerce before iterating (Aug 24 backfill failure mode).
+function arr<T>(v: unknown): T[] {
+  if (Array.isArray(v)) return v as T[];
+  if (typeof v === "string") { try { const p = JSON.parse(v); return Array.isArray(p) ? (p as T[]) : []; } catch { return []; } }
+  return [];
+}
 // ---------------------------------------------------------------------------
 // 1. Transcript extraction
 // ---------------------------------------------------------------------------
@@ -126,7 +134,7 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
     (await prisma.contentTopic.findMany({ where: { monthId }, select: { title: true } })).map((t) => t.title.toLowerCase()),
   );
   let confirmed = 0;
-  for (const t of out.confirmedTopics ?? []) {
+  for (const t of arr<{ title: string; concept: string; pillar: string | null }>(out.confirmedTopics)) {
     if (!t.title?.trim() || existing.has(t.title.toLowerCase())) continue;
     await prisma.contentTopic.create({
       data: {
@@ -140,7 +148,7 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
   }
   // Future ideas → the bank.
   let future = 0;
-  for (const t of out.futureIdeas ?? []) {
+  for (const t of arr<{ title: string; concept: string; pillar: string | null }>(out.futureIdeas)) {
     if (!t.title?.trim()) continue;
     await prisma.contentTopic.create({
       data: {
@@ -153,7 +161,7 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
     future++;
   }
   // Rejected ideas → recorded so they aren't re-pitched.
-  for (const title of out.rejectedIdeas ?? []) {
+  for (const title of arr<string>(out.rejectedIdeas)) {
     if (!title?.trim()) continue;
     await prisma.contentTopic.create({
       data: {
@@ -165,7 +173,7 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
   // Profile intel → PROPOSED as intelligence notes (review happens by reading
   // them — they feed AI context but never silently rewrite the profile, §17).
   let intel = 0;
-  for (const fact of out.profileIntel ?? []) {
+  for (const fact of arr<string>(out.profileIntel)) {
     if (!fact?.trim()) continue;
     await prisma.contentNote.create({
       data: { clientId: month.clientId, body: `From the ${month.monthKey} strategy call: ${fact.trim().slice(0, 2000)}`, intelligence: true, authorName: "AI (call extraction)" },
@@ -175,11 +183,12 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
   // Location + todos → a plain month note the workspace shows.
   const extras: string[] = [];
   if (out.locationNotes?.trim()) extras.push(`Location/production: ${out.locationNotes.trim()}`);
-  if (out.todos?.length) extras.push(`To-dos:\n${out.todos.map((t) => `• ${t}`).join("\n")}`);
+  const todoList = arr<string>(out.todos);
+  if (todoList.length) extras.push(`To-dos:\n${todoList.map((t) => `• ${t}`).join("\n")}`);
   if (extras.length) {
     await prisma.contentMonth.update({ where: { id: monthId }, data: { notes: extras.join("\n\n").slice(0, 8000) } });
   }
-  return { confirmedTopics: confirmed, futureIdeas: future, rejected: (out.rejectedIdeas ?? []).length, intelNotes: intel, todos: (out.todos ?? []).length };
+  return { confirmedTopics: confirmed, futureIdeas: future, rejected: arr<string>(out.rejectedIdeas).length, intelNotes: intel, todos: todoList.length };
 }
 
 // ---------------------------------------------------------------------------

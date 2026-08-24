@@ -6,6 +6,19 @@ import { requireAdmin } from "@/lib/auth/guards";
 import { contentProgramSweep, PACKAGE_RULES } from "@/lib/contentProgram";
 
 type Result = { ok: boolean; message: string };
+// The model occasionally returns an array/object field as a JSON-encoded STRING
+// (quote-heavy source documents trigger it — Aug 24 backfill). Coerce first.
+function coerceArray<T>(v: unknown): T[] {
+  if (Array.isArray(v)) return v as T[];
+  if (typeof v === "string") { try { const p = JSON.parse(v); return Array.isArray(p) ? (p as T[]) : []; } catch { return []; } }
+  return [];
+}
+function coerceObject(v: unknown): Record<string, string> {
+  if (v && typeof v === "object" && !Array.isArray(v)) return v as Record<string, string>;
+  if (typeof v === "string") { try { const p = JSON.parse(v); return p && typeof p === "object" && !Array.isArray(p) ? p : {}; } catch { return {}; } }
+  return {};
+}
+
 const fail = (e: unknown): Result => ({ ok: false, message: e instanceof Error ? e.message : "Something went wrong." });
 
 // Re-run enrollment/month/project sync on demand. The button pulls the social
@@ -244,7 +257,7 @@ export async function previewScriptBackfill(form: FormData): Promise<BackfillPre
         required: ["monthKey", "scripts"],
       },
     });
-    const scripts = (out.scripts ?? [])
+    const scripts = coerceArray<{ title: string; hook: string | null; body: string }>(out.scripts)
       .filter((s) => s.body?.trim())
       .map((s) => ({ title: (s.title || s.body.slice(0, 60)).trim().slice(0, 200), hook: s.hook?.trim() || null, body: s.body.trim().slice(0, 20_000) }));
     if (scripts.length === 0) return { ok: false, message: "No scripts found in the document." };
@@ -352,7 +365,7 @@ export async function previewStrategyBackfill(form: FormData): Promise<StrategyP
       },
     });
     const sections: Record<string, string> = {};
-    for (const [k, v] of Object.entries(out.sections ?? {})) {
+    for (const [k, v] of Object.entries(coerceObject(out.sections))) {
       if (typeof v === "string" && v.trim()) sections[k.slice(0, 80)] = v.trim().slice(0, 12_000);
     }
     if (Object.keys(sections).length === 0) return { ok: false, message: "Couldn't find strategy content in the document." };
