@@ -452,11 +452,13 @@ export async function saveScriptText(scriptId: string, body: string): Promise<Re
 // Pull Calendly bookings + Drive transcripts on demand (cron does both too).
 export async function syncCallsNow(): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
-  const { syncStrategyCallsFromCalendly, sweepDriveTranscripts } = await import("@/lib/contentCalls");
+  const { syncStrategyCallsFromCalendly, sweepNotetakerTranscripts, sweepDriveTranscripts } = await import("@/lib/contentCalls");
   const cal = await syncStrategyCallsFromCalendly().catch((e) => ({ skipped: e instanceof Error ? e.message : "failed" }));
+  const nt = await sweepNotetakerTranscripts().catch((e) => ({ skipped: e instanceof Error ? e.message : "failed" }));
   const drv = await sweepDriveTranscripts().catch((e) => ({ skipped: e instanceof Error ? e.message : "failed" }));
   revalidatePath("/content");
   const calMsg = "skipped" in cal ? `Calendly: ${cal.skipped}` : `Calendly: ${cal.stamped} scheduled, ${cal.completed} completed${cal.canceled ? `, ${cal.canceled} canceled` : ""}`;
-  const drvMsg = "skipped" in drv ? `Drive: ${drv.skipped}` : `Drive: ${drv.ingested} transcript${drv.ingested === 1 ? "" : "s"} pulled in`;
-  return { ok: true, message: `${calMsg} · ${drvMsg}.` };
+  const ntMsg = "skipped" in nt ? `Notetaker: ${nt.skipped}` : `Notetaker: ${nt.ingested} transcript${nt.ingested === 1 ? "" : "s"}`;
+  const drvMsg = "skipped" in drv ? `Drive: ${drv.skipped}` : `Drive: ${drv.ingested} transcript${drv.ingested === 1 ? "" : "s"}`;
+  return { ok: true, message: `${calMsg} · ${ntMsg} · ${drvMsg}.` };
 }

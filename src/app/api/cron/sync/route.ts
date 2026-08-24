@@ -53,8 +53,11 @@ export async function GET(req: NextRequest) {
   // wait in INTERNAL_REVIEW — the human-review rule holds), and on the 1st the
   // booking-link drafts are minted for clients who haven't scheduled.
   await step("contentCalls", async () => {
-    const { syncStrategyCallsFromCalendly, sweepDriveTranscripts, mintStrategyCallInvites } = await import("@/lib/contentCalls");
+    const { syncStrategyCallsFromCalendly, sweepNotetakerTranscripts, sweepDriveTranscripts, mintStrategyCallInvites } = await import("@/lib/contentCalls");
     const cal = await syncStrategyCallsFromCalendly().catch(() => ({ skipped: "error" }));
+    // Transcript sources in priority order: Notetaker (primary — Jordan keeps
+    // it on every call), then the Drive/Meet backup for anything still bare.
+    const nt = await sweepNotetakerTranscripts().catch(() => ({ skipped: "error" }));
     const drv = await sweepDriveTranscripts().catch(() => ({ skipped: "error" }));
     const inv = await mintStrategyCallInvites().catch(() => ({ minted: 0 }));
     // Auto-process any transcript that landed without analysis (Drive sweep or
@@ -74,7 +77,7 @@ export async function GET(req: NextRequest) {
         processed++;
       } catch { /* one bad transcript must not stop the rest */ }
     }
-    return { calendly: cal, drive: drv, invites: inv.minted, processed };
+    return { calendly: cal, notetaker: nt, drive: drv, invites: inv.minted, processed };
   });
   // Re-evaluate project statuses (Aryeo has no media-upload webhook, so this is
   // how a shoot's media gets detected → SHOT/REVIEW) and (re)generate the QC /

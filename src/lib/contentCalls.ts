@@ -237,3 +237,52 @@ export async function mintStrategyCallInvites(): Promise<{ minted: number }> {
   }
   return { minted };
 }
+
+// ---------------------------------------------------------------------------
+// Notetaker transcript sweep — PRIMARY source (Jordan keeps Notetaker on every
+// call). A month qualifies when it has a Calendly booking and no transcript;
+// the recap is matched by the booked event's uuid. Drive remains the backup,
+// paste the last resort — all three write the same transcriptText and feed the
+// same analysis pipeline.
+// ---------------------------------------------------------------------------
+export async function sweepNotetakerTranscripts(): Promise<{ ingested: number } | { skipped: string }> {
+  const { getSecret } = await import("@/lib/integrations/connections");
+  if (!(await getSecret("calendly"))) return { skipped: "Calendly not connected" };
+
+  const months = await prisma.contentMonth.findMany({
+    where: { transcriptText: null, calendlyEventUri: { not: null } },
+    select: { id: true, calendlyEventUri: true },
+  });
+  if (months.length === 0) return { ingested: 0 };
+
+  const { listMeetingRecaps, recapEventUuid, recapTranscriptText } = await import("@/lib/integrations/calendly");
+  const recaps = await listMeetingRecaps();
+  if ("skipped" in recaps) return recaps;
+
+  // event uuid → recap uri
+  const byEvent = new Map<string, string>();
+  for (const r of recaps) {
+    const uuid = recapEventUuid(r);
+    if (uuid && typeof r.uri === "string") byEvent.set(uuid, r.uri);
+  }
+  let ingested = 0;
+  for (const m of months) {
+    const eventUuid = m.calendlyEventUri!.split("/").pop();
+    const recapUri = eventUuid ? byEvent.get(eventUuid) : undefined;
+    if (!recapUri) continue;
+    try {
+      const text = await recapTranscriptText(recapUri);
+      if (!text || text.length < 200) continue; // a stub recap is not a call
+      await prisma.contentMonth.update({
+        where: { id: m.id },
+        data: {
+          transcriptText: text.slice(0, 500_000),
+          transcriptSource: `notetaker:${recapUri.split("/").pop()}`,
+          strategyCallStatus: "COMPLETED",
+        },
+      });
+      ingested++;
+    } catch { /* one bad recap must not stop the rest */ }
+  }
+  return { ingested };
+}

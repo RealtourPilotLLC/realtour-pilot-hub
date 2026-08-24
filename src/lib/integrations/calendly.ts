@@ -123,3 +123,85 @@ export async function listStrategyCalls(minStartIso: string, maxStartIso: string
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Notetaker meeting recaps. Jordan keeps Notetaker ON for every strategy call;
+// its transcript is the PRIMARY source (Drive/Meet is the backup, paste last).
+// NOTE: the account currently returns 403 "Required features are not enabled"
+// — everything here degrades to {skipped} until Notetaker is enabled in
+// Calendly, then starts working with no code change.
+// ---------------------------------------------------------------------------
+export type MeetingRecap = Record<string, unknown> & { uri?: string };
+
+export async function listMeetingRecaps(): Promise<MeetingRecap[] | { skipped: string }> {
+  try {
+    const r = await calendlyRequest<{ collection?: MeetingRecap[] }>("/meeting_recaps", { query: { count: "50" } });
+    return r.collection ?? [];
+  } catch (e) {
+    if (e instanceof CalendlyError && (e.status === 403 || e.status === 404)) {
+      return { skipped: "Notetaker not enabled on this Calendly account" };
+    }
+    throw e;
+  }
+}
+
+// The scheduled-event uuid a recap belongs to — the docs are gated, so find it
+// defensively: any string field (top-level or one deep) containing the
+// scheduled_events path is the linkage.
+export function recapEventUuid(recap: MeetingRecap): string | null {
+  const hunt = (v: unknown): string | null => {
+    if (typeof v === "string") {
+      const m = v.match(/scheduled_events\/([a-f0-9-]{8,})/i);
+      return m ? m[1] : null;
+    }
+    if (v && typeof v === "object") {
+      for (const x of Object.values(v)) { const hit = hunt(x); if (hit) return hit; }
+    }
+    return null;
+  };
+  return hunt(recap);
+}
+
+// The transcript for one recap, flattened to plain text whatever the shape:
+// a raw-text body, {transcript: "..."}, or a segments/speakers array.
+export async function recapTranscriptText(recapUri: string): Promise<string | null> {
+  const uuid = recapUri.split("/").pop();
+  if (!uuid) return null;
+  const key = await getSecret("calendly");
+  if (!key) return null;
+  const res = await fetch(`${BASE}/meeting_recaps/${uuid}/transcript`, {
+    headers: { Authorization: `Bearer ${key}` }, cache: "no-store", signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) return null;
+  const raw = await res.text();
+  let json: unknown;
+  try { json = JSON.parse(raw); } catch { return raw.trim() || null; }
+
+  const flatten = (v: unknown): string | null => {
+    if (typeof v === "string") return v;
+    if (Array.isArray(v)) {
+      const lines = v
+        .map((seg) => {
+          if (typeof seg === "string") return seg;
+          if (seg && typeof seg === "object") {
+            const o = seg as Record<string, unknown>;
+            const speaker = typeof o.speaker === "string" ? o.speaker : typeof o.speaker_name === "string" ? o.speaker_name : null;
+            const text = typeof o.text === "string" ? o.text : typeof o.content === "string" ? o.content : null;
+            if (text) return speaker ? `${speaker}: ${text}` : text;
+          }
+          return null;
+        })
+        .filter(Boolean);
+      return lines.length ? lines.join("\n") : null;
+    }
+    if (v && typeof v === "object") {
+      const o = v as Record<string, unknown>;
+      for (const k of ["transcript", "text", "content", "segments", "utterances", "resource", "collection"]) {
+        if (k in o) { const hit = flatten(o[k]); if (hit) return hit; }
+      }
+    }
+    return null;
+  };
+  const text = flatten(json);
+  return text?.trim() || null;
+}
