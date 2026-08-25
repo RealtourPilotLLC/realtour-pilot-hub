@@ -247,7 +247,7 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
 
       <div className="space-y-1 border-t px-3 py-3">
         {/* Connections lives in the System nav section — no duplicate here. */}
-        {user && (
+        {user ? (
           <div className="mt-1 flex items-center gap-2 rounded-lg bg-surface-2/60 px-3 py-2">
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm font-medium">{user.name || user.email}</div>
@@ -260,6 +260,12 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
                 <LogOut className="size-4" />
               </button>
             </form>
+          </div>
+        ) : (
+          // No session (open local dev): the theme switch must not vanish with
+          // the user chip — light/dark is a device preference, not an account one.
+          <div className="mt-1 flex justify-end px-1">
+            <ThemeToggle />
           </div>
         )}
       </div>
