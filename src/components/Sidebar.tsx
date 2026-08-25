@@ -31,7 +31,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { canAccess, type PageKey } from "@/lib/auth/access";
+import { canAccess, parsePermissions, type PageKey } from "@/lib/auth/access";
 import { NotificationsBell } from "@/components/NotificationsBell";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
@@ -154,9 +154,13 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
     // Match on href, not key: the Creative "Style Guide" item also carries the
     // `resources` key (it rides that permission) and must keep its own label.
     if (creative) items = items.map((i) => (i.href === "/resources" ? { ...i, label: "SOP Center" } : i));
-    // "My Pay" is the photographer's own payout view — owner/admin use /payouts,
-    // so keep it out of their nav even though canAccess(OWNER) allows everything.
-    if (user && user.role !== "PHOTOGRAPHER") items = items.filter((i) => i.key !== "mypay");
+    // "My Pay" is a person's own payout view. Photographers always have it;
+    // owner/admin see it ONLY with an explicit mypay:true override (James:
+    // admin powers for the creative-manager role, his own pay visible, the
+    // company financials blocked). The blanket role filter here was eating
+    // the override (Aug 24).
+    const mypayGranted = "mypay" in parsePermissions(user?.permissions) && parsePermissions(user?.permissions).mypay;
+    if (user && user.role !== "PHOTOGRAPHER" && !mypayGranted) items = items.filter((i) => i.key !== "mypay");
     if (showScripting && s.title === "Creative") {
       items = [...items, { label: "Script Writing", href: scriptingUrl!, icon: PenLine, external: true }];
     }
