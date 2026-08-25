@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { requireAdmin } from "@/lib/auth/guards";
+import { requireAdmin, requireOwner } from "@/lib/auth/guards";
 import { contentProgramSweep, PACKAGE_RULES } from "@/lib/contentProgram";
 
 type Result = { ok: boolean; message: string };
@@ -52,10 +52,33 @@ export async function runProgramSweep(): Promise<Result> {
 // ---------------------------------------------------------------------------
 export async function saveEnrollmentSettings(
   enrollmentId: string,
-  s: { package?: string; strategyCallRequired?: boolean; clientSuppliesTopics?: boolean; status?: string; notes?: string },
+  s: {
+    package?: string; strategyCallRequired?: boolean; clientSuppliesTopics?: boolean; status?: string; notes?: string;
+    billingType?: string | null; billingRate?: number | null; billingMonths?: number | null;
+  },
 ): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   const data: Record<string, unknown> = {};
+  // Billing terms are the OWNER's alone — an admin session can save every other
+  // field on this card but never money.
+  const touchesBilling = s.billingType !== undefined || s.billingRate !== undefined || s.billingMonths !== undefined;
+  if (touchesBilling) {
+    try { await requireOwner(); } catch (e) { return fail(e); }
+    if (s.billingType !== undefined) {
+      if (s.billingType !== null && !["PAID_IN_FULL", "MONTHLY_CONTRACT", "MONTH_TO_MONTH", "TRIAL"].includes(s.billingType)) {
+        return { ok: false, message: "Unknown billing type." };
+      }
+      data.billingType = s.billingType;
+    }
+    if (s.billingRate !== undefined) {
+      if (s.billingRate !== null && (!Number.isFinite(s.billingRate) || s.billingRate < 0)) return { ok: false, message: "Bad rate." };
+      data.billingRate = s.billingRate;
+    }
+    if (s.billingMonths !== undefined) {
+      if (s.billingMonths !== null && (!Number.isInteger(s.billingMonths) || s.billingMonths < 1 || s.billingMonths > 60)) return { ok: false, message: "Bad term length." };
+      data.billingMonths = s.billingMonths;
+    }
+  }
   if (s.package !== undefined) {
     const rules = PACKAGE_RULES[s.package];
     if (!rules) return { ok: false, message: "Unknown package." };

@@ -300,6 +300,13 @@ export default async function ContentClientPage({
               strategyCallRequired={enrollment.strategyCallRequired}
               clientSuppliesTopics={enrollment.clientSuppliesTopics}
               notes={enrollment.notes}
+              // Billing renders for the owner alone (open local dev counts);
+              // the save action re-checks with requireOwner.
+              billing={
+                (me ? me.role === "OWNER" : !authEnforced())
+                  ? { type: enrollment.billingType, rate: enrollment.billingRate, months: enrollment.billingMonths }
+                  : undefined
+              }
             />
           </div>
         )}

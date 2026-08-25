@@ -1649,6 +1649,13 @@ model ContentEnrollment {
   clientSuppliesTopics Boolean @default(false)
   overridesJson        String? // anything rarer, JSON
   status        String    @default("ACTIVE") // ACTIVE | PAUSED | ENDED
+  // --- Billing terms (owner-entered, Aug 25) — how this client pays. ---
+  // PAID_IN_FULL (rate = the full amount) | MONTHLY_CONTRACT (rate = per month,
+  // months = commitment) | MONTH_TO_MONTH (rate = per month) | TRIAL (rate = the
+  // one-month price). Never shown to creatives.
+  billingType   String?
+  billingRate   Float?
+  billingMonths Int?
   // A human set the status (trials that aren't Aryeo-flagged, hand-pauses):
   // the Aryeo sync must never auto-pause or auto-reactivate these.
   statusManual  Boolean   @default(false)

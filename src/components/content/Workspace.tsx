@@ -395,14 +395,33 @@ export function NotesCard({
 // Enrollment settings — package override + workflow flags (spec §3).
 // ---------------------------------------------------------------------------
 export function EnrollmentSettingsCard({
-  enrollmentId, pkg, status, packageSource, strategyCallRequired, clientSuppliesTopics, notes,
+  enrollmentId, pkg, status, packageSource, strategyCallRequired, clientSuppliesTopics, notes, billing,
 }: {
   enrollmentId: string; pkg: string; status: string; packageSource: string;
   strategyCallRequired: boolean; clientSuppliesTopics: boolean; notes: string | null;
+  // Owner-only: the page passes this ONLY for the owner; the action re-checks.
+  billing?: { type: string | null; rate: number | null; months: number | null };
 }) {
   const [state, setState] = useState({ pkg, status, strategyCallRequired, clientSuppliesTopics, notes: notes ?? "" });
   const [note, setNote] = useState<string | null>(null);
   const [busy, start] = useTransition();
+  const [bill, setBill] = useState({
+    type: billing?.type ?? "",
+    rate: billing?.rate != null ? String(billing.rate) : "",
+    months: billing?.months != null ? String(billing.months) : "",
+  });
+  const saveBilling = (partial: Partial<typeof bill>) => {
+    const next = { ...bill, ...partial };
+    setBill(next);
+    start(async () => {
+      const r = await saveEnrollmentSettings(enrollmentId, {
+        billingType: next.type || null,
+        billingRate: next.rate.trim() === "" ? null : Number(next.rate.replace(/[$,\s]/g, "")),
+        billingMonths: next.months.trim() === "" ? null : Number(next.months),
+      });
+      setNote(r.message);
+    });
+  };
 
   function save(partial: Partial<typeof state>) {
     const next = { ...state, ...partial };
@@ -445,6 +464,38 @@ export function EnrollmentSettingsCard({
           <input type="checkbox" checked={state.clientSuppliesTopics} onChange={(e) => save({ clientSuppliesTopics: e.target.checked })} className="accent-[var(--brand)]" />
           Client supplies their own topics
         </label>
+
+        {/* Billing terms — rendered only for the owner (the action re-checks). */}
+        {billing !== undefined && (
+          <div className="space-y-2 border-t border-border pt-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Billing · owner only</p>
+            <div className="flex items-center gap-2">
+              <label className="w-28 text-xs text-muted">How they pay</label>
+              <select value={bill.type} onChange={(e) => saveBilling({ type: e.target.value })}
+                className="rounded-lg border border-border bg-surface-2 px-2 py-1 text-xs outline-none focus:border-brand">
+                <option value="">Not set</option>
+                <option value="PAID_IN_FULL">Paid in full</option>
+                <option value="MONTHLY_CONTRACT">Monthly · contract</option>
+                <option value="MONTH_TO_MONTH">Month to month</option>
+                <option value="TRIAL">Trial</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="w-28 text-xs text-muted">{bill.type === "PAID_IN_FULL" || bill.type === "TRIAL" ? "Amount" : "Rate / month"}</label>
+              <input value={bill.rate} onChange={(e) => setBill((b) => ({ ...b, rate: e.target.value }))}
+                onBlur={() => saveBilling({})} onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                inputMode="decimal" placeholder="$"
+                className="w-24 rounded-lg border border-border bg-surface-2 px-2 py-1 text-right text-xs tabular-nums outline-none focus:border-brand" />
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="w-28 text-xs text-muted">Term (months)</label>
+              <input value={bill.months} onChange={(e) => setBill((b) => ({ ...b, months: e.target.value }))}
+                onBlur={() => saveBilling({})} onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                inputMode="numeric" placeholder="12, or blank for open-ended"
+                className="w-40 rounded-lg border border-border bg-surface-2 px-2 py-1 text-xs outline-none focus:border-brand" />
+            </div>
+          </div>
+        )}
         {busy && <Loader2 className="size-3.5 animate-spin text-muted" />}
         {note && !busy && <p className="text-[11px] text-muted">{note}</p>}
       </div>

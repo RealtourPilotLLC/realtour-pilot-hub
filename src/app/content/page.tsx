@@ -9,8 +9,10 @@ import { authEnforced } from "@/lib/auth/guards";
 import { canAccess } from "@/lib/auth/access";
 import { cn, nameColor } from "@/lib/utils";
 import { contentProgramSweep, getProgramRoster, monthLabel, etMonthKey, type ProgramRow } from "@/lib/contentProgram";
+import { programRevenue, billingLabel, agreementValue, type RevenueRow } from "@/lib/contentBilling";
 import { MonthJourney, VideoMeter } from "@/components/content/MonthJourney";
 import { SweepButton } from "@/components/content/SweepButton";
+import { BadgeDollarSign, ChevronDown } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +38,10 @@ export default async function ContentProgramPage() {
   const attention = live.filter((r) => r.attention.length > 0);
   const delivered = live.reduce((s, r) => s + r.delivered, 0);
   const owed = live.reduce((s, r) => s + r.videosOwed, 0);
+  // Money is the OWNER's view alone — admins and creatives never see billing.
+  // (Open local dev counts as the owner, same as the feedback board's rule.)
+  const ownerEyes = me ? me.role === "OWNER" : !authEnforced();
+  const revenue = ownerEyes ? await programRevenue().catch(() => null) : null;
 
   return (
     <div>
@@ -76,6 +82,11 @@ export default async function ContentProgramPage() {
         {live.length > 0 && attention.length === 0 && (
           <p className="flex items-center gap-2 text-sm text-success"><CheckCircle2 className="size-4" /> Every enrolled client is on track this month.</p>
         )}
+
+        {/* REVENUE & BILLING — owner-only, collapsed until asked for (Jordan
+            Aug 25: "how much we are making off each person and if they paid in
+            full, paid monthly, or monthly with a 1yr contract"). */}
+        {revenue && revenue.length > 0 && <RevenuePanel rows={revenue} />}
 
         {/* PAUSED & PAST — history stays one click away without cluttering the month */}
         {inactive.length > 0 && (
@@ -160,6 +171,57 @@ function ClientCard({ r }: { r: ProgramRow }) {
         </p>
       )}
     </Link>
+  );
+}
+
+// Owner-only money panel: one row per active client — the terms as signed,
+// and what QuickBooks has actually collected from them this year (all
+// services, deliberately: it answers "how much do we make off this person").
+function RevenuePanel({ rows }: { rows: RevenueRow[] }) {
+  const money = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
+  const collected = rows.reduce((s, r) => s + r.collectedThisYear, 0);
+  const recurring = rows
+    .filter((r) => r.billingType === "MONTHLY_CONTRACT" || r.billingType === "MONTH_TO_MONTH")
+    .reduce((s, r) => s + (r.billingRate ?? 0), 0);
+  const TYPE_CHIP: Record<string, string> = {
+    PAID_IN_FULL: "bg-success/15 text-success",
+    MONTHLY_CONTRACT: "bg-brand/15 text-brand",
+    MONTH_TO_MONTH: "bg-[#8b93e6]/20 text-[#8b93e6]",
+    TRIAL: "bg-warning/15 text-warning",
+  };
+  return (
+    <details className="group panel-shadow overflow-hidden rounded-2xl border bg-surface">
+      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-5 py-3 hover:bg-surface-2">
+        <ChevronDown className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
+        <span className="flex size-7 items-center justify-center rounded-lg bg-success/15 text-success"><BadgeDollarSign className="size-4" /></span>
+        <h2 className="text-sm font-semibold">Revenue &amp; billing</h2>
+        <span className="ml-auto text-xs text-muted">
+          <span className="font-semibold text-foreground">{money(collected)}</span> collected this year · {money(recurring)}/mo recurring
+        </span>
+      </summary>
+      <div className="divide-y divide-border border-t border-border">
+        {rows.map((r) => {
+          const value = agreementValue(r.billingType, r.billingRate, r.billingMonths);
+          return (
+            <Link key={r.enrollmentId} href={`/content/${r.enrollmentId}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-2.5 hover:bg-surface-2/60">
+              <Avatar name={r.clientName} color={nameColor(r.clientName)} size={24} />
+              <span className="min-w-0 flex-1 truncate text-sm font-medium">{r.clientName}</span>
+              <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", TYPE_CHIP[r.billingType ?? ""] ?? "bg-surface-2 text-muted-2")}>
+                {billingLabel(r.billingType, r.billingRate, r.billingMonths)}
+              </span>
+              {value != null && <span className="hidden text-[11px] text-muted-2 sm:inline">agreement {money(value)}</span>}
+              <span className={cn("w-28 shrink-0 text-right text-sm font-semibold tabular-nums", r.collectedThisYear === 0 && "text-warning")}>
+                {money(r.collectedThisYear)}
+                <span className="ml-1 text-[10px] font-normal text-muted-2">this yr</span>
+              </span>
+            </Link>
+          );
+        })}
+      </div>
+      <p className="border-t border-border px-5 py-2 text-[11px] text-muted-2">
+        Collected = every QuickBooks payment from this person in {new Date().getFullYear()} (all services, not just content). $0 on a trial = not invoiced or not paid yet. Edit terms inside the client&rsquo;s Notes &amp; settings tab.
+      </p>
+    </details>
   );
 }
 
