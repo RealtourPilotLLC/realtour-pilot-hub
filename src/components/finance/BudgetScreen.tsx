@@ -2,10 +2,11 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, PiggyBank, Plus, Sparkles, Trash2, Wallet } from "lucide-react";
+import { ChevronRight, Loader2, PiggyBank, Plus, Sparkles, Trash2, Wallet } from "lucide-react";
 import { Markdown } from "@/components/ui/Markdown";
 import { saveBudgetTargetAction, removeBudgetTargetAction } from "@/app/sales/budgetActions";
 import { aiSetupBudgetAction } from "@/app/sales/advisorActions";
+import { CategoryTxnPanel, type CatOpt } from "@/components/finance/CategoryTxnPanel";
 
 export type BudgetRow = { category: string; target: number; note: string | null; spent: number; avg3mo: number };
 
@@ -13,17 +14,21 @@ const m0 = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 const MONTH = (key: string) => new Date(`${key}-01T12:00:00Z`).toLocaleString("en-US", { month: "long", timeZone: "UTC" });
 
 export function BudgetScreen({
-  rows, unbudgeted, monthKey, dayOfMonth, daysInMonth, totalSpent,
+  rows, unbudgeted, monthKey, dayOfMonth, daysInMonth, totalSpent, allCategories, startKey, endKey,
 }: {
   rows: BudgetRow[];
   unbudgeted: { category: string; spent: number; avg3mo: number }[];
   monthKey: string; dayOfMonth: number; daysInMonth: number; totalSpent: number;
+  allCategories: CatOpt[]; startKey: string; endKey: string;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [aiBusy, setAiBusy] = useState(false);
   const [aiSummary, setAiSummary] = useState<string | null>(null);
   const [edits, setEdits] = useState<Record<string, string>>({});
+  // Which category's charges are open below its bar (Jordan Aug 25: tap a
+  // budget line → its itemized charges, each recategorizable in place).
+  const [open, setOpen] = useState<string | null>(null);
 
   const totalTarget = rows.reduce((s, r) => s + r.target, 0);
   const budgetedSpent = rows.reduce((s, r) => s + r.spent, 0);
@@ -102,7 +107,15 @@ export function BudgetScreen({
               return (
                 <div key={r.category} className="px-5 py-3">
                   <div className="flex items-center justify-between gap-3 text-sm">
-                    <span className="min-w-0 flex-1 truncate font-medium">{r.category}</span>
+                    {/* Tap the name to open the category's itemized charges below. */}
+                    <button
+                      onClick={() => setOpen(open === r.category ? null : r.category)}
+                      className="flex min-w-0 flex-1 items-center gap-1 text-left"
+                      title="See the charges behind this number"
+                    >
+                      <ChevronRight className={`size-3.5 shrink-0 text-muted-2 transition-transform ${open === r.category ? "rotate-90" : ""}`} />
+                      <span className="truncate font-medium">{r.category}</span>
+                    </button>
                     <span className="shrink-0 tabular-nums text-muted">{m0(r.spent)} /</span>
                     <input
                       defaultValue={Math.round(r.target)}
@@ -127,6 +140,17 @@ export function BudgetScreen({
                     <span className="truncate">{r.note ?? `3-mo average ${m0(r.avg3mo)}`}</span>
                     <span className="shrink-0 tabular-nums">{over ? `${m0(r.spent - r.target)} over` : `${m0(r.target - r.spent)} left`}</span>
                   </div>
+                  {open === r.category && (
+                    <div className="mt-2 rounded-xl border border-border/60 bg-surface-2/40 px-2 py-2">
+                      <CategoryTxnPanel
+                        category={r.category}
+                        startKey={startKey}
+                        endKey={endKey}
+                        allCategories={allCategories}
+                        onChanged={() => router.refresh()}
+                      />
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -143,17 +167,37 @@ export function BudgetScreen({
           </div>
           <div className="divide-y divide-border/60">
             {unbudgeted.map((u) => (
-              <div key={u.category} className="flex items-center justify-between gap-3 px-5 py-2 text-sm">
-                <span className="min-w-0 flex-1 truncate">{u.category}</span>
-                <span className="shrink-0 tabular-nums text-muted">{m0(u.spent)} this mo · avg {m0(u.avg3mo)}</span>
-                <button
-                  onClick={() => save(u.category, String(Math.max(25, Math.round(u.avg3mo))))}
-                  disabled={pending}
-                  className="shrink-0 rounded-full border border-border bg-surface-2 p-1 text-muted hover:text-foreground disabled:opacity-40"
-                  title={`Budget at ${m0(Math.max(25, u.avg3mo))}/mo`}
-                >
-                  <Plus className="size-3.5" />
-                </button>
+              <div key={u.category} className="px-5 py-2">
+                <div className="flex items-center justify-between gap-3 text-sm">
+                  <button
+                    onClick={() => setOpen(open === u.category ? null : u.category)}
+                    className="flex min-w-0 flex-1 items-center gap-1 text-left"
+                    title="See the charges behind this number"
+                  >
+                    <ChevronRight className={`size-3.5 shrink-0 text-muted-2 transition-transform ${open === u.category ? "rotate-90" : ""}`} />
+                    <span className="truncate">{u.category}</span>
+                  </button>
+                  <span className="shrink-0 tabular-nums text-muted">{m0(u.spent)} this mo · avg {m0(u.avg3mo)}</span>
+                  <button
+                    onClick={() => save(u.category, String(Math.max(25, Math.round(u.avg3mo))))}
+                    disabled={pending}
+                    className="shrink-0 rounded-full border border-border bg-surface-2 p-1 text-muted hover:text-foreground disabled:opacity-40"
+                    title={`Budget at ${m0(Math.max(25, u.avg3mo))}/mo`}
+                  >
+                    <Plus className="size-3.5" />
+                  </button>
+                </div>
+                {open === u.category && (
+                  <div className="mt-2 rounded-xl border border-border/60 bg-surface-2/40 px-2 py-2">
+                    <CategoryTxnPanel
+                      category={u.category}
+                      startKey={startKey}
+                      endKey={endKey}
+                      allCategories={allCategories}
+                      onChanged={() => router.refresh()}
+                    />
+                  </div>
+                )}
               </div>
             ))}
           </div>
