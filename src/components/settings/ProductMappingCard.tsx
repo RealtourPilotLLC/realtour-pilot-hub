@@ -24,7 +24,8 @@ const TYPE_OPTIONS: { key: string; label: string }[] = [
   { key: "PHOTOS", label: "Photos" },
   { key: "VIDEO", label: "Video" },
   { key: "SOCIAL_REEL", label: "Social reel" },
-  { key: "DRONE", label: "Drone" },
+  { key: "DRONE_PHOTO", label: "Drone photos" },
+  { key: "DRONE_VIDEO", label: "Drone video" },
   { key: "FLOORPLAN", label: "Floor plan" },
   { key: "ZILLOW_3D", label: "Zillow 3D" },
   { key: "MATTERPORT_3D", label: "Matterport" },
@@ -48,7 +49,7 @@ export function ProductMappingCard({ card }: { card: ProductCard }) {
   const [busy, start] = useTransition();
   const [showDesc, setShowDesc] = useState(false);
 
-  const hasVideo = types.has("VIDEO") || types.has("SOCIAL_REEL");
+  const hasVideo = types.has("VIDEO") || types.has("SOCIAL_REEL") || types.has("DRONE_VIDEO");
   const toggle = (k: string) => {
     const next = new Set(types);
     if (next.has(k)) next.delete(k); else next.add(k);

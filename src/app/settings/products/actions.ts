@@ -12,7 +12,10 @@ export type MappingInput = {
   serviceKind?: string; // legacy product-level kind; derived when absent
 };
 
-const VALID_TYPES = new Set(["PHOTOS", "VIDEO", "SOCIAL_REEL", "DRONE", "FLOORPLAN", "MATTERPORT_3D", "ZILLOW_3D", "TWILIGHT", "VIRTUAL_STAGING", "HEADSHOT", "OTHER"]);
+// DRONE_PHOTO / DRONE_VIDEO are mapping-level distinctions (Jordan, Aug 24:
+// "drone can be drone video or drone photo") — the parser translates them to
+// real deliverable types+labels. Plain DRONE stays valid for older mappings.
+const VALID_TYPES = new Set(["PHOTOS", "VIDEO", "SOCIAL_REEL", "DRONE", "DRONE_PHOTO", "DRONE_VIDEO", "FLOORPLAN", "MATTERPORT_3D", "ZILLOW_3D", "TWILIGHT", "VIRTUAL_STAGING", "HEADSHOT", "OTHER"]);
 
 // Save a product's manual mapping, refresh the parser cache, and REPAIR every
 // live (non-delivered) project that ordered this product so "the entire
@@ -27,7 +30,7 @@ export async function saveProductMapping(
 
   const types = input.types.filter((t) => VALID_TYPES.has(t));
   const addonTypes = input.addonTypes.filter((t) => types.includes(t));
-  const hasVideo = types.includes("VIDEO") || types.includes("SOCIAL_REEL");
+  const hasVideo = types.includes("VIDEO") || types.includes("SOCIAL_REEL") || types.includes("DRONE_VIDEO");
   const tier = hasVideo && ["standard", "premium", "personal_branding"].includes(input.videoTier ?? "") ? input.videoTier : null;
   const me = await getCurrentUser().catch(() => null);
 

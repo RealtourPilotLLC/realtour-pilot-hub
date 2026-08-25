@@ -39,7 +39,8 @@ export default async function ProductMappingPage() {
     try { mapped = p.mediaTypes ? (JSON.parse(p.mediaTypes) as string[]) : null; } catch { mapped = null; }
     // The parser's current opinion — shown as the STARTING point on unmapped
     // cards so Jordan corrects rather than starts from zero.
-    const suggestion = mapped ?? [...new Set(deliverablesForTitle(p.title).map((d) => d.type as string))];
+    const suggestion = (mapped ?? [...new Set(deliverablesForTitle(p.title).map((d) => d.type as string))])
+      .map((t) => (t === "DRONE" ? "DRONE_PHOTO" : t)); // UI splits drone into photo/video chips
     return {
       id: p.id,
       title: p.title,

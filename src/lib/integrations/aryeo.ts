@@ -667,7 +667,9 @@ export function deliverablesForTitle(title: string, quantity = 1): ParsedDeliver
 // platform now trusts the hand-set category over every parser below).
 // Loaded once per lambda (5-min TTL); sync entry points await the load.
 // ---------------------------------------------------------------------------
-export type ManualMapping = { types: DeliverableType[]; tier: "standard" | "premium" | "personal_branding" | null; addOn: boolean; addonTypes: Set<string> };
+// types may include the mapping-level pseudo-types DRONE_PHOTO / DRONE_VIDEO,
+// translated to real deliverable rows at emit time.
+export type ManualMapping = { types: string[]; tier: "standard" | "premium" | "personal_branding" | null; addOn: boolean; addonTypes: Set<string> };
 let MANUAL_MAP: Map<string, ManualMapping> | null = null;
 let manualLoadedAt = 0;
 
@@ -682,7 +684,7 @@ export async function loadManualProductMap(force = false): Promise<void> {
     const map = new Map<string, ManualMapping>();
     for (const r of rows) {
       try {
-        const types = JSON.parse(r.mediaTypes!) as DeliverableType[];
+        const types = JSON.parse(r.mediaTypes!) as string[];
         if (!Array.isArray(types)) continue;
         let addonList: string[] = [];
         try { addonList = r.addonTypes ? (JSON.parse(r.addonTypes) as string[]) : []; } catch { addonList = []; }
@@ -735,7 +737,18 @@ export function itemToDeliverables(item: AryeoOrderItem): ParsedDeliverable[] {
   // pure post-shoot add-on legitimately produces no deliverables).
   const manual = manualMappingForTitle(title);
   if (manual) {
-    return manual.types.map((type) => ({ type, label: manualLabel(manual, type, title), quantity: qty }));
+    return manual.types.map((raw) => {
+      // Drone splits at the mapping level: photos stay a DRONE capture
+      // deliverable (photo pipeline); drone VIDEO is a real VIDEO deliverable
+      // (editor queue, video SLA) labeled so every engine reads it.
+      if (raw === "DRONE_PHOTO") return { type: "DRONE" as DeliverableType, label: "Drone Photos", quantity: qty };
+      if (raw === "DRONE_VIDEO") {
+        const label = manual.tier === "premium" ? "Premium Drone Video" : manual.tier === "personal_branding" ? (MONTHLY_PLAN_RE.test(title) ? title : `${title} · Monthly Content`) : "Drone Video";
+        return { type: "VIDEO" as DeliverableType, label, quantity: qty };
+      }
+      const type = raw as DeliverableType;
+      return { type, label: manualLabel(manual, type, title), quantity: qty };
+    });
   }
 
   const mapped = mappedTypesForTitle(title);
