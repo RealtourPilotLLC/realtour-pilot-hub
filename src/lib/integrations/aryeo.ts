@@ -669,7 +669,7 @@ export function deliverablesForTitle(title: string, quantity = 1): ParsedDeliver
 // ---------------------------------------------------------------------------
 // types may include the mapping-level pseudo-types DRONE_PHOTO / DRONE_VIDEO,
 // translated to real deliverable rows at emit time.
-export type ManualMapping = { types: string[]; tier: "standard" | "premium" | "personal_branding" | null; addOn: boolean; addonTypes: Set<string> };
+export type ManualMapping = { types: string[]; tier: "standard" | "premium" | "personal_branding" | null; addOn: boolean; addonTypes: Set<string>; videoQty: number | null };
 let MANUAL_MAP: Map<string, ManualMapping> | null = null;
 let manualLoadedAt = 0;
 
@@ -679,7 +679,7 @@ export async function loadManualProductMap(force = false): Promise<void> {
     const { prisma } = await import("@/lib/prisma");
     const rows = await prisma.product.findMany({
       where: { mediaTypes: { not: null } },
-      select: { title: true, mediaTypes: true, videoTier: true, serviceKind: true, addonTypes: true },
+      select: { title: true, mediaTypes: true, videoTier: true, serviceKind: true, addonTypes: true, videoQuantity: true },
     });
     const map = new Map<string, ManualMapping>();
     for (const r of rows) {
@@ -693,6 +693,7 @@ export async function loadManualProductMap(force = false): Promise<void> {
           tier: (r.videoTier as ManualMapping["tier"]) ?? null,
           addOn: r.serviceKind === "addon",
           addonTypes: new Set(addonList),
+          videoQty: r.videoQuantity ?? null,
         });
       } catch { /* one bad row must not break the map */ }
     }
@@ -737,6 +738,8 @@ export function itemToDeliverables(item: AryeoOrderItem): ParsedDeliverable[] {
   // pure post-shoot add-on legitimately produces no deliverables).
   const manual = manualMappingForTitle(title);
   if (manual) {
+    // Hand-set videos-per-order multiplies the line quantity (Accelerator=4).
+    const vidQty = (manual.videoQty && manual.videoQty > 0 ? manual.videoQty : 1) * qty;
     return manual.types.map((raw) => {
       // Drone splits at the mapping level: photos stay a DRONE capture
       // deliverable (photo pipeline); drone VIDEO is a real VIDEO deliverable
@@ -744,10 +747,11 @@ export function itemToDeliverables(item: AryeoOrderItem): ParsedDeliverable[] {
       if (raw === "DRONE_PHOTO") return { type: "DRONE" as DeliverableType, label: "Drone Photos", quantity: qty };
       if (raw === "DRONE_VIDEO") {
         const label = manual.tier === "premium" ? "Premium Drone Video" : manual.tier === "personal_branding" ? (MONTHLY_PLAN_RE.test(title) ? title : `${title} · Monthly Content`) : "Drone Video";
-        return { type: "VIDEO" as DeliverableType, label, quantity: qty };
+        return { type: "VIDEO" as DeliverableType, label, quantity: vidQty };
       }
       const type = raw as DeliverableType;
-      return { type, label: manualLabel(manual, type, title), quantity: qty };
+      const videoish = type === "VIDEO" || type === "SOCIAL_REEL";
+      return { type, label: manualLabel(manual, type, title), quantity: videoish ? vidQty : qty };
     });
   }
 

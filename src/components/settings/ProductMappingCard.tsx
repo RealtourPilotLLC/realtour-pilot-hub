@@ -15,6 +15,7 @@ export type ProductCard = {
   types: string[]; // current mapping, or the parser's suggestion when unmapped
   addonTypes: string[]; // subset of types that are post-shoot add-on work
   videoTier: string | null;
+  videoQuantity: number | null;
   serviceKind: string; // service | addon (legacy product-level)
   isMapped: boolean;
   mappedBy: string | null;
@@ -38,6 +39,7 @@ const TYPE_OPTIONS: { key: string; label: string }[] = [
 export function ProductMappingCard({ card }: { card: ProductCard }) {
   const [types, setTypes] = useState<Set<string>>(new Set(card.types));
   const [tier, setTier] = useState(card.videoTier ?? "standard");
+  const [vidQty, setVidQty] = useState(card.videoQuantity ?? 1);
   // Per-PART kind — a bundle's photos are shoot work while its virtual
   // staging is post-shoot editing (Jordan, Aug 24). Default: Aryeo add-on
   // products start with every part as add-on.
@@ -105,6 +107,16 @@ export function ProductMappingCard({ card }: { card: ProductCard }) {
             </select>
           </label>
         )}
+        {hasVideo && (
+          <label className="flex items-center gap-1.5 text-xs text-muted">
+            Videos per order
+            <input
+              type="number" min={1} max={20} value={vidQty}
+              onChange={(e) => { setVidQty(Math.max(1, Math.min(20, Number(e.target.value) || 1))); setSaved(false); }}
+              className="w-16 rounded-lg border border-border bg-surface-2 px-2 py-1 text-xs outline-none focus:border-brand"
+            />
+          </label>
+        )}
         {types.size > 0 && (
           <div className="flex w-full flex-col gap-1">
             {[...types].map((t) => (
@@ -131,7 +143,7 @@ export function ProductMappingCard({ card }: { card: ProductCard }) {
         <button
           disabled={busy}
           onClick={() => start(async () => {
-            const r = await saveProductMapping(card.id, { types: [...types], addonTypes: [...addons].filter((t) => types.has(t)), videoTier: hasVideo ? tier : null });
+            const r = await saveProductMapping(card.id, { types: [...types], addonTypes: [...addons].filter((t) => types.has(t)), videoTier: hasVideo ? tier : null, videoQuantity: hasVideo ? vidQty : null });
             setMsg(r.message);
             if (r.ok) setSaved(true);
           })}

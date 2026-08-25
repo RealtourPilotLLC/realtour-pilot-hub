@@ -9,6 +9,7 @@ export type MappingInput = {
   types: string[]; // DeliverableType[] — empty = produces nothing (fee/pure add-on)
   addonTypes: string[]; // subset of types that are POST-SHOOT work (per-part kind)
   videoTier: string | null; // standard | premium | personal_branding
+  videoQuantity?: number | null; // videos one order produces (Accelerator = 4)
   serviceKind?: string; // legacy product-level kind; derived when absent
 };
 
@@ -40,6 +41,7 @@ export async function saveProductMapping(
       mediaTypes: JSON.stringify(types),
       addonTypes: JSON.stringify(addonTypes),
       videoTier: tier,
+      videoQuantity: hasVideo && input.videoQuantity && input.videoQuantity >= 1 ? Math.min(Math.round(input.videoQuantity), 20) : null,
       // Product-level kind = add-on only when EVERY part is post-shoot work.
       serviceKind: types.length > 0 && addonTypes.length === types.length ? "addon" : "service",
       mappedAt: new Date(),

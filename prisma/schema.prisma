@@ -801,6 +801,9 @@ model Product {
   // Per-PART kinds: the subset of mediaTypes that are post-shoot add-on work
   // (a bundle's photos are shoot work while its virtual staging is editing).
   addonTypes  String? // JSON DeliverableType[]
+  // How many VIDEOS one order of this product produces (Accelerator = 4, a
+  // two-reel bundle = 2). Applies to VIDEO / SOCIAL_REEL / DRONE_VIDEO rows.
+  videoQuantity Int?
   mappedAt    DateTime?
   mappedBy    String? // email of who set it
   minPrice    Int? // cents (lowest variant)
