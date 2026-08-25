@@ -795,6 +795,9 @@ model Product {
   mediaTypes  String? // JSON DeliverableType[] this product actually produces ([] = none, e.g. a fee)
   videoTier   String? // standard | premium | personal_branding (when a video/reel type is included)
   serviceKind String? // service (done at the shoot) | addon (post-shoot work, e.g. photo editing)
+  // Per-PART kinds: the subset of mediaTypes that are post-shoot add-on work
+  // (a bundle's photos are shoot work while its virtual staging is editing).
+  addonTypes  String? // JSON DeliverableType[]
   mappedAt    DateTime?
   mappedBy    String? // email of who set it
   minPrice    Int? // cents (lowest variant)

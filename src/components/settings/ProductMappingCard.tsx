@@ -10,10 +10,12 @@ export type ProductCard = {
   aryeoType: string | null; // MAIN | ADDON (Aryeo's own hint)
   description: string | null;
   orders: number;
+  tags: string[];
   priceRange: string | null;
   types: string[]; // current mapping, or the parser's suggestion when unmapped
+  addonTypes: string[]; // subset of types that are post-shoot add-on work
   videoTier: string | null;
-  serviceKind: string; // service | addon
+  serviceKind: string; // service | addon (legacy product-level)
   isMapped: boolean;
   mappedBy: string | null;
 };
@@ -35,7 +37,12 @@ const TYPE_OPTIONS: { key: string; label: string }[] = [
 export function ProductMappingCard({ card }: { card: ProductCard }) {
   const [types, setTypes] = useState<Set<string>>(new Set(card.types));
   const [tier, setTier] = useState(card.videoTier ?? "standard");
-  const [kind, setKind] = useState(card.serviceKind);
+  // Per-PART kind — a bundle's photos are shoot work while its virtual
+  // staging is post-shoot editing (Jordan, Aug 24). Default: Aryeo add-on
+  // products start with every part as add-on.
+  const [addons, setAddons] = useState<Set<string>>(
+    new Set(card.addonTypes.length ? card.addonTypes : card.serviceKind === "addon" ? card.types : []),
+  );
   const [msg, setMsg] = useState<string | null>(null);
   const [saved, setSaved] = useState(card.isMapped);
   const [busy, start] = useTransition();
@@ -97,18 +104,33 @@ export function ProductMappingCard({ card }: { card: ProductCard }) {
             </select>
           </label>
         )}
-        <label className="flex items-center gap-1.5 text-xs text-muted">
-          Kind
-          <select value={kind} onChange={(e) => { setKind(e.target.value); setSaved(false); }}
-            className="rounded-lg border border-border bg-surface-2 px-2 py-1 text-xs outline-none focus:border-brand">
-            <option value="service">Serviceable (done at the shoot)</option>
-            <option value="addon">Add-on (post-shoot work, e.g. photo editing)</option>
-          </select>
-        </label>
+        {types.size > 0 && (
+          <div className="flex w-full flex-col gap-1">
+            {[...types].map((t) => (
+              <div key={t} className="flex items-center gap-2 text-xs">
+                <span className="w-28 shrink-0 text-muted">{TYPE_OPTIONS.find((o) => o.key === t)?.label ?? t}</span>
+                <div className="flex overflow-hidden rounded-lg border border-border">
+                  <button
+                    onClick={() => { const n = new Set(addons); n.delete(t); setAddons(n); setSaved(false); }}
+                    className={!addons.has(t) ? "bg-brand px-2 py-0.5 text-[11px] font-semibold text-white" : "px-2 py-0.5 text-[11px] text-muted hover:bg-surface-2"}
+                  >
+                    At the shoot
+                  </button>
+                  <button
+                    onClick={() => { const n = new Set(addons); n.add(t); setAddons(n); setSaved(false); }}
+                    className={addons.has(t) ? "bg-brand px-2 py-0.5 text-[11px] font-semibold text-white" : "px-2 py-0.5 text-[11px] text-muted hover:bg-surface-2"}
+                  >
+                    Post-shoot add-on
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
         <button
           disabled={busy}
           onClick={() => start(async () => {
-            const r = await saveProductMapping(card.id, { types: [...types], videoTier: hasVideo ? tier : null, serviceKind: kind });
+            const r = await saveProductMapping(card.id, { types: [...types], addonTypes: [...addons].filter((t) => types.has(t)), videoTier: hasVideo ? tier : null });
             setMsg(r.message);
             if (r.ok) setSaved(true);
           })}

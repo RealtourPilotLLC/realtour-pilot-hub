@@ -666,7 +666,7 @@ export function deliverablesForTitle(title: string, quantity = 1): ParsedDeliver
 // platform now trusts the hand-set category over every parser below).
 // Loaded once per lambda (5-min TTL); sync entry points await the load.
 // ---------------------------------------------------------------------------
-export type ManualMapping = { types: DeliverableType[]; tier: "standard" | "premium" | "personal_branding" | null; addOn: boolean };
+export type ManualMapping = { types: DeliverableType[]; tier: "standard" | "premium" | "personal_branding" | null; addOn: boolean; addonTypes: Set<string> };
 let MANUAL_MAP: Map<string, ManualMapping> | null = null;
 let manualLoadedAt = 0;
 
@@ -676,17 +676,20 @@ export async function loadManualProductMap(force = false): Promise<void> {
     const { prisma } = await import("@/lib/prisma");
     const rows = await prisma.product.findMany({
       where: { mediaTypes: { not: null } },
-      select: { title: true, mediaTypes: true, videoTier: true, serviceKind: true },
+      select: { title: true, mediaTypes: true, videoTier: true, serviceKind: true, addonTypes: true },
     });
     const map = new Map<string, ManualMapping>();
     for (const r of rows) {
       try {
         const types = JSON.parse(r.mediaTypes!) as DeliverableType[];
         if (!Array.isArray(types)) continue;
+        let addonList: string[] = [];
+        try { addonList = r.addonTypes ? (JSON.parse(r.addonTypes) as string[]) : []; } catch { addonList = []; }
         map.set(normProduct(r.title), {
           types,
           tier: (r.videoTier as ManualMapping["tier"]) ?? null,
           addOn: r.serviceKind === "addon",
+          addonTypes: new Set(addonList),
         });
       } catch { /* one bad row must not break the map */ }
     }

@@ -7,8 +7,9 @@ import { getCurrentUser } from "@/lib/auth/user";
 
 export type MappingInput = {
   types: string[]; // DeliverableType[] — empty = produces nothing (fee/pure add-on)
+  addonTypes: string[]; // subset of types that are POST-SHOOT work (per-part kind)
   videoTier: string | null; // standard | premium | personal_branding
-  serviceKind: string; // service | addon
+  serviceKind?: string; // legacy product-level kind; derived when absent
 };
 
 const VALID_TYPES = new Set(["PHOTOS", "VIDEO", "SOCIAL_REEL", "DRONE", "FLOORPLAN", "MATTERPORT_3D", "ZILLOW_3D", "TWILIGHT", "VIRTUAL_STAGING", "HEADSHOT", "OTHER"]);
@@ -25,6 +26,7 @@ export async function saveProductMapping(
   if (!product) return { ok: false, message: "Product not found." };
 
   const types = input.types.filter((t) => VALID_TYPES.has(t));
+  const addonTypes = input.addonTypes.filter((t) => types.includes(t));
   const hasVideo = types.includes("VIDEO") || types.includes("SOCIAL_REEL");
   const tier = hasVideo && ["standard", "premium", "personal_branding"].includes(input.videoTier ?? "") ? input.videoTier : null;
   const me = await getCurrentUser().catch(() => null);
@@ -33,8 +35,10 @@ export async function saveProductMapping(
     where: { id: productId },
     data: {
       mediaTypes: JSON.stringify(types),
+      addonTypes: JSON.stringify(addonTypes),
       videoTier: tier,
-      serviceKind: input.serviceKind === "addon" ? "addon" : "service",
+      // Product-level kind = add-on only when EVERY part is post-shoot work.
+      serviceKind: types.length > 0 && addonTypes.length === types.length ? "addon" : "service",
       mappedAt: new Date(),
       mappedBy: me?.email ?? null,
     },
