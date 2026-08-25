@@ -659,9 +659,80 @@ export function deliverablesForTitle(title: string, quantity = 1): ParsedDeliver
   return itemToDeliverables({ title, quantity } as AryeoOrderItem);
 }
 
+// ---------------------------------------------------------------------------
+// MANUAL PRODUCT MAPPING — the authoritative override, set by a human on
+// Settings → Products (Aug 24: descriptions kept minting phantom deliverables
+// — a floor plan nobody ordered, a video on Faye's photo-only shoot — so the
+// platform now trusts the hand-set category over every parser below).
+// Loaded once per lambda (5-min TTL); sync entry points await the load.
+// ---------------------------------------------------------------------------
+export type ManualMapping = { types: DeliverableType[]; tier: "standard" | "premium" | "personal_branding" | null; addOn: boolean };
+let MANUAL_MAP: Map<string, ManualMapping> | null = null;
+let manualLoadedAt = 0;
+
+export async function loadManualProductMap(force = false): Promise<void> {
+  if (!force && MANUAL_MAP && Date.now() - manualLoadedAt < 300_000) return;
+  try {
+    const { prisma } = await import("@/lib/prisma");
+    const rows = await prisma.product.findMany({
+      where: { mediaTypes: { not: null } },
+      select: { title: true, mediaTypes: true, videoTier: true, serviceKind: true },
+    });
+    const map = new Map<string, ManualMapping>();
+    for (const r of rows) {
+      try {
+        const types = JSON.parse(r.mediaTypes!) as DeliverableType[];
+        if (!Array.isArray(types)) continue;
+        map.set(normProduct(r.title), {
+          types,
+          tier: (r.videoTier as ManualMapping["tier"]) ?? null,
+          addOn: r.serviceKind === "addon",
+        });
+      } catch { /* one bad row must not break the map */ }
+    }
+    MANUAL_MAP = map;
+    manualLoadedAt = Date.now();
+  } catch { /* keep whatever map we had */ }
+}
+
+// Exact normalized-title hit, then the same suffix-tolerant prefix match the
+// static map uses (marketing suffixes must not dodge a manual mapping either).
+function manualMappingForTitle(title: string): ManualMapping | undefined {
+  if (!MANUAL_MAP || MANUAL_MAP.size === 0) return undefined;
+  const norm = normProduct(title);
+  const exact = MANUAL_MAP.get(norm);
+  if (exact) return exact;
+  for (const key of [...MANUAL_MAP.keys()].sort((a, b) => b.length - a.length)) {
+    if (!norm.startsWith(key + " ")) continue;
+    const leftover = norm.slice(key.length + 1);
+    if (!MEDIA_WORD_RE.test(leftover) && !SUFFIX_VETO_RE.test(leftover)) return MANUAL_MAP.get(key);
+  }
+  return undefined;
+}
+
+// Labels for manually-mapped products carry the tier signal every downstream
+// engine reads from the label text: premium → "Premium <Type>"; personal
+// branding keeps the plan TITLE (suffixed so MONTHLY_PLAN_RE always matches
+// even when the product name itself doesn't say "monthly").
+function manualLabel(m: ManualMapping, type: DeliverableType, title: string): string {
+  const videoish = type === "VIDEO" || type === "SOCIAL_REEL";
+  if (videoish && m.tier === "personal_branding") {
+    return MONTHLY_PLAN_RE.test(title) ? title : `${title} · Monthly Content`;
+  }
+  if (videoish && m.tier === "premium") return `Premium ${TYPE_LABEL[type]}`;
+  return TYPE_LABEL[type] ?? title;
+}
+
 export function itemToDeliverables(item: AryeoOrderItem): ParsedDeliverable[] {
   const title = (item.title || item.subtitle || item.sub_title || "Item").trim();
   const qty = item.quantity || 1;
+
+  // A human-set mapping beats every parser — including an EMPTY one (a fee or
+  // pure post-shoot add-on legitimately produces no deliverables).
+  const manual = manualMappingForTitle(title);
+  if (manual) {
+    return manual.types.map((type) => ({ type, label: manualLabel(manual, type, title), quantity: qty }));
+  }
 
   const mapped = mappedTypesForTitle(title);
   if (mapped) {

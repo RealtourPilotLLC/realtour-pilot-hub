@@ -117,9 +117,10 @@ function Clamp({ text, limit = 260 }: { text: string; limit?: number }) {
   );
 }
 
-function ActionCard({ card, assignees, onGone }: {
+function ActionCard({ card, assignees, viewerKey, onGone }: {
   card: TodayCard;
   assignees: { key: string; name: string }[];
+  viewerKey: string;
   onGone: (id: string, note: string) => void;
 }) {
   const [busy, start] = useTransition();
@@ -204,7 +205,9 @@ function ActionCard({ card, assignees, onGone }: {
   const assign = (key: string, name: string) =>
     start(async () => {
       await setTaskAssignee(card.id, key);
-      if (key === "kyle") setKept(true);
+      // Keeping it = the VIEWER took it (Jordan taps "I'll do it" → Jordan's
+      // list, not Kyle's). Anyone else's chip moves the card off this screen.
+      if (key === viewerKey) setKept(true);
       else onGone(card.id, `Moved to ${name}'s list`);
     });
 
@@ -279,14 +282,19 @@ function ActionCard({ card, assignees, onGone }: {
           <div className="rounded-xl border border-warning/30 bg-warning/5 p-2.5">
             <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-warning">Who owns this?</p>
             <div className="flex flex-wrap gap-1.5">
-              {assignees.slice(0, 12).map((a) => (
+              {[...assignees]
+                .sort((a, b) => (a.key === viewerKey ? -1 : b.key === viewerKey ? 1 : 0))
+                .slice(0, 12)
+                .map((a) => (
                 <button
                   key={a.key}
                   onClick={() => assign(a.key, a.name)}
                   disabled={busy}
-                  className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium hover:bg-surface-2 disabled:opacity-50"
+                  className={a.key === viewerKey
+                    ? "rounded-lg border border-brand/40 bg-brand-soft px-2.5 py-1.5 text-xs font-semibold text-brand hover:bg-brand/15 disabled:opacity-50"
+                    : "rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium hover:bg-surface-2 disabled:opacity-50"}
                 >
-                  {a.key === "kyle" ? "I'll do it" : a.name}
+                  {a.key === viewerKey ? "I'll do it" : a.name}
                 </button>
               ))}
             </div>
@@ -426,7 +434,8 @@ function ActionCard({ card, assignees, onGone }: {
   );
 }
 
-export function TodayFeed({ cards, shoots, handledToday, assignees, tomorrowCount = 0, initialGuided = false }: {
+export function TodayFeed({ cards, shoots, handledToday, assignees, viewerKey = "kyle", tomorrowCount = 0, initialGuided = false }: {
+  viewerKey?: string;
   cards: TodayCard[];
   shoots: TodayShoot[];
   handledToday: number;
@@ -503,7 +512,7 @@ export function TodayFeed({ cards, shoots, handledToday, assignees, tomorrowCoun
                 <span className="hidden text-[11px] text-muted-2 sm:inline">· {sec.blurb}</span>
               </div>
             )}
-            <ActionCard key={current.id} card={current} assignees={assignees} onGone={onGone} />
+            <ActionCard key={current.id} card={current} assignees={assignees} viewerKey={viewerKey} onGone={onGone} />
             <div className="flex items-center justify-between">
               <p className="px-1 text-[11px] text-muted-2">Handle it above, or skip it for now.</p>
               <button
@@ -617,7 +626,7 @@ export function TodayFeed({ cards, shoots, handledToday, assignees, tomorrowCoun
                   <CheckCircle2 className="size-3.5 text-success" /> {goneNotes[c.id]} — {c.title.slice(0, 60)}
                 </p>
               ) : (
-                <ActionCard key={c.id} card={c} assignees={assignees} onGone={onGone} />
+                <ActionCard key={c.id} card={c} assignees={assignees} viewerKey={viewerKey} onGone={onGone} />
               ),
             )}
           </section>

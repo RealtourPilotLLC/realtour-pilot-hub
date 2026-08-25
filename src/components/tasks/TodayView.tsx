@@ -180,6 +180,14 @@ export async function TodayView({ sp, tabs }: { sp: { guided?: string }; tabs: R
   }));
 
   const chips = assignees.map((a) => ({ key: a.key, name: a.name }));
+  // Whose screen is this? "I'll do it" must mean the VIEWER — Jordan tapping
+  // it assigns Jordan, Kyle tapping it assigns Kyle (Aug 24: the chip was
+  // hard-bound to Kyle, so the owner kept assigning Kyle by accident).
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const { slugForName } = await import("@/lib/assignees");
+  const me = await getCurrentUser().catch(() => null);
+  const meKey = me?.name ? slugForName(me.name) : null;
+  const viewerKey = meKey && chips.some((c) => c.key === meKey) ? meKey : "kyle";
 
   return (
     <div>
@@ -190,7 +198,7 @@ export async function TodayView({ sp, tabs }: { sp: { guided?: string }; tabs: R
       />
       <div className="p-4 sm:p-6">
         {tabs}
-        <TodayFeed cards={cards} shoots={shoots} handledToday={handledToday} assignees={chips} tomorrowCount={shootWindow.tomorrow.length} initialGuided={sp.guided === "1"} />
+        <TodayFeed cards={cards} shoots={shoots} handledToday={handledToday} assignees={chips} viewerKey={viewerKey} tomorrowCount={shootWindow.tomorrow.length} initialGuided={sp.guided === "1"} />
       </div>
     </div>
   );

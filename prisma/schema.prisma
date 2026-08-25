@@ -789,6 +789,14 @@ model Product {
   active      Boolean  @default(true)
   isTwilight  Boolean  @default(false)
   description String?
+  // ---- Manual mapping (settings → Products) — the AUTHORITATIVE category
+  // assignment, set by a human. When present it overrides every regex/AI
+  // parser at sync time (Aug 24: phantom floor plans / Faye's ghost video).
+  mediaTypes  String? // JSON DeliverableType[] this product actually produces ([] = none, e.g. a fee)
+  videoTier   String? // standard | premium | personal_branding (when a video/reel type is included)
+  serviceKind String? // service (done at the shoot) | addon (post-shoot work, e.g. photo editing)
+  mappedAt    DateTime?
+  mappedBy    String? // email of who set it
   minPrice    Int? // cents (lowest variant)
   maxPrice    Int? // cents (highest variant)
   variants    String? // JSON: [{title, price_amount, duration}]
