@@ -11,6 +11,7 @@ import { setSmartTaskStatus, setTaskAssignee, draftTaskReply, sendDeliveryText, 
 import { resolveEmailRecipient, sendEmailReply } from "@/app/emailActions";
 import { sendReplyForTask } from "@/app/today/actions";
 import { sourceMeta } from "@/lib/taskSource";
+import { TaskSlackPing } from "@/components/queue/TaskSlackPing";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 // One card = one action. The stack is finish-able: every card ends in a tap
@@ -46,6 +47,10 @@ export type TodayCard = {
   // (Jordan Aug 25) — computed server-side in TodayView.
   receivedAt: string | null;
   receivedBy: string | null;
+  // Same-action tasks fold into ONE card (Jordan Aug 25: "Send Gary's photos"
+  // belongs in a "Send photos" card with everyone in it, not N cards). Cards
+  // sharing a non-null groupKey render as one stack; computed server-side.
+  groupKey: string | null;
 };
 
 export type TodayShoot = { key: string; id: string; title: string; time: string; photographer: string | null };
@@ -451,13 +456,112 @@ function ActionCard({ card, assignees, viewerKey, onGone }: {
               )}
             </>
           )}
+          {/* DM a teammate on Slack about this task — link + description included. */}
+          {!isTextsRollup && <TaskSlackPing taskId={card.id} compact />}
         </div>
       </div>
     </div>
   );
 }
 
-export function TodayFeed({ cards, shoots, handledToday, assignees, viewerKey = "kyle", tomorrowCount = 0, initialGuided = false }: {
+// One combined card for same-action tasks ("Send photos", "QC & deliver", …):
+// each person/job is a row with its own Done, and a row expands to the full
+// card when it needs more than a tap. The tasks underneath stay individual —
+// engines, auto-close, and the Board are untouched; this is presentation only.
+function GroupStack({ title, cards, assignees, viewerKey, onGone, goneNotes }: {
+  title: string;
+  cards: TodayCard[];
+  assignees: { key: string; name: string }[];
+  viewerKey: string;
+  onGone: (id: string, note: string) => void;
+  goneNotes: Record<string, string>;
+}) {
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const live = cards.filter((c) => !goneNotes[c.id]);
+  const anyOverdue = live.some((c) => c.overdue);
+
+  const doneRow = (c: TodayCard) => {
+    setBusyId(c.id);
+    void (async () => {
+      try {
+        await setSmartTaskStatus(c.id, "COMPLETED");
+        onGone(c.id, "Done");
+      } finally {
+        setBusyId(null);
+      }
+    })();
+  };
+
+  // Row label: the part after the shared stem ("QC & deliver — 316 W Market"
+  // → "316 W Market"); falls back to the full title for family groups.
+  const rowLabel = (c: TodayCard) => {
+    const t = c.title.trim();
+    if (t.toLowerCase().startsWith(title.toLowerCase())) {
+      const rest = t.slice(title.length).replace(/^[\s—:–-]+/, "").trim();
+      if (rest) return rest;
+    }
+    return t;
+  };
+
+  return (
+    <div className="rounded-2xl border border-border bg-surface p-4">
+      <div className="flex items-center gap-2">
+        <p className="min-w-0 flex-1 break-words text-sm font-semibold leading-snug">{title}</p>
+        <span className="rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">{live.length}</span>
+        {anyOverdue && <span className="text-[11px] font-semibold text-danger">overdue inside</span>}
+      </div>
+      <div className="mt-2.5 divide-y divide-border/60">
+        {cards.map((c) => {
+          if (goneNotes[c.id]) {
+            return (
+              <p key={c.id} className="flex items-center gap-2 py-2 text-xs text-muted-2">
+                <CheckCircle2 className="size-3.5 text-success" /> {goneNotes[c.id]} — {rowLabel(c).slice(0, 60)}
+              </p>
+            );
+          }
+          const open = openId === c.id;
+          const due = dueLabel(c);
+          return (
+            <div key={c.id} className="py-2">
+              <div className="flex items-center gap-2">
+                <span className="size-2 shrink-0 rounded-full" style={{ background: PRIORITY_DOT[c.priority] ?? PRIORITY_DOT.MEDIUM }} />
+                <button onClick={() => setOpenId(open ? null : c.id)} className="min-w-0 flex-1 text-left">
+                  <span className="break-words text-sm font-medium">{rowLabel(c)}</span>
+                  {c.clientName && <span className="ml-1.5 text-xs text-muted-2">· {c.clientName}</span>}
+                </button>
+                {due.text && (
+                  <span className={`shrink-0 text-[11px] ${due.danger ? "font-semibold text-danger" : "text-muted"}`}>{due.text}</span>
+                )}
+                <button
+                  onClick={() => doneRow(c)}
+                  disabled={busyId !== null}
+                  title="Mark done"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-success/10 px-2.5 py-1.5 text-xs font-semibold text-success hover:bg-success/20 disabled:opacity-50"
+                >
+                  {busyId === c.id ? <Loader2 className="size-3.5 animate-spin" /> : <CheckCircle2 className="size-3.5" />} Done
+                </button>
+                <button
+                  onClick={() => setOpenId(open ? null : c.id)}
+                  className="shrink-0 text-xs font-medium text-muted hover:text-foreground"
+                >
+                  {open ? "Close" : "Open"}
+                </button>
+              </div>
+              {open && (
+                <div className="mt-2">
+                  <ActionCard card={c} assignees={assignees} viewerKey={viewerKey} onGone={onGone} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export function TodayFeed({ cards, shoots, handledToday, assignees, viewerKey = "", tomorrowCount = 0, initialGuided = false }: {
   viewerKey?: string;
   cards: TodayCard[];
   shoots: TodayShoot[];
@@ -643,15 +747,39 @@ export function TodayFeed({ cards, shoots, handledToday, assignees, viewerKey = 
               <span className="rounded-full bg-surface-2 px-1.5 text-xs font-medium text-muted">{live}</span>
               <span className="hidden text-[11px] text-muted-2 sm:inline">· {sec.blurb}</span>
             </div>
-            {items.map((c) =>
-              goneNotes[c.id] ? (
-                <p key={c.id} className="flex items-center gap-2 px-1 text-xs text-muted-2">
-                  <CheckCircle2 className="size-3.5 text-success" /> {goneNotes[c.id]} — {c.title.slice(0, 60)}
-                </p>
-              ) : (
-                <ActionCard key={c.id} card={c} assignees={assignees} viewerKey={viewerKey} onGone={onGone} />
-              ),
-            )}
+            {(() => {
+              // Same-action cards fold into one GroupStack, placed where the
+              // loudest member would have sorted; everything else renders solo.
+              const byGroup = new Map<string, TodayCard[]>();
+              for (const c of items) {
+                if (!c.groupKey) continue;
+                const arr = byGroup.get(c.groupKey) ?? [];
+                arr.push(c);
+                byGroup.set(c.groupKey, arr);
+              }
+              const renderedGroups = new Set<string>();
+              const out: React.ReactNode[] = [];
+              for (const c of items) {
+                const grp = c.groupKey ? byGroup.get(c.groupKey) : undefined;
+                if (grp && grp.length >= 2) {
+                  if (renderedGroups.has(c.groupKey!)) continue;
+                  renderedGroups.add(c.groupKey!);
+                  out.push(
+                    <GroupStack key={`grp-${c.groupKey}`} title={c.groupKey!} cards={grp}
+                      assignees={assignees} viewerKey={viewerKey} onGone={onGone} goneNotes={goneNotes} />,
+                  );
+                } else if (goneNotes[c.id]) {
+                  out.push(
+                    <p key={c.id} className="flex items-center gap-2 px-1 text-xs text-muted-2">
+                      <CheckCircle2 className="size-3.5 text-success" /> {goneNotes[c.id]} — {c.title.slice(0, 60)}
+                    </p>,
+                  );
+                } else {
+                  out.push(<ActionCard key={c.id} card={c} assignees={assignees} viewerKey={viewerKey} onGone={onGone} />);
+                }
+              }
+              return out;
+            })()}
           </section>
         );
       })}

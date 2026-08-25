@@ -12,7 +12,7 @@ import { MESSAGE_TASK_TYPES } from "@/lib/queries";
 import { prisma } from "@/lib/prisma";
 import { recentProjectWhere } from "@/lib/recency";
 import { etDayStartUtc } from "@/lib/datetime";
-import { listAssignees, slugForName, firstName } from "@/lib/assignees";
+import { listAssignees, slugForName, firstName, viewerAssigneeKey } from "@/lib/assignees";
 import { isNeedsAssigning } from "@/lib/triage";
 import { getCurrentUser } from "@/lib/auth/user";
 import { cn } from "@/lib/utils";
@@ -141,9 +141,9 @@ export async function BoardView({ sp, tabs }: { sp: { who?: string }; tabs: Reac
   const ownerKey = (v: QueueTask) => v.assignedKey || "kyle";
   const countOf = (key: string) => assigned.filter((v) => ownerKey(v) === key).length;
 
-  // "My tasks" = the signed-in person, matched to their assignee slug.
-  const meKey = me?.name ? slugForName(me.name) : null;
-  const meHasChip = !!meKey && assignees.some((a) => a.key === meKey);
+  // "My tasks" = the signed-in person, matched by teamMemberId/email/slug.
+  const meKey = viewerAssigneeKey(me, assignees);
+  const meHasChip = !!meKey;
 
   // Selected filter. ?who=all | me | needs-assigning | <slug>. An editor is
   // locked to their own key (the ?who= param can't broaden their view).

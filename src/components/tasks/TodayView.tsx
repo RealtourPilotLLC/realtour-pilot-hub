@@ -66,6 +66,23 @@ function verbFor(taskType: string): TodayCard["verb"] {
   return "do";
 }
 
+// Same-action tasks fold into one card (Jordan Aug 25: "Send Gary's photos"
+// belongs in a "Send photos" card listing everyone — not N near-identical
+// cards). Two ways in: a known action family (send videos / send photos /
+// booking links), or an exact title stem before the "—" (the engines' own
+// "{action} — {address}" convention: "QC & deliver — …", "Find the raw video
+// — …"). Stems only group when ≥2 cards share one — the feed handles that.
+function groupKeyFor(verb: TodayCard["verb"], title: string): string | null {
+  if (verb === "reply") return null; // conversations stay per-person
+  const t = title.trim();
+  if (/strategy-call booking link/i.test(t)) return "Send strategy-call booking links";
+  if (/^send\b/i.test(t) && /(video|reel|footage)/i.test(t)) return "Send finished videos";
+  if (/^send\b/i.test(t) && /(photo|image|picture|galler)/i.test(t)) return "Send photos";
+  const dash = t.split("—")[0].trim();
+  if (dash && dash !== t && dash.length >= 6) return dash;
+  return null;
+}
+
 const TYPE_LABEL: Record<string, string> = {
   client_reply: "reply", lead: "new lead", confirmation_text: "confirmation",
   delivery_text: "delivery text", media_qa: "QC", delivery: "delivery",
@@ -129,6 +146,7 @@ export async function TodayView({ sp, tabs }: { sp: { guided?: string }; tabs: R
       // When the message landed + which inbox/line got it (Jordan Aug 25).
       receivedAt: t.createdAt.toISOString(),
       receivedBy: receivedByLabel(t.source, t.sourceDetail),
+      groupKey: groupKeyFor(verb, t.title),
     };
   });
 
@@ -172,6 +190,7 @@ export async function TodayView({ sp, tabs }: { sp: { guided?: string }; tabs: R
       warnQcOpen: false,
       receivedAt: null,
       receivedBy: null,
+      groupKey: null,
     });
   }
 
@@ -189,11 +208,12 @@ export async function TodayView({ sp, tabs }: { sp: { guided?: string }; tabs: R
   // Whose screen is this? "I'll do it" must mean the VIEWER — Jordan tapping
   // it assigns Jordan, Kyle tapping it assigns Kyle (Aug 24: the chip was
   // hard-bound to Kyle, so the owner kept assigning Kyle by accident).
+  // Resolved by teamMemberId/email, and when it CAN'T be resolved the chips
+  // all show real names — a wrong "I'll do it" is worse than none (Aug 25).
   const { getCurrentUser } = await import("@/lib/auth/user");
-  const { slugForName } = await import("@/lib/assignees");
+  const { viewerAssigneeKey } = await import("@/lib/assignees");
   const me = await getCurrentUser().catch(() => null);
-  const meKey = me?.name ? slugForName(me.name) : null;
-  const viewerKey = meKey && chips.some((c) => c.key === meKey) ? meKey : "kyle";
+  const viewerKey = viewerAssigneeKey(me, assignees) ?? "";
 
   return (
     <div>

@@ -11,7 +11,7 @@ import { prisma } from "@/lib/prisma";
 // migration is needed. Vendors/roles keep their fixed keys.
 
 export type AssigneeKind = "owner" | "manager" | "photographer" | "editor" | "vendor";
-export type Assignee = { key: string; name: string; kind: AssigneeKind; teamMemberId?: string };
+export type Assignee = { key: string; name: string; kind: AssigneeKind; teamMemberId?: string; email?: string | null };
 
 // Editors / vendors / roles that are NOT in the TeamMember table.
 const NON_TEAM: Assignee[] = [
@@ -42,19 +42,45 @@ const isOwnerName = (name: string) => /^jordan\b/i.test(name.trim());
 export async function listAssignees(): Promise<Assignee[]> {
   const members = await prisma.teamMember.findMany({
     where: { active: true },
-    select: { id: true, name: true, role: true },
+    select: { id: true, name: true, role: true, email: true },
   });
   const team: Assignee[] = members.map((m) => ({
     key: slugForName(m.name),
     name: firstName(m.name),
     kind: isOwnerName(m.name) ? "owner" : m.role === "MANAGER" ? "manager" : "photographer",
     teamMemberId: m.id,
+    email: m.email,
   }));
   const taken = new Set(team.map((t) => t.key));
   const extra = NON_TEAM.filter((v) => !taken.has(v.key));
   return [...team, ...extra].sort(
     (a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || a.name.localeCompare(b.name),
   );
+}
+
+/**
+ * Which assignee chip IS the signed-in viewer — the "I'll do it" identity.
+ * Matched by teamMemberId first (the AppUser↔TeamMember link), then email,
+ * then the first-name slug. Returns null when the viewer can't be resolved —
+ * callers must then show REAL names on every chip (never guess Kyle: Jordan
+ * tapping a mislabeled "I'll do it" assigned Kyle by accident, Aug 25).
+ */
+export function viewerAssigneeKey(
+  me: { name?: string | null; email?: string | null; teamMemberId?: string | null } | null,
+  list: Assignee[],
+): string | null {
+  if (!me) return null;
+  if (me.teamMemberId) {
+    const hit = list.find((a) => a.teamMemberId === me.teamMemberId);
+    if (hit) return hit.key;
+  }
+  if (me.email) {
+    const em = me.email.toLowerCase();
+    const hit = list.find((a) => a.email?.toLowerCase() === em);
+    if (hit) return hit.key;
+  }
+  const slug = me.name ? slugForName(me.name) : null;
+  return slug && list.some((a) => a.key === slug) ? slug : null;
 }
 
 /** Resolve a stored assignedKey (slug, or null = the Kyle default) to a display name. */
