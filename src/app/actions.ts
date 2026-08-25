@@ -272,6 +272,68 @@ export async function createManualTask(input: {
   return { ok: true, message: "Task added." };
 }
 
+// "Look into this" for TASKS — DM a teammate on Slack about one task, with the
+// description and a deep link that lands on (and highlights) the card. Sent AS
+// the logged-in person (Jordan pings as Jordan); Slack id resolves from email
+// on first use and is remembered; falls back to the ops channel so the ping
+// never silently vanishes. Mirrors pingFeedbackOnSlack on the feedback board.
+export async function pingTaskOnSlack(
+  taskId: string,
+  teamMemberId: string,
+  note?: string,
+): Promise<{ ok: boolean; message: string }> {
+  try { await requireAdmin(); } catch (e) { return { ok: false, message: (e as Error).message }; }
+  const [task, member, me] = await Promise.all([
+    prisma.smartTask.findUnique({
+      where: { id: taskId },
+      select: { title: true, summary: true, description: true, source: true, sourceDetail: true, createdAt: true, client: { select: { name: true } } },
+    }),
+    prisma.teamMember.findUnique({ where: { id: teamMemberId }, select: { id: true, name: true, email: true, slackId: true } }),
+    (await import("@/lib/auth/user")).getCurrentUser().catch(() => null),
+  ]);
+  if (!task || !member) return { ok: false, message: "Task or person not found." };
+  const sender = me?.name?.split(/\s+/)[0] ?? "Jordan";
+  const { etDateTime } = await import("@/lib/datetime");
+  const { receivedByLabel } = await import("@/lib/taskSource");
+  const receivedBy = receivedByLabel(task.source, task.sourceDetail);
+  const base = process.env.APP_URL ?? "https://realtour-pilot-hub.vercel.app";
+  const url = `${base}/tasks?tab=board&task=${taskId}`;
+  const body = (task.summary ?? task.description ?? "").trim();
+  const text =
+    `👀 *${sender}* asked you to look into this task:\n` +
+    `*${task.title}*${task.client?.name ? ` — ${task.client.name}` : ""}\n` +
+    (body ? `> ${body.slice(0, 280).replace(/\n/g, "\n> ")}\n` : "") +
+    `_Received ${etDateTime(task.createdAt)}${receivedBy ? ` on ${receivedBy}` : ""}_\n` +
+    (note?.trim() ? `\n${sender}: ${note.trim().slice(0, 500)}\n` : "") +
+    `\n${url}`;
+
+  const { slackUserByEmail, slackDmUser, slackNotify } = await import("@/lib/integrations/slack");
+  let slackId = member.slackId;
+  if (!slackId) {
+    slackId = await slackUserByEmail(member.email);
+    if (slackId) await prisma.teamMember.update({ where: { id: member.id }, data: { slackId } });
+  }
+  if (slackId && (await slackDmUser(slackId, text))) {
+    return { ok: true, message: `Pinged ${member.name.split(/\s+/)[0]} on Slack.` };
+  }
+  // No DM possible → the ops channel, addressed by name, so it still lands.
+  const { alertDestination } = await import("@/lib/notify");
+  const sent = await slackNotify(await alertDestination(), `@${member.name} ` + text).catch(() => false);
+  return sent
+    ? { ok: true, message: `No Slack DM for ${member.name.split(/\s+/)[0]} — posted to the ops channel instead.` }
+    : { ok: false, message: "Couldn't reach Slack — is it still connected?" };
+}
+
+// Active teammates for the task ping picker (loaded lazily when the ping row opens).
+export async function listTaskPingTargets(): Promise<{ id: string; name: string }[]> {
+  try { await requireAdmin(); } catch { return []; }
+  return prisma.teamMember.findMany({
+    where: { active: true },
+    select: { id: true, name: true },
+    orderBy: { name: "asc" },
+  });
+}
+
 // Delegate a task to an editor (or clear it back to "Needs you"). Pass "" / "kyle"
 // to un-delegate. Keys validated against the editor roster (src/lib/editors.ts).
 export async function setTaskAssignee(taskId: string, key: string) {

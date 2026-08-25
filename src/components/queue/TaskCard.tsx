@@ -15,6 +15,7 @@ import { etDateTime, etMonthDay, etDaysAgo } from "@/lib/datetime";
 import { sourceMeta, receivedByLabel, SOURCE_CHIP, type SourceKey } from "@/lib/taskSource";
 import { editorMeta, isDelegated, DELEGATE_KEYS, EDITORS } from "@/lib/editors";
 import { TaskFullView } from "@/components/queue/TaskFullView";
+import { TaskSlackPing } from "@/components/queue/TaskSlackPing";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
 // Friendly display label per task type (QA → QC, etc.).
@@ -722,6 +723,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
             </button>
           )}
           <TaskFullView task={task} editorView={editorView} />
+          {!editorView && !done && <TaskSlackPing taskId={task.id} />}
           {task.projectId && (
             <button
               onClick={() => setNoteOpen((v) => !v)}
