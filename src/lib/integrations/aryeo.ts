@@ -852,6 +852,7 @@ export async function syncAryeoOrders(
   // recent-window floor, so an old job can be refreshed on demand in ~1 call.
   opts: { full?: boolean; orderId?: string } = {},
 ): Promise<{ imported: number; updated: number; clients: number; scanned: number }> {
+  await loadManualProductMap(); // hand-set product categories override the parsers below
   let imported = 0;
   let updated = 0;
   let scanned = 0;
@@ -1742,11 +1743,13 @@ export async function syncAryeoAppointments(
   // for a button. The ORDER payload already carries its appointments, so we
   // read those ids and fetch each in full (users included) — 2-4 calls, ~1s —
   // then run them through this function's normal body.
-  opts: { recentOnlyDays?: number; orderId?: string } = {},
+  opts: {
+ recentOnlyDays?: number; orderId?: string } = {},
 ): Promise<{
   appointments: number;
   photographerAssigned: number;
 }> {
+  await loadManualProductMap(); // hand-set product categories override the parsers below
   // Hourly cron passes recentOnlyDays so we only write recent + all future
   // appointments (past shoots are already stored) — keeps the run fast enough
   // to never time out. The daily cron runs it unbounded to reconcile everything.
@@ -2123,7 +2126,9 @@ export async function backfillProjectCoords(): Promise<{ updated: number; scanne
 // descriptions (so old bundles/packages get split + correctly categorized).
 // Preserves completed/in-progress status per type where it still applies.
 const STATUS_RANK: Record<string, number> = { PENDING: 0, UPLOADED: 1, FLAGGED: 1, IN_PROGRESS: 2, DONE: 3 };
-export async function reclassifyAryeoDeliverables(): Promise<{ projects: number; before: number; after: number }> {
+export async function reclassifyAryeoDeliverables(): Promise<{
+ projects: number; before: number; after: number }> {
+  await loadManualProductMap(); // hand-set product categories override the parsers below
   const { prisma } = await import("@/lib/prisma");
   const projects = await prisma.project.findMany({
     where: { aryeoOrderId: { not: null } },

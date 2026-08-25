@@ -72,7 +72,10 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
       : null;
     if (tm?.payPercent == null) redirect("/payouts");
     memberId = me.teamMemberId;
-    showTeamLink = true;
+    // The whole-team payroll link only helps people allowed on Finance —
+    // James (admin, sales:false) sees HIS pay with no dead door beside it.
+    const { canAccess } = await import("@/lib/auth/access");
+    showTeamLink = canAccess(me, "sales");
   } else if (authEnforced()) {
     // Unauthenticated or a transient session/DB failure — bounce to login; a
     // healthy session lands right back here on the next request.

@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { jobProfitability, videoEditingCost } from "@/lib/jobProfit";
-import { deliverablesForTitle, isPayExcludedItem } from "@/lib/integrations/aryeo";
+import { deliverablesForTitle, isPayExcludedItem, loadManualProductMap } from "@/lib/integrations/aryeo";
 import { canonicalPackage } from "@/lib/packageNames";
 
 // ---------------------------------------------------------------------------
@@ -94,6 +94,7 @@ function allocate(total: number, weights: number[], alt: number[]): number[] {
 }
 
 export async function packageMargins(start: Date, end: Date): Promise<PackageMargins> {
+  await loadManualProductMap();
   // The per-job engine gives exact photographer payroll + editing per project.
   const profit = await jobProfitability(start, end);
   const byProject = new Map(profit.jobs.map((j) => [j.id, j]));
