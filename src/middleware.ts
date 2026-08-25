@@ -69,9 +69,25 @@ export async function middleware(req: NextRequest) {
   // the permissions claim). Owner sees everything; others are bounced home from a
   // page they can't open.
   const key = pathKey(pathname);
-  const viewer = { role: session.role, permissions: session.permissions };
+  let viewer = { role: session.role, permissions: session.permissions };
   if (key && !canAccess(viewer, key)) {
-    const home = homeFor(session.role);
+    // The permissions CLAIM was minted at login and goes stale the moment the
+    // owner grants a page — James's fresh `mypay` grant kept bouncing him to
+    // /tasks until re-login (Aug 25). This file runs on the Node runtime
+    // (Next 16 proxy), so on this rare DENY path re-read the live row and
+    // re-evaluate; allowed requests never touch the DB. A DB hiccup falls
+    // back to the claim — fail toward the stricter answer, never open.
+    try {
+      const { prisma } = await import("@/lib/prisma");
+      const u = await prisma.appUser.findUnique({
+        where: { id: session.uid },
+        select: { role: true, permissions: true, status: true },
+      });
+      if (u && u.status === "ACTIVE") viewer = { role: u.role, permissions: u.permissions };
+    } catch { /* keep the claim */ }
+  }
+  if (key && !canAccess(viewer, key)) {
+    const home = homeFor(viewer.role);
     const homeKey = pathKey(home);
     // Bounce home — but ONLY if they can actually open it. The old code assumed
     // "homeFor never points at a page the role can't open", which is false the
