@@ -38,6 +38,26 @@ export function sourceMeta(raw: string | null | undefined): SourceMeta {
   return { key: "system", label: "System" };
 }
 
+// WHO received the original message — the inbox/line/channel it landed on
+// (Jordan Aug 25: every task should say when the message came in and who got
+// it). Derived from the same sourceDetail the task creators already store:
+//   gmail  → "gmail-thread:<mailbox>:<threadId>"  → the mailbox
+//   slack  → "channel <name> · <ts>"              → the channel
+//   openphone → all texts/calls land on the one company Quo line
+export function receivedByLabel(source: string | null | undefined, sourceDetail: string | null | undefined): string | null {
+  const key = sourceMeta(source).key;
+  if (key === "gmail") {
+    const m = sourceDetail?.match(/^gmail-thread:([^:]+@[^:]+):/);
+    return m ? `${m[1]} inbox` : "email inbox";
+  }
+  if (key === "openphone") return "the company line";
+  if (key === "slack") {
+    const m = sourceDetail?.match(/^channel ([^\s·]+)/);
+    return m ? `#${m[1].replace(/^#/, "")}` : "Slack";
+  }
+  return null;
+}
+
 // Tailwind classes per origin for the small source chip (soft bg + readable text,
 // dark-theme friendly — uses the app's semantic surface/brand tokens).
 export const SOURCE_CHIP: Record<SourceKey, string> = {

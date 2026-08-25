@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  MessageSquare, ClipboardCheck, Send, PackageCheck, CheckCircle2, Loader2,
+  MessageSquare, ClipboardCheck, Send, PackageCheck, CheckCircle2, Loader2, Clock,
   AlertTriangle, Sparkles, Copy, Camera, ArrowRight, User, MapPin, type LucideIcon,
 } from "lucide-react";
 import { setSmartTaskStatus, setTaskAssignee, draftTaskReply, sendDeliveryText, sendConfirmationText } from "@/app/actions";
@@ -42,6 +42,10 @@ export type TodayCard = {
   // Editor/vendor this task is delegated to (Kim/Remar/Luma/…) — they never log
   // in, so the card shows in Kyle's stack with a "→ Kim" chip to check on it.
   delegatedTo: string | null;
+  // When the underlying message came in + which inbox/line/channel got it
+  // (Jordan Aug 25) — computed server-side in TodayView.
+  receivedAt: string | null;
+  receivedBy: string | null;
 };
 
 export type TodayShoot = { key: string; id: string; title: string; time: string; photographer: string | null };
@@ -56,6 +60,18 @@ const SECTIONS: { verb: TodayCard["verb"]; title: string; blurb: string; accent:
 
 const PRIORITY_RANK: Record<string, number> = { URGENT: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
 const PRIORITY_DOT: Record<string, string> = { URGENT: "#dc2626", HIGH: "#d97706", MEDIUM: "#0ea5e9", LOW: "#64748b" };
+
+// "Received Today 9:12 AM" / "Yesterday 4:30 PM" / "Aug 22, 4:30 PM" — ET.
+function receivedLabel(iso: string | null): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  const dayKey = (x: Date) => x.toLocaleDateString("en-US", { timeZone: "America/New_York" });
+  const t = d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
+  const now = new Date();
+  if (dayKey(d) === dayKey(now)) return `today ${t}`;
+  if (dayKey(d) === dayKey(new Date(now.getTime() - 24 * 3600_000))) return `yesterday ${t}`;
+  return `${d.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}, ${t}`;
+}
 
 function dueLabel(card: TodayCard): { text: string; danger: boolean } {
   if (card.overdue) return { text: "overdue", danger: true };
@@ -254,6 +270,13 @@ function ActionCard({ card, assignees, viewerKey, onGone }: {
         <span className="text-muted-2">· {card.typeLabel}</span>
         {card.delegatedTo && <span className="rounded bg-brand/10 px-1 font-medium text-brand">→ {card.delegatedTo}</span>}
         {card.status.startsWith("WAITING") && <span className="rounded bg-warning/10 px-1 font-medium text-warning">{card.status.replace(/_/g, " ").toLowerCase()}</span>}
+        {/* When it came in + which inbox/line got it (Jordan Aug 25). */}
+        {receivedLabel(card.receivedAt) && (
+          <span className="inline-flex items-center gap-1">
+            <Clock className="size-3" /> {receivedLabel(card.receivedAt)}
+            {card.receivedBy && <span className="text-muted-2/80">on {card.receivedBy}</span>}
+          </span>
+        )}
       </div>
 
       {/* Body by verb */}

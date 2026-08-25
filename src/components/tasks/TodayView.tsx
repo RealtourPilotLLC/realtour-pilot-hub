@@ -7,6 +7,7 @@ import { MESSAGE_TASK_TYPES, DELIVER_TASK_TYPES, CLIENT_TEXT_TYPES, getClientTex
 import { recentProjectWhere } from "@/lib/recency";
 import { etDayStartUtc } from "@/lib/datetime";
 import { isNeedsAssigning } from "@/lib/triage";
+import { receivedByLabel } from "@/lib/taskSource";
 import { listAssignees } from "@/lib/assignees";
 import { editorMeta, isDelegated } from "@/lib/editors";
 
@@ -125,6 +126,9 @@ export async function TodayView({ sp, tabs }: { sp: { guided?: string }; tabs: R
       triage: isNeedsAssigning(t),
       warnStale: false,
       warnQcOpen: false,
+      // When the message landed + which inbox/line got it (Jordan Aug 25).
+      receivedAt: t.createdAt.toISOString(),
+      receivedBy: receivedByLabel(t.source, t.sourceDetail),
     };
   });
 
@@ -166,6 +170,8 @@ export async function TodayView({ sp, tabs }: { sp: { guided?: string }; tabs: R
       triage: false,
       warnStale: false,
       warnQcOpen: false,
+      receivedAt: null,
+      receivedBy: null,
     });
   }
 

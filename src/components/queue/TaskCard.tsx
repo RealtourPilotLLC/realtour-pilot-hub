@@ -12,7 +12,7 @@ import { setSmartTaskStatus, setTaskAssignee, draftTaskReply, sendDeliveryText, 
 import { resolveEmailRecipient, sendEmailReply } from "@/app/emailActions";
 import { addTaskNote } from "@/app/projects/messageActions";
 import { etDateTime, etMonthDay, etDaysAgo } from "@/lib/datetime";
-import { sourceMeta, SOURCE_CHIP, type SourceKey } from "@/lib/taskSource";
+import { sourceMeta, receivedByLabel, SOURCE_CHIP, type SourceKey } from "@/lib/taskSource";
 import { editorMeta, isDelegated, DELEGATE_KEYS, EDITORS } from "@/lib/editors";
 import { TaskFullView } from "@/components/queue/TaskFullView";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
@@ -128,14 +128,16 @@ function dueLabel(due: string | null) {
   return { text, overdue, soon: daysUntil <= 1 };
 }
 
-// "Came in" label: relative for the last couple days, else the month/day.
+// "Came in" label: relative day + the actual time (Jordan Aug 25: every task
+// should say when the message was received), e.g. "today 9:12 AM" / "Aug 22, 4:30 PM".
 function cameInLabel(iso: string | null): string | null {
   if (!iso) return null;
   const d = new Date(iso);
   const ago = etDaysAgo(d);
-  if (ago === 0) return "Today";
-  if (ago === 1) return "Yesterday";
-  return etMonthDay(d);
+  const t = d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
+  if (ago === 0) return `today ${t}`;
+  if (ago === 1) return `yesterday ${t}`;
+  return `${etMonthDay(d)}, ${t}`;
 }
 
 // The card's expandable "what happened" body. Prefers the AI summary; falls back
@@ -434,6 +436,7 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
       : null;
   const src = sourceMeta(task.source);
   const SrcIcon = SOURCE_ICON[src.key];
+  const receivedBy = receivedByLabel(task.source, task.sourceDetail);
   const summary = summaryText(task);
   // Project chip label: the street, when we have an address.
   const projectLabel = task.propertyAddress ? task.propertyAddress.split(",")[0].trim() : null;
@@ -552,7 +555,12 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
             <Users className="size-3" /> {assigneeName}
           </span>
         )}
-        {cameIn && <span className="text-muted-2">· {cameIn}</span>}
+        {cameIn && (
+          <span className="text-muted-2" title="When the message was received">
+            · received {cameIn}
+            {receivedBy ? ` on ${receivedBy}` : ""}
+          </span>
+        )}
       </div>
 
       {/* Expandable body — the "what happened" summary + details. */}
