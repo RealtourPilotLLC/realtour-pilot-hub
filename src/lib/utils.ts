@@ -16,6 +16,14 @@ export function initials(name: string) {
     .join("");
 }
 
+/** Deterministic avatar color for a name — same person, same color, everywhere. */
+const NAME_COLORS = ["#6366f1", "#0ea5e9", "#14b8a6", "#f59e0b", "#ec4899", "#8b5cf6", "#ef4444", "#22c55e"];
+export function nameColor(name: string) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return NAME_COLORS[h % NAME_COLORS.length];
+}
+
 /** Currency formatting for order totals / finance. */
 export function formatMoney(value?: number | null) {
   if (value == null) return "—";
