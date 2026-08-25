@@ -245,7 +245,19 @@ export async function categorizeAllPlaid(): Promise<{ updated: number }> {
   // category its own vendor's charges actually carry (including the owner's
   // manual re-tags), so netting always happens in the right bucket.
   const refunds = await prisma.plaidTransaction.findMany({
-    where: { amount: { lt: 0 }, financeKind: { in: ["PERSONAL", "BUSINESS"] }, financeLocked: false },
+    where: {
+      amount: { lt: 0 },
+      financeLocked: false,
+      OR: [
+        { financeKind: { in: ["PERSONAL", "BUSINESS"] } },
+        // A credit that SAYS it's a merchant return but fell through to income
+        // (no spend rule knew the vendor — a BeenVerified POS RETURN sat in
+        // "Deposit / income", Aug 2026). Give it the same vendor-adoption shot;
+        // with no charges to net against it stays income below, per the
+        // T-Mobile rule.
+        { financeKind: "INCOME", name: { contains: "POS RETURN", mode: "insensitive" } },
+      ],
+    },
     select: { id: true, name: true, merchantName: true, financeKind: true, financeCategory: true },
   });
   // One pass over the charges builds vendor → dominant (kind, category).
@@ -288,7 +300,89 @@ export async function categorizeAllPlaid(): Promise<{ updated: number }> {
       updated++;
     }
   }
+  // RETURNED PAYMENTS ARE NOT SPEND. A "RETRY PYMT" row exists ONLY because an
+  // earlier attempt at the same payment bounced — the two share the bank's
+  // per-payment reference token at the head of the name ("*5826 BILLPAY …" /
+  // "*5826 RETRY PYMT…", "DP0E3F… DIRECTPAY" / "DP0E3F… RETRY PYMT"). The dead
+  // attempt must come OFF spend (Jordan, Aug 25: four unfixed August pairs had
+  // the car payment double-counted ~$636). Token matching — never amount-only:
+  // Capital One pays weekly at the SAME amount, and only the bounced week
+  // shares its token with the retry. Chains work too: a retry that itself
+  // bounced is excluded by ITS later retry. Locked so the reclassify above
+  // never resurrects a dead debit; the owner's drill-in re-tag still wins.
+  const nr = await netReturnedPayments();
+  const pr = await pairReversalCredits();
+  updated += nr.netted + pr.netted;
   return { updated };
+}
+
+/** Pair every REVERSE-ACH credit with the debit it reverses — the dead debit
+ *  comes off spend too. classifyRow already EXCLUDEs the credit side; without
+ *  this the failed debit kept counting (Aug 2026: bounced Staffify editor
+ *  pulls ~$3k + Intuit fees + car-payment retries that THEMSELVES bounced).
+ *  Nearest-prior pairing with consume-once semantics: N reversal credits of
+ *  amount X kill the N nearest prior debits of X on that account — set-wise
+ *  right even when two bounces share an amount (the weekly $158.94 problem).
+ *  A consumed debit that's already excluded/locked is the same bounce counted
+ *  once (or the owner's call) — consumed, never rewritten. */
+export async function pairReversalCredits(): Promise<{ netted: number }> {
+  const credits = await prisma.plaidTransaction.findMany({
+    where: { amount: { lt: 0 }, name: { contains: "REVERSE", mode: "insensitive" }, financeKind: "EXCLUDE" },
+    select: { id: true, amount: true, date: true, accountId: true },
+    orderBy: { date: "asc" },
+  });
+  const consumed = new Set<string>();
+  let netted = 0;
+  for (const cr of credits) {
+    const debits = await prisma.plaidTransaction.findMany({
+      where: {
+        accountId: cr.accountId,
+        amount: -cr.amount,
+        date: { gte: new Date(cr.date.getTime() - 10 * 864e5), lte: cr.date },
+        NOT: { name: { contains: "REVERSE", mode: "insensitive" } },
+      },
+      select: { id: true, financeKind: true, financeLocked: true },
+      orderBy: { date: "desc" }, // nearest prior first
+    });
+    const pick = debits.find((d) => !consumed.has(d.id));
+    if (!pick) continue;
+    consumed.add(pick.id);
+    if (pick.financeKind === "EXCLUDE" || pick.financeLocked) continue;
+    await prisma.plaidTransaction.update({
+      where: { id: pick.id },
+      data: { financeKind: "EXCLUDE", financeCategory: "ACH reversal (netted)", financeLocked: true },
+    });
+    netted++;
+  }
+  return { netted };
+}
+
+/** Exclude every payment attempt a later RETRY row proves was returned. */
+export async function netReturnedPayments(): Promise<{ netted: number }> {
+  const retries = await prisma.plaidTransaction.findMany({
+    where: { amount: { gt: 0 }, name: { contains: "RETRY PYMT", mode: "insensitive" } },
+    select: { id: true, name: true, amount: true, date: true },
+    orderBy: { date: "asc" },
+  });
+  let netted = 0;
+  for (const retry of retries) {
+    const token = (retry.name || "").trim().split(/\s+/)[0] ?? "";
+    // Only a real per-payment reference qualifies (has digits, not a plain word).
+    if (token.length < 4 || !/\d/.test(token)) continue;
+    const r = await prisma.plaidTransaction.updateMany({
+      where: {
+        id: { not: retry.id },
+        amount: retry.amount,
+        date: { gte: new Date(retry.date.getTime() - 31 * 864e5), lt: retry.date },
+        name: { startsWith: `${token} ` },
+        financeLocked: false,
+        NOT: { financeKind: "EXCLUDE" },
+      },
+      data: { financeKind: "EXCLUDE", financeCategory: "ACH reversal (netted)", financeLocked: true },
+    });
+    netted += r.count;
+  }
+  return { netted };
 }
 
 export type CatRow = { category: string; sum: number; count: number };
