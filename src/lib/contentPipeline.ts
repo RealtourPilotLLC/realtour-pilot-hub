@@ -11,6 +11,29 @@ import { prisma } from "@/lib/prisma";
 // Jordan to approve; nothing generated is client-visible on its own.
 // ---------------------------------------------------------------------------
 
+
+// ---------------------------------------------------------------------------
+// THE CONTENT RULES — injected into every prompt that creates topics, scripts,
+// or profile intel. Born from a real failure (Aug 24): the bank recommended
+// Ashley "Why I'd Rather Sell Three $350k Houses Than One $1M House" — pulled
+// straight from his call, but it undercuts his positioning and price-point
+// audience — and his private brokerage plans were fair game for extraction.
+// ---------------------------------------------------------------------------
+export const CONTENT_RULES =
+  "NON-NEGOTIABLE CONTENT RULES:\n" +
+  "1. STRATEGIC FIT — every topic/script must actively grow THIS agent's brand with THEIR stated target audience and " +
+  "positioning (in the strategy above). An idea the agent mentioned on a call is NOT automatically a good topic: if it " +
+  "would undercut their positioning, alienate part of their market, cap their price point, disparage a segment they " +
+  "serve, or read as complaining/inside-baseball, DO NOT produce it — no matter who suggested it.\n" +
+  "2. THE FOUR OUTCOMES — every topic/script must clearly build at least two of Trust, Credibility, Value, " +
+  "Entertainment for the agent's AUDIENCE (home buyers/sellers — not other agents), with Trust and Credibility " +
+  "preferred. If you cannot say plainly which outcomes it builds and for whom, it does not qualify.\n" +
+  "3. CONFIDENTIALITY — anything the agent frames as private ('between us', 'off the record', 'don't share this yet') " +
+  "and categorically: unannounced brokerage moves or exits, internal business plans, recruiting, financial or legal or " +
+  "personal disclosures, negative remarks about named people or companies — must NEVER appear in a topic, script, " +
+  "hook, or anything a client or the public could see. Such facts may only be recorded as internal profile intel " +
+  "prefixed '[CONFIDENTIAL]'.";
+
 // The client context the generators read: strategy + profile + curated info.
 // Retrieval, not the whole history (spec §9).
 async function clientContext(enrollmentId: string): Promise<string> {
@@ -23,7 +46,12 @@ async function clientContext(enrollmentId: string): Promise<string> {
     prisma.client.findUnique({ where: { id: e.clientId }, select: { name: true, company: true } }),
     prisma.contentStrategy.findFirst({ where: { enrollmentId, status: "ACTIVE" }, select: { sectionsJson: true } }),
     prisma.agentProfile.findUnique({ where: { clientId: e.clientId } }),
-    prisma.contentNote.findMany({ where: { clientId: e.clientId, intelligence: true }, orderBy: { createdAt: "desc" }, take: 12, select: { body: true } }),
+    prisma.contentNote.findMany({
+      // [CONFIDENTIAL] intel stays internal — it must never reach a prompt
+      // that writes topics or scripts (rule 3).
+      where: { clientId: e.clientId, intelligence: true, NOT: { body: { startsWith: "[CONFIDENTIAL" } } },
+      orderBy: { createdAt: "desc" }, take: 12, select: { body: true },
+    }),
   ]);
   const parts: string[] = [];
   parts.push(`AGENT: ${client?.name ?? "?"}${client?.company ? ` (${client.company})` : ""} — ${e.package} plan.`);
@@ -114,10 +142,11 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
       "- confirmedTopics: topics the agent and strategist agreed to film THIS month (title = specific, filmable, hook-ready; concept = the angle in 1-2 sentences, grounded in what the agent SAID).\n" +
       "- futureIdeas: ideas raised but saved for later.\n" +
       "- rejectedIdeas: ideas explicitly declined (titles only).\n" +
-      "- profileIntel: NEW durable facts about the agent worth remembering (stories, opinions, preferences, positioning changes) — quote or closely paraphrase the agent; never invent.\n" +
+      "- profileIntel: NEW durable facts about the agent worth remembering (stories, opinions, preferences, positioning changes) — quote or closely paraphrase the agent; never invent. Anything told in confidence or commercially sensitive (rule 3) MUST be prefixed '[CONFIDENTIAL] '.\n" +
       "- locationNotes: filming location/production decisions if discussed.\n" +
       "- todos: action items either side committed to.\n" +
       `The plan owes ${month.videosOwed} videos this month — do not force the count; report what was agreed.\n` +
+      CONTENT_RULES + "\n" +
       "Topics already in this agent's history (avoid lazy duplicates; a fresh angle on an old theme is fine):\n" + history,
     prompt: `CALL DATE: ${month.strategyCallAt ? month.strategyCallAt.toLocaleDateString("en-US", { timeZone: "America/New_York", year: "numeric", month: "long", day: "numeric" }) : `sometime in ${month.monthKey}`}\n\nAGENT CONTEXT:\n${context}\n\nTRANSCRIPT:\n${month.transcriptText.slice(0, 150_000)}`,
     maxTokens: 8000,
@@ -244,6 +273,7 @@ const SCRIPT_SYSTEM = (context: string) =>
   "Use bracketed placeholders like $[PRICE], $[PAYMENT], [NEIGHBORHOOD] for any figure or detail that must be confirmed before filming, and mention it in productionIdeas. " +
   "Voice: conversational, confident, direct, specific, easy to say ALOUD — the agent's strongest self, never a copywriter. " +
   "Ground every claim in the agent's real context below; NEVER invent stories, opinions, or numbers. Clarity beats cleverness. " +
+  "\n" + CONTENT_RULES +
   "\n\nAGENT CONTEXT:\n" + context;
 
 const SCRIPT_SCHEMA = {
@@ -396,7 +426,8 @@ export async function seedTopicBank(enrollmentId: string, perPillar = 10): Promi
       "opinions, stories, and positioning. Strong angles: opinions, misconceptions, client mistakes, surprising truths, real stories, " +
       "local insight, behind-the-scenes. NEVER generic ('tips for sellers', 'market update', 'why you need a Realtor'). " +
       "Do not repeat anything in the topic history below — a fresh angle on an old theme is allowed, lazy duplication is not. " +
-      "scores = a short 'Trust/Credibility/Value/Entertainment' judgement like 'Trust: High · Value: Medium'.",
+      "scores = a short 'Trust/Credibility/Value/Entertainment' judgement like 'Trust: High · Value: Medium'.\n" +
+      CONTENT_RULES,
     prompt:
       `AGENT CONTEXT:\n${context}\n\nIDEAS ALREADY IN THE BANK (do not duplicate):\n` +
       bankIdeas.map((b) => `- ${b.title}`).join("\n") +
@@ -501,7 +532,9 @@ export async function buildAgentProfileFromHistory(clientId: string): Promise<{ 
       "Fill these sections (JSON object per section, short labeled entries — a few sentences each):\n" +
       PROFILE_BUILD_SECTIONS.map((s) => `- ${s.key}: ${s.label} — ${s.guide}`).join("\n") +
       "\nRULES: never invent — every entry must trace to the material; quote their own phrases where possible (especially voice); " +
-      "omit any section or field the evidence doesn't support. This is internal — candid, useful, specific.",
+      "omit any section or field the evidence doesn't support. This is internal — candid, useful, specific. " +
+      "Anything told in confidence or commercially sensitive (unannounced brokerage moves, internal plans, personal/financial disclosures) " +
+      "must be prefixed '[CONFIDENTIAL] ' so it can never be used in content.",
     prompt: material.join("\n\n").slice(0, 90_000),
     maxTokens: 16_000,
     schema: {
