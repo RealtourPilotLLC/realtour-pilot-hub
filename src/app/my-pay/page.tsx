@@ -236,7 +236,13 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
                       <span className="shrink-0 font-semibold">{usd(j.jobTotal)}</span>
                     </div>
                     <div className="mt-0.5 flex items-center justify-between gap-3 text-[11px] text-muted-2">
-                      <span>{fmtDay(j.shootISO)}{j.invoice > 0 ? ` · invoice ${usd(j.invoice)}` : ""} · shoot {usd(j.shootPay)}{j.mileageShare > 0 ? ` · mileage ${usd(j.mileageShare)}` : ""}</span>
+                      {/* The agent beside the invoice — a row is reviewable without
+                          opening the job (Jordan, Aug 25). */}
+                      <span className="min-w-0 truncate">
+                        {fmtDay(j.shootISO)}
+                        {j.clientName ? <> · <span className="font-medium text-muted">{j.clientName}</span></> : ""}
+                        {j.invoice > 0 ? ` · invoice ${usd(j.invoice)}` : ""} · shoot {usd(j.shootPay)}{j.mileageShare > 0 ? ` · mileage ${usd(j.mileageShare)}` : ""}
+                      </span>
                       <PayFlag projectId={j.projectId} street={j.title.split(",")[0]} periodStartKey={period.startKey} already={flagged.has(key)} />
                     </div>
                   </div>

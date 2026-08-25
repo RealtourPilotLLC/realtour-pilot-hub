@@ -147,6 +147,7 @@ async function dailyMiles(
 export type PayrollJob = {
   projectId: string;
   title: string;
+  clientName: string | null; // the agent the shoot was for
   shootISO: string | null;
   dayKey: string;
   invoice: number; // eligible services invoice the % is applied to
@@ -237,6 +238,9 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
     select: {
       id: true, title: true, shootDate: true, lat: true, lng: true,
       price: true, payableInvoice: true, photographerId: true, photographerManual: true,
+      // The agent the shoot was for — shown beside the invoice on pay surfaces
+      // so a row is reviewable without opening the job (Jordan, Aug 25).
+      client: { select: { name: true } },
       // status: whether a post-shoot stage proves the shoot happened (see the
       // timeline fallback below).
       status: true,
@@ -363,6 +367,7 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
       const line: Built = {
         projectId: p.id,
         title: p.title,
+        clientName: p.client?.name ?? null,
         shootISO: at.toISOString(),
         dayKey,
         // Return legs aren't a % of invoice unless an override says so.
@@ -403,7 +408,8 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
       const base = shootPay(invoice, m?.payPercent, m?.payFloor);
       const pay = o.flatAmount != null ? r2(o.flatAmount) : base;
       const line: Built = {
-        projectId: p.id, title: p.title, shootISO: primaryAt.toISOString(), dayKey: etDayKey(primaryAt),
+        projectId: p.id, title: p.title, clientName: p.client?.name ?? null,
+        shootISO: primaryAt.toISOString(), dayKey: etDayKey(primaryAt),
         invoice: r2(invoice),
         invoiceIsFallback: o.invoiceOverride == null && p.payableInvoice == null,
         invoiceOverridden: o.invoiceOverride != null,
