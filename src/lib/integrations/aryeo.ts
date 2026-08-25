@@ -281,6 +281,7 @@ export interface AryeoProduct {
   title?: string;
   type?: string; // MAIN | ADDON
   active?: boolean;
+  is_serviceable?: boolean; // Aryeo's OWN shoot-service flag (Jordan, Aug 24)
   is_twilight?: boolean;
   description?: string;
   categories?: { title?: string }[];
@@ -1345,6 +1346,7 @@ export async function syncAryeoProducts(): Promise<{ products: number }> {
         category: p.categories?.[0]?.title ?? null,
         active: p.active ?? true,
         isTwilight: p.is_twilight ?? false,
+        aryeoServiceable: p.is_serviceable ?? null,
         description: p.description ?? null,
         minPrice: prices.length ? Math.min(...prices) : null,
         maxPrice: prices.length ? Math.max(...prices) : null,
@@ -1357,6 +1359,7 @@ export async function syncAryeoProducts(): Promise<{ products: number }> {
         category: p.categories?.[0]?.title ?? null,
         active: p.active ?? true,
         isTwilight: p.is_twilight ?? false,
+        aryeoServiceable: p.is_serviceable ?? null,
         description: p.description ?? null,
         minPrice: prices.length ? Math.min(...prices) : null,
         maxPrice: prices.length ? Math.max(...prices) : null,

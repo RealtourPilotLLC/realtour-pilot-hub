@@ -30,7 +30,7 @@ export default async function ProductMappingPage() {
     orderBy: [{ title: "asc" }],
     select: {
       id: true, title: true, type: true, tags: true, description: true, minPrice: true, maxPrice: true,
-      mediaTypes: true, addonTypes: true, videoTier: true, serviceKind: true, mappedAt: true, mappedBy: true,
+      mediaTypes: true, addonTypes: true, videoTier: true, serviceKind: true, aryeoServiceable: true, mappedAt: true, mappedBy: true,
     },
   });
 
@@ -56,7 +56,8 @@ export default async function ProductMappingPage() {
       tags: (() => { try { return p.tags ? (JSON.parse(p.tags) as string[]) : []; } catch { return []; } })(),
       addonTypes: (() => { try { return p.addonTypes ? (JSON.parse(p.addonTypes) as string[]) : []; } catch { return []; } })(),
       videoTier: p.videoTier,
-      serviceKind: p.serviceKind ?? (p.type === "ADDON" ? "addon" : "service"),
+      // Aryeo's own is_serviceable flag seeds the default until a human maps it.
+      serviceKind: p.serviceKind ?? (p.aryeoServiceable === false || p.type === "ADDON" ? "addon" : "service"),
       isMapped: mapped !== null,
       mappedBy: p.mappedBy,
     };

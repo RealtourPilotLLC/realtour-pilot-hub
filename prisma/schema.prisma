@@ -788,6 +788,9 @@ model Product {
   category    String?
   active      Boolean  @default(true)
   isTwilight  Boolean  @default(false)
+  // Aryeo's native is_serviceable flag — the DEFAULT for the per-part
+  // shoot/add-on toggles until a human maps the product.
+  aryeoServiceable Boolean?
   description String?
   // ---- Manual mapping (settings → Products) — the AUTHORITATIVE category
   // assignment, set by a human. When present it overrides every regex/AI

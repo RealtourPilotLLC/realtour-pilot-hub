@@ -399,7 +399,27 @@ export async function createCommTask(opts: {
   // stay separate, and replying about one order won't close another's.
   const key = dedupe([opts.clientId, opts.projectId ?? "noproject", "client_reply"]);
   const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
-  if (existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED") return false;
+  if (existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED") {
+    // APPEND, don't drop (Aug 24 audit): a client sending three texts used to
+    // leave the task showing only the FIRST — Kyle answered stale asks. One
+    // task per conversation, every message on it, count in the summary.
+    const line = (opts.snippet ? clip(opts.snippet, 400) : opts.aiDetail?.trim()) || "(another message)";
+    const at = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }).format(new Date());
+    const prev = existing.description ?? "";
+    const appended = `${prev}\n\n— ${at}: ${line}`.trim();
+    const count = (appended.match(/^— /gm)?.length ?? 0) + 1; // first message + appends
+    await prisma.smartTask.update({
+      where: { id: existing.id },
+      data: {
+        description: appended.length > 4000 ? appended.slice(appended.length - 4000) : appended,
+        summary: `${opts.clientName}: ${count} messages waiting — latest: \u201C${clip(line, 200)}\u201D`.slice(0, 500),
+        // A follow-up nudge means they're waiting — never LATER than the
+        // current due, sometimes sooner.
+        ...(existing.dueAt && existing.dueAt.getTime() > Date.now() + 2 * HOUR ? { dueAt: new Date(Date.now() + 2 * HOUR) } : {}),
+      },
+    }).catch(() => {});
+    return false;
+  }
 
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
   const verb = opts.kind === "text" ? "Reply to" : "Call back";
@@ -2031,4 +2051,17 @@ async function syncOneProjectTasks(
     created++;
   }
   return created;
+}
+
+// Stale-Slack sweep (daily): an unactioned Slack instruction older than 7 days
+// is dead weight — nobody is going to do it from the task list, and the pile
+// was 60% of the board (Aug 24 audit: 86 open, median 6 days). Cancel, don't
+// complete: the truth is it wasn't done here.
+export async function expireStaleSlackTasks(): Promise<{ expired: number }> {
+  const cutoff = new Date(Date.now() - 7 * 86_400_000);
+  const r = await prisma.smartTask.updateMany({
+    where: { taskType: "internal_instruction", source: "slack", status: "OPEN", createdAt: { lt: cutoff } },
+    data: { status: "CANCELLED" },
+  });
+  return { expired: r.count };
 }

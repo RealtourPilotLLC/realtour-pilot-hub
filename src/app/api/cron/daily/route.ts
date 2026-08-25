@@ -33,6 +33,10 @@ export async function GET(req: NextRequest) {
   // below admits can eat the entire budget — and as a result it had not run from
   // cron in weeks while every CronRun died with finishedAt=null. That single
   // ordering bug is why the books showed a 32% revenue collapse that never happened.
+  await step("expireSlackTasks", async () => {
+    const { expireStaleSlackTasks } = await import("@/lib/tasks");
+    return expireStaleSlackTasks();
+  });
   await step("stripe", async () => {
     const { syncStripe } = await import("@/lib/integrations/stripe");
     return syncStripe();

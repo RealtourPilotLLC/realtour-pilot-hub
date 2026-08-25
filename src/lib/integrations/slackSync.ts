@@ -96,6 +96,38 @@ export async function maybeCreateSlackTask(opts: { text: string; ts: string; cha
     } catch { /* fall back to raw text */ }
   }
 
+  // CONSOLIDATE (Aug 24 audit: 86 open per-message Slack tasks = 60% of the
+  // whole list). Same sender + same project (or both unanchored) within 24h →
+  // append to their OPEN rolling task instead of minting another card.
+  try {
+    const rolling = await prisma.smartTask.findFirst({
+      where: {
+        taskType: "internal_instruction",
+        source: "slack",
+        status: "OPEN",
+        contactName: opts.senderName ?? undefined,
+        projectId: projectId ?? null,
+        createdAt: { gte: new Date(Date.now() - 24 * 3600_000) },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    if (rolling && opts.senderName) {
+      const prev = rolling.description ?? "";
+      const appended = `${prev}\n\n• ${title}${detail && detail !== title ? ` — ${clip(detail, 300)}` : ""}`.trim();
+      const count = (appended.match(/^• /gm)?.length ?? 0) + 1;
+      await prisma.smartTask.update({
+        where: { id: rolling.id },
+        data: {
+          description: appended.length > 4000 ? appended.slice(appended.length - 4000) : appended,
+          title: `${rolling.title.replace(/ \(\+\d+ more\)$/, "")} (+${count - 1} more)`.slice(0, 120),
+          summary: `${opts.senderName} in Slack — ${count} asks on one card. Latest: ${clip(title, 160)}`.slice(0, 500),
+          ...(priority === "URGENT" ? { priority: "URGENT" } : {}),
+        },
+      });
+      return true;
+    }
+  } catch { /* consolidation is best-effort — fall through to a fresh card */ }
+
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
   const summary = (usedBrain && detail && detail !== text)
     ? detail
@@ -113,6 +145,7 @@ export async function maybeCreateSlackTask(opts: { text: string; ts: string; cha
       reasonCreated: match ? `From Slack — re: ${match.title}` : `From Slack — ${opts.senderName || "team"}`,
       checklist: JSON.stringify(["Do the requested action", "Reply in Slack when done"]),
       source: "slack",
+      contactName: opts.senderName ?? null,
       sourceDetail: opts.channel ? `channel ${opts.channel} · ${opts.ts}` : opts.ts,
       priority,
       dueAt: new Date(Date.now() + 6 * 3600_000),
