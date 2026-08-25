@@ -2,8 +2,8 @@
 
 import { useState, useTransition } from "react";
 import Link from "next/link";
-import { Bug, Sparkles, MessageSquare, Check, X, RotateCcw, Undo2, Loader2, CheckCircle2, Flag } from "lucide-react";
-import { decidePlatformFeedback } from "@/app/feedback/actions";
+import { Bug, Sparkles, MessageSquare, Check, X, RotateCcw, Undo2, Loader2, CheckCircle2, Flag, Send } from "lucide-react";
+import { decidePlatformFeedback, pingFeedbackOnSlack } from "@/app/feedback/actions";
 import { etDateTime } from "@/lib/datetime";
 
 export type FeedbackRow = {
@@ -26,13 +26,19 @@ const KIND_META: Record<string, { icon: typeof Bug; label: string; cls: string }
   field_issue: { icon: Flag, label: "Field issue", cls: "text-warning bg-warning/10" },
 };
 
-export function PlatformFeedbackItem({ row, canModerate = true }: { row: FeedbackRow; canModerate?: boolean }) {
+export function PlatformFeedbackItem({ row, canModerate = true, pingTargets = [] }: {
+  row: FeedbackRow; canModerate?: boolean; pingTargets?: { id: string; name: string }[];
+}) {
   const [pending, start] = useTransition();
   const [err, setErr] = useState<string | null>(null);
   const meta = KIND_META[row.kind] ?? KIND_META.feature;
   const Icon = meta.icon;
   // Every decision is owner-only in the action. Swallowing the rejection made
   // these buttons look like they worked for anyone else — say so instead.
+  const [pingTo, setPingTo] = useState("");
+  const [pingNote, setPingNote] = useState("");
+  const [pingMsg, setPingMsg] = useState<string | null>(null);
+  const [pinging, startPing] = useTransition();
   const decide = (s: "APPROVED" | "DECLINED" | "DONE" | "NEW") =>
     start(async () => {
       setErr(null);
@@ -59,7 +65,7 @@ export function PlatformFeedbackItem({ row, canModerate = true }: { row: Feedbac
             </a>
           )}
           <div className="mt-1 text-[11px] text-muted-2">
-            {row.submittedBy ? `${row.submittedBy} · ` : ""}{etDateTime(row.createdAt)}
+            Received {etDateTime(row.createdAt)}{row.submittedBy ? ` · from ${row.submittedBy}` : ""}
             {row.page &&
               // In-app paths only — "//host" would be a protocol-relative
               // external URL, so it stays plain text like full https:// values.
@@ -152,6 +158,31 @@ export function PlatformFeedbackItem({ row, canModerate = true }: { row: Feedbac
           </>
         )}
       </div>
+      {/* "Look into this" — DM a teammate on Slack about this item, sent AS
+          the logged-in person (Jordan pings as Jordan). */}
+      {canModerate && pingTargets.length > 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-border pt-2">
+          <select value={pingTo} onChange={(e) => setPingTo(e.target.value)}
+            className="rounded-lg border border-border bg-surface-2 px-2 py-1 text-xs outline-none focus:border-brand">
+            <option value="">Ask someone to look into this…</option>
+            {pingTargets.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+          {pingTo && (
+            <>
+              <input value={pingNote} onChange={(e) => setPingNote(e.target.value)} placeholder="optional note…"
+                className="min-w-32 flex-1 rounded-lg border border-border bg-surface-2 px-2 py-1 text-xs outline-none focus:border-brand" />
+              <button disabled={pinging} onClick={() => startPing(async () => {
+                const r = await pingFeedbackOnSlack(row.id, pingTo, pingNote);
+                setPingMsg(r.message);
+                if (r.ok) { setPingTo(""); setPingNote(""); }
+              })} className="inline-flex items-center gap-1 rounded-lg bg-brand px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50">
+                {pinging ? <Loader2 className="size-3 animate-spin" /> : <Send className="size-3" />} Ping on Slack
+              </button>
+            </>
+          )}
+          {pingMsg && <span className="text-[11px] text-muted">{pingMsg}</span>}
+        </div>
+      )}
       {err && <p className="mt-1.5 text-xs text-danger">{err}</p>}
     </div>
   );

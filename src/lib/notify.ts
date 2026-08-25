@@ -27,7 +27,7 @@ function appBase(): string {
 // the ops channel the bot is already in (#rp-project-tracker family); else
 // Kyle's DM. Cached ~1h so we don't list channels on every ping.
 let destCache: { at: number; channel: string } | null = null;
-async function alertDestination(): Promise<string> {
+export async function alertDestination(): Promise<string> {
   const env = process.env.SLACK_ALERT_CHANNEL;
   if (env) return env;
   if (destCache && Date.now() - destCache.at < 3600_000) return destCache.channel;
@@ -107,26 +107,74 @@ function withinTextingHours(tz = "America/New_York"): boolean {
   return hour >= 7 && hour < 22;
 }
 
+// One text per person per window; everything else queues and flushes as ONE
+// combined message (Aug 24: Harrison & James were getting blown up with
+// back-to-back texts). Quiet-hours pings queue too — they become part of the
+// next morning's digest instead of silently vanishing.
+const SMS_BATCH_WINDOW_MS = 30 * 60_000;
+
 async function smsPhotographer(teamMemberId: string, title: string, href: string): Promise<void> {
   try {
-    if (!withinTextingHours()) return;
-    const member = await prisma.teamMember.findUnique({
-      where: { id: teamMemberId },
-      select: { phone: true },
+    await prisma.pendingSms.create({ data: { teamMemberId, line: `${title} → ${appBase()}${href}` } });
+    const recentSend = await prisma.pendingSms.findFirst({
+      where: { teamMemberId, sentAt: { gte: new Date(Date.now() - SMS_BATCH_WINDOW_MS) } },
+      select: { id: true },
     });
-    const phone = member?.phone?.replace(/[^\d+]/g, "");
-    if (!phone) return;
-    const { OpenPhone, defaultOpenPhoneNumber, phoneKey } = await import("@/lib/integrations/openphone");
-    const from = await defaultOpenPhoneNumber();
-    if (!from) return;
-    const to = phone.startsWith("+") ? phone : `+1${phoneKey(phone)}`;
-    await OpenPhone.sendMessage(from, to, `⚙️ RealTour Hub: ${title}\n${appBase()}${href}`);
+    // First ping in the window and daytime → deliver immediately (flushing
+    // everything queued for them along the way). Otherwise the flusher cron
+    // combines it into one message shortly.
+    if (!recentSend && withinTextingHours()) await flushMemberSms(teamMemberId);
   } catch (e) {
     console.warn("smsPhotographer failed", e);
   }
 }
 
-// ---------------------------------------------------------------------------
+// Send EVERYTHING queued for one member as a single text.
+async function flushMemberSms(teamMemberId: string): Promise<boolean> {
+  const rows = await prisma.pendingSms.findMany({
+    where: { teamMemberId, sentAt: null },
+    orderBy: { createdAt: "asc" },
+  });
+  if (rows.length === 0) return false;
+  const member = await prisma.teamMember.findUnique({ where: { id: teamMemberId }, select: { phone: true } });
+  const phone = member?.phone?.replace(/[^\d+]/g, "");
+  if (!phone) return false;
+  const { OpenPhone, defaultOpenPhoneNumber, phoneKey } = await import("@/lib/integrations/openphone");
+  const from = await defaultOpenPhoneNumber();
+  if (!from) return false;
+  const to = phone.startsWith("+") ? phone : `+1${phoneKey(phone)}`;
+  const body =
+    rows.length === 1
+      ? `⚙️ RealTour Hub: ${rows[0].line}`
+      : `⚙️ RealTour Hub — ${rows.length} updates:\n` + rows.map((r) => `• ${r.line}`).join("\n");
+  await OpenPhone.sendMessage(from, to, body.slice(0, 1500));
+  await prisma.pendingSms.updateMany({ where: { id: { in: rows.map((r) => r.id) } }, data: { sentAt: new Date() } });
+  return true;
+}
+
+// Cron flusher (every 5 min): deliver queued digests once the batch window has
+// passed (or daylight returns after quiet hours). Never inside quiet hours.
+export async function flushPendingSms(): Promise<{ flushed: number }> {
+  if (!withinTextingHours()) return { flushed: 0 };
+  const pending = await prisma.pendingSms.groupBy({
+    by: ["teamMemberId"],
+    where: { sentAt: null },
+    _min: { createdAt: true },
+  });
+  let flushed = 0;
+  for (const p of pending) {
+    const oldest = p._min.createdAt;
+    if (!oldest) continue;
+    const recentSend = await prisma.pendingSms.findFirst({
+      where: { teamMemberId: p.teamMemberId, sentAt: { gte: new Date(Date.now() - SMS_BATCH_WINDOW_MS) } },
+      select: { id: true },
+    });
+    if (recentSend && Date.now() - oldest.getTime() < SMS_BATCH_WINDOW_MS) continue;
+    if (await flushMemberSms(p.teamMemberId)) flushed++;
+  }
+  return { flushed };
+}
+
 // INTERNAL STAFF SMS. For alerts that must reach a named person's phone rather
 // than a role's bell — "photos still not delivered", the kind of thing that has
 // to interrupt someone.
@@ -143,14 +191,14 @@ async function smsPhotographer(teamMemberId: string, title: string, href: string
 // relayed to Slack instead of being silently dropped, because a missed alert is
 // the failure this whole feature exists to prevent.
 // ---------------------------------------------------------------------------
-export type StaffSmsResult = { teamMemberId: string; name: string; outcome: "sent" | "no-phone" | "own-line" | "quiet-hours" | "failed" };
+export type StaffSmsResult = { teamMemberId: string; name: string; outcome: "sent" | "slack" | "no-phone" | "own-line" | "quiet-hours" | "failed" };
 
 export async function notifyStaffSms(teamMemberIds: string[], text: string): Promise<StaffSmsResult[]> {
   const ids = [...new Set(teamMemberIds.filter(Boolean))];
   if (ids.length === 0) return [];
   const out: StaffSmsResult[] = [];
   try {
-    const members = await prisma.teamMember.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, phone: true } });
+    const members = await prisma.teamMember.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, phone: true, slackId: true } });
     const quiet = !withinTextingHours();
     const { OpenPhone, defaultOpenPhoneNumber, phoneKey, ourOpenPhoneNumberKeys } = await import("@/lib/integrations/openphone");
     const ours = await ourOpenPhoneNumberKeys().catch(() => new Set<string>());
@@ -159,6 +207,15 @@ export async function notifyStaffSms(teamMemberIds: string[], text: string): Pro
     const body = `⚙️ RealTour Hub: ${text}`;
 
     for (const m of members) {
+      // Slack first — Jordan (Aug 24): "instead of texting Kyle, message him
+      // on Slack." Anyone with a Slack id gets a DM; SMS is the fallback.
+      if (m.slackId) {
+        const { slackDmUser } = await import("@/lib/integrations/slack");
+        if (await slackDmUser(m.slackId, text)) {
+          out.push({ teamMemberId: m.id, name: m.name, outcome: "slack" });
+          continue;
+        }
+      }
       const digits = m.phone?.replace(/[^\d+]/g, "") ?? "";
       const key = digits ? phoneKey(digits) : "";
       if (!digits || key.length !== 10) {
@@ -185,7 +242,7 @@ export async function notifyStaffSms(teamMemberIds: string[], text: string): Pro
       }
     }
     // Anyone we could not reach by text still gets the alert — via Slack ops.
-    const unreached = out.filter((r) => r.outcome !== "sent" && r.outcome !== "quiet-hours");
+    const unreached = out.filter((r) => r.outcome !== "sent" && r.outcome !== "slack" && r.outcome !== "quiet-hours");
     if (unreached.length) {
       await opsAlert(`⚠️ Couldn't text ${unreached.map((r) => `${r.name} (${r.outcome})`).join(", ")} — relaying: ${text}`);
     }
@@ -352,5 +409,56 @@ export async function alertWebhookRejections(provider: string): Promise<void> {
     }
   } catch {
     /* never let alerting break the receiver */
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Kyle's 4 PM Slack digest — open to-dos and things to check, once per ET day
+// in the 4-6pm window (the 5-minute cron calls this; the AppSetting key makes
+// it fire exactly once). Jordan (Aug 24): "by 4PM that day, send Kyle a
+// reminder of his open to-dos and things to check."
+// ---------------------------------------------------------------------------
+export async function kyleAfternoonDigest(): Promise<{ sent: boolean; reason?: string }> {
+  const etHour = Number(
+    new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }).format(new Date()),
+  );
+  if (etHour < 16 || etHour >= 18) return { sent: false, reason: "outside 4-6pm ET" };
+  const day = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  try {
+    await prisma.appSetting.create({ data: { key: `kyle-digest-${day}`, value: "sent" } });
+  } catch {
+    return { sent: false, reason: "already sent today" };
+  }
+  try {
+    const kyle = await prisma.teamMember.findFirst({
+      where: { name: { contains: "Kyle", mode: "insensitive" }, active: true },
+      select: { slackId: true },
+    });
+    const slackId = kyle?.slackId ?? KYLE_SLACK_ID;
+    const { slackDmUser } = await import("@/lib/integrations/slack");
+    const { getMorningBrief, getOverdueTasks, getClientTextTasks } = await import("@/lib/queries");
+    const [brief, overdue, texts] = await Promise.all([
+      getMorningBrief().catch(() => []),
+      getOverdueTasks().catch(() => []),
+      getClientTextTasks().catch(() => []),
+    ]);
+    const seen = new Set(overdue.map((t) => t.id));
+    const openToday = brief.filter((t) => !seen.has(t.id));
+    if (overdue.length + openToday.length + texts.length === 0) {
+      await slackDmUser(slackId, "🕓 4 o'clock check — everything's clear. Nice work today. 🎉");
+      return { sent: true };
+    }
+    const lines: string[] = ["🕓 *4 o'clock check* — still open today:"];
+    for (const t of overdue.slice(0, 8)) lines.push(`• 🔴 ${t.title}`);
+    if (overdue.length > 8) lines.push(`  …and ${overdue.length - 8} more overdue`);
+    for (const t of openToday.slice(0, 10)) lines.push(`• ${t.title}`);
+    if (openToday.length > 10) lines.push(`  …and ${openToday.length - 10} more`);
+    if (texts.length > 0) lines.push(`✉️ ${texts.length} client text${texts.length === 1 ? "" : "s"} drafted & waiting in the Outbox`);
+    lines.push(`${appBase()}/today`);
+    await slackDmUser(slackId, lines.join("\n"));
+    return { sent: true };
+  } catch (e) {
+    console.warn("kyleAfternoonDigest failed", e);
+    return { sent: false, reason: "failed" };
   }
 }

@@ -111,3 +111,43 @@ export async function slackUserName(id: string): Promise<string> {
   }
   return slackUserCache?.map[id] ?? id;
 }
+
+// Resolve a Slack user by email (users.lookupByEmail). Null when the scope is
+// missing or the email has no Slack account — callers fall back to the ops
+// channel rather than failing the ping.
+export async function slackUserByEmail(email: string): Promise<string | null> {
+  try {
+    const token = await getSecret("slack");
+    if (!token) return null;
+    const res = await fetch(`https://slack.com/api/users.lookupByEmail?email=${encodeURIComponent(email)}`, {
+      headers: { Authorization: `Bearer ${token}` }, cache: "no-store",
+    });
+    const json = (await res.json()) as { ok?: boolean; user?: { id?: string } };
+    return json.ok && json.user?.id ? json.user.id : null;
+  } catch { return null; }
+}
+
+// DM a Slack user. The bot token has chat:write but NOT im:write (verified
+// Aug 24), so conversations.open is unavailable — but posting straight to the
+// user id works when the bot's DM with them exists (the long-standing Kyle
+// fallback in notify.ts relies on exactly this). Try direct post first;
+// attempt conversations.open only as a forward-compat fallback.
+export async function slackDmUser(userId: string, text: string): Promise<boolean> {
+  try {
+    await slackPostMessage(userId, text);
+    return true;
+  } catch { /* fall through */ }
+  try {
+    const token = await getSecret("slack");
+    if (!token) return false;
+    const open = await fetch("https://slack.com/api/conversations.open", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ users: userId }),
+    });
+    const oj = (await open.json()) as { ok?: boolean; channel?: { id?: string } };
+    if (!oj.ok || !oj.channel?.id) return false;
+    await slackPostMessage(oj.channel.id, text);
+    return true;
+  } catch { return false; }
+}

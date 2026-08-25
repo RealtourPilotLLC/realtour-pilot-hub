@@ -12,6 +12,9 @@ export default async function FeedbackPage() {
   const { getCurrentUser } = await import("@/lib/auth/user");
   const viewer = await getCurrentUser().catch(() => null);
   const canModerate = !viewer || viewer.role === "OWNER";
+  const pingTargets = canModerate
+    ? await prisma.teamMember.findMany({ where: { active: true }, select: { id: true, name: true }, orderBy: { name: "asc" } })
+    : [];
   const all = await prisma.platformFeedback.findMany({ orderBy: { createdAt: "desc" } });
   const rows: FeedbackRow[] = all.map((f) => ({
     id: f.id,
@@ -53,7 +56,7 @@ export default async function FeedbackPage() {
                 </h2>
                 <div className="space-y-2">
                   {g.rows.map((r) => (
-                    <PlatformFeedbackItem key={r.id} row={r} canModerate={canModerate} />
+                    <PlatformFeedbackItem key={r.id} row={r} canModerate={canModerate} pingTargets={pingTargets} />
                   ))}
                 </div>
               </section>

@@ -1,6 +1,6 @@
 "use server";
 
-import { requireOwner, requireRole } from "@/lib/auth/guards";
+import { requireAdmin, requireOwner, requireRole } from "@/lib/auth/guards";
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
@@ -128,4 +128,62 @@ export async function decidePlatformFeedback(
     } catch { /* non-fatal */ }
   }
   revalidatePath("/feedback");
+}
+
+// ---------------------------------------------------------------------------
+// "Look into this" — ping a teammate on Slack about a feedback item. The
+// message is FROM the logged-in person (Jordan pings AS Jordan — he is not
+// Kyle), TO any active team member; Slack id resolves from email on first
+// use and is remembered. Falls back to the ops alert channel when a DM can't
+// be opened, so the ping never silently vanishes.
+// ---------------------------------------------------------------------------
+export async function pingFeedbackOnSlack(
+  feedbackId: string,
+  teamMemberId: string,
+  note?: string,
+): Promise<{ ok: boolean; message: string }> {
+  try { await requireAdmin(); } catch (e) { return { ok: false, message: (e as Error).message }; }
+  const [row, member, me] = await Promise.all([
+    prisma.platformFeedback.findUnique({ where: { id: feedbackId }, select: { title: true, body: true, kind: true, submittedBy: true, createdAt: true } }),
+    prisma.teamMember.findUnique({ where: { id: teamMemberId }, select: { id: true, name: true, email: true, slackId: true } }),
+    (await import("@/lib/auth/user")).getCurrentUser().catch(() => null),
+  ]);
+  if (!row || !member) return { ok: false, message: "Item or person not found." };
+  const sender = me?.name?.split(/\s+/)[0] ?? "Jordan";
+  const { etDateTime } = await import("@/lib/datetime");
+  const url = `${process.env.APP_URL ?? "https://realtour-pilot-hub.vercel.app"}/feedback`;
+  const text =
+    `👀 *${sender}* asked you to look into this ${row.kind === "bug" ? "bug" : row.kind === "field_issue" ? "field issue" : "request"}:\n` +
+    `*${row.title}*\n` +
+    (row.body ? `> ${row.body.slice(0, 280).replace(/\n/g, "\n> ")}\n` : "") +
+    `_Received ${etDateTime(row.createdAt)}${row.submittedBy ? ` from ${row.submittedBy}` : ""}_\n` +
+    (note?.trim() ? `\n${sender}: ${note.trim().slice(0, 500)}\n` : "") +
+    `\n${url}`;
+
+  const { slackUserByEmail, slackDmUser, slackNotify } = await import("@/lib/integrations/slack");
+  let slackId = member.slackId;
+  if (!slackId) {
+    slackId = await slackUserByEmail(member.email);
+    if (slackId) await prisma.teamMember.update({ where: { id: member.id }, data: { slackId } });
+  }
+  if (slackId && (await slackDmUser(slackId, text))) {
+    return { ok: true, message: `Pinged ${member.name.split(/\s+/)[0]} on Slack.` };
+  }
+  // No DM possible → the ops channel, addressed by name, so it still lands.
+  const { alertDestination } = await import("@/lib/notify");
+  const sent = await slackNotify(await alertDestination(), `@${member.name} ` + text).catch(() => false);
+  return sent
+    ? { ok: true, message: `No Slack DM for ${member.name.split(/\s+/)[0]} — posted to the ops channel instead.` }
+    : { ok: false, message: `Couldn't reach Slack — is it still connected?` };
+}
+
+// Active teammates for the ping picker.
+export async function listPingTargets(): Promise<{ id: string; name: string }[]> {
+  try { await requireAdmin(); } catch { return []; }
+  const members = await prisma.teamMember.findMany({
+    where: { active: true },
+    select: { id: true, name: true },
+    orderBy: { name: "asc" },
+  });
+  return members;
 }

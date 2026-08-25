@@ -90,6 +90,8 @@ model TeamMember {
   email             String    @unique
   role              Role      @default(VA)
   phone             String?
+  // Slack user id (U…) for direct pings; resolved from email on first use.
+  slackId           String?
   avatarColor       String    @default("#6366f1") // for UI avatars
   // "Work-ons for your next shoot" — the AI-summarized THEMES of this person's
   // open capture feedback, cached so the page never waits on a model call.
@@ -1760,4 +1762,18 @@ model ContentStrategy {
 
   @@index([clientId])
   @@index([enrollmentId, status])
+}
+
+// Queued team SMS for digest batching (Aug 24: Harrison & James were getting
+// blown up with back-to-back texts). First ping in a window sends instantly;
+// the rest queue and flush as ONE combined message. Sent rows stay as a log.
+model PendingSms {
+  id           String    @id @default(cuid())
+  teamMemberId String
+  line         String // one digest line: "title → link"
+  createdAt    DateTime  @default(now())
+  sentAt       DateTime?
+
+  @@index([teamMemberId, sentAt])
+  @@index([sentAt])
 }

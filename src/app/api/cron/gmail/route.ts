@@ -36,6 +36,16 @@ export async function GET(req: NextRequest) {
   // Keep Slack comms memory near-live (channels + Jordan's DMs) every few
   // minutes via the user token. Small window; logComm dedups the overlap.
   await step("slack", () => syncSlackHistory({ sinceHours: 2 }));
+  // Team-SMS digest flusher (batched pings for Harrison/James) + Kyle's 4 PM
+  // Slack check-in — both cheap no-ops most runs.
+  await step("smsFlush", async () => {
+    const { flushPendingSms } = await import("@/lib/notify");
+    return flushPendingSms();
+  });
+  await step("kyleDigest", async () => {
+    const { kyleAfternoonDigest } = await import("@/lib/notify");
+    return kyleAfternoonDigest();
+  });
   // Reply-SLA escalation: page the team when an inbound client text sits
   // unanswered (30m → ADMIN bell + Slack, 2h → OWNER + urgent; VIPs faster).
   // Best-effort by construction — sweepReplySla never throws — and the step()
