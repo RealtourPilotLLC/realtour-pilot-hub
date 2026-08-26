@@ -100,18 +100,6 @@ export async function syncStrategyCallsFromCalendly(): Promise<{ stamped: number
 // ---------------------------------------------------------------------------
 type DriveFile = { id: string; name: string; createdTime?: string; mimeType?: string };
 
-async function driveSearchTranscripts(token: string, sinceIso: string): Promise<DriveFile[]> {
-  const q = encodeURIComponent(
-    `name contains 'Transcript' and mimeType = 'application/vnd.google-apps.document' and createdTime > '${sinceIso}' and trashed = false`,
-  );
-  const res = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,createdTime,mimeType)&pageSize=50&orderBy=createdTime desc`,
-    { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" },
-  );
-  if (!res.ok) throw new Error(`Drive search failed (${res.status})`);
-  const json = (await res.json()) as { files?: DriveFile[] };
-  return json.files ?? [];
-}
 
 async function driveExportText(token: string, fileId: string): Promise<string> {
   const res = await fetch(

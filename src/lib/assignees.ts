@@ -17,7 +17,8 @@ export type Assignee = { key: string; name: string; kind: AssigneeKind; teamMemb
 const NON_TEAM: Assignee[] = [
   { key: "creative_director", name: "Creative Director", kind: "editor" },
   { key: "john", name: "John Mark", kind: "editor" },
-  { key: "luma", name: "Luma", kind: "vendor" },
+  // Luma removed Aug 25 — the engagement ended Aug 14; historical tasks
+  // with assignedKey "luma" still display via the firstName fallback.
   { key: "autohdr", name: "AutoHDR", kind: "vendor" },
   { key: "cubicasa", name: "CubiCasa", kind: "vendor" },
 ];

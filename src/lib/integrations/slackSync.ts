@@ -12,7 +12,7 @@ const ME = "U07D2KJH1JP"; // Jordan
 const TARGET_DM_USERS: Record<string, string> = {
   U07SCBTPDC7: "Kyle Smith",
   U0ASP9C1WRK: "Kim",
-  U0B7WNGEH0D: "Remar",
+  // Remar departed (John replaced her) — her DM poll removed Aug 25 (audit).
 };
 const CHANNEL_NAME_RE = /video-editing|project-tracker|photo-editing/i;
 

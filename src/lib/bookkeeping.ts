@@ -527,61 +527,6 @@ export async function revenueByProcessor(startKey: string, endKey: string) {
 }
 
 /** True revenue / expense / profit, with the noise removed. */
-export async function trueProfitAndLoss(startKey: string, endKey: string) {
-  const rows = await prisma.qboTransaction.findMany({
-    where: { txnDate: { gte: new Date(`${startKey}T00:00:00Z`), lte: new Date(`${endKey}T23:59:59Z`) } },
-  });
-  const sum = (cats: Category[], types?: string[]) =>
-    rows.filter((r) => cats.includes(r.category as Category) && (!types || types.includes(r.type)))
-      .reduce((s, r) => s + r.amount, 0);
-
-  // Revenue counts DEPOSITS + SalesReceipts only — never Invoice AND Payment for
-  // the same sale, which would double the books all over again.
-  //
-  // Stripe deposits are classified ALREADY_COUNTED so they cannot double against
-  // the Stripe rail — which means the Stripe rail has to be ADDED here or a third
-  // of revenue silently disappears. Charges net of refunds, gross of fees: fees
-  // are a real cost and belong in expenses, not netted out of the top line.
-  // Revenue MUST be the ONE canonical processor number, or this engine and
-  // revenueByProcessor never reconcile. Counting REVENUE on Deposit AND
-  // SalesReceipt double-counted the QuickBooks rail (the deposits already settle
-  // those receipts) and dropped Venmo entirely. So reuse revenueByProcessor
-  // verbatim: QuickBooks Payments (Payment + SalesReceipt, once) + Stripe + Venmo.
-  const rp = await revenueByProcessor(startKey, endKey);
-  const revenue = rp.total;
-  const qboRevenue = rp.quickbooks;
-  const stripeRevenue = rp.stripe;
-  const venmoRevenue = rp.venmo;
-  const stripeFees = rp.stripeFees;
-
-  const costOfSales = sum(["COST_OF_SALES"], ["Purchase"]);
-  const operating = sum(["OPERATING"], ["Purchase"]);
-  const vehicle = sum(["VEHICLE"], ["Purchase"]);
-  const qboExpenses = costOfSales + operating + vehicle;
-  // Contractor pay routed through Stripe (transfers OUT to James/Harrison's
-  // Stripe balances) is a real cost that never touches the QuickBooks ledger, so
-  // it must be added here or it's silently free labor. The bank top-up that funds
-  // it is classified TRANSFER (not a cost) precisely so this isn't double-counted.
-  const stripeTransfers = await prisma.stripeTransaction.findMany({
-    where: { type: "transfer", createdAt: { gte: new Date(`${startKey}T00:00:00Z`), lte: new Date(`${endKey}T23:59:59Z`) } },
-  });
-  const stripeContractorPay = stripeTransfers.reduce((s, r) => s + Math.abs(r.gross), 0);
-  const expenses = qboExpenses + stripeFees + stripeContractorPay;
-  const ownerDraws = sum(["OWNER_DRAW"], ["Purchase"]);
-  const excluded = sum(["DUPLICATE", "TRANSFER", "FEE_REFUND"]);
-  // What we genuinely cannot see yet — quoted so no one mistakes this for final.
-  const unknown = sum(["UNCATEGORISED"], ["Purchase"]);
-  const needsReview = rows.filter((r) => r.needsReview).length;
-
-  return {
-    start: startKey, end: endKey,
-    revenue, qboRevenue, stripeRevenue, venmoRevenue,
-    expenses, costOfSales, operating, vehicle, stripeFees, stripeContractorPay, uncategorisedExpenses: unknown,
-    profit: revenue - expenses,
-    ownerDraws, excludedFromIncome: excluded, needsReview,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // WHO YOU PAY — resolve the person + the rail for each contractor payment.
 // The bank text carries both; the P2P rails (Venmo/Zelle/Wise/PayPal) ride ON
@@ -794,42 +739,3 @@ function personalBucket(text: string): string {
 }
 
 /** Personal (owner-draw) spending bucketed by category, month, and top vendor. */
-export async function personalSpending(startKey: string, endKey: string): Promise<{
-  total: number; count: number;
-  byBucket: { bucket: string; amount: number; count: number }[];
-  byMonth: Record<string, number>;
-  topVendors: { vendor: string; amount: number; count: number }[];
-}> {
-  const rows = await prisma.qboTransaction.findMany({
-    where: {
-      type: "Purchase",
-      txnDate: { gte: new Date(`${startKey}T00:00:00Z`), lte: new Date(`${endKey}T23:59:59Z`) },
-      OR: [{ personal: true }, { category: "OWNER_DRAW" }],
-    },
-  });
-  const buckets: Record<string, { amount: number; count: number }> = {};
-  const byMonth: Record<string, number> = {};
-  const vendors: Record<string, { amount: number; count: number }> = {};
-  let total = 0;
-  for (const r of rows) {
-    let raw: { EntityRef?: { name?: string } } | null = null;
-    try { raw = JSON.parse(r.raw ?? "null"); } catch { /* ignore */ }
-    const text = describe(r);
-    const bucket = personalBucket(text);
-    (buckets[bucket] ||= { amount: 0, count: 0 }).amount += r.amount;
-    buckets[bucket].count++;
-    byMonth[r.txnDate.toISOString().slice(0, 7)] = (byMonth[r.txnDate.toISOString().slice(0, 7)] || 0) + r.amount;
-    // Real vendor/person name (surfaces the nanny, retailers, etc.) — same
-    // resolver the People tab uses — instead of collapsing to the bucket label.
-    const vend = /\bcheck\s*#?\s*\d/i.test(text) ? "Rent (check)" : resolvePayee(raw, text);
-    (vendors[vend] ||= { amount: 0, count: 0 }).amount += r.amount;
-    vendors[vend].count++;
-    total += r.amount;
-  }
-  return {
-    total, count: rows.length,
-    byBucket: Object.entries(buckets).map(([bucket, v]) => ({ bucket, ...v })).sort((a, b) => b.amount - a.amount),
-    byMonth,
-    topVendors: Object.entries(vendors).map(([vendor, v]) => ({ vendor, ...v })).sort((a, b) => b.amount - a.amount).slice(0, 12),
-  };
-}

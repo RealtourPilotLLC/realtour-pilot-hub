@@ -310,10 +310,3 @@ export async function execTrendsTool(name: string, input: Record<string, unknown
   }
 }
 
-function keyToDate(v: unknown, fallback: Date): Date {
-  if (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v)) {
-    const d = new Date(`${v}T12:00:00Z`);
-    if (!isNaN(d.getTime())) return d;
-  }
-  return fallback;
-}

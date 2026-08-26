@@ -15,7 +15,6 @@ import { cn } from "@/lib/utils";
 import { CullingReminder } from "@/components/upload/CullingReminder";
 import { CullUploader } from "@/components/upload/CullUploader";
 import { UploadPortal } from "@/components/upload/UploadPortal";
-import { AppointmentFeedback } from "@/components/upload/AppointmentFeedback";
 import { getProjectFolderState } from "@/lib/dropboxFolders";
 import { BRACKET_RATIO, photoTargetFor, rawBudgetFor, rawOverageCeiling } from "@/lib/culling";
 import { ActivityType } from "@prisma/client";
@@ -54,6 +53,9 @@ export default async function UploadProjectPage({
   // This home's photo budget (from sq ft or the owner override) — surfaced next
   // to the live raw count so the photographer sees over-shooting immediately.
   const photoTarget = photoTargetFor(project);
+  // The culling kit is PHOTO tooling — a video-/3D-only job must not tell the
+  // shooter to cull photos nobody ordered (audit Aug 25).
+  const photosOrdered = project.deliverables.some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d.type));
 
   return (
     <div className="mx-auto max-w-3xl p-6">
@@ -61,16 +63,21 @@ export default async function UploadProjectPage({
 
       <DropboxFolders state={folderState} photoTarget={photoTarget} />
 
-      {/* Always visible at the drop point — this home's budget + the pay policy. */}
-      <div className="mt-4">
-        <CullingReminder compact target={photoTarget} />
-      </div>
+      {photosOrdered && (
+        <>
+          {/* The budget chip at the drop point — the ONE budget surface on this
+              page (the banner + duplicate chips were noise — audit). */}
+          <div className="mt-4">
+            <CullingReminder compact target={photoTarget} />
+          </div>
 
-      {/* Cull FIRST, upload only the keepers (photos; video still goes via the
-          Dropbox folders below). */}
-      <div className="mt-4">
-        <CullUploader projectId={project.id} photoTarget={photoTarget} bracket={BRACKET_RATIO} />
-      </div>
+          {/* Cull FIRST, upload only the keepers (photos; video still goes via
+              the Dropbox folders below). */}
+          <div className="mt-4">
+            <CullUploader projectId={project.id} photoTarget={photoTarget} bracket={BRACKET_RATIO} />
+          </div>
+        </>
+      )}
 
       <UploadPortal
         project={{
@@ -105,7 +112,6 @@ export default async function UploadProjectPage({
           .map((a) => a.body)}
       />
 
-      <AppointmentFeedback projectId={project.id} />
     </div>
   );
 }
