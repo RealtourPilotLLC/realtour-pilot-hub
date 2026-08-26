@@ -435,7 +435,10 @@ export async function raiseRevision(opts: {
         body: clip(taskNote, 140),
         href: `/projects/${project.id}`,
         targets,
-        dedupeKey: `rev-${taskId}`,
+        // Day-suffixed: the revision TASK id is stable per project (deduped),
+        // so a SECOND round's ping collided with the first and was silently
+        // swallowed (audit). Same-day repeats stay quiet via wasAlreadyOpen.
+        dedupeKey: `rev-${taskId}-${new Date().toISOString().slice(0, 10)}`,
       });
     } catch { /* non-fatal */ }
   }

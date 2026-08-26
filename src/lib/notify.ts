@@ -136,19 +136,33 @@ async function flushMemberSms(teamMemberId: string): Promise<boolean> {
     orderBy: { createdAt: "asc" },
   });
   if (rows.length === 0) return false;
+  // CLAIM before sending — the immediate flush and the 5-minute cron can race
+  // on the same unsent rows and text the digest twice (audit). updateMany
+  // where-sentAt-null is the atomic gate; a loser claims 0 rows and stops.
+  const claimed = await prisma.pendingSms.updateMany({
+    where: { id: { in: rows.map((r) => r.id) }, sentAt: null },
+    data: { sentAt: new Date() },
+  });
+  if (claimed.count === 0) return false;
+  const unclaim = () =>
+    prisma.pendingSms.updateMany({ where: { id: { in: rows.map((r) => r.id) } }, data: { sentAt: null } }).catch(() => {});
   const member = await prisma.teamMember.findUnique({ where: { id: teamMemberId }, select: { phone: true } });
   const phone = member?.phone?.replace(/[^\d+]/g, "");
-  if (!phone) return false;
+  if (!phone) { await unclaim(); return false; }
   const { OpenPhone, defaultOpenPhoneNumber, phoneKey } = await import("@/lib/integrations/openphone");
   const from = await defaultOpenPhoneNumber();
-  if (!from) return false;
+  if (!from) { await unclaim(); return false; }
   const to = phone.startsWith("+") ? phone : `+1${phoneKey(phone)}`;
   const body =
     rows.length === 1
       ? `⚙️ RealTour Hub: ${rows[0].line}`
       : `⚙️ RealTour Hub — ${rows.length} updates:\n` + rows.map((r) => `• ${r.line}`).join("\n");
-  await OpenPhone.sendMessage(from, to, body.slice(0, 1500));
-  await prisma.pendingSms.updateMany({ where: { id: { in: rows.map((r) => r.id) } }, data: { sentAt: new Date() } });
+  try {
+    await OpenPhone.sendMessage(from, to, body.slice(0, 1500));
+  } catch (e) {
+    await unclaim(); // failed send → rows go back in the queue for the next flush
+    throw e;
+  }
   return true;
 }
 
@@ -229,6 +243,9 @@ export async function notifyStaffSms(teamMemberIds: string[], text: string): Pro
         continue;
       }
       if (quiet) {
+        // Queue for the morning flusher instead of dropping (audit: quiet-hours
+        // staff alerts vanished — not sent, not queued, excluded from the relay).
+        await prisma.pendingSms.create({ data: { teamMemberId: m.id, line: text } }).catch(() => {});
         out.push({ teamMemberId: m.id, name: m.name, outcome: "quiet-hours" });
         continue;
       }
@@ -254,7 +271,7 @@ export async function notifyStaffSms(teamMemberIds: string[], text: string): Pro
 
 // What actually happened when we tried to reach an editor — callers use this
 // to log the truth ("texted" vs "relayed to ops") instead of assuming Slack.
-export type EditorChannel = "slack" | "sms" | "relay" | "quiet" | "none";
+export type EditorChannel = "slack" | "sms" | "relay" | "quiet" | "none" | "bell";
 
 // Reach an editor addressed by `editor:<key>` (Kim/Remar) on THEIR channel:
 //   · Slack DM if the roster carries a slackUserId (preferred — same path as
@@ -266,40 +283,15 @@ export type EditorChannel = "slack" | "sms" | "relay" | "quiet" | "none";
 // same as photographer SMS). Best-effort; never throws — returns which channel
 // actually carried the ping.
 async function channelForEditor(editorKey: string, title: string, href: string): Promise<EditorChannel> {
-  try {
-    const { editorMeta, editorTeamMemberId, DEFAULT_EDITOR_TZ } = await import("@/lib/editors");
-    const meta = editorMeta(editorKey);
-    if (!meta) return "none";
-    if (!withinTextingHours(meta.tz ?? DEFAULT_EDITOR_TZ)) return "quiet"; // bell row still landed
-    const link = `${appBase()}${href}`;
-    // Prefer a Slack DM when we have the id (opening the bot's DM with them).
-    if (meta.slackUserId) {
-      const ok = await slackNotify(meta.slackUserId, `⚙️ RealTour Hub: ${title}\n${link}`);
-      return ok ? "slack" : "none";
-    }
-    // Fall back to SMS via their TeamMember phone.
-    const tmId = await editorTeamMemberId(editorKey);
-    const member = tmId ? await prisma.teamMember.findUnique({ where: { id: tmId }, select: { phone: true } }) : null;
-    const phone = member?.phone?.replace(/[^\d+]/g, "");
-    if (!phone) {
-      // NO reachable channel (no Slack id, no phone — e.g. Remar today). The
-      // old silent return meant editor-addressed work landed NOWHERE a human
-      // saw (audit critical) — make it loud so ops relays it by hand.
-      const relayed = await opsAlert(`⚠️ Couldn't reach ${meta.name} (no Slack/phone on file) — relay this: ${title} → ${link}`);
-      return relayed ? "relay" : "none";
-    }
-    const { OpenPhone, defaultOpenPhoneNumber, phoneKey } = await import("@/lib/integrations/openphone");
-    const from = await defaultOpenPhoneNumber();
-    if (!from) return "none";
-    // Editors are offshore — keep an explicit + international number as-is; only
-    // bare 10-digit US numbers get the +1 prefix.
-    const to = phone.startsWith("+") ? phone : `+1${phoneKey(phone)}`;
-    await OpenPhone.sendMessage(from, to, `⚙️ RealTour Hub: ${title}\n${link}`);
-    return "sms";
-  } catch (e) {
-    console.warn("channelForEditor failed", e);
-    return "none";
-  }
+  // Jordan (Aug 25): editors get their notifications ON THE DASHBOARD — the
+  // in-app bell row (which already landed before this runs) plus the editor
+  // home's notification feed. The old Slack/SMS bridge never delivered a single
+  // ping in production (no slackUserId, no phone on file, Manila quiet-hours
+  // drops — audit) and was retired; git history keeps the implementation if a
+  // push channel ever comes back.
+  void title; void href;
+  const { editorMeta } = await import("@/lib/editors");
+  return editorMeta(editorKey) ? "bell" : "none";
 }
 
 export async function notifyInApp(n: {
@@ -459,6 +451,9 @@ export async function kyleAfternoonDigest(): Promise<{ sent: boolean; reason?: s
     return { sent: true };
   } catch (e) {
     console.warn("kyleAfternoonDigest failed", e);
+    // Release the day claim — marking "sent" BEFORE a Slack hiccup permanently
+    // ate that day's digest with no retry (audit). The next 5-min tick retries.
+    await prisma.appSetting.delete({ where: { key: `kyle-digest-${day}` } }).catch(() => {});
     return { sent: false, reason: "failed" };
   }
 }

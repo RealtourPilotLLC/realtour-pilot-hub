@@ -20,9 +20,16 @@ function visibleWhere(u: { role: string; teamMemberId: string | null; editorKey:
     u.teamMemberId ? `tm:${u.teamMemberId}` : null,
     u.editorKey ? `editor:${u.editorKey}` : null,
   ].filter((k): k is string => !!k);
+  // A row ADDRESSED to this person (their tm:/editor: key) is theirs no matter
+  // what audience role it was minted with — James (ADMIN login, works as a
+  // photographer) had 100+ personally-addressed field rows invisible because
+  // they carried audience ["PHOTOGRAPHER"] (audit Aug 25). Role gating applies
+  // only to broadcasts.
   return {
-    audience: { contains: `"${u.role}"` },
-    OR: [{ userKey: null }, ...(userKeys.length ? [{ userKey: { in: userKeys } }] : [])],
+    OR: [
+      { audience: { contains: `"${u.role}"` }, userKey: null },
+      ...(userKeys.length ? [{ userKey: { in: userKeys } }] : []),
+    ],
   };
 }
 

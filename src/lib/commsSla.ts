@@ -113,9 +113,12 @@ export async function findUnansweredInbound(now: Date = new Date()): Promise<Una
   // Both directions in one pull: any outbound AFTER an in-window inbound is
   // itself in-window, so the single cutoff can't miss the answering text.
   const rows = await prisma.commLog.findMany({
-    where: { channel: "text", occurredAt: { gte: since }, clientId: { not: null } },
+    // Calls count too: an ANSWERED outbound call is an answer — Jordan kept
+    // getting "client still unanswered" pages two hours after handling it by
+    // phone (audit). A missed/unanswered outgoing call clears nothing.
+    where: { channel: { in: ["text", "call"] }, occurredAt: { gte: since }, clientId: { not: null } },
     orderBy: { occurredAt: "asc" },
-    select: { clientId: true, clientName: true, direction: true, body: true, occurredAt: true },
+    select: { clientId: true, clientName: true, channel: true, direction: true, body: true, occurredAt: true },
   });
 
   // Walk in time order: an inbound that needs a reply becomes the client's
@@ -124,8 +127,30 @@ export async function findUnansweredInbound(now: Date = new Date()): Promise<Una
   const pending = new Map<string, { clientName: string | null; body: string; occurredAt: Date }>();
   for (const r of rows) {
     const cid = r.clientId as string;
-    if (r.direction === "out") pending.delete(cid);
-    else if (needsReply(r.body)) pending.set(cid, { clientName: r.clientName, body: r.body, occurredAt: r.occurredAt });
+    if (r.direction === "out") {
+      if (r.channel === "call" && /missed|no answer|unanswered/i.test(r.body ?? "")) continue;
+      pending.delete(cid);
+    } else if (r.channel === "text" && needsReply(r.body)) {
+      pending.set(cid, { clientName: r.clientName, body: r.body, occurredAt: r.occurredAt });
+    }
+  }
+  if (pending.size === 0) return [];
+
+  // A HUMAN JUDGMENT also counts: a client_reply task completed AFTER the
+  // pending inbound means someone dealt with it (answered on a personal phone,
+  // decided no reply was needed). The pager must respect that (audit).
+  const handled = await prisma.smartTask.findMany({
+    where: {
+      clientId: { in: [...pending.keys()] },
+      taskType: "client_reply",
+      status: "COMPLETED",
+      completedAt: { gte: since },
+    },
+    select: { clientId: true, completedAt: true },
+  });
+  for (const h of handled) {
+    const pnd = h.clientId ? pending.get(h.clientId) : null;
+    if (pnd && h.completedAt && h.completedAt > pnd.occurredAt) pending.delete(h.clientId!);
   }
   if (pending.size === 0) return [];
 
