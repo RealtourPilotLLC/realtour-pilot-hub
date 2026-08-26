@@ -57,6 +57,20 @@ export async function GET(req: NextRequest) {
     const { categoriseBooks } = await import("@/lib/bookkeeping");
     return categoriseBooks({ sinceKey: "2026-01-01" });
   });
+  // Statement-import staleness: business Venmo / Lauren's Venmo / the Tilt card
+  // only move when Jordan uploads an export — 21+ days stale rings his bell
+  // weekly (audit Aug 25: they went 6+ weeks dark with no warning anywhere).
+  await step("staleStatements", async () => {
+    const { nagStaleStatements } = await import("@/lib/financeCategories");
+    return nagStaleStatements();
+  });
+  // Ops go-dark alarm: someone with ops duties stopped logging in, or an
+  // ops-critical login's role changed — Jordan hears in a day, not from an
+  // audit (Kyle was locked out 19 days before anyone noticed).
+  await step("opsGoDark", async () => {
+    const { checkOpsGoDark } = await import("@/lib/usage");
+    return checkOpsGoDark();
+  });
   // Pull fresh transactions + balances from every connected Plaid bank/card.
   // No-op (returns 0 items) until Jordan links accounts — safe to always run.
   await step("plaidSync", async () => {

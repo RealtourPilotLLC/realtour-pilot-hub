@@ -8,15 +8,17 @@ import { PageHeader } from "@/components/PageHeader";
 import { FinanceTabs, type FinanceTab } from "@/components/finance/FinanceTabs";
 import { KpiCards } from "@/components/finance/KpiCards";
 import { revenueByProcessor } from "@/lib/bookkeeping";
-import { categoryBreakdown } from "@/lib/financeCategories";
+import { categoryBreakdown, railFreshness } from "@/lib/financeCategories";
+import { BooksReview } from "@/components/finance/BooksReview";
+import { listFlaggedQbo } from "@/app/sales/booksReviewActions";
 import { SavingsPlan, type SavingsItemView } from "@/components/finance/SavingsPlan";
 import { getCashPosition, getMonthlyPnl, monthBounds } from "@/lib/finance";
 import { prisma } from "@/lib/prisma";
-import { etDate } from "@/lib/datetime";
+import { etDate , etYearStartKey } from "@/lib/datetime";
 
 export const dynamic = "force-dynamic";
 
-const YEAR_START = "2026-01-01";
+const YEAR_START = etYearStartKey(); // ET year — never frozen at a hard-coded 2026 (audit)
 
 // Rounded-dollar money format. Negative → en-dash prefix. Null → em-dash.
 const m0 = (n: number | null | undefined) =>
@@ -78,7 +80,7 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
   const endKey = now.toISOString().slice(0, 10);
   const monthStartKey = `${monthBounds(0).key}-01`; // yyyy-mm-01 for the current ET month
 
-  const [rev, prevYear, cats, monthCats, cash, month, monthRev, health] = await Promise.all([
+  const [rev, prevYear, cats, monthCats, cash, month, monthRev, health, fresh, flagged] = await Promise.all([
     revenueByProcessor(YEAR_START, endKey),
     revenueByProcessor("2025-01-01", "2025-12-31"),
     // ONE SOURCE OF TRUTH: the audited bank+card+Venmo ledger the Categories
@@ -92,6 +94,8 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
     // Payments sale (e.g. the $9k SalesReceipt) and understates the month badly.
     revenueByProcessor(monthStartKey, endKey),
     booksHealth(),
+    railFreshness(),
+    listFlaggedQbo().catch(() => []),
   ]);
   // The $5k/mo savings checklist (best-effort: table may not exist pre-push).
   const savingsItems: SavingsItemView[] = await prisma.savingsItem
@@ -211,7 +215,7 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
             {
               key: "bank", icon: <Landmark className="size-4" />, accent: "#6ba3d6",
               label: "In the bank", value: m0(cash.bankBalance), tone: bankTone,
-              sub: cash.bankAsOf ? `as of ${etDate(cash.bankAsOf)}` : "not set — add on Money",
+              sub: cash.bankAsOf ? `as of ${etDate(cash.bankAsOf)}` : "connecting to your bank…",
             },
             {
               key: "ar", icon: <HandCoins className="size-4" />, accent: "#d4a95f",
@@ -358,6 +362,20 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
               sub="bank feed vs. ledger"
             />
           </div>
+          {/* RAIL FRESHNESS — how current each money source is (audit: Venmo/Tilt
+              statements went 6+ weeks stale with zero warning). Amber = stale. */}
+          <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
+            <span className="text-muted-2">Data through:</span>
+            <span className={health.daysBehind != null && health.daysBehind > BOOKS_STALE_DAYS ? "font-medium text-warning" : "text-muted"}>
+              QuickBooks {fresh.quickbooks ? etDate(fresh.quickbooks) : "—"}
+            </span>
+            <span className="text-muted">Stripe {fresh.stripe ? etDate(fresh.stripe) : "—"}</span>
+            {fresh.manual.map((mrow) => (
+              <span key={mrow.mask} className={mrow.daysBehind != null && mrow.daysBehind >= 21 ? "font-medium text-warning" : "text-muted"}>
+                {mrow.label} {mrow.newest ? etDate(mrow.newest) : "never"}
+              </span>
+            ))}
+          </div>
           <div className="mt-3 flex items-start gap-1.5 rounded-lg bg-surface-2/50 p-3 text-xs text-muted">
             {health.needsReview > 0 ? <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" /> : <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-success" />}
             <span>
@@ -367,6 +385,9 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
             </span>
           </div>
         </section>
+
+        {/* THE FLAGGED LEDGER ROWS — finally reviewable on-screen (audit). */}
+        <BooksReview rows={flagged} />
 
         {/* THIS MONTH + jump links */}
         <section className="rounded-2xl border border-border bg-surface p-4 sm:p-5">

@@ -4,10 +4,11 @@ import { PageHeader } from "@/components/PageHeader";
 import { FinanceTabs, type FinanceTab } from "@/components/finance/FinanceTabs";
 import { KpiCards } from "@/components/finance/KpiCards";
 import { personalTruth } from "@/lib/financeCategories";
+import { etYearStartKey } from "@/lib/datetime";
 
 export const dynamic = "force-dynamic";
 
-const YEAR_START = "2026-01-01";
+const YEAR_START = etYearStartKey(); // ET year — never frozen at a hard-coded 2026 (audit)
 const m0 = (n: number | null | undefined) =>
   n == null ? "—" : `${n < 0 ? "−" : ""}$${Math.abs(Math.round(n)).toLocaleString("en-US")}`;
 const MONTH_LABEL = (key: string) => new Date(`${key}-01T12:00:00Z`).toLocaleString("en-US", { month: "short", timeZone: "UTC" });

@@ -680,3 +680,63 @@ export async function vendorBreakdown(startKey: string, endKey: string): Promise
   }).sort((a, b) => b.ytd - a.ytd);
   return { vendors, months };
 }
+
+// ---------------------------------------------------------------------------
+// Rail freshness — how current each money source actually is. The three
+// statement-import accounts (business Venmo, Lauren's Venmo, the Tilt card)
+// only move when Jordan uploads a fresh export, and they went 6+ weeks stale
+// with no warning anywhere (audit Aug 25).
+// ---------------------------------------------------------------------------
+export const MANUAL_STATEMENT_ACCOUNTS: { mask: string; label: string }[] = [
+  { mask: "venmo", label: "Business Venmo" },
+  { mask: "venmoL", label: "Lauren's Venmo" },
+  { mask: "9323", label: "Tilt card" },
+];
+
+export type RailFreshness = {
+  quickbooks: Date | null;
+  stripe: Date | null;
+  manual: { mask: string; label: string; newest: Date | null; daysBehind: number | null }[];
+};
+
+export async function railFreshness(): Promise<RailFreshness> {
+  const days = (d: Date | null) => (d ? Math.floor((Date.now() - d.getTime()) / 86_400_000) : null);
+  const [qbo, stripe, ...manualRows] = await Promise.all([
+    prisma.qboTransaction.aggregate({ _max: { txnDate: true } }),
+    prisma.stripeTransaction.aggregate({ _max: { createdAt: true } }),
+    ...MANUAL_STATEMENT_ACCOUNTS.map((a) =>
+      prisma.plaidTransaction.findFirst({ where: { account: { mask: a.mask } }, orderBy: { date: "desc" }, select: { date: true } }),
+    ),
+  ]);
+  return {
+    quickbooks: qbo._max.txnDate,
+    stripe: stripe._max.createdAt,
+    manual: MANUAL_STATEMENT_ACCOUNTS.map((a, i) => ({
+      ...a,
+      newest: manualRows[i]?.date ?? null,
+      daysBehind: days(manualRows[i]?.date ?? null),
+    })),
+  };
+}
+
+// Daily-cron nag: a statement account gone 21+ days stale rings the owner's
+// bell once a week until a fresh export lands.
+export async function nagStaleStatements(): Promise<{ nagged: number }> {
+  const f = await railFreshness();
+  let nagged = 0;
+  const week = new Date().toISOString().slice(0, 10).slice(0, 8); // YYYY-MM-D~ bucket ≈ weekly-ish
+  for (const m of f.manual) {
+    if (m.daysBehind == null || m.daysBehind < 21) continue;
+    const { notifyInApp } = await import("@/lib/notify");
+    await notifyInApp({
+      kind: "system",
+      title: `${m.label} statements are ${Math.floor(m.daysBehind / 7)} weeks behind`,
+      body: `Newest imported transaction is ${m.newest?.toISOString().slice(0, 10)} — revenue/spend totals are missing everything since. Upload a fresh export.`,
+      href: "/sales?tab=overview",
+      targets: [{ roles: ["OWNER"] }],
+      dedupeKey: `stale-stmt-${m.mask}-${week}`,
+    });
+    nagged++;
+  }
+  return { nagged };
+}

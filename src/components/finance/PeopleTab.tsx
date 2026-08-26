@@ -4,10 +4,11 @@ import { PageHeader } from "@/components/PageHeader";
 import { FinanceTabs, type FinanceTab } from "@/components/finance/FinanceTabs";
 import { KpiCards } from "@/components/finance/KpiCards";
 import { peoplePayments, PAYEE_GROUPS, type PayeeRow } from "@/lib/bookkeeping";
+import { etYearStartKey } from "@/lib/datetime";
 
 export const dynamic = "force-dynamic";
 
-const YEAR_START = "2026-01-01";
+const YEAR_START = etYearStartKey(); // ET year — never frozen at a hard-coded 2026 (audit)
 const m0 = (n: number | null | undefined) =>
   n == null ? "—" : `${n < 0 ? "−" : ""}$${Math.abs(Math.round(n)).toLocaleString("en-US")}`;
 const abbr = (n: number) => (Math.abs(n) >= 1000 ? `$${Math.round(n / 1000).toLocaleString("en-US")}k` : `$${Math.round(n)}`);

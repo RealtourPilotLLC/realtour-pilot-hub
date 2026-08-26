@@ -137,8 +137,11 @@ export async function execFinanceTool(name: string, input: Record<string, unknow
 
   switch (name) {
     case "current_datetime": {
-      const now = new Date();
-      return { date: now.toISOString().slice(0, 10), month: now.toISOString().slice(0, 7), year: now.getUTCFullYear() };
+      // ET, as the description promises — the UTC date told the Advisor it was
+      // tomorrow every evening after ~8pm ET (audit).
+      const { etDayKey } = await import("@/lib/datetime");
+      const day = etDayKey(new Date());
+      return { date: day, month: day.slice(0, 7), year: Number(day.slice(0, 4)) };
     }
     case "finance_overview": {
       const [{ revenueByProcessor }, { categoryBreakdown }] = await Promise.all([import("@/lib/bookkeeping"), import("@/lib/financeCategories")]);

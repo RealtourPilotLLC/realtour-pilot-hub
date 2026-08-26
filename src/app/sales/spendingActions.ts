@@ -49,7 +49,9 @@ export async function fetchCategoryTxnsAction(category: string, startKey: string
   const from = new Date(`${startKey}T00:00:00Z`);
   const to = new Date(`${endKey}T23:59:59Z`);
   const rows = await prisma.plaidTransaction.findMany({
-    where: { financeCategory: category, amount: { gt: 0 }, date: { gte: from, lte: to } },
+    // Refunds included (negative rows) — a charges-only list visibly failed to
+    // add up to its own category total whenever a return netted it (audit).
+    where: { financeCategory: category, amount: { not: 0 }, date: { gte: from, lte: to } },
     orderBy: { amount: "desc" },
     take: 250,
     select: { id: true, name: true, amount: true, date: true, financeKind: true, financeLocked: true },

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { TrendingUp, Receipt, Banknote, Wallet, LayoutDashboard, User, Users, Briefcase, PieChart, Sparkles, PiggyBank } from "lucide-react";
+import { Receipt, Banknote, LayoutDashboard, User, Users, Briefcase, PieChart, Sparkles, PiggyBank } from "lucide-react";
 
 // Tab bar for the merged Finance page, styled to match CommsTabs: brand pill =
 // active, bordered pill = idle. Which tabs render depends on the viewer's role —
@@ -14,8 +14,9 @@ const TABS: { key: FinanceTab; label: string; href: string; icon: typeof Receipt
   { key: "personal", label: "Personal", href: "/sales?tab=personal", icon: User },
   { key: "budget", label: "Budget", href: "/sales?tab=budget", icon: PiggyBank },
   { key: "spending", label: "Categories", href: "/sales?tab=spending", icon: PieChart },
-  { key: "money", label: "Money", href: "/sales?tab=money", icon: Wallet },
-  { key: "revenue", label: "Revenue", href: "/sales", icon: TrendingUp },
+  // "money" and "revenue" retired Aug 25 (audit): Money was ~70% a copy of
+  // Overview with never-used entry forms; Revenue was unreachable and reported
+  // Aryeo-price numbers that contradicted every other surface.
   { key: "unpaid", label: "Unpaid", href: "/sales?tab=unpaid", icon: Receipt },
   { key: "payroll", label: "Payroll", href: "/sales?tab=payroll", icon: Banknote },
 ];

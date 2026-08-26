@@ -2,10 +2,8 @@ import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/user";
 import { canAccess } from "@/lib/auth/access";
 import { authEnforced } from "@/lib/auth/guards";
-import { RevenueTab } from "@/components/finance/RevenueTab";
 import { UnpaidTab } from "@/components/finance/UnpaidTab";
 import { PayrollTab } from "@/components/finance/PayrollTab";
-import { MoneyTab } from "@/components/finance/MoneyTab";
 import { OverviewTab } from "@/components/finance/OverviewTab";
 import { PersonalTab } from "@/components/finance/PersonalTab";
 import { PeopleTab } from "@/components/finance/PeopleTab";
@@ -57,8 +55,12 @@ export default async function FinancePage({
   const requested = sp.tab;
 
   // Which tabs this viewer may see (owner: all; admin: Unpaid only).
+  // "money" + "revenue" retired Aug 25 (audit) — Money duplicated Overview and
+  // its entry forms were never used; Revenue reported Aryeo-price figures that
+  // contradicted the processor-truth engine. Old ?tab= deep links fall through
+  // to Overview below.
   const show: FinanceTab[] = isOwner
-    ? ["overview", "advisor", "jobs", "people", "personal", "budget", "spending", "money", "revenue", "unpaid", "payroll"]
+    ? ["overview", "advisor", "jobs", "people", "personal", "budget", "spending", "unpaid", "payroll"]
     : ["unpaid"];
   // Where non-owners land: their only tab, Unpaid. Owners land on Overview (the
   // command center — true P&L, cash, where the money's actually going).
@@ -67,9 +69,7 @@ export default async function FinancePage({
   let tab: FinanceTab;
   if (requested === "unpaid") tab = "unpaid";
   else if (requested === "payroll") tab = "payroll";
-  else if (requested === "revenue") tab = "revenue";
-  else if (requested === "money") tab = "money";
-  else if (requested === "overview") tab = "overview";
+  else if (requested === "overview" || requested === "revenue" || requested === "money") tab = "overview";
   else if (requested === "personal") tab = "personal";
   else if (requested === "people") tab = "people";
   else if (requested === "jobs") tab = "jobs";
@@ -80,20 +80,17 @@ export default async function FinancePage({
 
   // Owner-only tabs: bounce a non-owner who asked for them to their default tab
   // (mirrors the old owner-only route gate, now per-tab).
-  if (!isOwner && (tab === "revenue" || tab === "payroll" || tab === "money" || tab === "overview"
-    || tab === "personal" || tab === "people" || tab === "jobs" || tab === "spending" || tab === "advisor" || tab === "budget")) {
+  if (!isOwner && tab !== "unpaid") {
     redirect("/sales?tab=unpaid");
   }
 
   if (tab === "unpaid") return <UnpaidTab show={show} />;
   if (tab === "payroll") return <PayrollTab show={show} start={sp.start} />;
-  if (tab === "money") return <MoneyTab show={show} />;
-  if (tab === "overview") return <OverviewTab show={show} />;
   if (tab === "personal") return <PersonalTab show={show} />;
   if (tab === "people") return <PeopleTab show={show} />;
   if (tab === "jobs") return <JobsTab show={show} />;
   if (tab === "spending") return <SpendingTab show={show} />;
   if (tab === "advisor") return <AdvisorTab show={show} />;
   if (tab === "budget") return <BudgetTab show={show} />;
-  return <RevenueTab show={show} />;
+  return <OverviewTab show={show} />;
 }

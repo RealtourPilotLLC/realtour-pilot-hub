@@ -2,6 +2,7 @@ import { Briefcase, User, AlertTriangle, ArrowLeftRight, Wallet, CreditCard } fr
 import { PageHeader } from "@/components/PageHeader";
 import { FinanceTabs, type FinanceTab } from "@/components/finance/FinanceTabs";
 import { categoryBreakdown, vendorBreakdown, cardPaydowns } from "@/lib/financeCategories";
+import { etYear } from "@/lib/datetime";
 import { revenueByProcessor } from "@/lib/bookkeeping";
 import { SpendingCategories } from "@/components/finance/SpendingCategories";
 import { VendorTable } from "@/components/finance/VendorTable";
@@ -15,7 +16,7 @@ const m = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 // BUSINESS or PERSONAL, with self-transfers / card paydowns / top-ups excluded
 // as movement (not spend). Built from src/lib/financeCategories.ts.
 export async function SpendingTab({ show }: { show: FinanceTab[] }) {
-  const year = new Date().getUTCFullYear();
+  const year = etYear(); // ET, not UTC — late-evening views shifted a year at Dec 31 (audit)
   const start = `${year}-01-01`, end = `${year}-12-31`;
   const [b, rev, vb, cards] = await Promise.all([
     categoryBreakdown(start, end),
@@ -80,7 +81,7 @@ export async function SpendingTab({ show }: { show: FinanceTab[] }) {
         {b.reviewTotal > 100 && (
           <div className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
-            <span><span className="font-medium">{m(b.reviewTotal)}</span> still needs a call — see “To review” below. Re-tagging any row is coming next; for now these sit out of the totals above.</span>
+            <span><span className="font-medium">{m(b.reviewTotal)}</span> still needs a call — open “To review” below and tag each charge with its dropdown; they join the totals the moment they're tagged.</span>
           </div>
         )}
 

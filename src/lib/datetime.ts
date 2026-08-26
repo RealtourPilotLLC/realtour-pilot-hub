@@ -68,3 +68,8 @@ export function etAt(dayKey: string, hour: number, minute = 0): Date {
 
 /** End of the working day (5pm ET) — the default when a due date has no time. */
 export const etEndOfDay = (dayKey: string) => etAt(dayKey, 17);
+
+/** The current ET year ("2026") and its Jan-1 key — finance tabs hard-coded
+ *  "2026-01-01" and would have silently frozen at New Year (audit Aug 25). */
+export const etYear = () => Number(etDayKey(new Date()).slice(0, 4));
+export const etYearStartKey = () => `${etYear()}-01-01`;

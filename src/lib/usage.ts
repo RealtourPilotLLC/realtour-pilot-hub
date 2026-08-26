@@ -199,3 +199,60 @@ export async function getUsageOverview(windowDays = 14): Promise<UsageOverview> 
     })),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Ops go-dark alarm (daily cron). Two checks, both born from the Kyle incident
+// (audit Aug 25: his login was flipped to PHOTOGRAPHER ~Aug 18 and he vanished
+// for 19 days before a database probe noticed):
+//   1. An ops-flagged person (opsAlerts / creativeManager / MANAGER) with a
+//      login and ZERO recorded activity in 5+ days.
+//   2. An ops-flagged person whose LOGIN role can't open the ops surfaces.
+// Owner bell, deduped per person per week.
+// ---------------------------------------------------------------------------
+export async function checkOpsGoDark(): Promise<{ alerts: number }> {
+  const members = await prisma.teamMember.findMany({
+    where: { active: true, OR: [{ opsAlerts: true }, { creativeManager: true }, { role: "MANAGER" }] },
+    select: { id: true, name: true, email: true },
+  });
+  if (members.length === 0) return { alerts: 0 };
+  const emails = members.map((m) => m.email).filter((e): e is string => !!e);
+  const [users, lastEvents] = await Promise.all([
+    prisma.appUser.findMany({
+      where: { OR: [{ email: { in: emails } }, { teamMemberId: { in: members.map((m) => m.id) } }] },
+      select: { email: true, role: true, status: true, teamMemberId: true },
+    }),
+    prisma.usageEvent.groupBy({ by: ["email"], where: { email: { in: emails } }, _max: { createdAt: true } }),
+  ]);
+  const lastByEmail = new Map(lastEvents.map((e) => [e.email, e._max.createdAt]));
+  const { notifyInApp } = await import("@/lib/notify");
+  const week = new Date().toISOString().slice(0, 7) + "-w" + Math.ceil(new Date().getUTCDate() / 7);
+  let alerts = 0;
+  for (const m of members) {
+    const user = users.find((u) => u.teamMemberId === m.id || (m.email && u.email === m.email));
+    const first = m.name.split(/\s+/)[0];
+    if (user && user.status === "ACTIVE" && user.role !== "ADMIN" && user.role !== "OWNER") {
+      await notifyInApp({
+        kind: "system",
+        title: `${first} runs ops but their login can't open it`,
+        body: `${m.name}'s login role is ${user.role} — Tasks/Communications/Pipeline are closed to them. If that's not intentional, fix it on People → Logins.`,
+        href: "/users",
+        targets: [{ roles: ["OWNER"] }],
+        dedupeKey: `ops-role-${m.id}-${week}`,
+      });
+      alerts++;
+    }
+    const last = m.email ? lastByEmail.get(m.email) : null;
+    if (user && user.status === "ACTIVE" && (!last || Date.now() - last.getTime() > 5 * 864e5)) {
+      await notifyInApp({
+        kind: "system",
+        title: `${first} hasn't opened the hub in ${last ? Math.floor((Date.now() - last.getTime()) / 864e5) : "many"} days`,
+        body: `${m.name} carries ops duties and has no recorded activity since ${last ? last.toISOString().slice(0, 10) : "tracking began"}. Worth a check-in.`,
+        href: "/users?tab=activity",
+        targets: [{ roles: ["OWNER"] }],
+        dedupeKey: `ops-dark-${m.id}-${week}`,
+      });
+      alerts++;
+    }
+  }
+  return { alerts };
+}
