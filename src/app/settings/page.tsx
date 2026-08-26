@@ -1,3 +1,4 @@
+import { requirePageAccess } from "@/lib/auth/guards";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { SlidersHorizontal, Route, Package, ArrowRight } from "lucide-react";
@@ -15,6 +16,7 @@ export const dynamic = "force-dynamic";
 // premium / personal-branding video work). New rule groups get their own
 // Section here; storage is the generic AppSetting KV (src/lib/settings.ts).
 export default async function SettingsPage() {
+  await requirePageAccess("settings");
   const me = await getCurrentUser().catch(() => null);
   if (!me && authEnforced()) redirect("/login?next=/settings");
   if (me && me.role !== "OWNER" && me.role !== "ADMIN") redirect("/");

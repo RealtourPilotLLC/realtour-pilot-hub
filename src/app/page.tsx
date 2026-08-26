@@ -109,7 +109,7 @@ export default async function DashboardPage() {
             {/* 2 · THE button — the page's single primary action. Its number is
                 the exact card count /today renders (shared query logic). */}
             <Link
-              href="/today"
+              href="/tasks?tab=today"
               className="flex w-full items-center justify-between rounded-2xl bg-brand px-5 py-4 text-white shadow-lg transition-opacity hover:opacity-90"
             >
               <span className="text-base font-semibold">Start your day</span>
@@ -118,7 +118,7 @@ export default async function DashboardPage() {
               </span>
             </Link>
             {/* Guided variant: same stack, one card at a time */}
-            <Link href="/today?guided=1" className="-mt-2 block px-1 text-xs font-medium text-muted hover:text-foreground">
+            <Link href="/tasks?tab=today&guided=1" className="-mt-2 block px-1 text-xs font-medium text-muted hover:text-foreground">
               or walk me through it one at a time →
             </Link>
 
@@ -159,9 +159,9 @@ export default async function DashboardPage() {
               )}
               <CountChip label="message to-dos" count={counts.replies} tone="#38bdf8" href="/tasks" />
               <CountChip label="in QC" count={counts.qc} tone="#a78bfa" href="/tasks?tab=board" />
-              <CountChip label="running late" count={counts.late} tone="var(--danger)" href="/today" />
+              <CountChip label="running late" count={counts.late} tone="var(--danger)" href="/tasks?tab=today" />
               {counts.toAssign > 0 && (
-                <CountChip label="to assign" count={counts.toAssign} tone="var(--warning)" href="/queue" />
+                <CountChip label="to assign" count={counts.toAssign} tone="var(--warning)" href="/tasks?tab=board&who=needs-assigning" />
               )}
             </div>
 
@@ -223,7 +223,7 @@ export default async function DashboardPage() {
             old footer also repeated the chip numbers in grey; deleted — the
             same number twice on one screen is how dashboards start lying.) */}
         <div className="flex flex-wrap items-center gap-4 px-1 text-xs text-muted-2">
-          <Link href="/queue" className="hover:text-foreground">Full task board</Link>
+          <Link href="/tasks?tab=board" className="hover:text-foreground">Full task board</Link>
           <Link href="/pipeline" className="hover:text-foreground">Project tracker</Link>
         </div>
       </div>

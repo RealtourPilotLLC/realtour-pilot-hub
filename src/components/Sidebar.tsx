@@ -16,7 +16,6 @@ import {
   DollarSign,
   TrendingUp,
   Wallet,
-  Package,
   Palette,
   BookOpen,
   GraduationCap,
@@ -24,6 +23,7 @@ import {
   MessageSquare,
   MessageSquarePlus,
   MonitorPlay,
+  IdCard,
   Plug,
   LogOut,
   PenLine,
@@ -31,7 +31,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { canAccess, parsePermissions, type PageKey } from "@/lib/auth/access";
+import { canAccess, parsePermissions, ROLE_LABEL, type PageKey } from "@/lib/auth/access";
 import { NotificationsBell } from "@/components/NotificationsBell";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
@@ -84,7 +84,7 @@ const SECTIONS: NavSection[] = [
       // access (AppUser allowlist, owner-only) hub. Lives in Operations next to
       // Clients — both are "who we work with" directories, and it reads cleaner
       // here than buried in System. The old System "Users" item is gone.
-      { label: "People", href: "/users", icon: Users, key: "users" },
+      { label: "People", href: "/users", icon: IdCard, key: "users" },
     ],
   },
   {
@@ -99,6 +99,8 @@ const SECTIONS: NavSection[] = [
       // Rides the `resources` PageKey (every role has it), so no new
       // permission — the page lives at /resources/video-styles and middleware
       // already resolves that path to `resources`.
+      // Editors/admin/owner only — it is the video-editing reference, pure
+      // clutter in a field shooter's small menu (audit).
       { label: "Style Guide", href: "/resources/video-styles", icon: Clapperboard, key: "resources" },
     ],
   },
@@ -120,8 +122,9 @@ const SECTIONS: NavSection[] = [
     title: "Knowledge",
     items: [
       { label: "Resources & SOPs", href: "/resources", icon: BookOpen, key: "resources" },
-      // Service Catalog is a static price reference — knowledge, not finance.
-      { label: "Service Catalog", href: "/catalog", icon: Package, key: "catalog" },
+      // Service Catalog folded into Resources (audit: zero opens in all
+      // recorded history as a top-level door; the page itself stays reachable
+      // from the Resources page).
       { label: "Training", href: "/training", icon: GraduationCap, key: "training" },
       { label: "Ask the Hub", href: "/assistant", icon: MessageSquare, key: "assistant" },
     ],
@@ -136,7 +139,6 @@ const SECTIONS: NavSection[] = [
   },
 ];
 
-const ROLE_LABEL: Record<string, string> = { OWNER: "Owner", ADMIN: "Admin", EDITOR: "Editor", PHOTOGRAPHER: "Photographer" };
 
 export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser | null; scriptingUrl?: string | null; onNavigate?: () => void }) {
   const pathname = usePathname();
@@ -145,21 +147,29 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
   const can = (item: NavItem) => (item.key ? !user || canAccess(user, item.key) : true);
   // External link to the Script Studio app — owner/admin only, and only when it's
   // configured (SCRIPTING_BASE_URL set). Injected into the Creative section.
-  const showScripting = !!scriptingUrl && (!user || user.role === "OWNER" || user.role === "ADMIN");
+  // Owner (or an explicit per-user grant) — a blanket-ADMIN external link put a
+  // scripting product Kyle never uses in his menu (audit).
+  const showScripting =
+    !!scriptingUrl &&
+    (!user || user.role === "OWNER" || ("scripting" in parsePermissions(user?.permissions) && !!parsePermissions(user?.permissions).scripting));
   // Creatives see /resources as a pure "SOP Center" (no forms/quick links), so
   // the nav label matches what the page actually is for them.
   const creative = !!user && (user.role === "EDITOR" || user.role === "PHOTOGRAPHER");
+  // Parsed ONCE per render (was re-parsed twice per section — audit).
+  const perms = parsePermissions(user?.permissions);
   const sections = SECTIONS.map((s) => {
     let items = s.items.filter(can);
     // Match on href, not key: the Creative "Style Guide" item also carries the
     // `resources` key (it rides that permission) and must keep its own label.
     if (creative) items = items.map((i) => (i.href === "/resources" ? { ...i, label: "SOP Center" } : i));
+    // Style Guide is the video-editing reference — photographers don't need it.
+    if (user && user.role === "PHOTOGRAPHER") items = items.filter((i) => i.href !== "/resources/video-styles");
     // "My Pay" is a person's own payout view. Photographers always have it;
     // owner/admin see it ONLY with an explicit mypay:true override (James:
     // admin powers for the creative-manager role, his own pay visible, the
     // company financials blocked). The blanket role filter here was eating
     // the override (Aug 24).
-    const mypayGranted = "mypay" in parsePermissions(user?.permissions) && parsePermissions(user?.permissions).mypay;
+    const mypayGranted = "mypay" in perms && perms.mypay;
     if (user && user.role !== "PHOTOGRAPHER" && !mypayGranted) items = items.filter((i) => i.key !== "mypay");
     if (showScripting && s.title === "Creative") {
       items = [...items, { label: "Script Writing", href: scriptingUrl!, icon: PenLine, external: true }];

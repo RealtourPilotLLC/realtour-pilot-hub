@@ -1,3 +1,4 @@
+import { requirePageAccess } from "@/lib/auth/guards";
 import Link from "next/link";
 import { CalendarDays, MapPin as MapPinIcon, Camera } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -200,6 +201,7 @@ async function MapView() {
 }
 
 export default async function SchedulePage({ searchParams }: { searchParams: Promise<{ view?: string }> }) {
+  await requirePageAccess("schedule");
   const sp = await searchParams;
   const view: ScheduleView = sp.view === "map" ? "map" : "list";
   // Each view early-returns its own query (communications pattern): the List

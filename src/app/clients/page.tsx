@@ -1,3 +1,4 @@
+import { requirePageAccess } from "@/lib/auth/guards";
 import Link from "next/link";
 import { Building2, Mail, Palette, Phone, Sparkles } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -15,6 +16,7 @@ export const dynamic = "force-dynamic";
 const SEGMENT_ORDER: SegmentKey[] = ["vip", "heavy", "regular", "casual_repeat", "one_timer", "never_converted"];
 
 export default async function ClientsPage() {
+  await requirePageAccess("clients");
   const clients = await getClients();
 
   // Group clients by their segment, preserving the name sort within each group.

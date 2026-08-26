@@ -73,7 +73,9 @@ export default async function EditBriefPage({
   // editor notes read-only — their interactive desk is /review).
   const editorScope =
     viewer?.role === "EDITOR" ? (viewer.editorKey || (viewer.name ? slugForName(viewer.name) : null)) : null;
-  const feedback = await getEditorFeedback(id, isOwnerAdmin ? null : editorScope).catch(() => []);
+  // Fail CLOSED for an editor whose scope can't resolve — a null scope meant
+  // "all lanes" and leaked every editor's notes to a keyless EDITOR login (audit).
+  const feedback = await getEditorFeedback(id, isOwnerAdmin ? null : editorScope ?? "__none__").catch(() => []);
   // The client's asset shelf (logos, endcards, brand kit) — folder truth from
   // Dropbox; editors upload here too.
   const assets = await listClientAssets(project.client.id).catch(() => null);

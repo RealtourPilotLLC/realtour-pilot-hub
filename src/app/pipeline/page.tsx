@@ -1,3 +1,4 @@
+import { requirePageAccess } from "@/lib/auth/guards";
 import { PageHeader } from "@/components/PageHeader";
 import { DeliveryBoardView } from "@/components/tracker/DeliveryBoardView";
 import { deliveryBoard } from "@/lib/deliveryBoard";
@@ -20,6 +21,7 @@ export const dynamic = "force-dynamic";
 // premium reels in 3-4 days, the monthly social packages in 7-10 BUSINESS days.
 
 export default async function PipelinePage() {
+  await requirePageAccess("pipeline");
   const board = await deliveryBoard();
   const live = board.today.length + board.tomorrow.length + board.upcoming.length;
 

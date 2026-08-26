@@ -1,3 +1,4 @@
+import { requirePageAccess } from "@/lib/auth/guards";
 import { Package, Sun, Plus, Camera, Home, Building2 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
@@ -89,6 +90,7 @@ function ProductCard({ p }: { p: Product }) {
 }
 
 export default async function CatalogPage() {
+  await requirePageAccess("catalog");
   const products = await prisma.product.findMany({ orderBy: [{ title: "asc" }] });
 
   // Build the four fixed groups.

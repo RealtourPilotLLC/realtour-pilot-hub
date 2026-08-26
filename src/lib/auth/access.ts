@@ -6,7 +6,7 @@
 export type PageKey =
   | "dashboard" | "tasks" | "pipeline" | "schedule" | "map"
   | "communications" | "clients" | "team" | "upload" | "editing" | "sales"
-  | "billing" | "catalog" | "payouts" | "marketing" | "resources" | "assistant"
+  | "billing" | "catalog" | "payouts" | "resources" | "assistant"
   | "training" | "feedback" | "connections" | "users" | "shoot" | "mypay" | "review" | "trends" | "day" | "settings" | "content";
 // NOTE: "map", "billing", "payouts", "team" survive in this type only so stored
 // per-user permission JSON keeps resolving and so canAccess() can treat them as
@@ -57,7 +57,6 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   // ownerOnly — it is one person's private list, not a shared queue.
   { key: "day", label: "My Day", href: "/day", ownerOnly: true },
   { key: "catalog", label: "Service Catalog", href: "/catalog" },
-  { key: "marketing", label: "Campaigns", href: "/marketing" },
   { key: "resources", label: "Resources & SOPs", href: "/resources" },
   { key: "training", label: "Training", href: "/training" },
   { key: "assistant", label: "Ask the Hub", href: "/assistant" },
@@ -86,14 +85,19 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
   // (admins only ever saw Unpaid + the Team directory). No "map"/"billing"/
   // "payouts"/"team" here: those merged away and canAccess() maps their legacy
   // grants onto schedule/sales/users below.
+  // "shoot" (all-shoots window — Schedule owns it) and "catalog" (folded into
+  // Resources) dropped Aug 25; shooting admins (James) carry a per-user grant.
   ADMIN: [
-    "dashboard", "tasks", "review", "pipeline", "schedule", "shoot",
+    "dashboard", "tasks", "review", "pipeline", "schedule",
     "communications", "clients", "content", "users", "upload", "editing", "sales",
-    "catalog", "resources", "training", "assistant", "feedback", "trends", "settings",
+    "resources", "training", "assistant", "feedback", "trends", "settings",
   ],
   // No "dashboard": the overview page carries ops counts + owner money strips
   // that aren't an editor's business — middleware bounces them to /editing.
-  EDITOR: ["tasks", "editing", "upload", "resources", "training", "assistant"],
+  // ONE work surface (audit Aug 25): /editing is the editor's queue AND home;
+  // Tasks duplicated it and Upload Portal exposed the whole company's shoot
+  // roster for no editing purpose.
+  EDITOR: ["editing", "resources", "training", "assistant"],
   // Photographers live entirely in the field platform: their own shoots (which
   // already carry their scoped schedule, maps, route + pay), the upload checklist
   // (scoped to their jobs), SOPs, and Ask the Hub (auto-gated to the CREATIVE
@@ -143,15 +147,9 @@ export function canAccess(user: AccessUser, key: PageKey): boolean {
   //   sales    ← billing/payouts (Finance = Revenue | Unpaid | Payroll tabs)
   //   users    ← team            (People = Team | Logins tabs)
   // Honour ANY of the merged keys as an override on the destination page.
-  const LEGACY: Partial<Record<PageKey, PageKey[]>> = {
-    tasks: ["tasks", "today" as PageKey, "history" as PageKey],
-    schedule: ["schedule", "map"],
-    sales: ["sales", "billing", "payouts"],
-    users: ["users", "team"],
-  };
-  const keys = LEGACY[key] ?? [key];
-  const overridden = keys.filter((k) => k in perms);
-  if (overridden.length > 0) return overridden.some((k) => !!perms[k]);
+  // (The legacy merged-key mapping — today/history/map/billing/payouts/team —
+  // was removed Aug 25: a live scan found zero stored legacy grants.)
+  if (key in perms) return !!perms[key];
   const role = (ROLE_PAGES[user.role as Role] ?? []) as PageKey[];
   return role.includes(key);
 }

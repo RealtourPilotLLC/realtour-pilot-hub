@@ -1,3 +1,4 @@
+import { requirePageAccess } from "@/lib/auth/guards";
 import Link from "next/link";
 import { CheckCircle2, Camera, ArrowRight, Upload, FolderOpen, Scissors } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -37,6 +38,7 @@ function bucketFor(shootDate: Date | null): BucketKey {
 }
 
 export default async function UploadListPage() {
+  await requirePageAccess("upload");
   // Photographers see ONLY their own shoots here (fail-closed: unresolvable →
   // none). Owner/admin/editor see all.
   const user = await getCurrentUser();

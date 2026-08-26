@@ -1801,3 +1801,17 @@ model PendingSms {
   @@index([teamMemberId, sentAt])
   @@index([sentAt])
 }
+
+// Who changed what on the login roster — the Kyle role-flip (Aug 18) was
+// unattributable because account changes kept no history (audit Aug 25).
+model AuditLog {
+  id        String   @id @default(cuid())
+  actor     String // email of who made the change
+  action    String // role_change | permission_change | status_change | invite
+  target    String // email of the affected account
+  detail    String // human-readable before -> after
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([target])
+}

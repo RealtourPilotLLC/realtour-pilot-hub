@@ -8,6 +8,7 @@ import { etAddDays } from "@/lib/datetime";
 import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { videoTier } from "@/lib/projectStatus";
 import { isMonthlyContentJob } from "@/lib/pipeline";
+import { stripMoneySentences } from "@/lib/text";
 import { SlaCountdown } from "./SlaCountdown";
 import { SendToReviewButton } from "./EditorActions";
 
@@ -69,7 +70,7 @@ export async function EditorDay({ editorScope, editorName }: { editorScope: stri
         // The ASK itself — a revision card that just says "Revision" gives the
         // editor nothing to act on (audit). description holds the client's own
         // words; summary is the brain's read.
-        ask: t.taskType === "revision" ? (t.description?.trim() || t.summary?.trim() || null) : null,
+        ask: t.taskType === "revision" ? stripMoneySentences(t.description?.trim() || t.summary?.trim() || "") || null : null,
         rawUrl,
         briefUrl: `/edit/${p.id}`,
         frameio: p.frameioViewUrl,
@@ -85,6 +86,7 @@ export async function EditorDay({ editorScope, editorName }: { editorScope: stri
     where: {
       status: { in: ["BOOKED", "SCHEDULED"] },
       shootDate: { gte: new Date(), lte: soon },
+      deliverables: { some: { type: { in: ["VIDEO", "SOCIAL_REEL"] } } },
     },
     orderBy: { shootDate: "asc" },
     select: {
@@ -114,6 +116,29 @@ export async function EditorDay({ editorScope, editorName }: { editorScope: stri
     .filter(Boolean) as { id: string; street: string; client: string; premium: boolean; shootISO: string | null }[];
 
   const overdue = doNow.filter((d) => d.dueISO && new Date(d.dueISO).getTime() < Date.now()).length;
+
+  // The editor's notification feed + finished-work receipts — this page IS
+  // their channel now (Jordan Aug 25: dashboard notifications, no Slack/SMS).
+  const since = new Date(Date.now() - 14 * 86_400_000);
+  const [pings, finished] = await Promise.all([
+    prisma.notification.findMany({
+      where: { userKey: `editor:${editorScope}`, createdAt: { gte: since } },
+      orderBy: { createdAt: "desc" },
+      take: 10,
+      select: { id: true, title: true, href: true, createdAt: true, kind: true },
+    }),
+    prisma.smartTask.findMany({
+      where: {
+        assignedKey: editorScope,
+        taskType: { in: ["edit_video", "revision"] },
+        status: "COMPLETED",
+        completedAt: { gte: new Date(Date.now() - 7 * 86_400_000) },
+      },
+      orderBy: { completedAt: "desc" },
+      take: 8,
+      select: { id: true, title: true, completedAt: true },
+    }),
+  ]);
 
   return (
     <div className="flex h-full flex-col">
@@ -169,11 +194,6 @@ export async function EditorDay({ editorScope, editorName }: { editorScope: stri
                         <Link href={j.briefUrl} className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-2.5 py-1 text-xs font-medium hover:bg-surface-2">
                           <FileText className="size-3.5 text-muted" /> Brief
                         </Link>
-                        {j.frameio && (
-                          <a href={j.frameio} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-2.5 py-1 text-xs font-medium hover:bg-surface-2">
-                            <Clapperboard className="size-3.5 text-muted" /> Frame.io <ExternalLink className="size-3 text-muted-2" />
-                          </a>
-                        )}
                       </div>
                     </div>
                     <SendToReviewButton projectId={j.projectId} />
@@ -184,9 +204,28 @@ export async function EditorDay({ editorScope, editorName }: { editorScope: stri
           )}
         </Section>
 
+        {/* FOR YOU — raws landed, revisions, review verdicts. The bell rows
+            addressed to this editor, on the page they actually open. */}
+        {pings.length > 0 && (
+          <Section icon={FileText} title="For you" count={pings.length}>
+            <ul className="divide-y divide-border">
+              {pings.map((n) => (
+                <li key={n.id}>
+                  <Link href={n.href} className="flex items-center justify-between gap-3 py-2 hover:bg-surface-2/50">
+                    <span className="min-w-0 flex-1 truncate text-sm">{n.title}</span>
+                    <span className="shrink-0 text-[11px] text-muted-2">
+                      {n.createdAt.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </Section>
+        )}
+
         <Section icon={CalendarClock} title="Up next — on the schedule" count={upNext.length || null}>
           {upNext.length === 0 ? (
-            <p className="text-sm text-muted">No video shoots booked for you in the next 7 days.</p>
+            <p className="text-sm text-muted">No video shoots on the schedule for you yet.</p>
           ) : (
             <ul className="divide-y divide-border">
               {upNext.map((u) => (
@@ -212,6 +251,23 @@ export async function EditorDay({ editorScope, editorName }: { editorScope: stri
             </ul>
           )}
         </Section>
+
+        {/* THE DAY'S RECEIPTS — what you finished (the sweep used to close
+            these silently, indistinguishable from "disappeared" — audit). */}
+        {finished.length > 0 && (
+          <Section icon={Clapperboard} title="Recently finished" count={finished.length}>
+            <ul className="divide-y divide-border">
+              {finished.map((f) => (
+                <li key={f.id} className="flex items-center justify-between gap-3 py-2 text-sm">
+                  <span className="min-w-0 flex-1 truncate text-muted">{f.title}</span>
+                  <span className="shrink-0 text-[11px] text-success">
+                    ✓ {f.completedAt?.toLocaleDateString("en-US", { month: "short", day: "numeric" }) ?? ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </Section>
+        )}
       </div>
     </div>
   );

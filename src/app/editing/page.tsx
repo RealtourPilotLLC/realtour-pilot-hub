@@ -1,3 +1,4 @@
+import { requirePageAccess } from "@/lib/auth/guards";
 import { PageHeader } from "@/components/PageHeader";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
@@ -59,6 +60,7 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export default async function EditorQueuePage() {
+  await requirePageAccess("editing");
   const me = await getCurrentUser().catch(() => null);
   const editorScope = me?.role === "EDITOR" ? (me.editorKey || (me.name ? slugForName(me.name) : null)) : null;
 

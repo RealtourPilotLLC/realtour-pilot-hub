@@ -881,6 +881,29 @@ export async function closeObsoleteTasks(projectId: string, projectStatus: strin
         }
       }
     } catch { /* QC snapshot is best-effort */ }
+    // Receipt for the editor BEFORE the close: their card vanishing silently
+    // was indistinguishable from "disappeared" (audit) — now the bell (and the
+    // editor dashboard's For-you feed) says "accepted & delivered".
+    try {
+      const editorTasks = await prisma.smartTask.findMany({
+        where: { projectId, taskType: { in: ["edit_video", "revision"] }, status: { notIn: ["COMPLETED", "CANCELLED"] }, assignedKey: { not: null } },
+        select: { assignedKey: true, title: true },
+      });
+      if (editorTasks.length) {
+        const { notifyInApp } = await import("@/lib/notify");
+        const { TEAM_MEMBER_EDITOR_KEYS } = await import("@/lib/editors");
+        for (const t of editorTasks) {
+          if (!t.assignedKey || !(TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(t.assignedKey)) continue;
+          await notifyInApp({
+            kind: "edit_finished",
+            title: `Delivered ✓ — ${t.title.split("—").pop()?.trim() ?? t.title}`.slice(0, 90),
+            href: "/editing",
+            targets: [{ roles: ["EDITOR"], userKey: `editor:${t.assignedKey}` }],
+            dedupeKey: `editdone-${projectId}-${t.assignedKey}`,
+          });
+        }
+      }
+    } catch { /* receipts never block the close */ }
     const r = await prisma.smartTask.updateMany({
       where: {
         projectId,

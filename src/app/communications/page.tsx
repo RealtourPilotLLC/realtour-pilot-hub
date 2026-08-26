@@ -1,3 +1,4 @@
+import { requirePageAccess } from "@/lib/auth/guards";
 import Link from "next/link";
 import { Mail, MessageCircle, Phone, Reply, Send, User, Users } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -80,6 +81,7 @@ function CommsTabs({ tab, pending, emailFresh = 0, waiting = 0 }: { tab: CommsTa
 }
 
 export default async function CommunicationsPage({ searchParams }: { searchParams: Promise<{ tab?: string }> }) {
+  await requirePageAccess("communications");
   const sp = await searchParams;
   const tab: CommsTab =
     sp.tab === "outbox" || sp.tab === "email" || sp.tab === "team" || sp.tab === "replies" ? sp.tab : "inbox";

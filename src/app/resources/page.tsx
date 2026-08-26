@@ -1,3 +1,4 @@
+import { requirePageAccess } from "@/lib/auth/guards";
 import Link from "next/link";
 import {
   Clapperboard,
@@ -78,6 +79,7 @@ function groupBy<T>(items: T[], key: (t: T) => string) {
 }
 
 export default async function ResourcesPage() {
+  await requirePageAccess("resources");
   const me = await getCurrentUser().catch(() => null);
   const creative = !!me && contentTier(me.role) === "CREATIVE";
   const [allResources, allSops, orderForms] = await Promise.all([
@@ -157,6 +159,17 @@ export default async function ResourcesPage() {
         {/* Quick links */}
         <section className="space-y-5">
           <h2 className="text-sm font-semibold text-muted">Quick links</h2>
+          {/* Service Catalog lives here now — it's a static price reference and
+              its own nav door went unopened in all recorded history (audit). */}
+          {!creative && (
+            <Link
+              href="/catalog"
+              className="flex items-center justify-between rounded-2xl border border-border bg-surface px-4 py-3 text-sm font-medium hover:bg-surface-2"
+            >
+              <span>Service Catalog — every product, price, and description</span>
+              <span className="text-muted-2">→</span>
+            </Link>
+          )}
           {resourceGroups.map(([category, items]) => (
             <div key={category}>
               <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-2">

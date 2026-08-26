@@ -1,3 +1,4 @@
+import { requirePageAccess } from "@/lib/auth/guards";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { formatDistanceToNow } from "date-fns";
@@ -74,6 +75,7 @@ function CutRow({ s, decided }: { s: QueueSubmission; decided?: boolean }) {
 }
 
 export default async function ReviewRoomPage() {
+  await requirePageAccess("review");
   const me = await getCurrentUser().catch(() => null);
   const ownerDesk = me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
   if (!ownerDesk) redirect(homeFor(me?.role));

@@ -120,3 +120,20 @@ export async function requireUploadFileAccess(fileId: string): Promise<void> {
   if (!f) throw new Error("That file no longer exists.");
   return requireShootAccess(f.projectId);
 }
+
+// ---------------------------------------------------------------------------
+// One-line in-page access gate. Middleware's allow-path trusts the session
+// claim (which can be stale for days); pages are the fresh-data authority —
+// every top-level page calls this so a revoke applies on the next click
+// (audit Aug 25: /communications had NO in-page guard, so a revoked override
+// kept reading client threads until the login token expired).
+// ---------------------------------------------------------------------------
+export async function requirePageAccess(key: import("@/lib/auth/access").PageKey): Promise<void> {
+  const { redirect } = await import("next/navigation");
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const { canAccess, homeFor, PAGES } = await import("@/lib/auth/access");
+  const me = await getCurrentUser().catch(() => null);
+  const href = PAGES.find((p) => p.key === key)?.href ?? "/";
+  if (!me && authEnforced()) redirect(`/login?next=${encodeURIComponent(href)}`);
+  if (me && !canAccess(me, key)) redirect(homeFor(me.role));
+}

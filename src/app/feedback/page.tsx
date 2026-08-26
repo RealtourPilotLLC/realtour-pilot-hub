@@ -1,3 +1,4 @@
+import { requirePageAccess } from "@/lib/auth/guards";
 import { MessageSquarePlus, Inbox, CheckCircle2, Rocket, Archive } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { prisma } from "@/lib/prisma";
@@ -7,6 +8,7 @@ import { PlatformFeedbackItem, type FeedbackRow } from "@/components/feedback/Pl
 export const dynamic = "force-dynamic";
 
 export default async function FeedbackPage() {
+  await requirePageAccess("feedback");
   // Approve/Decline are OWNER decisions (the actions enforce it) — don't render
   // buttons that silently fail for ADMIN (audit).
   const { getCurrentUser } = await import("@/lib/auth/user");

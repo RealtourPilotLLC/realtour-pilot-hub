@@ -93,6 +93,14 @@ export async function inviteLinkFor(id: string): Promise<Res> {
   }
 }
 
+
+// Every roster change writes a receipt — the Kyle role-flip was unattributable
+// because nothing recorded who/when/what (audit Aug 25). Best-effort: an audit
+// write must never block the change itself.
+async function auditRosterChange(actorEmail: string, action: string, target: string, detail: string) {
+  await prisma.auditLog.create({ data: { actor: actorEmail, action, target, detail } }).catch(() => {});
+}
+
 export async function setUserRole(id: string, role: string): Promise<Res> {
   try {
     const actor = await requireOwnerActor();
@@ -124,10 +132,12 @@ export async function setUserRole(id: string, role: string): Promise<Res> {
     }
     const nextPerms = Object.keys(perms).length ? JSON.stringify(perms) : null;
 
+    const prevRole = (await prisma.appUser.findUnique({ where: { id }, select: { role: true } }))?.role;
     await prisma.appUser.update({
       where: { id },
       data: { role, permissions: nextPerms, ...(editorKey ? { editorKey } : {}) },
     });
+    await auditRosterChange(actor.email, "role_change", u.email, `${prevRole ?? "?"} → ${role}`);
     revalidatePath("/users");
     return { ok: true, message: "Role updated." };
   } catch (e) {
@@ -139,14 +149,21 @@ export async function setUserRole(id: string, role: string): Promise<Res> {
 // back to their role's default.
 export async function setUserPermission(id: string, key: string, value: boolean | null): Promise<Res> {
   try {
-    await requireOwnerActor();
+    const actor = await requireOwnerActor();
     if (!PAGES.some((p) => p.key === key && !p.ownerOnly)) return { ok: false, message: "Can't override that page." };
     const u = await prisma.appUser.findUnique({ where: { id } });
     if (!u) return { ok: false, message: "User not found." };
+    // Owners always see everything — the permission system ignores their
+    // overrides, so storing one just makes the toggles lie (audit: an owner
+    // account carried fifteen revocations that silently did nothing).
+    if (u.role === "OWNER") return { ok: false, message: "Owners always see every page — change the role first if you need to restrict this account." };
     const perms = parsePermissions(u.permissions);
-    if (value === null) delete perms[key as PageKey];
+    // A toggle equal to the role's default is a NO-OP — don't store it (audit:
+    // stored no-op entries made the Logins screen lie about what's customized).
+    if (value === null || value === roleHasByDefault(u.role, key as PageKey)) delete perms[key as PageKey];
     else perms[key as PageKey] = value;
     await prisma.appUser.update({ where: { id }, data: { permissions: Object.keys(perms).length ? JSON.stringify(perms) : null } });
+    await auditRosterChange(actor.email, "permission_change", u.email, `${key} → ${value === null ? "role default" : value ? "granted" : "revoked"}`);
     revalidatePath("/users");
     return { ok: true, message: "Access updated." };
   } catch (e) {
@@ -158,7 +175,9 @@ export async function setUserStatus(id: string, status: "ACTIVE" | "DISABLED"): 
   try {
     const actor = await requireOwnerActor();
     if (id === actor.id) return { ok: false, message: "You can't disable your own account." };
+    const target = await prisma.appUser.findUnique({ where: { id }, select: { email: true } });
     await prisma.appUser.update({ where: { id }, data: { status } });
+    await auditRosterChange(actor.email, "status_change", target?.email ?? id, status);
     revalidatePath("/users");
     return { ok: true, message: status === "DISABLED" ? "Access revoked." : "Access restored." };
   } catch (e) {

@@ -1,3 +1,4 @@
+import { requirePageAccess } from "@/lib/auth/guards";
 import { ChevronDown, GraduationCap } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Markdown } from "@/components/ui/Markdown";
@@ -46,6 +47,7 @@ function vimeoEmbed(url: string): string | null {
 // grouped Volume → Course → Lesson (both collapsible). The same content the Hub
 // searches (as concise/chunked KnowledgeItems); this is the READING view.
 export default async function TrainingPage() {
+  await requirePageAccess("training");
   const me = await getCurrentUser().catch(() => null);
   const creative = !!me && contentTier(me.role) === "CREATIVE";
   // Only the owner can mint a PUBLIC share link (it bypasses login).
