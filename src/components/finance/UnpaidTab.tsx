@@ -46,6 +46,14 @@ function BillingCard({ r }: { r: BillingRow }) {
                 {r.paymentStatus.replace(/_/g, " ").toLowerCase()}
               </span>
             )}
+            {r.possiblyPaidQbo && (
+              <span
+                className="rounded-full bg-success/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-success"
+                title="A QuickBooks payment from this customer on/after the order covers this balance — Aryeo's paid flag lags for QuickBooks-rail clients. Verify before chasing."
+              >
+                possibly paid — check QuickBooks
+              </span>
+            )}
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted">
             {r.clientName && <span className="inline-flex items-center gap-1"><Building2 className="size-3" /> {r.clientName}</span>}

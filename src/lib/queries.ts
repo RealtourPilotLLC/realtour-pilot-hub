@@ -975,6 +975,10 @@ export type BillingRow = {
   deliverables: string[]; // distinct labels of what was delivered
   openTasks: number;
   lastNudgedAt: string | null; // when we last chased this payment (AR follow-up)
+  // A QuickBooks payment from this customer, on/after the order, covering the
+  // balance — Aryeo's paid-status lags for QuickBooks-rail clients, so this
+  // "owed" row may already be settled. A hint to verify, never an auto-clear.
+  possiblyPaidQbo: boolean;
 };
 
 export async function getBillingRows(): Promise<{ rows: BillingRow[]; totalOutstanding: number }> {
@@ -1003,6 +1007,37 @@ export async function getBillingRows(): Promise<{ rows: BillingRow[]; totalOutst
     for (const r of n) if (r.lastNudgedAt) nudged.set(r.id, r.lastNudgedAt);
   } catch { /* column not migrated yet — rows just show no nudge history */ }
 
+  // CROSS-CHECK vs QuickBooks: for each unpaid order, is there a Payment/
+  // SalesReceipt from the same customer, on/after the order date, of at least
+  // the outstanding amount? One grouped pull — no per-row queries.
+  const names = [...new Set(projects.map((p) => p.client?.name).filter((n): n is string => !!n))];
+  const paidHints = new Set<string>();
+  if (names.length) {
+    try {
+      const oldestOrder = projects.reduce<Date | null>((min, p) => (p.orderedAt && (!min || p.orderedAt < min) ? p.orderedAt : min), null);
+      const qboPays = await prisma.qboTransaction.findMany({
+        where: {
+          type: { in: ["Payment", "SalesReceipt"] },
+          ...(oldestOrder ? { txnDate: { gte: oldestOrder } } : {}),
+          OR: names.map((n) => ({ customerName: { contains: n, mode: "insensitive" as const } })),
+        },
+        select: { customerName: true, amount: true, txnDate: true },
+      });
+      for (const p of projects) {
+        const nm = p.client?.name;
+        if (!nm) continue;
+        const owed = (p.balanceAmount ?? 0) / 100;
+        const hit = qboPays.some(
+          (q) =>
+            q.customerName?.toLowerCase().includes(nm.toLowerCase()) &&
+            q.amount >= owed - 0.01 &&
+            (!p.orderedAt || q.txnDate >= p.orderedAt),
+        );
+        if (hit) paidHints.add(p.id);
+      }
+    } catch { /* hint only — AR renders without it */ }
+  }
+
   const rows: BillingRow[] = projects.map((p) => ({
     id: p.id,
     title: p.title,
@@ -1019,6 +1054,7 @@ export async function getBillingRows(): Promise<{ rows: BillingRow[]; totalOutst
     deliverables: [...new Set(p.deliverables.map((d) => d.label || d.type).filter(Boolean))] as string[],
     openTasks: p.smartTasks.length,
     lastNudgedAt: nudged.get(p.id)?.toISOString() ?? null,
+    possiblyPaidQbo: paidHints.has(p.id),
   }));
   const totalOutstanding = rows.reduce((s, r) => s + r.outstanding, 0);
   return { rows, totalOutstanding };

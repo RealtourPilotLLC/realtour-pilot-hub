@@ -626,3 +626,34 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
 
   return out.sort((a, b) => b.total - a.total);
 }
+
+// ---------------------------------------------------------------------------
+// Payday pings (audit build #9): pay is the field crew's proven hook — on
+// payout morning each paid creative gets "your $X lands today". Uses the same
+// queued-SMS path as every other photographer ping (batching + quiet hours),
+// deduped once per payout day.
+// ---------------------------------------------------------------------------
+export async function paydayPings(): Promise<{ pinged: number } | { skipped: string }> {
+  const todayKey = etDayKey(new Date());
+  // The most recent CLOSED period paying today.
+  let period = payPeriodFor();
+  period = shiftPeriod(period.startKey, -1);
+  if (period.payoutKey !== todayKey) return { skipped: "not a payday" };
+  try {
+    await prisma.appSetting.create({ data: { key: `payday-ping-${period.payoutKey}`, value: "sent" } });
+  } catch {
+    return { skipped: "already pinged today" };
+  }
+  const start = new Date(`${period.startKey}T00:00:00-04:00`);
+  const end = new Date(`${period.endKey}T23:59:59-04:00`);
+  const people = await computePayroll(start, end);
+  let pinged = 0;
+  for (const person of people) {
+    if (person.total <= 0) continue;
+    const jobs = person.jobs.length;
+    const line = `💰 Payday: $${person.total.toFixed(2)} lands today (${jobs} shoot${jobs === 1 ? "" : "s"} + mileage, ${period.startKey.slice(5)}–${period.endKey.slice(5)}). Details: ${process.env.APP_URL ?? "https://realtour-pilot-hub.vercel.app"}/my-pay`;
+    await prisma.pendingSms.create({ data: { teamMemberId: person.member.id, line } }).catch(() => {});
+    pinged++;
+  }
+  return { pinged };
+}

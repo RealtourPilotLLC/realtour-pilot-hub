@@ -135,7 +135,9 @@ export async function attachMonthlyProjects(): Promise<{ attached: number }> {
       clientId: { in: clientIds },
       contentMonthId: null,
       status: { not: "CANCELLED" },
-      shootDate: { not: null },
+      // Date floor: the program launched Aug 2026 — without it the sweep
+      // re-examined ~305 unattachable historical shoots on every run (audit).
+      shootDate: { gte: new Date("2026-06-01T00:00:00Z") },
     },
     select: { id: true, clientId: true, shootDate: true, deliverables: { select: { label: true } } },
   });
@@ -214,7 +216,7 @@ export async function getProgramRoster(): Promise<ProgramRow[]> {
     where: { status: { in: ["ACTIVE", "PAUSED"] } },
     select: {
       id: true, clientId: true, package: true, status: true, statusManual: true, notes: true,
-      sessionsPerMonth: true, strategyCallRequired: true, clientSuppliesTopics: true,
+      sessionsPerMonth: true, strategyCallRequired: true, clientSuppliesTopics: true, billingType: true,
     },
   });
   // Last month that has ANY program content — the "when were they last active"
@@ -308,7 +310,7 @@ export async function getProgramRoster(): Promise<ProgramRow[]> {
       topicsSelected,
       scriptsReady,
       attention,
-      trial: e.status === "ACTIVE" && e.statusManual && /trial/i.test(e.notes ?? ""),
+      trial: e.status === "ACTIVE" && (e.billingType === "TRIAL" || (e.statusManual && /trial/i.test(e.notes ?? ""))),
       lastMonthKey: lastMonthOf.get(e.id) ?? null,
     });
   }

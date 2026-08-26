@@ -305,6 +305,7 @@ export default async function ContentClientPage({
               packageSource={enrollment.packageSource}
               strategyCallRequired={enrollment.strategyCallRequired}
               clientSuppliesTopics={enrollment.clientSuppliesTopics}
+              videosPerMonth={enrollment.videosPerMonth}
               notes={enrollment.notes}
               // Billing renders for the owner alone (open local dev counts);
               // the save action re-checks with requireOwner.

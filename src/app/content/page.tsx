@@ -8,7 +8,7 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
 import { canAccess } from "@/lib/auth/access";
 import { cn, nameColor } from "@/lib/utils";
-import { contentProgramSweep, getProgramRoster, monthLabel, etMonthKey, type ProgramRow } from "@/lib/contentProgram";
+import { getProgramRoster, monthLabel, etMonthKey, type ProgramRow } from "@/lib/contentProgram";
 import { programRevenue, billingLabel, agreementValue, type RevenueRow } from "@/lib/contentBilling";
 import { MonthJourney, VideoMeter } from "@/components/content/MonthJourney";
 import { SweepButton } from "@/components/content/SweepButton";
@@ -27,9 +27,9 @@ export default async function ContentProgramPage() {
   const me = await getCurrentUser().catch(() => null);
   if (!me && authEnforced()) redirect("/login?next=/content");
   if (me && !canAccess(me, "content")) redirect("/");
-  // Self-maintaining: opening the page runs the same sweep the nightly cron
-  // does (enrollments ↔ Aryeo flag, current months, project attachment).
-  await contentProgramSweep().catch(() => null);
+  // (The page-open full sweep was removed Aug 25 — the hourly cron owns it and
+  // the header's "Sync now" button covers on-demand; running it per view was
+  // why the tab felt slow — audit.)
   const rows = await getProgramRoster();
   const active = rows.filter((r) => r.status === "ACTIVE" && !r.trial);
   const trials = rows.filter((r) => r.status === "ACTIVE" && r.trial);

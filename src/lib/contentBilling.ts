@@ -79,31 +79,32 @@ export async function programRevenue(): Promise<RevenueRow[]> {
   const nameOf = new Map(clients.map((c) => [c.id, c.name]));
   const yearStart = new Date(Date.UTC(new Date().getUTCFullYear(), 0, 1));
 
+  // ONE pull of the year's payments, matched in memory — the per-client
+  // aggregate loop was nine sequential scans of the QuickBooks table per page
+  // open (audit).
+  const pays = await prisma.qboTransaction.findMany({
+    where: { type: { in: ["Payment", "SalesReceipt"] }, txnDate: { gte: yearStart } },
+    select: { customerName: true, amount: true },
+  });
   const rows: RevenueRow[] = [];
   for (const e of enrollments) {
     const name = cleanName(nameOf.get(e.clientId) ?? "");
     // Full-name contains — a bare first name would cross-match (Erica Walker
     // vs Erica Wright). Collected covers ALL the client's payments, not just
     // the program: that is deliberately "how much we make off this person".
+    const lower = name.toLowerCase();
     const collected = name
-      ? await prisma.qboTransaction.aggregate({
-          where: {
-            customerName: { contains: name, mode: "insensitive" },
-            type: { in: ["Payment", "SalesReceipt"] },
-            txnDate: { gte: yearStart },
-          },
-          _sum: { amount: true },
-        })
-      : null;
+      ? pays.reduce((sum, q) => (q.customerName?.toLowerCase().includes(lower) ? sum + q.amount : sum), 0)
+      : 0;
     rows.push({
       enrollmentId: e.id,
       clientName: name || "Unknown",
       status: e.status,
-      trial: e.status === "ACTIVE" && e.statusManual && /trial/i.test(e.notes ?? ""),
+      trial: e.billingType === "TRIAL" || (e.status === "ACTIVE" && e.statusManual && /trial/i.test(e.notes ?? "")),
       billingType: e.billingType,
       billingRate: e.billingRate,
       billingMonths: e.billingMonths,
-      collectedThisYear: collected?._sum.amount ?? 0,
+      collectedThisYear: collected,
     });
   }
   // Biggest relationships first.

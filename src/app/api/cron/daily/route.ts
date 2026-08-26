@@ -60,6 +60,12 @@ export async function GET(req: NextRequest) {
   // Statement-import staleness: business Venmo / Lauren's Venmo / the Tilt card
   // only move when Jordan uploads an export — 21+ days stale rings his bell
   // weekly (audit Aug 25: they went 6+ weeks dark with no warning anywhere).
+  // Payday morning: "your $X lands today" to every paid creative (queued SMS —
+  // same batching/quiet-hour rules as all photographer pings).
+  await step("paydayPings", async () => {
+    const { paydayPings } = await import("@/lib/payroll");
+    return paydayPings();
+  });
   await step("staleStatements", async () => {
     const { nagStaleStatements } = await import("@/lib/financeCategories");
     return nagStaleStatements();

@@ -1,3 +1,4 @@
+import { prisma } from "@/lib/prisma";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
@@ -46,6 +47,8 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
         !/\bsent to\b|sent\.|\breplied\b/i.test(t.body),
     )?.body ?? "";
 
+  const enrollment = await prisma.contentEnrollment.findUnique({ where: { clientId: client.id }, select: { id: true } }).catch(() => null);
+
   return (
     <div>
       <div className="border-b border-border px-4 py-4 sm:px-6">
@@ -57,6 +60,13 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
               <h1 className="text-2xl font-semibold tracking-tight">{client.name}</h1>
               <SegmentBadge segment={client.segment} title />
               <SocialBadge socialClient={client.socialClient} socialPlan={client.socialPlan} />
+              {/* Two-way navigation: the content workspace links here; this
+                  links back (audit: the trip was one-way). */}
+              {enrollment && (
+                <Link href={`/content/${enrollment.id}`} className="rounded-full bg-brand-soft px-2.5 py-0.5 text-xs font-semibold text-brand hover:bg-brand/20">
+                  Content workspace →
+                </Link>
+              )}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted">
               {client.company && (

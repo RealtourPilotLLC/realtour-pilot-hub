@@ -77,7 +77,17 @@ export function StrategyCallCard({
       <div className="mt-3 border-t border-border pt-3">
         {hasTranscript && !showPaste ? (
           transcriptProcessed ? (
-            <p className="text-xs text-success"><Check className="mr-1 inline size-3.5" />Transcript analyzed — topics and scripts are below.</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-xs text-success"><Check className="mr-1 inline size-3.5" />Transcript analyzed — topics and scripts are below.</p>
+              <button disabled={busy} onClick={() => start(async () => {
+                setNote("Re-analyzing the call…");
+                const r = await analyzeTranscript(monthId, true);
+                setNote(r.message);
+              })} className="rounded-md border border-border px-2 py-0.5 text-[10px] font-medium text-muted hover:bg-surface-2 disabled:opacity-50"
+                title="Run the extraction again (existing topics are kept; duplicates are avoided)">
+                Re-analyze
+              </button>
+            </div>
           ) : (
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-xs text-success"><Check className="mr-1 inline size-3.5" />Transcript on file.</p>
@@ -395,10 +405,11 @@ export function NotesCard({
 // Enrollment settings — package override + workflow flags (spec §3).
 // ---------------------------------------------------------------------------
 export function EnrollmentSettingsCard({
-  enrollmentId, pkg, status, packageSource, strategyCallRequired, clientSuppliesTopics, notes, billing,
+  enrollmentId, pkg, status, packageSource, strategyCallRequired, clientSuppliesTopics, notes, billing, videosPerMonth = 4,
 }: {
   enrollmentId: string; pkg: string; status: string; packageSource: string;
   strategyCallRequired: boolean; clientSuppliesTopics: boolean; notes: string | null;
+  videosPerMonth?: number;
   // Owner-only: the page passes this ONLY for the owner; the action re-checks.
   billing?: { type: string | null; rate: number | null; months: number | null };
 }) {
@@ -464,6 +475,22 @@ export function EnrollmentSettingsCard({
           <input type="checkbox" checked={state.clientSuppliesTopics} onChange={(e) => save({ clientSuppliesTopics: e.target.checked })} className="accent-[var(--brand)]" />
           Client supplies their own topics
         </label>
+        <div className="flex items-center gap-2">
+          <label className="w-28 text-xs text-muted">Videos / month</label>
+          <input
+            defaultValue={videosPerMonth}
+            onBlur={(e) => {
+              const n = Number(e.target.value);
+              if (Number.isInteger(n) && n >= 1 && n <= 31 && n !== videosPerMonth) {
+                start(async () => { const r = await saveEnrollmentSettings(enrollmentId, { videosPerMonth: n }); setNote(r.message); });
+              }
+            }}
+            onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+            inputMode="numeric"
+            className="w-16 rounded-lg border border-border bg-surface-2 px-2 py-1 text-right text-xs tabular-nums outline-none focus:border-brand"
+            title="Custom deals (the 5-video clients) set their real number here — it survives package changes"
+          />
+        </div>
 
         {/* Billing terms — rendered only for the owner (the action re-checks). */}
         {billing !== undefined && (
