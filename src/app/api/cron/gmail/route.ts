@@ -32,7 +32,14 @@ export async function GET(req: NextRequest) {
   const { step, out, finish } = cronBudget(100_000, Date.now(), "gmail"); // ~20s headroom under maxDuration
 
   await step("gmail", () => syncGmail());
-  await step("openphoneClosed", () => sweepRepliedOpenPhoneTasks());
+  // Backstop only — the realtime webhook already closes answered threads.
+  // Run it on the top-of-hour tick instead of all 12 (audit: the 5-minute poll
+  // hit the OpenPhone API per open reply task per line, duplicating the webhook).
+  await step("openphoneClosed", async () => {
+    const min = Number(new Intl.DateTimeFormat("en-US", { minute: "numeric", timeZone: "UTC" }).format(new Date()));
+    if (min >= 5) return { skipped: "hourly backstop — top-of-hour tick only" };
+    return sweepRepliedOpenPhoneTasks();
+  });
   // Keep Slack comms memory near-live (channels + Jordan's DMs) every few
   // minutes via the user token. Small window; logComm dedups the overlap.
   await step("slack", () => syncSlackHistory({ sinceHours: 2 }));

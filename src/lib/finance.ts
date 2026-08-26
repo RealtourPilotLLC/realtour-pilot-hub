@@ -266,10 +266,8 @@ export async function getCashPosition(): Promise<CashPosition> {
 
 // Payroll-as-%-of-revenue trend — the "am I overpaying?" answer, a few months back.
 export async function getPayrollTrend(months = 4): Promise<{ key: string; label: string; revenue: number; allPayroll: number; pct: number | null }[]> {
-  const out: { key: string; label: string; revenue: number; allPayroll: number; pct: number | null }[] = [];
-  for (let b = months - 1; b >= 0; b--) {
-    const p = await getMonthlyPnl(b);
-    out.push({ key: p.key, label: p.label, revenue: p.revenue, allPayroll: p.allPayroll, pct: p.payrollPctOfRevenue });
-  }
-  return out;
+  // The four month computations are independent — run them together (was a
+  // serial loop on the Overview render path — audit).
+  const pnls = await Promise.all(Array.from({ length: months }, (_, i) => getMonthlyPnl(months - 1 - i)));
+  return pnls.map((p) => ({ key: p.key, label: p.label, revenue: p.revenue, allPayroll: p.allPayroll, pct: p.payrollPctOfRevenue }));
 }

@@ -369,6 +369,16 @@ export async function categoriseBooks(opts: { sinceKey?: string } = {}): Promise
     byCategory[v.category].n++;
     byCategory[v.category].amount += r.amount;
     if (v.needsReview) flagged++;
+    // Skip the write when nothing changed — this loop was ~1,300 UPDATE
+    // round-trips against production every night for mostly identical verdicts
+    // (audit).
+    const same =
+      r.category === v.category &&
+      r.needsReview === v.needsReview &&
+      (r.reviewNote ?? null) === (v.reviewNote ?? null) &&
+      (r.personal ?? false) === (v.personal ?? false) &&
+      (r.duplicateOf ?? null) === (v.duplicateOf ?? null);
+    if (same) continue;
     await prisma.qboTransaction.update({
       where: { id: r.id },
       data: {
