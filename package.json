@@ -12,7 +12,7 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:seed:clean": "tsx prisma/seed-clean.ts",
     "db:studio": "prisma studio",
-    "db:reset": "prisma db push --force-reset && npm run db:seed"
+    "db:reset": "tsx scripts/guard-prod-db.ts && prisma db push --force-reset && npm run db:seed"
   },
   "engines": {
     "node": ">=20"

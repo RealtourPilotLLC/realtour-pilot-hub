@@ -1,3 +1,22 @@
+// ---------------------------------------------------------------------------
+// SAFETY GUARD (audit Aug 25): this script DELETES data, and the local .env
+// points DATABASE_URL at the LIVE Neon production database shared with the
+// deployed app. Refuse to run against it. tsx does NOT autoload .env (Prisma
+// does), so read the file directly rather than trusting process.env alone.
+// ---------------------------------------------------------------------------
+import { readFileSync } from "fs";
+{
+  let dbUrl = process.env.DATABASE_URL ?? "";
+  if (!dbUrl) {
+    try { dbUrl = /^DATABASE_URL\s*=\s*"?([^"\n]+)/m.exec(readFileSync(".env", "utf8"))?.[1] ?? ""; } catch { /* no .env */ }
+  }
+  if (/neon\.tech|vercel|amazonaws/i.test(dbUrl) && process.env.I_UNDERSTAND_THIS_WIPES_PROD !== "yes") {
+    console.error("REFUSING TO RUN: DATABASE_URL points at a hosted (production) database — this script would DELETE live data.");
+    console.error("If you truly mean it, run with I_UNDERSTAND_THIS_WIPES_PROD=yes.");
+    process.exit(1);
+  }
+}
+
 import {
   PrismaClient,
   Role,

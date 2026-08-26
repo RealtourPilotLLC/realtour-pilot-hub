@@ -229,7 +229,11 @@ export async function ensureReviewAction(baseUrl?: string): Promise<{ created: b
 // working until it's (re)registered with a token.
 export async function frameioRequestAuthorized(token: string | null): Promise<boolean> {
   const expected = await getSecret("frameio_webhook");
-  if (!expected) return true;
+  // No token registered = the integration is DORMANT (retired Aug 14, the
+  // action was never re-registered) — reject, don't fail open: this receiver
+  // flips job statuses and mints tasks, and the audit found it accepting
+  // unauthenticated internet POSTs. Re-arming Frame.io = register the token.
+  if (!expected) return false;
   const got = token ?? "";
   if (got.length !== expected.length) return false;
   return crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expected));
