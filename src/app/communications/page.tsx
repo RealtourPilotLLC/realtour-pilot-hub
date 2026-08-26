@@ -9,6 +9,7 @@ import { getSecret } from "@/lib/integrations/connections";
 import { OpenPhone, phoneKey, recentOpenPhoneConversations, type OpConversation } from "@/lib/integrations/openphone";
 import { getClientTextTasks } from "@/lib/queries";
 import { ClientTextsPanel } from "@/components/texts/ClientTextsPanel";
+import { SendAllTexts } from "@/components/tasks/SendAllTexts";
 import { getEmailThreads } from "@/components/comms/emailThreads";
 import { EmailThreadList } from "@/components/comms/EmailThreadList";
 import { TeamMessagesPanel } from "@/components/comms/TeamMessagesPanel";
@@ -133,6 +134,10 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
         />
         <div className="p-4 sm:p-6">
           <CommsTabs tab="outbox" pending={pendingTexts} waiting={waiting} />
+          {/* The batch send-all lives HERE now — the Outbox is the one home for
+              drafted texts (it was also a panel on /tasks + a rollup card, three
+              surfaces for the same rows — audit). */}
+          <div className="mb-3"><SendAllTexts count={pendingTexts} /></div>
           <ClientTextsPanel />
         </div>
       </div>

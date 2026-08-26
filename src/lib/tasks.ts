@@ -1504,6 +1504,32 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
   // verifiably live (Aryeo/final folder) → nothing to mint; clear stale nudges.
   const submitted = await prisma.reviewSubmission.count({ where: { projectId } });
   const videoPresent = (ev.present ?? []).includes("Video") || (dropbox?.finalVideo ?? 0) > 0;
+  // AUTO-SUPPLY THE REVIEW ROOM (Jordan Aug 25: keep the room, make it real):
+  // a finished cut landing in the Dropbox Final folder becomes a PENDING
+  // ReviewSubmission on its own — the room only ever filled if an editor
+  // pressed a button that was pressed once in its lifetime (audit).
+  if (submitted === 0 && (dropbox?.finalVideo ?? 0) > 0 && p.status !== "DELIVERED") {
+    try {
+      await prisma.reviewSubmission.create({
+        data: {
+          projectId,
+          kind: "video",
+          // assetPath stays null — the review workspace already resolves the
+          // job's Final folder itself; a wrong hand-built path is worse.
+          submittedByName: "Auto — Final folder",
+          note: "Cut detected in the Dropbox Final folder — auto-entered for review.",
+        },
+      });
+      const { notifyInApp } = await import("@/lib/notify");
+      await notifyInApp({
+        kind: "cut_ready",
+        title: `Cut ready to review — ${(p.title || "job").split(",")[0].trim()}`,
+        href: `/review/${projectId}`,
+        targets: [{ roles: ["OWNER", "ADMIN"] }],
+        dedupeKey: `autocut-${projectId}`,
+      });
+    } catch { /* auto-supply is best-effort — the sweep must never break */ }
+  }
   if (submitted > 0 || videoPresent) {
     await clearNudge();
     return;

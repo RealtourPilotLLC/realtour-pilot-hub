@@ -15,9 +15,25 @@ export const dynamic = "force-dynamic";
 // High-value → low-value, so the most important customers sit at the top.
 const SEGMENT_ORDER: SegmentKey[] = ["vip", "heavy", "regular", "casual_repeat", "one_timer", "never_converted"];
 
-export default async function ClientsPage() {
+export default async function ClientsPage({ searchParams }: { searchParams: Promise<{ q?: string; all?: string }> }) {
   await requirePageAccess("clients");
-  const clients = await getClients();
+  const { q = "", all } = await searchParams;
+  const allClients = await getClients();
+
+  // SEARCH + a sane default view (audit: 346 full cards including 131 never-
+  // converted leads and folded assistants, no search box — finding one client
+  // meant scrolling a wall, which is why the page got 8 visits a month).
+  const needle = q.trim().toLowerCase();
+  const searched = needle
+    ? allClients.filter((c) =>
+        [c.name, c.company, c.email, c.phone].some((f) => f?.toLowerCase().includes(needle)),
+      )
+    : allClients;
+  // Default: real customers (has orders, not a folded assistant). ?all=1 or a
+  // search shows everyone.
+  const showAll = all === "1" || !!needle;
+  const clients = showAll ? searched : searched.filter((c) => c._count.projects > 0 && !c.parentClientId);
+  const hiddenCount = searched.length - clients.length;
 
   // Group clients by their segment, preserving the name sort within each group.
   const groups = SEGMENT_ORDER.map((key) => ({
@@ -30,7 +46,7 @@ export default async function ClientsPage() {
     <div>
       <PageHeader
         title="Clients"
-        subtitle={`${clients.length} clients · grouped by segment`}
+        subtitle={`${clients.length} shown of ${allClients.length} · grouped by segment`}
         // Client Assets lives as a TAB here (Jordan: "client assets should be
         // in the clients tab"), not its own nav item.
         actions={
@@ -43,6 +59,32 @@ export default async function ClientsPage() {
         }
       />
       <div className="space-y-8 p-4 sm:p-6">
+        {/* Search + view toggle — plain GET form, no client JS needed. */}
+        <form className="flex flex-wrap items-center gap-2" action="/clients">
+          <input
+            type="search"
+            name="q"
+            defaultValue={q}
+            placeholder="Search name, company, email, phone…"
+            className="w-full max-w-sm rounded-xl border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand"
+          />
+          <button className="rounded-xl bg-brand px-3.5 py-2 text-sm font-semibold text-white">Search</button>
+          {hiddenCount > 0 && (
+            <Link href="/clients?all=1" className="text-xs font-medium text-muted hover:text-foreground hover:underline">
+              Show {hiddenCount} more (leads &amp; assistants)
+            </Link>
+          )}
+          {(showAll || needle) && (
+            <Link href="/clients" className="text-xs font-medium text-muted hover:text-foreground hover:underline">
+              Clear
+            </Link>
+          )}
+        </form>
+        {clients.length === 0 && (
+          <p className="rounded-2xl border border-dashed border-border bg-surface px-4 py-8 text-center text-sm text-muted">
+            No one matches {needle ? `“${q.trim()}”` : "this view"}.
+          </p>
+        )}
         {groups.map((g) => (
           <section key={g.key}>
             <div className="mb-3 flex items-center gap-2">

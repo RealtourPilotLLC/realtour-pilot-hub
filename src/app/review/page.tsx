@@ -100,6 +100,14 @@ export default async function ReviewRoomPage() {
       />
 
       <div className="space-y-6 p-4 sm:p-6">
+        {/* ————— VIDEO LANE ————— */}
+        <div className="flex items-center gap-2 px-1 pt-1">
+          <span className="flex size-6 items-center justify-center rounded-lg" style={{ background: "#a78bfa22", color: "#a78bfa" }}>
+            <PlayCircle className="size-3.5" />
+          </span>
+          <h2 className="text-sm font-semibold">Video</h2>
+          <span className="text-[11px] text-muted-2">· cuts land here on their own when the editor drops a Final file</span>
+        </div>
         <Section icon={PlayCircle} title="Cuts to review" count={q.pending.length || null}>
           {q.pending.length === 0 ? (
             <p className="text-sm text-muted">
@@ -117,6 +125,14 @@ export default async function ReviewRoomPage() {
           </Section>
         )}
 
+        {/* ————— PHOTO LANE ————— */}
+        <div className="flex items-center gap-2 px-1 pt-3">
+          <span className="flex size-6 items-center justify-center rounded-lg" style={{ background: "#34d39922", color: "#34d399" }}>
+            <ClipboardCheck className="size-3.5" />
+          </span>
+          <h2 className="text-sm font-semibold">Photos</h2>
+          <span className="text-[11px] text-muted-2">· the same QC cards as Tasks — deep-link into the gallery to pin issues</span>
+        </div>
         {q.photoQc.length > 0 && (
           <Section icon={ClipboardCheck} title="Photo sets in QC" count={q.photoQc.length}>
             <ul className="divide-y divide-border">

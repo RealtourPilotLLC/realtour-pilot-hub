@@ -157,6 +157,45 @@ export const HUB_TOOLS: HubTool[] = [
     },
   },
   {
+    name: "complete_task",
+    description: "Mark a hub task done (or reopen it). Use when the user says a task is handled ('mark the QC on 316 Market done', 'I called Gary back — close it'). Find the task by words from its title; confirm what you closed.",
+    input_schema: {
+      type: "object",
+      properties: {
+        task: { type: "string", description: "Words from the task title (e.g. '316 Market QC', 'call Gary')." },
+        reopen: { type: "boolean", description: "True to REOPEN a completed task instead." },
+      },
+      required: ["task"],
+    },
+  },
+  {
+    name: "assign_task",
+    description: "Assign a hub task to a person (or take it yourself). Use for 'give the Ruth Ridge edit to John', 'I'll take the Slack to-dos about Marcee', 'assign the unowned confirmation texts to Kyle'. Finds the task by title words; person by first name.",
+    input_schema: {
+      type: "object",
+      properties: {
+        task: { type: "string", description: "Words from the task title." },
+        person: { type: "string", description: "First name of who owns it (Kyle, Jordan, James, John, Kim…) — or 'me'." },
+      },
+      required: ["task", "person"],
+    },
+  },
+  {
+    name: "list_reply_queue",
+    description: "The unanswered client texts, each with its pre-drafted reply. Use for 'who's waiting on a reply?', 'show me the reply queue', 'what texts need answers?'. Read-only — send from the Communications Replies tab (or say which one to answer and draft it).",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "send_drafted_texts",
+    description: "The day's drafted confirmation/delivery texts (the comms Outbox). WITHOUT confirm:true it only LISTS them for review. When the user has seen the list and explicitly says to send, call again with confirm:true — that actually texts clients, so never set confirm on your own initiative.",
+    input_schema: {
+      type: "object",
+      properties: {
+        confirm: { type: "boolean", description: "True ONLY after the user has reviewed the list in this conversation and explicitly said to send." },
+      },
+    },
+  },
+  {
     name: "remember_fact",
     description: "Save a lasting fact, rule, price, policy, preference, or correction to the hub's long-term memory so it is remembered and used in future answers. Use this WHENEVER the user tells you to remember something, states or changes a price/fee/policy/rule, shares a durable preference or decision, or corrects something you got wrong ('remember that...', 'from now on...', 'our rush fee is now $X', 'actually it's...', 'going forward we...', 'no, that's wrong, it's...'). Do NOT use it for one-off action items (use create_task) or for things already in the live data. Set min_role carefully: OWNER for anything about money, margins, pay, costs, strategy, or personnel; ADMIN for operations, client handling, fees, and scheduling; CREATIVE only for pure shoot/editing craft. When the user is changing or fixing a known value, set correction=true so the old version is retired. After saving, confirm briefly what you stored.",
     input_schema: {
@@ -645,6 +684,116 @@ export async function execHubTool(
         message: noReply ? "" : clean,
         note: noReply ? "Nothing seems to need a reply right now." : undefined,
       };
+    }
+
+    case "complete_task": {
+      if (ctx.impersonating) return { error: "You're previewing another user — exit View As first." };
+      if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.CREATIVE) < ROLE_RANK.ADMIN) {
+        return { error: "Completing tasks is available to admin and owner roles only." };
+      }
+      const q = String(input.task ?? "").trim();
+      if (!q) return { error: "Which task?" };
+      const reopen = input.reopen === true;
+      const matches = await prisma.smartTask.findMany({
+        where: {
+          status: reopen ? "COMPLETED" : { notIn: ["COMPLETED", "CANCELLED"] },
+          OR: q.split(/\s+/).filter((w) => w.length > 2).map((w) => ({ title: { contains: w, mode: "insensitive" as const } })),
+        },
+        orderBy: { createdAt: "desc" },
+        take: 5,
+        select: { id: true, title: true, taskType: true, status: true },
+      });
+      const scored = matches
+        .map((m) => ({ m, hits: q.toLowerCase().split(/\s+/).filter((w) => w.length > 2 && m.title.toLowerCase().includes(w)).length }))
+        .sort((a, b) => b.hits - a.hits);
+      const best = scored[0];
+      if (!best || best.hits === 0) return { error: `No ${reopen ? "completed" : "open"} task matches “${q}”.` };
+      if (scored.length > 1 && scored[1].hits === best.hits) {
+        return { ambiguous: scored.slice(0, 3).map((x) => x.m.title), note: "Say which one you mean." };
+      }
+      await prisma.smartTask.update({
+        where: { id: best.m.id },
+        data: reopen ? { status: "OPEN", completedAt: null } : { status: "COMPLETED", completedAt: new Date() },
+      });
+      return { done: true, task: best.m.title, nowStatus: reopen ? "OPEN" : "COMPLETED" };
+    }
+
+    case "assign_task": {
+      if (ctx.impersonating) return { error: "You're previewing another user — exit View As first." };
+      if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.CREATIVE) < ROLE_RANK.ADMIN) {
+        return { error: "Assigning tasks is available to admin and owner roles only." };
+      }
+      const q = String(input.task ?? "").trim();
+      let who = String(input.person ?? "").trim().toLowerCase();
+      if (!q || !who) return { error: "Which task, and to whom?" };
+      const { listAssignees, slugForName } = await import("@/lib/assignees");
+      const roster = await listAssignees();
+      if (who === "me" || who === "myself") who = ctx.who ? slugForName(ctx.who) : who;
+      const target = roster.find((a) => a.key === slugForName(who) || a.name.toLowerCase().startsWith(who));
+      if (!target) return { error: `I don't know “${input.person}” — people here: ${roster.map((a) => a.name).join(", ")}.` };
+      const matches = await prisma.smartTask.findMany({
+        where: {
+          status: { notIn: ["COMPLETED", "CANCELLED"] },
+          OR: q.split(/\s+/).filter((w) => w.length > 2).map((w) => ({ title: { contains: w, mode: "insensitive" as const } })),
+        },
+        orderBy: { createdAt: "desc" },
+        take: 5,
+        select: { id: true, title: true },
+      });
+      const scored2 = matches
+        .map((m) => ({ m, hits: q.toLowerCase().split(/\s+/).filter((w) => w.length > 2 && m.title.toLowerCase().includes(w)).length }))
+        .sort((a, b) => b.hits - a.hits);
+      const best2 = scored2[0];
+      if (!best2 || best2.hits === 0) return { error: `No open task matches “${q}”.` };
+      if (scored2.length > 1 && scored2[1].hits === best2.hits) {
+        return { ambiguous: scored2.slice(0, 3).map((x) => x.m.title), note: "Say which one you mean." };
+      }
+      // Human assignment through chat IS manual — the engines must respect it.
+      await prisma.smartTask.update({ where: { id: best2.m.id }, data: { assignedKey: target.key, assignedManually: true } });
+      return { done: true, task: best2.m.title, assignedTo: target.name };
+    }
+
+    case "list_reply_queue": {
+      if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.CREATIVE) < ROLE_RANK.ADMIN) {
+        return { error: "The reply queue is admin/owner only." };
+      }
+      const { replyQueue } = await import("@/lib/replyQueue");
+      const rq = await replyQueue();
+      return {
+        waiting: rq.cards.slice(0, 12).map((c) => ({
+          client: c.displayName,
+          theirMessage: c.lastInbound.slice(0, 200),
+          canTextBack: !!c.phone,
+        })),
+        count: rq.cards.length,
+        note: "Send from Communications → Replies (each has a pre-drafted answer), or tell me which one to draft here.",
+      };
+    }
+
+    case "send_drafted_texts": {
+      if (ctx.impersonating) return { error: "You're previewing another user — exit View As first." };
+      if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.CREATIVE) < ROLE_RANK.ADMIN) {
+        return { error: "The Outbox is admin/owner only." };
+      }
+      const { listDraftedTexts, sendDraftText } = await import("@/app/tasks/sendAllActions");
+      const listed = await listDraftedTexts();
+      if (!listed.ok || !listed.rows?.length) return { texts: [], note: "The Outbox is empty — nothing drafted to send." };
+      if (input.confirm !== true) {
+        // REVIEW step — listing only. The human must read these and explicitly
+        // say “send” before the confirm call. The hub never texts on its own.
+        return {
+          review: listed.rows.map((r) => ({ to: r.clientName, kind: r.taskType, street: r.street, text: r.body, blocked: r.blocked })),
+          count: listed.rows.length,
+          note: "Nothing sent. Show the user this list; only when they explicitly say to send, call again with confirm:true.",
+        };
+      }
+      const results: { to: string; ok: boolean; message: string }[] = [];
+      for (const r of listed.rows) {
+        if (r.blocked) { results.push({ to: r.clientName, ok: false, message: r.blocked }); continue; }
+        const res = await sendDraftText(r.taskId, r.body).catch((e) => ({ ok: false, message: (e as Error).message }));
+        results.push({ to: r.clientName, ok: res.ok, message: res.message });
+      }
+      return { sent: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok), note: "Each send used the same reviewed draft the Outbox shows." };
     }
 
     case "create_task": {

@@ -42,6 +42,10 @@ export async function GET(req: NextRequest) {
     const { flushPendingSms } = await import("@/lib/notify");
     return flushPendingSms();
   });
+  await step("kyleMorning", async () => {
+    const { kyleMorningDigest } = await import("@/lib/notify");
+    return kyleMorningDigest();
+  });
   await step("kyleDigest", async () => {
     const { kyleAfternoonDigest } = await import("@/lib/notify");
     return kyleAfternoonDigest();

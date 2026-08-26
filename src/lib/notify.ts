@@ -404,6 +404,58 @@ export async function alertWebhookRejections(provider: string): Promise<void> {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Kyle's MORNING digest — the day's list at the start of the day (audit: the
+// function literally named getMorningBrief was only ever delivered at 4 PM).
+// Same shape and dedupe pattern as the 4 o'clock check; 8–10am ET window.
+// ---------------------------------------------------------------------------
+export async function kyleMorningDigest(): Promise<{ sent: boolean; reason?: string }> {
+  const etHour = Number(
+    new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }).format(new Date()),
+  );
+  if (etHour < 8 || etHour >= 10) return { sent: false, reason: "outside 8-10am ET" };
+  const day = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  try {
+    await prisma.appSetting.create({ data: { key: `kyle-morning-${day}`, value: "sent" } });
+  } catch {
+    return { sent: false, reason: "already sent today" };
+  }
+  try {
+    const kyle = await prisma.teamMember.findFirst({
+      where: { name: { contains: "Kyle", mode: "insensitive" }, active: true },
+      select: { slackId: true },
+    });
+    const slackId = kyle?.slackId ?? KYLE_SLACK_ID;
+    const { slackDmUser } = await import("@/lib/integrations/slack");
+    const { getMorningBrief, getOverdueTasks, getClientTextTasks } = await import("@/lib/queries");
+    const [brief, overdue, texts] = await Promise.all([
+      getMorningBrief().catch(() => []),
+      getOverdueTasks().catch(() => []),
+      getClientTextTasks().catch(() => []),
+    ]);
+    const seen = new Set(overdue.map((t) => t.id));
+    const openToday = brief.filter((t) => !seen.has(t.id));
+    if (overdue.length + openToday.length + texts.length === 0) {
+      await slackDmUser(slackId, "☀️ Morning — nothing on the board yet. Enjoy the quiet start.");
+      return { sent: true };
+    }
+    const lines: string[] = ["☀️ *Morning check* — today's list:"];
+    for (const t of overdue.slice(0, 8)) lines.push(`• 🔴 ${t.title}`);
+    if (overdue.length > 8) lines.push(`  …and ${overdue.length - 8} more overdue`);
+    for (const t of openToday.slice(0, 10)) lines.push(`• ${t.title}`);
+    if (openToday.length > 10) lines.push(`  …and ${openToday.length - 10} more`);
+    if (texts.length > 0) lines.push(`✉️ ${texts.length} client text${texts.length === 1 ? "" : "s"} drafted & ready in the Outbox`);
+    lines.push(`${appBase()}/tasks?tab=today&guided=1`);
+    await slackDmUser(slackId, lines.join("\n"));
+    return { sent: true };
+  } catch (e) {
+    console.warn("kyleMorningDigest failed", e);
+    await prisma.appSetting.delete({ where: { key: `kyle-morning-${day}` } }).catch(() => {});
+    return { sent: false, reason: "failed" };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Kyle's 4 PM Slack digest — open to-dos and things to check, once per ET day
 // in the 4-6pm window (the 5-minute cron calls this; the AppSetting key makes
