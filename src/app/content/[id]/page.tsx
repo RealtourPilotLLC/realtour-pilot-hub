@@ -15,6 +15,7 @@ import { etMonthKey, monthLabel } from "@/lib/contentProgram";
 import { stageMeta } from "@/lib/pipeline";
 import { Badge } from "@/components/ui/Badge";
 import { MonthJourney } from "@/components/content/MonthJourney";
+import { PortalLinkButton } from "@/components/content/PortalLinkButton";
 import {
   EnrollmentSettingsCard, StrategyCallCard, StrategyCard, TopicBank, ScriptBackfillCard, ProfileSections, NotesCard, ScriptReview, TopicSeedButton,
 } from "@/components/content/Workspace";
@@ -132,7 +133,12 @@ export default async function ContentClientPage({
         eyebrow={`${enrollment.package} · ${enrollment.videosPerMonth} videos / ${enrollment.sessionsPerMonth} session${enrollment.sessionsPerMonth === 1 ? "" : "s"} monthly`}
         title={client.name}
         subtitle={[client.company, client.email].filter(Boolean).join(" · ")}
-        actions={<Link href={`/clients/${client.id}`} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"><User className="mr-1 inline size-3.5" />Client page</Link>}
+        actions={
+          <div className="flex items-center gap-2">
+            {(me ? me.role === "OWNER" : !authEnforced()) && <PortalLinkButton enrollmentId={id} />}
+            <Link href={`/clients/${client.id}`} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"><User className="mr-1 inline size-3.5" />Client page</Link>
+          </div>
+        }
       />
 
       <div className="mx-auto max-w-6xl space-y-5 p-4 pb-16 sm:p-6">

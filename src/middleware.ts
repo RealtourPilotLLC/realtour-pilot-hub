@@ -32,7 +32,8 @@ function pathKey(pathname: string): PageKey | null {
 // both run in the owner's own browser, so the session cookie carries them through
 // the gate exactly like Frame.io. Opening the prefix would bypass middleware auth
 // on /connect, whose own guard only fires when AUTH_ENFORCE is explicitly "true".
-const PUBLIC_PREFIXES = ["/login", "/invite", "/learn", "/privacy", "/terms", "/api/auth", "/api/google", "/api/webhooks", "/api/cron", "/api/health", "/api/activity"];
+// /portal/<token> = the client-facing content page (unguessable token is the gate).
+const PUBLIC_PREFIXES = ["/login", "/invite", "/learn", "/portal", "/privacy", "/terms", "/api/auth", "/api/google", "/api/webhooks", "/api/cron", "/api/health", "/api/activity"];
 
 function isPublic(pathname: string): boolean {
   if (PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"))) return true;

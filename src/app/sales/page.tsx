@@ -11,6 +11,7 @@ import { JobsTab } from "@/components/finance/JobsTab";
 import { SpendingTab } from "@/components/finance/SpendingTab";
 import { AdvisorTab } from "@/components/finance/AdvisorTab";
 import { BudgetTab } from "@/components/finance/BudgetTab";
+import { BonusTab } from "@/components/finance/BonusTab";
 import type { FinanceTab } from "@/components/finance/FinanceTabs";
 
 export const dynamic = "force-dynamic";
@@ -33,7 +34,7 @@ export const maxDuration = 60;
 export default async function FinancePage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string; start?: string }>;
+  searchParams: Promise<{ tab?: string; start?: string; back?: string }>;
 }) {
   // Same guard shape as the Tasks hub: getCurrentUser() is null sessionless
   // (local dev = owner view, gate off) and never redirects on its own; we only
@@ -60,7 +61,7 @@ export default async function FinancePage({
   // contradicted the processor-truth engine. Old ?tab= deep links fall through
   // to Overview below.
   const show: FinanceTab[] = isOwner
-    ? ["overview", "advisor", "jobs", "people", "personal", "budget", "spending", "unpaid", "payroll"]
+    ? ["overview", "advisor", "jobs", "people", "personal", "budget", "spending", "unpaid", "payroll", "bonus"]
     : ["unpaid"];
   // Where non-owners land: their only tab, Unpaid. Owners land on Overview (the
   // command center — true P&L, cash, where the money's actually going).
@@ -76,6 +77,7 @@ export default async function FinancePage({
   else if (requested === "spending") tab = "spending";
   else if (requested === "advisor") tab = "advisor";
   else if (requested === "budget") tab = "budget";
+  else if (requested === "bonus") tab = "bonus";
   else tab = fallback; // no/unknown ?tab= → role default
 
   // Owner-only tabs: bounce a non-owner who asked for them to their default tab
@@ -92,5 +94,6 @@ export default async function FinancePage({
   if (tab === "spending") return <SpendingTab show={show} />;
   if (tab === "advisor") return <AdvisorTab show={show} />;
   if (tab === "budget") return <BudgetTab show={show} />;
+  if (tab === "bonus") return <BonusTab show={show} back={Number(sp.start ?? 0) || Number((sp as { back?: string }).back ?? 0) || 0} />;
   return <OverviewTab show={show} />;
 }

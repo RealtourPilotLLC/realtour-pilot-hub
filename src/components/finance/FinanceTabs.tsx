@@ -1,10 +1,10 @@
 import Link from "next/link";
-import { Receipt, Banknote, LayoutDashboard, User, Users, Briefcase, PieChart, Sparkles, PiggyBank } from "lucide-react";
+import { Receipt, Banknote, LayoutDashboard, User, Users, Briefcase, PieChart, Sparkles, PiggyBank, Trophy } from "lucide-react";
 
 // Tab bar for the merged Finance page, styled to match CommsTabs: brand pill =
 // active, bordered pill = idle. Which tabs render depends on the viewer's role —
 // everything except Unpaid is owner-only — so the caller passes the allowed tabs.
-export type FinanceTab = "overview" | "money" | "personal" | "people" | "jobs" | "spending" | "revenue" | "unpaid" | "payroll" | "advisor" | "budget";
+export type FinanceTab = "overview" | "money" | "personal" | "people" | "jobs" | "spending" | "revenue" | "unpaid" | "payroll" | "advisor" | "budget" | "bonus";
 
 const TABS: { key: FinanceTab; label: string; href: string; icon: typeof Receipt }[] = [
   { key: "overview", label: "Overview", href: "/sales?tab=overview", icon: LayoutDashboard },
@@ -19,6 +19,7 @@ const TABS: { key: FinanceTab; label: string; href: string; icon: typeof Receipt
   // Aryeo-price numbers that contradicted every other surface.
   { key: "unpaid", label: "Unpaid", href: "/sales?tab=unpaid", icon: Receipt },
   { key: "payroll", label: "Payroll", href: "/sales?tab=payroll", icon: Banknote },
+  { key: "bonus", label: "Bonus", href: "/sales?tab=bonus", icon: Trophy },
 ];
 
 export function FinanceTabs({ tab, show }: { tab: FinanceTab; show: FinanceTab[] }) {

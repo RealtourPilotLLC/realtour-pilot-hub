@@ -551,3 +551,21 @@ export async function buildProfile(clientId: string): Promise<Result> {
     return { ok: true, message: r.keysAdded ? `${r.keysAdded} entries added across ${r.sectionsFilled} section${r.sectionsFilled === 1 ? "" : "s"} — hand-written entries untouched.` : "Not enough call/strategy history to add anything new." };
   } catch (e) { return fail(e); }
 }
+
+// ---------------------------------------------------------------------------
+// Client portal (Phase 5): issue the unguessable share link. Owner-only —
+// this LINK is client-facing.
+// ---------------------------------------------------------------------------
+export async function issuePortalLink(enrollmentId: string): Promise<Result & { url?: string }> {
+  try { await requireOwner(); } catch (e) { return fail(e); }
+  const e = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { portalToken: true } });
+  if (!e) return { ok: false, message: "Enrollment not found." };
+  let token = e.portalToken;
+  if (!token) {
+    const { randomBytes } = await import("crypto");
+    token = randomBytes(24).toString("base64url");
+    await prisma.contentEnrollment.update({ where: { id: enrollmentId }, data: { portalToken: token } });
+  }
+  const base = process.env.APP_URL ?? "https://realtour-pilot-hub.vercel.app";
+  return { ok: true, message: "Portal link ready — send it to the client whenever you choose.", url: `${base}/portal/${token}` };
+}

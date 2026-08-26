@@ -1656,6 +1656,9 @@ model ContentEnrollment {
   billingType   String?
   billingRate   Float?
   billingMonths Int?
+  // Phase-5 portal: unguessable share token — the client's read-only page of
+  // their approved scripts + booking link. Null = no portal issued yet.
+  portalToken   String?   @unique
   // A human set the status (trials that aren't Aryeo-flagged, hand-pauses):
   // the Aryeo sync must never auto-pause or auto-reactivate these.
   statusManual  Boolean   @default(false)
