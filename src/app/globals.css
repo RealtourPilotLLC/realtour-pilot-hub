@@ -12,14 +12,17 @@
 :root {
   color-scheme: dark;
 
-  --background: #0a0a0a;
-  --surface: #141414; /* cards / panels */
-  --surface-2: #1c1c1c; /* insets, hovers, chips */
-  --foreground: #f2f2f2;
-  --muted: #9b9b9b;
-  --muted-2: #6a6a6a;
-  --border: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.16);
+  /* Makeover Aug 25 (Jordan: "high-tech, futuristic, luxurious"): the canvas
+     cools toward a rich blue-black, surfaces carry a faint cool tint so panels
+     read as layered glass over depth rather than gray boxes. */
+  --background: #08090c;
+  --surface: #101218; /* cards / panels */
+  --surface-2: #171a22; /* insets, hovers, chips */
+  --foreground: #f4f5f7;
+  --muted: #9aa0ab;
+  --muted-2: #676d78;
+  --border: rgba(214, 222, 240, 0.09);
+  --border-strong: rgba(214, 222, 240, 0.18);
 
   /* Brand: burnt orange / copper */
   --brand: #e96320;
@@ -43,7 +46,7 @@
   --chip-ink-mix: 18%;
   --hue-ink-mix: 0%;
 
-  --radius: 0.875rem;
+  --radius: 1rem;
 }
 
 /* Light mode — same token contract, warm-white palette. Activated by a class
@@ -53,14 +56,14 @@
 html.light {
   color-scheme: light;
 
-  --background: #f6f5f2;
+  --background: #f5f5f4;
   --surface: #ffffff;
-  --surface-2: #f1efeb;
-  --foreground: #1a1a1a;
-  --muted: #5c5c5c;
-  --muted-2: #8a8a8a;
-  --border: rgba(20, 20, 20, 0.1);
-  --border-strong: rgba(20, 20, 20, 0.2);
+  --surface-2: #eeedeb;
+  --foreground: #17181b;
+  --muted: #585c63;
+  --muted-2: #878c95;
+  --border: rgba(23, 24, 27, 0.1);
+  --border-strong: rgba(23, 24, 27, 0.2);
 
   --brand: #d95816; /* a touch deeper so white-on-brand stays readable */
   --brand-soft: rgba(217, 88, 22, 0.12);
@@ -99,6 +102,7 @@ html.light {
   --color-danger: var(--danger);
   --color-danger-soft: var(--danger-soft);
   --font-sans: var(--font-inter);
+  --font-display: var(--font-sora);
   --font-mono: var(--font-geist-mono);
 }
 
@@ -111,10 +115,15 @@ html {
 }
 
 body {
-  /* Subtle high-tech vignette: a faint copper glow up top, deep black canvas. */
+  /* Futuristic atmosphere: copper aurora up top, a cool counter-glow low-left,
+     and a whisper of engineering grid — all a few percent opacity, so content
+     floats over depth without ever competing with it. */
   background:
-    radial-gradient(1100px 520px at 50% -8%, rgba(233, 99, 32, 0.07), transparent 60%),
-    radial-gradient(900px 600px at 100% 0%, rgba(255, 255, 255, 0.025), transparent 55%),
+    radial-gradient(1100px 520px at 50% -8%, rgba(233, 99, 32, 0.08), transparent 60%),
+    radial-gradient(900px 700px at -10% 110%, rgba(96, 129, 197, 0.05), transparent 55%),
+    radial-gradient(900px 600px at 100% 0%, rgba(255, 255, 255, 0.02), transparent 55%),
+    repeating-linear-gradient(0deg, rgba(214, 222, 240, 0.012) 0 1px, transparent 1px 56px),
+    repeating-linear-gradient(90deg, rgba(214, 222, 240, 0.012) 0 1px, transparent 1px 56px),
     var(--background);
   background-attachment: fixed;
   color: var(--foreground);
@@ -128,13 +137,16 @@ body {
 html.light body {
   background:
     radial-gradient(1100px 520px at 50% -8%, rgba(217, 88, 22, 0.05), transparent 60%),
+    radial-gradient(900px 700px at -10% 110%, rgba(96, 129, 197, 0.04), transparent 55%),
     radial-gradient(900px 600px at 100% 0%, rgba(20, 20, 20, 0.02), transparent 55%),
     var(--background);
   background-attachment: fixed;
 }
 
-/* Headings get the tightened, high-tech tracking the brand site uses. */
+/* Headings ride the display face (Sora — geometric, techy, premium) with the
+   tightened tracking the brand site uses; body copy stays Inter. */
 h1, h2, h3 {
+  font-family: var(--font-display), var(--font-sans), system-ui, sans-serif;
   letter-spacing: -0.02em;
 }
 
@@ -145,6 +157,8 @@ h1, h2, h3 {
 :focus-visible {
   outline: 2px solid var(--brand);
   outline-offset: 2px;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand) 18%, transparent);
+  border-radius: 6px;
 }
 
 /* Small uppercase, letter-spaced "eyebrow" label, copper — the brand motif. */
@@ -174,9 +188,23 @@ summary,
 /* Panel depth — a hairline top highlight + soft drop shadow gives the dark
    surfaces dimensionality so cards read as layered, not flat rectangles. */
 .panel-shadow {
+  position: relative;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.03),
-    0 1px 2px rgba(0, 0, 0, 0.28);
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 12px 40px -24px rgba(0, 0, 0, 0.6);
+}
+/* The luxe detail: a copper-kissed hairline along each panel's top edge that
+   fades out at the corners — visible only when you look for it. */
+.panel-shadow::before {
+  content: "";
+  position: absolute;
+  inset: 0 12% auto 12%;
+  height: 1px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--brand) 38%, transparent), transparent);
+  opacity: 0.55;
+  pointer-events: none;
 }
 /* Light surfaces read depth through soft shadow, not inner glow. */
 html.light .panel-shadow {
@@ -204,8 +232,9 @@ html.light .scroll-thin::-webkit-scrollbar-thumb:hover {
   transform: translateY(-2px);
   border-color: var(--border-strong);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.04),
-    0 14px 32px -16px rgba(0, 0, 0, 0.7);
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 14px 32px -16px rgba(0, 0, 0, 0.7),
+    0 0 32px -14px color-mix(in srgb, var(--brand) 55%, transparent);
 }
 @media (prefers-reduced-motion: reduce) {
   .lift:hover {
