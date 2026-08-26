@@ -139,11 +139,30 @@ export async function sendThreadText(
   const from = await defaultOpenPhoneNumber();
   if (!from) return { ok: false, message: "OpenPhone isn't connected." };
 
+  let sentId: string | undefined;
   try {
-    await OpenPhone.sendMessage(from, tos.length === 1 ? tos[0] : tos, text || "📎", mediaUrls);
+    const sent = await OpenPhone.sendMessage(from, tos.length === 1 ? tos[0] : tos, text || "📎", mediaUrls);
+    sentId = sent?.data?.id;
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Failed to send." };
   }
+
+  // Log it OURSELVES — the delivery webhook can be slow/dropped, and until it
+  // lands the thread showed the client "still waiting", inviting a double-send
+  // (audit; same fix the Replies tab already carried). Same externalId the
+  // webhook will use, so its later event dedupes instead of duplicating.
+  await import("@/lib/commLog").then(({ logComm }) =>
+    logComm({
+      channel: "text",
+      direction: "out",
+      clientId: clientId ?? null,
+      contactName: "Us",
+      fromPhone: tos[0],
+      body: text || "[attachment]",
+      source: "openphone",
+      externalId: sentId ? `op-${sentId}` : undefined,
+    }),
+  ).catch(() => { /* already sent — a log failure must not report failure */ });
 
   if (clientId) {
     const recent = await prisma.project.findFirst({

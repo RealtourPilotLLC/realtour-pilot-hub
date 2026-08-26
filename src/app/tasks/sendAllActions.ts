@@ -125,7 +125,7 @@ export async function sendDraftText(taskId: string, body: string): Promise<{ ok:
 
   const project = await prisma.project.findUnique({
     where: { id: task.projectId },
-    select: { id: true, client: { select: { name: true, phone: true } } },
+    select: { id: true, clientId: true, client: { select: { name: true, phone: true } } },
   });
   if (!project?.client.phone) return { ok: false, message: "No phone number on file." };
 
@@ -144,14 +144,32 @@ export async function sendDraftText(taskId: string, body: string): Promise<{ ok:
   });
   if (claimed.count === 0) return { ok: false, message: "Already handled." };
 
+  let sentId: string | undefined;
   try {
-    await OpenPhone.sendMessage(from, `+1${k}`, text);
+    const sent = await OpenPhone.sendMessage(from, `+1${k}`, text);
+    sentId = sent?.data?.id;
   } catch (e) {
     await prisma.smartTask
       .updateMany({ where: { id: task.id }, data: { status: "OPEN", completedAt: null } })
       .catch(() => {});
     return { ok: false, message: e instanceof Error ? e.message : "Failed to send." };
   }
+  // Self-record in comms memory — don't depend on the delivery webhook (audit;
+  // same externalId the webhook uses, so its event dedupes).
+  await import("@/lib/commLog").then(({ logComm }) =>
+    logComm({
+      channel: "text",
+      direction: "out",
+      clientId: project.clientId,
+      clientName: project.client.name,
+      projectId: project.id,
+      contactName: "Us",
+      fromPhone: `+1${k}`,
+      body: text,
+      source: "openphone",
+      externalId: sentId ? `op-${sentId}` : undefined,
+    }),
+  ).catch(() => {});
   const label = task.taskType === "delivery_text" ? "Delivery text" : "Confirmation text";
   await prisma.activity.create({
     data: { projectId: project.id, type: "SYSTEM", body: `${label} sent to ${project.client.name}: ${text.slice(0, 160)}` },
