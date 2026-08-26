@@ -61,10 +61,17 @@ export type DeliveryBoard = {
 const VIDEOISH = new Set(["VIDEO", "SOCIAL_REEL"]);
 const PHOTOISH = new Set(["PHOTOS", "DRONE", "TWILIGHT"]);
 
+// A deliverable counts as IN when EITHER signal says so: the manual uploadedAt
+// tick, or the evidence-driven status (DONE = live on Aryeo, UPLOADED = the
+// photographer's tick). uploadedAt alone was a field the automated pipeline
+// never writes, so the board said "Waiting on photos" on delivered jobs (audit).
+const isIn = (r: { uploadedAt: Date | null; status: string }) =>
+  !!r.uploadedAt || r.status === "DONE" || r.status === "UPLOADED";
+
 /** none = nothing in, some = partially in, in = all of that kind uploaded. */
-function uploadState(rows: { uploadedAt: Date | null }[]): "none" | "some" | "in" | "n/a" {
+function uploadState(rows: { uploadedAt: Date | null; status: string }[]): "none" | "some" | "in" | "n/a" {
   if (rows.length === 0) return "n/a";
-  const up = rows.filter((r) => r.uploadedAt).length;
+  const up = rows.filter(isIn).length;
   return up === 0 ? "none" : up === rows.length ? "in" : "some";
 }
 
@@ -88,7 +95,7 @@ function blockerFor(
     return { kind: "not_shot", label: p.shootDate ? "Not shot yet" : "No shoot date" };
   }
 
-  const missing = deliverables.filter((d) => !d.uploadedAt);
+  const missing = deliverables.filter((d) => !isIn(d));
   if (missing.length > 0) {
     const kinds = new Set(missing.map((d) => d.type));
     // Name the missing thing. "Waiting on video" is Jordan's own example.

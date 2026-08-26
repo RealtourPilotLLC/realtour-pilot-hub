@@ -119,6 +119,10 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
   if (claim.count === 0 && !month.transcriptProcessedAt) throw new Error("This transcript is already being analyzed.");
   if (claim.count === 0) throw new Error("This transcript was already analyzed.");
 
+  // From here on the claim is OURS — an AI hiccup must RELEASE it, or the month
+  // is permanently marked "analyzed" over zero topics with no way to retry
+  // (audit Aug 25: the card said "topics and scripts are below" over nothing).
+  try {
   const [context, history] = await Promise.all([clientContext(month.enrollmentId), topicHistory(month.enrollmentId)]);
   const { aiJson } = await import("@/lib/integrations/ai");
 
@@ -249,6 +253,12 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
     await prisma.contentMonth.update({ where: { id: monthId }, data: { notes: extras.join("\n\n").slice(0, 8000) } });
   }
   return { confirmedTopics: confirmed, futureIdeas: future, rejected: arr<string>(out.rejectedIdeas).length, intelNotes: intel, todos: todoList.length };
+  } catch (e) {
+    // Release the claim so the month can be analyzed again — a stamped-but-
+    // empty month was unrecoverable from the UI (audit Aug 25).
+    await prisma.contentMonth.updateMany({ where: { id: monthId }, data: { transcriptProcessedAt: null } }).catch(() => {});
+    throw e;
+  }
 }
 
 // ---------------------------------------------------------------------------

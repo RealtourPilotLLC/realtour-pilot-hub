@@ -874,12 +874,22 @@ function ActionBar({
               <div className="text-xs text-muted">
                 {total > 0 ? <>{captured}/{total} captured</> : "Ready when you are"}
               </div>
+              {/* Upload is ALWAYS one tap away — hiding it behind Mark-complete
+                  (pressed zero times ever) dead-ended the guided flow, so
+                  shooters detoured through the /upload list 30×/month (audit). */}
+              <Link
+                href={`/upload/${projectId}`}
+                className="ml-auto inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90"
+              >
+                <Upload className="size-4" /> Upload content
+              </Link>
               <button
                 onClick={complete}
                 disabled={pending}
-                className="ml-auto inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2 text-sm font-semibold text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50"
+                title="Mark the shoot complete"
               >
-                {pending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Mark shoot complete
+                {pending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />} Done
               </button>
             </>
           )}

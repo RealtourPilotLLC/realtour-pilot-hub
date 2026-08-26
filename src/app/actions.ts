@@ -543,6 +543,12 @@ export async function moveProjectStatus(projectId: string, status: ProjectStatus
       ...(status === ProjectStatus.DELIVERED
         ? { revisionRequestedAt: null, revisionNote: null }
         : {}),
+      // Hand-picking Revisions must STAMP the request — without it the hourly
+      // status sweep recomputed from evidence and silently reverted the pick
+      // within the hour (audit Aug 25).
+      ...(status === ProjectStatus.REVISION && !project.revisionRequestedAt
+        ? { revisionRequestedAt: new Date() }
+        : {}),
     },
   });
 

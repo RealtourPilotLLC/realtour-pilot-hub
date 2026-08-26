@@ -70,6 +70,8 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
           { status: { in: ["PENDING", "CHANGES_REQUESTED"] } },
           { status: "APPROVED", decidedAt: { gte: since } },
         ],
+        // A cancelled or on-hold job's cuts are not the owner's work list (audit).
+        project: { status: { notIn: ["CANCELLED", "ON_HOLD"] } },
       },
       orderBy: { createdAt: "desc" },
       include: {
@@ -84,7 +86,11 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
       },
     }),
     prisma.smartTask.findMany({
-      where: { taskType: "media_qa", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      where: {
+        taskType: "media_qa",
+        status: { notIn: ["COMPLETED", "CANCELLED"] },
+        OR: [{ projectId: null }, { project: { status: { notIn: ["CANCELLED", "ON_HOLD"] } } }],
+      },
       orderBy: [{ dueAt: { sort: "asc", nulls: "last" } }],
       select: {
         id: true,

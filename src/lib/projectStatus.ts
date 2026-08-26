@@ -384,7 +384,7 @@ type StatusProject = {
   photoTarget: number | null;
   photographer: { name: string } | null;
   client: { name: string; socialClient: boolean };
-  deliverables: { id: string; type: string; label: string | null }[];
+  deliverables: { id: string; type: string; label: string | null; status: string }[];
   appointments: { status: string | null; startAt: Date | null }[];
 };
 
@@ -439,7 +439,12 @@ async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<Sta
     // appointments were canceled must not read as scheduled (audit crack #14).
     anyAppt: p.appointments.some((a) => (a.status || "").toUpperCase() !== "CANCELED"),
     shootDate: p.shootDate,
-    revisionOpen: !!p.revisionRequestedAt,
+    // A revision stamp OLDER than the delivery is stale — that delivery WAS the
+    // revision being resolved. Treating it as open resurrected delivered jobs
+    // as zombie REVISION rows on every full sweep (Jul 24 + Aug 25 audits).
+    revisionOpen:
+      !!p.revisionRequestedAt &&
+      !(p.deliveredAt && p.revisionRequestedAt.getTime() <= p.deliveredAt.getTime()),
     revisionNote: p.revisionNote,
     videoTier: videoTier(p.deliverables),
     videoType: p.deliverables.find((d) => expectedCategories([d]).has("VIDEO"))?.type ?? null,
@@ -524,7 +529,7 @@ export async function syncProjectStatuses(
       photoTarget: true,
       photographer: { select: { name: true } },
       client: { select: { name: true, socialClient: true } },
-      deliverables: { select: { id: true, type: true, label: true } },
+      deliverables: { select: { id: true, type: true, label: true, status: true } },
       appointments: { select: { status: true, startAt: true } },
     },
   })) as StatusProject[];
@@ -759,13 +764,21 @@ export async function syncProjectStatuses(
 // Mark each deliverable DONE/PENDING based on whether its category is present.
 async function syncDeliverableStatuses(p: StatusProject, evidence: StatusEvidence) {
   const presentSet = new Set(evidence.present);
+  // Human-owned states the hourly sweep must never stomp (audit Aug 25: the
+  // photographer's UPLOADED tick and the owner's IN_PROGRESS/FLAGGED picks
+  // were rewritten to PENDING every hour). DONE still wins over them — live
+  // Aryeo evidence is stronger than any manual state.
+  const MANUAL_STATES = new Set(["UPLOADED", "IN_PROGRESS", "FLAGGED"]);
   for (const d of p.deliverables) {
     const cats = expectedCategories([d]);
     if (cats.size === 0) continue;
     const done = [...cats].every((c) => presentSet.has(CATEGORY_LABEL[c]));
+    const next = done ? "DONE" : "PENDING";
+    if (d.status === next) continue; // hundreds of no-op writes/day, gone
+    if (!done && MANUAL_STATES.has(d.status as string)) continue;
     await prisma.deliverable.update({
       where: { id: d.id },
-      data: { status: done ? "DONE" : "PENDING" },
+      data: { status: next as never },
     });
   }
 }

@@ -123,8 +123,13 @@ export async function finalizeCullUpload(
       },
     })
     .catch(() => {});
-  // The folder-count status sync (hourly + on project view) sees the files and
-  // flips the photo deliverables — no manual tick needed.
+  // Fire the status sync NOW — this is the upload flow photographers actually
+  // use (12 uses/30d, audit), and waiting for the hourly cron meant the
+  // field→SHOT→editor-handoff sat idle for up to an hour after every upload.
+  // Best-effort + non-blocking: the photographer's confirmation never waits on it.
+  import("@/lib/projectStatus")
+    .then(({ syncProjectStatuses }) => syncProjectStatuses({ projectId }))
+    .catch(() => {});
   const { revalidatePath } = await import("next/cache");
   revalidatePath(`/upload/${projectId}`);
   revalidatePath(`/projects/${projectId}`);

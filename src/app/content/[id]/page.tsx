@@ -74,6 +74,7 @@ export default async function ContentClientPage({
             id: true, title: true, status: true, shootDate: true,
             photographer: { select: { name: true } },
             reviewSubmissions: { select: { status: true } },
+            deliverables: { select: { type: true, quantity: true } },
           },
           orderBy: { shootDate: "asc" },
         })
@@ -91,17 +92,22 @@ export default async function ContentClientPage({
   // The journey hero's counts — the SAME status filters the dashboard roster
   // uses, so the tracker here always matches the client's card out front.
   const now = new Date();
+  // Cancelled sessions don't count as booked; delivered counts VIDEO UNITS —
+  // the same two rules as the dashboard roster (audit Aug 25).
+  const liveProjects = projects.filter((p) => p.status !== "CANCELLED");
   const journey = month
     ? {
         callStatus: month.strategyCallStatus,
         topicsSelected: topics.filter((t) => ["SELECTED", "SCRIPTED", "FILMED", "EDITING", "DELIVERED"].includes(t.status)).length,
         scriptsReady: scripts.filter((s) => ["APPROVED", "CLIENT_VISIBLE", "READY_TO_FILM"].includes(s.status)).length,
         videosOwed: month.videosOwed,
-        sessionsScheduled: projects.length,
+        sessionsScheduled: liveProjects.length,
         sessionsRequired: enrollment.sessionsPerMonth,
-        shotCount: projects.filter((p) => p.shootDate && p.shootDate < now).length,
-        delivered: projects.filter((p) => p.status === "DELIVERED").length,
-        inReview: projects.reduce((s, p) => s + p.reviewSubmissions.filter((r) => r.status === "PENDING").length, 0),
+        shotCount: liveProjects.filter((p) => p.shootDate && p.shootDate < now).length,
+        delivered: liveProjects
+          .filter((p) => p.status === "DELIVERED")
+          .reduce((s, p) => s + Math.max(1, p.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL").reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0)), 0),
+        inReview: liveProjects.reduce((s, p) => s + p.reviewSubmissions.filter((r) => r.status === "PENDING").length, 0),
         muted: month.historical,
       }
     : null;

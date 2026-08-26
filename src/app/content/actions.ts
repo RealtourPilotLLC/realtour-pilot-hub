@@ -54,6 +54,7 @@ export async function saveEnrollmentSettings(
   enrollmentId: string,
   s: {
     package?: string; strategyCallRequired?: boolean; clientSuppliesTopics?: boolean; status?: string; notes?: string;
+    videosPerMonth?: number;
     billingType?: string | null; billingRate?: number | null; billingMonths?: number | null;
   },
 ): Promise<Result> {
@@ -83,7 +84,21 @@ export async function saveEnrollmentSettings(
     const rules = PACKAGE_RULES[s.package];
     if (!rules) return { ok: false, message: "Unknown package." };
     // A hand-set package is an override — the Aryeo sync must stop following the plan field.
-    Object.assign(data, { package: s.package, ...rules, packageSource: "manual" });
+    // PRESERVE a custom videosPerMonth: Marcee/Erica/Bernadette's 5-video deals
+    // are hand-set numbers, and the stock rule silently shrank them to 4 when
+    // anyone touched this dropdown (audit Aug 25).
+    const cur = await prisma.contentEnrollment.findUnique({
+      where: { id: enrollmentId },
+      select: { package: true, videosPerMonth: true },
+    });
+    const curRule = cur ? PACKAGE_RULES[cur.package] : null;
+    const isCustom = cur && curRule && cur.videosPerMonth !== curRule.videosPerMonth;
+    Object.assign(data, { package: s.package, ...rules, ...(isCustom ? { videosPerMonth: cur.videosPerMonth } : {}), packageSource: "manual" });
+  }
+  // Owner-set videos-per-month (the custom-deal control — no more direct DB edits).
+  if (s.videosPerMonth !== undefined) {
+    if (!Number.isInteger(s.videosPerMonth) || s.videosPerMonth < 1 || s.videosPerMonth > 31) return { ok: false, message: "Bad video count." };
+    data.videosPerMonth = s.videosPerMonth;
   }
   if (s.strategyCallRequired !== undefined) data.strategyCallRequired = s.strategyCallRequired;
   if (s.clientSuppliesTopics !== undefined) data.clientSuppliesTopics = s.clientSuppliesTopics;
@@ -117,10 +132,17 @@ export async function saveMonthTranscript(monthId: string, text: string): Promis
   try { await requireAdmin(); } catch (e) { return fail(e); }
   await prisma.contentMonth.update({
     where: { id: monthId },
-    data: { transcriptText: text.trim().slice(0, 500_000) || null, strategyCallStatus: text.trim() ? "COMPLETED" : undefined },
+    data: {
+      transcriptText: text.trim().slice(0, 500_000) || null,
+      strategyCallStatus: text.trim() ? "COMPLETED" : undefined,
+      // A REPLACED transcript is un-analyzed by definition — clearing the stamp
+      // re-arms the Analyze button (audit: it stayed stamped forever).
+      transcriptProcessedAt: null,
+    },
   });
   revalidatePath("/content");
-  return { ok: true, message: "Transcript saved. Extraction lands in the next build phase." };
+  // (The old message said extraction was "a later build phase" — it shipped.)
+  return { ok: true, message: "Transcript saved — hit “Analyze → topics + scripts” to extract this month's plan." };
 }
 
 // ---------------------------------------------------------------------------
@@ -433,10 +455,13 @@ export async function saveStrategyBackfill(
 // Human-review rule: everything the AI makes stays INTERNAL_REVIEW until
 // Jordan approves it; nothing auto-delivers.
 // ---------------------------------------------------------------------------
-export async function analyzeTranscript(monthId: string): Promise<Result> {
+export async function analyzeTranscript(monthId: string, force = false): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   try {
     const { processMonthTranscript, generateScriptsForMonth } = await import("@/lib/contentPipeline");
+    // A deliberate re-run clears the analyzed stamp first (topics already
+    // extracted are deduped by the pipeline's history pass).
+    if (force) await prisma.contentMonth.updateMany({ where: { id: monthId }, data: { transcriptProcessedAt: null } });
     const r = await processMonthTranscript(monthId);
     const g = await generateScriptsForMonth(monthId);
     revalidatePath("/content");

@@ -261,13 +261,21 @@ export async function getProgramRoster(): Promise<ProgramRow[]> {
   }
 
   const now = new Date();
+  // Video units on a project — the meter's currency is VIDEOS, not sessions
+  // (audit Aug 25: "1/5" was the best a healthy month could ever show).
+  const videoUnits = (p: { deliverables: { type: string; quantity: number | null }[] }) =>
+    p.deliverables
+      .filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL")
+      .reduce((s, d) => s + Math.max(1, d.quantity ?? 1), 0);
   const rows: ProgramRow[] = [];
   for (const e of enrollments) {
     const m = monthOf.get(e.id) ?? null;
-    const ps = m ? projByMonth.get(m.id) ?? [] : [];
+    // A session cancelled AFTER it attached still had contentMonthId — it must
+    // not count as booked, or the no-session alarm never fires (audit).
+    const ps = (m ? projByMonth.get(m.id) ?? [] : []).filter((p) => p.status !== "CANCELLED");
     const sessionsScheduled = ps.length;
     const shotCount = ps.filter((p) => p.shootDate && p.shootDate < now).length;
-    const delivered = ps.filter((p) => p.status === "DELIVERED").length;
+    const delivered = ps.filter((p) => p.status === "DELIVERED").reduce((s, p) => s + Math.max(1, videoUnits(p)), 0);
     const inReview = ps.reduce((s, p) => s + p.reviewSubmissions.filter((r) => r.status === "PENDING").length, 0);
     const topicsSelected = m ? topicCount.get(m.id) ?? 0 : 0;
     const scriptsReady = m ? scriptCount.get(m.id) ?? 0 : 0;
