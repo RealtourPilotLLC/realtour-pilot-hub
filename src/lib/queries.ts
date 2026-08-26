@@ -257,7 +257,16 @@ const BRIEF_ACTIVE = [
 // reply for. These belong in the brief's "Check your messages" step and should
 // stay there until handled (NOT roll off when they're no longer due "today",
 // and NOT get buried in Needs Attention). Email/text/Slack/lead all land here.
-export const MESSAGE_TASK_TYPES = ["client_reply", "comms_followup", "revision", "lead", "internal_instruction", "vendor_update", "todo"];
+// A CLIENT (or vendor/teammate on a live job) wrote in and is waiting. These
+// surface until handled regardless of due date. internal_instruction / todo /
+// vendor_update were REMOVED (audit Aug 25): padding this list made the
+// "message to-dos" chip read 69 when only 3 were real client replies, and made
+// the Today stack an unbounded 77-card wall. Instructions now surface via the
+// triage pile + their due dates, like every other to-do.
+export const MESSAGE_TASK_TYPES = ["client_reply", "comms_followup", "revision", "lead"];
+// The ops pile: instructions and system to-dos — routed by assignment + due
+// date, rolled up in Today's triage card, never counted as "messages".
+export const OPS_PILE_TYPES = ["internal_instruction", "vendor_update", "todo"];
 
 // Content-pipeline tasks — QC, deliver, post-delivery text, feedback, image
 // fixes. Kyle works these as the content lands, not on a formal due date, so the
@@ -409,8 +418,10 @@ export type ActionCounts = {
 export async function getActionCounts(): Promise<ActionCounts> {
   const [replies, qc, late, toAssign] = await Promise.all([
     prisma.smartTask.count({ where: { status: { in: BRIEF_ACTIVE }, taskType: { in: MESSAGE_TASK_TYPES } } }),
-    prisma.smartTask.count({ where: { status: { in: BRIEF_ACTIVE }, taskType: { in: DELIVER_TASK_TYPES } } }),
-    prisma.smartTask.count({ where: { status: { in: BRIEF_ACTIVE }, dueAt: { lt: new Date() } } }),
+    // Same recency rule as the Board, so the chip never counts a card no list
+    // can render (audit: a 28-day ON_HOLD QC ghost was chip-counted, invisible).
+    prisma.smartTask.count({ where: { status: { in: BRIEF_ACTIVE }, taskType: { in: DELIVER_TASK_TYPES }, OR: [{ projectId: null }, { project: recentProjectWhere() }] } }),
+    prisma.smartTask.count({ where: { status: { in: BRIEF_ACTIVE }, dueAt: { lt: new Date() }, OR: [{ projectId: null }, { project: recentProjectWhere() }] } }),
     // Same definition as isNeedsAssigning (src/lib/triage.ts) — delegatable work
     // that arrived without an owner — expressed in SQL so it counts system-wide
     // instead of only the brief slice.

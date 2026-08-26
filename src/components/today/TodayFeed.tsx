@@ -161,6 +161,9 @@ function ActionCard({ card, assignees, viewerKey, onGone }: {
   // So it gets a link instead of Done (there's nothing to complete here), while
   // guided mode still treats it as a normal step (Next skips it like any card).
   const isTextsRollup = card.taskType === "client_texts";
+  // The unowned-instructions rollup: its whole action is opening the triage
+  // board; it disappears on its own as tasks get owners.
+  const isTriageRollup = card.taskType === "triage_pile";
 
   const done = (note = "Done") =>
     start(async () => {
@@ -413,7 +416,15 @@ function ActionCard({ card, assignees, viewerKey, onGone }: {
               Check texts <ArrowRight className="size-4" />
             </Link>
           )}
-          {(card.verb === "do" || card.verb === "check") && !isTextsRollup && (
+          {isTriageRollup && (
+            <Link
+              href="/tasks?tab=board&who=needs-assigning"
+              className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-brand px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:opacity-90"
+            >
+              Assign owners <ArrowRight className="size-4" />
+            </Link>
+          )}
+          {(card.verb === "do" || card.verb === "check") && !isTextsRollup && !isTriageRollup && (
             <>
               <Btn success onClick={() => done("Done")} busy={busy}>
                 <CheckCircle2 className="size-4" /> Done
@@ -457,7 +468,7 @@ function ActionCard({ card, assignees, viewerKey, onGone }: {
             </>
           )}
           {/* DM a teammate on Slack about this task — link + description included. */}
-          {!isTextsRollup && <TaskSlackPing taskId={card.id} compact />}
+          {!isTextsRollup && !isTriageRollup && <TaskSlackPing taskId={card.id} compact />}
         </div>
       </div>
     </div>

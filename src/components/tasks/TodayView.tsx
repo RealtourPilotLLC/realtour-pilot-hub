@@ -5,7 +5,7 @@ import { TodayFeed, type TodayCard, type TodayShoot } from "@/components/today/T
 import { prisma } from "@/lib/prisma";
 import { MESSAGE_TASK_TYPES, DELIVER_TASK_TYPES, CLIENT_TEXT_TYPES, getClientTextTasks, getShootWindow, getHandledToday } from "@/lib/queries";
 import { recentProjectWhere } from "@/lib/recency";
-import { etDayStartUtc } from "@/lib/datetime";
+import { etDayStartUtc, etAddDays } from "@/lib/datetime";
 import { isNeedsAssigning } from "@/lib/triage";
 import { receivedByLabel } from "@/lib/taskSource";
 import { listAssignees } from "@/lib/assignees";
@@ -42,7 +42,8 @@ function stackWhere(startToday: Date): Prisma.SmartTaskWhereInput {
         // card below stands in for all of them.
         {
           taskType: { notIn: [...MESSAGE_TASK_TYPES, ...CHECK_TYPES, ...CLIENT_TEXT_TYPES] },
-          dueAt: { lte: new Date(startToday.getTime() + 24 * 3600_000 - 1) },
+          // ET calendar end-of-day, NOT +24h arithmetic (the documented DST bug).
+          dueAt: { lte: new Date(etDayStartUtc(etAddDays(new Date(), 1)).getTime() - 1) },
           OR: [{ projectId: null }, { project: recentProjectWhere() }],
         },
       ],
@@ -94,7 +95,7 @@ const TYPE_LABEL: Record<string, string> = {
 export async function TodayView({ sp, tabs }: { sp: { guided?: string }; tabs: ReactNode }) {
   const startToday = etDayStartUtc(new Date());
 
-  const [tasks, textTasks, shootWindow, handledToday, assignees] = await Promise.all([
+  const [tasks, textTasks, shootWindow, handledToday, assignees, triageCount] = await Promise.all([
     prisma.smartTask.findMany({
       where: stackWhere(startToday),
       include: { client: { select: { name: true, phone: true } } },
@@ -104,6 +105,8 @@ export async function TodayView({ sp, tabs }: { sp: { guided?: string }; tabs: R
     getShootWindow(),
     getHandledToday(),
     listAssignees(),
+    // The unowned instruction pile — one rollup card, not N walls of text.
+    prisma.smartTask.count({ where: { status: { in: ACTIVE }, assignedKey: null, taskType: { in: ["internal_instruction", "todo", "vendor_update"] } } }),
   ]);
 
   const cards: TodayCard[] = tasks.map((t) => {
@@ -185,6 +188,41 @@ export async function TodayView({ sp, tabs }: { sp: { guided?: string }; tabs: R
       status: "OPEN",
       dueAt: textTasks[0].dueAt ? textTasks[0].dueAt.toISOString() : null, // query is dueAt-asc
       overdue: textTasks.some((t) => !!t.dueAt && t.dueAt < startToday),
+      triage: false,
+      warnStale: false,
+      warnQcOpen: false,
+      receivedAt: null,
+      receivedBy: null,
+      groupKey: null,
+    });
+  }
+
+  // "44 Slack to-dos to triage" — the pile is real work, but it belongs in ONE
+  // card that opens the triage board, not as 44 separate cards drowning the
+  // client work (audit Aug 25; same presentation-only pattern as the texts
+  // rollup above).
+  if (triageCount > 0) {
+    cards.push({
+      id: "triage-rollup",
+      verb: "do",
+      delegatedTo: null,
+      taskType: "triage_pile", // sentinel — TodayFeed renders a link to the triage board
+      typeLabel: "to assign",
+      title: `${triageCount} to-do${triageCount === 1 ? "" : "s"} need an owner`,
+      summary: null,
+      draft: null,
+      quote: null,
+      body: "Slack instructions and system to-dos that arrived without an owner. Open the triage board, tap a name on each, and they move to that person's list.",
+      clientId: null,
+      clientName: null,
+      hasPhone: false,
+      street: null,
+      projectId: null,
+      source: "slack",
+      priority: "HIGH",
+      status: "OPEN",
+      dueAt: null,
+      overdue: false,
       triage: false,
       warnStale: false,
       warnQcOpen: false,

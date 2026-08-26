@@ -549,7 +549,26 @@ export async function createProjectFollowupTask(opts: {
     ownerId: kyle?.id ?? null,
     dedupeKey: key,
   };
-  if (existing) {
+  if (existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED") {
+    // APPEND, don't overwrite (audit Aug 25): the same fix client_reply got on
+    // Aug 24 — a second text from the same sender used to REPLACE the task's
+    // description, silently erasing the first instruction (Harrison texts a
+    // lockbox code, then a detail; only the detail survived).
+    const at = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }).format(new Date());
+    const line = clip(opts.text, 400) || "(another message)";
+    const prev = existing.description ?? "";
+    const appended = `${prev}\n\n— ${at}: ${line}`.trim();
+    const count = (appended.match(/^— /gm)?.length ?? 0) + 1;
+    await prisma.smartTask.update({
+      where: { id: existing.id },
+      data: {
+        description: appended.length > 4000 ? appended.slice(appended.length - 4000) : appended,
+        summary: `${opts.senderName}: ${count} messages on ${street} — latest: “${clip(opts.text, 200)}”`.slice(0, 500),
+        ...(existing.dueAt && existing.dueAt.getTime() > Date.now() + 2 * HOUR ? { dueAt: new Date(Date.now() + 2 * HOUR) } : {}),
+      },
+    });
+  } else if (existing) {
+    // Closed task, new message → reopen fresh with the new content.
     await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } });
   } else {
     await prisma.smartTask.create({ data });
@@ -799,6 +818,7 @@ export async function reflectRevisionInQc(projectId: string, categories: string[
       checklist: serializeChecklist(markRevised([])),
       source: "revision",
       priority: "HIGH",
+      assignedKey: "kyle",
       dueAt: new Date(),
       projectId,
       clientId: project.clientId,
@@ -869,11 +889,24 @@ export async function closeObsoleteTasks(projectId: string, projectStatus: strin
       },
       data: { status: "COMPLETED", completedAt: new Date() },
     });
-    // The cull nudge (taskType "todo", dedupeKey cull-<id>) is moot once the
-    // gallery shipped — the raws can't be thinned retroactively. Close it so it
-    // doesn't rot as noise (todo-type tasks are swept by nothing else).
+    // EVERY system watchdog to-do on this job is moot once the gallery shipped —
+    // the cull nudge, "Find the raw video", "No raws uploaded" (audit Aug 25:
+    // 8 of 11 open watchdogs sat on already-DELIVERED jobs for up to 16 days,
+    // because only the cull nudge had this carve-out). System-minted todos are
+    // recognizable by their dedupeKey prefixes; a HUMAN-added todo (manual/
+    // assistant source, no dedupeKey pattern) is left alone — it may be real
+    // follow-up work.
     await prisma.smartTask.updateMany({
-      where: { projectId, dedupeKey: `cull-${projectId}`, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      where: {
+        projectId,
+        taskType: "todo",
+        status: { notIn: ["COMPLETED", "CANCELLED"] },
+        OR: [
+          { dedupeKey: `cull-${projectId}` },
+          { dedupeKey: `raws-${projectId}` },
+          { dedupeKey: `raw-video-missing-${projectId}` },
+        ],
+      },
       data: { status: "COMPLETED", completedAt: new Date() },
     });
     // Closing the image_fixes task without resolving its ImageFlag rows left
@@ -1550,7 +1583,9 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
 // is in the past. Mints ONE deduped chase task on Kyle + bell/SMS to the
 // photographer once the raws are 18+ hours late; self-clears when files land.
 // ---------------------------------------------------------------------------
-const RAWS_MISSING_AFTER_MS = 18 * HOUR;
+// 18h fired on most shoots (89 bells in 30 days — noise, audit Aug 25); a
+// real miss is still loud a day later.
+const RAWS_MISSING_AFTER_MS = 30 * HOUR;
 
 // Who hears about a creative's field problem, beyond the person themselves.
 // ADMIN is a role broadcast (Kyle) so it survives a rename; the Creative
@@ -2036,7 +2071,10 @@ async function syncOneProjectTasks(
         description,
         reasonCreated: s.reasonCreated,
         checklist: serializeChecklist(s.checklist),
-        assignedKey: s.assignedKey ?? null,
+        // QC & delivery work is Kyle's routine by definition — born on his
+        // plate, not in the triage pile (audit Aug 25: all 57 media_qa cards
+        // ever minted arrived unowned).
+        assignedKey: s.assignedKey ?? (["media_qa", "delivery", "delivery_text", "confirmation_text"].includes(s.taskType) ? "kyle" : null),
         source: "aryeo",
         priority,
         dueAt: s.dueAt ?? null,
@@ -2058,6 +2096,23 @@ async function syncOneProjectTasks(
 // was 60% of the board (Aug 24 audit: 86 open, median 6 days). Cancel, don't
 // complete: the truth is it wasn't done here.
 export async function expireStaleSlackTasks(): Promise<{ expired: number }> {
+  // System watchdog to-dos (find-the-raws / cull nudges) that survived 14 days
+  // are stale alarms, not work — the job either resolved another way or the
+  // chase happened off-platform. They also close at DELIVERED; this catches
+  // the rest (audit Aug 25: "swept by nothing").
+  await prisma.smartTask.updateMany({
+    where: {
+      taskType: "todo",
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
+      createdAt: { lt: new Date(Date.now() - 14 * 86_400_000) },
+      OR: [
+        { dedupeKey: { startsWith: "cull-" } },
+        { dedupeKey: { startsWith: "raws-" } },
+        { dedupeKey: { startsWith: "raw-video-missing-" } },
+      ],
+    },
+    data: { status: "CANCELLED" },
+  });
   const cutoff = new Date(Date.now() - 7 * 86_400_000);
   const r = await prisma.smartTask.updateMany({
     where: { taskType: "internal_instruction", source: "slack", status: "OPEN", createdAt: { lt: cutoff } },
