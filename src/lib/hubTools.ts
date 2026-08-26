@@ -700,7 +700,7 @@ export async function execHubTool(
           OR: q.split(/\s+/).filter((w) => w.length > 2).map((w) => ({ title: { contains: w, mode: "insensitive" as const } })),
         },
         orderBy: { createdAt: "desc" },
-        take: 5,
+        take: 25, // score over a real pool — 5-newest could exclude the true match (review)
         select: { id: true, title: true, taskType: true, status: true },
       });
       const scored = matches
@@ -737,7 +737,7 @@ export async function execHubTool(
           OR: q.split(/\s+/).filter((w) => w.length > 2).map((w) => ({ title: { contains: w, mode: "insensitive" as const } })),
         },
         orderBy: { createdAt: "desc" },
-        take: 5,
+        take: 25, // score over a real pool (review)
         select: { id: true, title: true },
       });
       const scored2 = matches
@@ -782,14 +782,20 @@ export async function execHubTool(
         // REVIEW step — listing only. The human must read these and explicitly
         // say “send” before the confirm call. The hub never texts on its own.
         return {
-          review: listed.rows.map((r) => ({ to: r.clientName, kind: r.taskType, street: r.street, text: r.body, blocked: r.blocked })),
+          review: listed.rows.map((r) => ({
+            to: r.clientName, kind: r.taskType, street: r.street, text: r.body, blocked: r.blocked,
+            held: r.warnStale ? "STALE — the shoot time may already have passed; this one will NOT send in the batch (handle it on the Outbox)" : null,
+          })),
           count: listed.rows.length,
-          note: "Nothing sent. Show the user this list; only when they explicitly say to send, call again with confirm:true.",
+          note: "Nothing sent. Show the user this list (including any held/stale rows); only when they explicitly say to send, call again with confirm:true.",
         };
       }
       const results: { to: string; ok: boolean; message: string }[] = [];
       for (const r of listed.rows) {
         if (r.blocked) { results.push({ to: r.clientName, ok: false, message: r.blocked }); continue; }
+        // The Outbox loads stale confirmations UNTICKED — the batch must never
+        // fire one (review finding). Same rule here: held, not sent.
+        if (r.warnStale) { results.push({ to: r.clientName, ok: false, message: "held — possibly stale confirmation; review it on the Outbox" }); continue; }
         const res = await sendDraftText(r.taskId, r.body).catch((e) => ({ ok: false, message: (e as Error).message }));
         results.push({ to: r.clientName, ok: res.ok, message: res.message });
       }

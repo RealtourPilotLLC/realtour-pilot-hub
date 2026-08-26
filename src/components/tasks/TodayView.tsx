@@ -4,8 +4,9 @@ import { PageHeader } from "@/components/PageHeader";
 import { TodayFeed, type TodayCard, type TodayShoot } from "@/components/today/TodayFeed";
 import { prisma } from "@/lib/prisma";
 import { MESSAGE_TASK_TYPES, DELIVER_TASK_TYPES, CLIENT_TEXT_TYPES, getClientTextTasks, getShootWindow, getHandledToday } from "@/lib/queries";
+import { etEndOfTodayUtc } from "@/lib/clientTexts";
 import { recentProjectWhere } from "@/lib/recency";
-import { etDayStartUtc, etAddDays } from "@/lib/datetime";
+import { etDayStartUtc } from "@/lib/datetime";
 import { isNeedsAssigning } from "@/lib/triage";
 import { receivedByLabel } from "@/lib/taskSource";
 import { listAssignees } from "@/lib/assignees";
@@ -42,8 +43,8 @@ function stackWhere(startToday: Date): Prisma.SmartTaskWhereInput {
         // card below stands in for all of them.
         {
           taskType: { notIn: [...MESSAGE_TASK_TYPES, ...CHECK_TYPES, ...CLIENT_TEXT_TYPES] },
-          // ET calendar end-of-day, NOT +24h arithmetic (the documented DST bug).
-          dueAt: { lte: new Date(etDayStartUtc(etAddDays(new Date(), 1)).getTime() - 1) },
+          // ET calendar end-of-day via the documented DST-correct helper.
+          dueAt: { lte: etEndOfTodayUtc() },
           OR: [{ projectId: null }, { project: recentProjectWhere() }],
         },
       ],
@@ -54,11 +55,14 @@ function stackWhere(startToday: Date): Prisma.SmartTaskWhereInput {
 // The hub tab badge: the feed's card count (stack tasks + the one texts rollup
 // card when texts are waiting) via a cheap count, not the full include query.
 export async function todayCardCount(): Promise<number> {
-  const [n, textTasks] = await Promise.all([
+  const [n, textTasks, triage] = await Promise.all([
     prisma.smartTask.count({ where: stackWhere(etDayStartUtc(new Date())) }),
     getClientTextTasks(),
+    prisma.smartTask.count({ where: { status: { in: ACTIVE }, assignedKey: null, taskType: { in: ["internal_instruction", "todo", "vendor_update"] }, OR: [{ projectId: null }, { project: recentProjectWhere() }] } }),
   ]);
-  return n + (textTasks.length > 0 ? 1 : 0);
+  // + one rollup card each for waiting texts and the unowned pile (review:
+  // the badge must match what the feed renders).
+  return n + (textTasks.length > 0 ? 1 : 0) + (triage > 0 ? 1 : 0);
 }
 
 function verbFor(taskType: string): TodayCard["verb"] {
@@ -106,7 +110,7 @@ export async function TodayView({ sp, tabs }: { sp: { guided?: string }; tabs: R
     getHandledToday(),
     listAssignees(),
     // The unowned instruction pile — one rollup card, not N walls of text.
-    prisma.smartTask.count({ where: { status: { in: ACTIVE }, assignedKey: null, taskType: { in: ["internal_instruction", "todo", "vendor_update"] } } }),
+    prisma.smartTask.count({ where: { status: { in: ACTIVE }, assignedKey: null, taskType: { in: ["internal_instruction", "todo", "vendor_update"] }, OR: [{ projectId: null }, { project: recentProjectWhere() }] } }),
   ]);
 
   const cards: TodayCard[] = tasks.map((t) => {

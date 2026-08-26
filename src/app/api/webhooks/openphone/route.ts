@@ -238,7 +238,24 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
           .catch(() => {});
       } else if (type === "call.completed") {
         const dur = Number(data.duration ?? 0);
-        if (!!data.answeredAt || dur > 0) await closeReplyForOutboundCall(clientId, effProject?.id ?? null);
+        if (!!data.answeredAt || dur > 0) {
+          await closeReplyForOutboundCall(clientId, effProject?.id ?? null);
+          // Record the ANSWERED outbound call in comms memory — the reply-SLA
+          // scan clears "still unanswered" off outbound rows, and without this
+          // write no outbound call ever existed in CommLog (review finding:
+          // the SLA's call branch was dead code).
+          const { logComm } = await import("@/lib/commLog");
+          await logComm({
+            channel: "call",
+            direction: "out",
+            clientId,
+            projectId: effProject?.id ?? null,
+            contactName: "Us",
+            body: `Outgoing call — answered (${Math.max(1, Math.round(dur / 60))} min)`,
+            source: "openphone",
+            externalId: data.id ? `op-call-out-${data.id}` : undefined,
+          }).catch(() => {});
+        }
       }
     }
   }

@@ -364,8 +364,8 @@ export async function setTaskAssignee(taskId: string, key: string) {
         await notifyInApp({
           kind: "edit_assigned",
           title,
-          href: t.projectId ? `/edit/${t.projectId}` : "/tasks",
-          targets: [{ roles: ["EDITOR"], userKey: `editor:${assignedKey}`, href: t.projectId ? `/edit/${t.projectId}` : "/tasks" }],
+          href: t.projectId ? `/edit/${t.projectId}` : "/editing",
+          targets: [{ roles: ["EDITOR"], userKey: `editor:${assignedKey}`, href: t.projectId ? `/edit/${t.projectId}` : "/editing" }],
           dedupeKey: `assign-${taskId}-${assignedKey}`,
         });
       } else if (!VENDOR_KEYS.has(assignedKey)) {

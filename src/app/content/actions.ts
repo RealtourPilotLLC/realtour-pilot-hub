@@ -99,6 +99,13 @@ export async function saveEnrollmentSettings(
   if (s.videosPerMonth !== undefined) {
     if (!Number.isInteger(s.videosPerMonth) || s.videosPerMonth < 1 || s.videosPerMonth > 31) return { ok: false, message: "Bad video count." };
     data.videosPerMonth = s.videosPerMonth;
+    // The CURRENT month was minted with the old number — update its owed figure
+    // too, or a mid-month change is invisible until next month (review finding).
+    const { etMonthKey } = await import("@/lib/contentProgram");
+    await prisma.contentMonth.updateMany({
+      where: { enrollmentId, monthKey: etMonthKey(), historical: false },
+      data: { videosOwed: s.videosPerMonth },
+    });
   }
   if (s.strategyCallRequired !== undefined) data.strategyCallRequired = s.strategyCallRequired;
   if (s.clientSuppliesTopics !== undefined) data.clientSuppliesTopics = s.clientSuppliesTopics;

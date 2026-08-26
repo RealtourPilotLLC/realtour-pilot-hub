@@ -85,12 +85,13 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
   // (admins only ever saw Unpaid + the Team directory). No "map"/"billing"/
   // "payouts"/"team" here: those merged away and canAccess() maps their legacy
   // grants onto schedule/sales/users below.
-  // "shoot" (all-shoots window — Schedule owns it) and "catalog" (folded into
-  // Resources) dropped Aug 25; shooting admins (James) carry a per-user grant.
+  // "shoot" (all-shoots window — Schedule owns it) dropped Aug 25; shooting
+  // admins (James) carry a per-user grant. "catalog" stays openable (the
+  // Resources quick-link points there) — it just has no nav item of its own.
   ADMIN: [
     "dashboard", "tasks", "review", "pipeline", "schedule",
     "communications", "clients", "content", "users", "upload", "editing", "sales",
-    "resources", "training", "assistant", "feedback", "trends", "settings",
+    "catalog", "resources", "training", "assistant", "feedback", "trends", "settings",
   ],
   // No "dashboard": the overview page carries ops counts + owner money strips
   // that aren't an editor's business — middleware bounces them to /editing.

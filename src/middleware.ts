@@ -8,6 +8,11 @@ import { canAccess, homeFor, PAGES, type PageKey } from "@/lib/auth/access";
 // are allowed to any signed-in user.
 function pathKey(pathname: string): PageKey | null {
   if (pathname === "/") return "dashboard";
+  // Shoot DETAIL screens are contextual field surfaces every signed-in role
+  // may open from a link (Schedule rows, Today's-shoots strip) — only the
+  // bare /shoot list is the photographer nav page (review finding: dropping
+  // "shoot" from ADMIN broke every /shoot/<id> link Kyle taps).
+  if (pathname.startsWith("/shoot/")) return null;
   for (const p of PAGES) {
     if (p.href !== "/" && (pathname === p.href || pathname.startsWith(p.href + "/"))) return p.key;
   }

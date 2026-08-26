@@ -421,7 +421,9 @@ export async function getActionCounts(): Promise<ActionCounts> {
     // Same recency rule as the Board, so the chip never counts a card no list
     // can render (audit: a 28-day ON_HOLD QC ghost was chip-counted, invisible).
     prisma.smartTask.count({ where: { status: { in: BRIEF_ACTIVE }, taskType: { in: DELIVER_TASK_TYPES }, OR: [{ projectId: null }, { project: recentProjectWhere() }] } }),
-    prisma.smartTask.count({ where: { status: { in: BRIEF_ACTIVE }, dueAt: { lt: new Date() }, OR: [{ projectId: null }, { project: recentProjectWhere() }] } }),
+    // Message-type tasks are recency-EXEMPT on every list that renders them —
+    // the chip must count what the lists show (review finding).
+    prisma.smartTask.count({ where: { status: { in: BRIEF_ACTIVE }, dueAt: { lt: new Date() }, OR: [{ projectId: null }, { project: recentProjectWhere() }, { taskType: { in: MESSAGE_TASK_TYPES } }] } }),
     // Same definition as isNeedsAssigning (src/lib/triage.ts) — delegatable work
     // that arrived without an owner — expressed in SQL so it counts system-wide
     // instead of only the brief slice.
@@ -439,10 +441,13 @@ export async function getActionCounts(): Promise<ActionCounts> {
 // waiting. Kept here so /today can adopt this helper later and the two numbers
 // can never drift.
 export async function getTodayCardCount(): Promise<number> {
-  const endToday = new Date(etDayStartUtc(etAddDays(new Date(), 1)).getTime() - 1);
+  // etEndOfTodayUtc is the DST-correct helper (clientTexts.ts documents why
+  // now+24h is wrong around the clock changes — review finding).
+  const { etEndOfTodayUtc } = await import("@/lib/clientTexts");
+  const endToday = etEndOfTodayUtc();
   // /today's "check" step excludes delivery_text — those moved to /texts.
   const CHECK_TYPES = DELIVER_TASK_TYPES.filter((t) => t !== "delivery_text");
-  const [stack, texts] = await Promise.all([
+  const [stack, texts, triage] = await Promise.all([
     prisma.smartTask.count({
       where: {
         status: { in: BRIEF_ACTIVE },
@@ -464,9 +469,12 @@ export async function getTodayCardCount(): Promise<number> {
       },
     }),
     getClientTextTasks(),
+    // The unowned-instructions rollup card (one per feed when the pile is
+    // non-empty) — counted so the badge matches the feed (review finding).
+    prisma.smartTask.count({ where: { status: { in: BRIEF_ACTIVE }, assignedKey: null, taskType: { in: ["internal_instruction", "todo", "vendor_update"] }, OR: [{ projectId: null }, { project: recentProjectWhere() }] } }),
   ]);
-  // The texts themselves aren't cards — /today shows one rollup card for all.
-  return stack + (texts.length > 0 ? 1 : 0);
+  // The texts/triage piles aren't cards — /today shows one rollup card each.
+  return stack + (texts.length > 0 ? 1 : 0) + (triage > 0 ? 1 : 0);
 }
 
 // ---------------------------------------------------------------------------

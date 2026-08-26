@@ -174,7 +174,7 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
               </p>
               <div className="mt-2 flex flex-wrap gap-3 text-xs">
                 <Link href="/connections" className="font-medium text-brand hover:underline">Sync QuickBooks now</Link>
-                <Link href="/sales?tab=money" className="font-medium text-brand hover:underline">Review the bank feed</Link>
+                <Link href="/sales?tab=spending" className="font-medium text-brand hover:underline">Review the bank feed</Link>
               </div>
             </div>
           </div>
@@ -250,7 +250,7 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
                 {netFlow >= 0 ? "+" : ""}{m0(netFlow)}<span className="ml-1 text-base font-medium text-muted-2">/mo</span>
               </div>
               <p className="mt-1 text-xs text-muted">
-                About {m0(cash.comingIn30)} comes in and {m0(cash.goingOut30)} goes out in a typical month. Add your bank balance on the <Link href="/sales?tab=money" className="font-medium text-brand hover:underline">Money</Link> tab for a full month-end projection.
+                About {m0(cash.comingIn30)} comes in and {m0(cash.goingOut30)} goes out in a typical month. The balance reads live from your <Link href="/connections/banks" className="font-medium text-brand hover:underline">connected bank</Link>.
               </p>
             </div>
           )}
@@ -401,7 +401,6 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
             <Stat label="Payroll % of rev" value={monthPayrollPct == null ? "—" : `${Math.round(monthPayrollPct * 100)}%`} sub="~30–45% normal" tone={monthPayrollPct != null && monthPayrollPct > 0.5 ? "warning" : "muted"} />
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
-            <JumpLink href="/sales?tab=money" icon={Wallet} label="Money — record cash, expenses, pay" />
             <JumpLink href="/sales?tab=unpaid" icon={Receipt} label="Unpaid — chase AR" />
             <JumpLink href="/sales?tab=payroll" icon={Users} label="Payroll — per-person pay" />
             <JumpLink href="/connections" icon={Landmark} label="Connections — sync QuickBooks / Stripe" />

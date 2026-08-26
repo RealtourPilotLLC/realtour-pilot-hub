@@ -9,8 +9,11 @@ import { resolveQboRow, type FlaggedQboRow } from "@/app/sales/booksReviewAction
 // flagged rows, no surface ever rendered the notes). Each row: confirm the
 // category, flip business/personal if needed, done. Decisions are final —
 // the nightly re-classify never touches a reviewed row.
+// The classifier's FULL category set (review: VEHICLE/DUPLICATE/FEE_REFUND/
+// ALREADY_COUNTED rows rendered a blank dropdown and couldn't be confirmed).
 const CATEGORIES = [
-  "OPERATING", "COST_OF_SALES", "OWNER_DRAW", "FINANCING", "REVENUE", "TRANSFER", "UNCATEGORISED",
+  "OPERATING", "COST_OF_SALES", "VEHICLE", "OWNER_DRAW", "OWNER_CONTRIBUTION",
+  "REVENUE", "TRANSFER", "FINANCING", "FEE_REFUND", "DUPLICATE", "ALREADY_COUNTED", "UNCATEGORISED",
 ];
 const m = (n: number) => `$${Math.abs(Math.round(n)).toLocaleString("en-US")}`;
 
@@ -39,6 +42,8 @@ export function BooksReview({ rows }: { rows: FlaggedQboRow[] }) {
 
 function Row({ r, onDone }: { r: FlaggedQboRow; onDone: (id: string) => void }) {
   const [cat, setCat] = useState(r.category ?? "UNCATEGORISED");
+  // Never lose the classifier's own value even if it's outside the roster.
+  const options = CATEGORIES.includes(cat) ? CATEGORIES : [cat, ...CATEGORIES];
   const [personal, setPersonal] = useState(r.personal);
   const [busy, start] = useTransition();
   const [err, setErr] = useState<string | null>(null);
@@ -55,7 +60,7 @@ function Row({ r, onDone }: { r: FlaggedQboRow; onDone: (id: string) => void }) 
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         <select value={cat} onChange={(e) => setCat(e.target.value)}
           className="rounded-lg border border-border bg-surface-2 px-2 py-1 text-xs outline-none focus:border-brand">
-          {CATEGORIES.map((c) => <option key={c} value={c}>{c.toLowerCase().replace(/_/g, " ")}</option>)}
+          {options.map((c) => <option key={c} value={c}>{c.toLowerCase().replace(/_/g, " ")}</option>)}
         </select>
         <label className="flex items-center gap-1.5 text-xs text-muted">
           <input type="checkbox" checked={personal} onChange={(e) => setPersonal(e.target.checked)} className="accent-[var(--brand)]" />

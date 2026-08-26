@@ -211,7 +211,10 @@ export async function getUsageOverview(windowDays = 14): Promise<UsageOverview> 
 // ---------------------------------------------------------------------------
 export async function checkOpsGoDark(): Promise<{ alerts: number }> {
   const members = await prisma.teamMember.findMany({
-    where: { active: true, OR: [{ opsAlerts: true }, { creativeManager: true }, { role: "MANAGER" }] },
+    // Flags ONLY — deliberately NOT role-derived: Kim (Manila editor) carries
+    // role MANAGER and must never be treated as ops (schema + deliveryWatch
+    // both document this; review finding).
+    where: { active: true, OR: [{ opsAlerts: true }, { creativeManager: true }] },
     select: { id: true, name: true, email: true },
   });
   if (members.length === 0) return { alerts: 0 };

@@ -724,7 +724,7 @@ export async function railFreshness(): Promise<RailFreshness> {
 export async function nagStaleStatements(): Promise<{ nagged: number }> {
   const f = await railFreshness();
   let nagged = 0;
-  const week = new Date().toISOString().slice(0, 10).slice(0, 8); // YYYY-MM-D~ bucket ≈ weekly-ish
+  const week = new Date().toISOString().slice(0, 9); // YYYY-MM-D (decade-of-month) ≈ weekly-ish
   for (const m of f.manual) {
     if (m.daysBehind == null || m.daysBehind < 21) continue;
     const { notifyInApp } = await import("@/lib/notify");

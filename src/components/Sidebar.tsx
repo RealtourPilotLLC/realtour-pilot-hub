@@ -147,11 +147,9 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
   const can = (item: NavItem) => (item.key ? !user || canAccess(user, item.key) : true);
   // External link to the Script Studio app — owner/admin only, and only when it's
   // configured (SCRIPTING_BASE_URL set). Injected into the Creative section.
-  // Owner (or an explicit per-user grant) — a blanket-ADMIN external link put a
-  // scripting product Kyle never uses in his menu (audit).
-  const showScripting =
-    !!scriptingUrl &&
-    (!user || user.role === "OWNER" || ("scripting" in parsePermissions(user?.permissions) && !!parsePermissions(user?.permissions).scripting));
+  // Owner-only — the blanket-ADMIN external link put a scripting product Kyle
+  // never uses in his menu (audit; a per-user grant needs a real PageKey first).
+  const showScripting = !!scriptingUrl && (!user || user.role === "OWNER");
   // Creatives see /resources as a pure "SOP Center" (no forms/quick links), so
   // the nav label matches what the page actually is for them.
   const creative = !!user && (user.role === "EDITOR" || user.role === "PHOTOGRAPHER");

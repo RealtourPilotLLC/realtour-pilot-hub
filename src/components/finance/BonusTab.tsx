@@ -57,6 +57,9 @@ export async function BonusTab({ show, back = 0 }: { show: FinanceTab[]; back?: 
   for (const tm of members) {
     const basis = tm.creativeManager ? "TEAM" : "OWN";
     if (tm.role === "MANAGER" && !tm.creativeManager) continue; // ops managers aren't in the shoot bonus
+    // The owner shoots too but is not in his own bonus pool (review: his card
+    // diluted every creative's split and offered a pay-himself button).
+    if (/^jordan\b/i.test(tm.name)) continue;
     cards.push(await scorecardFor(q, { memberId: basis === "TEAM" ? null : tm.id, name: tm.name, basis }).then((c) => ({ ...c, memberId: tm.id })));
   }
   const split = splitPool(pool.pool, cards);
@@ -120,6 +123,11 @@ export async function BonusTab({ show, back = 0 }: { show: FinanceTab[]; back?: 
                 <span className={`text-sm font-bold tabular-nums ${split[c.memberId] > 0 ? "text-success" : "text-muted-2"}`}>{m(split[c.memberId] ?? 0)}</span>
                 {paidTo.has(c.memberId) ? (
                   <span className="rounded-full bg-success/10 px-2 py-0.5 text-[10px] font-semibold text-success">paid {m(paidTo.get(c.memberId) ?? 0)}</span>
+                ) : back === 0 ? (
+                  // The running quarter's pool is partial — paying now would
+                  // permanently cap this person at the mid-quarter figure
+                  // (per-quarter idempotency; review finding). Pay when closed.
+                  split[c.memberId] > 0 && <span className="text-[10px] text-muted-2">payable when the quarter closes</span>
                 ) : (
                   split[c.memberId] > 0 && <PayBonusButton memberId={c.memberId} name={c.name.split(" ")[0]} amount={split[c.memberId]} quarter={q.quarter} />
                 )}

@@ -644,16 +644,25 @@ export async function paydayPings(): Promise<{ pinged: number } | { skipped: str
   } catch {
     return { skipped: "already pinged today" };
   }
-  const start = new Date(`${period.startKey}T00:00:00-04:00`);
-  const end = new Date(`${period.endKey}T23:59:59-04:00`);
-  const people = await computePayroll(start, end);
-  let pinged = 0;
-  for (const person of people) {
-    if (person.total <= 0) continue;
-    const jobs = person.jobs.length;
-    const line = `💰 Payday: $${person.total.toFixed(2)} lands today (${jobs} shoot${jobs === 1 ? "" : "s"} + mileage, ${period.startKey.slice(5)}–${period.endKey.slice(5)}). Details: ${process.env.APP_URL ?? "https://realtour-pilot-hub.vercel.app"}/my-pay`;
-    await prisma.pendingSms.create({ data: { teamMemberId: person.member.id, line } }).catch(() => {});
-    pinged++;
+  try {
+    // periodBounds = the DST-correct ET window (review: hardcoded -04:00
+    // offsets shifted the winter window an hour early and could disagree
+    // with /my-pay's own figures).
+    const { start, end } = periodBounds(period);
+    const people = await computePayroll(start, end);
+    let pinged = 0;
+    for (const person of people) {
+      if (person.total <= 0) continue;
+      const jobs = person.jobs.length;
+      const line = `💰 Payday: $${person.total.toFixed(2)} lands today (${jobs} shoot${jobs === 1 ? "" : "s"} + mileage, ${period.startKey.slice(5)}–${period.endKey.slice(5)}). Details: ${process.env.APP_URL ?? "https://realtour-pilot-hub.vercel.app"}/my-pay`;
+      await prisma.pendingSms.create({ data: { teamMemberId: person.member.id, line } }).catch(() => {});
+      pinged++;
+    }
+    return { pinged };
+  } catch (e) {
+    // A failure after the claim must RELEASE it, or that payday's pings are
+    // permanently suppressed (review finding — same pattern as the digests).
+    await prisma.appSetting.delete({ where: { key: `payday-ping-${period.payoutKey}` } }).catch(() => {});
+    throw e;
   }
-  return { pinged };
 }

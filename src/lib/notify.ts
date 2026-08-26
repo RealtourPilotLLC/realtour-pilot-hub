@@ -137,15 +137,23 @@ async function flushMemberSms(teamMemberId: string): Promise<boolean> {
   });
   if (rows.length === 0) return false;
   // CLAIM before sending — the immediate flush and the 5-minute cron can race
-  // on the same unsent rows and text the digest twice (audit). updateMany
-  // where-sentAt-null is the atomic gate; a loser claims 0 rows and stops.
+  // on the same unsent rows and text the digest twice (audit). The claim stamp
+  // is a unique instant; the body is then built from EXACTLY the rows this
+  // claim won, so a partial claim can never re-text a competitor's rows
+  // (review finding), and an unclaim can only release our own.
+  const claimStamp = new Date();
   const claimed = await prisma.pendingSms.updateMany({
     where: { id: { in: rows.map((r) => r.id) }, sentAt: null },
-    data: { sentAt: new Date() },
+    data: { sentAt: claimStamp },
   });
   if (claimed.count === 0) return false;
+  const mine = await prisma.pendingSms.findMany({
+    where: { teamMemberId, sentAt: claimStamp },
+    orderBy: { createdAt: "asc" },
+  });
+  if (mine.length === 0) return false;
   const unclaim = () =>
-    prisma.pendingSms.updateMany({ where: { id: { in: rows.map((r) => r.id) } }, data: { sentAt: null } }).catch(() => {});
+    prisma.pendingSms.updateMany({ where: { id: { in: mine.map((r) => r.id) } }, data: { sentAt: null } }).catch(() => {});
   const member = await prisma.teamMember.findUnique({ where: { id: teamMemberId }, select: { phone: true } });
   const phone = member?.phone?.replace(/[^\d+]/g, "");
   if (!phone) { await unclaim(); return false; }
@@ -154,9 +162,9 @@ async function flushMemberSms(teamMemberId: string): Promise<boolean> {
   if (!from) { await unclaim(); return false; }
   const to = phone.startsWith("+") ? phone : `+1${phoneKey(phone)}`;
   const body =
-    rows.length === 1
-      ? `⚙️ RealTour Hub: ${rows[0].line}`
-      : `⚙️ RealTour Hub — ${rows.length} updates:\n` + rows.map((r) => `• ${r.line}`).join("\n");
+    mine.length === 1
+      ? `⚙️ RealTour Hub: ${mine[0].line}`
+      : `⚙️ RealTour Hub — ${mine.length} updates:\n` + mine.map((r) => `• ${r.line}`).join("\n");
   try {
     await OpenPhone.sendMessage(from, to, body.slice(0, 1500));
   } catch (e) {
@@ -284,14 +292,27 @@ export type EditorChannel = "slack" | "sms" | "relay" | "quiet" | "none" | "bell
 // actually carried the ping.
 async function channelForEditor(editorKey: string, title: string, href: string): Promise<EditorChannel> {
   // Jordan (Aug 25): editors get their notifications ON THE DASHBOARD — the
-  // in-app bell row (which already landed before this runs) plus the editor
-  // home's notification feed. The old Slack/SMS bridge never delivered a single
-  // ping in production (no slackUserId, no phone on file, Manila quiet-hours
-  // drops — audit) and was retired; git history keeps the implementation if a
-  // push channel ever comes back.
-  void title; void href;
-  const { editorMeta } = await import("@/lib/editors");
-  return editorMeta(editorKey) ? "bell" : "none";
+  // in-app bell row plus the editor home's feed. ONE exception (review): an
+  // editor with NO hub login can't see any dashboard — until their login
+  // exists, a phone on file gets the queued-SMS fallback (PendingSms handles
+  // batching + quiet hours), so work pings don't land in a room nobody enters.
+  const { editorMeta, editorTeamMemberId } = await import("@/lib/editors");
+  const meta = editorMeta(editorKey);
+  if (!meta) return "none";
+  try {
+    const tmId = await editorTeamMemberId(editorKey);
+    if (tmId) {
+      const [login, member] = await Promise.all([
+        prisma.appUser.findFirst({ where: { OR: [{ editorKey }, { teamMemberId: tmId }], status: "ACTIVE" }, select: { id: true } }),
+        prisma.teamMember.findUnique({ where: { id: tmId }, select: { phone: true } }),
+      ]);
+      if (!login && member?.phone) {
+        await prisma.pendingSms.create({ data: { teamMemberId: tmId, line: `${title} → ${appBase()}${href}` } });
+        return "sms";
+      }
+    }
+  } catch { /* fall through to bell */ }
+  return "bell";
 }
 
 export async function notifyInApp(n: {

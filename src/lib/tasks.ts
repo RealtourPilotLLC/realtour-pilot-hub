@@ -559,11 +559,18 @@ export async function createProjectFollowupTask(opts: {
     const prev = existing.description ?? "";
     const appended = `${prev}\n\n— ${at}: ${line}`.trim();
     const count = (appended.match(/^— /gm)?.length ?? 0) + 1;
+    // One-way priority escalation: a follow-up classified hotter RAISES the
+    // task; a routine follow-up never downgrades it (review finding — the
+    // append branch silently dropped an URGENT re-classification).
+    const RANK: Record<string, number> = { URGENT: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+    const incoming = opts.priority ?? "HIGH";
+    const escalate = (RANK[incoming] ?? 9) < (RANK[existing.priority] ?? 9);
     await prisma.smartTask.update({
       where: { id: existing.id },
       data: {
         description: appended.length > 4000 ? appended.slice(appended.length - 4000) : appended,
         summary: `${opts.senderName}: ${count} messages on ${street} — latest: “${clip(opts.text, 200)}”`.slice(0, 500),
+        ...(escalate ? { priority: incoming } : {}),
         ...(existing.dueAt && existing.dueAt.getTime() > Date.now() + 2 * HOUR ? { dueAt: new Date(Date.now() + 2 * HOUR) } : {}),
       },
     });
@@ -926,7 +933,7 @@ export async function closeObsoleteTasks(projectId: string, projectStatus: strin
         status: { notIn: ["COMPLETED", "CANCELLED"] },
         OR: [
           { dedupeKey: `cull-${projectId}` },
-          { dedupeKey: `raws-${projectId}` },
+          { dedupeKey: `raws-missing-${projectId}` },
           { dedupeKey: `raw-video-missing-${projectId}` },
         ],
       },

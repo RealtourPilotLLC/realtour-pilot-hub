@@ -197,6 +197,15 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
   const existing = new Set(
     (await prisma.contentTopic.findMany({ where: { monthId: targetMonthId }, select: { title: true } })).map((t) => t.title.toLowerCase()),
   );
+  // Re-runs (the Re-analyze button / a replaced transcript) must not multiply
+  // bank ideas, rejected records, or intel notes — dedupe against EVERYTHING
+  // this enrollment already holds (review finding).
+  const allTitles = new Set(
+    (await prisma.contentTopic.findMany({ where: { enrollmentId: month.enrollmentId }, select: { title: true } })).map((t) => t.title.toLowerCase()),
+  );
+  const noteBodies = new Set(
+    (await prisma.contentNote.findMany({ where: { clientId: month.clientId, intelligence: true }, select: { body: true } })).map((n) => n.body.toLowerCase()),
+  );
   let confirmed = 0;
   for (const t of arr<{ title: string; concept: string; pillar: string | null }>(out.confirmedTopics)) {
     if (!t.title?.trim() || existing.has(t.title.toLowerCase())) continue;
@@ -213,7 +222,8 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
   // Future ideas → the bank.
   let future = 0;
   for (const t of arr<{ title: string; concept: string; pillar: string | null }>(out.futureIdeas)) {
-    if (!t.title?.trim()) continue;
+    if (!t.title?.trim() || allTitles.has(t.title.trim().toLowerCase())) continue;
+    allTitles.add(t.title.trim().toLowerCase());
     await prisma.contentTopic.create({
       data: {
         enrollmentId: month.enrollmentId, clientId: month.clientId,
@@ -226,7 +236,8 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
   }
   // Rejected ideas → recorded so they aren't re-pitched.
   for (const title of arr<string>(out.rejectedIdeas)) {
-    if (!title?.trim()) continue;
+    if (!title?.trim() || allTitles.has(title.trim().toLowerCase())) continue;
+    allTitles.add(title.trim().toLowerCase());
     await prisma.contentTopic.create({
       data: {
         enrollmentId: month.enrollmentId, clientId: month.clientId,
@@ -239,8 +250,11 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
   let intel = 0;
   for (const fact of arr<string>(out.profileIntel)) {
     if (!fact?.trim()) continue;
+    const body = `From the ${month.monthKey} strategy call: ${fact.trim().slice(0, 2000)}`;
+    if (noteBodies.has(body.toLowerCase())) continue;
+    noteBodies.add(body.toLowerCase());
     await prisma.contentNote.create({
-      data: { clientId: month.clientId, body: `From the ${month.monthKey} strategy call: ${fact.trim().slice(0, 2000)}`, intelligence: true, authorName: "AI (call extraction)" },
+      data: { clientId: month.clientId, body, intelligence: true, authorName: "AI (call extraction)" },
     });
     intel++;
   }
@@ -255,8 +269,19 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
   return { confirmedTopics: confirmed, futureIdeas: future, rejected: arr<string>(out.rejectedIdeas).length, intelNotes: intel, todos: todoList.length };
   } catch (e) {
     // Release the claim so the month can be analyzed again — a stamped-but-
-    // empty month was unrecoverable from the UI (audit Aug 25).
-    await prisma.contentMonth.updateMany({ where: { id: monthId }, data: { transcriptProcessedAt: null } }).catch(() => {});
+    // empty month was unrecoverable from the UI (audit Aug 25). CAPPED at
+    // three failures: after that the stamp STAYS so a deterministically
+    // failing transcript can't become an hourly AI retry loop (review
+    // finding); the Re-analyze button still force-clears for a human retry.
+    try {
+      const key = `transcript-fails-${monthId}`;
+      const row = await prisma.appSetting.findUnique({ where: { key } });
+      const fails = Number(row?.value ?? 0) + 1;
+      await prisma.appSetting.upsert({ where: { key }, create: { key, value: String(fails) }, update: { value: String(fails) } });
+      if (fails < 3) {
+        await prisma.contentMonth.updateMany({ where: { id: monthId }, data: { transcriptProcessedAt: null } });
+      }
+    } catch { /* releasing is best-effort */ }
     throw e;
   }
 }
