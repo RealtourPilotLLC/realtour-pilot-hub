@@ -154,6 +154,8 @@ export async function postProjectMessage(
 
   revalidatePath(`/projects/${projectId}`);
   revalidatePath("/editing");
+  revalidatePath("/editing/messages"); // the message center renders these threads too
+  revalidatePath(`/edit/${projectId}`);
   return { ok: true, message: mentions.length ? "Posted & tagged." : "Posted." };
 }
 

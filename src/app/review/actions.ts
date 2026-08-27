@@ -225,7 +225,7 @@ export async function submitCutForReview(
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: {
-      id: true, title: true, status: true, addressLine: true, shootDate: true, createdAt: true,
+      id: true, title: true, status: true, addressLine: true, shootDate: true, createdAt: true, deliveredAt: true,
       client: { select: { name: true, socialClient: true } },
       deliverables: { select: { type: true, label: true, quantity: true } },
     },
@@ -316,6 +316,23 @@ export async function submitCutForReview(
   // EDITING/SHOT → REVIEW (never demote a job already past review).
   if (project.status === "EDITING" || project.status === "SHOT") {
     await prisma.project.update({ where: { id: projectId }, data: { status: "REVIEW" } });
+  } else if (project.status === "REVISION" && !project.deliveredAt) {
+    // A NEVER-delivered job bounced in the Review Room (Jordan, Aug 27:
+    // requesting changes flips it to Revisions) — the redo landing sends it
+    // back to Ready-for-review, but only when this submit closed the LAST
+    // open revision ask (a photo-lane ask on the same job keeps it in
+    // Revisions), and clear the stamp so the hourly sweep can't flip it
+    // straight back. A delivered job's revision keeps its lifecycle:
+    // resolveRevision is what returns it to DELIVERED.
+    const stillOpen = await prisma.smartTask.count({
+      where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    });
+    if (stillOpen === 0) {
+      await prisma.project.update({
+        where: { id: projectId },
+        data: { status: "REVIEW", revisionRequestedAt: null },
+      });
+    }
   }
   await prisma.activity.create({
     data: {
@@ -593,8 +610,9 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
 
 // REQUEST CHANGES: bundle the open EDITOR-lane notes on this cut into ONE
 // revision task on the editor's plate (their scoped queue on /editing shows it as a
-// red Revision chip), flip the job back to EDITING, ring their bell. Re-sending
-// reopens + refreshes the same task instead of duplicating.
+// red Revision chip), flip the job to REVISION ("Revisions" on the queue),
+// ring their bell. Re-sending reopens + refreshes the same task instead of
+// duplicating.
 export async function requestCutChanges(submissionId: string): Promise<{ ok: boolean; message: string }> {
   try {
     await requireAdmin();
@@ -662,10 +680,19 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
     where: { id: submissionId },
     data: { status: "CHANGES_REQUESTED", decidedAt: new Date(), decidedBy: authorName },
   });
-  // Back to the cutting room (REVIEW → EDITING); REVISION stays reserved for
-  // client-requested post-delivery changes so the comms engine's meaning holds.
-  if (submission.project?.status === "REVIEW") {
-    await prisma.project.update({ where: { id: submission.projectId }, data: { status: "EDITING" } });
+  // The job IS in revisions now (Jordan, Aug 27: "once we review the video and
+  // I submit it for revisions, change the status to revisions"). The stamp
+  // makes it sweep-proof — computeStatus honours an open revision, so the
+  // hourly evidence engine can't flip it back off the old cut's files. The
+  // editor's resubmit clears the stamp and returns a never-delivered job to
+  // REVIEW; a delivered job still exits via resolveRevision, so the comms
+  // engine's post-delivery meaning holds.
+  const st = submission.project?.status;
+  if (st === "REVIEW" || st === "EDITING" || st === "REVISION") {
+    await prisma.project.update({
+      where: { id: submission.projectId },
+      data: { status: "REVISION", revisionRequestedAt: new Date() },
+    });
   }
   await prisma.activity.create({
     data: {

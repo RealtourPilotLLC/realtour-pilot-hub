@@ -255,9 +255,11 @@ export function computeStatus(sig: StatusSignals): StatusResult {
         aryeo: a,
         dropbox: d,
         fulfilledOnAryeo: fulfilled,
+        // Neutral wording: a revision can be the client's post-delivery ask OR
+        // the owner bouncing a cut in the Review Room (Aug 27).
         reason: sig.revisionNote
-          ? `Client requested changes after delivery: "${sig.revisionNote.slice(0, 160)}"`
-          : "Client requested changes after delivery — revision in progress.",
+          ? `Changes requested: "${sig.revisionNote.slice(0, 160)}"`
+          : "Changes requested — revision in progress.",
         checkedAt: new Date().toISOString(),
         videoTier: sig.videoTier,
         videoDue: null,

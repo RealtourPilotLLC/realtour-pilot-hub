@@ -52,6 +52,8 @@ export type QueueRow = {
   comments: number;
   rawUrl: string | null;
   finalUrl: string | null;
+  rawCount: number; // video files seen in the RAW folder (evidence sweep, ~hourly)
+  finalCount: number; // video files seen in the Final folder
   shootISO: string | null;
   photographer: string | null;
   openRevisions: number;
@@ -215,12 +217,16 @@ function LinkChip({
   label,
   title,
   brand = false,
+  dot,
 }: {
   href: string;
   icon: typeof FolderOpen;
   label: string;
   title: string;
   brand?: boolean;
+  // Uploaded-or-not (Jordan, Aug 27): green = files are in the folder, hollow
+  // grey = still empty. Fed by the evidence sweep, so it refreshes ~hourly.
+  dot?: boolean;
 }) {
   const external = href.startsWith("http");
   const classes = cn(
@@ -229,15 +235,24 @@ function LinkChip({
       ? "border-brand/30 bg-brand-soft text-brand hover:bg-brand/15"
       : "border-border text-muted hover:bg-surface-2 hover:text-foreground",
   );
-  return external ? (
-    <a href={href} target="_blank" rel="noopener noreferrer" title={title} className={classes}>
+  const body = (
+    <>
+      {dot != null && (
+        <span
+          className={cn("size-1.5 shrink-0 rounded-full", dot ? "bg-success" : "border border-muted-2/70 bg-transparent")}
+        />
+      )}
       <Icon className="size-3" />
       {label}
+    </>
+  );
+  return external ? (
+    <a href={href} target="_blank" rel="noopener noreferrer" title={title} className={classes}>
+      {body}
     </a>
   ) : (
     <Link href={href} title={title} className={classes}>
-      <Icon className="size-3" />
-      {label}
+      {body}
     </Link>
   );
 }
@@ -363,8 +378,24 @@ export function SimpleQueue({
                     <td className="px-3 py-2.5 text-center text-xs">{r.videos}</td>
                     <td className="whitespace-nowrap px-3 py-2.5" onClick={swallow}>
                       <span className="inline-flex items-center gap-1">
-                        {r.rawUrl && <LinkChip href={r.rawUrl} icon={FolderOpen} label="RAW" title="Open the RAW footage folder in Dropbox" />}
-                        {r.finalUrl && <LinkChip href={r.finalUrl} icon={FolderUp} label="Final" title="Upload the finished cut to this Dropbox folder" />}
+                        {r.rawUrl && (
+                          <LinkChip
+                            href={r.rawUrl}
+                            icon={FolderOpen}
+                            label="RAW"
+                            dot={r.rawCount > 0}
+                            title={r.rawCount > 0 ? `RAW footage folder — ${r.rawCount} file${r.rawCount === 1 ? "" : "s"} uploaded` : "RAW footage folder — nothing uploaded yet (checked hourly)"}
+                          />
+                        )}
+                        {r.finalUrl && (
+                          <LinkChip
+                            href={r.finalUrl}
+                            icon={FolderUp}
+                            label="Final"
+                            dot={r.finalCount > 0}
+                            title={r.finalCount > 0 ? `Final footage folder — ${r.finalCount} file${r.finalCount === 1 ? "" : "s"} in` : "Final footage folder — no finished cut yet (checked hourly)"}
+                          />
+                        )}
                         {r.hasScript && <LinkChip href={`/edit/${r.id}`} icon={FileText} label="Script" title="A script is on file — view it on the edit page" brand />}
                       </span>
                     </td>

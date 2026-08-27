@@ -752,6 +752,19 @@ model ProjectMessage {
   @@index([projectId])
 }
 
+// Per-person read watermark for a project's message thread — powers the
+// unread dots + badge in the message center (/editing/messages). userKey is
+// the viewer's AppUser id; upserted when they open the thread.
+model ThreadRead {
+  id        String   @id @default(cuid())
+  userKey   String
+  projectId String
+  seenAt    DateTime @default(now())
+
+  @@unique([userKey, projectId])
+  @@index([userKey])
+}
+
 // Service catalogue synced from Aryeo /products.
 // The LINE ITEMS of an Aryeo order, exactly as the client bought them.
 //

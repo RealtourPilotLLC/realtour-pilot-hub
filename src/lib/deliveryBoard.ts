@@ -88,7 +88,8 @@ function blockerFor(
 ): { kind: BlockerKind; label: string } {
   if (p.deliveredAt) return { kind: "delivered", label: "Delivered" };
   if (p.status === "ON_HOLD") return { kind: "on_hold", label: "On hold" };
-  if (p.status === "REVISION") return { kind: "revision", label: "Client asked for changes" };
+  // Neutral: a revision is the client's ask OR the owner bouncing a cut in review.
+  if (p.status === "REVISION") return { kind: "revision", label: "Changes requested" };
 
   const now = new Date();
   if (!p.shootDate || p.shootDate > now) {
