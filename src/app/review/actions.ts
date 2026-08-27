@@ -20,7 +20,7 @@ import { notifyInApp, type NotifyTarget } from "@/lib/notify";
 //   owner reviews at /review/<projectId> → addCutNote() drops timestamped
 //     EDITOR-lane notes (or PHOTOGRAPHER-lane for capture problems) on the cut.
 //   requestCutChanges() → bundles the open EDITOR notes into ONE revision task
-//     back on the editor's plate (their EditorDay Do-Now), rings their bell.
+//     back on the editor's plate (their scoped queue on /editing), rings their bell.
 //   editor re-submits → NEW round; approveCut() → APPROVED + Kyle delivers.
 // Reads live in src/lib/reviewRoom.ts. The per-asset PHOTO pin review stays in
 // the project gallery (reviewActions.ts) — this file is the CUT loop.
@@ -592,7 +592,7 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
 }
 
 // REQUEST CHANGES: bundle the open EDITOR-lane notes on this cut into ONE
-// revision task on the editor's plate (their EditorDay Do-Now shows it with a
+// revision task on the editor's plate (their scoped queue on /editing shows it as a
 // red Revision chip), flip the job back to EDITING, ring their bell. Re-sending
 // reopens + refreshes the same task instead of duplicating.
 export async function requestCutChanges(submissionId: string): Promise<{ ok: boolean; message: string }> {

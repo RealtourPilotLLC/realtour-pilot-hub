@@ -243,9 +243,14 @@ function LinkChip({
 }
 
 export function SimpleQueue({
-  notDone, upcoming, done,
+  notDone, upcoming, done, hideEditor = false,
 }: {
   notDone: QueueRow[]; upcoming: QueueRow[]; done: QueueRow[];
+  // The editor's own view (Jordan, Aug 27: "the same queue I do, just with the
+  // jobs assigned to them and no editor section") — every row is already
+  // theirs, so the Editor column is dead weight and the reassign control is
+  // admin-only anyway.
+  hideEditor?: boolean;
 }) {
   const router = useRouter();
   const [view, setView] = useState<"notdone" | "upcoming" | "done">("notdone");
@@ -286,7 +291,7 @@ export function SimpleQueue({
                 <th className="px-3 py-2">Video type</th>
                 <th className="px-3 py-2">Status</th>
                 <th className="px-3 py-2">Due</th>
-                <th className="px-3 py-2">Editor</th>
+                {!hideEditor && <th className="px-3 py-2">Editor</th>}
                 <th className="px-3 py-2 text-center">Videos</th>
                 <th className="px-3 py-2">Links</th>
                 <th className="px-3 py-2 text-center">
@@ -342,17 +347,19 @@ export function SimpleQueue({
                       {view === "upcoming" ? `Shoots ${fmtDay(r.shootISO)}` : fmtDay(r.dueISO)}{r.late ? " · late" : ""}
                       {view === "upcoming" && r.photographer && <span className="block text-muted">📷 {r.photographer}</span>}
                     </td>
-                    <td className="whitespace-nowrap px-3 py-2.5" onClick={swallow}>
-                      {view === "done" ? (
-                        // Delivered = credit, not live work — no reassign here
-                        // (the server refuses too). A new cut on a finished
-                        // job goes through "Add a job to the queue".
-                        <span className="text-xs font-medium">{r.editor ?? "—"}</span>
-                      ) : (
-                        // key = server truth, same deal as the status pill.
-                        <EditorSelect key={r.editorKey ?? "none"} row={r} />
-                      )}
-                    </td>
+                    {!hideEditor && (
+                      <td className="whitespace-nowrap px-3 py-2.5" onClick={swallow}>
+                        {view === "done" ? (
+                          // Delivered = credit, not live work — no reassign here
+                          // (the server refuses too). A new cut on a finished
+                          // job goes through "Add a job to the queue".
+                          <span className="text-xs font-medium">{r.editor ?? "—"}</span>
+                        ) : (
+                          // key = server truth, same deal as the status pill.
+                          <EditorSelect key={r.editorKey ?? "none"} row={r} />
+                        )}
+                      </td>
+                    )}
                     <td className="px-3 py-2.5 text-center text-xs">{r.videos}</td>
                     <td className="whitespace-nowrap px-3 py-2.5" onClick={swallow}>
                       <span className="inline-flex items-center gap-1">

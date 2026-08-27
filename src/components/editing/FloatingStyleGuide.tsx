@@ -9,7 +9,7 @@ import { Clapperboard, ExternalLink, GripHorizontal, X } from "lucide-react";
 // able to be dragged around the screen and placed wherever they want it."
 //
 // · The launcher button lives in the queue's PageHeader (owner view and the
-//   editor's EditorDay both).
+//   editor's scoped queue both).
 // · The window is position:fixed, dragged by its title bar (pointer capture),
 //   resizable from the bottom-right corner (native CSS resize), and remembers
 //   where you left it (localStorage) — "placed wherever they want it" sticks

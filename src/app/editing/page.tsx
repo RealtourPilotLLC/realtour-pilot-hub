@@ -1,9 +1,11 @@
+import Link from "next/link";
+import { Bell } from "lucide-react";
 import { requirePageAccess } from "@/lib/auth/guards";
 import { PageHeader } from "@/components/PageHeader";
+import { Section } from "@/components/ui/Section";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
 import { slugForName } from "@/lib/assignees";
-import { EditorDay } from "@/components/editing/EditorDay";
 import { AddToQueue } from "@/components/editing/AddToQueue";
 import { FloatingStyleGuide } from "@/components/editing/FloatingStyleGuide";
 import { SimpleQueue, type QueueRow } from "@/components/editing/SimpleQueue";
@@ -18,12 +20,17 @@ export const dynamic = "force-dynamic";
 
 // The Editor dashboard is VIDEO-ONLY — photos are edited by AI, so editors only
 // touch video/reel jobs.
-//   · EDITOR (Kim / John Mark) → their guided personal worklist (EditorDay).
 //   · OWNER / ADMIN → the Slack-tracker view, rebuilt in-hub (Jordan: "make
 //     this editor queue as simple as possible … I really like the way we have
 //     it set up in Slack"): Queue | Upcoming edits | Delivered, one row per
 //     job. The old SLA-panel + tracker-spreadsheet stack is gone — per-job
 //     controls (reassign, review, chat) live on /edit/<id>.
+//   · EDITOR (Kim / John Mark) → the SAME queue (Jordan, Aug 27: "I want them
+//     to see the same queue I do, just with the jobs assigned to them and no
+//     editor section"), scoped to rows whose resolved editor is them, plus
+//     their "For you" notification feed — this page IS their channel (Jordan
+//     Aug 25: dashboard notifications, no Slack/SMS). The old bespoke
+//     EditorDay worklist is gone.
 // Project status → the Slack ladder's words, verbatim from the Loom.
 const STATUS_LABEL: Record<string, string> = {
   // Past-shoot BOOKED/SCHEDULED = shot but raws not in yet → Slack's "Waiting".
@@ -41,12 +48,9 @@ export default async function EditorQueuePage() {
   const me = await getCurrentUser().catch(() => null);
   const editorScope = me?.role === "EDITOR" ? (me.editorKey || (me.name ? slugForName(me.name) : null)) : null;
 
-  if (me?.role === "EDITOR" && editorScope) {
-    return <EditorDay editorScope={editorScope} editorName={me.name ?? "there"} />;
-  }
   // An EDITOR whose login has no editorKey AND no name can't be scoped — fail
   // closed with a nudge, never fall through to the all-jobs view below.
-  if (me?.role === "EDITOR") {
+  if (me?.role === "EDITOR" && !editorScope) {
     return (
       <div>
         <PageHeader eyebrow="Video projects only" title="Editor Queue" />
@@ -180,6 +184,61 @@ export default async function EditorQueuePage() {
   const notDone = inflight.filter(hasVideo).map((p) => toRow(p));
   const upcomingRows = scheduled.filter(hasVideo).map((p) => toRow(p, true));
   const done = deliveredRaw.filter(hasVideo).map((p) => toRow(p));
+
+  // THE EDITOR'S VIEW — the same table, filtered to rows whose resolved editor
+  // (open task → Project.editor → routing rules, exactly what the owner's
+  // Editor column shows) is them. Rows are creative-safe by construction: a
+  // QueueRow carries no money fields.
+  if (me?.role === "EDITOR" && editorScope) {
+    const mine = (rows: QueueRow[]) => rows.filter((r) => r.editorKey === editorScope);
+    const myNotDone = mine(notDone);
+    const myUpcoming = mine(upcomingRows);
+    const myDone = mine(done);
+    const overdue = myNotDone.filter((r) => r.late).length;
+
+    // Their notification feed — raws landed, revisions, review verdicts. The
+    // bell rows addressed to this editor, on the page they actually open.
+    const pings = await prisma.notification.findMany({
+      where: { userKey: `editor:${editorScope}`, createdAt: { gte: new Date(Date.now() - 14 * 86_400_000) } },
+      orderBy: { createdAt: "desc" },
+      take: 10,
+      select: { id: true, title: true, href: true, createdAt: true },
+    });
+
+    return (
+      <div>
+        <PageHeader
+          eyebrow="Your edits"
+          title={`Hi ${(me.name ?? "there").split(" ")[0]}`}
+          subtitle={
+            myNotDone.length
+              ? `${myNotDone.length} to edit${overdue ? ` · ${overdue} overdue` : ""} · ${myUpcoming.length} upcoming`
+              : "Nothing waiting — you're all caught up."
+          }
+          actions={<FloatingStyleGuide />}
+        />
+        <div className="mx-auto max-w-7xl space-y-4 p-4 pb-16 sm:p-6">
+          {pings.length > 0 && (
+            <Section icon={Bell} title="For you" count={pings.length}>
+              <ul className="divide-y divide-border">
+                {pings.map((n) => (
+                  <li key={n.id}>
+                    <Link href={n.href} className="flex items-center justify-between gap-3 py-2 hover:bg-surface-2/50">
+                      <span className="min-w-0 flex-1 truncate text-sm">{n.title}</span>
+                      <span className="shrink-0 text-[11px] text-muted-2">
+                        {n.createdAt.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" })}
+                      </span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </Section>
+          )}
+          <SimpleQueue notDone={myNotDone} upcoming={myUpcoming} done={myDone} hideEditor />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
