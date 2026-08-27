@@ -13,31 +13,8 @@ import { videoTier } from "@/lib/projectStatus";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { etAddDays } from "@/lib/datetime";
-import { cleanBrief, parseShootBrief } from "@/lib/shoot";
 
 export const dynamic = "force-dynamic";
-
-// The customer's OWN words live in the Aryeo appointment brief — their intake
-// answers ("Special Instructions for the photographer", "Order Notes"), which
-// until now died on /shoot and never reached anyone editing the job.
-const APPT = {
-  appointments: { select: { description: true }, orderBy: { startAt: "asc" as const }, take: 1 },
-};
-
-// The order's editorially-relevant note: the special instructions first (that's
-// where people actually write "shoot horizontal", "coming-soon teaser only"),
-// then any Order Notes. Aryeo writes a literal "n/a" when the field was left
-// blank — that's not a note, so drop it.
-const realNote = (s?: string | null) => {
-  const t = (s ?? "").trim();
-  return t && !/^n\/?a\.?$/i.test(t) ? t : null;
-};
-function aryeoCustomerNote(description?: string | null): string | null {
-  const parsed = description ? parseShootBrief(cleanBrief(description)) : null;
-  if (!parsed) return null;
-  const parts = [realNote(parsed.special), realNote(parsed.orderNotes)].filter(Boolean);
-  return parts.length ? parts.join("\n\n") : null;
-}
 
 // The Editor dashboard is VIDEO-ONLY — photos are edited by AI, so editors only
 // touch video/reel jobs.
@@ -98,7 +75,7 @@ export default async function EditorQueuePage() {
         ],
       },
       orderBy: [{ deliveryDue: { sort: "asc", nulls: "last" } }, { shootDate: { sort: "asc", nulls: "last" } }],
-      include: { client: true, editor: true, photographer: true, deliverables: true, ...APPT },
+      include: { client: true, editor: true, photographer: true, deliverables: true },
     }),
     // Upcoming edits — Jordan: "any shoot on the schedule upcoming should be in
     // an upcoming edits tab". Every future-dated booked/scheduled job with a
@@ -106,13 +83,13 @@ export default async function EditorQueuePage() {
     prisma.project.findMany({
       where: { status: { in: ["BOOKED", "SCHEDULED"] }, shootDate: { gte: now } },
       orderBy: { shootDate: "asc" },
-      include: { client: true, editor: true, photographer: true, deliverables: true, ...APPT },
+      include: { client: true, editor: true, photographer: true, deliverables: true },
     }),
     prisma.project.findMany({
       where: { status: "DELIVERED", deliveredAt: { gte: deliveredCutoff } },
       orderBy: { deliveredAt: "desc" },
       take: 60,
-      include: { client: true, editor: true, photographer: true, deliverables: true, ...APPT },
+      include: { client: true, editor: true, photographer: true, deliverables: true },
     }),
   ]);
 
@@ -189,13 +166,6 @@ export default async function EditorQueuePage() {
       dueISO: upcoming ? p.shootDate?.toISOString() ?? null : p.deliveryDue?.toISOString() ?? null,
       late: !upcoming && p.status !== "DELIVERED" && !!p.deliveryDue && p.deliveryDue < now,
       priority: p.priority,
-      // Three different voices, kept separate on purpose: what the customer
-      // asked for on the ORDER, what we've since written about this job, and
-      // the client's standing style preferences.
-      orderNotes: aryeoCustomerNote(p.appointments[0]?.description),
-      customerNotes: p.notes ?? null,
-      clientPrefs: p.client.editingPreferences ?? null,
-      photographerNotes: p.editorBrief ?? null,
       videos: videos.length,
       hasScript: !!(p.reelScript || p.reelHook),
       comments: comments.get(p.id) ?? 0,
@@ -227,14 +197,9 @@ export default async function EditorQueuePage() {
         {/* Manual add — the human override for jobs the automatic handoff never
             picks up (video added after booking, old footage, non-Aryeo work). */}
         <AddToQueue />
-        {/* Owners, admins and photographers can correct the notes; editors read
-            them. realRole, so a "view as" preview can't write. */}
-        <SimpleQueue
-          notDone={notDone}
-          upcoming={upcomingRows}
-          done={done}
-          canEditNotes={["OWNER", "ADMIN", "PHOTOGRAPHER"].includes(me?.realRole ?? "OWNER") && !me?.impersonating}
-        />
+        {/* Rows click straight through to /edit/<id> — the notes (customer +
+            shoot) live there now, not in the table. */}
+        <SimpleQueue notDone={notDone} upcoming={upcomingRows} done={done} />
       </div>
     </div>
   );

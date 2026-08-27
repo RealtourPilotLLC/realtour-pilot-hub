@@ -85,6 +85,22 @@ export function parseShootBrief(text: string): ShootBrief | null {
   return any ? out : null;
 }
 
+// The order's editorially-relevant customer note: the special instructions
+// first (that's where people actually write "shoot horizontal", "coming-soon
+// teaser only"), then any Order Notes. Aryeo writes a literal "n/a" when the
+// field was left blank — that's not a note, so drop it. Shared by the editor
+// queue and the edit brief so both read the customer's same words.
+const realNote = (s?: string | null) => {
+  const t = (s ?? "").trim();
+  return t && !/^n\/?a\.?$/i.test(t) ? t : null;
+};
+export function aryeoCustomerNote(description?: string | null): string | null {
+  const parsed = description ? parseShootBrief(cleanBrief(description)) : null;
+  if (!parsed) return null;
+  const parts = [realNote(parsed.special), realNote(parsed.orderNotes)].filter(Boolean);
+  return parts.length ? parts.join("\n\n") : null;
+}
+
 // A Zillow 3D tour link pasted into the order notes, if any — the photographer
 // opens/captures it on-site. Returns the first zillow URL found, else null.
 export function extractZillowUrl(text: string | null | undefined): string | null {

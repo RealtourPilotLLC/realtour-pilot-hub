@@ -1,38 +1,38 @@
 "use client";
 
-import { Fragment, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ChevronDown,
-  ChevronRight,
-  ExternalLink,
   FileText,
   FolderOpen,
   FolderUp,
   Loader2,
   MessageSquare,
-  Pencil,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { saveJobNotes, setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
+import { setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
 
 // THE SLACK TRACKER, replicated — Jordan: "I want the editor queue to look
 // just like our Slack. It's been working, so I don't want to fix what isn't
 // broken." Same columns as the Slack List (task name, video type, due date,
-// status pill, editor, notes, deliverables, priority, RAW/Final/script links,
+// status pill, editor, deliverables, priority, RAW/Final/script links,
 // comments), same views (Not Done | Upcoming | Done), same status ladder.
 //
 // What the hub fixes UNDER the familiar surface — the things that WERE broken
 // in Slack: jobs add themselves (Aryeo booking → row appears), Waiting →
 // Ready for editing flips on raw-upload evidence and Completed on delivery
-// evidence (Kyle forgetting the tracker can't hide work any more),
-// photographer notes + customer notes + script fill their columns from the
-// job itself, and revisions live on the job's own chat instead of channel
-// dumps and screenshots.
+// evidence (Kyle forgetting the tracker can't hide work any more), and
+// revisions live on the job's own chat instead of channel dumps and
+// screenshots.
 //
-// On top of the Slack surface (Jordan, Aug 17): click a row and the whole
-// project opens right there (full notes, every link labeled, shoot facts);
-// the Editor cell is a live select so reassigning doesn't need the edit page.
+// Rows are DOORS, not drawers (Jordan, Aug 27): clicking a row opens the edit
+// page — the full brief, customer + shoot notes included, lives on /edit/<id>.
+// The old expand-in-place panel and the two note columns are gone; the row
+// keeps only what you triage by (status, due, editor, links). In-row controls
+// (status pill, editor select, link chips) swallow the click and never
+// navigate.
 
 export type QueueRow = {
   id: string;
@@ -47,10 +47,6 @@ export type QueueRow = {
   dueISO: string | null;
   late: boolean;
   priority: string; // LOW | NORMAL | HIGH | URGENT
-  orderNotes: string | null; // the customer's OWN words from the Aryeo order (read-only)
-  customerNotes: string | null; // our per-job note about this customer (editable)
-  clientPrefs: string | null; // the client's standing style prefs (edited on the client page)
-  photographerNotes: string | null; // editor brief from the shoot
   videos: number; // deliverable count
   hasScript: boolean;
   comments: number;
@@ -211,15 +207,6 @@ function EditorSelect({ row }: { row: QueueRow }) {
   );
 }
 
-function NoteCell({ text, title }: { text: string | null; title: string }) {
-  if (!text) return <span className="text-muted-2">—</span>;
-  return (
-    <span title={`${title}:\n${text}`} className="block max-w-44 cursor-help truncate text-xs text-foreground/80">
-      {text}
-    </span>
-  );
-}
-
 // A labeled link chip — the fix for "the links section is confusing": words
 // instead of bare icons, so RAW vs Final vs script is legible at a glance.
 function LinkChip({
@@ -255,229 +242,20 @@ function LinkChip({
   );
 }
 
-// An editable note box. Reads as plain text until you click it, so the panel
-// stays a briefing and only becomes a form when someone means to change
-// something. Read-only for anyone without permission (editors).
-function NoteEditor({
-  projectId, field, value, canEdit, label, placeholder, empty,
-}: {
-  projectId: string;
-  field: "customer" | "shoot";
-  value: string | null;
-  canEdit: boolean;
-  label: string;
-  placeholder: string;
-  empty: string;
-}) {
-  const [text, setText] = useState(value ?? "");
-  const [saved, setSaved] = useState<string | null>(value);
-  const [open, setOpen] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [saving, startSave] = useTransition();
-
-  function save() {
-    const next = text.trim();
-    startSave(async () => {
-      const r = await saveJobNotes(projectId, { [field]: next });
-      if (r.ok) { setSaved(next || null); setOpen(false); setErr(null); }
-      else setErr(r.message);
-    });
-  }
-
-  if (!open) {
-    return (
-      <div className="group">
-        {label && saved && <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">{label}</div>}
-        <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/85">
-          {saved || <span className="text-muted-2">{empty}</span>}
-        </p>
-        {canEdit && (
-          <button
-            onClick={() => { setText(saved ?? ""); setOpen(true); }}
-            className="mt-1.5 inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[10px] font-medium text-muted hover:bg-surface-2 hover:text-foreground"
-          >
-            <Pencil className="size-2.5" />
-            {saved ? "Edit" : "Add a note"}
-          </button>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div>
-      <textarea
-        autoFocus
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder={placeholder}
-        rows={5}
-        className="w-full rounded-lg border border-border bg-surface-2 px-2 py-1.5 text-xs leading-relaxed outline-none focus:border-brand"
-      />
-      <div className="mt-1.5 flex items-center gap-1.5">
-        <button
-          onClick={save}
-          disabled={saving}
-          className="inline-flex items-center gap-1 rounded-md bg-brand px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
-        >
-          {saving && <Loader2 className="size-3 animate-spin" />}
-          Save
-        </button>
-        <button
-          onClick={() => { setOpen(false); setText(saved ?? ""); setErr(null); }}
-          className="rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted hover:bg-surface-2"
-        >
-          Cancel
-        </button>
-      </div>
-      {err && <p className="mt-1 text-[10px] text-danger">{err}</p>}
-    </div>
-  );
-}
-
-// The expanded project panel — Jordan: "open the project details by clicking
-// it but having it all right there." Full notes, every link labeled, shoot
-// facts, and the door to the full edit workspace.
-function DetailPanel({ row, upcoming, canEdit }: { row: QueueRow; upcoming: boolean; canEdit: boolean }) {
-  const t = TIER[row.tier];
-  return (
-    <div className="space-y-4 px-4 py-4 sm:px-6">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-sm font-semibold">{row.street}</span>
-        <span className="text-sm text-muted">· {row.client}</span>
-        <span className="inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold" style={{ backgroundColor: `${t.color}26`, color: t.color }}>
-          {t.label}
-        </span>
-        {row.priority !== "NORMAL" && row.priority !== "LOW" && (
-          <span className="rounded bg-danger-soft px-1.5 py-0.5 text-[10px] font-semibold text-danger">{row.priority}</span>
-        )}
-        {row.openRevisions > 0 && (
-          <span className="rounded bg-warning-soft px-1.5 py-0.5 text-[10px] font-semibold text-warning">
-            {row.openRevisions} open revision ask{row.openRevisions === 1 ? "" : "s"}
-          </span>
-        )}
-        <Link
-          href={`/edit/${row.id}`}
-          className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
-        >
-          Open edit page
-          <ExternalLink className="size-3.5" />
-        </Link>
-      </div>
-
-      <div className="grid gap-4 sm:grid-cols-3">
-        <div className="rounded-xl border border-border bg-surface p-3">
-          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-2">Job</div>
-          <dl className="space-y-1.5 text-xs">
-            <div className="flex justify-between gap-2">
-              <dt className="text-muted">Shoot</dt>
-              <dd className="text-right font-medium">
-                {fmtDay(row.shootISO)}
-                {row.photographer ? ` · ${row.photographer}` : ""}
-              </dd>
-            </div>
-            <div className="flex justify-between gap-2">
-              <dt className="text-muted">{upcoming ? "Shoots" : "Due"}</dt>
-              <dd className={cn("text-right font-medium", row.late && "text-danger")}>
-                {fmtDay(upcoming ? row.shootISO : row.dueISO)}
-                {row.late ? " · late" : ""}
-              </dd>
-            </div>
-            <div className="flex justify-between gap-2">
-              <dt className="text-muted">Videos</dt>
-              <dd className="text-right font-medium">{row.videos}</dd>
-            </div>
-            {row.typeDetail && (
-              <div className="pt-1">
-                <dt className="text-muted">Deliverables</dt>
-                <dd className="mt-1 space-y-0.5">
-                  {row.typeDetail.split(" · ").map((d, i) => (
-                    <div key={i} className="text-foreground/85">{d}</div>
-                  ))}
-                </dd>
-              </div>
-            )}
-          </dl>
-        </div>
-
-        <div className="rounded-xl border border-border bg-surface p-3">
-          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-2">Customer notes</div>
-
-          {/* What the customer actually asked for on the order. Read-only: it's
-              Aryeo's record and the next sync would overwrite an edit — the
-              editable note below is where a correction goes. */}
-          {row.orderNotes && (
-            <div className="mb-3 rounded-lg border-l-2 border-brand/50 bg-surface-2/60 px-2.5 py-2">
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-brand">From their order</div>
-              <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/85">{row.orderNotes}</p>
-            </div>
-          )}
-          {row.clientPrefs && (
-            <div className="mb-3">
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">Their usual style</div>
-              <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/85">{row.clientPrefs}</p>
-            </div>
-          )}
-
-          <NoteEditor
-            projectId={row.id}
-            field="customer"
-            value={row.customerNotes}
-            canEdit={canEdit}
-            label="Note for this job"
-            placeholder="Anything the editor should know about this customer or job…"
-            empty={
-              row.orderNotes || row.clientPrefs
-                ? "Nothing added."
-                : "None on file — cut it to the Style Guide."
-            }
-          />
-        </div>
-
-        <div className="rounded-xl border border-border bg-surface p-3">
-          <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-2">Shoot notes</div>
-          <NoteEditor
-            projectId={row.id}
-            field="shoot"
-            value={row.photographerNotes}
-            canEdit={canEdit}
-            label="What the photographer left the editor"
-            placeholder="What the editor needs to know from the shoot…"
-            empty="None from the photographer."
-          />
-        </div>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2">
-        {row.rawUrl && <LinkChip href={row.rawUrl} icon={FolderOpen} label="RAW footage" title="Open the RAW footage folder in Dropbox" />}
-        {row.finalUrl && <LinkChip href={row.finalUrl} icon={FolderUp} label="Final footage — upload here" title="The finished cut goes in this Dropbox folder" />}
-        {row.hasScript && <LinkChip href={`/edit/${row.id}`} icon={FileText} label="View script" title="A script is on file — view it on the edit page" brand />}
-        <LinkChip
-          href={`/edit/${row.id}`}
-          icon={MessageSquare}
-          label={`Project chat${row.comments > 0 ? ` (${row.comments})` : ""}`}
-          title="Revisions and questions live on the job's own chat"
-          brand={row.comments > 0}
-        />
-      </div>
-    </div>
-  );
-}
-
 export function SimpleQueue({
-  notDone, upcoming, done, canEditNotes = false,
+  notDone, upcoming, done,
 }: {
-  notDone: QueueRow[]; upcoming: QueueRow[]; done: QueueRow[]; canEditNotes?: boolean;
+  notDone: QueueRow[]; upcoming: QueueRow[]; done: QueueRow[];
 }) {
+  const router = useRouter();
   const [view, setView] = useState<"notdone" | "upcoming" | "done">("notdone");
-  const [openId, setOpenId] = useState<string | null>(null);
   const rows = view === "notdone" ? notDone : view === "upcoming" ? upcoming : done;
   const VIEWS = [
     { key: "notdone" as const, label: "Not Done", n: notDone.length },
     { key: "upcoming" as const, label: "Upcoming", n: upcoming.length },
     { key: "done" as const, label: "Done", n: done.length },
   ];
-  // Keeps click-to-expand from firing when the click was really for a control
+  // Keeps click-to-open from firing when the click was really for a control
   // inside the row (status pill, editor select, a link).
   const swallow = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -486,7 +264,7 @@ export function SimpleQueue({
       {/* Slack's saved views, as pills. */}
       <div className="mb-3 flex flex-wrap items-center gap-1.5">
         {VIEWS.map((v) => (
-          <button key={v.key} onClick={() => { setView(v.key); setOpenId(null); }}
+          <button key={v.key} onClick={() => setView(v.key)}
             className={cn("rounded-lg px-3 py-1.5 text-sm font-medium",
               view === v.key ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2")}>
             {v.label}
@@ -501,7 +279,7 @@ export function SimpleQueue({
         </p>
       ) : (
         <div className="overflow-x-auto rounded-2xl border border-border bg-surface">
-          <table className="w-full min-w-[900px] text-sm">
+          <table className="w-full min-w-[760px] text-sm">
             <thead>
               <tr className="border-b border-border text-left text-[11px] font-semibold uppercase tracking-wide text-muted-2">
                 <th className="px-3 py-2">Task</th>
@@ -509,8 +287,6 @@ export function SimpleQueue({
                 <th className="px-3 py-2">Status</th>
                 <th className="px-3 py-2">Due</th>
                 <th className="px-3 py-2">Editor</th>
-                <th className="px-3 py-2">Customer notes</th>
-                <th className="px-3 py-2">Shoot notes</th>
                 <th className="px-3 py-2 text-center">Videos</th>
                 <th className="px-3 py-2">Links</th>
                 <th className="px-3 py-2 text-center">
@@ -521,93 +297,76 @@ export function SimpleQueue({
             <tbody className="divide-y divide-border">
               {rows.map((r) => {
                 const t = TIER[r.tier];
-                const open = openId === r.id;
                 return (
-                  <Fragment key={r.id}>
-                    <tr
-                      onClick={() => setOpenId(open ? null : r.id)}
-                      title={open ? undefined : "Click for the full project"}
-                      className={cn("cursor-pointer align-top", open ? "bg-surface-2/60" : "hover:bg-surface-2/50")}
-                    >
-                      <td className="min-w-44 px-3 py-2.5">
-                        <span className="flex items-start gap-1">
-                          <ChevronRight className={cn("mt-0.5 size-3.5 shrink-0 text-muted-2 transition-transform", open && "rotate-90")} />
-                          <span>
-                            <span className="font-semibold">{r.street}</span>
-                            <span className="block text-xs text-muted">{r.client}</span>
-                            {r.priority !== "NORMAL" && r.priority !== "LOW" && (
-                              <span className="mt-0.5 inline-block rounded bg-danger-soft px-1.5 text-[10px] font-semibold text-danger">{r.priority}</span>
-                            )}
-                            {r.openRevisions > 0 && (
-                              <span className="mt-0.5 ml-1 inline-block rounded bg-warning-soft px-1.5 text-[10px] font-semibold text-warning">
-                                {r.openRevisions} revision ask{r.openRevisions === 1 ? "" : "s"}
-                              </span>
-                            )}
-                          </span>
-                        </span>
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <span className="inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold" style={{ backgroundColor: `${t.color}26`, color: t.color }}>
-                          {t.label}
-                        </span>
-                        {r.typeDetail && <span title={r.typeDetail} className="mt-0.5 block max-w-40 truncate text-[11px] text-muted">{r.typeDetail}</span>}
-                      </td>
-                      <td className="px-3 py-2.5" onClick={swallow}>
-                        {view === "upcoming" ? (
-                          <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold" style={{ backgroundColor: "#94a3b826", color: "#94a3b8" }}>
-                            Waiting
-                          </span>
-                        ) : (
-                          // key = server truth: when a revalidation streams a
-                          // status this component didn't set (evidence flip,
-                          // another admin), remount so the pill can't go stale.
-                          <StatusPill key={r.status} row={r} />
+                  <tr
+                    key={r.id}
+                    onClick={() => router.push(`/edit/${r.id}`)}
+                    title="Open the edit page"
+                    className="cursor-pointer align-top hover:bg-surface-2/50"
+                  >
+                    <td className="min-w-44 px-3 py-2.5">
+                      {/* A real link under the row click, so cmd/middle-click
+                          opens the edit page in a new tab. */}
+                      <Link href={`/edit/${r.id}`} onClick={swallow} className="block">
+                        <span className="font-semibold">{r.street}</span>
+                        <span className="block text-xs text-muted">{r.client}</span>
+                        {r.priority !== "NORMAL" && r.priority !== "LOW" && (
+                          <span className="mt-0.5 inline-block rounded bg-danger-soft px-1.5 text-[10px] font-semibold text-danger">{r.priority}</span>
                         )}
-                      </td>
-                      <td className={cn("whitespace-nowrap px-3 py-2.5 text-xs font-medium", r.late ? "text-danger" : "")}>
-                        {view === "upcoming" ? `Shoots ${fmtDay(r.shootISO)}` : fmtDay(r.dueISO)}{r.late ? " · late" : ""}
-                        {view === "upcoming" && r.photographer && <span className="block text-muted">📷 {r.photographer}</span>}
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-2.5" onClick={swallow}>
-                        {view === "done" ? (
-                          // Delivered = credit, not live work — no reassign here
-                          // (the server refuses too). A new cut on a finished
-                          // job goes through "Add a job to the queue".
-                          <span className="text-xs font-medium">{r.editor ?? "—"}</span>
-                        ) : (
-                          // key = server truth, same deal as the status pill.
-                          <EditorSelect key={r.editorKey ?? "none"} row={r} />
+                        {r.openRevisions > 0 && (
+                          <span className="mt-0.5 ml-1 inline-block rounded bg-warning-soft px-1.5 text-[10px] font-semibold text-warning">
+                            {r.openRevisions} revision ask{r.openRevisions === 1 ? "" : "s"}
+                          </span>
                         )}
-                      </td>
-                      {/* The customer's own order request outranks our note and
-                          their standing prefs in the one-line cell — it's the
-                          thing that changes what this edit should be. */}
-                      <td className="px-3 py-2.5">
-                        <NoteCell text={r.orderNotes ?? r.customerNotes ?? r.clientPrefs} title="Customer notes" />
-                      </td>
-                      <td className="px-3 py-2.5"><NoteCell text={r.photographerNotes} title="Shoot notes" /></td>
-                      <td className="px-3 py-2.5 text-center text-xs">{r.videos}</td>
-                      <td className="whitespace-nowrap px-3 py-2.5" onClick={swallow}>
-                        <span className="inline-flex items-center gap-1">
-                          {r.rawUrl && <LinkChip href={r.rawUrl} icon={FolderOpen} label="RAW" title="Open the RAW footage folder in Dropbox" />}
-                          {r.finalUrl && <LinkChip href={r.finalUrl} icon={FolderUp} label="Final" title="Upload the finished cut to this Dropbox folder" />}
-                          {r.hasScript && <LinkChip href={`/edit/${r.id}`} icon={FileText} label="Script" title="A script is on file — view it on the edit page" brand />}
+                      </Link>
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <span className="inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold" style={{ backgroundColor: `${t.color}26`, color: t.color }}>
+                        {t.label}
+                      </span>
+                      {r.typeDetail && <span title={r.typeDetail} className="mt-0.5 block max-w-40 truncate text-[11px] text-muted">{r.typeDetail}</span>}
+                    </td>
+                    <td className="px-3 py-2.5" onClick={swallow}>
+                      {view === "upcoming" ? (
+                        <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold" style={{ backgroundColor: "#94a3b826", color: "#94a3b8" }}>
+                          Waiting
                         </span>
-                      </td>
-                      <td className="px-3 py-2.5 text-center" onClick={swallow}>
-                        <Link href={`/edit/${r.id}`} title="Project chat — revisions and questions live HERE, not in the Slack channel" className={cn("text-xs font-semibold", r.comments > 0 ? "text-brand" : "text-muted-2")}>
-                          {r.comments}
-                        </Link>
-                      </td>
-                    </tr>
-                    {open && (
-                      <tr className="bg-surface-2/30">
-                        <td colSpan={10} className="p-0">
-                          <DetailPanel row={r} upcoming={view === "upcoming"} canEdit={canEditNotes} />
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
+                      ) : (
+                        // key = server truth: when a revalidation streams a
+                        // status this component didn't set (evidence flip,
+                        // another admin), remount so the pill can't go stale.
+                        <StatusPill key={r.status} row={r} />
+                      )}
+                    </td>
+                    <td className={cn("whitespace-nowrap px-3 py-2.5 text-xs font-medium", r.late ? "text-danger" : "")}>
+                      {view === "upcoming" ? `Shoots ${fmtDay(r.shootISO)}` : fmtDay(r.dueISO)}{r.late ? " · late" : ""}
+                      {view === "upcoming" && r.photographer && <span className="block text-muted">📷 {r.photographer}</span>}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2.5" onClick={swallow}>
+                      {view === "done" ? (
+                        // Delivered = credit, not live work — no reassign here
+                        // (the server refuses too). A new cut on a finished
+                        // job goes through "Add a job to the queue".
+                        <span className="text-xs font-medium">{r.editor ?? "—"}</span>
+                      ) : (
+                        // key = server truth, same deal as the status pill.
+                        <EditorSelect key={r.editorKey ?? "none"} row={r} />
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 text-center text-xs">{r.videos}</td>
+                    <td className="whitespace-nowrap px-3 py-2.5" onClick={swallow}>
+                      <span className="inline-flex items-center gap-1">
+                        {r.rawUrl && <LinkChip href={r.rawUrl} icon={FolderOpen} label="RAW" title="Open the RAW footage folder in Dropbox" />}
+                        {r.finalUrl && <LinkChip href={r.finalUrl} icon={FolderUp} label="Final" title="Upload the finished cut to this Dropbox folder" />}
+                        {r.hasScript && <LinkChip href={`/edit/${r.id}`} icon={FileText} label="Script" title="A script is on file — view it on the edit page" brand />}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2.5 text-center" onClick={swallow}>
+                      <Link href={`/edit/${r.id}`} title="Project chat — revisions and questions live HERE, not in the Slack channel" className={cn("text-xs font-semibold", r.comments > 0 ? "text-brand" : "text-muted-2")}>
+                        {r.comments}
+                      </Link>
+                    </td>
+                  </tr>
                 );
               })}
             </tbody>

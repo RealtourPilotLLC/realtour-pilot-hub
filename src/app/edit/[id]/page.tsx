@@ -1,7 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import {
-  Film, FolderOpen, Palette, Clapperboard, MessageSquare, Star, ExternalLink, PenLine, PlayCircle,
+  Film, FolderOpen, Palette, Clapperboard, MessageSquare, Star, ExternalLink, PenLine, PlayCircle, Quote,
 } from "lucide-react";
 import { VIDEO_TIER, videoTypeForDeliverable } from "@/lib/videoStyles";
 import { listClientAssets } from "@/lib/clientAssets";
@@ -23,6 +23,8 @@ import { getVideoSlaStatus } from "@/lib/projectStatus";
 import { SubmitCutCard } from "@/components/editing/EditorActions";
 import { EditFeedback } from "@/components/editing/EditFeedback";
 import { EditTracker, deriveEditStage, type RoundRow } from "@/components/editing/EditTracker";
+import { JobNoteEditor } from "@/components/editing/JobNoteEditor";
+import { aryeoCustomerNote } from "@/lib/shoot";
 import { getEditorFeedback } from "@/lib/reviewRoom";
 import { slugForName } from "@/lib/assignees";
 import { refinedDeliverableLabel, isMonthlyContentJob } from "@/lib/pipeline";
@@ -68,6 +70,11 @@ export default async function EditBriefPage({
   if (!project) notFound();
 
   const isOwnerAdmin = !viewer || viewer.role === "OWNER" || viewer.role === "ADMIN";
+  // Who may rewrite the customer/shoot notes (saveJobNotes enforces this
+  // server-side too). realRole, so a "view as" preview can't write; editors
+  // read the brief, they don't rewrite what the customer or photographer said.
+  const canEditNotes =
+    ["OWNER", "ADMIN", "PHOTOGRAPHER"].includes(viewer?.realRole ?? "OWNER") && !viewer?.impersonating;
 
   // Review Room feedback addressed to this editor (owner/admin see all lanes'
   // editor notes read-only — their interactive desk is /review).
@@ -101,6 +108,10 @@ export default async function EditBriefPage({
   const editDeliverables = videoDeliverables.length ? videoDeliverables : project.deliverables;
   const specialRequests = project.activities.filter((a) => a.type === ActivityType.SPECIAL_REQUEST);
   const deliverableNotes = project.deliverables.filter((d) => d.notes?.trim());
+  // The customer's OWN words from the Aryeo order intake ("Special
+  // Instructions", "Order Notes") — moved here from the queue's note columns
+  // (Jordan, Aug 27: rows stay clean, the notes live on the edit page).
+  const orderNote = aryeoCustomerNote(project.appointments[0]?.description);
 
   // ---- The tracker: stage + rounds + revision asks, all from hard state ----
   // VIDEO-lane revision tasks only: a photo retouch routed to Kyle also flips
@@ -158,6 +169,13 @@ export default async function EditBriefPage({
   // live OWNER/ADMIN sees raw text). Scrubbed-empty asks become placeholders,
   // never dropped, so the round labels stay on the right ask.
   const canSeeRaw = viewer?.role === "OWNER" || viewer?.role === "ADMIN";
+  // The customer-notes trio, money-scrubbed for editor eyes like everything
+  // else on this screen (owner/admin see raw — they're also the only ones who
+  // can edit, so the editor never rewrites over a scrubbed value).
+  const scrub = (s: string | null) => (s == null ? null : canSeeRaw ? s : stripMoneySentences(s) || null);
+  const showOrderNote = scrub(orderNote);
+  const showPrefs = scrub(project.client.editingPreferences);
+  const showJobNote = scrub(project.notes);
   const rawAsks = videoRevisionTasks
     .flatMap((t) => (t.description ?? t.summary ?? "").split(/\n\nNew request: /))
     .map((s) => s.trim())
@@ -349,15 +367,51 @@ export default async function EditBriefPage({
             )
           )}
 
-          {/* Editing notes from the photographer */}
-          <Section icon={PenLine} title="Editing notes">
-            {project.editorBrief ? (
-              <div className="whitespace-pre-wrap rounded-lg bg-surface-2 px-3 py-2.5 text-sm leading-relaxed text-foreground/90">
-                {project.editorBrief}
+          {/* The customer's voice — three separate registers, kept apart on
+              purpose: what they asked for on THIS order, their standing style
+              preferences, and our own per-job note. */}
+          <Section icon={Quote} title="Customer notes">
+            {showOrderNote && (
+              <div className="mb-3 rounded-lg border-l-2 border-brand/50 bg-surface-2/60 px-3 py-2.5">
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-brand">From their order</div>
+                <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">{showOrderNote}</p>
               </div>
-            ) : (
-              <p className="text-sm text-muted">No editing notes were submitted on the upload.</p>
             )}
+            {showPrefs && (
+              <div className="mb-3">
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">Their usual style</div>
+                <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">{showPrefs}</p>
+              </div>
+            )}
+            <JobNoteEditor
+              projectId={project.id}
+              field="customer"
+              // An editor edits the RAW note or not at all — saving a scrubbed
+              // rendering back would destroy the held-back text.
+              value={canEditNotes ? project.notes : showJobNote}
+              canEdit={canEditNotes}
+              label="Note for this job"
+              placeholder="Anything the editor should know about this customer or job…"
+              empty={
+                showOrderNote || showPrefs
+                  ? "Nothing added."
+                  : "None on file — cut it to the Style Guide."
+              }
+            />
+          </Section>
+
+          {/* Editing notes from the photographer — owner/admin can correct
+              what the upload left behind; editors read. */}
+          <Section icon={PenLine} title="Editing notes">
+            <JobNoteEditor
+              projectId={project.id}
+              field="shoot"
+              value={project.editorBrief}
+              canEdit={canEditNotes}
+              label=""
+              placeholder="What the editor needs to know from the shoot…"
+              empty="No editing notes were submitted on the upload."
+            />
             {deliverableNotes.length > 0 && (
               <ul className="mt-3 space-y-1.5">
                 {deliverableNotes.map((d) => (
