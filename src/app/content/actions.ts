@@ -35,9 +35,20 @@ export async function runProgramSweep(): Promise<Result> {
   } catch {
     flagNote = "Aryeo unreachable — used last-known flags · ";
   }
+  // Website signups first (paid Stripe checkouts -> live enrollments), so the
+  // sweep below builds their month workspaces in the same click.
+  let signupNote = "";
+  try {
+    const { sweepStripeSignups } = await import("@/lib/stripeSignups");
+    const sg = await sweepStripeSignups();
+    signupNote = sg.activated > 0 ? `${sg.activated} website signup${sg.activated === 1 ? "" : "s"} activated · ` : "";
+  } catch {
+    signupNote = "Stripe unreachable — signups unchecked · ";
+  }
   const r = await contentProgramSweep();
   revalidatePath("/content");
   const parts = [
+    signupNote ? signupNote.replace(/ · $/, "") : null,
     r.created > 0 ? `${r.created} enrolled` : null,
     r.paused > 0 ? `${r.paused} paused` : null,
     r.updated > 0 ? `${r.updated} updated` : null,
@@ -575,4 +586,15 @@ export async function issuePortalLink(enrollmentId: string): Promise<Result & { 
   }
   const base = process.env.APP_URL ?? "https://realtour-pilot-hub.vercel.app";
   return { ok: true, message: "Portal link ready — send it to the client whenever you choose.", url: `${base}/portal/${token}` };
+}
+
+// Owner clears a parked website signup off the /content review strip once the
+// terms are confirmed. Form action (no client component needed).
+export async function dismissSignupReview(formData: FormData): Promise<void> {
+  await requireOwner();
+  const id = String(formData.get("id") ?? "");
+  if (!id) return;
+  const { resolveSignupReview } = await import("@/lib/stripeSignups");
+  await resolveSignupReview(id);
+  revalidatePath("/content");
 }

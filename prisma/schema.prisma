@@ -1678,6 +1678,36 @@ model HubDocument {
 // Content sessions ARE Aryeo appointments -> Projects (Project.contentMonthId).
 // ---------------------------------------------------------------------------
 
+// A PAID website signup, one row per Stripe Checkout session — the activation
+// ledger for the Content Program (Jordan, Aug 28: the website already handles
+// package selection -> agreement -> Stripe Checkout -> Calendly; the hub just
+// never heard about it). checkoutId is the idempotency key: however many times
+// the sweep re-reads Stripe, one payment activates exactly one enrollment.
+// Money fields live here and on the enrollment's owner-only billing block —
+// never on any creative surface.
+model ProgramSignup {
+  id               String   @id @default(cuid())
+  checkoutId       String   @unique // Stripe checkout.session id
+  subscriptionId   String? // present on monthly plans; watched for lapses
+  stripeCustomerId String?
+  email            String?
+  name             String?
+  phone            String?
+  productId        String
+  productName      String // e.g. "Video Accelerator - 1-Year Commitment"
+  priceId          String?
+  amount           Float // dollars, as paid at checkout
+  recurring        Boolean
+  paidAt           DateTime
+  clientId         String? // -> Client (plain ref, matched or created)
+  enrollmentId     String? // -> ContentEnrollment (plain ref)
+  status           String   @default("ACTIVATED") // ACTIVATED | NEEDS_REVIEW
+  note             String? // why NEEDS_REVIEW, package conflicts, etc.
+  createdAt        DateTime @default(now())
+
+  @@index([enrollmentId])
+}
+
 model ContentEnrollment {
   id               String    @id @default(cuid())
   clientId         String    @unique // -> Client (plain ref)

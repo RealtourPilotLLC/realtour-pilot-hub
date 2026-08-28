@@ -44,6 +44,16 @@ export async function GET(req: NextRequest) {
   // Content Creator Program: enrollments follow the Aryeo social flag, every
   // active client gets the current month's workspace, and monthly-plan shoots
   // attach to their month.
+  await step("stripeSignups", async () => {
+    // Website signup activation: paid Stripe checkouts for the program's
+    // products become live enrollments (Jordan, Aug 28). Runs BEFORE the
+    // program sweep so a brand-new enrollment gets its month workspace and
+    // roster rows in the same cron pass.
+    const { sweepStripeSignups, sweepSubscriptionHealth } = await import("@/lib/stripeSignups");
+    const signups = await sweepStripeSignups();
+    const health = await sweepSubscriptionHealth().catch(() => ({ checked: 0, alerts: 0 }));
+    return { ...signups, subs: health };
+  });
   await step("contentProgram", async () => {
     const { contentProgramSweep } = await import("@/lib/contentProgram");
     return contentProgramSweep();

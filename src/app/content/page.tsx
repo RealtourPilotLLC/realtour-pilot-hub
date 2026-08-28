@@ -10,6 +10,8 @@ import { canAccess } from "@/lib/auth/access";
 import { cn, nameColor } from "@/lib/utils";
 import { getProgramRoster, monthLabel, etMonthKey, type ProgramRow } from "@/lib/contentProgram";
 import { programRevenue, billingLabel, agreementValue, type RevenueRow } from "@/lib/contentBilling";
+import { signupsNeedingReview } from "@/lib/stripeSignups";
+import { dismissSignupReview } from "@/app/content/actions";
 import { MonthJourney, VideoMeter } from "@/components/content/MonthJourney";
 import { SweepButton } from "@/components/content/SweepButton";
 import { BadgeDollarSign, ChevronDown } from "lucide-react";
@@ -42,6 +44,10 @@ export default async function ContentProgramPage() {
   // (Open local dev counts as the owner, same as the feedback board's rule.)
   const ownerEyes = me ? me.role === "OWNER" : !authEnforced();
   const revenue = ownerEyes ? await programRevenue().catch(() => null) : null;
+  // Website signups the activation sweep couldn't finish cleanly (guessed
+  // terms, package conflicts, transient failures). Owner-only — the notes name
+  // billing terms.
+  const reviewSignups = ownerEyes ? await signupsNeedingReview().catch(() => []) : [];
 
   return (
     <div>
@@ -52,6 +58,38 @@ export default async function ContentProgramPage() {
         actions={<SweepButton />}
       />
       <div className="mx-auto max-w-6xl space-y-6 p-4 pb-16 sm:p-6">
+        {/* WEBSITE SIGNUPS NEEDING A LOOK — payments Stripe confirmed that the
+            activation sweep parked for a human (it keeps retrying failures on
+            its own; this strip is how a parked one gets seen). */}
+        {reviewSignups.length > 0 && (
+          <div className="rounded-2xl border border-warning/40 bg-warning/5 p-4">
+            <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-warning">
+              <AlertTriangle className="size-4" /> Website signups needing a look
+            </div>
+            <ul className="space-y-2">
+              {reviewSignups.map((sg) => (
+                <li key={sg.id} className="flex flex-wrap items-baseline gap-x-2 text-sm">
+                  <span className="font-medium">{sg.name ?? sg.email ?? "Unknown buyer"}</span>
+                  <span className="text-muted">· {sg.productName}</span>
+                  <span className="text-xs text-muted-2">
+                    paid {sg.paidAt.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}
+                  </span>
+                  {sg.enrollmentId && (
+                    <Link href={`/content/${sg.enrollmentId}`} className="text-xs font-medium text-brand hover:underline">Open →</Link>
+                  )}
+                  <form action={dismissSignupReview}>
+                    <input type="hidden" name="id" value={sg.id} />
+                    <button className="rounded-md border border-border px-1.5 py-0.5 text-[10px] font-medium text-muted hover:bg-surface-2 hover:text-foreground">
+                      Got it
+                    </button>
+                  </form>
+                  {sg.note && <span className="basis-full text-xs text-muted">{sg.note}</span>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {/* THE MONTH IN FOUR NUMBERS */}
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Stat icon={Users} label="Active clients" value={String(active.length)} />
