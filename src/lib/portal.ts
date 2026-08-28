@@ -167,3 +167,87 @@ export async function scriptForEnrollment(enrollmentId: string, scriptId: string
   if (!CLIENT_VISIBLE_SCRIPT.includes(script.status)) return null;
   return script;
 }
+
+// ---------------------------------------------------------------------------
+// THE CLIENT'S FULL HISTORY (Jordan, Aug 28: "are we able to see backfilled
+// content too from Aryeo and their other content sessions and scripts?").
+// Month-by-month: sessions, client-visible scripts, and the DELIVERED videos
+// straight from Aryeo's CDN — watchable and downloadable, no proxy needed.
+// ---------------------------------------------------------------------------
+
+export type PortalMonthVideo = {
+  title: string | null;
+  thumb: string | null;
+  playback: string | null;
+  download: string | null;
+};
+export type PortalMonth = {
+  monthKey: string;
+  videosOwed: number;
+  strategyCallStatus: string;
+  strategyCallAtISO: string | null;
+  sessions: { dateISO: string | null; delivered: boolean }[];
+  scripts: { id: string; title: string; body: string }[];
+  videos: PortalMonthVideo[]; // delivered, from Aryeo
+};
+
+// Aryeo lookups are the slow part — cap how many delivered listings one page
+// load will fetch, newest shoots first.
+const ARYEO_LOOKUP_CAP = 8;
+
+export async function portalMonths(enrollmentId: string): Promise<PortalMonth[]> {
+  const months = await prisma.contentMonth.findMany({
+    where: { enrollmentId },
+    orderBy: { monthKey: "desc" },
+    take: 12,
+    select: { id: true, monthKey: true, videosOwed: true, strategyCallStatus: true, strategyCallAt: true },
+  });
+  if (months.length === 0) return [];
+  const monthIds = months.map((m) => m.id);
+
+  const [scripts, projects] = await Promise.all([
+    prisma.contentScript.findMany({
+      where: { monthId: { in: monthIds }, status: { in: CLIENT_VISIBLE_SCRIPT } },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, monthId: true, title: true, body: true },
+    }),
+    prisma.project.findMany({
+      where: { contentMonthId: { in: monthIds }, status: { not: "CANCELLED" } },
+      orderBy: { shootDate: "desc" },
+      select: { id: true, contentMonthId: true, shootDate: true, status: true, aryeoListingId: true },
+    }),
+  ]);
+
+  // Delivered videos from Aryeo — newest delivered sessions first, capped,
+  // fetched 4 at a time. Best-effort: an Aryeo hiccup just means fewer videos
+  // this load, never a broken page.
+  const delivered = projects.filter((p) => p.status === "DELIVERED" && p.aryeoListingId).slice(0, ARYEO_LOOKUP_CAP);
+  const videosByProject = new Map<string, PortalMonthVideo[]>();
+  const { getListingMedia } = await import("@/lib/integrations/aryeo");
+  for (let i = 0; i < delivered.length; i += 4) {
+    await Promise.all(
+      delivered.slice(i, i + 4).map(async (p) => {
+        const media = await getListingMedia(p.aryeoListingId!).catch(() => null);
+        if (!media?.videos?.length) return;
+        videosByProject.set(
+          p.id,
+          media.videos
+            .filter((v) => v.playback || v.download)
+            .map((v) => ({ title: v.title, thumb: v.thumb, playback: v.playback, download: v.download })),
+        );
+      }),
+    );
+  }
+
+  return months.map((m) => ({
+    monthKey: m.monthKey,
+    videosOwed: m.videosOwed,
+    strategyCallStatus: m.strategyCallStatus,
+    strategyCallAtISO: m.strategyCallAt ? m.strategyCallAt.toISOString() : null,
+    sessions: projects
+      .filter((p) => p.contentMonthId === m.id)
+      .map((p) => ({ dateISO: p.shootDate ? p.shootDate.toISOString() : null, delivered: p.status === "DELIVERED" })),
+    scripts: scripts.filter((s) => s.monthId === m.id).map((s) => ({ id: s.id, title: s.title, body: s.body })),
+    videos: projects.filter((p) => p.contentMonthId === m.id).flatMap((p) => videosByProject.get(p.id) ?? []),
+  }));
+}
