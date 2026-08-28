@@ -2,26 +2,43 @@
 
 import { useState, useTransition } from "react";
 import { CalendarClock, Camera, CheckCircle2, Loader2, Lock, MapPin } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { portalRequestSession } from "@/app/portal/actions";
+import type { PortalSlotDay } from "@/lib/portal";
 
-// The scheduling card — strategy call first, always; the session scheduler
-// unlocks once the call is on the books. Captures preferred times + the
-// filming LOCATION in one place; the live-Aryeo slot picker replaces the
-// free-text time field when it ships, same card.
+// The scheduling card — strategy call first, always; the session picker
+// unlocks once the call is on the books and shows REAL Aryeo availability,
+// already filtered past the 3-business-day prep window. The desk gets the
+// exact slot to confirm in Aryeo.
+
+const dayLabel = (date: string) =>
+  new Date(`${date}T12:00:00Z`).toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" });
+const timeLabel = (iso: string) =>
+  new Date(iso).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
+
 export function PortalScheduler({
-  token, callBooked, bookingUrl, hasUpcomingSession, monthDone = false,
+  token, callBooked, bookingUrl, hasUpcomingSession, monthDone = false, days = [],
 }: {
   token: string; callBooked: boolean; bookingUrl: string; hasUpcomingSession: boolean;
-  // This month's session allowance is used up (already filmed) — offer
-  // nothing to book instead of inviting a session the package doesn't carry.
   monthDone?: boolean;
+  days?: PortalSlotDay[];
 }) {
-  const [open, setOpen] = useState(false);
+  const [day, setDay] = useState<string | null>(null);
+  const [slot, setSlot] = useState<string | null>(null);
   const [when, setWhen] = useState("");
   const [location, setLocation] = useState("");
   const [done, setDone] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, start] = useTransition();
+
+  const send = () =>
+    start(async () => {
+      const r = await portalRequestSession(token, slot ? { slotISO: slot, location } : { when, location }).catch(() => ({ ok: false, message: "That didn't send — try again." }));
+      if (r.ok) setDone(r.message);
+      else setErr(r.message);
+    });
+
+  const activeDay = days.find((d) => d.date === day) ?? null;
 
   return (
     <div className="rounded-2xl border border-border bg-surface/70 p-4 backdrop-blur">
@@ -54,34 +71,46 @@ export function PortalScheduler({
             <p className="mt-1.5 flex items-center gap-1.5 text-xs text-muted-2"><Lock className="size-3.5" /> Unlocks after your strategy call is booked</p>
           ) : done ? (
             <p className="mt-1.5 text-xs font-medium text-success">{done}</p>
-          ) : !open ? (
-            <>
-              <p className="mt-1.5 text-xs text-muted">Tell us when works and where we&rsquo;re filming.</p>
-              <button onClick={() => setOpen(true)}
-                className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
-                Schedule my session
-              </button>
-            </>
           ) : (
             <div className="mt-2 space-y-2">
-              <input value={when} onChange={(e) => setWhen(e.target.value)} placeholder="Days/times that work — e.g. Tue or Thu afternoon"
-                className="w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs outline-none focus:border-brand" />
+              {days.length > 0 ? (
+                <>
+                  <p className="text-[11px] text-muted-2">Live availability — pick a day, then a time:</p>
+                  <div className="flex flex-wrap gap-1">
+                    {days.map((d) => (
+                      <button key={d.date} onClick={() => { setDay(d.date); setSlot(null); }}
+                        className={cn("rounded-lg border px-2 py-1 text-[11px] font-semibold",
+                          day === d.date ? "border-brand bg-brand text-white" : "border-border text-muted hover:bg-surface")}>
+                        {dayLabel(d.date)}
+                      </button>
+                    ))}
+                  </div>
+                  {activeDay && (
+                    <div className="flex flex-wrap gap-1">
+                      {activeDay.slots.map((s) => (
+                        <button key={s} onClick={() => setSlot(s)}
+                          className={cn("rounded-lg border px-2 py-1 text-[11px] font-medium tabular-nums",
+                            slot === s ? "border-brand bg-brand-soft text-brand" : "border-border text-muted hover:bg-surface")}>
+                          {timeLabel(s)}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <input value={when} onChange={(e) => setWhen(e.target.value)} placeholder="Days/times that work — e.g. Tue or Thu afternoon"
+                  className="w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs outline-none focus:border-brand" />
+              )}
               <div className="flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1.5">
                 <MapPin className="size-3.5 shrink-0 text-muted-2" />
                 <input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Filming location (address or area)"
                   className="w-full bg-transparent text-xs outline-none" />
               </div>
-              <div className="flex gap-1.5">
-                <button disabled={busy || !when.trim() || !location.trim()}
-                  onClick={() => start(async () => {
-                    const r = await portalRequestSession(token, { when, location }).catch(() => ({ ok: false, message: "That didn't send — try again." }));
-                    if (r.ok) setDone(r.message); else setErr(r.message);
-                  })}
-                  className="inline-flex items-center gap-1 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
-                  {busy && <Loader2 className="size-3 animate-spin" />} Send
-                </button>
-                <button onClick={() => setOpen(false)} className="rounded-lg border border-border px-2.5 py-1.5 text-xs text-muted">Cancel</button>
-              </div>
+              <button disabled={busy || !location.trim() || (days.length > 0 ? !slot : !when.trim())}
+                onClick={send}
+                className="inline-flex items-center gap-1 rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+                {busy && <Loader2 className="size-3 animate-spin" />} {slot ? `Book ${timeLabel(slot)}` : "Send"}
+              </button>
               {err && <p className="text-[11px] text-danger">{err}</p>}
             </div>
           )}

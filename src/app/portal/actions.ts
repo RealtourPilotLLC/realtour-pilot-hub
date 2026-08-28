@@ -216,23 +216,35 @@ export async function portalSaveProfile(
  */
 export async function portalRequestSession(
   token: string,
-  input: { when: string; location: string },
+  input: { when?: string; slotISO?: string; location: string },
 ): Promise<R> {
   const enrollment = await portalEnrollment(token);
   if (!enrollment) return fail("This link is no longer active.");
-  const when = clip((input.when ?? "").trim(), 500);
   const location = clip((input.location ?? "").trim(), 300);
-  if (!when || !location) return fail("Give us a time that works and where we're filming.");
+  if (!location) return fail("Tell us where we're filming.");
+
+  // The gate, server-side (owner rule: strategy call first, session no
+  // earlier than 3 BUSINESS DAYS after it) — the picker enforces it visually,
+  // this enforces it for real.
+  const { sessionGate } = await import("@/lib/portal");
+  const gate = await sessionGate(enrollment.id);
+  if (gate.locked) return fail(gate.reason);
+
+  let when = clip((input.when ?? "").trim(), 500);
+  if (input.slotISO) {
+    const slot = new Date(input.slotISO);
+    if (!Number.isFinite(slot.getTime())) return fail("Pick a time from the list.");
+    if (slot < gate.earliest) return fail("That time is inside the prep window after your strategy call — pick a later slot.");
+    when = `${slot.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" })} ET (picked from live availability)`;
+  }
+  if (!when) return fail("Pick a time from the list (or tell us what works).");
 
   const { etMonthKey } = await import("@/lib/contentProgram");
   const month = await prisma.contentMonth.findUnique({
     where: { enrollmentId_monthKey: { enrollmentId: enrollment.id, monthKey: etMonthKey() } },
-    select: { id: true, strategyCallStatus: true },
+    select: { id: true },
   });
-  // The gate: strategy first, always (owner rule). NOT_REQUIRED counts as satisfied.
-  if (!month || month.strategyCallStatus === "NOT_SCHEDULED") {
-    return fail("Book your strategy call first — we plan the month on that call, then film it.");
-  }
+  if (!month) return fail("Book your strategy call first — we plan the month on that call, then film it.");
   // Lookup WITHOUT a status filter: dedupeKey is unique, so a completed
   // task must be REOPENED, not re-created (the create path threw P2002 —
   // review finding). updatedAt doubles as the throttle.
@@ -244,7 +256,7 @@ export async function portalRequestSession(
     return { ok: true, message: "Got it — we already have your request and we're on it." };
   }
   const client = await prisma.client.findUnique({ where: { id: enrollment.clientId }, select: { id: true, name: true } });
-  const desc = `The client scheduled from their portal.\nPreferred time(s): ${when}\nFilming location: ${location}\n\nBook it in Aryeo and it will attach to their month automatically.`;
+  const desc = `The client scheduled from their portal.\nTime: ${when}\nFilming location: ${location}\n\nBook it in Aryeo and it will attach to their month automatically.`;
   if (existing) {
     await prisma.smartTask.update({ where: { id: existing.id }, data: { description: desc, status: "OPEN", completedAt: null } });
   } else {

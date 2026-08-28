@@ -251,3 +251,96 @@ export async function portalMonths(enrollmentId: string): Promise<PortalMonth[]>
     videos: projects.filter((p) => p.contentMonthId === m.id).flatMap((p) => videosByProject.get(p.id) ?? []),
   }));
 }
+
+// ---------------------------------------------------------------------------
+// LIVE SESSION SCHEDULING (Jordan, Aug 28 — rule confirmed: sessions start no
+// earlier than 3 BUSINESS DAYS after the strategy call). Slots come straight
+// from Aryeo's scheduling calendar; availability is company-wide, so one
+// 10-minute cache serves every portal. Booking stays human-confirmed: the
+// client picks a real slot + location, the desk gets the exact slot to book.
+// ---------------------------------------------------------------------------
+
+export function addBusinessDays(from: Date, n: number): Date {
+  const d = new Date(from);
+  let left = n;
+  while (left > 0) {
+    d.setDate(d.getDate() + 1);
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) left--;
+  }
+  return d;
+}
+
+export type PortalSlotDay = { date: string; slots: string[] }; // ISO starts
+export type PortalAvailability =
+  | { locked: true; reason: string }
+  | { locked: false; earliestISO: string; days: PortalSlotDay[] };
+
+const SLOTS_CACHE_KEY = "portal-aryeo-slots";
+const SLOTS_TTL_MS = 10 * 60_000;
+
+async function companySlots(): Promise<PortalSlotDay[]> {
+  const cached = await prisma.appSetting.findUnique({ where: { key: SLOTS_CACHE_KEY } }).catch(() => null);
+  if (cached) {
+    try {
+      const v = JSON.parse(cached.value) as { at: number; days: PortalSlotDay[] };
+      if (Date.now() - v.at < SLOTS_TTL_MS) return v.days;
+    } catch { /* recompute */ }
+  }
+  const { getSchedulingAvailability, Aryeo } = await import("@/lib/integrations/aryeo");
+  const dates = (await getSchedulingAvailability({ days: 21, limit: 8 }).catch(() => null)) ?? [];
+  const days: PortalSlotDay[] = [];
+  for (let i = 0; i < dates.length; i += 4) {
+    await Promise.all(
+      dates.slice(i, i + 4).map(async (d) => {
+        try {
+          const r = (await Aryeo.availableTimeslots({ timezone: "America/New_York", interval: 60, date: d.date })) as {
+            data?: { start_at?: string }[];
+          };
+          const slots = (r?.data ?? [])
+            .map((s) => s.start_at)
+            .filter((s): s is string => !!s)
+            .slice(0, 10);
+          if (slots.length) days.push({ date: d.date, slots });
+        } catch { /* a missing day is fine */ }
+      }),
+    );
+  }
+  days.sort((a, b) => a.date.localeCompare(b.date));
+  await prisma.appSetting
+    .upsert({
+      where: { key: SLOTS_CACHE_KEY },
+      update: { value: JSON.stringify({ at: Date.now(), days }) },
+      create: { key: SLOTS_CACHE_KEY, value: JSON.stringify({ at: Date.now(), days }) },
+    })
+    .catch(() => {});
+  return days;
+}
+
+/** The gate + earliest bookable moment for one enrollment's current month. */
+export async function sessionGate(enrollmentId: string): Promise<{ locked: boolean; reason: string; earliest: Date }> {
+  const { etMonthKey } = await import("@/lib/contentProgram");
+  const month = await prisma.contentMonth.findUnique({
+    where: { enrollmentId_monthKey: { enrollmentId, monthKey: etMonthKey() } },
+    select: { strategyCallStatus: true, strategyCallAt: true },
+  });
+  const call = month?.strategyCallStatus ?? "NOT_SCHEDULED";
+  if (call === "NOT_SCHEDULED") {
+    return { locked: true, reason: "Book your strategy call first — we plan the month on that call, then film it.", earliest: new Date() };
+  }
+  // 3 business days after the call (owner rule); a call with no timestamp
+  // (completed historically) gates only on tomorrow.
+  const floor = new Date(Date.now() + 24 * 3600_000);
+  const afterCall = month?.strategyCallAt ? addBusinessDays(month.strategyCallAt, 3) : floor;
+  return { locked: false, reason: "", earliest: afterCall > floor ? afterCall : floor };
+}
+
+export async function portalAvailability(enrollmentId: string): Promise<PortalAvailability> {
+  const gate = await sessionGate(enrollmentId);
+  if (gate.locked) return { locked: true, reason: gate.reason };
+  const days = (await companySlots())
+    .map((d) => ({ date: d.date, slots: d.slots.filter((s) => new Date(s) >= gate.earliest) }))
+    .filter((d) => d.slots.length > 0)
+    .slice(0, 6);
+  return { locked: false, earliestISO: gate.earliest.toISOString(), days };
+}

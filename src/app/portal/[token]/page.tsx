@@ -198,6 +198,14 @@ export default async function ClientPortalPage({
   const sessionsUsedThisMonth = sessions.filter((s) => s.contentMonthId === current?.id && s.shootDate).length;
   const currentVideos = library.filter((v) => v.monthId === current?.id);
   const currentScripts = scripts.filter((s) => s.monthId === current?.id);
+  // Live Aryeo slots for the scheduler — only fetched when the picker could
+  // actually render (call booked, no session yet, allowance open, Home tab).
+  let slotDays: import("@/lib/portal").PortalSlotDay[] = [];
+  if (tab === "home" && callBooked && !upcoming[0] && sessionsUsedThisMonth < (enrollment.sessionsPerMonth || 1)) {
+    const { portalAvailability } = await import("@/lib/portal");
+    const avail = await portalAvailability(enrollment.id).catch(() => null);
+    if (avail && !avail.locked) slotDays = avail.days;
+  }
   const first = (client?.name ?? "there").split(/\s+/)[0];
   const href = (t: TabKey) => `/portal/${token}${t === "home" ? "" : `?tab=${t}`}`;
 
@@ -297,6 +305,7 @@ export default async function ClientPortalPage({
               bookingUrl={STRATEGY_CALL_BOOKING_URL}
               hasUpcomingSession={!!upcoming[0]}
               monthDone={sessionsUsedThisMonth >= (enrollment.sessionsPerMonth || 1) && !upcoming[0]}
+              days={slotDays}
             />
 
             {cuts.length > 0 && (
