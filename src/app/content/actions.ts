@@ -598,3 +598,55 @@ export async function dismissSignupReview(formData: FormData): Promise<void> {
   await resolveSignupReview(id);
   revalidatePath("/content");
 }
+
+// ---------------------------------------------------------------------------
+// Client script suggestions (portal interactive layer, Aug 28). The client's
+// ask is a RECORD — applying it runs the AI rewrite with their words as the
+// instruction (original body snapshotted on the suggestion), and the script
+// drops back to INTERNAL_REVIEW so a human re-approves before the portal
+// shows the new version.
+// ---------------------------------------------------------------------------
+export async function applyScriptSuggestion(suggestionId: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  const sugg = await prisma.scriptSuggestion.findUnique({
+    where: { id: suggestionId },
+    select: { id: true, scriptId: true, enrollmentId: true, body: true, status: true },
+  });
+  if (!sugg || sugg.status !== "OPEN") return { ok: false, message: "That suggestion was already handled." };
+  const script = await prisma.contentScript.findUnique({ where: { id: sugg.scriptId }, select: { body: true } });
+  if (!script) return { ok: false, message: "That script no longer exists." };
+  // Atomic claim: two admins (or a double-click) racing here would run the AI
+  // rewrite twice — the second pass rewrites the first pass's output (review
+  // finding). Only the claimer proceeds; failure releases the claim.
+  const claimed = await prisma.scriptSuggestion.updateMany({
+    where: { id: sugg.id, status: "OPEN" },
+    data: { status: "APPLYING", originalBody: script.body },
+  });
+  if (claimed.count !== 1) return { ok: false, message: "That suggestion is being applied already." };
+  try {
+    const { reviseScriptWithInstructions } = await import("@/lib/contentPipeline");
+    await reviseScriptWithInstructions(
+      sugg.scriptId,
+      `The client sent this suggestion from their portal — apply it faithfully, keeping everything they didn't mention:\n"${sugg.body}"`,
+    );
+  } catch (e) {
+    await prisma.scriptSuggestion.updateMany({ where: { id: sugg.id, status: "APPLYING" }, data: { status: "OPEN", originalBody: null } }).catch(() => {});
+    return fail(e);
+  }
+  await prisma.scriptSuggestion.update({
+    where: { id: sugg.id },
+    data: { status: "APPLIED", resolvedAt: new Date() },
+  });
+  revalidatePath("/content");
+  return { ok: true, message: "Rewritten with their suggestion — review and approve the new version." };
+}
+
+export async function dismissScriptSuggestion(suggestionId: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  await prisma.scriptSuggestion.updateMany({
+    where: { id: suggestionId, status: "OPEN" },
+    data: { status: "DISMISSED", resolvedAt: new Date() },
+  });
+  revalidatePath("/content");
+  return { ok: true, message: "Dismissed." };
+}

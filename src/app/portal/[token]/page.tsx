@@ -1,8 +1,11 @@
 import { notFound } from "next/navigation";
-import { CalendarClock, Camera, FileText, Sparkles } from "lucide-react";
+import { CalendarClock, Camera, FileText, PlayCircle, Sparkles } from "lucide-react";
 import { prisma } from "@/lib/prisma";
 import { monthLabel, etMonthKey } from "@/lib/contentProgram";
 import { STRATEGY_CALL_BOOKING_URL } from "@/lib/integrations/calendly";
+import { portalCuts, CLIENT_VISIBLE_SCRIPT } from "@/lib/portal";
+import { PortalVideoReview } from "@/components/portal/PortalVideoReview";
+import { PortalSuggestBox } from "@/components/portal/PortalSuggestBox";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +14,8 @@ export const dynamic = "force-dynamic";
 // shell like the public feedback form. STRICT content rules: approved scripts,
 // session dates, and the booking link ONLY — no topics-in-progress, no internal
 // notes, no drafts, never money.
-const CLIENT_VISIBLE_SCRIPT = ["APPROVED", "CLIENT_VISIBLE", "READY_TO_FILM", "FILMED", "DELIVERED"];
+// Script visibility now lives in src/lib/portal.ts — the render and the write
+// layer must never drift apart on what a client may see.
 
 export default async function ClientPortalPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
@@ -28,6 +32,7 @@ export default async function ClientPortalPage({ params }: { params: Promise<{ t
     where: { enrollmentId_monthKey: { enrollmentId: enrollment.id, monthKey } },
     select: { id: true },
   });
+  const cuts = await portalCuts(enrollment.id).catch(() => []);
   const [scripts, sessions] = await Promise.all([
     month
       ? prisma.contentScript.findMany({
@@ -90,6 +95,22 @@ export default async function ClientPortalPage({ params }: { params: Promise<{ t
           </a>
         </div>
 
+        {/* Their videos — watch, drop timestamped notes, request changes.
+            Only cuts Jordan APPROVED internally ever appear here. */}
+        {cuts.length > 0 && (
+          <div className="mt-5 rounded-2xl border border-border bg-surface p-4">
+            <div className="flex items-center gap-2 text-sm font-semibold"><PlayCircle className="size-4 text-brand" /> Your videos</div>
+            <p className="mt-1 text-xs text-muted-2">
+              Watch each cut, pause and drop a note where you want a change, then hit &ldquo;Request changes&rdquo; — it goes straight to your editor.
+            </p>
+            <div className="mt-3 space-y-4">
+              {cuts.map((c) => (
+                <PortalVideoReview key={c.submissionId} token={token} cut={c} monthLabel={monthLabel(c.monthKey)} />
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Approved scripts */}
         <div className="mt-5 rounded-2xl border border-border bg-surface p-4">
           <div className="flex items-center gap-2 text-sm font-semibold"><FileText className="size-4 text-brand" /> Your scripts</div>
@@ -103,6 +124,7 @@ export default async function ClientPortalPage({ params }: { params: Promise<{ t
                 <details key={sc.id} className="rounded-xl border border-border bg-surface-2/40 px-4 py-3" open={scripts.length <= 2}>
                   <summary className="cursor-pointer text-sm font-semibold">{sc.title}</summary>
                   <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">{sc.body}</p>
+                  <PortalSuggestBox token={token} scriptId={sc.id} />
                 </details>
               ))}
             </div>

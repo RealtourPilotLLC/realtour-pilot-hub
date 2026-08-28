@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { formatDistanceToNow } from "date-fns";
-import { Clapperboard, ExternalLink, Film, History, Images, Music, PenLine, ScrollText } from "lucide-react";
+import { Clapperboard, ExternalLink, Film, History, Images, MessageSquareQuote, Music, PenLine, ScrollText } from "lucide-react";
+import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { getCurrentUser } from "@/lib/auth/user";
@@ -35,6 +36,15 @@ export default async function CutReviewPage({
   if (!ownerDesk) redirect(homeFor(me?.role));
 
   const w = await getCutWorkspace(id, cut ?? null);
+  // Portal notes across this job's cuts, newest last.
+  // Newest 30, shown oldest-first (desc+take keeps the LATEST notes when a
+  // chatty client passes thirty — asc+take silently dropped the new ones).
+  const clientNotes = (await prisma.portalComment.findMany({
+    where: { projectId: id },
+    orderBy: { createdAt: "desc" },
+    take: 30,
+    select: { id: true, timeSec: true, body: true, status: true },
+  }).catch(() => [])).reverse();
   if (!w) notFound();
 
   const active = w.active;
@@ -188,6 +198,27 @@ export default async function CutReviewPage({
           {w.editorBrief && (
             <Section icon={PenLine} title="Photographer's editing notes">
               <p className="whitespace-pre-wrap text-sm text-foreground/85">{w.editorBrief}</p>
+            </Section>
+          )}
+
+          {/* The client's own portal notes on this job's cuts (interactive
+              layer, Aug 28) — read-only context while judging the next round;
+              SENT ones already became the revision work order. */}
+          {clientNotes.length > 0 && (
+            <Section icon={MessageSquareQuote} title="Client's notes" count={clientNotes.length}>
+              <ul className="space-y-1.5">
+                {clientNotes.map((n) => (
+                  <li key={n.id} className="flex items-start gap-2 text-sm">
+                    {n.timeSec != null && (
+                      <span className="mt-0.5 shrink-0 rounded-md bg-brand-soft px-1.5 py-0.5 text-[11px] font-semibold text-brand">
+                        {Math.floor(n.timeSec / 60)}:{String(Math.floor(n.timeSec % 60)).padStart(2, "0")}
+                      </span>
+                    )}
+                    <span className="min-w-0 flex-1 text-foreground/85">{n.body}</span>
+                    <span className="shrink-0 text-[10px] text-muted-2">{n.status === "SENT" ? "sent to editor" : "new"}</span>
+                  </li>
+                ))}
+              </ul>
             </Section>
           )}
         </div>

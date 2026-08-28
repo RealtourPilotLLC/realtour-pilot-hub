@@ -113,6 +113,20 @@ export default async function ContentClientPage({
       }
     : null;
   const scriptsAwaiting = scripts.filter((s) => s.status === "INTERNAL_REVIEW" || s.status === "DRAFT").length;
+  // The client's OPEN portal suggestions, keyed by script (interactive layer).
+  const openSuggestions = scripts.length
+    ? await prisma.scriptSuggestion.findMany({
+        where: { scriptId: { in: scripts.map((s) => s.id) }, status: "OPEN" },
+        orderBy: { createdAt: "asc" },
+        select: { id: true, scriptId: true, body: true, createdAt: true },
+      })
+    : [];
+  const suggByScript = new Map<string, { id: string; body: string; createdAtISO: string }[]>();
+  for (const sg of openSuggestions) {
+    const arr = suggByScript.get(sg.scriptId) ?? [];
+    arr.push({ id: sg.id, body: sg.body, createdAtISO: sg.createdAt.toISOString() });
+    suggByScript.set(sg.scriptId, arr);
+  }
 
   // Tab + month links preserve each other, so switching one never resets the other.
   const hrefFor = (t: Tab, mKey?: string) => {
@@ -259,11 +273,15 @@ export default async function ContentClientPage({
         {tab === "scripts" && (
           <>
             <Section icon={FileText} title={month ? `Scripts — ${monthLabel(month.monthKey)}` : "Scripts"} count={scripts.length} flush
-              action={scriptsAwaiting > 0 ? <span className="text-[11px] font-medium text-warning">{scriptsAwaiting} awaiting your review</span> : undefined}>
+              action={scriptsAwaiting > 0 || openSuggestions.length > 0 ? (
+                <span className="text-[11px] font-medium text-warning">
+                  {[scriptsAwaiting > 0 ? `${scriptsAwaiting} awaiting your review` : null, openSuggestions.length > 0 ? `${openSuggestions.length} client suggestion${openSuggestions.length === 1 ? "" : "s"}` : null].filter(Boolean).join(" · ")}
+                </span>
+              ) : undefined}>
               <ScriptReview scripts={scripts.map((s) => {
                 let prod: string[] = [];
                 try { prod = s.productionJson ? (JSON.parse(s.productionJson) as string[]) : []; } catch { prod = []; }
-                return { id: s.id, title: s.title, body: s.body, status: s.status, source: s.source, sourceFile: s.sourceFile, productionIdeas: prod };
+                return { id: s.id, title: s.title, body: s.body, status: s.status, source: s.source, sourceFile: s.sourceFile, productionIdeas: prod, suggestions: suggByScript.get(s.id) ?? [] };
               })} />
             </Section>
             <ScriptBackfillCard enrollmentId={id} defaultMonth={month?.monthKey ?? etMonthKey()} />

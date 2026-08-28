@@ -1678,6 +1678,44 @@ model HubDocument {
 // Content sessions ARE Aryeo appointments -> Projects (Project.contentMonthId).
 // ---------------------------------------------------------------------------
 
+// A client's suggested change to one of their scripts, straight from the
+// portal (interactive layer, Aug 28). NEVER overwrites the script — it sits
+// OPEN until a human applies it (AI rewrite, original body snapshotted here)
+// or dismisses it. Spec rule: client suggestions create records, not edits.
+model ScriptSuggestion {
+  id           String    @id @default(cuid())
+  scriptId     String // -> ContentScript (plain ref)
+  enrollmentId String // -> ContentEnrollment (plain ref, the token's owner)
+  body         String // the client's ask, their words
+  status       String    @default("OPEN") // OPEN | APPLIED | DISMISSED
+  originalBody String? // the script body BEFORE an applied rewrite
+  resolvedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([scriptId])
+  @@index([enrollmentId, status])
+}
+
+// A client's timestamped note on one of their cuts, from the portal player.
+// OPEN notes pile up while they watch; "Request changes" bundles them into
+// ONE revision (raiseRevision -> RevisionBrief work order) and marks them
+// SENT. Kept separate from MediaNote on purpose: the internal lanes'
+// counters, bundlers and sweeps must not see client rows.
+model PortalComment {
+  id           String   @id @default(cuid())
+  submissionId String // -> ReviewSubmission (plain ref)
+  projectId    String // -> Project (plain ref)
+  enrollmentId String // -> ContentEnrollment (plain ref)
+  timeSec      Float? // null = a general note
+  body         String
+  status       String   @default("OPEN") // OPEN | SENT | RESOLVED
+  createdAt    DateTime @default(now())
+
+  @@index([submissionId])
+  @@index([projectId, status])
+  @@index([enrollmentId])
+}
+
 // A PAID website signup, one row per Stripe Checkout session — the activation
 // ledger for the Content Program (Jordan, Aug 28: the website already handles
 // package selection -> agreement -> Stripe Checkout -> Calendly; the hub just
