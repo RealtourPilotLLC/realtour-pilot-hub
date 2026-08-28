@@ -66,7 +66,7 @@ export default async function ClientPortalPage({
   if (!/^[a-zA-Z0-9_-]{20,}$/.test(token)) notFound();
   const enrollment = await prisma.contentEnrollment.findUnique({
     where: { portalToken: token },
-    select: { id: true, clientId: true, status: true, videosPerMonth: true },
+    select: { id: true, clientId: true, status: true, videosPerMonth: true, sessionsPerMonth: true },
   });
   if (!enrollment || enrollment.status !== "ACTIVE") notFound();
   const client = await prisma.client.findUnique({
@@ -193,6 +193,13 @@ export default async function ClientPortalPage({
   const callBooked = call !== "NOT_SCHEDULED";
   const now = new Date();
   const upcoming = sessions.filter((s) => s.shootDate && s.shootDate >= now).sort((a, b) => +a.shootDate! - +b.shootDate!);
+  // Sessions ALREADY FILMED this month — "no session booked yet" was a lie the
+  // day after the shoot (Jordan: "Marcee did have a filming session this
+  // month").
+  const filmedThisMonth = sessions
+    .filter((s) => s.contentMonthId === current?.id && s.shootDate && s.shootDate < now)
+    .sort((a, b) => +b.shootDate! - +a.shootDate!);
+  const sessionsUsedThisMonth = sessions.filter((s) => s.contentMonthId === current?.id && s.shootDate).length;
   const currentVideos = library.filter((v) => v.monthId === current?.id);
   const currentScripts = scripts.filter((s) => s.monthId === current?.id);
   const first = (client?.name ?? "there").split(/\s+/)[0];
@@ -252,7 +259,8 @@ export default async function ClientPortalPage({
                 ) : call === "SCHEDULED" && callAt ? (
                   <p className="flex items-center gap-2"><CalendarClock className="size-4 shrink-0 text-brand" /> Strategy call — {fmtDate(callAt)} at {fmtTime(callAt)} ET</p>
                 ) : null}
-                {/* THE SESSION — date, time, location, one spot */}
+                {/* THE SESSION — date, time, location, one spot. Three true
+                    states: booked ahead, already filmed, or nothing yet. */}
                 {upcoming[0] ? (
                   <div className="rounded-xl border border-brand/25 bg-brand-soft/30 p-3">
                     <div className="text-[11px] font-semibold uppercase tracking-widest text-brand">Your next session</div>
@@ -264,6 +272,22 @@ export default async function ClientPortalPage({
                       )}
                     </div>
                   </div>
+                ) : filmedThisMonth[0] ? (
+                  <div className="rounded-xl border border-success/25 bg-success-soft/40 p-3">
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-widest text-success">
+                      <CheckCircle2 className="size-3.5" /> This month&rsquo;s session — filmed
+                    </div>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm font-medium">
+                      <span className="flex items-center gap-1.5"><CalendarClock className="size-4 text-success" /> {fmtDate(filmedThisMonth[0].shootDate!)}</span>
+                      <span className="flex items-center gap-1.5"><Clock className="size-4 text-success" /> {fmtTime(filmedThisMonth[0].shootDate!)} ET</span>
+                      {streetOf(filmedThisMonth[0].title, filmedThisMonth[0].addressLine) && (
+                        <span className="flex items-center gap-1.5"><MapPin className="size-4 text-success" /> {streetOf(filmedThisMonth[0].title, filmedThisMonth[0].addressLine)}</span>
+                      )}
+                      {filmedThisMonth[0].status === "DELIVERED" && (
+                        <span className="rounded bg-success-soft px-1.5 py-0.5 text-[10px] font-semibold text-success">delivered</span>
+                      )}
+                    </div>
+                  </div>
                 ) : (
                   <p className="flex items-center gap-2 text-muted"><Camera className="size-4 shrink-0" /> No filming session booked yet</p>
                 )}
@@ -271,7 +295,13 @@ export default async function ClientPortalPage({
             </div>
 
             {/* Scheduling */}
-            <PortalScheduler token={token} callBooked={callBooked} bookingUrl={STRATEGY_CALL_BOOKING_URL} hasUpcomingSession={!!upcoming[0]} />
+            <PortalScheduler
+              token={token}
+              callBooked={callBooked}
+              bookingUrl={STRATEGY_CALL_BOOKING_URL}
+              hasUpcomingSession={!!upcoming[0]}
+              monthDone={sessionsUsedThisMonth >= (enrollment.sessionsPerMonth || 1) && !upcoming[0]}
+            />
 
             {cuts.length > 0 && (
               <Link href={href("library")} className="flex items-center gap-2 rounded-2xl border border-brand/30 bg-brand-soft/40 p-4 text-sm font-medium hover:bg-brand-soft/60">

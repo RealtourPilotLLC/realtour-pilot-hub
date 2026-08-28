@@ -9,9 +9,12 @@ import { portalRequestSession } from "@/app/portal/actions";
 // filming LOCATION in one place; the live-Aryeo slot picker replaces the
 // free-text time field when it ships, same card.
 export function PortalScheduler({
-  token, callBooked, bookingUrl, hasUpcomingSession,
+  token, callBooked, bookingUrl, hasUpcomingSession, monthDone = false,
 }: {
   token: string; callBooked: boolean; bookingUrl: string; hasUpcomingSession: boolean;
+  // This month's session allowance is used up (already filmed) — offer
+  // nothing to book instead of inviting a session the package doesn't carry.
+  monthDone?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [when, setWhen] = useState("");
@@ -43,7 +46,9 @@ export function PortalScheduler({
         {/* Content session */}
         <div className="rounded-xl border border-border bg-surface-2/50 p-3.5">
           <div className="flex items-center gap-1.5 text-sm font-semibold"><Camera className="size-4 text-brand" /> Filming session</div>
-          {hasUpcomingSession ? (
+          {monthDone ? (
+            <p className="mt-1.5 flex items-center gap-1.5 text-xs text-success"><CheckCircle2 className="size-3.5" /> Filmed — this month&rsquo;s session is in the can</p>
+          ) : hasUpcomingSession ? (
             <p className="mt-1.5 flex items-center gap-1.5 text-xs text-success"><CheckCircle2 className="size-3.5" /> Booked — details up top</p>
           ) : !callBooked ? (
             <p className="mt-1.5 flex items-center gap-1.5 text-xs text-muted-2"><Lock className="size-3.5" /> Unlocks after your strategy call is booked</p>
