@@ -12,11 +12,17 @@ export function BrandMark({ className = "size-9" }: { className?: string }) {
   return <img src="/brand/mark.svg" alt="RealTour Pilot" className={cn("shrink-0 rounded-xl bg-white p-1", className)} />;
 }
 
-export function BrandWordmark({ className = "text-sm" }: { className?: string }) {
+// The REAL wordmark file (Jordan, Aug 28 — realtour-pilot-social brand kit,
+// cropped + a navy-recolored variant generated for light surfaces). Sized by
+// height; width follows the file's own proportions.
+export function BrandWordmark({ className = "h-4", variant = "onDark" }: { className?: string; variant?: "onDark" | "onLight" }) {
+  // eslint-disable-next-line @next/next/no-img-element
   return (
-    <span className={cn("select-none font-black uppercase leading-none tracking-tight", className)} style={{ fontFamily: "var(--font-sora), Inter, sans-serif" }}>
-      REAL<span className="text-brand">TOUR</span>&nbsp;PILOT
-    </span>
+    <img
+      src={variant === "onLight" ? "/brand/wordmark-dark.png" : "/brand/wordmark-white.png"}
+      alt="RealTour Pilot"
+      className={cn("w-auto select-none", className)}
+    />
   );
 }
 

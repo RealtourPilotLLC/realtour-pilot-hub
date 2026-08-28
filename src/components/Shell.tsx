@@ -98,7 +98,7 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
             {/* eslint-disable-next-line @next/next/no-img-element */}
 <img src="/brand/mark.svg" alt="RealTour Pilot" className="flex size-7 rounded-lg bg-white p-1" />
             <span className="text-sm font-semibold tracking-tight">
-              <BrandWordmark className="text-[15px]" />
+              <BrandWordmark className="h-4" />
             </span>
           </div>
           <div className="ml-auto">

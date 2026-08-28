@@ -215,7 +215,7 @@ export default async function ClientPortalPage({
 <img src="/brand/mark.svg" alt="RealTour Pilot" className="flex size-10 rounded-xl shadow-lg bg-white p-1" />
           <div className="min-w-0">
             <div className="text-sm font-semibold tracking-tight">
-              <BrandWordmark className="text-[15px]" /> <span className="ml-1 hidden text-muted-2 sm:inline">· Content Program</span>
+              <BrandWordmark variant="onLight" className="h-4" /> <span className="ml-1 hidden text-muted-2 sm:inline">· Content Program</span>
             </div>
             <div className="truncate text-xs text-muted">{client?.name}</div>
           </div>

@@ -22,7 +22,7 @@ export default async function FeedbackPage({ params }: { params: Promise<{ id: s
           {/* eslint-disable-next-line @next/next/no-img-element */}
 <img src="/brand/mark.svg" alt="RealTour Pilot" className="flex size-9 rounded-xl bg-white p-1" />
           <div className="text-sm font-semibold tracking-tight">
-            <BrandWordmark className="text-[15px]" />
+            <BrandWordmark className="h-4" />
           </div>
         </div>
         <div className="rounded-2xl border bg-surface p-6 shadow-xl">
