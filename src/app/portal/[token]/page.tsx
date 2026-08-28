@@ -217,15 +217,14 @@ export default async function ClientPortalPage({
       <div aria-hidden className="pointer-events-none fixed inset-x-0 top-0 h-72"
         style={{ background: "radial-gradient(60% 100% at 50% 0%, color-mix(in oklab, var(--brand) 14%, transparent), transparent 70%)" }} />
       <div className="relative mx-auto max-w-3xl p-4 pb-24 sm:p-6">
-        {/* BRAND + NAME */}
-        <div className="flex items-center gap-2.5 pt-3">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-<img src="/brand/mark.svg" alt="RealTour Pilot" className="flex size-10 rounded-xl shadow-lg bg-white p-1" />
-          <div className="min-w-0">
-            <div className="text-sm font-semibold tracking-tight">
-              <BrandWordmark variant="onLight" className="h-4" /> <span className="ml-1 hidden text-muted-2 sm:inline">· Content Program</span>
-            </div>
-            <div className="truncate text-xs text-muted">{client?.name}</div>
+        {/* BRAND + NAME — one clean row: the wordmark leads, the client's
+            name sits right-aligned (Jordan: the mashed-up three-line header
+            looked messy). */}
+        <div className="flex items-center gap-3 pt-4">
+          <BrandWordmark variant="onLight" className="h-5 sm:h-6" />
+          <div className="ml-auto min-w-0 text-right">
+            <div className="truncate text-sm font-semibold leading-tight">{client?.name}</div>
+            <div className="text-[11px] text-muted-2">Content Program</div>
           </div>
         </div>
 
