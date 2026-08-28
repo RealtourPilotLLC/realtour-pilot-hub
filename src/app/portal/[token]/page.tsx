@@ -96,24 +96,38 @@ export default async function ClientPortalPage({ params }: { params: Promise<{ t
         </div>
 
         {/* Their videos — watch, drop timestamped notes, request changes.
-            Only cuts Jordan APPROVED internally ever appear here. */}
-        {cuts.length > 0 && (
-          <div className="mt-5 rounded-2xl border border-border bg-surface p-4">
-            <div className="flex items-center gap-2 text-sm font-semibold"><PlayCircle className="size-4 text-brand" /> Your videos</div>
-            <p className="mt-1 text-xs text-muted-2">
-              Watch each cut, pause and drop a note where you want a change, then hit &ldquo;Request changes&rdquo; — it goes straight to your editor.
+            Only cuts Jordan APPROVED internally ever appear here. The card
+            renders even while empty (Jordan, Aug 28: the interactive layer
+            was invisible) so clients know the review loop exists. */}
+        <div className="mt-5 rounded-2xl border border-border bg-surface p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold"><PlayCircle className="size-4 text-brand" /> Your videos</div>
+          {cuts.length > 0 ? (
+            <>
+              <p className="mt-1 text-xs text-muted-2">
+                Watch each cut, pause and drop a note where you want a change, then hit &ldquo;Request changes&rdquo; — it goes straight to your editor.
+              </p>
+              <div className="mt-3 space-y-4">
+                {cuts.map((c) => (
+                  <PortalVideoReview key={c.submissionId} token={token} cut={c} monthLabel={monthLabel(c.monthKey)} />
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="mt-2 text-sm text-muted">
+              Your videos will appear right here as soon as they&rsquo;re ready — you&rsquo;ll watch them on this page, drop
+              notes at the exact moment you want changed, and send them straight to your editor.
             </p>
-            <div className="mt-3 space-y-4">
-              {cuts.map((c) => (
-                <PortalVideoReview key={c.submissionId} token={token} cut={c} monthLabel={monthLabel(c.monthKey)} />
-              ))}
-            </div>
-          </div>
-        )}
+          )}
+        </div>
 
         {/* Approved scripts */}
         <div className="mt-5 rounded-2xl border border-border bg-surface p-4">
           <div className="flex items-center gap-2 text-sm font-semibold"><FileText className="size-4 text-brand" /> Your scripts</div>
+          {scripts.length > 0 && (
+            <p className="mt-1 text-xs text-muted-2">
+              Tap a script to read it — and if you&rsquo;d word something differently, hit &ldquo;Suggest a change&rdquo; inside and we&rsquo;ll rework it.
+            </p>
+          )}
           {scripts.length === 0 ? (
             <p className="mt-2 text-sm text-muted">
               Scripts for {monthLabel(monthKey)} are being written from your strategy call — they&rsquo;ll appear here the moment they&rsquo;re approved.
