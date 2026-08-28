@@ -249,6 +249,22 @@ export async function addContentNote(clientId: string, body: string, intelligenc
 export type ExtractedScript = { title: string; body: string; hook?: string | null };
 export type BackfillPreview = { ok: boolean; message: string; monthGuess?: string | null; scripts?: ExtractedScript[]; sourceFile?: string };
 
+// The DOCUMENT TITLE names the month (Jordan, Aug 28: "the title of their
+// scripts should tell the month") — a deterministic filename parse beats any
+// AI guess. Handles "July 2026", "April 2026 - Final", "June" (year assumed
+// from context: current year), and "2026-07".
+const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+function monthFromFilename(name: string): string | null {
+  const lower = name.toLowerCase();
+  const iso = lower.match(/\b(20\d{2})[-_ ](0[1-9]|1[0-2])\b/);
+  if (iso) return `${iso[1]}-${iso[2]}`;
+  const idx = MONTHS.findIndex((m) => new RegExp(`\\b${m}\\b`).test(lower));
+  if (idx === -1) return null;
+  const yr = lower.match(/\b(20\d{2})\b/);
+  const year = yr ? yr[1] : etMonthKey().slice(0, 4);
+  return `${year}-${String(idx + 1).padStart(2, "0")}`;
+}
+
 // Shared file→plain-text extraction for the backfill uploads (scripts + strategies).
 async function extractUploadText(form: FormData): Promise<{ ok: true; text: string; name: string } | { ok: false; message: string }> {
   const file = form.get("file");
@@ -324,10 +340,10 @@ export async function previewScriptBackfill(form: FormData): Promise<BackfillPre
       .filter((s) => s.body?.trim())
       .map((s) => ({ title: (s.title || s.body.slice(0, 60)).trim().slice(0, 200), hook: s.hook?.trim() || null, body: s.body.trim().slice(0, 20_000) }));
     if (scripts.length === 0) return { ok: false, message: "No scripts found in the document." };
-    return { ok: true, message: `Found ${scripts.length} script${scripts.length === 1 ? "" : "s"}.`, monthGuess: out.monthKey ?? null, scripts, sourceFile: name };
+    return { ok: true, message: `Found ${scripts.length} script${scripts.length === 1 ? "" : "s"}.`, monthGuess: monthFromFilename(name) ?? out.monthKey ?? null, scripts, sourceFile: name };
   } catch {
     // AI unavailable → the whole document becomes one script; staff set the month.
-    return { ok: true, message: "Imported as one script (AI split unavailable).", monthGuess: null, scripts: [{ title: name.replace(/\.[^.]+$/, ""), body: text.slice(0, 20_000), hook: null }], sourceFile: name };
+    return { ok: true, message: "Imported as one script (AI split unavailable).", monthGuess: monthFromFilename(name), scripts: [{ title: name.replace(/\.[^.]+$/, ""), body: text.slice(0, 20_000), hook: null }], sourceFile: name };
   }
 }
 

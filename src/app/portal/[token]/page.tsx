@@ -348,6 +348,11 @@ export default async function ClientPortalPage({
               const mScripts = scripts.filter((s) => s.monthId === m.id);
               const mSessions = sessions.filter((s) => s.contentMonthId === m.id && s.shootDate);
               const isCurrent = m.monthKey === monthKey;
+              // Each video carries its own script when the titles match; the
+              // Scripts list below keeps only the unpaired ones.
+              const paired = matchVideosToScripts(mVideos, mScripts);
+              const pairedIds = new Set([...paired.values()].map((x) => x.id));
+              const looseScripts = mScripts.filter((sc) => !pairedIds.has(sc.id));
               return (
                 <div key={m.id} className="panel-shadow rounded-2xl border border-border bg-surface/70 p-4 backdrop-blur">
                   <div className="flex flex-wrap items-baseline gap-2">
@@ -366,11 +371,11 @@ export default async function ClientPortalPage({
                       {s.status === "DELIVERED" && <span className="rounded bg-success-soft px-1.5 py-0.5 text-[10px] font-semibold text-success">delivered</span>}
                     </div>
                   ))}
-                  {mVideos.length > 0 && <VideoGrid videos={mVideos} />}
-                  {mScripts.length > 0 && (
+                  {mVideos.length > 0 && <VideoGrid videos={mVideos} scriptFor={paired} />}
+                  {looseScripts.length > 0 && (
                     <div className="mt-3 space-y-2">
-                      <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Scripts</div>
-                      {mScripts.map((sc) => (
+                      <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">{paired.size > 0 ? "More scripts" : "Scripts"}</div>
+                      {looseScripts.map((sc) => (
                         <details key={sc.id} className="rounded-xl border border-border bg-surface-2/40 px-4 py-3">
                           <summary className="cursor-pointer text-sm font-bold">{sc.title}</summary>
                           <ScriptBody body={sc.body} size="xs" />
@@ -469,7 +474,57 @@ export default async function ClientPortalPage({
   );
 }
 
-function VideoGrid({ videos }: { videos: { id: string; title: string | null; thumb: string | null; playback: string | null; download: string | null }[] }) {
+// ---------------------------------------------------------------------------
+// Video ↔ script pairing (Jordan, Aug 28: "the script topics can be matched
+// with the video titles"). Deterministic: shared significant words score the
+// pair, and when BOTH titles carry numbers ("Tip #4") the numbers must agree
+// — Tip #4's video can never claim Tip #2's script. Greedy best-first; each
+// script pairs at most once.
+// ---------------------------------------------------------------------------
+const STOP_WORDS = new Set(["the", "and", "for", "with", "your", "you", "what", "how", "why", "isn", "not", "can", "video", "final"]);
+function titleTokens(t: string): { words: Set<string>; nums: Set<string> } {
+  const lower = t.toLowerCase().replace(/[’']/g, "");
+  const nums = new Set([...lower.matchAll(/(?:#|no\.?\s*)?(\d+)/g)].map((m) => m[1]));
+  const words = new Set(
+    lower.replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length > 2 && !STOP_WORDS.has(w)),
+  );
+  return { words, nums };
+}
+function pairScore(videoTitle: string, scriptTitle: string): number {
+  const a = titleTokens(videoTitle);
+  const b = titleTokens(scriptTitle);
+  if (a.nums.size && b.nums.size && ![...a.nums].some((n) => b.nums.has(n))) return 0;
+  if (a.words.size === 0 || b.words.size === 0) return 0;
+  const shared = [...a.words].filter((w) => b.words.has(w)).length;
+  return shared / Math.min(a.words.size, b.words.size);
+}
+function matchVideosToScripts(
+  videos: { id: string; title: string | null }[],
+  scripts: { id: string; title: string; body: string }[],
+): Map<string, { id: string; title: string; body: string }> {
+  const candidates: { v: string; s: (typeof scripts)[number]; score: number }[] = [];
+  for (const v of videos) {
+    if (!v.title) continue;
+    for (const sc of scripts) {
+      const score = pairScore(v.title, sc.title);
+      if (score >= 0.5) candidates.push({ v: v.id, s: sc, score });
+    }
+  }
+  candidates.sort((x, y) => y.score - x.score);
+  const out = new Map<string, (typeof scripts)[number]>();
+  const usedScripts = new Set<string>();
+  for (const c of candidates) {
+    if (out.has(c.v) || usedScripts.has(c.s.id)) continue;
+    out.set(c.v, c.s);
+    usedScripts.add(c.s.id);
+  }
+  return out;
+}
+
+function VideoGrid({ videos, scriptFor }: {
+  videos: { id: string; title: string | null; thumb: string | null; playback: string | null; download: string | null }[];
+  scriptFor?: Map<string, { id: string; title: string; body: string }>;
+}) {
   return (
     <div className="mt-3 grid grid-cols-2 gap-3">
       {videos.map((v, i) => (
@@ -490,6 +545,14 @@ function VideoGrid({ videos }: { videos: { id: string; title: string | null; thu
               </a>
             )}
           </div>
+          {scriptFor?.get(v.id) && (
+            <details className="border-t border-border bg-surface-2/40 px-2.5 py-1.5">
+              <summary className="cursor-pointer text-[11px] font-semibold text-brand">
+                <FileText className="mr-1 inline size-3" /> The script for this video
+              </summary>
+              <ScriptBody body={scriptFor.get(v.id)!.body} size="xs" />
+            </details>
+          )}
         </div>
       ))}
     </div>
