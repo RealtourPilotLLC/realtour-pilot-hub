@@ -713,3 +713,38 @@ export async function setMonthSkipped(monthId: string, skipped: boolean): Promis
   revalidatePath("/content");
   return { ok: true, message: skipped ? "Marked skipped — no more nagging about this month." : "Reopened." };
 }
+
+// Scripts slip months too (Jordan, Aug 28: "her July scripts were for the
+// content we shot in August") — same move semantics as sessions: the script
+// re-labels onto the month its content belongs to, and the portal follows.
+export async function moveScriptToMonth(scriptId: string, targetMonthKey: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  if (!/^\d{4}-\d{2}$/.test(targetMonthKey)) return { ok: false, message: "Pick a month." };
+  const script = await prisma.contentScript.findUnique({
+    where: { id: scriptId },
+    select: { id: true, enrollmentId: true, monthId: true },
+  });
+  if (!script) return { ok: false, message: "That script no longer exists." };
+  const enrollment = await prisma.contentEnrollment.findUnique({
+    where: { id: script.enrollmentId },
+    select: { id: true, clientId: true, videosPerMonth: true, strategyCallRequired: true },
+  });
+  if (!enrollment) return { ok: false, message: "Enrollment not found." };
+  const target = await prisma.contentMonth.upsert({
+    where: { enrollmentId_monthKey: { enrollmentId: enrollment.id, monthKey: targetMonthKey } },
+    update: {},
+    create: {
+      enrollmentId: enrollment.id,
+      clientId: enrollment.clientId,
+      monthKey: targetMonthKey,
+      videosOwed: enrollment.videosPerMonth,
+      historical: targetMonthKey < etMonthKey(),
+      strategyCallStatus: enrollment.strategyCallRequired ? "NOT_SCHEDULED" : "NOT_REQUIRED",
+    },
+    select: { id: true },
+  });
+  if (target.id === script.monthId) return { ok: true, message: "Already on that month." };
+  await prisma.contentScript.update({ where: { id: scriptId }, data: { monthId: target.id } });
+  revalidatePath(`/content/${enrollment.id}`);
+  return { ok: true, message: `Moved to ${targetMonthKey}.` };
+}

@@ -132,23 +132,13 @@ export default async function ClientPortalPage({
   };
   if (tab === "profile") {
     if (!prefill.videoStyle || !prefill.preferences) {
-      const calls = await prisma.contentNote.findMany({
-        where: { clientId: enrollment.clientId, intelligence: true, authorName: "AI (call extraction)" },
-        orderBy: { createdAt: "desc" },
-        take: 60,
-        select: { body: true },
-      }).catch(() => []);
-      const facts = calls
-        .map((n) => scrubMoney(n.body.replace(/^From the \S+ (?:strategy |discovery )?call:\s*/i, "")).trim())
-        .filter((f) => f.length > 3);
-      const pick = (re: RegExp) =>
-        facts.filter((f) => re.test(f)).slice(0, 6).map((f) => `• ${f}`).join("\n").slice(0, 1400);
-      if (!prefill.videoStyle) {
-        prefill.videoStyle = pick(/\bvideo|edit|reel|style|pac(?:e|ing)|music|song|caption|text on|polish|transition|intro|outro|glitter|font\b/i);
-      }
-      if (!prefill.preferences) {
-        prefill.preferences = pick(/\bschedul|prefer|location|film|shoot|session|teleprompter|wardrobe|availab|communicat|call|text us|morning|afternoon|office\b/i);
-      }
+      // Strict AI extraction over the call facts (cached weekly) — explicit
+      // preferences only; empty when nothing qualifies. The keyword-filter
+      // version surfaced motivation and brand lore as "preferences" (Jordan).
+      const { getPortalPrefill } = await import("@/lib/portalPrefill");
+      const extracted = await getPortalPrefill(enrollment.id, enrollment.clientId).catch(() => ({ videoStyle: "", preferences: "" }));
+      if (!prefill.videoStyle) prefill.videoStyle = extracted.videoStyle;
+      if (!prefill.preferences) prefill.preferences = extracted.preferences;
     }
     if (!prefill.brandColors) {
       // Colors are factual — hexes anywhere in the client's own brand data.
@@ -490,12 +480,13 @@ function VideoGrid({ videos }: { videos: { id: string; title: string | null; thu
             // eslint-disable-next-line @next/next/no-img-element
             <img src={v.thumb} alt={v.title ?? "Video"} className="max-h-64 w-full object-cover" />
           ) : null}
-          <div className="flex items-center gap-2 px-2 py-1.5">
-            <span className="min-w-0 flex-1 truncate text-[11px] font-medium">{v.title ?? `Video ${i + 1}`}</span>
+          <div className="flex items-start gap-2 px-2.5 py-2">
+            {/* Full title, wrapping — the agent reads the whole thing (Jordan). */}
+            <span className="min-w-0 flex-1 text-sm font-semibold leading-snug">{v.title ?? `Video ${i + 1}`}</span>
             {v.download && (
               <a href={v.download} target="_blank" rel="noopener noreferrer" title="Download"
-                className="inline-flex shrink-0 items-center gap-0.5 text-[11px] font-semibold text-brand hover:underline">
-                <Download className="size-3" />
+                className="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-1.5 py-1 text-[11px] font-semibold text-brand hover:bg-brand-soft">
+                <Download className="size-3.5" />
               </a>
             )}
           </div>
