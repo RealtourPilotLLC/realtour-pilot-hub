@@ -565,6 +565,13 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
     data: { projectId: submission.projectId, type: "SYSTEM", body: `Cut approved in review (round ${submission.round}).` },
   });
 
+  // QC passed → the cut joins the client's portal library the same moment
+  // (content-program jobs only; best-effort — approval never fails over it).
+  try {
+    const { addApprovedCutToLibrary } = await import("@/lib/portalLibrary");
+    await addApprovedCutToLibrary(submissionId);
+  } catch { /* library is best-effort */ }
+
   // Multi-video sets: "Ready to deliver" is a SET verdict, not a per-cut one
   // (audit: Kyle was told to deliver on video 1 of 4). Count the cuts still
   // in flight (latest round per file that isn't APPROVED yet).

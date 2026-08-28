@@ -1678,6 +1678,30 @@ model HubDocument {
 // Content sessions ARE Aryeo appointments -> Projects (Project.contentMonthId).
 // ---------------------------------------------------------------------------
 
+// The client's video LIBRARY — one row per delivered content-program video,
+// materialized (Jordan, Aug 28: "backfill everything for all the clients, and
+// from then on it gets added once it passes QC and is uploaded to Dropbox").
+// Two sources feed it: the Aryeo backfill/sweep (history — the CDN links the
+// delivery emails use) and the Review Room approve hook (a QC-passed cut's
+// Dropbox streaming link, the instant Jordan approves). The portal reads ONLY
+// this table — no live Aryeo calls on a client page load.
+model PortalVideo {
+  id           String   @id @default(cuid())
+  enrollmentId String // -> ContentEnrollment (plain ref)
+  monthId      String? // -> ContentMonth
+  projectId    String? // -> Project
+  title        String?
+  thumb        String?
+  playback     String? // streamable URL (Aryeo CDN or Dropbox direct link)
+  download     String?
+  source       String // aryeo | review
+  externalKey  String   @unique // aryeo:<listingId>:<n> | sub:<submissionId> — sync idempotency
+  deliveredAt  DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([enrollmentId, deliveredAt])
+}
+
 // A client's suggested change to one of their scripts, straight from the
 // portal (interactive layer, Aug 28). NEVER overwrites the script — it sits
 // OPEN until a human applies it (AI rewrite, original body snapshotted here)

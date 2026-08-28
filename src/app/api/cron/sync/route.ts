@@ -54,6 +54,12 @@ export async function GET(req: NextRequest) {
     const health = await sweepSubscriptionHealth().catch(() => ({ checked: 0, alerts: 0 }));
     return { ...signups, subs: health };
   });
+  await step("portalLibrary", async () => {
+    // Fresh Aryeo deliveries on content jobs reach the client's portal library
+    // within the hour (review-room approvals land instantly via the hook).
+    const { sweepPortalLibraries } = await import("@/lib/portalLibrary");
+    return sweepPortalLibraries();
+  });
   await step("contentProgram", async () => {
     const { contentProgramSweep } = await import("@/lib/contentProgram");
     return contentProgramSweep();

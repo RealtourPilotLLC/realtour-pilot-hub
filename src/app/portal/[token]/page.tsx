@@ -1,34 +1,47 @@
 import { notFound } from "next/navigation";
-import { CalendarClock, Camera, CheckCircle2, Download, FileText, History, PlayCircle, Sparkles } from "lucide-react";
+import Link from "next/link";
+import {
+  CalendarClock, Camera, CheckCircle2, ChevronRight, Download, FileText, Home, PlayCircle, Sparkles,
+} from "lucide-react";
 import { prisma } from "@/lib/prisma";
 import { monthLabel, etMonthKey } from "@/lib/contentProgram";
 import { STRATEGY_CALL_BOOKING_URL } from "@/lib/integrations/calendly";
-import { portalCuts, portalMonths, type PortalMonth } from "@/lib/portal";
+import { portalCuts, CLIENT_VISIBLE_SCRIPT, type PortalCut } from "@/lib/portal";
 import { PortalVideoReview } from "@/components/portal/PortalVideoReview";
 import { PortalSuggestBox } from "@/components/portal/PortalSuggestBox";
+import { cn } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
-// CLIENT-FACING content portal. Public route gated by the unguessable
-// per-client token; renders full-screen over the app shell. STRICT content
-// rules: approved scripts, sessions, delivered/approved videos, and the
-// booking link ONLY — no topics-in-progress, no internal notes, no drafts,
-// never money.
-//
-// Aug 28 rebuild (Jordan: "this honestly wasn't totally what I was
-// expecting"): the page is now the client's WHOLE program, not one month's
-// slice — a state-aware strategy-call card (no booking button when the call
-// already happened), this month's sessions/videos/scripts, and a
-// month-by-month archive of everything backfilled: past sessions, delivered
-// videos straight from Aryeo (watch + download), and every approved script.
+// CLIENT-FACING content hub — a tabbed mini-app (Jordan, Aug 28, modeled on
+// the Luma portal he liked): Home · Videos · Scripts · Sessions. The video
+// library reads the materialized PortalVideo table (backfilled from Aryeo for
+// every client; QC-passed cuts land via the Review Room approve hook), so a
+// page load never calls Aryeo. STRICT content rules hold: approved scripts,
+// delivered/approved videos, session dates, the booking link — never topics,
+// internal notes, drafts, or money.
 
-const fmtSession = (iso: string) =>
-  new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" });
-const fmtDay = (iso: string) =>
-  new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "long", day: "numeric" });
+type TabKey = "home" | "videos" | "scripts" | "sessions";
+const TABS: { key: TabKey; label: string; icon: typeof Home }[] = [
+  { key: "home", label: "Home", icon: Home },
+  { key: "videos", label: "Videos", icon: PlayCircle },
+  { key: "scripts", label: "Scripts", icon: FileText },
+  { key: "sessions", label: "Sessions", icon: Camera },
+];
 
-export default async function ClientPortalPage({ params }: { params: Promise<{ token: string }> }) {
+const fmtSession = (d: Date) =>
+  d.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" });
+const fmtDay = (d: Date) =>
+  d.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "long", day: "numeric", year: "numeric" });
+
+export default async function ClientPortalPage({
+  params, searchParams,
+}: {
+  params: Promise<{ token: string }>;
+  searchParams: Promise<{ tab?: string }>;
+}) {
   const { token } = await params;
+  const { tab: rawTab } = await searchParams;
   if (!/^[a-zA-Z0-9_-]{20,}$/.test(token)) notFound();
   const enrollment = await prisma.contentEnrollment.findUnique({
     where: { portalToken: token },
@@ -36,208 +49,280 @@ export default async function ClientPortalPage({ params }: { params: Promise<{ t
   });
   if (!enrollment || enrollment.status !== "ACTIVE") notFound();
   const client = await prisma.client.findUnique({ where: { id: enrollment.clientId }, select: { name: true } });
+  const tab: TabKey = (TABS.some((t) => t.key === rawTab) ? rawTab : "home") as TabKey;
 
   const monthKey = etMonthKey();
-  const [cuts, allMonths] = await Promise.all([
-    portalCuts(enrollment.id).catch(() => []),
-    portalMonths(enrollment.id).catch(() => [] as PortalMonth[]),
+  const [months, cuts, library] = await Promise.all([
+    prisma.contentMonth.findMany({
+      where: { enrollmentId: enrollment.id },
+      orderBy: { monthKey: "desc" },
+      take: 18,
+      select: { id: true, monthKey: true, strategyCallStatus: true, strategyCallAt: true },
+    }),
+    portalCuts(enrollment.id).catch(() => [] as PortalCut[]),
+    prisma.portalVideo.findMany({
+      where: { enrollmentId: enrollment.id },
+      orderBy: { deliveredAt: "desc" },
+      take: 200,
+      select: { id: true, monthId: true, title: true, thumb: true, playback: true, download: true, deliveredAt: true },
+    }),
   ]);
-  const current = allMonths.find((m) => m.monthKey === monthKey) ?? null;
-  const past = allMonths.filter((m) => m.monthKey !== monthKey && (m.scripts.length > 0 || m.videos.length > 0 || m.sessions.length > 0));
+  const monthIds = months.map((m) => m.id);
+  const keyOfMonth = new Map(months.map((m) => [m.id, m.monthKey]));
+  const [scripts, sessions] = await Promise.all([
+    prisma.contentScript.findMany({
+      where: { monthId: { in: monthIds }, status: { in: CLIENT_VISIBLE_SCRIPT } },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, monthId: true, title: true, body: true },
+    }),
+    prisma.project.findMany({
+      where: { contentMonthId: { in: monthIds }, status: { not: "CANCELLED" }, shootDate: { not: null } },
+      orderBy: { shootDate: "desc" },
+      select: { id: true, contentMonthId: true, shootDate: true, status: true },
+    }),
+  ]);
 
-  // The strategy call, truthfully: done → say so; booked → show when; only a
-  // genuinely un-booked required call gets the booking button (Jordan: "the
-  // button is right there and not even needed — she already had her call").
+  const current = months.find((m) => m.monthKey === monthKey) ?? null;
   const call = current?.strategyCallStatus ?? "NOT_SCHEDULED";
-  const callAt = current?.strategyCallAtISO ?? null;
-  const showBooking = call === "NOT_SCHEDULED";
+  const callAt = current?.strategyCallAt ?? null;
+  const now = new Date();
+  const upcoming = sessions.filter((s) => s.shootDate! >= now).sort((a, b) => +a.shootDate! - +b.shootDate!);
+  const deliveredThisMonth = library.filter((v) => v.monthId && keyOfMonth.get(v.monthId) === monthKey).length;
+  const currentScripts = scripts.filter((s) => s.monthId === current?.id);
+
+  // Library grouped by month, newest month first; undated rows fall to their
+  // delivery date's month label.
+  const groups: { label: string; videos: typeof library }[] = [];
+  for (const v of library) {
+    const label = (v.monthId && keyOfMonth.get(v.monthId) && monthLabel(keyOfMonth.get(v.monthId)!)) ||
+      v.deliveredAt.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "long", year: "numeric" });
+    const g = groups.find((x) => x.label === label);
+    if (g) g.videos.push(v);
+    else groups.push({ label, videos: [v] });
+  }
 
   const first = (client?.name ?? "there").split(/\s+/)[0];
+  const href = (t: TabKey) => `/portal/${token}${t === "home" ? "" : `?tab=${t}`}`;
+
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-background">
-      <div className="mx-auto max-w-2xl p-6 pb-20">
-        <div className="mb-8 flex items-center gap-2.5 pt-4">
-          <div
-            className="flex size-9 items-center justify-center rounded-xl text-sm font-bold text-white"
-            style={{ background: "linear-gradient(135deg, #f97316, #e96320 55%, #c2410c)" }}
-          >
-            RP
-          </div>
-          <div className="text-sm font-semibold tracking-tight">
-            Real<span className="text-brand">Tour</span> Pilot <span className="ml-1 text-muted-2">· Content Program</span>
-          </div>
-        </div>
-
-        <h1 className="text-2xl font-semibold tracking-tight">Hi {first} 👋</h1>
-        <p className="mt-1 text-sm text-muted">
-          Your {monthLabel(monthKey)} content — {enrollment.videosPerMonth} video{enrollment.videosPerMonth === 1 ? "" : "s"} this month.
-        </p>
-
-        {/* THIS MONTH — call state + sessions */}
-        <div className="mt-6 rounded-2xl border border-border bg-surface p-4">
-          <div className="flex items-center gap-2 text-sm font-semibold"><Camera className="size-4 text-brand" /> This month</div>
-
-          {/* Strategy call, state-aware */}
-          <div className="mt-2 text-sm">
-            {call === "COMPLETED" ? (
-              <p className="flex items-center gap-1.5 text-success">
-                <CheckCircle2 className="size-4" /> Strategy call done{callAt ? ` — ${fmtDay(callAt)}` : ""}. Your content plan is set.
-              </p>
-            ) : call === "SCHEDULED" && callAt ? (
-              <p className="flex items-center gap-1.5 text-muted">
-                <CalendarClock className="size-4 text-brand" /> Strategy call booked for {fmtSession(callAt)} ET.
-              </p>
-            ) : call === "SKIPPED" || call === "NOT_REQUIRED" ? null : null}
-          </div>
-
-          {/* Sessions */}
-          {(current?.sessions.length ?? 0) > 0 ? (
-            <ul className="mt-2 space-y-1 text-sm text-muted">
-              {current!.sessions.filter((s) => s.dateISO).map((s, i) => (
-                <li key={i} className="flex items-center gap-1.5">
-                  <Camera className="size-3.5 text-muted-2" />
-                  Filming: {fmtSession(s.dateISO!)} ET
-                  {s.delivered && <span className="rounded bg-success-soft px-1.5 py-0.5 text-[10px] font-semibold text-success">delivered</span>}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="mt-2 text-sm text-muted">No filming session on the calendar yet — we&rsquo;ll get one booked.</p>
-          )}
-
-          {showBooking && (
-            <a
-              href={STRATEGY_CALL_BOOKING_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
-            >
-              <CalendarClock className="size-4" /> Book your strategy call
-            </a>
-          )}
-        </div>
-
-        {/* VIDEOS — in-review cuts (interactive) + this month's delivered, or the what's-coming note */}
-        <div className="mt-5 rounded-2xl border border-border bg-surface p-4">
-          <div className="flex items-center gap-2 text-sm font-semibold"><PlayCircle className="size-4 text-brand" /> Your videos</div>
-          {cuts.length > 0 && (
-            <>
-              <p className="mt-1 text-xs text-muted-2">
-                Watch each cut, pause and drop a note where you want a change, then hit &ldquo;Request changes&rdquo; — it goes straight to your editor.
-              </p>
-              <div className="mt-3 space-y-4">
-                {cuts.map((c) => (
-                  <PortalVideoReview key={c.submissionId} token={token} cut={c} monthLabel={monthLabel(c.monthKey)} />
-                ))}
-              </div>
-            </>
-          )}
-          {(current?.videos.length ?? 0) > 0 && (
-            <div className="mt-3">
-              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Delivered this month</div>
-              <DeliveredGrid videos={current!.videos} />
+      <div className="mx-auto max-w-3xl p-4 pb-24 sm:p-6">
+        {/* BRAND + NAME */}
+        <div className="flex items-center gap-2.5 pt-3">
+          <div className="flex size-9 items-center justify-center rounded-xl text-sm font-bold text-white"
+            style={{ background: "linear-gradient(135deg, #f97316, #e96320 55%, #c2410c)" }}>RP</div>
+          <div className="min-w-0">
+            <div className="text-sm font-semibold tracking-tight">
+              Real<span className="text-brand">Tour</span> Pilot <span className="ml-1 hidden text-muted-2 sm:inline">· Content Program</span>
             </div>
-          )}
-          {cuts.length === 0 && (current?.videos.length ?? 0) === 0 && (
-            <p className="mt-2 text-sm text-muted">
-              Your videos will appear right here as soon as they&rsquo;re ready — you&rsquo;ll watch them on this page, drop
-              notes at the exact moment you want changed, and send them straight to your editor.
-            </p>
-          )}
+            <div className="truncate text-xs text-muted">{client?.name}</div>
+          </div>
         </div>
 
-        {/* Approved scripts */}
-        <div className="mt-5 rounded-2xl border border-border bg-surface p-4">
-          <div className="flex items-center gap-2 text-sm font-semibold"><FileText className="size-4 text-brand" /> Your scripts</div>
-          {(current?.scripts.length ?? 0) > 0 ? (
-            <>
-              <p className="mt-1 text-xs text-muted-2">
-                Tap a script to read it — and if you&rsquo;d word something differently, hit &ldquo;Suggest a change&rdquo; inside and we&rsquo;ll rework it.
-              </p>
-              <div className="mt-3 space-y-3">
-                {current!.scripts.map((sc) => (
-                  <details key={sc.id} className="rounded-xl border border-border bg-surface-2/40 px-4 py-3" open={current!.scripts.length <= 2}>
-                    <summary className="cursor-pointer text-sm font-semibold">{sc.title}</summary>
-                    <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">{sc.body}</p>
-                    <PortalSuggestBox token={token} scriptId={sc.id} />
-                  </details>
-                ))}
+        {/* TABS */}
+        <nav className="mt-5 flex gap-1 overflow-x-auto border-b border-border">
+          {TABS.map((t) => (
+            <Link key={t.key} href={href(t.key)}
+              className={cn(
+                "flex items-center gap-1.5 whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium",
+                tab === t.key ? "border-brand text-foreground" : "border-transparent text-muted hover:text-foreground",
+              )}>
+              <t.icon className="size-4" /> {t.label}
+              {t.key === "videos" && (library.length > 0 || cuts.length > 0) && (
+                <span className="rounded-full bg-surface-2 px-1.5 text-[10px] font-semibold text-muted">{library.length + cuts.length}</span>
+              )}
+            </Link>
+          ))}
+        </nav>
+
+        {/* ---------------- HOME ---------------- */}
+        {tab === "home" && (
+          <div className="mt-5 space-y-4">
+            <h1 className="text-2xl font-semibold tracking-tight">Hi {first} 👋</h1>
+
+            <div className="rounded-2xl border border-border bg-surface p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">{monthLabel(monthKey)}</div>
+              <div className="mt-2 space-y-2 text-sm">
+                <p className="flex items-center gap-2">
+                  <PlayCircle className="size-4 shrink-0 text-brand" />
+                  <span><b>{deliveredThisMonth}</b> of {enrollment.videosPerMonth} videos delivered this month</span>
+                </p>
+                {call === "COMPLETED" ? (
+                  <p className="flex items-center gap-2 text-success"><CheckCircle2 className="size-4 shrink-0" /> Strategy call done{callAt ? ` — ${fmtDay(callAt)}` : ""}</p>
+                ) : call === "SCHEDULED" && callAt ? (
+                  <p className="flex items-center gap-2"><CalendarClock className="size-4 shrink-0 text-brand" /> Strategy call booked — {fmtSession(callAt)} ET</p>
+                ) : call === "NOT_SCHEDULED" ? (
+                  <p className="flex items-center gap-2 text-warning"><CalendarClock className="size-4 shrink-0" /> Strategy call not booked yet</p>
+                ) : null}
+                {upcoming[0] ? (
+                  <p className="flex items-center gap-2"><Camera className="size-4 shrink-0 text-brand" /> Next filming: {fmtSession(upcoming[0].shootDate!)} ET</p>
+                ) : (
+                  <p className="flex items-center gap-2 text-muted"><Camera className="size-4 shrink-0" /> No filming session booked yet</p>
+                )}
               </div>
-            </>
-          ) : (
-            <p className="mt-2 text-sm text-muted">
-              Scripts for {monthLabel(monthKey)} are being written from your strategy call — they&rsquo;ll appear here the moment they&rsquo;re approved.
-            </p>
-          )}
-        </div>
-
-        {/* THE ARCHIVE — every past month: sessions, delivered videos, scripts */}
-        {past.length > 0 && (
-          <div className="mt-5 rounded-2xl border border-border bg-surface p-4">
-            <div className="flex items-center gap-2 text-sm font-semibold"><History className="size-4 text-brand" /> Past months</div>
-            <p className="mt-1 text-xs text-muted-2">Everything we&rsquo;ve made together — sessions, videos and scripts, month by month.</p>
-            <div className="mt-3 space-y-3">
-              {past.map((m) => (
-                <details key={m.monthKey} className="rounded-xl border border-border bg-surface-2/40 px-4 py-3">
-                  <summary className="cursor-pointer text-sm font-semibold">
-                    {monthLabel(m.monthKey)}
-                    <span className="ml-2 text-xs font-normal text-muted-2">
-                      {[
-                        m.videos.length > 0 ? `${m.videos.length} video${m.videos.length === 1 ? "" : "s"}` : null,
-                        m.scripts.length > 0 ? `${m.scripts.length} script${m.scripts.length === 1 ? "" : "s"}` : null,
-                      ].filter(Boolean).join(" · ") || "—"}
-                    </span>
-                  </summary>
-                  {m.sessions.filter((s) => s.dateISO).length > 0 && (
-                    <ul className="mt-2 space-y-0.5 text-xs text-muted">
-                      {m.sessions.filter((s) => s.dateISO).map((s, i) => (
-                        <li key={i}>Filmed {fmtDay(s.dateISO!)}</li>
-                      ))}
-                    </ul>
-                  )}
-                  {m.videos.length > 0 && <DeliveredGrid videos={m.videos} />}
-                  {m.scripts.length > 0 && (
-                    <div className="mt-3 space-y-2">
-                      {m.scripts.map((sc) => (
-                        <details key={sc.id} className="rounded-lg border border-border bg-surface px-3 py-2">
-                          <summary className="cursor-pointer text-xs font-semibold">{sc.title}</summary>
-                          <p className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-foreground/85">{sc.body}</p>
-                        </details>
-                      ))}
-                    </div>
-                  )}
-                </details>
-              ))}
+              {call === "NOT_SCHEDULED" && (
+                <a href={STRATEGY_CALL_BOOKING_URL} target="_blank" rel="noopener noreferrer"
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90">
+                  <CalendarClock className="size-4" /> Book your strategy call
+                </a>
+              )}
             </div>
+
+            {cuts.length > 0 && (
+              <Link href={href("videos")} className="flex items-center gap-2 rounded-2xl border border-brand/30 bg-brand-soft/40 p-4 text-sm font-medium hover:bg-brand-soft/60">
+                <PlayCircle className="size-4 text-brand" />
+                {cuts.length} video{cuts.length === 1 ? "" : "s"} ready for your review
+                <ChevronRight className="ml-auto size-4 text-brand" />
+              </Link>
+            )}
+
+            {library.length > 0 && (
+              <div className="rounded-2xl border border-border bg-surface p-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold">Latest videos</span>
+                  <Link href={href("videos")} className="text-xs font-medium text-brand hover:underline">See all {library.length} →</Link>
+                </div>
+                <VideoGrid videos={library.slice(0, 4)} />
+              </div>
+            )}
+
+            {currentScripts.length > 0 && (
+              <Link href={href("scripts")} className="flex items-center gap-2 rounded-2xl border border-border bg-surface p-4 text-sm font-medium hover:bg-surface-2">
+                <FileText className="size-4 text-brand" />
+                {currentScripts.length} script{currentScripts.length === 1 ? "" : "s"} ready for {monthLabel(monthKey)}
+                <ChevronRight className="ml-auto size-4 text-muted-2" />
+              </Link>
+            )}
           </div>
         )}
 
-        <p className="mt-8 flex items-center gap-1.5 text-center text-xs text-muted-2">
-          <Sparkles className="size-3.5" /> Questions or topic ideas? Text us any time — this page updates as your month progresses.
+        {/* ---------------- VIDEOS ---------------- */}
+        {tab === "videos" && (
+          <div className="mt-5 space-y-5">
+            {cuts.length > 0 && (
+              <div className="rounded-2xl border border-brand/30 bg-surface p-4">
+                <div className="text-sm font-semibold">For your review</div>
+                <p className="mt-1 text-xs text-muted-2">
+                  Watch, pause and drop a note where you want a change, then hit &ldquo;Request changes&rdquo; — it goes straight to your editor.
+                </p>
+                <div className="mt-3 space-y-4">
+                  {cuts.map((c) => (
+                    <PortalVideoReview key={c.submissionId} token={token} cut={c} monthLabel={monthLabel(c.monthKey)} />
+                  ))}
+                </div>
+              </div>
+            )}
+            {groups.length === 0 && cuts.length === 0 && (
+              <p className="rounded-2xl border border-dashed border-border bg-surface p-6 text-sm text-muted">
+                Your videos will appear here as soon as the first one is ready.
+              </p>
+            )}
+            {groups.map((g) => (
+              <div key={g.label}>
+                <div className="mb-2 text-sm font-semibold">{g.label} <span className="text-xs font-normal text-muted-2">· {g.videos.length}</span></div>
+                <VideoGrid videos={g.videos} />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ---------------- SCRIPTS ---------------- */}
+        {tab === "scripts" && (
+          <div className="mt-5 space-y-5">
+            {scripts.length === 0 && (
+              <p className="rounded-2xl border border-dashed border-border bg-surface p-6 text-sm text-muted">
+                Scripts appear here the moment they&rsquo;re approved — usually right after your strategy call.
+              </p>
+            )}
+            {months.filter((m) => scripts.some((s) => s.monthId === m.id)).map((m) => {
+              const monthScripts = scripts.filter((s) => s.monthId === m.id);
+              const isCurrent = m.monthKey === monthKey;
+              return (
+                <div key={m.id} className="rounded-2xl border border-border bg-surface p-4">
+                  <div className="text-sm font-semibold">{monthLabel(m.monthKey)}{isCurrent && <span className="ml-2 rounded bg-brand-soft px-1.5 py-0.5 text-[10px] font-semibold text-brand">this month</span>}</div>
+                  {isCurrent && (
+                    <p className="mt-1 text-xs text-muted-2">Tap a script to read it — and if you&rsquo;d word something differently, hit &ldquo;Suggest a change&rdquo;.</p>
+                  )}
+                  <div className="mt-3 space-y-2">
+                    {monthScripts.map((sc) => (
+                      <details key={sc.id} className="rounded-xl border border-border bg-surface-2/40 px-4 py-3" open={isCurrent && monthScripts.length <= 2}>
+                        <summary className="cursor-pointer text-sm font-semibold">{sc.title}</summary>
+                        <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">{sc.body}</p>
+                        {isCurrent && <PortalSuggestBox token={token} scriptId={sc.id} />}
+                      </details>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* ---------------- SESSIONS ---------------- */}
+        {tab === "sessions" && (
+          <div className="mt-5 space-y-4">
+            <div className="rounded-2xl border border-border bg-surface p-4">
+              <div className="text-sm font-semibold">Upcoming</div>
+              {upcoming.length > 0 ? (
+                <ul className="mt-2 space-y-1.5 text-sm">
+                  {upcoming.map((s) => (
+                    <li key={s.id} className="flex items-center gap-2">
+                      <Camera className="size-4 shrink-0 text-brand" /> {fmtSession(s.shootDate!)} ET
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-2 text-sm text-muted">No filming session on the calendar yet — we&rsquo;ll get one booked after your strategy call.</p>
+              )}
+              {call === "NOT_SCHEDULED" && (
+                <a href={STRATEGY_CALL_BOOKING_URL} target="_blank" rel="noopener noreferrer"
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90">
+                  <CalendarClock className="size-4" /> Book your strategy call
+                </a>
+              )}
+            </div>
+            {sessions.filter((s) => s.shootDate! < now).length > 0 && (
+              <div className="rounded-2xl border border-border bg-surface p-4">
+                <div className="text-sm font-semibold">Past sessions</div>
+                <ul className="mt-2 space-y-1 text-sm text-muted">
+                  {sessions.filter((s) => s.shootDate! < now).map((s) => (
+                    <li key={s.id} className="flex items-center gap-2">
+                      <CheckCircle2 className="size-3.5 shrink-0 text-success" /> {fmtDay(s.shootDate!)}
+                      {s.status === "DELIVERED" && <span className="rounded bg-success-soft px-1.5 py-0.5 text-[10px] font-semibold text-success">delivered</span>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
+        <p className="mt-8 flex items-center justify-center gap-1.5 text-center text-xs text-muted-2">
+          <Sparkles className="size-3.5" /> Questions or topic ideas? Text us any time.
         </p>
       </div>
     </div>
   );
 }
 
-// Delivered videos straight from Aryeo — playable inline, downloadable from
-// the same CDN link the delivery email uses.
-function DeliveredGrid({ videos }: { videos: { title: string | null; thumb: string | null; playback: string | null; download: string | null }[] }) {
+// The library grid — playable inline, downloadable from the same links the
+// delivery emails use.
+function VideoGrid({ videos }: { videos: { id: string; title: string | null; thumb: string | null; playback: string | null; download: string | null }[] }) {
   return (
-    <div className="mt-2 grid gap-3 sm:grid-cols-2">
+    <div className="mt-2 grid grid-cols-2 gap-3">
       {videos.map((v, i) => (
-        <div key={i} className="overflow-hidden rounded-lg border border-border bg-surface">
+        <div key={v.id} className="overflow-hidden rounded-lg border border-border bg-surface">
           {v.playback ? (
-            <video src={v.playback} poster={v.thumb ?? undefined} controls playsInline preload="none" className="aspect-[9/16] max-h-72 w-full bg-black object-contain" />
+            <video src={v.playback} poster={v.thumb ?? undefined} controls playsInline preload="none" className="aspect-[9/16] max-h-64 w-full bg-black object-contain" />
           ) : v.thumb ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={v.thumb} alt={v.title ?? "Video"} className="max-h-72 w-full object-cover" />
+            <img src={v.thumb} alt={v.title ?? "Video"} className="max-h-64 w-full object-cover" />
           ) : null}
-          <div className="flex items-center gap-2 px-2.5 py-1.5">
-            <span className="min-w-0 flex-1 truncate text-xs font-medium">{v.title ?? `Video ${i + 1}`}</span>
+          <div className="flex items-center gap-2 px-2 py-1.5">
+            <span className="min-w-0 flex-1 truncate text-[11px] font-medium">{v.title ?? `Video ${i + 1}`}</span>
             {v.download && (
-              <a href={v.download} target="_blank" rel="noopener noreferrer" className="inline-flex shrink-0 items-center gap-1 text-[11px] font-semibold text-brand hover:underline">
-                <Download className="size-3" /> Download
+              <a href={v.download} target="_blank" rel="noopener noreferrer" className="inline-flex shrink-0 items-center gap-0.5 text-[11px] font-semibold text-brand hover:underline">
+                <Download className="size-3" />
               </a>
             )}
           </div>
