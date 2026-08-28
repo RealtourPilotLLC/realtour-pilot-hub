@@ -13,6 +13,7 @@ import { PortalSuggestBox } from "@/components/portal/PortalSuggestBox";
 import { PortalScheduler } from "@/components/portal/PortalScheduler";
 import { PortalProfile } from "@/components/portal/PortalProfile";
 import { ScriptBody } from "@/components/portal/ScriptBody";
+import { PortalRichText } from "@/components/portal/PortalRichText";
 import { cn } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -120,29 +121,43 @@ export default async function ClientPortalPage({
   // know instead of a blank box. Their save writes the canonical Client
   // fields; the AI profile itself is never overwritten.
   const { stripMoneySentences: scrubMoney } = await import("@/lib/text");
-  let prefill = {
+  // Prefill rules (Jordan, Aug 28): the style/preference fields seed ONLY from
+  // what the client actually SAID on their calls — the intelligence facts the
+  // call analyzer extracts from strategy + brand-discovery calls. Never from
+  // the content strategy document or internal notes. Nothing fits → empty.
+  const prefill = {
     brandColors: client?.brandColors ?? "",
-    videoStyle: client?.portalVideoStyle ?? scrubMoney(client?.editingPreferences ?? ""),
-    preferences: client?.portalPreferences ?? scrubMoney(client?.clientPreferences ?? ""),
+    videoStyle: client?.portalVideoStyle ?? "",
+    preferences: client?.portalPreferences ?? "",
   };
-  if (tab === "profile" && (!prefill.brandColors || !prefill.videoStyle || !prefill.preferences)) {
-    const ap = await prisma.agentProfile.findUnique({
-      where: { clientId: enrollment.clientId },
-      select: { brandJson: true, editingJson: true, productionJson: true },
-    }).catch(() => null);
-    const joinVals = (raw: string | null | undefined): string => {
-      try {
-        const obj = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-        return Object.values(obj).filter((v): v is string => typeof v === "string" && v.trim().length > 0).join("\n");
-      } catch { return ""; }
-    };
-    const stripMoneySentences = scrubMoney;
+  if (tab === "profile") {
+    if (!prefill.videoStyle || !prefill.preferences) {
+      const calls = await prisma.contentNote.findMany({
+        where: { clientId: enrollment.clientId, intelligence: true, authorName: "AI (call extraction)" },
+        orderBy: { createdAt: "desc" },
+        take: 60,
+        select: { body: true },
+      }).catch(() => []);
+      const facts = calls
+        .map((n) => scrubMoney(n.body.replace(/^From the \S+ (?:strategy |discovery )?call:\s*/i, "")).trim())
+        .filter((f) => f.length > 3);
+      const pick = (re: RegExp) =>
+        facts.filter((f) => re.test(f)).slice(0, 6).map((f) => `• ${f}`).join("\n").slice(0, 1400);
+      if (!prefill.videoStyle) {
+        prefill.videoStyle = pick(/\bvideo|edit|reel|style|pac(?:e|ing)|music|song|caption|text on|polish|transition|intro|outro|glitter|font\b/i);
+      }
+      if (!prefill.preferences) {
+        prefill.preferences = pick(/\bschedul|prefer|location|film|shoot|session|teleprompter|wardrobe|availab|communicat|call|text us|morning|afternoon|office\b/i);
+      }
+    }
     if (!prefill.brandColors) {
-      const hexes = [...new Set((joinVals(ap?.brandJson).match(/#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b/g) ?? []))];
+      // Colors are factual — hexes anywhere in the client's own brand data.
+      const ap = await prisma.agentProfile.findUnique({
+        where: { clientId: enrollment.clientId }, select: { brandJson: true },
+      }).catch(() => null);
+      const hexes = [...new Set(((ap?.brandJson ?? "").match(/#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b/g) ?? []))];
       if (hexes.length) prefill.brandColors = hexes.join(", ");
     }
-    if (!prefill.videoStyle) prefill.videoStyle = stripMoneySentences(joinVals(ap?.editingJson)).slice(0, 1200);
-    if (!prefill.preferences) prefill.preferences = stripMoneySentences(joinVals(ap?.productionJson)).slice(0, 1200);
   }
   // Their content strategy — the ACTIVE one, read-only and money-scrubbed
   // (Jordan: "in their agent profile, they should have their content strategy
@@ -361,7 +376,7 @@ export default async function ClientPortalPage({
                   {strategySections.map((sec) => (
                     <details key={sec.name} className="rounded-xl border border-border bg-surface-2/40 px-4 py-3">
                       <summary className="cursor-pointer text-sm font-bold">{sec.name}</summary>
-                      <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-foreground/85">{sec.body}</p>
+                      <PortalRichText text={sec.body} />
                     </details>
                   ))}
                 </div>
