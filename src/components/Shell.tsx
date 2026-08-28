@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { BrandWordmark } from "@/components/Brand";
 import { usePathname } from "next/navigation";
 import { Menu, X } from "lucide-react";
 import { NotificationsBell } from "@/components/NotificationsBell";
@@ -97,7 +98,7 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
             {/* eslint-disable-next-line @next/next/no-img-element */}
 <img src="/brand/mark.svg" alt="RealTour Pilot" className="flex size-7 rounded-lg bg-white p-1" />
             <span className="text-sm font-semibold tracking-tight">
-              Real<span className="text-brand">Tour</span> Pilot
+              <BrandWordmark className="text-[15px]" />
             </span>
           </div>
           <div className="ml-auto">

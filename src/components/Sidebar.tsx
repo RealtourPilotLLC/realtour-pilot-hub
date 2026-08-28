@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { BrandWordmark } from "@/components/Brand";
 import { usePathname } from "next/navigation";
 import {
   Clapperboard,
@@ -183,7 +184,7 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
 <img src="/brand/mark.svg" alt="RealTour Pilot" className="flex size-9 rounded-xl shadow-lg bg-white p-1" />
         <div className="leading-tight">
           <div className="text-sm font-semibold tracking-tight">
-            Real<span className="text-brand">Tour</span> Pilot
+            <BrandWordmark className="text-[15px]" />
           </div>
           <div className="text-[11px] uppercase tracking-[0.14em] text-muted-2">Operations Hub</div>
         </div>

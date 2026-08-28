@@ -1,4 +1,5 @@
 import { PasswordLoginForm } from "@/components/auth/PasswordLoginForm";
+import { BrandWordmark } from "@/components/Brand";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +26,7 @@ export default async function LoginPage({
         {/* eslint-disable-next-line @next/next/no-img-element */}
 <img src="/brand/mark.svg" alt="RealTour Pilot" className="flex size-12 rounded-xl bg-white p-1" />
         <h1 className="text-lg font-semibold tracking-tight">
-          Real<span className="text-brand">Tour</span> Pilot
+          <BrandWordmark className="text-[15px]" />
         </h1>
         <p className="mt-1 text-sm text-muted">Operations Hub — sign in to continue</p>
 

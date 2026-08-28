@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { BrandWordmark } from "@/components/Brand";
 import { prisma } from "@/lib/prisma";
 import { FeedbackForm } from "@/components/feedback/FeedbackForm";
 
@@ -21,7 +22,7 @@ export default async function FeedbackPage({ params }: { params: Promise<{ id: s
           {/* eslint-disable-next-line @next/next/no-img-element */}
 <img src="/brand/mark.svg" alt="RealTour Pilot" className="flex size-9 rounded-xl bg-white p-1" />
           <div className="text-sm font-semibold tracking-tight">
-            Real<span className="text-brand">Tour</span> Pilot
+            <BrandWordmark className="text-[15px]" />
           </div>
         </div>
         <div className="rounded-2xl border bg-surface p-6 shadow-xl">

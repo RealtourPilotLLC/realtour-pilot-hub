@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { BrandWordmark } from "@/components/Brand";
 import Link from "next/link";
 import {
   CalendarClock, Camera, CheckCircle2, ChevronRight, Clock, Download, FileText, Home, MapPin, PlayCircle, ScrollText, Sparkles, UserRound,
@@ -163,7 +164,12 @@ export default async function ClientPortalPage({
       try {
         const { stripMoneySentences } = await import("@/lib/text");
         const obj = JSON.parse(strat.sectionsJson) as Record<string, unknown>;
+        // Hide the internal production mechanics (Jordan, Aug 28: the video-
+        // structure framework and caption-CTA lists don't belong on the
+        // client's page); everything brand-facing stays.
+        const INTERNAL_SECTION = /preference|framework|business|production|caption/i;
         strategySections = Object.entries(obj)
+          .filter(([k]) => !INTERNAL_SECTION.test(k))
           .filter(([, v]) => typeof v === "string" && (v as string).trim().length > 0)
           .map(([k, v]) => ({
             name: k.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, (c) => c.toUpperCase()),
@@ -209,7 +215,7 @@ export default async function ClientPortalPage({
 <img src="/brand/mark.svg" alt="RealTour Pilot" className="flex size-10 rounded-xl shadow-lg bg-white p-1" />
           <div className="min-w-0">
             <div className="text-sm font-semibold tracking-tight">
-              Real<span className="text-brand">Tour</span> Pilot <span className="ml-1 hidden text-muted-2 sm:inline">· Content Program</span>
+              <BrandWordmark className="text-[15px]" /> <span className="ml-1 hidden text-muted-2 sm:inline">· Content Program</span>
             </div>
             <div className="truncate text-xs text-muted">{client?.name}</div>
           </div>
@@ -348,8 +354,8 @@ export default async function ClientPortalPage({
               const mScripts = scripts.filter((s) => s.monthId === m.id);
               const mSessions = sessions.filter((s) => s.contentMonthId === m.id && s.shootDate);
               const isCurrent = m.monthKey === monthKey;
-              // Each video carries its own script when the titles match; the
-              // Scripts list below keeps only the unpaired ones.
+              // Scripts pair with their videos; the unpaired ones are the
+              // leftovers that carry to the next session.
               const paired = matchVideosToScripts(mVideos, mScripts);
               const pairedIds = new Set([...paired.values()].map((x) => x.id));
               const looseScripts = mScripts.filter((sc) => !pairedIds.has(sc.id));
@@ -374,7 +380,9 @@ export default async function ClientPortalPage({
                   {mVideos.length > 0 && <VideoGrid videos={mVideos} scriptFor={paired} />}
                   {looseScripts.length > 0 && (
                     <div className="mt-3 space-y-2">
-                      <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">{paired.size > 0 ? "More scripts" : "Scripts"}</div>
+                      <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">
+                        {paired.size > 0 && mVideos.length > 0 ? "Not filmed yet — carries to the next session" : "Scripts"}
+                      </div>
                       {looseScripts.map((sc) => (
                         <details key={sc.id} className="rounded-xl border border-border bg-surface-2/40 px-4 py-3">
                           <summary className="cursor-pointer text-sm font-bold">{sc.title}</summary>
@@ -475,19 +483,16 @@ export default async function ClientPortalPage({
 }
 
 // ---------------------------------------------------------------------------
-// Video ↔ script pairing (Jordan, Aug 28: "the script topics can be matched
-// with the video titles"). Deterministic: shared significant words score the
-// pair, and when BOTH titles carry numbers ("Tip #4") the numbers must agree
-// — Tip #4's video can never claim Tip #2's script. Greedy best-first; each
-// script pairs at most once.
+// Video ↔ script pairing. Jordan's rule (Aug 28, settled): a month's scripts
+// ride WITH its videos — and when a session films 3 of 4, the unpaired script
+// visibly carries to the next session. Deterministic matching: shared
+// significant words; when BOTH titles carry numbers they must agree.
 // ---------------------------------------------------------------------------
-const STOP_WORDS = new Set(["the", "and", "for", "with", "your", "you", "what", "how", "why", "isn", "not", "can", "video", "final"]);
+const STOP_WORDS = new Set(["the", "and", "for", "with", "your", "you", "what", "how", "why", "isn", "not", "can", "video", "final", "reel"]);
 function titleTokens(t: string): { words: Set<string>; nums: Set<string> } {
   const lower = t.toLowerCase().replace(/[’']/g, "");
   const nums = new Set([...lower.matchAll(/(?:#|no\.?\s*)?(\d+)/g)].map((m) => m[1]));
-  const words = new Set(
-    lower.replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length > 2 && !STOP_WORDS.has(w)),
-  );
+  const words = new Set(lower.replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length > 2 && !STOP_WORDS.has(w)));
   return { words, nums };
 }
 function pairScore(videoTitle: string, scriptTitle: string): number {
@@ -495,8 +500,7 @@ function pairScore(videoTitle: string, scriptTitle: string): number {
   const b = titleTokens(scriptTitle);
   if (a.nums.size && b.nums.size && ![...a.nums].some((n) => b.nums.has(n))) return 0;
   if (a.words.size === 0 || b.words.size === 0) return 0;
-  const shared = [...a.words].filter((w) => b.words.has(w)).length;
-  return shared / Math.min(a.words.size, b.words.size);
+  return [...a.words].filter((w) => b.words.has(w)).length / Math.min(a.words.size, b.words.size);
 }
 function matchVideosToScripts(
   videos: { id: string; title: string | null }[],
@@ -512,11 +516,11 @@ function matchVideosToScripts(
   }
   candidates.sort((x, y) => y.score - x.score);
   const out = new Map<string, (typeof scripts)[number]>();
-  const usedScripts = new Set<string>();
+  const used = new Set<string>();
   for (const c of candidates) {
-    if (out.has(c.v) || usedScripts.has(c.s.id)) continue;
+    if (out.has(c.v) || used.has(c.s.id)) continue;
     out.set(c.v, c.s);
-    usedScripts.add(c.s.id);
+    used.add(c.s.id);
   }
   return out;
 }
@@ -553,6 +557,7 @@ function VideoGrid({ videos, scriptFor }: {
               <ScriptBody body={scriptFor.get(v.id)!.body} size="xs" />
             </details>
           )}
+
         </div>
       ))}
     </div>
