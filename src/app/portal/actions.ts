@@ -176,3 +176,100 @@ export async function portalRequestRevision(token: string, submissionId: string,
     .catch(() => {});
   return { ok: true, message: "Sent to the editor — we'll text you when the new cut is ready." };
 }
+
+/** Client updates their own brand + preference fields (Agent Profile tab). */
+export async function portalSaveProfile(
+  token: string,
+  input: { brandColors?: string; videoStyle?: string; preferences?: string },
+): Promise<R> {
+  const enrollment = await portalEnrollment(token);
+  if (!enrollment) return fail("This link is no longer active.");
+  // Blank means "leave it alone", never "erase". The style/preference text
+  // lands in CLIENT-OWNED columns (portalVideoStyle / portalPreferences) —
+  // the internal editingPreferences/clientPreferences are admin-authored
+  // notes a public token must never rewrite (adversarial review, Aug 28).
+  const data: { brandColors?: string; portalVideoStyle?: string; portalPreferences?: string } = {};
+  const bc = clip((input.brandColors ?? "").trim(), 300);
+  const vs = clip((input.videoStyle ?? "").trim(), 1500);
+  const pf = clip((input.preferences ?? "").trim(), 1500);
+  if (bc) data.brandColors = bc;
+  if (vs) data.portalVideoStyle = vs;
+  if (pf) data.portalPreferences = pf;
+  if (Object.keys(data).length === 0) return fail("Nothing to save.");
+  await prisma.client.update({ where: { id: enrollment.clientId }, data });
+  const client = await prisma.client.findUnique({ where: { id: enrollment.clientId }, select: { name: true } });
+  await ownerBell(
+    "portal_profile",
+    `Profile updated — ${client?.name ?? "a client"}`,
+    "They updated their brand or preferences on their portal.",
+    `/clients/${enrollment.clientId}`,
+    `portal-profile-${enrollment.id}-${new Date().toISOString().slice(0, 13)}`,
+  );
+  return { ok: true, message: "Saved — your team sees this on every job." };
+}
+
+/**
+ * Client asks to schedule their content session: preferred times + the
+ * filming location, gated until the strategy call is at least booked. Lands
+ * as a HIGH task on the booking desk + your bell — the live-Aryeo slot picker
+ * plugs into this same card when it ships.
+ */
+export async function portalRequestSession(
+  token: string,
+  input: { when: string; location: string },
+): Promise<R> {
+  const enrollment = await portalEnrollment(token);
+  if (!enrollment) return fail("This link is no longer active.");
+  const when = clip((input.when ?? "").trim(), 500);
+  const location = clip((input.location ?? "").trim(), 300);
+  if (!when || !location) return fail("Give us a time that works and where we're filming.");
+
+  const { etMonthKey } = await import("@/lib/contentProgram");
+  const month = await prisma.contentMonth.findUnique({
+    where: { enrollmentId_monthKey: { enrollmentId: enrollment.id, monthKey: etMonthKey() } },
+    select: { id: true, strategyCallStatus: true },
+  });
+  // The gate: strategy first, always (owner rule). NOT_REQUIRED counts as satisfied.
+  if (!month || month.strategyCallStatus === "NOT_SCHEDULED") {
+    return fail("Book your strategy call first — we plan the month on that call, then film it.");
+  }
+  // Lookup WITHOUT a status filter: dedupeKey is unique, so a completed
+  // task must be REOPENED, not re-created (the create path threw P2002 —
+  // review finding). updatedAt doubles as the throttle.
+  const existing = await prisma.smartTask.findFirst({
+    where: { dedupeKey: `portal-session-${month.id}` },
+    select: { id: true, updatedAt: true },
+  });
+  if (existing && Date.now() - existing.updatedAt.getTime() < 10 * 60_000) {
+    return { ok: true, message: "Got it — we already have your request and we're on it." };
+  }
+  const client = await prisma.client.findUnique({ where: { id: enrollment.clientId }, select: { id: true, name: true } });
+  const desc = `The client scheduled from their portal.\nPreferred time(s): ${when}\nFilming location: ${location}\n\nBook it in Aryeo and it will attach to their month automatically.`;
+  if (existing) {
+    await prisma.smartTask.update({ where: { id: existing.id }, data: { description: desc, status: "OPEN", completedAt: null } });
+  } else {
+    await prisma.smartTask.create({
+      data: {
+        taskType: "todo",
+        title: `Book content session — ${client?.name ?? "client"}`,
+        summary: `Portal request: ${clip(when, 120)} · ${clip(location, 80)}`,
+        description: desc,
+        reasonCreated: "Client requested their content session from the portal",
+        source: "portal",
+        priority: "HIGH",
+        dueAt: new Date(Date.now() + 24 * 3600_000),
+        assignedKey: "kyle",
+        clientId: client?.id ?? null,
+        dedupeKey: `portal-session-${month.id}`,
+      },
+    });
+  }
+  await ownerBell(
+    "portal_session",
+    `Session request — ${client?.name ?? "a client"}`,
+    `${clip(when, 100)} · ${clip(location, 60)}`,
+    "/tasks?tab=board",
+    `portal-session-${month.id}-${new Date().toISOString().slice(0, 10)}`,
+  );
+  return { ok: true, message: "Got it — we'll get it booked and you'll see the date here." };
+}

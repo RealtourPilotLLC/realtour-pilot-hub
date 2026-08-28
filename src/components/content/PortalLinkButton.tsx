@@ -1,6 +1,6 @@
 "use client";
 import { useState, useTransition } from "react";
-import { Link2, Loader2 } from "lucide-react";
+import { ExternalLink, Link2, Loader2 } from "lucide-react";
 import { issuePortalLink } from "@/app/content/actions";
 
 // Owner-only: mint/copy the client's portal link. Nothing is SENT anywhere —
@@ -26,6 +26,25 @@ export function PortalLinkButton({ enrollmentId }: { enrollmentId: string }) {
       >
         {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Link2 className="size-3.5" />}
         Client portal link
+      </button>
+      {/* See exactly what the client sees (Jordan: "I should be able to see
+          these things on my end too") — opens their live portal in a new tab. */}
+      <button
+        disabled={busy}
+        onClick={() => {
+          // Open the window SYNCHRONOUSLY (popup blockers kill a window.open
+          // that happens after an await), then point it once the link exists.
+          const w = window.open("about:blank", "_blank");
+          start(async () => {
+            const r = await issuePortalLink(enrollmentId);
+            if (r.ok && r.url && w) w.location.href = r.url;
+            else { w?.close(); setMsg(r.ok ? "Couldn't open the window — copy the link instead." : r.message); }
+          });
+        }}
+        className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50"
+      >
+        <ExternalLink className="size-3.5" />
+        View portal
       </button>
     </span>
   );

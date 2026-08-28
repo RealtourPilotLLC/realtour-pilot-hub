@@ -94,12 +94,8 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
             {open ? <X className="size-5" /> : <Menu className="size-5" />}
           </button>
           <div className="flex items-center gap-2">
-            <div
-              className="flex size-7 items-center justify-center rounded-lg text-[11px] font-bold text-white ring-1 ring-white/10"
-              style={{ background: "linear-gradient(135deg, #f97316, #e96320 55%, #c2410c)" }}
-            >
-              RP
-            </div>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+<img src="/brand/mark.svg" alt="RealTour Pilot" className="flex size-7 rounded-lg bg-white p-1" />
             <span className="text-sm font-semibold tracking-tight">
               Real<span className="text-brand">Tour</span> Pilot
             </span>

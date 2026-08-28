@@ -179,12 +179,8 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
     // relative: the notification-bell panel anchors to the sidebar (opens upward).
     <aside className="relative flex h-full w-64 shrink-0 flex-col border-r border-border bg-surface/95 backdrop-blur-xl lg:bg-surface/60">
       <div className="flex items-center gap-3 px-5 py-5">
-        <div
-          className="flex size-9 items-center justify-center rounded-xl text-sm font-bold text-white shadow-lg ring-1 ring-white/10"
-          style={{ background: "linear-gradient(135deg, #f97316, #e96320 55%, #c2410c)" }}
-        >
-          RP
-        </div>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+<img src="/brand/mark.svg" alt="RealTour Pilot" className="flex size-9 rounded-xl shadow-lg bg-white p-1" />
         <div className="leading-tight">
           <div className="text-sm font-semibold tracking-tight">
             Real<span className="text-brand">Tour</span> Pilot

@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin, requireOwner } from "@/lib/auth/guards";
-import { contentProgramSweep, PACKAGE_RULES } from "@/lib/contentProgram";
+import { contentProgramSweep, PACKAGE_RULES, etMonthKey } from "@/lib/contentProgram";
 
 type Result = { ok: boolean; message: string };
 // The model occasionally returns an array/object field as a JSON-encoded STRING
@@ -649,4 +649,67 @@ export async function dismissScriptSuggestion(suggestionId: string): Promise<Res
   });
   revalidatePath("/content");
   return { ok: true, message: "Dismissed." };
+}
+
+// ---------------------------------------------------------------------------
+// Month slippage controls (Jordan, Aug 28: "we did her July content in August
+// — sometimes clients get a month behind or miss a month"). The content month
+// is a PACKAGE, not a calendar month: a session filmed in August can BELONG to
+// July. Moving a session re-labels it (and its library videos); skipping a
+// month records "the client missed this one" so nothing nags about it.
+// ---------------------------------------------------------------------------
+export async function moveSessionToMonth(projectId: string, targetMonthKey: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  if (!/^\d{4}-\d{2}$/.test(targetMonthKey)) return { ok: false, message: "Pick a month." };
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { id: true, contentMonthId: true },
+  });
+  if (!project?.contentMonthId) return { ok: false, message: "That session isn't attached to a content month." };
+  const from = await prisma.contentMonth.findUnique({
+    where: { id: project.contentMonthId },
+    select: { id: true, enrollmentId: true, monthKey: true },
+  });
+  if (!from) return { ok: false, message: "That session isn't attached to a content month." };
+  if (from.monthKey === targetMonthKey) return { ok: true, message: "Already on that month." };
+  const enrollment = await prisma.contentEnrollment.findUnique({
+    where: { id: from.enrollmentId },
+    select: { id: true, clientId: true, videosPerMonth: true, strategyCallRequired: true },
+  });
+  if (!enrollment) return { ok: false, message: "Enrollment not found." };
+  // Find-or-create the target month WITHIN the same enrollment — a session can
+  // never move to another client's month.
+  const target = await prisma.contentMonth.upsert({
+    where: { enrollmentId_monthKey: { enrollmentId: enrollment.id, monthKey: targetMonthKey } },
+    update: {},
+    create: {
+      enrollmentId: enrollment.id,
+      clientId: enrollment.clientId,
+      monthKey: targetMonthKey,
+      videosOwed: enrollment.videosPerMonth,
+      historical: targetMonthKey < etMonthKey(),
+      strategyCallStatus: enrollment.strategyCallRequired ? "NOT_SCHEDULED" : "NOT_REQUIRED",
+    },
+    select: { id: true },
+  });
+  await prisma.project.update({ where: { id: projectId }, data: { contentMonthId: target.id } });
+  // The library follows the session — the portal groups by month, and "her
+  // July content" must sit under July however late it was filmed.
+  await prisma.portalVideo.updateMany({ where: { projectId }, data: { monthId: target.id } }).catch(() => {});
+  revalidatePath(`/content/${enrollment.id}`);
+  revalidatePath("/content");
+  return { ok: true, message: `Moved to ${targetMonthKey} — the portal follows.` };
+}
+
+export async function setMonthSkipped(monthId: string, skipped: boolean): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { id: true, enrollmentId: true, status: true } });
+  if (!month) return { ok: false, message: "Month not found." };
+  await prisma.contentMonth.update({
+    where: { id: monthId },
+    data: { status: skipped ? "SKIPPED" : "OPEN" },
+  });
+  revalidatePath(`/content/${month.enrollmentId}`);
+  revalidatePath("/content");
+  return { ok: true, message: skipped ? "Marked skipped — no more nagging about this month." : "Reopened." };
 }

@@ -82,6 +82,34 @@ html.light {
   --hue-ink-mix: 40%;
 }
 
+/* THE CLIENT PORTAL IS ALWAYS LIGHT (Jordan, Aug 28) — clients get the
+   porcelain palette whatever theme the hub itself is in. Same tokens as
+   html.light, scoped to the portal subtree; token-driven components re-theme
+   for free. */
+.portal-light {
+  color-scheme: light;
+  --background: #f5f5f4;
+  --surface: #ffffff;
+  --surface-2: #eeedeb;
+  --foreground: #17181b;
+  --muted: #585c63;
+  --muted-2: #878c95;
+  --border: rgba(23, 24, 27, 0.1);
+  --border-strong: rgba(23, 24, 27, 0.2);
+  --brand: #d95816;
+  --brand-soft: rgba(217, 88, 22, 0.12);
+  --accent: #d95816;
+  --success: #059669;
+  --success-soft: rgba(5, 150, 105, 0.12);
+  --warning: #b45309;
+  --warning-soft: rgba(180, 83, 9, 0.14);
+  --danger: #dc2626;
+  --danger-soft: rgba(220, 38, 38, 0.1);
+  --chip-ink: #1f1f1f;
+  --chip-ink-mix: 42%;
+  --hue-ink-mix: 40%;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-surface: var(--surface);

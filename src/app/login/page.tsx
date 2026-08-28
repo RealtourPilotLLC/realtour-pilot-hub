@@ -22,12 +22,8 @@ export default async function LoginPage({
   return (
     <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-brand/[0.08] via-surface to-surface p-6">
       <div className="panel-shadow w-full max-w-sm rounded-2xl border border-border bg-surface p-8 text-center">
-        <div
-          className="mx-auto mb-4 flex size-12 items-center justify-center rounded-xl text-sm font-bold text-white ring-1 ring-white/10"
-          style={{ background: "linear-gradient(135deg, #f97316, #e96320 55%, #c2410c)" }}
-        >
-          RP
-        </div>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+<img src="/brand/mark.svg" alt="RealTour Pilot" className="flex size-12 rounded-xl bg-white p-1" />
         <h1 className="text-lg font-semibold tracking-tight">
           Real<span className="text-brand">Tour</span> Pilot
         </h1>

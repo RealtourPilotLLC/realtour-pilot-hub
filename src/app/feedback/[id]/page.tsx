@@ -18,12 +18,8 @@ export default async function FeedbackPage({ params }: { params: Promise<{ id: s
     <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-background p-6">
       <div className="w-full max-w-md">
         <div className="mb-6 flex items-center justify-center gap-2.5">
-          <div
-            className="flex size-9 items-center justify-center rounded-xl text-sm font-bold text-white"
-            style={{ background: "linear-gradient(135deg, #f97316, #e96320 55%, #c2410c)" }}
-          >
-            RP
-          </div>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+<img src="/brand/mark.svg" alt="RealTour Pilot" className="flex size-9 rounded-xl bg-white p-1" />
           <div className="text-sm font-semibold tracking-tight">
             Real<span className="text-brand">Tour</span> Pilot
           </div>

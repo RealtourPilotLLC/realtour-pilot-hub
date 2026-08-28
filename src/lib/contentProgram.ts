@@ -240,6 +240,30 @@ export async function getProgramRoster(): Promise<ProgramRow[]> {
   const monthOf = new Map(months.map((m) => [m.enrollmentId, m]));
   const monthIds = months.map((m) => m.id);
 
+  // LAST month, for the behind-flag (Jordan, Aug 28: "sometimes clients get a
+  // month behind or miss a month" — Marcee's July was filmed in August). A
+  // month the owner marked SKIPPED, or an imported backfill month, never nags.
+  const [y, mm] = key.split("-").map(Number);
+  const prevKey = mm === 1 ? `${y - 1}-12` : `${y}-${String(mm - 1).padStart(2, "0")}`;
+  const prevMonths = await prisma.contentMonth.findMany({
+    where: { enrollmentId: { in: enrollments.map((e) => e.id) }, monthKey: prevKey, historical: false, status: { notIn: ["SKIPPED", "IMPORTED"] } },
+    select: { id: true, enrollmentId: true, videosOwed: true },
+  });
+  const prevOf = new Map(prevMonths.map((m) => [m.enrollmentId, m]));
+  const prevDelivered = new Map<string, number>();
+  if (prevMonths.length) {
+    const prevProjects = await prisma.project.findMany({
+      where: { contentMonthId: { in: prevMonths.map((m) => m.id) }, status: "DELIVERED" },
+      select: { contentMonthId: true, deliverables: { select: { type: true, quantity: true } } },
+    });
+    for (const p of prevProjects) {
+      const units = Math.max(1, p.deliverables
+        .filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL")
+        .reduce((s2, d) => s2 + Math.max(1, d.quantity ?? 1), 0));
+      prevDelivered.set(p.contentMonthId!, (prevDelivered.get(p.contentMonthId!) ?? 0) + units);
+    }
+  }
+
   const [projects, topics, scripts] = await Promise.all([
     prisma.project.findMany({
       where: { contentMonthId: { in: monthIds } },
@@ -290,6 +314,13 @@ export async function getProgramRoster(): Promise<ProgramRow[]> {
       else if (sessionsScheduled < e.sessionsPerMonth) attention.push(`Needs ${e.sessionsPerMonth - sessionsScheduled} more session${e.sessionsPerMonth - sessionsScheduled === 1 ? "" : "s"}`);
       if (topicsSelected === 0 && !e.clientSuppliesTopics) attention.push("No topics selected");
       if (inReview > 0) attention.push(`${inReview} video${inReview === 1 ? "" : "s"} awaiting review`);
+      const prev = prevOf.get(e.id);
+      if (prev && prev.videosOwed > 0) {
+        const got = prevDelivered.get(prev.id) ?? 0;
+        if (got < prev.videosOwed) {
+          attention.push(`Behind — ${monthLabel(prevKey)} delivered ${got}/${prev.videosOwed}`);
+        }
+      }
     }
 
     rows.push({

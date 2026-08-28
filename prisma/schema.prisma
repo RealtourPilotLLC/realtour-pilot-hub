@@ -286,6 +286,13 @@ model Client {
   // Agent Profile — the client's brand + working preferences (distinct from
   // editingPreferences, which is purely how to edit their media).
   clientPreferences String? // how they like to work: scheduling, comms, must-haves
+  // CLIENT-OWNED portal fields (adversarial review, Aug 28): what the client
+  // types on their own portal. Deliberately separate columns — the internal
+  // editingPreferences/clientPreferences are ADMIN-authored notes the system
+  // money-scrubs even from editors, and a public token must never read or
+  // rewrite them.
+  portalVideoStyle  String? // "how I like my videos", in the client's words
+  portalPreferences String? // their own working-preference notes
   brandColors       String? // free text / hex list, e.g. "#0B1F3A, #C9A24B"
   brandAssetsPath   String? // Dropbox folder path holding their logo/fonts/brand kit
 

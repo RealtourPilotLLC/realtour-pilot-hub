@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- RealTour Pilot mark: the crossbar-less "A" — navy legs, orange summit
+       triangle. Recreated as geometry from the brand file (Aug 28) so it
+       stays crisp at every size. -->
+  <path d="M 24 78 L 45.5 22 L 54.5 22 L 76 78"
+        fill="none" stroke="#1b4a70" stroke-width="17" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M 50 62 L 60 78 L 40 78 Z"
+        fill="#f26522" stroke="#f26522" stroke-width="5" stroke-linejoin="round" />
+</svg>

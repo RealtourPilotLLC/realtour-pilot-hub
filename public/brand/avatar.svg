@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Avatar variant: the mark on a white rounded tile, for dark surfaces. -->
+  <rect width="100" height="100" rx="22" fill="#ffffff"/>
+  <path d="M 27 74 L 46 25 L 54 25 L 73 74"
+        fill="none" stroke="#1b4a70" stroke-width="15" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M 50 60.5 L 59 74.5 L 41 74.5 Z"
+        fill="#f26522" stroke="#f26522" stroke-width="4.5" stroke-linejoin="round" />
+</svg>

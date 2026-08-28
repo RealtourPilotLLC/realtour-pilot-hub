@@ -186,6 +186,9 @@ export default async function EditBriefPage({
   const scrub = (s: string | null) => (s == null ? null : canSeeRaw ? s : stripMoneySentences(s) || null);
   const showOrderNote = scrub(orderNote);
   const showPrefs = scrub(project.client.editingPreferences);
+  // The client's OWN style notes, typed on their portal (client-owned column,
+  // distinct from our internal editing notes) — scrubbed like everything else.
+  const showTheirStyle = scrub(project.client.portalVideoStyle);
   const showJobNote = scrub(project.notes);
   const rawAsks = videoRevisionTasks
     .flatMap((t) => (t.description ?? t.summary ?? "").split(/\n\nNew request: /))
@@ -402,6 +405,12 @@ export default async function EditBriefPage({
               <div className="mb-3">
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">Their usual style</div>
                 <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">{showPrefs}</p>
+              </div>
+            )}
+            {showTheirStyle && (
+              <div className="mb-3">
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">In their own words — from their portal</div>
+                <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">{showTheirStyle}</p>
               </div>
             )}
             <JobNoteEditor

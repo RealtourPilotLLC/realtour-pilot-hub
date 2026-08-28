@@ -15,6 +15,7 @@ import { etMonthKey, monthLabel } from "@/lib/contentProgram";
 import { stageMeta } from "@/lib/pipeline";
 import { Badge } from "@/components/ui/Badge";
 import { MonthJourney } from "@/components/content/MonthJourney";
+import { SessionMonthMover, SkipMonthButton } from "@/components/content/MonthControls";
 import { PortalLinkButton } from "@/components/content/PortalLinkButton";
 import {
   EnrollmentSettingsCard, StrategyCallCard, StrategyCard, TopicBank, ScriptBackfillCard, ProfileSections, NotesCard, ScriptReview, TopicSeedButton,
@@ -226,7 +227,8 @@ export default async function ContentClientPage({
               />
 
               {/* SESSIONS — the attached shoots (the real pipeline rows) */}
-              <Section icon={Camera} title="Content sessions" count={`${projects.length}/${enrollment.sessionsPerMonth}`} flush>
+              <Section icon={Camera} title="Content sessions" count={`${projects.length}/${enrollment.sessionsPerMonth}`} flush
+                action={<SkipMonthButton monthId={month.id} skipped={month.status === "SKIPPED"} />}>
                 <div className="divide-y divide-border">
                   {projects.map((p) => {
                     const s = stageMeta(p.status as never);
@@ -241,6 +243,9 @@ export default async function ContentClientPage({
                           </div>
                         </div>
                         {pending > 0 && <span className="rounded bg-brand-soft px-1.5 py-0.5 text-[10px] font-medium text-brand">{pending} in review</span>}
+                        {/* Which month's PACKAGE this session belongs to — a
+                            filmed-in-August session can be July's content. */}
+                        <SessionMonthMover projectId={p.id} currentKey={month.monthKey} monthKeys={months.map((mm) => mm.monthKey)} />
                         <Badge color={s.color} soft={s.soft} className="px-1.5 py-0 text-[10px]">{s.short}</Badge>
                       </Link>
                     );
