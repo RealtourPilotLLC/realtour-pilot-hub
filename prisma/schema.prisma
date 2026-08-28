@@ -503,6 +503,7 @@ model Project {
   mediaVerdicts     MediaVerdict[]
   qcRecords         QcRecord[]
   reviewSubmissions ReviewSubmission[]
+  revisionBriefs    RevisionBrief[]
 
   createdAt  DateTime    @default(now())
   updatedAt  DateTime    @updatedAt
@@ -750,6 +751,33 @@ model ProjectMessage {
   createdAt  DateTime         @default(now())
 
   @@index([projectId])
+}
+
+// A client's change request, turned into a work order. The raw ask (a 20-minute
+// phone call, a rambling email) is kept WHOLE in `originalText`; the AI pass
+// splits it into discrete, area-tagged items the editor can actually work
+// through, plus what to leave alone, what the client is sending, and what to
+// confirm before starting. One row per incoming ask, so a second call adds a
+// round instead of overwriting the first (Jordan, Aug 27: Marcee's call reached
+// the editor as a truncated wall of one-sided transcript).
+model RevisionBrief {
+  id            String    @id @default(cuid())
+  project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId     String
+  taskId        String? // the revision SmartTask this ask belongs to
+  source        String // openphone | gmail | review_room | manual | …
+  sourceDetail  String? // thread ref, so the full conversation stays reachable
+  originalText  String // the client's words, UNCLIPPED — the record of truth
+  twoSided      Boolean   @default(false) // true when originalText is a full dialogue
+  headline      String?
+  itemsJson     String? // { items, keep, references, questions }
+  doneJson      String? // ids of items the editor has ticked off
+  analyzedAt    DateTime?
+  analysisError String?
+  createdAt     DateTime  @default(now())
+
+  @@index([projectId])
+  @@index([taskId])
 }
 
 // Per-person read watermark for a project's message thread — powers the

@@ -482,6 +482,10 @@ async function handleTranscript(data: Record<string, unknown>) {
       projectStatus: project?.status ?? null,
       propertyAddress: project?.title ?? null,
       text: clientText,
+      // The whole call, for the revision brief: the client's half of a live
+      // conversation reads as a ramble on its own ("Okay. Okay. There we go."),
+      // and every specific they gave is an answer to something we asked.
+      fullText: full,
       kind: "voicemail",
       // Task source stays "openphone" (not "openphone-call") so the reply sweep +
       // real-time outbound close pick up voicemail callbacks like any other reply.

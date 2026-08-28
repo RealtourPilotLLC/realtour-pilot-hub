@@ -112,6 +112,11 @@ export async function recordClientCommunication(opts: {
   kind: "text" | "missed_call" | "voicemail" | "email";
   source?: string; // openphone | gmail | facebook | form | ...
   threadRef?: string | null; // e.g. "gmail-thread:hello@…:<threadId>"
+  // The WHOLE conversation this ask came out of, when `text` is only one side
+  // of it (a call transcript). The revision brief reads this instead: our own
+  // questions ("what kind of colours?") are what make the client's answers
+  // ("big chunky glitter") legible as instructions.
+  fullText?: string | null;
   // The real human who sent this, when different from the folded account client
   // (e.g. an assistant emailing on the agent's behalf). Shown as the task person.
   contactName?: string | null;
@@ -264,6 +269,7 @@ export async function recordClientCommunication(opts: {
         note: opts.text,
         source: opts.source ?? "comms",
         threadRef: opts.threadRef,
+        fullText: opts.fullText ?? null,
       });
     } else {
       // In-flight job: capture the ask as a special request, no status churn.
@@ -291,6 +297,8 @@ export async function raiseRevision(opts: {
   source: string;
   /** Where the request came from (e.g. "gmail-thread:<mailbox>:<threadId>") — lets the task full-view pull the real conversation. */
   threadRef?: string | null;
+  /** The whole conversation, when `note` is only the client's half of it. */
+  fullText?: string | null;
   qcCategories?: string[]; // QC labels to reopen for re-QC, e.g. ["Reel"]
 }): Promise<boolean> {
   const project = await prisma.project.findUnique({
@@ -411,6 +419,33 @@ export async function raiseRevision(opts: {
     const created = await prisma.smartTask.create({ data });
     taskId = created.id;
   }
+
+  // THE WORK ORDER. The task description above is a clipped paragraph by
+  // necessity (it has to fit a task card); the brief keeps the client's ask
+  // WHOLE and splits it into items the editor can actually work through. When
+  // the ask came out of a call we hand the analyser the two-sided transcript —
+  // our own questions are what make the client's answers legible. Best-effort:
+  // a brief that fails to write or analyse never blocks the revision.
+  try {
+    const { createRevisionBrief } = await import("@/lib/revisionBrief");
+    const dialogue = (opts.fullText ?? "").trim();
+    // Only prefer the dialogue when it genuinely contains the client's half —
+    // a transcript that dropped their side would otherwise brief the editor on
+    // our own words.
+    const useDialogue = dialogue.length > opts.note.trim().length;
+    await createRevisionBrief({
+      projectId: project.id,
+      taskId,
+      source: opts.source,
+      sourceDetail: opts.threadRef ?? null,
+      text: useDialogue ? dialogue : opts.note,
+      twoSided: useDialogue,
+      clientName: opts.clientName ?? null,
+      propertyAddress: opts.propertyAddress ?? project.title,
+      deliverables: project.deliverables.map((d) => d.label || d.type).filter(Boolean),
+    });
+  } catch { /* the revision itself already landed */ }
+
   // A revision request shouldn't wait for someone to open the hub — Slack-ping
   // when the task is NEWLY raised (a repeat text about an already-open revision
   // stays quiet), mirrored to the in-app bell for ops + the editor it's delegated

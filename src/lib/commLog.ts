@@ -43,7 +43,12 @@ export async function logComm(input: {
       return k.length === 10 ? k : null;
     })(),
     subject: input.subject?.slice(0, 300) ?? null,
-    body: body.slice(0, 6000),
+    // A long CALL is the one thing that legitimately runs past a few thousand
+    // characters, and truncating it loses real instructions — Marcee's 21-minute
+    // revision call hit the old 6k ceiling mid-word and the back third (music
+    // direction, video length) never reached the editor. Texts and email stay
+    // on the tighter cap; a transcript gets room.
+    body: body.slice(0, input.channel === "call" ? 60_000 : 6_000),
     occurredAt: input.occurredAt ?? new Date(),
     source: input.source,
     externalId: input.externalId ?? null,

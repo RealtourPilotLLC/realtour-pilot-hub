@@ -24,6 +24,8 @@ import { SubmitCutCard } from "@/components/editing/EditorActions";
 import { EditFeedback } from "@/components/editing/EditFeedback";
 import { EditTracker, deriveEditStage, type RoundRow } from "@/components/editing/EditTracker";
 import { JobNoteEditor } from "@/components/editing/JobNoteEditor";
+import { RevisionBriefCard } from "@/components/editing/RevisionBriefCard";
+import { getRevisionBriefs } from "@/lib/revisionBrief";
 import { aryeoCustomerNote } from "@/lib/shoot";
 import { getEditorFeedback } from "@/lib/reviewRoom";
 import { slugForName } from "@/lib/assignees";
@@ -83,6 +85,15 @@ export default async function EditBriefPage({
   // Fail CLOSED for an editor whose scope can't resolve — a null scope meant
   // "all lanes" and leaked every editor's notes to a keyless EDITOR login (audit).
   const feedback = await getEditorFeedback(id, isOwnerAdmin ? null : editorScope ?? "__none__").catch(() => []);
+  // The client's change requests, itemised. Money-scrubbed unless a LIVE
+  // owner/admin is looking — this is the client's raw wording and they do talk
+  // price, so the gate is the strict one the revision asks use (an unknown or
+  // expired session scrubs too). Ticking off items is the working editor's job
+  // as well as the owner's; a "view as" preview is read-only, and the server
+  // re-checks either way.
+  const strictOwnerAdmin = viewer?.role === "OWNER" || viewer?.role === "ADMIN";
+  const briefs = await getRevisionBriefs(id, !strictOwnerAdmin).catch(() => []);
+  const canTickBrief = !viewer?.impersonating && (isOwnerAdmin || viewer?.role === "EDITOR");
   // The client's asset shelf (logos, endcards, brand kit) — folder truth from
   // Dropbox; editors upload here too.
   const assets = await listClientAssets(project.client.id).catch(() => null);
@@ -232,7 +243,9 @@ export default async function EditBriefPage({
             photographerName={project.photographer?.name ?? null}
             song={project.reelSong}
             rounds={rounds}
-            revisionAsks={revisionAsks}
+            // When a work order exists it carries the asks in full, itemised —
+            // repeating the raw paragraph here would be the wall of text twice.
+            revisionAsks={briefs.length > 0 ? [] : revisionAsks}
             revisionAtISO={revisionAtISO}
             showSubmitAnchor={!isOwnerAdmin}
           />
@@ -242,6 +255,14 @@ export default async function EditBriefPage({
       <div className="grid gap-6 p-4 sm:p-6 lg:grid-cols-3">
         {/* LEFT — the brief */}
         <div className="space-y-6 lg:col-span-2">
+          {/* THE WORK ORDER — what the client asked for, split into items the
+              editor ticks off, with their own words kept whole underneath.
+              First in the column: on a bounced job this is the job. */}
+          <RevisionBriefCard
+            briefs={briefs}
+            canTick={canTickBrief}
+            canReanalyze={isOwnerAdmin && !viewer?.impersonating}
+          />
           {/* The editor's side of the review (the in-hub Frame.io): the cut
               they submitted plays here, the owner's timestamped notes under
               it — tap a time to jump the player, reply, mark fixed. Notes on
