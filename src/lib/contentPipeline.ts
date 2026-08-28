@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 // ---------------------------------------------------------------------------
 // The Content Program AI pipeline:
 //   transcript → extraction (topics / ideas / profile intel / notes)
-//   selected topics → scripts (Hook → Re-hook → Build-up → Payoff → CTA)
+//   selected topics → scripts (HOOK → TALKING POINT 1-3 → CALL TO ACTION)
 //   script → AI revision on request
 //
 // Human-review rule holds throughout: everything lands as INTERNAL_REVIEW for
@@ -287,24 +287,29 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
 }
 
 // ---------------------------------------------------------------------------
-// 2. Script generation — Hook → Re-hook → Build-up → Payoff → CTA/Close.
+// 2. Script generation — HOOK → TALKING POINT 1-3 → CALL TO ACTION.
 // One script per SELECTED topic that doesn't have one yet. INTERNAL_REVIEW.
 // ---------------------------------------------------------------------------
-// Jordan's house script format, learned from his real documents (e.g.
-// "Bernadette Rabel August 2026 Social Content Scripts"): numbered title,
-// Category line, then HOOK / TALKING POINT 1 - RE-HOOK / TALKING POINT 2 -
-// SETUP / TALKING POINT 3 - PAYOFF / CALLBACK / CTA — written in short
-// spoken-breath lines, with $[PRICE]-style placeholders for numbers nobody
-// has confirmed yet, and an optional "Production note:" for filming needs.
+// The house format is Jordan's own current deliverable ("Ashley Brunner
+// Scripts - Session 1", Aug 2026 — his stated gold standard): a Category
+// line, then HOOK / TALKING POINT 1 / TALKING POINT 2 / TALKING POINT 3 /
+// CALL TO ACTION with those PLAIN labels, each section 1-3 short
+// spoken-breath lines, concrete specifics and quoted client objections, and
+// a CTA that is one direct instruction. The re-hook → setup → payoff
+// dramaturgy still steers WHAT each talking point does — it just never
+// appears in the labels the agent and editor read.
 const SCRIPT_SYSTEM = (context: string) =>
   "You write short-form video scripts (20-35 seconds spoken) for a real-estate agent's personal-branding program, in Realtour Pilot's exact house format. " +
-  "Sections, in order: " +
-  "HOOK (scroll-stopping opener — curiosity, tension, contrast, or a strong POV; never 'Hey guys', 'Did you know', 'Here are three tips'), " +
-  "TALKING POINT 1 - RE-HOOK (deepen the curiosity — escalate, tease the real answer, challenge an assumption; NOT fact #1), " +
-  "TALKING POINT 2 - SETUP (the context/story/reasoning that develops the argument), " +
-  "TALKING POINT 3 - PAYOFF (deliver what the hook promised — the insight or lesson), " +
-  "CALLBACK / CTA (finish intentionally — callback to the hook, takeaway, conversation starter, or soft CTA; no hard sell unless the context demands it). " +
-  "WRITING STYLE: short spoken-breath lines with a line break after each phrase — the way a person actually talks to camera — not paragraphs. " +
+  "Sections, in order, using these EXACT plain labels: HOOK, TALKING POINT 1, TALKING POINT 2, TALKING POINT 3, CALL TO ACTION. " +
+  "What each section must do: " +
+  "HOOK — scroll-stopping opener: curiosity, tension, contrast, or a strong POV (never 'Hey guys', 'Did you know', 'Here are three tips'). " +
+  "TALKING POINT 1 — deepen the hook: name the assumption, or quote what people actually say ('Most sellers tell me: ...'); do NOT give the answer yet. " +
+  "TALKING POINT 2 — develop it: the reasoning, story, or specifics that earn the payoff. " +
+  "TALKING POINT 3 — pay off what the hook promised: the insight, the reframe, the lesson. " +
+  "CALL TO ACTION — ONE direct next step in the agent's own voice ('call me before you start packing', 'let's talk'); no hard sell unless the context demands it. " +
+  "Also return category: a 2-4 word content category for THIS script, e.g. 'Seller Strategy', 'Pre-Listing Strategy', 'Negotiation & Multiple Offers', 'Personal Brand'. " +
+  "WRITING STYLE: every section is 1-3 short spoken-breath lines with a line break after each phrase — the way a person actually talks to camera, never paragraphs. " +
+  "Be concrete: real numbers, real objects, quoted objections — take the RHYTHM of examples like '17 offers on one house' or 'paint. trim. curtains.', never the facts. " +
   "Use bracketed placeholders like $[PRICE], $[PAYMENT], [NEIGHBORHOOD] for any figure or detail that must be confirmed before filming, and mention it in productionIdeas. " +
   "Voice: conversational, confident, direct, specific, easy to say ALOUD — the agent's strongest self, never a copywriter. " +
   "Ground every claim in the agent's real context below; NEVER invent stories, opinions, or numbers. Clarity beats cleverness. " +
@@ -314,14 +319,15 @@ const SCRIPT_SYSTEM = (context: string) =>
 const SCRIPT_SCHEMA = {
   type: "object",
   properties: {
-    hook: { type: "string" }, rehook: { type: "string" }, buildup: { type: "string" },
-    payoff: { type: "string" }, cta: { type: "string" },
+    category: { type: "string", description: "2-4 word content category for this script, e.g. 'Seller Strategy'" },
+    hook: { type: "string" }, point1: { type: "string" }, point2: { type: "string" },
+    point3: { type: "string" }, cta: { type: "string" },
     productionIdeas: { type: "array", items: { type: "string" }, description: "optional B-roll/location/overlay ideas, not spoken" },
   },
-  required: ["hook", "rehook", "buildup", "payoff", "cta"],
+  required: ["category", "hook", "point1", "point2", "point3", "cta"],
 } as const;
 
-type ScriptSections = { hook: string; rehook: string; buildup: string; payoff: string; cta: string; productionIdeas?: string[] };
+type ScriptSections = { category?: string; hook: string; point1: string; point2: string; point3: string; cta: string; productionIdeas?: string[] };
 
 // Keep an existing "Category:" line through AI revisions.
 function categoryOf(body: string): string | null {
@@ -330,13 +336,15 @@ function categoryOf(body: string): string | null {
 }
 
 // Render with the house labels so a draft reads exactly like Jordan's own
-// script documents.
-function sectionsToBody(s: ScriptSections, category?: string | null): string {
+// script documents. The AI's script-specific category leads; fallbackCategory
+// (the topic's pillar, or a preserved Category line on revision) fills in.
+function sectionsToBody(s: ScriptSections, fallbackCategory?: string | null): string {
   const parts: string[] = [];
-  if (category) parts.push(`Category: ${category}`);
+  const cat = (s.category ?? "").trim() || (fallbackCategory ?? "").trim();
+  if (cat) parts.push(`Category: ${cat}`);
   const pairs: [string, string][] = [
-    ["HOOK", s.hook], ["TALKING POINT 1 - RE-HOOK", s.rehook], ["TALKING POINT 2 - SETUP", s.buildup],
-    ["TALKING POINT 3 - PAYOFF", s.payoff], ["CALLBACK / CTA", s.cta],
+    ["HOOK", s.hook], ["TALKING POINT 1", s.point1], ["TALKING POINT 2", s.point2],
+    ["TALKING POINT 3", s.point3], ["CALL TO ACTION", s.cta],
   ];
   for (const [label, text] of pairs) if (text?.trim()) parts.push(`${label}\n${text.trim()}`);
   return parts.join("\n\n");
@@ -381,7 +389,7 @@ export async function generateScriptsForMonth(monthId: string): Promise<{ genera
           enrollmentId: month.enrollmentId, clientId: month.clientId, monthId, topicId: t.id,
           title: t.title,
           body: sectionsToBody(s, t.pillar),
-          sectionsJson: JSON.stringify({ hook: s.hook, rehook: s.rehook, buildup: s.buildup, payoff: s.payoff, cta: s.cta }),
+          sectionsJson: JSON.stringify({ category: s.category, hook: s.hook, point1: s.point1, point2: s.point2, point3: s.point3, cta: s.cta }),
           productionJson: s.productionIdeas?.length ? JSON.stringify(s.productionIdeas.slice(0, 10)) : null,
           status: "INTERNAL_REVIEW",
           source: "ai",
@@ -423,8 +431,10 @@ export async function reviseScriptWithInstructions(scriptId: string, instruction
   await prisma.contentScript.update({
     where: { id: scriptId },
     data: {
-      body: sectionsToBody(s, categoryOf(script.body)),
-      sectionsJson: JSON.stringify({ hook: s.hook, rehook: s.rehook, buildup: s.buildup, payoff: s.payoff, cta: s.cta }),
+      // A reviewer's revision shouldn't silently recategorise the script — the
+      // existing Category line wins; the AI's only fills a blank.
+      body: sectionsToBody({ ...s, category: categoryOf(script.body) ?? s.category }),
+      sectionsJson: JSON.stringify({ category: s.category, hook: s.hook, point1: s.point1, point2: s.point2, point3: s.point3, cta: s.cta }),
       status: "INTERNAL_REVIEW",
     },
   });

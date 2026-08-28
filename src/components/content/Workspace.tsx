@@ -5,6 +5,7 @@ import {
   CalendarClock, Check, Compass, FileText, FileUp, Loader2, NotebookPen, Plus, Settings2, Sparkles, Trash2, Upload, X,
 } from "lucide-react";
 import { Section } from "@/components/ui/Section";
+import { ScriptBody } from "@/components/portal/ScriptBody";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import {
   addContentNote, addTopic, analyzeTranscript, approveScript, buildProfile, generateTopicIdeas, previewScriptBackfill, previewStrategyBackfill,
@@ -254,7 +255,7 @@ export function ScriptBackfillCard({ enrollmentId, defaultMonth }: { enrollmentI
             {preview.scripts!.map((s, i) => (
               <details key={i}>
                 <summary className="cursor-pointer text-xs font-medium">{s.title}</summary>
-                <p className="mt-1 whitespace-pre-wrap text-[11px] leading-relaxed text-foreground/80">{s.body.slice(0, 1200)}{s.body.length > 1200 ? "…" : ""}</p>
+                <div className="mt-1"><ScriptBody body={s.body.slice(0, 1200) + (s.body.length > 1200 ? "…" : "")} size="xs" /></div>
               </details>
             ))}
           </div>
@@ -706,7 +707,9 @@ function ScriptItem({ script }: { script: ScriptRow }) {
             </div>
           </div>
         ) : (
-          <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/85">{body}</p>
+          /* Same bold-label rendering the client sees in the portal — Jordan's
+             side reads the script the way it ships, not as a wall of text. */
+          <ScriptBody body={body} size="xs" />
         )}
 
         {script.productionIdeas.length > 0 && mode === "read" && (
