@@ -137,14 +137,25 @@ export default async function UploadListPage() {
 }
 
 type Shoot = {
+  debriefSubmittedAt: Date | null;
   id: string; title: string; status: string; shootDate: Date | null; uploadedAt: Date | null;
   client: { name: string }; photographer: { name: string; avatarColor: string } | null;
   deliverables: { type: DeliverableType }[]; _count: { uploads: number };
 };
 
+// Shoots from Sep 2 2026 on ride the payroll gate: pay shows in My Pay only
+// once the upload page is SUBMITTED (debriefSubmittedAt — not the Dropbox
+// auto-stamp). The row says so until they do.
+const DEBRIEF_PAY_GATE_FROM = Date.parse("2026-09-02T00:00:00-04:00");
+
 function JobRow({ s, overBudget }: { s: Shoot; overBudget: boolean }) {
   const stage = stageMeta(s.status as Parameters<typeof stageMeta>[0]);
   const uploaded = s.uploadedAt != null;
+  const payrollPending =
+    !s.debriefSubmittedAt &&
+    s.shootDate != null &&
+    s.shootDate.getTime() >= DEBRIEF_PAY_GATE_FROM &&
+    s.shootDate.getTime() <= Date.now();
   // Distinct deliverable types = the checklist of what to capture/upload.
   const types = [...new Set(s.deliverables.map((d) => d.type))];
   return (
@@ -164,6 +175,11 @@ function JobRow({ s, overBudget }: { s: Shoot; overBudget: boolean }) {
           {overBudget && (
             <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-semibold text-warning">
               <Scissors className="size-3" /> Over budget
+            </span>
+          )}
+          {payrollPending && (
+            <span className="inline-flex items-center rounded-full bg-brand/15 px-2 py-0.5 text-[10px] font-semibold text-brand">
+              Submit to add to payroll
             </span>
           )}
         </div>

@@ -209,6 +209,7 @@ export async function finalizeUpload(
       shootDate: true,
       createdAt: true,
       cullingConfirmedAt: true,
+      debriefSubmittedAt: true,
       shotOrderNotes: true,
       removalNotes: true,
       videoInstructions: true,
@@ -232,7 +233,7 @@ export async function finalizeUpload(
     const wantsPhotosGate = prior.deliverables.some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d.type));
     const wantsVideoGate = prior.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
     if (wantsPhotosGate && !data.cullingConfirmed && !prior.cullingConfirmedAt) {
-      return { blocked: "Run your cull and confirm all four checks first — hero shots in, duplicates out, extras in Backup Photos. Clearly unnecessary photos can carry a $1 production charge (never justified coverage)." };
+      return { blocked: "Run your cull and confirm all four checks first — hero shots in, duplicates out, extras in Backup Photos. Clearly unnecessary photos can carry a $1 production charge; photos a property genuinely needed are never charged." };
     }
     if (wantsPhotosGate && data.shotOrder === undefined && !prior.shotOrderNotes) {
       // Key ABSENT = a pre-update page still open on their phone — an error
@@ -330,6 +331,10 @@ export async function finalizeUpload(
       // Only overwrite the brief when the finalize actually carries one — a
       // re-finalize with an empty field must not wipe the photographer's notes.
       ...(data.editorBrief.trim() ? { editorBrief: data.editorBrief.trim() } : {}),
+      // The FIRST completed submit is the payroll-visibility moment ("once
+      // submitted, this shoot will be added to your payroll") — keep the
+      // original stamp on re-submits.
+      ...(prior?.debriefSubmittedAt ? {} : { debriefSubmittedAt: new Date() }),
       ...(data.cullingConfirmed ? { cullingConfirmedAt: new Date() } : {}),
       ...(data.shotOrder
         ? {

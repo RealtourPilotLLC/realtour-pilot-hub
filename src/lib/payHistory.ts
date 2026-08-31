@@ -59,7 +59,7 @@ export async function payHistoryFor(memberId: string): Promise<PayHistory> {
   const yearFirstKey = `${year}-01-01`;
   const { start: windowStart } = periodBounds(payPeriodFor(yearFirstKey));
   const { end: nextEnd } = periodBounds(next);
-  const people = await computePayroll(windowStart, nextEnd, { memberId });
+  const people = await computePayroll(windowStart, nextEnd, { memberId, forCreativeEyes: true });
   const person = people.find((p) => p.member.id === memberId) ?? null;
 
   const jobs = person?.jobs ?? [];

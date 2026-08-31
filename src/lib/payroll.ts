@@ -160,6 +160,9 @@ export type PayrollJob = {
   jobTotal: number;
   hasCoords: boolean;
   returnTrip: boolean; // a later/second trip by a different shooter — paid at their flat rate
+  /** Sep 2 2026+ shoots whose upload page was never submitted: hidden from
+   *  creative-facing surfaces, chipped "(upload page not submitted)" for the owner. */
+  debriefPending?: boolean;
   override: { invoiceOverride: number | null; flatAmount: number | null; noMileage: boolean; excluded: boolean; note: string | null } | null;
 };
 
@@ -210,7 +213,17 @@ export async function unassignedShootsInRange(start: Date, end: Date): Promise<{
 // Compute payroll for every photographer with shoots in [start, end]. Pass
 // `opts.memberId` to scope to a single creative (used by the /shoot pay card so
 // one photographer's view doesn't route everyone's day).
-export async function computePayroll(start: Date, end: Date, opts?: { memberId?: string }): Promise<PayrollPerson[]> {
+// Shoots from this instant forward earn pay as always, but the pay only shows
+// on CREATIVE surfaces (My Pay, /shoot pay card, payday text) once the upload
+// page is submitted (Jordan, Sep 1 2026: "once submitted, this shoot will be
+// added to your payroll"). Owner surfaces always see the full accrual.
+const DEBRIEF_PAY_GATE_FROM = Date.parse("2026-09-02T00:00:00-04:00");
+
+export async function computePayroll(
+  start: Date,
+  end: Date,
+  opts?: { memberId?: string; forCreativeEyes?: boolean },
+): Promise<PayrollPerson[]> {
   // Candidate projects: any non-cancelled project with a shoot (appointment or
   // shootDate) in range. We do NOT pre-filter by the project's photographer —
   // the payee is decided per appointment below. When scoped to one member (the
@@ -237,6 +250,7 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
     },
     select: {
       id: true, title: true, shootDate: true, lat: true, lng: true,
+      debriefSubmittedAt: true,
       price: true, payableInvoice: true, photographerId: true, photographerManual: true,
       // The agent the shoot was for — shown beside the invoice on pay surfaces
       // so a row is reviewable without opening the job (Jordan, Aug 25).
@@ -457,6 +471,22 @@ export async function computePayroll(start: Date, end: Date, opts?: { memberId?:
   }
 
   // Everyone with lines, a period adjustment, OR a removed job gets a card.
+  // The debrief pay gate: flag every line whose shoot (Sep 2+) has no
+  // submitted upload page; creative-facing calls drop those lines entirely
+  // BEFORE day/mileage/total assembly, so what a photographer sees is
+  // internally consistent — the shoot simply isn't on their pay yet.
+  const debriefPendingIds = new Set(
+    projects
+      .filter((p) => p.shootDate && p.shootDate.getTime() >= DEBRIEF_PAY_GATE_FROM && !p.debriefSubmittedAt)
+      .map((p) => p.id),
+  );
+  if (debriefPendingIds.size > 0) {
+    for (const [mid, lines] of linesByMember) {
+      for (const l of lines) if (debriefPendingIds.has(l.projectId)) l.debriefPending = true;
+      if (opts?.forCreativeEyes) linesByMember.set(mid, lines.filter((l) => !l.debriefPending));
+    }
+  }
+
   const outMemberIds = new Set<string>([...linesByMember.keys(), ...adjByMember.keys(), ...removedByMember.keys()]);
   if (opts?.memberId) for (const id of [...outMemberIds]) if (id !== opts.memberId) outMemberIds.delete(id);
 
@@ -649,7 +679,7 @@ export async function paydayPings(): Promise<{ pinged: number } | { skipped: str
     // offsets shifted the winter window an hour early and could disagree
     // with /my-pay's own figures).
     const { start, end } = periodBounds(period);
-    const people = await computePayroll(start, end);
+    const people = await computePayroll(start, end, { forCreativeEyes: true });
     let pinged = 0;
     for (const person of people) {
       if (person.total <= 0) continue;

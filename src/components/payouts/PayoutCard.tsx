@@ -243,7 +243,7 @@ function JobRow({ job, memberId, busy, run }: { job: PayrollJob; memberId: strin
     <>
       <tr className="border-t border-border/60">
         <td className="py-1.5 pr-2 text-muted whitespace-nowrap">{fmtDay(job.shootISO)}</td>
-        <td className="py-1.5 pr-2"><Link href={`/projects/${job.projectId}`} className="hover:text-brand">{job.title.split(",")[0]}</Link>{job.override && <span className="ml-1 rounded bg-warning/15 px-1 text-[10px] font-medium text-warning">override</span>}</td>
+        <td className="py-1.5 pr-2"><Link href={`/projects/${job.projectId}`} className="hover:text-brand">{job.title.split(",")[0]}</Link>{job.override && <span className="ml-1 rounded bg-warning/15 px-1 text-[10px] font-medium text-warning">override</span>}{job.debriefPending && <span className="ml-1 rounded bg-danger/15 px-1 text-[10px] font-medium text-danger" title="Accrues as normal, but hidden from their My Pay until they submit the upload page">upload page not submitted</span>}</td>
         <td className="py-1.5 pr-2 text-right text-muted-2">{usd(job.invoice)}{job.invoiceOverridden ? <span title="invoice manually set" className="text-warning">†</span> : job.invoiceIsFallback ? "*" : ""}</td>
         <td className="py-1.5 pr-2 text-right">{usd(job.shootPay)}</td>
         <td className="py-1.5 pr-2 text-right text-muted-2">{job.override?.noMileage ? "—" : usd(job.mileageShare)}</td>

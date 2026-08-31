@@ -41,6 +41,69 @@ function initialUploaded(d: Deliverable): boolean {
 }
 
 const NOTHING_SENTINEL = "Nothing needs removal — confirmed by the photographer.";
+
+// ---------------------------------------------------------------------------
+// Video instructions are STRUCTURED (Jordan, Sep 1: "sectioning it off so it's
+// nice and organized for the editor vs a big paragraph"). Stored composed into
+// the one videoInstructions column with these labels, so the editor brief PDF
+// and /edit render it sectioned with zero schema churn — and parsed back out
+// on re-open.
+// ---------------------------------------------------------------------------
+const VID_STYLES = {
+  fast: "Fast-Paced",
+  cinematic: "Timeless & Elegant (Cinematic)",
+} as const;
+type VidStyle = keyof typeof VID_STYLES;
+const VID_SECTIONS = [
+  { key: "vision", label: "VISION FOR THE EDIT", title: "Vision for the edit", required: true, placeholder: "The feel and the story — e.g. luxury and calm; let the property breathe; the hook is the double-height foyer." },
+  { key: "summary", label: "SUMMARY", title: "Summary", required: false, placeholder: "The shoot in two lines — what was captured, the flow, anything unusual." },
+  { key: "mustShow", label: "SHOTS THAT MUST BE SHOWN", title: "Shots that must be shown", required: false, placeholder: "e.g. drone push-in over the pool · the kitchen island reveal · sunset patio clips at the end." },
+  { key: "avoid", label: "AREAS TO AVOID", title: "Areas to avoid", required: false, placeholder: "e.g. skip the unfinished office · avoid the neighbor's yard in the drone pass." },
+  { key: "realtor", label: "REALTOR REQUESTS", title: "Realtor requests", required: false, placeholder: "Anything the agent asked for on site — features to hit, order, moments they want kept." },
+  { key: "additional", label: "ADDITIONAL NOTES", title: "Additional notes", required: false, placeholder: "Anything else that shapes this edit." },
+] as const;
+type VidKey = (typeof VID_SECTIONS)[number]["key"];
+const COLOR_PROFILE_LINE = "COLOR PROFILE: S-Log3, D-LogM";
+
+function composeVideoInstructions(style: VidStyle | null, sections: Record<VidKey, string>): string {
+  const parts: string[] = [];
+  if (style) parts.push(`STYLE: ${VID_STYLES[style]}`);
+  parts.push(COLOR_PROFILE_LINE);
+  for (const s of VID_SECTIONS) {
+    const v = sections[s.key]?.trim();
+    if (v) parts.push(`${s.label}\n${v}`);
+  }
+  return parts.join("\n\n");
+}
+
+function parseVideoInstructions(text: string | null): { style: VidStyle | null; sections: Record<VidKey, string> } {
+  const sections = Object.fromEntries(VID_SECTIONS.map((s) => [s.key, ""])) as Record<VidKey, string>;
+  if (!text?.trim()) return { style: null, sections };
+  let style: VidStyle | null = null;
+  const styleMatch = text.match(/^STYLE:\s*(.+)$/m);
+  if (styleMatch) {
+    const v = styleMatch[1].trim();
+    style = v === VID_STYLES.fast ? "fast" : v === VID_STYLES.cinematic ? "cinematic" : null;
+  }
+  const labels = VID_SECTIONS.map((s) => s.label);
+  const hasLabels = labels.some((l) => text.includes(l));
+  if (!hasLabels) {
+    // Legacy free-text instructions land whole in the vision box.
+    sections.vision = text.trim();
+    return { style, sections };
+  }
+  for (let i = 0; i < VID_SECTIONS.length; i++) {
+    const start = text.indexOf(VID_SECTIONS[i].label);
+    if (start === -1) continue;
+    let end = text.length;
+    for (const other of labels) {
+      const idx = text.indexOf(other, start + VID_SECTIONS[i].label.length);
+      if (idx !== -1 && idx < end) end = idx;
+    }
+    sections[VID_SECTIONS[i].key] = text.slice(start + VID_SECTIONS[i].label.length, end).trim();
+  }
+  return { style, sections };
+}
 const FRONT_TO_BACK_SENTINEL = "Shot front to back.";
 const INTERIOR_EXTERIOR_SENTINEL = "Shot front to back — interior first, then exterior.";
 
@@ -177,7 +240,11 @@ export function UploadPortal({
   const [orderNotes, setOrderNotes] = useState(
     priorStandardOrder ? "" : (project.shotOrderNotes ?? "").replace(/^Out of order — /, ""),
   );
-  const [vidInstructions, setVidInstructions] = useState(project.videoInstructions ?? "");
+  const parsedVid = parseVideoInstructions(project.videoInstructions);
+  const [vidStyle, setVidStyle] = useState<VidStyle | null>(parsedVid.style);
+  const [vidSections, setVidSections] = useState<Record<VidKey, string>>(parsedVid.sections);
+  const vidInstructions = composeVideoInstructions(vidStyle, vidSections);
+  const vidAnswered = !!vidSections.vision.trim() && vidStyle !== null;
   const [scriptChoice, setScriptChoice] = useState<"as-written" | "edited" | null>(
     project.scriptConfirmedAt
       ? project.scriptConfirmNote?.startsWith("Edited") ? "edited" : "as-written"
@@ -226,7 +293,8 @@ export function UploadPortal({
     if (policy.photosOrdered && orderChoice === null) missing.push("answer the shot order");
     if (policy.photosOrdered && orderChoice === "out-of-order" && !orderNotes.trim()) missing.push("the order you shot the home (and why)");
     if (policy.photosOrdered && !removal.trim() && !nothingToRemove) missing.push("answer the removal notes");
-    if (policy.videoOrdered && !vidInstructions.trim()) missing.push("video instructions for the editor");
+    if (policy.videoOrdered && !vidSections.vision.trim()) missing.push("the vision for the edit");
+    if (policy.videoOrdered && vidStyle === null) missing.push("pick an edit style");
     if (policy.videoOrdered && script && !scriptChoice) missing.push("confirm the script");
     if (policy.videoOrdered && scriptChoice === "edited" && !scriptText.trim()) missing.push("the edited script text (or pick “Delivered as written”)");
     return missing;
@@ -295,7 +363,7 @@ export function UploadPortal({
     orderChoice === "front-to-back" || orderChoice === "interior-exterior" ||
     (orderChoice === "out-of-order" && !!orderNotes.trim());
   const videoDone =
-    !!vidInstructions.trim() && (!script || (scriptChoice !== null && (scriptChoice !== "edited" || !!scriptText.trim())));
+    vidAnswered && (!script || (scriptChoice !== null && (scriptChoice !== "edited" || !!scriptText.trim())));
 
   return (
     <div className="space-y-4">
@@ -318,7 +386,8 @@ export function UploadPortal({
             <span className="font-semibold">Submitted — editors notified</span>
           </div>
           <p className="mt-1 text-sm text-foreground/80">
-            Thanks! Your notes are on the editor brief and the editors know the files are in Dropbox.
+            Thanks! Your notes are on the editor brief, the editors know the files are in Dropbox, and{" "}
+            <strong>this shoot is on your payroll</strong> — you&rsquo;ll see it in My Pay.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             {pdfPath && (
@@ -450,21 +519,53 @@ export function UploadPortal({
             <summary className="cursor-pointer px-3.5 py-2.5 text-sm font-medium text-muted hover:text-foreground">
               Room-by-room guide (guidelines, not quotas)
             </summary>
-            <div className="border-t border-border px-3.5 py-2.5 text-[13px] leading-relaxed text-foreground/80">
-              Front &amp; rear exterior 2–4 (up to 5 with aerials) · kitchen 3–5 · living/family 2–3 · dining 1–2 ·
-              primary bed &amp; bath 2–3 · other bedrooms 1–2 · full baths 1–2 · powder room 1 · basement 2–4 ·
-              office/bonus 1–2 · deck/patio 1–2 · pool 2–3.{" "}
-              <a href="/resources/photography-sop" target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">
-                Full table in the SOP ↗
-              </a>
+            <div className="overflow-x-auto border-t border-border">
+              <table className="w-full text-[13px]">
+                <tbody className="divide-y divide-border/60">
+                  {[
+                    ["Front exterior", "2–4 · up to 5 with aerials"],
+                    ["Rear exterior", "2–4 · up to 5 with aerials"],
+                    ["Front door / entry", "1"],
+                    ["Foyer / entrance", "1–2"],
+                    ["Dining room", "1–2"],
+                    ["Living / family room", "2–3"],
+                    ["Kitchen", "3–5 · up to 6 when justified"],
+                    ["Mudroom / laundry", "1–2"],
+                    ["Powder room", "1"],
+                    ["Full bathroom", "1 · 2 when necessary"],
+                    ["Primary bathroom", "2–3"],
+                    ["Primary bedroom", "2–3"],
+                    ["Secondary bedroom", "1–2"],
+                    ["Basement", "2–4 by layout"],
+                    ["Office / bonus room", "1–2"],
+                    ["Bar", "1–3"],
+                    ["Deck / patio", "1–2"],
+                    ["Pool", "2–3"],
+                    ["Pool house / detached", "1–3 by importance"],
+                    ["Other spaces", "1–2"],
+                  ].map(([space, n]) => (
+                    <tr key={space}>
+                      <td className="px-3.5 py-1.5 text-foreground/85">{space}</td>
+                      <td className="px-3.5 py-1.5 text-right text-muted tabular-nums">{n}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="border-t border-border px-3.5 py-2 text-xs text-muted-2">
+                Guidelines, not quotas — use professional judgment.{" "}
+                <a href="/resources/photography-sop" target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">
+                  Full table in the SOP ↗
+                </a>
+              </p>
             </div>
           </details>
 
           <p className="mt-3 text-[13px] leading-relaxed text-muted">
-            Unnecessary photos cost real money — extra editing plus office time to re-cull after the fact. A{" "}
+            Unnecessary photos cost real money — extra editing, plus an extra 1–2 hours per job of re-culling
+            after the fact, which kills our turnaround time and pulls the admin and owner off other work. A{" "}
             <strong className="text-foreground/85">$1 production charge may be deducted per clearly unnecessary photo</strong>{" "}
-            (duplicates, distance variations, backups uploaded as finals — never justified coverage). This is not a
-            photo-count penalty: a property that truly needs more gets more.{" "}
+            — duplicates, distance variations, backups uploaded as finals. You will never be charged for photos a
+            property genuinely needed: this is not a photo-count penalty, and a property that truly needs more gets more.{" "}
             <a href="/resources/photography-sop" target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">
               Read the full Photography SOP ↗
             </a>
@@ -607,17 +708,44 @@ export function UploadPortal({
               Your instructions for the edit <span className="text-brand">— required</span>
             </p>
             <p className="mt-0.5 text-[13px] text-muted">
-              The flow and your vision: shot order, the money shots, pacing, where the hook lands, anything you promised the agent.
+              Sectioned so the editor can act on it — fill what applies; vision and style are required.
             </p>
-            <AutoTextarea
-              value={vidInstructions}
-              onChange={(e) => setVidInstructions(e.target.value)}
-              minRows={3}
-              placeholder="e.g. Open on the drone push-in, hook over the entry clip · kitchen is the money room, hold on it · agent walk-and-talks clips 12–18, tightest read is take 2 · end on the sunset back patio."
-              className="mt-2 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
-            />
+
+            <div className="mt-2.5">
+              <label className="text-[13px] font-medium text-muted">Edit style <span className="text-brand">*</span></label>
+              <select
+                value={vidStyle ?? ""}
+                onChange={(e) => setVidStyle((e.target.value || null) as VidStyle | null)}
+                className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand sm:max-w-xs"
+              >
+                <option value="">Pick a style…</option>
+                <option value="fast">{VID_STYLES.fast}</option>
+                <option value="cinematic">{VID_STYLES.cinematic}</option>
+              </select>
+            </div>
+
+            <div className="mt-3 space-y-3">
+              {VID_SECTIONS.map((s) => (
+                <div key={s.key}>
+                  <label className="text-[13px] font-medium text-muted">
+                    {s.title}{s.required && <span className="text-brand"> *</span>}
+                  </label>
+                  <AutoTextarea
+                    value={vidSections[s.key]}
+                    onChange={(e) => setVidSections((v) => ({ ...v, [s.key]: e.target.value }))}
+                    minRows={s.key === "vision" ? 3 : 2}
+                    placeholder={s.placeholder}
+                    className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+                  />
+                </div>
+              ))}
+            </div>
+
+            <p className="mt-2 text-[13px] text-muted">
+              The color profile goes to the editor automatically: <strong className="text-foreground/80">S-Log3, D-LogM</strong>.
+            </p>
             <p className="mt-1.5 text-xs text-warning">
-              This can&rsquo;t be left blank. Skipping the instructions forfeits future premium shoot assignments.
+              Vision and style can&rsquo;t be left blank. Skipping the instructions forfeits future premium shoot assignments.
             </p>
           </div>
         </StepCard>
@@ -694,7 +822,13 @@ export function UploadPortal({
       </StepCard>
 
       {/* Submit */}
-      <div className="sticky bottom-4 flex items-center justify-between gap-3 rounded-2xl border bg-surface p-4 shadow-lg">
+      <div className="sticky bottom-4 rounded-2xl border bg-surface p-4 shadow-lg">
+        {!done && (
+          <p className="mb-2.5 text-[13px] font-medium text-brand">
+            Once submitted, this shoot is added to your payroll.
+          </p>
+        )}
+        <div className="flex items-center justify-between gap-3">
         <div className="text-sm text-muted">
           {doneCount}/{total} uploaded
           {project.photographerName && ` · ${project.photographerName}`}
@@ -707,6 +841,7 @@ export function UploadPortal({
           {isPending ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
           {done ? "Re-submit to editors" : "Everything's uploaded — submit"}
         </button>
+        </div>
       </div>
     </div>
   );

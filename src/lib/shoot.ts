@@ -321,7 +321,7 @@ export async function shootEarnings(projectId: string, memberId: string | null):
 
   let person;
   try {
-    const people = await computePayroll(start, end, { memberId });
+    const people = await computePayroll(start, end, { memberId, forCreativeEyes: true });
     person = people.find((x) => x.member.id === memberId);
   } catch {
     return null;

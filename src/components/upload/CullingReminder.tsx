@@ -46,7 +46,7 @@ export function CullingReminder({
         {!hidePay && (
           <p className="mt-1.5 text-xs font-medium text-warning">
             Clearly unnecessary photos (duplicates, distance variations, backups uploaded as finals) can carry a
-            $1 production charge — never justified coverage.
+            $1 production charge. You&rsquo;re never charged for photos a property genuinely needed.
           </p>
         )}
       </div>

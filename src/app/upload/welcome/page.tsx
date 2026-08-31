@@ -1,4 +1,4 @@
-import { CheckCircle2, FolderOpen, Scissors, Route, Eraser, Clapperboard, Upload } from "lucide-react";
+import { BadgeDollarSign, CheckCircle2, FolderOpen, Scissors, Route, Eraser, Clapperboard, Upload } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { AgreeButton } from "@/components/upload/AgreeButton";
 
@@ -35,14 +35,19 @@ export default async function UploadWelcomePage({
         </p>
       </div>
 
-      <h2 className="mt-7 text-lg font-semibold">How it works</h2>
+      <h2 className="mt-7 text-lg font-semibold">How it works — step by step</h2>
+      <p className="mt-1 text-sm text-muted">
+        The upload page walks you through these in order. Nothing here is new work — it&rsquo;s the professional
+        wrap-up of the shoot you just did, written down once so nobody has to chase you for it later.
+      </p>
       <div className="mt-3 space-y-2.5">
-        <Row icon={FolderOpen} title="Upload to Dropbox" text="Raw files in the Raw folders. Culled extras in the new Backup Photos folder — every shoot has one now." />
-        <Row icon={Scissors} title="Cull to the standard" text="Every home has a target gallery range by size (25–35 for the smallest, up to 70–85 for the largest — the ceiling is not a goal). Every space gets a HERO shot; one composition, once; every photo must add new information; 5-bracket JPG. A $1 production charge may apply per clearly unnecessary photo — never justified coverage." />
-        <Row icon={Route} title="Tell us the shot order" text="Shoot front to back — the whole property, or interior front-to-back then exterior (both are standard). Had to work around a seller or contractor? No problem — just tell us the order you shot, so nobody has to guess what's where." />
-        <Row icon={Eraser} title="Note what needs removing" text="Pets, trash cans, vehicles, clutter that couldn't be moved. Move what you can on site — strong attention to detail is the job." />
-        <Row icon={Clapperboard} title="Video jobs: confirm the script + leave instructions" text="The script imports from Script Studio — confirm it as written or fix what changed on site. Then your instructions for the edit: the flow, the money shots, your vision. Required on every video job." />
-        <Row icon={Upload} title="Check off and submit" text="Tick each deliverable as it lands, add anything the editor should know, submit. You can leave feedback on the process after every job — it goes straight to Jordan." />
+        <Row icon={FolderOpen} title="1 · Upload your files to Dropbox" text="Exactly like always: raw photos into Raw Photos, raw video into Raw Video. What's new is the Backup Photos folder — that's where your culled extras go (the alternate hero shot, the backup exterior angle). Backup photos are kept, but they never get edited or delivered. The page shows you all three folders with live file counts so you can confirm everything landed." />
+        <Row icon={Scissors} title="2 · Cull to the standard, then confirm it" text="Every home has a target gallery range based on its size — the page shows you this home's exact numbers (for example 'aim for 45–55 finals, 60 is the ceiling'). Cull before you upload: every space gets one HERO shot (the photo you'd pick if you could only show one), no duplicate angles at different distances, and every photo has to show something new. Then you tick four boxes — Coverage, Culling, Quality, Count — to confirm the gallery is right. A $1 production charge may apply per clearly unnecessary photo, but you're never charged for photos a property genuinely needed." />
+        <Row icon={Route} title="3 · Tell us the order you shot" text="Two taps if you shot the standard way: front to back, or interior front-to-back then exterior. If a seller, a contractor, or the agent forced a different order, that's completely fine — just pick 'Different order' and type the order you went in. Without this, someone who has never been inside the house spends an hour guessing which bedroom is which." />
+        <Row icon={Eraser} title="4 · Note what the editor needs to remove" text="List anything that couldn't be moved on site and needs to come out in editing — trash cans, pet bowls, a car in the driveway. If the scene was clean, just tick 'Nothing needs removal — I checked.' One of the two is required, so the editor never has to guess." />
+        <Row icon={Clapperboard} title="5 · Video shoots: confirm the script + brief the editor" text="If the shoot had a video, the script the agent was supposed to read imports automatically. Confirm it was delivered as written — or fix the text right there if anything changed on site, so the editor cuts to the real words. Then fill in the edit brief: your vision, the must-show shots, areas to avoid, what the realtor asked for, and pick the edit style (Fast-Paced, or Timeless & Elegant). The camera color profile goes to the editor automatically. Vision and style are required on every video job." />
+        <Row icon={Upload} title="6 · Check off and submit" text="Tick each deliverable as its files land in Dropbox, add anything else the editor should know, and hit submit. That single tap notifies the editors, builds the editor brief, and closes out your job. Afterward there's an optional feedback box — anything you'd change about this process goes straight to Jordan." />
+        <Row icon={BadgeDollarSign} title="Your pay rides on the submit" text="Once submitted, the shoot is added to your payroll — you'll see it in My Pay right away. A shoot that's uploaded but never submitted doesn't show up in My Pay, because the job isn't done until the page is done." />
       </div>
 
       <a

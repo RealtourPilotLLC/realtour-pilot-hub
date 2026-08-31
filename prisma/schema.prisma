@@ -461,6 +461,7 @@ model Project {
   // Shoot debrief (upload portal rebuild, Aug 31 2026) — structured fields the
   // photographer fills before the job counts as done. All feed the editor brief.
   cullingConfirmedAt DateTime? // ticked "culled to the standard, extras in Backup"
+  debriefSubmittedAt DateTime? // the photographer SUBMITTED the upload page (finalizeUpload) — distinct from uploadedAt, which the Dropbox sweep can auto-stamp; gates My Pay visibility for shoots from Sep 2 2026
   shotOrderNotes     String?   // "Shot front to back." or the actual order + why (organizing unseen photos burns office time)
   removalNotes       String?   // pets/cans/vehicles/clutter the editor must remove
   videoInstructions  String?   // REQUIRED on video jobs: flow + vision for the editor
