@@ -58,6 +58,125 @@ export function digestText(firstName: string, streets: string[], opts?: { newPro
   );
 }
 
+// The one-time launch announcement (Jordan approves the copy, then the blast
+// goes to every ACTIVE photographer with a phone — once ever, marker-guarded).
+export function introUploadProcessText(firstName: string): string {
+  return (
+    `Hi ${firstName} — RealTour Pilot here.\n\n` +
+    `Starting today: every shoot now finishes on its UPLOAD PAGE. This is required for every shoot going forward.\n\n` +
+    `Nothing changes about Dropbox — files go there like always. The page is the wrap-up: confirm your cull, note the shot order, flag anything for the editor, hit submit. A few minutes per shoot.\n\n` +
+    `Worth knowing:\n` +
+    `1. A shoot is added to your payroll when you submit its page.\n` +
+    `2. First time in, the page explains everything: ${APP_URL}/upload\n\n` +
+    `We're open to feedback — there's a feedback box after every submit and we'll keep improving it. But this one's not optional.\n\n` +
+    `Questions? Text Kyle or Jordan.`
+  );
+}
+
+export async function sendUploadProcessIntro(): Promise<{ sent: number; skipped: number; notes: string[] }> {
+  const notes: string[] = [];
+  const members = await prisma.teamMember.findMany({
+    where: { role: "PHOTOGRAPHER", active: true, phone: { not: null } },
+    select: { id: true, name: true, phone: true },
+  });
+  const from = await defaultOpenPhoneNumber();
+  if (!from) return { sent: 0, skipped: members.length, notes: ["OpenPhone not connected"] };
+  let sent = 0, skipped = 0;
+  for (const m of members) {
+    const k = phoneKey(m.phone ?? "");
+    if (k.length !== 10) { skipped++; notes.push(`${m.name}: no valid phone`); continue; }
+    const marker = `upload-intro-${m.id}`; // once EVER, not per day
+    try {
+      await prisma.appSetting.create({ data: { key: marker, value: new Date().toISOString() } });
+    } catch { skipped++; continue; }
+    const text = introUploadProcessText(m.name.split(" ")[0]);
+    try {
+      await OpenPhone.sendMessage(from, `+1${k}`, text);
+      sent++;
+      await logComm({
+        channel: "text", direction: "out", minRole: "ADMIN",
+        contactName: m.name, fromPhone: k, body: text,
+        source: "upload-intro", externalId: marker,
+      }).catch((e) => { notes.push(`${m.name}: sent but comms log failed — ${e instanceof Error ? e.message : "?"}`); });
+    } catch (e) {
+      await prisma.appSetting.delete({ where: { key: marker } }).catch(() => {});
+      skipped++;
+      notes.push(`${m.name}: send failed — ${e instanceof Error ? e.message : "unknown"}`);
+    }
+  }
+  return { sent, skipped, notes };
+}
+
+// The 10 PM chaser: shoots that HAPPENED today whose upload page still isn't
+// submitted. One text per photographer, atomic per-day marker.
+export function nagText(firstName: string, streets: string[]): string {
+  const list = streets.map((s, i) => `${i + 1}. ${s}`).join("\n");
+  return (
+    `Hi ${firstName} — RealTour Pilot here.\n\n` +
+    `Still waiting on today's upload page${streets.length === 1 ? "" : "s"}:\n${list}\n\n` +
+    `Finish tonight — files in Dropbox + the page submitted. The shoot is added to your payroll when you submit:\n` +
+    `${APP_URL}/upload`
+  );
+}
+
+export async function sendNightlyUploadNags(): Promise<{ sent: number; skipped: number; notes: string[] }> {
+  const notes: string[] = [];
+  const { start } = etDayWindow();
+  const dayKey = etDayKey();
+  const now = new Date();
+
+  const shoots = await prisma.project.findMany({
+    where: {
+      shootDate: { gte: start, lte: now }, // happened TODAY (never nag a future or ON_HOLD shoot)
+      status: { notIn: ["CANCELLED", "ON_HOLD"] },
+      photographerId: { not: null },
+      debriefSubmittedAt: null,
+    },
+    select: {
+      id: true, title: true,
+      photographer: { select: { id: true, name: true, phone: true } },
+    },
+    orderBy: { shootDate: "asc" },
+  });
+  if (shoots.length === 0) return { sent: 0, skipped: 0, notes: ["nothing unsubmitted today"] };
+
+  const byMember = new Map<string, { name: string; phone: string | null; streets: string[] }>();
+  for (const s of shoots) {
+    if (!s.photographer) continue;
+    const cur = byMember.get(s.photographer.id) ?? { name: s.photographer.name, phone: s.photographer.phone, streets: [] };
+    cur.streets.push(s.title.split(",")[0]);
+    byMember.set(s.photographer.id, cur);
+  }
+
+  const from = await defaultOpenPhoneNumber();
+  if (!from) return { sent: 0, skipped: byMember.size, notes: ["OpenPhone not connected"] };
+
+  let sent = 0, skipped = 0;
+  for (const [memberId, m] of byMember) {
+    const k = phoneKey(m.phone ?? "");
+    if (k.length !== 10) { skipped++; notes.push(`${m.name}: no valid phone`); continue; }
+    const marker = `upload-nag-${dayKey}-${memberId}`;
+    try {
+      await prisma.appSetting.create({ data: { key: marker, value: new Date().toISOString() } });
+    } catch { skipped++; continue; }
+    const text = nagText(m.name.split(" ")[0], m.streets);
+    try {
+      await OpenPhone.sendMessage(from, `+1${k}`, text);
+      sent++;
+      await logComm({
+        channel: "text", direction: "out", minRole: "ADMIN",
+        contactName: m.name, fromPhone: k, body: text,
+        source: "upload-nag", externalId: marker,
+      }).catch((e) => { notes.push(`${m.name}: sent but comms log failed — ${e instanceof Error ? e.message : "?"}`); });
+    } catch (e) {
+      await prisma.appSetting.delete({ where: { key: marker } }).catch(() => {});
+      skipped++;
+      notes.push(`${m.name}: send failed — ${e instanceof Error ? e.message : "unknown"}`);
+    }
+  }
+  return { sent, skipped, notes };
+}
+
 export async function sendEveningUploadDigests(): Promise<{ sent: number; skipped: number; notes: string[] }> {
   const notes: string[] = [];
   const { start, end } = etDayWindow();
