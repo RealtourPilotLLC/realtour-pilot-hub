@@ -122,6 +122,33 @@ const TASK_STATUSES = new Set([
   "WAITING_VENDOR", "WAITING_JORDAN", "BLOCKED", "COMPLETED", "CANCELLED",
 ]);
 
+// Comms Checklist manual tick (Jordan, Sep 1): "handled it outside the hub"
+// — completes the silent client_reply task for that client (creating a
+// completed one when none exists), which the unanswered walks already honor.
+export async function markCommsHandled(clientId: string): Promise<{ ok: boolean }> {
+  const { requireAdmin } = await import("@/lib/auth/guards");
+  try { await requireAdmin(); } catch { return { ok: false }; }
+  const open = await prisma.smartTask.findFirst({
+    where: { clientId, taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    select: { id: true },
+  });
+  if (open) {
+    await prisma.smartTask.update({ where: { id: open.id }, data: { status: "COMPLETED", completedAt: new Date() } });
+  } else {
+    await prisma.smartTask.create({
+      data: {
+        taskType: "client_reply", title: "Client reply — handled outside the hub",
+        summary: "Marked handled from the Comms Checklist.",
+        reasonCreated: "Manual tick on the Comms Checklist.",
+        source: "manual", status: "COMPLETED", completedAt: new Date(), clientId,
+      },
+    });
+  }
+  revalidatePath("/tasks");
+  revalidatePath("/ops");
+  return { ok: true };
+}
+
 export async function setSmartTaskStatus(taskId: string, status: string) {
   // Owner/admin, or the editor this task is delegated to — editors must be able
   // to complete their own queue work (audit crack #28).

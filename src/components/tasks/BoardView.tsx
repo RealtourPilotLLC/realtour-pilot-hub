@@ -37,6 +37,9 @@ function editorScopeOf(me: Me): string | null {
 function boardWhere(editorScope: string | null): Prisma.SmartTaskWhereInput {
   return {
     status: { in: ACTIVE },
+    // Comm-type tasks live on the Comms tab now (Jordan, Sep 1: "the board
+    // just gets clogged") — the engine still tracks them silently underneath.
+    taskType: { notIn: ["client_reply", "comms_followup", "callback"] },
     // DB-level scope for editors, so their view can't even load others' work.
     ...(editorScope ? { assignedKey: editorScope } : {}),
     OR: [

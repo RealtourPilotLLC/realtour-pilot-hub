@@ -27,6 +27,8 @@ const REPLY_TYPES = ["client_reply", "lead"];
 function stackWhere(startToday: Date): Prisma.SmartTaskWhereInput {
   return {
     status: { in: ACTIVE },
+    // Comm-type tasks moved to the Comms tab (engine keeps tracking silently).
+    taskType: { notIn: ["client_reply", "comms_followup", "callback"] },
     // EVERY assignee stays visible — Kyle's own + unassigned work, plus
     // anything delegated to ANYONE (editors, vendors, Jordan, photographers)
     // with a "→ Name" chip. Scoping to kyle+DELEGATE_KEYS made tasks assigned
