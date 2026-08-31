@@ -178,6 +178,10 @@ export async function sendReply(key: string, text: string): Promise<{ ok: boolea
     body,
     source: "openphone",
     externalId: sentId ? `op-${sentId}` : undefined,
+    // The card's projectId is inherited from the task / latest inbound row —
+    // often a router guess. Marking the reply a guess keeps it visible on
+    // every shoot card the inbound was visible on (false-visible > hidden).
+    projectGuess: true,
   }).catch(() => { /* the text is already sent; a log failure must not report failure */ });
 
   if (card.clientId) {

@@ -86,6 +86,9 @@ export async function sendEmailReply(
     body: text,
     source: "gmail",
     externalId: `hub-send-${taskId}-${Date.now()}`,
+    // task.projectId's provenance is unknown (often a router guess at mint
+    // time) — stamp it a guess so project-scoped surfaces don't over-trust it.
+    projectGuess: true,
   }).catch(() => {});
   if (task.projectId) {
     await prisma.activity

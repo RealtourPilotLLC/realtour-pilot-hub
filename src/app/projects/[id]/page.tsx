@@ -351,8 +351,10 @@ export default async function ProjectPage({
             </Suspense>
           )}
 
-          {/* Uploads & editor brief */}
-          {(project.uploads.length > 0 || project.editorPdfPath || project.editorBrief) && (
+          {/* Uploads & editor brief — also surfaces pre-submit when the
+              photographer marked something "couldn't complete" (the Admin
+              must see the reason without waiting for the full submit). */}
+          {(project.uploads.length > 0 || project.editorPdfPath || project.editorBrief || project.deliverables.some((d) => d.notCompletedReason)) && (
             <Section
               icon={FileText}
               title="Uploads & editor brief"
@@ -372,9 +374,14 @@ export default async function ProjectPage({
               }
               bodyClassName="space-y-3"
             >
-              {(project.shotOrderNotes || project.removalNotes || project.videoInstructions) && (
+              {(project.shotOrderNotes || project.removalNotes || project.videoInstructions || project.deliverables.some((d) => d.notCompletedReason)) && (
                 <div className="space-y-2 border-b border-border pb-3">
                   <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Shoot debrief</div>
+                  {project.deliverables.filter((d) => d.notCompletedReason).map((d) => (
+                    <p key={d.id} className="text-sm font-medium text-warning">
+                      Couldn&rsquo;t complete {d.label ?? d.type}: <span className="font-normal text-foreground/85">{d.notCompletedReason}</span>
+                    </p>
+                  ))}
                   {project.shotOrderNotes && (
                     <p className="text-sm text-foreground/85"><span className="font-medium">Shot order:</span> {project.shotOrderNotes}</p>
                   )}

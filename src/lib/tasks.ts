@@ -668,7 +668,12 @@ export async function closeReplyForOutboundCall(clientId: string, projectId?: st
 // ONE open reply task. Multi-order + unknown → leave it for a human, so a generic
 // "thanks!" outbound can't silently clear an unrelated order's open question.
 async function closeReplyScoped(clientId: string, projectId: string | null): Promise<boolean> {
-  if (projectId) return closeClientReplyTask(clientId, projectId);
+  // A scoped close that matches NOTHING falls through to the single-open-task
+  // blanket below — the task and the comm row can legitimately disagree on the
+  // project (the comms refile re-points CommLog rows when a new project is
+  // created but tasks keep their mint-time guess; review: Kyle's street-less
+  // "Perfect, we'll be there" stranded the open reply task forever).
+  if (projectId && (await closeClientReplyTask(clientId, projectId))) return true;
   const open = await prisma.smartTask.findMany({
     where: { clientId, taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] } },
     select: { id: true },
@@ -1494,7 +1499,7 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
       photographerId: true,
       photographer: { select: { name: true } },
       client: { select: { socialClient: true } },
-      deliverables: { select: { type: true, label: true } },
+      deliverables: { select: { type: true, label: true, notCompletedReason: true } },
     },
   });
   if (!p) return;
@@ -1511,6 +1516,44 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
 
   const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
   if (!v) return; // photos-only → AutoHDR, no human editor
+
+  // Every video deliverable marked "couldn't complete + why" on the wrap-up →
+  // the footage is NOT owed. Chasing the photographer ("the video clock is
+  // running") for a reel the agent canceled on site punishes honesty (review
+  // HIGH). Instead: one Admin decision task — cancel the item (fix the order
+  // in Aryeo so billing + expectations follow) or book the re-shoot.
+  const videoDeliverables = p.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  if (videoDeliverables.length > 0 && videoDeliverables.every((d) => d.notCompletedReason)) {
+    const street = (p.title || "this job").split(",")[0].trim();
+    const reason = videoDeliverables.map((d) => d.notCompletedReason).filter(Boolean).join(" · ");
+    await prisma.smartTask.upsert({
+      where: { dedupeKey: dedupe([projectId, "video-not-completable"]) },
+      create: {
+        taskType: "internal_instruction",
+        title: `Video marked not completable — ${street}`.slice(0, 120),
+        summary: `The photographer marked the video/reel on ${street} as “couldn't complete”: ${reason.slice(0, 300)}. Decide: cancel the item in Aryeo (so the order, billing, and delivery expectations match reality) or book a re-shoot.`.slice(0, 500),
+        reasonCreated: "Photographer marked the video not completable on the upload wrap-up.",
+        source: "system",
+        priority: "HIGH",
+        dueAt: new Date(Date.now() + 24 * HOUR),
+        assignedKey: "kyle",
+        projectId,
+        clientId: p.clientId,
+        propertyAddress: p.title,
+        dedupeKey: dedupe([projectId, "video-not-completable"]),
+      },
+      update: {}, // one decision task per job — never re-open or overwrite a human's handling
+    });
+    // Clear any already-minted raw-video chase; skip minting the edit task —
+    // there is nothing to edit until a human decides.
+    await prisma.smartTask
+      .updateMany({
+        where: { dedupeKey: `raw-video-missing-${projectId}`, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        data: { status: "CANCELLED", completedAt: new Date() },
+      })
+      .catch(() => {});
+    return;
+  }
 
   // A human hand-picked this job's editor (owner reassign / manual queue-add):
   // don't overwrite their routing, and don't chase raw video — the owner just

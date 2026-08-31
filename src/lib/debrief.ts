@@ -17,3 +17,8 @@ export const QC_LABEL_PAGE_SUBMITTED = "Photographer submitted the upload page";
 export const DEBRIEF_QC_LABELS = new Set([
   QC_LABEL_SHOT_ORDER, QC_LABEL_REMOVALS, QC_LABEL_VIDEO_BRIEF, QC_LABEL_PAGE_SUBMITTED,
 ]);
+
+// Prefix of the machine-written "couldn't complete" FLAG activity — shared so
+// the portal can filter its own echo out of the photographer's problem list
+// while the Admin timeline keeps the full row.
+export const NOT_COMPLETED_FLAG_PREFIX = "Not completed — ";

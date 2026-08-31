@@ -227,6 +227,15 @@ function BlockBody({ blockKey, d }: { blockKey: string; d: OpsDay }) {
                   </span>
                   {r.editor && <span className="shrink-0 text-xs text-muted">→ {r.editor}</span>}
                 </div>
+                {/* Who it's for + what was ordered (Jordan: "more details on
+                    who it is, what it's for"). */}
+                {(r.clientName || r.services.length > 0) && (
+                  <p className="mt-0.5 text-xs text-muted">
+                    {r.clientName}
+                    {r.clientName && r.services.length > 0 && " · "}
+                    {r.services.join(", ")}
+                  </p>
+                )}
                 <p className="mt-1 text-[13px]">
                   {r.sent.length > 0 && <span className="text-success">Sent: {r.sent.join(", ")}</span>}
                   {r.sent.length > 0 && r.waitingOn.length > 0 && <span className="text-muted-2"> · </span>}
@@ -362,9 +371,17 @@ function ShootList({ shoots, empty, showGaps, showDebrief }: { shoots: OpsShoot[
               </span>
             )}
             {s.comms && (
-              <Link href={`/communications`} className={cn("inline-flex items-center gap-1 hover:underline", s.comms.latestInbound ? "font-semibold text-brand" : "text-muted")}>
+              <Link href={`/communications`} className={cn("inline-flex items-center gap-1 hover:underline", s.comms.count > 0 && s.comms.latestInbound ? "font-semibold text-brand" : "text-muted")}>
                 <MessageSquare className="size-3.5" />
-                {s.comms.count} msg{s.comms.count === 1 ? "" : "s"} (72h) · {s.comms.latestInbound ? "them" : "us"}: &ldquo;{s.comms.latestSnippet.slice(0, 60)}&rdquo;
+                {s.comms.count > 0 && (
+                  <>
+                    {s.comms.count} msg{s.comms.count === 1 ? "" : "s"} (72h)
+                    {s.comms.latestSnippet && <> · {s.comms.latestInbound ? "them" : "us"}: &ldquo;{s.comms.latestSnippet.slice(0, 60)}&rdquo;</>}
+                  </>
+                )}
+                {s.comms.otherCount > 0 && (
+                  <span className="text-muted-2">{s.comms.count > 0 ? "· " : ""}+{s.comms.otherCount} on other job{s.comms.otherCount === 1 ? "" : "s"}</span>
+                )}
               </Link>
             )}
             {showDebrief && s.timeISO && new Date(s.timeISO) < new Date() && (
@@ -415,10 +432,19 @@ function QcGroups({ qc }: { qc: OpsQcRow[] }) {
 
 function DropboxChip({ label, n }: { label: string; n: number }) {
   return (
-    <span className={cn(
-      "rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
-      n > 0 ? "bg-success/15 text-success" : "bg-surface-2 text-muted-2",
-    )}>
+    <span
+      // Hover explains the count — "Raw 150 ✓" reads as a mystery otherwise
+      // (Jordan asked what these mean).
+      title={
+        label === "Raw"
+          ? n > 0 ? `${n} raw files are in the job's Dropbox RAW folders` : "No files found in the job's Dropbox RAW folders yet"
+          : n > 0 ? `${n} finished files are in the job's Dropbox FINAL folders` : "No finished files in the job's Dropbox FINAL folders yet"
+      }
+      className={cn(
+        "rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
+        n > 0 ? "bg-success/15 text-success" : "bg-surface-2 text-muted-2",
+      )}
+    >
       {label} {n > 0 ? `${n} ✓` : "—"}
     </span>
   );
@@ -430,7 +456,12 @@ function QcRow({ q }: { q: OpsQcRow }) {
     <div className="rounded-xl border border-border px-3.5 py-2.5">
       <div className="flex items-center gap-2">
         <Link href={`/projects/${q.projectId}`} className="min-w-0 flex-1 truncate text-sm font-semibold hover:text-brand">{q.title}</Link>
-        <span className="shrink-0 text-xs text-muted">{q.itemsLeft} check{q.itemsLeft === 1 ? "" : "s"} left</span>
+        <span
+          className="shrink-0 text-xs text-muted"
+          title="Unticked boxes on this job's QC task — one per deliverable to check (photos, video, floor plan…). They tick themselves as each one goes live on Aryeo."
+        >
+          {q.itemsLeft} check{q.itemsLeft === 1 ? "" : "s"} left
+        </span>
         {q.aryeoListingId && (
           <a
             href={`https://app.aryeo.com/listings/${q.aryeoListingId}`}
@@ -462,9 +493,14 @@ function QcRow({ q }: { q: OpsQcRow }) {
           <span className="text-[11px] font-medium text-warning">missing: {q.evidence.missing.join(", ")}</span>
         )}
       </div>
-      {(q.debrief.removals || q.debrief.unsubmitted) && (
+      {(q.debrief.removals || q.debrief.unsubmitted || q.notCompleted.length > 0) && (
         <div className="mt-1.5 space-y-0.5 text-[13px]">
           {q.debrief.unsubmitted && <p className="font-medium text-danger">Upload page never submitted — treat the gallery as unculled.</p>}
+          {q.notCompleted.map((nc, i) => (
+            <p key={i} className="font-medium text-warning">
+              Couldn&rsquo;t complete {nc.label}: <span className="font-normal text-foreground/80">{nc.reason.slice(0, 160)}</span>
+            </p>
+          ))}
           {q.debrief.removals && <p className="text-foreground/80"><span className="font-semibold">Remove in editing:</span> {q.debrief.removals.slice(0, 140)}</p>}
         </div>
       )}

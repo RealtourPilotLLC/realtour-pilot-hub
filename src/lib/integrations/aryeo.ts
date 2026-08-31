@@ -1239,6 +1239,14 @@ export async function syncAryeoOrders(
         });
         seenOrders.add(order.id);
         imported++;
+        // The booking conversation predates this row — texts/emails naming this
+        // street were filed to the client's previous job (or unfiled) because
+        // this project didn't exist yet. Re-point them now so the shoot card,
+        // project page, and Hub see the access/lockbox chat. Best-effort.
+        try {
+          const { refileRecentCommsToProject } = await import("@/lib/contacts");
+          await refileRecentCommsToProject(createdProject);
+        } catch { /* refile is best-effort */ }
         // Bell: a fresh booking, announced here (not the webhook receiver — it
         // only triggers this sync, and emitting here covers cron-discovered
         // orders too). Deduped per project. Best-effort.

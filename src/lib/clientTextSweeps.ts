@@ -101,9 +101,12 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
     try {
       await prisma.appSetting.create({ data: { key: `auto-confirm-missed-${m.id}`, value: now.toISOString() } });
     } catch { continue; } // already noted
-    notes.push(`${m.title}: shoot started during quiet hours before a confirmation could be sent`);
+    // Neutral wording: the CAUSE varies (quiet-hours booking, pre-automation
+    // shoot on day one, a held ambiguous send) — the fact is simply "no
+    // confirmation went out before this shoot."
+    notes.push(`${m.title}: shoot passed without a confirmation text being sent`);
     await prisma.activity.create({
-      data: { projectId: m.id, type: "SYSTEM", body: "Confirmation text was never sent — the shoot fell inside SMS quiet hours (booked too close to start)." },
+      data: { projectId: m.id, type: "SYSTEM", body: "No confirmation text was sent before this shoot." },
     }).catch(() => {});
   }
 

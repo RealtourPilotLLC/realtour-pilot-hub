@@ -753,9 +753,13 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
         let resolvedClientId: string | null = senderClient?.id ?? null;
         let resolvedClientName: string | null = senderClient?.name ?? null;
         let project: { id: string; title: string; status: string } | null = null;
+        // Track HOW the project resolves: a street named in the mail is a real
+        // filing; the fallbacks below are guesses, and project-scoped surfaces
+        // (the /ops shoot-card comms chip) must know the difference.
+        let projectNamed = false;
         if (senderClient) {
           const named = await findClientProjectByText(senderClient.id, `${subject ?? ""} ${text}`);
-          if (named) project = named;
+          if (named) { project = named; projectNamed = true; }
         }
         // Fall back to a GLOBAL listing match only when we DON'T already know the
         // sender (a coordinator/assistant emailing about an agent's property), or
@@ -767,6 +771,7 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
           const gp = await findProjectByText(`${subject ?? ""} ${text}`);
           if (gp && (!senderClient || gp.clientId === senderClient.id)) {
             project = { id: gp.id, title: gp.title, status: gp.status };
+            projectNamed = true; // global match = the street was in the mail
             resolvedClientId = gp.clientId;
             resolvedClientName = clients.find((c) => c.id === gp.clientId)?.name ?? null;
           }
@@ -805,6 +810,7 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
           body: fullBody || snippet || text,
           source: "gmail",
           externalId: `gmail-${dedupe}`,
+          projectGuess: !!project && !projectNamed,
         });
 
         if (answered) {

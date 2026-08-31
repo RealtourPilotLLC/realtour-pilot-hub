@@ -73,7 +73,7 @@ const ACK_WORDS = new Set([
  *  emphasis or a sentence naming a date can't eat the message — and if a rule
  *  still empties the text, we fall back to the un-truncated base rather than
  *  silently hiding the email (review). */
-function cleanEmailBody(raw: string): string {
+export function cleanEmailBody(raw: string): string {
   const base = stripQuotedReply(raw)
     .replace(/\[image:[^\]]*\]/gi, " ")
     .replace(/<(?:https?:\/\/|mailto:|tel:)[^>]*>/gi, " ")

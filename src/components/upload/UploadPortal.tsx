@@ -6,6 +6,7 @@ import {
   Upload,
   CheckCircle2,
   Circle,
+  XCircle,
   AlertTriangle,
   Star,
   Flag,
@@ -14,7 +15,7 @@ import {
   Check,
 } from "lucide-react";
 import { DELIVERABLE_META } from "@/lib/pipeline";
-import { markDeliverableUploaded, flagIssue, finalizeUpload, submitUploadFeedback } from "@/app/upload/actions";
+import { markDeliverableUploaded, markDeliverableNotCompleted, flagIssue, finalizeUpload, submitUploadFeedback } from "@/app/upload/actions";
 import { cn } from "@/lib/utils";
 import type { DeliverableType, DeliverableStatus } from "@prisma/client";
 import { etDateTime } from "@/lib/datetime";
@@ -33,10 +34,16 @@ type Deliverable = {
   quantity: number;
   status: DeliverableStatus;
   uploadedAt: string | null;
+  notCompletedReason: string | null;
 };
 
 const DETECTED: DeliverableStatus[] = ["UPLOADED", "IN_PROGRESS", "DONE"];
 function initialUploaded(d: Deliverable): boolean {
+  // A saved "couldn't complete" reason is authoritative — a mis-tap-promoted
+  // status must not re-render the row green on reload while /ops shows the
+  // reason (review). Marking uploaded always clears the reason server-side,
+  // so a genuine upload can never carry a stale one.
+  if (d.notCompletedReason) return false;
   return d.uploadedAt != null || DETECTED.includes(d.status);
 }
 
@@ -216,7 +223,7 @@ export function UploadPortal({
   const [flags, setFlags] = useState(initialFlags);
   const [flagInput, setFlagInput] = useState("");
   const [isPending, startTransition] = useTransition();
-  const [, startToggle] = useTransition();
+  const [toggling, startToggle] = useTransition();
   const [done, setDone] = useState(project.uploadedAt != null);
   const [pdfPath, setPdfPath] = useState<string | null>(project.editorPdfPath);
   const [err, setErr] = useState<string | null>(null);
@@ -267,20 +274,80 @@ export function UploadPortal({
       : "",
   );
 
+  // "Couldn't complete" answers (Jordan, Sep 1): an unchecked box with no
+  // explanation tells the admin nothing — each item can carry the reason it
+  // wasn't completed, which lands on the project timeline + Kyle's QC card.
+  const [notDone, setNotDone] = useState<Record<string, string>>(
+    Object.fromEntries(deliverables.filter((d) => d.notCompletedReason).map((d) => [d.id, d.notCompletedReason as string])),
+  );
+  const [reasonFor, setReasonFor] = useState<string | null>(null);
+  const [reasonText, setReasonText] = useState("");
+
   const addr = [project.addressLine, project.city, project.state, project.zip].filter(Boolean).join(", ");
   const total = deliverables.length;
   const doneCount = Object.values(uploaded).filter(Boolean).length;
-  const remaining = deliverables.filter((d) => !uploaded[d.id]);
+  const notDoneCount = deliverables.filter((d) => !uploaded[d.id] && notDone[d.id]).length;
+  // "Remaining" = truly unanswered — a "couldn't complete + reason" item is
+  // accounted for, so it doesn't nag on submit.
+  const remaining = deliverables.filter((d) => !uploaded[d.id] && !notDone[d.id]);
 
   function toggle(id: string) {
     const next = !uploaded[id];
+    const prevReason = notDone[id];
+    // A saved "couldn't complete" reason must not be silently converted into
+    // an upload by one stray tap on the amber row (review).
+    if (next && prevReason) {
+      const ok = window.confirm("Mark this as uploaded instead? That clears the “couldn't complete” reason.");
+      if (!ok) return;
+    }
     setUploaded((u) => ({ ...u, [id]: next }));
+    if (next) {
+      // Marking it uploaded supersedes an earlier "couldn't complete".
+      setNotDone((m) => { const c = { ...m }; delete c[id]; return c; });
+      if (reasonFor === id) setReasonFor(null);
+    }
     startToggle(async () => {
       try {
         await markDeliverableUploaded(id, next);
       } catch {
+        // Roll back BOTH optimistic changes — the DB still holds the reason.
         setUploaded((u) => ({ ...u, [id]: !next }));
+        if (next && prevReason) setNotDone((m) => ({ ...m, [id]: prevReason }));
         setErr("Couldn’t save that — check your connection and try again.");
+      }
+    });
+  }
+
+  function saveNotCompleted(id: string, r: string) {
+    const prevReason = notDone[id];
+    const prevUploaded = uploaded[id];
+    if (r) {
+      setNotDone((m) => ({ ...m, [id]: r }));
+      setUploaded((u) => ({ ...u, [id]: false }));
+    } else {
+      if (prevReason === undefined) return;
+      // Withdraw — back to a plain "Not yet" row.
+      setNotDone((m) => { const c = { ...m }; delete c[id]; return c; });
+    }
+    setReasonFor(null);
+    setReasonText("");
+    startToggle(async () => {
+      try {
+        const res = await markDeliverableNotCompleted(id, r);
+        if (!res.ok) throw new Error(res.message ?? "save failed");
+      } catch (e) {
+        // Restore exactly what was there before, and reopen the editor with
+        // the typed text so retry is one tap — a silently-lost reason is the
+        // bare unchecked box this feature exists to prevent (review).
+        setNotDone((m) => {
+          const c = { ...m };
+          if (prevReason === undefined) delete c[id];
+          else c[id] = prevReason;
+          return c;
+        });
+        setUploaded((u) => ({ ...u, [id]: prevUploaded }));
+        if (r) { setReasonFor(id); setReasonText(r); }
+        setErr(e instanceof Error && e.message !== "save failed" ? e.message : "Couldn’t save that — check your connection and try again.");
       }
     });
   }
@@ -295,17 +362,26 @@ export function UploadPortal({
     });
   }
 
+  // Gate scoping follows the LIVE deliverables: a "couldn't complete" answer
+  // excuses its whole category (the server mirrors this in finalizeUpload) —
+  // a reel the agent canceled on site must not demand fabricated video
+  // instructions or a script attestation (review HIGH).
+  const liveType = (types: string[]) =>
+    deliverables.some((d) => types.includes(d.type) && (uploaded[d.id] || !notDone[d.id]));
+  const photosLive = policy.photosOrdered && liveType(["PHOTOS", "DRONE", "TWILIGHT"]);
+  const videoLive = policy.videoOrdered && liveType(["VIDEO", "SOCIAL_REEL"]);
+
   // What still blocks the submit — same rules the server enforces.
   function missingItems(): string[] {
     const missing: string[] = [];
-    if (policy.photosOrdered && !cullOk) missing.push("the pre-upload checklist (all four boxes)");
-    if (policy.photosOrdered && orderChoice === null) missing.push("answer the shot order");
-    if (policy.photosOrdered && orderChoice === "out-of-order" && !orderNotes.trim()) missing.push("the order you shot the home (and why)");
-    if (policy.photosOrdered && !removal.trim() && !nothingToRemove) missing.push("answer the removal notes");
-    if (policy.videoOrdered && !hadPriorBrief && !vidSections.vision.trim()) missing.push("the vision for the edit");
-    if (policy.videoOrdered && !hadPriorBrief && vidStyle === null) missing.push("pick an edit style");
-    if (policy.videoOrdered && script && !scriptChoice) missing.push("confirm the script");
-    if (policy.videoOrdered && scriptChoice === "edited" && !scriptText.trim()) missing.push("the edited script text (or pick “Delivered as written”)");
+    if (photosLive && !cullOk) missing.push("the pre-upload checklist (all four boxes)");
+    if (photosLive && orderChoice === null) missing.push("answer the shot order");
+    if (photosLive && orderChoice === "out-of-order" && !orderNotes.trim()) missing.push("the order you shot the home (and why)");
+    if (photosLive && !removal.trim() && !nothingToRemove) missing.push("answer the removal notes");
+    if (videoLive && !hadPriorBrief && !vidSections.vision.trim()) missing.push("the vision for the edit");
+    if (videoLive && !hadPriorBrief && vidStyle === null) missing.push("pick an edit style");
+    if (videoLive && script && !scriptChoice) missing.push("confirm the script");
+    if (videoLive && scriptChoice === "edited" && !scriptText.trim()) missing.push("the edited script text (or pick “Delivered as written”)");
     return missing;
   }
 
@@ -771,22 +847,87 @@ export function UploadPortal({
           {deliverables.map((d) => {
             const meta = DELIVERABLE_META[d.type];
             const on = uploaded[d.id];
+            const reason = !on ? notDone[d.id] : undefined;
+            const editing = reasonFor === d.id;
             return (
-              <button
-                key={d.id}
-                onClick={() => toggle(d.id)}
-                className={cn(
-                  "flex w-full items-center gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-colors",
-                  on ? "border-success/40 bg-success-soft/30" : "bg-surface hover:bg-surface-2",
+              <div key={d.id}>
+                <button
+                  onClick={() => toggle(d.id)}
+                  className={cn(
+                    "flex w-full items-center gap-3 rounded-xl border px-3.5 py-2.5 text-left transition-colors",
+                    on ? "border-success/40 bg-success-soft/30" : reason ? "border-warning/40 bg-warning/5" : "bg-surface hover:bg-surface-2",
+                  )}
+                >
+                  {on ? (
+                    <CheckCircle2 className="size-5 shrink-0 text-success" />
+                  ) : reason ? (
+                    <XCircle className="size-5 shrink-0 text-warning" />
+                  ) : (
+                    <Circle className="size-5 shrink-0 text-muted-2" />
+                  )}
+                  <span className="flex-1 text-sm font-medium">
+                    {meta.label}
+                    {d.quantity > 1 && <span className="text-muted"> ×{d.quantity}</span>}
+                  </span>
+                  <span className={cn("text-xs", reason ? "font-semibold text-warning" : "text-muted")}>
+                    {on ? "Uploaded" : reason ? "Couldn't complete" : "Not yet"}
+                  </span>
+                </button>
+                {reason && !editing && (
+                  <p className="mt-1 rounded-lg bg-warning/10 px-2.5 py-1.5 text-xs text-foreground/80">
+                    <span className="font-semibold text-warning">Why:</span> {reason}{" "}
+                    <button
+                      onClick={() => { setReasonFor(d.id); setReasonText(reason); }}
+                      className="ml-1 font-medium text-muted underline"
+                    >
+                      edit
+                    </button>
+                    <button
+                      onClick={() => saveNotCompleted(d.id, "")}
+                      title="Remove the reason — it's just not done yet"
+                      className="ml-2 font-medium text-muted underline"
+                    >
+                      clear
+                    </button>
+                  </p>
                 )}
-              >
-                {on ? <CheckCircle2 className="size-5 shrink-0 text-success" /> : <Circle className="size-5 shrink-0 text-muted-2" />}
-                <span className="flex-1 text-sm font-medium">
-                  {meta.label}
-                  {d.quantity > 1 && <span className="text-muted"> ×{d.quantity}</span>}
-                </span>
-                <span className="text-xs text-muted">{on ? "Uploaded" : "Not yet"}</span>
-              </button>
+                {!on && !reason && !editing && (
+                  <button
+                    onClick={() => { setReasonFor(d.id); setReasonText(""); }}
+                    className="mt-1 px-1 text-xs text-muted underline hover:text-foreground"
+                  >
+                    Can&rsquo;t complete this? Tell the admin why
+                  </button>
+                )}
+                {editing && (
+                  <div className="mt-1.5 flex gap-2">
+                    <input
+                      autoFocus
+                      value={reasonText}
+                      onChange={(e) => setReasonText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && reasonText.trim()) saveNotCompleted(d.id, reasonText.trim());
+                        if (e.key === "Escape") { setReasonFor(null); setReasonText(""); }
+                      }}
+                      placeholder="Why couldn't it be completed? e.g. Seller refused the drone — needs a re-shoot"
+                      className="flex-1 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+                    />
+                    <button
+                      disabled={toggling || !reasonText.trim()}
+                      onClick={() => saveNotCompleted(d.id, reasonText.trim())}
+                      className="rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-50"
+                    >
+                      Save
+                    </button>
+                    <button
+                      onClick={() => { setReasonFor(null); setReasonText(""); }}
+                      className="rounded-lg px-2 py-2 text-sm text-muted hover:text-foreground"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>
@@ -840,6 +981,7 @@ export function UploadPortal({
         <div className="flex items-center justify-between gap-3">
         <div className="text-sm text-muted">
           {doneCount}/{total} uploaded
+          {notDoneCount > 0 && <span className="text-warning"> · {notDoneCount} couldn&rsquo;t be completed</span>}
           {project.photographerName && ` · ${project.photographerName}`}
         </div>
         <button

@@ -22,6 +22,8 @@ export async function logComm(input: {
   occurredAt?: Date | null;
   source: string;
   externalId?: string | null;
+  /** projectId is a router heuristic, not a named match (see schema comment). */
+  projectGuess?: boolean;
 }): Promise<boolean> {
   // Returns true if a NEW row was inserted (false if it already existed / empty),
   // so callers (e.g. the Slack sync) can act only on genuinely-new messages.
@@ -52,6 +54,7 @@ export async function logComm(input: {
     occurredAt: input.occurredAt ?? new Date(),
     source: input.source,
     externalId: input.externalId ?? null,
+    projectGuess: input.projectId ? input.projectGuess === true : false,
   };
   if (data.externalId) {
     // Pre-check so the common dedup case is clean (no thrown constraint error).

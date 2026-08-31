@@ -615,7 +615,18 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
             </button>
           </div>
           <p className="whitespace-pre-line break-words text-sm text-foreground/90">{task.description}</p>
-          <p className="mt-2 text-[10px] text-muted-2">Review before sending. The hub never sends on its own.</p>
+          {/* Since Sep 2026 these two text types DO send themselves (Jordan's
+              call) — the old "never sends on its own" line here was a lie.
+              Wording matches the sweeps' actual gates (review: the hand-send
+              auto-close for confirmations is 48h-scoped; delivery auto-send
+              needs verified Aryeo evidence + a ≤3-day-old card). */}
+          <p className="mt-2 text-[10px] text-muted-2">
+            {task.taskType === "confirmation_text"
+              ? "Auto-sends ~48h before the shoot (9am–8pm ET). Sending it yourself inside those 2 days is safe — the hub sees your text and stands down. Earlier than that, tap Complete after you send so it doesn't re-send later."
+              : task.taskType === "delivery_text"
+                ? "Usually auto-sends once Aryeo shows everything delivered (9am–8pm ET). If delivery can't be verified on Aryeo — or this card is older than 3 days — the hub leaves it to you: send it and tap Complete."
+                : "Review before sending. The hub never sends on its own."}
+          </p>
         </div>
       )}
 

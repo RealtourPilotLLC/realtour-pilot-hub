@@ -389,6 +389,73 @@ export async function findProjectByText(
 // filed on their most-recent order by default. Returns the most specific street
 // match (longest core), preferring the most-recent on ties. Client-scoped, so it
 // can never cross-file onto a different client's job.
+// A new project's booking conversation predates the project row: texts/emails
+// that NAMED this street were filed to the client's previous job (or left
+// unfiled) because this project didn't exist yet to match. Re-point them the
+// moment the project is created, with the same whole-word street-core matcher
+// the live routers trust. (Review probe: ~15% of shoots had such rows in the
+// 72h pre-shoot window — "1429 n 62nd ready tomorrow." filed to an old job.)
+export async function refileRecentCommsToProject(project: {
+  id: string;
+  clientId: string | null;
+  title: string;
+  addressLine: string | null;
+}): Promise<number> {
+  if (!project.clientId) return 0;
+  const core = streetCore(project.addressLine || project.title).toLowerCase();
+  if (core.length < 5) return 0;
+  // Only rows the routers were UNSURE about (unfiled, or a heuristic guess).
+  // A NAMED filing on a sibling job stays put — review: "34 Adams Ct" must
+  // not steal "N Adams" rows, and a same-street add-on order must not yank
+  // the main job's access texts (they still surface on the new shoot's card
+  // via the "+N on other jobs" count).
+  const rows = await prisma.commLog.findMany({
+    where: {
+      clientId: project.clientId,
+      occurredAt: { gte: new Date(Date.now() - 7 * 86_400_000) },
+      OR: [{ projectId: null }, { projectGuess: true }],
+    },
+    select: { id: true, subject: true, body: true, channel: true },
+    orderBy: { occurredAt: "desc" },
+    take: 200,
+  });
+  if (rows.length === 0) return 0;
+  // The same longest-core-wins competition the live router runs: the new
+  // project must be the BEST street match for the row, not merely A match —
+  // and email rows are matched on the sender's OWN words (quoted history can
+  // name other properties; the router strips it, so must we). Projects are
+  // ordered like findClientProjectByText so ties resolve identically.
+  const projects = await prisma.project.findMany({
+    where: { clientId: project.clientId },
+    select: { id: true, title: true, addressLine: true },
+    orderBy: [
+      { orderedAt: { sort: "desc", nulls: "last" } },
+      { shootDate: { sort: "desc", nulls: "last" } },
+      { createdAt: "desc" },
+    ],
+  });
+  const cores = projects
+    .map((p) => ({ id: p.id, core: streetCore(p.addressLine || p.title).toLowerCase() }))
+    .filter((c) => c.core.length >= 5)
+    .map((c) => ({ id: c.id, len: c.core.length, re: new RegExp(`\\b${escapeRegExp(c.core)}\\b`, "i") }));
+  const { stripQuotedReply, clip } = await import("@/lib/text");
+  const ids: string[] = [];
+  for (const r of rows) {
+    const text = `${r.subject ?? ""} ${r.channel === "email" ? clip(stripQuotedReply(r.body), 2000) : r.body}`;
+    let best: { id: string; len: number } | null = null;
+    for (const c of cores) {
+      if ((!best || c.len > best.len) && c.re.test(text)) best = { id: c.id, len: c.len };
+    }
+    if (best?.id === project.id) ids.push(r.id);
+  }
+  if (ids.length === 0) return 0;
+  await prisma.commLog.updateMany({
+    where: { id: { in: ids } },
+    data: { projectId: project.id, projectGuess: false },
+  });
+  return ids.length;
+}
+
 export async function findClientProjectByText(
   clientId: string,
   text: string,

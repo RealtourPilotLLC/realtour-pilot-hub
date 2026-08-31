@@ -549,6 +549,12 @@ model Deliverable {
   // They upload to Dropbox directly — this is the accountability signal that the
   // raw files for this item are in, so editors aren't chasing ETAs.
   uploadedAt DateTime?
+  // Photographer marked this item NOT completed on the wrap-up step (couldn't
+  // shoot / couldn't upload) with the reason the Admin reads — surfaces on the
+  // /ops QC card + project timeline. Cleared if the item is later marked
+  // uploaded (Jordan, Sep 1 2026).
+  notCompletedReason String?
+  notCompletedAt     DateTime?
   createdAt  DateTime          @default(now())
 
   uploads UploadedFile[]
@@ -1312,6 +1318,12 @@ model CommLog {
   occurredAt  DateTime
   source      String // openphone | openphone-call | gmail | slack | manual | backfill
   externalId  String?  @unique // dedup: provider message/call id
+  // TRUE when projectId is a router HEURISTIC (mostRelevantProject /
+  // mostRecentDeliveredIsh fallback for a message naming no street) rather
+  // than a named street/thread match or an explicit send. Surfaces that scope
+  // by project (e.g. the /ops shoot-card comms chip) must not treat a guessed
+  // filing as proof the message is about that job.
+  projectGuess Boolean @default(false)
   createdAt   DateTime @default(now())
 
   @@index([clientId])

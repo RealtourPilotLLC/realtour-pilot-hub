@@ -72,11 +72,74 @@ export async function markDeliverableUploaded(
     where: { id: deliverableId },
     data: {
       uploadedAt: uploaded ? new Date() : null,
+      // Marking it uploaded supersedes an earlier "couldn't complete" answer.
+      ...(uploaded ? { notCompletedReason: null, notCompletedAt: null } : {}),
       // Only move PENDING → UPLOADED on tick; never downgrade work already in
       // progress / done, and clearing the tick leaves the status alone.
       ...(uploaded && d.status === DeliverableStatus.PENDING ? { status: DeliverableStatus.UPLOADED } : {}),
     },
   });
+  revalidatePath(`/upload/${d.projectId}`);
+  revalidatePath(`/projects/${d.projectId}`);
+  return { ok: true };
+}
+
+/**
+ * The wrap-up's "couldn't complete this" answer (Jordan, Sep 1 2026): the
+ * photographer marks a deliverable NOT completed with the reason, so the Admin
+ * sees WHY instead of a bare unchecked box. Lands on the project timeline as a
+ * FLAG and on Kyle's /ops QC card; marking the item uploaded later clears it.
+ * Pass an empty reason to withdraw the mark.
+ */
+export async function markDeliverableNotCompleted(
+  deliverableId: string,
+  reason: string,
+): Promise<{ ok: boolean; message?: string }> {
+  await requireDeliverableAccess(deliverableId);
+  const d = await prisma.deliverable.findUnique({
+    where: { id: deliverableId },
+    select: { projectId: true, type: true, label: true, status: true, notCompletedReason: true },
+  });
+  if (!d) return { ok: false };
+  const trimmed = reason.trim().slice(0, 500);
+  if (!trimmed) {
+    // Withdraw: back to a plain "not yet" row.
+    await prisma.deliverable.update({
+      where: { id: deliverableId },
+      data: { notCompletedReason: null, notCompletedAt: null },
+    });
+    revalidatePath(`/upload/${d.projectId}`);
+    revalidatePath(`/projects/${d.projectId}`);
+    return { ok: true };
+  }
+  // A DONE deliverable was already delivered to the client — "couldn't
+  // complete" is the wrong tool (and nulling its uploadedAt would corrupt the
+  // record). Flag a problem instead.
+  if (d.status === DeliverableStatus.DONE) {
+    return { ok: false, message: "This item is already delivered — use “Flag a problem” instead." };
+  }
+  await prisma.deliverable.update({
+    where: { id: deliverableId },
+    data: {
+      notCompletedReason: trimmed,
+      notCompletedAt: new Date(),
+      uploadedAt: null,
+      // Mirror of the tick's PENDING→UPLOADED promote: a mis-tap that promoted
+      // the status must not leave "Uploaded" contradicting the saved reason
+      // on the next page load (review).
+      ...(d.status === DeliverableStatus.UPLOADED ? { status: DeliverableStatus.PENDING } : {}),
+    },
+  });
+  // The Admin-visible trail — only when the reason actually changed, so a
+  // re-opened portal doesn't stack duplicate timeline rows.
+  if (d.notCompletedReason !== trimmed) {
+    const { DELIVERABLE_META } = await import("@/lib/pipeline");
+    const { NOT_COMPLETED_FLAG_PREFIX } = await import("@/lib/debrief");
+    const label = d.label ?? DELIVERABLE_META[d.type]?.label ?? d.type;
+    await prisma.activity.create({
+      data: { projectId: d.projectId, type: ActivityType.FLAG, body: `${NOT_COMPLETED_FLAG_PREFIX}${label}: ${trimmed}` },
+    }).catch(() => {});
+  }
   revalidatePath(`/upload/${d.projectId}`);
   revalidatePath(`/projects/${d.projectId}`);
   return { ok: true };
@@ -218,10 +281,15 @@ export async function finalizeUpload(
       scriptConfirmNote: true,
       reelScript: true,
       client: { select: { name: true } },
-      deliverables: { select: { type: true } },
+      deliverables: { select: { type: true, notCompletedReason: true } },
     },
   });
   const firstFinalize = !prior?.uploadedAt;
+  // A deliverable marked "couldn't complete + why" is EXCUSED from the gates —
+  // demanding video instructions for a reel the agent canceled on site forces
+  // the photographer to fabricate answers (review HIGH). The reason itself is
+  // already on the Admin's QC card / timeline for a human to resolve.
+  const liveDeliverables = (prior?.deliverables ?? []).filter((d) => !d.notCompletedReason);
 
   // ---- The debrief gates (Jordan, Aug 31): the job is not done until the
   // cull is confirmed, removal notes are answered, and video jobs carry the
@@ -231,8 +299,8 @@ export async function finalizeUpload(
   // (or delivered weeks ago and re-opened for a brief tweak) keeps its prior
   // answers and never demands retroactive debrief data (review finding).
   if (prior && firstFinalize) {
-    const wantsPhotosGate = prior.deliverables.some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d.type));
-    const wantsVideoGate = prior.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+    const wantsPhotosGate = liveDeliverables.some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d.type));
+    const wantsVideoGate = liveDeliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
     if (wantsPhotosGate && !data.cullingConfirmed && !prior.cullingConfirmedAt) {
       return { blocked: "Run your cull and confirm all four checks first — hero shots in, duplicates out, extras in Backup Photos. Clearly unnecessary photos can carry a $1 production charge; photos a property genuinely needed are never charged." };
     }
@@ -295,8 +363,8 @@ export async function finalizeUpload(
     try {
       const { projectFolderPaths, folderFileCount } = await import("@/lib/dropboxFolders");
       const paths = projectFolderPaths(prior);
-      const wantsVideo = prior.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
-      const wantsPhotos = prior.deliverables.some((d) => d.type === "PHOTOS" || d.type === "DRONE");
+      const wantsVideo = liveDeliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+      const wantsPhotos = liveDeliverables.some((d) => d.type === "PHOTOS" || d.type === "DRONE");
       const [rawPhotos, rawVideo] = await Promise.all([
         wantsPhotos ? folderFileCount(paths.rawPhotos) : Promise.resolve(null),
         wantsVideo ? folderFileCount(paths.rawVideo) : Promise.resolve(null),

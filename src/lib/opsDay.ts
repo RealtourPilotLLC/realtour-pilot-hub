@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { findUnansweredInbound } from "@/lib/commsSla";
 import { TRIAGE_TYPES, boardVisibleWhere } from "@/lib/triage";
+import { cleanEmailBody } from "@/lib/commsBoard";
 import { NOTHING_TO_REMOVE_SENTINEL } from "@/lib/debrief";
 import type { StatusEvidence } from "@/lib/projectStatus";
 
@@ -126,7 +127,7 @@ export type OpsShoot = {
   aryeoListingId: string | null;
   weather: ShootWeather | null;
   airspace: Airspace | null; // drone jobs only
-  comms: { count: number; latestSnippet: string; latestAgoH: number; latestInbound: boolean } | null;
+  comms: { count: number; latestSnippet: string; latestAgoH: number; latestInbound: boolean; otherCount: number } | null;
 };
 
 export type QcEvidence = {
@@ -149,12 +150,16 @@ export type OpsQcRow = {
   bucket: "overdue" | "today" | "waiting";
   evidence: QcEvidence;
   debrief: { shotOrder: string | null; removals: string | null; videoBrief: boolean; unsubmitted: boolean };
+  /** items the photographer marked "couldn't complete" on the wrap-up, with why */
+  notCompleted: { label: string; reason: string }[];
 };
 
 export type PipelineRow = {
   projectId: string;
   title: string;
   status: string; // EDITING | REVIEW | REVISION
+  clientName: string | null;
+  services: string[];
   editor: string | null;
   sent: string[]; // delivered categories
   waitingOn: string[]; // missing categories
@@ -207,9 +212,24 @@ type ShootRowInput = {
   appointments: { description: string | null }[];
 };
 
+// One recent-comms row, as pulled for the shoot cards.
+type ShootCommRow = { projectId: string | null; projectGuess: boolean; channel: string; direction: string; subject: string | null; body: string; occurredAt: Date };
+
+// A glanceable one-liner for the shoot card's comms chip. Email bodies carry
+// signature junk ("[image: …]", quoted history) — clean them the same way the
+// comms board does, falling back to the subject when nothing readable is left.
+function shootCommSnippet(r: ShootCommRow): string {
+  const text =
+    r.channel === "email"
+      ? cleanEmailBody(r.body ?? "") || (r.subject ?? "").trim() || "(image/attachment)"
+      : (r.body ?? "");
+  return text.replace(/\s+/g, " ").trim().slice(0, 110);
+}
+
 async function shootRow(
   p: ShootRowInput,
-  comms: Map<string, { count: number; latestSnippet: string; latestAgoH: number; latestInbound: boolean }>,
+  commRows: Map<string, ShootCommRow[]>,
+  now: Date,
 ): Promise<OpsShoot> {
   const services = [...new Set(p.deliverables.map((d) => d.label ?? d.type))];
   const videoOrdered = p.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
@@ -225,6 +245,18 @@ async function shootRow(
     p.lat != null && p.lng != null && p.shootDate ? weatherFor(p.lat, p.lng, p.shootDate.toISOString()) : Promise.resolve(null),
     droneOrdered && p.lat != null && p.lng != null ? airspaceFor(p.lat, p.lng) : Promise.resolve(null),
   ]);
+  // Only comms about THIS shoot. A message filed to a DIFFERENT job by a
+  // NAMED street match stays on that job — Jordan: Renee's 775 Scotch Way
+  // email must not show on her 208 N Adams card. But the routers file every
+  // known-client message to SOME job (review: 0 of 422 recent rows were
+  // unfiled), so a heuristic guess (projectGuess) is NOT proof it's about the
+  // other job — a shoot-eve "gate code changed" with no street would be
+  // guessed onto an old job and must stay visible here. Named-elsewhere rows
+  // still surface as a muted "+N on other jobs" count, never silently hidden.
+  const clientRows = p.clientId ? commRows.get(p.clientId) ?? [] : [];
+  const mine = clientRows.filter((r) => r.projectId === p.id || r.projectId == null || r.projectGuess);
+  const otherCount = clientRows.length - mine.length;
+  const latest = mine[0] ?? null; // rows are newest-first
   return {
     id: p.id,
     title: p.title.split(",")[0],
@@ -241,7 +273,15 @@ async function shootRow(
     aryeoListingId: p.aryeoListingId,
     weather,
     airspace,
-    comms: p.clientId ? comms.get(p.clientId) ?? null : null,
+    comms: latest || otherCount > 0
+      ? {
+          count: mine.length,
+          latestSnippet: latest ? shootCommSnippet(latest) : "",
+          latestAgoH: latest ? Math.max(0, Math.round((now.getTime() - latest.occurredAt.getTime()) / 3_600_000)) : 0,
+          latestInbound: latest?.direction === "in",
+          otherCount,
+        }
+      : null,
   };
 }
 
@@ -293,7 +333,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
               title: true, shootDate: true, shotOrderNotes: true, removalNotes: true, videoInstructions: true,
               debriefSubmittedAt: true, statusEvidence: true, aryeoListingId: true,
               photographer: { select: { name: true } },
-              deliverables: { select: { type: true, label: true } },
+              deliverables: { select: { type: true, label: true, notCompletedReason: true } },
               client: { select: { name: true } },
             },
           },
@@ -314,6 +354,8 @@ export async function buildOpsDay(): Promise<OpsDay> {
         where: { status: { in: ["EDITING", "REVIEW", "REVISION"] } },
         select: {
           id: true, title: true, status: true, statusEvidence: true,
+          client: { select: { name: true } },
+          deliverables: { select: { type: true, label: true } },
           editor: { select: { name: true } },
           revisionBriefs: { orderBy: { createdAt: "desc" }, take: 1, select: { headline: true, itemsJson: true } },
         },
@@ -336,33 +378,29 @@ export async function buildOpsDay(): Promise<OpsDay> {
       }),
     ]);
 
-  // One comms pull for every shoot client (last 72h): count + latest message —
-  // "any comms about this shoot appointment should be seen right there".
+  // One comms pull for every shoot client (last 72h) — the per-SHOOT filter
+  // (this project or unfiled only) happens in shootRow, so a message about a
+  // client's other job never bleeds onto this card.
   const shootClientIds = [...new Set([...todayProjects, ...tomorrowProjects].map((p) => p.clientId).filter((x): x is string => !!x))];
-  const commsByClient = new Map<string, { count: number; latestSnippet: string; latestAgoH: number; latestInbound: boolean }>();
+  const commRowsByClient = new Map<string, ShootCommRow[]>();
   if (shootClientIds.length) {
     const recent = await prisma.commLog.findMany({
       where: { clientId: { in: shootClientIds }, occurredAt: { gte: new Date(now.getTime() - 72 * 3_600_000) } },
       orderBy: { occurredAt: "desc" },
-      select: { clientId: true, body: true, direction: true, occurredAt: true },
+      select: { clientId: true, projectId: true, projectGuess: true, channel: true, subject: true, body: true, direction: true, occurredAt: true },
       take: 200,
     });
     for (const r of recent) {
       const cid = r.clientId as string;
-      const cur = commsByClient.get(cid);
-      if (cur) cur.count += 1;
-      else commsByClient.set(cid, {
-        count: 1,
-        latestSnippet: (r.body ?? "").replace(/\s+/g, " ").trim().slice(0, 110),
-        latestAgoH: Math.max(0, Math.round((now.getTime() - r.occurredAt.getTime()) / 3_600_000)),
-        latestInbound: r.direction === "in",
-      });
+      const list = commRowsByClient.get(cid);
+      if (list) list.push(r);
+      else commRowsByClient.set(cid, [r]);
     }
   }
 
   const [todayShoots, tomorrowShoots] = await Promise.all([
-    Promise.all(todayProjects.map((p) => shootRow(p, commsByClient))),
-    Promise.all(tomorrowProjects.map((p) => shootRow(p, commsByClient))),
+    Promise.all(todayProjects.map((p) => shootRow(p, commRowsByClient, now))),
+    Promise.all(tomorrowProjects.map((p) => shootRow(p, commRowsByClient, now))),
   ]);
 
   const todayKey = today.key;
@@ -399,6 +437,11 @@ export async function buildOpsDay(): Promise<OpsDay> {
           !!pr?.shootDate && pr.shootDate.getTime() >= DEBRIEF_GATE && pr.shootDate < now && !pr.debriefSubmittedAt &&
           (pr.deliverables ?? []).some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d.type)),
       },
+      // The photographer's "couldn't complete + why" answers from the wrap-up —
+      // the Admin reads the reason here instead of chasing a bare unchecked box.
+      notCompleted: (pr?.deliverables ?? [])
+        .filter((d): d is typeof d & { notCompletedReason: string } => !!d.notCompletedReason)
+        .map((d) => ({ label: d.label ?? d.type, reason: d.notCompletedReason })),
     };
   });
 
@@ -418,6 +461,10 @@ export async function buildOpsDay(): Promise<OpsDay> {
       projectId: p.id,
       title: p.title.split(",")[0],
       status: p.status,
+      // WHO the job is for and WHAT was ordered — Jordan: the pipeline check
+      // "should have more details on who it is, what it's for."
+      clientName: p.client?.name ?? null,
+      services: [...new Set(p.deliverables.map((d) => d.label ?? d.type))],
       editor: p.editor?.name ?? null,
       sent: e.present,
       waitingOn: e.missing,

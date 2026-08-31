@@ -17,6 +17,7 @@ import { AppointmentFeedback } from "@/components/upload/AppointmentFeedback";
 import { getProjectFolderState } from "@/lib/dropboxFolders";
 import { photoPolicyFor, rawBudgetFor, rawOverageCeiling } from "@/lib/culling";
 import { ActivityType } from "@prisma/client";
+import { NOT_COMPLETED_FLAG_PREFIX } from "@/lib/debrief";
 
 export const dynamic = "force-dynamic";
 
@@ -130,12 +131,16 @@ export default async function UploadProjectPage({
           quantity: d.quantity,
           status: d.status,
           uploadedAt: d.uploadedAt?.toISOString() ?? null,
+          notCompletedReason: d.notCompletedReason,
         }))}
         specialRequests={project.activities
           .filter((a) => a.type === ActivityType.SPECIAL_REQUEST)
           .map((a) => a.body)}
         flags={project.activities
-          .filter((a) => a.type === ActivityType.FLAG)
+          // The machine-written "Not completed — …" rows are the wrap-up's own
+          // echo — the amber row already shows them; repeating them as red
+          // "problems" reads as a duplicate escalation (review).
+          .filter((a) => a.type === ActivityType.FLAG && !a.body.startsWith(NOT_COMPLETED_FLAG_PREFIX))
           .map((a) => a.body)}
       />
 

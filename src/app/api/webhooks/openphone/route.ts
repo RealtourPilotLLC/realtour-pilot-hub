@@ -142,10 +142,15 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
   // active listing isn't filed on their newest one. Client-scoped, so it never
   // routes onto a different client's job.
   let effProject = match?.project ?? null;
+  // Track HOW the project was resolved: a street named in the text is a real
+  // filing; the mostRelevantProject default is a guess, and project-scoped
+  // surfaces (the /ops shoot-card comms chip) must know the difference.
+  let projectNamed = false;
   if (match && !isCall && text.trim()) {
     const named = await findClientProjectByText(match.clientId, text);
-    if (named) effProject = named;
+    if (named) { effProject = named; projectNamed = true; }
   }
+  const projectGuess = !!effProject && !projectNamed;
 
   // Comms memory: record the full text (in or out) so Ask the Hub can recall it.
   // Attributed to the REAL sender: our own messages are "Us" (outbound even when
@@ -176,6 +181,7 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
       body: text,
       source: "openphone",
       externalId: data.id ? `op-${data.id as string}` : undefined,
+      projectGuess,
     });
   }
 
@@ -289,6 +295,7 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
             body: `Outgoing call — answered (${Math.max(1, Math.round(dur / 60))} min)`,
             source: "openphone",
             externalId: data.id ? `op-call-out-${data.id}` : undefined,
+            projectGuess, // calls carry no text to name a street — always the router's guess
           }).catch(() => {});
         }
       }
@@ -495,7 +502,8 @@ async function handleTranscript(data: Record<string, unknown>) {
     });
   }
 
-  // Comms memory: store the full call transcript.
+  // Comms memory: store the full call transcript. The project is always the
+  // router's most-relevant guess (a call has no parsed street), so stamp it.
   await logComm({
     channel: "call",
     direction: "in",
@@ -506,6 +514,7 @@ async function handleTranscript(data: Record<string, unknown>) {
     body: full,
     source: "openphone-call",
     externalId: callId ? `op-call-${callId}` : undefined,
+    projectGuess: !!project,
   });
 
   // Scan the client's spoken words for a revision/change request.
