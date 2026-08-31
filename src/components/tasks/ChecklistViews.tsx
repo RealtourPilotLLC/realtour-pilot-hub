@@ -49,7 +49,7 @@ export async function CommsView({ tabs, channel }: { tabs: ReactNode; channel: "
       ) : (
         <div className="space-y-3">
           {groups.map((g) => (
-            <div key={g.clientId} className="panel-shadow rounded-2xl border bg-surface p-4">
+            <div key={g.groupKey} className="panel-shadow rounded-2xl border bg-surface p-4">
               <div className="flex items-center gap-2.5">
                 <Avatar name={g.clientName} color={nameColor(g.clientName)} size={32} />
                 <div className="min-w-0 flex-1">
@@ -67,15 +67,25 @@ export async function CommsView({ tabs, channel }: { tabs: ReactNode; channel: "
                 >
                   Reply
                 </Link>
-                <HandledButton clientId={g.clientId} />
+                <HandledButton clientId={g.clientId} family={channel} groupKey={g.groupKey} />
               </div>
-              <div className="mt-2.5 space-y-1.5 border-t border-border pt-2.5">
-                {g.items.map((i, idx) => (
-                  <p key={idx} className="text-sm text-foreground/85">
-                    <span className="text-muted-2">{i.ageHours}h ago · </span>
-                    &ldquo;{i.snippet}&rdquo;
-                  </p>
-                ))}
+              <div className="mt-2.5 space-y-2.5 border-t border-border pt-2.5">
+                {g.items.map((i, idx) =>
+                  channel === "email" ? (
+                    <div key={idx} className="text-sm">
+                      <p className="font-semibold text-foreground">
+                        {i.subject || "(no subject)"}
+                        <span className="ml-2 font-normal text-muted-2">{i.ageHours}h ago</span>
+                      </p>
+                      {i.body && <p className="mt-0.5 whitespace-pre-wrap text-foreground/80">{i.body}</p>}
+                    </div>
+                  ) : (
+                    <p key={idx} className="text-sm text-foreground/85">
+                      <span className="text-muted-2">{i.ageHours}h ago · </span>
+                      &ldquo;{i.snippet}&rdquo;
+                    </p>
+                  ),
+                )}
               </div>
             </div>
           ))}

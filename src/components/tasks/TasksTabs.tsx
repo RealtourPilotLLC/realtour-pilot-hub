@@ -1,13 +1,13 @@
 import Link from "next/link";
-import { Sun, ListTodo, History, MessageSquare, Repeat2, Hash } from "lucide-react";
+import { ListTodo, History, MessageSquare, Repeat2, Hash } from "lucide-react";
 
-export type TasksTab = "today" | "comms" | "revisions" | "slack" | "board" | "done";
+export type TasksTab = "comms" | "revisions" | "slack" | "other" | "done";
 
 // CommsTabs-style switcher for the Tasks hub — same consolidation pattern as
 // /communications: every tab is shareable via ?tab= and the page renders ONLY
 // the active tab's data. Counts reuse each view's own (cheap) count query.
-export function TasksTabs({ tab, todayCount, boardCount, doneCount, commsCount = 0, revisionsCount = 0, slackCount = 0 }: {
-  tab: TasksTab; todayCount: number; boardCount: number; doneCount: number;
+export function TasksTabs({ tab, otherCount, doneCount, commsCount = 0, revisionsCount = 0, slackCount = 0 }: {
+  tab: TasksTab; otherCount: number; doneCount: number;
   commsCount?: number; revisionsCount?: number; slackCount?: number;
 }) {
   const active = "rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white";
@@ -20,12 +20,7 @@ export function TasksTabs({ tab, todayCount, boardCount, doneCount, commsCount =
     ) : null;
   return (
     <div className="mb-4 flex flex-wrap items-center gap-1.5">
-      <Link href="/tasks" className={tab === "today" ? active : idle}>
-        <Sun className="mr-1.5 inline size-3.5" />
-        Today
-        {badge(todayCount, tab === "today")}
-      </Link>
-      <Link href="/tasks?tab=comms" className={tab === "comms" ? active : idle}>
+      <Link href="/tasks" className={tab === "comms" ? active : idle}>
         <MessageSquare className="mr-1.5 inline size-3.5" />
         Comms
         {badge(commsCount, tab === "comms")}
@@ -40,10 +35,10 @@ export function TasksTabs({ tab, todayCount, boardCount, doneCount, commsCount =
         Slack
         {badge(slackCount, tab === "slack")}
       </Link>
-      <Link href="/tasks?tab=board" className={tab === "board" ? active : idle}>
+      <Link href="/tasks?tab=other" className={tab === "other" ? active : idle}>
         <ListTodo className="mr-1.5 inline size-3.5" />
-        Board
-        {badge(boardCount, tab === "board")}
+        Other
+        {badge(otherCount, tab === "other")}
       </Link>
       <Link href="/tasks?tab=done" className={tab === "done" ? active : idle}>
         <History className="mr-1.5 inline size-3.5" />

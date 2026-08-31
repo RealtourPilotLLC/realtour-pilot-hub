@@ -125,24 +125,36 @@ const TASK_STATUSES = new Set([
 // Comms Checklist manual tick (Jordan, Sep 1): "handled it outside the hub"
 // — completes the silent client_reply task for that client (creating a
 // completed one when none exists), which the unanswered walks already honor.
-export async function markCommsHandled(clientId: string): Promise<{ ok: boolean }> {
+export async function markCommsHandled(clientId: string, family: "phone" | "email" = "phone", groupKey?: string): Promise<{ ok: boolean; message?: string }> {
   const { requireAdmin } = await import("@/lib/auth/guards");
-  try { await requireAdmin(); } catch { return { ok: false }; }
-  const open = await prisma.smartTask.findFirst({
-    where: { clientId, taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] } },
-    select: { id: true },
-  });
-  if (open) {
-    await prisma.smartTask.update({ where: { id: open.id }, data: { status: "COMPLETED", completedAt: new Date() } });
+  try { await requireAdmin(); } catch (e) { return { ok: false, message: e instanceof Error ? e.message : "Admins only." }; }
+  if (family === "email") {
+    // Email keeps its OWN ack marker — completing client_reply here would also
+    // silence the phone board for a client who still owes a text reply. The
+    // marker is scoped to the SENDER GROUP (review: two senders mis-filed
+    // under one client record must never share one tick).
+    const { emailAckKey } = await import("@/lib/commsBoard");
+    const key = groupKey ? emailAckKey(clientId, groupKey) : `comms-ack-email-${clientId}`;
+    const value = new Date().toISOString();
+    await prisma.appSetting.upsert({ where: { key }, create: { key, value }, update: { value } });
   } else {
-    await prisma.smartTask.create({
-      data: {
-        taskType: "client_reply", title: "Client reply — handled outside the hub",
-        summary: "Marked handled from the Comms Checklist.",
-        reasonCreated: "Manual tick on the Comms Checklist.",
-        source: "manual", status: "COMPLETED", completedAt: new Date(), clientId,
-      },
+    // Complete EVERY open client_reply for this client (a busy client can hold
+    // several) so the tick clears the pager and the board in one motion —
+    // except gmail-born ones: a phone tick answers texts, not email (review).
+    const done = await prisma.smartTask.updateMany({
+      where: { clientId, taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] }, source: { not: "gmail" } },
+      data: { status: "COMPLETED", completedAt: new Date() },
     });
+    if (done.count === 0) {
+      await prisma.smartTask.create({
+        data: {
+          taskType: "client_reply", title: "Client reply — handled outside the hub",
+          summary: "Marked handled from the Comms Checklist.",
+          reasonCreated: "Manual tick on the Comms Checklist.",
+          source: "manual", status: "COMPLETED", completedAt: new Date(), clientId,
+        },
+      });
+    }
   }
   revalidatePath("/tasks");
   revalidatePath("/ops");

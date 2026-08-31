@@ -467,7 +467,9 @@ export async function kyleMorningDigest(): Promise<{ sent: boolean; reason?: str
     for (const t of openToday.slice(0, 10)) lines.push(`• ${t.title}`);
     if (openToday.length > 10) lines.push(`  …and ${openToday.length - 10} more`);
     if (texts.length > 0) lines.push(`✉️ ${texts.length} client text${texts.length === 1 ? "" : "s"} drafted & ready in the Outbox`);
-    lines.push(`${appBase()}/tasks?tab=today&guided=1`);
+    // The guided Today walkthrough is gone (Sep 1 restructure) — land on the
+    // Other tab, where the listed to-dos actually live.
+    lines.push(`${appBase()}/tasks?tab=other`);
     await slackDmUser(slackId, lines.join("\n"));
     return { sent: true };
   } catch (e) {

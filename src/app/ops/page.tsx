@@ -142,8 +142,8 @@ function BlockBody({ blockKey, d }: { blockKey: string; d: OpsDay }) {
           <ShootList shoots={d.todayShoots} empty="No shoots on today's calendar." showDebrief />
           <div className="flex flex-wrap gap-2 text-[13px]">
             <Pill warn={d.unanswered.count > 0} label={`${d.unanswered.count} unanswered client${d.unanswered.count === 1 ? "" : "s"}`} href="/tasks?tab=comms" />
-            <Pill warn={d.pipeline.overdueTasks > 0} label={`${d.pipeline.overdueTasks} overdue task${d.pipeline.overdueTasks === 1 ? "" : "s"}`} href="/tasks" />
-            <Pill warn={false} label={`${d.pipeline.dueTodayTasks} due today`} href="/tasks" />
+            <Pill warn={d.pipeline.overdueTasks > 0} label={`${d.pipeline.overdueTasks} overdue task${d.pipeline.overdueTasks === 1 ? "" : "s"}`} href="/tasks?tab=other" />
+            <Pill warn={false} label={`${d.pipeline.dueTodayTasks} due today`} href="/tasks?tab=other" />
             <Pill warn={d.pipeline.revision > 0} label={`${d.pipeline.revision} open revision${d.pipeline.revision === 1 ? "" : "s"}`} href="/tasks?tab=revisions" />
             <Pill warn={d.needsAssigning > 0} label={`${d.needsAssigning} need assigning`} href="/tasks?tab=slack" />
           </div>
@@ -192,13 +192,14 @@ function BlockBody({ blockKey, d }: { blockKey: string; d: OpsDay }) {
       return (
         <div className="space-y-2">
           {d.openLoops.length === 0 && <p className="text-sm text-muted">No follow-ups waiting on someone else.</p>}
-          {d.openLoops.slice(0, 8).map((l) => (
+          {/* All rendered inline — the Other tab hides comm-type tasks, so an
+              overflow link there showed none of these rows (review). */}
+          {d.openLoops.map((l) => (
             <Link key={l.taskId} href={l.projectId ? `/projects/${l.projectId}` : "/tasks"} className="flex items-center gap-2 rounded-xl border border-border px-3.5 py-2 text-sm transition-colors hover:bg-surface-2/60">
               <span className="min-w-0 flex-1 truncate">{l.title}</span>
               {l.overdue && <span className="shrink-0 rounded-full bg-danger/15 px-2 py-0.5 text-[10px] font-semibold text-danger">overdue</span>}
             </Link>
           ))}
-          {d.openLoops.length > 8 && <Link href="/tasks" className="text-[13px] font-medium text-brand hover:underline">All follow-ups →</Link>}
         </div>
       );
 
@@ -352,7 +353,11 @@ function ShootList({ shoots, empty, showGaps, showDebrief }: { shoots: OpsShoot[
                 {s.airspace?.checked
                   ? s.airspace.ceilingFt == null
                     ? "Airspace: uncontrolled"
-                    : `Airspace: ${s.airspace.ceilingFt} ft grid — LAANC`
+                    : s.airspace.ceilingFt === 0
+                      // A 0-ft grid has NO LAANC auto-authorization — a LAANC
+                      // request there gets denied; manual FAA auth or no-fly.
+                      ? "Airspace: 0 ft grid — manual FAA auth required (likely no-fly)"
+                      : `Airspace: ${s.airspace.ceilingFt} ft grid — LAANC`
                   : <a href="https://b4ufly.aloft.ai/" target="_blank" rel="noopener noreferrer" className="underline">check airspace</a>}
               </span>
             )}
@@ -397,8 +402,9 @@ function QcGroups({ qc }: { qc: OpsQcRow[] }) {
           <div key={g.key}>
             <h3 className={cn("mb-1.5 text-xs font-bold uppercase tracking-widest", g.tone)}>{g.label} · {rows.length}</h3>
             <div className="space-y-2">
-              {rows.slice(0, 6).map((q) => <QcRow key={q.taskId} q={q} />)}
-              {rows.length > 6 && <Link href="/tasks" className="text-[13px] font-medium text-brand hover:underline">All {rows.length} →</Link>}
+              {/* All rows inline — the Other tab hides media_qa for non-editors,
+                  so the old "All N →" link landed on an empty list (review). */}
+              {rows.map((q) => <QcRow key={q.taskId} q={q} />)}
             </div>
           </div>
         );

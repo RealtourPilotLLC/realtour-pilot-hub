@@ -225,17 +225,52 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
     if (direction.toLowerCase().startsWith("out") || (fromUs && !isCall)) {
       const { closeReplyForOutbound, closeReplyForOutboundCall } = await import("@/lib/tasks");
       if (!isCall) {
-        await closeReplyForOutbound(clientId, text);
-        // Kyle often sends the "your gallery is ready" text straight from his
-        // phone — that outbound text to a client with a queued delivery_text
-        // IS the delivery text. Close it (audit: delivery_texts were 36% of
-        // all overdue, only ever swept by a 7-day timer).
-        await prisma.smartTask
-          .updateMany({
-            where: { clientId, taskType: "delivery_text", status: { notIn: ["COMPLETED", "CANCELLED"] } },
-            data: { status: "COMPLETED", completedAt: new Date() },
+        // The hub's OWN automated sends (confirmation/delivery sweeps) echo
+        // through here too. They complete exactly their own task themselves —
+        // the human-send heuristics below must NOT fire for them: an auto
+        // confirmation used to blanket-close every pending delivery_text for
+        // the client, and an auto text answers no one's question (review).
+        const autoSent = await prisma.commLog
+          .findFirst({
+            where: {
+              source: { in: ["auto-confirmation", "auto-delivery"] },
+              OR: [
+                ...(data.id ? [{ externalId: `op-${data.id as string}` }] : []),
+                { clientId, body: text, createdAt: { gte: new Date(Date.now() - 30 * 60_000) } },
+              ],
+            },
+            select: { id: true },
           })
-          .catch(() => {});
+          .catch(() => null);
+        if (!autoSent) {
+          await closeReplyForOutbound(clientId, text);
+          // Kyle often sends the "your gallery is ready" text straight from his
+          // phone — that outbound text to a client with a queued delivery_text
+          // IS the delivery text. Close it (audit: delivery_texts were 36% of
+          // all overdue, only ever swept by a 7-day timer).
+          await prisma.smartTask
+            .updateMany({
+              where: { clientId, taskType: "delivery_text", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+              data: { status: "COMPLETED", completedAt: new Date() },
+            })
+            .catch(() => {});
+          // Same for hand-sent confirmations: an outbound text to a client
+          // whose shoot is inside the next 48h IS the confirmation — complete
+          // the task so the hourly sweep doesn't send a second one. Scoped to
+          // the confirmation window so an unrelated text can't suppress a
+          // real confirmation for a far-out shoot.
+          await prisma.smartTask
+            .updateMany({
+              where: {
+                clientId,
+                taskType: "confirmation_text",
+                status: { notIn: ["COMPLETED", "CANCELLED"] },
+                project: { is: { shootDate: { gt: new Date(), lte: new Date(Date.now() + 48 * 3_600_000) } } },
+              },
+              data: { status: "COMPLETED", completedAt: new Date() },
+            })
+            .catch(() => {});
+        }
       } else if (type === "call.completed") {
         const dur = Number(data.duration ?? 0);
         if (!!data.answeredAt || dur > 0) {

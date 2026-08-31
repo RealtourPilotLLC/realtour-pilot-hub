@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { findUnansweredInbound } from "@/lib/commsSla";
-import { TRIAGE_TYPES } from "@/lib/triage";
+import { TRIAGE_TYPES, boardVisibleWhere } from "@/lib/triage";
 import { NOTHING_TO_REMOVE_SENTINEL } from "@/lib/debrief";
 import type { StatusEvidence } from "@/lib/projectStatus";
 
@@ -43,6 +43,17 @@ export function parseAccessBrief(raw: string | null): AccessInfo {
   const phone = grab(/Phone:\s*([()\d\s+.-]{7,20})/i);
   let notes = grab(/Notes:\s*(.*?)(?=\s*Order Items|$)/i);
   if (notes && /^n\/?a$/i.test(notes)) notes = null;
+  // Anything typed BEFORE the first label (often the lockbox code itself)
+  // must not vanish — fold it into notes. A dangling label word ("Customer:")
+  // is structure, not content — drop it.
+  const firstLabel = text.search(/(?:Customer|Contact|Name|Email|Phone|Notes|Order Items):/i);
+  const leftover = firstLabel > 0 ? text.slice(0, firstLabel).trim() : "";
+  // Only KNOWN label words are structure — a short real note ("Dogs inside",
+  // "Use side door") must survive (review: the old any-short-string filter ate
+  // those). Bare "Contact"/"Customer" fragments of compound labels still drop.
+  if (leftover && !/^(?:Customer|Contact|Name|Email|Phone|Notes|Order(?: Items)?)(?: (?:Name|Info))?\s*:?$/i.test(leftover)) {
+    notes = notes ? `${leftover} — ${notes}` : leftover;
+  }
   // A blob that doesn't match the Aryeo format at all → keep it whole as notes.
   if (!name && !email && !phone && !notes) notes = text.slice(0, 300);
   return { name, email, phone, notes: notes ? notes.slice(0, 300) : null };
@@ -64,7 +75,7 @@ async function weatherFor(lat: number, lng: number, atISO: string): Promise<Shoo
     // Match the shoot's ET hour ("YYYY-MM-DDTHH:00" in the API's local time).
     const target = new Date(atISO).toLocaleString("sv-SE", { timeZone: ET }).slice(0, 13).replace(" ", "T") + ":00";
     const i = j.hourly.time.indexOf(target);
-    if (i === -1) return null;
+    if (i === -1 || j.hourly.temperature_2m?.[i] == null) return null;
     return {
       tempF: Math.round(j.hourly.temperature_2m[i]),
       precipPct: Math.round(j.hourly.precipitation_probability[i] ?? 0),
@@ -83,13 +94,16 @@ async function airspaceFor(lat: number, lng: number): Promise<Airspace> {
     const url =
       "https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/arcgis/rest/services/FAA_UAS_FacilityMap_Data_V5/FeatureServer/0/query" +
       `?f=json&where=1%3D1&geometry=${lng.toFixed(5)}%2C${lat.toFixed(5)}&geometryType=esriGeometryPoint&inSR=4326` +
-      "&spatialRel=esriSpatialRelIntersects&outFields=CEILING&returnGeometry=false&resultRecordCount=1";
+      "&spatialRel=esriSpatialRelIntersects&outFields=CEILING&returnGeometry=false";
     const res = await fetch(url, { next: { revalidate: 86_400 }, signal: AbortSignal.timeout(4000) });
     if (!res.ok) return { ceilingFt: null, checked: false };
     const j = (await res.json()) as { features?: { attributes?: { CEILING?: number } }[] };
     if (!Array.isArray(j.features)) return { ceilingFt: null, checked: false };
     if (j.features.length === 0) return { ceilingFt: null, checked: true }; // outside gridded (uncontrolled) airspace
-    return { ceilingFt: j.features[0]?.attributes?.CEILING ?? null, checked: true };
+    // A boundary point can intersect several grid cells — the STRICTEST
+    // (lowest) ceiling is the one the pilot must honor.
+    const ceilings = j.features.map((f) => f.attributes?.CEILING).filter((c): c is number => typeof c === "number");
+    return { ceilingFt: ceilings.length ? Math.min(...ceilings) : null, checked: true };
   } catch {
     return { ceilingFt: null, checked: false };
   }
@@ -310,8 +324,10 @@ export async function buildOpsDay(): Promise<OpsDay> {
         prisma.project.count({ where: { status: "EDITING" } }),
         prisma.project.count({ where: { status: "REVIEW" } }),
         prisma.project.count({ where: { status: "REVISION" } }),
-        prisma.smartTask.count({ where: { status: { notIn: ["COMPLETED", "CANCELLED"] }, dueAt: { lt: now } } }),
-        prisma.smartTask.count({ where: { status: { notIn: ["COMPLETED", "CANCELLED"] }, dueAt: { gte: today.start, lt: today.end } } }),
+        // Scoped to what the destination (/tasks?tab=other) actually shows —
+        // an unscoped count read "14 overdue" while the tab hid most (review).
+        prisma.smartTask.count({ where: { status: { notIn: ["COMPLETED", "CANCELLED"] }, dueAt: { lt: now }, AND: [boardVisibleWhere()] } }),
+        prisma.smartTask.count({ where: { status: { notIn: ["COMPLETED", "CANCELLED"] }, dueAt: { gte: today.start, lt: today.end }, AND: [boardVisibleWhere()] } }),
       ]),
       findUnansweredInbound(now).catch(() => []),
       // Exact count, same predicate as the /tasks triage strip (no sampling).
@@ -344,8 +360,10 @@ export async function buildOpsDay(): Promise<OpsDay> {
     }
   }
 
-  const todayShoots = await Promise.all(todayProjects.map((p) => shootRow(p, commsByClient)));
-  const tomorrowShoots = await Promise.all(tomorrowProjects.map((p) => shootRow(p, commsByClient)));
+  const [todayShoots, tomorrowShoots] = await Promise.all([
+    Promise.all(todayProjects.map((p) => shootRow(p, commsByClient))),
+    Promise.all(tomorrowProjects.map((p) => shootRow(p, commsByClient))),
+  ]);
 
   const todayKey = today.key;
   const qc: OpsQcRow[] = qcTasks.filter((t) => t.projectId != null).map((t) => {

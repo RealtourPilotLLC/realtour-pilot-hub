@@ -3,7 +3,6 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
 import { canAccess } from "@/lib/auth/access";
 import { TasksTabs, type TasksTab } from "@/components/tasks/TasksTabs";
-import { TodayView, todayCardCount } from "@/components/tasks/TodayView";
 import { BoardView, boardOpenCount } from "@/components/tasks/BoardView";
 import { DoneView, doneTodayCount } from "@/components/tasks/DoneView";
 import { CommsView, RevisionsView, SlackView, checklistCounts } from "@/components/tasks/ChecklistViews";
@@ -29,26 +28,25 @@ export default async function TasksHubPage({ searchParams }: {
   // the Today stack and Done ledger cover the whole team's work, which was never
   // theirs to see. No tab bar for them: the board IS their tasks page.
   const boardOnly = me?.role === "EDITOR";
+  // Comms is the front door now (Jordan, Sep 1: Today + Board removed —
+  // "they should just be going to Comms, Revisions and Slack; the rest can
+  // go to an Other tab"). Old links: ?tab=board|today land sensibly.
+  const rawTab = sp.tab === "board" ? "other" : sp.tab === "today" ? "comms" : sp.tab;
   const tab: TasksTab = boardOnly
-    ? "board"
-    : ["board", "done", "comms", "revisions", "slack"].includes(sp.tab ?? "")
-      ? (sp.tab as TasksTab)
-      : "today";
+    ? "other"
+    : ["other", "done", "comms", "revisions", "slack"].includes(rawTab ?? "")
+      ? (rawTab as TasksTab)
+      : "comms";
 
-  const [todayN, boardN, doneN, checklists] = await Promise.all([
-    boardOnly ? 0 : todayCardCount(),
+  const [otherN, doneN, checklists] = await Promise.all([
     boardOpenCount(),
     boardOnly ? 0 : doneTodayCount(),
-    // The Comms/Revisions/Slack checklists (Jordan, Sep 1) — comm items no
-    // longer clog the board; the badges show what's waiting. Editors never
-    // see client comms.
     boardOnly ? { comms: 0, revisions: 0, slack: 0 } : checklistCounts(),
   ]);
   const tabs = boardOnly ? null : (
     <TasksTabs
       tab={tab}
-      todayCount={todayN}
-      boardCount={boardN}
+      otherCount={otherN}
       doneCount={doneN}
       commsCount={checklists.comms}
       revisionsCount={checklists.revisions}
@@ -56,10 +54,9 @@ export default async function TasksHubPage({ searchParams }: {
     />
   );
 
-  if (tab === "board") return <BoardView sp={sp} tabs={tabs} />;
+  if (tab === "other") return <BoardView sp={sp} tabs={tabs} />;
   if (tab === "done") return <DoneView tabs={tabs} />;
-  if (tab === "comms") return <CommsView tabs={tabs} channel={sp.via === "email" ? "email" : "phone"} />;
   if (tab === "revisions") return <RevisionsView tabs={tabs} />;
   if (tab === "slack") return <SlackView tabs={tabs} />;
-  return <TodayView sp={sp} tabs={tabs} />;
+  return <CommsView tabs={tabs} channel={sp.via === "email" ? "email" : "phone"} />;
 }

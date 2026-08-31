@@ -169,10 +169,12 @@ export const OpenPhone = {
     pageAll<OpMessage>("/messages", { phoneNumberId, participants }, cap),
   calls: (phoneNumberId: string, participants: string[], cap = 100) =>
     pageAll<OpCall>("/calls", { phoneNumberId, participants }, cap),
-  // Send an SMS/MMS. `from` is one of our OpenPhone numbers (E.164). CLIENT
-  // texts are human-initiated only (a person clicks Send) — never auto-sent.
-  // Sole automated caller: the internal TEAM SMS bridge in notify.ts, which
-  // only ever texts TeamMember phones (photographer notifications).
+  // Send an SMS/MMS. `from` is one of our OpenPhone numbers (E.164).
+  // Automated callers: the TEAM SMS bridge in notify.ts (TeamMember phones
+  // only) and — since Sep 2026, on Jordan's explicit order — the confirmation
+  // + delivery sweeps in clientTextSweeps.ts, which text CLIENTS under strict
+  // idempotency claims and a 9am-8pm ET gate. Everything else client-facing
+  // stays human-initiated (a person clicks Send).
   sendMessage: (from: string, to: string | string[], content: string, mediaUrls?: string[]) =>
     openphoneRequest<{ data: OpMessage }>("/messages", {
       method: "POST",

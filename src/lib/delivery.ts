@@ -26,12 +26,18 @@ export function deliveryMessage(p: DeliveryProject): string {
   const ev = parseEvidence(p.statusEvidence);
   const missing = ev?.missing ?? [];
 
+  // Jordan (Sep 1): lead with asking how we did, not "we just sent everything
+  // over" — the text's job is to invite feedback, not announce the delivery.
   if (missing.length > 0) {
-    const present = ev?.present?.length ? ev.present.join(", ").toLowerCase() : "first round of content";
+    const presentItems = ev?.present ?? [];
+    const present = presentItems.length ? presentItems.join(", ").toLowerCase() : "first round of content";
+    // Verb agreement: "the photos ARE delivered" / "the video IS delivered".
+    const presentVerb = presentItems.length > 1 || /s\s*$/i.test(presentItems[0] ?? "") ? "are" : "is";
     const left = missing.join(", ").toLowerCase();
-    return `Hi ${first}! We just delivered the ${present} for ${street}, and the ${left} is still in production. We will have the rest over to you shortly. Let us know if you need anything. If you would like to share quick feedback on your experience, you can do that here: ${url}`;
+    const leftVerb = missing.length > 1 || /s\s*$/i.test(missing[0]) ? "are" : "is";
+    return `Hi ${first}! The ${present} for ${street} ${presentVerb} delivered, and the ${left} ${leftVerb} still in production and coming shortly. How is everything looking so far? If anything is not exactly right, just reply here and we will jump on it. Quick feedback means a lot to us: ${url}`;
   }
-  return `Hi ${first}! We just sent everything over for ${street}. Let us know if you need anything at all. If you would like to share quick feedback on your experience, you can do that here: ${url}`;
+  return `Hi ${first}! Everything for ${street} has been delivered. How did we do? If anything is not exactly right, just reply here and we will jump on it. And if you have a quick minute, we would love your feedback here: ${url}`;
 }
 
 type ConfirmProject = {

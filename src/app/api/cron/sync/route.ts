@@ -117,6 +117,21 @@ export async function GET(req: NextRequest) {
     const { generateTasksForActiveProjects } = await import("@/lib/tasks");
     return generateTasksForActiveProjects();
   });
+  // Client texts that send themselves (Jordan, Sep 1): shoot confirmations 48h
+  // out and delivery texts once Aryeo shows every deliverable shipped. Both
+  // self-gate to 9am-8pm ET, atomically claim the task + an idempotency marker
+  // before sending, and share ONE per-client set so a multi-listing client
+  // gets at most one auto-text per tick (confirmations first — time-critical).
+  // Runs right after `tasks`/`statuses` so the evidence they read is fresh.
+  const autoTexted = new Set<string>();
+  await step("confirmationTexts", async () => {
+    const { sweepConfirmationTexts } = await import("@/lib/clientTextSweeps");
+    return sweepConfirmationTexts(autoTexted);
+  });
+  await step("deliveryTexts", async () => {
+    const { sweepDeliveryTexts } = await import("@/lib/clientTextSweeps");
+    return sweepDeliveryTexts(autoTexted);
+  });
   // Pull missing scripts from the Script Writing platform (by external_id) so
   // the queue's Script chip and the shoot screen fill themselves — Jordan:
   // "Script studio should just get the script from the shoot on our script

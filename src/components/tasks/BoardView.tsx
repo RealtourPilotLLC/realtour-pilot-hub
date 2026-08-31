@@ -13,7 +13,7 @@ import { prisma } from "@/lib/prisma";
 import { recentProjectWhere } from "@/lib/recency";
 import { etDayStartUtc } from "@/lib/datetime";
 import { listAssignees, slugForName, firstName, viewerAssigneeKey } from "@/lib/assignees";
-import { isNeedsAssigning } from "@/lib/triage";
+import { isNeedsAssigning, boardVisibleWhere } from "@/lib/triage";
 import { getCurrentUser } from "@/lib/auth/user";
 import { cn } from "@/lib/utils";
 
@@ -37,17 +37,27 @@ function editorScopeOf(me: Me): string | null {
 function boardWhere(editorScope: string | null): Prisma.SmartTaskWhereInput {
   return {
     status: { in: ACTIVE },
-    // Comm-type tasks live on the Comms tab now (Jordan, Sep 1: "the board
-    // just gets clogged") — the engine still tracks them silently underneath.
-    taskType: { notIn: ["client_reply", "comms_followup", "callback"] },
-    // DB-level scope for editors, so their view can't even load others' work.
-    ...(editorScope ? { assignedKey: editorScope } : {}),
-    OR: [
-      { projectId: null },
-      { project: recentProjectWhere() },
-      // Messages/replies surface regardless of project age — same as the
-      // morning brief — so clicking one in the brief always finds it here.
-      { taskType: { in: MESSAGE_TASK_TYPES } },
+    AND: [
+      // Comm-type tasks live on the Comms tab; Slack items on the Slack tab;
+      // edit tasks belong to the Editor Queue, not Kyle's board (Jordan, Sep 1).
+      // Editors keep their own scoped view untouched (incl. their edit_video,
+      // DB-scoped to their key so their view can't even load others' work).
+      // Non-editors use the shared boardVisibleWhere: QC + delivery hidden
+      // (Kyle's Ops Day owns those), the two auto-text types hidden — but
+      // UNASSIGNED triage work always shows in the "Needs assigning" pile
+      // (review: reel edits routed to nobody were invisible everywhere).
+      editorScope
+        ? { taskType: { notIn: ["client_reply", "comms_followup", "callback"] }, assignedKey: editorScope }
+        : boardVisibleWhere(),
+      {
+        OR: [
+          { projectId: null },
+          { project: recentProjectWhere() },
+          // Messages/replies surface regardless of project age — same as the
+          // morning brief — so clicking one in the brief always finds it here.
+          { taskType: { in: MESSAGE_TASK_TYPES } },
+        ],
+      },
     ],
   };
 }
@@ -113,12 +123,19 @@ function FilterChip({ href, label, count, active }: { href: string; label: strin
   );
 }
 
-export async function BoardView({ sp, tabs }: { sp: { who?: string }; tabs: ReactNode }) {
+export async function BoardView({ sp, tabs }: { sp: { who?: string; task?: string }; tabs: ReactNode }) {
   const me = await getCurrentUser().catch(() => null);
   const editorScope = editorScopeOf(me);
+  // A ?task= deep link (Slack pings, bell notifications) must always render
+  // its card, even when the task's type is hidden from this board — otherwise
+  // the recipient lands on an unrelated list with no highlight (review).
+  // Editors stay scoped to their own work even through a deep link.
+  const deepLink: Prisma.SmartTaskWhereInput | null = sp.task
+    ? { id: sp.task, ...(editorScope ? { assignedKey: editorScope } : {}) }
+    : null;
   const [tasks, assignees] = await Promise.all([
     prisma.smartTask.findMany({
-      where: boardWhere(editorScope),
+      where: deepLink ? { OR: [boardWhere(editorScope), deepLink] } : boardWhere(editorScope),
       // segment / editingPreferences / profileJson feed the QC card's client-aware
       // strip + VIP flag (taskView builds the compact context). Cheap columns on
       // the already-joined client — only used by media_qa cards.

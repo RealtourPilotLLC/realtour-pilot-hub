@@ -159,7 +159,7 @@ export default async function DashboardPage() {
               )}
               <CountChip label="message to-dos" count={counts.replies} tone="#38bdf8" href="/tasks" />
               <CountChip label="in QC" count={counts.qc} tone="#a78bfa" href="/tasks?tab=board" />
-              <CountChip label="running late" count={counts.late} tone="var(--danger)" href="/tasks?tab=today" />
+              <CountChip label="running late" count={counts.late} tone="var(--danger)" href="/tasks?tab=other" />
               {counts.toAssign > 0 && (
                 <CountChip label="to assign" count={counts.toAssign} tone="var(--warning)" href="/tasks?tab=board&who=needs-assigning" />
               )}

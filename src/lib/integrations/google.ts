@@ -719,87 +719,11 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
         // (The old handler even raised a REVISION off Luma's revision-received
         // ack — us asking Luma for a fix boomeranged into an urgent task at us.)
         if (domain && LUMA_DOMAINS.includes(domain)) {
-          const subj = subject || "";
-          // 1) Acks of our own submissions → do nothing.
-          if (/\b(request|order)\s+(received|submitted)\b/i.test(subj) || /^thank(s| you)/i.test(subj)) return 0;
-
-          const isDone = /\b(ready|complete|completed|delivered|approved|final(ized)?)\b/i.test(subj);
-          const local = (email.split("@")[0] || "").toLowerCase();
-          const editorMsg =
-            /\b(message from your editor|question|comment|note from)\b/i.test(subj) ||
-            // A real person at Luma (not status@/no-reply@ automation) emailed us.
-            (!AUTOMATED_LOCAL.test(local) && !/^(status|updates?)$/.test(local));
-          // 2) Neither finished nor a human message → status ping; log only.
-          if (!isDone && !editorMsg) return 0;
-
-          const matchedClient = clients.find((c) => c.name && subj.toLowerCase().includes(c.name.toLowerCase()));
-          // Which JOB is this about? Match the street named in the subject within
-          // the client's orders so two reels in flight get separate tasks.
-          let lumaProject: { id: string; title: string } | null = null;
-          if (matchedClient) {
-            const subjLower = subj.toLowerCase();
-            const projs = await prisma.project.findMany({
-              where: { clientId: matchedClient.id },
-              orderBy: [{ orderedAt: { sort: "desc", nulls: "last" } }, { shootDate: { sort: "desc", nulls: "last" } }, { createdAt: "desc" }],
-              select: { id: true, title: true },
-            });
-            lumaProject = projs.find((p) => { const c = streetCore(p.title); return c.length >= 4 && subjLower.includes(c); }) ?? null;
-          }
-          const street = lumaProject ? lumaProject.title.split(",")[0] : matchedClient?.name ?? "see tracker";
-          const subjectKey = subj.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
-          const kind = isDone ? "done" : "msg";
-          const key = matchedClient
-            ? `luma-client-${matchedClient.id}-${lumaProject?.id ?? (subjectKey || threadId)}-${kind}`
-            : `luma-${threadId}`;
-
-          // The finished edit is positive evidence — close any open chase/update
-          // tasks for this job before minting the "go get it" task.
-          if (isDone && lumaProject) {
-            await prisma.smartTask.updateMany({
-              where: {
-                projectId: lumaProject.id,
-                status: { notIn: ["COMPLETED", "CANCELLED"] },
-                OR: [{ taskType: "vendor_update" }, { dedupeKey: { startsWith: `vendor-chase-${lumaProject.id}` } }, { dedupeKey: { startsWith: `luma-dispatch-${lumaProject.id}` } }],
-              },
-              data: { status: "COMPLETED", completedAt: new Date() },
-            }).catch(() => {});
-          }
-
-          const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
-          if (existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED") return 0;
-          const data = {
-            taskType: "vendor_update",
-            title: isDone
-              ? `Download + QC the finished Luma reel — ${street}`
-              : `Answer Luma's editor — ${street}`,
-            summary: isDone
-              ? `Luma says the edit is finished: “${clip(text, 180)}”. Download it from the tracker, QC it, deliver to the client, and update the job.`.slice(0, 500)
-              : `Luma's editor wrote us: “${clip(text, 200)}”. Read it in the tracker and answer so the edit keeps moving.`.slice(0, 500),
-            description: clip(text, 1200),
-            reasonCreated: isDone ? "Luma Visuals: edit finished" : "Luma Visuals: message from the editor",
-            checklist: JSON.stringify(
-              isDone
-                ? ["Open the Luma tracker: https://portal.lumavisuals.co/", "Download the finished reel", "QC it (per the QC SOP)", "Deliver to the client + update the project"]
-                : ["Open the Luma tracker: https://portal.lumavisuals.co/", "Read the editor's message", "Answer them so the edit keeps moving"],
-            ),
-            source: "gmail",
-            sourceDetail: threadRef,
-            priority: "HIGH" as const,
-            dueAt: new Date(Date.now() + 4 * 3600_000),
-            ownerId: kyle?.id ?? null,
-            // KYLE's job (unassigned = his by default) — the vendor is named in
-            // the title; assigning to "luma" hid it from every human surface.
-            assignedKey: null,
-            clientId: matchedClient?.id ?? null,
-            // A finished edit is definitionally about an ALREADY-SHOT job —
-            // never the client's upcoming shoot, so no mostRelevantProject
-            // here: most-recent-overall is the job whose edit was in flight.
-            projectId: lumaProject?.id ?? matchedClient?.projects[0]?.id ?? null,
-            dedupeKey: key,
-          };
-          if (existing) await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } });
-          else await prisma.smartTask.create({ data });
-          return 1;
+          // RETIRED (Jordan, Sep 1 2026: "stop doing these Download + QC the
+          // finished Luma reel"): the Luma engagement ended Aug 14 — editing is
+          // in-house/Review Room now, so a stray Luma email must never mint
+          // work again. The email still logs to comms memory above.
+          return 0;
         }
 
         // Resolve the sender to a client account FIRST (email → synced contact →
