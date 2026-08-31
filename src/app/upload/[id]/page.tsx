@@ -30,6 +30,11 @@ export default async function UploadProjectPage({
   // A photographer can only open the upload page for their OWN shoot.
   const viewer = await getCurrentUser();
   if (viewer?.role === "PHOTOGRAPHER") {
+    // New-process acknowledgment first (one time), then ownership.
+    if (viewer.email) {
+      const ack = await prisma.appSetting.findUnique({ where: { key: `upload-ack-${viewer.email.toLowerCase()}` } });
+      if (!ack) redirect("/upload/welcome");
+    }
     const mine = await photographerMemberId(viewer);
     if (!mine || !(await photographerOwnsShoot(id, mine))) redirect("/upload");
   }
@@ -80,12 +85,11 @@ export default async function UploadProjectPage({
   }
 
   return (
-    <div className="mx-auto max-w-3xl p-6">
-      <BackLink href="/upload" label="All shoots" />
-
-      <DropboxFolders state={folderState} photoTarget={photoTarget} />
+    <div className="mx-auto max-w-3xl p-4 sm:p-6">
+      <div className="mb-4"><BackLink href="/upload" label="All shoots" /></div>
 
       <UploadPortal
+        foldersSlot={<DropboxFolders state={folderState} photoTarget={photoTarget} />}
         project={{
           id: project.id,
           title: project.title,
@@ -103,6 +107,7 @@ export default async function UploadProjectPage({
           editingPreferences: project.client.editingPreferences,
           photographerName: project.photographer?.name ?? null,
           cullingConfirmedAt: project.cullingConfirmedAt?.toISOString() ?? null,
+          shotOrderNotes: project.shotOrderNotes,
           removalNotes: project.removalNotes,
           videoInstructions: project.videoInstructions,
           scriptConfirmedAt: project.scriptConfirmedAt?.toISOString() ?? null,
@@ -158,9 +163,11 @@ function DropboxFolders({
   if (!state) return null;
   const iconFor = (label: string) => (/video/i.test(label) ? Video : ImageIcon);
 
-  // Live raw-photo count vs this home's budget. Amber past the bracket budget
-  // (target × BRACKET_RATIO), red past the overage ceiling (× RAW_OVERAGE_FACTOR
-  // → over-shot even accounting for the 5-bracket JPG sets).
+  // Photographers see the folders THEY use: Raw Photos, Raw Video, Backup
+  // Photos. The Final folders are the editors' side — removed per Jordan.
+  const shown = state.folders.filter((f) => f.key !== "finalPhotos" && f.key !== "finalVideo");
+
+  // Live raw-photo count vs this home's budget.
   const rawPhotoCount = state.folders.find((f) => f.key === "rawPhotos")?.count ?? 0;
   const rawBudget = rawBudgetFor(photoTarget);
   const overage = rawOverageCeiling(photoTarget);
@@ -168,26 +175,11 @@ function DropboxFolders({
     rawPhotoCount > overage ? "danger" : rawPhotoCount > rawBudget ? "warning" : "muted";
 
   return (
-    <section className="mt-4 rounded-2xl border bg-surface p-4">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <FolderOpen className="size-4 text-brand" />
-          <h2 className="text-sm font-semibold">Dropbox folders for this shoot</h2>
-        </div>
-        {/* Quick progress: raw uploaded → final delivered */}
-        <div className="flex items-center gap-3 text-[11px] font-medium">
-          <Step done={state.hasRaw} label="Raw uploaded" />
-          <span className="text-muted-2">→</span>
-          <Step done={state.hasFinal} label="Final delivered" />
-        </div>
-      </div>
-
-      {/* Raw count vs budget — only meaningful once Dropbox is connected AND raws
-          have started landing. Turns amber/red as the pile blows past budget. */}
+    <div>
       {state.connected && rawPhotoCount > 0 && (
         <div
           className={cn(
-            "mt-2 inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium",
+            "mb-2.5 inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium",
             budgetTone === "danger" && "bg-danger/10 text-danger",
             budgetTone === "warning" && "bg-warning/10 text-warning",
             budgetTone === "muted" && "bg-surface-2 text-muted",
@@ -195,56 +187,47 @@ function DropboxFolders({
         >
           <ImageIcon className="size-3.5" />
           Raw photos: {rawPhotoCount} / ~{rawBudget} budget
-          {budgetTone === "danger" && " — over budget, cull before delivering"}
+          {budgetTone === "danger" && " — over budget, cull before submitting"}
           {budgetTone === "warning" && " — approaching the budget"}
         </div>
       )}
 
-      <p className="mt-1.5 text-xs text-muted">
-        Drop originals into the <strong>Raw</strong> folders — the hub watches them and moves the project to{" "}
-        <em>Shot</em> automatically. Final edits go in the <strong>Final</strong> folders.
-        {!state.connected && " (Connect Dropbox to see live file counts.)"}
-      </p>
-
-      <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        {state.folders.map((r) => {
+      <div className="grid gap-2 sm:grid-cols-3">
+        {shown.map((r) => {
           const Icon = iconFor(r.label);
+          const backup = r.key === "backupPhotos";
           return (
             <a
               key={r.key}
               href={r.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="group flex items-center gap-2.5 rounded-lg border bg-surface-2 px-3 py-2 transition-colors hover:border-brand hover:bg-brand-soft/40"
+              className="group flex items-center gap-2.5 rounded-xl border bg-surface-2 px-3 py-2.5 transition-colors hover:border-brand hover:bg-brand-soft/40"
             >
-              <Icon className={`size-4 shrink-0 ${r.raw ? "text-warning" : "text-success"}`} />
+              <Icon className={cn("size-4 shrink-0", backup ? "text-muted" : "text-warning")} />
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5 text-xs font-medium">
+                <div className="flex items-center gap-1.5 text-sm font-medium">
                   {r.label}
                   {state.connected && (
-                    // count null = the Dropbox read FAILED — show "couldn't
-                    // check", never "empty" (a photographer verifying their
-                    // 300-raw drop must not be told the folder is empty).
+                    // count null = the Dropbox read FAILED — show "?", never
+                    // "empty".
                     <span
-                      className={`rounded-full px-1.5 text-[10px] font-semibold ${
-                        (r.count ?? 0) > 0 ? "bg-success/15 text-success" : "bg-surface-2 text-muted-2"
+                      className={`rounded-full px-1.5 text-[11px] font-semibold ${
+                        (r.count ?? 0) > 0 ? "bg-success/15 text-success" : "bg-surface text-muted-2"
                       }`}
                     >
-                      {r.count === null
-                        ? "couldn't check"
-                        : r.count > 0
-                        ? `${r.count} file${r.count === 1 ? "" : "s"}`
-                        : "empty"}
+                      {r.count === null ? "?" : r.count > 0 ? `${r.count}` : "empty"}
                     </span>
                   )}
                 </div>
-                <div className="truncate font-mono text-[10px] text-muted-2">{r.path}</div>
+                {backup && <div className="text-[11px] text-muted-2">culled extras live here</div>}
               </div>
               <ExternalLink className="size-3.5 shrink-0 text-muted-2 group-hover:text-brand" />
             </a>
           );
         })}
       </div>
-    </section>
+      {!state.connected && <p className="mt-1.5 text-xs text-muted-2">Connect Dropbox to see live file counts.</p>}
+    </div>
   );
 }

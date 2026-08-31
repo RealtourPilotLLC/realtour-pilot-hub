@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge, ink } from "@/components/ui/Badge";
 import { prisma } from "@/lib/prisma";
+import { redirect } from "next/navigation";
 import { CullingReminder } from "@/components/upload/CullingReminder";
 import { getCurrentUser } from "@/lib/auth/user";
 import { photographerMemberId } from "@/lib/shoot";
@@ -42,6 +43,12 @@ export default async function UploadListPage() {
   // Photographers see ONLY their own shoots here (fail-closed: unresolvable →
   // none). Owner/admin/editor see all.
   const user = await getCurrentUser();
+  // First visit under the new process: photographers read the standard and
+  // agree once before the queue opens (Jordan, Sep 1).
+  if (user?.role === "PHOTOGRAPHER" && user.email) {
+    const ack = await prisma.appSetting.findUnique({ where: { key: `upload-ack-${user.email.toLowerCase()}` } });
+    if (!ack) redirect("/upload/welcome");
+  }
   const mine = user?.role === "PHOTOGRAPHER" ? ((await photographerMemberId(user)) ?? "__none__") : null;
 
   const shoots = await prisma.project.findMany({

@@ -81,6 +81,29 @@ export async function markDeliverableUploaded(
   return { ok: true };
 }
 
+// One-time acknowledgment of the new upload process (the /upload/welcome
+// page's "I agree"). Keyed per user; /upload gates photographers on it.
+export async function acknowledgeUploadProcess(): Promise<{ ok: boolean }> {
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  if (!me?.email) return { ok: false };
+  const key = `upload-ack-${me.email.toLowerCase()}`;
+  const value = new Date().toISOString();
+  await prisma.appSetting.upsert({ where: { key }, create: { key, value }, update: { value } });
+  return { ok: true };
+}
+
+// Post-job feedback on the upload PROCESS itself (not the shoot) — lands on
+// Jordan's Feedback & requests board so the process keeps improving.
+export async function submitUploadFeedback(projectId: string, body: string): Promise<{ ok: boolean }> {
+  await requireShootAccess(projectId);
+  const trimmed = body.trim().slice(0, 2000);
+  if (!trimmed) return { ok: false };
+  const { fileFieldIssue } = await import("@/lib/fieldIssues");
+  await fileFieldIssue({ projectId, note: trimmed, page: `/upload/${projectId}`, label: "Upload process feedback" });
+  return { ok: true };
+}
+
 export async function flagIssue(projectId: string, body: string) {
   await requireShootAccess(projectId);
   const trimmed = body.trim();
@@ -160,6 +183,7 @@ export async function finalizeUpload(
     // Shoot-debrief fields (upload portal rebuild, Aug 31 2026). The job is
     // not done until these are answered — enforced HERE, not just in the UI.
     cullingConfirmed?: boolean;
+    shotOrder?: { frontToBack: boolean; notes?: string } | null;
     removalNotes?: string;
     nothingToRemove?: boolean;
     videoInstructions?: string;
@@ -180,6 +204,7 @@ export async function finalizeUpload(
       shootDate: true,
       createdAt: true,
       cullingConfirmedAt: true,
+      shotOrderNotes: true,
       removalNotes: true,
       videoInstructions: true,
       scriptConfirmedAt: true,
@@ -200,6 +225,12 @@ export async function finalizeUpload(
     const wantsVideoGate = prior.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
     if (wantsPhotosGate && !data.cullingConfirmed && !prior.cullingConfirmedAt) {
       return { blocked: "Confirm the cull first — the gallery must be at or under this home's photo cap, with extras in the Backup folder. Overages are deducted at $1/photo." };
+    }
+    if (wantsPhotosGate && !data.shotOrder && !prior.shotOrderNotes) {
+      return { blocked: "Answer the shot order — front to back, or tell us the order you shot the home (so nobody has to guess what's where)." };
+    }
+    if (wantsPhotosGate && data.shotOrder && !data.shotOrder.frontToBack && !data.shotOrder.notes?.trim() && !prior.shotOrderNotes) {
+      return { blocked: "You said the shoot went out of order — tell us why and the order you shot, so the office can organize the gallery without guessing." };
     }
     if (wantsPhotosGate && !data.removalNotes?.trim() && !data.nothingToRemove && !prior.removalNotes) {
       return { blocked: "Answer the removal notes — list anything the editor needs to remove (pets, cans, vehicles, clutter), or tick “Nothing needs removal.”" };
@@ -283,6 +314,15 @@ export async function finalizeUpload(
       // re-finalize with an empty field must not wipe the photographer's notes.
       ...(data.editorBrief.trim() ? { editorBrief: data.editorBrief.trim() } : {}),
       ...(data.cullingConfirmed ? { cullingConfirmedAt: new Date() } : {}),
+      ...(data.shotOrder
+        ? {
+            shotOrderNotes: data.shotOrder.frontToBack
+              ? "Shot front to back."
+              : data.shotOrder.notes?.trim()
+                ? `Out of order — ${data.shotOrder.notes.trim().slice(0, 2000)}`
+                : undefined,
+          }
+        : {}),
       ...(data.removalNotes?.trim()
         ? { removalNotes: data.removalNotes.trim().slice(0, 4000) }
         : data.nothingToRemove

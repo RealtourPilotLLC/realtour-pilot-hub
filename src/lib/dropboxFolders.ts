@@ -9,7 +9,9 @@ import { generateTasksForActiveProjects } from "@/lib/tasks";
 // Mirrors the Zapier "AutoHDR" folder convention so the hub knows exactly where
 // photographers/editors upload, and can drive status from file presence:
 //   /AutoHDR/{Year}/{Quarter}/{Month}/{Street} ({Client})/
-//     01-RAW-Photos · 02-RAW-Video · 04-Final-Photos · 05-Final-Video
+//     01-RAW-Photos · 02-RAW-Video · 03-Backup-Photos · 04-Final-Photos · 05-Final-Video
+// (03-Backup-Photos added Aug 31 2026 — the culling standard's home for the
+// extra frames; the Zap's original output had no 03, we fill the gap.)
 // ---------------------------------------------------------------------------
 
 const MONTHS = [
@@ -21,6 +23,7 @@ export type ProjectFolders = {
   listing: string;
   rawPhotos: string;
   rawVideo: string;
+  backupPhotos: string;
   finalPhotos: string;
   finalVideo: string;
 };
@@ -62,6 +65,7 @@ export function projectFolderPaths(p: FolderProject): ProjectFolders {
     listing: base,
     rawPhotos: `${base}/01-RAW-Photos`,
     rawVideo: `${base}/02-RAW-Video`,
+    backupPhotos: `${base}/03-Backup-Photos`,
     finalPhotos: `${base}/04-Final-Photos`,
     finalVideo: `${base}/05-Final-Video`,
   };
@@ -90,7 +94,7 @@ export function projectFolderPaths(p: FolderProject): ProjectFolders {
 // anything already under /Canceled/.
 // ---------------------------------------------------------------------------
 
-const SUBFOLDERS: (keyof ProjectFolders)[] = ["rawPhotos", "rawVideo", "finalPhotos", "finalVideo"];
+const SUBFOLDERS: (keyof ProjectFolders)[] = ["rawPhotos", "rawVideo", "backupPhotos", "finalPhotos", "finalVideo"];
 
 export type EnsureResult = "created" | "repaired" | "exists" | "moved" | "archived" | "conflict" | "skipped";
 
@@ -112,10 +116,9 @@ async function rememberPath(projectId: string, path: string, note?: string): Pro
   }
 }
 
-// Make sure ONE project's Dropbox presence matches reality. Verified against
-// the live Dropbox before building: the Zap's actual output is exactly
-// 01-RAW-Photos / 02-RAW-Video / 04-Final-Photos / 05-Final-Video (no 03 —
-// the numbering gap is real, don't "fix" it).
+// Make sure ONE project's Dropbox presence matches reality. The Zap's output
+// is 01/02/04/05; the hub adds 03-Backup-Photos on create AND on the repair
+// pass, so existing upcoming shoots pick it up on the next hourly sweep.
 export async function ensureProjectFolders(p: EnsureProject): Promise<EnsureResult> {
   if (!dropboxConfigured() || !(await getSecret("dropbox"))) return "skipped";
 
@@ -242,6 +245,7 @@ export async function getProjectFolderState(p: FolderProject): Promise<{
   const defs: { key: keyof ProjectFolders; label: string; raw: boolean }[] = [
     { key: "rawPhotos", label: "Raw Photos", raw: true },
     { key: "rawVideo", label: "Raw Video", raw: true },
+    { key: "backupPhotos", label: "Backup Photos", raw: true },
     { key: "finalPhotos", label: "Final Photos", raw: false },
     { key: "finalVideo", label: "Final Video", raw: false },
   ];

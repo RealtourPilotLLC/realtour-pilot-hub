@@ -144,6 +144,12 @@ export async function buildEditorBriefPdf(project: FullProject): Promise<Uint8Ar
     for (const r of requests) text(`•  ${r.body}`, { size: 11 });
   }
 
+  // ---- Shot order (how to organize the gallery) -------------------------
+  if (project.shotOrderNotes) {
+    heading("Shot order");
+    text(project.shotOrderNotes, { size: 11 });
+  }
+
   // ---- Removal notes (photo retouch list) -------------------------------
   if (project.removalNotes) {
     heading("Remove in editing");

@@ -442,6 +442,12 @@ export default async function EditBriefPage({
               placeholder="What the editor needs to know from the shoot…"
               empty="No editing notes were submitted on the upload."
             />
+            {project.shotOrderNotes && (
+              <div className="mt-3 space-y-1 border-t border-border pt-3">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Shot order</div>
+                <p className="whitespace-pre-wrap text-sm text-foreground/85">{project.shotOrderNotes}</p>
+              </div>
+            )}
             {project.removalNotes && (
               <div className="mt-3 space-y-1 border-t border-border pt-3">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Remove in editing</div>
