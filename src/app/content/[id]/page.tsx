@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
-  Camera, CalendarDays, CheckCircle2, FileText, FolderOpen, Lightbulb, User,
+  Camera, CalendarDays, CheckCircle2, ExternalLink, Eye, FileText, FolderOpen, Lightbulb, User,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
@@ -31,11 +31,12 @@ export const dynamic = "force-dynamic";
 // Strategy call · Filming sessions · Scripts · the month's video plan.
 // Three tabs: THIS MONTH (the work), IDEAS (the topic bank in plain words),
 // CLIENT FILE (strategy, profile, notes, settings, imports).
-type Tab = "month" | "ideas" | "file";
+type Tab = "month" | "ideas" | "file" | "portal";
 const TABS: { key: Tab; label: string; icon: typeof FileText }[] = [
   { key: "month", label: "This month", icon: CalendarDays },
   { key: "ideas", label: "Ideas", icon: Lightbulb },
   { key: "file", label: "Client file", icon: FolderOpen },
+  { key: "portal", label: "Their portal", icon: Eye },
 ];
 // Old bookmarked URLs keep working.
 const LEGACY_TABS: Record<string, Tab> = { scripts: "month", topics: "ideas", profile: "file", notes: "file" };
@@ -51,12 +52,15 @@ export default async function ContentClientPage({
   if (me && !canAccess(me, "content")) redirect("/");
   const { id } = await params;
   const { month: monthParam, tab: tabParam } = await searchParams;
-  const tab: Tab = TABS.some((t) => t.key === tabParam)
+  let tab: Tab = TABS.some((t) => t.key === tabParam)
     ? (tabParam as Tab)
     : LEGACY_TABS[tabParam ?? ""] ?? "month";
 
   const enrollment = await prisma.contentEnrollment.findUnique({ where: { id } });
   if (!enrollment) notFound();
+  const ownerEyes = me ? me.role === "OWNER" : !authEnforced();
+  // The portal mirror is the owner's window — the link inside is client-facing.
+  if (tab === "portal" && !ownerEyes) tab = "month";
   const client = await prisma.client.findUnique({
     where: { id: enrollment.clientId },
     select: { id: true, name: true, email: true, phone: true, company: true, editingPreferences: true },
@@ -183,7 +187,7 @@ export default async function ContentClientPage({
         subtitle={[client.company, client.email].filter(Boolean).join(" · ")}
         actions={
           <div className="flex items-center gap-2">
-            {(me ? me.role === "OWNER" : !authEnforced()) && <PortalLinkButton enrollmentId={id} />}
+            {ownerEyes && <PortalLinkButton enrollmentId={id} />}
             <Link href={`/clients/${client.id}`} className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"><User className="mr-1 inline size-3.5" />Client page</Link>
           </div>
         }
@@ -192,7 +196,7 @@ export default async function ContentClientPage({
       <div className="mx-auto max-w-5xl space-y-6 p-4 pb-16 sm:p-6">
         {/* TABS */}
         <div className="flex flex-wrap items-center gap-1.5">
-          {TABS.map((t) => (
+          {TABS.filter((t) => t.key !== "portal" || ownerEyes).map((t) => (
             <Link
               key={t.key}
               href={hrefFor(t.key)}
@@ -374,6 +378,36 @@ export default async function ContentClientPage({
           </Section>
         )}
 
+        {/* ---------- THEIR PORTAL — the live client portal, embedded. ---------- */}
+        {tab === "portal" && ownerEyes && (
+          enrollment.portalToken ? (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm text-muted">
+                  This is {client.name.split(" ")[0]}&rsquo;s live portal — exactly what they see, videos and profile included. Anything that changes in the program shows up here instantly.
+                </p>
+                <a
+                  href={`/portal/${enrollment.portalToken}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+                >
+                  <ExternalLink className="size-3.5" /> Open in a new tab
+                </a>
+              </div>
+              <iframe
+                src={`/portal/${enrollment.portalToken}`}
+                title={`${client.name}'s client portal`}
+                className="h-[78vh] w-full rounded-2xl border border-border bg-white"
+              />
+            </div>
+          ) : (
+            <p className="rounded-2xl border border-border bg-surface px-5 py-4 text-sm text-muted">
+              No portal link exists for this client yet — click <span className="font-medium text-foreground">Client portal link</span> up top to create it, then come back to this tab.
+            </p>
+          )
+        )}
+
         {/* ---------- CLIENT FILE ---------- */}
         {tab === "file" && (
           <>
@@ -408,7 +442,7 @@ export default async function ContentClientPage({
                   videosPerMonth={enrollment.videosPerMonth}
                   notes={enrollment.notes}
                   billing={
-                    (me ? me.role === "OWNER" : !authEnforced())
+                    ownerEyes
                       ? { type: enrollment.billingType, rate: enrollment.billingRate, months: enrollment.billingMonths }
                       : undefined
                   }
