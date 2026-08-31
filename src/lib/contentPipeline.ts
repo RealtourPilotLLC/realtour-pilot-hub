@@ -308,7 +308,10 @@ const SCRIPT_SYSTEM = (context: string) =>
   "TALKING POINT 3 — pay off what the hook promised: the insight, the reframe, the lesson. " +
   "CALL TO ACTION — ONE direct next step in the agent's own voice ('call me before you start packing', 'let's talk'); no hard sell unless the context demands it. " +
   "Also return category: a 2-4 word content category for THIS script, e.g. 'Seller Strategy', 'Pre-Listing Strategy', 'Negotiation & Multiple Offers', 'Personal Brand'. " +
-  "WRITING STYLE: every section is 1-3 short spoken-breath lines with a line break after each phrase — the way a person actually talks to camera, never paragraphs. " +
+  "LENGTH IS A HARD RULE: the whole script must speak in 20-35 seconds — 70 to 110 words TOTAL across all sections. " +
+  "HOOK is 1-2 lines. Each TALKING POINT is 1-3 lines. CALL TO ACTION is 1-2 lines. " +
+  "If the material doesn't fit, CUT IDEAS, not words-per-line — one sharp point per talking point, never a list of them. Jordan rejects long scripts on sight. " +
+  "WRITING STYLE: short spoken-breath lines with a line break after each phrase — the way a person actually talks to camera, never paragraphs. " +
   "Be concrete: real numbers, real objects, quoted objections — take the RHYTHM of examples like '17 offers on one house' or 'paint. trim. curtains.', never the facts. " +
   "Use bracketed placeholders like $[PRICE], $[PAYMENT], [NEIGHBORHOOD] for any figure or detail that must be confirmed before filming, and mention it in productionIdeas. " +
   "Voice: conversational, confident, direct, specific, easy to say ALOUD — the agent's strongest self, never a copywriter. " +

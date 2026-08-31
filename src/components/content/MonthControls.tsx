@@ -1,8 +1,59 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { CalendarX2, Loader2, Undo2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { CalendarX2, ChevronLeft, ChevronRight, Loader2, Undo2 } from "lucide-react";
 import { moveSessionToMonth, setMonthSkipped } from "@/app/content/actions";
+
+/** Month navigation for the workspace: ‹ › chevrons + a quiet "all months"
+ *  select. Replaces the old every-month pill rail — one month is the subject,
+ *  history is a dropdown, not fourteen equal pills. */
+export function MonthPicker({
+  months, currentKey, makeHref,
+}: {
+  months: { key: string; label: string; historical: boolean }[];
+  currentKey: string;
+  /** href pattern with MONTH placeholder, e.g. "/content/abc?month=MONTH" */
+  makeHref: string;
+}) {
+  const router = useRouter();
+  const go = (k: string) => router.push(makeHref.replace("MONTH", encodeURIComponent(k)));
+  const idx = months.findIndex((m) => m.key === currentKey);
+  const newer = idx > 0 ? months[idx - 1] : null; // months sorted newest-first
+  const older = idx >= 0 && idx < months.length - 1 ? months[idx + 1] : null;
+  return (
+    <span className="inline-flex items-center gap-1">
+      <button
+        disabled={!older}
+        onClick={() => older && go(older.key)}
+        title={older ? older.label : undefined}
+        aria-label="Earlier month"
+        className="rounded-lg border border-border p-1.5 text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-30"
+      >
+        <ChevronLeft className="size-4" />
+      </button>
+      <select
+        aria-label="Month"
+        value={currentKey}
+        onChange={(e) => go(e.target.value)}
+        className="cursor-pointer rounded-lg border border-border bg-surface-2 px-2.5 py-1.5 text-sm font-medium outline-none focus:border-brand"
+      >
+        {months.map((m) => (
+          <option key={m.key} value={m.key}>{m.label}{m.historical ? " · imported" : ""}</option>
+        ))}
+      </select>
+      <button
+        disabled={!newer}
+        onClick={() => newer && go(newer.key)}
+        title={newer ? newer.label : undefined}
+        aria-label="Later month"
+        className="rounded-lg border border-border p-1.5 text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-30"
+      >
+        <ChevronRight className="size-4" />
+      </button>
+    </span>
+  );
+}
 
 // Month-slippage controls (Jordan, Aug 28: "we did her July content in August
 // — sometimes clients get a month behind or miss a month"). The content month

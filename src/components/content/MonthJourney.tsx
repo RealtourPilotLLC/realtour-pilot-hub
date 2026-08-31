@@ -14,6 +14,8 @@ export type JourneyInput = {
   callStatus: string; // NOT_REQUIRED | NOT_SCHEDULED | SCHEDULED | COMPLETED | SKIPPED
   topicsSelected: number;
   scriptsReady: number;
+  /** drafts sitting on Jordan's desk — when set, the Scripts node says "N to review" instead of a 0/4 that lies */
+  scriptsAwaiting?: number;
   videosOwed: number;
   sessionsScheduled: number;
   sessionsRequired: number;
@@ -41,8 +43,9 @@ export function journeySteps(j: JourneyInput): Step[] {
     state: j.topicsSelected >= owed ? "done" : j.topicsSelected > 0 ? "active" : call.state === "done" ? "warn" : "todo",
   };
   const scripts: Step = {
-    key: "scripts", label: "Scripts", icon: FileText, detail: `${j.scriptsReady}/${owed}`,
-    state: j.scriptsReady >= owed ? "done" : j.scriptsReady > 0 ? "active" : topics.state === "done" ? "warn" : "todo",
+    key: "scripts", label: "Scripts", icon: FileText,
+    detail: (j.scriptsAwaiting ?? 0) > 0 ? `${j.scriptsAwaiting} to review` : `${j.scriptsReady}/${owed}`,
+    state: j.scriptsReady >= owed ? "done" : (j.scriptsAwaiting ?? 0) > 0 ? "warn" : j.scriptsReady > 0 ? "active" : topics.state === "done" ? "warn" : "todo",
   };
   const shoot: Step = {
     key: "shoot", label: "Shoot", icon: Camera, detail: `${j.sessionsScheduled}/${Math.max(j.sessionsRequired, 1)} booked`,
@@ -89,11 +92,11 @@ export function MonthJourney({ input, size = "card" }: { input: JourneyInput; si
             </span>
             <span className={cn("h-0.5 flex-1 rounded", i === steps.length - 1 ? "bg-transparent" : BAR[s.state === "todo" || steps[i + 1].state === "todo" ? "todo" : s.state])} />
           </div>
-          <span className={cn("mt-1 truncate font-medium", hero ? "text-[11px]" : "text-[9.5px]", s.state === "warn" ? "text-warning" : s.state === "todo" ? "text-muted-2" : "text-muted")}>
+          <span className={cn("mt-1.5 truncate font-medium", hero ? "text-sm" : "text-[9.5px]", s.state === "warn" ? "text-warning" : s.state === "todo" ? "text-muted-2" : "text-muted")}>
             {s.label}
           </span>
           {hero && (
-            <span className={cn("text-[10px]", s.state === "warn" ? "text-warning" : "text-muted-2")}>{s.detail}</span>
+            <span className={cn("mt-0.5 text-xs", s.state === "warn" ? "text-warning" : "text-muted-2")}>{s.detail}</span>
           )}
         </div>
       ))}

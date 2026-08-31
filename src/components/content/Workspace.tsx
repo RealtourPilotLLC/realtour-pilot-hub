@@ -5,6 +5,7 @@ import {
   CalendarClock, Check, Compass, FileText, FileUp, Loader2, NotebookPen, Plus, Settings2, Sparkles, Trash2, Upload, X,
 } from "lucide-react";
 import { Section } from "@/components/ui/Section";
+import { TOPIC_STATUS_WORDS } from "@/lib/contentStatus";
 import { ScriptBody } from "@/components/portal/ScriptBody";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import {
@@ -19,14 +20,13 @@ import {
 // Strategy call card — status ladder + manual transcript paste (Phase 3 wires
 // Calendly + Meet automation; the manual path always survives as the fallback).
 // ---------------------------------------------------------------------------
-const CALL_STEPS: { key: string; label: string }[] = [
-  { key: "NOT_SCHEDULED", label: "Not scheduled" },
-  { key: "SCHEDULED", label: "Scheduled" },
-  { key: "COMPLETED", label: "Completed" },
-  { key: "SKIPPED", label: "Skipped" },
-  { key: "NOT_REQUIRED", label: "Not required" },
-];
+function fmtCallTime(iso: string): string {
+  return new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) + " ET";
+}
 
+// The call step of the month checklist — a state machine, not a status ladder.
+// One sentence for where the call stands, one clear next action, everything
+// else behind a quiet "change" menu. Same server actions as always.
 export function StrategyCallCard({
   monthId, status, at, hasTranscript, transcriptProcessed, required, bookingUrl,
 }: {
@@ -37,94 +37,117 @@ export function StrategyCallCard({
   const [showPaste, setShowPaste] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [note, setNote] = useState<string | null>(null);
+  const [analyzed, setAnalyzed] = useState(transcriptProcessed);
+  const [onFile, setOnFile] = useState(hasTranscript);
   const [busy, start] = useTransition();
 
+  const setStatus = (key: string) => start(async () => {
+    const r = await setStrategyCallStatus(monthId, key);
+    if (r.ok) setCur(key); else setNote(r.message);
+  });
+
+  const isDone = cur === "COMPLETED" || cur === "SKIPPED" || cur === "NOT_REQUIRED" || !required;
+
+  const title =
+    !required || cur === "NOT_REQUIRED" ? "Strategy call — not needed for this client"
+    : cur === "SKIPPED" ? "Strategy call — skipped this month"
+    : cur === "COMPLETED" ? (analyzed ? "Strategy call held — turned into this month's topics and scripts" : "Strategy call held")
+    : cur === "SCHEDULED" ? `Strategy call booked${at ? ` for ${fmtCallTime(at)}` : ""}`
+    : "The strategy call isn't booked yet";
+
+  const primaryBtn = "inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50";
+  const quietLink = "text-[13px] font-medium text-muted hover:text-foreground hover:underline";
+
   return (
-    <Section icon={CalendarClock} title="Strategy call" action={!required ? <span className="text-[11px] text-muted-2">not required for this client</span> : undefined}>
-      <div className="flex flex-wrap gap-1.5">
-        {CALL_STEPS.map((s) => (
-          <button
-            key={s.key}
-            disabled={busy}
-            onClick={() => start(async () => {
-              const r = await setStrategyCallStatus(monthId, s.key);
-              if (r.ok) setCur(s.key); else setNote(r.message);
-            })}
-            className={
-              cur === s.key
-                ? "rounded-lg bg-brand px-2.5 py-1 text-xs font-semibold text-white"
-                : "rounded-lg border border-border px-2.5 py-1 text-xs font-medium text-muted hover:bg-surface-2"
-            }
-          >
-            {s.label}
+    <Section icon={CalendarClock} title="Strategy call"
+      action={isDone ? <Check className="size-4 text-success" /> : undefined}>
+      <p className={isDone ? "text-sm text-foreground/85" : "text-[15px] font-semibold"}>{title}</p>
+      {/* Paste box — reachable from every state, because reality is messy. */}
+      {showPaste ? (
+        <div className="mt-2.5">
+          <AutoTextarea value={transcript} onChange={(e) => setTranscript(e.target.value)} minRows={4}
+            placeholder="Paste the call transcript here…"
+            className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand" />
+          <div className="mt-2 flex items-center gap-2">
+            <button disabled={busy || !transcript.trim()} onClick={() => start(async () => {
+              const r = await saveMonthTranscript(monthId, transcript);
+              setNote(r.message);
+              if (r.ok) { setShowPaste(false); setCur("COMPLETED"); setOnFile(true); setTranscript(""); }
+            })} className={primaryBtn}>
+              {busy ? <Loader2 className="size-4 animate-spin" /> : "Save transcript"}
+            </button>
+            <button onClick={() => setShowPaste(false)} className={quietLink}>Cancel</button>
+          </div>
+        </div>
+      ) : cur === "NOT_SCHEDULED" && required ? (
+        <div className="mt-2.5">
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={() => { navigator.clipboard?.writeText(bookingUrl); setNote("Booking link copied — text it to them."); }}
+              className={primaryBtn}
+            >
+              Copy the booking link
+            </button>
+            <a href={bookingUrl} target="_blank" rel="noopener noreferrer" className={quietLink}>Open Calendly ↗</a>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <button onClick={() => setShowPaste(true)} className={quietLink}>Already held it — paste the transcript</button>
+            <span className="text-muted-2">·</span>
+            <button disabled={busy} onClick={() => setStatus("SKIPPED")} className={quietLink}>Skip this month</button>
+            <span className="text-muted-2">·</span>
+            <button disabled={busy} onClick={() => setStatus("NOT_REQUIRED")} className={quietLink}>They don&rsquo;t do calls</button>
+          </div>
+        </div>
+      ) : cur === "SCHEDULED" ? (
+        <div className="mt-2.5">
+          <button onClick={() => setShowPaste(true)} className={primaryBtn}>
+            Call happened — paste the transcript
           </button>
-        ))}
-      </div>
-      {at && <p className="mt-2 text-xs text-muted">Booked for {new Date(at).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })} ET</p>}
-
-      {/* The client's booking link — copy it into a text, or it goes out
-          automatically as a drafted invite on the 1st. */}
-      <div className="mt-3 flex items-center gap-2 border-t border-border pt-3">
-        <a href={bookingUrl} target="_blank" rel="noopener noreferrer" className="truncate text-xs font-medium text-brand hover:underline">
-          {bookingUrl.replace("https://", "")}
-        </a>
-        <button
-          onClick={() => { navigator.clipboard?.writeText(bookingUrl); setNote("Booking link copied."); }}
-          className="shrink-0 rounded-md border border-border px-2 py-0.5 text-[10px] font-medium text-muted hover:bg-surface-2"
-        >
-          Copy link
-        </button>
-      </div>
-
-      <div className="mt-3 border-t border-border pt-3">
-        {hasTranscript && !showPaste ? (
-          transcriptProcessed ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-xs text-success"><Check className="mr-1 inline size-3.5" />Transcript analyzed — topics and scripts are below.</p>
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <button onClick={() => { navigator.clipboard?.writeText(bookingUrl); setNote("Booking link copied."); }} className={quietLink}>Copy booking link</button>
+            <span className="text-muted-2">·</span>
+            <button disabled={busy} onClick={() => setStatus("SKIPPED")} className={quietLink}>Skip this month</button>
+          </div>
+        </div>
+      ) : cur === "COMPLETED" ? (
+        <div className="mt-1.5">
+          {analyzed ? (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
               <button disabled={busy} onClick={() => start(async () => {
-                setNote("Re-analyzing the call…");
+                setNote("Re-reading the call…");
                 const r = await analyzeTranscript(monthId, true);
                 setNote(r.message);
-              })} className="rounded-md border border-border px-2 py-0.5 text-[10px] font-medium text-muted hover:bg-surface-2 disabled:opacity-50"
-                title="Run the extraction again (existing topics are kept; duplicates are avoided)">
-                Re-analyze
+              })} className={quietLink} title="Run the extraction again — existing topics are kept, duplicates avoided">
+                Re-analyze the call
               </button>
+              <span className="text-muted-2">·</span>
+              <button onClick={() => setShowPaste(true)} className={quietLink}>Replace transcript</button>
             </div>
+          ) : onFile ? (
+            <button disabled={busy} onClick={() => start(async () => {
+              setNote("Reading the call — this takes a moment…");
+              const r = await analyzeTranscript(monthId);
+              setNote(r.message);
+              if (r.ok) setAnalyzed(true);
+            })} className={primaryBtn}>
+              {busy ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
+              Turn the call into topics + scripts
+            </button>
           ) : (
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-xs text-success"><Check className="mr-1 inline size-3.5" />Transcript on file.</p>
-              <button disabled={busy} onClick={() => start(async () => {
-                setNote("Analyzing the call — this takes a moment…");
-                const r = await analyzeTranscript(monthId);
-                setNote(r.message);
-              })} className="inline-flex items-center gap-1 rounded-md bg-brand px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50">
-                {busy ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}
-                Analyze → topics + scripts
-              </button>
-            </div>
-          )
-        ) : showPaste ? (
-          <div>
-            <AutoTextarea value={transcript} onChange={(e) => setTranscript(e.target.value)} minRows={4}
-              placeholder="Paste the Google Meet transcript here…"
-              className="w-full rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-xs outline-none focus:border-brand" />
-            <div className="mt-1.5 flex gap-1.5">
-              <button disabled={busy || !transcript.trim()} onClick={() => start(async () => {
-                const r = await saveMonthTranscript(monthId, transcript);
-                setNote(r.message); if (r.ok) { setShowPaste(false); setCur("COMPLETED"); }
-              })} className="rounded-md bg-brand px-2.5 py-1 text-xs font-semibold text-white disabled:opacity-50">
-                {busy ? <Loader2 className="inline size-3 animate-spin" /> : "Save transcript"}
-              </button>
-              <button onClick={() => setShowPaste(false)} className="rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2">Cancel</button>
-            </div>
+            <button onClick={() => setShowPaste(true)} className={quietLink}>Paste the transcript to unlock topics + scripts</button>
+          )}
+        </div>
+      ) : (
+        // SKIPPED / NOT_REQUIRED — one quiet undo.
+        required && (
+          <div className="mt-1.5">
+            <button disabled={busy} onClick={() => setStatus("NOT_SCHEDULED")} className={quietLink}>
+              {cur === "SKIPPED" ? "Undo — they're doing the call after all" : "Turn monthly calls back on"}
+            </button>
           </div>
-        ) : (
-          <button onClick={() => setShowPaste(true)} className="text-xs font-medium text-brand hover:underline">
-            {hasTranscript ? "Replace transcript" : "Paste call transcript"}
-          </button>
-        )}
-      </div>
-      {note && <p className="mt-2 text-[11px] text-muted">{note}</p>}
+        )
+      )}
+      {note && <p className="mt-2 text-[13px] text-muted">{note}</p>}
     </Section>
   );
 }
@@ -135,9 +158,9 @@ export function StrategyCallCard({
 type TopicRow = { id: string; title: string; concept: string | null; pillar: string | null; status: string; source: string };
 
 export function TopicBank({
-  enrollmentId, monthId, topics, mode,
+  enrollmentId, monthId, topics, mode, monthName,
 }: {
-  enrollmentId: string; monthId: string | null; topics: TopicRow[]; mode: "month" | "bank";
+  enrollmentId: string; monthId: string | null; topics: TopicRow[]; mode: "month" | "bank"; monthName?: string | null;
 }) {
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState("");
@@ -151,18 +174,21 @@ export function TopicBank({
         {topics.map((t) => (
           <div key={t.id} className="flex items-start gap-3 px-5 py-3">
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium">{t.title}</span>
-                {t.pillar && <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">{t.pillar}</span>}
-                <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted-2">{t.status.toLowerCase()}</span>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[15px] font-medium">{t.title}</span>
+                {!["SAVED", "RECOMMENDED", "IDEA"].includes(t.status) && (
+                  <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">
+                    {TOPIC_STATUS_WORDS[t.status] ?? t.status.toLowerCase()}
+                  </span>
+                )}
               </div>
-              {t.concept && <p className="mt-0.5 text-xs text-muted">{t.concept}</p>}
+              {t.concept && <p className="mt-1 text-[13px] leading-relaxed text-muted">{t.concept}</p>}
             </div>
             {mode === "bank" && monthId && (
               <button disabled={busy} title="Plan into the selected month"
                 onClick={() => start(async () => { const r = await setTopicStatus(t.id, "SELECTED", monthId); if (!r.ok) setNote(r.message); })}
-                className="rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted hover:bg-surface-2 hover:text-foreground">
-                Plan this month
+                className="shrink-0 rounded-lg border border-brand/40 px-2.5 py-1.5 text-xs font-semibold text-brand hover:bg-brand-soft">
+                Use for {monthName ?? "this month"}
               </button>
             )}
             {mode === "month" && (
@@ -622,10 +648,10 @@ export type ScriptRow = {
 };
 
 const SCRIPT_STATUS: Record<string, { label: string; tone: "warn" | "ok" | "muted" }> = {
-  DRAFT: { label: "draft", tone: "muted" },
-  INTERNAL_REVIEW: { label: "needs your review", tone: "warn" },
+  DRAFT: { label: "needs your OK", tone: "warn" },
+  INTERNAL_REVIEW: { label: "needs your OK", tone: "warn" },
   APPROVED: { label: "approved", tone: "ok" },
-  CLIENT_VISIBLE: { label: "client visible", tone: "ok" },
+  CLIENT_VISIBLE: { label: "live in their portal", tone: "ok" },
   READY_TO_FILM: { label: "ready to film", tone: "ok" },
 };
 
@@ -680,11 +706,11 @@ function ScriptItem({ script }: { script: ScriptRow }) {
     <details className="group px-5 py-3" open={needsReview}>
       <summary className="flex cursor-pointer items-center gap-2 marker:content-none">
         <FileText className="size-3.5 shrink-0 text-muted-2" />
-        <span className="min-w-0 flex-1 truncate text-sm font-medium">{script.title}</span>
+        <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">{script.title}</span>
         <span className={
-          st.tone === "warn" ? "rounded bg-warning-soft px-1.5 py-0.5 text-[10px] font-medium text-warning"
-          : st.tone === "ok" ? "rounded bg-success-soft px-1.5 py-0.5 text-[10px] font-medium text-success"
-          : "rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted"
+          st.tone === "warn" ? "shrink-0 rounded-full bg-brand-soft px-2 py-0.5 text-xs font-medium text-brand"
+          : st.tone === "ok" ? "shrink-0 rounded-full bg-success-soft px-2 py-0.5 text-xs font-medium text-success"
+          : "shrink-0 rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted"
         }>{st.label}</span>
       </summary>
 
@@ -709,7 +735,7 @@ function ScriptItem({ script }: { script: ScriptRow }) {
         ) : (
           /* Same bold-label rendering the client sees in the portal — Jordan's
              side reads the script the way it ships, not as a wall of text. */
-          <ScriptBody body={body} size="xs" />
+          <ScriptBody body={body} size="sm" />
         )}
 
         {script.productionIdeas.length > 0 && mode === "read" && (

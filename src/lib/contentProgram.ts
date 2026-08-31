@@ -205,6 +205,13 @@ export type ProgramRow = {
   inReview: number; // pending review submissions on attached projects
   topicsSelected: number;
   scriptsReady: number;
+  scriptsAwaiting: number; // drafts sitting in INTERNAL_REVIEW/DRAFT — Jordan's approve queue
+  openSuggestions: number; // OPEN portal suggestions from the client on this month's scripts
+  strategyCallAt: string | null; // ISO, when booked — lets the UI say "call Fri 2 PM"
+  nextShootDate: string | null; // ISO, the next upcoming session this month
+  strategyCallRequired: boolean;
+  clientSuppliesTopics: boolean;
+  behind: { monthKey: string; delivered: number; owed: number } | null; // last month under-delivered
   attention: string[]; // human-readable exception flags, worst first
   trial: boolean; // hand-set ACTIVE on a one-month trial
   lastMonthKey: string | null; // latest month with any program content
@@ -235,7 +242,7 @@ export async function getProgramRoster(): Promise<ProgramRow[]> {
 
   const months = await prisma.contentMonth.findMany({
     where: { enrollmentId: { in: enrollments.map((e) => e.id) }, monthKey: key },
-    select: { id: true, enrollmentId: true, videosOwed: true, strategyCallStatus: true },
+    select: { id: true, enrollmentId: true, videosOwed: true, strategyCallStatus: true, strategyCallAt: true },
   });
   const monthOf = new Map(months.map((m) => [m.enrollmentId, m]));
   const monthIds = months.map((m) => m.id);
@@ -276,6 +283,27 @@ export async function getProgramRoster(): Promise<ProgramRow[]> {
     prisma.contentTopic.groupBy({ by: ["monthId"], where: { monthId: { in: monthIds }, status: { in: ["SELECTED", "SCRIPTED", "FILMED", "EDITING", "DELIVERED"] } }, _count: true }),
     prisma.contentScript.groupBy({ by: ["monthId"], where: { monthId: { in: monthIds }, status: { in: ["APPROVED", "CLIENT_VISIBLE", "READY_TO_FILM"] } }, _count: true }),
   ]);
+  // Jordan's approve queue + the client's open portal suggestions — the two
+  // counts that make "what needs you" answerable without opening each client.
+  const [awaitingScripts, monthScripts] = await Promise.all([
+    prisma.contentScript.groupBy({ by: ["monthId"], where: { monthId: { in: monthIds }, status: { in: ["INTERNAL_REVIEW", "DRAFT"] } }, _count: true }),
+    prisma.contentScript.findMany({ where: { monthId: { in: monthIds } }, select: { id: true, monthId: true } }),
+  ]);
+  const awaitingCount = new Map(awaitingScripts.map((t) => [t.monthId, t._count]));
+  // ScriptSuggestion carries only scriptId (no relation) — map via the scripts.
+  const monthOfScript = new Map(monthScripts.map((s) => [s.id, s.monthId]));
+  const suggestionCount = new Map<string, number>();
+  if (monthScripts.length) {
+    const openSugg = await prisma.scriptSuggestion.groupBy({
+      by: ["scriptId"],
+      where: { status: "OPEN", scriptId: { in: monthScripts.map((s) => s.id) } },
+      _count: true,
+    });
+    for (const s of openSugg) {
+      const mid = monthOfScript.get(s.scriptId);
+      if (mid) suggestionCount.set(mid, (suggestionCount.get(mid) ?? 0) + s._count);
+    }
+  }
   const topicCount = new Map(topics.map((t) => [t.monthId, t._count]));
   const scriptCount = new Map(scripts.map((t) => [t.monthId, t._count]));
   const projByMonth = new Map<string, typeof projects>();
@@ -305,8 +333,14 @@ export async function getProgramRoster(): Promise<ProgramRow[]> {
     const inReview = ps.reduce((s, p) => s + p.reviewSubmissions.filter((r) => r.status === "PENDING").length, 0);
     const topicsSelected = m ? topicCount.get(m.id) ?? 0 : 0;
     const scriptsReady = m ? scriptCount.get(m.id) ?? 0 : 0;
+    const scriptsAwaiting = m ? awaitingCount.get(m.id) ?? 0 : 0;
+    const openSuggestions = m ? suggestionCount.get(m.id) ?? 0 : 0;
+    const upcoming = ps
+      .filter((p) => p.shootDate && p.shootDate >= now)
+      .sort((a, b) => a.shootDate!.getTime() - b.shootDate!.getTime())[0];
 
     const attention: string[] = [];
+    let behind: { monthKey: string; delivered: number; owed: number } | null = null;
     if (e.status === "PAUSED") attention.push("Paused — no longer flagged in Aryeo");
     else if (m) {
       if (m.strategyCallStatus === "NOT_SCHEDULED") attention.push("Strategy call not scheduled");
@@ -319,6 +353,7 @@ export async function getProgramRoster(): Promise<ProgramRow[]> {
         const got = prevDelivered.get(prev.id) ?? 0;
         if (got < prev.videosOwed) {
           attention.push(`Behind — ${monthLabel(prevKey)} delivered ${got}/${prev.videosOwed}`);
+          behind = { monthKey: prevKey, delivered: got, owed: prev.videosOwed };
         }
       }
     }
@@ -340,6 +375,13 @@ export async function getProgramRoster(): Promise<ProgramRow[]> {
       inReview,
       topicsSelected,
       scriptsReady,
+      scriptsAwaiting,
+      openSuggestions,
+      strategyCallAt: m?.strategyCallAt?.toISOString() ?? null,
+      nextShootDate: upcoming?.shootDate?.toISOString() ?? null,
+      strategyCallRequired: e.strategyCallRequired,
+      clientSuppliesTopics: e.clientSuppliesTopics,
+      behind,
       attention,
       trial: e.status === "ACTIVE" && (e.billingType === "TRIAL" || (e.statusManual && /trial/i.test(e.notes ?? ""))),
       lastMonthKey: lastMonthOf.get(e.id) ?? null,
