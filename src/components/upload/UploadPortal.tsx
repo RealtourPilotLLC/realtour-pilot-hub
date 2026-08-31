@@ -40,7 +40,7 @@ function initialUploaded(d: Deliverable): boolean {
   return d.uploadedAt != null || DETECTED.includes(d.status);
 }
 
-const NOTHING_SENTINEL = "Nothing needs removal — confirmed by the photographer.";
+import { NOTHING_TO_REMOVE_SENTINEL as NOTHING_SENTINEL, FRONT_TO_BACK_SENTINEL, INTERIOR_EXTERIOR_SENTINEL } from "@/lib/debrief";
 
 // ---------------------------------------------------------------------------
 // Video instructions are STRUCTURED (Jordan, Sep 1: "sectioning it off so it's
@@ -111,8 +111,6 @@ function parseVideoInstructions(text: string | null): { style: VidStyle | null; 
   if (prefixText) sections.vision = sections.vision ? `${prefixText}\n${sections.vision}` : prefixText;
   return { style, sections };
 }
-const FRONT_TO_BACK_SENTINEL = "Shot front to back.";
-const INTERIOR_EXTERIOR_SENTINEL = "Shot front to back — interior first, then exterior.";
 
 // One numbered step card: orange number while open, green check once its
 // requirement is satisfied. The whole page reads as a checklist.

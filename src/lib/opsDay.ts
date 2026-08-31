@@ -1,7 +1,8 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { findUnansweredInbound } from "@/lib/commsSla";
-import { isNeedsAssigning } from "@/lib/triage";
+import { TRIAGE_TYPES } from "@/lib/triage";
+import { NOTHING_TO_REMOVE_SENTINEL } from "@/lib/debrief";
 
 // ---------------------------------------------------------------------------
 // Kyle's Ops Day (Jordan's "Daily Operations & Client Experience Structure",
@@ -16,7 +17,11 @@ function etDayKey(d: Date): string {
   return d.toLocaleDateString("en-CA", { timeZone: ET });
 }
 function etDayWindow(offsetDays: number): { start: Date; end: Date; key: string } {
-  // DST-safe: resolve the ET offset at noon of the target day.
+  // DST-safe for ordinary days (offset resolved at the target day's noon).
+  // Known accepted edges (review): on the two transition nights a shoot
+  // timestamped 11 PM–1 AM can fall in the wrong/both windows, and between
+  // midnight–1 AM on fall-back night "tomorrow" can equal today — real shoots
+  // never book those hours and the windows self-correct on the next render.
   const base = new Date();
   base.setUTCDate(base.getUTCDate()); // today, UTC
   const key = new Date(Date.now() + offsetDays * 86_400_000).toLocaleDateString("en-CA", { timeZone: ET });
@@ -128,7 +133,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
   const today = etDayWindow(0);
   const tomorrow = etDayWindow(1);
 
-  const [todayProjects, tomorrowProjects, qcTasks, loopTasks, revisionProjects, pipelineCounts, unansweredList, assignQueue] =
+  const [todayProjects, tomorrowProjects, qcTasks, loopTasks, revisionProjects, pipelineCounts, unansweredList, needsAssigningCount] =
     await Promise.all([
       prisma.project.findMany({
         where: { shootDate: { gte: today.start, lt: today.end }, status: { notIn: ["CANCELLED", "ON_HOLD"] } },
@@ -141,13 +146,20 @@ export async function buildOpsDay(): Promise<OpsDay> {
         orderBy: { shootDate: "asc" },
       }),
       prisma.smartTask.findMany({
-        where: { taskType: "media_qa", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        where: {
+          taskType: "media_qa",
+          status: { notIn: ["COMPLETED", "CANCELLED"] },
+          // Orphan media_qa rows (null project) exist — the Review Room handles
+          // them; Kyle's home page must not render dead /projects/null links.
+          project: { is: { status: { notIn: ["CANCELLED", "ON_HOLD"] } } },
+        },
         select: {
           id: true, title: true, dueAt: true, checklist: true, projectId: true,
           project: {
             select: {
               title: true, shotOrderNotes: true, removalNotes: true, videoInstructions: true,
               debriefSubmittedAt: true, shootDate: true,
+              deliverables: { select: { type: true } },
               client: { select: { name: true } },
             },
           },
@@ -178,14 +190,17 @@ export async function buildOpsDay(): Promise<OpsDay> {
         prisma.smartTask.count({ where: { status: { notIn: ["COMPLETED", "CANCELLED"] }, dueAt: { gte: today.start, lt: today.end } } }),
       ]),
       findUnansweredInbound(now).catch(() => []),
-      prisma.smartTask.findMany({
-        where: { status: { notIn: ["COMPLETED", "CANCELLED"] } },
-        select: { assignedKey: true, taskType: true },
-        take: 400,
+      // Exact count, same predicate as the /tasks triage strip (no sampling).
+      prisma.smartTask.count({
+        where: {
+          status: { notIn: ["COMPLETED", "CANCELLED"] },
+          assignedKey: null,
+          taskType: { in: [...TRIAGE_TYPES] },
+        },
       }),
     ]);
 
-  const qc: OpsQcRow[] = qcTasks.map((t) => {
+  const qc: OpsQcRow[] = qcTasks.filter((t) => t.projectId != null).map((t) => {
     let itemsLeft = 0;
     try {
       const items = t.checklist ? (JSON.parse(t.checklist) as { done?: boolean }[]) : [];
@@ -202,9 +217,13 @@ export async function buildOpsDay(): Promise<OpsDay> {
       overdue: !!t.dueAt && t.dueAt < now,
       debrief: {
         shotOrder: pr?.shotOrderNotes ?? null,
-        removals: pr?.removalNotes && pr.removalNotes !== "Nothing needs removal — confirmed by the photographer." ? pr.removalNotes : null,
+        removals: pr?.removalNotes && pr.removalNotes !== NOTHING_TO_REMOVE_SENTINEL ? pr.removalNotes : null,
         videoBrief: !!pr?.videoInstructions,
-        unsubmitted: !!pr?.shootDate && pr.shootDate.getTime() >= DEBRIEF_GATE && pr.shootDate < now && !pr.debriefSubmittedAt,
+        // Same predicate as the QC card's line (photo-category jobs only) —
+        // two surfaces must never disagree about the same shoot (review).
+        unsubmitted:
+          !!pr?.shootDate && pr.shootDate.getTime() >= DEBRIEF_GATE && pr.shootDate < now && !pr.debriefSubmittedAt &&
+          (pr.deliverables ?? []).some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d.type)),
       },
     };
   });
@@ -248,7 +267,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
     })),
     pipeline: { editing, review, revision, overdueTasks, dueTodayTasks },
     openLoops,
-    needsAssigning: assignQueue.filter((t) => isNeedsAssigning(t)).length,
+    needsAssigning: needsAssigningCount,
     closeout: {
       todayShootsDone: shotAlready.length === todayShoots.length,
       todayDebriefsIn: debriefsIn,

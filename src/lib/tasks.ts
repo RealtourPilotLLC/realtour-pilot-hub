@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { NOTHING_TO_REMOVE_SENTINEL, DEBRIEF_QC_LABELS, QC_LABEL_SHOT_ORDER, QC_LABEL_REMOVALS, QC_LABEL_VIDEO_BRIEF, QC_LABEL_PAGE_SUBMITTED } from "@/lib/debrief";
 import crypto from "crypto";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { type ChecklistItem, parseChecklist, serializeChecklist, checklistComplete } from "@/lib/checklist";
@@ -321,23 +322,33 @@ function specsForProject(p: {
         if (isVip && category === "Photos") for (const label of VIP_EXTRA_PASS) qcItems.push({ label, done: false });
       }
     }
-    // ---- Shoot-debrief dispatch (Jordan, Sep 1): the photographer's answers
-    // ride the QC card. Removal verification and the video-brief check are
-    // REAL Kyle work (unchecked); the shot order is reference (pre-checked).
+    // ---- Shoot-debrief dispatch (Jordan, Sep 1; hardened per review): every
+    // line uses a STABLE label (the reconciler merges ticks by label) with the
+    // debrief STATE carried in `done`, and once a line has been emitted its
+    // condition can only self-clear (done flips true in the spec), never drop
+    // the label — a dropped done:false label would strand as a permanent
+    // auto-close blocker via the extras rule. Dynamic text (the actual notes)
+    // lives on the project page and Ops Day, never in a label.
     if (p.shotOrderNotes) {
-      qcItems.push({ label: `Shot order from the photographer: ${p.shotOrderNotes.slice(0, 180)}`, done: true });
+      qcItems.push({ label: QC_LABEL_SHOT_ORDER, done: true });
     }
-    if (p.removalNotes && p.removalNotes !== "Nothing needs removal — confirmed by the photographer.") {
-      qcItems.push({ label: `Verify removals were edited out — photographer flagged: ${p.removalNotes.slice(0, 220)}`, done: false });
+    if (p.removalNotes) {
+      // Unchecked = real Kyle work; the photographer flipping to "nothing to
+      // remove" on a re-submit self-clears it (spec re-emits done:true).
+      qcItems.push({ label: QC_LABEL_REMOVALS, done: p.removalNotes === NOTHING_TO_REMOVE_SENTINEL });
     }
-    if (seenCategories.has("Video") && p.videoInstructions) {
-      qcItems.push({ label: "Check the video against the photographer's brief (style · must-show · areas to avoid) — it's on the project page", done: false });
+    if (p.videoInstructions && qcTypes.some((d) => TYPE_CATEGORY_LABEL[d] === "Video")) {
+      qcItems.push({ label: QC_LABEL_VIDEO_BRIEF, done: false });
     }
     if (
       p.shootDate && p.shootDate.getTime() >= Date.parse("2026-09-02T00:00:00-04:00") &&
-      !p.debriefSubmittedAt && qcTypes.some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d))
+      // dedupeTypes folds DRONE into PHOTOS, so PHOTOS/TWILIGHT is the real set.
+      qcTypes.some((d) => ["PHOTOS", "TWILIGHT"].includes(d))
     ) {
-      qcItems.push({ label: "Upload page never submitted — treat the gallery as unculled and check counts against the SOP", done: false });
+      // Positive framing so done:true = good; unchecked BLOCKS delivery until
+      // the page is submitted (Jordan's law: the job isn't done until it is),
+      // and the submit self-clears it on the next sweep.
+      qcItems.push({ label: QC_LABEL_PAGE_SUBMITTED, done: !!p.debriefSubmittedAt });
     }
 
     // QC and "deliver the gallery" are ONE motion for Kyle — a separate
@@ -1948,6 +1959,12 @@ async function syncOneProjectTasks(
     squareFeet: p.squareFeet,
     photoTarget: p.photoTarget,
     clientSegment: p.client.segment,
+    // Shoot-debrief dispatch — WITHOUT these the whole feature is dead code
+    // (review, Sep 1: optional params + an explicit literal = silent no-op).
+    removalNotes: p.removalNotes,
+    shotOrderNotes: p.shotOrderNotes,
+    debriefSubmittedAt: p.debriefSubmittedAt,
+    videoInstructions: p.videoInstructions,
   });
   // Reconcile: close any open production task that's no longer expected. This
   // retires "QA photos" / "Deliver gallery" once the photos are live (even
@@ -2050,7 +2067,11 @@ async function syncOneProjectTasks(
         // "Re-QC after revision" / "QC Reel (revision)" from reflectRevisionInQc)
         // with its done state — otherwise it'd be silently dropped and the task
         // could auto-complete while a re-QC was still pending.
-        const extras = prev.filter((i) => !specLabels.has(i.label));
+        // Debrief lines are exempt from extras-preservation: their labels are
+        // stable constants that self-clear via spec state, so one absent from
+        // the spec is retired ON PURPOSE (e.g. a video deliverable removed) —
+        // preserving it unchecked would block auto-close forever (review).
+        const extras = prev.filter((i) => !specLabels.has(i.label) && !DEBRIEF_QC_LABELS.has(i.label));
         const merged: ChecklistItem[] = [
           ...s.checklist.map((i) => ({ label: i.label, done: i.done || (prevDone.get(i.label) ?? false) })),
           ...extras,

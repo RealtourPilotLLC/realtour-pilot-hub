@@ -3,6 +3,7 @@
 import { requireDeliverableAccess, requireShootAccess, requireUploadFileAccess } from "@/lib/auth/guards";
 
 import { prisma } from "@/lib/prisma";
+import { NOTHING_TO_REMOVE_SENTINEL, FRONT_TO_BACK_SENTINEL, INTERIOR_EXTERIOR_SENTINEL } from "@/lib/debrief";
 import { revalidatePath } from "next/cache";
 import { ProjectStatus, DeliverableStatus, ActivityType } from "@prisma/client";
 import { saveUpload, deleteFile } from "@/lib/storage";
@@ -354,8 +355,8 @@ export async function finalizeUpload(
         ? {
             shotOrderNotes: (() => {
               const mode = data.shotOrder.mode ?? (data.shotOrder.frontToBack ? "front-to-back" : "out-of-order");
-              if (mode === "front-to-back") return "Shot front to back.";
-              if (mode === "interior-exterior") return "Shot front to back — interior first, then exterior.";
+              if (mode === "front-to-back") return FRONT_TO_BACK_SENTINEL;
+              if (mode === "interior-exterior") return INTERIOR_EXTERIOR_SENTINEL;
               // Never double-wrap a note that already carries the prefix
               // (belt to the client-side strip — prod data stays clean).
               return data.shotOrder.notes?.trim()
@@ -367,7 +368,7 @@ export async function finalizeUpload(
       ...(data.removalNotes?.trim()
         ? { removalNotes: data.removalNotes.trim().slice(0, 4000) }
         : data.nothingToRemove
-          ? { removalNotes: "Nothing needs removal — confirmed by the photographer." }
+          ? { removalNotes: NOTHING_TO_REMOVE_SENTINEL }
           : {}),
       ...(data.videoInstructions?.trim() ? { videoInstructions: data.videoInstructions.trim().slice(0, 6000) } : {}),
       ...(data.scriptConfirm
