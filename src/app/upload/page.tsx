@@ -11,6 +11,7 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { photographerMemberId } from "@/lib/shoot";
 import { rawPhotoCounts } from "@/lib/dropboxFolders";
 import { photoTargetFor, rawOverageCeiling } from "@/lib/culling";
+import { DEBRIEF_PAY_GATE_FROM } from "@/lib/payroll";
 import { stageMeta, DELIVERABLE_META } from "@/lib/pipeline";
 import { DeliverableType } from "@prisma/client";
 import { etDateTime, etDaysAgo } from "@/lib/datetime";
@@ -146,7 +147,6 @@ type Shoot = {
 // Shoots from Sep 2 2026 on ride the payroll gate: pay shows in My Pay only
 // once the upload page is SUBMITTED (debriefSubmittedAt — not the Dropbox
 // auto-stamp). The row says so until they do.
-const DEBRIEF_PAY_GATE_FROM = Date.parse("2026-09-02T00:00:00-04:00");
 
 function JobRow({ s, overBudget }: { s: Shoot; overBudget: boolean }) {
   const stage = stageMeta(s.status as Parameters<typeof stageMeta>[0]);

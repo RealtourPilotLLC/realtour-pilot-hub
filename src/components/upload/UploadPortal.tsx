@@ -66,6 +66,11 @@ type VidKey = (typeof VID_SECTIONS)[number]["key"];
 const COLOR_PROFILE_LINE = "COLOR PROFILE: S-Log3, D-LogM";
 
 function composeVideoInstructions(style: VidStyle | null, sections: Record<VidKey, string>): string {
+  const hasContent = style !== null || VID_SECTIONS.some((s) => sections[s.key]?.trim());
+  // Nothing filled (photo-only jobs, untouched video forms) → EMPTY, so the
+  // server never persists a brief that is just the auto color-profile line
+  // (review: that vacuously satisfied the required-brief gate).
+  if (!hasContent) return "";
   const parts: string[] = [];
   if (style) parts.push(`STYLE: ${VID_STYLES[style]}`);
   parts.push(COLOR_PROFILE_LINE);
@@ -76,32 +81,34 @@ function composeVideoInstructions(style: VidStyle | null, sections: Record<VidKe
   return parts.join("\n\n");
 }
 
+// Labels only count as section headers when they are an ENTIRE line — a legacy
+// free-text brief that merely contains the word "SUMMARY" mid-sentence must
+// not be mis-split and truncated on re-submit (review: silent prod data loss).
 function parseVideoInstructions(text: string | null): { style: VidStyle | null; sections: Record<VidKey, string> } {
   const sections = Object.fromEntries(VID_SECTIONS.map((s) => [s.key, ""])) as Record<VidKey, string>;
   if (!text?.trim()) return { style: null, sections };
   let style: VidStyle | null = null;
-  const styleMatch = text.match(/^STYLE:\s*(.+)$/m);
-  if (styleMatch) {
-    const v = styleMatch[1].trim();
-    style = v === VID_STYLES.fast ? "fast" : v === VID_STYLES.cinematic ? "cinematic" : null;
-  }
-  const labels = VID_SECTIONS.map((s) => s.label);
-  const hasLabels = labels.some((l) => text.includes(l));
-  if (!hasLabels) {
-    // Legacy free-text instructions land whole in the vision box.
-    sections.vision = text.trim();
-    return { style, sections };
-  }
-  for (let i = 0; i < VID_SECTIONS.length; i++) {
-    const start = text.indexOf(VID_SECTIONS[i].label);
-    if (start === -1) continue;
-    let end = text.length;
-    for (const other of labels) {
-      const idx = text.indexOf(other, start + VID_SECTIONS[i].label.length);
-      if (idx !== -1 && idx < end) end = idx;
+  const lines = text.split("\n");
+  const keyForLabel = new Map<string, VidKey>(VID_SECTIONS.map((s) => [s.label, s.key as VidKey]));
+  let current: VidKey | null = null;
+  const prefix: string[] = []; // content before any label line (legacy text)
+  for (const raw of lines) {
+    const line = raw.trim();
+    const styleMatch = line.match(/^STYLE:\s*(.+)$/);
+    if (styleMatch && current === null) {
+      const v = styleMatch[1].trim();
+      style = v === VID_STYLES.fast ? "fast" : v === VID_STYLES.cinematic ? "cinematic" : style;
+      continue;
     }
-    sections[VID_SECTIONS[i].key] = text.slice(start + VID_SECTIONS[i].label.length, end).trim();
+    if (line === COLOR_PROFILE_LINE) continue; // re-added automatically on compose
+    const key = keyForLabel.get(line);
+    if (key) { current = key; continue; }
+    if (current) sections[current] += (sections[current] ? "\n" : "") + raw;
+    else prefix.push(raw);
   }
+  for (const s of VID_SECTIONS) sections[s.key] = sections[s.key].trim();
+  const prefixText = prefix.join("\n").trim();
+  if (prefixText) sections.vision = sections.vision ? `${prefixText}\n${sections.vision}` : prefixText;
   return { style, sections };
 }
 const FRONT_TO_BACK_SENTINEL = "Shot front to back.";
@@ -244,7 +251,11 @@ export function UploadPortal({
   const [vidStyle, setVidStyle] = useState<VidStyle | null>(parsedVid.style);
   const [vidSections, setVidSections] = useState<Record<VidKey, string>>(parsedVid.sections);
   const vidInstructions = composeVideoInstructions(vidStyle, vidSections);
-  const vidAnswered = !!vidSections.vision.trim() && vidStyle !== null;
+  // A job that already carries a brief (legacy free text, or a prior submit)
+  // is never retro-blocked for the new required fields — same rule as the
+  // server's first-finalize-only gates.
+  const hadPriorBrief = !!project.videoInstructions?.trim();
+  const vidAnswered = hadPriorBrief || (!!vidSections.vision.trim() && vidStyle !== null);
   const [scriptChoice, setScriptChoice] = useState<"as-written" | "edited" | null>(
     project.scriptConfirmedAt
       ? project.scriptConfirmNote?.startsWith("Edited") ? "edited" : "as-written"
@@ -293,8 +304,8 @@ export function UploadPortal({
     if (policy.photosOrdered && orderChoice === null) missing.push("answer the shot order");
     if (policy.photosOrdered && orderChoice === "out-of-order" && !orderNotes.trim()) missing.push("the order you shot the home (and why)");
     if (policy.photosOrdered && !removal.trim() && !nothingToRemove) missing.push("answer the removal notes");
-    if (policy.videoOrdered && !vidSections.vision.trim()) missing.push("the vision for the edit");
-    if (policy.videoOrdered && vidStyle === null) missing.push("pick an edit style");
+    if (policy.videoOrdered && !hadPriorBrief && !vidSections.vision.trim()) missing.push("the vision for the edit");
+    if (policy.videoOrdered && !hadPriorBrief && vidStyle === null) missing.push("pick an edit style");
     if (policy.videoOrdered && script && !scriptChoice) missing.push("confirm the script");
     if (policy.videoOrdered && scriptChoice === "edited" && !scriptText.trim()) missing.push("the edited script text (or pick “Delivered as written”)");
     return missing;
@@ -363,7 +374,7 @@ export function UploadPortal({
     orderChoice === "front-to-back" || orderChoice === "interior-exterior" ||
     (orderChoice === "out-of-order" && !!orderNotes.trim());
   const videoDone =
-    vidAnswered && (!script || (scriptChoice !== null && (scriptChoice !== "edited" || !!scriptText.trim())));
+    vidAnswered && (!script || hadPriorBrief || (scriptChoice !== null && (scriptChoice !== "edited" || !!scriptText.trim())));
 
   return (
     <div className="space-y-4">

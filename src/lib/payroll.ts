@@ -114,6 +114,10 @@ async function dailyMiles(
   dayKey: string,
   home: { lat: number; lng: number } | null,
   stops: Stop[],
+  // Creative-eyes payroll drops gated lines, so its stop set can differ from
+  // the owner view's on mixed days. It must READ the cache but never write it,
+  // or the two views ping-pong the sig and re-hit OSRM forever (review).
+  readOnlyCache = false,
 ): Promise<DayMiles> {
   const cached = await prisma.mileageDay.findUnique({
     where: { teamMemberId_dayKey: { teamMemberId: memberId, dayKey } },
@@ -136,11 +140,13 @@ async function dailyMiles(
   const miles = await routeMiles(home, stops);
   // The upsert never touches the override columns — a recompute (route change,
   // cache clear) must not eat an owner correction.
-  await prisma.mileageDay.upsert({
-    where: { teamMemberId_dayKey: { teamMemberId: memberId, dayKey } },
-    create: { teamMemberId: memberId, dayKey, miles, stops: stops.length, sig },
-    update: { miles, stops: stops.length, sig, computedAt: new Date() },
-  });
+  if (!readOnlyCache) {
+    await prisma.mileageDay.upsert({
+      where: { teamMemberId_dayKey: { teamMemberId: memberId, dayKey } },
+      create: { teamMemberId: memberId, dayKey, miles, stops: stops.length, sig },
+      update: { miles, stops: stops.length, sig, computedAt: new Date() },
+    });
+  }
   return withOverride(miles);
 }
 
@@ -217,7 +223,7 @@ export async function unassignedShootsInRange(start: Date, end: Date): Promise<{
 // on CREATIVE surfaces (My Pay, /shoot pay card, payday text) once the upload
 // page is submitted (Jordan, Sep 1 2026: "once submitted, this shoot will be
 // added to your payroll"). Owner surfaces always see the full accrual.
-const DEBRIEF_PAY_GATE_FROM = Date.parse("2026-09-02T00:00:00-04:00");
+export const DEBRIEF_PAY_GATE_FROM = Date.parse("2026-09-02T00:00:00-04:00");
 
 export async function computePayroll(
   start: Date,
@@ -471,19 +477,36 @@ export async function computePayroll(
   }
 
   // Everyone with lines, a period adjustment, OR a removed job gets a card.
-  // The debrief pay gate: flag every line whose shoot (Sep 2+) has no
-  // submitted upload page; creative-facing calls drop those lines entirely
-  // BEFORE day/mileage/total assembly, so what a photographer sees is
-  // internally consistent — the shoot simply isn't on their pay yet.
-  const debriefPendingIds = new Set(
-    projects
-      .filter((p) => p.shootDate && p.shootDate.getTime() >= DEBRIEF_PAY_GATE_FROM && !p.debriefSubmittedAt)
-      .map((p) => p.id),
-  );
-  if (debriefPendingIds.size > 0) {
+  // The debrief pay gate: flag lines whose shoot (Sep 2+) has HAPPENED but has
+  // no submitted upload page. Two deliberate scopes (review, Sep 1): a FUTURE
+  // booked shoot is never gated — the pre-shoot pay preview is a motivator and
+  // debriefSubmittedAt is null by definition before the shoot — and only the
+  // PRIMARY photographer's lines gate, since the debrief is their job; a
+  // return-trip second shooter or a hand-added payee must not have their pay
+  // hidden by someone else's unsubmitted page. Creative-facing calls drop the
+  // flagged lines BEFORE day/mileage/total assembly.
+  const nowMs = Date.now();
+  const debriefPendingOwner = new Map<string, string | null>(); // projectId -> photographerId
+  for (const p of projects) {
+    if (p.shootDate && p.shootDate.getTime() >= DEBRIEF_PAY_GATE_FROM && p.shootDate.getTime() <= nowMs && !p.debriefSubmittedAt) {
+      debriefPendingOwner.set(p.id, p.photographerId ?? null);
+    }
+  }
+  const droppedDaysByMember = new Map<string, Set<string>>();
+  if (debriefPendingOwner.size > 0) {
     for (const [mid, lines] of linesByMember) {
-      for (const l of lines) if (debriefPendingIds.has(l.projectId)) l.debriefPending = true;
-      if (opts?.forCreativeEyes) linesByMember.set(mid, lines.filter((l) => !l.debriefPending));
+      for (const l of lines) {
+        if (debriefPendingOwner.has(l.projectId) && debriefPendingOwner.get(l.projectId) === mid) l.debriefPending = true;
+      }
+      if (opts?.forCreativeEyes) {
+        for (const l of lines) {
+          if (l.debriefPending) {
+            if (!droppedDaysByMember.has(mid)) droppedDaysByMember.set(mid, new Set());
+            droppedDaysByMember.get(mid)!.add(l.dayKey);
+          }
+        }
+        linesByMember.set(mid, lines.filter((l) => !l.debriefPending));
+      }
     }
   }
 
@@ -508,7 +531,7 @@ export async function computePayroll(
             .filter((b) => b.hasCoords)
             .map((b) => { const c = coordsByProject.get(b.projectId)!; return { lat: c!.lat, lng: c!.lng, at: b._at }; })
         : [];
-      const dm = await dailyMiles(memberId, dayKey, home, stops);
+      const dm = await dailyMiles(memberId, dayKey, home, stops, !!opts?.forCreativeEyes);
       const payableMiles = Math.max(dm.miles - freeMiles, 0);
       const share = mileageJobs.length > 0 ? r2((payableMiles * (m?.mileageRate ?? 0.65)) / mileageJobs.length) : 0;
       for (const b of mileageJobs) { b.mileageShare = share; b.jobTotal = r2(b.shootPay + share); }
@@ -540,6 +563,9 @@ export async function computePayroll(
       select: { dayKey: true, miles: true, overrideMiles: true, overrideNote: true },
     });
     for (const o of orphanOverrides) {
+      // A day that only LOOKS empty because its shoot was debrief-dropped from
+      // this creative view must not render a confusing zero-job override row.
+      if (opts?.forCreativeEyes && droppedDaysByMember.get(memberId)?.has(o.dayKey)) continue;
       days.push({
         dayKey: o.dayKey, miles: o.overrideMiles!, computedMiles: o.miles,
         overrideMiles: o.overrideMiles, overrideNote: o.overrideNote,
@@ -679,7 +705,10 @@ export async function paydayPings(): Promise<{ pinged: number } | { skipped: str
     // offsets shifted the winter window an hour early and could disagree
     // with /my-pay's own figures).
     const { start, end } = periodBounds(period);
-    const people = await computePayroll(start, end, { forCreativeEyes: true });
+    // FULL accrual here — this text describes money actually landing today,
+    // and it must match the deposit even if an upload page is still pending
+    // (the concealment is a during-the-period nudge, never a payday lie).
+    const people = await computePayroll(start, end);
     let pinged = 0;
     for (const person of people) {
       if (person.total <= 0) continue;

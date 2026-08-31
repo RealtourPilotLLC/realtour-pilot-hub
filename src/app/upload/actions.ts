@@ -253,8 +253,22 @@ export async function finalizeUpload(
     if (wantsPhotosGate && !data.removalNotes?.trim() && !data.nothingToRemove && !prior.removalNotes) {
       return { blocked: "Answer the removal notes — list anything the editor needs to remove (pets, cans, vehicles, clutter), or tick “Nothing needs removal.”" };
     }
-    if (wantsVideoGate && !data.videoInstructions?.trim() && !prior.videoInstructions) {
-      return { blocked: "Video instructions are required — the flow and your vision for the edit. This can't be left blank; skipping it forfeits premium shoot assignments." };
+    if (wantsVideoGate && !prior.videoInstructions) {
+      // Strip the auto-added STYLE / COLOR PROFILE lines and section labels —
+      // the gate demands the photographer's OWN words, not machine boilerplate
+      // (review: the color-profile line vacuously satisfied a bare check).
+      const meaningful = (data.videoInstructions ?? "")
+        .split("\n")
+        .filter((l) => {
+          const t = l.trim();
+          return t && !/^STYLE:/.test(t) && !/^COLOR PROFILE:/.test(t) &&
+            !["VISION FOR THE EDIT", "SUMMARY", "SHOTS THAT MUST BE SHOWN", "AREAS TO AVOID", "REALTOR REQUESTS", "ADDITIONAL NOTES"].includes(t);
+        })
+        .join("")
+        .trim();
+      if (!meaningful) {
+        return { blocked: "Video instructions are required — the flow and your vision for the edit. This can't be left blank; skipping it forfeits premium shoot assignments." };
+      }
     }
     if (wantsVideoGate && prior.reelScript && !data.scriptConfirm && !prior.scriptConfirmedAt) {
       // The script may have landed from Studio AFTER their page loaded — an
