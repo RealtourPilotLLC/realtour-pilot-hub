@@ -133,6 +133,7 @@ export function UploadPortal({
     videoOrdered: boolean;
     photoTarget: number;
     range: { low: number; high: number; upper: number | null };
+    rangeMode: "sop" | "legacy" | "override";
     squareFeet: number | null;
   };
   /** the shoot script pulled from Script Studio (null = none exists there) */
@@ -405,7 +406,17 @@ export function UploadPortal({
       {policy.photosOrdered && (
         <StepCard n={stepNo++} title="The photo standard — run your cull" done={cullOk}>
           <div className="rounded-xl bg-brand-soft/50 px-3.5 py-2.5 text-sm">
-            {policy.range.upper ? (
+            {policy.rangeMode === "override" ? (
+              <>
+                <span className="font-semibold">This home&rsquo;s target: {policy.photoTarget} photos.</span>{" "}
+                <span className="text-foreground/80">Set by the office for this property — it beats the size tier.</span>
+              </>
+            ) : policy.rangeMode === "legacy" ? (
+              <>
+                <span className="font-semibold">This shoot predates the new standard — ceiling ~{policy.photoTarget} finals.</span>{" "}
+                <span className="text-foreground/80">Cull to the SOP anyway: hero shots, one composition once.</span>
+              </>
+            ) : policy.range.upper ? (
               <>
                 <span className="font-semibold">This home: aim for {policy.range.low}–{policy.range.high} finals.</span>{" "}
                 <span className="text-foreground/80">
@@ -416,7 +427,10 @@ export function UploadPortal({
             ) : (
               <>
                 <span className="font-semibold">7,000+ sq ft — property dependent.</span>{" "}
-                <span className="text-foreground/80">Professional judgment: complete coverage without unnecessary repetition.</span>
+                <span className="text-foreground/80">
+                  Professional judgment: complete coverage without unnecessary repetition. The sweep checks in
+                  around ~{policy.photoTarget} finals unless the office sets a target.
+                </span>
               </>
             )}
           </div>
@@ -465,9 +479,11 @@ export function UploadPortal({
             <CheckRow checked={checks.quality} onChange={setCheck("quality")} title="Quality"
               text="Distractions were fixed on site — no avoidable trash cans, pets, or pet items in frame." />
             <CheckRow checked={checks.count} onChange={setCheck("count")} title="Count"
-              text={policy.range.upper
-                ? `The gallery makes sense for this home (aim ${policy.range.low}–${policy.range.high}) — anything above has a reason to exist.`
-                : "The gallery size makes sense for this property — every photo has a reason to exist."} />
+              text={policy.rangeMode !== "sop"
+                ? `The gallery makes sense for this home (~${policy.photoTarget} target) — every photo has a reason to exist.`
+                : policy.range.upper
+                  ? `The gallery makes sense for this home (aim ${policy.range.low}–${policy.range.high}) — anything above has a reason to exist.`
+                  : "The gallery size makes sense for this property — every photo has a reason to exist."} />
           </div>
         </StepCard>
       )}

@@ -232,7 +232,7 @@ export async function finalizeUpload(
     const wantsPhotosGate = prior.deliverables.some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d.type));
     const wantsVideoGate = prior.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
     if (wantsPhotosGate && !data.cullingConfirmed && !prior.cullingConfirmedAt) {
-      return { blocked: "Confirm the cull first — the gallery must be at or under this home's photo cap, with extras in the Backup folder. Overages are deducted at $1/photo." };
+      return { blocked: "Run your cull and confirm all four checks first — hero shots in, duplicates out, extras in Backup Photos. Clearly unnecessary photos can carry a $1 production charge (never justified coverage)." };
     }
     if (wantsPhotosGate && data.shotOrder === undefined && !prior.shotOrderNotes) {
       // Key ABSENT = a pre-update page still open on their phone — an error

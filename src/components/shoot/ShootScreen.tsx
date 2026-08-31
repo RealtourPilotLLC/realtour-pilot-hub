@@ -70,7 +70,9 @@ export function ShootScreen({
   // Only relevant when a photo set is actually being captured; the room budget
   // rides on the PHOTOS capture row and the culling reminder above the checklist.
   const photosOrdered = deliverables.some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d.type));
-  const photoTarget = photosOrdered ? photoTargetFor(project) : null;
+  // ShootView carries shootDateISO (no shootDate key) — hand it through or the
+  // legacy date gate silently never applies on the field view (review finding).
+  const photoTarget = photosOrdered ? photoTargetFor({ ...project, shootDate: project.shootDateISO }) : null;
   // Video/reel jobs get the Agent-on-Camera playbook + reel recipe on-site.
   const isVideo = deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
   // Hard, order-specific must-dos (amber "don't leave without"): the order's

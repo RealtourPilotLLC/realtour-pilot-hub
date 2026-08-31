@@ -41,21 +41,56 @@ export function photoRangeFor(sqft: number | null | undefined): PhotoRange {
 // (review finding, Aug 31).
 const SOP_TIERS_FROM = Date.parse("2026-09-01T00:00:00-04:00");
 
+function legacyTier(sqft: number | null | undefined): number {
+  return sqft != null && sqft >= 3500 ? 80 : 50;
+}
+
+// A shoot is judged by the OLD rules when it happened before the SOP landed —
+// and shootDate alone is not enough (it's movable, and can be null): a job
+// CREATED pre-SOP whose date was rescheduled/lost was still briefed to the
+// old standard. Unknown-everything also counts as legacy (lenient: enforcement
+// must never retro-tighten on a job we can't date — review finding, Sep 1).
+function legacyEligible(project: { shootDate?: Date | string | null; createdAt?: Date | string | null }): boolean {
+  const shotAt = project.shootDate ? new Date(project.shootDate).getTime() : null;
+  if (shotAt != null) return shotAt < SOP_TIERS_FROM;
+  const createdAt = project.createdAt ? new Date(project.createdAt).getTime() : null;
+  return createdAt == null || createdAt < SOP_TIERS_FROM;
+}
+
 // The ENFORCEMENT number for one home (the ceiling the cull sweep and the
 // over-budget chips judge against): an explicit owner override wins; otherwise
-// the SOP tier's normal upper range (or the legacy 50/80 for pre-SOP shoots).
+// the SOP tier's normal upper range. Legacy shoots get the MORE LENIENT of
+// their briefed 50/80 and the SOP upper — the gate exists to prevent
+// retro-tightening, never to grandfather a tighter rule.
 export function photoTargetFor(project: {
   photoTarget?: number | null;
   squareFeet?: number | null;
   shootDate?: Date | string | null;
+  createdAt?: Date | string | null;
 }): number {
   if (project.photoTarget != null) return project.photoTarget;
   const sqft = project.squareFeet;
-  const shotAt = project.shootDate ? new Date(project.shootDate).getTime() : null;
-  if (shotAt != null && shotAt < SOP_TIERS_FROM) {
-    return sqft != null && sqft >= 3500 ? 80 : 50; // the standard that shoot was briefed to
-  }
-  return photoRangeFor(sqft).upper ?? 90;
+  const sopUpper = photoRangeFor(sqft).upper ?? 90;
+  if (legacyEligible(project)) return Math.max(legacyTier(sqft), sopUpper);
+  return sopUpper;
+}
+
+// The ONE source for every surface that talks photo counts: the enforcement
+// target plus the display range plus which regime produced it — so a page can
+// never preach a range the sweep doesn't enforce (review finding, Sep 1).
+export type PhotoPolicy = { target: number; range: PhotoRange; mode: "sop" | "legacy" | "override" };
+
+export function photoPolicyFor(project: {
+  photoTarget?: number | null;
+  squareFeet?: number | null;
+  shootDate?: Date | string | null;
+  createdAt?: Date | string | null;
+}): PhotoPolicy {
+  const range = photoRangeFor(project.squareFeet);
+  const target = photoTargetFor(project);
+  if (project.photoTarget != null) return { target, range, mode: "override" };
+  const sopUpper = range.upper ?? 90;
+  return { target, range, mode: legacyEligible(project) && target !== sopUpper ? "legacy" : "sop" };
 }
 
 // The bracketed-raw budget that maps to a final target (what the photographer

@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
 import { UploadPortal } from "@/components/upload/UploadPortal";
 import { AppointmentFeedback } from "@/components/upload/AppointmentFeedback";
 import { getProjectFolderState } from "@/lib/dropboxFolders";
-import { photoRangeFor, photoTargetFor, rawBudgetFor, rawOverageCeiling } from "@/lib/culling";
+import { photoPolicyFor, rawBudgetFor, rawOverageCeiling } from "@/lib/culling";
 import { ActivityType } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
@@ -54,9 +54,11 @@ export default async function UploadProjectPage({
   if (!project) notFound();
 
   const folderState = await getProjectFolderState(project);
-  // This home's photo budget (from sq ft or the owner override) — the standard
-  // the cull confirmation on this page holds them to.
-  const photoTarget = photoTargetFor(project);
+  // ONE policy source for everything this page says about photo counts — the
+  // enforcement target, the display range, and which regime produced them
+  // (override / legacy / SOP), so the chip can never contradict the sweep.
+  const photoPolicy = photoPolicyFor(project);
+  const photoTarget = photoPolicy.target;
   // Photo policy sections only render for jobs that ordered photos; the video
   // script + instructions only for jobs that ordered video (audit Aug 25).
   const photosOrdered = project.deliverables.some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d.type));
@@ -117,7 +119,8 @@ export default async function UploadProjectPage({
           photosOrdered,
           videoOrdered,
           photoTarget,
-          range: photoRangeFor(project.squareFeet),
+          range: photoPolicy.range,
+          rangeMode: photoPolicy.mode,
           squareFeet: project.squareFeet ?? null,
         }}
         script={scriptBody ? { body: scriptBody, hook: scriptHook, url: scriptUrl } : null}

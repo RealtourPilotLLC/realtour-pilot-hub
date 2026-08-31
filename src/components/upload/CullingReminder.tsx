@@ -1,15 +1,10 @@
 import { Scissors } from "lucide-react";
 
-// Jordan's culling policy (Jul 2026): galleries kept coming in way over count —
-// extra photos cost real editing money and clients said oversized galleries are
-// a hassle to sort through. Targets: ~50 photos for most homes, ~80 for large
-// properties. Over-delivering is now pay-deductible, so the reminder lives on
-// the upload list AND on every shoot's drop page.
-//
-// `target` is THIS home's budget (from photoTargetFor). When present we LEAD with
-// it so the photographer sees a concrete number for this job, not just the
-// generic 50/80 policy. `hidePay` drops the pay-deduction line for the /shoot
-// field view, where photographers see counts only — never money.
+// The Photography SOP's culling reminder (rewritten Sep 1 2026 when the SOP
+// replaced the old flat 50/80 caps with size-tier RANGES). `target` is THIS
+// home's enforcement ceiling from photoTargetFor — when present we lead with
+// it. `hidePay` drops the pay line for the /shoot field view (counts only,
+// never money).
 export function CullingReminder({
   compact,
   target,
@@ -26,12 +21,12 @@ export function CullingReminder({
         <span>
           {target != null && (
             <>
-              <strong>Your budget for this home: ~{target} photos.</strong>{" "}
+              <strong>This home&rsquo;s ceiling: ~{target} finals — and the ceiling is not a goal.</strong>{" "}
             </>
           )}
-          <strong>Cull before you drop:</strong> aim for <strong>~50 photos</strong> on most homes,
-          up to <strong>~80</strong> on large properties.
-          {!hidePay && " Over-delivering comes out of shoot pay."}
+          <strong>Cull before you upload:</strong> a hero shot per space, one composition once, every photo adds
+          new information. Extras go to Backup Photos.
+          {!hidePay && " Clearly unnecessary photos can carry a $1 production charge."}
         </span>
       </p>
     );
@@ -41,16 +36,17 @@ export function CullingReminder({
       <Scissors className="mt-0.5 size-5 shrink-0 text-warning" />
       <div className="text-sm leading-relaxed">
         <p className="font-semibold">
-          {target != null ? `Your budget for this home: ~${target} photos` : "Cull your photos before uploading"}
+          {target != null ? `This home's ceiling: ~${target} finals — the ceiling is not a goal` : "Cull to the Photography SOP before uploading"}
         </p>
         <p className="mt-1 text-muted">
-          Most homes should be <strong className="text-foreground">around 50 photos or fewer</strong> — large
-          properties up to <strong className="text-foreground">about 80</strong>. Extra photos cost real editing
-          money, and clients have told us oversized galleries are a hassle to sort through and organize.
+          Gallery targets run by home size — <strong className="text-foreground">25–35 finals on the smallest
+          homes up to 70–85 on the largest</strong>. A hero shot per space, one composition once, every photo must
+          add new information; alternates go to Backup Photos. Complete coverage, zero unnecessary repetition.
         </p>
         {!hidePay && (
           <p className="mt-1.5 text-xs font-medium text-warning">
-            Heads up: over-delivering photos will come out of shoot pay going forward.
+            Clearly unnecessary photos (duplicates, distance variations, backups uploaded as finals) can carry a
+            $1 production charge — never justified coverage.
           </p>
         )}
       </div>

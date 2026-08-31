@@ -68,8 +68,11 @@ export function PhotoTargetControl({
 
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         {chip("Auto", null, photoTarget == null)}
+        {chip("40", 40, photoTarget === 40)}
         {chip("50", 50, photoTarget === 50)}
-        {chip("80", 80, photoTarget === 80)}
+        {chip("60", 60, photoTarget === 60)}
+        {chip("70", 70, photoTarget === 70)}
+        {chip("90", 90, photoTarget === 90)}
         <form
           onSubmit={(e) => {
             e.preventDefault();
