@@ -144,6 +144,23 @@ export async function buildEditorBriefPdf(project: FullProject): Promise<Uint8Ar
     for (const r of requests) text(`•  ${r.body}`, { size: 11 });
   }
 
+  // ---- Removal notes (photo retouch list) -------------------------------
+  if (project.removalNotes) {
+    heading("Remove in editing");
+    text(project.removalNotes, { size: 11 });
+  }
+
+  // ---- Video: confirmed script + the photographer's instructions --------
+  if (project.videoInstructions) {
+    heading("Video - instructions from the shoot");
+    text(project.videoInstructions, { size: 11 });
+  }
+  if (project.scriptConfirmNote) {
+    heading("Video script");
+    text(`Script status: ${project.scriptConfirmNote}`, { size: 11 });
+    if (project.reelScript) text(project.reelScript, { size: 10 });
+  }
+
   // ---- Photographer's brief --------------------------------------------
   if (project.editorBrief) {
     heading("Photographer's notes");

@@ -442,6 +442,23 @@ export default async function EditBriefPage({
               placeholder="What the editor needs to know from the shoot…"
               empty="No editing notes were submitted on the upload."
             />
+            {project.removalNotes && (
+              <div className="mt-3 space-y-1 border-t border-border pt-3">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Remove in editing</div>
+                <p className="whitespace-pre-wrap text-sm text-foreground/85">{project.removalNotes}</p>
+              </div>
+            )}
+            {project.videoInstructions && (
+              <div className="mt-3 space-y-1 border-t border-border pt-3">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Video — instructions from the shoot</div>
+                <p className="whitespace-pre-wrap text-sm text-foreground/85">{project.videoInstructions}</p>
+              </div>
+            )}
+            {project.scriptConfirmNote && (
+              <p className="mt-3 border-t border-border pt-3 text-[13px] text-muted">
+                Script: <span className="text-foreground/85">{project.scriptConfirmNote}</span> — the confirmed text is in the Script card.
+              </p>
+            )}
             {deliverableNotes.length > 0 && (
               <ul className="mt-3 space-y-1.5">
                 {deliverableNotes.map((d) => (

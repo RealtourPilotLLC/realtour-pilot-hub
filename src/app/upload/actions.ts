@@ -153,8 +153,19 @@ export async function submitAppointmentFeedback(
  */
 export async function finalizeUpload(
   projectId: string,
-  data: { editorBrief: string; itemNotes?: Record<string, string>; force?: boolean },
-): Promise<{ pdfPath?: string; needsConfirm?: boolean; warning?: string }> {
+  data: {
+    editorBrief: string;
+    itemNotes?: Record<string, string>;
+    force?: boolean;
+    // Shoot-debrief fields (upload portal rebuild, Aug 31 2026). The job is
+    // not done until these are answered — enforced HERE, not just in the UI.
+    cullingConfirmed?: boolean;
+    removalNotes?: string;
+    nothingToRemove?: boolean;
+    videoInstructions?: string;
+    scriptConfirm?: { state: "as-written" | "edited"; script?: string; note?: string } | null;
+  },
+): Promise<{ pdfPath?: string; needsConfirm?: boolean; warning?: string; blocked?: string }> {
   await requireShootAccess(projectId);
   // First finalize or a re-submit? The raws-landed handoff below only fires on
   // the FIRST completed upload (the transition), never on edits/re-submits.
@@ -166,11 +177,37 @@ export async function finalizeUpload(
       addressLine: true,
       shootDate: true,
       createdAt: true,
+      cullingConfirmedAt: true,
+      removalNotes: true,
+      videoInstructions: true,
+      scriptConfirmedAt: true,
+      reelScript: true,
       client: { select: { name: true } },
       deliverables: { select: { type: true } },
     },
   });
   const firstFinalize = !prior?.uploadedAt;
+
+  // ---- The debrief gates (Jordan, Aug 31): the job is not done until the
+  // cull is confirmed, removal notes are answered, and video jobs carry the
+  // editor's instructions + a confirmed script. Prior answers survive
+  // re-submits — nobody re-types a form to fix a typo in the brief.
+  if (prior) {
+    const wantsPhotosGate = prior.deliverables.some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d.type));
+    const wantsVideoGate = prior.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+    if (wantsPhotosGate && !data.cullingConfirmed && !prior.cullingConfirmedAt) {
+      return { blocked: "Confirm the cull first — the gallery must be at or under this home's photo cap, with extras in the Backup folder. Overages are deducted at $1/photo." };
+    }
+    if (wantsPhotosGate && !data.removalNotes?.trim() && !data.nothingToRemove && !prior.removalNotes) {
+      return { blocked: "Answer the removal notes — list anything the editor needs to remove (pets, cans, vehicles, clutter), or tick “Nothing needs removal.”" };
+    }
+    if (wantsVideoGate && !data.videoInstructions?.trim() && !prior.videoInstructions) {
+      return { blocked: "Video instructions are required — the flow and your vision for the edit. This can't be left blank; skipping it forfeits premium shoot assignments." };
+    }
+    if (wantsVideoGate && prior.reelScript && !data.scriptConfirm && !prior.scriptConfirmedAt) {
+      return { blocked: "Confirm the script — delivered as written, or edited on site? The editor cuts to whatever you confirm here." };
+    }
+  }
 
   // SERVER-SIDE completeness check against the ORDER (the old client-side
   // confirm was honor-system only — July 2026 audit: "photos-only upload reads
@@ -210,12 +247,33 @@ export async function finalizeUpload(
     }
   }
 
+  const scriptEdited = data.scriptConfirm?.state === "edited";
   await prisma.project.update({
     where: { id: projectId },
     data: {
       // Only overwrite the brief when the finalize actually carries one — a
       // re-finalize with an empty field must not wipe the photographer's notes.
       ...(data.editorBrief.trim() ? { editorBrief: data.editorBrief.trim() } : {}),
+      ...(data.cullingConfirmed ? { cullingConfirmedAt: new Date() } : {}),
+      ...(data.removalNotes?.trim()
+        ? { removalNotes: data.removalNotes.trim().slice(0, 4000) }
+        : data.nothingToRemove
+          ? { removalNotes: "Nothing needs removal — confirmed by the photographer." }
+          : {}),
+      ...(data.videoInstructions?.trim() ? { videoInstructions: data.videoInstructions.trim().slice(0, 6000) } : {}),
+      ...(data.scriptConfirm
+        ? {
+            scriptConfirmedAt: new Date(),
+            scriptConfirmNote: scriptEdited
+              ? `Edited on site${data.scriptConfirm.note?.trim() ? ` — ${data.scriptConfirm.note.trim().slice(0, 500)}` : ""}`
+              : "Delivered as written",
+            // An on-site edit replaces the working script — the editor must cut
+            // to what was actually filmed, not what Studio drafted.
+            ...(scriptEdited && data.scriptConfirm.script?.trim()
+              ? { reelScript: data.scriptConfirm.script.trim().slice(0, 20_000), reelRecipeUpdatedAt: new Date() }
+              : {}),
+          }
+        : {}),
       uploadedAt: new Date(),
     },
   });

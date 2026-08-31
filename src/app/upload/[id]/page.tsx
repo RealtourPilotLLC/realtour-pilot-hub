@@ -12,9 +12,8 @@ import {
 import { BackLink } from "@/components/ui/BackLink";
 import { prisma } from "@/lib/prisma";
 import { cn } from "@/lib/utils";
-import { CullingReminder } from "@/components/upload/CullingReminder";
-import { CullUploader } from "@/components/upload/CullUploader";
 import { UploadPortal } from "@/components/upload/UploadPortal";
+import { AppointmentFeedback } from "@/components/upload/AppointmentFeedback";
 import { getProjectFolderState } from "@/lib/dropboxFolders";
 import { BRACKET_RATIO, photoTargetFor, rawBudgetFor, rawOverageCeiling } from "@/lib/culling";
 import { ActivityType } from "@prisma/client";
@@ -50,34 +49,41 @@ export default async function UploadProjectPage({
   if (!project) notFound();
 
   const folderState = await getProjectFolderState(project);
-  // This home's photo budget (from sq ft or the owner override) — surfaced next
-  // to the live raw count so the photographer sees over-shooting immediately.
+  // This home's photo budget (from sq ft or the owner override) — the standard
+  // the cull confirmation on this page holds them to.
   const photoTarget = photoTargetFor(project);
-  // The culling kit is PHOTO tooling — a video-/3D-only job must not tell the
-  // shooter to cull photos nobody ordered (audit Aug 25).
+  // Photo policy sections only render for jobs that ordered photos; the video
+  // script + instructions only for jobs that ordered video (audit Aug 25).
   const photosOrdered = project.deliverables.some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d.type));
+  const videoOrdered = project.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+
+  // Video jobs: pull the shoot script from Script Studio (freshness-gated,
+  // never blocks the page on a dead Studio) so the photographer confirms the
+  // words the agent actually read.
+  let scriptBody = project.reelScript;
+  let scriptHook = project.reelHook;
+  let scriptUrl = project.reelScriptUrl;
+  if (videoOrdered) {
+    try {
+      const { autoSyncScript } = await import("@/lib/scriptSync");
+      const pulled = await autoSyncScript(project.id);
+      if (pulled) {
+        const fresh = await prisma.project.findUnique({
+          where: { id: project.id },
+          select: { reelScript: true, reelHook: true, reelScriptUrl: true },
+        });
+        scriptBody = fresh?.reelScript ?? scriptBody;
+        scriptHook = fresh?.reelHook ?? scriptHook;
+        scriptUrl = fresh?.reelScriptUrl ?? scriptUrl;
+      }
+    } catch { /* Studio down → the page still works with what's stored */ }
+  }
 
   return (
     <div className="mx-auto max-w-3xl p-6">
       <BackLink href="/upload" label="All shoots" />
 
       <DropboxFolders state={folderState} photoTarget={photoTarget} />
-
-      {photosOrdered && (
-        <>
-          {/* The budget chip at the drop point — the ONE budget surface on this
-              page (the banner + duplicate chips were noise — audit). */}
-          <div className="mt-4">
-            <CullingReminder compact target={photoTarget} />
-          </div>
-
-          {/* Cull FIRST, upload only the keepers (photos; video still goes via
-              the Dropbox folders below). */}
-          <div className="mt-4">
-            <CullUploader projectId={project.id} photoTarget={photoTarget} bracket={BRACKET_RATIO} />
-          </div>
-        </>
-      )}
 
       <UploadPortal
         project={{
@@ -96,7 +102,19 @@ export default async function UploadProjectPage({
           clientName: project.client.name,
           editingPreferences: project.client.editingPreferences,
           photographerName: project.photographer?.name ?? null,
+          cullingConfirmedAt: project.cullingConfirmedAt?.toISOString() ?? null,
+          removalNotes: project.removalNotes,
+          videoInstructions: project.videoInstructions,
+          scriptConfirmedAt: project.scriptConfirmedAt?.toISOString() ?? null,
+          scriptConfirmNote: project.scriptConfirmNote,
         }}
+        policy={{
+          photosOrdered,
+          videoOrdered,
+          photoTarget,
+          squareFeet: project.squareFeet ?? null,
+        }}
+        script={scriptBody ? { body: scriptBody, hook: scriptHook, url: scriptUrl } : null}
         deliverables={project.deliverables.map((d) => ({
           id: d.id,
           type: d.type,
@@ -111,6 +129,10 @@ export default async function UploadProjectPage({
           .filter((a) => a.type === ActivityType.FLAG)
           .map((a) => a.body)}
       />
+
+      {/* How the shoot went — client issues, anything we should change on our
+          end. Routes to Kyle + the feedback board when it wasn't smooth. */}
+      <AppointmentFeedback projectId={project.id} />
 
     </div>
   );

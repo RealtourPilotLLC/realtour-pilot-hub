@@ -19,19 +19,24 @@ export const BRACKET_RATIO = 5;
 // ratio the old 3.3-on-3 had.
 export const RAW_OVERAGE_FACTOR = 5.5;
 
-// Homes at or above this size get the larger default budget (80 vs 50).
-export const LARGE_PROPERTY_SQFT = 3500;
+// Size tiers (Jordan, Aug 31 2026 — "this is the standard moving forward"):
+// ≤ 2,500 sq ft → 50 finals · 2,500–5,000 → 65 · above 5,000 → 85.
+export const MID_PROPERTY_SQFT = 2500;
+export const LARGE_PROPERTY_SQFT = 5000;
 
 // The photo budget for one home: an explicit owner override wins; otherwise
-// large homes (>= 3500 sq ft) default to 80 finals, everything else to 50.
-// squareFeet comes from the Aryeo listing sync (may be null on older/manual
-// jobs → falls back to the 50 default).
+// the size tier decides. squareFeet comes from the Aryeo listing sync (may be
+// null on older/manual jobs → falls back to the 50 default).
 export function photoTargetFor(project: {
   photoTarget?: number | null;
   squareFeet?: number | null;
 }): number {
   if (project.photoTarget != null) return project.photoTarget;
-  return project.squareFeet != null && project.squareFeet >= LARGE_PROPERTY_SQFT ? 80 : 50;
+  const sqft = project.squareFeet;
+  if (sqft == null) return 50;
+  if (sqft > LARGE_PROPERTY_SQFT) return 85;
+  if (sqft > MID_PROPERTY_SQFT) return 65;
+  return 50;
 }
 
 // The bracketed-raw budget that maps to a final target (what the photographer
@@ -45,8 +50,8 @@ export function rawOverageCeiling(target: number): number {
   return Math.round(target * RAW_OVERAGE_FACTOR);
 }
 
-// Room-by-room budget shown on /shoot so "aim ~50" becomes an actionable plan.
-// Static (not per-home) — a mental model, not a quota per room.
+// Room-by-room budget shown on /shoot and /upload so "aim ~50" becomes an
+// actionable plan. Jordan's per-room standard (Aug 31 2026).
 export function roomBudgetText(target: number): string {
-  return `Aim ~${target} finals (~${target * BRACKET_RATIO} JPGs at ${BRACKET_RATIO} brackets each): exteriors 6-8, kitchen 4-5, living/dining 4-6, each bedroom 2-3, each bath 1-2, features 4-6. Shoot each composition ONCE — don't machine-gun.`;
+  return `Aim ~${target} finals (~${target * BRACKET_RATIO} JPGs at ${BRACKET_RATIO} brackets each): front max 4, back max 5, each bedroom 2, each bath 1-2 (if one frame shows everything, keep the better angle). No same angle at different distances — shoot each composition ONCE. Extras go to the Backup folder.`;
 }

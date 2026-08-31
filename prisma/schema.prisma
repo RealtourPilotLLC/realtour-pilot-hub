@@ -458,6 +458,13 @@ model Project {
 
   // Photographer's brief to the editor, captured at upload time.
   editorBrief     String?
+  // Shoot debrief (upload portal rebuild, Aug 31 2026) — structured fields the
+  // photographer fills before the job counts as done. All feed the editor brief.
+  cullingConfirmedAt DateTime? // ticked "culled to the standard, extras in Backup"
+  removalNotes       String?   // pets/cans/vehicles/clutter the editor must remove
+  videoInstructions  String?   // REQUIRED on video jobs: flow + vision for the editor
+  scriptConfirmedAt  DateTime? // photographer confirmed the shoot script (as-is or edited)
+  scriptConfirmNote  String?   // "as written" | "edited on site" + what changed
   // Edit instructions for THIS job, set by owner/admin on /edit/<id> and shown
   // read-only to the editor (mirrors the Luma order form Jordan likes):
   // JSON { musicType, colorProfile, desiredLength, instructions }
