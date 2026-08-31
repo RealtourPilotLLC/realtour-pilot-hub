@@ -186,7 +186,9 @@ export async function finalizeUpload(
     // Shoot-debrief fields (upload portal rebuild, Aug 31 2026). The job is
     // not done until these are answered — enforced HERE, not just in the UI.
     cullingConfirmed?: boolean;
-    shotOrder?: { frontToBack: boolean; notes?: string } | null;
+    // mode is the new three-way answer; frontToBack kept so a pre-update tab's
+    // payload still lands correctly (deploy-skew lesson from the last review).
+    shotOrder?: { mode?: "front-to-back" | "interior-exterior" | "out-of-order"; frontToBack?: boolean; notes?: string } | null;
     removalNotes?: string;
     nothingToRemove?: boolean;
     videoInstructions?: string;
@@ -241,8 +243,11 @@ export async function finalizeUpload(
     if (wantsPhotosGate && data.shotOrder === null && !prior.shotOrderNotes) {
       return { blocked: "Answer the shot order — front to back, or tell us the order you shot the home (so nobody has to guess what's where)." };
     }
-    if (wantsPhotosGate && data.shotOrder && !data.shotOrder.frontToBack && !data.shotOrder.notes?.trim() && !prior.shotOrderNotes) {
-      return { blocked: "You said the shoot went out of order — tell us why and the order you shot, so the office can organize the gallery without guessing." };
+    {
+      const mode = data.shotOrder ? data.shotOrder.mode ?? (data.shotOrder.frontToBack ? "front-to-back" : "out-of-order") : null;
+      if (wantsPhotosGate && mode === "out-of-order" && !data.shotOrder?.notes?.trim() && !prior.shotOrderNotes) {
+        return { blocked: "You said the shoot went out of order — tell us why and the order you shot, so the office can organize the gallery without guessing." };
+      }
     }
     if (wantsPhotosGate && !data.removalNotes?.trim() && !data.nothingToRemove && !prior.removalNotes) {
       return { blocked: "Answer the removal notes — list anything the editor needs to remove (pets, cans, vehicles, clutter), or tick “Nothing needs removal.”" };
@@ -328,13 +333,16 @@ export async function finalizeUpload(
       ...(data.cullingConfirmed ? { cullingConfirmedAt: new Date() } : {}),
       ...(data.shotOrder
         ? {
-            shotOrderNotes: data.shotOrder.frontToBack
-              ? "Shot front to back."
-              : data.shotOrder.notes?.trim()
-                // Never double-wrap a note that already carries the prefix
-                // (belt to the client-side strip — prod data stays clean).
+            shotOrderNotes: (() => {
+              const mode = data.shotOrder.mode ?? (data.shotOrder.frontToBack ? "front-to-back" : "out-of-order");
+              if (mode === "front-to-back") return "Shot front to back.";
+              if (mode === "interior-exterior") return "Shot front to back — interior first, then exterior.";
+              // Never double-wrap a note that already carries the prefix
+              // (belt to the client-side strip — prod data stays clean).
+              return data.shotOrder.notes?.trim()
                 ? `Out of order — ${data.shotOrder.notes.trim().replace(/^Out of order — /, "").slice(0, 2000)}`
-                : undefined,
+                : undefined;
+            })(),
           }
         : {}),
       ...(data.removalNotes?.trim()

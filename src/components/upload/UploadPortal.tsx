@@ -42,6 +42,7 @@ function initialUploaded(d: Deliverable): boolean {
 
 const NOTHING_SENTINEL = "Nothing needs removal — confirmed by the photographer.";
 const FRONT_TO_BACK_SENTINEL = "Shot front to back.";
+const INTERIOR_EXTERIOR_SENTINEL = "Shot front to back — interior first, then exterior.";
 
 // One numbered step card: orange number while open, green check once its
 // requirement is satisfied. The whole page reads as a checklist.
@@ -162,14 +163,18 @@ export function UploadPortal({
   const priorNothing = project.removalNotes === NOTHING_SENTINEL;
   const [removal, setRemoval] = useState(priorNothing ? "" : project.removalNotes ?? "");
   const [nothingToRemove, setNothingToRemove] = useState(priorNothing);
-  const priorFrontToBack = project.shotOrderNotes === FRONT_TO_BACK_SENTINEL;
-  const [orderChoice, setOrderChoice] = useState<"front-to-back" | "out-of-order" | null>(
-    project.shotOrderNotes ? (priorFrontToBack ? "front-to-back" : "out-of-order") : null,
+  const priorStandardOrder =
+    project.shotOrderNotes === FRONT_TO_BACK_SENTINEL || project.shotOrderNotes === INTERIOR_EXTERIOR_SENTINEL;
+  const [orderChoice, setOrderChoice] = useState<"front-to-back" | "interior-exterior" | "out-of-order" | null>(
+    !project.shotOrderNotes ? null
+      : project.shotOrderNotes === FRONT_TO_BACK_SENTINEL ? "front-to-back"
+      : project.shotOrderNotes === INTERIOR_EXTERIOR_SENTINEL ? "interior-exterior"
+      : "out-of-order",
   );
   // Strip the storage prefix on rehydrate — otherwise every re-submit would
   // re-wrap it ("Out of order — Out of order — …") — same pattern as scriptNote.
   const [orderNotes, setOrderNotes] = useState(
-    priorFrontToBack ? "" : (project.shotOrderNotes ?? "").replace(/^Out of order — /, ""),
+    priorStandardOrder ? "" : (project.shotOrderNotes ?? "").replace(/^Out of order — /, ""),
   );
   const [vidInstructions, setVidInstructions] = useState(project.videoInstructions ?? "");
   const [scriptChoice, setScriptChoice] = useState<"as-written" | "edited" | null>(
@@ -244,7 +249,7 @@ export function UploadPortal({
     const payload = {
       editorBrief,
       cullingConfirmed: cullOk,
-      shotOrder: orderChoice ? { frontToBack: orderChoice === "front-to-back", notes: orderNotes } : null,
+      shotOrder: orderChoice ? { mode: orderChoice, notes: orderNotes } : null,
       removalNotes: removal,
       nothingToRemove,
       videoInstructions: vidInstructions,
@@ -285,7 +290,9 @@ export function UploadPortal({
   // only jobs never see the photo steps (Jordan, Sep 1).
   let stepNo = 1;
   const removalAnswered = !!removal.trim() || nothingToRemove;
-  const orderAnswered = orderChoice === "front-to-back" || (orderChoice === "out-of-order" && !!orderNotes.trim());
+  const orderAnswered =
+    orderChoice === "front-to-back" || orderChoice === "interior-exterior" ||
+    (orderChoice === "out-of-order" && !!orderNotes.trim());
   const videoDone =
     !!vidInstructions.trim() && (!script || (scriptChoice !== null && (scriptChoice !== "edited" || !!scriptText.trim())));
 
@@ -475,10 +482,13 @@ export function UploadPortal({
         >
           <div className="flex flex-wrap gap-2">
             <button onClick={() => { setOrderChoice("front-to-back"); setOrderNotes(""); }} className={choiceBtn(orderChoice === "front-to-back")}>
-              <CheckCircle2 className="size-4" /> Shot front to back
+              <CheckCircle2 className="size-4" /> Front to back
+            </button>
+            <button onClick={() => { setOrderChoice("interior-exterior"); setOrderNotes(""); }} className={choiceBtn(orderChoice === "interior-exterior")}>
+              <CheckCircle2 className="size-4" /> Interior front-to-back, then exterior
             </button>
             <button onClick={() => setOrderChoice("out-of-order")} className={choiceBtn(orderChoice === "out-of-order", "warn")}>
-              Had to go out of order
+              Different order
             </button>
           </div>
           {orderChoice === "out-of-order" && (
