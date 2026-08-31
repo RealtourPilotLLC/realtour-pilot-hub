@@ -112,7 +112,12 @@ export function UploadPortal({
       : null,
   );
   const [scriptText, setScriptText] = useState(script?.body ?? "");
-  const [scriptNote, setScriptNote] = useState("");
+  // Re-hydrate the "what changed" detail so a re-submit can't wipe it.
+  const [scriptNote, setScriptNote] = useState(
+    project.scriptConfirmNote?.startsWith("Edited on site — ")
+      ? project.scriptConfirmNote.slice("Edited on site — ".length)
+      : "",
+  );
 
   const addr = [project.addressLine, project.city, project.state, project.zip].filter(Boolean).join(", ");
   const total = deliverables.length;
@@ -149,6 +154,7 @@ export function UploadPortal({
     if (policy.photosOrdered && !removal.trim() && !nothingToRemove) missing.push("answer the removal notes");
     if (policy.videoOrdered && !vidInstructions.trim()) missing.push("video instructions for the editor");
     if (policy.videoOrdered && script && !scriptChoice) missing.push("confirm the script");
+    if (policy.videoOrdered && scriptChoice === "edited" && !scriptText.trim()) missing.push("the edited script text (or pick “Delivered as written”)");
     return missing;
   }
 
@@ -175,6 +181,7 @@ export function UploadPortal({
       scriptConfirm: scriptChoice
         ? { state: scriptChoice, ...(scriptChoice === "edited" ? { script: scriptText, note: scriptNote } : {}) }
         : null,
+      sawScript: !!script,
     };
     startTransition(async () => {
       try {
@@ -350,7 +357,13 @@ export function UploadPortal({
               </div>
               <AutoTextarea
                 value={scriptText}
-                onChange={(e) => { setScriptText(e.target.value); if (e.target.value !== script.body) setScriptChoice("edited"); }}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setScriptText(v);
+                  // Typing flips to "edited"; reverting to the exact original
+                  // un-flips, so a stray touch can't confirm a phantom edit.
+                  setScriptChoice((prev) => (v.trim() === script.body.trim() ? (prev === "edited" ? null : prev) : "edited"));
+                }}
                 minRows={4}
                 className="mt-1.5 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm leading-relaxed outline-none focus:border-brand"
               />

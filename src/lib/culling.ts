@@ -24,16 +24,28 @@ export const RAW_OVERAGE_FACTOR = 5.5;
 export const MID_PROPERTY_SQFT = 2500;
 export const LARGE_PROPERTY_SQFT = 5000;
 
+// "Moving forward" means exactly that: shoots executed BEFORE the standard
+// changed were briefed to the OLD tiers (50, or 80 at ≥3,500 sq ft), and the
+// hourly cull sweep must keep judging them by the rules they were given —
+// otherwise the tier change retro-fires cull tasks + SMS on compliant
+// in-flight jobs (review finding, Aug 31).
+const NEW_TIERS_FROM = Date.parse("2026-09-01T00:00:00-04:00");
+
 // The photo budget for one home: an explicit owner override wins; otherwise
-// the size tier decides. squareFeet comes from the Aryeo listing sync (may be
-// null on older/manual jobs → falls back to the 50 default).
+// the size tier decides (by the standard in force on the shoot date).
+// squareFeet comes from the Aryeo listing sync (null → the 50 default).
 export function photoTargetFor(project: {
   photoTarget?: number | null;
   squareFeet?: number | null;
+  shootDate?: Date | string | null;
 }): number {
   if (project.photoTarget != null) return project.photoTarget;
   const sqft = project.squareFeet;
   if (sqft == null) return 50;
+  const shotAt = project.shootDate ? new Date(project.shootDate).getTime() : null;
+  if (shotAt != null && shotAt < NEW_TIERS_FROM) {
+    return sqft >= 3500 ? 80 : 50; // the standard that shoot was briefed to
+  }
   if (sqft > LARGE_PROPERTY_SQFT) return 85;
   if (sqft > MID_PROPERTY_SQFT) return 65;
   return 50;

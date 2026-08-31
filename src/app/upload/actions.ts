@@ -164,6 +164,8 @@ export async function finalizeUpload(
     nothingToRemove?: boolean;
     videoInstructions?: string;
     scriptConfirm?: { state: "as-written" | "edited"; script?: string; note?: string } | null;
+    /** whether the page the photographer submitted from actually SHOWED a script */
+    sawScript?: boolean;
   },
 ): Promise<{ pdfPath?: string; needsConfirm?: boolean; warning?: string; blocked?: string }> {
   await requireShootAccess(projectId);
@@ -181,6 +183,7 @@ export async function finalizeUpload(
       removalNotes: true,
       videoInstructions: true,
       scriptConfirmedAt: true,
+      scriptConfirmNote: true,
       reelScript: true,
       client: { select: { name: true } },
       deliverables: { select: { type: true } },
@@ -205,7 +208,16 @@ export async function finalizeUpload(
       return { blocked: "Video instructions are required — the flow and your vision for the edit. This can't be left blank; skipping it forfeits premium shoot assignments." };
     }
     if (wantsVideoGate && prior.reelScript && !data.scriptConfirm && !prior.scriptConfirmedAt) {
-      return { blocked: "Confirm the script — delivered as written, or edited on site? The editor cuts to whatever you confirm here." };
+      // The script may have landed from Studio AFTER their page loaded — an
+      // un-satisfiable error with no visible confirm control is a trap.
+      return {
+        blocked: data.sawScript === false
+          ? "A script just arrived from Script Studio for this shoot — refresh this page to review and confirm it, then submit."
+          : "Confirm the script — delivered as written, or edited on site? The editor cuts to whatever you confirm here.",
+      };
+    }
+    if (wantsVideoGate && data.scriptConfirm?.state === "edited" && !data.scriptConfirm.script?.trim()) {
+      return { blocked: "You marked the script as changed but the script box is empty — paste what was actually filmed, or choose “Delivered as written.”" };
     }
   }
 
@@ -248,6 +260,22 @@ export async function finalizeUpload(
   }
 
   const scriptEdited = data.scriptConfirm?.state === "edited";
+  // On a RE-submit, an empty note must not wipe the prior "what changed"
+  // detail, and an unchanged script text must not re-write reelScript (which
+  // would bump timestamps and, from a stale tab, clobber later corrections).
+  const priorNote = prior?.scriptConfirmNote ?? null;
+  const incomingNote = data.scriptConfirm?.note?.trim() ?? "";
+  const newScriptText = data.scriptConfirm?.script?.trim() ?? "";
+  const scriptTextChanged = scriptEdited && !!newScriptText && newScriptText !== (prior?.reelScript ?? "").trim();
+  const nextConfirmNote = !data.scriptConfirm
+    ? undefined
+    : scriptEdited
+      ? incomingNote
+        ? `Edited on site — ${incomingNote.slice(0, 500)}`
+        : priorNote?.startsWith("Edited")
+          ? priorNote // keep the existing what-changed detail
+          : "Edited on site"
+      : "Delivered as written";
   await prisma.project.update({
     where: { id: projectId },
     data: {
@@ -264,13 +292,11 @@ export async function finalizeUpload(
       ...(data.scriptConfirm
         ? {
             scriptConfirmedAt: new Date(),
-            scriptConfirmNote: scriptEdited
-              ? `Edited on site${data.scriptConfirm.note?.trim() ? ` — ${data.scriptConfirm.note.trim().slice(0, 500)}` : ""}`
-              : "Delivered as written",
+            scriptConfirmNote: nextConfirmNote,
             // An on-site edit replaces the working script — the editor must cut
             // to what was actually filmed, not what Studio drafted.
-            ...(scriptEdited && data.scriptConfirm.script?.trim()
-              ? { reelScript: data.scriptConfirm.script.trim().slice(0, 20_000), reelRecipeUpdatedAt: new Date() }
+            ...(scriptTextChanged
+              ? { reelScript: newScriptText.slice(0, 20_000), reelRecipeUpdatedAt: new Date() }
               : {}),
           }
         : {}),

@@ -337,7 +337,7 @@ function specsForProject(p: {
     // auto-close (checklistComplete needs every item done). Mirrors how the
     // isDelivered() items ride the same checklist without becoming Kyle's work.
     const galleryPhotoCount = Math.max(ev?.aryeo?.photos ?? 0, ev?.dropbox?.finalPhotos ?? 0);
-    const budget = photoTargetFor({ squareFeet: p.squareFeet, photoTarget: p.photoTarget });
+    const budget = photoTargetFor({ squareFeet: p.squareFeet, photoTarget: p.photoTarget, shootDate: p.shootDate });
     if (galleryPhotoCount > budget) {
       qcItems.push({
         label: `Gallery is ${galleryPhotoCount} photos vs ~${budget} target — cull near-duplicates before delivering (keep the best of each room).`,

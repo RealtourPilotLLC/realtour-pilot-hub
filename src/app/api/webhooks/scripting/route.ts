@@ -113,12 +113,19 @@ export async function processScriptingEvent(
     const detail = await scriptingGetByExternalId(project.id).catch(() => null);
     if (detail) {
       const r = studioToRecipe(detail);
-      if (r.hook) base.reelHook = r.hook;
-      if (r.script) base.reelScript = r.script;
+      // Frozen once the photographer confirmed what was filmed (upload
+      // debrief) — Studio pushes keep status/link/song, never the words.
+      const confirmed = await prisma.project.findUnique({
+        where: { id: project.id },
+        select: { scriptConfirmedAt: true },
+      });
+      const frozen = !!confirmed?.scriptConfirmedAt;
+      if (r.hook && !frozen) base.reelHook = r.hook;
+      if (r.script && !frozen) base.reelScript = r.script;
       if (r.song) base.reelSong = r.song;
       if (r.url) { base.reelScriptUrl = r.url; base.scriptingUrl = r.url; }
       if (r.status) base.scriptingStatus = r.status;
-      if (r.hook || r.script) base.reelRecipeUpdatedAt = new Date();
+      if ((r.hook || r.script) && !frozen) base.reelRecipeUpdatedAt = new Date();
     }
   }
   base.scriptingSyncedAt = new Date();

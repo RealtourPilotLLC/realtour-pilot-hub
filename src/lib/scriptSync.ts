@@ -45,6 +45,14 @@ export async function pullScriptFromStudio(
     throw e;
   }
   const r = studioToRecipe(detail);
+  // A photographer-CONFIRMED script is the record of what was actually filmed
+  // (upload debrief, Aug 31) — a later Studio pull must never overwrite it.
+  // Status/link/song keep syncing; the words are frozen once confirmed.
+  const confirmed = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { scriptConfirmedAt: true },
+  });
+  const frozen = !!confirmed?.scriptConfirmedAt;
   const data: Record<string, unknown> = { scriptingSyncedAt: new Date() };
   if (detail.id) data.scriptingId = String(detail.id);
   if (r.status) data.scriptingStatus = r.status;
@@ -52,10 +60,10 @@ export async function pullScriptFromStudio(
     data.scriptingUrl = r.url;
     data.reelScriptUrl = r.url;
   }
-  if (r.hook) data.reelHook = r.hook;
-  if (r.script) data.reelScript = r.script;
+  if (r.hook && !frozen) data.reelHook = r.hook;
+  if (r.script && !frozen) data.reelScript = r.script;
   if (r.song) data.reelSong = r.song;
-  if (r.hook || r.script) data.reelRecipeUpdatedAt = new Date();
+  if ((r.hook || r.script) && !frozen) data.reelRecipeUpdatedAt = new Date();
   await prisma.project.update({ where: { id: projectId }, data });
   const got = [r.hook && "hook", r.script && "script", r.song && "song"].filter(Boolean) as string[];
   return { got, url: r.url, status: r.status };

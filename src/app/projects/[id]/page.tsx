@@ -530,7 +530,7 @@ export default async function ProjectPage({
                 <PhotoTargetControl
                   projectId={project.id}
                   photoTarget={project.photoTarget}
-                  computed={photoTargetFor({ squareFeet: project.squareFeet, photoTarget: null })}
+                  computed={photoTargetFor({ squareFeet: project.squareFeet, photoTarget: null, shootDate: project.shootDate })}
                   squareFeet={project.squareFeet}
                 />
               </div>
