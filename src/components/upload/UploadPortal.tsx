@@ -733,6 +733,9 @@ export function UploadPortal({
                 <option value="fast">{VID_STYLES.fast}</option>
                 <option value="cinematic">{VID_STYLES.cinematic}</option>
               </select>
+              <p className="mt-1 text-xs text-muted">
+                Ask the realtor on site which they want — luxury often leans timeless &amp; elegant, but not always. Never guess, just ask.
+              </p>
             </div>
 
             <div className="mt-3 space-y-3">
@@ -752,9 +755,6 @@ export function UploadPortal({
               ))}
             </div>
 
-            <p className="mt-2 text-[13px] text-muted">
-              The color profile goes to the editor automatically: <strong className="text-foreground/80">S-Log3, D-LogM</strong>.
-            </p>
             <p className="mt-1.5 text-xs text-warning">
               Vision and style can&rsquo;t be left blank. Skipping the instructions forfeits future premium shoot assignments.
             </p>

@@ -71,8 +71,8 @@ export default async function UploadWelcomePage({
         <Row icon={Clapperboard} title="5 · Video shoots: script + edit brief" points={[
           "The script the agent read imports automatically — confirm it was delivered as written, or fix the text if anything changed on site.",
           "Brief the editor in sections: your vision, must-show shots, areas to avoid, realtor requests, extra notes.",
-          "Pick the edit style: Fast-Paced, or Timeless & Elegant (Cinematic).",
-          "The color profile (S-Log3, D-LogM) goes to the editor automatically. Vision + style are required.",
+          "Pick the edit style: Fast-Paced, or Timeless & Elegant (Cinematic). Discuss it with the realtor on site — a luxury listing may want timeless and elegant, but they might want fast-paced. Never guess, just ask.",
+          "Vision and style are required on every video job.",
         ]} />
         <Row icon={Upload} title="6 · Check off and submit" points={[
           "Tick each deliverable as its files land in Dropbox, add anything else the editor should know.",
