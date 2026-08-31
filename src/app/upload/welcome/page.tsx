@@ -61,7 +61,7 @@ export default async function UploadWelcomePage({
         <Row icon={Route} title="3 · Tell us the order you shot" points={[
           "Standard orders are two taps: Front to back, or Interior front-to-back, then exterior.",
           "Had to work around a seller, contractor, or the agent? Totally fine — just type the order you went in.",
-          "Why it matters: organizing photos of a house we've never been inside burns hours of office time.",
+          "Why it matters: organizing photos of a house we've never been inside burns hours of office time — and presentation matters.",
         ]} />
         <Row icon={Eraser} title="4 · Note what the editor needs to remove" points={[
           "List anything that couldn't be moved on site — trash cans, pet items, a car in the driveway.",
