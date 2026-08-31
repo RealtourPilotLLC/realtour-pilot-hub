@@ -45,7 +45,13 @@ export function journeySteps(j: JourneyInput): Step[] {
   const scripts: Step = {
     key: "scripts", label: "Scripts", icon: FileText,
     detail: (j.scriptsAwaiting ?? 0) > 0 ? `${j.scriptsAwaiting} to review` : `${j.scriptsReady}/${owed}`,
-    state: j.scriptsReady >= owed ? "done" : (j.scriptsAwaiting ?? 0) > 0 ? "warn" : j.scriptsReady > 0 ? "active" : topics.state === "done" ? "warn" : "todo",
+    // Drafts on Jordan's desk mean NOT done, even with enough approved — the
+    // node must agree with its own "N to review" caption and the next-step line.
+    state:
+      (j.scriptsAwaiting ?? 0) > 0 ? "warn"
+      : j.scriptsReady >= owed ? "done"
+      : j.scriptsReady > 0 ? "active"
+      : topics.state === "done" ? "warn" : "todo",
   };
   const shoot: Step = {
     key: "shoot", label: "Shoot", icon: Camera, detail: `${j.sessionsScheduled}/${Math.max(j.sessionsRequired, 1)} booked`,
@@ -92,7 +98,7 @@ export function MonthJourney({ input, size = "card" }: { input: JourneyInput; si
             </span>
             <span className={cn("h-0.5 flex-1 rounded", i === steps.length - 1 ? "bg-transparent" : BAR[s.state === "todo" || steps[i + 1].state === "todo" ? "todo" : s.state])} />
           </div>
-          <span className={cn("mt-1.5 truncate font-medium", hero ? "text-sm" : "text-[9.5px]", s.state === "warn" ? "text-warning" : s.state === "todo" ? "text-muted-2" : "text-muted")}>
+          <span className={cn("truncate font-medium", hero ? "mt-1.5 text-sm" : "mt-1 text-[9.5px]", s.state === "warn" ? "text-warning" : s.state === "todo" ? "text-muted-2" : "text-muted")}>
             {s.label}
           </span>
           {hero && (

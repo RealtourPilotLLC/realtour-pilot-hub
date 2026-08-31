@@ -72,7 +72,10 @@ export function StrategyCallCard({
             <button disabled={busy || !transcript.trim()} onClick={() => start(async () => {
               const r = await saveMonthTranscript(monthId, transcript);
               setNote(r.message);
-              if (r.ok) { setShowPaste(false); setCur("COMPLETED"); setOnFile(true); setTranscript(""); }
+              // A NEW transcript is un-analyzed by definition (the server clears
+              // the stamp) — re-arm the big Analyze button instead of claiming
+              // the old analysis covers it.
+              if (r.ok) { setShowPaste(false); setCur("COMPLETED"); setOnFile(true); setAnalyzed(false); setTranscript(""); }
             })} className={primaryBtn}>
               {busy ? <Loader2 className="size-4 animate-spin" /> : "Save transcript"}
             </button>
@@ -138,14 +141,22 @@ export function StrategyCallCard({
           )}
         </div>
       ) : (
-        // SKIPPED / NOT_REQUIRED — one quiet undo.
-        required && (
-          <div className="mt-1.5">
-            <button disabled={busy} onClick={() => setStatus("NOT_SCHEDULED")} className={quietLink}>
-              {cur === "SKIPPED" ? "Undo — they're doing the call after all" : "Turn monthly calls back on"}
-            </button>
-          </div>
-        )
+        // SKIPPED / NOT_REQUIRED / no-calls clients — the paste door stays open
+        // (calls happen even for clients who "don't do calls"), plus one quiet
+        // undo when a required call was skipped.
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+          <button onClick={() => setShowPaste(true)} className={quietLink}>
+            Held a call anyway? Paste the transcript
+          </button>
+          {required && (
+            <>
+              <span className="text-muted-2">·</span>
+              <button disabled={busy} onClick={() => setStatus("NOT_SCHEDULED")} className={quietLink}>
+                {cur === "SKIPPED" ? "Undo — they're doing the call after all" : "Turn monthly calls back on"}
+              </button>
+            </>
+          )}
+        </div>
       )}
       {note && <p className="mt-2 text-[13px] text-muted">{note}</p>}
     </Section>

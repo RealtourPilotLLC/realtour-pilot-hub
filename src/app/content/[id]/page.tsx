@@ -146,7 +146,7 @@ export default async function ContentClientPage({
   const monthName = month ? monthLabel(month.monthKey) : monthLabel(activeKey);
   const monthShort = monthName.split(" ")[0];
 
-  const nextStep: { text: string; cta: string; href: string } | null = muted ? null
+  const nextStep: { text: string; cta: string; href: string } | null = muted || deliveredDone ? null
     : !callDone
       ? month?.strategyCallStatus === "SCHEDULED"
         ? { text: `Strategy call is booked${month.strategyCallAt ? ` for ${fmtDay(month.strategyCallAt.toISOString())}` : ""} — paste the transcript after`, cta: "Open the call", href: "#call" }
@@ -161,11 +161,9 @@ export default async function ContentClientPage({
       ? nextShoot?.shootDate
         ? { text: `Filming ${fmtDay(nextShoot.shootDate.toISOString())}${nextShoot.photographer?.name ? ` with ${nextShoot.photographer.name}` : ""}`, cta: "See the session", href: "#sessions" }
         : { text: "No filming session on the calendar yet", cta: "See the sessions", href: "#sessions" }
-    : !deliveredDone
-      ? counts.inReview > 0
-        ? { text: `${counts.inReview} video${counts.inReview === 1 ? "" : "s"} waiting in the Review Room`, cta: "Open the Review Room", href: "/review" }
-        : { text: `${counts.delivered} of ${owedRaw} videos delivered — the rest are in editing`, cta: "See the sessions", href: "#sessions" }
-    : null;
+    : counts.inReview > 0
+      ? { text: `${counts.inReview} video${counts.inReview === 1 ? "" : "s"} waiting in the Review Room`, cta: "Open the Review Room", href: "/review" }
+      : { text: `${counts.delivered} of ${owedRaw} videos delivered — the rest are in editing`, cta: "See the sessions", href: "#sessions" };
 
   const hrefFor = (t: Tab, mKey?: string) => {
     const q = new URLSearchParams();
@@ -384,7 +382,8 @@ export default async function ContentClientPage({
             <div className="space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm text-muted">
-                  This is {client.name.split(" ")[0]}&rsquo;s live portal — exactly what they see, videos and profile included. Anything that changes in the program shows up here instantly.
+                  This is {client.name.split(" ")[0]}&rsquo;s live portal — exactly what they see, videos and profile included.{" "}
+                  <span className="text-warning">Careful: anything you submit in here (a revision request, a comment, a profile change) is recorded as them.</span>
                 </p>
                 <a
                   href={`/portal/${enrollment.portalToken}`}
