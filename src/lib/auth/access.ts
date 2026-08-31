@@ -7,7 +7,7 @@ export type PageKey =
   | "dashboard" | "tasks" | "pipeline" | "schedule" | "map"
   | "communications" | "clients" | "team" | "upload" | "editing" | "sales"
   | "billing" | "catalog" | "payouts" | "resources" | "assistant"
-  | "training" | "feedback" | "connections" | "users" | "shoot" | "mypay" | "review" | "trends" | "day" | "settings" | "content";
+  | "training" | "feedback" | "connections" | "users" | "shoot" | "mypay" | "review" | "trends" | "day" | "settings" | "content" | "ops";
 // NOTE: "map", "billing", "payouts", "team" survive in this type only so stored
 // per-user permission JSON keeps resolving and so canAccess() can treat them as
 // legacy grants on the pages they merged into (see canAccess). They no longer
@@ -29,6 +29,9 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   // deliberately have NO PageKey: any signed-in user may take the redirect hop,
   // and the destination page enforces access itself.
   { key: "tasks", label: "Tasks", href: "/tasks" },
+  // Kyle's guided operating day (Jordan's Daily Operations & Client Experience
+  // Structure, Sep 1 2026): time-blocked control tower with live data per block.
+  { key: "ops", label: "Ops Day", href: "/ops" },
   // The Review Room — the owner's quality desk: cuts editors submitted, photo
   // sets in QC, and open feedback follow-through. Owner/admin by default;
   // creatives receive their feedback on their own surfaces (/shoot, /edit).
@@ -89,7 +92,7 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
   // admins (James) carry a per-user grant. "catalog" stays openable (the
   // Resources quick-link points there) — it just has no nav item of its own.
   ADMIN: [
-    "dashboard", "tasks", "review", "pipeline", "schedule",
+    "dashboard", "ops", "tasks", "review", "pipeline", "schedule",
     "communications", "clients", "content", "users", "upload", "editing", "sales",
     "catalog", "resources", "training", "assistant", "feedback", "trends", "settings",
   ],
@@ -118,7 +121,8 @@ export function homeFor(role: string | null | undefined): string {
   switch (role) {
     case "PHOTOGRAPHER": return "/shoot";
     case "EDITOR": return "/editing";
-    case "ADMIN": return "/tasks";
+    // Kyle lands on his guided operating day (Jordan, Sep 1) — Tasks stays one tap away.
+    case "ADMIN": return "/ops";
     default: return "/";
   }
 }

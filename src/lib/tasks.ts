@@ -225,6 +225,11 @@ function specsForProject(p: {
   // Client segment (vip | heavy | …) — drives the VIP extra-pass ticks on the QC
   // checklist. QC used to be client-blind despite 38% of deliveries being VIP.
   clientSegment?: string | null;
+  // Shoot-debrief answers, dispatched onto the QC card (Jordan, Sep 1).
+  removalNotes?: string | null;
+  shotOrderNotes?: string | null;
+  debriefSubmittedAt?: Date | null;
+  videoInstructions?: string | null;
 }): TaskSpec[] {
   const specs: TaskSpec[] = [];
   const shoot = p.shootDate;
@@ -316,6 +321,25 @@ function specsForProject(p: {
         if (isVip && category === "Photos") for (const label of VIP_EXTRA_PASS) qcItems.push({ label, done: false });
       }
     }
+    // ---- Shoot-debrief dispatch (Jordan, Sep 1): the photographer's answers
+    // ride the QC card. Removal verification and the video-brief check are
+    // REAL Kyle work (unchecked); the shot order is reference (pre-checked).
+    if (p.shotOrderNotes) {
+      qcItems.push({ label: `Shot order from the photographer: ${p.shotOrderNotes.slice(0, 180)}`, done: true });
+    }
+    if (p.removalNotes && p.removalNotes !== "Nothing needs removal — confirmed by the photographer.") {
+      qcItems.push({ label: `Verify removals were edited out — photographer flagged: ${p.removalNotes.slice(0, 220)}`, done: false });
+    }
+    if (seenCategories.has("Video") && p.videoInstructions) {
+      qcItems.push({ label: "Check the video against the photographer's brief (style · must-show · areas to avoid) — it's on the project page", done: false });
+    }
+    if (
+      p.shootDate && p.shootDate.getTime() >= Date.parse("2026-09-02T00:00:00-04:00") &&
+      !p.debriefSubmittedAt && qcTypes.some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d))
+    ) {
+      qcItems.push({ label: "Upload page never submitted — treat the gallery as unculled and check counts against the SOP", done: false });
+    }
+
     // QC and "deliver the gallery" are ONE motion for Kyle — a separate
     // "Deliver gallery" task open NEXT TO the QC task doubled every job's cards
     // (Jordan: "too many redundant QC tasks"; 47 of 65 recent jobs carried 2-4
@@ -1803,6 +1827,11 @@ export async function generateTasksForProject(projectId: string): Promise<number
 type TaskProject = {
   id: string; status: string; title: string; shootDate: Date | null; statusEvidence: string | null;
   squareFeet: number | null; photoTarget: number | null;
+  // Shoot-debrief answers (the queries use `include`, so these ride along) —
+  // dispatched onto the QC card so Kyle verifies against the photographer's
+  // own notes instead of guessing (Jordan, Sep 1).
+  removalNotes: string | null; shotOrderNotes: string | null;
+  cullingConfirmedAt: Date | null; debriefSubmittedAt: Date | null; videoInstructions: string | null;
   deliverables: { type: string; label: string | null }[];
   client: { id: string; name: string | null; socialClient: boolean; segment: string | null };
   photographer: { name: string } | null;

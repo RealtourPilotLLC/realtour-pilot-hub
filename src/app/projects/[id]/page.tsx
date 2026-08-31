@@ -372,6 +372,23 @@ export default async function ProjectPage({
               }
               bodyClassName="space-y-3"
             >
+              {(project.shotOrderNotes || project.removalNotes || project.videoInstructions) && (
+                <div className="space-y-2 border-b border-border pb-3">
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Shoot debrief</div>
+                  {project.shotOrderNotes && (
+                    <p className="text-sm text-foreground/85"><span className="font-medium">Shot order:</span> {project.shotOrderNotes}</p>
+                  )}
+                  {project.removalNotes && (
+                    <p className="text-sm text-foreground/85"><span className="font-medium">Remove in editing:</span> {project.removalNotes}</p>
+                  )}
+                  {project.videoInstructions && (
+                    <div>
+                      <p className="text-sm font-medium">Video brief:</p>
+                      <p className="whitespace-pre-wrap text-sm text-foreground/85">{project.videoInstructions}</p>
+                    </div>
+                  )}
+                </div>
+              )}
               {project.editorBrief && (
                 <div className="rounded-lg bg-surface-2 px-3 py-2 text-sm text-foreground/85">
                   {project.editorBrief}
