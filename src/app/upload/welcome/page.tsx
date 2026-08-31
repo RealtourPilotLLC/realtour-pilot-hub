@@ -7,7 +7,14 @@ export const dynamic = "force-dynamic";
 // One-time onboarding for the new upload process (Jordan, Sep 1 2026). The
 // 7 PM shoot text links here on first visit; after "I agree" the photographer
 // lands on /upload and never sees this page again unless they come back.
-export default function UploadWelcomePage() {
+export default async function UploadWelcomePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ next?: string }>;
+}) {
+  const { next } = await searchParams;
+  // Only ever bounce back inside the upload portal — no open redirects.
+  const dest = next && next.startsWith("/upload") ? next : "/upload";
   return (
     <div className="mx-auto max-w-2xl p-4 pb-16 sm:p-6">
       <p className="text-xs font-bold uppercase tracking-widest text-brand">New for every shoot</p>
@@ -46,7 +53,7 @@ export default function UploadWelcomePage() {
           with your feedback.
         </p>
         <div className="mt-3.5">
-          <AgreeButton />
+          <AgreeButton next={dest} />
         </div>
       </div>
     </div>

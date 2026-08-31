@@ -33,7 +33,7 @@ export default async function UploadProjectPage({
     // New-process acknowledgment first (one time), then ownership.
     if (viewer.email) {
       const ack = await prisma.appSetting.findUnique({ where: { key: `upload-ack-${viewer.email.toLowerCase()}` } });
-      if (!ack) redirect("/upload/welcome");
+      if (!ack) redirect(`/upload/welcome?next=${encodeURIComponent(`/upload/${id}`)}`);
     }
     const mine = await photographerMemberId(viewer);
     if (!mine || !(await photographerOwnsShoot(id, mine))) redirect("/upload");

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Check, Loader2 } from "lucide-react";
 import { acknowledgeUploadProcess } from "@/app/upload/actions";
 
-export function AgreeButton() {
+export function AgreeButton({ next = "/upload" }: { next?: string }) {
   const router = useRouter();
   const [busy, start] = useTransition();
   const [err, setErr] = useState<string | null>(null);
@@ -16,7 +16,7 @@ export function AgreeButton() {
         onClick={() =>
           start(async () => {
             const r = await acknowledgeUploadProcess().catch(() => ({ ok: false }));
-            if (r.ok) router.push("/upload");
+            if (r.ok) router.push(next);
             else setErr("Couldn't save — make sure you're signed in, then try again.");
           })
         }

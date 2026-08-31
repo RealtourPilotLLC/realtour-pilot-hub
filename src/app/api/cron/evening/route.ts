@@ -31,5 +31,8 @@ export async function GET(req: NextRequest) {
   const digests = await sendEveningUploadDigests().catch((e) => ({
     sent: 0, skipped: 0, notes: [e instanceof Error ? e.message : "digest failed"],
   }));
-  return NextResponse.json({ digests });
+  // A quiet day is a 200; sending NOTHING while there was work (or the whole
+  // run threw) must show RED on the cron dashboard, not green.
+  const totalFailure = digests.sent === 0 && digests.notes.length > 0 && digests.notes[0] !== "no shoots today";
+  return NextResponse.json({ digests }, { status: totalFailure ? 500 : 200 });
 }

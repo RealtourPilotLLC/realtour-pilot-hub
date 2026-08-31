@@ -17,7 +17,9 @@ function etDayKey(d: Date = new Date()): string {
   return d.toLocaleDateString("en-CA", { timeZone: "America/New_York" }); // YYYY-MM-DD
 }
 
-/** ET midnight-to-midnight window for "today", expressed in UTC instants. */
+/** ET midnight-to-midnight window for "today", expressed in UTC instants.
+ *  Known 1h edge skew on the two DST transition days for shoots timestamped
+ *  11 PM–1 AM ET — real shoots never are (reviewed and accepted). */
 function etDayWindow(): { start: Date; end: Date } {
   const key = etDayKey();
   // Resolve the ET offset at noon ET today (DST-safe for a whole-day window).
@@ -52,7 +54,9 @@ export async function sendEveningUploadDigests(): Promise<{ sent: number; skippe
   const shoots = await prisma.project.findMany({
     where: {
       shootDate: { gte: start, lt: end },
-      status: { notIn: ["CANCELLED"] },
+      // ON_HOLD = the shoot may not have happened — never tell someone to
+      // wrap up content that wasn't captured (review finding).
+      status: { notIn: ["CANCELLED", "ON_HOLD"] },
       photographerId: { not: null },
     },
     select: {
@@ -78,24 +82,37 @@ export async function sendEveningUploadDigests(): Promise<{ sent: number; skippe
 
   let sent = 0, skipped = 0;
   for (const [memberId, m] of byMember) {
-    const marker = `upload-digest-${dayKey}-${memberId}`;
-    const already = await prisma.appSetting.findUnique({ where: { key: marker } });
-    if (already) { skipped++; continue; }
     const k = phoneKey(m.phone ?? "");
     if (k.length !== 10) { skipped++; notes.push(`${m.name}: no valid phone`); continue; }
+    // ATOMIC claim FIRST (unique key insert) — two concurrent invocations can
+    // never both text; the loser hits P2002 and skips. Send failure releases
+    // the claim so the next firing retries (never-double-text > never-miss).
+    const marker = `upload-digest-${dayKey}-${memberId}`;
+    try {
+      await prisma.appSetting.create({ data: { key: marker, value: new Date().toISOString() } });
+    } catch {
+      skipped++; // already claimed (today's text went out or is in flight)
+      continue;
+    }
     const text = digestText(m.name.split(" ")[0], m.streets);
     try {
       await OpenPhone.sendMessage(from, `+1${k}`, text);
-      await prisma.appSetting.create({ data: { key: marker, value: new Date().toISOString() } }).catch(() => {});
+      sent++;
+    } catch (e) {
+      // Release the claim — this photographer was NOT texted.
+      await prisma.appSetting.delete({ where: { key: marker } }).catch(() => {});
+      skipped++;
+      notes.push(`${m.name}: send failed — ${e instanceof Error ? e.message : "unknown"}`);
+      continue;
+    }
+    try {
       await logComm({
         channel: "text", direction: "out", minRole: "ADMIN",
         contactName: m.name, fromPhone: k, body: text,
         source: "upload-digest", externalId: `upload-digest-${dayKey}-${memberId}`,
-      }).catch(() => {});
-      sent++;
+      });
     } catch (e) {
-      skipped++;
-      notes.push(`${m.name}: send failed — ${e instanceof Error ? e.message : "unknown"}`);
+      notes.push(`${m.name}: sent but comms log failed — ${e instanceof Error ? e.message : "unknown"}`);
     }
   }
   return { sent, skipped, notes };

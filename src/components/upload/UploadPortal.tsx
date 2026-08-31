@@ -145,7 +145,11 @@ export function UploadPortal({
   const [orderChoice, setOrderChoice] = useState<"front-to-back" | "out-of-order" | null>(
     project.shotOrderNotes ? (priorFrontToBack ? "front-to-back" : "out-of-order") : null,
   );
-  const [orderNotes, setOrderNotes] = useState(priorFrontToBack ? "" : project.shotOrderNotes ?? "");
+  // Strip the storage prefix on rehydrate — otherwise every re-submit would
+  // re-wrap it ("Out of order — Out of order — …") — same pattern as scriptNote.
+  const [orderNotes, setOrderNotes] = useState(
+    priorFrontToBack ? "" : (project.shotOrderNotes ?? "").replace(/^Out of order — /, ""),
+  );
   const [vidInstructions, setVidInstructions] = useState(project.videoInstructions ?? "");
   const [scriptChoice, setScriptChoice] = useState<"as-written" | "edited" | null>(
     project.scriptConfirmedAt
@@ -314,11 +318,16 @@ export function UploadPortal({
                     className="flex-1 rounded-lg border border-border bg-surface px-3 py-1.5 text-sm outline-none focus:border-brand"
                   />
                   <button
-                    disabled={!processNote.trim()}
+                    disabled={!processNote.trim() || isPending}
                     onClick={() => {
                       const note = processNote.trim();
-                      setProcessNoteSent(true);
-                      startTransition(async () => { await submitUploadFeedback(project.id, note).catch(() => {}); });
+                      // Confirm only AFTER the write lands — a dead cell
+                      // connection must not eat feedback behind a thank-you.
+                      startTransition(async () => {
+                        const r = await submitUploadFeedback(project.id, note).catch(() => ({ ok: false }));
+                        if (r.ok) setProcessNoteSent(true);
+                        else setErr("Couldn't send the feedback — check your connection and try again.");
+                      });
                     }}
                     className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm font-medium hover:bg-surface-2 disabled:opacity-50"
                   >

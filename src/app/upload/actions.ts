@@ -87,6 +87,9 @@ export async function acknowledgeUploadProcess(): Promise<{ ok: boolean }> {
   const { getCurrentUser } = await import("@/lib/auth/user");
   const me = await getCurrentUser().catch(() => null);
   if (!me?.email) return { ok: false };
+  // "View as" is read-only EVERYWHERE — an owner previewing a photographer's
+  // welcome page must not satisfy that photographer's one-time acknowledgment.
+  if (me.impersonating) return { ok: false };
   const key = `upload-ack-${me.email.toLowerCase()}`;
   const value = new Date().toISOString();
   await prisma.appSetting.upsert({ where: { key }, create: { key, value }, update: { value } });
@@ -220,13 +223,22 @@ export async function finalizeUpload(
   // cull is confirmed, removal notes are answered, and video jobs carry the
   // editor's instructions + a confirmed script. Prior answers survive
   // re-submits — nobody re-types a form to fix a typo in the brief.
-  if (prior) {
+  // Gates apply to the FIRST finalize only — a job already submitted once
+  // (or delivered weeks ago and re-opened for a brief tweak) keeps its prior
+  // answers and never demands retroactive debrief data (review finding).
+  if (prior && firstFinalize) {
     const wantsPhotosGate = prior.deliverables.some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d.type));
     const wantsVideoGate = prior.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
     if (wantsPhotosGate && !data.cullingConfirmed && !prior.cullingConfirmedAt) {
       return { blocked: "Confirm the cull first — the gallery must be at or under this home's photo cap, with extras in the Backup folder. Overages are deducted at $1/photo." };
     }
-    if (wantsPhotosGate && !data.shotOrder && !prior.shotOrderNotes) {
+    if (wantsPhotosGate && data.shotOrder === undefined && !prior.shotOrderNotes) {
+      // Key ABSENT = a pre-update page still open on their phone — an error
+      // naming a step their screen doesn't have is a trap. (The new page
+      // always sends the key: null when unanswered.)
+      return { blocked: "The upload page just got new steps — refresh this page, then submit." };
+    }
+    if (wantsPhotosGate && data.shotOrder === null && !prior.shotOrderNotes) {
       return { blocked: "Answer the shot order — front to back, or tell us the order you shot the home (so nobody has to guess what's where)." };
     }
     if (wantsPhotosGate && data.shotOrder && !data.shotOrder.frontToBack && !data.shotOrder.notes?.trim() && !prior.shotOrderNotes) {
@@ -319,7 +331,9 @@ export async function finalizeUpload(
             shotOrderNotes: data.shotOrder.frontToBack
               ? "Shot front to back."
               : data.shotOrder.notes?.trim()
-                ? `Out of order — ${data.shotOrder.notes.trim().slice(0, 2000)}`
+                // Never double-wrap a note that already carries the prefix
+                // (belt to the client-side strip — prod data stays clean).
+                ? `Out of order — ${data.shotOrder.notes.trim().replace(/^Out of order — /, "").slice(0, 2000)}`
                 : undefined,
           }
         : {}),
