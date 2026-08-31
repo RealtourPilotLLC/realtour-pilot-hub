@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
 import { UploadPortal } from "@/components/upload/UploadPortal";
 import { AppointmentFeedback } from "@/components/upload/AppointmentFeedback";
 import { getProjectFolderState } from "@/lib/dropboxFolders";
-import { BRACKET_RATIO, photoTargetFor, rawBudgetFor, rawOverageCeiling } from "@/lib/culling";
+import { photoRangeFor, photoTargetFor, rawBudgetFor, rawOverageCeiling } from "@/lib/culling";
 import { ActivityType } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
@@ -117,6 +117,7 @@ export default async function UploadProjectPage({
           photosOrdered,
           videoOrdered,
           photoTarget,
+          range: photoRangeFor(project.squareFeet),
           squareFeet: project.squareFeet ?? null,
         }}
         script={scriptBody ? { body: scriptBody, hook: scriptHook, url: scriptUrl } : null}

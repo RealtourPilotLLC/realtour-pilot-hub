@@ -38,19 +38,28 @@ export default async function UploadWelcomePage({
       <h2 className="mt-7 text-lg font-semibold">How it works</h2>
       <div className="mt-3 space-y-2.5">
         <Row icon={FolderOpen} title="Upload to Dropbox" text="Raw files in the Raw folders. Culled extras in the new Backup Photos folder — every shoot has one now." />
-        <Row icon={Scissors} title="Confirm your cull" text="Every home has a photo cap by size (50 / 65 / 80–85). Front max 4, back max 5, bedrooms 2, baths 1–2. Every room gets at least one HERO shot — the best angle of that room; the exterior gets one front and one back. 5-bracket JPG only. Overages come out of pay at $1/photo — because we pay to edit photos we never deliver." />
+        <Row icon={Scissors} title="Cull to the standard" text="Every home has a target gallery range by size (25–35 for the smallest, up to 70–85 for the largest — the ceiling is not a goal). Every space gets a HERO shot; one composition, once; every photo must add new information; 5-bracket JPG. A $1 production charge may apply per clearly unnecessary photo — never justified coverage." />
         <Row icon={Route} title="Tell us the shot order" text="Shoot front to back. Had to work around a seller or contractor? No problem — just tell us the order you shot, so nobody has to guess what's where." />
         <Row icon={Eraser} title="Note what needs removing" text="Pets, trash cans, vehicles, clutter that couldn't be moved. Move what you can on site — strong attention to detail is the job." />
         <Row icon={Clapperboard} title="Video jobs: confirm the script + leave instructions" text="The script imports from Script Studio — confirm it as written or fix what changed on site. Then your instructions for the edit: the flow, the money shots, your vision. Required on every video job." />
         <Row icon={Upload} title="Check off and submit" text="Tick each deliverable as it lands, add anything the editor should know, submit. You can leave feedback on the process after every job — it goes straight to Jordan." />
       </div>
 
+      <a
+        href="/resources/photography-sop"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="mt-4 block rounded-2xl border border-brand/30 bg-brand-soft/40 px-4 py-3 text-sm font-semibold text-brand transition-colors hover:bg-brand-soft"
+      >
+        Read the full Photography SOP — shooting, culling &amp; upload standards ↗
+      </a>
+
       <div className="mt-7 rounded-2xl border bg-surface p-4">
         <p className="text-sm leading-relaxed text-foreground/85">
           <CheckCircle2 className="mr-1.5 inline size-4 -translate-y-px text-success" />
-          By agreeing you&rsquo;re confirming you&rsquo;ve read the standard and you&rsquo;ll complete the upload
-          page for every shoot, the same day. Questions or pushback? Text Kyle or Jordan — this process improves
-          with your feedback.
+          By agreeing you&rsquo;re confirming you&rsquo;ve read the Photography SOP and this page, and that
+          you&rsquo;ll complete the upload page for every shoot, the same day. Questions or pushback? Text Kyle or
+          Jordan — this process improves with your feedback.
         </p>
         <div className="mt-3.5">
           <AgreeButton next={dest} />

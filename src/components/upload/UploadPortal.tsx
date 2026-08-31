@@ -76,6 +76,22 @@ function MiniHeading({ children }: { children: React.ReactNode }) {
   return <div className="mb-1.5 mt-4 text-[11px] font-bold uppercase tracking-widest text-brand first:mt-0">{children}</div>;
 }
 
+// One group of the SOP §27 pre-upload checklist.
+function CheckRow({ checked, onChange, title, text }: { checked: boolean; onChange: (v: boolean) => void; title: string; text: string }) {
+  return (
+    <label className={cn(
+      "flex cursor-pointer items-start gap-2.5 rounded-xl border px-3.5 py-2.5 transition-colors",
+      checked ? "border-success/40 bg-success-soft/30" : "border-border hover:bg-surface-2",
+    )}>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="mt-0.5 size-4 shrink-0 accent-[var(--brand)]" />
+      <span className="text-sm leading-snug">
+        <span className={cn("font-semibold", checked && "text-success")}>{title}.</span>{" "}
+        <span className="text-foreground/75">{text}</span>
+      </span>
+    </label>
+  );
+}
+
 export function UploadPortal({
   project,
   deliverables,
@@ -115,6 +131,7 @@ export function UploadPortal({
     photosOrdered: boolean;
     videoOrdered: boolean;
     photoTarget: number;
+    range: { low: number; high: number; upper: number | null };
     squareFeet: number | null;
   };
   /** the shoot script pulled from Script Studio (null = none exists there) */
@@ -137,7 +154,11 @@ export function UploadPortal({
   const [processNoteSent, setProcessNoteSent] = useState(false);
 
   // --- Debrief state (prefilled from prior submits — re-opening never re-asks). ---
-  const [cullOk, setCullOk] = useState(!!project.cullingConfirmedAt);
+  // The SOP §27 pre-upload checklist: four groups, all four required.
+  const confirmedBefore = !!project.cullingConfirmedAt;
+  const [checks, setChecks] = useState({ coverage: confirmedBefore, culling: confirmedBefore, quality: confirmedBefore, count: confirmedBefore });
+  const cullOk = checks.coverage && checks.culling && checks.quality && checks.count;
+  const setCheck = (k: keyof typeof checks) => (v: boolean) => setChecks((c) => ({ ...c, [k]: v }));
   const priorNothing = project.removalNotes === NOTHING_SENTINEL;
   const [removal, setRemoval] = useState(priorNothing ? "" : project.removalNotes ?? "");
   const [nothingToRemove, setNothingToRemove] = useState(priorNothing);
@@ -195,7 +216,7 @@ export function UploadPortal({
   // What still blocks the submit — same rules the server enforces.
   function missingItems(): string[] {
     const missing: string[] = [];
-    if (policy.photosOrdered && !cullOk) missing.push("confirm the cull");
+    if (policy.photosOrdered && !cullOk) missing.push("the pre-upload checklist (all four boxes)");
     if (policy.photosOrdered && orderChoice === null) missing.push("answer the shot order");
     if (policy.photosOrdered && orderChoice === "out-of-order" && !orderNotes.trim()) missing.push("the order you shot the home (and why)");
     if (policy.photosOrdered && !removal.trim() && !nothingToRemove) missing.push("answer the removal notes");
@@ -373,47 +394,74 @@ export function UploadPortal({
         {foldersSlot}
       </StepCard>
 
-      {/* ---- STEP: The photo standard ---- */}
+      {/* ---- STEP: The photo standard (the SOP, enforced) ---- */}
       {policy.photosOrdered && (
-        <StepCard n={stepNo++} title="The photo standard — confirm your cull" done={cullOk}>
+        <StepCard n={stepNo++} title="The photo standard — run your cull" done={cullOk}>
           <div className="rounded-xl bg-brand-soft/50 px-3.5 py-2.5 text-sm">
-            <span className="font-semibold">This home&rsquo;s cap: {policy.photoTarget} photos.</span>{" "}
-            <span className="text-foreground/80">
-              {policy.squareFeet
-                ? `${policy.squareFeet.toLocaleString("en-US")} sq ft — up to 2,500 gets 50 · 2,500–5,000 gets 65 · above 5,000 gets 80–85.`
-                : "Up to 2,500 sq ft gets 50 · 2,500–5,000 gets 65 · above 5,000 gets 80–85."}
-            </span>
+            {policy.range.upper ? (
+              <>
+                <span className="font-semibold">This home: aim for {policy.range.low}–{policy.range.high} finals.</span>{" "}
+                <span className="text-foreground/80">
+                  {policy.range.upper} is the normal ceiling — and the ceiling is not a goal.
+                  {policy.squareFeet ? ` (${policy.squareFeet.toLocaleString("en-US")} sq ft)` : ""}
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="font-semibold">7,000+ sq ft — property dependent.</span>{" "}
+                <span className="text-foreground/80">Professional judgment: complete coverage without unnecessary repetition.</span>
+              </>
+            )}
           </div>
 
-          <MiniHeading>The gallery</MiniHeading>
+          <MiniHeading>The standard</MiniHeading>
           <ul className="space-y-1.5 text-sm leading-relaxed text-foreground/85">
-            <li><strong>Front: max 4 · back: max 5 · bedrooms: 2 · bathrooms: 1–2.</strong> If one frame shows everything, keep the better-looking angle.</li>
-            <li><strong>No same angle at different distances.</strong> One composition, once.</li>
-            <li><strong>Extras go in the Backup Photos folder</strong> — never into the delivery set.</li>
+            <li><strong>Every space gets one HERO SHOT</strong> — the photo you&rsquo;d pick if you could only show one. Supporting shots exist only to show what the hero can&rsquo;t.</li>
+            <li><strong>One composition, once.</strong> No distance or zoom variations of the same angle.</li>
+            <li><strong>Every photo must add new information.</strong> &ldquo;I like both&rdquo; is not a reason.</li>
+            <li><strong>Open-concept areas are one space</strong> — not four rooms&rsquo; worth of angles.</li>
+            <li><strong>5-bracket JPG.</strong> A bracket set counts as ONE composition. Not RAW, not 3-bracket.</li>
+            <li><strong>Trash cans and pet items are a no-go.</strong> Fix it on site — don&rsquo;t lean on the editor.</li>
+            <li><strong>Alternates go to Backup Photos</strong> — and cull that folder too.</li>
           </ul>
 
-          <MiniHeading>The shots</MiniHeading>
-          <ul className="space-y-1.5 text-sm leading-relaxed text-foreground/85">
-            <li><strong>Every room gets at least one HERO SHOT</strong> — the absolute best angle of that room.</li>
-            <li><strong>The exterior gets two heroes:</strong> one front, one back.</li>
-            <li><strong>Shoot 5-bracket JPG.</strong> Not RAW. Not 3-bracket.</li>
-          </ul>
+          <details className="mt-3 rounded-xl border border-border">
+            <summary className="cursor-pointer px-3.5 py-2.5 text-sm font-medium text-muted hover:text-foreground">
+              Room-by-room guide (guidelines, not quotas)
+            </summary>
+            <div className="border-t border-border px-3.5 py-2.5 text-[13px] leading-relaxed text-foreground/80">
+              Front &amp; rear exterior 2–4 (up to 5 with aerials) · kitchen 3–5 · living/family 2–3 · dining 1–2 ·
+              primary bed &amp; bath 2–3 · other bedrooms 1–2 · full baths 1–2 · powder room 1 · basement 2–4 ·
+              office/bonus 1–2 · deck/patio 1–2 · pool 2–3.{" "}
+              <a href="/resources/photography-sop" target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">
+                Full table in the SOP ↗
+              </a>
+            </div>
+          </details>
 
-          <p className="mt-3.5 text-[13px] leading-relaxed text-muted">
-            Why the cap: we pay to edit every photo you upload — including ones we&rsquo;ll never deliver — and an
-            unculled gallery pulls Kyle and Jordan off revenue work to re-cull it after editing. That&rsquo;s why{" "}
-            <strong className="text-foreground/85">overages come out of your pay at $1 per photo</strong>. The best
-            photographers don&rsquo;t take a lot of photos — they take the right ones. Overshoot at the shoot all you
-            want; the gallery you upload must be culled.
+          <p className="mt-3 text-[13px] leading-relaxed text-muted">
+            Unnecessary photos cost real money — extra editing plus office time to re-cull after the fact. A{" "}
+            <strong className="text-foreground/85">$1 production charge may be deducted per clearly unnecessary photo</strong>{" "}
+            (duplicates, distance variations, backups uploaded as finals — never justified coverage). This is not a
+            photo-count penalty: a property that truly needs more gets more.{" "}
+            <a href="/resources/photography-sop" target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">
+              Read the full Photography SOP ↗
+            </a>
           </p>
 
-          <label className={cn(
-            "mt-3.5 flex cursor-pointer items-start gap-2.5 rounded-xl border px-3.5 py-3 text-sm font-medium transition-colors",
-            cullOk ? "border-success/40 bg-success-soft/30 text-success" : "border-border hover:bg-surface-2",
-          )}>
-            <input type="checkbox" checked={cullOk} onChange={(e) => setCullOk(e.target.checked)} className={cn(checkbox, "mt-0.5")} />
-            I culled to the standard — at or under {policy.photoTarget}, hero shots in, extras in Backup Photos.
-          </label>
+          <MiniHeading>Before you upload — confirm all four</MiniHeading>
+          <div className="space-y-2">
+            <CheckRow checked={checks.coverage} onChange={setCheck("coverage")} title="Coverage"
+              text="Every important space is represented, each has its hero shot, exteriors and drone (if ordered) are complete." />
+            <CheckRow checked={checks.culling} onChange={setCheck("culling")} title="Culling"
+              text="Failures and test shots gone, duplicates and distance variations gone, every supporting photo adds something, backups separated." />
+            <CheckRow checked={checks.quality} onChange={setCheck("quality")} title="Quality"
+              text="Distractions were fixed on site — no avoidable trash cans, pets, or pet items in frame." />
+            <CheckRow checked={checks.count} onChange={setCheck("count")} title="Count"
+              text={policy.range.upper
+                ? `The gallery makes sense for this home (aim ${policy.range.low}–${policy.range.high}) — anything above has a reason to exist.`
+                : "The gallery size makes sense for this property — every photo has a reason to exist."} />
+          </div>
         </StepCard>
       )}
 

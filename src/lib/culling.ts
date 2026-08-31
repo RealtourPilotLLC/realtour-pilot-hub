@@ -19,21 +19,31 @@ export const BRACKET_RATIO = 5;
 // ratio the old 3.3-on-3 had.
 export const RAW_OVERAGE_FACTOR = 5.5;
 
-// Size tiers (Jordan, Aug 31 2026 — "this is the standard moving forward"):
-// ≤ 2,500 sq ft → 50 finals · 2,500–5,000 → 65 · above 5,000 → 85.
-export const MID_PROPERTY_SQFT = 2500;
-export const LARGE_PROPERTY_SQFT = 5000;
+// Gallery-size tiers from the Photography SOP §16 (Jordan, Sep 1 2026): a
+// TYPICAL range to aim for plus a NORMAL UPPER RANGE. "The upper range is not
+// a goal" — complete coverage without unnecessary repetition. 7,000+ sq ft is
+// professional judgment (upper: null → enforcement falls back to 90).
+export type PhotoRange = { low: number; high: number; upper: number | null };
 
-// "Moving forward" means exactly that: shoots executed BEFORE the standard
-// changed were briefed to the OLD tiers (50, or 80 at ≥3,500 sq ft), and the
-// hourly cull sweep must keep judging them by the rules they were given —
-// otherwise the tier change retro-fires cull tasks + SMS on compliant
-// in-flight jobs (review finding, Aug 31).
-const NEW_TIERS_FROM = Date.parse("2026-09-01T00:00:00-04:00");
+export function photoRangeFor(sqft: number | null | undefined): PhotoRange {
+  if (sqft == null) return { low: 35, high: 45, upper: 50 }; // unknown size → the common tier
+  if (sqft < 1500) return { low: 25, high: 35, upper: 40 };
+  if (sqft <= 2500) return { low: 35, high: 45, upper: 50 };
+  if (sqft <= 3500) return { low: 45, high: 55, upper: 60 };
+  if (sqft <= 5000) return { low: 55, high: 70, upper: 70 };
+  if (sqft <= 7000) return { low: 70, high: 85, upper: 90 };
+  return { low: 70, high: 90, upper: null }; // property dependent — judgment
+}
 
-// The photo budget for one home: an explicit owner override wins; otherwise
-// the size tier decides (by the standard in force on the shoot date).
-// squareFeet comes from the Aryeo listing sync (null → the 50 default).
+// Shoots executed BEFORE a standard changed were briefed to the OLD rules,
+// and the hourly cull sweep must keep judging them by those rules — otherwise
+// a tier change retro-fires cull tasks + SMS on compliant in-flight jobs
+// (review finding, Aug 31).
+const SOP_TIERS_FROM = Date.parse("2026-09-01T00:00:00-04:00");
+
+// The ENFORCEMENT number for one home (the ceiling the cull sweep and the
+// over-budget chips judge against): an explicit owner override wins; otherwise
+// the SOP tier's normal upper range (or the legacy 50/80 for pre-SOP shoots).
 export function photoTargetFor(project: {
   photoTarget?: number | null;
   squareFeet?: number | null;
@@ -41,14 +51,11 @@ export function photoTargetFor(project: {
 }): number {
   if (project.photoTarget != null) return project.photoTarget;
   const sqft = project.squareFeet;
-  if (sqft == null) return 50;
   const shotAt = project.shootDate ? new Date(project.shootDate).getTime() : null;
-  if (shotAt != null && shotAt < NEW_TIERS_FROM) {
-    return sqft >= 3500 ? 80 : 50; // the standard that shoot was briefed to
+  if (shotAt != null && shotAt < SOP_TIERS_FROM) {
+    return sqft != null && sqft >= 3500 ? 80 : 50; // the standard that shoot was briefed to
   }
-  if (sqft > LARGE_PROPERTY_SQFT) return 85;
-  if (sqft > MID_PROPERTY_SQFT) return 65;
-  return 50;
+  return photoRangeFor(sqft).upper ?? 90;
 }
 
 // The bracketed-raw budget that maps to a final target (what the photographer
@@ -62,8 +69,8 @@ export function rawOverageCeiling(target: number): number {
   return Math.round(target * RAW_OVERAGE_FACTOR);
 }
 
-// Room-by-room budget shown on /shoot and /upload so "aim ~50" becomes an
-// actionable plan. Jordan's per-room standard (Aug 31 2026).
+// Room-by-room guide shown on /shoot and /upload — the SOP §12/§14 essentials
+// as one line the photographer can hold in their head on site.
 export function roomBudgetText(target: number): string {
-  return `Aim ~${target} finals (~${target * BRACKET_RATIO} JPGs at ${BRACKET_RATIO} brackets each): front max 4, back max 5, each bedroom 2, each bath 1-2 (if one frame shows everything, keep the better angle). No same angle at different distances — shoot each composition ONCE. Extras go to the Backup folder.`;
+  return `Aim ~${target} finals max (~${target * BRACKET_RATIO} JPGs at ${BRACKET_RATIO} brackets each): front 2-4, rear 2-4, kitchen 3-5, living 2-3, primary bed/bath 2-3, other beds 1-2, baths 1-2 — guidelines, not quotas. Every space gets a HERO shot; one composition, ONCE; extras to Backup.`;
 }
