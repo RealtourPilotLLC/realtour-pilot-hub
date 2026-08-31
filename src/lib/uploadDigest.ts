@@ -35,14 +35,26 @@ function etDayWindow(): { start: Date; end: Date } {
   return { start, end };
 }
 
-export function digestText(firstName: string, streets: string[]): string {
-  const list = streets.map((s) => `• ${s}`).join("\n");
+// Plain and human (Jordan, Sep 1: the first draft read "cryptic") — short
+// sentences, a numbered list, one idea per line. Once the photographer has
+// agreed to the new process, the intro/footer drop and it's just the nightly
+// list.
+export function digestText(firstName: string, streets: string[], opts?: { newProcess?: boolean }): string {
+  const list = streets.map((s, i) => `${i + 1}. ${s}`).join("\n");
+  if (opts?.newProcess === false) {
+    return (
+      `Hi ${firstName} — RealTour Pilot here.\n\n` +
+      `Tonight's shoots to upload:\n${list}\n\n` +
+      `Files in Dropbox, then finish each shoot's checklist:\n${APP_URL}/upload`
+    );
+  }
   return (
-    `RealTour Pilot — heads up ${firstName}: NEW upload process for all uploads, starting now.\n` +
-    `Your shoots today:\n${list}\n` +
-    `Each one gets wrapped up on its upload page tonight — cull confirmed, notes in, everything uploaded:\n` +
-    `${APP_URL}/upload\n` +
-    `First time? The page walks you through it in 2 minutes.`
+    `Hi ${firstName} — RealTour Pilot here.\n\n` +
+    `Heads up: uploads work a new way starting today.\n\n` +
+    `Tonight's shoots to upload:\n${list}\n\n` +
+    `Upload to Dropbox like always, then finish each shoot's checklist here:\n` +
+    `${APP_URL}/upload\n\n` +
+    `The first time you open it, it explains everything — takes 2 minutes.`
   );
 }
 
@@ -63,16 +75,16 @@ export async function sendEveningUploadDigests(): Promise<{ sent: number; skippe
       id: true,
       title: true,
       photographerId: true,
-      photographer: { select: { id: true, name: true, phone: true } },
+      photographer: { select: { id: true, name: true, phone: true, email: true } },
     },
     orderBy: { shootDate: "asc" },
   });
   if (shoots.length === 0) return { sent: 0, skipped: 0, notes: ["no shoots today"] };
 
-  const byMember = new Map<string, { name: string; phone: string | null; streets: string[] }>();
+  const byMember = new Map<string, { name: string; phone: string | null; email: string | null; streets: string[] }>();
   for (const s of shoots) {
     if (!s.photographer) continue;
-    const cur = byMember.get(s.photographer.id) ?? { name: s.photographer.name, phone: s.photographer.phone, streets: [] };
+    const cur = byMember.get(s.photographer.id) ?? { name: s.photographer.name, phone: s.photographer.phone, email: s.photographer.email, streets: [] };
     cur.streets.push(s.title.split(",")[0]);
     byMember.set(s.photographer.id, cur);
   }
@@ -94,7 +106,11 @@ export async function sendEveningUploadDigests(): Promise<{ sent: number; skippe
       skipped++; // already claimed (today's text went out or is in flight)
       continue;
     }
-    const text = digestText(m.name.split(" ")[0], m.streets);
+    // Once they've agreed to the process, the "new way" intro retires itself.
+    const acked = m.email
+      ? await prisma.appSetting.findUnique({ where: { key: `upload-ack-${m.email.toLowerCase()}` } }).catch(() => null)
+      : null;
+    const text = digestText(m.name.split(" ")[0], m.streets, { newProcess: !acked });
     try {
       await OpenPhone.sendMessage(from, `+1${k}`, text);
       sent++;
