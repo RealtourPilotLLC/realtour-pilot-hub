@@ -992,7 +992,7 @@ export function UploadPortal({
                   className="mt-1 w-28 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
                 />
                 <p className="mt-1 text-xs text-muted">
-                  The number of finished videos this session should produce — the editor cuts to this count.
+                  The number of DELIVERABLES — how many finished videos this session owes the client. The editor cuts exactly this many.
                 </p>
               </div>
             )}

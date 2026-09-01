@@ -989,41 +989,63 @@ export type BillingRow = {
   possiblyPaidQbo: boolean;
 };
 
-/** Rows the owner took OFF the AR list — shown collapsed under Finance →
- *  Unpaid so a removal is never invisible and can be undone (review HIGH). */
-export async function getRemovedArRows(): Promise<
-  { id: string; title: string; clientName: string; outstanding: number /* dollars */; removedAt: string; note: string | null }[]
+/** Rows no longer counted as owed — either REMOVED (cancelled appointment /
+ *  test order) or MARKED PAID by hand. Shown collapsed under Finance → Unpaid
+ *  so neither action is invisible, and both can be undone (review HIGH). */
+export async function getClearedArRows(): Promise<
+  {
+    id: string; title: string; clientName: string; outstanding: number /* dollars */;
+    kind: "removed" | "paid"; at: string; note: string | null;
+  }[]
 > {
   const rows = await prisma.project.findMany({
     where: {
       AND: [
         { OR: [{ status: "DELIVERED" }, { deliveredAt: { not: null } }] },
         { balanceAmount: { gt: 0 } },
-        { arRemovedAt: { not: null } },
+        { OR: [{ arRemovedAt: { not: null } }, { paidMarkedAt: { not: null } }] },
       ],
     },
-    orderBy: { arRemovedAt: "desc" },
     select: {
-      id: true, title: true, balanceAmount: true, arRemovedAt: true, arRemovedNote: true,
+      id: true, title: true, balanceAmount: true,
+      arRemovedAt: true, arRemovedNote: true, paidMarkedAt: true, paidMarkedNote: true,
       client: { select: { name: true } },
     },
     take: 100,
   });
-  return rows.map((r) => ({
-    id: r.id,
-    title: r.title,
-    clientName: r.client?.name ?? "Unknown",
-    outstanding: (r.balanceAmount ?? 0) / 100, // balanceAmount is CENTS; every AR surface reports dollars
-    removedAt: (r.arRemovedAt as Date).toISOString(),
-    note: r.arRemovedNote,
-  }));
+  // Sorted by when it was CLEARED — updatedAt is bumped by the Aryeo money
+  // mirror on every sync, which would scramble this list (review).
+  return rows
+    .map((r) => {
+      const paid = r.paidMarkedAt != null;
+      return {
+        id: r.id,
+        title: r.title,
+        clientName: r.client?.name ?? "Unknown",
+        outstanding: (r.balanceAmount ?? 0) / 100, // balanceAmount is CENTS
+        kind: (paid ? "paid" : "removed") as "removed" | "paid",
+        at: ((paid ? r.paidMarkedAt : r.arRemovedAt) as Date).toISOString(),
+        note: paid ? r.paidMarkedNote : r.arRemovedNote,
+      };
+    })
+    .sort((a, b) => b.at.localeCompare(a.at));
 }
 
 export async function getBillingRows(): Promise<{ rows: BillingRow[]; totalOutstanding: number }> {
   const projects = await prisma.project.findMany({
     // arRemovedAt = the owner took it off the AR list (cancelled appointment /
     // test order) — the row stays in the DB, just not in what's owed.
-    where: { AND: [{ OR: [{ status: "DELIVERED" }, { deliveredAt: { not: null } }] }, { balanceAmount: { gt: 0 } }, { arRemovedAt: null }] },
+    // arRemovedAt = the owner took it off AR (cancelled/test); paidMarkedAt =
+    // the owner confirmed the money came in (Aryeo's paid flag lags). Either
+    // way it is no longer OWED, so it leaves this list.
+    where: {
+      AND: [
+        { OR: [{ status: "DELIVERED" }, { deliveredAt: { not: null } }] },
+        { balanceAmount: { gt: 0 } },
+        { arRemovedAt: null },
+        { paidMarkedAt: null },
+      ],
+    },
     orderBy: [{ deliveredAt: { sort: "desc", nulls: "last" } }, { orderedAt: "desc" }],
     select: {
       id: true, title: true, orderedAt: true, deliveredAt: true,

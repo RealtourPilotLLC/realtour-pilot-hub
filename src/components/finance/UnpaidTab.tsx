@@ -4,7 +4,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { NudgeActions } from "@/components/billing/NudgeActions";
 import { RemoveFromAr } from "@/components/billing/RemoveFromAr";
 import { RestoreToAr } from "@/components/billing/RestoreToAr";
-import { getBillingRows, getRemovedArRows, type BillingRow } from "@/lib/queries";
+import { getBillingRows, getClearedArRows, type BillingRow } from "@/lib/queries";
 import { formatMoney } from "@/lib/utils";
 import { etDate } from "@/lib/datetime";
 import { FinanceTabs, type FinanceTab } from "./FinanceTabs";
@@ -114,7 +114,7 @@ function BillingCard({ r }: { r: BillingRow }) {
 }
 
 export async function UnpaidTab({ show }: { show: FinanceTab[] }) {
-  const [{ rows, totalOutstanding }, removed] = await Promise.all([getBillingRows(), getRemovedArRows()]);
+  const [{ rows, totalOutstanding }, cleared] = await Promise.all([getBillingRows(), getClearedArRows()]);
 
   // Group into aging buckets (90+ first — chase the oldest money).
   const grouped = BUCKETS.map((b, i) => {
@@ -177,19 +177,26 @@ export async function UnpaidTab({ show }: { show: FinanceTab[] }) {
         )}
       </div>
 
-      {/* Rows the owner took off the books — collapsed, never invisible, and
-          undoable (review: a removal used to be a one-way trip with no trace). */}
-      {removed.length > 0 && (
+      {/* Rows no longer counted as owed — marked paid, or removed as junk.
+          Collapsed but never invisible, and both are undoable (review HIGH). */}
+      {cleared.length > 0 && (
         <details className="mt-6 rounded-2xl border border-border bg-surface">
           <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium text-muted hover:text-foreground">
-            Removed from AR · {removed.length}
+            Cleared from AR · {cleared.length}
             <span className="ml-2 text-xs text-muted-2">
-              {formatMoney(removed.reduce((n, r) => n + r.outstanding, 0))} not counted as owed
+              {formatMoney(cleared.reduce((n, r) => n + r.outstanding, 0))} no longer counted as owed
             </span>
           </summary>
           <div className="space-y-2 border-t border-border p-3">
-            {removed.map((r) => (
+            {cleared.map((r) => (
               <div key={r.id} className="flex flex-wrap items-center gap-2 rounded-xl border border-border px-3 py-2">
+                <span
+                  className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                    r.kind === "paid" ? "bg-success/15 text-success" : "bg-surface-2 text-muted-2"
+                  }`}
+                >
+                  {r.kind === "paid" ? "PAID" : "REMOVED"}
+                </span>
                 <Link href={`/projects/${r.id}`} className="min-w-0 flex-1 truncate text-sm font-medium hover:text-brand">
                   {r.title}
                 </Link>

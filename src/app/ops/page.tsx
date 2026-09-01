@@ -356,18 +356,29 @@ function ShootList({ shoots, empty, showGaps, showDebrief }: { shoots: OpsShoot[
                 {s.weather.tempF}° · {s.weather.precipPct}% rain · wind {s.weather.windMph} mph
               </span>
             )}
-            {s.droneOrdered && (
-              <span className={cn("inline-flex items-center gap-1", s.airspace?.checked && s.airspace.ceilingFt != null && s.airspace.ceilingFt < 400 ? "font-semibold text-warning" : "text-muted")}>
+            {s.droneOrdered && s.airspace && (
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1",
+                  !s.airspace.available ? "text-muted" : s.airspace.warning ? "font-semibold text-warning" : "text-success",
+                )}
+                title={s.airspace.airport ? `Controlling airport: ${s.airspace.airport}` : undefined}
+              >
                 <Plane className="size-3.5" />
-                {s.airspace?.checked
-                  ? s.airspace.ceilingFt == null
-                    ? "Airspace: uncontrolled"
-                    : s.airspace.ceilingFt === 0
-                      // A 0-ft grid has NO LAANC auto-authorization — a LAANC
-                      // request there gets denied; manual FAA auth or no-fly.
-                      ? "Airspace: 0 ft grid — manual FAA auth required (likely no-fly)"
-                      : `Airspace: ${s.airspace.ceilingFt} ft grid — LAANC`
-                  : <a href="https://b4ufly.aloft.ai/" target="_blank" rel="noopener noreferrer" className="underline">check airspace</a>}
+                {!s.airspace.available ? (
+                  <>
+                    Airspace check unavailable —{" "}
+                    <a href="https://b4ufly.aloft.ai/" target="_blank" rel="noopener noreferrer" className="underline">
+                      verify on B4UFLY
+                    </a>
+                  </>
+                ) : s.airspace.status === "clear" ? (
+                  "Airspace clear — OK to 400 ft"
+                ) : s.airspace.status === "restricted" ? (
+                  `No-fly without FAA authorization${s.airspace.airport ? ` (${s.airspace.airport})` : ""} — 0 ft grid`
+                ) : (
+                  `LAANC required — auto-auth to ${s.airspace.ceilingFt} ft${s.airspace.airport ? ` near ${s.airspace.airport}` : ""}`
+                )}
               </span>
             )}
             {s.comms && (

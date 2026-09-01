@@ -20,6 +20,9 @@ export type DroneAirspace = {
   airspaceClass: string | null; // B/C/D/E
   warning: boolean; // true when the creative should be alerted before flying
   summary: string; // human-readable one-liner
+  // FALSE when the FAA lookup itself failed. "Couldn't check" is NOT "clear" —
+  // a pilot-facing surface must say so rather than imply an all-clear.
+  available: boolean;
 };
 
 type Cell = {
@@ -52,6 +55,7 @@ export async function droneAirspace(lat: number, lng: number): Promise<DroneAirs
         airport: null,
         airspaceClass: null,
         warning: false,
+        available: true,
         summary: "Uncontrolled airspace (Class G) — Part 107 OK to 400 ft, no LAANC needed.",
       };
     }
@@ -68,6 +72,7 @@ export async function droneAirspace(lat: number, lng: number): Promise<DroneAirs
         airport,
         airspaceClass,
         warning: true,
+        available: true,
         summary: `No-fly without authorization — Class ${airspaceClass ?? "?"} near ${airport ?? "an airport"} has a 0 ft LAANC ceiling. Manual FAA authorization required.`,
       };
     }
@@ -77,6 +82,7 @@ export async function droneAirspace(lat: number, lng: number): Promise<DroneAirs
       airport,
       airspaceClass,
       warning: true,
+      available: true,
       summary: `LAANC required — controlled (Class ${airspaceClass ?? "?"}) near ${airport ?? "an airport"}. Auto-authorization up to ${ceiling} ft. File LAANC before the shoot.`,
     };
   } catch {
@@ -86,6 +92,7 @@ export async function droneAirspace(lat: number, lng: number): Promise<DroneAirs
       airport: null,
       airspaceClass: null,
       warning: false,
+      available: false,
       summary: "Airspace check unavailable right now.",
     };
   }

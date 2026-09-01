@@ -39,6 +39,23 @@ function nudgeTemplate(p: {
 
 // Draft a friendly payment-reminder text for one unpaid delivered job.
 // DRAFT ONLY — returned for review; the human sends (or copies) it.
+// balanceAmount is NOT the source of truth for "is this still owed": markArPaid
+// deliberately never rewrites it (the next Aryeo sync would restore it), and
+// removeFromAr doesn't either. Every OUTBOUND chase must re-read the flags at
+// action time — an AR card sitting in a stale tab must never dun a client who
+// already paid (review HIGH; 11 rows were marked paid in ~a minute).
+async function stillOwed(projectId: string): Promise<{ ok: true } | { ok: false; message: string }> {
+  const p = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { balanceAmount: true, arRemovedAt: true, paidMarkedAt: true },
+  });
+  if (!p) return { ok: false, message: "Job not found." };
+  if (p.paidMarkedAt) return { ok: false, message: "This job was marked paid — it is no longer owed. Refresh the list." };
+  if (p.arRemovedAt) return { ok: false, message: "This job was removed from AR. Refresh the list." };
+  if (!p.balanceAmount || p.balanceAmount <= 0) return { ok: false, message: "Nothing outstanding on this job." };
+  return { ok: true };
+}
+
 export async function draftPaymentNudge(projectId: string): Promise<NudgeDraft> {
   await requireAdmin();
   const p = await prisma.project.findUnique({
@@ -49,7 +66,8 @@ export async function draftPaymentNudge(projectId: string): Promise<NudgeDraft> 
     },
   });
   if (!p) return { ok: false, error: "Job not found." };
-  if (!p.balanceAmount || p.balanceAmount <= 0) return { ok: false, error: "Nothing outstanding on this job." };
+  const owed = await stillOwed(projectId);
+  if (!owed.ok) return { ok: false, error: owed.message };
 
   const template = nudgeTemplate({ ...p, clientName: p.client?.name ?? null });
 
@@ -86,6 +104,11 @@ export async function sendPaymentNudge(
     select: { id: true, title: true, clientId: true, client: { select: { name: true, phone: true } } },
   });
   if (!project) return { ok: false, message: "Job not found." };
+  // Re-check at SEND time, not just at draft time: the card may have gone stale
+  // in this tab while someone else marked it paid. This is the irreversible
+  // step — it previously had no balance check of any kind (review HIGH).
+  const owedNow = await stillOwed(projectId);
+  if (!owedNow.ok) return { ok: false, message: owedNow.message };
   if (!project.client.phone) return { ok: false, message: "No phone number on file for this client." };
 
   const { phoneKey, OpenPhone, defaultOpenPhoneNumber } = await import("@/lib/integrations/openphone");
@@ -183,11 +206,51 @@ export async function removeFromAr(projectId: string, note: string): Promise<{ o
 /** Undo — put a removed job back on the AR list. */
 export async function restoreToAr(projectId: string): Promise<{ ok: boolean; message: string }> {
   try { await requireAdmin(); } catch (e) { return { ok: false, message: (e as Error).message }; }
-  await prisma.project.update({ where: { id: projectId }, data: { arRemovedAt: null, arRemovedNote: null } });
+  await prisma.project.update({
+    where: { id: projectId },
+    data: { arRemovedAt: null, arRemovedNote: null, paidMarkedAt: null, paidMarkedNote: null },
+  });
   await prisma.activity.create({
     data: { projectId, type: ActivityType.SYSTEM, body: "Put back on the unpaid (AR) list." },
   }).catch(() => {});
   revalidatePath("/sales");
   revalidatePath("/billing");
+  revalidatePath("/day");
   return { ok: true, message: "Back on the AR list." };
+}
+
+/**
+ * Mark an AR row as PAID by hand (Jordan, Sep 1). Aryeo's paid flag lags badly
+ * for the QuickBooks rail, so the hub can't wait for it — but we also never
+ * rewrite balanceAmount (the next Aryeo sync would just restore it). A flag
+ * keeps the order's real numbers intact while dropping it off "still owed".
+ * Distinct from removeFromAr: this one means the money actually came in.
+ */
+export async function markArPaid(projectId: string, note: string): Promise<{ ok: boolean; message: string }> {
+  try { await requireAdmin(); } catch (e) { return { ok: false, message: (e as Error).message }; }
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { balanceAmount: true } });
+  if (!p) return { ok: false, message: "That job no longer exists." };
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const who = (me?.name ?? "").trim();
+  const reason = note.trim().slice(0, 300);
+  await prisma.project.update({
+    where: { id: projectId },
+    data: {
+      paidMarkedAt: new Date(),
+      paidMarkedNote: [reason || "Marked paid", who].filter(Boolean).join(" — "),
+    },
+  });
+  await prisma.activity.create({
+    data: {
+      projectId,
+      type: ActivityType.SYSTEM,
+      body: `Marked PAID${who ? ` by ${who}` : ""}${reason ? `: ${reason}` : ""}. The balance Aryeo still shows is $${((p.balanceAmount ?? 0) / 100).toFixed(2)} — the hub no longer counts it as owed.`,
+    },
+  }).catch(() => {});
+  revalidatePath("/sales");
+  revalidatePath("/billing");
+  revalidatePath("/day");
+  revalidatePath(`/projects/${projectId}`);
+  return { ok: true, message: "Marked paid." };
 }

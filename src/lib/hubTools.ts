@@ -292,7 +292,7 @@ export async function execHubTool(
         orderBy: [{ orderedAt: "desc" }, { createdAt: "desc" }],
         select: {
           id: true, title: true, status: true, shootDate: true, deliveryDue: true, deliveredAt: true,
-          balanceAmount: true, paymentStatus: true,
+          balanceAmount: true, paymentStatus: true, paidMarkedAt: true, arRemovedAt: true,
           client: { select: { name: true } },
           deliverables: { select: { type: true, label: true } },
         },
@@ -308,7 +308,7 @@ export async function execHubTool(
           shoot: p.shootDate ? etDate(p.shootDate) : null,
           due: p.deliveryDue ? etDate(p.deliveryDue) : null,
           delivered: p.deliveredAt ? etDate(p.deliveredAt) : null,
-          balance_owed: money ? dollars(p.balanceAmount) : undefined,
+          balance_owed: money && !p.paidMarkedAt && !p.arRemovedAt ? dollars(p.balanceAmount) : undefined,
           deliverables: deliverableLabels(p.deliverables),
         })),
       };
@@ -320,7 +320,7 @@ export async function execHubTool(
         where: { id },
         select: {
           id: true, title: true, status: true, shootDate: true, deliveryDue: true, deliveredAt: true,
-          price: true, balanceAmount: true, paymentStatus: true, invoiceUrl: true,
+          price: true, balanceAmount: true, paymentStatus: true, invoiceUrl: true, paidMarkedAt: true, arRemovedAt: true,
           aryeoOrderId: true, statusEvidence: true, revisionNote: true, revisionRequestedAt: true, notes: true,
           client: { select: { id: true, name: true, segment: true } },
           photographer: { select: { name: true } },
@@ -352,7 +352,7 @@ export async function execHubTool(
         // Billing block (price, balance, payment status, invoice link) is
         // admin/owner only — creatives get the project without the money.
         billing: canSeeMoney(ctx.role)
-          ? { total: p.price, balance_owed: dollars(p.balanceAmount), payment_status: p.paymentStatus, invoice_url: p.invoiceUrl }
+          ? { total: p.price, balance_owed: p.paidMarkedAt || p.arRemovedAt ? 0 : dollars(p.balanceAmount), payment_status: p.paymentStatus, invoice_url: p.invoiceUrl }
           : undefined,
         open_tasks: p.smartTasks.map((t) => ({ type: t.taskType, title: t.title, priority: t.priority, due: t.dueAt ? etDate(t.dueAt) : null })),
         recent_messages: p.messages.map((m) => ({ from: m.authorName, at: etDate(m.createdAt), text: (m.body ?? "").slice(0, 280) })),

@@ -74,6 +74,7 @@ export async function ownerPulse(): Promise<OwnerPulseSnapshot> {
             { OR: [{ status: "DELIVERED" }, { deliveredAt: { not: null } }] },
             { balanceAmount: { gt: 0 } },
             { arRemovedAt: null },
+            { paidMarkedAt: null },
           ],
         },
       })

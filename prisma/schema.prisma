@@ -414,6 +414,12 @@ model Project {
   // can't resurrect it and the history stays auditable (Jordan, Sep 1).
   arRemovedAt   DateTime?
   arRemovedNote String?
+  // Owner/admin confirmed this was actually PAID (Aryeo's paid flag lags badly
+  // for the QuickBooks rail, so the hub can't wait for it). Distinct from
+  // arRemovedAt: removed = never really owed; paid = the money came in.
+  // Both drop the row off AR; only this one means revenue was collected.
+  paidMarkedAt   DateTime?
+  paidMarkedNote String?
 
   // Relations / assignment
   client             Client      @relation(fields: [clientId], references: [id])

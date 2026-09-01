@@ -88,26 +88,33 @@ async function weatherFor(lat: number, lng: number, atISO: string): Promise<Shoo
 }
 
 // ---- FAA UAS Facility Map grid ceiling (drone jobs; best-effort) ------------
-export type Airspace = { ceilingFt: number | null; checked: boolean };
+// The shoot card's airspace answer comes from the SHARED FAA module
+// (src/lib/faa.ts droneAirspace) — the free, keyless FAA UAS Facility Map that
+// the drone advisory already uses. Ops Day used to carry its own thinner copy
+// of the same query and fell back to a "check airspace" link, which made Kyle
+// do by hand what the API already answers (Jordan, Sep 1).
+export type Airspace = {
+  /** clear = Class G · laanc = controlled, auto-auth to a ceiling · restricted = 0 ft grid */
+  status: "clear" | "laanc" | "restricted";
+  ceilingFt: number | null;
+  airport: string | null;
+  airspaceClass: string | null;
+  warning: boolean;
+  /** false = the FAA lookup failed; "couldn't check" is never "clear" */
+  available: boolean;
+};
 
 async function airspaceFor(lat: number, lng: number): Promise<Airspace> {
-  try {
-    const url =
-      "https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/arcgis/rest/services/FAA_UAS_FacilityMap_Data_V5/FeatureServer/0/query" +
-      `?f=json&where=1%3D1&geometry=${lng.toFixed(5)}%2C${lat.toFixed(5)}&geometryType=esriGeometryPoint&inSR=4326` +
-      "&spatialRel=esriSpatialRelIntersects&outFields=CEILING&returnGeometry=false";
-    const res = await fetch(url, { next: { revalidate: 86_400 }, signal: AbortSignal.timeout(4000) });
-    if (!res.ok) return { ceilingFt: null, checked: false };
-    const j = (await res.json()) as { features?: { attributes?: { CEILING?: number } }[] };
-    if (!Array.isArray(j.features)) return { ceilingFt: null, checked: false };
-    if (j.features.length === 0) return { ceilingFt: null, checked: true }; // outside gridded (uncontrolled) airspace
-    // A boundary point can intersect several grid cells — the STRICTEST
-    // (lowest) ceiling is the one the pilot must honor.
-    const ceilings = j.features.map((f) => f.attributes?.CEILING).filter((c): c is number => typeof c === "number");
-    return { ceilingFt: ceilings.length ? Math.min(...ceilings) : null, checked: true };
-  } catch {
-    return { ceilingFt: null, checked: false };
-  }
+  const { droneAirspace } = await import("@/lib/faa");
+  const a = await droneAirspace(lat, lng);
+  return {
+    status: a.status,
+    ceilingFt: a.ceiling,
+    airport: a.airport,
+    airspaceClass: a.airspaceClass,
+    warning: a.warning,
+    available: a.available,
+  };
 }
 
 // ---- Types ------------------------------------------------------------------
