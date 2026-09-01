@@ -32,7 +32,9 @@ export async function countProjectPhotos(projectId: string): Promise<{ raw: numb
   if (!p || !p.client) return null;
   const paths = projectFolderPaths({ title: p.title, addressLine: p.addressLine, shootDate: p.shootDate, createdAt: p.createdAt, client: p.client } as Parameters<typeof projectFolderPaths>[0]);
   try {
-    const entries = await dropboxListFolder(paths.rawPhotos);
+    // Recursive: same counter semantics as the portal + status engine, so the
+  // billed count can't disagree with the over-budget chip (review).
+  const entries = await dropboxListFolder(paths.rawPhotos, { recursive: true });
     const imgs = entries.filter((e) => e.tag === "file" && IMG_RE.test(e.name));
     const drone = imgs.filter((e) => DRONE_RE.test(e.name)).length;
     await prisma.project.update({

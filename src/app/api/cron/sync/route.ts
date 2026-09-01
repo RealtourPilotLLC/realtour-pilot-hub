@@ -119,7 +119,7 @@ export async function GET(req: NextRequest) {
   });
   // Client texts that send themselves (Jordan, Sep 1): shoot confirmations 48h
   // out and delivery texts once Aryeo shows every deliverable shipped. Both
-  // self-gate to 9am-8pm ET, atomically claim the task + an idempotency marker
+  // self-gate to 9am-4pm ET, atomically claim the task + an idempotency marker
   // before sending, and share ONE per-client set so a multi-listing client
   // gets at most one auto-text per tick (confirmations first — time-critical).
   // Runs right after `tasks`/`statuses` so the evidence they read is fresh.

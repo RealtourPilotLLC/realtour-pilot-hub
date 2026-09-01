@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { logComm } from "@/lib/commLog";
 import { OpenPhoneError } from "@/lib/integrations/openphone";
+import { MONTHLY_BATCH_INCOMPLETE } from "@/lib/tasks";
 
 // Auto-send client texts (Jordan, Sep 1 2026): confirmation texts go out on
 // their own 2 days before the shoot, and delivery texts go out on their own
@@ -21,6 +22,7 @@ import { OpenPhoneError } from "@/lib/integrations/openphone";
 //   the webhook would read our text as "we answered them".
 // - One auto-text per client per tick (the shared `texted` set) — a
 //   multi-listing client gets one text an hour, not four in a minute.
+// - Nothing sends after 4pm ET; it waits for the next morning.
 
 const HOUR = 3_600_000;
 const AUTO_SOURCES = ["auto-confirmation", "auto-delivery"];
@@ -29,12 +31,21 @@ function etHourNow(): number {
   return Number(new Date().toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }));
 }
 
-// Client texts only go out in waking hours; the hourly cron just skips the
-// night ticks and catches up on the first morning one. (Node's ICU renders
-// midnight as "24" with hour12:false — that safely fails the 9-20 window.)
+// Client texts go out in the BUSINESS morning/afternoon only — never in the
+// evening (Jordan, Sep 1: "they should never go out past 4PM. If 4PM passes,
+// they should go out the next morning"). The hourly cron simply skips every
+// tick outside 9am-4pm ET and catches up on the next morning's first tick.
+// (Node's ICU renders midnight as "24" with hour12:false — safely outside.)
+const SEND_FROM_HOUR = 9;
+const SEND_UNTIL_HOUR = 16; // exclusive — the 4:00pm tick is already too late
+// The missed-confirmation scan runs only on in-window ticks, so it must reach
+// from the FIRST tick of the day back past the LAST tick of the previous one.
+// Derived, because the old hard-coded 14h was tuned to the 8pm window and left
+// 3pm-7pm shoots (twilights) invisible when the cutoff moved to 4pm (review).
+const MISSED_LOOKBACK_HOURS = 24 - (SEND_UNTIL_HOUR - 1) + SEND_FROM_HOUR + 1;
 function inSendWindow(): boolean {
   const h = etHourNow();
-  return h >= 9 && h < 20;
+  return h >= SEND_FROM_HOUR && h < SEND_UNTIL_HOUR;
 }
 
 async function openPhone() {
@@ -69,7 +80,7 @@ async function clientHasOpenQuestion(clientId: string): Promise<boolean> {
  *  per client per cron tick. */
 export async function sweepConfirmationTexts(texted: Set<string> = new Set()): Promise<{ sent: number; skipped: number; notes: string[] }> {
   const notes: string[] = [];
-  if (!inSendWindow()) return { sent: 0, skipped: 0, notes: ["outside 9am-8pm ET window"] };
+  if (!inSendWindow()) return { sent: 0, skipped: 0, notes: ["outside the 9am-4pm ET send window — waiting for the next morning"] };
   const now = new Date();
   const projects = await prisma.project.findMany({
     where: {
@@ -90,7 +101,7 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
   const missed = await prisma.project.findMany({
     where: {
       status: { notIn: ["CANCELLED", "ON_HOLD"] },
-      shootDate: { gt: new Date(now.getTime() - 14 * HOUR), lte: now },
+      shootDate: { gt: new Date(now.getTime() - MISSED_LOOKBACK_HOURS * HOUR), lte: now },
       smartTasks: { none: { taskType: "confirmation_text", status: "COMPLETED" } },
     },
     select: { id: true, title: true },
@@ -195,7 +206,7 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
  *  auto-send, so day-one deploy can't text about last week's job. */
 export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promise<{ sent: number; skipped: number; notes: string[] }> {
   const notes: string[] = [];
-  if (!inSendWindow()) return { sent: 0, skipped: 0, notes: ["outside 9am-8pm ET window"] };
+  if (!inSendWindow()) return { sent: 0, skipped: 0, notes: ["outside the 9am-4pm ET send window — waiting for the next morning"] };
   const tasks = await prisma.smartTask.findMany({
     where: {
       taskType: "delivery_text",
@@ -203,7 +214,7 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
       createdAt: { gte: new Date(Date.now() - 72 * HOUR) },
       projectId: { not: null },
     },
-    select: { id: true, projectId: true },
+    select: { id: true, projectId: true, sourceDetail: true },
     // Oldest first, so a deferred (one-per-client-per-tick) task can't age out
     // of the 72h window while newer ones keep sending.
     orderBy: { createdAt: "asc" },
@@ -217,7 +228,11 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
   for (const t of tasks) {
     const project = await prisma.project.findUnique({
       where: { id: t.projectId! },
-      select: { id: true, title: true, status: true, statusEvidence: true, client: { select: { id: true, name: true, phone: true } } },
+      select: {
+        id: true, title: true, status: true, statusEvidence: true, packageName: true,
+        deliverables: { select: { type: true, label: true } },
+        client: { select: { id: true, name: true, phone: true } },
+      },
     });
     if (!project) { skipped++; continue; }
     // The job must still READ delivered — a revision request (or a manual
@@ -228,6 +243,15 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
     // fulfilled signal) is NOT the same as "everything shipped" — stays manual.
     const ev = parseEvidence(project.statusEvidence);
     if (!ev || ev.missing.length > 0 || (ev.expected.length === 0 && !ev.fulfilledOnAryeo)) { skipped++; continue; }
+    // A delivery text minted only because a monthly batch ran out of time is a
+    // HUMAN decision (see MONTHLY_BATCH_INCOMPLETE) — never auto-send it. The
+    // batch rule itself now lives on the task's CREATION, so any task that
+    // exists here is already owed.
+    if (t.sourceDetail === MONTHLY_BATCH_INCOMPLETE) {
+      skipped++;
+      notes.push(`${project.title}: monthly batch incomplete past turnaround — left for a human`);
+      continue;
+    }
     const k = phoneKey(project.client.phone ?? "");
     if (k.length !== 10) { skipped++; notes.push(`${project.title}: no valid client phone`); continue; }
     if (texted.has(project.client.id)) { skipped++; continue; } // one auto-text per client per tick

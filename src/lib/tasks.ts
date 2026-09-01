@@ -998,21 +998,58 @@ export async function closeObsoleteTasks(projectId: string, projectStatus: strin
 // When a job is delivered, queue Kyle's post-delivery client TEXT (we dropped
 // care calls — no one answers). The drafted, status-aware message + feedback
 // link is attached so Kyle just reviews and sends. Deduped one per project.
+/** Marks a delivery text minted only because the monthly batch ran out of
+ *  time — a HUMAN decides on these; the auto-sweep never sends them. */
+export const MONTHLY_BATCH_INCOMPLETE = "monthly-batch-incomplete";
+
 export async function createDeliveryTextTask(projectId: string): Promise<void> {
   const key = dedupe([projectId, "delivery_text"]);
   if (await prisma.smartTask.findUnique({ where: { dedupeKey: key } })) return;
   const project = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { id: true, title: true, clientId: true, statusEvidence: true, client: { select: { name: true } } },
+    select: {
+      id: true, title: true, clientId: true, statusEvidence: true, packageName: true, shootDate: true,
+      deliverables: { select: { type: true, label: true } },
+      client: { select: { name: true } },
+    },
   });
   if (!project) return;
+  // MONTHLY CONTENT: the order carries ONE line item but the session owes a
+  // BATCH of videos, so Aryeo showing video #1 used to mint (and auto-send)
+  // "everything has been delivered" while the rest were still in production
+  // (Jordan, Sep 1 — 131 Woodcutter St). Hold the task back until the batch is
+  // real. Gating the SEND instead was worse: the task aged out of the sweep's
+  // 72h window and the 7-day sweeper closed it, so the text never went at all
+  // (review HIGH). Because this mint is dedupeKey-guarded and re-attempted
+  // every status pass, holding back here is safe and self-healing.
+  let batchIncomplete = false;
+  if (isMonthlyContentJob(project.deliverables, project.packageName)) {
+    const { parseEvidence } = await import("@/lib/statusEvidence");
+    const { monthlyVideoQuota } = await import("@/lib/pipeline");
+    const videos = parseEvidence(project.statusEvidence)?.aryeo?.videos ?? 0;
+    const quota = monthlyVideoQuota([project.packageName, ...project.deliverables.map((d) => d.label)]);
+    // The editor's explicit override on the Editor Queue (setQueueStatus).
+    const markedComplete = await prisma.activity.findFirst({
+      where: { projectId, type: "SYSTEM", body: { contains: "Queue status set: Completed" } },
+      select: { id: true },
+    });
+    if (videos < quota && !markedComplete) {
+      // Not there yet. Keep waiting UNLESS the promised turnaround has already
+      // passed — then a human must decide rather than the job going silent.
+      const due = project.shootDate ? deliveryDueFrom(project.shootDate, "VIDEO", { monthlyContent: true }) : null;
+      if (!due || due.getTime() > Date.now()) return;
+      batchIncomplete = true;
+    }
+  }
   const { deliveryMessage } = await import("@/lib/delivery");
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
   await prisma.smartTask.create({
     data: {
       taskType: "delivery_text",
       title: `Send delivery text — ${project.title}`,
-      summary: "This job was delivered. Review the drafted post-delivery text (with the feedback link) and send it to the client. A feedback reply auto-logs back to the project.",
+      summary: batchIncomplete
+        ? "This monthly-content job is past its turnaround but Aryeo still shows fewer videos than the plan owes. Check what actually shipped: finish the batch, or send the client an honest update. The hub will NOT send this one on its own."
+        : "This job was delivered. Review the drafted post-delivery text (with the feedback link) and send it to the client. A feedback reply auto-logs back to the project.",
       description: deliveryMessage(project),
       reasonCreated: "Delivered — send the post-delivery client text + feedback link",
       checklist: JSON.stringify([
@@ -1021,7 +1058,11 @@ export async function createDeliveryTextTask(projectId: string): Promise<void> {
         "Watch for a feedback reply (auto-logs to the project)",
       ]),
       source: "system",
-      priority: "MEDIUM",
+      // An incomplete batch past its turnaround is a decision, not a courtesy
+      // nudge — it outranks a normal delivery text and is flagged so the
+      // auto-sweep leaves it strictly alone.
+      priority: batchIncomplete ? "HIGH" : "MEDIUM",
+      ...(batchIncomplete ? { sourceDetail: MONTHLY_BATCH_INCOMPLETE } : {}),
       dueAt: new Date(),
       projectId,
       clientId: project.clientId,

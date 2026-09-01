@@ -16,6 +16,18 @@ function clean(s: string): string {
     .replace(/[^\x09\x0A\x0D\x20-\xFF]/g, "");
 }
 
+// Flatten Markdown to readable plain text for the PDF: drop heading/bold/
+// italic/quote markers, normalize bullets. Content and line structure are
+// kept verbatim — only the syntax characters go.
+function stripMarkdownSyntax(md: string): string {
+  return md
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*\n]+)\*/g, "$1")
+    .replace(/^>\s?/gm, "")
+    .replace(/^[\t ]*[-*•]\s+/gm, "- ");
+}
+
 const MARGIN = 56;
 const PAGE_W = 595.28; // A4
 const PAGE_H = 841.89;
@@ -164,7 +176,9 @@ export async function buildEditorBriefPdf(project: FullProject): Promise<Uint8Ar
   if (project.scriptConfirmNote) {
     heading("Video script");
     text(`Script status: ${project.scriptConfirmNote}`, { size: 11 });
-    if (project.reelScript) text(project.reelScript, { size: 10 });
+    // Studio scripts are Markdown — flatten the syntax for the plain-text PDF
+    // (a literal "**Hook**" or "## " in the editor's hands reads as noise).
+    if (project.reelScript) text(stripMarkdownSyntax(project.reelScript), { size: 10 });
   }
 
   // ---- Photographer's brief --------------------------------------------

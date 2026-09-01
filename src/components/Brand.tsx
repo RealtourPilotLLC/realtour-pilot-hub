@@ -12,17 +12,30 @@ export function BrandMark({ className = "size-9" }: { className?: string }) {
   return <img src="/brand/mark.svg" alt="RealTour Pilot" className={cn("shrink-0 rounded-xl bg-white p-1", className)} />;
 }
 
-// The REAL wordmark file (Jordan, Aug 28 — realtour-pilot-social brand kit,
-// cropped + a navy-recolored variant generated for light surfaces). Sized by
-// height; width follows the file's own proportions.
-export function BrandWordmark({ className = "h-4", variant = "onDark" }: { className?: string; variant?: "onDark" | "onLight" }) {
-  // eslint-disable-next-line @next/next/no-img-element
+// The REAL wordmark files (Jordan, Sep 1 — brand kit: white REAL/PILOT +
+// orange TOUR for dark surfaces; charcoal + orange for light surfaces).
+// Default "auto" follows the THEME — the old always-white default rendered
+// only "TOUR" visibly in light mode (Jordan: "fix the Logos"). The app is
+// dark-first: html.light toggles light mode, so `light:` is the variant.
+// Sized by height; width follows the file's own proportions.
+export function BrandWordmark({ className = "h-4", variant = "auto" }: { className?: string; variant?: "auto" | "onDark" | "onLight" }) {
+  if (variant !== "auto") {
+    // eslint-disable-next-line @next/next/no-img-element
+    return (
+      <img
+        src={variant === "onLight" ? "/brand/wordmark-dark.png" : "/brand/wordmark-white.png"}
+        alt="RealTour Pilot"
+        className={cn("w-auto select-none", className)}
+      />
+    );
+  }
   return (
-    <img
-      src={variant === "onLight" ? "/brand/wordmark-dark.png" : "/brand/wordmark-white.png"}
-      alt="RealTour Pilot"
-      className={cn("w-auto select-none", className)}
-    />
+    <>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src="/brand/wordmark-white.png" alt="RealTour Pilot" className={cn("w-auto select-none light:hidden", className)} />
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src="/brand/wordmark-dark.png" alt="" aria-hidden className={cn("hidden w-auto select-none light:block", className)} />
+    </>
   );
 }
 

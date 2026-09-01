@@ -18,6 +18,7 @@ import { getProjectFolderState } from "@/lib/dropboxFolders";
 import { photoPolicyFor, rawBudgetFor, rawOverageCeiling } from "@/lib/culling";
 import { ActivityType } from "@prisma/client";
 import { NOT_COMPLETED_FLAG_PREFIX } from "@/lib/debrief";
+import { videoStepSpec } from "@/lib/pipeline";
 
 export const dynamic = "force-dynamic";
 
@@ -46,6 +47,9 @@ export default async function UploadProjectPage({
       client: true,
       photographer: true,
       deliverables: { orderBy: { createdAt: "asc" } },
+      // Canceled lines must NOT drive the video step: a downgraded order
+      // would keep demanding the old package's script (review HIGH).
+      orderItems: { where: { isCanceled: false }, select: { title: true } },
       activities: {
         where: { type: { in: [ActivityType.SPECIAL_REQUEST, ActivityType.FLAG] } },
         orderBy: { createdAt: "desc" },
@@ -64,6 +68,16 @@ export default async function UploadProjectPage({
   // script + instructions only for jobs that ordered video (audit Aug 25).
   const photosOrdered = project.deliverables.some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d.type));
   const videoOrdered = project.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  // Which flavor of the video step this package gets (Jordan, Sep 1): premium
+  // packages require the SCRIPT; agent-intro packages require the typed INTRO
+  // script + just editing notes. Names live in the verbatim order items.
+  // Deliverables the photographer marked "couldn't complete" are excused, so
+  // they must not drive the requirements either (review).
+  const liveDeliverables = project.deliverables.filter((d) => !d.notCompletedReason);
+  const videoSpec = videoStepSpec(
+    [project.packageName, ...project.orderItems.map((i) => i.title), ...liveDeliverables.map((d) => d.label)],
+    { hasFullVideo: liveDeliverables.some((d) => d.type === "VIDEO") },
+  );
 
   // Video jobs: pull the shoot script from Script Studio (freshness-gated,
   // never blocks the page on a dead Studio) so the photographer confirms the
@@ -123,6 +137,7 @@ export default async function UploadProjectPage({
           range: photoPolicy.range,
           rangeMode: photoPolicy.mode,
           squareFeet: project.squareFeet ?? null,
+          videoSpec,
         }}
         script={scriptBody ? { body: scriptBody, hook: scriptHook, url: scriptUrl } : null}
         deliverables={project.deliverables.map((d) => ({

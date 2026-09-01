@@ -14,12 +14,14 @@ import {
   Loader2,
   Check,
 } from "lucide-react";
-import { DELIVERABLE_META } from "@/lib/pipeline";
+import { DELIVERABLE_META, type VideoStepSpec } from "@/lib/pipeline";
 import { markDeliverableUploaded, markDeliverableNotCompleted, flagIssue, finalizeUpload, submitUploadFeedback } from "@/app/upload/actions";
 import { cn } from "@/lib/utils";
 import type { DeliverableType, DeliverableStatus } from "@prisma/client";
 import { etDateTime } from "@/lib/datetime";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
+import { Markdown } from "@/components/ui/Markdown";
+import { MarkdownEditor } from "@/components/ui/MarkdownEditor";
 
 // ---------------------------------------------------------------------------
 // The shoot debrief portal (rebuilt Aug 31 2026 per Jordan; readability pass
@@ -27,6 +29,10 @@ import { AutoTextarea } from "@/components/ui/AutoTextarea";
 // Files go to Dropbox directly — THIS page is where the photographer and the
 // office get aligned. The job is not done until every step is answered.
 // ---------------------------------------------------------------------------
+
+type AskAction =
+  | { kind: "submit"; force: boolean }
+  | { kind: "toggle"; id: string; next: boolean; prevReason: string | undefined };
 
 type Deliverable = {
   id: string;
@@ -68,8 +74,20 @@ const VID_SECTIONS = [
   { key: "avoid", label: "AREAS TO AVOID", title: "Areas to avoid", required: false, placeholder: "e.g. skip the unfinished office · avoid the neighbor's yard in the drone pass." },
   { key: "realtor", label: "REALTOR REQUESTS", title: "Realtor requests", required: false, placeholder: "Anything the agent asked for on site — features to hit, order, moments they want kept." },
   { key: "additional", label: "ADDITIONAL NOTES", title: "Additional notes", required: false, placeholder: "Anything else that shapes this edit." },
+  // Agent-intro packages only (Jordan, Sep 1): the typed intro script +
+  // simple editing notes replace the full section set. Same composed-column
+  // storage, so the editor brief PDF and /edit render them for free.
+  { key: "intro", label: "INTRO SCRIPT", title: "Intro script — exactly as the agent delivered it", required: true, placeholder: "Type the intro word for word as it was filmed — the editor cuts and captions to this." },
+  { key: "editNotes", label: "EDITING NOTES", title: "Editing instructions / notes", required: false, placeholder: "Anything the editor should know — order, must-show moments, things to avoid." },
 ] as const;
 type VidKey = (typeof VID_SECTIONS)[number]["key"];
+// Which sections each package flavor shows (all compose/parse identically).
+const AGENT_INTRO_KEYS: readonly VidKey[] = ["intro", "editNotes"];
+const FULL_KEYS: readonly VidKey[] = ["vision", "summary", "mustShow", "avoid", "realtor", "additional"];
+// A plain social reel needs no brief at all (Jordan, Sep 1: "if it's a
+// standard social reel, it doesn't need additional notes") — one optional
+// box, nothing demanded.
+const MINIMAL_KEYS: readonly VidKey[] = ["editNotes"];
 const COLOR_PROFILE_LINE = "COLOR PROFILE: S-Log3, D-LogM";
 
 function composeVideoInstructions(style: VidStyle | null, sections: Record<VidKey, string>): string {
@@ -210,6 +228,8 @@ export function UploadPortal({
     range: { low: number; high: number; upper: number | null };
     rangeMode: "sop" | "legacy" | "override";
     squareFeet: number | null;
+    /** what this order's video step must show and demand — see videoStepSpec */
+    videoSpec: VideoStepSpec;
   };
   /** the shoot script pulled from Script Studio (null = none exists there) */
   script: { body: string; hook: string | null; url: string | null } | null;
@@ -260,7 +280,28 @@ export function UploadPortal({
   // is never retro-blocked for the new required fields — same rule as the
   // server's first-finalize-only gates.
   const hadPriorBrief = !!project.videoInstructions?.trim();
-  const vidAnswered = hadPriorBrief || (!!vidSections.vision.trim() && vidStyle !== null);
+  // What "answered" means depends on the package flavor: agent-intro packages
+  // need the typed intro script; everything else needs vision + style.
+  const spec = policy.videoSpec;
+  // Which sections this order shows. An agent-intro ADD-ON riding a bundle
+  // keeps the bundle's full brief — that listing video is separately directed
+  // (review HIGH) — while a standalone intro package gets intro + notes only.
+  const sectionKeys: readonly VidKey[] = spec.minimalReel
+    ? MINIMAL_KEYS
+    : spec.requireIntro
+      ? (spec.fullBrief ? (["intro", ...FULL_KEYS] as VidKey[]) : AGENT_INTRO_KEYS)
+      : FULL_KEYS;
+  // Names exactly what THIS order must fill, so the closing warning can't say
+  // "vision and style" on a shape whose only required field is the intro.
+  const requiredLabels = [
+    spec.requireIntro ? "The intro script" : null,
+    spec.fullBrief ? "vision and style" : null,
+  ].filter(Boolean) as string[];
+  const isRequiredKey = (k: VidKey) => (k === "intro" && spec.requireIntro) || (k === "vision" && spec.fullBrief);
+  const vidAnswered =
+    hadPriorBrief ||
+    ((!spec.requireIntro || !!vidSections.intro.trim()) &&
+      (!spec.fullBrief || (!!vidSections.vision.trim() && vidStyle !== null)));
   const [scriptChoice, setScriptChoice] = useState<"as-written" | "edited" | null>(
     project.scriptConfirmedAt
       ? project.scriptConfirmNote?.startsWith("Edited") ? "edited" : "as-written"
@@ -282,6 +323,17 @@ export function UploadPortal({
   );
   const [reasonFor, setReasonFor] = useState<string | null>(null);
   const [reasonText, setReasonText] = useState("");
+  // IN-PAGE confirmation, never window.confirm(). The portal is opened from a
+  // text message, so it runs in mobile Safari / the Messages in-app browser —
+  // and a native confirm() raised AFTER an await (outside the tap's gesture)
+  // is suppressed or auto-answered "cancel" there. That's why Harrison's
+  // "hold on" prompt wouldn't let him continue when he pressed OK (Jordan,
+  // Sep 1). An inline panel is deterministic and readable on a phone.
+  // The panel stores a SERIALISABLE intent, never a function: a stored closure
+  // would capture the render it was created in, so anything typed while the
+  // panel was open got silently dropped from the submit (review HIGH). The
+  // yes button dispatches from the CURRENT render instead.
+  const [ask, setAsk] = useState<{ body: string; yes: string; action: AskAction } | null>(null);
 
   const addr = [project.addressLine, project.city, project.state, project.zip].filter(Boolean).join(", ");
   const total = deliverables.length;
@@ -297,9 +349,17 @@ export function UploadPortal({
     // A saved "couldn't complete" reason must not be silently converted into
     // an upload by one stray tap on the amber row (review).
     if (next && prevReason) {
-      const ok = window.confirm("Mark this as uploaded instead? That clears the “couldn't complete” reason.");
-      if (!ok) return;
+      setAsk({
+        body: "Mark this as uploaded instead? That clears the “couldn’t complete” reason you saved.",
+        yes: "Mark uploaded",
+        action: { kind: "toggle", id, next, prevReason },
+      });
+      return;
     }
+    applyToggle(id, next, prevReason);
+  }
+
+  function applyToggle(id: string, next: boolean, prevReason: string | undefined) {
     setUploaded((u) => ({ ...u, [id]: next }));
     if (next) {
       // Marking it uploaded supersedes an earlier "couldn't complete".
@@ -378,10 +438,18 @@ export function UploadPortal({
     if (photosLive && orderChoice === null) missing.push("answer the shot order");
     if (photosLive && orderChoice === "out-of-order" && !orderNotes.trim()) missing.push("the order you shot the home (and why)");
     if (photosLive && !removal.trim() && !nothingToRemove) missing.push("answer the removal notes");
-    if (videoLive && !hadPriorBrief && !vidSections.vision.trim()) missing.push("the vision for the edit");
-    if (videoLive && !hadPriorBrief && vidStyle === null) missing.push("pick an edit style");
+    if (videoLive && !hadPriorBrief) {
+      if (spec.requireIntro && !vidSections.intro.trim()) missing.push("the agent's intro script — type it exactly as delivered");
+      if (spec.fullBrief && !vidSections.vision.trim()) missing.push("the vision for the edit");
+      if (spec.fullBrief && vidStyle === null) missing.push("pick an edit style");
+    }
     if (videoLive && script && !scriptChoice) missing.push("confirm the script");
     if (videoLive && scriptChoice === "edited" && !scriptText.trim()) missing.push("the edited script text (or pick “Delivered as written”)");
+    // Premium packages: the script can NOT be left blank (Jordan, Sep 1) —
+    // when Studio has none, the photographer types what was delivered.
+    if (videoLive && spec.requireScript && !script && !hadPriorBrief && !scriptText.trim()) {
+      missing.push("the script — this premium package can't be submitted without it");
+    }
     return missing;
   }
 
@@ -393,12 +461,19 @@ export function UploadPortal({
       return;
     }
     if (remaining.length > 0) {
-      const ok = window.confirm(
-        `${remaining.length} item${remaining.length === 1 ? " isn’t" : "s aren’t"} checked off yet ` +
-          `(${remaining.map((d) => DELIVERABLE_META[d.type].label).join(", ")}).\n\nSubmit to editors anyway?`,
-      );
-      if (!ok) return;
+      setAsk({
+        body:
+          `${remaining.length} item${remaining.length === 1 ? " isn’t" : "s aren’t"} checked off yet ` +
+          `(${remaining.map((d) => DELIVERABLE_META[d.type].label).join(", ")}). Submit to editors anyway?`,
+        yes: "Submit anyway",
+        action: { kind: "submit", force: false },
+      });
+      return;
     }
+    runSubmit(false);
+  }
+
+  function runSubmit(force: boolean) {
     setErr(null);
     const payload = {
       editorBrief,
@@ -411,16 +486,27 @@ export function UploadPortal({
         ? { state: scriptChoice, ...(scriptChoice === "edited" ? { script: scriptText, note: scriptNote } : {}) }
         : null,
       sawScript: !!script,
+      // Package-scoped requirements (keys ABSENT on pre-update pages — the
+      // server treats absence as "old tab, ask for a refresh", null as
+      // "unanswered, block with the real message").
+      introScript: spec.requireIntro ? vidSections.intro.trim() || null : undefined,
+      providedScript: spec.requireScript && !script ? scriptText.trim() || null : undefined,
+      ...(force ? { force: true } : {}),
     };
     startTransition(async () => {
       try {
-        let res = await finalizeUpload(project.id, payload);
+        const res = await finalizeUpload(project.id, payload);
         if (res.blocked) { setErr(res.blocked); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
         if (res.needsConfirm) {
-          const proceed = window.confirm(res.warning ?? "Some ordered items look missing. Submit anyway?");
-          if (!proceed) return;
-          res = await finalizeUpload(project.id, { ...payload, force: true });
-          if (res.blocked) { setErr(res.blocked); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
+          // Ask IN PAGE and re-submit with force on "yes" — never a native
+          // dialog here: this point is past an await, where mobile browsers
+          // silently swallow confirm() (Harrison's stuck "hold on").
+          setAsk({
+            body: res.warning ?? "Some ordered items look missing. Submit anyway?",
+            yes: "Submit anyway",
+            action: { kind: "submit", force: true },
+          });
+          return;
         }
         if (res.pdfPath) setPdfPath(res.pdfPath);
         setDone(true);
@@ -448,7 +534,10 @@ export function UploadPortal({
     orderChoice === "front-to-back" || orderChoice === "interior-exterior" ||
     (orderChoice === "out-of-order" && !!orderNotes.trim());
   const videoDone =
-    vidAnswered && (!script || hadPriorBrief || (scriptChoice !== null && (scriptChoice !== "edited" || !!scriptText.trim())));
+    vidAnswered &&
+    (!script || hadPriorBrief || (scriptChoice !== null && (scriptChoice !== "edited" || !!scriptText.trim()))) &&
+    // Premium: no Studio script → the typed script is part of "done".
+    (!spec.requireScript || !!script || hadPriorBrief || !!scriptText.trim());
 
   return (
     <div className="space-y-4">
@@ -737,9 +826,17 @@ export function UploadPortal({
         </StepCard>
       )}
 
-      {/* ---- STEP: Video (only when a video is on the order) ---- */}
+      {/* ---- STEP: Video (only when a video is on the order). The step's
+          shape follows the PACKAGE (Jordan, Sep 1): premium packages show the
+          full fields and REQUIRE the script; agent-intro packages require the
+          typed intro script + just editing notes; everything else keeps the
+          vision + style flow. ---- */}
       {policy.videoOrdered && (
-        <StepCard n={stepNo++} title="Video — script & your instructions" done={videoDone}>
+        <StepCard
+          n={stepNo++}
+          title={spec.requireIntro && !spec.fullBrief ? "Video — agent intro script & notes" : "Video — script & your instructions"}
+          done={videoDone}
+        >
           {script ? (
             <div>
               <div className="flex items-center justify-between gap-2">
@@ -750,27 +847,24 @@ export function UploadPortal({
                   </a>
                 )}
               </div>
-              <AutoTextarea
-                value={scriptText}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setScriptText(v);
-                  // Typing flips to "edited"; reverting to the exact original
-                  // un-flips, so a stray touch can't confirm a phantom edit.
-                  setScriptChoice((prev) => (v.trim() === script.body.trim() ? (prev === "edited" ? null : prev) : "edited"));
-                }}
-                minRows={4}
-                className="mt-1.5 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm leading-relaxed outline-none focus:border-brand"
-              />
+              {/* Studio scripts are MARKDOWN (Jordan, Sep 1) — read it rendered,
+                  and only open the formatting editor after "Changed on site". */}
+              {scriptChoice === "edited" ? (
+                <MarkdownEditor value={scriptText} onChange={setScriptText} minRows={5} className="mt-1.5" />
+              ) : (
+                <div className="mt-1.5 max-h-80 overflow-y-auto scroll-thin rounded-lg border border-border bg-surface-2/60 px-3 py-2">
+                  <Markdown content={scriptText} />
+                </div>
+              )}
               <p className="mt-1.5 text-[13px] text-muted">
-                Did the agent deliver it as written? If anything changed on site, fix the text above — the editor cuts to what you confirm here.
+                Did the agent deliver it as written? If anything changed on site, pick &ldquo;Changed on site&rdquo; and fix the text — the editor cuts to what you confirm here.
               </p>
               <div className="mt-2 flex flex-wrap gap-2">
                 <button onClick={() => { setScriptChoice("as-written"); setScriptText(script.body); }} className={choiceBtn(scriptChoice === "as-written")}>
                   <CheckCircle2 className="size-4" /> Delivered as written
                 </button>
                 <button onClick={() => setScriptChoice("edited")} className={choiceBtn(scriptChoice === "edited", "warn")}>
-                  Changed on site
+                  Changed on site — edit it
                 </button>
               </div>
               {scriptChoice === "edited" && (
@@ -782,46 +876,74 @@ export function UploadPortal({
                 />
               )}
             </div>
-          ) : (
+          ) : spec.requireScript ? (
+            <div>
+              <p className="text-sm font-semibold">
+                The script <span className="text-brand">— required for this package</span>
+              </p>
+              <p className="mt-0.5 text-[13px] text-muted">
+                No script came through from Script Studio — type or paste the script exactly as it was delivered on camera. Premium packages can&rsquo;t be submitted without it.
+              </p>
+              <MarkdownEditor
+                value={scriptText}
+                onChange={setScriptText}
+                minRows={4}
+                placeholder="The full script, word for word as filmed."
+                className="mt-1.5"
+              />
+            </div>
+          ) : spec.requireIntro ? null : (
             <p className="rounded-lg bg-surface-2/70 px-3 py-2 text-[13px] text-muted">
               No script found in Script Studio for this shoot. If the agent read from one, put it in the instructions below so the editor has it.
             </p>
           )}
 
-          <div className="mt-4 border-t border-border pt-3.5">
-            <p className="text-sm font-semibold">
-              Your instructions for the edit <span className="text-brand">— required</span>
-            </p>
-            <p className="mt-0.5 text-[13px] text-muted">
-              Sectioned so the editor can act on it — fill what applies; vision and style are required.
-            </p>
-
-            <div className="mt-2.5">
-              <label className="text-[13px] font-medium text-muted">Edit style <span className="text-brand">*</span></label>
-              <select
-                value={vidStyle ?? ""}
-                onChange={(e) => setVidStyle((e.target.value || null) as VidStyle | null)}
-                className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand sm:max-w-xs"
-              >
-                <option value="">Pick a style…</option>
-                <option value="fast">{VID_STYLES.fast}</option>
-                <option value="cinematic">{VID_STYLES.cinematic}</option>
-              </select>
-              <p className="mt-1 text-xs text-muted">
-                Ask the realtor on site which they want — luxury often leans timeless &amp; elegant, but not always. Never guess, just ask.
+          <div className={cn("border-border", (script || !spec.requireIntro) && "mt-4 border-t pt-3.5")}>
+            {spec.minimalReel ? (
+              <p className="text-sm font-semibold">
+                Anything the editor should know? <span className="font-normal text-muted">— optional</span>
               </p>
-            </div>
+            ) : spec.requireIntro && !spec.fullBrief ? (
+              <p className="text-sm font-semibold">
+                Intro script &amp; editing notes <span className="text-brand">— intro required</span>
+              </p>
+            ) : (
+              <>
+                <p className="text-sm font-semibold">
+                  Your instructions for the edit <span className="text-brand">— required</span>
+                </p>
+                <p className="mt-0.5 text-[13px] text-muted">
+                  Sectioned so the editor can act on it — fill what applies; vision and style are required.
+                </p>
+
+                <div className="mt-2.5">
+                  <label className="text-[13px] font-medium text-muted">Edit style <span className="text-brand">*</span></label>
+                  <select
+                    value={vidStyle ?? ""}
+                    onChange={(e) => setVidStyle((e.target.value || null) as VidStyle | null)}
+                    className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand sm:max-w-xs"
+                  >
+                    <option value="">Pick a style…</option>
+                    <option value="fast">{VID_STYLES.fast}</option>
+                    <option value="cinematic">{VID_STYLES.cinematic}</option>
+                  </select>
+                  <p className="mt-1 text-xs text-muted">
+                    Ask the realtor on site which they want — luxury often leans timeless &amp; elegant, but not always. Never guess, just ask.
+                  </p>
+                </div>
+              </>
+            )}
 
             <div className="mt-3 space-y-3">
-              {VID_SECTIONS.map((s) => (
+              {sectionKeys.map((k) => VID_SECTIONS.find((sec) => sec.key === k)!).map((s) => (
                 <div key={s.key}>
                   <label className="text-[13px] font-medium text-muted">
-                    {s.title}{s.required && <span className="text-brand"> *</span>}
+                    {s.title}{isRequiredKey(s.key) && <span className="text-brand"> *</span>}
                   </label>
                   <AutoTextarea
                     value={vidSections[s.key]}
                     onChange={(e) => setVidSections((v) => ({ ...v, [s.key]: e.target.value }))}
-                    minRows={s.key === "vision" ? 3 : 2}
+                    minRows={s.key === "vision" || s.key === "intro" ? 3 : 2}
                     placeholder={s.placeholder}
                     className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
                   />
@@ -829,9 +951,11 @@ export function UploadPortal({
               ))}
             </div>
 
-            <p className="mt-1.5 text-xs text-warning">
-              Vision and style can&rsquo;t be left blank. Skipping the instructions forfeits future premium shoot assignments.
-            </p>
+            {requiredLabels.length > 0 && (
+              <p className="mt-1.5 text-xs text-warning">
+                {`${requiredLabels.join(" and ")} can’t be left blank${spec.requireIntro ? " — the editor cuts and captions to the intro" : ""}. Skipping the instructions forfeits future premium shoot assignments.`}
+              </p>
+            )}
           </div>
         </StepCard>
       )}
@@ -973,7 +1097,38 @@ export function UploadPortal({
 
       {/* Submit */}
       <div className="sticky bottom-4 rounded-2xl border bg-surface p-4 shadow-lg">
-        {!done && (
+        {/* In-page confirmation — replaces window.confirm(), which mobile and
+            in-app browsers swallow after an await (Harrison's stuck "hold on"). */}
+        {ask && (
+          <div className="mb-3 rounded-xl border border-warning/40 bg-warning/10 p-3">
+            <p className="flex items-start gap-2 text-[13px] leading-relaxed text-foreground/90">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
+              <span>{ask.body}</span>
+            </p>
+            <div className="mt-2.5 flex flex-wrap gap-2">
+              <button
+                onClick={() => {
+                  const a = ask.action;
+                  setAsk(null);
+                  // Dispatched from THIS render, so it carries whatever the
+                  // photographer has typed up to the moment they confirm.
+                  if (a.kind === "submit") runSubmit(a.force);
+                  else applyToggle(a.id, a.next, a.prevReason);
+                }}
+                className="rounded-lg bg-brand px-3.5 py-2 text-sm font-semibold text-brand-fg hover:opacity-90"
+              >
+                {ask.yes}
+              </button>
+              <button
+                onClick={() => setAsk(null)}
+                className="rounded-lg border border-border px-3.5 py-2 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+              >
+                Go back
+              </button>
+            </div>
+          </div>
+        )}
+        {!done && !ask && (
           <p className="mb-2.5 text-[13px] font-medium text-brand">
             Once submitted, this shoot is added to your payroll.
           </p>

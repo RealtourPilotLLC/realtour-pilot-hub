@@ -189,11 +189,21 @@ export async function dropboxMoveFolder(fromPath: string, toPath: string): Promi
   }
 }
 
-export async function dropboxListFolder(path: string): Promise<{ name: string; tag: string; path: string }[]> {
+export async function dropboxListFolder(
+  path: string,
+  opts: { recursive?: boolean } = {},
+): Promise<{ name: string; tag: string; path: string }[]> {
   type Page = { entries: { name: string; [".tag"]: string; path_display?: string }[]; has_more?: boolean; cursor?: string };
   // PAGINATED: a 400-raw shoot folder exceeds one page and used to be silently
   // truncated, which under-counted photos (and photo-editing cost).
-  let res = await dbx<Page>("files/list_folder", { path: path === "/" ? "" : path });
+  // RECURSIVE (opt-in): camera dumps land as nested folders (Sony/Canon card
+  // trees, or a photographer's own subfolder), and a top-level-only listing
+  // counted those as ZERO — the portal told Harrison "the RAW-Video folder is
+  // empty" while his footage sat one level down (Jordan, Sep 1).
+  let res = await dbx<Page>("files/list_folder", {
+    path: path === "/" ? "" : path,
+    ...(opts.recursive ? { recursive: true } : {}),
+  });
   const all = [...(res.entries ?? [])];
   let guard = 0;
   while (res.has_more && res.cursor && guard++ < 50) {

@@ -479,6 +479,17 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
     data: { projectId, type: "SYSTEM", body: `Queue status set: ${label}` },
   }).catch(() => {});
 
+  // "Completed" is the editor's explicit "the batch is done" — it's the human
+  // override that releases a monthly-content job's held-back delivery text
+  // (createDeliveryTextTask; dedupeKey-guarded, so this is a no-op if it
+  // already exists).
+  if (status === "DELIVERED") {
+    try {
+      const { createDeliveryTextTask } = await import("@/lib/tasks");
+      await createDeliveryTextTask(projectId);
+    } catch { /* best-effort */ }
+  }
+
   // Flipping to Revisions IS a revision request — in Slack the flip only
   // recolored a cell; here it mints the video-lane work item, so the label
   // sticks (the queue narrates the video lane from open revision tasks), the

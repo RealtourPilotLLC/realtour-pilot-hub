@@ -223,10 +223,95 @@ export const DELIVERABLE_STATUS_META: Record<
 export const MONTHLY_PLAN_RE =
   /video\s*[-–]?\s*(starter|accelerator|pro)\b|monthly\s+(social\s+)?(media\s+)?content|social\s+(media\s+)?content|personal[-\s]*brand|content\s+(session|day)\b|branding\s+(shoot|session)\b/i;
 
+// How many finished videos a monthly-content session actually owes — the same
+// numbers the content program bills on (PACKAGE_RULES in lib/contentProgram:
+// Starter 2 / Accelerator 4 / Pro 8). A flat 4 was unreachable for every
+// Starter job and too low for Pro (review).
+export function monthlyVideoQuota(labels: (string | null | undefined)[]): number {
+  const t = labels.filter(Boolean).join(" | ");
+  if (/\bpro\b/i.test(t)) return 8;
+  if (/starter/i.test(t)) return 2;
+  return 4; // Accelerator + generic monthly wordings ("Content Day", "Branding Shoot")
+}
+
 export function isMonthlyContentJob(
   deliverables: { type?: string; label?: string | null }[],
   packageName?: string | null,
 ): boolean {
   if (packageName && MONTHLY_PLAN_RE.test(packageName)) return true;
   return deliverables.some((d) => !!d.label && MONTHLY_PLAN_RE.test(d.label));
+}
+
+// ---------------------------------------------------------------------------
+// Upload-portal video step, scoped by PACKAGE (Jordan, Sep 1 2026):
+// - "premium-script": the premium/luxury packages — full instruction fields
+//   AND the script section can't be left blank (Premium Social [Media] Reel,
+//   Premium Package, REALTOUR PRO BUNDLE, Signature Package).
+// - "agent-intro": agent-on-camera intro packages — a required INTRO SCRIPT
+//   field (typed exactly as delivered) + just editing instructions/notes
+//   (Photography and Standard Reel w/ Agent intro, Standard Reel with Agent
+//   Intro, Agent on Camera, Agent Intro and Outro).
+// - "standard": everything else — the existing vision+style flow.
+// Premium is checked FIRST: "Premium Social Media Reel (No Agent on camera or
+// Exteriors)" contains "agent on camera" inside a NEGATION (live data).
+// Names live in OrderItem.title (verbatim) + Deliverable.label; packageName is
+// usually empty for these — pass all three.
+// ---------------------------------------------------------------------------
+export type VideoScriptMode = "premium-script" | "agent-intro" | "standard";
+const PREMIUM_SCRIPT_RE = /premium\s+social\s+(media\s+)?reel|premium\s+package|realtour\s+pro\s+bundle|signature\s+package|premium\s+reel|\binfluencer\b/i;
+const AGENT_INTRO_RE = /agent[-\s]+intro|agent\s+on\s+camera/i;
+// The plain in-house reel — the ONLY shape that gets "no notes needed".
+const STANDARD_REEL_RE = /\b(standard|social(\s+media)?)\s+(video\s+)?(highlight\s+)?reel\b|photography\s+(and|&)\s+standard\s+reel/i;
+
+/** What the upload portal's video step must show and demand for this order. */
+export type VideoStepSpec = {
+  mode: VideoScriptMode;
+  /** premium packages: the script itself can never be left blank */
+  requireScript: boolean;
+  /** agent-intro packages: the typed intro script can never be left blank */
+  requireIntro: boolean;
+  /** the six sectioned instruction fields + style picker, vision required */
+  fullBrief: boolean;
+  /** a plain social reel: style + optional notes, nothing demanded */
+  minimalReel: boolean;
+};
+
+/**
+ * titles = the order's LIVE item titles + deliverable labels + packageName
+ * (canceled items and "couldn't complete" deliverables must be filtered out by
+ * the caller — a downgraded or unfilmed line must not drive the gates).
+ * hasFullVideo = the order carries a full VIDEO deliverable, not only a reel.
+ *
+ * Jordan (Sep 1): premium packages show everything and require the script;
+ * agent-intro packages require the typed intro; "if it's a standard social
+ * reel, it doesn't need additional notes". An agent-intro ADD-ON riding a
+ * bundle still needs the bundle's full brief — that video is a separate,
+ * fully-directed deliverable.
+ */
+export function videoStepSpec(
+  titles: (string | null | undefined)[],
+  opts: { hasFullVideo: boolean },
+): VideoStepSpec {
+  const t = titles.filter(Boolean).join(" | ");
+  // Premium is tested FIRST: "Premium Social Media Reel (No Agent on camera or
+  // Exteriors)" carries the agent-on-camera words inside a NEGATION.
+  if (PREMIUM_SCRIPT_RE.test(t)) {
+    return { mode: "premium-script", requireScript: true, requireIntro: false, fullBrief: true, minimalReel: false };
+  }
+  if (AGENT_INTRO_RE.test(t)) {
+    return { mode: "agent-intro", requireScript: false, requireIntro: true, fullBrief: opts.hasFullVideo, minimalReel: false };
+  }
+  // "Nothing demanded" must be EARNED, not a fallthrough. An unrecognised
+  // product name (a discounted/renamed influencer package, a new SKU) used to
+  // land here and silently drop every requirement — the safe default is the
+  // full brief (review). Only an explicitly-recognised plain reel goes
+  // minimal.
+  const plainReel = STANDARD_REEL_RE.test(t) && !opts.hasFullVideo;
+  return {
+    mode: "standard",
+    requireScript: false,
+    requireIntro: false,
+    fullBrief: !plainReel,
+    minimalReel: plainReel,
+  };
 }

@@ -34,6 +34,8 @@ type FolderProject = {
   shootDate: Date | null;
   createdAt: Date;
   client: { name: string };
+  /** the folder the engine actually created/moved to, when it recorded one */
+  dropboxFolder?: string | null;
 };
 
 // Year/month of a date IN EASTERN TIME. The Zap names folders by the shoot's
@@ -61,6 +63,10 @@ export function projectFolderPaths(p: FolderProject): ProjectFolders {
   const street = (p.addressLine || p.title.split(",")[0] || "Listing").trim();
   const listingName = `${street} (${p.client.name})`;
   const base = `/AutoHDR/${year}/${quarter}/${month}/${listingName}`;
+  return foldersUnder(base);
+}
+
+function foldersUnder(base: string): ProjectFolders {
   return {
     listing: base,
     rawPhotos: `${base}/01-RAW-Photos`,
@@ -69,6 +75,21 @@ export function projectFolderPaths(p: FolderProject): ProjectFolders {
     finalPhotos: `${base}/04-Final-Photos`,
     finalVideo: `${base}/05-Final-Video`,
   };
+}
+
+/**
+ * Where this job's files ACTUALLY live. projectFolderPaths() returns the
+ * CONVENTION path (year/quarter/month/street) — ensureProjectFolders compares
+ * against it to detect a reschedule and move the folder, so it must keep
+ * returning the convention. But every READ surface wants the real location:
+ * a shoot moved August→September leaves the files in September while the
+ * convention still says August, so the portal read an empty/absent folder and
+ * told the photographer "the RAW-Video folder is empty" (Jordan, Sep 1 —
+ * Harrison; 4 live jobs were mis-pointed, incl. 775 Scotch Way).
+ */
+export function actualFolderPaths(p: FolderProject): ProjectFolders {
+  const base = p.dropboxFolder?.trim();
+  return base ? foldersUnder(base) : projectFolderPaths(p);
 }
 
 // ---------------------------------------------------------------------------
@@ -216,7 +237,8 @@ export async function ensureFoldersForUpcomingShoots(): Promise<{
 // sweep's folderCount.
 export async function folderFileCount(path: string): Promise<number | null> {
   try {
-    const entries = await dropboxListFolder(path);
+    // Recursive: a card dump inside a subfolder is still footage that's IN.
+    const entries = await dropboxListFolder(path, { recursive: true });
     return entries.filter((e) => e.tag === "file").length;
   } catch (e) {
     if (e instanceof DropboxError && /not_found|path_lookup/i.test(e.message)) return 0;
@@ -241,7 +263,7 @@ export async function getProjectFolderState(p: FolderProject): Promise<{
   hasFinal: boolean;
   readFailed: boolean;
 } | null> {
-  const f = projectFolderPaths(p);
+  const f = actualFolderPaths(p);
   const defs: { key: keyof ProjectFolders; label: string; raw: boolean }[] = [
     { key: "rawPhotos", label: "Raw Photos", raw: true },
     { key: "rawVideo", label: "Raw Video", raw: true },

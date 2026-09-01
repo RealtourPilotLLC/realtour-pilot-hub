@@ -2,9 +2,9 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import type { ProjectStatus } from "@prisma/client";
 import { Aryeo } from "@/lib/integrations/aryeo";
-import { dropboxConfigured, dropboxListFolder, DropboxError } from "@/lib/integrations/dropbox";
+import { dropboxConfigured } from "@/lib/integrations/dropbox";
 import { getSecret } from "@/lib/integrations/connections";
-import { projectFolderPaths } from "@/lib/dropboxFolders";
+import { actualFolderPaths, folderFileCount } from "@/lib/dropboxFolders";
 import { standardDeliveryDue, deliveryDueFrom } from "@/lib/tasks";
 import type { NotifyTarget } from "@/lib/notify";
 import { photoTargetFor, RAW_OVERAGE_FACTOR, BRACKET_RATIO } from "@/lib/culling";
@@ -357,13 +357,12 @@ async function aryeoMedia(listingId: string): Promise<AryeoMediaSignal | null> {
 // failure — auth, rate limit, network, a 5xx — is UNKNOWN, not zero: treating it
 // as zero made a one-second Dropbox blip read as "no media", which demoted shot
 // jobs and destroyed their QC/delivery tasks (audit crack #2). null = "couldn't look".
+// Delegates to the ONE shared counter (identical null/not_found semantics) so
+// the status engine can't drift from the portal again: it kept its own
+// top-level-only listing, so a nested camera dump still read as zero here even
+// after the portal was fixed — no SHOT transition, no editor handoff (review).
 async function folderCount(path: string): Promise<number | null> {
-  try {
-    return (await dropboxListFolder(path)).filter((e) => e.tag === "file").length;
-  } catch (e) {
-    if (e instanceof DropboxError && /not_found|path_lookup/i.test(e.message)) return 0;
-    return null;
-  }
+  return folderFileCount(path);
 }
 
 type StatusProject = {
@@ -377,6 +376,7 @@ type StatusProject = {
   shootDate: Date | null;
   addressLine: string | null;
   createdAt: Date;
+  dropboxFolder: string | null;
   revisionRequestedAt: Date | null;
   revisionNote: string | null;
   photographerId: string | null;
@@ -409,7 +409,10 @@ async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<Sta
   let dropbox: DropboxSignal | null = null;
   let dropboxUnavailable = !useDropbox;
   if (useDropbox && !aryeoSatisfies) {
-    const f = projectFolderPaths(p);
+    // The REAL folder — a rescheduled shoot's files stay put while the
+    // convention path moves, and reading the wrong path counted 0 media
+    // (which drives evidence, /ops chips, and the delivery-text gate).
+    const f = actualFolderPaths(p);
     const [rawPhotos, rawVideo, finalPhotos, finalVideo] = await Promise.all([
       folderCount(f.rawPhotos),
       folderCount(f.rawVideo),
@@ -524,6 +527,7 @@ export async function syncProjectStatuses(
       shootDate: true,
       addressLine: true,
       createdAt: true,
+      dropboxFolder: true,
       revisionRequestedAt: true,
       revisionNote: true,
       photographerId: true,
@@ -702,6 +706,19 @@ export async function syncProjectStatuses(
         const { ensureEditorHandoff } = await import("@/lib/tasks");
         await ensureEditorHandoff(p.id);
       } catch { /* handoff is best-effort — never break the sweep */ }
+    }
+
+    // DELIVERED — re-attempt the delivery-text mint every pass, not just on the
+    // transition. A monthly-content job holds the task back until its video
+    // BATCH is really done (createDeliveryTextTask), and videos 2-4 land days
+    // after the status flip; without this re-check the task would never be
+    // created and the client would never hear from us (review HIGH).
+    // dedupeKey-guarded inside, so re-calling hourly is a no-op once minted.
+    if (final === "DELIVERED") {
+      try {
+        const { createDeliveryTextTask } = await import("@/lib/tasks");
+        await createDeliveryTextTask(p.id);
+      } catch { /* best-effort */ }
     }
 
     // RAWS MISSING watchdog — the counterpart alarm. Shoot happened, 18+ hours

@@ -8,6 +8,11 @@ import { revalidatePath } from "next/cache";
 import { ProjectStatus, DeliverableStatus, ActivityType } from "@prisma/client";
 import { saveUpload, deleteFile } from "@/lib/storage";
 
+// Provenance marker for a script the photographer typed on site (no Script
+// Studio draft existed). Kept as a constant so the re-submit guard and the
+// portal's re-open both key off the same string.
+const PROVIDED_ON_SITE = "Provided on site";
+
 /** Save one or more files, optionally tied to a deliverable, and mark it uploaded. */
 export async function uploadFiles(
   projectId: string,
@@ -259,6 +264,13 @@ export async function finalizeUpload(
     scriptConfirm?: { state: "as-written" | "edited"; script?: string; note?: string } | null;
     /** whether the page the photographer submitted from actually SHOWED a script */
     sawScript?: boolean;
+    // Package-scoped requirements (Jordan, Sep 1). Key ABSENT = a pre-update
+    // tab (or a package that doesn't use it) — never trap those; null =
+    // unanswered on the new page — block with the real message.
+    /** agent-intro packages: the intro script typed exactly as delivered */
+    introScript?: string | null;
+    /** premium packages with no Studio script: the script typed on site */
+    providedScript?: string | null;
   },
 ): Promise<{ pdfPath?: string; needsConfirm?: boolean; warning?: string; blocked?: string }> {
   await requireShootAccess(projectId);
@@ -272,6 +284,7 @@ export async function finalizeUpload(
       addressLine: true,
       shootDate: true,
       createdAt: true,
+      dropboxFolder: true,
       cullingConfirmedAt: true,
       debriefSubmittedAt: true,
       shotOrderNotes: true,
@@ -281,7 +294,10 @@ export async function finalizeUpload(
       scriptConfirmNote: true,
       reelScript: true,
       client: { select: { name: true } },
-      deliverables: { select: { type: true, notCompletedReason: true } },
+      packageName: true,
+      // Canceled lines must not drive the gates (review HIGH).
+      orderItems: { where: { isCanceled: false }, select: { title: true } },
+      deliverables: { select: { type: true, label: true, notCompletedReason: true } },
     },
   });
   const firstFinalize = !prior?.uploadedAt;
@@ -322,7 +338,17 @@ export async function finalizeUpload(
     if (wantsPhotosGate && !data.removalNotes?.trim() && !data.nothingToRemove && !prior.removalNotes) {
       return { blocked: "Answer the removal notes — list anything the editor needs to remove (pets, cans, vehicles, clutter), or tick “Nothing needs removal.”" };
     }
-    if (wantsVideoGate && !prior.videoInstructions) {
+    // What this order's video step demands — computed from LIVE lines only
+    // (canceled items filtered in the query; excused deliverables filtered
+    // here), mirroring the client so the two can never disagree.
+    const { videoStepSpec } = await import("@/lib/pipeline");
+    const spec = videoStepSpec(
+      [prior.packageName, ...prior.orderItems.map((i) => i.title), ...liveDeliverables.map((d) => d.label)],
+      { hasFullVideo: liveDeliverables.some((d) => d.type === "VIDEO") },
+    );
+    // A plain social reel demands no brief at all (Jordan: "if it's a standard
+    // social reel, it doesn't need additional notes").
+    if (wantsVideoGate && !spec.minimalReel && !prior.videoInstructions) {
       // Strip the auto-added STYLE / COLOR PROFILE lines and section labels —
       // the gate demands the photographer's OWN words, not machine boilerplate
       // (review: the color-profile line vacuously satisfied a bare check).
@@ -331,22 +357,52 @@ export async function finalizeUpload(
         .filter((l) => {
           const t = l.trim();
           return t && !/^STYLE:/.test(t) && !/^COLOR PROFILE:/.test(t) &&
-            !["VISION FOR THE EDIT", "SUMMARY", "SHOTS THAT MUST BE SHOWN", "AREAS TO AVOID", "REALTOR REQUESTS", "ADDITIONAL NOTES"].includes(t);
+            !["VISION FOR THE EDIT", "SUMMARY", "SHOTS THAT MUST BE SHOWN", "AREAS TO AVOID", "REALTOR REQUESTS", "ADDITIONAL NOTES", "INTRO SCRIPT", "EDITING NOTES"].includes(t);
         })
         .join("")
         .trim();
       if (!meaningful) {
-        return { blocked: "Video instructions are required — the flow and your vision for the edit. This can't be left blank; skipping it forfeits premium shoot assignments." };
+        return {
+          blocked: spec.requireIntro && !spec.fullBrief
+            ? "The agent's intro script can't be left blank — type it exactly as it was delivered on camera."
+            : "Video instructions are required — the flow and your vision for the edit. This can't be left blank; skipping it forfeits premium shoot assignments.",
+        };
       }
+      // Agent-intro packages: the INTRO SCRIPT itself is the requirement (a
+      // filled notes box alone isn't enough). Key absent = pre-update tab —
+      // its old-style brief above already carried the photographer's words,
+      // so never trap it behind a refresh that would lose their typing.
+      if (wantsVideoGate && spec.requireIntro && data.introScript === null) {
+        return { blocked: "The agent's intro script can't be left blank — type it exactly as it was delivered on camera." };
+      }
+    }
+    // Premium packages: the script can NOT be blank (Jordan, Sep 1). When
+    // Studio has one, the confirm gate below covers it; when it doesn't, the
+    // photographer types what was delivered. Key absent = pre-update tab.
+    if (
+      wantsVideoGate &&
+      spec.requireScript &&
+      !prior.reelScript &&
+      !prior.scriptConfirmedAt &&
+      !prior.videoInstructions &&
+      data.providedScript === null
+    ) {
+      return { blocked: "The script can't be left blank for this premium package — type or paste it exactly as it was delivered on camera." };
     }
     if (wantsVideoGate && prior.reelScript && !data.scriptConfirm && !prior.scriptConfirmedAt) {
       // The script may have landed from Studio AFTER their page loaded — an
       // un-satisfiable error with no visible confirm control is a trap.
-      return {
-        blocked: data.sawScript === false
-          ? "A script just arrived from Script Studio for this shoot — refresh this page to review and confirm it, then submit."
-          : "Confirm the script — delivered as written, or edited on site? The editor cuts to whatever you confirm here.",
-      };
+      // A photographer who TYPED the script on site has already answered this
+      // — their text is the record of what was filmed, and a Studio draft that
+      // landed mid-session is just a draft. Telling them to refresh would
+      // throw away what they typed (review), so accept it instead.
+      if (!(data.sawScript === false && data.providedScript?.trim())) {
+        return {
+          blocked: data.sawScript === false
+            ? "A script just arrived from Script Studio for this shoot — refresh this page to review and confirm it, then submit."
+            : "Confirm the script — delivered as written, or edited on site? The editor cuts to whatever you confirm here.",
+        };
+      }
     }
     if (wantsVideoGate && data.scriptConfirm?.state === "edited" && !data.scriptConfirm.script?.trim()) {
       return { blocked: "You marked the script as changed but the script box is empty — paste what was actually filmed, or choose “Delivered as written.”" };
@@ -361,8 +417,10 @@ export async function finalizeUpload(
   // unreadable → don't block (unknown is not proof of absence).
   if (!data.force && prior) {
     try {
-      const { projectFolderPaths, folderFileCount } = await import("@/lib/dropboxFolders");
-      const paths = projectFolderPaths(prior);
+      const { actualFolderPaths, folderFileCount } = await import("@/lib/dropboxFolders");
+      // The REAL folder (a rescheduled shoot's files stay where they were) —
+      // the convention path made this warn "RAW-Video is empty" wrongly.
+      const paths = actualFolderPaths(prior);
       const wantsVideo = liveDeliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
       const wantsPhotos = liveDeliverables.some((d) => d.type === "PHOTOS" || d.type === "DRONE");
       const [rawPhotos, rawVideo] = await Promise.all([
@@ -399,7 +457,12 @@ export async function finalizeUpload(
   const incomingNote = data.scriptConfirm?.note?.trim() ?? "";
   const newScriptText = data.scriptConfirm?.script?.trim() ?? "";
   const scriptTextChanged = scriptEdited && !!newScriptText && newScriptText !== (prior?.reelScript ?? "").trim();
-  const nextConfirmNote = !data.scriptConfirm
+  const providedOnSitePrior = (prior?.scriptConfirmNote ?? "").startsWith(PROVIDED_ON_SITE);
+  // undefined = leave the stored note alone. A script the photographer typed
+  // on site must keep that provenance: a later re-submit (even one only
+  // tweaking the brief) sends state "as-written" and would otherwise relabel
+  // it "Delivered as written", erasing who wrote it (review).
+  const nextConfirmNote = !data.scriptConfirm || (providedOnSitePrior && data.scriptConfirm.state === "as-written")
     ? undefined
     : scriptEdited
       ? incomingNote
@@ -448,6 +511,23 @@ export async function finalizeUpload(
             ...(scriptTextChanged
               ? { reelScript: newScriptText.slice(0, 20_000), reelRecipeUpdatedAt: new Date() }
               : {}),
+          }
+        : {}),
+      // Premium package with no Studio script: the photographer's typed script
+      // becomes the working script (mutually exclusive with scriptConfirm —
+      // that flow only runs when a Studio script exists). Never clobbers an
+      // existing reelScript.
+      // Re-submits must still be able to FIX a typed-on-site script. Only a
+      // real Studio script is protected from being overwritten here (review:
+      // the old !prior.reelScript guard silently discarded corrections after
+      // the first submit, while showing a success banner).
+      ...(data.providedScript?.trim() &&
+      (!prior?.reelScript || (prior?.scriptConfirmNote ?? "").startsWith(PROVIDED_ON_SITE) || data.sawScript === false)
+        ? {
+            reelScript: data.providedScript.trim().slice(0, 20_000),
+            reelRecipeUpdatedAt: new Date(),
+            scriptConfirmedAt: new Date(),
+            scriptConfirmNote: `${PROVIDED_ON_SITE} — typed by the photographer`,
           }
         : {}),
       uploadedAt: new Date(),
