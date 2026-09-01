@@ -339,7 +339,24 @@ function ShootList({ shoots, empty, showGaps, showDebrief }: { shoots: OpsShoot[
             <Field label="Creative">{s.photographer ?? <span className="font-semibold text-danger">unassigned</span>}</Field>
             <Field label="Services">{s.services.join(", ") || "—"}</Field>
             {s.access.name && <Field label="Contact">{s.access.name}{s.access.phone ? ` · ${s.access.phone}` : ""}</Field>}
-            {s.access.notes && <div className="sm:col-span-2"><Field label="Access / notes">{s.access.notes}</Field></div>}
+            {/* The door code is the single most operational thing on this card —
+                give it its own emphasised row, not a buried note (audit HIGH). */}
+            {s.access.lockbox && (
+              <div className="sm:col-span-2">
+                <Field label="Lockbox / door code">
+                  <span className="font-semibold text-brand">{s.access.lockbox}</span>
+                </Field>
+              </div>
+            )}
+            {s.access.access && <div className="sm:col-span-2"><Field label="Getting in">{s.access.access}</Field></div>}
+            {s.access.presence && <Field label="Who's there">{s.access.presence}</Field>}
+            {s.access.special && (
+              <div className="sm:col-span-2">
+                <Field label="Special instructions"><span className="text-warning">{s.access.special}</span></Field>
+              </div>
+            )}
+            {s.access.orderNotes && <div className="sm:col-span-2"><Field label="Order notes">{s.access.orderNotes}</Field></div>}
+            {s.access.notes && <div className="sm:col-span-2"><Field label="Client preferences">{s.access.notes}</Field></div>}
             {s.specialRequests.length > 0 && (
               <div className="sm:col-span-2">
                 <p className="text-[13px] leading-relaxed">

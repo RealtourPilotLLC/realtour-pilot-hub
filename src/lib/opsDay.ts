@@ -4,6 +4,7 @@ import { findUnansweredInbound } from "@/lib/commsSla";
 import { TRIAGE_TYPES, boardVisibleWhere } from "@/lib/triage";
 import { cleanEmailBody } from "@/lib/commsBoard";
 import { isMonthlyContentJob, monthlyVideoQuota } from "@/lib/pipeline";
+import { cleanBrief, parseShootBrief } from "@/lib/shoot";
 import { NOTHING_TO_REMOVE_SENTINEL } from "@/lib/debrief";
 import type { StatusEvidence } from "@/lib/projectStatus";
 
@@ -34,10 +35,22 @@ function etDayWindow(offsetDays: number): { start: Date; end: Date; key: string 
 }
 
 // ---- The Aryeo appointment brief, parsed into labeled fields ----------------
-export type AccessInfo = { name: string | null; email: string | null; phone: string | null; notes: string | null };
+export type AccessInfo = {
+  name: string | null; email: string | null; phone: string | null;
+  /** the customer-level "Notes:" — a standing client preference, NOT access info */
+  notes: string | null;
+  // The ON-SITE fields live AFTER "Order Items" in Aryeo's brief, inside the
+  // Order Questions block — the old parser stopped at "Order Items" and threw
+  // all of it away, so Kyle's card showed no door code while the photographer's
+  // /shoot screen showed it fine (audit HIGH: 4 upcoming shoots lost a real
+  // code, one of them today). Same parser as /shoot now — one source of truth.
+  lockbox: string | null; access: string | null; presence: string | null;
+  special: string | null; orderNotes: string | null;
+};
 
 export function parseAccessBrief(raw: string | null): AccessInfo {
-  if (!raw?.trim()) return { name: null, email: null, phone: null, notes: null };
+  const EMPTY: AccessInfo = { name: null, email: null, phone: null, notes: null, lockbox: null, access: null, presence: null, special: null, orderNotes: null };
+  if (!raw?.trim()) return EMPTY;
   const text = raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
   const grab = (re: RegExp) => text.match(re)?.[1]?.trim() || null;
   const name = grab(/Name:\s*(.*?)(?=\s*(?:Email:|Phone:|Notes:|Order Items|$))/i);
@@ -56,9 +69,16 @@ export function parseAccessBrief(raw: string | null): AccessInfo {
   if (leftover && !/^(?:Customer|Contact|Name|Email|Phone|Notes|Order(?: Items)?)(?: (?:Name|Info))?\s*:?$/i.test(leftover)) {
     notes = notes ? `${leftover} — ${notes}` : leftover;
   }
+  const b = parseShootBrief(cleanBrief(raw));
   // A blob that doesn't match the Aryeo format at all → keep it whole as notes.
-  if (!name && !email && !phone && !notes) notes = text.slice(0, 300);
-  return { name, email, phone, notes: notes ? notes.slice(0, 300) : null };
+  if (!name && !email && !phone && !notes && !b) notes = text.slice(0, 300);
+  const clip = (v: string | null | undefined) => (v ? v.slice(0, 300) : null);
+  return {
+    name, email, phone,
+    notes: clip(notes),
+    lockbox: clip(b?.lockbox), access: clip(b?.access), presence: clip(b?.presence),
+    special: clip(b?.special), orderNotes: clip(b?.orderNotes),
+  };
 }
 
 // ---- Weather at the shoot hour (Open-Meteo, keyless; cached 30 min) ---------
@@ -252,7 +272,12 @@ async function shootRow(
   const access = parseAccessBrief(rawBrief);
   const gaps: string[] = [];
   if (!p.photographer) gaps.push("no photographer assigned");
-  if (!rawBrief) gaps.push("no access / lockbox notes on the appointment");
+  // Content, not existence: a 1,200-character brief with every access field
+  // blank used to pass, so /ops promised "every shoot assigned with access
+  // notes on file" while the cards showed none (audit).
+  if (!access.lockbox && !access.access && !access.presence && !access.special && !access.orderNotes && !access.notes) {
+    gaps.push("no lockbox / access answer on the appointment");
+  }
   if (p.deliverables.length === 0) gaps.push("no services on the order");
   const [weather, airspace] = await Promise.all([
     p.lat != null && p.lng != null && p.shootDate ? weatherFor(p.lat, p.lng, p.shootDate.toISOString()) : Promise.resolve(null),

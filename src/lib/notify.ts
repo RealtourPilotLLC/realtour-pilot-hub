@@ -176,14 +176,15 @@ async function flushMemberSms(teamMemberId: string): Promise<boolean> {
 
 // Cron flusher (every 5 min): deliver queued digests once the batch window has
 // passed (or daylight returns after quiet hours). Never inside quiet hours.
-export async function flushPendingSms(): Promise<{ flushed: number }> {
-  if (!withinTextingHours()) return { flushed: 0 };
+export async function flushPendingSms(): Promise<{ flushed: number; failed: string[] }> {
+  if (!withinTextingHours()) return { flushed: 0, failed: [] };
   const pending = await prisma.pendingSms.groupBy({
     by: ["teamMemberId"],
     where: { sentAt: null },
     _min: { createdAt: true },
   });
   let flushed = 0;
+  const failed: string[] = [];
   for (const p of pending) {
     const oldest = p._min.createdAt;
     if (!oldest) continue;
@@ -192,9 +193,18 @@ export async function flushPendingSms(): Promise<{ flushed: number }> {
       select: { id: true },
     });
     if (recentSend && Date.now() - oldest.getTime() < SMS_BATCH_WINDOW_MS) continue;
-    if (await flushMemberSms(p.teamMemberId)) flushed++;
+    // ONE bad recipient must not abort everyone else's flush. flushMemberSms
+    // rethrows when OpenPhone rejects a send, and this loop had no guard — so
+    // Kim's un-textable +63 number jammed the whole queue for FIVE DAYS and
+    // failed the 5-minute comms cron every run (audit HIGH). Isolate per
+    // member: a permanent rejection is that person's problem, not the team's.
+    try {
+      if (await flushMemberSms(p.teamMemberId)) flushed++;
+    } catch (e) {
+      failed.push(`${p.teamMemberId}: ${e instanceof Error ? e.message : "send failed"}`);
+    }
   }
-  return { flushed };
+  return { flushed, failed };
 }
 
 // INTERNAL STAFF SMS. For alerts that must reach a named person's phone rather

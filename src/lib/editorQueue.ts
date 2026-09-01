@@ -141,7 +141,12 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
       dueISO: upcoming ? p.shootDate?.toISOString() ?? null : p.deliveryDue?.toISOString() ?? null,
       late: !upcoming && p.status !== "DELIVERED" && !!p.deliveryDue && p.deliveryDue < now,
       priority: p.priority,
-      videos: videos.length,
+      // The BATCH size, not the number of order rows: a monthly plan is ONE
+      // deliverable whose quantity is the batch (Starter 2 / Accelerator 4 /
+      // Pro 8), so counting rows told the editor "1 video" for a 4-video
+      // session (audit HIGH). videosFilmed, when the photographer reported it,
+      // is the most truthful number of all.
+      videos: p.videosFilmed ?? videos.reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0),
       hasScript: !!(p.reelScript || p.reelHook),
       comments: comments.get(p.id) ?? 0,
       rawUrl: dropboxWebUrl(folders.rawVideo),

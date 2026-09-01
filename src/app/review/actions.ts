@@ -731,8 +731,14 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
         : `Relay cut changes to ${editorMeta(editorKey)?.name ?? editorKey} — ${street}`,
       body: `${open.length} note${s}: ${open[0].body}`.slice(0, 140),
       href: `/edit/${submission.projectId}`,
+      // ADMIN always rides along: an editor:<key> row reaches NOBODY when that
+      // editor has no login (Kim today), so a bounce could vanish silently —
+      // the owner at least sees the cut came back (audit HIGH).
       targets: isTeamEditor
-        ? [{ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${submission.projectId}` }]
+        ? [
+            { roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${submission.projectId}` },
+            { roles: ["ADMIN"], href: `/edit/${submission.projectId}` },
+          ]
         : [{ roles: ["ADMIN"] }],
       dedupeKey: `review-changes-${submissionId}-${open[open.length - 1].id}`,
     });
