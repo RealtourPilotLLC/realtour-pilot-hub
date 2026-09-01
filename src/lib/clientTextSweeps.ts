@@ -36,6 +36,9 @@ function etHourNow(): number {
 // they should go out the next morning"). The hourly cron simply skips every
 // tick outside 9am-4pm ET and catches up on the next morning's first tick.
 // (Node's ICU renders midnight as "24" with hour12:false — safely outside.)
+// DEFAULTS only — the live values come from Settings → Automated texts
+// (lib/settings autoTextRules), so Jordan can move the window or switch an
+// automation off without a deploy.
 const SEND_FROM_HOUR = 9;
 const SEND_UNTIL_HOUR = 16; // exclusive — the 4:00pm tick is already too late
 // The missed-confirmation scan runs only on in-window ticks, so it must reach
@@ -43,9 +46,9 @@ const SEND_UNTIL_HOUR = 16; // exclusive — the 4:00pm tick is already too late
 // Derived, because the old hard-coded 14h was tuned to the 8pm window and left
 // 3pm-7pm shoots (twilights) invisible when the cutoff moved to 4pm (review).
 const MISSED_LOOKBACK_HOURS = 24 - (SEND_UNTIL_HOUR - 1) + SEND_FROM_HOUR + 1;
-function inSendWindow(): boolean {
+function inSendWindow(from = SEND_FROM_HOUR, until = SEND_UNTIL_HOUR): boolean {
   const h = etHourNow();
-  return h >= SEND_FROM_HOUR && h < SEND_UNTIL_HOUR;
+  return h >= from && h < until;
 }
 
 async function openPhone() {
@@ -80,12 +83,19 @@ async function clientHasOpenQuestion(clientId: string): Promise<boolean> {
  *  per client per cron tick. */
 export async function sweepConfirmationTexts(texted: Set<string> = new Set()): Promise<{ sent: number; skipped: number; notes: string[] }> {
   const notes: string[] = [];
-  if (!inSendWindow()) return { sent: 0, skipped: 0, notes: ["outside the 9am-4pm ET send window — waiting for the next morning"] };
+  const { autoTextRules } = await import("@/lib/settings");
+  const rules = await autoTextRules();
+  if (!rules.enabled || !rules.confirmation.enabled) {
+    return { sent: 0, skipped: 0, notes: ["confirmation texts are switched OFF in Settings → Automated texts"] };
+  }
+  if (!inSendWindow(rules.sendFromHour, rules.sendUntilHour)) {
+    return { sent: 0, skipped: 0, notes: [`outside the ${rules.sendFromHour}:00-${rules.sendUntilHour}:00 ET send window — waiting for the next morning`] };
+  }
   const now = new Date();
   const projects = await prisma.project.findMany({
     where: {
       status: { in: ["BOOKED", "SCHEDULED"] },
-      shootDate: { gt: now, lte: new Date(now.getTime() + 48 * HOUR) },
+      shootDate: { gt: now, lte: new Date(now.getTime() + rules.confirmation.hoursBefore * HOUR) },
     },
     select: {
       id: true, title: true, shootDate: true,
@@ -130,8 +140,8 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
   for (const p of projects) {
     const k = phoneKey(p.client.phone ?? "");
     if (k.length !== 10) { skipped++; notes.push(`${p.title}: no valid client phone`); continue; }
-    if (texted.has(p.client.id)) { skipped++; continue; } // one auto-text per client per tick — next tick sends this one
-    if (await clientHasOpenQuestion(p.client.id)) {
+    if (rules.onePerClientPerRun && texted.has(p.client.id)) { skipped++; continue; } // next tick sends this one
+    if (rules.skipWhenClientWaiting && await clientHasOpenQuestion(p.client.id)) {
       skipped++; notes.push(`${p.title}: client has an open question — left for a human`); continue;
     }
     // Someone already sent it by hand (the old send button / a hand-typed text
@@ -206,12 +216,19 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
  *  auto-send, so day-one deploy can't text about last week's job. */
 export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promise<{ sent: number; skipped: number; notes: string[] }> {
   const notes: string[] = [];
-  if (!inSendWindow()) return { sent: 0, skipped: 0, notes: ["outside the 9am-4pm ET send window — waiting for the next morning"] };
+  const { autoTextRules } = await import("@/lib/settings");
+  const rules = await autoTextRules();
+  if (!rules.enabled || !rules.delivery.enabled) {
+    return { sent: 0, skipped: 0, notes: ["delivery texts are switched OFF in Settings → Automated texts"] };
+  }
+  if (!inSendWindow(rules.sendFromHour, rules.sendUntilHour)) {
+    return { sent: 0, skipped: 0, notes: [`outside the ${rules.sendFromHour}:00-${rules.sendUntilHour}:00 ET send window — waiting for the next morning`] };
+  }
   const tasks = await prisma.smartTask.findMany({
     where: {
       taskType: "delivery_text",
       status: { notIn: ["COMPLETED", "CANCELLED"] },
-      createdAt: { gte: new Date(Date.now() - 72 * HOUR) },
+      createdAt: { gte: new Date(Date.now() - rules.delivery.maxTaskAgeHours * HOUR) },
       projectId: { not: null },
     },
     select: { id: true, projectId: true, sourceDetail: true },
@@ -254,8 +271,8 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
     }
     const k = phoneKey(project.client.phone ?? "");
     if (k.length !== 10) { skipped++; notes.push(`${project.title}: no valid client phone`); continue; }
-    if (texted.has(project.client.id)) { skipped++; continue; } // one auto-text per client per tick
-    if (await clientHasOpenQuestion(project.client.id)) {
+    if (rules.onePerClientPerRun && texted.has(project.client.id)) { skipped++; continue; }
+    if (rules.skipWhenClientWaiting && await clientHasOpenQuestion(project.client.id)) {
       skipped++; notes.push(`${project.title}: client has an open question — left for a human`); continue;
     }
     // Atomically claim the task — the manual /texts send and the OpenPhone

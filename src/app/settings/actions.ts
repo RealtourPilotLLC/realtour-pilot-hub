@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/auth/user";
 import { requireAdmin } from "@/lib/auth/guards";
-import { editorRouting, putSetting, ROUTABLE_EDITORS, type EditorRoutingRules } from "@/lib/settings";
+import { editorRouting, putSetting, ROUTABLE_EDITORS, autoTextRules, DEFAULT_AUTO_TEXTS, type EditorRoutingRules, type AutoTextRules } from "@/lib/settings";
 import type { EditorKey } from "@/lib/editors";
 
 // Settings writes: owner or admin (Kyle) — requireAdmin is the house guard
@@ -40,4 +40,42 @@ export async function saveEditorRouting(input: {
 export async function loadEditorRouting(): Promise<EditorRoutingRules> {
   await requireSettingsActor();
   return editorRouting();
+}
+
+// ---- Automated client texts (Jordan, Sep 1) --------------------------------
+// The sweeps read these on every cron tick, so a change lands within a minute
+// and OFF stops the next tick. Values are clamped again in autoTextRules() —
+// this saves what the form sent; that guards what the sender trusts.
+export async function saveAutoTextRules(input: AutoTextRules): Promise<{ ok: boolean; message: string }> {
+  try {
+    const me = await requireSettingsActor();
+    const from = Math.min(23, Math.max(0, Math.round(input.sendFromHour)));
+    const until = Math.min(24, Math.max(from + 1, Math.round(input.sendUntilHour)));
+    const rules: AutoTextRules = {
+      enabled: !!input.enabled,
+      sendFromHour: from,
+      sendUntilHour: until,
+      confirmation: {
+        enabled: !!input.confirmation?.enabled,
+        hoursBefore: Math.min(168, Math.max(1, Math.round(input.confirmation?.hoursBefore ?? DEFAULT_AUTO_TEXTS.confirmation.hoursBefore))),
+      },
+      delivery: {
+        enabled: !!input.delivery?.enabled,
+        maxTaskAgeHours: Math.min(720, Math.max(1, Math.round(input.delivery?.maxTaskAgeHours ?? DEFAULT_AUTO_TEXTS.delivery.maxTaskAgeHours))),
+        requireMonthlyBatch: !!input.delivery?.requireMonthlyBatch,
+      },
+      skipWhenClientWaiting: !!input.skipWhenClientWaiting,
+      onePerClientPerRun: !!input.onePerClientPerRun,
+    };
+    await putSetting("auto_texts", rules, me?.email ?? null);
+    revalidatePath("/settings");
+    return { ok: true, message: "Saved — the next hourly run follows these rules." };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Failed." };
+  }
+}
+
+export async function loadAutoTextRules(): Promise<AutoTextRules> {
+  await requireSettingsActor();
+  return autoTextRules();
 }

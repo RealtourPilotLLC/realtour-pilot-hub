@@ -1029,7 +1029,9 @@ export async function createDeliveryTextTask(projectId: string): Promise<void> {
   // (review HIGH). Because this mint is dedupeKey-guarded and re-attempted
   // every status pass, holding back here is safe and self-healing.
   let batchIncomplete = false;
-  if (isMonthlyContentJob(project.deliverables, project.packageName)) {
+  const { autoTextRules } = await import("@/lib/settings");
+  const requireBatch = (await autoTextRules()).delivery.requireMonthlyBatch;
+  if (requireBatch && isMonthlyContentJob(project.deliverables, project.packageName)) {
     const { parseEvidence } = await import("@/lib/statusEvidence");
     const { monthlyVideoQuota } = await import("@/lib/pipeline");
     const videos = parseEvidence(project.statusEvidence)?.aryeo?.videos ?? 0;

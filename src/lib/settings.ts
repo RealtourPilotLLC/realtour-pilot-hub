@@ -72,3 +72,82 @@ export async function editorRouting(): Promise<EditorRoutingRules> {
     personalBranding: ok(r.personalBranding) ? r.personalBranding : DEFAULT_ROUTING.personalBranding,
   };
 }
+
+// ---------------------------------------------------------------------------
+// AUTOMATED CLIENT TEXTS (Jordan, Sep 1 2026): "I want an Automated Texts
+// Settings in the settings page so I can see exactly what automations there
+// are, what time they go out (the rules) and to be able to change the rules,
+// and turn off the automations." The sweeps read this on every cron tick, so
+// a change takes effect within a minute — and OFF is honoured immediately.
+// ---------------------------------------------------------------------------
+export type AutoTextRules = {
+  /** master switch — false stops every automated CLIENT text */
+  enabled: boolean;
+  /** earliest ET hour a client text may go out (0-23) */
+  sendFromHour: number;
+  /** exclusive ET hour after which nothing sends; it waits for the morning */
+  sendUntilHour: number;
+  confirmation: {
+    enabled: boolean;
+    /** how far ahead of the shoot to confirm */
+    hoursBefore: number;
+  };
+  delivery: {
+    enabled: boolean;
+    /** only auto-send while the delivery task is younger than this */
+    maxTaskAgeHours: number;
+    /** monthly plans: require the batch (plan quota) before announcing delivery */
+    requireMonthlyBatch: boolean;
+  };
+  /** never auto-text a client who has an unanswered question in the queue */
+  skipWhenClientWaiting: boolean;
+  /** at most one automated text per client per cron tick */
+  onePerClientPerRun: boolean;
+};
+
+export const DEFAULT_AUTO_TEXTS: AutoTextRules = {
+  enabled: true,
+  sendFromHour: 9,
+  sendUntilHour: 16, // Jordan: "they should never go out past 4PM"
+  confirmation: { enabled: true, hoursBefore: 48 },
+  delivery: { enabled: true, maxTaskAgeHours: 72, requireMonthlyBatch: true },
+  skipWhenClientWaiting: true,
+  onePerClientPerRun: true,
+};
+
+export async function autoTextRules(): Promise<AutoTextRules> {
+  const r = await getSetting<AutoTextRules>("auto_texts", DEFAULT_AUTO_TEXTS);
+  // Clamp anything a bad save could put here — the sweeps text real clients.
+  const hour = (v: unknown, fallback: number) =>
+    typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 23 ? v : fallback;
+  const rawFrom = hour(r.sendFromHour, DEFAULT_AUTO_TEXTS.sendFromHour);
+  const rawUntil = hour(r.sendUntilHour, DEFAULT_AUTO_TEXTS.sendUntilHour);
+  // An inverted/empty window (until <= from) can't be repaired one field at a
+  // time — 18:00→16:00 would silently never send. Fall back to BOTH defaults
+  // so the behaviour is the documented one rather than an accidental mute.
+  const valid = rawUntil > rawFrom;
+  const from = valid ? rawFrom : DEFAULT_AUTO_TEXTS.sendFromHour;
+  const until = valid ? rawUntil : DEFAULT_AUTO_TEXTS.sendUntilHour;
+  return {
+    enabled: r.enabled !== false,
+    sendFromHour: from,
+    sendUntilHour: until,
+    confirmation: {
+      enabled: r.confirmation?.enabled !== false,
+      hoursBefore:
+        typeof r.confirmation?.hoursBefore === "number" && r.confirmation.hoursBefore > 0 && r.confirmation.hoursBefore <= 168
+          ? r.confirmation.hoursBefore
+          : DEFAULT_AUTO_TEXTS.confirmation.hoursBefore,
+    },
+    delivery: {
+      enabled: r.delivery?.enabled !== false,
+      maxTaskAgeHours:
+        typeof r.delivery?.maxTaskAgeHours === "number" && r.delivery.maxTaskAgeHours > 0 && r.delivery.maxTaskAgeHours <= 720
+          ? r.delivery.maxTaskAgeHours
+          : DEFAULT_AUTO_TEXTS.delivery.maxTaskAgeHours,
+      requireMonthlyBatch: r.delivery?.requireMonthlyBatch !== false,
+    },
+    skipWhenClientWaiting: r.skipWhenClientWaiting !== false,
+    onePerClientPerRun: r.onePerClientPerRun !== false,
+  };
+}

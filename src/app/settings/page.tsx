@@ -1,13 +1,14 @@
 import { requirePageAccess } from "@/lib/auth/guards";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { SlidersHorizontal, Route, Package, ArrowRight } from "lucide-react";
+import { SlidersHorizontal, Route, Package, ArrowRight , MessageSquareText } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { RoutingRulesForm } from "@/components/settings/RoutingRulesForm";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
-import { editorRouting } from "@/lib/settings";
+import { editorRouting, autoTextRules } from "@/lib/settings";
+import { AutoTextSettings } from "@/components/settings/AutoTextSettings";
 
 export const dynamic = "force-dynamic";
 
@@ -21,7 +22,7 @@ export default async function SettingsPage() {
   if (!me && authEnforced()) redirect("/login?next=/settings");
   if (me && me.role !== "OWNER" && me.role !== "ADMIN") redirect("/");
 
-  const rules = await editorRouting();
+  const [rules, textRules] = await Promise.all([editorRouting(), autoTextRules()]);
 
   return (
     <div>
@@ -38,6 +39,14 @@ export default async function SettingsPage() {
             Editor Queue always overrides these rules.
           </p>
           <RoutingRulesForm initial={rules} />
+        </Section>
+
+        <Section icon={MessageSquareText} title="Automated texts">
+          <p className="mb-3 text-[13px] text-muted">
+            Every text the hub sends to a client on its own — what it is, when it goes out, and the switches.
+            Changes take effect on the next hourly run.
+          </p>
+          <AutoTextSettings initial={textRules} />
         </Section>
 
         <Section icon={Package} title="Product categories">
