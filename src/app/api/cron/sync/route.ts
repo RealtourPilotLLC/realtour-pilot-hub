@@ -35,6 +35,12 @@ export async function GET(req: NextRequest) {
     const { flagOrphanedOrders } = await import("@/lib/integrations/aryeo");
     return flagOrphanedOrders();
   });
+  // Approved cuts → Dropbox: finish in-flight save_url copies, retry failed
+  // ones, and retire uploads that never completed.
+  await step("approvedCuts", async () => {
+    const { finalizeApprovedCuts } = await import("@/lib/reviewCuts");
+    return finalizeApprovedCuts();
+  }, { maxMs: 45_000 });
 
   // Dropbox folder creation — took over from the broken Zapier Zap (Aug 2026).
   // Runs after appointments so a fresh booking's shootDate is already on the

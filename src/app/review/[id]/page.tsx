@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { formatDistanceToNow } from "date-fns";
-import { Clapperboard, ExternalLink, Film, History, Images, MessageSquareQuote, Music, PenLine, ScrollText } from "lucide-react";
+import { ExternalLink, Film, History, Images, MessageSquareQuote, Music, PenLine, ScrollText } from "lucide-react";
 import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
@@ -51,9 +51,21 @@ export default async function CutReviewPage({
   // The job's CURRENT cuts — latest round per video file. One video job = one
   // chip (hidden); a monthly package = a switcher so each video is reviewed
   // individually (Jordan: "review each one individually in a timely manner").
+  // A cut = (deliverable × slot) for uploaded rows, the file for legacy
+  // folder rows; the newest round of each is the current cut.
+  const cutKeyOf = (s: (typeof w.submissions)[number]) => (s.deliverableId ? `${s.deliverableId}:${s.slot}` : (s.assetPath ?? s.id));
   const latestPerCut = new Map<string, (typeof w.submissions)[number]>();
-  for (const s of [...w.submissions].sort((a, b) => a.round - b.round)) latestPerCut.set(s.assetPath ?? s.id, s);
-  const currentCuts = [...latestPerCut.values()].sort((a, b) => a.round - b.round);
+  for (const s of [...w.submissions].sort((a, b) => a.round - b.round)) latestPerCut.set(cutKeyOf(s), s);
+  const { cutSlots } = await import("@/lib/reviewCuts");
+  const slots = await cutSlots(w.projectId).catch(() => []);
+  const slotLabel = (s: (typeof w.submissions)[number]) =>
+    slots.find((sl) => sl.deliverableId === s.deliverableId && sl.slot === s.slot)?.label ?? null;
+  const earlierRounds = w.submissions.filter((s) => s.id !== active?.id && (!active || cutKeyOf(s) === cutKeyOf(active)));
+  const currentCuts = [...latestPerCut.values()].sort((a, b) => {
+    const ia = slots.findIndex((sl) => `${sl.deliverableId}:${sl.slot}` === cutKeyOf(a));
+    const ib = slots.findIndex((sl) => `${sl.deliverableId}:${sl.slot}` === cutKeyOf(b));
+    return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib) || a.round - b.round;
+  });
   const editorLabel =
     active?.submittedByName ??
     (active?.submittedByKey ? (editorMeta(active.submittedByKey)?.name ?? active.submittedByKey) : "the editor");
@@ -93,7 +105,8 @@ export default async function CutReviewPage({
                     className="size-2 rounded-full"
                     style={{ backgroundColor: c.status === "APPROVED" ? "#34d399" : c.status === "CHANGES_REQUESTED" ? "#f87171" : "#f59e0b" }}
                   />
-                  <span className="max-w-40 truncate">{c.fileName ?? `Video ${i + 1}`}</span>
+                  <span className="max-w-48 truncate">{slotLabel(c) ?? c.fileName ?? `Video ${i + 1}`}</span>
+                  {c.round > 1 && <span className="text-[10px] text-muted-2">v{c.round}</span>}
                 </Link>
               ))}
             </div>
@@ -101,7 +114,9 @@ export default async function CutReviewPage({
           {active ? (
             <>
               <div className="flex flex-wrap items-center gap-2 text-sm text-muted">
-                <span className="font-medium text-foreground/85">Round {active.round}</span>
+                {slotLabel(active) && <span className="font-semibold text-foreground">{slotLabel(active)}</span>}
+                {slotLabel(active) && <span className="text-muted-2">·</span>}
+                <span className="font-medium text-foreground/85">Version {active.round}</span>
                 <span className="text-muted-2">·</span>
                 <span>from {editorLabel}</span>
                 <span className="text-muted-2">·</span>
@@ -119,20 +134,20 @@ export default async function CutReviewPage({
               <CutReviewPanel projectId={w.projectId} submission={active} notes={w.notes} editorLabel={editorLabel} />
             </>
           ) : (
-            <Section icon={Film} title="No cut submitted yet">
+            <Section icon={Film} title="No cut uploaded yet">
               <p className="text-sm text-muted">
-                When the editor hits “Done — send to review,” the cut shows up here with a player and timestamped
-                notes. This job is currently <span className="font-medium text-foreground/80">{w.status.toLowerCase()}</span>.
+                When the editor uploads a version from the editor portal, it shows up here with a player and
+                timestamped notes. This job is currently <span className="font-medium text-foreground/80">{w.status.toLowerCase()}</span>.
               </p>
             </Section>
           )}
 
-          {w.submissions.length > 1 && (
+          {earlierRounds.length > 0 && (
             <Section icon={History} title="Earlier rounds">
               <ul className="divide-y divide-border">
-                {w.submissions.filter((s) => s.id !== active?.id).map((s) => (
+                {earlierRounds.map((s) => (
                   <li key={s.id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
-                    <span className="font-medium">Round {s.round}</span>
+                    <span className="font-medium">Version {s.round}</span>
                     <span className="text-xs text-muted">
                       {s.status === "APPROVED" ? "approved" : s.status === "CHANGES_REQUESTED" ? "changes requested" : "superseded"}
                       {s.decidedAt ? ` ${formatDistanceToNow(new Date(s.decidedAt), { addSuffix: true })}` : ""}

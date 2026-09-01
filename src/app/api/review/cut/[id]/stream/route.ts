@@ -34,12 +34,22 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     allowed = !!enrollment && !!(await submissionForEnrollment(enrollment.id, id));
   } else {
     const { getCurrentUser } = await import("@/lib/auth/user");
+    const { authEnforced } = await import("@/lib/auth/guards");
     const me = await getCurrentUser().catch(() => null);
-    allowed = !!me;
+    allowed = !!me || !authEnforced(); // local dev without a session, same as every guard
   }
   if (!allowed) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const sub = await prisma.reviewSubmission.findUnique({ where: { id }, select: { assetPath: true } });
+  const sub = await prisma.reviewSubmission.findUnique({ where: { id }, select: { assetPath: true, blobUrl: true } });
+  // Uploaded through the hub → served from the hub's own store (inline,
+  // Range-capable, plays in every browser). Dropbox temporary links are the
+  // legacy fallback and do NOT play in Chrome (served as an attachment) —
+  // they're still fine as a download.
+  if (sub?.blobUrl) {
+    const res = NextResponse.redirect(sub.blobUrl, 302);
+    res.headers.set("Cache-Control", "private, no-store");
+    return res;
+  }
   if (!sub?.assetPath) return NextResponse.json({ error: "No file is attached to this cut" }, { status: 404 });
 
   try {

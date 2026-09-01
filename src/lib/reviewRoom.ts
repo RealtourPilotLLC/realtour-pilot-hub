@@ -155,7 +155,7 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
   // pending video gets its own row so it can be reviewed individually.
   const latestByCut = new Map<string, (typeof subs)[number]>();
   for (const s of subs) {
-    const key = `${s.projectId}:${s.assetPath ?? s.id}`;
+    const key = `${s.projectId}:${s.deliverableId ? `${s.deliverableId}:${s.slot}` : (s.assetPath ?? s.id)}`;
     const cur = latestByCut.get(key);
     if (!cur || s.round > cur.round) latestByCut.set(key, s);
   }
@@ -237,6 +237,12 @@ export type CutSubmission = {
   createdAt: string;
   decidedAt: string | null;
   decidedBy: string | null;
+  // internal-upload flow (Sep 1 2026)
+  deliverableId: string | null;
+  slot: number;
+  source: string;
+  blobUrl: string | null;
+  completedAt: string | null;
 };
 
 export type CutNote = {
@@ -319,7 +325,8 @@ export async function getCutWorkspace(projectId: string, cutId?: string | null):
       reelSong: true,
       client: { select: { name: true, socialClient: true } },
       deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
-      reviewSubmissions: { orderBy: { round: "desc" } },
+      // An upload still in flight (or one that died) is not a cut yet.
+      reviewSubmissions: { where: { status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } }, orderBy: { round: "desc" } },
     },
   });
   if (!project) return null;
@@ -337,6 +344,11 @@ export async function getCutWorkspace(projectId: string, cutId?: string | null):
     createdAt: s.createdAt.toISOString(),
     decidedAt: s.decidedAt ? s.decidedAt.toISOString() : null,
     decidedBy: s.decidedBy,
+    deliverableId: s.deliverableId,
+    slot: s.slot,
+    source: s.source,
+    blobUrl: s.blobUrl,
+    completedAt: s.completedAt ? s.completedAt.toISOString() : null,
   }));
   const active =
     (cutId ? submissions.find((s) => s.id === cutId) : null) ??

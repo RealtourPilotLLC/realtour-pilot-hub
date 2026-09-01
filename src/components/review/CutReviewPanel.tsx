@@ -59,6 +59,10 @@ export function CutReviewPanel({
   const [err, setErr] = useState<string | null>(null);
 
   const src = submission.assetUrl;
+  // Uploaded cuts stream from the hub's own store; legacy rows stream through
+  // the route from Dropbox (verified in a visible tab) but get a download
+  // link too, for the day a link stalls.
+  const legacy = !submission.blobUrl && !!submission.assetUrl;
   const decided = submission.status !== "PENDING";
   const openEditorNotes = notes.filter((n) => n.lane === "EDITOR" && n.status === "OPEN").length;
   const sorted = [...notes].sort(
@@ -104,7 +108,7 @@ export function CutReviewPanel({
       {/* Player */}
       <div className="overflow-hidden rounded-2xl border bg-black">
         {src ? (
-          // eslint-disable-next-line jsx-a11y/media-has-caption
+           
           <video
             ref={videoRef}
             src={src}
@@ -115,14 +119,20 @@ export function CutReviewPanel({
           />
         ) : (
           <div className="flex flex-col items-center gap-1 px-6 py-14 text-center text-sm text-white/70">
-            <span>No streamable file was found for this round.</span>
+            <span>No file was found for this round.</span>
             <span className="text-xs text-white/40">
-              Open the Final-Video folder from the project page — notes below still work with typed timestamps.
+              Notes below still work with typed timestamps.
             </span>
           </div>
         )}
       </div>
 
+      {legacy && (
+        <p className="text-[11px] text-muted-2">
+          This version came from the Dropbox Final folder. If the player doesn&apos;t start,{" "}
+          <a href={submission.assetUrl!} className="text-brand hover:underline">download it</a> — uploads from the editor portal play from the hub directly.
+        </p>
+      )}
       {/* Note + verdict bar */}
       <div className="flex flex-wrap items-center gap-2">
         <button

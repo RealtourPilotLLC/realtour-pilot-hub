@@ -17,6 +17,7 @@ import { ReelScriptCard } from "@/components/project/ReelScriptCard";
 import { EditInstructionsCard } from "@/components/editing/EditInstructionsCard";
 import { AocPlaybookCard } from "@/components/project/AocPlaybookCard";
 import { EditorCutPanel } from "@/components/editing/EditorCutPanel";
+import { CutUploader } from "@/components/editing/CutUploader";
 import { autoSyncScript } from "@/lib/scriptSync";
 import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { getVideoSlaStatus } from "@/lib/projectStatus";
@@ -64,12 +65,18 @@ export default async function EditBriefPage({
     getProject(id),
     getTeam(),
     prisma.reviewSubmission.findMany({
-      where: { projectId: id },
+      where: { projectId: id, status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } },
       orderBy: { round: "asc" },
-      select: { id: true, round: true, status: true, assetUrl: true, assetPath: true, fileName: true, submittedByName: true, note: true, createdAt: true, decidedAt: true },
+      select: { id: true, round: true, status: true, assetUrl: true, assetPath: true, fileName: true, submittedByName: true, note: true, createdAt: true, decidedAt: true, deliverableId: true, slot: true, source: true, blobUrl: true, completedAt: true },
     }),
   ]);
   if (!project) notFound();
+  // The cuts this job owes (deliverable × slot) with the newest version of
+  // each — the editor's upload panel and the cut switcher both hang off it.
+  const { cutSlots } = await import("@/lib/reviewCuts");
+  const slots = await cutSlots(id).catch(() => []);
+  const cutKeyOf = (s: { deliverableId?: string | null; slot?: number | null; assetPath?: string | null; id: string }) =>
+    s.deliverableId ? `${s.deliverableId}:${s.slot ?? 1}` : (s.assetPath ?? s.id);
 
   const isOwnerAdmin = !viewer || viewer.role === "OWNER" || viewer.role === "ADMIN";
   // Who may rewrite the customer/shoot notes (saveJobNotes enforces this
@@ -152,8 +159,10 @@ export default async function EditBriefPage({
   // video file, latest round each) so the editor works each cut's notes with
   // its own player — same convention as /review/[id].
   const latestPerCut = new Map<string, (typeof submissions)[number]>();
-  for (const s of submissions) latestPerCut.set(s.assetPath ?? s.id, s); // round-asc → latest wins
+  for (const s of submissions) latestPerCut.set(cutKeyOf(s), s); // round-asc → latest wins
   const currentCuts = [...latestPerCut.values()];
+  const slotLabelOf = (s: (typeof submissions)[number]) =>
+    slots.find((sl) => sl.deliverableId === s.deliverableId && sl.slot === s.slot)?.label ?? null;
   const activeSub =
     (cut ? submissions.find((s) => s.id === cut) : null) ??
     [...currentCuts].reverse().find((s) => s.status === "CHANGES_REQUESTED" || s.status === "PENDING") ??
@@ -288,11 +297,31 @@ export default async function EditBriefPage({
                     className="size-2 rounded-full"
                     style={{ backgroundColor: c.status === "APPROVED" ? "#34d399" : c.status === "CHANGES_REQUESTED" ? "#f87171" : "#f59e0b" }}
                   />
-                  <span className="max-w-40 truncate">{c.fileName ?? `Video ${i + 1}`}</span>
+                  <span className="max-w-48 truncate">{slotLabelOf(c) ?? c.fileName ?? `Video ${i + 1}`}</span>
+                  {c.round > 1 && <span className="text-[10px] text-muted-2">v{c.round}</span>}
                 </Link>
               ))}
             </div>
           )}
+          {/* The way in: upload a version per cut (Jordan, Sep 1). Owner/admin
+              can upload on an editor's behalf (vendor cuts). */}
+          <CutUploader
+            projectId={project.id}
+            canUpload={!viewer?.impersonating && (isOwnerAdmin || viewer?.role === "EDITOR")}
+            cuts={slots.map((sl) => {
+              const latest = latestPerCut.get(`${sl.deliverableId}:${sl.slot}`) ?? null;
+              const openNotes = latest?.assetUrl ? feedback.filter((n) => n.assetUrl === latest.assetUrl && n.status === "OPEN").length : 0;
+              return {
+                deliverableId: sl.deliverableId,
+                slot: sl.slot,
+                label: sl.label,
+                latest: latest
+                  ? { id: latest.id, round: latest.round, status: latest.status, fileName: latest.fileName, completedAt: latest.completedAt ? latest.completedAt.toISOString() : null }
+                  : null,
+                openNotes,
+              };
+            })}
+          />
           {activeSub && (
             <EditorCutPanel
               projectId={project.id}
@@ -300,6 +329,7 @@ export default async function EditBriefPage({
               round={activeSub.round}
               status={activeSub.status}
               assetUrl={activeSub.assetUrl}
+              streamable={!!activeSub.blobUrl}
               fileName={activeSub.fileName}
               finalFolderUrl={finalUrl}
               notes={activeNotes}
@@ -517,12 +547,15 @@ export default async function EditBriefPage({
               <div className="flex items-start gap-2">
                 <Clapperboard className="mt-0.5 size-4 shrink-0 text-[#5b53ff]" />
                 <span className="text-sm text-foreground/85">
-                  When the cut is ready: <strong>1)</strong> drop the finished file in the <strong>Final footage</strong> folder
-                  above, <strong>2)</strong> hit <strong>Done — send to review</strong>. It goes straight to the Review Room
-                  with a player — Jordan gets pinged the moment you send it.
+                  When a cut is ready, use <strong>Upload version</strong> in the <strong>Cuts to deliver</strong> panel at the
+                  top of this page. It goes straight to the Review Room with a player, Jordan gets pinged, and once
+                  it&rsquo;s approved the hub copies it into the <strong>Final footage</strong> folder for you.
                 </span>
               </div>
-              <SubmitCutCard projectId={project.id} />
+              <details className="text-xs text-muted">
+                <summary className="cursor-pointer">Already dropped a file in the Final footage folder instead?</summary>
+                <div className="mt-2"><SubmitCutCard projectId={project.id} /></div>
+              </details>
             </div>
           </Section>
 

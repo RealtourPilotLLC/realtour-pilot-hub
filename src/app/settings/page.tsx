@@ -1,15 +1,15 @@
 import { requirePageAccess } from "@/lib/auth/guards";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { SlidersHorizontal, Route, Package, ArrowRight , MessageSquareText, Clock, BellRing } from "lucide-react";
+import { SlidersHorizontal, Route, Package, ArrowRight , MessageSquareText, Clock, BellRing, Clapperboard } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { RoutingRulesForm } from "@/components/settings/RoutingRulesForm";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
-import { editorRouting, autoTextRules, turnaroundRules, internalAlertRules, textTemplates } from "@/lib/settings";
+import { editorRouting, autoTextRules, turnaroundRules, internalAlertRules, textTemplates, reviewRoomRules } from "@/lib/settings";
 import { AutoTextSettings } from "@/components/settings/AutoTextSettings";
-import { TurnaroundSettings, InternalAlertSettings, TextTemplateSettings } from "@/components/settings/OperatingRules";
+import { TurnaroundSettings, InternalAlertSettings, TextTemplateSettings, ReviewRoomSettings } from "@/components/settings/OperatingRules";
 
 export const dynamic = "force-dynamic";
 
@@ -23,8 +23,8 @@ export default async function SettingsPage() {
   if (!me && authEnforced()) redirect("/login?next=/settings");
   if (me && me.role !== "OWNER" && me.role !== "ADMIN") redirect("/");
 
-  const [rules, textRules, turns, alerts, templates] = await Promise.all([
-    editorRouting(), autoTextRules(), turnaroundRules(), internalAlertRules(), textTemplates(),
+  const [rules, textRules, turns, alerts, templates, reviewRoom] = await Promise.all([
+    editorRouting(), autoTextRules(), turnaroundRules(), internalAlertRules(), textTemplates(), reviewRoomRules(),
   ]);
 
   return (
@@ -62,6 +62,10 @@ export default async function SettingsPage() {
 
         <Section icon={BellRing} title="Internal alerts">
           <InternalAlertSettings initial={alerts} />
+        </Section>
+
+        <Section icon={Clapperboard} title="Review Room">
+          <ReviewRoomSettings initial={reviewRoom} />
         </Section>
 
         <Section icon={Package} title="Product categories">

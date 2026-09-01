@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
+    "@vercel/blob": "^2.8.0",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
     "html2canvas-pro": "^2.1.1",
@@ -37,6 +38,7 @@
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-plaid-link": "^4.1.1",
+    "server-only": "^0.0.1",
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {

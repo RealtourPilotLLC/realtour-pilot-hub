@@ -156,7 +156,7 @@ export async function searchQueueCandidates(q: string): Promise<QueueCandidate[]
       statusEvidence: true,
       client: { select: { name: true } },
       deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
-      _count: { select: { reviewSubmissions: true } },
+      _count: { select: { reviewSubmissions: { where: { status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } } } } },
     },
   });
 
@@ -220,7 +220,7 @@ export async function addToEditorQueue(
       statusEvidence: true,
       revisionRequestedAt: true,
       deliverables: { where: { removedFromOrderAt: null }, select: { id: true, type: true } },
-      _count: { select: { reviewSubmissions: true } },
+      _count: { select: { reviewSubmissions: { where: { status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } } } } },
     },
   });
   if (!project) return { ok: false, message: "That project no longer exists." };

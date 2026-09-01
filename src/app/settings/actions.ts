@@ -8,6 +8,7 @@ import {
   turnaroundRules, internalAlertRules, textTemplates,
   type EditorRoutingRules, type AutoTextRules, type TurnaroundRules,
   type InternalAlertRules, type TextTemplates,
+  reviewRoomRules, type ReviewRoomRules,
 } from "@/lib/settings";
 import type { EditorKey } from "@/lib/editors";
 
@@ -115,6 +116,22 @@ export async function saveInternalAlerts(input: InternalAlertRules): Promise<{ o
 export async function loadInternalAlerts(): Promise<InternalAlertRules> {
   await requireSettingsActor();
   return internalAlertRules();
+}
+
+// ---- Review Room -----------------------------------------------------------
+export async function saveReviewRoomRules(input: ReviewRoomRules): Promise<{ ok: boolean; message: string }> {
+  try {
+    const me = await requireSettingsActor();
+    await putSetting("review_room", input, me?.email ?? null);
+    revalidatePath("/settings");
+    return { ok: true, message: "Saved — the next hourly run follows these rules." };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Failed." };
+  }
+}
+export async function loadReviewRoomRules(): Promise<ReviewRoomRules> {
+  await requireSettingsActor();
+  return reviewRoomRules();
 }
 
 // ---- Client text wording ---------------------------------------------------

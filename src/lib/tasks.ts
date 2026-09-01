@@ -1753,7 +1753,7 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
   // sweep — discoverCutsForReview — because it must also run for REVISION
   // jobs, which this handoff deliberately skips.)
   const videoPresent = (ev.present ?? []).includes("Video") || (dropbox?.finalVideo ?? 0) > 0;
-  const submitted = await prisma.reviewSubmission.count({ where: { projectId } });
+  const submitted = await prisma.reviewSubmission.count({ where: { projectId, status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } } });
   // A cut exists (submission) or the video is verifiably live → nothing to
   // chase. But a MONTHLY job is a BATCH: the first cut landing must not close
   // the editor's work item while videos 2..N are still owed — without it the
@@ -2110,8 +2110,9 @@ async function syncOneProjectTasks(
     // (any round, any verdict state) and their work item was already completed
     // by submitCutForReview; treat as landed so nothing here fights that flow.
     if (!finalVideoLanded) {
+      // Rows still uploading (or whose upload died) are not cuts.
       finalVideoLanded =
-        (await prisma.reviewSubmission.count({ where: { projectId: p.id } })) > 0;
+        (await prisma.reviewSubmission.count({ where: { projectId: p.id, status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } } })) > 0;
     }
     // MULTI-VIDEO packages (monthly personal branding: 2–5 videos) submit one
     // video at a time, and submitCutForReview deliberately keeps the edit task
@@ -2131,12 +2132,10 @@ async function syncOneProjectTasks(
       } else {
         const videosOwed = vids.reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
         if (videosOwed > 1) {
-          const paths = await prisma.reviewSubmission.findMany({
-            where: { projectId: p.id, assetPath: { not: null } },
-            select: { assetPath: true },
-            distinct: ["assetPath"],
-          });
-          if (paths.length < videosOwed) finalVideoLanded = false;
+          // Distinct CUTS (deliverable × slot for uploads, file for legacy
+          // folder rows) — uploaded cuts carry no Dropbox path.
+          const { submittedDistinctCuts } = await import("@/lib/reviewCuts");
+          if ((await submittedDistinctCuts(p.id)) < videosOwed) finalVideoLanded = false;
         }
       }
     }

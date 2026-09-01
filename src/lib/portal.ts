@@ -73,7 +73,7 @@ export async function portalCuts(enrollmentId: string): Promise<PortalCut[]> {
   const subs = await prisma.reviewSubmission.findMany({
     where: { projectId: { in: projects.map((p) => p.id) } },
     orderBy: { round: "asc" },
-    select: { id: true, projectId: true, status: true, assetUrl: true, assetPath: true, fileName: true, decidedAt: true },
+    select: { id: true, projectId: true, status: true, assetUrl: true, assetPath: true, fileName: true, decidedAt: true, deliverableId: true, slot: true },
   });
   // Which submissions carry THIS client's notes — a cut they bounced (their
   // revision flips it to CHANGES_REQUESTED) stays on their page; an
@@ -92,7 +92,8 @@ export async function portalCuts(enrollmentId: string): Promise<PortalCut[]> {
   const latestPerCut = new Map<string, (typeof subs)[number]>();
   for (const s of subs) {
     const visible = s.status === "APPROVED" || (s.status === "CHANGES_REQUESTED" && commented.has(s.id));
-    if (visible && s.assetUrl) latestPerCut.set(`${s.projectId}:${s.assetPath ?? s.id}`, s);
+    // A cut = (deliverable × slot) for uploaded rows, the file for legacy rows.
+    if (visible && s.assetUrl) latestPerCut.set(`${s.projectId}:${s.deliverableId ? `${s.deliverableId}:${s.slot}` : (s.assetPath ?? s.id)}`, s);
   }
   const shown = [...latestPerCut.values()];
   if (shown.length === 0) return [];

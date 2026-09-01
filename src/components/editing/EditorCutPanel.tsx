@@ -29,6 +29,7 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
   PENDING: { label: "Waiting on review", cls: "bg-warning-soft text-warning" },
   CHANGES_REQUESTED: { label: "Changes requested", cls: "bg-danger-soft text-danger" },
   APPROVED: { label: "Approved", cls: "bg-success/10 text-success" },
+  SUPERSEDED: { label: "Replaced by a newer version", cls: "bg-surface-2 text-muted" },
 };
 
 export function EditorCutPanel({
@@ -37,6 +38,7 @@ export function EditorCutPanel({
   round,
   status,
   assetUrl,
+  streamable = true,
   fileName,
   finalFolderUrl,
   notes,
@@ -48,6 +50,8 @@ export function EditorCutPanel({
   round: number;
   status: string;
   assetUrl: string | null;
+  /** false for legacy Dropbox-folder rows (they download, they don't stream) */
+  streamable?: boolean;
   fileName: string | null;
   finalFolderUrl: string;
   notes: CutNote[];
@@ -106,7 +110,7 @@ export function EditorCutPanel({
 
       {assetUrl ? (
         <div className="bg-black">
-          {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+          { }
           <video
             ref={videoRef}
             src={assetUrl}
@@ -118,11 +122,16 @@ export function EditorCutPanel({
         </div>
       ) : (
         <p className="px-4 py-3 text-sm text-muted sm:px-5">
-          No streamable link was minted for this round — the cut file lives in the{" "}
+          No file is attached to this version — it lives in the{" "}
           <a href={finalFolderUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-brand hover:underline">
             <FolderOpen className="size-3.5" /> Final footage folder <ExternalLink className="size-3" />
           </a>
-          .
+          . Upload the next version above and it will play right here.
+        </p>
+      )}
+      {assetUrl && !streamable && (
+        <p className="px-4 py-2 text-[11px] text-muted-2 sm:px-5">
+          This version came from the Dropbox Final folder. If the player doesn&apos;t start, <a href={assetUrl} className="text-brand hover:underline">download it</a>.
         </p>
       )}
 

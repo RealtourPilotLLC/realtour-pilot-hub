@@ -10,6 +10,7 @@ import type { NotifyTarget } from "@/lib/notify";
 import { photoTargetFor, RAW_OVERAGE_FACTOR, BRACKET_RATIO } from "@/lib/culling";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { parseEvidence } from "@/lib/statusEvidence";
+import { reviewRoomRules } from "@/lib/settings";
 
 // ---------------------------------------------------------------------------
 // Smart project-status engine.
@@ -787,15 +788,19 @@ export async function syncProjectStatuses(
     // sweep no longer reads Dropbox, so the evidence count can't be the gate
     // — the redo would never enter the room (review). listFinalCuts is one
     // cheap listing and returns [] for an empty folder.
+    // Opt-in only (Settings → Review Room): cuts reach the room by UPLOAD
+    // through the editor portal; reading the Final folder is the fallback.
+    const discover = (await reviewRoomRules()).discoverFromDropbox;
     if (
-      (["REVIEW", "REVISION"].includes(final)) ||
-      (["SHOT", "EDITING"].includes(final) && (sig.dropbox?.finalVideo ?? 0) > 0)
+      discover &&
+      ((["REVIEW", "REVISION"].includes(final)) ||
+        (["SHOT", "EDITING"].includes(final) && (sig.dropbox?.finalVideo ?? 0) > 0))
     ) {
       try {
         const { discoverCutsForReview } = await import("@/lib/reviewCuts");
         await discoverCutsForReview(p.id, p.title);
       } catch { /* discovery is best-effort — never break the sweep */ }
-    } else if (final === "DELIVERED") {
+    } else if (discover && final === "DELIVERED") {
       // A delivered job carrying one of the old blank placeholders: give it
       // its file and record what delivery meant (approved). Aryeo satisfies
       // these jobs so Dropbox isn't consulted above — check the row instead.

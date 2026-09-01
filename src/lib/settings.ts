@@ -115,6 +115,30 @@ export const DEFAULT_AUTO_TEXTS: AutoTextRules = {
   onePerClientPerRun: true,
 };
 
+// ---- Review Room ------------------------------------------------------------
+// Cuts reach the room by UPLOAD through the editor portal (Jordan, Sep 1:
+// "going off what's in Dropbox can get messy"). Folder discovery — minting a
+// review row for every video file that appears in 05-Final-Video — stays as
+// an opt-in fallback, off by default.
+export type ReviewRoomRules = {
+  /** mint review rows from files found in the job's Dropbox Final folder */
+  discoverFromDropbox: boolean;
+  /** days an approved cut's upload is kept in the hub store after it was copied to Dropbox */
+  keepUploadsDays: number;
+};
+// 90 days: the client portal shows the current and previous month's cuts.
+export const DEFAULT_REVIEW_ROOM: ReviewRoomRules = { discoverFromDropbox: false, keepUploadsDays: 90 };
+export async function reviewRoomRules(): Promise<ReviewRoomRules> {
+  const r = await getSetting<ReviewRoomRules>("review_room", DEFAULT_REVIEW_ROOM);
+  return {
+    discoverFromDropbox: r.discoverFromDropbox === true,
+    keepUploadsDays:
+      typeof r.keepUploadsDays === "number" && r.keepUploadsDays >= 1 && r.keepUploadsDays <= 365
+        ? Math.floor(r.keepUploadsDays)
+        : DEFAULT_REVIEW_ROOM.keepUploadsDays,
+  };
+}
+
 export async function autoTextRules(): Promise<AutoTextRules> {
   const r = await getSetting<AutoTextRules>("auto_texts", DEFAULT_AUTO_TEXTS);
   // Clamp anything a bad save could put here — the sweeps text real clients.

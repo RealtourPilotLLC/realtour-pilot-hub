@@ -2,8 +2,8 @@
 
 import { useState, useTransition } from "react";
 import { Check, Loader2 } from "lucide-react";
-import { saveTurnarounds, saveInternalAlerts, saveTextTemplates } from "@/app/settings/actions";
-import type { TurnaroundRules, InternalAlertRules, TextTemplates } from "@/lib/settings";
+import { saveTurnarounds, saveInternalAlerts, saveTextTemplates, saveReviewRoomRules } from "@/app/settings/actions";
+import type { TurnaroundRules, InternalAlertRules, TextTemplates, ReviewRoomRules } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 
 // Everything that used to be a constant in the code (Jordan, Sep 1: "I want
@@ -220,6 +220,51 @@ export function TextTemplateSettings({ initial }: { initial: TextTemplates }) {
       ))}
       <SaveRow busy={busy} msg={msg} onSave={() => start(async () => {
         const res = await saveTextTemplates(t).catch(() => ({ ok: false, message: "Couldn’t save — try again." }));
+        setMsg(res.message);
+      })} />
+    </div>
+  );
+}
+
+
+// ---- Review Room ------------------------------------------------------------
+export function ReviewRoomSettings({ initial }: { initial: ReviewRoomRules }) {
+  const [r, setR] = useState(initial);
+  const [busy, start] = useTransition();
+  const [msg, setMsg] = useState<string | null>(null);
+  const set = (patch: Partial<ReviewRoomRules>) => { setR((p) => ({ ...p, ...patch })); setMsg(null); };
+  return (
+    <div className="space-y-3">
+      <p className="text-[13px] text-muted">
+        Cuts reach the Review Room when the editor uploads a version from the editor portal. Approved cuts are
+        copied into the job&rsquo;s Dropbox Final folder automatically.
+      </p>
+
+      <div className="flex items-start justify-between gap-3 rounded-lg border border-border p-3">
+        <div>
+          <p className="text-sm font-semibold">Also watch the Dropbox Final folder</p>
+          <p className="text-[13px] text-muted">
+            Off by default. When on, any video file that appears in a job&rsquo;s 05-Final-Video folder is
+            entered for review on its own — handy for editors who won&rsquo;t use the portal, messy when they
+            export several versions of the same video.
+          </p>
+        </div>
+        <Toggle on={r.discoverFromDropbox} onChange={(v) => set({ discoverFromDropbox: v })} label="Watch the Final folder" />
+      </div>
+
+      <div className="rounded-lg border border-border p-3">
+        <p className="text-sm font-semibold">Keep uploaded cuts in the hub for</p>
+        <p className="text-[13px] text-muted">
+          After an approved cut has been copied to Dropbox, its upload is released from the hub&rsquo;s store once
+          this many days have passed. The client portal shows the current and previous month, so keep at least 60.
+        </p>
+        <div className="mt-2 flex items-center gap-2 border-t border-border pt-2">
+          <Num value={r.keepUploadsDays} onChange={(n) => set({ keepUploadsDays: n })} min={1} max={365} suffix="days" />
+        </div>
+      </div>
+
+      <SaveRow busy={busy} msg={msg} onSave={() => start(async () => {
+        const res = await saveReviewRoomRules(r).catch(() => ({ ok: false, message: "Couldn’t save — try again." }));
         setMsg(res.message);
       })} />
     </div>

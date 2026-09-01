@@ -591,6 +591,7 @@ model Deliverable {
   createdAt  DateTime          @default(now())
 
   uploads UploadedFile[]
+  reviewSubmissions ReviewSubmission[]
 
   @@index([projectId])
 }
@@ -1197,11 +1198,28 @@ model ReviewSubmission {
   project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
   projectId       String
   kind            String    @default("video") // video | photos (photos reserved for later)
-  assetUrl        String? // direct-streamable URL (Dropbox raw link); null = link the folder instead
-  assetPath       String? // Dropbox path of the cut file
+  assetUrl        String? // stable playback URL (/api/review/cut/<id>/stream); MediaNotes key on it
+  assetPath       String? // Dropbox path of the cut file (folder-discovered rows) or the staging path
   fileName        String?
   round           Int       @default(1) // 1 = first cut, +1 per re-submission
-  status          String    @default("PENDING") // PENDING | CHANGES_REQUESTED | APPROVED
+  status          String    @default("PENDING") // UPLOADING | PENDING | CHANGES_REQUESTED | APPROVED
+  // ---- Internal upload flow (Sep 1 2026, Jordan: "upload through the editor
+  // portal as Version 1 → review room → revisions → approved → auto to
+  // Dropbox, marked complete per cut"). A cut is identified by WHICH
+  // deliverable and WHICH slot of it (video 2 of 4 on a monthly plan); rounds
+  // are versions of that cut. The bytes live in the hub's own store (Vercel
+  // Blob — Dropbox temporary links refuse to play in a browser) until the cut
+  // is approved and copied to the job's Final folder.
+  deliverable     Deliverable? @relation(fields: [deliverableId], references: [id], onDelete: SetNull)
+  deliverableId   String?
+  slot            Int       @default(1) // 1..quantity for multi-video deliverables
+  source          String    @default("folder") // upload | folder | button
+  blobUrl         String? // the uploaded version's URL in the hub store
+  blobPathname    String?
+  sizeBytes       Int?
+  finalPath       String? // where the approved cut was placed in Dropbox
+  dropboxJobId    String? // files/save_url async job while the copy is in flight
+  completedAt     DateTime? // approved AND copied to Dropbox — "complete for that cut"
   submittedByKey  String? // editor key (kim/remar/…)
   submittedByName String?
   note            String? // editor's note to the reviewer ("music was client's pick", …)
@@ -1212,6 +1230,7 @@ model ReviewSubmission {
 
   @@index([status])
   @@index([projectId, round])
+  @@index([deliverableId, slot])
   // One row per (file, round): the sweep and the editor's button can race on
   // the same new file; Postgres treats the legacy NULL-path rows as distinct.
   @@unique([projectId, assetPath, round])

@@ -13,6 +13,13 @@ export async function GET(req: NextRequest) {
   if (denied) return denied;
   const { step, out, finish } = cronBudget(250_000, Date.now(), "daily-reconcile");
 
+  // Release approved cuts' uploads from the hub store once they're old enough
+  // (Settings → Review Room); the Dropbox copy remains the file of record.
+  await step("pruneReviewUploads", async () => {
+    const { reviewRoomRules } = await import("@/lib/settings");
+    const { pruneReviewUploads } = await import("@/lib/reviewCuts");
+    return pruneReviewUploads((await reviewRoomRules()).keepUploadsDays);
+  }, { maxMs: 60_000 });
   // Count raw photos in recent shoots' Dropbox folders → per-job AutoHDR cost.
   await step("photoCounts", async () => {
     const { sweepPhotoCounts } = await import("@/lib/photoCount");

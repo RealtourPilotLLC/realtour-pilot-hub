@@ -29,6 +29,10 @@ const streetOf = (title?: string | null) => (title || "this job").split(",")[0].
 // a per-project key made "request changes on video 2" OVERWRITE video 1's
 // still-open change list (adversarial review). Keyed by assetPath so a redo of
 // the same video reuses (reopens) its own task; submission id when no file.
+// A cut's identity across rounds: uploaded cuts by (deliverable, slot),
+// legacy folder rows by file path — see reviewCuts.cutKeyOf.
+const cutKeyOf = (s: { deliverableId?: string | null; slot?: number | null; assetPath?: string | null; id: string }) =>
+  s.deliverableId ? `${s.deliverableId}:${s.slot ?? 1}` : (s.assetPath ?? s.id);
 const CUT_CHANGES_KEY = (projectId: string, cutKey: string) => {
   const h = crypto.createHash("sha1").update(cutKey).digest("hex").slice(0, 10);
   return `cut-changes-${projectId}-${h}`;
@@ -533,17 +537,56 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
     await addApprovedCutToLibrary(submissionId);
   } catch { /* library is best-effort */ }
 
+  // Approved → the file goes to the job's Final folder on Dropbox and this
+  // cut is COMPLETE (Jordan: "if it's approved, it automatically gets
+  // uploaded to Dropbox, and it gets marked as complete for that cut").
+  let copyNote = "";
+  if (submission.blobUrl) {
+    try {
+      const { startDropboxCopy } = await import("@/lib/reviewCuts");
+      const r = await startDropboxCopy(submissionId);
+      copyNote = r.complete ? " Copied to the Final folder." : " Copying to the Final folder in the background.";
+    } catch (e) {
+      copyNote = ` Dropbox copy failed (${(e as Error).message.slice(0, 60)}) — it will be retried hourly.`;
+    }
+  }
+
   // Multi-video sets: "Ready to deliver" is a SET verdict, not a per-cut one
   // (audit: Kyle was told to deliver on video 1 of 4). Count the cuts still
-  // in flight (latest round per file that isn't APPROVED yet).
+  // in flight — owed slots with no approved round yet, plus any legacy
+  // file-keyed cuts whose latest round isn't approved.
+  const { cutSlots } = await import("@/lib/reviewCuts");
+  const slots = await cutSlots(submission.projectId).catch(() => []);
   const siblings = await prisma.reviewSubmission.findMany({
-    where: { projectId: submission.projectId },
+    where: { projectId: submission.projectId, status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } },
     orderBy: { round: "asc" },
-    select: { id: true, assetPath: true, status: true },
+    select: { id: true, assetPath: true, status: true, deliverableId: true, slot: true },
   });
   const latestPerCut = new Map<string, string>();
-  for (const s of siblings) latestPerCut.set(s.assetPath ?? s.id, s.status);
-  const inFlight = [...latestPerCut.values()].filter((st) => st !== "APPROVED").length;
+  for (const s of siblings) latestPerCut.set(cutKeyOf(s), s.status);
+  const hasUploadRows = siblings.some((s) => !!s.deliverableId);
+  const legacyEntries = [...latestPerCut.entries()].filter(([k]) => !k.includes(":"));
+  const legacyApproved = legacyEntries.filter(([, st]) => st === "APPROVED").length;
+  const legacyOpen = legacyEntries.filter(([, st]) => st !== "APPROVED").length;
+  const uploadApproved = [...latestPerCut.entries()].filter(([k, st]) => k.includes(":") && st === "APPROVED").length;
+  // Two eras on one job (review): legacy folder rows carry no deliverable, so
+  // they can never satisfy an owed slot by key. Rule:
+  //  · no uploads yet → the per-file verdict the room always had;
+  //  · uploads exist  → owed cuts minus approved uploads minus approved legacy
+  //    cuts (each counts for one); legacy cuts still awaiting a verdict no
+  //    longer count — the upload era supersedes the folder era, otherwise a
+  //    bounced folder row would be double-counted with its re-uploaded slot.
+  const inFlight = hasUploadRows
+    ? Math.max(0, slots.length - uploadApproved - legacyApproved)
+    : legacyOpen;
+  // Every owed cut approved → the editor's work item is done (never a
+  // hand-assigned one — the assignedManually invariant).
+  if (inFlight === 0) {
+    await prisma.smartTask.updateMany({
+      where: { projectId: submission.projectId, taskType: "edit_video", assignedManually: false, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    }).catch(() => {});
+  }
 
   try {
     const targets: NotifyTarget[] = [{ roles: ["ADMIN"] }];
@@ -570,9 +613,9 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
   return {
     ok: true,
     message:
-      inFlight > 0
+      (inFlight > 0
         ? `Approved — ${inFlight} more video${inFlight === 1 ? "" : "s"} still in review on ${street}.`
-        : `Approved — Kyle's been pinged to deliver ${street}.`,
+        : `Approved — every cut on ${street} is done; Kyle's been pinged to deliver.`) + copyNote,
   };
 }
 
@@ -620,7 +663,7 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
   const fmtT = (t: number | null) =>
     t == null ? "" : `[${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}] `;
   const lines = open.map((n) => `• ${fmtT(n.timeSec)}${n.body.trim()}`);
-  const key = CUT_CHANGES_KEY(submission.projectId, submission.assetPath ?? submission.id);
+  const key = CUT_CHANGES_KEY(submission.projectId, cutKeyOf(submission));
   const data = {
     taskType: "revision",
     title: `Cut changes — ${street}`.slice(0, 120),
@@ -646,7 +689,9 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
   const { authorName } = await sessionAuthor();
   await prisma.reviewSubmission.update({
     where: { id: submissionId },
-    data: { status: "CHANGES_REQUESTED", decidedAt: new Date(), decidedBy: authorName },
+    // A copied-to-Dropbox cut that gets bounced is no longer complete; the
+    // next approved version moves the old file aside (startDropboxCopy).
+    data: { status: "CHANGES_REQUESTED", decidedAt: new Date(), decidedBy: authorName, completedAt: null },
   });
   // The job IS in revisions now (Jordan, Aug 27: "once we review the video and
   // I submit it for revisions, change the status to revisions"). The stamp
@@ -697,4 +742,128 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
 
   refresh(submission.projectId);
   return { ok: true, message: `Sent ${open.length} change${s} to ${editorMeta(editorKey)?.name ?? editorKey}.` };
+}
+
+
+// ===========================================================================
+// UPLOAD A CUT (the editor portal's "Upload version N"). Two halves around a
+// direct browser → store transfer: start() reserves the row and the path,
+// finish() verifies the bytes landed and puts the cut in the Review Room.
+// ===========================================================================
+// Who may upload on THIS project. Owner/admin: any job (vendor cuts). An
+// EDITOR: only a job with an open edit_video/revision task assigned to them —
+// the same scope submitCutForReview enforces, because an earlier audit found
+// one editor's action closing ANOTHER editor's work item (review).
+async function uploadAuthor(projectId: string): Promise<{ ok: true; key: string | null; name: string | null } | { ok: false; message: string }> {
+  const me = await getCurrentUser().catch(() => null);
+  if (!me && !authEnforced()) return { ok: true, key: null, name: "Local dev" }; // same rule as requireRole
+  if (!me) return { ok: false, message: "Sign in to upload a cut." };
+  if (me.impersonating) return { ok: false, message: "You're previewing another user — exit the preview to upload." };
+  if (!["OWNER", "ADMIN", "EDITOR"].includes(me.role)) return { ok: false, message: "Only editors, admins and the owner can upload cuts." };
+  const key = me.role === "EDITOR" ? (me.editorKey ?? (me.name ? slugForName(me.name) : null)) : null;
+  if (me.role === "EDITOR") {
+    const mine = await prisma.smartTask.findFirst({
+      where: {
+        projectId,
+        taskType: { in: ["edit_video", "revision"] },
+        status: { notIn: ["COMPLETED", "CANCELLED"] },
+        assignedKey: key ?? "__none__",
+      },
+      select: { id: true },
+    });
+    if (!mine) return { ok: false, message: "This job isn't on your queue — ask Kyle or Jordan to assign it to you first." };
+  }
+  return { ok: true, key, name: me.name ?? me.email ?? null };
+}
+
+export async function startCutUpload(input: {
+  projectId: string;
+  deliverableId: string;
+  slot: number;
+  fileName: string;
+  sizeBytes: number;
+}): Promise<{ ok: true; submissionId: string; pathname: string; round: number } | { ok: false; message: string }> {
+  const who = await uploadAuthor(input.projectId);
+  if (!who.ok) return who;
+  const { cutSlots, uploadPathnameFor } = await import("@/lib/reviewCuts");
+  const slots = await cutSlots(input.projectId);
+  const slot = slots.find((s) => s.deliverableId === input.deliverableId && s.slot === Math.floor(input.slot));
+  if (!slot) return { ok: false, message: "That video isn't on this job's order any more — refresh the page." };
+  if (!/\.(mp4|mov|m4v|webm|mkv)$/i.test(input.fileName)) return { ok: false, message: "Upload a video file (.mp4, .mov, .m4v, .webm)." };
+  const last = await prisma.reviewSubmission.findFirst({
+    where: { projectId: input.projectId, deliverableId: input.deliverableId, slot: slot.slot, status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } },
+    orderBy: { round: "desc" },
+    select: { round: true, status: true },
+  });
+  if (last?.status === "APPROVED") return { ok: false, message: `${slot.label} is already approved — nothing more to upload.` };
+  // Rounds count in-flight uploads too, so two tabs starting at once don't
+  // both become "Version 1" (a failed one leaves a harmless gap).
+  const highest = await prisma.reviewSubmission.aggregate({
+    where: { projectId: input.projectId, deliverableId: input.deliverableId, slot: slot.slot, status: { not: "UPLOAD_FAILED" } },
+    _max: { round: true },
+  });
+  const round = (highest._max.round ?? 0) + 1;
+  const row = await prisma.reviewSubmission.create({
+    data: {
+      projectId: input.projectId,
+      kind: "video",
+      deliverableId: input.deliverableId,
+      slot: slot.slot,
+      round,
+      status: "UPLOADING",
+      source: "upload",
+      fileName: input.fileName.slice(0, 200),
+      sizeBytes: Number.isFinite(input.sizeBytes) ? Math.floor(input.sizeBytes) : null,
+      submittedByKey: who.key,
+      submittedByName: who.name,
+    },
+    select: { id: true },
+  });
+  return { ok: true, submissionId: row.id, pathname: uploadPathnameFor(input.projectId, row.id, input.fileName), round };
+}
+
+export async function finishCutUpload(input: { submissionId: string; url: string; pathname: string }): Promise<{ ok: boolean; message: string }> {
+  const row = await prisma.reviewSubmission.findUnique({ where: { id: input.submissionId }, select: { projectId: true, status: true } });
+  if (!row) return { ok: false, message: "That upload no longer exists." };
+  const who = await uploadAuthor(row.projectId);
+  if (!who.ok) return who;
+  if (row.status !== "UPLOADING") return { ok: true, message: "Already in review." };
+  // The blob must live in THIS store under THIS row's prefix — never attach a
+  // foreign URL to a cut.
+  if (!input.pathname.startsWith(`review-cuts/${row.projectId}/${input.submissionId}/`) || !/^https:\/\/[a-z0-9]+\.public\.blob\.vercel-storage\.com\//.test(input.url)) {
+    return { ok: false, message: "That file doesn't belong to this cut." };
+  }
+  // Prove the bytes are really in the store before calling it a cut.
+  let size: number | null = null;
+  try {
+    const { head } = await import("@vercel/blob");
+    const meta = await head(input.url);
+    size = meta.size;
+    if (meta.pathname !== input.pathname) return { ok: false, message: "Upload mismatch — try again." };
+  } catch {
+    return { ok: false, message: "The file didn't land in the store — try the upload again." };
+  }
+  const { finalizeCutUpload } = await import("@/lib/reviewCuts");
+  const r = await finalizeCutUpload(input.submissionId, { url: input.url, pathname: input.pathname, size });
+  const sub = await prisma.reviewSubmission.findUnique({ where: { id: input.submissionId }, select: { projectId: true } });
+  if (sub) refresh(sub.projectId);
+  return r;
+}
+
+export async function abandonCutUpload(submissionId: string, blobUrl?: string | null): Promise<void> {
+  const row = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true } });
+  if (!row) return;
+  const who = await uploadAuthor(row.projectId);
+  if (!who.ok) return;
+  await prisma.reviewSubmission.updateMany({
+    where: { id: submissionId, status: "UPLOADING" },
+    data: { status: "UPLOAD_FAILED" },
+  }).catch(() => {});
+  // Bytes that landed but never became a cut have no reason to stay public.
+  if (blobUrl && /^https:\/\/[a-z0-9]+\.public\.blob\.vercel-storage\.com\/review-cuts\//.test(blobUrl)) {
+    try {
+      const { del } = await import("@vercel/blob");
+      await del(blobUrl);
+    } catch { /* the retention sweep catches strays */ }
+  }
 }
