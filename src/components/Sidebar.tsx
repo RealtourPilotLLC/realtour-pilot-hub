@@ -7,6 +7,7 @@ import {
   Clapperboard,
   SlidersHorizontal,
   LayoutDashboard,
+  Compass,
   Sun,
   ListTodo,
   KanbanSquare,
@@ -64,6 +65,10 @@ const SECTIONS: NavSection[] = [
     title: "Operations",
     items: [
       { label: "Dashboard", href: "/", icon: LayoutDashboard, key: "dashboard" },
+      // Kyle's guided operating day — his MAIN dashboard (ADMIN's login home in
+      // access.ts homeFor). It had access rules and a route but no nav item, so
+      // it was unreachable unless you typed the URL (Jordan, Sep 1).
+      { label: "Ops Day", href: "/ops", icon: Compass, key: "ops" },
       // Owner-only (ownerOnly in PAGES) — his day plan and personal to-dos.
       { label: "My Day", href: "/day", icon: Sun, key: "day" },
       // Today + Daily Tasks + Task History merged into the one Tasks hub

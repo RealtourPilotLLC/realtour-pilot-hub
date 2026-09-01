@@ -989,9 +989,41 @@ export type BillingRow = {
   possiblyPaidQbo: boolean;
 };
 
+/** Rows the owner took OFF the AR list — shown collapsed under Finance →
+ *  Unpaid so a removal is never invisible and can be undone (review HIGH). */
+export async function getRemovedArRows(): Promise<
+  { id: string; title: string; clientName: string; outstanding: number /* dollars */; removedAt: string; note: string | null }[]
+> {
+  const rows = await prisma.project.findMany({
+    where: {
+      AND: [
+        { OR: [{ status: "DELIVERED" }, { deliveredAt: { not: null } }] },
+        { balanceAmount: { gt: 0 } },
+        { arRemovedAt: { not: null } },
+      ],
+    },
+    orderBy: { arRemovedAt: "desc" },
+    select: {
+      id: true, title: true, balanceAmount: true, arRemovedAt: true, arRemovedNote: true,
+      client: { select: { name: true } },
+    },
+    take: 100,
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    clientName: r.client?.name ?? "Unknown",
+    outstanding: (r.balanceAmount ?? 0) / 100, // balanceAmount is CENTS; every AR surface reports dollars
+    removedAt: (r.arRemovedAt as Date).toISOString(),
+    note: r.arRemovedNote,
+  }));
+}
+
 export async function getBillingRows(): Promise<{ rows: BillingRow[]; totalOutstanding: number }> {
   const projects = await prisma.project.findMany({
-    where: { AND: [{ OR: [{ status: "DELIVERED" }, { deliveredAt: { not: null } }] }, { balanceAmount: { gt: 0 } }] },
+    // arRemovedAt = the owner took it off the AR list (cancelled appointment /
+    // test order) — the row stays in the DB, just not in what's owed.
+    where: { AND: [{ OR: [{ status: "DELIVERED" }, { deliveredAt: { not: null } }] }, { balanceAmount: { gt: 0 } }, { arRemovedAt: null }] },
     orderBy: [{ deliveredAt: { sort: "desc", nulls: "last" } }, { orderedAt: "desc" }],
     select: {
       id: true, title: true, orderedAt: true, deliveredAt: true,

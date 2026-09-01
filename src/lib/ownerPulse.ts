@@ -65,7 +65,17 @@ export async function ownerPulse(): Promise<OwnerPulseSnapshot> {
       .aggregate({
         _sum: { balanceAmount: true },
         _count: { _all: true },
-        where: { deliveredAt: { not: null }, balanceAmount: { gt: 0 } },
+        // Same definition of "owed" as getBillingRows / Finance → Unpaid:
+        // delivered, still has a balance, and NOT taken off the AR list by the
+        // owner (cancelled appointment / test order). /day links straight to
+        // Finance, so these two must never disagree (review HIGH).
+        where: {
+          AND: [
+            { OR: [{ status: "DELIVERED" }, { deliveredAt: { not: null } }] },
+            { balanceAmount: { gt: 0 } },
+            { arRemovedAt: null },
+          ],
+        },
       })
       .catch(() => null),
     prisma.appointment.count({ where: { startAt: { gte: weekStart, lt: weekEnd } } }).catch(() => 0),

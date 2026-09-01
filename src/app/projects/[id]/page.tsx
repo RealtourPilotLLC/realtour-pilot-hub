@@ -374,7 +374,7 @@ export default async function ProjectPage({
               }
               bodyClassName="space-y-3"
             >
-              {(project.shotOrderNotes || project.removalNotes || project.videoInstructions || project.deliverables.some((d) => d.notCompletedReason)) && (
+              {(project.shotOrderNotes || project.removalNotes || project.videoInstructions || project.videosFilmed != null || project.deliverables.some((d) => d.notCompletedReason)) && (
                 <div className="space-y-2 border-b border-border pb-3">
                   <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Shoot debrief</div>
                   {project.deliverables.filter((d) => d.notCompletedReason).map((d) => (
@@ -382,6 +382,9 @@ export default async function ProjectPage({
                       Couldn&rsquo;t complete {d.label ?? d.type}: <span className="font-normal text-foreground/85">{d.notCompletedReason}</span>
                     </p>
                   ))}
+                  {project.videosFilmed != null && (
+                    <p className="text-sm text-foreground/85"><span className="font-medium">Videos filmed:</span> {project.videosFilmed}</p>
+                  )}
                   {project.shotOrderNotes && (
                     <p className="text-sm text-foreground/85"><span className="font-medium">Shot order:</span> {project.shotOrderNotes}</p>
                   )}

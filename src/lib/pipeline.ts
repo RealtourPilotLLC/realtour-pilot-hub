@@ -270,48 +270,49 @@ export type VideoStepSpec = {
   requireScript: boolean;
   /** agent-intro packages: the typed intro script can never be left blank */
   requireIntro: boolean;
+  /** monthly plans: "how many videos did you film" — the editor needs the count */
+  requireVideoCount: boolean;
   /** the six sectioned instruction fields + style picker, vision required */
   fullBrief: boolean;
   /** a plain social reel: style + optional notes, nothing demanded */
   minimalReel: boolean;
+  /** monthly plans: the edit style is FIXED (personal branding), no picker */
+  fixedStyle: boolean;
 };
 
 /**
- * titles = the order's LIVE item titles + deliverable labels + packageName
- * (canceled items and "couldn't complete" deliverables must be filtered out by
- * the caller — a downgraded or unfilmed line must not drive the gates).
- * hasFullVideo = the order carries a full VIDEO deliverable, not only a reel.
+ * The video step follows the SETTINGS -> Products mapping, not a name guess.
+ * Product.videoTier (set by a human on /settings/products) is carried onto the
+ * deliverable LABEL by itemToDeliverables — premium -> "Premium <Type>",
+ * personal_branding -> the plan title + "· Monthly Content" — and read back by
+ * videoTier() / isMonthlyContentJob(). Callers pass those as isPremium /
+ * isMonthly; the name regexes are only the fallback for products nobody has
+ * mapped yet. Jordan (Sep 1): "Premium Video is premium — it should follow the
+ * same rules set in the setting page", and Starter/Accelerator/Pro get every
+ * instruction field plus the videos-filmed count.
  *
- * Jordan (Sep 1): premium packages show everything and require the script;
- * agent-intro packages require the typed intro; "if it's a standard social
- * reel, it doesn't need additional notes". An agent-intro ADD-ON riding a
- * bundle still needs the bundle's full brief — that video is a separate,
- * fully-directed deliverable.
+ * titles = LIVE order-item titles + deliverable labels + packageName (canceled
+ * items and "couldn't complete" deliverables filtered by the caller).
  */
 export function videoStepSpec(
   titles: (string | null | undefined)[],
-  opts: { hasFullVideo: boolean },
+  opts: { hasFullVideo: boolean; isPremium?: boolean; isMonthly?: boolean },
 ): VideoStepSpec {
   const t = titles.filter(Boolean).join(" | ");
-  // Premium is tested FIRST: "Premium Social Media Reel (No Agent on camera or
-  // Exteriors)" carries the agent-on-camera words inside a NEGATION.
-  if (PREMIUM_SCRIPT_RE.test(t)) {
-    return { mode: "premium-script", requireScript: true, requireIntro: false, fullBrief: true, minimalReel: false };
+  const base = { requireScript: false, requireIntro: false, requireVideoCount: false, fullBrief: false, minimalReel: false, fixedStyle: false };
+  // MONTHLY PLANS first — Jordan named them explicitly, and the batch count is
+  // the thing the editor genuinely cannot work without.
+  if (opts.isMonthly ?? MONTHLY_PLAN_RE.test(t)) {
+    return { ...base, mode: "standard", requireVideoCount: true, fullBrief: true, fixedStyle: true };
+  }
+  if (opts.isPremium ?? PREMIUM_SCRIPT_RE.test(t)) {
+    return { ...base, mode: "premium-script", requireScript: true, fullBrief: true };
   }
   if (AGENT_INTRO_RE.test(t)) {
-    return { mode: "agent-intro", requireScript: false, requireIntro: true, fullBrief: opts.hasFullVideo, minimalReel: false };
+    return { ...base, mode: "agent-intro", requireIntro: true, fullBrief: opts.hasFullVideo };
   }
-  // "Nothing demanded" must be EARNED, not a fallthrough. An unrecognised
-  // product name (a discounted/renamed influencer package, a new SKU) used to
-  // land here and silently drop every requirement — the safe default is the
-  // full brief (review). Only an explicitly-recognised plain reel goes
-  // minimal.
+  // "Nothing demanded" must be EARNED, never a fallthrough: an unrecognised
+  // product used to land here and silently drop every requirement.
   const plainReel = STANDARD_REEL_RE.test(t) && !opts.hasFullVideo;
-  return {
-    mode: "standard",
-    requireScript: false,
-    requireIntro: false,
-    fullBrief: !plainReel,
-    minimalReel: plainReel,
-  };
+  return { ...base, mode: "standard", fullBrief: !plainReel, minimalReel: plainReel };
 }

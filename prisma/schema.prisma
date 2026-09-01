@@ -409,6 +409,11 @@ model Project {
   // AR follow-up: when we last nudged the client about this unpaid job
   // (set by the /billing "Followed up" marker or sending a payment reminder).
   lastNudgedAt  DateTime?
+  // Owner removed this from the AR (unpaid) list — a cancelled appointment we
+  // never completed, or a test order. A FLAG, not a delete, so the Aryeo sync
+  // can't resurrect it and the history stays auditable (Jordan, Sep 1).
+  arRemovedAt   DateTime?
+  arRemovedNote String?
 
   // Relations / assignment
   client             Client      @relation(fields: [clientId], references: [id])
@@ -460,6 +465,10 @@ model Project {
   editorBrief     String?
   // Shoot debrief (upload portal rebuild, Aug 31 2026) — structured fields the
   // photographer fills before the job counts as done. All feed the editor brief.
+  // Monthly-content plans (Starter/Accelerator/Pro) owe a BATCH of videos, so
+  // the photographer reports how many they actually filmed on the wrap-up —
+  // the editor needs the count to know how many cuts to produce (Jordan, Sep 1).
+  videosFilmed       Int?
   cullingConfirmedAt DateTime? // ticked "culled to the standard, extras in Backup"
   debriefSubmittedAt DateTime? // the photographer SUBMITTED the upload page (finalizeUpload) — distinct from uploadedAt, which the Dropbox sweep can auto-stamp; gates My Pay visibility for shoots from Sep 2 2026
   shotOrderNotes     String?   // "Shot front to back." or the actual order + why (organizing unseen photos burns office time)

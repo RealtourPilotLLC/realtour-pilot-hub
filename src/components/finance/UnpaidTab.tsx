@@ -2,7 +2,9 @@ import Link from "next/link";
 import { Receipt, FileText, ExternalLink, CreditCard, ListTodo, Building2, CalendarClock } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { NudgeActions } from "@/components/billing/NudgeActions";
-import { getBillingRows, type BillingRow } from "@/lib/queries";
+import { RemoveFromAr } from "@/components/billing/RemoveFromAr";
+import { RestoreToAr } from "@/components/billing/RestoreToAr";
+import { getBillingRows, getRemovedArRows, type BillingRow } from "@/lib/queries";
 import { formatMoney } from "@/lib/utils";
 import { etDate } from "@/lib/datetime";
 import { FinanceTabs, type FinanceTab } from "./FinanceTabs";
@@ -82,6 +84,7 @@ function BillingCard({ r }: { r: BillingRow }) {
       {/* Actions */}
       <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3 text-xs">
         <NudgeActions projectId={r.id} lastNudgedAt={r.lastNudgedAt} />
+        <RemoveFromAr projectId={r.id} />
         <Link href={`/projects/${r.id}`} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 font-medium hover:bg-surface-2">
           <ListTodo className="size-3.5" /> {r.openTasks} open {r.openTasks === 1 ? "task" : "tasks"}
         </Link>
@@ -111,7 +114,7 @@ function BillingCard({ r }: { r: BillingRow }) {
 }
 
 export async function UnpaidTab({ show }: { show: FinanceTab[] }) {
-  const { rows, totalOutstanding } = await getBillingRows();
+  const [{ rows, totalOutstanding }, removed] = await Promise.all([getBillingRows(), getRemovedArRows()]);
 
   // Group into aging buckets (90+ first — chase the oldest money).
   const grouped = BUCKETS.map((b, i) => {
@@ -173,6 +176,31 @@ export async function UnpaidTab({ show }: { show: FinanceTab[] }) {
           )
         )}
       </div>
+
+      {/* Rows the owner took off the books — collapsed, never invisible, and
+          undoable (review: a removal used to be a one-way trip with no trace). */}
+      {removed.length > 0 && (
+        <details className="mt-6 rounded-2xl border border-border bg-surface">
+          <summary className="cursor-pointer list-none px-4 py-3 text-sm font-medium text-muted hover:text-foreground">
+            Removed from AR · {removed.length}
+            <span className="ml-2 text-xs text-muted-2">
+              {formatMoney(removed.reduce((n, r) => n + r.outstanding, 0))} not counted as owed
+            </span>
+          </summary>
+          <div className="space-y-2 border-t border-border p-3">
+            {removed.map((r) => (
+              <div key={r.id} className="flex flex-wrap items-center gap-2 rounded-xl border border-border px-3 py-2">
+                <Link href={`/projects/${r.id}`} className="min-w-0 flex-1 truncate text-sm font-medium hover:text-brand">
+                  {r.title}
+                </Link>
+                <span className="shrink-0 text-xs text-muted">{r.clientName} · {formatMoney(r.outstanding)}</span>
+                {r.note && <span className="w-full text-[11px] text-muted-2">{r.note}</span>}
+                <RestoreToAr projectId={r.id} />
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
     </div>
   );
 }

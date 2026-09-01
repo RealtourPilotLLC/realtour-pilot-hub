@@ -269,6 +269,8 @@ export async function finalizeUpload(
     // unanswered on the new page — block with the real message.
     /** agent-intro packages: the intro script typed exactly as delivered */
     introScript?: string | null;
+    /** monthly plans: how many videos the photographer actually filmed */
+    videosFilmed?: number | null;
     /** premium packages with no Studio script: the script typed on site */
     providedScript?: string | null;
   },
@@ -290,6 +292,7 @@ export async function finalizeUpload(
       shotOrderNotes: true,
       removalNotes: true,
       videoInstructions: true,
+      videosFilmed: true,
       scriptConfirmedAt: true,
       scriptConfirmNote: true,
       reelScript: true,
@@ -306,6 +309,7 @@ export async function finalizeUpload(
   // the photographer to fabricate answers (review HIGH). The reason itself is
   // already on the Admin's QC card / timeline for a human to resolve.
   const liveDeliverables = (prior?.deliverables ?? []).filter((d) => !d.notCompletedReason);
+  const anyVideoOrdered = liveDeliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
 
   // ---- The debrief gates (Jordan, Aug 31): the job is not done until the
   // cull is confirmed, removal notes are answered, and video jobs carry the
@@ -342,9 +346,15 @@ export async function finalizeUpload(
     // (canceled items filtered in the query; excused deliverables filtered
     // here), mirroring the client so the two can never disagree.
     const { videoStepSpec } = await import("@/lib/pipeline");
+    const { videoTier } = await import("@/lib/projectStatus");
+    const { isMonthlyContentJob } = await import("@/lib/pipeline");
     const spec = videoStepSpec(
       [prior.packageName, ...prior.orderItems.map((i) => i.title), ...liveDeliverables.map((d) => d.label)],
-      { hasFullVideo: liveDeliverables.some((d) => d.type === "VIDEO") },
+      {
+        hasFullVideo: liveDeliverables.some((d) => d.type === "VIDEO"),
+        isPremium: videoTier(liveDeliverables) === "premium",
+        isMonthly: isMonthlyContentJob(liveDeliverables, prior.packageName),
+      },
     );
     // A plain social reel demands no brief at all (Jordan: "if it's a standard
     // social reel, it doesn't need additional notes").
@@ -372,6 +382,17 @@ export async function finalizeUpload(
       // filled notes box alone isn't enough). Key absent = pre-update tab —
       // its old-style brief above already carried the photographer's words,
       // so never trap it behind a refresh that would lose their typing.
+      if (
+        wantsVideoGate &&
+        spec.requireVideoCount &&
+        // undefined = a pre-update tab; never trap those. Anything else must be
+        // a real positive integer (0 used to pass the gate then be dropped).
+        data.videosFilmed !== undefined &&
+        !(typeof data.videosFilmed === "number" && Number.isInteger(data.videosFilmed) && data.videosFilmed > 0) &&
+        prior.videosFilmed == null
+      ) {
+        return { blocked: "Tell us how many videos you filmed — the editor cuts to that count." };
+      }
       if (wantsVideoGate && spec.requireIntro && data.introScript === null) {
         return { blocked: "The agent's intro script can't be left blank — type it exactly as it was delivered on camera." };
       }
@@ -501,7 +522,15 @@ export async function finalizeUpload(
         : data.nothingToRemove
           ? { removalNotes: NOTHING_TO_REMOVE_SENTINEL }
           : {}),
-      ...(data.videoInstructions?.trim() ? { videoInstructions: data.videoInstructions.trim().slice(0, 6000) } : {}),
+      // Only a job that actually ordered video can carry a video brief — a
+      // fixed-style monthly job with no video deliverable would otherwise
+      // store a bare "STYLE:" line that reads as a real brief everywhere.
+      ...(anyVideoOrdered && data.videoInstructions?.trim()
+        ? { videoInstructions: data.videoInstructions.trim().slice(0, 6000) }
+        : {}),
+      ...(typeof data.videosFilmed === "number" && data.videosFilmed > 0
+        ? { videosFilmed: Math.min(data.videosFilmed, 999) }
+        : {}),
       ...(data.scriptConfirm
         ? {
             scriptConfirmedAt: new Date(),

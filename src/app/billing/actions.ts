@@ -5,6 +5,7 @@ import { requireAdmin } from "@/lib/auth/guards";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { etDate } from "@/lib/datetime";
+import { ActivityType } from "@prisma/client";
 
 // AR follow-up actions for /billing (audit crack #17): $25k of real receivables
 // had no in-app way to chase. Draft-then-send, same contract as the rest of the
@@ -146,4 +147,47 @@ export async function markBillingNudged(projectId: string): Promise<{ ok: boolea
     .catch(() => {});
   revalidatePath("/sales");
   return { ok: true, message: "Marked followed up." };
+}
+
+/**
+ * Take a row off the AR list (Jordan, Sep 1: "some are canceled appointments
+ * we never completed or were tests"). Deliberately a FLAG, not a delete: the
+ * Aryeo sync would re-import a deleted project on the next pass, and the order
+ * history still matters for the books. Owner/admin only; reversible.
+ */
+export async function removeFromAr(projectId: string, note: string): Promise<{ ok: boolean; message: string }> {
+  try { await requireAdmin(); } catch (e) { return { ok: false, message: (e as Error).message }; }
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true, balanceAmount: true } });
+  if (!p) return { ok: false, message: "That job no longer exists." };
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const who = (me?.name ?? "").trim();
+  const reason = note.trim().slice(0, 300) || "No reason given";
+  await prisma.project.update({
+    where: { id: projectId },
+    data: { arRemovedAt: new Date(), arRemovedNote: who ? `${reason} — ${who}` : reason },
+  });
+  await prisma.activity.create({
+    data: {
+      projectId,
+      type: ActivityType.SYSTEM,
+      body: `Removed from the unpaid (AR) list${who ? ` by ${who}` : ""}: ${reason}. The outstanding balance on file was $${((p.balanceAmount ?? 0) / 100).toFixed(2)}.`,
+    },
+  }).catch(() => {});
+  revalidatePath("/sales");
+  revalidatePath("/billing");
+  revalidatePath(`/projects/${projectId}`);
+  return { ok: true, message: "Removed from AR." };
+}
+
+/** Undo — put a removed job back on the AR list. */
+export async function restoreToAr(projectId: string): Promise<{ ok: boolean; message: string }> {
+  try { await requireAdmin(); } catch (e) { return { ok: false, message: (e as Error).message }; }
+  await prisma.project.update({ where: { id: projectId }, data: { arRemovedAt: null, arRemovedNote: null } });
+  await prisma.activity.create({
+    data: { projectId, type: ActivityType.SYSTEM, body: "Put back on the unpaid (AR) list." },
+  }).catch(() => {});
+  revalidatePath("/sales");
+  revalidatePath("/billing");
+  return { ok: true, message: "Back on the AR list." };
 }

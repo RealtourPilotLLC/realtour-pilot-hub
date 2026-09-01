@@ -169,6 +169,10 @@ export async function buildEditorBriefPdf(project: FullProject): Promise<Uint8Ar
   }
 
   // ---- Video: confirmed script + the photographer's instructions --------
+  if (project.videosFilmed != null) {
+    heading("Videos filmed");
+    text(`${project.videosFilmed} video${project.videosFilmed === 1 ? "" : "s"} were filmed on this session - cut this many.`, { size: 11 });
+  }
   if (project.videoInstructions) {
     heading("Video - instructions from the shoot");
     text(project.videoInstructions, { size: 11 });

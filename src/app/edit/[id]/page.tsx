@@ -454,6 +454,17 @@ export default async function EditBriefPage({
                 <p className="whitespace-pre-wrap text-sm text-foreground/85">{project.removalNotes}</p>
               </div>
             )}
+            {/* Monthly plans: the batch size the photographer actually filmed —
+                the editor cuts to this count (Jordan, Sep 1). */}
+            {project.videosFilmed != null && (
+              <div className="mt-3 space-y-1 border-t border-border pt-3">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Videos filmed</div>
+                <p className="text-sm">
+                  <span className="text-base font-semibold text-brand">{project.videosFilmed}</span>
+                  <span className="text-foreground/85"> video{project.videosFilmed === 1 ? "" : "s"} filmed on this session — cut this many.</span>
+                </p>
+              </div>
+            )}
             {project.videoInstructions && (
               <div className="mt-3 space-y-1 border-t border-border pt-3">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Video — instructions from the shoot</div>

@@ -65,8 +65,18 @@ import { NOTHING_TO_REMOVE_SENTINEL as NOTHING_SENTINEL, FRONT_TO_BACK_SENTINEL,
 const VID_STYLES = {
   fast: "Fast-Paced",
   cinematic: "Timeless & Elegant (Cinematic)",
+  // Monthly plans (Starter/Accelerator/Pro) are ALWAYS this — Jordan, Sep 1:
+  // no dropdown, the style is fixed. Kept in the same map so it composes,
+  // parses and renders through the identical STYLE: line as the others.
+  branding: "Personal Branding",
 } as const;
 type VidStyle = keyof typeof VID_STYLES;
+// Reverse lookup so compose/parse can never drift — a style added to
+// VID_STYLES round-trips automatically (review: "Personal Branding" was
+// composed but not parsed, so it vanished on re-open).
+const STYLE_BY_LABEL = new Map<string, VidStyle>(
+  (Object.entries(VID_STYLES) as [VidStyle, string][]).map(([k, v]) => [v, k]),
+);
 const VID_SECTIONS = [
   { key: "vision", label: "VISION FOR THE EDIT", title: "Vision for the edit", required: true, placeholder: "The feel and the story — e.g. luxury and calm; let the property breathe; the hook is the double-height foyer." },
   { key: "summary", label: "SUMMARY", title: "Summary", required: false, placeholder: "The shoot in two lines — what was captured, the flow, anything unusual." },
@@ -122,7 +132,7 @@ function parseVideoInstructions(text: string | null): { style: VidStyle | null; 
     const styleMatch = line.match(/^STYLE:\s*(.+)$/);
     if (styleMatch && current === null) {
       const v = styleMatch[1].trim();
-      style = v === VID_STYLES.fast ? "fast" : v === VID_STYLES.cinematic ? "cinematic" : style;
+      style = STYLE_BY_LABEL.get(v) ?? style;
       continue;
     }
     if (line === COLOR_PROFILE_LINE) continue; // re-added automatically on compose
@@ -215,6 +225,7 @@ export function UploadPortal({
     shotOrderNotes: string | null;
     removalNotes: string | null;
     videoInstructions: string | null;
+    videosFilmed: number | null;
     scriptConfirmedAt: string | null;
     scriptConfirmNote: string | null;
   };
@@ -275,14 +286,27 @@ export function UploadPortal({
   const parsedVid = parseVideoInstructions(project.videoInstructions);
   const [vidStyle, setVidStyle] = useState<VidStyle | null>(parsedVid.style);
   const [vidSections, setVidSections] = useState<Record<VidKey, string>>(parsedVid.sections);
-  const vidInstructions = composeVideoInstructions(vidStyle, vidSections);
   // A job that already carries a brief (legacy free text, or a prior submit)
   // is never retro-blocked for the new required fields — same rule as the
   // server's first-finalize-only gates.
   const hadPriorBrief = !!project.videoInstructions?.trim();
   // What "answered" means depends on the package flavor: agent-intro packages
   // need the typed intro script; everything else needs vision + style.
+  // Monthly plans: how many videos actually got filmed. The editor works from
+  // this number (Jordan, Sep 1) — it's the only place the real batch size is
+  // known, since the order carries one line item.
+  const [videosFilmed, setVideosFilmed] = useState<string>(
+    project.videosFilmed != null ? String(project.videosFilmed) : "",
+  );
+  const videosFilmedNum = /^\d{1,3}$/.test(videosFilmed.trim()) ? Number(videosFilmed.trim()) : null;
   const spec = policy.videoSpec;
+  // A fixed-style job composes with that style regardless of the picker state.
+  // Scoped to a job that ACTUALLY ordered video: isMonthlyContentJob matches on
+  // any deliverable label, so a "Content Day" photo-only job would otherwise
+  // compose a phantom "STYLE: Personal Branding" brief and permanently waive
+  // the vision gate (review).
+  const effectiveStyle: VidStyle | null = spec.fixedStyle && policy.videoOrdered ? "branding" : vidStyle;
+  const vidInstructions = composeVideoInstructions(effectiveStyle, vidSections);
   // Which sections this order shows. An agent-intro ADD-ON riding a bundle
   // keeps the bundle's full brief — that listing video is separately directed
   // (review HIGH) — while a standalone intro package gets intro + notes only.
@@ -295,13 +319,16 @@ export function UploadPortal({
   // "vision and style" on a shape whose only required field is the intro.
   const requiredLabels = [
     spec.requireIntro ? "The intro script" : null,
-    spec.fullBrief ? "vision and style" : null,
+    spec.requireVideoCount ? "The video count" : null,
+    spec.fullBrief ? (spec.fixedStyle ? "vision" : "vision and style") : null,
   ].filter(Boolean) as string[];
   const isRequiredKey = (k: VidKey) => (k === "intro" && spec.requireIntro) || (k === "vision" && spec.fullBrief);
+  const countAnswered = !spec.requireVideoCount || project.videosFilmed != null || (videosFilmedNum ?? 0) > 0;
   const vidAnswered =
-    hadPriorBrief ||
+    countAnswered &&
+    (hadPriorBrief ||
     ((!spec.requireIntro || !!vidSections.intro.trim()) &&
-      (!spec.fullBrief || (!!vidSections.vision.trim() && vidStyle !== null)));
+      (!spec.fullBrief || (!!vidSections.vision.trim() && effectiveStyle !== null))));
   const [scriptChoice, setScriptChoice] = useState<"as-written" | "edited" | null>(
     project.scriptConfirmedAt
       ? project.scriptConfirmNote?.startsWith("Edited") ? "edited" : "as-written"
@@ -441,7 +468,10 @@ export function UploadPortal({
     if (videoLive && !hadPriorBrief) {
       if (spec.requireIntro && !vidSections.intro.trim()) missing.push("the agent's intro script — type it exactly as delivered");
       if (spec.fullBrief && !vidSections.vision.trim()) missing.push("the vision for the edit");
-      if (spec.fullBrief && vidStyle === null) missing.push("pick an edit style");
+      if (spec.fullBrief && effectiveStyle === null) missing.push("pick an edit style");
+    }
+    if (videoLive && spec.requireVideoCount && project.videosFilmed == null && !((videosFilmedNum ?? 0) > 0)) {
+      missing.push("how many videos you filmed");
     }
     if (videoLive && script && !scriptChoice) missing.push("confirm the script");
     if (videoLive && scriptChoice === "edited" && !scriptText.trim()) missing.push("the edited script text (or pick “Delivered as written”)");
@@ -489,6 +519,7 @@ export function UploadPortal({
       // Package-scoped requirements (keys ABSENT on pre-update pages — the
       // server treats absence as "old tab, ask for a refresh", null as
       // "unanswered, block with the real message").
+      videosFilmed: spec.requireVideoCount ? videosFilmedNum : undefined,
       introScript: spec.requireIntro ? vidSections.intro.trim() || null : undefined,
       providedScript: spec.requireScript && !script ? scriptText.trim() || null : undefined,
       ...(force ? { force: true } : {}),
@@ -916,22 +947,54 @@ export function UploadPortal({
                   Sectioned so the editor can act on it — fill what applies; vision and style are required.
                 </p>
 
-                <div className="mt-2.5">
-                  <label className="text-[13px] font-medium text-muted">Edit style <span className="text-brand">*</span></label>
-                  <select
-                    value={vidStyle ?? ""}
-                    onChange={(e) => setVidStyle((e.target.value || null) as VidStyle | null)}
-                    className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand sm:max-w-xs"
-                  >
-                    <option value="">Pick a style…</option>
-                    <option value="fast">{VID_STYLES.fast}</option>
-                    <option value="cinematic">{VID_STYLES.cinematic}</option>
-                  </select>
-                  <p className="mt-1 text-xs text-muted">
-                    Ask the realtor on site which they want — luxury often leans timeless &amp; elegant, but not always. Never guess, just ask.
-                  </p>
-                </div>
+                {/* Monthly plans have ONE style — no dropdown (Jordan, Sep 1). */}
+                {spec.fixedStyle ? (
+                  <div className="mt-2.5">
+                    <label className="text-[13px] font-medium text-muted">Edit style</label>
+                    <p className="mt-1 inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm font-medium">
+                      <CheckCircle2 className="size-4 text-success" /> {VID_STYLES.branding}
+                    </p>
+                    <p className="mt-1 text-xs text-muted">Monthly content is always cut in the personal-branding style.</p>
+                  </div>
+                ) : (
+                  <div className="mt-2.5">
+                    <label className="text-[13px] font-medium text-muted">Edit style <span className="text-brand">*</span></label>
+                    <select
+                      value={vidStyle ?? ""}
+                      onChange={(e) => setVidStyle((e.target.value || null) as VidStyle | null)}
+                      className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand sm:max-w-xs"
+                    >
+                      <option value="">Pick a style…</option>
+                      <option value="fast">{VID_STYLES.fast}</option>
+                      <option value="cinematic">{VID_STYLES.cinematic}</option>
+                    </select>
+                    <p className="mt-1 text-xs text-muted">
+                      Ask the realtor on site which they want — luxury often leans timeless &amp; elegant, but not always. Never guess, just ask.
+                    </p>
+                  </div>
+                )}
               </>
+            )}
+
+            {/* Monthly plans: the batch size the editor cuts to. The order
+                carries ONE line item, so this number is the only truth about
+                how many videos were actually filmed (Jordan, Sep 1). */}
+            {spec.requireVideoCount && (
+              <div className="mt-3">
+                <label className="text-[13px] font-medium text-muted">
+                  How many videos did you film? <span className="text-brand">*</span>
+                </label>
+                <input
+                  inputMode="numeric"
+                  value={videosFilmed}
+                  onChange={(e) => setVideosFilmed(e.target.value.replace(/[^\d]/g, "").slice(0, 3))}
+                  placeholder="e.g. 4"
+                  className="mt-1 w-28 rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+                />
+                <p className="mt-1 text-xs text-muted">
+                  The number of finished videos this session should produce — the editor cuts to this count.
+                </p>
+              </div>
             )}
 
             <div className="mt-3 space-y-3">
@@ -953,7 +1016,7 @@ export function UploadPortal({
 
             {requiredLabels.length > 0 && (
               <p className="mt-1.5 text-xs text-warning">
-                {`${requiredLabels.join(" and ")} can’t be left blank${spec.requireIntro ? " — the editor cuts and captions to the intro" : ""}. Skipping the instructions forfeits future premium shoot assignments.`}
+                {`${requiredLabels.length > 2 ? `${requiredLabels.slice(0, -1).join(", ")} and ${requiredLabels[requiredLabels.length - 1]}` : requiredLabels.join(" and ")} can’t be left blank${spec.requireIntro ? " — the editor cuts and captions to the intro" : ""}. Skipping the instructions forfeits future premium shoot assignments.`}
               </p>
             )}
           </div>

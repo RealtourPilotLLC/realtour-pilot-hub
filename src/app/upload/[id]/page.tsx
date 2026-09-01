@@ -18,7 +18,8 @@ import { getProjectFolderState } from "@/lib/dropboxFolders";
 import { photoPolicyFor, rawBudgetFor, rawOverageCeiling } from "@/lib/culling";
 import { ActivityType } from "@prisma/client";
 import { NOT_COMPLETED_FLAG_PREFIX } from "@/lib/debrief";
-import { videoStepSpec } from "@/lib/pipeline";
+import { videoStepSpec, isMonthlyContentJob } from "@/lib/pipeline";
+import { videoTier } from "@/lib/projectStatus";
 
 export const dynamic = "force-dynamic";
 
@@ -74,9 +75,16 @@ export default async function UploadProjectPage({
   // Deliverables the photographer marked "couldn't complete" are excused, so
   // they must not drive the requirements either (review).
   const liveDeliverables = project.deliverables.filter((d) => !d.notCompletedReason);
+  // Tier comes from the SETTINGS product mapping (videoTier() reads the label
+  // itemToDeliverables stamped from Product.videoTier), so "Premium Video" and
+  // anything else Jordan maps premium follows the premium rules automatically.
   const videoSpec = videoStepSpec(
     [project.packageName, ...project.orderItems.map((i) => i.title), ...liveDeliverables.map((d) => d.label)],
-    { hasFullVideo: liveDeliverables.some((d) => d.type === "VIDEO") },
+    {
+      hasFullVideo: liveDeliverables.some((d) => d.type === "VIDEO"),
+      isPremium: videoTier(liveDeliverables) === "premium",
+      isMonthly: isMonthlyContentJob(liveDeliverables, project.packageName),
+    },
   );
 
   // Video jobs: pull the shoot script from Script Studio (freshness-gated,
@@ -127,6 +135,7 @@ export default async function UploadProjectPage({
           shotOrderNotes: project.shotOrderNotes,
           removalNotes: project.removalNotes,
           videoInstructions: project.videoInstructions,
+          videosFilmed: project.videosFilmed,
           scriptConfirmedAt: project.scriptConfirmedAt?.toISOString() ?? null,
           scriptConfirmNote: project.scriptConfirmNote,
         }}

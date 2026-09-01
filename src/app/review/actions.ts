@@ -226,6 +226,7 @@ export async function submitCutForReview(
     where: { id: projectId },
     select: {
       id: true, title: true, status: true, addressLine: true, shootDate: true, createdAt: true, deliveredAt: true,
+      packageName: true, videosFilmed: true,
       client: { select: { name: true, socialClient: true } },
       deliverables: { select: { type: true, label: true, quantity: true } },
     },
@@ -256,7 +257,16 @@ export async function submitCutForReview(
   const quantityOwed = project.deliverables
     .filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL")
     .reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
-  const videosOwed = Math.max(quantityOwed, cut.folderVideoCount);
+  // The photographer's own count (upload wrap-up) is the truth for a monthly
+  // session — the order row stores quantity=1 while the session really owes a
+  // batch, so without this the editor's work item closed after cut #1 even
+  // though the brief says "cut 4" (review). Fall back to the PLAN quota for
+  // in-flight jobs submitted before the count existed.
+  const { isMonthlyContentJob, monthlyVideoQuota } = await import("@/lib/pipeline");
+  const monthlyOwed = isMonthlyContentJob(project.deliverables, project.packageName)
+    ? project.videosFilmed ?? monthlyVideoQuota([project.packageName, ...project.deliverables.map((d) => d.label)])
+    : 0;
+  const videosOwed = Math.max(quantityOwed, cut.folderVideoCount, monthlyOwed);
   const priorPaths = new Set(
     (
       await prisma.reviewSubmission.findMany({
