@@ -414,8 +414,13 @@ function ShootList({ shoots, empty, showGaps, showDebrief }: { shoots: OpsShoot[
 // QC — grouped Overdue · Due today · Waiting, with evidence and quick links.
 // ---------------------------------------------------------------------------
 
-function QcGroups({ qc }: { qc: OpsQcRow[] }) {
-  if (qc.length === 0) return <p className="text-sm text-muted">Nothing waiting on QC right now.</p>;
+function QcGroups({ qc: all }: { qc: OpsQcRow[] }) {
+  // Monthly personal-branding content runs on its own rhythm (a BATCH of videos
+  // on a 7-10 business-day window) — mixing it into the listing QC pile made
+  // Kyle's queue unreadable (Jordan, Sep 1). Separate card below.
+  const qc = all.filter((q) => !q.monthly);
+  const monthly = all.filter((q) => q.monthly);
+  if (qc.length === 0 && monthly.length === 0) return <p className="text-sm text-muted">Nothing waiting on QC right now.</p>;
   const groups: { key: OpsQcRow["bucket"]; label: string; tone: string }[] = [
     { key: "overdue", label: "Overdue", tone: "text-danger" },
     { key: "today", label: "Due today", tone: "text-warning" },
@@ -437,6 +442,21 @@ function QcGroups({ qc }: { qc: OpsQcRow[] }) {
           </div>
         );
       })}
+      {qc.length === 0 && <p className="text-sm text-muted">Nothing waiting on listing QC right now.</p>}
+
+      {monthly.length > 0 && (
+        <div className="rounded-xl border border-brand/30 bg-brand/[0.04] p-3">
+          <h3 className="mb-1.5 text-xs font-bold uppercase tracking-widest text-brand">
+            Monthly content · {monthly.length}
+          </h3>
+          <p className="mb-2 text-[13px] text-muted">
+            Personal-branding batches — 7–10 business days, delivered as a set. Not listing QC.
+          </p>
+          <div className="space-y-2">
+            {monthly.map((q) => <QcRow key={q.taskId} q={q} />)}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -467,6 +487,11 @@ function QcRow({ q }: { q: OpsQcRow }) {
     <div className="rounded-xl border border-border px-3.5 py-2.5">
       <div className="flex items-center gap-2">
         <Link href={`/projects/${q.projectId}`} className="min-w-0 flex-1 truncate text-sm font-semibold hover:text-brand">{q.title}</Link>
+        {q.videosOwed != null && (
+          <span className="shrink-0 rounded-full bg-brand/15 px-2 py-0.5 text-[10px] font-semibold text-brand" title="Videos this monthly session owes — the photographer's count, else the plan quota">
+            {q.videosOwed} video{q.videosOwed === 1 ? "" : "s"}
+          </span>
+        )}
         <span
           className="shrink-0 text-xs text-muted"
           title="Unticked boxes on this job's QC task — one per deliverable to check (photos, video, floor plan…). They tick themselves as each one goes live on Aryeo."

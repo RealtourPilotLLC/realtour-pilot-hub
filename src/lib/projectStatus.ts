@@ -377,6 +377,7 @@ type StatusProject = {
   addressLine: string | null;
   createdAt: Date;
   dropboxFolder: string | null;
+  packageName: string | null;
   revisionRequestedAt: Date | null;
   revisionNote: string | null;
   photographerId: string | null;
@@ -386,7 +387,7 @@ type StatusProject = {
   photoTarget: number | null;
   photographer: { name: string } | null;
   client: { name: string; socialClient: boolean };
-  deliverables: { id: string; type: string; label: string | null; status: string }[];
+  deliverables: { id: string; type: string; label: string | null; status: string; quantity?: number }[];
   appointments: { status: string | null; startAt: Date | null }[];
 };
 
@@ -528,6 +529,7 @@ export async function syncProjectStatuses(
       addressLine: true,
       createdAt: true,
       dropboxFolder: true,
+      packageName: true,
       revisionRequestedAt: true,
       revisionNote: true,
       photographerId: true,
@@ -535,7 +537,7 @@ export async function syncProjectStatuses(
       photoTarget: true,
       photographer: { select: { name: true } },
       client: { select: { name: true, socialClient: true } },
-      deliverables: { select: { id: true, type: true, label: true, status: true } },
+      deliverables: { select: { id: true, type: true, label: true, status: true, quantity: true } },
       appointments: { select: { status: true, startAt: true } },
     },
   })) as StatusProject[];
@@ -714,6 +716,23 @@ export async function syncProjectStatuses(
     // after the status flip; without this re-check the task would never be
     // created and the client would never hear from us (review HIGH).
     // dedupeKey-guarded inside, so re-calling hourly is a no-op once minted.
+    // Monthly plans owe a BATCH: Product.videoQuantity (Starter 2 / Accelerator
+    // 4 / Pro 8, set on /settings/products) only multiplies at Aryeo sync time,
+    // so rows created before a product was mapped sit at quantity 1 and the
+    // editor queue says "1 deliverable" for a 2-video session (Jordan, Sep 1 —
+    // 1033 Preserve Ln). Self-heal every pass; never lowers a count.
+    try {
+      const { isMonthlyContentJob, monthlyVideoQuota } = await import("@/lib/pipeline");
+      if (final !== "CANCELLED" && isMonthlyContentJob(p.deliverables, p.packageName)) {
+        const quota = monthlyVideoQuota([p.packageName, ...p.deliverables.map((d) => d.label)]);
+        for (const d of p.deliverables) {
+          if (d.type !== "VIDEO" && d.type !== "SOCIAL_REEL") continue;
+          if ((d.quantity ?? 1) >= quota) continue;
+          await prisma.deliverable.update({ where: { id: d.id }, data: { quantity: quota } }).catch(() => {});
+        }
+      }
+    } catch { /* best-effort */ }
+
     if (final === "DELIVERED") {
       try {
         const { createDeliveryTextTask } = await import("@/lib/tasks");

@@ -388,7 +388,13 @@ function specsForProject(p: {
         summary: monthly
           ? "Monthly personal-branding / social content (7–10 business-day turnaround). QC each piece as it lands, then produce + deliver this month's content. Auto-completes once everything is live and delivered."
           : "Content is coming in for this shoot. Quality-check each deliverable as it lands on Aryeo (verticals + horizontals, no odd edits/reflections/blemishes, staging + item removal done), then deliver the gallery via Aryeo + the branded email. Auto-completes once every category is live and the gallery is out.",
-        dueAt: pendingDues.length ? new Date(Math.min(...pendingDues)) : deliveryDueFrom(anchor, primary, dueOpts(primary)),
+        // The card is due when the JOB is due — the LATEST still-pending
+        // deliverable — not the earliest. Using the min made every shoot read
+        // "overdue" the morning after (photos are a 20h SLA) while the video
+        // still had a day to run, so Kyle's QC list cried wolf on jobs that
+        // were perfectly on time (Jordan, Sep 1: 208 N Adams, 2009 Garrison,
+        // 263 Towamensing). Per-item SLAs still drive the per-item chases.
+        dueAt: pendingDues.length ? new Date(Math.max(...pendingDues)) : deliveryDueFrom(anchor, primary, dueOpts(primary)),
         checklist: qcItems,
       });
     }

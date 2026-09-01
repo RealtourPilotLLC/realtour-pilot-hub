@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { findUnansweredInbound } from "@/lib/commsSla";
 import { TRIAGE_TYPES, boardVisibleWhere } from "@/lib/triage";
 import { cleanEmailBody } from "@/lib/commsBoard";
+import { isMonthlyContentJob, monthlyVideoQuota } from "@/lib/pipeline";
 import { NOTHING_TO_REMOVE_SENTINEL } from "@/lib/debrief";
 import type { StatusEvidence } from "@/lib/projectStatus";
 
@@ -159,6 +160,11 @@ export type OpsQcRow = {
   debrief: { shotOrder: string | null; removals: string | null; videoBrief: boolean; unsubmitted: boolean };
   /** items the photographer marked "couldn't complete" on the wrap-up, with why */
   notCompleted: { label: string; reason: string }[];
+  /** monthly personal-branding content — its own card, not the listing QC pile
+   *  (Jordan, Sep 1): different rhythm, different turnaround, batch delivery. */
+  monthly: boolean;
+  /** how many videos the batch owes (photographer's count, else the plan quota) */
+  videosOwed: number | null;
 };
 
 export type PipelineRow = {
@@ -341,6 +347,8 @@ export async function buildOpsDay(): Promise<OpsDay> {
               debriefSubmittedAt: true, statusEvidence: true, aryeoListingId: true,
               photographer: { select: { name: true } },
               deliverables: { select: { type: true, label: true, notCompletedReason: true } },
+              packageName: true,
+              videosFilmed: true,
               client: { select: { name: true } },
             },
           },
@@ -446,6 +454,10 @@ export async function buildOpsDay(): Promise<OpsDay> {
       },
       // The photographer's "couldn't complete + why" answers from the wrap-up —
       // the Admin reads the reason here instead of chasing a bare unchecked box.
+      monthly: isMonthlyContentJob(pr?.deliverables ?? [], pr?.packageName),
+      videosOwed: isMonthlyContentJob(pr?.deliverables ?? [], pr?.packageName)
+        ? pr?.videosFilmed ?? monthlyVideoQuota([pr?.packageName, ...(pr?.deliverables ?? []).map((d) => d.label)])
+        : null,
       notCompleted: (pr?.deliverables ?? [])
         .filter((d): d is typeof d & { notCompletedReason: string } => !!d.notCompletedReason)
         .map((d) => ({ label: d.label ?? d.type, reason: d.notCompletedReason })),
