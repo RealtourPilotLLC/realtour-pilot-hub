@@ -228,6 +228,69 @@ const TYPE_CATEGORY_LABEL: Record<string, string> = {
   MATTERPORT_3D: "3D tour", ZILLOW_3D: "3D tour",
 };
 
+// ---------------------------------------------------------------------------
+// When does a QC card actually become WORK? Two different dates, and conflating
+// them hid yesterday's shoots from the morning QC block (Jordan, Sep 1):
+//
+//  · the JOB's promise  = the LATEST pending deliverable (the media_qa dueAt).
+//    This is what "overdue" means — we blew the whole promise.
+//  · the WORK's arrival = the moment a category goes live on Aryeo, because the
+//    guided failure-mode checks for a category are only emitted once it lands.
+//
+// 208 N Adams (shot yesterday) had photos + floor plan live with six unticked
+// photo checks sitting there — real morning QC work — but its card was dated by
+// the VIDEO's 48h SLA, so it read "not due yet" and never surfaced.
+// ---------------------------------------------------------------------------
+
+/** Checklist rows that are Kyle's work RIGHT NOW: unticked, and the media they
+ *  check is already live. Auto-evidence rows ("QC Video") are the pipeline
+ *  waiting on media, not work — and the video-brief row can't be done until
+ *  there is a video to watch. */
+export function actionableQcCount(
+  items: { label: string; done?: boolean }[],
+  presentCategories: string[],
+): number {
+  const hasVideo = presentCategories.includes("Video");
+  return items.filter((i) => {
+    if (i.done) return false;
+    if (/^QC /.test(i.label)) return false; // auto-ticks when the category lands
+    if (i.label === QC_LABEL_VIDEO_BRIEF && !hasVideo) return false;
+    return true;
+  }).length;
+}
+
+/** The SOONEST still-undelivered deliverable and when it is promised — what the
+ *  job owes next, as distinct from when the whole job is late. */
+export function nextPendingDue(p: {
+  shootDate: Date | null;
+  deliverables: { type: string; label?: string | null }[];
+  statusEvidence?: string | null;
+  monthlyContent?: boolean;
+  turnarounds?: TurnaroundRules;
+}): { at: Date; categories: string[] } | null {
+  const anchor = p.shootDate ?? new Date();
+  const present = new Set(parseEvidence(p.statusEvidence)?.present ?? []);
+  const premiumTypes = new Set(p.deliverables.filter((d) => isPremiumLabel(d.label)).map((d) => d.type));
+  const pending = dedupeTypes(p.deliverables).filter((t) => {
+    const lbl = TYPE_CATEGORY_LABEL[t];
+    return !lbl || !present.has(lbl);
+  });
+  if (pending.length === 0) return null;
+  const dues = pending.map((t) => ({
+    category: TYPE_CATEGORY_LABEL[t] ?? labelFor(t),
+    at: deliveryDueFrom(anchor, t, {
+      monthlyContent: !!p.monthlyContent,
+      premium: premiumTypes.has(t),
+      rules: p.turnarounds,
+    }).getTime(),
+  }));
+  const soonest = Math.min(...dues.map((d) => d.at));
+  return {
+    at: new Date(soonest),
+    categories: [...new Set(dues.filter((d) => d.at === soonest).map((d) => d.category))],
+  };
+}
+
 // Decide the expected tasks for one project, based on its pipeline stage.
 function specsForProject(p: {
   status: string;

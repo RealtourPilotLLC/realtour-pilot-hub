@@ -6,6 +6,8 @@ import { cleanEmailBody } from "@/lib/commsBoard";
 import { isMonthlyContentJob, monthlyVideoQuota } from "@/lib/pipeline";
 import { cleanBrief, parseShootBrief } from "@/lib/shoot";
 import { NOTHING_TO_REMOVE_SENTINEL, isFieldFlag } from "@/lib/debrief";
+import { actionableQcCount, nextPendingDue } from "@/lib/tasks";
+import { turnaroundRules } from "@/lib/settings";
 import type { StatusEvidence } from "@/lib/projectStatus";
 
 // ---------------------------------------------------------------------------
@@ -174,7 +176,14 @@ export type OpsQcRow = {
   services: string[];
   aryeoListingId: string | null;
   itemsLeft: number;
+  /** of those, the ones Kyle can actually do now — the media is live (see
+   *  actionableQcCount). The rest are rows waiting on media to land. */
+  actionable: number;
+  /** the JOB's promise — the LATEST pending deliverable. Drives "overdue". */
   dueISO: string | null;
+  /** the next thing we OWE and when — what makes a card due today. */
+  nextDueISO: string | null;
+  nextDueCategories: string[];
   bucket: "overdue" | "today" | "waiting";
   evidence: QcEvidence;
   /** The photographer's upload-portal wrap-up, verbatim and untruncated — every
@@ -473,16 +482,41 @@ export async function buildOpsDay(): Promise<OpsDay> {
   ]);
 
   const todayKey = today.key;
+  const turnarounds = await turnaroundRules();
   const qc: OpsQcRow[] = qcTasks.filter((t) => t.projectId != null).map((t) => {
     let itemsLeft = 0;
-    try {
-      const items = t.checklist ? (JSON.parse(t.checklist) as { done?: boolean }[]) : [];
-      itemsLeft = items.filter((i) => !i.done).length;
-    } catch { itemsLeft = 0; }
+    let actionable = 0;
     const pr = t.project;
     const { qc: evidence } = parseEvidence(pr?.statusEvidence ?? null);
+    try {
+      const items = t.checklist ? (JSON.parse(t.checklist) as { label: string; done?: boolean }[]) : [];
+      itemsLeft = items.filter((i) => !i.done).length;
+      actionable = actionableQcCount(items, evidence.present);
+    } catch { itemsLeft = 0; actionable = 0; }
+    const monthly = isMonthlyContentJob(pr?.deliverables ?? [], pr?.packageName);
+    const next = pr
+      ? nextPendingDue({
+          shootDate: pr.shootDate,
+          deliverables: pr.deliverables ?? [],
+          statusEvidence: pr.statusEvidence,
+          monthlyContent: monthly,
+          turnarounds,
+        })
+      : null;
+    // "Overdue" is still the JOB's promise (t.dueAt = the LATEST pending item) —
+    // a shoot whose photos are out and whose reel has another day to run is NOT
+    // late (Jordan: 208 N Adams, 2009 Garrison, 263 Towamensing).
+    // "Due today" is when there is QC WORK to do: media already live with
+    // unticked checks, or the next thing we owe is promised today. Keying the
+    // bucket on t.dueAt alone hid every one of yesterday's shoots behind their
+    // video's SLA, which is exactly what Jordan hit ("Nothing due for QC today?
+    // That's not true").
     const bucket: OpsQcRow["bucket"] =
-      t.dueAt && t.dueAt < now ? "overdue" : t.dueAt && etDayKey(t.dueAt) === todayKey ? "today" : "waiting";
+      t.dueAt && t.dueAt < now
+        ? "overdue"
+        : actionable > 0 || (next && etDayKey(next.at) <= todayKey) || (t.dueAt && etDayKey(t.dueAt) === todayKey)
+          ? "today"
+          : "waiting";
     return {
       taskId: t.id,
       projectId: t.projectId!,
@@ -519,8 +553,11 @@ export async function buildOpsDay(): Promise<OpsDay> {
       },
       // The photographer's "couldn't complete + why" answers from the wrap-up —
       // the Admin reads the reason here instead of chasing a bare unchecked box.
-      monthly: isMonthlyContentJob(pr?.deliverables ?? [], pr?.packageName),
-      videosOwed: isMonthlyContentJob(pr?.deliverables ?? [], pr?.packageName)
+      monthly,
+      actionable,
+      nextDueISO: next?.at.toISOString() ?? null,
+      nextDueCategories: next?.categories ?? [],
+      videosOwed: monthly
         ? pr?.videosFilmed ?? monthlyVideoQuota([pr?.packageName, ...(pr?.deliverables ?? []).map((d) => d.label)])
         : null,
       notCompleted: (pr?.deliverables ?? [])

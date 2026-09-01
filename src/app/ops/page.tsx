@@ -35,6 +35,9 @@ const fmtTime = (iso: string) =>
   new Date(iso).toLocaleTimeString("en-US", { timeZone: ET, hour: "numeric", minute: "2-digit" });
 const fmtDay = (iso: string) =>
   new Date(iso).toLocaleDateString("en-US", { timeZone: ET, weekday: "short", month: "short", day: "numeric" });
+// "Tue 9:00 AM" — a turnaround promise needs the hour, not just the day.
+const fmtDayTime = (iso: string) =>
+  new Date(iso).toLocaleString("en-US", { timeZone: ET, weekday: "short", hour: "numeric", minute: "2-digit" });
 
 type BlockDef = { key: string; from: number; to: number; time: string; title: string; icon: LucideIcon; goal: string };
 const BLOCKS: BlockDef[] = [
@@ -602,11 +605,21 @@ function QcRow({ q, now }: { q: OpsQcRow; now?: Date }) {
             {q.videosOwed} video{q.videosOwed === 1 ? "" : "s"}
           </span>
         )}
+        {/* "Ready now" is the number that matters: checks whose media is
+            already live. The rest of itemsLeft is the card waiting on media,
+            not work — showing only the total made a job with photos live and
+            six checks waiting look identical to one where nothing had landed. */}
         <span
-          className="shrink-0 text-xs text-muted"
-          title="Unticked boxes on this job's QC task — one per deliverable to check (photos, video, floor plan…). They tick themselves as each one goes live on Aryeo."
+          className={cn("shrink-0 text-xs", q.actionable > 0 ? "font-semibold text-warning" : "text-muted")}
+          title={
+            q.actionable > 0
+              ? `${q.actionable} of ${q.itemsLeft} unticked boxes can be done right now — that media is live on Aryeo. The rest tick themselves as each remaining category lands.`
+              : "Unticked boxes on this job's QC task. They tick themselves as each deliverable goes live on Aryeo — nothing to check until then."
+          }
         >
-          {q.itemsLeft} check{q.itemsLeft === 1 ? "" : "s"} left
+          {q.actionable > 0
+            ? `${q.actionable} ready now`
+            : `${q.itemsLeft} check${q.itemsLeft === 1 ? "" : "s"} left`}
         </span>
         {q.aryeoListingId && (
           <a
@@ -636,6 +649,19 @@ function QcRow({ q, now }: { q: OpsQcRow; now?: Date }) {
           </>
         )}
       </div>
+      {/* The work that's available NOW, stated first. A part-delivered job used
+          to say only "Waiting on: Video", which read as "nothing to do here"
+          even though its photos were live with six checks sitting unticked —
+          that's the morning QC Jordan expected to see and didn't. */}
+      {q.actionable > 0 && q.evidence.present.length > 0 && (
+        <p className="mt-1.5 text-[13px]">
+          <span className="font-semibold text-brand">Ready to check now:</span>{" "}
+          <span className="text-foreground/85">
+            {q.evidence.present.join(", ")} {q.evidence.present.length === 1 ? "is" : "are"} live on Aryeo —{" "}
+            {q.actionable} check{q.actionable === 1 ? "" : "s"} waiting on you.
+          </span>
+        </p>
+      )}
       {/* WHY it's still open, in words — "missing: Floor plan" alone didn't say
           whether we're waiting on the editor, on Aryeo, or on nothing at all
           (Jordan, Sep 1: 195 Woodhill's floor plan was removed from the order). */}
@@ -644,8 +670,9 @@ function QcRow({ q, now }: { q: OpsQcRow; now?: Date }) {
           <>
             <span className="font-semibold text-warning">Waiting on:</span>{" "}
             <span className="text-foreground/85">
-              {q.evidence.missing.join(", ")} — not live on Aryeo yet. If it was removed from the order or already
-              handled, mark this complete.
+              {q.evidence.missing.join(", ")} — not live on Aryeo yet
+              {q.nextDueISO ? `, ${q.nextDueCategories.join(" + ").toLowerCase()} due ${fmtDayTime(q.nextDueISO)}` : ""}.
+              {" "}If it was removed from the order or already handled, mark this complete.
             </span>
           </>
         ) : q.itemsLeft > 0 ? (
