@@ -5,6 +5,7 @@ import { createCommTask, mergeIntoExistingTask, closeObsoleteTasks } from "@/lib
 import { routeCommTask } from "@/lib/brain";
 import type { NotifyTarget } from "@/lib/notify";
 import { clip } from "@/lib/text";
+import { REVISION_FLAG_PREFIX } from "@/lib/debrief";
 
 // ---------------------------------------------------------------------------
 // Communications cross-check for the smart-status engine.
@@ -363,7 +364,7 @@ export async function raiseRevision(opts: {
     data: {
       projectId: project.id,
       type: "FLAG",
-      body: `Revision requested (${opts.source}): ${note}`,
+      body: `${REVISION_FLAG_PREFIX}${opts.source}): ${note}`,
     },
   });
 

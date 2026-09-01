@@ -22,3 +22,22 @@ export const DEBRIEF_QC_LABELS = new Set([
 // the portal can filter its own echo out of the photographer's problem list
 // while the Admin timeline keeps the full row.
 export const NOT_COMPLETED_FLAG_PREFIX = "Not completed — ";
+
+// Activity type FLAG is a shared bucket: the field crew's own problem flags land
+// there, but so do machine-written client revision asks (whose body carries the
+// WHOLE email or call transcript) and scheduling events. Any surface showing
+// "what the photographer flagged" must filter those out — otherwise a client's
+// 1,300-character email renders as an on-site flag (live on 3 jobs, Sep 1).
+export const REVISION_FLAG_PREFIX = "Revision requested (";
+export const APPT_CANCELLED_FLAG_PREFIX = "Appointment cancelled";
+const MACHINE_FLAG_PREFIXES = [
+  NOT_COMPLETED_FLAG_PREFIX, // the wrap-up's own echo — shown as its own amber row
+  REVISION_FLAG_PREFIX,
+  APPT_CANCELLED_FLAG_PREFIX,
+];
+
+/** True when this FLAG row is a human field flag (upload portal / on-site / debrief). */
+export function isFieldFlag(body: string | null | undefined): boolean {
+  const b = body?.trim();
+  return !!b && !MACHINE_FLAG_PREFIXES.some((p) => b.startsWith(p));
+}

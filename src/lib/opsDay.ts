@@ -5,7 +5,7 @@ import { TRIAGE_TYPES, boardVisibleWhere } from "@/lib/triage";
 import { cleanEmailBody } from "@/lib/commsBoard";
 import { isMonthlyContentJob, monthlyVideoQuota } from "@/lib/pipeline";
 import { cleanBrief, parseShootBrief } from "@/lib/shoot";
-import { NOTHING_TO_REMOVE_SENTINEL } from "@/lib/debrief";
+import { NOTHING_TO_REMOVE_SENTINEL, isFieldFlag } from "@/lib/debrief";
 import type { StatusEvidence } from "@/lib/projectStatus";
 
 // ---------------------------------------------------------------------------
@@ -177,7 +177,25 @@ export type OpsQcRow = {
   dueISO: string | null;
   bucket: "overdue" | "today" | "waiting";
   evidence: QcEvidence;
-  debrief: { shotOrder: string | null; removals: string | null; videoBrief: boolean; unsubmitted: boolean };
+  /** The photographer's upload-portal wrap-up, verbatim and untruncated — every
+   *  field EXCEPT the video editing brief, which lives on /edit for the editor
+   *  (Jordan, Sep 1: "the notes from the upload portal, not video editing
+   *  notes, should be fully shown in each QC card"). */
+  debrief: {
+    shotOrder: string | null;
+    removals: string | null;
+    /** the photographer confirmed "nothing needs removal" (vs. never answered) */
+    nothingToRemove: boolean;
+    culled: boolean;
+    editorBrief: string | null;
+    /** "Flag a problem" entries from the wrap-up, newest first */
+    flags: string[];
+    /** per-deliverable notes typed on the wrap-up */
+    itemNotes: { label: string; note: string }[];
+    videosFilmed: number | null;
+    videoBrief: boolean;
+    unsubmitted: boolean;
+  };
   /** items the photographer marked "couldn't complete" on the wrap-up, with why */
   notCompleted: { label: string; reason: string }[];
   /** monthly personal-branding content — its own card, not the listing QC pile
@@ -371,9 +389,20 @@ export async function buildOpsDay(): Promise<OpsDay> {
               title: true, shootDate: true, shotOrderNotes: true, removalNotes: true, videoInstructions: true,
               debriefSubmittedAt: true, statusEvidence: true, aryeoListingId: true,
               photographer: { select: { name: true } },
-              deliverables: { select: { type: true, label: true, notCompletedReason: true } },
+              deliverables: { select: { type: true, label: true, notCompletedReason: true, notes: true } },
               packageName: true,
               videosFilmed: true,
+              // The rest of the photographer's wrap-up. Jordan (Sep 1): every
+              // upload-portal note except the video editing brief belongs on
+              // the QC card, in full — QC is where those notes get acted on.
+              editorBrief: true,
+              cullingConfirmedAt: true,
+              activities: {
+                where: { type: "FLAG" as const },
+                select: { body: true },
+                orderBy: { createdAt: "desc" as const },
+                take: 10,
+              },
               client: { select: { name: true } },
             },
           },
@@ -470,6 +499,17 @@ export async function buildOpsDay(): Promise<OpsDay> {
       debrief: {
         shotOrder: pr?.shotOrderNotes ?? null,
         removals: pr?.removalNotes && pr.removalNotes !== NOTHING_TO_REMOVE_SENTINEL ? pr.removalNotes : null,
+        nothingToRemove: pr?.removalNotes === NOTHING_TO_REMOVE_SENTINEL,
+        culled: !!pr?.cullingConfirmedAt,
+        editorBrief: pr?.editorBrief?.trim() || null,
+        // Human field flags only — FLAG also carries the wrap-up's own
+        // "Not completed" echo and machine-written client revision rows whose
+        // body is an entire email thread (see isFieldFlag).
+        flags: (pr?.activities ?? []).map((a) => a.body).filter(isFieldFlag),
+        itemNotes: (pr?.deliverables ?? [])
+          .filter((d): d is typeof d & { notes: string } => !!d.notes?.trim())
+          .map((d) => ({ label: d.label ?? d.type, note: d.notes.trim() })),
+        videosFilmed: pr?.videosFilmed ?? null,
         videoBrief: !!pr?.videoInstructions,
         // Same predicate as the QC card's line (photo-category jobs only) —
         // two surfaces must never disagree about the same shoot (review).

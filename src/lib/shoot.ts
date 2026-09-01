@@ -7,6 +7,7 @@ import { parseClientProfile, type ClientProfile } from "@/lib/clientProfile";
 import { segmentMeta, type SegmentMeta } from "@/lib/segments";
 import { phoneKey } from "@/lib/integrations/openphone";
 import { ActivityType, type DeliverableType, type DeliverableStatus } from "@prisma/client";
+import { isFieldFlag } from "@/lib/debrief";
 
 // Data layer for the guided photographer experience (/shoot). Assembles one
 // clean, serializable view model per shoot — appointment access brief, customer
@@ -261,7 +262,9 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
       uploadCount: d.uploads.length,
     })),
     specialRequests: p.activities.filter((a) => a.type === ActivityType.SPECIAL_REQUEST).map((a) => a.body),
-    flags: p.activities.filter((a) => a.type === ActivityType.FLAG).map((a) => a.body),
+    // Human field flags only — FLAG also carries machine-written client
+    // revision rows (whole email threads) and the wrap-up's own echo.
+    flags: p.activities.filter((a) => a.type === ActivityType.FLAG).map((a) => a.body).filter(isFieldFlag),
     photographer: p.photographer,
     zillowTourUrl: extractZillowUrl(primary?.description),
   };

@@ -3,6 +3,7 @@ import { format } from "date-fns";
 import { DELIVERABLE_META, DELIVERABLE_STATUS_META } from "@/lib/pipeline";
 import type { FullProject } from "@/lib/queries";
 import { ActivityType } from "@prisma/client";
+import { isFieldFlag } from "@/lib/debrief";
 
 // Standard PDF fonts use WinAnsi encoding and throw on characters they can't
 // represent (emoji, smart quotes from some keyboards, etc). Map the common ones
@@ -192,7 +193,9 @@ export async function buildEditorBriefPdf(project: FullProject): Promise<Uint8Ar
   }
 
   // ---- Flags ------------------------------------------------------------
-  const flags = project.activities.filter((a) => a.type === ActivityType.FLAG);
+  // Human field flags only — a machine-written client revision row would print
+  // an entire email thread under "Flagged issues" in the editor's brief.
+  const flags = project.activities.filter((a) => a.type === ActivityType.FLAG && isFieldFlag(a.body));
   if (flags.length) {
     heading("Flagged issues");
     for (const fl of flags)

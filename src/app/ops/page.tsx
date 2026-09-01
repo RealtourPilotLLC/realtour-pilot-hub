@@ -1,7 +1,8 @@
 import Link from "next/link";
 import {
-  AlertTriangle, ArrowRight, Camera, CheckCircle2, ClipboardCheck, Clock, CloudSun, Coffee,
-  ExternalLink, ListChecks, MessageSquare, Moon, Plane, RefreshCw, Route, Sunrise, Wrench,
+  AlarmClock, AlertTriangle, ArrowRight, Camera, CheckCircle2, ClipboardCheck, Clapperboard, Clock,
+  CloudSun, Coffee, ExternalLink, ListChecks, MessageSquare, Moon, Plane, RefreshCw, Route, Sunrise,
+  Wrench,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -38,14 +39,16 @@ const fmtDay = (iso: string) =>
 type BlockDef = { key: string; from: number; to: number; time: string; title: string; icon: LucideIcon; goal: string };
 const BLOCKS: BlockDef[] = [
   { key: "tower", from: 9 * 60, to: 9 * 60 + 30, time: "9:00 – 9:30", title: "Morning Control Tower", icon: Sunrise, goal: "Know what's happening today, what needs attention, and what could go wrong — before the day gets moving." },
-  { key: "qc-am", from: 9 * 60 + 30, to: 10 * 60 + 30, time: "9:30 – 10:30", title: "QC + Morning Deliveries", icon: ClipboardCheck, goal: "Catch mistakes before the client does; get finished work delivered early." },
+  { key: "qc-am", from: 9 * 60 + 30, to: 10 * 60 + 15, time: "9:30 – 10:15", title: "QC + Morning Deliveries", icon: ClipboardCheck, goal: "Catch mistakes before the client does; get finished work delivered early. Only what's due today lives here — the backlog has its own card." },
+  { key: "overdue", from: 10 * 60 + 15, to: 10 * 60 + 30, time: "10:15 – 10:30", title: "Overdue Check", icon: AlarmClock, goal: "Everything past its promised date gets a decision today: chase it, close it, or tell the client. Nothing sits late in silence." },
   { key: "comms-1", from: 10 * 60 + 30, to: 11 * 60, time: "10:30 – 11:00", title: "Client Communication Sweep #1", icon: MessageSquare, goal: "Nobody waits wondering if we got their message." },
   { key: "prep", from: 11 * 60, to: 11 * 60 + 30, time: "11:00 – 11:30", title: "Tomorrow + Upcoming Prep", icon: Route, goal: "Tomorrow is operationally ready before today ends — problems get solved the day before, not 30 minutes before the shoot." },
   { key: "loops", from: 11 * 60 + 30, to: 12 * 60, time: "11:30 – 12:00", title: "Open Loops + Follow-Ups", icon: RefreshCw, goal: "Nothing stays stuck because someone forgot to follow up. Ask: what am I waiting on that could become a problem?" },
   { key: "lunch", from: 12 * 60, to: 13 * 60, time: "12:00 – 1:00", title: "Lunch", icon: Coffee, goal: "Protected — unless there's a genuine operational or client emergency." },
   { key: "pipeline", from: 13 * 60, to: 14 * 60, time: "1:00 – 2:00", title: "Production Pipeline Check", icon: ListChecks, goal: "Know the status of every active project — and exactly what's holding each one up — before the client asks." },
   { key: "comms-2", from: 14 * 60, to: 14 * 60 + 30, time: "2:00 – 2:30", title: "Client Communication Sweep #2", icon: MessageSquare, goal: "Proactive, not reactive — if something changed, the client hears it from us first." },
-  { key: "systems", from: 14 * 60 + 30, to: 15 * 60 + 30, time: "2:30 – 3:30", title: "Systems + Admin Work", icon: Wrench, goal: "Keep the backend organized — without letting admin work interfere with active client needs." },
+  { key: "systems", from: 14 * 60 + 30, to: 15 * 60 + 10, time: "2:30 – 3:10", title: "Systems + Admin Work", icon: Wrench, goal: "Keep the backend organized — without letting admin work interfere with active client needs." },
+  { key: "monthly", from: 15 * 60 + 10, to: 15 * 60 + 30, time: "3:10 – 3:30", title: "Monthly Content Check", icon: Clapperboard, goal: "Personal-branding retainers run on their own rhythm — a batch of videos on a 7–10 business-day window, delivered as a set. Never mixed into listing QC." },
   { key: "final-prep", from: 15 * 60 + 30, to: 16 * 60 + 15, time: "3:30 – 4:15", title: "Next-Day Finalization", icon: Route, goal: "By the end of this block, tomorrow is locked in and ready to go." },
   { key: "qc-pm", from: 16 * 60 + 15, to: 17 * 60, time: "4:15 – 5:00", title: "Final QC + Deliveries", icon: ClipboardCheck, goal: "Finished work doesn't sit overnight — get it into clients' hands before end of day." },
   { key: "comms-3", from: 17 * 60, to: 17 * 60 + 30, time: "5:00 – 5:30", title: "Client Communication Sweep #3", icon: MessageSquare, goal: "Don't carry simple client questions into the next business day." },
@@ -70,10 +73,21 @@ export default async function OpsDayPage() {
       />
       <div className="mx-auto max-w-4xl space-y-4 p-4 pb-16 sm:p-6">
 
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {/* Five numbers, one per card below — "QC open" used to fold the
+            overdue backlog and the monthly batches into one figure, so the
+            headline never matched any list Kyle could open (Jordan, Sep 1). */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
           <Stat label="Shoots today" value={String(d.todayShoots.length)} warn={false} />
           <Stat label="Unanswered clients" value={String(d.unanswered.count)} warn={d.unanswered.count > 0} />
-          <Stat label="QC open" value={String(d.qc.length)} warn={d.qc.some((q) => q.bucket === "overdue")} />
+          <Stat label="QC due today" value={String(listingQc(d).filter((q) => q.bucket === "today").length)} warn={false} />
+          {/* Listing jobs only — the number must equal the list it links to.
+              Late monthly batches are counted on the Monthly Content card. */}
+          <Stat
+            label="Overdue"
+            value={String(listingQc(d).filter((q) => q.bucket === "overdue").length)}
+            warn={listingQc(d).some((q) => q.bucket === "overdue")}
+            href="#overdue"
+          />
           <Stat label="Tomorrow gaps" value={String(d.closeout.tomorrowGaps)} warn={d.closeout.tomorrowGaps > 0} />
         </div>
 
@@ -101,12 +115,18 @@ export default async function OpsDayPage() {
   );
 }
 
-function Stat({ label, value, warn }: { label: string; value: string; warn: boolean }) {
-  return (
-    <div className="panel-shadow rounded-2xl border bg-surface px-4 py-3">
+function Stat({ label, value, warn, href }: { label: string; value: string; warn: boolean; href?: string }) {
+  const body = (
+    <>
       <div className="text-[11px] font-medium text-muted">{label}</div>
       <div className={cn("mt-0.5 text-xl font-semibold tabular-nums", warn && "text-warning")}>{value}</div>
-    </div>
+    </>
+  );
+  const className = "panel-shadow block rounded-2xl border bg-surface px-4 py-3";
+  return href ? (
+    <a href={href} className={cn(className, "transition-colors hover:bg-surface-2/60")}>{body}</a>
+  ) : (
+    <div className={className}>{body}</div>
   );
 }
 
@@ -154,7 +174,13 @@ function BlockBody({ blockKey, d }: { blockKey: string; d: OpsDay }) {
 
     case "qc-am":
     case "qc-pm":
-      return <QcGroups qc={d.qc} />;
+      return <QcDueToday d={d} />;
+
+    case "overdue":
+      return <OverdueCard d={d} />;
+
+    case "monthly":
+      return <MonthlyCard d={d} />;
 
     case "comms-1":
     case "comms-2":
@@ -433,49 +459,104 @@ function ShootList({ shoots, empty, showGaps, showDebrief }: { shoots: OpsShoot[
 // QC — grouped Overdue · Due today · Waiting, with evidence and quick links.
 // ---------------------------------------------------------------------------
 
-function QcGroups({ qc: all }: { qc: OpsQcRow[] }) {
-  // Monthly personal-branding content runs on its own rhythm (a BATCH of videos
-  // on a 7-10 business-day window) — mixing it into the listing QC pile made
-  // Kyle's queue unreadable (Jordan, Sep 1). Separate card below.
-  const qc = all.filter((q) => !q.monthly);
-  const monthly = all.filter((q) => q.monthly);
-  if (qc.length === 0 && monthly.length === 0) return <p className="text-sm text-muted">Nothing waiting on QC right now.</p>;
-  const groups: { key: OpsQcRow["bucket"]; label: string; tone: string }[] = [
-    { key: "overdue", label: "Overdue", tone: "text-danger" },
-    { key: "today", label: "Due today", tone: "text-warning" },
-    { key: "waiting", label: "Waiting", tone: "text-muted-2" },
-  ];
+// Listing QC only. Monthly personal-branding content runs on its own rhythm (a
+// BATCH of videos on a 7-10 business-day window) and has its own card.
+const listingQc = (d: OpsDay) => d.qc.filter((q) => !q.monthly);
+
+// The 9:30 block is for TODAY's work. The backlog (overdue + not-yet-due) was
+// burying it: on Sep 1 the card held 8 stale rows and nothing actually due, so
+// Kyle couldn't tell what this hour was for (Jordan: "too clogged up with
+// overdue and waiting — that should be a separate card to check").
+function QcDueToday({ d }: { d: OpsDay }) {
+  const qc = listingQc(d);
+  const rows = qc.filter((q) => q.bucket === "today");
+  // Each number must match the card it links to — monthly rows are counted
+  // once, under monthly, even when they are also late.
+  const overdue = qc.filter((q) => q.bucket === "overdue").length;
+  const waiting = qc.filter((q) => q.bucket === "waiting").length;
+  const monthly = d.qc.filter((q) => q.monthly).length;
+  return (
+    <div className="space-y-3">
+      {rows.length === 0 ? (
+        <p className="flex items-center gap-1.5 text-sm text-success">
+          <CheckCircle2 className="size-4" /> Nothing due for QC today.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {/* All rows inline — the Other tab hides media_qa for non-editors,
+              so the old "All N →" link landed on an empty list (review). */}
+          {rows.map((q) => <QcRow key={q.taskId} q={q} />)}
+        </div>
+      )}
+      {(overdue > 0 || waiting > 0 || monthly > 0) && (
+        <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[13px] text-muted">
+          Not in this block:
+          {overdue > 0 && <a href="#overdue" className="font-semibold text-danger hover:underline">{overdue} overdue →</a>}
+          {waiting > 0 && <a href="#overdue" className="hover:underline">{waiting} not due yet →</a>}
+          {monthly > 0 && <a href="#monthly" className="font-semibold text-brand hover:underline">{monthly} monthly content →</a>}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// Everything past its promised date, oldest first, plus what is not due yet.
+// Monthly batches are deliberately absent — they have their own card and their
+// own turnaround (Jordan: monthly content shouldn't sit in the QC pile).
+function OverdueCard({ d }: { d: OpsDay }) {
+  const now = new Date(d.nowISO);
+  const qc = listingQc(d);
+  const byDueAsc = (a: OpsQcRow, b: OpsQcRow) =>
+    (a.dueISO ? Date.parse(a.dueISO) : Infinity) - (b.dueISO ? Date.parse(b.dueISO) : Infinity);
+  const overdue = qc.filter((q) => q.bucket === "overdue").sort(byDueAsc);
+  const waiting = qc.filter((q) => q.bucket === "waiting").sort(byDueAsc);
+  const monthlyLate = d.qc.filter((q) => q.monthly && q.bucket === "overdue").length;
   return (
     <div className="space-y-4">
-      {groups.map((g) => {
-        const rows = qc.filter((q) => q.bucket === g.key);
-        if (rows.length === 0) return null;
-        return (
-          <div key={g.key}>
-            <h3 className={cn("mb-1.5 text-xs font-bold uppercase tracking-widest", g.tone)}>{g.label} · {rows.length}</h3>
-            <div className="space-y-2">
-              {/* All rows inline — the Other tab hides media_qa for non-editors,
-                  so the old "All N →" link landed on an empty list (review). */}
-              {rows.map((q) => <QcRow key={q.taskId} q={q} />)}
-            </div>
-          </div>
-        );
-      })}
-      {qc.length === 0 && <p className="text-sm text-muted">Nothing waiting on listing QC right now.</p>}
-
-      {monthly.length > 0 && (
-        <div className="rounded-xl border border-brand/30 bg-brand/[0.04] p-3">
-          <h3 className="mb-1.5 text-xs font-bold uppercase tracking-widest text-brand">
-            Monthly content · {monthly.length}
-          </h3>
-          <p className="mb-2 text-[13px] text-muted">
-            Personal-branding batches — 7–10 business days, delivered as a set. Not listing QC.
-          </p>
+      {overdue.length === 0 ? (
+        <p className="flex items-center gap-1.5 text-sm text-success">
+          <CheckCircle2 className="size-4" /> Nothing is past its promised date.
+        </p>
+      ) : (
+        <div>
+          <h3 className="mb-1.5 text-xs font-bold uppercase tracking-widest text-danger">Overdue · {overdue.length}</h3>
           <div className="space-y-2">
-            {monthly.map((q) => <QcRow key={q.taskId} q={q} />)}
+            {overdue.map((q) => <QcRow key={q.taskId} q={q} now={now} />)}
           </div>
         </div>
       )}
+      {waiting.length > 0 && (
+        <div>
+          <h3 className="mb-1.5 text-xs font-bold uppercase tracking-widest text-muted-2">Not due yet · {waiting.length}</h3>
+          <p className="mb-2 text-[13px] text-muted">Nothing to do today — listed so none of it creeps up on you.</p>
+          <div className="space-y-2">
+            {waiting.map((q) => <QcRow key={q.taskId} q={q} now={now} />)}
+          </div>
+        </div>
+      )}
+      {monthlyLate > 0 && (
+        <p className="text-[13px] text-muted">
+          {monthlyLate} monthly content batch{monthlyLate === 1 ? " is" : "es are"} also past due —{" "}
+          <a href="#monthly" className="font-semibold text-brand hover:underline">Monthly Content Check →</a>
+        </p>
+      )}
+    </div>
+  );
+}
+
+function MonthlyCard({ d }: { d: OpsDay }) {
+  const now = new Date(d.nowISO);
+  const monthly = d.qc.filter((q) => q.monthly);
+  if (monthly.length === 0) {
+    return (
+      <p className="flex items-center gap-1.5 text-sm text-success">
+        <CheckCircle2 className="size-4" /> No monthly batches open right now.
+      </p>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      {monthly.map((q) => <QcRow key={q.taskId} q={q} now={now} />)}
     </div>
   );
 }
@@ -500,12 +581,22 @@ function DropboxChip({ label, n }: { label: string; n: number }) {
   );
 }
 
-function QcRow({ q }: { q: OpsQcRow }) {
+function QcRow({ q, now }: { q: OpsQcRow; now?: Date }) {
   const db = q.evidence.dropbox;
+  // How late, in plain days — "due Aug 21" makes Kyle do the subtraction.
+  const lateDays =
+    now && q.dueISO && Date.parse(q.dueISO) < now.getTime()
+      ? Math.floor((now.getTime() - Date.parse(q.dueISO)) / 86_400_000)
+      : null;
   return (
     <div className="rounded-xl border border-border px-3.5 py-2.5">
       <div className="flex items-center gap-2">
         <Link href={`/projects/${q.projectId}`} className="min-w-0 flex-1 truncate text-sm font-semibold hover:text-brand">{q.title}</Link>
+        {lateDays != null && (
+          <span className="shrink-0 rounded-full bg-danger/15 px-2 py-0.5 text-[10px] font-semibold text-danger">
+            {lateDays === 0 ? "late today" : `${lateDays} day${lateDays === 1 ? "" : "s"} late`}
+          </span>
+        )}
         {q.videosOwed != null && (
           <span className="shrink-0 rounded-full bg-brand/15 px-2 py-0.5 text-[10px] font-semibold text-brand" title="Videos this monthly session owes — the photographer's count, else the plan quota">
             {q.videosOwed} video{q.videosOwed === 1 ? "" : "s"}
@@ -569,18 +660,59 @@ function QcRow({ q }: { q: OpsQcRow }) {
       <div className="mt-1.5 flex flex-wrap items-center gap-2">
         <QcComplete taskId={q.taskId} waitingOn={q.evidence.missing} />
       </div>
-      {(q.debrief.removals || q.debrief.unsubmitted || q.notCompleted.length > 0) && (
-        <div className="mt-1.5 space-y-0.5 text-[13px]">
-          {q.debrief.unsubmitted && <p className="font-medium text-danger">Upload page never submitted — treat the gallery as unculled.</p>}
-          {q.notCompleted.map((nc, i) => (
-            <p key={i} className="font-medium text-warning">
-              Couldn&rsquo;t complete {nc.label}: <span className="font-normal text-foreground/80">{nc.reason.slice(0, 160)}</span>
-            </p>
-          ))}
-          {q.debrief.removals && <p className="text-foreground/80"><span className="font-semibold">Remove in editing:</span> {q.debrief.removals.slice(0, 140)}</p>}
-        </div>
-      )}
+      <ShootNotes q={q} />
     </div>
+  );
+}
+
+// Everything the photographer wrote on the upload portal, verbatim and in full
+// — except the video editing brief, which belongs to the editor on /edit
+// (Jordan, Sep 1). These notes were previously either missing (shot order,
+// flags, per-item notes, "anything else for the editor") or clipped mid-sentence
+// at 140 characters, which is where the useful half usually was.
+function ShootNotes({ q }: { q: OpsQcRow }) {
+  const b = q.debrief;
+  const has =
+    b.unsubmitted || q.notCompleted.length > 0 || b.flags.length > 0 || !!b.removals ||
+    b.nothingToRemove || !!b.shotOrder || !!b.editorBrief || b.itemNotes.length > 0 ||
+    b.culled || b.videosFilmed != null;
+  if (!has) return null;
+  return (
+    <div className="mt-2 rounded-lg bg-surface-2/60 px-3 py-2">
+      <h4 className="text-[10px] font-bold uppercase tracking-widest text-muted-2">From the shoot</h4>
+      <div className="mt-1 space-y-1 text-[13px]">
+        {b.unsubmitted && (
+          <p className="font-medium text-danger">Upload page never submitted — treat the gallery as unculled.</p>
+        )}
+        {q.notCompleted.map((nc, i) => (
+          <p key={i} className="font-medium text-warning">
+            Couldn&rsquo;t complete {nc.label}: <span className="font-normal text-foreground/80">{nc.reason}</span>
+          </p>
+        ))}
+        {b.flags.map((f, i) => (
+          <p key={i} className="font-medium text-danger">Flagged: <span className="font-normal text-foreground/80">{f}</span></p>
+        ))}
+        {b.shotOrder && <NoteLine label="Shot order" body={b.shotOrder} />}
+        {b.removals && <NoteLine label="Remove in editing" body={b.removals} />}
+        {b.editorBrief && <NoteLine label="Anything else" body={b.editorBrief} />}
+        {b.itemNotes.map((n, i) => <NoteLine key={i} label={n.label} body={n.note} />)}
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5 pt-0.5 text-muted">
+          {b.videosFilmed != null && <span>{b.videosFilmed} video{b.videosFilmed === 1 ? "" : "s"} filmed</span>}
+          {b.culled && <span className="text-success">Culled to standard ✓</span>}
+          {b.nothingToRemove && !b.removals && <span>Nothing to remove ✓</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// whitespace-pre-wrap: multi-line wrap-up notes keep the photographer's line
+// breaks instead of collapsing into one run-on paragraph.
+function NoteLine({ label, body }: { label: string; body: string }) {
+  return (
+    <p className="whitespace-pre-wrap text-foreground/80">
+      <span className="font-semibold text-foreground/90">{label}:</span> {body}
+    </p>
   );
 }
 

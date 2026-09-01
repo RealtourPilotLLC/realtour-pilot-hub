@@ -17,7 +17,7 @@ import { AppointmentFeedback } from "@/components/upload/AppointmentFeedback";
 import { getProjectFolderState } from "@/lib/dropboxFolders";
 import { photoPolicyFor, rawBudgetFor, rawOverageCeiling } from "@/lib/culling";
 import { ActivityType } from "@prisma/client";
-import { NOT_COMPLETED_FLAG_PREFIX } from "@/lib/debrief";
+import { isFieldFlag } from "@/lib/debrief";
 import { videoStepSpec, isMonthlyContentJob } from "@/lib/pipeline";
 import { videoTier } from "@/lib/projectStatus";
 
@@ -161,10 +161,11 @@ export default async function UploadProjectPage({
           .filter((a) => a.type === ActivityType.SPECIAL_REQUEST)
           .map((a) => a.body)}
         flags={project.activities
-          // The machine-written "Not completed — …" rows are the wrap-up's own
-          // echo — the amber row already shows them; repeating them as red
-          // "problems" reads as a duplicate escalation (review).
-          .filter((a) => a.type === ActivityType.FLAG && !a.body.startsWith(NOT_COMPLETED_FLAG_PREFIX))
+          // Human field flags only. FLAG is a shared bucket: it also holds the
+          // wrap-up's own "Not completed — …" echo (already shown as its own
+          // amber row) and machine-written client revision rows whose body is a
+          // whole email thread — neither is a problem the photographer raised.
+          .filter((a) => a.type === ActivityType.FLAG && isFieldFlag(a.body))
           .map((a) => a.body)}
       />
 
