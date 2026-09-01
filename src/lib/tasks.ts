@@ -8,6 +8,7 @@ import { etDayStartUtc } from "@/lib/datetime";
 import { slugForName } from "@/lib/assignees";
 import { BRACKET_RATIO, photoTargetFor } from "@/lib/culling";
 import { isMonthlyContentJob } from "@/lib/pipeline";
+import type { TurnaroundRules } from "@/lib/settings";
 import { clip } from "@/lib/text";
 
 // ---------------------------------------------------------------------------
@@ -62,13 +63,29 @@ export function addBusinessDays(from: Date, days: number): Date {
 type DueOpts = { monthlyContent?: boolean; premium?: boolean };
 
 // Turnaround due for one deliverable from an anchor date.
-export function deliveryDueFrom(anchor: Date, deliverableType?: string | null, opts: DueOpts = {}): Date {
+// The promise table is EDITABLE (Settings → Turnaround promises). Callers that
+// already have the rules pass them in; everything else keeps the built-in
+// defaults, so this stays a pure sync function used across client + server.
+export function deliveryDueFrom(
+  anchor: Date,
+  deliverableType?: string | null,
+  opts: DueOpts & { rules?: TurnaroundRules } = {},
+): Date {
+  const r = opts.rules;
   if (deliverableType && REEL_VIDEO_TYPES.has(deliverableType)) {
-    if (opts.premium) return new Date(anchor.getTime() + PREMIUM_HOURS * HOUR); // premium wins over monthly
-    if (opts.monthlyContent) return addBusinessDays(anchor, 10); // 7-10 business days
-    return new Date(anchor.getTime() + STANDARD_REEL_HOURS * HOUR);
+    if (opts.premium) return new Date(anchor.getTime() + (r?.premiumVideoHours ?? PREMIUM_HOURS) * HOUR);
+    if (opts.monthlyContent) return addBusinessDays(anchor, r?.monthlyBusinessDays ?? 10);
+    return new Date(anchor.getTime() + (r?.standardVideoHours ?? STANDARD_REEL_HOURS) * HOUR);
   }
-  const h = (deliverableType && TURNAROUND_HOURS[deliverableType]) || 48;
+  const table: Record<string, number> = r
+    ? {
+        PHOTOS: r.photos, DRONE: r.drone, TWILIGHT: r.twilight,
+        FLOORPLAN: r.floorPlan, MATTERPORT_3D: r.tour3d, ZILLOW_3D: r.tour3d,
+        HEADSHOT: r.headshot, VIRTUAL_STAGING: r.virtualStaging,
+        SOCIAL_REEL: r.standardVideoHours, VIDEO: r.standardVideoHours, OTHER: r.otherHours,
+      }
+    : TURNAROUND_HOURS;
+  const h = (deliverableType && table[deliverableType]) || (r?.otherHours ?? 48);
   return new Date(anchor.getTime() + h * HOUR);
 }
 
@@ -231,6 +248,8 @@ function specsForProject(p: {
   shotOrderNotes?: string | null;
   debriefSubmittedAt?: Date | null;
   videoInstructions?: string | null;
+  /** editable promise table (Settings → Turnaround promises) */
+  turnarounds?: TurnaroundRules;
 }): TaskSpec[] {
   const specs: TaskSpec[] = [];
   const shoot = p.shootDate;
@@ -238,7 +257,7 @@ function specsForProject(p: {
   const monthly = !!p.monthlyContent;
   // Which deliverable types are premium (3-4 day reel/video) on this project.
   const premiumTypes = new Set(p.deliverables.filter((d) => isPremiumLabel(d.label)).map((d) => d.type));
-  const dueOpts = (type: string) => ({ monthlyContent: monthly, premium: premiumTypes.has(type) });
+  const dueOpts = (type: string) => ({ monthlyContent: monthly, premium: premiumTypes.has(type), rules: p.turnarounds });
 
   // What's already live on Aryeo (from the status cross-check). Used to retire
   // QA / "deliver gallery" work for a category the moment it's delivered — even
@@ -2038,7 +2057,9 @@ async function syncOneProjectTasks(
   // on reopen, and on a due-date drift, always from the same current fields.
   const draftConfirmation = () =>
     confirmationMessage({ title: p.title, shootDate: p.shootDate, client: { name: p.client.name ?? "" }, photographer: p.photographer, deliverables: p.deliverables });
+  const { turnaroundRules } = await import("@/lib/settings");
   const specs = specsForProject({
+    turnarounds: await turnaroundRules(),
     status: p.status,
     title: p.title,
     shootDate: p.shootDate,

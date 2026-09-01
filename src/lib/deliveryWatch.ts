@@ -30,7 +30,7 @@ const HOUR = 3_600_000;
 // The next day has had its chance once this many hours have passed since the
 // shoot. TURNAROUND_HOURS.PHOTOS is 20 ("next morning"); this sits past it so a
 // late-afternoon shoot is not chased before lunch the following day.
-const PHOTOS_LATE_AFTER_MS = 26 * HOUR;
+const PHOTOS_LATE_AFTER_MS_DEFAULT = 26 * HOUR; // overridden by Settings → Internal alerts
 // Never look further back than this — the backfill guard.
 const LOOKBACK_DAYS = 6;
 // Late-afternoon ET window: enough of the day gone to call it a miss, early
@@ -56,6 +56,14 @@ function isContentSession(titles: string[]): boolean {
 
 export async function sweepUndeliveredPhotos(opts?: { dryRun?: boolean }): Promise<DeliveryWatchResult> {
   const dryRun = !!opts?.dryRun;
+  const { internalAlertRules } = await import("@/lib/settings");
+  const rules = (await internalAlertRules()).photosUndelivered;
+  if (!dryRun && !rules.enabled) {
+    return { checked: 0, late: 0, alerted: 0, skippedOutsideWindow: true, texted: [] };
+  }
+  const PHOTOS_LATE_AFTER_MS = rules.lateAfterHours * HOUR;
+  const ALERT_HOUR_FROM = rules.fromHour;
+  const ALERT_HOUR_TO = rules.toHour;
   const hour = etHour();
   // Outside the window we do nothing at all — not even a bell — so the alert
   // lands at a predictable time rather than whenever a cron happened to run.

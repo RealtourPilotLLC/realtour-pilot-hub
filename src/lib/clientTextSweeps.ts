@@ -135,6 +135,8 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
   const { phoneKey, OpenPhone, from } = await openPhone();
   if (!from) return { sent: 0, skipped: projects.length, notes: ["OpenPhone not connected"] };
   const { confirmationMessage } = await import("@/lib/delivery");
+  const { textTemplates } = await import("@/lib/settings");
+  const tpl = await textTemplates();
 
   let sent = 0, skipped = 0;
   for (const p of projects) {
@@ -173,7 +175,7 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
     const body = confirmationMessage({
       title: p.title, shootDate: p.shootDate,
       client: { name: p.client.name }, photographer: p.photographer, deliverables: p.deliverables,
-    });
+    }, tpl.confirmation);
     try {
       const res = await OpenPhone.sendMessage(from, `+1${k}`, body);
       sent++;
@@ -240,6 +242,8 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
   const { phoneKey, OpenPhone, from } = await openPhone();
   if (!from) return { sent: 0, skipped: tasks.length, notes: ["OpenPhone not connected"] };
   const { deliveryMessage } = await import("@/lib/delivery");
+  const { textTemplates } = await import("@/lib/settings");
+  const tpl = await textTemplates();
 
   let sent = 0, skipped = 0;
   for (const t of tasks) {
@@ -286,7 +290,7 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
     try {
       await prisma.appSetting.create({ data: { key: marker, value: new Date().toISOString() } });
     } catch { skipped++; continue; } // already auto-texted for this project — task completion stands
-    const body = deliveryMessage(project);
+    const body = deliveryMessage(project, tpl);
     try {
       const res = await OpenPhone.sendMessage(from, `+1${k}`, body);
       sent++;

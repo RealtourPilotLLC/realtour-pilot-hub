@@ -1,14 +1,15 @@
 import { requirePageAccess } from "@/lib/auth/guards";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { SlidersHorizontal, Route, Package, ArrowRight , MessageSquareText } from "lucide-react";
+import { SlidersHorizontal, Route, Package, ArrowRight , MessageSquareText, Clock, BellRing } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { RoutingRulesForm } from "@/components/settings/RoutingRulesForm";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
-import { editorRouting, autoTextRules } from "@/lib/settings";
+import { editorRouting, autoTextRules, turnaroundRules, internalAlertRules, textTemplates } from "@/lib/settings";
 import { AutoTextSettings } from "@/components/settings/AutoTextSettings";
+import { TurnaroundSettings, InternalAlertSettings, TextTemplateSettings } from "@/components/settings/OperatingRules";
 
 export const dynamic = "force-dynamic";
 
@@ -22,7 +23,9 @@ export default async function SettingsPage() {
   if (!me && authEnforced()) redirect("/login?next=/settings");
   if (me && me.role !== "OWNER" && me.role !== "ADMIN") redirect("/");
 
-  const [rules, textRules] = await Promise.all([editorRouting(), autoTextRules()]);
+  const [rules, textRules, turns, alerts, templates] = await Promise.all([
+    editorRouting(), autoTextRules(), turnaroundRules(), internalAlertRules(), textTemplates(),
+  ]);
 
   return (
     <div>
@@ -47,6 +50,18 @@ export default async function SettingsPage() {
             Changes take effect on the next hourly run.
           </p>
           <AutoTextSettings initial={textRules} />
+        </Section>
+
+        <Section icon={MessageSquareText} title="Text wording">
+          <TextTemplateSettings initial={templates} />
+        </Section>
+
+        <Section icon={Clock} title="Turnaround promises">
+          <TurnaroundSettings initial={turns} />
+        </Section>
+
+        <Section icon={BellRing} title="Internal alerts">
+          <InternalAlertSettings initial={alerts} />
         </Section>
 
         <Section icon={Package} title="Product categories">

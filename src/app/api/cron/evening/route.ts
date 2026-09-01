@@ -25,7 +25,9 @@ export async function GET(req: NextRequest) {
   const etHour = Number(
     new Date().toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }),
   );
-  if (etHour === 19) {
+  const { internalAlertRules } = await import("@/lib/settings");
+  const alerts = await internalAlertRules();
+  if (alerts.uploadReminder.enabled && etHour === alerts.uploadReminder.hour) {
     const digests = await sendEveningUploadDigests().catch((e) => ({
       sent: 0, skipped: 0, notes: [e instanceof Error ? e.message : "digest failed"],
     }));
@@ -34,12 +36,12 @@ export async function GET(req: NextRequest) {
     const totalFailure = digests.sent === 0 && digests.notes.length > 0 && digests.notes[0] !== "no shoots today";
     return NextResponse.json({ digests }, { status: totalFailure ? 500 : 200 });
   }
-  if (etHour === 22) {
+  if (alerts.uploadChaser.enabled && etHour === alerts.uploadChaser.hour) {
     const nags = await sendNightlyUploadNags().catch((e) => ({
       sent: 0, skipped: 0, notes: [e instanceof Error ? e.message : "nag failed"],
     }));
     const totalFailure = nags.sent === 0 && nags.notes.length > 0 && nags.notes[0] !== "nothing unsubmitted today";
     return NextResponse.json({ nags }, { status: totalFailure ? 500 : 200 });
   }
-  return NextResponse.json({ skipped: true, reason: `ET hour is ${etHour}, not 19 or 22` });
+  return NextResponse.json({ skipped: true, reason: `ET hour is ${etHour}; reminder at ${alerts.uploadReminder.hour}, chaser at ${alerts.uploadChaser.hour} (Settings → Internal alerts)` });
 }

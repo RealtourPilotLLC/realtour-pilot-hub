@@ -3,7 +3,12 @@
 import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/auth/user";
 import { requireAdmin } from "@/lib/auth/guards";
-import { editorRouting, putSetting, ROUTABLE_EDITORS, autoTextRules, DEFAULT_AUTO_TEXTS, type EditorRoutingRules, type AutoTextRules } from "@/lib/settings";
+import {
+  editorRouting, putSetting, ROUTABLE_EDITORS, autoTextRules, DEFAULT_AUTO_TEXTS,
+  turnaroundRules, internalAlertRules, textTemplates,
+  type EditorRoutingRules, type AutoTextRules, type TurnaroundRules,
+  type InternalAlertRules, type TextTemplates,
+} from "@/lib/settings";
 import type { EditorKey } from "@/lib/editors";
 
 // Settings writes: owner or admin (Kyle) — requireAdmin is the house guard
@@ -78,4 +83,52 @@ export async function saveAutoTextRules(input: AutoTextRules): Promise<{ ok: boo
 export async function loadAutoTextRules(): Promise<AutoTextRules> {
   await requireSettingsActor();
   return autoTextRules();
+}
+
+// ---- Turnaround promises ---------------------------------------------------
+export async function saveTurnarounds(input: TurnaroundRules): Promise<{ ok: boolean; message: string }> {
+  try {
+    const me = await requireSettingsActor();
+    await putSetting("turnarounds", input, me?.email ?? null);
+    revalidatePath("/settings");
+    return { ok: true, message: "Saved — new work uses these promises; existing due dates re-sync on the next hourly run." };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Failed." };
+  }
+}
+export async function loadTurnarounds(): Promise<TurnaroundRules> {
+  await requireSettingsActor();
+  return turnaroundRules();
+}
+
+// ---- Internal alerts -------------------------------------------------------
+export async function saveInternalAlerts(input: InternalAlertRules): Promise<{ ok: boolean; message: string }> {
+  try {
+    const me = await requireSettingsActor();
+    await putSetting("internal_alerts", input, me?.email ?? null);
+    revalidatePath("/settings");
+    return { ok: true, message: "Saved — the next run follows these rules." };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Failed." };
+  }
+}
+export async function loadInternalAlerts(): Promise<InternalAlertRules> {
+  await requireSettingsActor();
+  return internalAlertRules();
+}
+
+// ---- Client text wording ---------------------------------------------------
+export async function saveTextTemplates(input: TextTemplates): Promise<{ ok: boolean; message: string }> {
+  try {
+    const me = await requireSettingsActor();
+    await putSetting("text_templates", input, me?.email ?? null);
+    revalidatePath("/settings");
+    return { ok: true, message: "Saved — the next automated text uses this wording." };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Failed." };
+  }
+}
+export async function loadTextTemplates(): Promise<TextTemplates> {
+  await requireSettingsActor();
+  return textTemplates();
 }

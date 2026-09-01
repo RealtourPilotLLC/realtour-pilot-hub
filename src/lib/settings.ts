@@ -151,3 +151,122 @@ export async function autoTextRules(): Promise<AutoTextRules> {
     onePerClientPerRun: r.onePerClientPerRun !== false,
   };
 }
+
+// ---------------------------------------------------------------------------
+// TURNAROUND PROMISES + INTERNAL ALERTS + TEXT TEMPLATES (Jordan, Sep 1 2026:
+// "I want settings for turnaround promises, alert thresholds, anything
+// currently hard coded"). Each group reads through getSetting with the old
+// hard-coded values as defaults, so nothing changes until Jordan edits it —
+// and a corrupt row falls back rather than breaking delivery promises.
+// ---------------------------------------------------------------------------
+
+export type TurnaroundRules = {
+  /** hours from the shoot, per deliverable category */
+  photos: number;
+  drone: number;
+  twilight: number;
+  floorPlan: number;
+  tour3d: number;
+  headshot: number;
+  virtualStaging: number;
+  /** reels/video tiers */
+  standardVideoHours: number;
+  premiumVideoHours: number;
+  /** monthly content is measured in BUSINESS days, not hours */
+  monthlyBusinessDays: number;
+  /** everything unmapped */
+  otherHours: number;
+};
+
+export const DEFAULT_TURNAROUNDS: TurnaroundRules = {
+  photos: 20, // next morning
+  drone: 20,
+  twilight: 20,
+  floorPlan: 36,
+  tour3d: 36,
+  headshot: 24,
+  virtualStaging: 48,
+  standardVideoHours: 48,
+  premiumVideoHours: 72,
+  monthlyBusinessDays: 10,
+  otherHours: 48,
+};
+
+export async function turnaroundRules(): Promise<TurnaroundRules> {
+  const r = await getSetting<TurnaroundRules>("turnarounds", DEFAULT_TURNAROUNDS);
+  const num = (v: unknown, fallback: number, max: number) =>
+    typeof v === "number" && Number.isFinite(v) && v > 0 && v <= max ? v : fallback;
+  return {
+    photos: num(r.photos, DEFAULT_TURNAROUNDS.photos, 720),
+    drone: num(r.drone, DEFAULT_TURNAROUNDS.drone, 720),
+    twilight: num(r.twilight, DEFAULT_TURNAROUNDS.twilight, 720),
+    floorPlan: num(r.floorPlan, DEFAULT_TURNAROUNDS.floorPlan, 720),
+    tour3d: num(r.tour3d, DEFAULT_TURNAROUNDS.tour3d, 720),
+    headshot: num(r.headshot, DEFAULT_TURNAROUNDS.headshot, 720),
+    virtualStaging: num(r.virtualStaging, DEFAULT_TURNAROUNDS.virtualStaging, 720),
+    standardVideoHours: num(r.standardVideoHours, DEFAULT_TURNAROUNDS.standardVideoHours, 720),
+    premiumVideoHours: num(r.premiumVideoHours, DEFAULT_TURNAROUNDS.premiumVideoHours, 720),
+    monthlyBusinessDays: num(r.monthlyBusinessDays, DEFAULT_TURNAROUNDS.monthlyBusinessDays, 60),
+    otherHours: num(r.otherHours, DEFAULT_TURNAROUNDS.otherHours, 720),
+  };
+}
+
+export type InternalAlertRules = {
+  uploadReminder: { enabled: boolean; hour: number };   // "did you submit the upload page?"
+  uploadChaser: { enabled: boolean; hour: number };     // second nudge, later that night
+  photosUndelivered: {
+    enabled: boolean;
+    fromHour: number;
+    toHour: number;
+    /** how long after the shoot photos count as late */
+    lateAfterHours: number;
+  };
+  rawVideoMissing: { enabled: boolean };
+  kyleDigests: { enabled: boolean };
+};
+
+export const DEFAULT_INTERNAL_ALERTS: InternalAlertRules = {
+  uploadReminder: { enabled: true, hour: 19 },
+  uploadChaser: { enabled: true, hour: 22 },
+  photosUndelivered: { enabled: true, fromHour: 16, toHour: 19, lateAfterHours: 26 },
+  rawVideoMissing: { enabled: true },
+  kyleDigests: { enabled: true },
+};
+
+export async function internalAlertRules(): Promise<InternalAlertRules> {
+  const r = await getSetting<InternalAlertRules>("internal_alerts", DEFAULT_INTERNAL_ALERTS);
+  const hr = (v: unknown, fallback: number) =>
+    typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 23 ? v : fallback;
+  const d = DEFAULT_INTERNAL_ALERTS;
+  const from = hr(r.photosUndelivered?.fromHour, d.photosUndelivered.fromHour);
+  const to = hr(r.photosUndelivered?.toHour, d.photosUndelivered.toHour);
+  const windowOk = to > from;
+  return {
+    uploadReminder: { enabled: r.uploadReminder?.enabled !== false, hour: hr(r.uploadReminder?.hour, d.uploadReminder.hour) },
+    uploadChaser: { enabled: r.uploadChaser?.enabled !== false, hour: hr(r.uploadChaser?.hour, d.uploadChaser.hour) },
+    photosUndelivered: {
+      enabled: r.photosUndelivered?.enabled !== false,
+      fromHour: windowOk ? from : d.photosUndelivered.fromHour,
+      toHour: windowOk ? to : d.photosUndelivered.toHour,
+      lateAfterHours:
+        typeof r.photosUndelivered?.lateAfterHours === "number" && r.photosUndelivered.lateAfterHours > 0 && r.photosUndelivered.lateAfterHours <= 336
+          ? r.photosUndelivered.lateAfterHours
+          : d.photosUndelivered.lateAfterHours,
+    },
+    rawVideoMissing: { enabled: r.rawVideoMissing?.enabled !== false },
+    kyleDigests: { enabled: r.kyleDigests?.enabled !== false },
+  };
+}
+
+// Client text wording. Placeholders are substituted by lib/delivery — an empty
+// string means "use the built-in wording", so a blank box can never send a
+// blank text.
+export type TextTemplates = { confirmation: string; deliveryAll: string; deliveryPartial: string };
+export const DEFAULT_TEMPLATES: TextTemplates = { confirmation: "", deliveryAll: "", deliveryPartial: "" };
+export const TEMPLATE_PLACEHOLDERS = ["{first}", "{street}", "{when}", "{items}", "{delivered}", "{remaining}", "{feedbackUrl}"];
+
+export async function textTemplates(): Promise<TextTemplates> {
+  const t = await getSetting<TextTemplates>("text_templates", DEFAULT_TEMPLATES);
+  const clean = (v: unknown) => (typeof v === "string" ? v.slice(0, 1000) : "");
+  return { confirmation: clean(t.confirmation), deliveryAll: clean(t.deliveryAll), deliveryPartial: clean(t.deliveryPartial) };
+}
