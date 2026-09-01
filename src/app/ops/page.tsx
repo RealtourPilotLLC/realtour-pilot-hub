@@ -8,7 +8,9 @@ import { PageHeader } from "@/components/PageHeader";
 import { requirePageAccess } from "@/lib/auth/guards";
 import { buildOpsDay, type OpsDay, type OpsShoot, type OpsQcRow } from "@/lib/opsDay";
 import { AutoRefresh } from "@/components/ops/AutoRefresh";
+import { QcComplete } from "@/components/ops/QcComplete";
 import { cn } from "@/lib/utils";
+import { aryeoListingUrl } from "@/lib/aryeoUrl";
 
 export const dynamic = "force-dynamic";
 
@@ -322,7 +324,7 @@ function ShootList({ shoots, empty, showGaps, showDebrief }: { shoots: OpsShoot[
             {s.timeISO && <span className="shrink-0 text-sm font-semibold tabular-nums text-brand">{fmtTime(s.timeISO)}</span>}
             {s.aryeoListingId && (
               <a
-                href={`https://app.aryeo.com/listings/${s.aryeoListingId}`}
+                href={aryeoListingUrl(s.aryeoListingId)}
                 target="_blank" rel="noopener noreferrer"
                 title="Open the listing in Aryeo"
                 className="shrink-0 rounded-lg border border-border p-1.5 text-muted hover:bg-surface-2 hover:text-foreground"
@@ -500,7 +502,7 @@ function QcRow({ q }: { q: OpsQcRow }) {
         </span>
         {q.aryeoListingId && (
           <a
-            href={`https://app.aryeo.com/listings/${q.aryeoListingId}`}
+            href={aryeoListingUrl(q.aryeoListingId)}
             target="_blank" rel="noopener noreferrer"
             title="Open the listing in Aryeo"
             className="shrink-0 rounded-lg border border-border p-1.5 text-muted hover:bg-surface-2 hover:text-foreground"
@@ -525,9 +527,30 @@ function QcRow({ q }: { q: OpsQcRow }) {
             <DropboxChip label="Final" n={db.finalPhotos + db.finalVideo} />
           </>
         )}
-        {q.evidence.missing.length > 0 && (
-          <span className="text-[11px] font-medium text-warning">missing: {q.evidence.missing.join(", ")}</span>
+      </div>
+      {/* WHY it's still open, in words — "missing: Floor plan" alone didn't say
+          whether we're waiting on the editor, on Aryeo, or on nothing at all
+          (Jordan, Sep 1: 195 Woodhill's floor plan was removed from the order). */}
+      <p className="mt-1.5 text-[13px]">
+        {q.evidence.missing.length > 0 ? (
+          <>
+            <span className="font-semibold text-warning">Waiting on:</span>{" "}
+            <span className="text-foreground/85">
+              {q.evidence.missing.join(", ")} — not live on Aryeo yet. If it was removed from the order or already
+              handled, mark this complete.
+            </span>
+          </>
+        ) : q.itemsLeft > 0 ? (
+          <>
+            <span className="font-semibold text-muted">Waiting on:</span>{" "}
+            <span className="text-foreground/85">your QC checks — everything ordered is live on Aryeo.</span>
+          </>
+        ) : (
+          <span className="text-success">Everything is live and checked — safe to close.</span>
         )}
+      </p>
+      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+        <QcComplete taskId={q.taskId} waitingOn={q.evidence.missing} />
       </div>
       {(q.debrief.removals || q.debrief.unsubmitted || q.notCompleted.length > 0) && (
         <div className="mt-1.5 space-y-0.5 text-[13px]">

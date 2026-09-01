@@ -8,6 +8,7 @@ import { getBillingRows, getClearedArRows, type BillingRow } from "@/lib/queries
 import { formatMoney } from "@/lib/utils";
 import { etDate } from "@/lib/datetime";
 import { FinanceTabs, type FinanceTab } from "./FinanceTabs";
+import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
 
 // Unpaid tab = the old Billing AR page, unchanged (aging buckets + nudge
 // actions). Admin-visible. Runs its own getBillingRows() query — the Revenue +
@@ -99,12 +100,12 @@ function BillingCard({ r }: { r: BillingRow }) {
           </a>
         )}
         {r.aryeoOrderId && (
-          <a href={`https://app.aryeo.com/orders/${r.aryeoOrderId}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 font-medium hover:bg-surface-2">
+          <a href={aryeoOrderUrl(r.aryeoOrderId)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 font-medium hover:bg-surface-2">
             <ExternalLink className="size-3.5" /> Order
           </a>
         )}
         {r.aryeoListingId && (
-          <a href={`https://app.aryeo.com/listings/${r.aryeoListingId}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 font-medium hover:bg-surface-2">
+          <a href={aryeoListingUrl(r.aryeoListingId)} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 font-medium hover:bg-surface-2">
             <ExternalLink className="size-3.5" /> Listing
           </a>
         )}

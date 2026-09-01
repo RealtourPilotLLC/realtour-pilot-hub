@@ -59,6 +59,7 @@ import { formatDistanceToNow } from "date-fns";
 import { etDateTime, etDateYear } from "@/lib/datetime";
 import { listAssignees } from "@/lib/assignees";
 import { ActivityType } from "@prisma/client";
+import { aryeoOrderUrl } from "@/lib/aryeoUrl";
 
 export const dynamic = "force-dynamic";
 
@@ -151,7 +152,7 @@ export default async function ProjectPage({
           {(project.aryeoOrderId || project.aryeoListingId) && <RefreshFromAryeo projectId={project.id} />}
           {project.aryeoOrderId && (
             <a
-              href={`https://app.aryeo.com/orders/${project.aryeoOrderId}`}
+              href={aryeoOrderUrl(project.aryeoOrderId)}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium hover:bg-surface-2"

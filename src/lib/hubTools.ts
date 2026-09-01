@@ -6,6 +6,7 @@ import { parseEvidence } from "@/lib/statusEvidence";
 import { refinedDeliverableLabel } from "@/lib/pipeline";
 import { etDateTime, etDate, etDayKey, etDayStartUtc, etAddDays, etFullDate, etEndOfDay } from "@/lib/datetime";
 import type { HubTool } from "@/lib/integrations/ai";
+import { aryeoOrderUrl } from "@/lib/aryeoUrl";
 
 // ---------------------------------------------------------------------------
 // Read-only data tools for "Ask the Hub". Each tool maps to a bounded Prisma
@@ -356,7 +357,7 @@ export async function execHubTool(
           : undefined,
         open_tasks: p.smartTasks.map((t) => ({ type: t.taskType, title: t.title, priority: t.priority, due: t.dueAt ? etDate(t.dueAt) : null })),
         recent_messages: p.messages.map((m) => ({ from: m.authorName, at: etDate(m.createdAt), text: (m.body ?? "").slice(0, 280) })),
-        aryeo_url: p.aryeoOrderId ? `https://app.aryeo.com/orders/${p.aryeoOrderId}` : null,
+        aryeo_url: p.aryeoOrderId ? aryeoOrderUrl(p.aryeoOrderId) : null,
         hub_url: `/projects/${p.id}`,
       };
     }
