@@ -79,8 +79,9 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
           select: {
             id: true,
             title: true,
+            status: true,
             client: { select: { name: true, socialClient: true } },
-            deliverables: { select: { type: true, label: true } },
+            deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
           },
         },
       },
@@ -158,7 +159,10 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
     const cur = latestByCut.get(key);
     if (!cur || s.round > cur.round) latestByCut.set(key, s);
   }
-  const latest = [...latestByCut.values()];
+  // A DELIVERED job's still-PENDING cut is not the owner's work list — the
+  // client already has it (131 Woodcutter sat in the queue for days after
+  // delivery). Approved rows stay in recentlyApproved.
+  const latest = [...latestByCut.values()].filter((s) => !(s.status === "PENDING" && s.project?.status === "DELIVERED"));
 
   // Unanswered creative replies: per thread, whoever spoke LAST holds the
   // floor — if that's not the owner, the owner owes an answer. Only live
@@ -314,7 +318,7 @@ export async function getCutWorkspace(projectId: string, cutId?: string | null):
       reelScript: true,
       reelSong: true,
       client: { select: { name: true, socialClient: true } },
-      deliverables: { select: { type: true, label: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
       reviewSubmissions: { orderBy: { round: "desc" } },
     },
   });

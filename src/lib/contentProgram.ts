@@ -139,7 +139,7 @@ export async function attachMonthlyProjects(): Promise<{ attached: number }> {
       // re-examined ~305 unattachable historical shoots on every run (audit).
       shootDate: { gte: new Date("2026-06-01T00:00:00Z") },
     },
-    select: { id: true, clientId: true, shootDate: true, deliverables: { select: { label: true } } },
+    select: { id: true, clientId: true, shootDate: true, deliverables: { where: { removedFromOrderAt: null }, select: { label: true } } },
   });
   let attached = 0;
   for (const p of candidates) {
@@ -261,7 +261,7 @@ export async function getProgramRoster(): Promise<ProgramRow[]> {
   if (prevMonths.length) {
     const prevProjects = await prisma.project.findMany({
       where: { contentMonthId: { in: prevMonths.map((m) => m.id) }, status: "DELIVERED" },
-      select: { contentMonthId: true, deliverables: { select: { type: true, quantity: true } } },
+      select: { contentMonthId: true, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, quantity: true } } },
     });
     for (const p of prevProjects) {
       const units = Math.max(1, p.deliverables
@@ -276,7 +276,7 @@ export async function getProgramRoster(): Promise<ProgramRow[]> {
       where: { contentMonthId: { in: monthIds } },
       select: {
         id: true, contentMonthId: true, status: true, shootDate: true,
-        deliverables: { select: { type: true, label: true, quantity: true } },
+        deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, quantity: true } },
         reviewSubmissions: { select: { status: true } },
       },
     }),

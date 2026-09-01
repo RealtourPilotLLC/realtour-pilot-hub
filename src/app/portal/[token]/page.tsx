@@ -92,6 +92,15 @@ export default async function ClientPortalPage({
       select: { id: true, monthId: true, projectId: true, source: true, title: true, thumb: true, playback: true, download: true, deliveredAt: true },
     }),
   ]);
+  // Review-room cuts stream through the hub's own gated route; the portal
+  // viewer has no login, so the enrollment token rides on the URL and the
+  // route checks that this enrollment owns the cut before minting a link.
+  const tokened = (u: string | null) => (u && u.startsWith("/api/review/cut/") ? `${u}?t=${encodeURIComponent(token)}` : u);
+  for (const c of cuts) c.assetUrl = tokened(c.assetUrl) ?? c.assetUrl;
+  for (const v of libraryRaw) {
+    v.playback = tokened(v.playback);
+    v.download = tokened(v.download);
+  }
   // One video, one card: once a project's videos are on Aryeo (delivered
   // truth), the review-sourced rows are the same cuts pre-delivery — drop
   // them (review finding: both writers materialized the same video twice).

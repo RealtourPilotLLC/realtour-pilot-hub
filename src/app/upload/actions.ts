@@ -300,7 +300,7 @@ export async function finalizeUpload(
       packageName: true,
       // Canceled lines must not drive the gates (review HIGH).
       orderItems: { where: { isCanceled: false }, select: { title: true } },
-      deliverables: { select: { type: true, label: true, notCompletedReason: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, notCompletedReason: true } },
     },
   });
   const firstFinalize = !prior?.uploadedAt;

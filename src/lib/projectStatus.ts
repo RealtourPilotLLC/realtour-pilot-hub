@@ -9,6 +9,7 @@ import { standardDeliveryDue, deliveryDueFrom } from "@/lib/tasks";
 import type { NotifyTarget } from "@/lib/notify";
 import { photoTargetFor, RAW_OVERAGE_FACTOR, BRACKET_RATIO } from "@/lib/culling";
 import { isMonthlyContentJob } from "@/lib/pipeline";
+import { parseEvidence } from "@/lib/statusEvidence";
 
 // ---------------------------------------------------------------------------
 // Smart project-status engine.
@@ -155,6 +156,14 @@ export type DropboxSignal = {
   rawVideo: number;
   finalPhotos: number;
   finalVideo: number;
+  /** ISO time of the read these counts came from */
+  at?: string;
+  /** true = this pass could NOT read Dropbox; these are the last good counts,
+   *  carried forward so one 429 can't blank a job's evidence (audit HIGH:
+   *  a shoot with 126 clips read as "scheduled" after a rate-limited pass). */
+  stale?: boolean;
+  /** why the latest read failed (e.g. too_many_requests, 401) — only when stale */
+  readError?: string;
 };
 
 export type StatusSignals = {
@@ -164,6 +173,10 @@ export type StatusSignals = {
   fulfilled: boolean; // Aryeo order fulfilled_at present
   scheduled: boolean; // a SCHEDULED (non-cancelled) appointment exists
   anyAppt: boolean;
+  /** a non-canceled appointment WITH a start time (an UNSCHEDULED/postponed row has none) */
+  datedAppt: boolean;
+  /** every live appointment is postponed / unscheduled — the job needs a new date */
+  postponed: boolean;
   shootDate: Date | null;
   // Dropbox was needed but couldn't be read (not connected, or a listing call
   // FAILED — distinct from "no folders", which is a real zero). Signals here are
@@ -302,7 +315,15 @@ export function computeStatus(sig: StatusSignals): StatusResult {
   } else if (sig.scheduled || (sig.shootDate && sig.shootDate.getTime() > Date.now())) {
     status = "SCHEDULED";
     reason = "Shoot scheduled.";
-  } else if (sig.anyAppt || sig.shootDate) {
+  } else if (sig.postponed && !sig.datedAppt) {
+    // A postponed job is "order received, needs a date" — BOOKED — not
+    // "scheduled with no date", which is the state that let 775 Scotch Way sit
+    // in Scheduled while every date-keyed list dropped it (Sep 1 2026 audit).
+    // Tested BEFORE the shootDate fallback: a postponement that lands after
+    // the slot's start leaves a stale past shootDate behind (review).
+    status = "BOOKED";
+    reason = "Postponed in Aryeo — no new date yet. Rebook it.";
+  } else if (sig.datedAppt || sig.shootDate) {
     status = "SCHEDULED";
     reason = "Appointment on file.";
   } else {
@@ -357,13 +378,10 @@ async function aryeoMedia(listingId: string): Promise<AryeoMediaSignal | null> {
 // failure — auth, rate limit, network, a 5xx — is UNKNOWN, not zero: treating it
 // as zero made a one-second Dropbox blip read as "no media", which demoted shot
 // jobs and destroyed their QC/delivery tasks (audit crack #2). null = "couldn't look".
-// Delegates to the ONE shared counter (identical null/not_found semantics) so
-// the status engine can't drift from the portal again: it kept its own
-// top-level-only listing, so a nested camera dump still read as zero here even
-// after the portal was fixed — no SHOT transition, no editor handoff (review).
-async function folderCount(path: string): Promise<number | null> {
-  return folderFileCount(path);
-}
+// The ONE shared counter (folderFileCount, identical null/not_found semantics)
+// is called directly in gatherSignals so the status engine can't drift from
+// the portal again: it once kept its own top-level-only listing, so a nested
+// camera dump read as zero here even after the portal was fixed (review).
 
 type StatusProject = {
   id: string;
@@ -388,7 +406,9 @@ type StatusProject = {
   photographer: { name: string } | null;
   client: { name: string; socialClient: boolean };
   deliverables: { id: string; type: string; label: string | null; status: string; quantity?: number }[];
-  appointments: { status: string | null; startAt: Date | null }[];
+  appointments: { status: string | null; startAt: Date | null; postponedAt?: Date | null }[];
+  /** the previous pass's evidence — last-known-good Dropbox counts live here */
+  statusEvidence?: string | null;
 };
 
 async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<StatusSignals> {
@@ -414,22 +434,42 @@ async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<Sta
     // convention path moves, and reading the wrong path counted 0 media
     // (which drives evidence, /ops chips, and the delivery-text gate).
     const f = actualFolderPaths(p);
-    const [rawPhotos, rawVideo, finalPhotos, finalVideo] = await Promise.all([
-      folderCount(f.rawPhotos),
-      folderCount(f.rawVideo),
-      folderCount(f.finalPhotos),
-      folderCount(f.finalVideo),
-    ]);
+    // Sequential, not Promise.all: the four reads used to fan out ×5 projects
+    // into a 20-wide burst on one token (13 of 44 came back 429 live; the same
+    // reads pass 44/44 one at a time). dbx() now also caps in-flight calls.
+    let readError: string | undefined;
+    const read = (path: string) =>
+      folderFileCount(path, (e) => {
+        readError = (e instanceof Error ? e.message : String(e)).slice(0, 80);
+      });
+    const rawPhotos = await read(f.rawPhotos);
+    const rawVideo = await read(f.rawVideo);
+    const finalPhotos = await read(f.finalPhotos);
+    const finalVideo = await read(f.finalVideo);
     // Any FAILED folder read (null ≠ a real "not found" zero) poisons the whole
     // signal — partial counts would read as "media vanished". Unknown beats wrong.
     if ([rawPhotos, rawVideo, finalPhotos, finalVideo].some((c) => c === null)) {
       dropboxUnavailable = true;
+      // Unknown is not zero — and it is not "forget what we knew" either. Keep
+      // the last good counts (marked stale) so a rate-limited pass can't blank
+      // the evidence Ops Day, the editor handoff and the delivery gate read.
+      // Ceiling: counts older than 48h are not "known" any more (a dead token
+      // must not pin every job on ancient numbers forever) → back to unknown.
+      // The original `at` survives across consecutive stale passes.
+      const priorEv = parseEvidence(p.statusEvidence ?? null);
+      const prior = priorEv?.dropbox;
+      const priorAt = prior?.at ?? priorEv?.checkedAt;
+      const fresh = priorAt ? Date.now() - Date.parse(priorAt) < 48 * 3600_000 : false;
+      if (prior && fresh && [prior.rawPhotos, prior.rawVideo, prior.finalPhotos, prior.finalVideo].every((n) => typeof n === "number")) {
+        dropbox = { ...prior, at: priorAt, stale: true, ...(readError ? { readError: readError.slice(0, 80) } : {}) };
+      }
     } else {
       dropbox = {
         rawPhotos: rawPhotos as number,
         rawVideo: rawVideo as number,
         finalPhotos: finalPhotos as number,
         finalVideo: finalVideo as number,
+        at: new Date().toISOString(),
       };
     }
   }
@@ -444,6 +484,12 @@ async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<Sta
     // Canceled appointments are not "an appointment on file" — a job whose only
     // appointments were canceled must not read as scheduled (audit crack #14).
     anyAppt: p.appointments.some((a) => (a.status || "").toUpperCase() !== "CANCELED"),
+    datedAppt: p.appointments.some((a) => (a.status || "").toUpperCase() !== "CANCELED" && a.startAt !== null),
+    postponed: p.appointments.some(
+      (a) =>
+        !(a.status || "").toUpperCase().startsWith("CANCEL") && // Aryeo keeps postponed_at on a later cancel
+        ((a.status || "").toUpperCase() === "UNSCHEDULED" || (!!a.postponedAt && a.startAt === null)),
+    ),
     shootDate: p.shootDate,
     // A revision stamp OLDER than the delivery is stale — that delivery WAS the
     // revision being resolved. Treating it as open resurrected delivered jobs
@@ -486,6 +532,9 @@ export async function syncProjectStatuses(
   changed: number;
   partials: number;
   byStatus: Record<string, number>;
+  /** projects whose Dropbox folders could not be read this pass (carried forward) */
+  dropboxUnreadable: number;
+  dropboxErrors: Record<string, number>;
 }> {
   const useDropbox = dropboxConfigured() && !!(await getSecret("dropbox"));
 
@@ -507,10 +556,13 @@ export async function syncProjectStatuses(
       // re-arming them (Aug 18 audit).
       { id: opts.projectId, status: { notIn: ["ON_HOLD", "CANCELLED"] as ProjectStatus[] } }
     : opts.full
-    ? { source: "ARYEO" as const, status: { notIn: ["ON_HOLD", "CANCELLED"] as ProjectStatus[] } }
+    ? { source: "ARYEO" as const, status: { notIn: ["ON_HOLD", "CANCELLED"] as ProjectStatus[] }, aryeoMissingAt: null }
     : {
         source: "ARYEO" as const,
         status: { in: ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW", "REVISION"] as ProjectStatus[] },
+        // An order that 404s in Aryeo has no listing to read — recomputing
+        // would only erase evidence. flagOrphanedOrders owns these jobs.
+        aryeoMissingAt: null,
       };
 
   const projects = (await prisma.project.findMany({
@@ -537,14 +589,19 @@ export async function syncProjectStatuses(
       photoTarget: true,
       photographer: { select: { name: true } },
       client: { select: { name: true, socialClient: true } },
-      deliverables: { select: { id: true, type: true, label: true, status: true, quantity: true } },
-      appointments: { select: { status: true, startAt: true } },
+      // Owed rows only — an item removed from the Aryeo order must not be
+      // "expected" (632 Greenridge read "video overdue" for a week).
+      deliverables: { where: { removedFromOrderAt: null }, select: { id: true, type: true, label: true, status: true, quantity: true } },
+      appointments: { select: { status: true, startAt: true, postponedAt: true } },
+      statusEvidence: true,
     },
   })) as StatusProject[];
 
   let changed = 0;
   let partials = 0;
   const byStatus: Record<string, number> = {};
+  let dropboxUnreadable = 0;
+  const dropboxErrors: Record<string, number> = {};
 
   const results = await pMap(projects, 5, async (p) => {
     const sig = await gatherSignals(p, useDropbox);
@@ -552,6 +609,14 @@ export async function syncProjectStatuses(
   });
 
   for (const { p, sig, status, evidence } of results) {
+    if (sig.dropboxUnavailable && useDropbox && sig.dropbox?.stale !== undefined) {
+      dropboxUnreadable++;
+      const k = sig.dropbox?.readError ?? "unknown";
+      dropboxErrors[k] = (dropboxErrors[k] ?? 0) + 1;
+    } else if (sig.dropboxUnavailable && useDropbox && !sig.dropbox) {
+      dropboxUnreadable++;
+      dropboxErrors.unknown = (dropboxErrors.unknown ?? 0) + 1;
+    }
     // "The shoot already happened" — the arming condition for both anti-demotion
     // guards below. shootDate alone is NOT enough: it's movable. When an
     // already-shot job gets a return visit or a forward reschedule, the
@@ -575,9 +640,11 @@ export async function syncProjectStatuses(
     // at all — keep the prior status/evidence untouched instead of recomputing
     // from nothing (which erased "present" evidence, flipped deliverables back to
     // PENDING, and cascaded into destroyed QC tasks — audit crack #2).
+    // (With counts carried forward, sig.dropbox is non-null on a failed read —
+    // the old `!sig.dropbox` term here would have disarmed this guard on the
+    // very pass it exists for: Aryeo AND Dropbox both unreadable.)
     if (
       !sig.aryeo &&
-      !sig.dropbox &&
       sig.dropboxUnavailable &&
       ["SHOT", "EDITING", "REVIEW", "REVISION"].includes(p.status) &&
       shootHappened
@@ -623,7 +690,7 @@ export async function syncProjectStatuses(
     // the evidence (so the project page shows WHY) and mint ONE cull task + text
     // the photographer below. SHOT/EDITING only — never nag a delivered job.
     let cullOver = false;
-    if (["SHOT", "EDITING"].includes(final) && sig.dropbox && sig.dropbox.rawPhotos > 0) {
+    if (["SHOT", "EDITING"].includes(final) && sig.dropbox && !sig.dropbox.stale && sig.dropbox.rawPhotos > 0) {
       const photoTarget = photoTargetFor(p);
       const rawPhotos = sig.dropbox.rawPhotos;
       if (rawPhotos > photoTarget * RAW_OVERAGE_FACTOR) {
@@ -709,6 +776,39 @@ export async function syncProjectStatuses(
         await ensureEditorHandoff(p.id);
       } catch { /* handoff is best-effort — never break the sweep */ }
     }
+    // Finished cuts → Review Room, one row per (file, round) with a playable
+    // link. REVISION included on purpose: a multi-video monthly job sits in
+    // REVISION from the first bounce on, and that is exactly when videos
+    // 2..N and the redo land (audit HIGH: no playable video on any
+    // submission; a batch got one blank placeholder). Stale counts are fine
+    // here — a stale finalVideo>0 came from a real read.
+    // REVIEW/REVISION run discovery UNCONDITIONALLY: once Aryeo carries the
+    // original video (a post-delivery revision, or video #1 of a batch) the
+    // sweep no longer reads Dropbox, so the evidence count can't be the gate
+    // — the redo would never enter the room (review). listFinalCuts is one
+    // cheap listing and returns [] for an empty folder.
+    if (
+      (["REVIEW", "REVISION"].includes(final)) ||
+      (["SHOT", "EDITING"].includes(final) && (sig.dropbox?.finalVideo ?? 0) > 0)
+    ) {
+      try {
+        const { discoverCutsForReview } = await import("@/lib/reviewCuts");
+        await discoverCutsForReview(p.id, p.title);
+      } catch { /* discovery is best-effort — never break the sweep */ }
+    } else if (final === "DELIVERED") {
+      // A delivered job carrying one of the old blank placeholders: give it
+      // its file and record what delivery meant (approved). Aryeo satisfies
+      // these jobs so Dropbox isn't consulted above — check the row instead.
+      try {
+        const blank = await prisma.reviewSubmission.count({
+          where: { projectId: p.id, assetPath: null, status: "PENDING", submittedByName: "Auto — Final folder" },
+        });
+        if (blank > 0) {
+          const { discoverCutsForReview } = await import("@/lib/reviewCuts");
+          await discoverCutsForReview(p.id, p.title);
+        }
+      } catch { /* best-effort */ }
+    }
 
     // DELIVERED — re-attempt the delivery-text mint every pass, not just on the
     // transition. A monthly-content job holds the task back until its video
@@ -755,8 +855,12 @@ export async function syncProjectStatuses(
       try {
         const { reconcileRawsMissing } = await import("@/lib/tasks");
         await reconcileRawsMissing(p.id, {
-          rawsKnownEmpty: !!sig.dropbox && sig.dropbox.rawPhotos + sig.dropbox.rawVideo === 0,
+          // "Known empty" needs a read from THIS pass: a stale zero carried from
+          // the night before the shoot must not mint a "no raws" chase after
+          // the raws landed (that chase is one-per-project, forever).
+          rawsKnownEmpty: !!sig.dropbox && !sig.dropbox.stale && sig.dropbox.rawPhotos + sig.dropbox.rawVideo === 0,
           anyAryeoMedia: !!sig.aryeo && sig.aryeo.photos + sig.aryeo.videos > 0,
+          dropboxReadable: !sig.dropboxUnavailable,
         });
       } catch { /* watchdog is best-effort */ }
     }
@@ -796,7 +900,7 @@ export async function syncProjectStatuses(
     }
   }
 
-  return { checked: projects.length, changed, partials, byStatus };
+  return { checked: projects.length, changed, partials, byStatus, dropboxUnreadable, dropboxErrors };
 }
 
 // Mark each deliverable DONE/PENDING based on whether its category is present.

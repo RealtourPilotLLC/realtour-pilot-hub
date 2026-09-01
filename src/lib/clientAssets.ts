@@ -81,7 +81,7 @@ export async function videoClients(): Promise<{ id: string; name: string; brandA
       projects: {
         some: {
           status: { not: "CANCELLED" },
-          deliverables: { some: { type: { in: ["VIDEO", "SOCIAL_REEL"] } } },
+          deliverables: { some: { type: { in: ["VIDEO", "SOCIAL_REEL"] }, removedFromOrderAt: null } },
         },
       },
     },
@@ -101,7 +101,7 @@ export async function ensureVideoClientAssetFolders(limit = 15): Promise<{ ensur
       projects: {
         some: {
           status: { not: "CANCELLED" },
-          deliverables: { some: { type: { in: ["VIDEO", "SOCIAL_REEL"] } } },
+          deliverables: { some: { type: { in: ["VIDEO", "SOCIAL_REEL"] }, removedFromOrderAt: null } },
         },
       },
     },

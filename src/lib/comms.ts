@@ -304,7 +304,7 @@ export async function raiseRevision(opts: {
 }): Promise<boolean> {
   const project = await prisma.project.findUnique({
     where: { id: opts.projectId },
-    select: { id: true, status: true, title: true, clientId: true, revisionRequestedAt: true, editorManual: true, editor: { select: { name: true } }, deliverables: { select: { type: true, label: true } }, client: { select: { socialClient: true } } },
+    select: { id: true, status: true, title: true, clientId: true, revisionRequestedAt: true, editorManual: true, editor: { select: { name: true } }, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } }, client: { select: { socialClient: true } } },
   });
   if (!project) return false;
 

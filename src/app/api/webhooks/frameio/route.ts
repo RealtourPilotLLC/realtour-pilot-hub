@@ -100,7 +100,7 @@ export async function processFrameioEvent(
     select: {
       id: true, title: true, clientId: true, status: true,
       // For the bell: which editor made the video (same routing /editing uses).
-      deliverables: { select: { type: true, label: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
       client: { select: { socialClient: true } },
     },
   });

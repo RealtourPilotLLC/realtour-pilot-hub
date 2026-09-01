@@ -181,6 +181,7 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
       client: true,
       photographer: { select: { id: true, name: true } },
       deliverables: {
+        where: { removedFromOrderAt: null }, // an item pulled from the order is not the photographer's work
         orderBy: { createdAt: "asc" },
         include: { uploads: { select: { id: true } } },
       },
@@ -517,7 +518,7 @@ export async function listMyShoots(memberId: string | null): Promise<MyShootRow[
     include: {
       client: { select: { name: true } },
       photographer: { select: { id: true, name: true, avatarColor: true } },
-      deliverables: { select: { type: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true } },
       appointments: {
         where: { status: { not: "CANCELED" }, startAt: { not: null } },
         select: { startAt: true, completedAt: true },

@@ -61,7 +61,7 @@ export default async function UploadListPage() {
     include: {
       client: true,
       photographer: true,
-      deliverables: { select: { id: true, type: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { id: true, type: true } },
       _count: { select: { uploads: true } },
     },
   });

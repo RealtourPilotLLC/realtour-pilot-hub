@@ -84,7 +84,7 @@ async function repairProjectsForProduct(title: string): Promise<{ projects: numb
       select: {
         id: true, status: true, shootDate: true,
         orderItems: { where: { isCanceled: false }, select: { title: true, quantity: true } },
-        deliverables: { select: { id: true, type: true, label: true, status: true } },
+        deliverables: { select: { id: true, type: true, label: true, status: true, manual: true, removedFromOrderAt: true } },
       },
     });
     if (!p) continue;
@@ -94,14 +94,26 @@ async function repairProjectsForProduct(title: string): Promise<{ projects: numb
     // Remove phantoms: types no longer implied — PENDING rows only (real work
     // that already happened is evidence the type was real).
     for (const d of p.deliverables) {
-      if (!wantByType.has(d.type) && d.status === "PENDING") {
-        await prisma.deliverable.delete({ where: { id: d.id } });
+      // Same retire semantics as the order reconcile — never a delete.
+      if (!wantByType.has(d.type) && d.status === "PENDING" && !d.manual && !d.removedFromOrderAt) {
+        await prisma.deliverable.update({
+          where: { id: d.id },
+          data: { removedFromOrderAt: new Date(), removedFromOrderNote: "No longer implied by the order's products (product-map repair)" },
+        });
         removed++; touched = true;
       }
     }
     // Add missing + fix labels in place.
     for (const [type, want] of wantByType) {
       const existing = p.deliverables.find((d) => d.type === type);
+      if (existing?.removedFromOrderAt) {
+        await prisma.deliverable.update({
+          where: { id: existing.id },
+          data: { removedFromOrderAt: null, removedFromOrderNote: null, label: want.label, quantity: want.quantity },
+        });
+        added++; touched = true;
+        continue;
+      }
       if (!existing) {
         await prisma.deliverable.create({
           data: { projectId: p.id, type: type as never, label: want.label, quantity: want.quantity, status: "PENDING" },

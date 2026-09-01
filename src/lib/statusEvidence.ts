@@ -19,6 +19,12 @@ export type ParsedEvidence = {
     rawVideo: number;
     finalPhotos: number;
     finalVideo: number;
+    /** ISO time of the read these counts came from */
+    at?: string;
+    /** last-known-good counts carried forward because this pass couldn't read Dropbox */
+    stale?: boolean;
+    /** why the latest read failed, when stale (e.g. too_many_requests) */
+    readError?: string;
   } | null;
   fulfilledOnAryeo: boolean;
   reason: string;

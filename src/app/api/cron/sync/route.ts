@@ -27,6 +27,14 @@ export async function GET(req: NextRequest) {
   await step("orders", () => syncAryeoOrders({ full: false }));
   // Recent + future only, so the hourly run stays well under the time limit.
   await step("appointments", () => syncAryeoAppointments({ recentOnlyDays: 21 }));
+  // Orders that vanished from Aryeo (deleted / archived) while the hub still
+  // holds a live job — the list scan can never see them. One GET per active
+  // project (~35, ~9s); runs BEFORE statuses/tasks so those steps see the
+  // flag the same tick. Flags + asks, never cancels.
+  await step("orphanOrders", async () => {
+    const { flagOrphanedOrders } = await import("@/lib/integrations/aryeo");
+    return flagOrphanedOrders();
+  });
 
   // Dropbox folder creation — took over from the broken Zapier Zap (Aug 2026).
   // Runs after appointments so a fresh booking's shootDate is already on the

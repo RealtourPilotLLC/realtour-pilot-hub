@@ -137,7 +137,7 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
       shootDate: true, deliveredAt: true, notes: true,
       client: { select: { name: true } },
       orderItems: { where: { isCanceled: false }, select: { title: true, quantity: true } },
-      deliverables: { select: { type: true, status: true, uploadedAt: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, status: true, uploadedAt: true } },
       appointments: { select: { assignedTo: { select: { name: true } } }, orderBy: { startAt: "asc" }, take: 1 },
     },
     orderBy: { shootDate: "desc" },

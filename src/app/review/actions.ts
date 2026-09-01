@@ -5,8 +5,6 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { authEnforced, requireAdmin, requireTaskAccess } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
-import { dbx, dropboxSharedLink, DropboxError } from "@/lib/integrations/dropbox";
-import { projectFolderPaths } from "@/lib/dropboxFolders";
 import { editorForDeliverable, editorMeta, TEAM_MEMBER_EDITOR_KEYS, type EditorKey } from "@/lib/editors";
 import { slugForName } from "@/lib/assignees";
 import { isMonthlyContentJob } from "@/lib/pipeline";
@@ -79,7 +77,7 @@ async function projectEditorKey(projectId: string): Promise<string | null> {
   if (latest?.submittedByKey) return latest.submittedByKey;
   const p = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { deliverables: { select: { type: true, label: true } }, client: { select: { socialClient: true } } },
+    select: { deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } }, client: { select: { socialClient: true } } },
   });
   if (!p) return null;
   const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL") ?? p.deliverables[0];
@@ -121,68 +119,6 @@ async function requireCutNoteAccess(
     }
   }
   throw new Error("You don't have access to do that.");
-}
-
-// Scan the project's FINAL video folder for the newest cut and mint a direct
-// streaming link. Best-effort: Dropbox down / folder empty → nulls, and the
-// review room degrades to folder links + manual-timestamp notes.
-// The NEXT cut to submit: the newest video in the Final folder that isn't
-// already sitting in review (or approved). Monthly personal-branding packages
-// carry 2–5 videos, and Jordan wants them sent ONE BY ONE — so each "send to
-// review" picks up the next new file, and a file whose review came back
-// CHANGES_REQUESTED is eligible again (that's the re-submit). `nothingNew` =
-// every video present is already pending/approved, so a second click can't
-// double-submit the same cut.
-async function findNextCut(
-  project: {
-    title: string;
-    addressLine: string | null;
-    shootDate: Date | null;
-    createdAt: Date;
-    client: { name: string };
-  },
-  projectId: string,
-): Promise<{ assetUrl: string | null; assetPath: string | null; fileName: string | null; isRedo: boolean; nothingNew: boolean; folderVideoCount: number }> {
-  const none = { assetUrl: null, assetPath: null, fileName: null, isRedo: false, nothingNew: false, folderVideoCount: 0 };
-  try {
-    const path = projectFolderPaths(project).finalVideo;
-    const res = await dbx<{ entries: { ".tag": string; name: string; path_display?: string; server_modified?: string }[] }>(
-      "files/list_folder",
-      { path },
-    );
-    const vids = (res.entries ?? [])
-      .filter((e) => e[".tag"] === "file" && /\.(mp4|mov|m4v|webm)$/i.test(e.name))
-      .sort((a, b) => (b.server_modified ?? "").localeCompare(a.server_modified ?? ""));
-    if (vids.length === 0) return none;
-
-    const prior = await prisma.reviewSubmission.findMany({
-      where: { projectId, assetPath: { not: null } },
-      orderBy: { round: "asc" },
-      select: { assetPath: true, status: true },
-    });
-    const latestByPath = new Map<string, string>(); // path → latest status
-    for (const p of prior) latestByPath.set(p.assetPath!, p.status);
-
-    const eligible = vids.filter((v) => {
-      const st = v.path_display ? latestByPath.get(v.path_display) : undefined;
-      return !st || st === "CHANGES_REQUESTED";
-    });
-    if (eligible.length === 0) return { ...none, nothingNew: true, folderVideoCount: vids.length };
-    const newest = eligible[0];
-    if (!newest.path_display) return none;
-    const url = await dropboxSharedLink(newest.path_display);
-    return {
-      assetUrl: url,
-      assetPath: newest.path_display,
-      fileName: newest.name,
-      isRedo: latestByPath.has(newest.path_display),
-      nothingNew: false,
-      folderVideoCount: vids.length,
-    };
-  } catch (e) {
-    if (!(e instanceof DropboxError)) console.warn("findNextCut failed", e);
-    return none;
-  }
 }
 
 // The editor's "Done — send to review". Everything sendEditToReview did, PLUS
@@ -228,7 +164,7 @@ export async function submitCutForReview(
       id: true, title: true, status: true, addressLine: true, shootDate: true, createdAt: true, deliveredAt: true,
       packageName: true, videosFilmed: true,
       client: { select: { name: true, socialClient: true } },
-      deliverables: { select: { type: true, label: true, quantity: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, quantity: true } },
     },
   });
   if (!project) return { ok: false, message: "That project no longer exists." };
@@ -237,15 +173,39 @@ export async function submitCutForReview(
   const { authorKey, authorName } = await sessionAuthor();
   const editorKey = authorKey.startsWith("editor:") ? authorKey.slice("editor:".length) : await projectEditorKey(projectId);
 
-  // The cut itself — the next UNSUBMITTED video in the Final folder (monthly
-  // packages carry several; they go to review one at a time).
-  const cut = await findNextCut(project, projectId);
-  if (cut.nothingNew) {
+  // The cut itself — the newest video in the Final folder that isn't in
+  // review yet (monthly packages carry several; they go one at a time). One
+  // shared discoverer with the hourly sweep: same folder resolution (the
+  // job's REAL folder, not the convention path), same per-file identity, and
+  // a playable link that doesn't depend on a sharing scope the Dropbox app
+  // doesn't have (the old shared-link mint returned null on every submit).
+  const { syncFinalCutsToReview, submittedDistinctCuts } = await import("@/lib/reviewCuts");
+  const sync = await syncFinalCutsToReview(projectId, {
+    mode: "button",
+    onlyNewest: true,
+    submittedByKey: editorKey,
+    submittedByName: authorName ?? "Editor",
+    note,
+  });
+  if (sync.unreadable) {
+    return { ok: false, message: "Dropbox couldn't be read just now — try again in a minute." };
+  }
+  const made = sync.claimed ?? sync.created[0] ?? null;
+  if (!made) {
     return {
       ok: false,
-      message: "Every video in the Final folder is already in review (or approved). Drop the next finished file in 05-Final-Video, then send again.",
+      message: sync.folderVideoCount === 0
+        ? "No video file found in 05-Final-Video yet. Export the cut there, then send again."
+        : "Every video in the Final folder is already in review (or approved). Drop the next finished file in 05-Final-Video, then send again.",
     };
   }
+  const cut = {
+    assetUrl: `/api/review/cut/${made.id}/stream`,
+    assetPath: made.assetPath,
+    fileName: made.fileName,
+    isRedo: made.isRedo,
+    folderVideoCount: sync.folderVideoCount,
+  };
 
   // How many videos this job owes (deliverable quantities), and how many
   // distinct files have been through review — drives whether this submit
@@ -266,16 +226,12 @@ export async function submitCutForReview(
   const monthlyOwed = isMonthlyContentJob(project.deliverables, project.packageName)
     ? project.videosFilmed ?? monthlyVideoQuota([project.packageName, ...project.deliverables.map((d) => d.label)])
     : 0;
-  const videosOwed = Math.max(quantityOwed, cut.folderVideoCount, monthlyOwed);
-  const priorPaths = new Set(
-    (
-      await prisma.reviewSubmission.findMany({
-        where: { projectId, assetPath: { not: null } },
-        select: { assetPath: true },
-      })
-    ).map((s) => s.assetPath!),
-  );
-  const distinctAfter = priorPaths.size + (cut.assetPath && !priorPaths.has(cut.assetPath) ? 1 : 0);
+  // NOT the folder's file count: editors export redos as new files (v1, v2,
+  // v3), and counting them made a 2-video Starter owe 5 — the edit task could
+  // never close. Owed = the order / the photographer's count / the plan.
+  const videosOwed = Math.max(quantityOwed, monthlyOwed);
+  // Distinct files now in review (the claimed/created row included).
+  const distinctAfter = await submittedDistinctCuts(projectId);
   // TYPE-SCOPED closes (adversarial review): a REDO closes the revision task
   // (the bounce is answered) but must NOT close the edit_video item still
   // covering unmade videos; completing the SET closes edit_video but must not
@@ -285,25 +241,20 @@ export async function submitCutForReview(
   const closeEdit = legacyClose || distinctAfter >= videosOwed;
   const closeRevision = legacyClose || cut.isRedo;
 
-  const lastRound = await prisma.reviewSubmission.findFirst({
-    where: { projectId },
-    orderBy: { round: "desc" },
-    select: { round: true },
-  });
-  const submission = await prisma.reviewSubmission.create({
-    data: {
-      projectId,
-      kind: "video",
-      assetUrl: cut.assetUrl,
-      assetPath: cut.assetPath,
-      fileName: cut.fileName,
-      round: (lastRound?.round ?? 0) + 1,
-      status: "PENDING",
-      submittedByKey: editorKey,
-      submittedByName: authorName,
-      note: (note ?? "").trim().slice(0, 1000) || null,
-    },
-  });
+  // Rounds are PER FILE (the helper computed it): video 2's first cut is
+  // "Round 1", not "Round 2" because video 1 came before it.
+  const submission = made
+    ? { id: made.id, round: made.round }
+    : await prisma.reviewSubmission.create({
+        // No file could be attached (shouldn't happen past the guards above) —
+        // keep the legacy no-file row so the submit is never silently lost.
+        data: {
+          projectId, kind: "video", round: 1, status: "PENDING",
+          submittedByKey: editorKey, submittedByName: authorName,
+          note: (note ?? "").trim().slice(0, 1000) || null,
+        },
+        select: { id: true, round: true },
+      });
 
   // Close out the editor's open work item (first submit = edit_video; a
   // re-submit after changes = the bundled revision task). An editor's submit

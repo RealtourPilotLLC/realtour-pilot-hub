@@ -75,6 +75,7 @@ export async function ownerPulse(): Promise<OwnerPulseSnapshot> {
             { balanceAmount: { gt: 0 } },
             { arRemovedAt: null },
             { paidMarkedAt: null },
+            { aryeoMissingAt: null },
           ],
         },
       })

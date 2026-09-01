@@ -1089,6 +1089,12 @@ export async function closeObsoleteTasks(projectId: string, projectStatus: strin
 /** Marks a delivery text minted only because the monthly batch ran out of
  *  time — a HUMAN decides on these; the auto-sweep never sends them. */
 export const MONTHLY_BATCH_INCOMPLETE = "monthly-batch-incomplete";
+/** A delivery text minted for a job Aryeo fulfilled days ago (an order the
+ *  hub only caught up with now). Kyle decides — never auto-sent. */
+export const DELIVERED_LONG_AGO = "delivered-long-ago";
+/** Stamped on a QC card a human closed with a reason — the reconciler must
+ *  never reopen it over unticked boxes. */
+export const CLOSED_BY_HAND = "closed-by-hand";
 
 export async function createDeliveryTextTask(projectId: string): Promise<void> {
   const key = dedupe([projectId, "delivery_text"]);
@@ -1096,12 +1102,24 @@ export async function createDeliveryTextTask(projectId: string): Promise<void> {
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: {
-      id: true, title: true, clientId: true, statusEvidence: true, packageName: true, shootDate: true,
-      deliverables: { select: { type: true, label: true } },
+      id: true, title: true, clientId: true, statusEvidence: true, packageName: true, shootDate: true, deliveredAt: true,
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
       client: { select: { name: true } },
     },
   });
   if (!project) return;
+  // The hub flipped this job DELIVERED because the ORDER changed (an item
+  // was removed and the reconcile just caught up — 632 Greenridge: Aryeo
+  // delivered Aug 26, reconciled Sep 1), not because media landed. "Your
+  // gallery is ready — how did we do?" days late reads as a bug to the
+  // client. Mint it as a decision for Kyle, never an auto-send. Keyed on the
+  // reconcile's own activity row (last 3h) — NOT on Aryeo's fulfilled_at,
+  // which lands at the first media delivery of every staged job.
+  const orderJustChanged = await prisma.activity.findFirst({
+    where: { projectId, type: "SYSTEM", body: { startsWith: "Order changed in Aryeo" }, createdAt: { gte: new Date(Date.now() - 3 * HOUR) } },
+    select: { id: true },
+  });
+  const deliveredLongAgo = !!orderJustChanged;
   // MONTHLY CONTENT: the order carries ONE line item but the session owes a
   // BATCH of videos, so Aryeo showing video #1 used to mint (and auto-send)
   // "everything has been delivered" while the rest were still in production
@@ -1139,7 +1157,9 @@ export async function createDeliveryTextTask(projectId: string): Promise<void> {
       title: `Send delivery text — ${project.title}`,
       summary: batchIncomplete
         ? "This monthly-content job is past its turnaround but Aryeo still shows fewer videos than the plan owes. Check what actually shipped: finish the batch, or send the client an honest update. The hub will NOT send this one on its own."
-        : "This job was delivered. Review the drafted post-delivery text (with the feedback link) and send it to the client. A feedback reply auto-logs back to the project.",
+        : deliveredLongAgo
+          ? "This job read as delivered only after its Aryeo order changed (an item was removed) — the client may have had everything for days. A \"how did we do?\" text now may read oddly: send it, adapt it, or skip it. The hub will NOT send this one on its own."
+          : "This job was delivered. Review the drafted post-delivery text (with the feedback link) and send it to the client. A feedback reply auto-logs back to the project.",
       description: deliveryMessage(project),
       reasonCreated: "Delivered — send the post-delivery client text + feedback link",
       checklist: JSON.stringify([
@@ -1152,7 +1172,7 @@ export async function createDeliveryTextTask(projectId: string): Promise<void> {
       // nudge — it outranks a normal delivery text and is flagged so the
       // auto-sweep leaves it strictly alone.
       priority: batchIncomplete ? "HIGH" : "MEDIUM",
-      ...(batchIncomplete ? { sourceDetail: MONTHLY_BATCH_INCOMPLETE } : {}),
+      ...(batchIncomplete ? { sourceDetail: MONTHLY_BATCH_INCOMPLETE } : deliveredLongAgo ? { sourceDetail: DELIVERED_LONG_AGO } : {}),
       dueAt: new Date(),
       projectId,
       clientId: project.clientId,
@@ -1354,7 +1374,7 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
       editorManual: true,
       editor: { select: { name: true } },
       client: { select: { socialClient: true } },
-      deliverables: { select: { type: true, label: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
     },
   });
   if (!p) return;
@@ -1498,7 +1518,7 @@ export async function mintEditTask(projectId: string): Promise<void> {
       editorManual: true,
       editor: { select: { name: true } },
       client: { select: { name: true, socialClient: true } },
-      deliverables: { select: { type: true, label: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
     },
   });
   if (!p) return;
@@ -1630,16 +1650,22 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
       photographerId: true,
       photographer: { select: { name: true } },
       client: { select: { socialClient: true } },
-      deliverables: { select: { type: true, label: true, notCompletedReason: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, notCompletedReason: true, quantity: true } },
+      packageName: true,
+      videosFilmed: true,
     },
   });
   if (!p) return;
 
-  let ev: { present?: string[]; dropbox?: { rawPhotos?: number; rawVideo?: number; finalVideo?: number } | null } = {};
+  let ev: { present?: string[]; dropbox?: { rawPhotos?: number; rawVideo?: number; finalVideo?: number; stale?: boolean } | null } = {};
   try {
     ev = p.statusEvidence ? JSON.parse(p.statusEvidence) : {};
   } catch { /* unreadable evidence → treat as unknown */ }
   const dropbox = ev.dropbox ?? null;
+  // Stale counts (carried forward from an earlier read because this pass
+  // couldn't reach Dropbox) are true for what they SAW: a stale >0 is real
+  // evidence, a stale 0 is not evidence of anything.
+  const dropboxFresh = !!dropbox && !dropbox.stale;
   const anyRaw = !!dropbox && (dropbox.rawPhotos ?? 0) + (dropbox.rawVideo ?? 0) > 0;
 
   // 1. Announce the raws once (marker-idempotent inside notifyRawsLanded).
@@ -1716,38 +1742,39 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
       data: { status: "COMPLETED", completedAt: new Date() },
     });
 
-  // 3. The cut is already in the owner's hands (Review Room submission) or
-  // verifiably live (Aryeo/final folder) → nothing to mint; clear stale nudges.
-  const submitted = await prisma.reviewSubmission.count({ where: { projectId } });
+  // 3. AUTO-SUPPLY THE REVIEW ROOM (Jordan Aug 25: keep the room, make it
+  // real). Every video file in the Dropbox Final folder becomes its own
+  // PENDING ReviewSubmission with a playable link — one row per (file, round),
+  // deduped by path inside syncFinalCutsToReview, so calling this every hour
+  // is safe and a monthly batch's videos 2..N enter review as they land. The
+  // old version minted ONE blank placeholder per project and never looked
+  // again (audit HIGH: no playable video on any submission).
+  // (Discovery of finished cuts into the Review Room lives in the status
+  // sweep — discoverCutsForReview — because it must also run for REVISION
+  // jobs, which this handoff deliberately skips.)
   const videoPresent = (ev.present ?? []).includes("Video") || (dropbox?.finalVideo ?? 0) > 0;
-  // AUTO-SUPPLY THE REVIEW ROOM (Jordan Aug 25: keep the room, make it real):
-  // a finished cut landing in the Dropbox Final folder becomes a PENDING
-  // ReviewSubmission on its own — the room only ever filled if an editor
-  // pressed a button that was pressed once in its lifetime (audit).
-  if (submitted === 0 && (dropbox?.finalVideo ?? 0) > 0 && p.status !== "DELIVERED") {
-    try {
-      await prisma.reviewSubmission.create({
-        data: {
-          projectId,
-          kind: "video",
-          // assetPath stays null — the review workspace already resolves the
-          // job's Final folder itself; a wrong hand-built path is worse.
-          submittedByName: "Auto — Final folder",
-          note: "Cut detected in the Dropbox Final folder — auto-entered for review.",
-        },
-      });
-      const { notifyInApp } = await import("@/lib/notify");
-      await notifyInApp({
-        kind: "cut_ready",
-        title: `Cut ready to review — ${(p.title || "job").split(",")[0].trim()}`,
-        href: `/review/${projectId}`,
-        targets: [{ roles: ["OWNER", "ADMIN"] }],
-        dedupeKey: `autocut-${projectId}`,
-      });
-    } catch { /* auto-supply is best-effort — the sweep must never break */ }
-  }
+  const submitted = await prisma.reviewSubmission.count({ where: { projectId } });
+  // A cut exists (submission) or the video is verifiably live → nothing to
+  // chase. But a MONTHLY job is a BATCH: the first cut landing must not close
+  // the editor's work item while videos 2..N are still owed — without it the
+  // editor has no task to submit against (submitCutForReview scopes to their
+  // open task) and the rest of the set has no owner (audit).
   if (submitted > 0 || videoPresent) {
     await clearNudge();
+    const monthly = isMonthlyContentJob(p.deliverables, p.packageName);
+    if (!monthly) return;
+    const { monthlyVideoQuota } = await import("@/lib/pipeline");
+    const { submittedDistinctCuts } = await import("@/lib/reviewCuts");
+    const quantityOwed = p.deliverables
+      .filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL")
+      .reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
+    const owed = Math.max(quantityOwed, p.videosFilmed ?? monthlyVideoQuota([p.packageName, ...p.deliverables.map((d) => d.label)]));
+    // SUBMITTED files, not approved — the editor's item closes when the set is
+    // in (submitCutForReview's closeEdit), and gating on approvals here would
+    // keep re-minting between "all in" and "all approved".
+    if ((await submittedDistinctCuts(projectId)) >= owed) return;
+    if (p.status === "DELIVERED") return;
+    await mintEditTask(projectId); // creates if absent, refreshes if open, never reopens a completed one
     return;
   }
 
@@ -1759,7 +1786,9 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
   // Skipped for manually-queued jobs: no footage in the folder is EXPECTED for
   // old-footage / externally-shot work, and the wrong "upload your video" text
   // would chase a photographer who owes nothing.
-  if (!manualTask && dropbox && (dropbox.rawVideo ?? 0) === 0) {
+  // A FRESH zero only — a stale zero carried from the night before the shoot
+  // must not chase a photographer whose footage landed since.
+  if (!manualTask && dropbox && dropboxFresh && (dropbox.rawVideo ?? 0) === 0) {
     const street = (p.title || "this job").split(",")[0].trim();
     const first = (p.photographer?.name || "the photographer").split(/\s+/)[0];
     const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: NUDGE_KEY } });
@@ -1803,8 +1832,14 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
     return; // hold the edit task until footage is findable
   }
 
-  // Footage is in (or Dropbox unreadable — don't block on unknown): clear the
-  // nudge and make sure the editor's accountable work item exists.
+  // Unknown read (Dropbox unreadable, or a carried-forward zero for video):
+  // neither clear the chase NOR hand off. Completing the chase on "couldn't
+  // look" silenced it forever (a completed dedupeKey is never re-minted), and
+  // minting the edit task off stale photo counts handed the editor footage
+  // the hub could not confirm. Mirrors the fresh-zero hold above.
+  if (!dropbox || (dropbox.stale && (dropbox.rawVideo ?? 0) === 0)) return;
+  // Footage is in → clear the nudge and make sure the editor's accountable
+  // work item exists.
   await clearNudge();
   if (!anyRaw) return; // nothing detected at all → nothing to hand off yet
 
@@ -1875,11 +1910,14 @@ async function creativeAlertTargets(
 
 export async function reconcileRawsMissing(
   projectId: string,
-  sig: { rawsKnownEmpty: boolean; anyAryeoMedia: boolean },
+  sig: { rawsKnownEmpty: boolean; anyAryeoMedia: boolean; dropboxReadable?: boolean },
 ): Promise<void> {
   const key = `raws-missing-${projectId}`;
-  // Raws showed up (or Aryeo already has media, or Dropbox was unreadable —
-  // unknown is not proof of absence): close any open watchdog task and stop.
+  // Unknown is not proof of absence — and it is not proof of PRESENCE either.
+  // A pass that couldn't read Dropbox neither mints nor completes the
+  // watchdog (a completed one is never re-minted: one nag per project).
+  if (sig.dropboxReadable === false && !sig.anyAryeoMedia) return;
+  // Raws showed up (or Aryeo already has media): close any open watchdog.
   if (!sig.rawsKnownEmpty || sig.anyAryeoMedia) {
     await prisma.smartTask.updateMany({
       where: { dedupeKey: key, status: { notIn: ["COMPLETED", "CANCELLED"] } },
@@ -1970,9 +2008,10 @@ export async function generateTasksForActiveProjects(): Promise<{ created: numbe
     data: { status: "CANCELLED" },
   });
   const projects = await prisma.project.findMany({
-    where: { status: { in: ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW", "REVISION"] } },
+    // An order that 404s in Aryeo is a human decision, not a task mint.
+    where: { status: { in: ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW", "REVISION"] }, aryeoMissingAt: null },
     include: {
-      deliverables: { select: { type: true, label: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
       // segment drives the VIP extra-pass ticks on the guided QC checklist.
       client: { select: { id: true, name: true, socialClient: true, segment: true } },
       photographer: { select: { name: true } },
@@ -1997,13 +2036,14 @@ export async function generateTasksForProject(projectId: string): Promise<number
   const p = await prisma.project.findUnique({
     where: { id: projectId },
     include: {
-      deliverables: { select: { type: true, label: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
       // segment drives the VIP extra-pass ticks on the guided QC checklist.
       client: { select: { id: true, name: true, socialClient: true, segment: true } },
       photographer: { select: { name: true } },
     },
   });
   if (!p || !ACTIVE_TASK_STATUSES.includes(p.status)) return 0;
+  if (p.aryeoMissingAt) return 0; // order gone from Aryeo — a human decides, nothing gets minted
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
   const { confirmationMessage } = await import("@/lib/delivery");
   return syncOneProjectTasks(p, kyle, confirmationMessage);
@@ -2080,7 +2120,7 @@ async function syncOneProjectTasks(
     // have been through review before this evidence-close may fire.
     if (finalVideoLanded) {
       const vids = await prisma.deliverable.findMany({
-        where: { projectId: p.id, type: { in: ["VIDEO", "SOCIAL_REEL"] } },
+        where: { projectId: p.id, type: { in: ["VIDEO", "SOCIAL_REEL"] }, removedFromOrderAt: null },
         select: { quantity: true, label: true, type: true },
       });
       // MONTHLY jobs deliver an open-ended SET (2–5 videos, stored quantity is
@@ -2247,7 +2287,11 @@ async function syncOneProjectTasks(
         // stable constants that self-clear via spec state, so one absent from
         // the spec is retired ON PURPOSE (e.g. a video deliverable removed) —
         // preserving it unchecked would block auto-close forever (review).
-        const extras = prev.filter((i) => !specLabels.has(i.label) && !DEBRIEF_QC_LABELS.has(i.label));
+        // Auto-evidence rows ("QC Video") for a category the spec no longer
+        // emits — the item was removed from the order — are dropped, not
+        // preserved: kept unticked they would block auto-close forever
+        // (review). Human sub-items and "Re-QC after revision" survive.
+        const extras = prev.filter((i) => !specLabels.has(i.label) && !DEBRIEF_QC_LABELS.has(i.label) && !/^QC\s/.test(i.label));
         const merged: ChecklistItem[] = [
           ...s.checklist.map((i) => ({ label: i.label, done: i.done || (prevDone.get(i.label) ?? false) })),
           ...extras,
@@ -2260,6 +2304,9 @@ async function syncOneProjectTasks(
         // dedupe key is never re-minted, so the work would vanish forever
         // (audit crack #2). If everything IS live, leave the completion alone.
         if (exists.status === "COMPLETED" && allDone) continue;
+        // A HUMAN close with a reason ("floor plan removed from the order")
+        // is not a blip — leave it closed, boxes or no boxes.
+        if (exists.status === "COMPLETED" && exists.sourceDetail === CLOSED_BY_HAND) continue;
         // During REVISION this reconciler must never flip the card COMPLETED —
         // every "done" signal describes the PREVIOUS accepted cut (the old
         // media is what's live on Aryeo), so a stale ticked re-QC row would

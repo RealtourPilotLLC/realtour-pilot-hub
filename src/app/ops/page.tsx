@@ -52,8 +52,12 @@ const BLOCKS: BlockDef[] = [
   { key: "comms-2", from: 14 * 60, to: 14 * 60 + 30, time: "2:00 – 2:30", title: "Client Communication Sweep #2", icon: MessageSquare, goal: "Proactive, not reactive — if something changed, the client hears it from us first." },
   { key: "systems", from: 14 * 60 + 30, to: 15 * 60 + 10, time: "2:30 – 3:10", title: "Systems + Admin Work", icon: Wrench, goal: "Keep the backend organized — without letting admin work interfere with active client needs." },
   { key: "monthly", from: 15 * 60 + 10, to: 15 * 60 + 30, time: "3:10 – 3:30", title: "Monthly Content Check", icon: Clapperboard, goal: "Personal-branding retainers run on their own rhythm — a batch of videos on a 7–10 business-day window, delivered as a set. Never mixed into listing QC." },
-  { key: "final-prep", from: 15 * 60 + 30, to: 16 * 60 + 15, time: "3:30 – 4:15", title: "Next-Day Finalization", icon: Route, goal: "By the end of this block, tomorrow is locked in and ready to go." },
-  { key: "qc-pm", from: 16 * 60 + 15, to: 17 * 60, time: "4:15 – 5:00", title: "Final QC + Deliveries", icon: ClipboardCheck, goal: "Finished work doesn't sit overnight — get it into clients' hands before end of day." },
+  // "Final QC + Deliveries" (4:15-5:00) was dropped Sep 1 — Jordan: it duplicated
+  // the morning QC + Deliveries block and the Production Pipeline Check. Its
+  // slot folds into Next-Day Finalization so the timeline has no dead gap
+  // (currentKey falls back to the LAST block inside a gap, which would have
+  // lit up Daily Closeout at 4:15).
+  { key: "final-prep", from: 15 * 60 + 30, to: 17 * 60, time: "3:30 – 5:00", title: "Next-Day Finalization", icon: Route, goal: "By the end of this block, tomorrow is locked in and ready to go." },
   { key: "comms-3", from: 17 * 60, to: 17 * 60 + 30, time: "5:00 – 5:30", title: "Client Communication Sweep #3", icon: MessageSquare, goal: "Don't carry simple client questions into the next business day." },
   { key: "closeout", from: 17 * 60 + 30, to: 18 * 60, time: "5:30 – 6:00", title: "Daily Closeout", icon: Moon, goal: "Review the whole operation before ending the day — escalate anything that needs Jordan." },
 ];
@@ -176,7 +180,6 @@ function BlockBody({ blockKey, d }: { blockKey: string; d: OpsDay }) {
       );
 
     case "qc-am":
-    case "qc-pm":
       return <QcDueToday d={d} />;
 
     case "overdue":
@@ -564,22 +567,27 @@ function MonthlyCard({ d }: { d: OpsDay }) {
   );
 }
 
-function DropboxChip({ label, n }: { label: string; n: number }) {
+function DropboxChip({ label, n, stale, at }: { label: string; n: number; stale?: boolean; at?: string }) {
+  // Stale = the last sweep couldn't read Dropbox (rate limit / blip) and these
+  // are the last good counts. Say so rather than presenting them as live.
+  const when = at ? ` (last read ${fmtDayTime(at)})` : "";
   return (
     <span
       // Hover explains the count — "Raw 150 ✓" reads as a mystery otherwise
       // (Jordan asked what these mean).
       title={
-        label === "Raw"
+        (label === "Raw"
           ? n > 0 ? `${n} raw files are in the job's Dropbox RAW folders` : "No files found in the job's Dropbox RAW folders yet"
-          : n > 0 ? `${n} finished files are in the job's Dropbox FINAL folders` : "No finished files in the job's Dropbox FINAL folders yet"
+          : n > 0 ? `${n} finished files are in the job's Dropbox FINAL folders` : "No finished files in the job's Dropbox FINAL folders yet") +
+        (stale ? ` — Dropbox couldn't be read on the last check, showing the previous count${when}` : "")
       }
       className={cn(
         "rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
         n > 0 ? "bg-success/15 text-success" : "bg-surface-2 text-muted-2",
+        stale && "opacity-70 ring-1 ring-warning/40",
       )}
     >
-      {label} {n > 0 ? `${n} ✓` : "—"}
+      {label} {n > 0 ? `${n} ✓` : "—"}{stale ? " ·stale" : ""}
     </span>
   );
 }
@@ -641,12 +649,17 @@ function QcRow({ q, now }: { q: OpsQcRow; now?: Date }) {
         {q.services.slice(0, 5).map((s) => (
           <span key={s} className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted">{s}</span>
         ))}
-        {db && (
+        {db ? (
           <>
             <span className="mx-0.5 text-muted-2">·</span>
-            <DropboxChip label="Raw" n={db.rawPhotos + db.rawVideo} />
-            <DropboxChip label="Final" n={db.finalPhotos + db.finalVideo} />
+            <DropboxChip label="Raw" n={db.rawPhotos + db.rawVideo} stale={db.stale} at={db.at} />
+            <DropboxChip label="Final" n={db.finalPhotos + db.finalVideo} stale={db.stale} at={db.at} />
           </>
+        ) : (
+          // Not consulted ≠ empty. Hiding both chips read as "no files".
+          <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted-2" title="The last status check didn't read Dropbox for this job (Aryeo already accounted for everything ordered, or the read failed with nothing to carry forward).">
+            Dropbox: not read
+          </span>
         )}
       </div>
       {/* The work that's available NOW, stated first. A part-delivered job used

@@ -128,7 +128,7 @@ async function MapView() {
         select: {
           id: true, title: true, lat: true, lng: true, status: true,
           client: { select: { name: true } },
-          deliverables: { select: { type: true } },
+          deliverables: { where: { removedFromOrderAt: null }, select: { type: true } },
         },
       },
       assignedTo: { select: { name: true, homeLat: true, homeLng: true, homeRadiusMi: true } },

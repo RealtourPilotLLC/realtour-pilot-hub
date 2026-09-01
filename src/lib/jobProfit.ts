@@ -103,7 +103,7 @@ export async function jobProfitability(start: Date, end: Date): Promise<JobProfi
       rawPhotoCount: true, dronePhotoCount: true,
       photographer: { select: { name: true } },
       client: { select: { name: true } },
-      deliverables: { select: { type: true, label: true, quantity: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, quantity: true } },
     },
     orderBy: { shootDate: "desc" },
   });

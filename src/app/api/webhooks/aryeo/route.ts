@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 import { getConnection } from "@/lib/integrations/connections";
-import { Aryeo, syncAryeoOrders, syncAryeoAppointments, syncAryeoSocialPlans, syncAryeoCustomers } from "@/lib/integrations/aryeo";
+import { syncAryeoOrders, syncAryeoAppointments, syncAryeoSocialPlans, syncAryeoCustomers } from "@/lib/integrations/aryeo";
 import { syncClientSegments } from "@/lib/segmentSync";
 
 export const runtime = "nodejs";
@@ -174,7 +174,13 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
   // reconciler for that project (cheap, idempotent — and since flat payloads
   // hide the verb, a fulfil/paid must not wait for the cron to be noticed).
   if (object === "ORDER" || name.startsWith("ORDER")) {
-    if (id) { try { await Aryeo.order(id); } catch { /* fall through to full sync */ } }
+    // Scoped to THIS order when the id is known. The bare incremental sweep
+    // stops at a 45-day created_at floor, so an event about an older order
+    // (632 Greenridge: created Jun 30, items changed Aug 26) never reached the
+    // update pass — its price, fulfilment and line items stayed frozen.
+    if (id) {
+      try { await syncAryeoOrders({ orderId: id }); } catch { /* fall through to the sweep */ }
+    }
     await syncAryeoOrders();
     if (id) {
       const project = await prisma.project.findUnique({ where: { aryeoOrderId: id }, select: { id: true } });
@@ -217,14 +223,18 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
     try { await syncAryeoAppointments({ recentOnlyDays: 21 }); } catch { /* non-fatal */ }
     await syncAryeoOrders();
     if (id) {
-      const appt = await prisma.appointment.findUnique({ where: { aryeoId: id }, select: { projectId: true, startAt: true } });
+      const appt = await prisma.appointment.findUnique({
+        where: { aryeoId: id },
+        select: { projectId: true, startAt: true, project: { select: { aryeoOrderId: true } } },
+      });
       if (appt) {
         // The bounded sync skips DATED rows older than its window, so a
         // retro-cancel/reassign of an old appointment would otherwise sit
-        // unpropagated until the nightly full sync. Rare path: re-run unbounded
-        // so the change lands now.
-        if (appt.startAt && appt.startAt.getTime() < Date.now() - 21 * 86_400_000) {
-          try { await syncAryeoAppointments(); } catch { /* non-fatal */ }
+        // unpropagated until the reconcile slices reach it. Rare path: re-sync
+        // THIS order's appointments (2-4 calls, ~1s) — never the unbounded
+        // pass, which is ~190s of API and can't fit a webhook.
+        if (appt.startAt && appt.startAt.getTime() < Date.now() - 21 * 86_400_000 && appt.project?.aryeoOrderId) {
+          try { await syncAryeoAppointments({ orderId: appt.project.aryeoOrderId }); } catch { /* non-fatal */ }
         }
         try { await restatusProject(appt.projectId); } catch { /* non-fatal */ }
         await retaskProject(appt.projectId);
@@ -268,7 +278,7 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
     return;
   }
   if (type.includes("order") || type.includes("customer") || type.includes("invoice")) {
-    if (id) { try { await Aryeo.order(id); } catch { /* non-fatal */ } }
+    if (id) { try { await syncAryeoOrders({ orderId: id }); } catch { /* non-fatal */ } }
     await syncAryeoOrders();
     try { await syncClientSegments(); } catch { /* non-fatal */ }
     return;

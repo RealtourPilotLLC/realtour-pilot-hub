@@ -28,9 +28,19 @@ async function cronHealth(): Promise<{ crons: CronJobHealth[]; ready: boolean }>
       const entry = byJob.get(r.job) ?? { job: r.job, runs: [] };
       if (entry.runs.length < 5) {
         let skipped: string[] = [];
+        let timedOut: string[] = [];
+        let slowest: string | null = null;
         try {
-          const s = r.summary ? (JSON.parse(r.summary) as { skipped?: string[] }) : null;
+          const s = r.summary ? (JSON.parse(r.summary) as { skipped?: string[]; timedOut?: string[]; ms?: Record<string, number> }) : null;
           if (Array.isArray(s?.skipped)) skipped = s.skipped;
+          if (Array.isArray(s?.timedOut)) timedOut = s.timedOut;
+          // Per-step timings are checkpointed after every step (lib/cron), so
+          // even a hard-killed run says which step was the hog.
+          const ms = s?.ms && typeof s.ms === "object" ? Object.entries(s.ms) : [];
+          if (ms.length) {
+            const [name, t] = ms.reduce((a, b) => (b[1] > a[1] ? b : a));
+            slowest = `${name} ${Math.round(t / 1000)}s`;
+          }
         } catch { /* unreadable summary */ }
         entry.runs.push({
           id: r.id,
@@ -39,6 +49,8 @@ async function cronHealth(): Promise<{ crons: CronJobHealth[]; ready: boolean }>
           ok: r.finishedAt ? r.ok : null,
           error: r.error,
           skipped,
+          timedOut,
+          slowest,
         });
       }
       byJob.set(r.job, entry);
@@ -52,7 +64,7 @@ async function cronHealth(): Promise<{ crons: CronJobHealth[]; ready: boolean }>
 export default async function ConnectionsPage() {
   const connections = await getAllConnections();
   const byProvider = new Map(connections.map((c) => [c.provider, c]));
-  const [webhookErrors, webhookHealth, { crons, ready: cronLogReady }, gmailSend] = await Promise.all([
+  const [webhookErrors, webhookHealth, { crons, ready: cronLogReady }, gmailSend, reconcile] = await Promise.all([
     webhookErrorCount(),
     webhookHealthByProvider().catch(() => []),
     cronHealth(),
@@ -63,6 +75,11 @@ export default async function ConnectionsPage() {
       gmailSendHealth().catch(() => null),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
     ]),
+    // The full order reconcile's cursor — proves the daily safety net completes.
+    import("@/lib/integrations/aryeo")
+      .then(({ readReconcileCursor }) => readReconcileCursor())
+      .then((c) => ({ lastCompletedAt: c.lastCompletedAt, inProgressPage: c.startedAt ? c.page : null, startedAt: c.startedAt }))
+      .catch(() => null),
   ]);
 
   // Receivers currently accepting UNSIGNED posts: connected providers whose
@@ -97,7 +114,7 @@ export default async function ConnectionsPage() {
       />
       <div className="space-y-6 p-6">
         {/* Sync health: cron run history + webhook rejections + unsigned receivers. */}
-        <SyncHealth crons={crons} webhooks={webhookHealth} unsignedProviders={unsignedProviders} cronLogReady={cronLogReady} />
+        <SyncHealth crons={crons} webhooks={webhookHealth} unsignedProviders={unsignedProviders} cronLogReady={cronLogReady} reconcile={reconcile} />
         {webhookErrors > 0 && (
           <div className="flex items-start gap-3 rounded-2xl border border-warning/40 bg-warning/10 p-4">
             <AlertTriangle className="mt-0.5 size-5 shrink-0 text-warning" />

@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
+import { CLOSED_BY_HAND } from "@/lib/tasks";
 import { requireAdmin } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 import { ActivityType } from "@prisma/client";
@@ -32,7 +33,12 @@ export async function completeQcTask(taskId: string, note: string): Promise<{ ok
 
   const done = await prisma.smartTask.updateMany({
     where: { id: taskId, status: { notIn: ["COMPLETED", "CANCELLED"] } },
-    data: { status: "COMPLETED", completedAt: new Date() },
+    // "closed-by-hand" is what stops the hourly reconciler from reopening
+    // this card: it reopens any COMPLETED QC whose checklist still has
+    // unticked boxes (a guard against auto-closes during signal blips), and a
+    // human close never ticks boxes — so 195 Woodhill and 632 Greenridge came
+    // back every hour after Kyle closed them with a reason (Sep 1 2026).
+    data: { status: "COMPLETED", completedAt: new Date(), sourceDetail: CLOSED_BY_HAND },
   });
   if (done.count === 0) return { ok: true, message: "Already handled." };
 

@@ -42,23 +42,24 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
           { status: { in: ["SHOT", "EDITING", "REVIEW", "REVISION"] } },
           { status: { in: ["BOOKED", "SCHEDULED"] }, shootDate: { lt: now, gte: etAddDays(now, -7) } },
         ],
+        aryeoMissingAt: null,
       },
       orderBy: [{ deliveryDue: { sort: "asc", nulls: "last" } }, { shootDate: { sort: "asc", nulls: "last" } }],
-      include: { client: true, editor: true, photographer: true, deliverables: true },
+      include: { client: true, editor: true, photographer: true, deliverables: { where: { removedFromOrderAt: null } } },
     }),
     // Upcoming edits — Jordan: "any shoot on the schedule upcoming should be in
     // an upcoming edits tab". Every future-dated booked/scheduled job with a
     // video deliverable, however far out.
     prisma.project.findMany({
-      where: { status: { in: ["BOOKED", "SCHEDULED"] }, shootDate: { gte: now } },
+      where: { status: { in: ["BOOKED", "SCHEDULED"] }, shootDate: { gte: now }, aryeoMissingAt: null },
       orderBy: { shootDate: "asc" },
-      include: { client: true, editor: true, photographer: true, deliverables: true },
+      include: { client: true, editor: true, photographer: true, deliverables: { where: { removedFromOrderAt: null } } },
     }),
     prisma.project.findMany({
       where: { status: "DELIVERED", deliveredAt: { gte: deliveredCutoff } },
       orderBy: { deliveredAt: "desc" },
       take: 60,
-      include: { client: true, editor: true, photographer: true, deliverables: true },
+      include: { client: true, editor: true, photographer: true, deliverables: { where: { removedFromOrderAt: null } } },
     }),
   ]);
 
@@ -114,17 +115,20 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
     // guard below.
     let rawIn = 0;
     let finalIn = 0;
+    let dropboxStale = false;
     try {
-      const ev = (JSON.parse(p.statusEvidence ?? "{}") as { dropbox?: { rawVideo?: number; finalVideo?: number } | null })?.dropbox;
+      const ev = (JSON.parse(p.statusEvidence ?? "{}") as { dropbox?: { rawVideo?: number; finalVideo?: number; stale?: boolean } | null })?.dropbox;
       rawIn = ev?.rawVideo ?? 0;
       finalIn = ev?.finalVideo ?? 0;
+      dropboxStale = !!ev?.stale;
     } catch { /* unreadable evidence → treat as empty */ }
     // A REVISION project with no open VIDEO-lane revision was flipped by a
     // photo ask — show the video's own state instead (cut in the final folder
-    // → Ready for review; otherwise still In editing).
+    // → Ready for review; otherwise still In editing). A stale zero (Dropbox
+    // couldn't be read this pass) proves nothing — keep the row where it is.
     let effectiveStatus = p.status;
     if (!upcoming && p.status === "REVISION" && (revisionCount.get(p.id) ?? 0) === 0) {
-      effectiveStatus = finalIn > 0 ? "REVIEW" : "EDITING";
+      effectiveStatus = finalIn > 0 ? "REVIEW" : dropboxStale ? p.status : "EDITING";
     }
     return {
       id: p.id,

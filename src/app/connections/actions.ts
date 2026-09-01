@@ -44,7 +44,9 @@ export async function syncAryeoNow(): Promise<ActionResult> {
   try {
     await syncAryeoTeam();
     const r = await syncAryeoOrders();
-    const appt = await syncAryeoAppointments();
+    // Bounded: the unbounded pass is ~190s of API and can't fit a request;
+    // the hourly reconcile slices cover all of history.
+    const appt = await syncAryeoAppointments({ recentOnlyDays: 120 });
     // Backfill client license #, brokerage, notes from /customer-users.
     await syncAryeoCustomers();
     // Re-evaluate true status by cross-checking Aryeo media (+ Dropbox).

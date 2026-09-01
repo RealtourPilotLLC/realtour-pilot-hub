@@ -155,7 +155,7 @@ export async function searchQueueCandidates(q: string): Promise<QueueCandidate[]
       shootDate: true,
       statusEvidence: true,
       client: { select: { name: true } },
-      deliverables: { select: { type: true, label: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
       _count: { select: { reviewSubmissions: true } },
     },
   });
@@ -219,7 +219,7 @@ export async function addToEditorQueue(
       clientId: true,
       statusEvidence: true,
       revisionRequestedAt: true,
-      deliverables: { select: { id: true, type: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { id: true, type: true } },
       _count: { select: { reviewSubmissions: true } },
     },
   });
@@ -234,7 +234,9 @@ export async function addToEditorQueue(
   const hasVideo = project.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
   if (!hasVideo) {
     await prisma.deliverable.create({
-      data: { projectId, type: "VIDEO", label: "Video — added manually" },
+      // manual: the order reconcile only knows Aryeo line items and must never
+      // retire a row a human added on purpose.
+      data: { projectId, type: "VIDEO", label: "Video — added manually", manual: true },
     });
   }
 
@@ -506,7 +508,7 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
           revisionRequestedAt: true,
           editorManual: true,
           editor: { select: { name: true } },
-          deliverables: { select: { type: true, label: true } },
+          deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
         },
       });
       if (proj) {

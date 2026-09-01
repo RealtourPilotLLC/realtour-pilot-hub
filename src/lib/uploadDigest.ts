@@ -129,6 +129,7 @@ export async function sendNightlyUploadNags(): Promise<{ sent: number; skipped: 
     where: {
       shootDate: { gte: start, lte: now }, // happened TODAY (never nag a future or ON_HOLD shoot)
       status: { notIn: ["CANCELLED", "ON_HOLD"] },
+      aryeoMissingAt: null,
       photographerId: { not: null },
       debriefSubmittedAt: null,
     },
@@ -188,6 +189,7 @@ export async function sendEveningUploadDigests(): Promise<{ sent: number; skippe
       // ON_HOLD = the shoot may not have happened — never tell someone to
       // wrap up content that wasn't captured (review finding).
       status: { notIn: ["CANCELLED", "ON_HOLD"] },
+      aryeoMissingAt: null,
       photographerId: { not: null },
     },
     select: {

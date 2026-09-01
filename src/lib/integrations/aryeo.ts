@@ -871,13 +871,36 @@ export async function syncAryeoOrders(
   // mirroring, cancel mapping, customer re-link, deliverable rebuild) instead
   // of a parallel implementation that would drift, but skips pagination and the
   // recent-window floor, so an old job can be refreshed on demand in ~1 call.
-  opts: { full?: boolean; orderId?: string } = {},
-): Promise<{ imported: number; updated: number; clients: number; scanned: number }> {
+  // `budgetMs` (full mode only) makes the sweep RESUMABLE: it walks pages
+  // until the budget is spent, persists the next page number, and the next
+  // run picks up there. Without it the daily "safety net" restarted at page 1
+  // every morning, ran ~130-330s, and was killed by the 5-minute platform
+  // limit 29 of the last 30 days — so it had never once reached the end
+  // (audit HIGH). The cursor lives in AppSetting "aryeo:fullReconcile".
+  opts: { full?: boolean; orderId?: string; budgetMs?: number; maxPages?: number } = {},
+): Promise<{
+  imported: number; updated: number; clients: number; scanned: number;
+  /** full mode: did this run reach the END of the order history? */
+  complete?: boolean;
+  /** full mode: the page the next run resumes from (1 = starting over) */
+  resumeFromPage?: number;
+  budgetHit?: boolean;
+  /** single-order mode: Aryeo returned 404/410 for that order */
+  missing?: boolean;
+}> {
   await loadManualProductMap(); // hand-set product categories override the parsers below
   let imported = 0;
   let updated = 0;
   let scanned = 0;
   let clientsCreated = 0;
+  const t0 = Date.now();
+  const resumable = !!opts.full && !opts.orderId;
+  // Direct AppSetting reads/writes (not getSetting's 60s cache) — a cursor has
+  // to be exact across two runs minutes apart.
+  const cursor = resumable ? await readReconcileCursor() : null;
+  let reachedEnd = false;
+  let budgetHit = false;
+  let orderMissing = false;
 
   try {
     // Preload what we already have to avoid a per-order round-trip. The extra
@@ -1025,24 +1048,51 @@ export async function syncAryeoOrders(
     const RECENT_WINDOW_DAYS = 45;
     const floorDate = opts.full ? ARYEO_MIN_DATE : new Date(Date.now() - RECENT_WINDOW_DAYS * 24 * 3600_000);
     const perPage = 50;
-    let page = 1;
+    let page = cursor?.page ?? 1;
     let stop = false;
+    let pagesThisRun = 0;
     for (let i = 0; i < 200 && !stop; i++) {
+      // Budget / slice check BEFORE each page fetch, so the page we were
+      // mid-way through is never half-applied; the cursor always points at a
+      // page boundary.
+      if (resumable && ((opts.budgetMs && Date.now() - t0 >= opts.budgetMs) || (opts.maxPages && pagesThisRun >= opts.maxPages))) {
+        budgetHit = true;
+        break;
+      }
       let batch: AryeoOrder[];
       let lastPage: number | undefined;
       if (opts.orderId) {
-        // Single-order mode: one fetch, one pass, no pagination.
-        const one = await Aryeo.order(opts.orderId).catch(() => null);
+        // Single-order mode: one fetch, one pass, no pagination. A definitive
+        // 404 is information the caller must see ("Refresh from Aryeo" used to
+        // swallow it and report no change on an order that no longer exists).
+        let one: AryeoOrder | null = null;
+        try {
+          one = await Aryeo.order(opts.orderId);
+        } catch (e) {
+          // Never THROW here: the outer catch marks the whole Aryeo connection
+          // as errored on /connections. A 404 is a fact about one order.
+          if (e instanceof AryeoError && (e.status === 404 || e.status === 410)) orderMissing = true;
+          one = null;
+        }
         batch = one ? [one] : [];
         stop = true;
       } else {
+        // Resumable passes page OLDEST-first: Aryeo honours sort=created_at
+        // (verified; updated_at is not an allowed sort) and it gives stable
+        // page positions, so an order booked between two runs can't push
+        // another order across the cursor's page boundary and get it skipped.
+        // Every other caller keeps the newest-first default byte-for-byte.
         const res = await aryeoRequest<{ data: AryeoOrder[]; meta?: { last_page?: number } }>("/orders", {
-          query: { include: ORDER_INCLUDES, page, per_page: perPage },
+          query: { include: ORDER_INCLUDES, page, per_page: perPage, ...(resumable ? { sort: "created_at" } : {}) },
         });
         batch = res?.data ?? [];
         lastPage = res?.meta?.last_page;
+        pagesThisRun++;
       }
-      if (batch.length === 0) break;
+      if (batch.length === 0) {
+        reachedEnd = true;
+        break;
+      }
 
       for (const order of batch) {
         if (!order.id) continue;
@@ -1050,8 +1100,11 @@ export async function syncAryeoOrders(
         // Newest-first: once we pass the window floor (full = all history,
         // incremental = the recent window), stop entirely. An explicit
         // single-order refresh ignores the floor — the owner asked for THIS job.
-        if (!opts.orderId && order.created_at && new Date(order.created_at) < floorDate) {
+        // (Never on an ascending resumable pass — the oldest orders come FIRST
+        // there, and the floor is 2021 anyway.)
+        if (!opts.orderId && !resumable && order.created_at && new Date(order.created_at) < floorDate) {
           stop = true;
+          reachedEnd = true;
           break;
         }
         // Already imported → UPDATE PASS (audit cracks #1/#14/#18/#29): orders
@@ -1109,6 +1162,10 @@ export async function syncAryeoOrders(
           const clientChanged = !!cust?.id && custClientId !== undefined && custClientId !== proj.clientId;
           const clientNeedsResolve = !!cust?.id && custClientId === undefined;
 
+          // (deliveredAt is HUB-owned — stamped at the hub's own DELIVERED
+          // transition. Aryeo's fulfilled_at lands at the FIRST media delivery,
+          // i.e. photos on day 1 of a staged listing job; mirroring it here
+          // would have marked every in-production job "delivered" — review.)
           if (moneyChanged || cancelNow || clientChanged || clientNeedsResolve) {
             const newClientId = clientChanged || clientNeedsResolve ? await resolveClient(cust) : proj.clientId;
             await prisma.project.update({
@@ -1180,6 +1237,16 @@ export async function syncAryeoOrders(
               status: cancelNow ? "CANCELLED" : proj.status,
             });
             updated++;
+          }
+          // The other half of the update pass: line items. A write-once
+          // import meant an item removed from the order kept its deliverable
+          // forever — 632 Greenridge chased a "Premium Video" for a week after
+          // the item was pulled and the order re-priced (Sep 1 2026 audit).
+          if (!["DELIVERED", "CANCELLED"].includes(proj.status)) {
+            try {
+              const r = await reconcileDeliverablesToOrder(proj.id, order);
+              if (r.changed) updated++;
+            } catch { /* reconcile is best-effort — the money mirror above already landed */ }
           }
           continue;
         }
@@ -1264,17 +1331,413 @@ export async function syncAryeoOrders(
 
       if (opts.orderId) break; // single-order mode already has everything
       const last = lastPage;
-      if (last ? page >= last : batch.length < perPage) break;
+      if (last ? page >= last : batch.length < perPage) {
+        reachedEnd = true;
+        break;
+      }
       page++;
+      // Page boundary reached and fully applied → remember it. A run killed
+      // mid-page re-does that one page next time (every write here is an
+      // idempotent upsert/update), never skips it.
+      if (resumable) await writeReconcileCursor({ page, startedAt: cursor?.startedAt ?? new Date(t0).toISOString(), lastCompletedAt: cursor?.lastCompletedAt ?? null });
+    }
+
+    if (resumable) {
+      if (reachedEnd) {
+        await writeReconcileCursor({ page: 1, startedAt: null, lastCompletedAt: new Date().toISOString() });
+      } else if (!budgetHit) {
+        // Hit the 200-iteration safety cap without reaching the end — keep the
+        // cursor where the loop left it so the next run continues.
+        await writeReconcileCursor({ page, startedAt: cursor?.startedAt ?? new Date(t0).toISOString(), lastCompletedAt: cursor?.lastCompletedAt ?? null });
+      }
     }
 
     await markSynced("aryeo");
-    return { imported, updated, clients: clientsCreated, scanned };
+    return {
+      imported, updated, clients: clientsCreated, scanned,
+      ...(resumable ? { complete: reachedEnd, resumeFromPage: reachedEnd ? 1 : page, budgetHit } : {}),
+      ...(opts.orderId ? { missing: orderMissing } : {}),
+    };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     await markError("aryeo", msg);
     throw e;
   }
+}
+
+// ---- Order items → deliverables (re-sync) ----------------------------------
+// Bring a project's Deliverable rows in line with the order's CURRENT line
+// items. Compares by TYPE (one row per type is the invariant), because a
+// Deliverable has no item id and several items can imply the same type.
+//   · type no longer implied by any non-canceled item → RETIRE the row
+//     (removedFromOrderAt + why). Never deleted: status, uploads, capturedAt
+//     stay as evidence of work that happened. Hub-created rows (manual) are
+//     never touched — the reconcile only knows Aryeo's line items.
+//   · type newly implied → un-retire a retired row of that type, else create.
+//   · label / quantity drift → update in place (status untouched).
+//   · stored OrderItem rows replaced when the item set changed.
+// Guards: an order with NO parseable items (fee-only, or a thin API page) is
+// left alone — "unknown beats wrong". DELIVERED/CANCELLED projects are never
+// reconciled (post-delivery edits are billing, not production).
+export async function reconcileDeliverablesToOrder(
+  projectId: string,
+  order: AryeoOrder,
+): Promise<{ changed: boolean; retired: string[]; restored: string[]; added: string[]; relabeled: string[] }> {
+  const out = { changed: false, retired: [] as string[], restored: [] as string[], added: [] as string[], relabeled: [] as string[] };
+  const items = (order.items ?? []).filter((it) => !it.is_canceled);
+  const parsed = dedupeParsedDeliverables(items.flatMap(itemToDeliverables));
+  if (parsed.length === 0) return out;
+
+  const rows = await prisma.deliverable.findMany({
+    where: { projectId },
+    select: { id: true, type: true, label: true, quantity: true, status: true, manual: true, removedFromOrderAt: true, uploadedAt: true },
+  });
+  const want = new Map(parsed.map((p) => [p.type, p]));
+  const orderNo = order.number ?? order.id ?? "?";
+
+  for (const r of rows) {
+    if (r.manual || /added manually/i.test(r.label ?? "")) continue;
+    const w = want.get(r.type);
+    if (!w) {
+      if (!r.removedFromOrderAt) {
+        await prisma.deliverable.update({
+          where: { id: r.id },
+          data: {
+            removedFromOrderAt: new Date(),
+            removedFromOrderNote: `'${r.label ?? r.type}' is no longer on Aryeo order #${orderNo}`.slice(0, 300),
+            // The photographer's "couldn't complete" excuse is moot for an
+            // item the order no longer carries.
+            notCompletedReason: null,
+            notCompletedAt: null,
+          },
+        });
+        out.retired.push(r.label ?? r.type);
+      }
+      continue;
+    }
+    if (r.removedFromOrderAt) {
+      // Back on the order. A previously-DONE row stays DONE only if its work
+      // is still on the site — safest is PENDING unless the photographer
+      // already uploaded for it; the status sweep re-derives DONE from Aryeo.
+      await prisma.deliverable.update({
+        where: { id: r.id },
+        data: {
+          removedFromOrderAt: null, removedFromOrderNote: null,
+          label: w.label, quantity: w.quantity,
+          ...(r.status === "DONE" ? { status: "PENDING" } : {}),
+        },
+      });
+      out.restored.push(w.label);
+    } else if ((r.label ?? "") !== w.label || r.quantity < w.quantity) {
+      // Quantity only ever RISES here: the status sweep lifts a monthly plan's
+      // video row to the plan quota (Starter 2 / Accelerator 4 / Pro 8) while
+      // the order line says 1 — writing 1 back would ping-pong hourly.
+      await prisma.deliverable.update({ where: { id: r.id }, data: { label: w.label, quantity: Math.max(r.quantity, w.quantity) } });
+      out.relabeled.push(w.label);
+    }
+    want.delete(r.type);
+  }
+  // Types on the order with no row at all (live, retired OR manual — one row
+  // per type is the invariant, and an editor-added video plus a later video
+  // line item must not become two).
+  for (const [, w] of want) {
+    if (rows.some((r) => r.type === w.type)) continue;
+    await prisma.deliverable.create({
+      data: { projectId, type: w.type, label: w.label, quantity: w.quantity, status: "PENDING" },
+    });
+    out.added.push(w.label);
+  }
+
+  // Stored line items: replace wholesale when the set differs (same shape as
+  // backfillOrderItems). Titles/amounts feed /billing, margins and trends.
+  const nextItems = orderItemRows(order.items ?? []);
+  if (nextItems.length > 0) {
+    const cur = await prisma.orderItem.findMany({
+      where: { projectId },
+      select: { aryeoId: true, title: true, quantity: true, amount: true, isCanceled: true },
+    });
+    const sig = (r: { aryeoId: string | null; title: string; quantity: number; amount: number; isCanceled: boolean }) =>
+      `${r.aryeoId ?? ""}|${r.title}|${r.quantity}|${r.amount}|${r.isCanceled}`;
+    const same = cur.length === nextItems.length && cur.map(sig).sort().join("\n") === nextItems.map(sig).sort().join("\n");
+    if (!same) {
+      await prisma.$transaction([
+        prisma.orderItem.deleteMany({ where: { projectId } }),
+        prisma.orderItem.createMany({ data: nextItems.map((r) => ({ ...r, projectId })) }),
+      ]);
+      out.changed = true;
+    }
+  }
+
+  const touched = out.retired.length + out.restored.length + out.added.length + out.relabeled.length > 0;
+  if (touched) {
+    out.changed = true;
+    const bits = [
+      out.retired.length ? `removed ${out.retired.join(", ")}` : null,
+      out.added.length ? `added ${out.added.join(", ")}` : null,
+      out.restored.length ? `restored ${out.restored.join(", ")}` : null,
+      out.relabeled.length ? `relabeled ${out.relabeled.join(", ")}` : null,
+    ].filter(Boolean).join(" · ");
+    await prisma.activity.create({
+      data: { projectId, type: "SYSTEM", body: `Order changed in Aryeo (#${orderNo}): ${bits}.`.slice(0, 1000) },
+    }).catch(() => {});
+    // The job's promise follows what is still owed.
+    try {
+      const { standardDeliveryDue } = await import("@/lib/tasks");
+      const p = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { shootDate: true, packageName: true, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } } },
+      });
+      if (p?.shootDate) {
+        const { isMonthlyContentJob } = await import("@/lib/pipeline");
+        await prisma.project.update({
+          where: { id: projectId },
+          data: { deliveryDue: standardDeliveryDue(p.shootDate, p.deliverables, isMonthlyContentJob(p.deliverables, p.packageName)) },
+        });
+      }
+    } catch { /* due refresh is best-effort */ }
+    // A retired video takes its chases with it. edit_video only when nobody
+    // hand-assigned it (the assignedManually invariant every engine respects).
+    if (out.retired.length > 0) {
+      const owedVideo = await prisma.deliverable.count({
+        where: { projectId, removedFromOrderAt: null, type: { in: ["VIDEO", "SOCIAL_REEL"] } },
+      });
+      if (owedVideo === 0) {
+        const { createHash } = await import("crypto");
+        // Same shape as tasks.ts dedupe(): sha1 hex, first 24 chars.
+        const notCompletableKey = createHash("sha1").update([projectId, "video-not-completable"].join("|")).digest("hex").slice(0, 24);
+        await prisma.smartTask.updateMany({
+          where: {
+            projectId,
+            status: { notIn: ["COMPLETED", "CANCELLED"] },
+            OR: [
+              { dedupeKey: `raw-video-missing-${projectId}` },
+              { dedupeKey: `edit-video-${projectId}`, assignedManually: false },
+              { dedupeKey: notCompletableKey }, // "video marked not completable — decide" is answered by the order itself
+            ],
+          },
+          data: { status: "CANCELLED" },
+        }).catch(() => {});
+      }
+    }
+  }
+  return out;
+}
+
+// ---- Postponed shoots -------------------------------------------------------
+// The one card that keeps a dateless job alive: "Rebook — <street>". Minted
+// when the appointment sync clears a shoot date because every Aryeo
+// appointment is postponed/unscheduled, closed by the same sync the moment a
+// scheduled date returns. Cancelled orders never get here (the order sync
+// cancels the project first).
+async function mintRebookTask(projectId: string): Promise<void> {
+  const p = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      title: true, clientId: true, status: true, aryeoMissingAt: true,
+      client: { select: { name: true } },
+      appointments: { select: { status: true, startAt: true, postponedAt: true } },
+    },
+  });
+  if (!p || p.status === "CANCELLED" || p.status === "DELIVERED" || p.aryeoMissingAt) return;
+  // Only a POSTPONED job ("we'll rebook") gets the card. A job whose
+  // appointments were all CANCELED while the order stayed open is a
+  // different conversation, and the card's wording would be wrong.
+  const postponed = p.appointments.filter(
+    (a) =>
+      !(a.status ?? "").toUpperCase().startsWith("CANCEL") && // Aryeo keeps postponed_at on a later cancel
+      ((a.status ?? "").toUpperCase() === "UNSCHEDULED" || (!!a.postponedAt && a.startAt === null)),
+  );
+  if (postponed.length === 0) return;
+  const newestPostponedAt = postponed
+    .map((a) => a.postponedAt?.getTime() ?? 0)
+    .reduce((m, t) => Math.max(m, t), 0);
+  const street = (p.title || "this job").split(",")[0].trim();
+  const key = `rebook-${projectId}`;
+  await prisma.smartTask.upsert({
+    where: { dedupeKey: key },
+    create: {
+      taskType: "internal_instruction",
+      title: `Rebook — ${street} (postponed, no new date)`.slice(0, 120),
+      summary: `${p.client?.name ?? "The client"}'s shoot at ${street} was postponed in Aryeo and has no new date. It has dropped off the schedule, Ops Day and the confirmation texts until one is set — reach out and get it rebooked (or cancel the order if it's not happening). This closes itself when a scheduled appointment appears.`.slice(0, 500),
+      reasonCreated: "Every Aryeo appointment on this job is postponed or unscheduled.",
+      source: "system",
+      priority: "HIGH",
+      // Due the business day after it was postponed — an old postponement
+      // arrives already overdue, which is the point (80 W Lancaster sat 12
+      // days with nothing open).
+      dueAt: new Date((newestPostponedAt || Date.now()) + 24 * 3600_000),
+      assignedKey: "kyle",
+      projectId,
+      clientId: p.clientId,
+      propertyAddress: p.title,
+      dedupeKey: key,
+    },
+    // Re-open a closed one only if it was COMPLETED by a rebook that later fell
+    // through again — a human CANCELLING it means "stop asking".
+    update: {},
+  }).catch(() => {});
+  const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key }, select: { status: true, completedAt: true } });
+  // Kyle marking it Done ("they'll pick a date next week") stays done. Only a
+  // postponement NEWER than that completion re-opens it.
+  if (existing?.status === "COMPLETED" && newestPostponedAt > (existing.completedAt?.getTime() ?? Infinity)) {
+    await prisma.smartTask.update({ where: { dedupeKey: key }, data: { status: "OPEN", completedAt: null } }).catch(() => {});
+  }
+}
+
+// ---- Orphaned orders --------------------------------------------------------
+// A job the hub still treats as live whose Aryeo order no longer exists (404:
+// deleted or merged on their side). The list scan can never see these — an
+// order that isn't there isn't listed — so nothing noticed: three live jobs
+// kept chasing raws, minting QC, and queueing client texts against orders that
+// were gone (Sep 1 2026 audit). One GET per active project, once a day.
+//
+// Policy: flag, stand down, ask. NEVER auto-cancel — a 404 can also mean the
+// order was re-created under a new id, and cancelling would close real work.
+const ORPHAN_STAND_DOWN = "aryeo-orphan-stand-down";
+export async function flagOrphanedOrders(): Promise<{ checked: number; flagged: number; cleared: number; unreachable: number }> {
+  // Live jobs — plus DELIVERED jobs still carrying an unpaid balance: an order
+  // that no longer exists can't be paid through Aryeo, and four of them were
+  // sitting in /billing as $875 of phantom AR (Sep 1 2026 audit).
+  const active = await prisma.project.findMany({
+    where: {
+      aryeoOrderId: { not: null },
+      OR: [
+        { status: { in: ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW", "REVISION"] } },
+        { status: "DELIVERED", balanceAmount: { gt: 0 }, paidMarkedAt: null, arRemovedAt: null },
+      ],
+    },
+    select: { id: true, title: true, aryeoOrderId: true, aryeoMissingAt: true, clientId: true, status: true },
+  });
+  let checked = 0, flagged = 0, cleared = 0, unreachable = 0;
+  for (const p of active) {
+    checked++;
+    const isGone = (e: unknown) => e instanceof AryeoError && (e.status === 404 || e.status === 410);
+    let missing = false;
+    try {
+      await Aryeo.order(p.aryeoOrderId!);
+    } catch (e) {
+      // Only a definitive "not there" counts. A timeout / 5xx / auth blip is
+      // unknown — say nothing, try again next tick.
+      if (!isGone(e)) { unreachable++; continue; }
+      // Confirm once more before flagging — a routing blip must not pause a
+      // live job's automations.
+      await new Promise((r) => setTimeout(r, 1500));
+      try {
+        await Aryeo.order(p.aryeoOrderId!);
+      } catch (e2) {
+        if (!isGone(e2)) { unreachable++; continue; }
+        missing = true;
+      }
+    }
+    const street = (p.title || "this job").split(",")[0].trim();
+    const key = `aryeo-orphan-${p.id}`;
+    if (missing && !p.aryeoMissingAt) {
+      await prisma.project.update({ where: { id: p.id }, data: { aryeoMissingAt: new Date() } });
+      // Stand down: every open production/pre-shoot task on a job whose order
+      // is gone would chase a ghost. CANCELLED, not COMPLETED — history must
+      // not claim the work happened. The decision task below is the one row
+      // that stays.
+      await prisma.smartTask.updateMany({
+        where: {
+          projectId: p.id,
+          taskType: { in: ["confirmation_text", "appointment_prep", "media_qa", "delivery", "finish_delivery", "delivery_text", "edit_video"] },
+          status: { notIn: ["COMPLETED", "CANCELLED"] },
+          assignedManually: false,
+        },
+        // Marked, so the clear branch below can put exactly these back — the
+        // reconciler never re-mints a CANCELLED dedupe key on its own.
+        data: { status: "CANCELLED", sourceDetail: ORPHAN_STAND_DOWN },
+      }).catch(() => {});
+      await prisma.activity.create({
+        data: {
+          projectId: p.id, type: "SYSTEM",
+          body: "Order no longer exists in Aryeo (404). Automations are paused on this job until someone decides: cancel it here, or re-link it to the right order.",
+        },
+      }).catch(() => {});
+      await prisma.smartTask.upsert({
+        where: { dedupeKey: key },
+        create: {
+          taskType: "internal_instruction",
+          title: `Order gone from Aryeo — ${street}`.slice(0, 120),
+          summary: (p.status === "DELIVERED"
+            ? `The Aryeo order behind ${street} returns "not found" but the job still shows an unpaid balance here. It can't be paid through Aryeo any more — write it off (remove from AR), mark it paid if it was settled another way, or re-link it to the right order.`
+            : `The Aryeo order behind ${street} returns "not found". The hub still holds it as a live job, so its automations (status checks, client texts, editor chases) are paused. Decide: was it deleted or re-created in Aryeo? Cancel the job here, or update its Aryeo order id on the project page.`).slice(0, 500),
+          reasonCreated: "Aryeo returned 404 for this project's order.",
+          source: "system",
+          priority: "HIGH",
+          dueAt: new Date(Date.now() + 24 * 3600_000),
+          assignedKey: "kyle",
+          projectId: p.id,
+          clientId: p.clientId,
+          propertyAddress: p.title,
+          dedupeKey: key,
+        },
+        update: {},
+      }).catch(() => {});
+      try {
+        const { notifyInApp } = await import("@/lib/notify");
+        await notifyInApp({
+          kind: "system",
+          title: `Order gone from Aryeo — ${street}`,
+          href: `/projects/${p.id}`,
+          targets: [{ roles: ["OWNER", "ADMIN"] }],
+          dedupeKey: key,
+        });
+      } catch { /* bell is best-effort */ }
+      flagged++;
+    } else if (!missing && p.aryeoMissingAt) {
+      await prisma.project.update({ where: { id: p.id }, data: { aryeoMissingAt: null } });
+      await prisma.smartTask.updateMany({
+        where: { dedupeKey: key, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        data: { status: "COMPLETED", completedAt: new Date() },
+      }).catch(() => {});
+      // "Resumed" has to mean it: put back the tasks the stand-down cancelled
+      // and let the reconciler refresh their due dates.
+      await prisma.smartTask.updateMany({
+        where: { projectId: p.id, status: "CANCELLED", sourceDetail: ORPHAN_STAND_DOWN },
+        data: { status: "OPEN", sourceDetail: null },
+      }).catch(() => {});
+      try {
+        const { generateTasksForProject } = await import("@/lib/tasks");
+        await generateTasksForProject(p.id);
+      } catch { /* best-effort */ }
+      await prisma.activity.create({
+        data: { projectId: p.id, type: "SYSTEM", body: "Order is back in Aryeo — automations resumed and the paused tasks re-opened." },
+      }).catch(() => {});
+      cleared++;
+    }
+  }
+  return { checked, flagged, cleared, unreachable };
+}
+
+// ---- Full-reconcile cursor ---------------------------------------------------
+// One JSON row in AppSetting. `page` = next page to process (1 = a fresh pass);
+// `startedAt` = when the current pass began (null between passes);
+// `lastCompletedAt` = the last time a pass reached the end of the history —
+// the number /connections shows so "the safety net ran" is provable.
+export const RECONCILE_CURSOR_KEY = "aryeo:fullReconcile";
+export type ReconcileCursor = { page: number; startedAt: string | null; lastCompletedAt: string | null };
+
+export async function readReconcileCursor(): Promise<ReconcileCursor> {
+  try {
+    const row = await prisma.appSetting.findUnique({ where: { key: RECONCILE_CURSOR_KEY }, select: { value: true } });
+    const c = row ? (JSON.parse(row.value) as Partial<ReconcileCursor>) : null;
+    const page = Number(c?.page);
+    return {
+      page: Number.isInteger(page) && page >= 1 ? page : 1,
+      startedAt: typeof c?.startedAt === "string" ? c.startedAt : null,
+      lastCompletedAt: typeof c?.lastCompletedAt === "string" ? c.lastCompletedAt : null,
+    };
+  } catch {
+    return { page: 1, startedAt: null, lastCompletedAt: null };
+  }
+}
+
+async function writeReconcileCursor(c: ReconcileCursor): Promise<void> {
+  const value = JSON.stringify(c);
+  await prisma.appSetting
+    .upsert({ where: { key: RECONCILE_CURSOR_KEY }, create: { key: RECONCILE_CURSOR_KEY, value }, update: { value } })
+    .catch(() => { /* cursor persistence is best-effort — worst case a page is re-done */ });
 }
 
 // Backfill payableInvoice on existing projects by re-reading each order's items
@@ -1774,17 +2237,28 @@ export async function syncAryeoAppointments(
   // for a button. The ORDER payload already carries its appointments, so we
   // read those ids and fetch each in full (users included) — 2-4 calls, ~1s —
   // then run them through this function's normal body.
-  opts: {
- recentOnlyDays?: number; orderId?: string } = {},
+  // `maxPages` / `budgetMs` (unbounded mode only) make the full-history pass
+  // RESUMABLE: walk a slice, persist the next page, continue next run. The
+  // full pass is ~190s of API on its own (16 pages × ~12s) — it was the step
+  // that exhausted the old single daily run (Sep 1 2026 audit).
+  opts: { recentOnlyDays?: number; orderId?: string; maxPages?: number; budgetMs?: number } = {},
 ): Promise<{
   appointments: number;
   photographerAssigned: number;
+  complete?: boolean;
+  resumeFromPage?: number;
 }> {
   await loadManualProductMap(); // hand-set product categories override the parsers below
   // Hourly cron passes recentOnlyDays so we only write recent + all future
   // appointments (past shoots are already stored) — keeps the run fast enough
-  // to never time out. The daily cron runs it unbounded to reconcile everything.
+  // to never time out. The reconcile cron runs it unbounded, in page slices,
+  // to reconcile everything.
   const windowAgoTs = opts.recentOnlyDays ? Date.now() - opts.recentOnlyDays * 86_400_000 : null;
+  const resumable = windowAgoTs === null && !opts.orderId && !!(opts.maxPages || opts.budgetMs);
+  const apptCursor = resumable ? await readApptCursor() : null;
+  const t0 = Date.now();
+  let pagesThisRun = 0;
+  let reachedEnd = false;
 
   // Preload lookups.
   const [projects, team] = await Promise.all([
@@ -1814,8 +2288,9 @@ export async function syncAryeoAppointments(
   };
 
   const perPage = 100;
-  let page = 1;
+  let page = apptCursor?.page ?? 1;
   for (let i = 0; i < 200; i++) {
+    if (resumable && ((opts.budgetMs && Date.now() - t0 >= opts.budgetMs) || (opts.maxPages && pagesThisRun >= opts.maxPages))) break;
     // Incremental runs used to fetch the ENTIRE appointment history (~15 heavy
     // pages hourly) and only apply the window locally — the repeated Aryeo
     // timeouts stalled the one reliable propagation path for reschedules and
@@ -1843,6 +2318,13 @@ export async function syncAryeoAppointments(
         query: { include: "users,order", page, per_page: perPage, ...(windowAgoTs !== null ? { sort: "-start_at" } : {}) },
       });
       batch = res?.data ?? [];
+      pagesThisRun++;
+      // A page past the end (rows deleted since the cursor was saved) answers
+      // 200 + [] — that is the end of history, not a parked cursor.
+      if (batch.length === 0) {
+        reachedEnd = true;
+        break;
+      }
       lastPage = res?.meta?.last_page;
     }
     if (batch.length === 0) break;
@@ -2020,8 +2502,45 @@ export async function syncAryeoAppointments(
 
     if (opts.orderId) break; // single-order mode fetched everything up front
     const last = lastPage;
-    if (last ? page >= last : batch.length < perPage) break;
+    if (last ? page >= last : batch.length < perPage) {
+      reachedEnd = true;
+      break;
+    }
     page++;
+    if (resumable) await writeApptCursor({ page, startedAt: apptCursor?.startedAt ?? new Date(t0).toISOString(), lastCompletedAt: apptCursor?.lastCompletedAt ?? null });
+  }
+  if (resumable) {
+    if (reachedEnd) await writeApptCursor({ page: 1, startedAt: null, lastCompletedAt: new Date().toISOString() });
+    else await writeApptCursor({ page, startedAt: apptCursor?.startedAt ?? new Date(t0).toISOString(), lastCompletedAt: apptCursor?.lastCompletedAt ?? null });
+  }
+
+  // A resumable SLICE saw only some of each project's visits — Aryeo lists
+  // undated rows first, then start_at descending, so a later page holds the
+  // OLDER visits of a multi-visit job. Writing shootDate from that partial
+  // view made such jobs oscillate between visits every pass (review). Rebuild
+  // the pick for every touched project from the DB (this page's rows are
+  // already upserted; the hourly path keeps the rest current).
+  if (resumable && pick.size > 0) {
+    const stored = await prisma.appointment.findMany({
+      where: { projectId: { in: [...pick.keys()] } },
+      select: { projectId: true, startAt: true, status: true, assignedToId: true },
+    });
+    const rebuilt = new Map<string, { photographerId: string | null; shootDate: Date | null; scheduled: boolean }>();
+    for (const a of stored) {
+      const scheduled = (a.status || "").toUpperCase() === "SCHEDULED";
+      const cur = rebuilt.get(a.projectId);
+      if (scheduled && a.startAt) {
+        if (!cur || !cur.scheduled || betterShoot(a.startAt, cur.shootDate)) {
+          rebuilt.set(a.projectId, { photographerId: a.assignedToId, shootDate: a.startAt, scheduled: true });
+        }
+      } else if (!cur) {
+        rebuilt.set(a.projectId, { photographerId: a.assignedToId, shootDate: null, scheduled: false });
+      } else if (!cur.photographerId && a.assignedToId) {
+        cur.photographerId = a.assignedToId;
+      }
+    }
+    pick.clear();
+    for (const [k, v] of rebuilt) pick.set(k, v);
   }
 
   // Apply photographer + shoot date per project (non-destructive: only fill).
@@ -2040,6 +2559,13 @@ export async function syncAryeoAppointments(
       },
     });
     if (info.photographerId) assigned++;
+    // A scheduled date is on the books again → the rebook chase is answered.
+    if (info.scheduled && info.shootDate) {
+      await prisma.smartTask.updateMany({
+        where: { dedupeKey: `rebook-${projectId}`, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        data: { status: "COMPLETED", completedAt: new Date() },
+      }).catch(() => {});
+    }
   }
 
   // Cancel/postpone propagation: when NO live appointment remains on a project
@@ -2059,9 +2585,25 @@ export async function syncAryeoAppointments(
     // Future-shootDate filter FIRST: it usually whittles the dead candidates to
     // a handful, and appointment rows are only needed for those — the nightly
     // full run would otherwise pull thousands of rows to gate a few writes.
+    // FUTURE shootDates as before — plus, for jobs that never reached SHOT, a
+    // PAST shootDate that Aryeo explicitly abandoned: an UNSCHEDULED
+    // (postponed) row whose previousStartAt IS that stored date. A client who
+    // postpones the morning after the slot used to leave the job SCHEDULED
+    // on a past date with no rebook card (review). SHOT+ jobs are untouched:
+    // a past date there may describe a shoot that happened (payroll).
     const candProjects = await prisma.project.findMany({
-      where: { id: { in: deadCandidates }, shootDate: { gt: new Date() } },
-      select: { id: true },
+      where: {
+        id: { in: deadCandidates },
+        OR: [
+          { shootDate: { gt: new Date() } },
+          {
+            status: { in: ["BOOKED", "SCHEDULED"] },
+            shootDate: { lte: new Date() },
+            appointments: { some: { status: { equals: "UNSCHEDULED", mode: "insensitive" }, startAt: null, previousStartAt: { not: null } } },
+          },
+        ],
+      },
+      select: { id: true, shootDate: true, appointments: { where: { previousStartAt: { not: null } }, select: { previousStartAt: true, status: true } } },
     });
     const candAppts = candProjects.length
       ? await prisma.appointment.findMany({
@@ -2083,6 +2625,14 @@ export async function syncAryeoAppointments(
     );
     for (const p of candProjects) {
       if (!hasRows.has(p.id) || hasLive.has(p.id)) continue;
+      // The past-date branch only fires when Aryeo names THIS slot as the one
+      // it abandoned.
+      if (p.shootDate && p.shootDate.getTime() <= Date.now()) {
+        const abandoned = p.appointments.some(
+          (a) => (a.status ?? "").toUpperCase() === "UNSCHEDULED" && a.previousStartAt && Math.abs(a.previousStartAt.getTime() - p.shootDate!.getTime()) < 60_000,
+        );
+        if (!abandoned) continue;
+      }
       await Promise.all([
         prisma.project.update({ where: { id: p.id }, data: { shootDate: null } }),
         // Pre-shoot tasks are moot without a shoot on the books. CANCELLED, not
@@ -2103,15 +2653,68 @@ export async function syncAryeoAppointments(
           },
         }).catch(() => {}),
       ]);
+      // A job with no date is invisible to every date-keyed list (schedule,
+      // Ops Day, My Shoots, the confirmation sweep) — 775 Scotch Way was
+      // postponed and simply disappeared (Sep 1 2026 audit). ONE rebook task
+      // keeps it on Kyle's plate until a new date lands; the apply loop above
+      // closes it the moment a scheduled appointment reappears.
+      await mintRebookTask(p.id);
     }
   }
+
+  // Every dateless live job whose appointments are all postponed/unscheduled
+  // carries ONE rebook card — including jobs postponed BEFORE this card
+  // existed (80 W Lancaster sat dateless for 12 days with nothing open) and
+  // the incremental runs that never touch the dead-slot sweep above. The
+  // apply loop closes the card the moment a scheduled date returns.
+  try {
+    const dateless = await prisma.project.findMany({
+      where: {
+        source: "ARYEO",
+        status: { in: ["BOOKED", "SCHEDULED"] },
+        OR: [{ shootDate: null }, { shootDate: { lt: new Date() } }],
+        aryeoMissingAt: null,
+        appointments: { some: { status: { equals: "UNSCHEDULED", mode: "insensitive" } } },
+        NOT: { appointments: { some: { startAt: { gt: new Date(Date.now() - 60 * 60 * 1000) }, NOT: { status: { startsWith: "CANCEL", mode: "insensitive" } } } } },
+      },
+      select: { id: true },
+    });
+    for (const p of dateless) await mintRebookTask(p.id);
+  } catch { /* the rebook card is best-effort */ }
 
   // VA = Kyle on all Aryeo projects.
   if (va) {
     await prisma.project.updateMany({ where: { source: "ARYEO" }, data: { vaId: va.id } });
   }
 
-  return { appointments: appointmentCount, photographerAssigned: assigned };
+  return {
+    appointments: appointmentCount,
+    photographerAssigned: assigned,
+    ...(resumable ? { complete: reachedEnd, resumeFromPage: reachedEnd ? 1 : page } : {}),
+  };
+}
+
+// Same cursor shape as the orders sweep, its own key.
+export const APPT_CURSOR_KEY = "aryeo:apptReconcile";
+export async function readApptCursor(): Promise<ReconcileCursor> {
+  try {
+    const row = await prisma.appSetting.findUnique({ where: { key: APPT_CURSOR_KEY }, select: { value: true } });
+    const c = row ? (JSON.parse(row.value) as Partial<ReconcileCursor>) : null;
+    const page = Number(c?.page);
+    return {
+      page: Number.isInteger(page) && page >= 1 ? page : 1,
+      startedAt: typeof c?.startedAt === "string" ? c.startedAt : null,
+      lastCompletedAt: typeof c?.lastCompletedAt === "string" ? c.lastCompletedAt : null,
+    };
+  } catch {
+    return { page: 1, startedAt: null, lastCompletedAt: null };
+  }
+}
+async function writeApptCursor(c: ReconcileCursor): Promise<void> {
+  const value = JSON.stringify(c);
+  await prisma.appSetting
+    .upsert({ where: { key: APPT_CURSOR_KEY }, create: { key: APPT_CURSOR_KEY, value }, update: { value } })
+    .catch(() => {});
 }
 
 // Backfill map coordinates onto existing projects from each Aryeo order's

@@ -88,7 +88,7 @@ export async function autoSyncScript(projectId: string, opts: { force?: boolean 
         reelScript: true,
         scriptingSyncedAt: true,
         status: true,
-        deliverables: { select: { type: true } },
+        deliverables: { where: { removedFromOrderAt: null }, select: { type: true } },
       },
     });
     if (!p || p.status === "CANCELLED") return false;
@@ -121,7 +121,7 @@ export async function sweepMissingScripts(limit = 12): Promise<{ pulled: number;
         { status: { in: ["BOOKED", "SCHEDULED"] }, shootDate: { gte: new Date(), lte: soon } },
       ],
       AND: [{ OR: [{ scriptingSyncedAt: null }, { scriptingSyncedAt: { lt: staleBefore } }] }],
-      deliverables: { some: { type: { in: ["VIDEO", "SOCIAL_REEL"] } } },
+      deliverables: { some: { type: { in: ["VIDEO", "SOCIAL_REEL"] }, removedFromOrderAt: null } },
     },
     // Never-checked first, then least-recently-checked — the cursor ROTATES
     // through the candidate set. Ordering by shootDate let a stuck oldest-12

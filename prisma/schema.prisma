@@ -446,6 +446,13 @@ model Project {
   aryeoId        String? // legacy/general Aryeo ref
   aryeoOrderId   String? @unique
   aryeoListingId String?
+  // The order 404s in Aryeo (deleted / merged there) while the hub still holds
+  // a live job. Set by the daily orphan sweep; every automation (status sweep,
+  // client texts, chases) stands down while it is set, and ONE decision task
+  // asks a human to cancel here or re-link. Cleared automatically if the order
+  // reappears. Never auto-cancels (Sep 1 2026 audit: three live jobs pointed
+  // at orders that no longer existed and nothing noticed).
+  aryeoMissingAt DateTime?
 
   notes String?
 
@@ -570,6 +577,17 @@ model Deliverable {
   // uploaded (Jordan, Sep 1 2026).
   notCompletedReason String?
   notCompletedAt     DateTime?
+  // The Aryeo order no longer carries an item for this deliverable (removed —
+  // not canceled — on their side). RETIRED, never deleted: status/uploads/
+  // capturedAt stay as evidence of work that happened. Every "what is owed"
+  // consumer filters removedFromOrderAt: null (OWED_DELIVERABLE_WHERE). Cleared
+  // if the item reappears on the order. (Sep 1 2026: 632 Greenridge chased a
+  // video for a week after the item was pulled from the order.)
+  removedFromOrderAt   DateTime?
+  removedFromOrderNote String?
+  // Hub-created row (editor's manual queue-add, owner tooling) — never touched
+  // by the order reconcile, which only knows about Aryeo line items.
+  manual     Boolean           @default(false)
   createdAt  DateTime          @default(now())
 
   uploads UploadedFile[]
@@ -1194,6 +1212,9 @@ model ReviewSubmission {
 
   @@index([status])
   @@index([projectId, round])
+  // One row per (file, round): the sweep and the editor's button can race on
+  // the same new file; Postgres treats the legacy NULL-path rows as distinct.
+  @@unique([projectId, assetPath, round])
 }
 
 // Per-photo quick verdict while arrowing through a gallery in review mode.

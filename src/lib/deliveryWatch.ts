@@ -80,6 +80,7 @@ export async function sweepUndeliveredPhotos(opts?: { dryRun?: boolean }): Promi
       // delivered once and is legitimately back in production.
       status: { in: ["SHOT", "EDITING", "REVIEW"] },
       aryeoListingId: { not: null },
+      aryeoMissingAt: null, // order gone from Aryeo — nothing to watch
     },
     select: {
       id: true,
@@ -90,7 +91,7 @@ export async function sweepUndeliveredPhotos(opts?: { dryRun?: boolean }): Promi
       photographer: { select: { name: true } },
       client: { select: { name: true } },
       orderItems: { where: { isCanceled: false }, select: { title: true } },
-      deliverables: { select: { label: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { label: true } },
     },
     orderBy: { shootDate: "desc" },
     take: 60,

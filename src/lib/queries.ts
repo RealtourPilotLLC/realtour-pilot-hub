@@ -685,7 +685,7 @@ export async function getOwnerDials(): Promise<OwnerDials> {
         shootDate: true,
         status: true,
         client: { select: { socialClient: true } },
-        deliverables: { select: { type: true, label: true } },
+        deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
       },
     }),
     getQcStats(30),
@@ -814,7 +814,7 @@ export async function getClientDetail(id: string) {
       projects: {
         orderBy: RECENT_PROJECT_ORDER,
         include: {
-          deliverables: { select: { id: true, type: true, label: true, status: true } },
+          deliverables: { where: { removedFromOrderAt: null }, select: { id: true, type: true, label: true, status: true } },
           photographer: { select: { name: true, avatarColor: true } },
           _count: { select: { uploads: true } },
         },
@@ -1044,6 +1044,9 @@ export async function getBillingRows(): Promise<{ rows: BillingRow[]; totalOutst
         { balanceAmount: { gt: 0 } },
         { arRemovedAt: null },
         { paidMarkedAt: null },
+        // An order that no longer exists in Aryeo can't be collected through
+        // it — the orphan sweep flags these and asks the owner what to do.
+        { aryeoMissingAt: null },
       ],
     },
     orderBy: [{ deliveredAt: { sort: "desc", nulls: "last" } }, { orderedAt: "desc" }],

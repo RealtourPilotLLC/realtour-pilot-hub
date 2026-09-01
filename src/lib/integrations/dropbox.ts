@@ -121,16 +121,53 @@ export async function dbx<T = unknown>(
   skipPathRoot = false,
 ): Promise<T> {
   const token = accessToken ?? (await dropboxAccessToken());
-  const res = await fetch(`https://api.dropboxapi.com/2/${endpoint}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(skipPathRoot ? {} : await pathRootHeader(token)),
-      ...(arg !== undefined ? { "Content-Type": "application/json" } : {}),
-    },
-    body: arg !== undefined ? JSON.stringify(arg) : undefined,
-    cache: "no-store",
-  });
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    ...(skipPathRoot ? {} : await pathRootHeader(token)),
+    ...(arg !== undefined ? { "Content-Type": "application/json" } : {}),
+  };
+  const body = arg !== undefined ? JSON.stringify(arg) : undefined;
+  // The rate limit is per app+account and EVERY caller shares this one token:
+  // the hourly status sweep alone fired 20 recursive list_folder calls at once
+  // (5 projects × 4 folders) and, measured live, 13 of 44 came back 429 while
+  // the same 44 reads succeed 44/44 one at a time. So the fix is a ceiling
+  // here, at the one choke point, plus a polite retry: honour Retry-After
+  // (header, or error.retry_after in the body — Dropbox's 429 body carries an
+  // EMPTY error_summary), jittered so a burst doesn't re-fire in lockstep.
+  // A 429 read as "couldn't look" cost a job with 126 clips its raws-in
+  // evidence, its SHOT transition and its editor handoff (audit HIGH).
+  let res: Response | undefined;
+  await acquire();
+  try {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        // Timed: a slot is held for the whole call, so a socket that accepts
+        // and never answers must not pin the ceiling for minutes (review).
+        res = await fetch(`https://api.dropboxapi.com/2/${endpoint}`, { method: "POST", headers, body, cache: "no-store", signal: AbortSignal.timeout(25_000) });
+      } catch (e) {
+        if (attempt === 3 || !READ_ENDPOINT.test(endpoint)) throw e;
+        await sleep(attempt * 1000 + Math.random() * 500); // network blip — one polite retry
+        continue;
+      }
+      // 429 = not processed, safe to retry anywhere. 5xx/network can arrive
+      // AFTER Dropbox applied a write (a move that "failed" then conflicts on
+      // retry) — so those are retried only on idempotent READ endpoints.
+      const retryable = res.status === 429 || (res.status >= 500 && READ_ENDPOINT.test(endpoint));
+      if (!retryable || attempt === 3) break;
+      let waitS = Number(res.headers.get("Retry-After"));
+      if (!Number.isFinite(waitS) || waitS <= 0) {
+        try {
+          const j = JSON.parse(await res.clone().text()) as { error?: { retry_after?: number } };
+          waitS = Number(j?.error?.retry_after);
+        } catch { /* no body hint */ }
+      }
+      if (!Number.isFinite(waitS) || waitS <= 0) waitS = attempt; // 1s, then 2s
+      await sleep(Math.min(waitS, 8) * 1000 + Math.random() * 500);
+    }
+  } finally {
+    release();
+  }
+  if (!res) throw new DropboxError(`Dropbox ${endpoint} — no response`, 0);
   const text = await res.text();
   // Guard the parse — a non-JSON edge/maintenance page (HTML 502, etc.) must
   // surface as a clean DropboxError, not an uncaught SyntaxError that escapes the
@@ -142,10 +179,41 @@ export async function dbx<T = unknown>(
     /* non-JSON response */
   }
   if (!res.ok) {
-    throw new DropboxError((json?.error_summary as string) || `Dropbox ${endpoint} ${res.status}`, res.status);
+    // Dropbox's 429 body has an empty error_summary — fall back to the reason
+    // tag so a final failure reads "too_many_requests", not a bare status.
+    const tag = (json as { error?: { reason?: { ".tag"?: string }; ".tag"?: string } } | undefined)?.error;
+    const reason = tag?.reason?.[".tag"] ?? tag?.[".tag"];
+    throw new DropboxError((json?.error_summary as string) || reason || `Dropbox ${endpoint} ${res.status}`, res.status);
   }
   return json as T;
 }
+
+const READ_ENDPOINT = /^(files\/list_folder(\/continue)?|files\/get_metadata|files\/get_temporary_link|users\/get_current_account|sharing\/list_shared_links)$/;
+
+// ---- Concurrency ceiling ----------------------------------------------------
+// At most MAX_IN_FLIGHT Dropbox calls at once per process (a Vercel lambda
+// instance — the sweep, the folder engine and /upload's counts on the same
+// instance share it; a render on another instance does not, and the retry
+// above absorbs those rarer cross-instance collisions). It removes the
+// demonstrated cause — the sweep's own 20-wide burst. Plain FIFO; a waiter is
+// released as soon as a slot frees. The slot is held during a 429 backoff on
+// purpose: that IS the throttle.
+const MAX_IN_FLIGHT = 4;
+let inFlight = 0;
+const waiters: (() => void)[] = [];
+function acquire(): Promise<void> {
+  if (inFlight < MAX_IN_FLIGHT) {
+    inFlight++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => waiters.push(() => { inFlight++; resolve(); }));
+}
+function release(): void {
+  inFlight = Math.max(0, inFlight - 1);
+  const next = waiters.shift();
+  if (next) next();
+}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export type DropboxAccount = { name?: { display_name?: string }; email?: string };
 

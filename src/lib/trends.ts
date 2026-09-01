@@ -395,7 +395,7 @@ export async function serviceTrends(): Promise<{
     where: { orderedAt: { gte: new Date(Date.now() - 800 * DAY) } },
     select: {
       id: true, orderedAt: true, price: true, payableInvoice: true,
-      deliverables: { select: { type: true, label: true, quantity: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, quantity: true } },
     },
   });
 

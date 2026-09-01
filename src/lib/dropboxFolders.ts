@@ -28,7 +28,7 @@ export type ProjectFolders = {
   finalVideo: string;
 };
 
-type FolderProject = {
+export type FolderProject = {
   title: string;
   addressLine: string | null;
   shootDate: Date | null;
@@ -235,13 +235,14 @@ export async function ensureFoldersForUpcomingShoots(): Promise<{
 // token used to render every folder "empty" to a photographer double-checking
 // their 300-raw drop (July 2026 audit). Same null semantics as the status
 // sweep's folderCount.
-export async function folderFileCount(path: string): Promise<number | null> {
+export async function folderFileCount(path: string, onError?: (e: unknown) => void): Promise<number | null> {
   try {
     // Recursive: a card dump inside a subfolder is still footage that's IN.
     const entries = await dropboxListFolder(path, { recursive: true });
     return entries.filter((e) => e.tag === "file").length;
   } catch (e) {
     if (e instanceof DropboxError && /not_found|path_lookup/i.test(e.message)) return 0;
+    onError?.(e); // WHY it failed (429 vs 401) — the contract stays number|null
     return null; // couldn't look — the caller must not treat this as "empty"
   }
 }

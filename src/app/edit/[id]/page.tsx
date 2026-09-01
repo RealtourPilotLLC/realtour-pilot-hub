@@ -111,14 +111,17 @@ export default async function EditBriefPage({
   const sla = getVideoSlaStatus({
     shootDate: project.shootDate,
     status: project.status,
-    deliverables: project.deliverables,
+    deliverables: project.deliverables.filter((d) => !d.removedFromOrderAt),
     client: { socialClient: project.client.socialClient },
   });
 
-  const videoDeliverables = project.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
-  const editDeliverables = videoDeliverables.length ? videoDeliverables : project.deliverables;
+  // Owed rows only — an item removed from the Aryeo order is not work to edit
+  // (the project page still shows it, dimmed, as history).
+  const owedDeliverables = project.deliverables.filter((d) => !d.removedFromOrderAt);
+  const videoDeliverables = owedDeliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  const editDeliverables = videoDeliverables.length ? videoDeliverables : owedDeliverables;
   const specialRequests = project.activities.filter((a) => a.type === ActivityType.SPECIAL_REQUEST);
-  const deliverableNotes = project.deliverables.filter((d) => d.notes?.trim());
+  const deliverableNotes = owedDeliverables.filter((d) => d.notes?.trim());
   // The customer's OWN words from the Aryeo order intake ("Special
   // Instructions", "Order Notes") — moved here from the queue's note columns
   // (Jordan, Aug 27: rows stay clean, the notes live on the edit page).

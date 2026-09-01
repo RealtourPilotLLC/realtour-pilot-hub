@@ -757,7 +757,7 @@ export async function sendConfirmationText(taskId: string): Promise<{ ok: boolea
       id: true, title: true, shootDate: true,
       client: { select: { name: true, phone: true } },
       photographer: { select: { name: true } },
-      deliverables: { select: { type: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true } },
     },
   });
   if (!project) return { ok: false, message: "Project not found." };

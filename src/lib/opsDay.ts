@@ -163,7 +163,8 @@ export type OpsShoot = {
 export type QcEvidence = {
   present: string[];
   missing: string[];
-  dropbox: { rawPhotos: number; rawVideo: number; finalPhotos: number; finalVideo: number } | null;
+  /** stale = this pass couldn't read Dropbox; counts are the last good read (at) */
+  dropbox: { rawPhotos: number; rawVideo: number; finalPhotos: number; finalVideo: number; at?: string; stale?: boolean } | null;
 };
 
 export type OpsQcRow = {
@@ -257,7 +258,7 @@ const SHOOT_SELECT = {
   lat: true, lng: true, aryeoListingId: true, clientId: true,
   photographer: { select: { name: true } },
   client: { select: { name: true } },
-  deliverables: { select: { type: true, label: true } },
+  deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
   activities: { where: { type: "SPECIAL_REQUEST" as const }, select: { type: true, body: true } },
   appointments: { select: { description: true } },
 } as const;
@@ -389,7 +390,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
           status: { notIn: ["COMPLETED", "CANCELLED"] },
           // Orphan media_qa rows (null project) exist — the Review Room handles
           // them; Kyle's home page must not render dead /projects/null links.
-          project: { is: { status: { notIn: ["CANCELLED", "ON_HOLD"] } } },
+          project: { is: { status: { notIn: ["CANCELLED", "ON_HOLD"] }, aryeoMissingAt: null } },
         },
         select: {
           id: true, title: true, dueAt: true, checklist: true, projectId: true,
@@ -398,7 +399,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
               title: true, shootDate: true, shotOrderNotes: true, removalNotes: true, videoInstructions: true,
               debriefSubmittedAt: true, statusEvidence: true, aryeoListingId: true,
               photographer: { select: { name: true } },
-              deliverables: { select: { type: true, label: true, notCompletedReason: true, notes: true } },
+              deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, notCompletedReason: true, notes: true } },
               packageName: true,
               videosFilmed: true,
               // The rest of the photographer's wrap-up. Jordan (Sep 1): every
@@ -433,7 +434,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
         select: {
           id: true, title: true, status: true, statusEvidence: true,
           client: { select: { name: true } },
-          deliverables: { select: { type: true, label: true } },
+          deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
           editor: { select: { name: true } },
           revisionBriefs: { orderBy: { createdAt: "desc" }, take: 1, select: { headline: true, itemsJson: true } },
         },

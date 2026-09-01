@@ -9,8 +9,20 @@
       "schedule": "0 * * * *"
     },
     {
+      "path": "/api/cron/reconcile",
+      "schedule": "30 * * * *"
+    },
+    {
       "path": "/api/cron/daily",
       "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/cron/daily-clients",
+      "schedule": "20 8 * * *"
+    },
+    {
+      "path": "/api/cron/daily-reconcile",
+      "schedule": "40 8 * * *"
     },
     {
       "path": "/api/cron/evening",

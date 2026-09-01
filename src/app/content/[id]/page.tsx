@@ -82,7 +82,7 @@ export default async function ContentClientPage({
             id: true, title: true, status: true, shootDate: true,
             photographer: { select: { name: true } },
             reviewSubmissions: { select: { status: true } },
-            deliverables: { select: { type: true, quantity: true } },
+            deliverables: { where: { removedFromOrderAt: null }, select: { type: true, quantity: true } },
           },
           orderBy: { shootDate: "asc" },
         })

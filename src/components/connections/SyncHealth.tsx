@@ -10,8 +10,12 @@ import { etDateTime } from "@/lib/datetime";
 export type CronJobHealth = {
   job: string;
   // Newest first. `ok:null` = still running / hard-killed mid-run.
-  runs: { id: string; at: string; ok: boolean | null; error: string | null; skipped: string[] }[];
+  runs: { id: string; at: string; ok: boolean | null; error: string | null; skipped: string[]; timedOut: string[]; slowest: string | null }[];
 };
+
+/** The full Aryeo order reconcile is resumable across daily runs; this is its
+ *  cursor, so "did the safety net ever finish?" is a date, not a guess. */
+export type ReconcileHealth = { lastCompletedAt: string | null; inProgressPage: number | null; startedAt: string | null };
 
 export type WebhookHealthRow = { provider: string; rejected: number; errored: number };
 
@@ -26,11 +30,13 @@ export function SyncHealth({
   webhooks,
   unsignedProviders,
   cronLogReady,
+  reconcile,
 }: {
   crons: CronJobHealth[];
   webhooks: WebhookHealthRow[];
   unsignedProviders: string[];
   cronLogReady: boolean;
+  reconcile?: ReconcileHealth | null;
 }) {
   const troubledWebhooks = webhooks.filter((w) => w.rejected > 0 || w.errored > 0);
   return (
@@ -74,13 +80,25 @@ export function SyncHealth({
               {latest && (
                 <span className={`text-[11px] ${healthy ? "text-muted" : "font-medium text-danger"}`}>
                   last run {etDateTime(new Date(latest.at))}
-                  {latest.ok === false && (latest.error ? ` — ${latest.error.slice(0, 120)}` : latest.skipped.length ? ` — skipped: ${latest.skipped.join(", ")}` : " — degraded")}
+                  {latest.ok === false && (latest.error ? ` — ${latest.error.slice(0, 120)}` : latest.skipped.length ? ` — skipped: ${latest.skipped.join(", ")}` : latest.timedOut.length ? ` — timed out: ${latest.timedOut.join(", ")}` : " — degraded")}
                   {latest.ok === null && " — didn't finish"}
+                  {latest.slowest && <span className="text-muted-2"> · slowest: {latest.slowest}</span>}
                 </span>
               )}
             </div>
           );
         })}
+        {reconcile && (
+          <p className="px-1 text-[11px] text-muted">
+            Full Aryeo order reconcile:{" "}
+            {reconcile.lastCompletedAt
+              ? <>last completed {etDateTime(new Date(reconcile.lastCompletedAt))}</>
+              : <span className="font-medium text-danger">has never completed a full pass</span>}
+            {reconcile.inProgressPage && reconcile.inProgressPage > 1 && (
+              <> · a pass is in progress (resumes at page {reconcile.inProgressPage}{reconcile.startedAt ? `, started ${etDateTime(new Date(reconcile.startedAt))}` : ""})</>
+            )}
+          </p>
+        )}
         {cronLogReady && crons.length === 0 && (
           <p className="text-xs text-muted-2">No cron runs recorded yet — the next hourly sync will show up here.</p>
         )}

@@ -57,7 +57,13 @@ export async function refreshFromAryeo(projectId: string): Promise<RefreshResult
 
     // 1. The order — scoped to this one, so it's a single API call.
     if (before.aryeoOrderId) {
-      await syncAryeoOrders({ orderId: before.aryeoOrderId });
+      const r = await syncAryeoOrders({ orderId: before.aryeoOrderId });
+      if (r.missing) {
+        return {
+          ok: false,
+          message: "This order no longer exists in Aryeo (deleted or archived there). Cancel the job here, put it on hold as a manual job, or update its Aryeo order id if it was re-created.",
+        };
+      }
     }
     // 2. Appointments — scoped to this order (times, reschedules, assignee).
     //    Walking the bounded list instead costs ~53s; this is ~1s.
@@ -108,6 +114,15 @@ export async function refreshFromAryeo(projectId: string): Promise<RefreshResult
   if ((before.paymentStatus ?? null) !== (after.paymentStatus ?? null)) {
     changed.push(`payment ${before.paymentStatus ?? "—"} → ${after.paymentStatus ?? "—"}`);
   }
+  // Retire-not-delete keeps the row count constant, so an item removed from
+  // (or restored to) the order would otherwise report "Up to date" — read the
+  // reconcile's own activity row from this refresh instead.
+  const orderChange = await prisma.activity.findFirst({
+    where: { projectId, type: "SYSTEM", body: { startsWith: "Order changed in Aryeo" }, createdAt: { gte: new Date(Date.now() - 2 * 60_000) } },
+    select: { body: true },
+    orderBy: { createdAt: "desc" },
+  });
+  if (orderChange) changed.push(orderChange.body.replace(/^Order changed in Aryeo \(#[^)]*\): /, "order items: ").replace(/\.$/, ""));
   if (before._count.deliverables !== after._count.deliverables) {
     changed.push(`${after._count.deliverables - before._count.deliverables > 0 ? "+" : ""}${after._count.deliverables - before._count.deliverables} order items`);
   }

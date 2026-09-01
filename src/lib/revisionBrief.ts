@@ -232,7 +232,7 @@ export async function analyzeBrief(
         select: {
           title: true,
           client: { select: { name: true } },
-          deliverables: { select: { type: true, label: true } },
+          deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
         },
       },
     },

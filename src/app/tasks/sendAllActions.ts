@@ -52,7 +52,7 @@ export async function listDraftedTexts(): Promise<{ ok: boolean; message?: strin
       id: true, title: true, shootDate: true, statusEvidence: true,
       client: { select: { name: true, phone: true } },
       photographer: { select: { name: true } },
-      deliverables: { select: { type: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true } },
     },
   });
   const byId = new Map(projects.map((p) => [p.id, p]));

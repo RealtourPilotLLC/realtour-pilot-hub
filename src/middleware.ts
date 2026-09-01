@@ -40,7 +40,7 @@ function pathKey(pathname: string): PageKey | null {
 // /portal/<token> = the client-facing content page (unguessable token is the gate).
 // /api/portal = the client portal's upload endpoint — token-authenticated
 // inside the route itself, exactly like the /portal pages it serves.
-const PUBLIC_PREFIXES = ["/login", "/invite", "/learn", "/portal", "/api/portal/upload", "/privacy", "/terms", "/api/auth", "/api/google", "/api/webhooks", "/api/cron", "/api/health", "/api/activity"];
+const PUBLIC_PREFIXES = ["/login", "/invite", "/learn", "/portal", "/api/portal/upload", "/api/review/cut", "/privacy", "/terms", "/api/auth", "/api/google", "/api/webhooks", "/api/cron", "/api/health", "/api/activity"];
 
 function isPublic(pathname: string): boolean {
   if (PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"))) return true;

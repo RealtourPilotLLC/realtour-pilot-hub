@@ -135,9 +135,9 @@ export function StatusEvidenceCard({
             </div>
           )}
           {e.dropbox && (
-            <div className="rounded-lg border bg-surface-2/50 px-3 py-2">
+            <div className={`rounded-lg border bg-surface-2/50 px-3 py-2 ${e.dropbox.stale ? "border-warning/40" : ""}`}>
               <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-2">
-                In Dropbox
+                In Dropbox{e.dropbox.stale ? " · last known" : ""}
               </div>
               <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-foreground/80">
                 <Count icon={Camera} n={e.dropbox.rawPhotos} label="raw photos" />
@@ -145,6 +145,14 @@ export function StatusEvidenceCard({
                 <Count icon={Camera} n={e.dropbox.finalPhotos} label="final photos" />
                 <Count icon={Video} n={e.dropbox.finalVideo} label="final video" />
               </div>
+              {/* "Couldn't look" is not "empty" — say which one this is. */}
+              {e.dropbox.stale && (
+                <p className="mt-1 text-[11px] text-warning">
+                  Dropbox couldn&apos;t be read on the latest check
+                  {e.dropbox.readError ? ` (${e.dropbox.readError})` : ""} — showing the last good read
+                  {e.dropbox.at ? ` from ${new Date(e.dropbox.at).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}.
+                </p>
+              )}
             </div>
           )}
         </div>

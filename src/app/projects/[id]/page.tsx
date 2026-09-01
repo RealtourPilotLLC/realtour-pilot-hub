@@ -255,30 +255,55 @@ export default async function ProjectPage({
             studioUrl={project.scriptingUrl ?? project.reelScriptUrl}
           />
 
-          {/* Ordered deliverables */}
-          <Section icon={Package} title="Ordered deliverables" count={project.deliverables.length || null} flush>
+          {/* Order gone from Aryeo — the one place a human decides. Automations
+              (status checks, texts, chases, task mints) are paused while set. */}
+          {project.aryeoMissingAt && (
+            <div className="rounded-2xl border border-danger/40 bg-danger/[0.06] px-5 py-4">
+              <p className="text-sm font-semibold text-danger">This order no longer exists in Aryeo</p>
+              <p className="mt-1 text-[13px] leading-relaxed text-foreground/80">
+                Aryeo has returned “not found” for order {project.aryeoOrderId} since {new Date(project.aryeoMissingAt).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}.
+                Every automation on this job is paused. Decide: it was deleted or archived there — cancel the job here
+                (Move to Cancelled), keep it as a manual job (On hold), or update its Aryeo order id if it was re-created.
+                If the order comes back, this clears itself on the next hourly check.
+              </p>
+            </div>
+          )}
+
+          {/* Ordered deliverables — retired rows (item removed from the Aryeo
+              order) stay visible, dimmed, with why: retire-not-delete only
+              pays off if a human can see what happened. */}
+          <Section icon={Package} title="Ordered deliverables" count={project.deliverables.filter((d) => !d.removedFromOrderAt).length || null} flush>
             <div className="divide-y">
               {project.deliverables.length === 0 && (
                 <p className="px-5 py-4 text-sm text-muted">Nothing ordered yet.</p>
               )}
               {project.deliverables.map((d) => (
-                <div key={d.id} className="flex items-center justify-between gap-3 px-5 py-3">
+                <div key={d.id} className={`flex items-center justify-between gap-3 px-5 py-3 ${d.removedFromOrderAt ? "opacity-60" : ""}`}>
                   <div className="flex min-w-0 items-center gap-3">
                     <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-muted">
                       <Package className="size-4" />
                     </span>
                     <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                      <div className={`flex flex-wrap items-center gap-2 text-sm font-medium ${d.removedFromOrderAt ? "line-through decoration-muted-2" : ""}`}>
                         {refinedDeliverableLabel(d.type, d.label)}
                         {d.quantity > 1 && (
                           <span className="text-muted"> ×{d.quantity}</span>
                         )}
                         <VendorBadge type={d.type} label={d.label} />
+                        {d.manual && (
+                          <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-semibold text-muted" title="Added by hand in the hub — not from the Aryeo order">manual</span>
+                        )}
                       </div>
+                      {d.removedFromOrderAt && (
+                        <div className="text-xs text-warning">
+                          Removed from the order {new Date(d.removedFromOrderAt).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}
+                          {d.removedFromOrderNote ? ` — ${d.removedFromOrderNote}` : ""}
+                        </div>
+                      )}
                       {d.notes && <div className="text-xs text-muted">{d.notes}</div>}
                     </div>
                   </div>
-                  <DeliverableStatusSelect id={d.id} status={d.status} />
+                  {!d.removedFromOrderAt && <DeliverableStatusSelect id={d.id} status={d.status} />}
                 </div>
               ))}
             </div>

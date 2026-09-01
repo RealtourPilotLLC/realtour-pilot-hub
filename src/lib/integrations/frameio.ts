@@ -268,7 +268,7 @@ export async function ensureFrameioProjectsForActiveVideoJobs(limit = 5): Promis
     where: {
       status: { in: ["EDITING", "REVIEW", "REVISION"] },
       frameioProjectId: null,
-      deliverables: { some: { type: { in: ["VIDEO", "SOCIAL_REEL"] } } },
+      deliverables: { some: { type: { in: ["VIDEO", "SOCIAL_REEL"] }, removedFromOrderAt: null } },
     },
     select: { id: true },
     take: limit,

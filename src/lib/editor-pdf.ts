@@ -134,6 +134,7 @@ export async function buildEditorBriefPdf(project: FullProject): Promise<Uint8Ar
   // ---- Deliverables -----------------------------------------------------
   heading("Deliverables to edit");
   for (const d of project.deliverables) {
+    if (d.removedFromOrderAt) continue; // pulled from the Aryeo order — not work
     const meta = DELIVERABLE_META[d.type];
     const status = DELIVERABLE_STATUS_META[d.status].label;
     text(`•  ${meta.label}${d.quantity > 1 ? `  ×${d.quantity}` : ""}   (${status})`, {

@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { logComm } from "@/lib/commLog";
 import { OpenPhoneError } from "@/lib/integrations/openphone";
-import { MONTHLY_BATCH_INCOMPLETE } from "@/lib/tasks";
+import { MONTHLY_BATCH_INCOMPLETE, DELIVERED_LONG_AGO } from "@/lib/tasks";
 
 // Auto-send client texts (Jordan, Sep 1 2026): confirmation texts go out on
 // their own 2 days before the shoot, and delivery texts go out on their own
@@ -96,12 +96,13 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
     where: {
       status: { in: ["BOOKED", "SCHEDULED"] },
       shootDate: { gt: now, lte: new Date(now.getTime() + rules.confirmation.hoursBefore * HOUR) },
+      aryeoMissingAt: null, // order gone from Aryeo → never text the client about it
     },
     select: {
       id: true, title: true, shootDate: true,
       client: { select: { id: true, name: true, phone: true } },
       photographer: { select: { name: true } },
-      deliverables: { select: { type: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true } },
     },
   });
 
@@ -232,6 +233,8 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
       status: { notIn: ["COMPLETED", "CANCELLED"] },
       createdAt: { gte: new Date(Date.now() - rules.delivery.maxTaskAgeHours * HOUR) },
       projectId: { not: null },
+      // Order gone from Aryeo → the job is in limbo; never text the client.
+      project: { is: { aryeoMissingAt: null } },
     },
     select: { id: true, projectId: true, sourceDetail: true },
     // Oldest first, so a deferred (one-per-client-per-tick) task can't age out
@@ -251,7 +254,7 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
       where: { id: t.projectId! },
       select: {
         id: true, title: true, status: true, statusEvidence: true, packageName: true,
-        deliverables: { select: { type: true, label: true } },
+        deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
         client: { select: { id: true, name: true, phone: true } },
       },
     });
@@ -271,6 +274,11 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
     if (t.sourceDetail === MONTHLY_BATCH_INCOMPLETE) {
       skipped++;
       notes.push(`${project.title}: monthly batch incomplete past turnaround — left for a human`);
+      continue;
+    }
+    if (t.sourceDetail === DELIVERED_LONG_AGO) {
+      skipped++;
+      notes.push(`${project.title}: delivered days before the hub caught up — left for a human`);
       continue;
     }
     const k = phoneKey(project.client.phone ?? "");

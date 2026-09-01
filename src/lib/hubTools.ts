@@ -295,7 +295,7 @@ export async function execHubTool(
           id: true, title: true, status: true, shootDate: true, deliveryDue: true, deliveredAt: true,
           balanceAmount: true, paymentStatus: true, paidMarkedAt: true, arRemovedAt: true,
           client: { select: { name: true } },
-          deliverables: { select: { type: true, label: true } },
+          deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
         },
       });
       const money = canSeeMoney(ctx.role); // creatives see the job, never the dollars
@@ -325,7 +325,7 @@ export async function execHubTool(
           aryeoOrderId: true, statusEvidence: true, revisionNote: true, revisionRequestedAt: true, notes: true,
           client: { select: { id: true, name: true, segment: true } },
           photographer: { select: { name: true } },
-          deliverables: { select: { type: true, label: true, status: true } },
+          deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, status: true } },
           appointments: { select: { startAt: true, status: true, assignedTo: { select: { name: true } } }, orderBy: { startAt: "asc" } },
           smartTasks: {
             where: { status: { notIn: ["COMPLETED", "CANCELLED"] } },

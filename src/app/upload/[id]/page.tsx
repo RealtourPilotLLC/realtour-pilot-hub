@@ -47,7 +47,9 @@ export default async function UploadProjectPage({
     include: {
       client: true,
       photographer: true,
-      deliverables: { orderBy: { createdAt: "asc" } },
+      // Owed rows only — an item removed from the Aryeo order must not show up
+      // as a capture/upload step or gate the wrap-up.
+      deliverables: { where: { removedFromOrderAt: null }, orderBy: { createdAt: "asc" } },
       // Canceled lines must NOT drive the video step: a downgraded order
       // would keep demanding the old package's script (review HIGH).
       orderItems: { where: { isCanceled: false }, select: { title: true } },
