@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { portalAddComment, portalDeleteComment, portalRequestRevision } from "@/app/portal/actions";
 import type { PortalCut } from "@/lib/portal";
 
-// The client's video review — a Frame.io-style loop on their own portal page
+// The client's video review — a timestamped review loop on their own portal page
 // (interactive layer, Aug 28): watch the cut, drop notes at the moment they
 // pause, then send everything as ONE revision request. Mobile-first: agents
 // review reels on their phone.

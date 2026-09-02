@@ -6,7 +6,6 @@ import { PROVIDERS, SEGMENTS } from "@/lib/integrations/registry";
 import { getAllConnections } from "@/lib/integrations/connections";
 import { dropboxAuthorizeUrl, dropboxConfigured } from "@/lib/integrations/dropbox";
 import { googleAuthorizeUrl, googleConfigured, gmailSendHealth } from "@/lib/integrations/google";
-import { frameioConfigured } from "@/lib/integrations/frameio";
 import { webhookErrorCount, webhookHealthByProvider } from "@/lib/webhookRetry";
 import { SyncHealth, type CronJobHealth } from "@/components/connections/SyncHealth";
 import { prisma } from "@/lib/prisma";
@@ -89,9 +88,6 @@ export default async function ConnectionsPage() {
   if (byProvider.get("openphone")?.status === "CONNECTED" && !byProvider.get("openphone_webhook")?.secretEncrypted) {
     unsignedProviders.push("openphone");
   }
-  if (byProvider.get("frameio")?.status === "CONNECTED" && !byProvider.get("frameio_webhook")?.secretEncrypted) {
-    unsignedProviders.push("frameio");
-  }
   if (byProvider.get("aryeo")?.status === "CONNECTED" && !byProvider.get("aryeo")?.webhookSecret) {
     unsignedProviders.push("aryeo");
   }
@@ -101,7 +97,6 @@ export default async function ConnectionsPage() {
 
   const connectedCount = connections.filter((c) => c.status === "CONNECTED").length;
   const errorCount = connections.filter((c) => c.status === "ERROR").length;
-  const frameioReady = await frameioConfigured();
 
   return (
     <div>
@@ -197,7 +192,6 @@ export default async function ConnectionsPage() {
                         provider.id === "gmail" && googleConfigured() ? googleAuthorizeUrl() : undefined
                       }
                       gmailSendHealth={provider.id === "gmail" ? gmailSend : undefined}
-                      frameioReady={provider.id === "frameio" ? frameioReady : undefined}
                     />
                   );
                 })}

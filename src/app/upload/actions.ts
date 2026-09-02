@@ -614,9 +614,7 @@ export async function finalizeUpload(
     }
   }
 
-  // (Frame.io auto-create removed Aug 25: the integration was retired Aug 14,
-  // and every video finalize was still firing a doomed external call with a
-  // July token, silently swallowed — audit. Review happens in the Review Room.)
+  // (Review happens in the in-hub Review Room — no external review-project hook here.)
 
   revalidatePath(`/upload/${projectId}`);
   revalidatePath(`/projects/${projectId}`);

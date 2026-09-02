@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { stripMoneySentences } from "@/lib/text";
 
 // ---------------------------------------------------------------------------
-// Read layer for the in-house media review room (Frame.io-style). Root notes
+// Read layer for the in-house media review room. Root notes
 // are pin-point feedback on a delivered asset (EDIT lane → Kyle fixes it,
 // PHOTOGRAPHER lane → capture feedback to whoever shot it); replies thread
 // under a root via parentId and carry no pin or meaningful status. Rollups

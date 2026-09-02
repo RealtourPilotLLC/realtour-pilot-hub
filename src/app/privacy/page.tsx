@@ -31,7 +31,7 @@ export default function PrivacyPage() {
           <li><strong>Aryeo.</strong> Orders, listings, appointments, and media for jobs the company delivers.</li>
           <li><strong>Stripe.</strong> Read-only payment and fee data for revenue reporting.</li>
           <li><strong>Google / Gmail.</strong> Company mailboxes, to turn client email into internal tasks.</li>
-          <li><strong>Dropbox, Frame.io, OpenPhone, Slack.</strong> Files, editorial review, calls and messages tied to jobs.</li>
+          <li><strong>Dropbox, OpenPhone, Slack.</strong> Files, calls and messages tied to jobs.</li>
         </ul>
         <p>
           The Hub also stores business records created inside it: projects, schedules, tasks, internal notes,

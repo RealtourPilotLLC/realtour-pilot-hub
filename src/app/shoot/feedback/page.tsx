@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 
 // ---------------------------------------------------------------------------
 // QUALITY FEEDBACK — the photographer's dedicated cross-shoot feedback screen
-// (the receiving end of the media/cut reviews, Frame.io-style, photos + video)
+// (the receiving end of the media/cut reviews, photos + video)
 // with their KPIs. Photographers are scoped to themselves, fail-closed.
 // Owner/admin without ?as= get the ROSTER: every photographer at a glance,
 // drill into anyone's hub read-only. Same scoping pattern as /shoot.

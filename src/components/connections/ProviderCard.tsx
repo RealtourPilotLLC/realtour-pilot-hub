@@ -13,7 +13,6 @@ import {
   MessageCircle,
   Send,
   Sparkles,
-  Clapperboard,
   CheckCircle2,
   AlertCircle,
   Circle,
@@ -30,7 +29,6 @@ import {
   connectAryeo,
   connectApiKey,
   connectDropbox,
-  connectFrameioSecret,
   syncAryeoNow,
   syncAryeoProductsNow,
   enableOpenPhoneRealtime,
@@ -44,7 +42,7 @@ import {
 } from "@/app/connections/actions";
 
 const ICONS: Record<string, LucideIcon> = {
-  Camera, CreditCard, Calculator, Folder, Mail, Phone, MessageSquare, Users, MessageCircle, Send, Sparkles, Clapperboard,
+  Camera, CreditCard, Calculator, Folder, Mail, Phone, MessageSquare, Users, MessageCircle, Send, Sparkles,
 };
 
 export type ConnState = {
@@ -64,7 +62,6 @@ export function ProviderCard({
   deployed,
   dropboxAuthorizeUrl,
   googleAuthorizeUrl,
-  frameioReady,
   gmailSendHealth,
 }: {
   provider: ProviderDef;
@@ -72,7 +69,6 @@ export function ProviderCard({
   deployed: boolean;
   dropboxAuthorizeUrl?: string;
   googleAuthorizeUrl?: string;
-  frameioReady?: boolean;
   gmailSendHealth?: GmailSendHealth[] | null;
 }) {
   const Icon = ICONS[provider.icon] ?? Circle;
@@ -151,8 +147,6 @@ export function ProviderCard({
           <AryeoActions connected={connected} onExpand={() => setExpanded((e) => !e)} expanded={expanded} />
         ) : provider.id === "gmail" ? (
           <GmailActions connected={connected} authorizeUrl={googleAuthorizeUrl} deployed={deployed} />
-        ) : provider.id === "frameio" ? (
-          <FrameioActions connected={connected} ready={!!frameioReady} deployed={deployed} />
         ) : provider.id === "quickbooks" ? (
           <QuickBooksActions connected={connected} deployed={deployed} />
         ) : provider.id === "dropbox" && provider.ready ? (
@@ -471,74 +465,6 @@ function QuickBooksActions({ connected, deployed }: { connected: boolean; deploy
     >
       Connect QuickBooks
     </a>
-  );
-}
-
-// Frame.io uses Adobe IMS OAuth (Connect → Adobe consent → callback stores the
-// refresh token). The connect link hits our /api/frameio/connect route.
-function FrameioActions({ connected, ready, deployed }: { connected: boolean; ready: boolean; deployed: boolean }) {
-  const [pending, startTransition] = useTransition();
-  const [msg, setMsg] = useState<ActionResult | null>(null);
-
-  if (connected) {
-    return (
-      <div className="space-y-2">
-        <button
-          onClick={() => startTransition(async () => setMsg(await disconnectProvider("frameio")))}
-          disabled={pending}
-          className="flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-60"
-        >
-          {pending ? <Loader2 className="size-4 animate-spin" /> : "Disconnect"}
-        </button>
-        {msg && <p className={`text-xs ${msg.ok ? "text-success" : "text-danger"}`}>{msg.message}</p>}
-      </div>
-    );
-  }
-  if (!deployed) {
-    return (
-      <button disabled title="Deploy first, then connect" className="w-full cursor-not-allowed rounded-lg border bg-surface px-3 py-2 text-sm font-medium opacity-60">
-        Connect Frame.io (after deploy)
-      </button>
-    );
-  }
-  // Step 1: paste the Adobe Client Secret (encrypted). Step 2: the Connect button.
-  if (!ready) return <FrameioSecretForm />;
-  return (
-    <a
-      href="/api/frameio/connect"
-      className="block w-full rounded-lg bg-brand px-3 py-2 text-center text-sm font-medium text-brand-fg hover:opacity-90"
-    >
-      Connect Frame.io
-    </a>
-  );
-}
-
-function FrameioSecretForm() {
-  const [state, action, pending] = useActionState(connectFrameioSecret, null);
-  return (
-    <form action={action} className="space-y-2 rounded-xl border bg-surface-2 p-3">
-      <label className="text-xs font-medium text-foreground/80">Adobe Client Secret</label>
-      <input
-        name="secret"
-        type="password"
-        autoComplete="off"
-        placeholder="Paste the Client Secret from Adobe"
-        className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
-      />
-      <p className="text-[11px] text-muted">
-        In the Adobe Developer Console → Project 1 → <strong>OAuth Web App</strong> → click{" "}
-        <strong>Retrieve client secret</strong> → copy → paste here. Encrypted before it&apos;s stored.
-      </p>
-      <button
-        type="submit"
-        disabled={pending}
-        className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
-      >
-        {pending && <Loader2 className="size-4 animate-spin" />}
-        Save secret
-      </button>
-      {state && <p className={`text-xs ${state.ok ? "text-success" : "text-danger"}`}>{state.message}</p>}
-    </form>
   );
 }
 

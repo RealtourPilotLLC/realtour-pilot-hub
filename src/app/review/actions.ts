@@ -127,7 +127,7 @@ async function requireCutNoteAccess(
 
 // The editor's "Done — send to review". Everything sendEditToReview did, PLUS
 // a ReviewSubmission row with a playable link so the owner reviews in-house at
-// /review/<id> instead of hunting through Dropbox/Frame.io.
+// /review/<id> instead of hunting through Dropbox.
 export async function submitCutForReview(
   projectId: string,
   note?: string,

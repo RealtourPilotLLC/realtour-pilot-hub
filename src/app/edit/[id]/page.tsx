@@ -40,7 +40,7 @@ export const dynamic = "force-dynamic";
 
 // The EDITOR's brief screen for one job — everything they need to cut the video:
 // the photographer's editing notes, the agent's branding/style profile, the edit
-// type, the RAW folder, the Frame.io project to upload finals to, and a per-job
+// type, the RAW folder, the in-hub cut review, and a per-job
 // message thread. Creative-safe (no pricing/financials).
 export default async function EditBriefPage({
   params,
@@ -278,7 +278,7 @@ export default async function EditBriefPage({
             canTick={canTickBrief}
             canReanalyze={isOwnerAdmin && !viewer?.impersonating}
           />
-          {/* The editor's side of the review (the in-hub Frame.io): the cut
+          {/* The editor's side of the in-hub review: the cut
               they submitted plays here, the owner's timestamped notes under
               it — tap a time to jump the player, reply, mark fixed. Notes on
               the ACTIVE round live in the panel; anything else falls through

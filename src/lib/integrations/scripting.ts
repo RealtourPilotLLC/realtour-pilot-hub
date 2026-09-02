@@ -9,7 +9,7 @@ import "server-only";
 // hooks/script back into the reel recipe. Inbound Studio webhooks (see
 // /api/webhooks/scripting) are the fast-path; a GET is the source of truth.
 //
-// Config is pure env (like Google/Frame.io app creds) so a rotated key just
+// Config is pure env (like Google app creds) so a rotated key just
 // works and nothing sensitive ever lands in source or the DB:
 //   SCRIPTING_BASE_URL  — the Studio app's base URL (e.g. https://…vercel.app)
 //   SCRIPTING_API_KEY   — the bearer key the Studio checks on /api/v1 requests

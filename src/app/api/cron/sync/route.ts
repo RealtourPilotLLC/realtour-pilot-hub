@@ -160,12 +160,7 @@ export async function GET(req: NextRequest) {
     const { retryFailedWebhooks } = await import("@/lib/webhookRetry");
     return retryFailedWebhooks(25);
   });
-  // Ensure in-production video jobs have a Frame.io review project (covers raw
-  // that skipped the in-app upload). No-op if Frame.io isn't connected.
-  // frameioProjects step REMOVED Aug 14 2026 — Jordan: "we don't need Frame.io
-  // anymore", review runs through the in-hub Review Room ("just like how it is
-  // in the review room"). Existing frameioViewUrl links on old jobs still
-  // render; nothing new is created.
+  // (Frame.io integration removed Sep 1 2026 per the owner — review runs through the in-hub Review Room.)
 
   // Persist this run (CronRun) + Slack-ping on a NEW failure/skip. Best-effort.
   await finish();

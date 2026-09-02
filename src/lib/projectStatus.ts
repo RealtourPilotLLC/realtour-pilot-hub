@@ -661,7 +661,7 @@ export async function syncProjectStatuses(
     let final = status;
     if (p.status === "EDITING" && ["SHOT", "SCHEDULED", "BOOKED"].includes(status)) final = "EDITING";
     // Same for REVIEW: an editor's "send to review" is a human signal the cut
-    // exists (in the Review Room or Frame.io) that the evidence engine can't
+    // exists (in the Review Room) that the evidence engine can't
     // see — recomputing raws-in/no-Aryeo-media as SHOT must not silently undo
     // it (July 2026 audit: REVIEW→SHOT was written unconditionally).
     if (p.status === "REVIEW" && status === "SHOT") final = "REVIEW";

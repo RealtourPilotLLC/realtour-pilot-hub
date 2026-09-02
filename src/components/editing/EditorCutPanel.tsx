@@ -14,9 +14,9 @@ const fmtClock = (sec: number) => {
 };
 
 // ---------------------------------------------------------------------------
-// The EDITOR'S side of the in-hub review — Frame.io rebuilt to mirror the
-// owner's Review Room desk (Jordan: "rebuild frame io into the system like how
-// we have in the review room, but this should be the editor's side of it").
+// The EDITOR'S side of the in-hub review — built to mirror the owner's Review
+// Room desk (Jordan: "rebuild frame io into the system like how we have in the
+// review room, but this should be the editor's side of it").
 //
 // One card on /edit/[id]: the cut they submitted plays right here, and the
 // owner's timestamped notes sit under it — tap a timestamp and the player

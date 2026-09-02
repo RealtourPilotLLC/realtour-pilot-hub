@@ -13,7 +13,7 @@ import type { FeedbackHub, HubGroup } from "@/lib/photographerFeedback";
 import type { ReviewNote } from "@/lib/review";
 
 // The photographer's QUALITY FEEDBACK hub — every capture note across every
-// shoot (photos AND video), plus the "how am I doing" numbers. Frame.io-style
+// shoot (photos AND video), plus the "how am I doing" numbers. The
 // receiving end: they reply and tick fixes off right here; Jordan's desk for
 // LEAVING notes stays the project gallery / cut review. No money anywhere.
 

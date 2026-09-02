@@ -46,7 +46,7 @@ export function EditFeedback({
   canFix: boolean;
   viewerName?: string | null;
   // embedded: rendered INSIDE the cut panel (no card chrome of its own) with
-  // onSeek wiring timestamp chips to the panel's player — the Frame.io feel.
+  // onSeek wiring timestamp chips to the panel's player.
   embedded?: boolean;
   onSeek?: (sec: number) => void;
 }) {

@@ -1514,7 +1514,6 @@ export async function mintEditTask(projectId: string): Promise<void> {
       shootDate: true,
       addressLine: true,
       createdAt: true,
-      frameioViewUrl: true,
       editorManual: true,
       editor: { select: { name: true } },
       client: { select: { name: true, socialClient: true } },
@@ -1564,8 +1563,7 @@ export async function mintEditTask(projectId: string): Promise<void> {
 
   const summary =
     `${tierLabel} reel for ${street}. Raws are in — cut the video. Delivery due ${dueLabel} (edit due 12h earlier for QC). ` +
-    `RAW footage: ${rawUrl} · Brief: ${briefUrl}` +
-    (p.frameioViewUrl ? ` · Frame.io: ${p.frameioViewUrl}` : "");
+    `RAW footage: ${rawUrl} · Brief: ${briefUrl}`;
 
   const key = `edit-video-${projectId}`;
   const priority = computePriority({ dueAt, status: "SHOT" });
@@ -2065,8 +2063,10 @@ type TaskProject = {
 // Dedupe-key families minted OUTSIDE this reconciler (webhooks/integrations).
 // Their keys aren't sha1 spec hashes, so they never appear in expectedKeys — the
 // reconciler used to read that as "no longer expected" and auto-complete them
-// within the hour (the Frame.io "Review finals" task self-destructed on first
+// within the hour (the old Frame.io "Review finals" task self-destructed on first
 // use — audit crack #20). Externally-minted tasks are closed by their OWN flows.
+// "frameio-review-" stays so legacy rows from the retired integration (removed
+// Sep 1 2026) are never auto-closed by this reconciler.
 const EXTERNAL_KEY_PREFIXES = ["frameio-review-", "scripting-script-", "scripting-client-", "luma-", "slack-", "lead-", "edit-video-"];
 
 // Reconcile one active project's expected tasks (create missing, refresh QC /
@@ -2199,7 +2199,7 @@ async function syncOneProjectTasks(
       status: { notIn: ["COMPLETED", "CANCELLED"] },
       NOT: [
         { dedupeKey: { in: [...expectedKeys] } },
-        // Never auto-close externally-minted tasks (Frame.io review handoffs etc.)
+        // Never auto-close externally-minted tasks (Script Studio/Slack handoffs etc.)
         // just because this reconciler didn't expect their key.
         ...EXTERNAL_KEY_PREFIXES.map((pfx) => ({ dedupeKey: { startsWith: pfx } })),
       ],

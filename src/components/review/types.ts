@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
-// Shared types + tiny pure helpers for the media review room UI (Frame.io-
-// style). ReviewNote mirrors src/lib/review's ReviewNote EXACTLY (structural
+// Shared types + tiny pure helpers for the media review room UI. ReviewNote
+// mirrors src/lib/review's ReviewNote EXACTLY (structural
 // match) so the ListingMedia server wrapper can pass getProjectReview() output
 // straight through WITHOUT client code ever importing the server-only read
 // layer (importing "@/lib/review" from a client component would throw via its

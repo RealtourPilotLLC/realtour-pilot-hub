@@ -8,7 +8,7 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { notifyInApp } from "@/lib/notify";
 
 // ---------------------------------------------------------------------------
-// Mutations for the in-house media review room (Frame.io-style). The owner
+// Mutations for the in-house media review room. The owner
 // drops pin-point notes on delivered assets in two lanes — EDIT (Kyle fixes
 // it) and PHOTOGRAPHER (capture feedback to whoever shot it; kind "fix" is
 // actionable, "coaching" is do-better-next-time and never mints a task).

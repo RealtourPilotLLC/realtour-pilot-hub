@@ -265,7 +265,6 @@ export type CutWorkspace = {
   status: string;
   clientName: string;
   premium: boolean;
-  frameioViewUrl: string | null;
   editorBrief: string | null;
   reelHook: string | null;
   reelScript: string | null;
@@ -318,7 +317,6 @@ export async function getCutWorkspace(projectId: string, cutId?: string | null):
       id: true,
       title: true,
       status: true,
-      frameioViewUrl: true,
       editorBrief: true,
       reelHook: true,
       reelScript: true,
@@ -374,7 +372,6 @@ export async function getCutWorkspace(projectId: string, cutId?: string | null):
     status: project.status,
     clientName: project.client?.name ?? "",
     premium: videoTier(project.deliverables) === "premium",
-    frameioViewUrl: project.frameioViewUrl,
     editorBrief: project.editorBrief,
     reelHook: project.reelHook,
     reelScript: project.reelScript,

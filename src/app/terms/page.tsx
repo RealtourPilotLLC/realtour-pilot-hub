@@ -38,7 +38,7 @@ export default function TermsPage() {
       <LegalSection title="4. Connected services">
         <p>
           The Hub connects to third-party services, including QuickBooks Online, Aryeo, Stripe, Google,
-          Dropbox, Frame.io, OpenPhone, and Slack, using each provider&rsquo;s official API and only after an
+          Dropbox, OpenPhone, and Slack, using each provider&rsquo;s official API and only after an
           authorized account owner grants consent.
         </p>
         <ul>

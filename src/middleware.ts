@@ -30,12 +30,12 @@ function pathKey(pathname: string): PageKey | null {
 // renders on every navigation.
 // /learn/<token> = public training-lesson share (unguessable token is the gate;
 // the page shows video + summary only, never the verbatim transcript).
-// /privacy + /terms are the public legal pages OAuth providers (Intuit, Google,
-// Adobe) require in order to issue production credentials, and reviewers must be
-// able to open them without signing in.
+// /privacy + /terms are the public legal pages OAuth providers (Intuit, Google)
+// require in order to issue production credentials, and reviewers must be able
+// to open them without signing in.
 // NOTE: /api/quickbooks is deliberately NOT public. The Intuit consent + callback
 // both run in the owner's own browser, so the session cookie carries them through
-// the gate exactly like Frame.io. Opening the prefix would bypass middleware auth
+// the gate. Opening the prefix would bypass middleware auth
 // on /connect, whose own guard only fires when AUTH_ENFORCE is explicitly "true".
 // /portal/<token> = the client-facing content page (unguessable token is the gate).
 // /api/portal = the client portal's upload endpoint — token-authenticated
