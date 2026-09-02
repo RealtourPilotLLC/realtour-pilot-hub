@@ -65,7 +65,11 @@ export function AutoTextSettings({ initial }: { initial: AutoTextRules }) {
       setMsg(res.message);
     });
 
-  const windowLine = `${hour12(r.sendFromHour)} – ${hour12(r.sendUntilHour)} ET`;
+  // Reflect the real rule (Jordan, Sep 2): weekdays only, and a minute-precise
+  // cutoff — "never after 4:30 PM to clients". Team texts are NOT governed here.
+  const untilMin = r.sendUntilMinute ?? 30;
+  const untilLabel = `${hour12(r.sendUntilHour)}${untilMin ? `:${String(untilMin).padStart(2, "0")}` : ""}`;
+  const windowLine = `${hour12(r.sendFromHour)} – ${untilLabel} ET${r.weekdaysOnly !== false ? ", Mon–Fri" : ""}`;
 
   return (
     <div className="space-y-4">
@@ -87,7 +91,7 @@ export function AutoTextSettings({ initial }: { initial: AutoTextRules }) {
           <Num value={r.sendFromHour} onChange={(n) => set({ sendFromHour: n })} min={0} max={22} suffix={`(${hour12(r.sendFromHour)})`} />
           <span className="text-xs text-muted-2">to</span>
           <Num value={r.sendUntilHour} onChange={(n) => set({ sendUntilHour: n })} min={1} max={24} suffix={`(${hour12(r.sendUntilHour)})`} />
-          <span className="text-[11px] text-muted-2">24-hour ET · nothing sends at or after the second number</span>
+          <span className="text-[11px] text-muted-2">24-hour ET · nothing sends at or after the cutoff{r.weekdaysOnly !== false ? " · weekdays only" : ""} · clients only, team texts are unaffected</span>
         </div>
       </div>
 

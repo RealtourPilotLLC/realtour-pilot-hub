@@ -146,6 +146,13 @@ export async function GET(req: NextRequest) {
     const { sweepDeliveryTexts } = await import("@/lib/clientTextSweeps");
     return sweepDeliveryTexts(autoTexted);
   });
+  // A client who texts outside working hours gets the office hours + the portal
+  // link, once per closed period (Jordan, Sep 2). Runs on every tick, including
+  // the ones outside the send window — that is the whole point of it.
+  await step("afterHoursReplies", async () => {
+    const { sweepAfterHoursReplies } = await import("@/lib/clientTextSweeps");
+    return sweepAfterHoursReplies(autoTexted);
+  });
   // Pull missing scripts from the Script Writing platform (by external_id) so
   // the queue's Script chip and the shoot screen fill themselves — Jordan:
   // "Script studio should just get the script from the shoot on our script

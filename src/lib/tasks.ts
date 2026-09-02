@@ -1288,7 +1288,13 @@ export async function createDeliveryTextTask(projectId: string): Promise<void> {
         : deliveredLongAgo
           ? "This job read as delivered only after its Aryeo order changed (an item was removed) — the client may have had everything for days. A \"how did we do?\" text now may read oddly: send it, adapt it, or skip it. The hub will NOT send this one on its own."
           : "This job was delivered. Review the drafted post-delivery text (with the feedback link) and send it to the client. A feedback reply auto-logs back to the project.",
-      description: deliveryMessage(project),
+      // Same copy the sweep will actually send (Jordan's feedback ask), so the
+      // task board and the outgoing text can never disagree.
+      description: deliveryMessage(project, await (async () => {
+        const { textTemplates, DEFAULT_DELIVERY_FEEDBACK_TEXT } = await import("@/lib/settings");
+        const tpl = await textTemplates();
+        return { ...tpl, deliveryAll: tpl.deliveryAll.trim() || DEFAULT_DELIVERY_FEEDBACK_TEXT };
+      })()),
       reasonCreated: "Delivered — send the post-delivery client text + feedback link",
       checklist: JSON.stringify([
         "Review the drafted message below",
@@ -1304,7 +1310,10 @@ export async function createDeliveryTextTask(projectId: string): Promise<void> {
       // NOT `new Date()` — that minted it already overdue (see
       // deliveryTextDueAt). The send window is the settings-driven one the
       // sweep actually obeys, so the deadline moves with it.
-      dueAt: deliveryTextDueAt(new Date(), rules.sendUntilHour),
+      // Weekend-aware: a task minted Friday evening must not read overdue all
+      // weekend when the send window is Mon-Fri (dynamic import — clientTextSweeps
+      // imports this module, so a static one would cycle).
+      dueAt: (await import("@/lib/clientTextSweeps")).clientTextDueAt(new Date(), rules),
       projectId,
       clientId: project.clientId,
       propertyAddress: project.title,

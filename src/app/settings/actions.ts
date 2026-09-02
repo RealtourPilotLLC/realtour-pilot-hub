@@ -72,6 +72,11 @@ export async function saveAutoTextRules(input: AutoTextRules): Promise<{ ok: boo
       },
       skipWhenClientWaiting: !!input.skipWhenClientWaiting,
       onePerClientPerRun: !!input.onePerClientPerRun,
+      // Carried through explicitly: this action rebuilds the object field by
+      // field, so anything omitted here is silently dropped on every save.
+      ...(input.sendUntilMinute != null ? { sendUntilMinute: Math.min(59, Math.max(0, Math.round(input.sendUntilMinute))) } : {}),
+      ...(input.weekdaysOnly != null ? { weekdaysOnly: !!input.weekdaysOnly } : {}),
+      ...(input.afterHours ? { afterHours: input.afterHours } : {}),
     };
     await putSetting("auto_texts", rules, me?.email ?? null);
     revalidatePath("/settings");

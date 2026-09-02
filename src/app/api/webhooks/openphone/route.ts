@@ -349,7 +349,11 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
         const autoSent = await prisma.commLog
           .findFirst({
             where: {
-              source: { in: ["auto-confirmation", "auto-delivery"] },
+              // "auto-afterhours" belongs here too: the echo of our OWN
+              // out-of-hours auto-reply must not be read as a human answering,
+              // or it closes the client's reply task and blanket-completes their
+              // queued delivery text with nothing actually sent (Sep 2).
+              source: { in: ["auto-confirmation", "auto-delivery", "auto-afterhours"] },
               OR: [
                 ...(data.id ? [{ externalId: `op-${data.id as string}` }] : []),
                 { clientId, body: text, createdAt: { gte: new Date(Date.now() - 30 * 60_000) } },

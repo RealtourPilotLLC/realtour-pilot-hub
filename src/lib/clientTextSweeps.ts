@@ -700,7 +700,10 @@ export async function sweepAfterHoursReplies(texted: Set<string> = new Set()): P
   const since = new Date(Math.max(period.startedAt.getTime(), now.getTime() - rules.afterHours.maxAgeHours * HOUR));
   const inbound = await prisma.commLog.findMany({
     where: { channel: "text", direction: "in", clientId: { not: null }, occurredAt: { gte: since } },
-    select: { clientId: true, clientName: true, fromPhone: true, occurredAt: true },
+    // contactName is the REAL sender (an agent's assistant writes in under her
+    // own name while the row files to the agent's client record) — greet who
+    // actually texted, not the account holder.
+    select: { clientId: true, clientName: true, contactName: true, fromPhone: true, occurredAt: true },
     orderBy: { occurredAt: "asc" },
   });
   if (inbound.length === 0) return { sent: 0, skipped: 0, notes };
@@ -721,7 +724,11 @@ export async function sweepAfterHoursReplies(texted: Set<string> = new Set()): P
   for (const r of inbound) {
     const k = phoneKey(r.fromPhone ?? "");
     if (k.length !== 10 || excluded.has(k)) continue;
-    latest.set(r.clientId!, { name: r.clientName, phone: k });
+    // The webhook falls back to a formatted PHONE NUMBER when it can't name the
+    // sender — "Hi (610)" is worse than no name at all, so only take a
+    // contactName that reads like a person.
+    const person = r.contactName && !/\d/.test(r.contactName) ? r.contactName : null;
+    latest.set(r.clientId!, { name: person ?? r.clientName, phone: k });
   }
 
   let sent = 0, skipped = 0;
@@ -737,6 +744,19 @@ export async function sweepAfterHoursReplies(texted: Set<string> = new Set()): P
       select: { id: true },
     });
     if (answered) { skipped++; continue; }
+    // Saturday is a shoot day and the office is shut: a client texting while
+    // our photographer is standing in their kitchen must not be told we are
+    // closed. The crew is with them; they are already being looked after.
+    const dayKey = etMoment(now).dayKey;
+    const shootingToday = await prisma.project.findFirst({
+      where: { clientId, status: { notIn: ["CANCELLED", "ON_HOLD"] }, shootDate: { gte: etAt(dayKey, 0), lt: etAt(dayKey, 24) } },
+      select: { id: true },
+    });
+    if (shootingToday) {
+      skipped++;
+      notes.push(`${msg.name ?? "a client"}: has a shoot today — the crew is with them, no robot reply`);
+      continue;
+    }
     const client = await prisma.client.findUnique({
       where: { id: clientId },
       select: { name: true, autoConfirmationText: true, autoDeliveryText: true },
@@ -755,7 +775,8 @@ export async function sweepAfterHoursReplies(texted: Set<string> = new Set()): P
     try {
       await prisma.appSetting.create({ data: { key: marker, value: now.toISOString() } });
     } catch { skipped++; continue; }
-    const name = (client?.name || msg.name || "").trim();
+    // Greet the human who wrote in (msg.name), falling back to the account.
+    const name = (msg.name || client?.name || "").trim();
     const body = applyTemplate(rules.afterHours.message, {
       first: name.split(/\s+/)[0] || "there",
       hours: officeHoursLabel(rules.afterHours.openHour, rules.afterHours.closeHour),
