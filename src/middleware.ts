@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isPublicRoute } from "@/lib/publicRoutes";
 import type { NextRequest } from "next/server";
 import { verifySession, SESSION_COOKIE } from "@/lib/auth/jwt";
 import { canAccess, homeFor, PAGES, type PageKey } from "@/lib/auth/access";
@@ -40,15 +41,10 @@ function pathKey(pathname: string): PageKey | null {
 // /portal/<token> = the client-facing content page (unguessable token is the gate).
 // /api/portal = the client portal's upload endpoint — token-authenticated
 // inside the route itself, exactly like the /portal pages it serves.
-const PUBLIC_PREFIXES = ["/login", "/invite", "/learn", "/portal", "/api/portal/upload", "/api/review/cut", "/api/review/upload", "/privacy", "/terms", "/api/auth", "/api/google", "/api/webhooks", "/api/cron", "/api/health", "/api/activity"];
+// The list itself lives in src/lib/publicRoutes.ts — middleware and the app
+// shell must never disagree about it (see that file).
 
-function isPublic(pathname: string): boolean {
-  if (PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"))) return true;
-  // Public client feedback form is /feedback/<projectId>; the bare /feedback board
-  // (no segment) stays gated.
-  if (/^\/feedback\/[^/]+$/.test(pathname)) return true;
-  return false;
-}
+const isPublic = isPublicRoute;
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;

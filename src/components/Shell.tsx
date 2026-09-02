@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { isPublicRoute } from "@/lib/publicRoutes";
 import { BrandWordmark } from "@/components/Brand";
 import { usePathname } from "next/navigation";
 import { Menu, X } from "lucide-react";
@@ -14,14 +15,8 @@ import { cn } from "@/lib/utils";
 // chain) so it reads next to middleware's PUBLIC_PREFIXES and a missing entry
 // is obvious. A prefix matches the path itself and anything under it, on a
 // segment boundary — "/portal" and "/portal/<token>" match, "/portals" doesn't.
-const BARE_PREFIXES = [
-  "/login",
-  "/invite", // token-link account setup, opened before a session exists
-  "/learn", // public training-lesson share link
-  "/portal", // THE CLIENT HUB — a client's only view of us
-  "/privacy",
-  "/terms", // public legal pages OAuth reviewers open signed out
-];
+// Public routes come from the shared list so a new one can never be gated in
+// middleware but still drawn with staff chrome (or the reverse).
 
 // The Editor Queue opens the style guide in a 440px floating window; chrome
 // inside that popup would be chrome inside chrome. Internal, not public — kept
@@ -30,12 +25,7 @@ const BARE_EXACT = ["/resources/video-styles/embed"];
 
 export function isBare(pathname: string): boolean {
   if (BARE_EXACT.includes(pathname)) return true;
-  if (BARE_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"))) return true;
-  // The client-facing feedback form is /feedback/<projectId> (one segment); the
-  // bare /feedback board is the INTERNAL request board and keeps its chrome.
-  // Same rule as isPublic() in src/middleware.ts.
-  if (/^\/feedback\/[^/]+$/.test(pathname)) return true;
-  return false;
+  return isPublicRoute(pathname);
 }
 
 // App chrome: a static sidebar on desktop (lg+), and a slide-in drawer with a

@@ -4,7 +4,7 @@ import { getShoot, photographerMemberId, photographerOwnsShoot } from "@/lib/sho
 import { getClientFeedback, getPhotographerFeedback } from "@/lib/review";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
-import { homeFor } from "@/lib/auth/access";
+import { canSeeMoney, homeFor } from "@/lib/auth/access";
 import { etDateTime, etDaysAgo } from "@/lib/datetime";
 import { ShootScreen } from "@/components/shoot/ShootScreen";
 import { ShootPayCard, ShootPayCardSkeleton } from "@/components/shoot/ShootPayCard";
@@ -79,11 +79,22 @@ export default async function ShootDetailPage({
     ? await Promise.all([getPhotographerFeedback(id, payMemberId), getClientFeedback(id, payMemberId)])
     : [[], []];
 
+  // THE MONEY RULE, on the one screen that carries a person's earnings: a pay
+  // card is your OWN pay, or it isn't shown. Jordan, Sep 2 2026 — "Kyle should
+  // not have access to any money related info" (canSeeMoney, src/lib/auth/access.ts)
+  // — and Kyle taps /shoot/<id> straight off Schedule, where this card was
+  // handing him the assigned photographer's earnings for the job. An admin who
+  // also shoots (James) keeps the card on HIS OWN shoots; the owner keeps it
+  // everywhere, ?as= photographer previews included. The route/map card below is
+  // unaffected — miles are ops, not money.
+  const ownPay = payMemberId != null && payMemberId === (viewerMemberId ?? user?.teamMemberId ?? null);
+  const showPay = payMemberId != null && (ownPay || (user ? canSeeMoney(user.role) : !authEnforced()));
+
   // Pay (this viewer's earnings for this shoot) streams in via Suspense so the
   // screen paints immediately instead of blocking on mileage.
-  const pay = payMemberId ? (
+  const pay = showPay ? (
     <Suspense fallback={<ShootPayCardSkeleton />}>
-      <ShootPayCard projectId={id} memberId={payMemberId} />
+      <ShootPayCard projectId={id} memberId={payMemberId!} />
     </Suspense>
   ) : null;
 
