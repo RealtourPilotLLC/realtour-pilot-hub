@@ -281,7 +281,14 @@ model Client {
 
   // Free-form, smart-notes-ready fields (CRM milestone fills these out)
   editingPreferences String? // e.g. "Bright & airy, blue skies, no HDR halos"
+  // THE customer note. There is exactly one, and Aryeo's customer
+  // `internal_notes` is the system of record — this column mirrors it, and a
+  // note typed in the hub is pushed straight back to Aryeo (see
+  // writeAryeoCustomerNotes). The two fields below make the state of that
+  // mirror visible instead of letting it drift in silence.
   generalNotes       String?
+  notesSyncedAt      DateTime? // last time this mirror was confirmed against Aryeo
+  notesSyncError     String? // why the last write-back failed (null = clean)
 
   // Agent Profile — the client's brand + working preferences (distinct from
   // editingPreferences, which is purely how to edit their media).

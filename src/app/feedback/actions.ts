@@ -125,10 +125,16 @@ export async function decidePlatformFeedback(
       const { opsAlert } = await import("@/lib/notify");
       const base = appBase();
       const verb = status === "APPROVED" ? "✅ approved — into the build queue" : status === "DONE" ? "🚀 marked shipped" : "🗄 declined";
-      await opsAlert(`Feedback “${fb.title}” ${verb}${fb.submittedBy ? ` (filed by ${fb.submittedBy})` : ""} → ${base}/feedback`);
+      // Field flags moved to the quality desk — link people at the board the
+      // row is actually ON, or the Slack link lands on a page without it.
+      const where = fb.kind === "field_issue" ? "/quality?tab=photographers" : "/feedback";
+      await opsAlert(`Feedback “${fb.title}” ${verb}${fb.submittedBy ? ` (filed by ${fb.submittedBy})` : ""} → ${base}${where}`);
     } catch { /* non-fatal */ }
   }
   revalidatePath("/feedback");
+  // Field-issue rows render on the quality desk (see the note on /feedback) —
+  // a decision made there has to refresh there.
+  revalidatePath("/quality");
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +158,8 @@ export async function pingFeedbackOnSlack(
   if (!row || !member) return { ok: false, message: "Item or person not found." };
   const sender = me?.name?.split(/\s+/)[0] ?? "Jordan";
   const { etDateTime } = await import("@/lib/datetime");
-  const url = `${appBase()}/feedback`;
+  // Field flags live on the quality desk now, everything else on the board.
+  const url = `${appBase()}${row.kind === "field_issue" ? "/quality?tab=photographers" : "/feedback"}`;
   const text =
     `👀 *${sender}* asked you to look into this ${row.kind === "bug" ? "bug" : row.kind === "field_issue" ? "field issue" : "request"}:\n` +
     `*${row.title}*\n` +

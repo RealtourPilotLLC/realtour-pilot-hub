@@ -691,6 +691,27 @@ Respond as strict JSON: {"title": "<4 to 7 word topic title>", "summary": "<2 to
 // Synthesize a creative-safe "working profile" of a client from everything we
 // know — comms, shoot debriefs, revision history, brand notes. Written FOR the
 // photographers/editors who'll work with them, so it must stay appropriate.
+//
+// AUDIENCE-SCOPED (Sep 2 2026). Jordan, on what an editor was being shown:
+// "There is too much there… These are all things that are not relevant or
+// necessary for the editor to know." Mike Ciunci's profile was reaching Kim and
+// John with his office-visit locations, his on-camera and wardrobe asks, that
+// faith is part of his brand, that he referred a colleague, his "LFG / My Man"
+// texting voice — none of which changes a single cut.
+//
+// So the profile is now generated in SEPARATE blocks rather than filtered after
+// the fact: `editing` is the ONLY block an editor ever receives, and the model
+// is told exactly what may and may not go in it. Rapport (aboutThem), voice
+// (communication), habits (workingStyle) and shoot-day logistics (shootNotes)
+// stay in their own fields for the owner/admin view and the photographer's
+// /shoot screen. See editorView() in src/lib/clientProfile.ts for the read side.
+export type ClientProfileEditing = {
+  summary: string; // 1-2 sentences an editor needs before opening the timeline
+  prefs: string[]; // standing instructions for the finished video
+  customerNotes: string[]; // facts about the customer that change the cut
+  dos: string[];
+  donts: string[];
+};
 export type ClientProfileInsights = {
   summary: string;
   touchLevel: "high" | "medium" | "low" | "";
@@ -702,6 +723,7 @@ export type ClientProfileInsights = {
   aboutThem: string[];
   dos: string[];
   donts: string[];
+  editing: ClientProfileEditing; // the editor-safe block (all an editor sees)
 };
 export async function synthesizeClientProfile(input: {
   name: string;
@@ -729,9 +751,19 @@ export async function synthesizeClientProfile(input: {
     input.notes.brandColors ? `Brand colors: ${input.notes.brandColors}` : null,
   ].filter(Boolean).join("\n") || "(none on file)";
 
-  const system = `You write an internal "working profile" of a real estate agent (our client) for the CREATIVE TEAM — the photographers and editors who will shoot and edit for them. The reader needs to quickly know who they're working with.
+  const system = `You write an internal "working profile" of a real estate agent (our client) for our own team. It has TWO readers and they do NOT get the same thing.
 
-It MUST be appropriate for a creative to read. Focus on: how they are to work with, their communication and revision habits, their brand and aesthetic taste, shoot logistics/preferences, and respectful rapport notes. NEVER include pricing, fees, payments, balances, internal finances, margins, business strategy, or anything unkind or gossipy. If you have nothing solid for a section, leave it brief or empty rather than inventing. Ground every statement ONLY in the data provided. Warm, specific, professional. No em dashes, no emojis, no bold. Output ONLY strict JSON.`;
+READER 1 — the owner and the ops manager. They get the whole profile: who this person is to work with, how they communicate, their habits, their shoot-day logistics.
+
+READER 2 — the VIDEO EDITOR, who receives ONLY the "editing" block. Editors never speak to the client, never attend the shoot and never schedule anything. They cut video and deliver it.
+
+The "editing" block may contain ONLY things that change the finished video or how it is delivered: standing brand instructions (logos, endcards, intros, outros, fonts, colours, music), the look and pacing they like, captions and on-screen text habits, aspect ratios and where the video gets posted, delivery and quality expectations, recurring revision themes, and facts about the customer that change the cut (name and title spellings, brokerage or compliance rules, anything that must never appear on screen).
+
+The "editing" block must NEVER contain: rapport, personality, faith, family, referrals, how appreciative or friendly they are, how they talk (channel, tone, catchphrases, reply speed), scheduling or availability, or shoot-day logistics (locations, office visits, access, parking, wardrobe, props, who appears on camera). If you cannot say what an editor would DO differently in the timeline because of a line, it does not belong in the "editing" block.
+
+Keep every other field in its own lane too. "shootNotes" is SHOOT DAY only. A standing instruction about the finished video (for example "always add his animated logo before delivery") is NOT a shoot note: it belongs in editing.prefs.
+
+It MUST all be appropriate for a creative to read. NEVER include pricing, fees, payments, balances, internal finances, margins, business strategy, or anything unkind or gossipy. If you have nothing solid for a section, leave it brief or empty rather than inventing. Ground every statement ONLY in the data provided. Warm, specific, professional. No em dashes, no emojis, no bold. Output ONLY strict JSON.`;
 
   const user = `Client: ${input.name}${input.company ? ` (${input.company})` : ""}
 Relationship: ${input.segment ?? "unknown"}${input.socialPlan ? ` · social plan ${input.socialPlan}` : ""}
@@ -751,18 +783,23 @@ Feedback they've given:
 ${fbBlock}
 
 Write the profile as STRICT JSON only:
-{"summary": "<2-4 sentence narrative of who they are to work with>", "touchLevel": "<high|medium|low>", "workingStyle": "<1-2 sentences>", "communication": "<how they communicate: channel, pace, tone>", "revisions": {"summary": "<how often / how particular about revisions>", "commonTypes": ["<recurring kinds of changes they ask for>"]}, "brandStyle": "<their look/aesthetic/brand taste>", "shootNotes": ["<logistics, access, things they mention about shoots>"], "aboutThem": ["<appropriate rapport notes>"], "dos": ["<tips for the creative>"], "donts": ["<things to avoid>"]}
+{"summary": "<2-4 sentence narrative of who they are to work with>", "touchLevel": "<high|medium|low>", "workingStyle": "<1-2 sentences>", "communication": "<how they communicate: channel, pace, tone>", "revisions": {"summary": "<how often / how particular about revisions>", "commonTypes": ["<recurring kinds of changes they ask for>"]}, "brandStyle": "<their look/aesthetic/brand taste>", "shootNotes": ["<SHOOT DAY only: logistics, access, locations, wardrobe/props, on-camera asks>"], "aboutThem": ["<appropriate rapport notes>"], "dos": ["<tips for the creative>"], "donts": ["<things to avoid>"], "editing": {"summary": "<1-2 sentences the editor needs before opening the timeline, or empty>", "prefs": ["<standing instructions for the finished video: logo, endcard, music, captions, aspect ratio, delivery>"], "customerNotes": ["<facts about the customer that change the cut: spellings, brokerage rules, what must never appear>"], "dos": ["<post-production dos>"], "donts": ["<post-production donts>"]}}
 
 Rules:
 - touchLevel: high = frequent contact / particular / many revisions; low = hands-off / rarely asks for changes.
 - commonTypes / shootNotes / aboutThem / dos / donts: 0 to 5 short bullets each, only real ones from the data.
+- editing.prefs / editing.customerNotes / editing.dos / editing.donts: 0 to 5 short bullets each. Every one must be something an editor can act on inside the edit. An empty "editing" block is the right answer when nothing in the data changes the cut. Never pad it with rapport, voice, scheduling or shoot-day material to fill it out.
+- A standing video instruction goes in editing.prefs and NOT in shootNotes. It may also stay in dos when it is genuinely a whole-team rule.
 - Do not invent facts, dates, or preferences not supported above. Empty arrays and short strings are fine when the signal is thin.`;
 
   try {
-    const raw = await anthropic({ model: SMART, system, user, maxTokens: 900 });
+    const raw = await anthropic({ model: SMART, system, user, maxTokens: 1400 });
     const m = raw.match(/\{[\s\S]*\}/);
     if (!m) return null;
-    const p = JSON.parse(m[0]) as Partial<ClientProfileInsights> & { revisions?: { summary?: string; commonTypes?: unknown } };
+    const p = JSON.parse(m[0]) as Partial<ClientProfileInsights> & {
+      revisions?: { summary?: string; commonTypes?: unknown };
+      editing?: Partial<ClientProfileEditing>;
+    };
     const arr = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").slice(0, 6) : []);
     const touch = ["high", "medium", "low"].includes(String(p.touchLevel)) ? (p.touchLevel as "high" | "medium" | "low") : "";
     return {
@@ -779,6 +816,16 @@ Rules:
       aboutThem: arr(p.aboutThem),
       dos: arr(p.dos),
       donts: arr(p.donts),
+      // The editor block is always present in the shape, even when the model
+      // (rightly) had nothing to put in it — the read side then renders an
+      // honest "nothing on file" rather than crashing on a missing key.
+      editing: {
+        summary: typeof p.editing?.summary === "string" ? p.editing.summary.slice(0, 500) : "",
+        prefs: arr(p.editing?.prefs),
+        customerNotes: arr(p.editing?.customerNotes),
+        dos: arr(p.editing?.dos),
+        donts: arr(p.editing?.donts),
+      },
     };
   } catch {
     return null;

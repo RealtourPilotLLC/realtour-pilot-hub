@@ -13,6 +13,10 @@ import { etDate, etDateTime } from "@/lib/datetime";
 export type EditStage = "booked" | "editing" | "revision" | "review" | "done";
 
 export type RoundRow = {
+  /** The submission's own id — a multi-video job sends FOUR "Round 1" cuts, so
+      the round number is not unique and cannot key the list (React was dropping
+      rows on the 4-video Accelerator jobs). */
+  id: string;
   round: number;
   status: string; // PENDING | CHANGES_REQUESTED | APPROVED
   submittedByName: string | null;
@@ -233,7 +237,7 @@ export function EditTracker({
             {rounds.map((r) => {
               const chip = ROUND_CHIP[r.status] ?? { text: r.status, cls: "bg-surface-2 text-muted" };
               return (
-                <li key={r.round} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
+                <li key={r.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
                   <span className="font-medium">Round {r.round}</span>
                   <span className="text-xs text-muted-2">
                     {r.submittedByName ? `${r.submittedByName} · ` : ""}

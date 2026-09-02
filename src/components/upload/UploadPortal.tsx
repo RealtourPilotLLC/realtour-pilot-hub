@@ -13,6 +13,7 @@ import {
   FileText,
   Loader2,
   Check,
+  NotebookPen,
 } from "lucide-react";
 import { DELIVERABLE_META, type VideoStepSpec } from "@/lib/pipeline";
 import { markDeliverableUploaded, markDeliverableNotCompleted, flagIssue, finalizeUpload, submitUploadFeedback } from "@/app/upload/actions";
@@ -219,7 +220,8 @@ export function UploadPortal({
     uploadedAt: string | null;
     editorPdfPath: string | null;
     clientName: string;
-    editingPreferences: string | null;
+    /** THE customer note, money-scrubbed (see src/lib/clientNotes.ts). */
+    customerNote: string | null;
     photographerName: string | null;
     cullingConfirmedAt: string | null;
     shotOrderNotes: string | null;
@@ -652,9 +654,19 @@ export function UploadPortal({
           <ul className="ml-6 list-disc space-y-0.5 text-sm text-foreground/85">
             {specialRequests.map((r, i) => <li key={i}>{r}</li>)}
           </ul>
-          {project.editingPreferences && (
-            <p className="mt-2 text-xs text-muted">Editing preferences: {project.editingPreferences}</p>
-          )}
+        </div>
+      )}
+
+      {/* Standing customer notes — its OWN card. It used to render inside the
+          special-requests box, so a client note only showed on the rare job
+          that also had a special request; on every other shoot the note the
+          office wrote reached nobody here. */}
+      {project.customerNote && (
+        <div className="rounded-2xl border border-border bg-surface p-4">
+          <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
+            <NotebookPen className="size-4 text-brand" /> Customer notes · {project.clientName}
+          </div>
+          <p className="whitespace-pre-line text-sm text-foreground/85">{project.customerNote}</p>
         </div>
       )}
 

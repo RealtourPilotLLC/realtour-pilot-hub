@@ -1,6 +1,7 @@
 import type { QueueTask, DeliverableStatus, QcClientContext } from "@/components/queue/TaskCard";
 import { parseChecklist } from "@/lib/checklist";
 import { parseClientProfile } from "@/lib/clientProfile";
+import { customerNote as clientCustomerNote } from "@/lib/clientNotes";
 
 // One place that turns a SmartTask row (with its client) into the shape the
 // TaskCard renders — used by both the Daily Tasks queue and the project page so
@@ -29,11 +30,19 @@ export type TaskRow = {
   contactName: string | null;
   propertyAddress: string | null;
   // The client join. `name` is always present; the QC-context fields (segment /
-  // editingPreferences / profileJson) are only selected on the surfaces that show
+  // generalNotes / profileJson) are only selected on the surfaces that show
   // the guided QC card (the task board). Where they're absent the card simply
   // renders no client strip — graceful, so callers that select only `name`
   // (e.g. the project page via getProject) still type-check and work.
-  client: { name: string; segment?: string | null; editingPreferences?: string | null; profileJson?: string | null } | null;
+  // generalNotes is THE customer note; editingPreferences is the retired column
+  // kept as a fallback (see src/lib/clientNotes.ts).
+  client: {
+    name: string;
+    segment?: string | null;
+    generalNotes?: string | null;
+    editingPreferences?: string | null;
+    profileJson?: string | null;
+  } | null;
 };
 
 // Segments that get the VIP extra-pass treatment on the card. Mirrors
@@ -47,7 +56,11 @@ const VIP_SEGMENTS = new Set(["vip", "heavy"]);
 function qcClientContext(client: TaskRow["client"]): QcClientContext | null {
   if (!client) return null;
   const segment = client.segment ?? null;
-  const editingPreferences = client.editingPreferences?.trim() || null;
+  // THE customer note (generalNotes, with the retired editingPreferences as
+  // fallback). This read editingPreferences alone — a column with no writer
+  // since the notes cards merged, NULL on all 349 clients — so the QC card's
+  // client line was dead everywhere while 17 clients had a real note.
+  const customerNote = clientCustomerNote(client);
   const profile = parseClientProfile(client.profileJson);
   // The single highest-leverage line: what this client usually asks changed —
   // it predicts the bounce-backs the QC pass is meant to prevent.
@@ -56,10 +69,10 @@ function qcClientContext(client: TaskRow["client"]): QcClientContext | null {
   const donts = profile?.donts?.filter((t) => !!t?.trim()) ?? [];
   const isVip = !!segment && VIP_SEGMENTS.has(segment);
   // Nothing to show at all → no strip.
-  if (!segment && !editingPreferences && usuallyAsks.length === 0 && dos.length === 0 && donts.length === 0) {
+  if (!segment && !customerNote && usuallyAsks.length === 0 && dos.length === 0 && donts.length === 0) {
     return null;
   }
-  return { segment, isVip, editingPreferences, usuallyAsks, dos, donts };
+  return { segment, isVip, customerNote, usuallyAsks, dos, donts };
 }
 
 export function taskToView(t: TaskRow): QueueTask {

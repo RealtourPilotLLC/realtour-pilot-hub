@@ -1,7 +1,10 @@
 import "server-only";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { findUnansweredInbound } from "@/lib/commsSla";
 import { TRIAGE_TYPES, boardVisibleWhere } from "@/lib/triage";
+import { listAssignees, slugForName, viewerAssigneeKey, assigneeName, type Assignee } from "@/lib/assignees";
+import { getCurrentUser, type CurrentUser } from "@/lib/auth/user";
 import { cleanEmailBody } from "@/lib/commsBoard";
 import { isMonthlyContentJob, monthlyVideoQuota } from "@/lib/pipeline";
 import { cleanBrief, parseShootBrief } from "@/lib/shoot";
@@ -240,9 +243,17 @@ export type OpsLoop = {
   summary: string | null;
   dueISO: string | null;
   overdue: boolean;
+  /** overdue, or promised today (ET) — the rows that need a move now */
+  actNow: boolean;
   projectId: string | null;
   projectTitle: string | null;
   kind: "comms_followup" | "internal_instruction" | "callback" | "client_reply" | string;
+  /** who the loop is FOR: an assignee key ("kyle"), OWNER_LANE, or OPS_LANE */
+  lane: string;
+  /** the viewer's own plate — their lane, or the shared ops pile */
+  mine: boolean;
+  /** the person it sits with, when that isn't the viewer ("Kim") */
+  withWhom: string | null;
 };
 
 export type OpsDay = {
@@ -253,6 +264,11 @@ export type OpsDay = {
   qc: OpsQcRow[];
   pipeline: { rows: PipelineRow[]; editing: number; review: number; revision: number; overdueTasks: number; dueTodayTasks: number };
   openLoops: OpsLoop[];
+  /** The same list, counted — so a header can say "14 loops, none of them
+   *  yours" instead of a bare 0, and only claim "+" when it was truly cut off.
+   *  Carried as a field (not read off the array) so it survives serialisation
+   *  into a client component. */
+  openLoopsTally: LoopsTally;
   /** every uploaded cut awaiting a verdict / back with its editor — the Ops Day
    *  "Video Review" block and the owner Dashboard card read the same list. */
   videoReview: { waiting: VideoCutState[]; revising: VideoCutState[] };
@@ -635,6 +651,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
     qc,
     pipeline: { rows: pipelineRows, editing, review, revision, overdueTasks, dueTodayTasks },
     openLoops,
+    openLoopsTally: tallyLoops(openLoops),
     videoReview,
     needsAssigning: needsAssigningCount,
     closeout: {
@@ -649,32 +666,276 @@ export async function buildOpsDay(): Promise<OpsDay> {
   };
 }
 
-/**
- * Open loops — follow-ups, instructions, callbacks and replies still owed.
- * Shared by Ops Day and the owner Dashboard, which both let a human close one
- * out (Jordan, Sep 1: "a button to view and a button to mark as handled").
- */
-/** Rows fetched at most — every badge renders "N+" at the cap so a truncated
- *  list is never presented as an exact count (review). */
-export const OPEN_LOOPS_CAP = 120;
-export async function openLoopsList(now = new Date()): Promise<OpsLoop[]> {
-  const rows = await prisma.smartTask.findMany({
-    where: {
-      status: { notIn: ["COMPLETED", "CANCELLED"] },
-      taskType: { in: ["comms_followup", "internal_instruction", "callback", "client_reply"] },
-    },
-    select: { id: true, title: true, summary: true, dueAt: true, projectId: true, taskType: true, project: { select: { title: true } } },
-    orderBy: [{ dueAt: "asc" }],
-    take: OPEN_LOOPS_CAP,
+// ---------------------------------------------------------------------------
+// Open loops — follow-ups, instructions, callbacks and replies still owed.
+// Shared by Ops Day and the owner Dashboard, which both let a human close one
+// out (Jordan, Sep 1: "a button to view and a button to mark as handled").
+//
+// WHO SEES WHAT — Jordan, Sep 2: "it's showing Kyle things that are for me.
+// That shouldn't be the case. It's also too many things there."
+// The query used to pull EVERY open loop in the business with no owner filter,
+// so an owner's decisions landed on Kyle's home screen behind a one-click
+// "Handled" that closes them forever. (The nightly duplicate-client scan
+// already had to route AROUND this list for exactly that reason — see the long
+// comment in clientDedupe.ts.) A loop belongs to someone by the SAME rules the
+// rest of the hub assigns work, in this order:
+//   1. `assignedKey` — the first-name slug from assignees.ts, when a human or
+//      an engine named a person ("kyle", "kim", "jordan").
+//   2. else `ownerId` — the TeamMember the routers file work to. Every
+//      comms-derived follow-up (Slack to-do, client reply, vendor chase) is
+//      filed to Kyle that way while its assignedKey stays null, so this is the
+//      signal that keeps his real pile on his screen.
+//   3. else the loop is UNCLAIMED, and unclaimed work routes by its NATURE
+//      (OWNER_LANE_SOURCES) instead of landing on everybody.
+// The OWNER's lane is the whole business — he still sees every row, which is
+// what makes the scoping safe: these four task types are hidden from the
+// /tasks board by design (BOARD_HIDDEN_TYPES), so this list is the only place
+// they render. Narrowing Kyle's view can misfile a row onto Jordan; it can
+// never strand one.
+// ---------------------------------------------------------------------------
+
+/** The four task types that make up a "loop" — work owed to someone else. */
+const LOOP_TYPES = ["comms_followup", "internal_instruction", "callback", "client_reply"];
+
+/** Nobody named on the row, and its nature is nobody's in particular. */
+export const OPS_LANE = "ops";
+/** The owner's own plate — never rendered on an admin's or a creative's screen. */
+export const OWNER_LANE = "owner";
+
+// Unclaimed work whose NATURE is the owner's, not the shared ops pile. The
+// monthly Content Program's strategy call IS Jordan's client relationship — he
+// runs the call — and its booking-link drafts are minted with no assignee and
+// no owner (contentCalls.ts mintStrategyCallInvites). Seven of them at once
+// were most of the wall on Kyle's screen on Sep 2.
+const OWNER_LANE_SOURCES = ["content_program"];
+
+/** Who counts as an owner, live from the AppUser allowlist (Jordan + Lauren).
+ *  Jordan's TeamMember role is PHOTOGRAPHER, so the roster can't answer this. */
+async function ownerIdentities(): Promise<{ keys: string[]; teamIds: string[] }> {
+  const owners = await prisma.appUser.findMany({
+    where: { role: "OWNER" },
+    select: { name: true, teamMemberId: true },
   });
-  return rows.map((t) => ({
-    taskId: t.id,
-    title: t.title,
-    summary: t.summary,
-    dueISO: t.dueAt?.toISOString() ?? null,
-    overdue: !!t.dueAt && t.dueAt < now,
-    projectId: t.projectId,
-    projectTitle: t.project?.title?.split(",")[0]?.trim() ?? null,
-    kind: t.taskType,
-  }));
+  const keys = new Set<string>();
+  for (const o of owners) {
+    const k = o.name ? slugForName(o.name) : "";
+    if (k) keys.add(k);
+  }
+  return { keys: [...keys], teamIds: owners.map((o) => o.teamMemberId).filter((x): x is string => !!x) };
+}
+
+const capitalize = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
+/** The signed-in person, as the loop list needs to know them. null = no
+ *  session (local dev / a cron probe) → the full owner view, exactly as the
+ *  Dashboard already documents for a sessionless render. */
+export type LoopViewer = { key: string | null; role: string; teamMemberId: string | null };
+
+/** The signed-in person as a LoopViewer, against a roster the caller already
+ *  loaded. viewerAssigneeKey matches teamMemberId → email → first-name slug and
+ *  returns null when it can't tell. A viewer we can't identify is shown MORE,
+ *  never less (see below) — the failure mode has to be noise, not lost work. */
+function loopViewerFrom(me: CurrentUser | null, assignees: Assignee[]): LoopViewer | null {
+  if (!me) return null;
+  return { key: viewerAssigneeKey(me, assignees), role: me.role, teamMemberId: me.teamMemberId };
+}
+
+/** Rows fetched at most. The scope below is in the WHERE clause, not applied
+ *  afterwards, so a viewer's list is capped only when THEIR OWN is 120 long.
+ *  We fetch CAP + 1 and keep CAP, so `capped` means "the database really had
+ *  more", never "you happen to have exactly 120" — a badge only earns its "+"
+ *  from `loopsCapped()`, never from `length >= OPEN_LOOPS_CAP` (review). */
+export const OPEN_LOOPS_CAP = 120;
+
+/** The loop list, plus the one thing a plain array can't say: whether it was
+ *  truncated. `capped` is a non-enumerable own property, so the array still
+ *  maps/serialises exactly as before; a copy that loses it reads as false —
+ *  i.e. no "+" — which understates rather than lying. */
+export type OpsLoopList = OpsLoop[] & { capped: boolean };
+
+/** True only when the query hit the cap with rows to spare. */
+export function loopsCapped(loops: OpsLoop[]): boolean {
+  return (loops as Partial<OpsLoopList>).capped === true;
+}
+
+export type LoopsTally = {
+  /** every loop this viewer is allowed to see */
+  total: number;
+  /** on their own plate — their lane plus the shared ops pile */
+  mine: number;
+  /** of theirs, overdue or promised today — the number the block badges */
+  actNow: number;
+  /** theirs, but not due yet */
+  later: number;
+  /** real, open, and sitting with someone else */
+  elsewhere: number;
+  capped: boolean;
+};
+
+/** One pass over the list for every count a header needs to tell the truth. */
+export function tallyLoops(loops: OpsLoop[]): LoopsTally {
+  let mine = 0, actNow = 0, later = 0;
+  for (const l of loops) {
+    if (!l.mine) continue;
+    mine++;
+    if (l.actNow) actNow++;
+    else later++;
+  }
+  return { total: loops.length, mine, actNow, later, elsewhere: loops.length - mine, capped: loopsCapped(loops) };
+}
+
+/**
+ * What a header should say when the act-now badge is 0 but the block is NOT
+ * empty. Returns null when it genuinely is empty (say "clear" then).
+ *
+ * The bug this exists to kill: an admin whose own plate is clear while other
+ * people's loops are still open saw a grey "0 / none due", which reads as an
+ * empty world. James's screen on Sep 2 had 14 open loops and none of them his.
+ * Say that instead — the rows are real, they're just not his.
+ */
+export function loopsZeroState(loops: OpsLoop[]): { label: string; title: string } | null {
+  const t = tallyLoops(loops);
+  if (t.total === 0) return null;
+  const n = (c: number) => `${c} loop${c === 1 ? "" : "s"}`;
+  if (t.mine === 0) {
+    return {
+      label: `${t.elsewhere} elsewhere`,
+      title: `${n(t.elsewhere)} open${t.capped ? "+" : ""}, none of them yours — they're with someone else`,
+    };
+  }
+  const tail = t.elsewhere > 0 ? `, ${t.elsewhere} with someone else` : "";
+  return {
+    label: "none due",
+    title: `Nothing of yours is overdue or promised today — ${t.later} of yours still open${tail}`,
+  };
+}
+
+/**
+ * Every open loop this viewer should see, most urgent first. Pass `viewer`
+ * explicitly to override; omit it and the signed-in user is resolved from the
+ * session (so Ops Day and the Dashboard call the SAME function and each get
+ * their own audience); pass `null` for the deliberate full-business view.
+ */
+export async function openLoopsList(now = new Date(), viewer?: LoopViewer | null): Promise<OpsLoopList> {
+  // ONE roster read per render. It used to be two — currentLoopViewer() pulled
+  // listAssignees() to resolve the viewer's key while this function pulled it
+  // again for the display names — on every /ops and every dashboard load.
+  const [sessionUser, owners, assignees] = await Promise.all([
+    viewer === undefined ? getCurrentUser().catch(() => null) : Promise.resolve(null),
+    ownerIdentities(),
+    listAssignees().catch(() => []),
+  ]);
+  const me = viewer === undefined ? loopViewerFrom(sessionUser, assignees) : viewer;
+  // The EFFECTIVE role, so an owner previewing "view as Kyle" gets Kyle's
+  // screen. No session at all (local dev, a probe) = the full owner view, the
+  // same fallback the Dashboard already documents.
+  const ownerView = !me || me.role === "OWNER";
+
+  const where: Prisma.SmartTaskWhereInput = {
+    status: { notIn: ["COMPLETED", "CANCELLED"] },
+    taskType: { in: LOOP_TYPES },
+  };
+  if (!ownerView) {
+    // Three NULL-safe exclusions, one per rule above. Each clause spells out
+    // the null cases as their own branches: `notIn` on a NULL column is NULL,
+    // not true, and would have silently dropped every unassigned row.
+    //
+    // A clause is built ONLY when its roster lookup returned something. Folding
+    // an empty roster in with `...(xs.length ? [notIn] : [])` was NOT a no-op:
+    // it left `{ OR: [{ assignedKey: null }] }` standing, which stops being an
+    // exclusion and becomes a *restriction* — the filter inverts and the
+    // viewer's own work vanishes off their screen with no error anywhere.
+    // Measured on live data (Sep 2): with both lookups empty Kyle's Open Loops
+    // went 14 → 0; with only `teamIds` empty (an owner AppUser not linked to a
+    // TeamMember — Lauren's row is exactly that today) he lost the 10 unnamed
+    // rows the routers file to him, i.e. his whole comms pile. An unreadable
+    // roster must widen this list, never narrow it.
+    const AND: Prisma.SmartTaskWhereInput[] = [];
+    // 1 · not a row a named owner holds
+    if (owners.keys.length) {
+      AND.push({ OR: [{ assignedKey: null }, { assignedKey: { notIn: owners.keys } }] });
+    }
+    // 2 · not one the routers filed to an owner
+    if (owners.teamIds.length) {
+      AND.push({ OR: [{ assignedKey: { not: null } }, { ownerId: null }, { ownerId: { notIn: owners.teamIds } }] });
+    }
+    // 3 · not unclaimed work whose nature is the owner's (a module constant,
+    //     guarded the same way so the shape can't rot back into an inversion)
+    if (OWNER_LANE_SOURCES.length) {
+      AND.push({ OR: [{ assignedKey: { not: null } }, { ownerId: { not: null } }, { source: { notIn: OWNER_LANE_SOURCES } }] });
+    }
+    if (AND.length) where.AND = AND;
+  }
+
+  const rows = await prisma.smartTask.findMany({
+    where,
+    select: {
+      id: true, title: true, summary: true, dueAt: true, projectId: true, taskType: true,
+      assignedKey: true, ownerId: true, source: true,
+      owner: { select: { name: true } },
+      project: { select: { title: true } },
+    },
+    orderBy: [{ dueAt: "asc" }],
+    // One MORE than we keep: the extra row is how we know the list was really
+    // truncated. Reading "capped" off `length === CAP` would stamp a "+" on a
+    // viewer who has exactly 120 loops and no more.
+    take: OPEN_LOOPS_CAP + 1,
+  });
+  const capped = rows.length > OPEN_LOOPS_CAP;
+  const page = capped ? rows.slice(0, OPEN_LOOPS_CAP) : rows;
+
+  const todayKey = etDayKey(now);
+  const loops = page.map((t) => {
+    const lane = t.assignedKey
+      ? t.assignedKey
+      : t.ownerId
+        ? owners.teamIds.includes(t.ownerId)
+          ? OWNER_LANE
+          : t.owner?.name
+            ? slugForName(t.owner.name)
+            : OPS_LANE
+        : OWNER_LANE_SOURCES.includes(t.source)
+          ? OWNER_LANE
+          : OPS_LANE;
+    const ownerLane = lane === OWNER_LANE || owners.keys.includes(lane);
+    // Shared ops work is on everyone's plate. Beyond that: the owner's plate is
+    // his own lane, an admin's is their key. A viewer we could NOT identify
+    // keeps the whole (already owner-filtered) list rather than an empty one.
+    const mine =
+      lane === OPS_LANE ||
+      (ownerView ? ownerLane : !me?.key ? true : lane === me.key);
+    const overdue = !!t.dueAt && t.dueAt < now;
+    return {
+      taskId: t.id,
+      title: t.title,
+      summary: t.summary,
+      dueISO: t.dueAt?.toISOString() ?? null,
+      overdue,
+      actNow: overdue || (!!t.dueAt && etDayKey(t.dueAt) <= todayKey),
+      projectId: t.projectId,
+      projectTitle: t.project?.title?.split(",")[0]?.trim() ?? null,
+      kind: t.taskType,
+      lane,
+      mine,
+      // Real names come back capitalised; a key with no roster row (a vendor,
+      // a departed editor) comes back as the raw slug — capitalise it so the
+      // chip never reads "with luma".
+      withWhom: mine || lane === OPS_LANE || lane === OWNER_LANE ? null : capitalize(assigneeName(lane, assignees)),
+    } satisfies OpsLoop;
+  });
+
+  // Most urgent first, and the viewer's own work ahead of what's with someone
+  // else — the Dashboard renders the first 8 of this list, so the order IS the
+  // triage there (it has no room for sections).
+  const rank = (l: OpsLoop) => (l.overdue ? 0 : l.actNow ? 1 : l.dueISO ? 2 : 3);
+  loops.sort(
+    (a, b) =>
+      rank(a) - rank(b) ||
+      Number(b.mine) - Number(a.mine) ||
+      (Date.parse(a.dueISO ?? "") || Infinity) - (Date.parse(b.dueISO ?? "") || Infinity) ||
+      a.title.localeCompare(b.title),
+  );
+  // Non-enumerable, so the list still behaves as a plain OpsLoop[] everywhere
+  // (map, spread, JSON) and only loopsCapped()/tallyLoops() look for it.
+  return Object.defineProperty(loops, "capped", { value: capped, enumerable: false }) as OpsLoopList;
 }

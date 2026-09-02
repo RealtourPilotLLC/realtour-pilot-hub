@@ -4,6 +4,7 @@ import { etDayStartUtc, etTime } from "@/lib/datetime";
 import { slugForName } from "@/lib/assignees";
 import { clip, stripMoneySentences } from "@/lib/text";
 import { parseClientProfile, type ClientProfile } from "@/lib/clientProfile";
+import { creativeCustomerNote } from "@/lib/clientNotes";
 import { segmentMeta, type SegmentMeta } from "@/lib/segments";
 import { phoneKey } from "@/lib/integrations/openphone";
 import { ActivityType, type DeliverableType, type DeliverableStatus } from "@prisma/client";
@@ -163,7 +164,11 @@ export type ShootView = {
     email: string | null;
     socialClient: boolean;
     socialPlan: string | null;
-    editingPreferences: string | null;
+    // THE customer note (Aryeo-mirrored generalNotes + legacy editingPreferences
+    // fallback), money-scrubbed — a photographer's screen never shows pricing.
+    // Was `editingPreferences` alone, a column with no writer since the notes
+    // cards merged, so this read NULL on all 349 clients.
+    customerNote: string | null;
   };
   segment: SegmentMeta | null;
   profile: ClientProfile | null;
@@ -249,7 +254,7 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
       email: p.client.email,
       socialClient: p.client.socialClient,
       socialPlan: p.client.socialPlan,
-      editingPreferences: p.client.editingPreferences,
+      customerNote: creativeCustomerNote(p.client),
     },
     segment: segmentMeta(p.client.segment),
     profile: parseClientProfile(p.client.profileJson),

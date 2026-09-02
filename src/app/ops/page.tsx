@@ -1,13 +1,13 @@
 import Link from "next/link";
 import {
-  AlarmClock, AlertTriangle, ArrowRight, Camera, CheckCircle2, ClipboardCheck, Clapperboard, Clock,
+  AlarmClock, AlertTriangle, ArrowRight, Camera, CheckCircle2, ChevronDown, ClipboardCheck, Clapperboard, Clock,
   CloudSun, Coffee, ExternalLink, Hourglass, ListChecks, MessageSquare, Moon, Plane, PlayCircle,
   RefreshCw, Route, Sunrise, Wrench,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { requirePageAccess } from "@/lib/auth/guards";
-import { buildOpsDay, OPEN_LOOPS_CAP, type OpsDay, type OpsShoot, type OpsQcRow } from "@/lib/opsDay";
+import { buildOpsDay, OPEN_LOOPS_CAP, type OpsDay, type OpsShoot, type OpsQcRow, type OpsLoop } from "@/lib/opsDay";
 import { AutoRefresh } from "@/components/ops/AutoRefresh";
 import { QcComplete } from "@/components/ops/QcComplete";
 import { LoopActions } from "@/components/ops/LoopActions";
@@ -54,6 +54,21 @@ function loopKind(kind: string): string {
     : kind === "callback" ? "Callback"
     : kind === "client_reply" ? "Reply owed"
     : "Follow-up";
+}
+
+// How many open loops render before the rest fold into "Show N more". The
+// block's job is what needs a move TODAY (Jordan, Sep 2: "it's also too many
+// things there") — the tail is one tap away on this same page, never dropped.
+const LOOPS_SHOWN = 6;
+
+/** Split the viewer's loops into: act now · not due yet · with someone else. */
+function splitLoops(loops: OpsLoop[]): { act: OpsLoop[]; later: OpsLoop[]; elsewhere: OpsLoop[] } {
+  const mine = loops.filter((l) => l.mine);
+  return {
+    act: mine.filter((l) => l.actNow),
+    later: mine.filter((l) => !l.actNow),
+    elsewhere: loops.filter((l) => !l.mine),
+  };
 }
 
 type BlockDef = { key: string; from: number; to: number; time: string; title: string; short: string; icon: LucideIcon; goal: string };
@@ -139,7 +154,7 @@ export default async function OpsDayPage() {
                 <span className="tabular-nums opacity-70">{b.time.split(" – ")[0]}</span>
                 {b.short}
                 {n != null && n > 0 && (
-                  <span className={cn("rounded-full px-1.5 text-[10px] font-semibold tabular-nums", cur ? "bg-white/20" : "bg-surface-2 text-foreground")}>{n}{plusFor(b.key, n)}</span>
+                  <span className={cn("rounded-full px-1.5 text-[10px] font-semibold tabular-nums", cur ? "bg-white/20" : "bg-surface-2 text-foreground")}>{n}{plusFor(b.key, d)}</span>
                 )}
               </a>
             );
@@ -186,7 +201,7 @@ function Stat({ label, value, warn, href }: { label: string; value: string; warn
 }
 
 // "120+" when a capped list is full — never present a truncated count as exact.
-const plusFor = (key: string, n: number) => (key === "loops" && n >= OPEN_LOOPS_CAP ? "+" : "");
+const plusFor = (key: string, d: OpsDay) => (key === "loops" && d.openLoops.length >= OPEN_LOOPS_CAP ? "+" : "");
 
 // What each block has waiting — the number on its header and jump-bar chip.
 // null = the block is guidance, not a list (lunch, admin, closeout).
@@ -197,7 +212,10 @@ function countFor(key: string, d: OpsDay): number | null {
     case "overdue": return listingQc(d).filter((q) => q.bucket === "overdue").length;
     case "comms-1": case "comms-2": case "comms-3": return d.unanswered.count;
     case "prep": case "final-prep": return d.tomorrowShoots.length;
-    case "loops": return d.openLoops.length;
+    // The badge counts what the block RENDERS by default: this viewer's loops
+    // that are overdue or promised today. The rest are stated and reachable in
+    // the block itself, so the number never points at a list that hides rows.
+    case "loops": return splitLoops(d.openLoops).act.length;
     case "video-review": return d.videoReview.waiting.length + d.videoReview.revising.length;
     case "pipeline": return d.pipeline.rows.length;
     case "monthly": return d.qc.filter((q) => q.monthly).length;
@@ -208,6 +226,14 @@ function countFor(key: string, d: OpsDay): number | null {
 function Block({ def, current, d }: { def: BlockDef; current: boolean; d: OpsDay }) {
   const Icon = def.icon;
   const n = countFor(def.key, d);
+  // A green "clear" must mean the block is empty. Open Loops counts what needs
+  // a move TODAY, so with a tail still open it reads "none due" instead — the
+  // rows are one tap away inside the card and must not look like zero.
+  const zeroLabel = def.key === "loops" && d.openLoops.length > 0 ? "none due" : "clear";
+  const zeroTitle =
+    zeroLabel === "clear"
+      ? "Nothing waiting in this block"
+      : `Nothing overdue or due today — ${d.openLoops.length} still open in this block`;
   // scroll-mt clears the sticky PageHeader (~104px with a one-line subtitle,
   // ~124px when it wraps on a phone) so a jump never tucks the block's title
   // under the header (review).
@@ -228,11 +254,11 @@ function Block({ def, current, d }: { def: BlockDef; current: boolean; d: OpsDay
           <span
             className={cn(
               "shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold tabular-nums",
-              n > 0 ? "bg-surface-2 text-foreground" : "bg-success/10 text-success",
+              n > 0 ? "bg-surface-2 text-foreground" : zeroLabel === "clear" ? "bg-success/10 text-success" : "bg-surface-2 text-muted",
             )}
-            title={n > 0 ? `${n} in this block` : "Nothing waiting in this block"}
+            title={n > 0 ? `${n} in this block` : zeroTitle}
           >
-            {n > 0 ? `${n}${plusFor(def.key, n)}` : "clear"}
+            {n > 0 ? `${n}${plusFor(def.key, d)}` : zeroLabel}
           </span>
         )}
       </div>
@@ -309,33 +335,8 @@ function BlockBody({ blockKey, d }: { blockKey: string; d: OpsDay }) {
         </div>
       );
 
-    case "loops": {
-      const now = new Date(d.nowISO);
-      return (
-        <div className="space-y-2">
-          {d.openLoops.length === 0 && (
-            <p className="flex items-center gap-1.5 text-sm text-success"><CheckCircle2 className="size-4" /> No follow-ups waiting on someone else.</p>
-          )}
-          {/* All rendered inline — the Other tab hides comm-type tasks, so an
-              overflow link there showed none of these rows (review). Each row
-              has View + Handled (Jordan, Sep 1) instead of being one big link. */}
-          {d.openLoops.map((l) => (
-            <div key={l.taskId} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-border px-3.5 py-2">
-              <div className="min-w-0 flex-1 basis-56">
-                <p className="text-sm font-medium leading-snug">{l.title}</p>
-                <p className="mt-0.5 text-[11px] text-muted">
-                  {loopKind(l.kind)}
-                  {l.projectTitle ? ` · ${l.projectTitle}` : ""}
-                  {l.dueISO ? (l.overdue ? ` · ${ageText(l.dueISO, now)} overdue` : ` · due ${fmtDay(l.dueISO)}`) : ""}
-                </p>
-              </div>
-              {l.overdue && <span className="shrink-0 rounded-full bg-danger/15 px-2 py-0.5 text-[10px] font-semibold text-danger">overdue</span>}
-              <LoopActions taskId={l.taskId} viewHref={l.projectId ? `/projects/${l.projectId}` : `/tasks?tab=other&task=${l.taskId}`} />
-            </div>
-          ))}
-        </div>
-      );
-    }
+    case "loops":
+      return <LoopsCard d={d} />;
 
     case "video-review":
       return <VideoReviewCard d={d} />;
@@ -666,6 +667,113 @@ function MonthlyCard({ d }: { d: OpsDay }) {
   return (
     <div className="space-y-2">
       {monthly.map((q) => <QcRow key={q.taskId} q={q} now={now} />)}
+    </div>
+  );
+}
+
+// One open loop — the row Kyle acts on. View + Handled on every row (Jordan,
+// Sep 1) rather than one big link; the Other tab hides comm-type tasks, so the
+// only honest "view" for an unanchored loop is the task deep-link.
+function LoopRow({ l, now, muted }: { l: OpsLoop; now: Date; muted?: boolean }) {
+  return (
+    <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-border px-3.5 py-2", muted && "bg-surface-2/40")}>
+      <div className="min-w-0 flex-1 basis-56">
+        <p className={cn("text-sm font-medium leading-snug", muted && "text-foreground/80")}>{l.title}</p>
+        <p className="mt-0.5 text-[11px] text-muted">
+          {loopKind(l.kind)}
+          {l.projectTitle ? ` · ${l.projectTitle}` : ""}
+          {l.dueISO ? (l.overdue ? ` · ${ageText(l.dueISO, now)} overdue` : ` · due ${fmtDay(l.dueISO)}`) : " · no date"}
+          {l.withWhom ? ` · with ${l.withWhom}` : ""}
+        </p>
+      </div>
+      {l.overdue && <span className="shrink-0 rounded-full bg-danger/15 px-2 py-0.5 text-[10px] font-semibold text-danger">overdue</span>}
+      <LoopActions taskId={l.taskId} viewHref={l.projectId ? `/projects/${l.projectId}` : `/tasks?tab=other&task=${l.taskId}`} />
+    </div>
+  );
+}
+
+/**
+ * Open Loops + Follow-Ups. Two problems Jordan named on Sep 2: the list showed
+ * every loop in the business to everyone ("it's showing Kyle things that are
+ * for me") and showed all of them at once ("it's also too many things there").
+ *
+ * Audience is settled in openLoopsList() — this card only ever receives the
+ * viewer's own lane plus the shared ops pile. Volume is settled here: overdue
+ * and due-today lead, the first {LOOPS_SHOWN} render open, and everything else
+ * is COUNTED in the summary and expands in place. Nothing is truncated away —
+ * the /tasks board hides these task types (BOARD_HIDDEN_TYPES), so an overflow
+ * link there would land on an empty page (that regression is why the list was
+ * rendered in full to begin with).
+ */
+function LoopsCard({ d }: { d: OpsDay }) {
+  const now = new Date(d.nowISO);
+  const { act, later, elsewhere } = splitLoops(d.openLoops);
+  if (act.length + later.length + elsewhere.length === 0) {
+    return (
+      <p className="flex items-center gap-1.5 text-sm text-success">
+        <CheckCircle2 className="size-4" /> No follow-ups waiting on someone else.
+      </p>
+    );
+  }
+  const shown = act.slice(0, LOOPS_SHOWN);
+  const restOfAct = act.slice(LOOPS_SHOWN);
+  const moreCount = restOfAct.length + later.length + elsewhere.length;
+  // Says what the tail actually IS, so "show N more" is never a mystery pile.
+  // The overdue-with-someone-else figure is called out WITHOUT expanding: on
+  // the owner's screen most loops sit with Kyle, and "12 overdue" is the whole
+  // point of this block ("what am I waiting on that could become a problem?").
+  const elsewhereLate = elsewhere.filter((l) => l.overdue).length;
+  const moreParts = [
+    restOfAct.length > 0 ? `${restOfAct.length} more due now` : null,
+    later.length > 0 ? `${later.length} not due yet` : null,
+    elsewhere.length > 0 ? `${elsewhere.length} with someone else` : null,
+  ].filter(Boolean);
+
+  return (
+    <div className="space-y-2">
+      {act.length === 0 ? (
+        <p className="flex items-center gap-1.5 text-sm text-success">
+          <CheckCircle2 className="size-4" /> Nothing of yours is overdue or promised today.
+        </p>
+      ) : (
+        shown.map((l) => <LoopRow key={l.taskId} l={l} now={now} />)
+      )}
+
+      {moreCount > 0 && (
+        <details className="group rounded-xl border border-border bg-surface-2/30">
+          <summary className="flex cursor-pointer list-none items-center gap-2 px-3.5 py-2 text-[13px] font-medium text-muted hover:text-foreground">
+            <ChevronDown className="size-3.5 shrink-0 -rotate-90 transition-transform group-open:rotate-0" />
+            Show {moreCount} more
+            <span className="text-[11px] font-normal text-muted-2">— {moreParts.join(" · ")}</span>
+            {elsewhereLate > 0 && (
+              <span className="rounded-full bg-danger/15 px-2 py-0.5 text-[10px] font-semibold text-danger">{elsewhereLate} overdue</span>
+            )}
+          </summary>
+          <div className="space-y-2 border-t border-border p-2.5">
+            {restOfAct.map((l) => <LoopRow key={l.taskId} l={l} now={now} />)}
+            {later.length > 0 && (
+              <>
+                <p className="px-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-2">Not due yet</p>
+                {later.map((l) => <LoopRow key={l.taskId} l={l} now={now} muted />)}
+              </>
+            )}
+            {elsewhere.length > 0 && (
+              <>
+                <p className="px-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-2">
+                  With someone else — chase, don&rsquo;t do
+                </p>
+                {elsewhere.map((l) => <LoopRow key={l.taskId} l={l} now={now} muted />)}
+              </>
+            )}
+          </div>
+        </details>
+      )}
+
+      {d.openLoops.length >= OPEN_LOOPS_CAP && (
+        <p className="text-[11px] text-muted-2">
+          Showing the first {OPEN_LOOPS_CAP} — there are more open than this block can load.
+        </p>
+      )}
     </div>
   );
 }

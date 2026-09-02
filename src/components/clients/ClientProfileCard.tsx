@@ -1,121 +1,122 @@
-"use client";
+import { UserRound, Palette, Repeat, Scissors, ThumbsUp, ThumbsDown, ShieldCheck } from "lucide-react";
+import {
+  editorView, liveProfileFacts, recentRevisionAsks,
+  type ClientProfile, type EditorClientProfile, type ProfileFacts, type RevisionAsk,
+} from "@/lib/clientProfile";
+import { getCurrentUser } from "@/lib/auth/user";
+import { authEnforced } from "@/lib/auth/guards";
+import { SegmentBadge } from "@/components/clients/SegmentBadge";
+import { ClientProfileCardView } from "@/components/clients/ClientProfileCardView";
+import { Bullets, RecentAsks, Stat } from "@/components/clients/profileParts";
 
-import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
-import { UserRound, RefreshCw, Sparkles, ThumbsUp, ThumbsDown, MessageSquare, Repeat, Camera, Palette, ShieldCheck } from "lucide-react";
-import { regenerateClientProfile } from "@/app/clients/actions";
-import type { ClientProfile } from "@/lib/clientProfile";
-import { ink } from "@/components/ui/Badge";
+// ---------------------------------------------------------------------------
+// THE WORKING PROFILE CARD — audience-scoped (Sep 2 2026).
+//
+// Jordan, on the profile an editor was reading off Mike Ciunci's job: "There is
+// too much there… These are all things that are not relevant or necessary for
+// the editor to know." He was seeing the office-visit locations, the on-camera
+// and wardrobe asks, that faith is part of Mike's brand, that he referred a
+// colleague, and his "LFG / My Man" texting voice.
+//
+// So this entry point is a SERVER component that resolves the viewer's role and
+// hands each audience its own card:
+//   · OWNER / ADMIN  → the whole profile (it is genuinely how Jordan and Kyle work)
+//   · everyone else  → the editor card below, built from editorView()
+// The filter runs here, on the server, so the rapport and comms text is never
+// serialized into an editor's browser at all. Same props as before, so the two
+// call sites (/clients/<id> and /edit/<id>) need no change.
+// ---------------------------------------------------------------------------
 
-const TOUCH: Record<string, { label: string; color: string }> = {
-  high: { label: "High touch", color: "#d782ac" },
-  medium: { label: "Medium touch", color: "#d4a95f" },
-  low: { label: "Low touch", color: "#5cb98a" },
-};
+export async function ClientProfileCard({
+  clientId,
+  profile,
+  updatedAt,
+  audience,
+}: {
+  clientId: string;
+  profile: ClientProfile | null;
+  updatedAt: string | null;
+  /** Force a view. Omitted = decide from the signed-in viewer's role. */
+  audience?: "full" | "editor";
+}) {
+  const viewer = await getCurrentUser();
+  // Fail to the NARROW view when we can't prove who's looking — except in local
+  // open mode, where there is no session at all and Jordan is the only user.
+  const scope =
+    audience ??
+    (viewer
+      ? viewer.role === "OWNER" || viewer.role === "ADMIN" ? "full" : "editor"
+      : authEnforced() ? "editor" : "full");
 
-function Stat({ value, label }: { value: number | string; label: string }) {
-  return (
-    <div className="rounded-xl border bg-background/40 px-3 py-2 text-center">
-      <div className="text-base font-semibold tabular-nums">{value}</div>
-      <div className="text-[10px] uppercase tracking-wide text-muted-2">{label}</div>
-    </div>
-  );
+  const [asks, facts] = await Promise.all([recentRevisionAsks(clientId), liveProfileFacts(clientId)]);
+
+  if (scope === "editor") return <EditorProfileCard profile={editorView(profile)} facts={facts} asks={asks} updatedAt={updatedAt} />;
+  return <ClientProfileCardView clientId={clientId} profile={profile} facts={facts} asks={asks} updatedAt={updatedAt} />;
 }
 
-function Bullets({ icon, title, items }: { icon: React.ReactNode; title: string; items: string[] }) {
-  if (!items?.length) return null;
-  return (
-    <div>
-      <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
-        {icon} {title}
-      </div>
-      <ul className="space-y-1">
-        {items.map((it, i) => (
-          <li key={i} className="flex gap-2 text-sm leading-relaxed text-foreground/90">
-            <span className="mt-2 size-1.5 shrink-0 rounded-full bg-brand/60" />
-            <span>{it}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
+// The editor's card: what this client wants done to the video, and nothing else.
+// No regenerate button — rebuilding a profile is admin-only (requireAdmin in
+// regenerateClientProfile), so offering an editor the button would only ever
+// hand them "You don't have access to do that."
+function EditorProfileCard({
+  profile,
+  facts,
+  asks,
+  updatedAt,
+}: {
+  profile: EditorClientProfile | null;
+  facts: ProfileFacts;
+  asks: RevisionAsk[];
+  updatedAt: string | null;
+}) {
+  const e = profile?.editing;
+  // The counts are live, so they are worth showing on their own — but a card
+  // with nothing BUT two numbers should say so rather than look broken.
+  const hasBody = Boolean(
+    e?.summary || e?.prefs.length || e?.customerNotes.length || e?.dos.length || e?.donts.length ||
+      profile?.brandStyle || profile?.revisions.summary || profile?.revisions.commonTypes.length || asks.length,
   );
-}
-
-export function ClientProfileCard({ clientId, profile, updatedAt }: { clientId: string; profile: ClientProfile | null; updatedAt: string | null }) {
-  const router = useRouter();
-  const [pending, start] = useTransition();
-  const [err, setErr] = useState("");
-  const touch = profile?.touchLevel ? TOUCH[profile.touchLevel] : null;
-
-  function regen() {
-    setErr("");
-    start(async () => {
-      const r = await regenerateClientProfile(clientId);
-      if (r.ok) router.refresh();
-      else setErr(r.message);
-    });
-  }
 
   return (
     <section className="overflow-hidden rounded-2xl border bg-surface">
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3">
         <span className="flex size-7 items-center justify-center rounded-lg bg-brand-soft text-brand"><UserRound className="size-4" /></span>
         <h2 className="text-sm font-semibold">Working profile</h2>
-        {touch && (
-          <span className="rounded-full px-2 py-0.5 text-[11px] font-medium" style={{ backgroundColor: `${touch.color}22`, color: ink(touch.color) }}>
-            {touch.label}
-          </span>
-        )}
-        <span className="ml-auto inline-flex items-center gap-1 text-[11px] text-muted-2" title="Built only from info appropriate for the creative team">
-          <ShieldCheck className="size-3.5 text-brand" /> creative-safe
+        {facts.segment && <SegmentBadge segment={facts.segment} size="xs" />}
+        <span className="ml-auto inline-flex items-center gap-1 text-[11px] text-muted-2" title="Only the parts of this client's profile that change the edit">
+          <ShieldCheck className="size-3.5 text-brand" /> what matters for the cut
         </span>
-        <button
-          onClick={regen}
-          disabled={pending}
-          className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-2.5 py-1 text-xs font-medium hover:bg-surface-2 disabled:opacity-50"
-        >
-          <RefreshCw className={`size-3.5 ${pending ? "animate-spin" : ""}`} /> {pending ? "Building…" : profile ? "Refresh" : "Generate"}
-        </button>
       </div>
 
       <div className="space-y-4 px-5 py-4">
-        {!profile ? (
-          <div className="flex flex-col items-center gap-2 py-6 text-center">
-            <Sparkles className="size-6 text-brand" />
-            <p className="max-w-sm text-sm text-muted">
-              Build an AI summary of who this client is to work with, from their messages, shoot debriefs, and revision history.
-            </p>
-            <button onClick={regen} disabled={pending} className="mt-1 inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-brand-fg disabled:opacity-50">
-              <Sparkles className="size-4" /> {pending ? "Building…" : "Generate profile"}
-            </button>
-          </div>
+        {e?.summary && <p className="text-sm leading-relaxed text-foreground/90">{e.summary}</p>}
+
+        <div className="grid grid-cols-2 gap-2">
+          <Stat value={facts.totalOrders} label="Orders" />
+          <Stat value={facts.revisions} label="Revisions" />
+        </div>
+
+        {!hasBody ? (
+          <p className="text-sm text-muted">
+            Nothing else on file for this client yet. Work from the job brief, their assets, and the photographer&rsquo;s notes.
+          </p>
         ) : (
           <>
-            {profile.summary && <p className="text-sm leading-relaxed text-foreground/90">{profile.summary}</p>}
+            <Bullets icon={<Scissors className="size-3.5" />} title="Editing preferences" items={e?.prefs ?? []} />
+            <Bullets icon={<UserRound className="size-3.5" />} title="Customer notes" items={e?.customerNotes ?? []} />
 
-            <div className="grid grid-cols-3 gap-2">
-              <Stat value={profile.stats.totalOrders} label="Orders" />
-              <Stat value={profile.stats.revisions} label="Revisions" />
-              <Stat value={profile.stats.inboundMsgs} label="Messages" />
-            </div>
-
-            {profile.workingStyle && (
+            {profile?.brandStyle && (
               <div>
-                <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">Working style</div>
-                <p className="text-sm leading-relaxed text-foreground/90">{profile.workingStyle}</p>
+                <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted"><Palette className="size-3.5" /> Brand &amp; style</div>
+                <p className="text-sm leading-relaxed text-foreground/90">{profile.brandStyle}</p>
               </div>
             )}
-            {profile.communication && (
-              <div>
-                <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted"><MessageSquare className="size-3.5" /> Communication</div>
-                <p className="text-sm leading-relaxed text-foreground/90">{profile.communication}</p>
-              </div>
-            )}
-            {(profile.revisions?.summary || profile.revisions?.commonTypes?.length) && (
+
+            {profile && (profile.revisions.summary || profile.revisions.commonTypes.length > 0) && (
               <div>
                 <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted"><Repeat className="size-3.5" /> Revisions</div>
                 {profile.revisions.summary && <p className="text-sm leading-relaxed text-foreground/90">{profile.revisions.summary}</p>}
-                {profile.revisions.commonTypes?.length > 0 && (
+                {profile.revisions.commonTypes.length > 0 && (
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
                     {profile.revisions.commonTypes.map((t, i) => (
                       <span key={i} className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{t}</span>
@@ -124,36 +125,38 @@ export function ClientProfileCard({ clientId, profile, updatedAt }: { clientId: 
                 )}
               </div>
             )}
-            {profile.brandStyle && (
-              <div>
-                <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted"><Palette className="size-3.5" /> Brand & style</div>
-                <p className="text-sm leading-relaxed text-foreground/90">{profile.brandStyle}</p>
-              </div>
-            )}
-            <Bullets icon={<Camera className="size-3.5" />} title="Shoot notes" items={profile.shootNotes} />
-            <Bullets icon={<UserRound className="size-3.5" />} title="About them" items={profile.aboutThem} />
 
-            {(profile.dos?.length > 0 || profile.donts?.length > 0) && (
+            <RecentAsks asks={asks} />
+
+            {(e && (e.dos.length > 0 || e.donts.length > 0)) && (
               <div className="grid gap-3 border-t border-border pt-3 sm:grid-cols-2">
-                {profile.dos?.length > 0 && (
+                {e.dos.length > 0 && (
                   <div>
                     <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-success"><ThumbsUp className="size-3.5" /> Do</div>
-                    <ul className="space-y-1">{profile.dos.map((d, i) => <li key={i} className="text-sm leading-relaxed text-foreground/90">{d}</li>)}</ul>
+                    <ul className="space-y-1">{e.dos.map((d, i) => <li key={i} className="text-sm leading-relaxed text-foreground/90">{d}</li>)}</ul>
                   </div>
                 )}
-                {profile.donts?.length > 0 && (
+                {e.donts.length > 0 && (
                   <div>
                     <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-danger"><ThumbsDown className="size-3.5" /> Avoid</div>
-                    <ul className="space-y-1">{profile.donts.map((d, i) => <li key={i} className="text-sm leading-relaxed text-foreground/90">{d}</li>)}</ul>
+                    <ul className="space-y-1">{e.donts.map((d, i) => <li key={i} className="text-sm leading-relaxed text-foreground/90">{d}</li>)}</ul>
                   </div>
                 )}
               </div>
+            )}
+
+            {/* A profile written before the audience split has no editing block
+                yet. Say so plainly rather than looking like this client has no
+                preferences: the nightly rebuild fills it in. */}
+            {profile && profile.v < 2 && !e?.prefs.length && !e?.customerNotes.length && (
+              <p className="rounded-lg bg-surface-2 px-3 py-2 text-xs text-muted">
+                Editing notes for this client are still being written up. Check the job brief and the client&rsquo;s assets for this cut.
+              </p>
             )}
 
             {updatedAt && <div className="border-t border-border pt-2 text-[11px] text-muted-2">Updated {updatedAt}</div>}
           </>
         )}
-        {err && <div className="text-xs text-danger">{err}</div>}
       </div>
     </section>
   );

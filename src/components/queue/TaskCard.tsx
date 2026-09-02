@@ -53,11 +53,12 @@ export type DeliverableStatus = { label: string; done: boolean };
 
 // The read-only "know this client" context shown under a QC checklist so QC
 // stops being client-blind. Built server-side in taskView.ts from the client's
-// segment + editing prefs + working profile (all JSON parsing guarded there).
+// segment + customer note + working profile (all JSON parsing guarded there).
 export type QcClientContext = {
   segment: string | null;
   isVip: boolean;
-  editingPreferences: string | null;
+  /** THE customer note — Aryeo-mirrored, see src/lib/clientNotes.ts. */
+  customerNote: string | null;
   usuallyAsks: string[]; // profileJson.revisions.commonTypes — predicts bounce-backs
   dos: string[];
   donts: string[];
@@ -295,9 +296,9 @@ function QcChecklist({ taskId, items, qcClient, interactive }: {
 // The compact read-only client-context strip under a QC checklist.
 function QcClientStrip({ qcClient }: { qcClient?: QcClientContext | null }) {
   if (!qcClient) return null;
-  const { segment, isVip, editingPreferences, usuallyAsks, dos, donts } = qcClient;
+  const { segment, isVip, customerNote, usuallyAsks, dos, donts } = qcClient;
   const segLabel = segment ? SEGMENT_LABEL[segment] ?? segment : null;
-  if (!segLabel && !editingPreferences && usuallyAsks.length === 0 && dos.length === 0 && donts.length === 0) return null;
+  if (!segLabel && !customerNote && usuallyAsks.length === 0 && dos.length === 0 && donts.length === 0) return null;
   return (
     <div className="rounded-lg border border-border bg-surface-2/40 p-2 text-xs">
       <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
@@ -307,8 +308,8 @@ function QcClientStrip({ qcClient }: { qcClient?: QcClientContext | null }) {
         )}
       </div>
       <div className="space-y-1 text-foreground/85">
-        {editingPreferences && (
-          <p><span className="text-muted-2">Editing style:</span> {editingPreferences}</p>
+        {customerNote && (
+          <p className="whitespace-pre-line"><span className="text-muted-2">Customer note:</span> {customerNote}</p>
         )}
         {usuallyAsks.length > 0 && (
           <p className="flex flex-wrap items-baseline gap-1">

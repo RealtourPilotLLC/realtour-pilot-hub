@@ -14,11 +14,14 @@ import { prisma } from "@/lib/prisma";
 import { cn } from "@/lib/utils";
 import { UploadPortal } from "@/components/upload/UploadPortal";
 import { AppointmentFeedback } from "@/components/upload/AppointmentFeedback";
+import { AddedAtShoot } from "./AddedAtShoot";
+import { itemFromTaskTitle, shootAddonKeyPrefix, streetOf, type ShootAddOn } from "@/app/upload/shootAddOns";
 import { getProjectFolderState } from "@/lib/dropboxFolders";
 import { photoPolicyFor, rawBudgetFor, rawOverageCeiling } from "@/lib/culling";
 import { ActivityType } from "@prisma/client";
 import { isFieldFlag } from "@/lib/debrief";
 import { videoStepSpec, isMonthlyContentJob } from "@/lib/pipeline";
+import { creativeCustomerNote } from "@/lib/clientNotes";
 import { videoTier } from "@/lib/projectStatus";
 
 export const dynamic = "force-dynamic";
@@ -62,6 +65,25 @@ export default async function UploadProjectPage({
   if (!project) notFound();
 
   const folderState = await getProjectFolderState(project);
+
+  // Items the agent added on site, already logged from this portal. Read back
+  // off the tasks themselves (their dedupeKey is prefixed per project) so the
+  // photographer sees what they've already reported instead of re-adding it,
+  // and CANCELLED rows stay hidden — those were withdrawn here.
+  const addOnTasks = await prisma.smartTask.findMany({
+    where: { projectId: project.id, dedupeKey: { startsWith: shootAddonKeyPrefix(project.id) }, status: { not: "CANCELLED" } },
+    select: { id: true, title: true, description: true, contactName: true, createdAt: true, status: true },
+    orderBy: { createdAt: "asc" },
+  });
+  const street = streetOf(project.title);
+  const addOns: ShootAddOn[] = addOnTasks.map((t) => ({
+    id: t.id,
+    item: itemFromTaskTitle(t.title, street),
+    note: t.description,
+    addedBy: t.contactName,
+    addedAtISO: t.createdAt.toISOString(),
+    handled: t.status === "COMPLETED",
+  }));
   // ONE policy source for everything this page says about photo counts — the
   // enforcement target, the display range, and which regime produced them
   // (override / legacy / SOP), so the chip can never contradict the sweep.
@@ -131,7 +153,11 @@ export default async function UploadProjectPage({
           uploadedAt: project.uploadedAt?.toISOString() ?? null,
           editorPdfPath: project.editorPdfPath,
           clientName: project.client.name,
-          editingPreferences: project.client.editingPreferences,
+          // THE customer note (Aryeo-mirrored generalNotes, legacy
+          // editingPreferences as fallback), money-scrubbed for a field screen.
+          // editingPreferences alone had no writer left, so this was null on
+          // every one of the 349 clients.
+          customerNote: creativeCustomerNote(project.client),
           photographerName: project.photographer?.name ?? null,
           cullingConfirmedAt: project.cullingConfirmedAt?.toISOString() ?? null,
           shotOrderNotes: project.shotOrderNotes,
@@ -170,6 +196,10 @@ export default async function UploadProjectPage({
           .filter((a) => a.type === ActivityType.FLAG && isFieldFlag(a.body))
           .map((a) => a.body)}
       />
+
+      {/* Anything the agent added on site that the order doesn't know about —
+          becomes one task for the office to add the item to the Aryeo order. */}
+      <AddedAtShoot projectId={project.id} initial={addOns} />
 
       {/* How the shoot went — client issues, anything we should change on our
           end. Routes to Kyle + the feedback board when it wasn't smooth. */}

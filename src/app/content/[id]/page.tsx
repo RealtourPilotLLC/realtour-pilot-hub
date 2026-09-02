@@ -12,6 +12,7 @@ import { authEnforced } from "@/lib/auth/guards";
 import { canAccess } from "@/lib/auth/access";
 import { prisma } from "@/lib/prisma";
 import { etMonthKey, monthLabel } from "@/lib/contentProgram";
+import { customerNote } from "@/lib/clientNotes";
 import { fmtDay } from "@/lib/contentStatus";
 import { stageMeta } from "@/lib/pipeline";
 import { Badge } from "@/components/ui/Badge";
@@ -63,7 +64,9 @@ export default async function ContentClientPage({
   if (tab === "portal" && !ownerEyes) tab = "month";
   const client = await prisma.client.findUnique({
     where: { id: enrollment.clientId },
-    select: { id: true, name: true, email: true, phone: true, company: true, editingPreferences: true },
+    // generalNotes is THE customer note; editingPreferences is the retired
+    // column, still read as a fallback (src/lib/clientNotes.ts).
+    select: { id: true, name: true, email: true, phone: true, company: true, generalNotes: true, editingPreferences: true },
   });
   if (!client) notFound();
 
@@ -425,7 +428,7 @@ export default async function ContentClientPage({
                   editingJson: profile?.editingJson ?? null,
                   storiesJson: profile?.storiesJson ?? null,
                 }}
-                editingPreferences={client.editingPreferences}
+                customerNote={customerNote(client)}
               />
             </div>
             <div className="grid items-start gap-5 lg:grid-cols-2">

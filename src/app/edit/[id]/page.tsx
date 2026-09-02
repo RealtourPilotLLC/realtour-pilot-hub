@@ -1,7 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import {
-  Film, FolderOpen, Palette, Clapperboard, MessageSquare, Star, ExternalLink, PenLine, PlayCircle, Quote,
+  AlertTriangle, Film, FolderOpen, Palette, MessageSquare, ExternalLink, PlayCircle, Quote,
 } from "lucide-react";
 import { VIDEO_TIER, videoTypeForDeliverable } from "@/lib/videoStyles";
 import { listClientAssets } from "@/lib/clientAssets";
@@ -25,10 +25,12 @@ import { getVideoSlaStatus } from "@/lib/projectStatus";
 import { SubmitCutCard } from "@/components/editing/EditorActions";
 import { EditFeedback } from "@/components/editing/EditFeedback";
 import { EditTracker, deriveEditStage, type RoundRow } from "@/components/editing/EditTracker";
-import { JobNoteEditor } from "@/components/editing/JobNoteEditor";
 import { RevisionBriefCard } from "@/components/editing/RevisionBriefCard";
 import { getRevisionBriefs } from "@/lib/revisionBrief";
 import { aryeoCustomerNote } from "@/lib/shoot";
+// Per-CLIENT note (the merged, Aryeo-mirrored one) — distinct from
+// aryeoCustomerNote just above, which is the note on THIS order.
+import { customerNote } from "@/lib/clientNotes";
 import { getEditorFeedback } from "@/lib/reviewRoom";
 import { slugForName } from "@/lib/assignees";
 import { refinedDeliverableLabel, isMonthlyContentJob } from "@/lib/pipeline";
@@ -39,10 +41,21 @@ import { formatDistanceToNow } from "date-fns";
 
 export const dynamic = "force-dynamic";
 
-// The EDITOR's brief screen for one job — everything they need to cut the video:
-// the photographer's editing notes, the agent's branding/style profile, the edit
-// type, the RAW folder, the in-hub cut review, and a per-job
-// message thread. Creative-safe (no pricing/financials).
+// The EDITOR's brief screen for one job. Creative-safe (no pricing/financials).
+//
+// Ordered around the editor's actual job (Jordan, Sep 2: "there is too much to
+// look at"): what to make → where the media is → do the work → what the client
+// is like → history.
+//   1. the work order (only on a bounced job — then it IS the job)
+//   2. Edit instructions — ONE card: the spec, the customer's words on this
+//      order, and everything that came off the shoot
+//   3. Media — RAW, Final, brand assets, the client's asset shelf, their colors
+//   4. What to make — the deliverables with their style tier and examples
+//   5. Script — the locked words
+//   6. Cuts to deliver — upload, the cut in review, the notes on it
+//   7. Project chat
+// The right rail is client context only; reference material sits in a
+// <details> so it is there without being in the way.
 export default async function EditBriefPage({
   params,
   searchParams,
@@ -207,7 +220,12 @@ export default async function EditBriefPage({
   // can edit, so the editor never rewrites over a scrubbed value).
   const scrub = (s: string | null) => (s == null ? null : canSeeRaw ? s : stripMoneySentences(s) || null);
   const showOrderNote = scrub(orderNote);
-  const showPrefs = scrub(project.client.editingPreferences);
+  // THE customer note: generalNotes (mirrors Aryeo's customer internal_notes,
+  // the only note anyone can still write) with the retired editingPreferences
+  // column as fallback. It used to read editingPreferences alone — NULL on all
+  // 349 clients since the notes cards were merged, so this card was blank for
+  // every job while 17 clients had a real note the editor needed.
+  const showPrefs = scrub(customerNote(project.client));
   // The client's OWN style notes, typed on their portal (client-owned column,
   // distinct from our internal editing notes) — scrubbed like everything else.
   const showTheirStyle = scrub(project.client.portalVideoStyle);
@@ -223,17 +241,57 @@ export default async function EditBriefPage({
     videoRevisionTasks.length > 0
       ? new Date(Math.max(...videoRevisionTasks.map((t) => t.createdAt.getTime()))).toISOString()
       : null;
+  // ReviewSubmission.note is the EDITOR'S message to whoever reviews the cut —
+  // except on rows the hourly folder sweep created, where it parked its own
+  // provenance line instead ("Cut detected in the Dropbox Final folder…",
+  // 11 of the 13 cuts on file). Quoting that back as if a person wrote it is
+  // noise on every surface, so it is dropped here and in the cut rows.
+  const editorMessage = (n: string | null) =>
+    n && !/^Cut detected in the Dropbox Final folder/i.test(n) ? n : null;
   const rounds: RoundRow[] = submissions.map((s) => ({
+    id: s.id,
     round: s.round,
     status: s.status,
     submittedByName: s.submittedByName,
-    note: s.note,
+    note: editorMessage(s.note),
     createdAtISO: s.createdAt.toISOString(),
     decidedAtISO: s.decidedAt ? s.decidedAt.toISOString() : null,
   }));
   // The tracker narrates a VIDEO edit — a photos-only or cancelled job has no
   // edit lifecycle to track (the brief below still renders for reference).
   const showTracker = videoDeliverables.length > 0 && project.status !== "CANCELLED";
+  // ---- ONE instruction card ----------------------------------------------
+  // Everything the editor is TOLD to do, gathered from the three cards that
+  // used to say it separately ("Edit instructions", "Editing notes", and the
+  // instruction half of "Customer notes"). The client's STANDING style
+  // preferences deliberately stay out: those are client context and sit beside
+  // their working profile in the right rail.
+  const briefFields = {
+    canEditNotes,
+    orderNote: showOrderNote,
+    // An editor edits the RAW note or not at all — saving a scrubbed rendering
+    // back would destroy the held-back text.
+    jobNote: canEditNotes ? project.notes : showJobNote,
+    editorBrief: project.editorBrief,
+    videoInstructions: project.videoInstructions,
+    shotOrderNotes: project.shotOrderNotes,
+    removalNotes: project.removalNotes,
+    videosFilmed: project.videosFilmed,
+    scriptConfirmNote: project.scriptConfirmNote,
+    deliverableNotes: deliverableNotes.map((d) => ({
+      id: d.id,
+      label: refinedDeliverableLabel(d.type, d.label),
+      notes: d.notes ?? "",
+    })),
+    specialRequests: specialRequests.map((a) => ({ id: a.id, body: a.body })),
+  };
+
+  // What the editor OWES on the cut in front of them. The cut panel sits below
+  // the brief now, so when work is waiting the page says so at the top and
+  // jumps them straight to it — a review note must never go unseen because it
+  // is four cards down.
+  const openOnActive = activeNotes.filter((n) => n.status === "OPEN").length;
+  const needsWork = activeSub?.status === "CHANGES_REQUESTED" || openOnActive > 0;
 
   return (
     <div>
@@ -277,83 +335,96 @@ export default async function EditBriefPage({
         </div>
       )}
 
+      {/* One line, only when something is owed on the current cut. */}
+      {needsWork && (
+        <div className="px-4 pt-4 sm:px-6">
+          <a
+            href="#submit-cut"
+            className="flex flex-wrap items-center gap-2 rounded-xl border border-danger/30 bg-danger-soft/50 px-3.5 py-2.5 text-sm font-medium text-danger hover:bg-danger-soft"
+          >
+            <AlertTriangle className="size-4 shrink-0" />
+            {openOnActive > 0
+              ? `${openOnActive} note${openOnActive === 1 ? "" : "s"} to fix on this cut`
+              : "Changes were requested on this cut"}
+            <span className="ml-auto text-xs font-semibold">Go to your cut →</span>
+          </a>
+        </div>
+      )}
+
       <div className="grid gap-6 p-4 sm:p-6 lg:grid-cols-3">
-        {/* LEFT — the brief */}
+        {/* LEFT — what to make, where the media is, the work, the history */}
         <div className="space-y-6 lg:col-span-2">
-          {/* THE WORK ORDER — what the client asked for, split into items the
-              editor ticks off, with their own words kept whole underneath.
-              First in the column: on a bounced job this is the job. */}
+          {/* 1 · THE WORK ORDER — what the client asked for, split into items
+              the editor ticks off, their own words kept whole underneath. It
+              renders nothing unless the job has been bounced; when it does
+              render, it is the job, so it goes first. */}
           <RevisionBriefCard
             briefs={briefs}
             canTick={canTickBrief}
             canReanalyze={isOwnerAdmin && !viewer?.impersonating}
           />
-          {/* The editor's side of the in-hub review: the cut
-              they submitted plays here, the owner's timestamped notes under
-              it — tap a time to jump the player, reply, mark fixed. Notes on
-              the ACTIVE round live in the panel; anything else falls through
-              to the flat feedback list below. */}
-          {currentCuts.length > 1 && (
-            <div className="flex flex-wrap items-center gap-1.5">
-              {currentCuts.map((c, i) => (
-                <Link
-                  key={c.id}
-                  href={`/edit/${project.id}?cut=${c.id}`}
-                  className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${
-                    activeSub?.id === c.id ? "border-brand bg-brand-soft text-brand" : "border-border bg-surface text-muted hover:text-foreground"
-                  }`}
-                >
-                  <span
-                    className="size-2 rounded-full"
-                    style={{ backgroundColor: c.status === "APPROVED" ? "#34d399" : c.status === "CHANGES_REQUESTED" ? "#f87171" : "#f59e0b" }}
-                  />
-                  <span className="max-w-48 truncate">{slotLabelOf(c) ?? c.fileName ?? `Video ${i + 1}`}</span>
-                  {c.round > 1 && <span className="text-[10px] text-muted-2">v{c.round}</span>}
-                </Link>
-              ))}
-            </div>
-          )}
-          {/* The way in: upload a version per cut (Jordan, Sep 1). Owner/admin
-              can upload on an editor's behalf (vendor cuts). */}
-          <CutUploader
-            projectId={project.id}
-            canUpload={!viewer?.impersonating && (isOwnerAdmin || viewer?.role === "EDITOR")}
-            cuts={slots.map((sl) => {
-              const latest = latestPerCut.get(`${sl.deliverableId}:${sl.slot}`) ?? null;
-              const openNotes = latest?.assetUrl ? feedback.filter((n) => n.assetUrl === latest.assetUrl && n.status === "OPEN").length : 0;
-              return {
-                deliverableId: sl.deliverableId,
-                slot: sl.slot,
-                label: sl.label,
-                latest: latest
-                  ? { id: latest.id, round: latest.round, status: latest.status, fileName: latest.fileName, completedAt: latest.completedAt ? latest.completedAt.toISOString() : null }
-                  : null,
-                openNotes,
-              };
-            })}
-          />
-          {activeSub && (
-            <EditorCutPanel
-              projectId={project.id}
-              submissionId={activeSub.id}
-              round={activeSub.round}
-              status={activeSub.status}
-              assetUrl={activeSub.assetUrl}
-              streamable={!!activeSub.blobUrl}
-              fileName={activeSub.fileName}
-              finalFolderUrl={finalUrl}
-              notes={activeNotes}
-              canFix={!isOwnerAdmin}
-              viewerName={viewer?.name}
-            />
-          )}
-          {/* Feedback from the Review Room — first, it's the most actionable */}
-          <EditFeedback notes={otherNotes} canFix={!isOwnerAdmin} viewerName={viewer?.name} />
 
-          {/* What to make — each deliverable with ITS type's style notes and
-              live examples (same data as the Style Guide, so they can't
-              drift). Jordan: "notes about the type of video should be on the
-              editing page in the What to make section, with examples." */}
+          {/* 2 · WHAT TO MAKE, in words — the spec, the customer's own words on
+              this order, and everything that came off the shoot, in one card. */}
+          <EditInstructionsCard
+            projectId={project.id}
+            spec={project.editSpec ? JSON.parse(project.editSpec) : {}}
+            canEdit={isOwnerAdmin}
+            brief={briefFields}
+          />
+
+          {/* 3 · WHERE THE MEDIA IS — footage in, footage out, and everything
+              of the client's that goes on top of it. Right under the
+              instructions, so opening this page answers "what do I edit" and
+              "where is it" in the same glance (Jordan, Sep 2). */}
+          <Section icon={FolderOpen} title="Media">
+            <div className="space-y-3">
+              <div className="flex flex-wrap gap-2">
+                <a href={rawUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-3 py-1.5 text-sm font-medium hover:bg-surface-2">
+                  <FolderOpen className="size-4 text-muted" /> RAW footage <ExternalLink className="size-3.5 text-muted-2" />
+                </a>
+                <a href={finalUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-3 py-1.5 text-sm font-medium hover:bg-surface-2">
+                  <FolderOpen className="size-4 text-muted" /> Final footage <ExternalLink className="size-3.5 text-muted-2" />
+                </a>
+                {brandUrl && (
+                  <a href={brandUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-3 py-1.5 text-sm font-medium hover:bg-surface-2">
+                    <Palette className="size-4 text-muted" /> Brand assets (logo, fonts) <ExternalLink className="size-3.5 text-muted-2" />
+                  </a>
+                )}
+              </div>
+              {/* The client's asset shelf — "Assets available" vs "No assets"
+                  is the Dropbox folder truth; editors, admin and owner can all
+                  upload (Jordan's spec). */}
+              {assets && (
+                <div className="border-t border-border pt-3">
+                  <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-2">Client assets — logos, endcards, brand kit</div>
+                  <ClientAssetsCard
+                    clientId={assets.clientId}
+                    files={assets.files.map((f) => ({ name: f.name, url: f.url }))}
+                    folderUrl={assets.folderUrl}
+                    canUpload
+                  />
+                </div>
+              )}
+              {brandColors.length > 0 && (
+                <div className="border-t border-border pt-3">
+                  <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-2">Brand colors</div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {brandColors.map((c) => (
+                      <span key={c} className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-2 py-1 text-xs font-medium">
+                        <span className="size-4 rounded" style={{ backgroundColor: c }} /> {c.toUpperCase()}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </Section>
+
+          {/* 4 · WHAT TO MAKE, by type — each deliverable with ITS type's style
+              notes and live examples (same data as the Style Guide, so they
+              can't drift). Jordan: "notes about the type of video should be on
+              the editing page in the What to make section, with examples." */}
           <Section icon={Film} title="What to make">
             {editDeliverables.length === 0 && <span className="text-sm text-muted">No deliverables listed.</span>}
             <div className="space-y-4">
@@ -401,19 +472,11 @@ export default async function EditBriefPage({
             </div>
           </Section>
 
-          {/* Edit instructions (Luma-form fields): owner/admin set them, the
-              editor reads them. Sits above the script — the spec before the words. */}
-          <EditInstructionsCard
-            projectId={project.id}
-            spec={project.editSpec ? JSON.parse(project.editSpec) : {}}
-            canEdit={isOwnerAdmin}
-          />
-
-          {/* The locked script — READ-ONLY, pulled automatically from the
-              Script Writing platform by this project's id (page render +
-              hourly cron + signed webhook; scripts are never written in the
-              hub). The editor pastes overlay text from here — re-typing is
-              the #1 typo/revision driver. */}
+          {/* 5 · THE SCRIPT — READ-ONLY, pulled automatically from the Script
+              Writing platform by this project's id (page render + hourly cron
+              + signed webhook; scripts are never written in the hub). The
+              editor pastes overlay text from here — re-typing is the #1
+              typo/revision driver. */}
           {videoDeliverables.length > 0 && (
             (project.reelHook || project.reelScript) ? (
               <ReelScriptCard
@@ -434,142 +497,78 @@ export default async function EditBriefPage({
             )
           )}
 
-          {/* The customer's voice — three separate registers, kept apart on
-              purpose: what they asked for on THIS order, their standing style
-              preferences, and our own per-job note. */}
-          <Section icon={Quote} title="Customer notes">
-            {showOrderNote && (
-              <div className="mb-3 rounded-lg border-l-2 border-brand/50 bg-surface-2/60 px-3 py-2.5">
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-brand">From their order</div>
-                <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">{showOrderNote}</p>
-              </div>
-            )}
-            {showPrefs && (
-              <div className="mb-3">
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">Their usual style</div>
-                <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">{showPrefs}</p>
-              </div>
-            )}
-            {showTheirStyle && (
-              <div className="mb-3">
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">In their own words — from their portal</div>
-                <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">{showTheirStyle}</p>
-              </div>
-            )}
-            <JobNoteEditor
-              projectId={project.id}
-              field="customer"
-              // An editor edits the RAW note or not at all — saving a scrubbed
-              // rendering back would destroy the held-back text.
-              value={canEditNotes ? project.notes : showJobNote}
-              canEdit={canEditNotes}
-              label="Note for this job"
-              placeholder="Anything the editor should know about this customer or job…"
-              empty={
-                showOrderNote || showPrefs
-                  ? "Nothing added."
-                  : "None on file — cut it to the Style Guide."
-              }
-            />
-          </Section>
-
-          {/* Editing notes from the photographer — owner/admin can correct
-              what the upload left behind; editors read. */}
-          <Section icon={PenLine} title="Editing notes">
-            <JobNoteEditor
-              projectId={project.id}
-              field="shoot"
-              value={project.editorBrief}
-              canEdit={canEditNotes}
-              label=""
-              placeholder="What the editor needs to know from the shoot…"
-              empty="No editing notes were submitted on the upload."
-            />
-            {project.shotOrderNotes && (
-              <div className="mt-3 space-y-1 border-t border-border pt-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Shot order</div>
-                <p className="whitespace-pre-wrap text-sm text-foreground/85">{project.shotOrderNotes}</p>
-              </div>
-            )}
-            {project.removalNotes && (
-              <div className="mt-3 space-y-1 border-t border-border pt-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Remove in editing</div>
-                <p className="whitespace-pre-wrap text-sm text-foreground/85">{project.removalNotes}</p>
-              </div>
-            )}
-            {/* Monthly plans: the batch size the photographer actually filmed —
-                the editor cuts to this count (Jordan, Sep 1). */}
-            {project.videosFilmed != null && (
-              <div className="mt-3 space-y-1 border-t border-border pt-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Videos filmed</div>
-                <p className="text-sm">
-                  <span className="text-base font-semibold text-brand">{project.videosFilmed}</span>
-                  <span className="text-foreground/85"> video{project.videosFilmed === 1 ? "" : "s"} filmed on this session — cut this many.</span>
-                </p>
-              </div>
-            )}
-            {project.videoInstructions && (
-              <div className="mt-3 space-y-1 border-t border-border pt-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">Video — instructions from the shoot</div>
-                <p className="whitespace-pre-wrap text-sm text-foreground/85">{project.videoInstructions}</p>
-              </div>
-            )}
-            {project.scriptConfirmNote && (
-              <p className="mt-3 border-t border-border pt-3 text-[13px] text-muted">
-                Script: <span className="text-foreground/85">{project.scriptConfirmNote}</span> — the confirmed text is in the Script card.
-              </p>
-            )}
-            {deliverableNotes.length > 0 && (
-              <ul className="mt-3 space-y-1.5">
-                {deliverableNotes.map((d) => (
-                  <li key={d.id} className="text-sm text-foreground/85">
-                    <span className="font-medium">{refinedDeliverableLabel(d.type, d.label)}:</span> {d.notes}
-                  </li>
-                ))}
-              </ul>
-            )}
-            {specialRequests.length > 0 && (
-              <div className="mt-3 space-y-1.5 border-t border-border pt-3">
-                <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-warning"><Star className="size-3.5" /> Special requests</div>
-                {specialRequests.map((a) => (
-                  <p key={a.id} className="text-sm text-foreground/85">{a.body}</p>
+          {/* 6 · THE WORK ITSELF — upload a version per cut, then the cut in
+              review with the owner's timestamped notes under it. #submit-cut
+              is the anchor the tracker's "Done? Send to review" jumps to. */}
+          <div id="submit-cut" className="scroll-mt-20 space-y-6">
+            {currentCuts.length > 1 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                {currentCuts.map((c, i) => (
+                  <Link
+                    key={c.id}
+                    href={`/edit/${project.id}?cut=${c.id}`}
+                    className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${
+                      activeSub?.id === c.id ? "border-brand bg-brand-soft text-brand" : "border-border bg-surface text-muted hover:text-foreground"
+                    }`}
+                  >
+                    <span
+                      className="size-2 rounded-full"
+                      style={{ backgroundColor: c.status === "APPROVED" ? "#34d399" : c.status === "CHANGES_REQUESTED" ? "#f87171" : "#f59e0b" }}
+                    />
+                    <span className="max-w-48 truncate">{slotLabelOf(c) ?? c.fileName ?? `Video ${i + 1}`}</span>
+                    {c.round > 1 && <span className="text-[10px] text-muted-2">v{c.round}</span>}
+                  </Link>
                 ))}
               </div>
             )}
-          </Section>
+            {/* The way in: upload a version per cut (Jordan, Sep 1), each with
+                the editor's own message to whoever reviews it (Sep 2).
+                Owner/admin can upload on an editor's behalf (vendor cuts). */}
+            <CutUploader
+              projectId={project.id}
+              canUpload={!viewer?.impersonating && (isOwnerAdmin || viewer?.role === "EDITOR")}
+              cuts={slots.map((sl) => {
+                const latest = latestPerCut.get(`${sl.deliverableId}:${sl.slot}`) ?? null;
+                const openNotes = latest?.assetUrl ? feedback.filter((n) => n.assetUrl === latest.assetUrl && n.status === "OPEN").length : 0;
+                return {
+                  deliverableId: sl.deliverableId,
+                  slot: sl.slot,
+                  label: sl.label,
+                  latest: latest
+                    ? { id: latest.id, round: latest.round, status: latest.status, fileName: latest.fileName, completedAt: latest.completedAt ? latest.completedAt.toISOString() : null, note: latest.note }
+                    : null,
+                  openNotes,
+                };
+              })}
+            />
+            {/* The rescue hatch for the old habit — exporting straight into the
+                Dropbox Final folder. Folded away (uploading here is the path)
+                but kept for everyone who had it before, owner included. */}
+            <details className="rounded-xl border border-border bg-surface px-4 py-2.5 text-xs text-muted">
+              <summary className="cursor-pointer">Already dropped a file in the Final footage folder instead?</summary>
+              <div className="mt-2"><SubmitCutCard projectId={project.id} /></div>
+            </details>
+            {activeSub && (
+              <EditorCutPanel
+                projectId={project.id}
+                submissionId={activeSub.id}
+                round={activeSub.round}
+                status={activeSub.status}
+                assetUrl={activeSub.assetUrl}
+                streamable={!!activeSub.blobUrl}
+                fileName={activeSub.fileName}
+                finalFolderUrl={finalUrl}
+                notes={activeNotes}
+                canFix={!isOwnerAdmin}
+                viewerName={viewer?.name}
+              />
+            )}
+            {/* Review-Room notes that aren't on the active cut (renders nothing
+                when the list is empty). */}
+            <EditFeedback notes={otherNotes} canFix={!isOwnerAdmin} viewerName={viewer?.name} />
+          </div>
 
-          {/* Files + where to deliver */}
-          <Section icon={FolderOpen} title="Files & delivery">
-            <div className="flex flex-wrap gap-2">
-              <a href={rawUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-3 py-1.5 text-sm font-medium hover:bg-surface-2">
-                <FolderOpen className="size-4 text-muted" /> RAW footage <ExternalLink className="size-3.5 text-muted-2" />
-              </a>
-              <a href={finalUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-3 py-1.5 text-sm font-medium hover:bg-surface-2">
-                <FolderOpen className="size-4 text-muted" /> Final footage <ExternalLink className="size-3.5 text-muted-2" />
-              </a>
-              {brandUrl && (
-                <a href={brandUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-3 py-1.5 text-sm font-medium hover:bg-surface-2">
-                  <Palette className="size-4 text-muted" /> Brand assets (logo, fonts) <ExternalLink className="size-3.5 text-muted-2" />
-                </a>
-              )}
-            </div>
-            <div id="submit-cut" className="mt-3 space-y-2 scroll-mt-20 rounded-lg border border-[#5b53ff]/25 bg-[#5b53ff]/5 p-3">
-              <div className="flex items-start gap-2">
-                <Clapperboard className="mt-0.5 size-4 shrink-0 text-[#5b53ff]" />
-                <span className="text-sm text-foreground/85">
-                  When a cut is ready, use <strong>Upload version</strong> in the <strong>Cuts to deliver</strong> panel at the
-                  top of this page. It goes straight to the Review Room with a player, Jordan gets pinged, and once
-                  it&rsquo;s approved the hub copies it into the <strong>Final footage</strong> folder for you.
-                </span>
-              </div>
-              <details className="text-xs text-muted">
-                <summary className="cursor-pointer">Already dropped a file in the Final footage folder instead?</summary>
-                <div className="mt-2"><SubmitCutCard projectId={project.id} /></div>
-              </details>
-            </div>
-          </Section>
-
-          {/* Per-job messages */}
+          {/* 7 · HISTORY — the per-job thread. */}
           <Section icon={MessageSquare} title="Project chat" flush>
             <div className="p-4 sm:p-5">
               <ProjectMessages
@@ -589,39 +588,47 @@ export default async function EditBriefPage({
           </Section>
         </div>
 
-        {/* RIGHT — the agent's brand + working profile */}
+        {/* RIGHT — what this client is like, and nothing else */}
         <div className="space-y-6">
-          {/* Client assets — logos, endcards, brand kit. "Assets available"
-              vs "No assets" is the Dropbox folder truth; editors, admin and
-              owner can all upload (Jordan's spec). */}
-          {assets && (
-            <Section icon={Palette} title="Client assets">
-              <ClientAssetsCard
-                clientId={assets.clientId}
-                files={assets.files.map((f) => ({ name: f.name, url: f.url }))}
-                folderUrl={assets.folderUrl}
-                canUpload
-              />
-            </Section>
-          )}
-          {videoDeliverables.length > 0 && <AocPlaybookCard context="edit" />}
-          {brandColors.length > 0 && (
-            <Section icon={Palette} title="Brand colors">
-              <div className="flex flex-wrap items-center gap-2">
-                {brandColors.map((c) => (
-                  <span key={c} className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-2 py-1 text-xs font-medium">
-                    <span className="size-4 rounded" style={{ backgroundColor: c }} /> {c.toUpperCase()}
-                  </span>
-                ))}
-              </div>
-            </Section>
-          )}
-
           <ClientProfileCard
             clientId={project.client.id}
             profile={profile}
             updatedAt={project.client.profileUpdatedAt ? formatDistanceToNow(project.client.profileUpdatedAt, { addSuffix: true }) : null}
           />
+          {/* Their STANDING preferences — two registers kept apart on purpose:
+              the note we hold on file, and what they typed on their portal.
+              Not job instructions, so they sit with the profile, not in the
+              instruction card. */}
+          {(showPrefs || showTheirStyle) && (
+            <Section icon={Quote} title="How they like it">
+              <div className="space-y-3">
+                {showPrefs && (
+                  <div>
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">Customer notes on file</div>
+                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">{showPrefs}</p>
+                  </div>
+                )}
+                {showTheirStyle && (
+                  <div>
+                    <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">In their own words — from their portal</div>
+                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">{showTheirStyle}</p>
+                  </div>
+                )}
+              </div>
+            </Section>
+          )}
+          {/* Reference, not instruction — there when they want it, folded away
+              when they don't. */}
+          {videoDeliverables.length > 0 && (
+            <details>
+              <summary className="cursor-pointer rounded-xl border border-border bg-surface px-4 py-2.5 text-xs font-semibold text-muted hover:text-foreground">
+                Coaching &amp; reference
+              </summary>
+              <div className="mt-3">
+                <AocPlaybookCard context="edit" />
+              </div>
+            </details>
+          )}
         </div>
       </div>
     </div>

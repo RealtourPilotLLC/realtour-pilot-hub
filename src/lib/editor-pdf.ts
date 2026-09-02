@@ -4,6 +4,7 @@ import { DELIVERABLE_META, DELIVERABLE_STATUS_META } from "@/lib/pipeline";
 import type { FullProject } from "@/lib/queries";
 import { ActivityType } from "@prisma/client";
 import { isFieldFlag } from "@/lib/debrief";
+import { creativeCustomerNote } from "@/lib/clientNotes";
 
 // Standard PDF fonts use WinAnsi encoding and throw on characters they can't
 // represent (emoji, smart quotes from some keyboards, etc). Map the common ones
@@ -145,10 +146,14 @@ export async function buildEditorBriefPdf(project: FullProject): Promise<Uint8Ar
     if (d.notes) text(d.notes, { size: 10, color: MUTED, x: MARGIN + 14 });
   }
 
-  // ---- Editing preferences ---------------------------------------------
-  if (project.client.editingPreferences) {
-    heading("Client editing preferences");
-    text(project.client.editingPreferences, { size: 11 });
+  // ---- Customer notes ----------------------------------------------------
+  // THE customer note (generalNotes, mirrored to/from Aryeo; the retired
+  // editingPreferences column is read as a fallback). Money-scrubbed: this PDF
+  // is the editor's brief, and creatives never see pricing.
+  const clientNote = creativeCustomerNote(project.client);
+  if (clientNote) {
+    heading("Customer notes");
+    text(clientNote, { size: 11 });
   }
 
   // ---- Special requests -------------------------------------------------

@@ -136,10 +136,16 @@ export async function BoardView({ sp, tabs }: { sp: { who?: string; task?: strin
   const [tasks, assignees] = await Promise.all([
     prisma.smartTask.findMany({
       where: deepLink ? { OR: [boardWhere(editorScope), deepLink] } : boardWhere(editorScope),
-      // segment / editingPreferences / profileJson feed the QC card's client-aware
+      // segment / customer note / profileJson feed the QC card's client-aware
       // strip + VIP flag (taskView builds the compact context). Cheap columns on
-      // the already-joined client — only used by media_qa cards.
-      include: { client: { select: { name: true, segment: true, editingPreferences: true, profileJson: true } } },
+      // the already-joined client — only used by media_qa cards. generalNotes is
+      // THE customer note; editingPreferences is the retired column, still read
+      // as a fallback (src/lib/clientNotes.ts).
+      include: {
+        client: {
+          select: { name: true, segment: true, generalNotes: true, editingPreferences: true, profileJson: true },
+        },
+      },
     }),
     listAssignees(),
   ]);

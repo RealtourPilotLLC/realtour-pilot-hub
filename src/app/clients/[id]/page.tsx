@@ -19,6 +19,7 @@ import { ClientProfileCard } from "@/components/clients/ClientProfileCard";
 import { parseClientProfile } from "@/lib/clientProfile";
 import { ShowMore } from "@/components/ui/ShowMore";
 import { dropboxWebUrl } from "@/lib/dropboxFolders";
+import { notesHtmlToText } from "@/lib/integrations/aryeo";
 import { getClientDetail } from "@/lib/queries";
 import { stageMeta } from "@/lib/pipeline";
 import { formatMoney, stripHtml } from "@/lib/utils";
@@ -213,13 +214,18 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
             brandAssetsUrl={client.brandAssetsPath ? dropboxWebUrl(client.brandAssetsPath) : null}
           />
 
+          {/* ONE set of customer notes. The column mirrors Aryeo's customer
+              notes (rich text over there, plain text in the box here), and the
+              card pushes edits straight back — see saveCustomerNotes. */}
           <ClientWorkspace
             clientId={client.id}
             hasPhone={!!client.phone}
             email={client.email}
             lastInbound={lastInbound}
-            editingPreferences={client.editingPreferences ?? ""}
-            generalNotes={client.generalNotes ?? ""}
+            notes={notesHtmlToText(client.generalNotes)}
+            notesSyncedAt={client.notesSyncedAt ? etDateTime(client.notesSyncedAt) : null}
+            notesSyncError={client.notesSyncError}
+            aryeoLinked={!!client.aryeoCustomerId}
           />
 
           <ClientTodos

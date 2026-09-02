@@ -1,11 +1,22 @@
+import Link from "next/link";
 import { requirePageAccess } from "@/lib/auth/guards";
-import { MessageSquarePlus, Inbox, CheckCircle2, Rocket, Archive } from "lucide-react";
+import { MessageSquarePlus, Inbox, CheckCircle2, Rocket, Archive, MessageSquareHeart } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { prisma } from "@/lib/prisma";
 import { PlatformFeedbackForm } from "@/components/feedback/PlatformFeedbackForm";
 import { PlatformFeedbackItem, type FeedbackRow } from "@/components/feedback/PlatformFeedbackItem";
 
 export const dynamic = "force-dynamic";
+
+// ---------------------------------------------------------------------------
+// THE PLATFORM board: feedback about the HUB — features to build, bugs to fix.
+// Nothing else belongs here. Feedback about the WORK (what clients said, how a
+// photographer is shooting) lives on /quality, and the field flags that used to
+// share this board moved there too: a "the sprinklers were on at 3188
+// Thornapple" flag is a job problem, not a hub problem, and mixing the two made
+// this list unreadable as a build queue. They keep the identical review
+// workflow over there (same PlatformFeedbackItem, same owner-only decisions).
+// ---------------------------------------------------------------------------
 
 export default async function FeedbackPage() {
   await requirePageAccess("feedback");
@@ -17,7 +28,13 @@ export default async function FeedbackPage() {
   const pingTargets = canModerate
     ? await prisma.teamMember.findMany({ where: { active: true }, select: { id: true, name: true }, orderBy: { name: "asc" } })
     : [];
-  const all = await prisma.platformFeedback.findMany({ orderBy: { createdAt: "desc" } });
+  // Field flags (kind "field_issue") are excluded — they're on /quality now.
+  const all = await prisma.platformFeedback.findMany({
+    where: { kind: { not: "field_issue" } },
+    orderBy: { createdAt: "desc" },
+  });
+  // Only owner/admin can open /quality, so only they get the pointer to it.
+  const showQualityLink = !viewer || viewer.role === "OWNER" || viewer.role === "ADMIN";
   const rows: FeedbackRow[] = all.map((f) => ({
     id: f.id,
     kind: f.kind,
@@ -39,9 +56,26 @@ export default async function FeedbackPage() {
 
   return (
     <div>
-      <PageHeader title="Feedback & requests" subtitle="Tell us what to build or fix — Jordan reviews each one, and approved ideas get built." />
+      <PageHeader
+        title="Feedback & requests"
+        subtitle="About the hub itself — what to build or fix. Jordan reviews each one, and approved ideas get built."
+      />
       <div className="mx-auto max-w-3xl space-y-6 p-4 sm:p-6">
         <PlatformFeedbackForm />
+
+        {showQualityLink && (
+          <Link
+            href="/quality"
+            className="flex items-center gap-2.5 rounded-2xl border border-border bg-surface px-4 py-3 text-sm hover:border-brand/40"
+          >
+            <MessageSquareHeart className="size-4 shrink-0 text-brand" />
+            <span className="text-muted">
+              Looking for what <span className="font-medium text-foreground">clients</span> said, or how a{" "}
+              <span className="font-medium text-foreground">photographer</span> is doing? That&rsquo;s on Client &amp;
+              team feedback — field flags from shoots live there too.
+            </span>
+          </Link>
+        )}
 
         {rows.length === 0 ? (
           <div className="rounded-2xl border border-border bg-surface p-8 text-center text-sm text-muted">

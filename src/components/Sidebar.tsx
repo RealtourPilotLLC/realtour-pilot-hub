@@ -23,6 +23,7 @@ import {
   GraduationCap,
   Upload,
   MessageSquare,
+  MessageSquareHeart,
   MessageSquarePlus,
   MonitorPlay,
   IdCard,
@@ -76,6 +77,14 @@ const SECTIONS: NavSection[] = [
       { label: "Tasks", href: "/tasks", icon: ListTodo, key: "tasks" },
       // The owner's quality desk — cuts to review, photo QC, feedback loops.
       { label: "Review Room", href: "/review", icon: MonitorPlay, key: "review" },
+      // Feedback about the WORK: what clients said (the delivery-text form +
+      // unhappy texts/emails) and how each photographer is shooting. Distinct
+      // from "Feedback & requests" in System, which is feedback about the HUB.
+      // It rides the `review` PageKey the same way Style Guide rides
+      // `resources`: identical audience (owner + admin; creatives read their
+      // own results on /shoot/feedback), so no new permission to grant and a
+      // per-user `review` override carries here too.
+      { label: "Client & Team Feedback", href: "/quality", icon: MessageSquareHeart, key: "review" },
       { label: "Project Tracker", href: "/pipeline", icon: KanbanSquare, key: "pipeline" },
       // Schedule now carries the Map as its ?view=map tab (List | Map toggle in
       // the header), so the standalone "Map" item is gone — one appointment
@@ -138,6 +147,8 @@ const SECTIONS: NavSection[] = [
   {
     title: "System",
     items: [
+      // The HUB's own board — features to build, bugs to fix. Every role files
+      // here. Feedback about the WORK is "Client & Team Feedback" in Operations.
       { label: "Feedback & requests", href: "/feedback", icon: MessageSquarePlus, key: "feedback" },
       { label: "Settings", href: "/settings", icon: SlidersHorizontal, key: "settings" },
       { label: "Connections", href: "/connections", icon: Plug, key: "connections" },

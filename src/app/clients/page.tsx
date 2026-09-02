@@ -6,7 +6,7 @@ import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { SegmentBadge } from "@/components/clients/SegmentBadge";
 import { SocialBadge } from "@/components/clients/SocialBadge";
-import { getClients } from "@/lib/queries";
+import { prisma } from "@/lib/prisma";
 import { SEGMENT_META, type SegmentKey } from "@/lib/segments";
 import { stripHtml } from "@/lib/utils";
 
@@ -15,10 +15,34 @@ export const dynamic = "force-dynamic";
 // High-value → low-value, so the most important customers sit at the top.
 const SEGMENT_ORDER: SegmentKey[] = ["vip", "heavy", "regular", "casual_repeat", "one_timer", "never_converted"];
 
+// Only the columns the cards actually draw. The old `include: { _count }` with
+// no select pulled EVERY column for all 349 clients — 844 KB a render, 554 KB
+// of it the AI working-profile blobs (profileJson/profileSummary) this page has
+// never shown. Measured against production: 844 KB / 186 ms → 100 KB / 58 ms.
+async function clientCards() {
+  return prisma.client.findMany({
+    orderBy: { name: "asc" },
+    select: {
+      id: true,
+      name: true,
+      company: true,
+      email: true,
+      phone: true,
+      segment: true,
+      socialClient: true,
+      socialPlan: true,
+      parentClientId: true,
+      editingPreferences: true,
+      generalNotes: true,
+      _count: { select: { projects: true } },
+    },
+  });
+}
+
 export default async function ClientsPage({ searchParams }: { searchParams: Promise<{ q?: string; all?: string }> }) {
   await requirePageAccess("clients");
   const { q = "", all } = await searchParams;
-  const allClients = await getClients();
+  const allClients = await clientCards();
 
   // SEARCH + a sane default view (audit: 346 full cards including 131 never-
   // converted leads and folded assistants, no search box — finding one client

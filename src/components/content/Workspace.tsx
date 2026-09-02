@@ -329,11 +329,12 @@ const SECTIONS: { key: string; label: string; hint: string; fields: string[] }[]
 ];
 
 export function ProfileSections({
-  clientId, profile, editingPreferences,
+  clientId, profile, customerNote,
 }: {
   clientId: string;
   profile: Record<string, string | null>;
-  editingPreferences: string | null;
+  /** THE customer note on the client record (src/lib/clientNotes.ts). */
+  customerNote: string | null;
 }) {
   return (
     <Section icon={NotebookPen} title="Agent profile" action={<ProfileBuildButton clientId={clientId} />}>
@@ -341,9 +342,9 @@ export function ProfileSections({
         {SECTIONS.map((s) => (
           <ProfileSection key={s.key} clientId={clientId} section={s} raw={profile[s.key] ?? null} />
         ))}
-        {editingPreferences && (
-          <p className="rounded-lg bg-surface-2/60 px-3 py-2 text-[11px] text-muted">
-            Existing editing notes on the client record: &ldquo;{editingPreferences.slice(0, 160)}&rdquo;
+        {customerNote && (
+          <p className="whitespace-pre-line rounded-lg bg-surface-2/60 px-3 py-2 text-[11px] text-muted">
+            Customer notes on the client record: &ldquo;{customerNote.slice(0, 160)}&rdquo;
           </p>
         )}
       </div>

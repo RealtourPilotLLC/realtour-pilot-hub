@@ -55,7 +55,8 @@ import { PRIORITY_META, DELIVERABLE_META, refinedDeliverableLabel, stageMeta } f
 import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { photoTargetFor } from "@/lib/culling";
 import { PhotoTargetControl } from "@/components/project/PhotoTargetControl";
-import { formatMoney, stripHtml } from "@/lib/utils";
+import { formatMoney } from "@/lib/utils";
+import { customerNote } from "@/lib/clientNotes";
 import { formatDistanceToNow } from "date-fns";
 import { etDateTime, etDateYear } from "@/lib/datetime";
 import { listAssignees } from "@/lib/assignees";
@@ -101,6 +102,9 @@ export default async function ProjectPage({
   const [project, team, assigneeList] = await Promise.all([getProject(id), getTeam(), listAssignees()]);
   if (!project) notFound();
   const assignees = assigneeList.map((a) => ({ key: a.key, name: a.name }));
+  // THE customer note — one list (src/lib/clientNotes.ts). Raw: this page is
+  // owner/admin only (everyone else was redirected above).
+  const clientNote = customerNote(project.client);
 
   const priority = PRIORITY_META[project.priority];
   const specialRequests = project.activities.filter(
@@ -206,21 +210,19 @@ export default async function ProjectPage({
             )}
           </div>
         </div>
-        {(project.client.editingPreferences || project.client.generalNotes) && (
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            {project.client.editingPreferences && (
-              <div className="rounded-lg bg-brand-soft px-3 py-2">
-                <div className="mb-0.5 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-brand">
-                  <Sparkles className="size-3" /> Editing preferences
-                </div>
-                <p className="text-xs text-foreground/80">{project.client.editingPreferences}</p>
+        {/* ONE customer note (generalNotes, mirrored to Aryeo — the retired
+            editingPreferences column is read as a fallback inside customerNote).
+            This used to print the two columns side by side as if they were
+            separate things; the left one has had no writer since the notes cards
+            merged and was empty on every client. */}
+        {clientNote && (
+          <div className="mt-3">
+            <div className="rounded-lg bg-brand-soft px-3 py-2">
+              <div className="mb-0.5 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-brand">
+                <Sparkles className="size-3" /> Customer notes
               </div>
-            )}
-            {project.client.generalNotes && (
-              <div className="rounded-lg bg-surface-2 px-3 py-2 text-xs text-muted">
-                {stripHtml(project.client.generalNotes)}
-              </div>
-            )}
+              <p className="whitespace-pre-line text-xs text-foreground/80">{clientNote}</p>
+            </div>
           </div>
         )}
       </Section>

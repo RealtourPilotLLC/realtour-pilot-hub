@@ -4,6 +4,13 @@ import { requireDeliverableAccess, requireShootAccess, requireUploadFileAccess }
 
 import { prisma } from "@/lib/prisma";
 import { NOTHING_TO_REMOVE_SENTINEL, FRONT_TO_BACK_SENTINEL, INTERIOR_EXTERIOR_SENTINEL } from "@/lib/debrief";
+import {
+  ADD_TO_ORDER_PREFIX,
+  shootAddonKey,
+  shootAddonKeyPrefix,
+  streetOf,
+  type ShootAddOn,
+} from "@/app/upload/shootAddOns";
 import { revalidatePath } from "next/cache";
 import { ProjectStatus, DeliverableStatus, ActivityType } from "@prisma/client";
 import { saveUpload, deleteFile } from "@/lib/storage";
@@ -165,17 +172,34 @@ export async function acknowledgeUploadProcess(): Promise<{ ok: boolean }> {
   return { ok: true };
 }
 
-// Post-job feedback on the upload PROCESS itself (not the shoot) — lands on
-// Jordan's Feedback & requests board so the process keeps improving.
+// Post-job feedback on the upload PROCESS itself — the hub's own portal, not
+// the shoot ("How was this upload process? Anything we should change?"). This
+// is the ONE photographer surface that really is a product note, so it goes to
+// the Feedback & requests board the same way the floating widget does, as a
+// plain "feedback" row. Shoot problems go to the job — see flagIssue below.
 export async function submitUploadFeedback(projectId: string, body: string): Promise<{ ok: boolean }> {
   await requireShootAccess(projectId);
   const trimmed = body.trim().slice(0, 2000);
   if (!trimmed) return { ok: false };
-  const { fileFieldIssue } = await import("@/lib/fieldIssues");
-  await fileFieldIssue({ projectId, note: trimmed, page: `/upload/${projectId}`, label: "Upload process feedback" });
-  return { ok: true };
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true } });
+  const street = (project?.title || "a job").split(",")[0].trim();
+  const { submitPlatformFeedback } = await import("@/app/feedback/actions");
+  // Reuses the board's own pipeline (session identity, owner email, Slack, bell)
+  // instead of a second hand-rolled writer that drifts from it.
+  const r = await submitPlatformFeedback({
+    kind: "feedback",
+    title: `Upload process — ${street}`,
+    body: `${trimmed}${project?.title ? `\n\nAfter the job: ${project.title}` : ""}`,
+    page: `/upload/${projectId}`,
+  });
+  return { ok: r.ok };
 }
 
+// "Flag a problem" on the wrap-up page — a problem from the JOB (access,
+// weather, a deliverable they couldn't get), written down while it's fresh.
+// Feedback about the shoot, so: project timeline + an ops loop for Kyle. It
+// does NOT go to the Feedback & requests board; a lockbox code is not a
+// shippable update (Jordan, Sep 2).
 export async function flagIssue(projectId: string, body: string) {
   await requireShootAccess(projectId);
   const trimmed = body.trim();
@@ -183,9 +207,8 @@ export async function flagIssue(projectId: string, body: string) {
   await prisma.activity.create({
     data: { projectId, type: ActivityType.FLAG, body: trimmed },
   });
-  // Mirror onto the Feedback & requests board — Jordan's review queue.
   const { fileFieldIssue } = await import("@/lib/fieldIssues");
-  await fileFieldIssue({ projectId, note: trimmed, page: `/upload/${projectId}`, label: "Upload issue" });
+  await fileFieldIssue({ projectId, note: trimmed, page: `/upload/${projectId}`, label: "Shoot issue" });
   revalidatePath(`/upload/${projectId}`);
   revalidatePath(`/projects/${projectId}`);
 }
@@ -204,7 +227,7 @@ export async function submitAppointmentFeedback(
     data: { projectId, type: wentWell ? ActivityType.NOTE : ActivityType.FLAG, body },
   });
   if (!wentWell) {
-    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true, clientId: true } });
+    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true } });
     const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
     await prisma.smartTask.upsert({
       where: { dedupeKey: `shoot-issue-${projectId}` },
@@ -219,21 +242,38 @@ export async function submitAppointmentFeedback(
         dueAt: new Date(Date.now() + 4 * 3600_000),
         ownerId: kyle?.id ?? null,
         projectId,
-        clientId: project?.clientId ?? null,
+        // clientId stays NULL on purpose (same reason as the add-on task below
+        // and fileFieldIssue's loop): internal_instruction is in brain.ts's
+        // MERGEABLE_TYPES, and routeCommTask selects open tasks BY clientId as
+        // merge candidates — so the client's next inbound text could retitle the
+        // photographer's debrief flag into something unrecognisable and it would
+        // never get acted on. projectId identifies the job.
+        clientId: null,
+        propertyAddress: project?.title ?? null,
         dedupeKey: `shoot-issue-${projectId}`,
       },
-      update: { status: "OPEN", completedAt: null, description: trimmed.slice(0, 400) || "Photographer flagged an issue." },
+      // The re-open path clears clientId too, so a debrief task filed before
+      // this change stops being a merge candidate the moment it's re-flagged.
+      update: {
+        status: "OPEN",
+        completedAt: null,
+        description: trimmed.slice(0, 400) || "Photographer flagged an issue.",
+        clientId: null,
+        propertyAddress: project?.title ?? null,
+      },
     });
-    // Also into Jordan's review queue on the Feedback & requests board. The
-    // debrief card re-renders on every portal visit, so re-submits refresh the
-    // one open row (dedupe) instead of stacking duplicates.
+    // Alerting only — Kyle's task is the upsert right above (keyed
+    // shoot-issue-<projectId>, so the debrief card re-rendering on every portal
+    // visit refreshes one loop instead of stacking), and the debrief FLAG is
+    // already on the timeline. This puts it in Slack + the bell and leaves it
+    // on the job: a shoot debrief is not a product request (Jordan, Sep 2).
     const { fileFieldIssue } = await import("@/lib/fieldIssues");
     await fileFieldIssue({
       projectId,
       note: trimmed || "Photographer flagged an issue on the shoot.",
       page: `/upload/${projectId}`,
       label: "Shoot debrief",
-      dedupe: true,
+      opsTaskAlreadyFiled: true,
     });
   }
   revalidatePath(`/upload/${projectId}`);
@@ -621,4 +661,216 @@ export async function finalizeUpload(
   revalidatePath("/pipeline");
   revalidatePath("/");
   return { pdfPath };
+}
+
+// ---------------------------------------------------------------------------
+// "Added at the shoot" (Jordan, Sep 2 2026)
+//
+// Agents add work on site all the time — an extra twilight, a drone add-on, a
+// second reel. The order in Aryeo doesn't know about it, so it never becomes a
+// deliverable, never gets billed, and the photographer has nowhere to say it
+// happened. This is that place: the photographer names the item, and it lands
+// on Kyle's plate as a real internal_instruction task, which /ops Open Loops,
+// the Daily Tasks board and the owner Dashboard all already render — no Ops Day
+// code change needed.
+//
+// The dedupe key is deliberately PLAIN TEXT (not the hashed dedupe() used in
+// lib/tasks.ts) so the upload page can list this project's add-ons back to the
+// photographer with a startsWith query. Key + shape live in ./shootAddOns —
+// this is a "use server" file and may only export async functions.
+// ---------------------------------------------------------------------------
+
+/**
+ * Log an item the agent added at the shoot and put it in front of Kyle so he
+ * can add it to the Aryeo order. Idempotent per (project, item): re-submitting
+ * the portal, or naming the same item twice, refreshes the one task instead of
+ * stacking duplicates, and never re-opens one Kyle has already handled.
+ */
+export async function addShootAddOn(
+  projectId: string,
+  item: string,
+  note: string,
+): Promise<{ ok: boolean; message: string; row?: ShootAddOn }> {
+  // requireShootAccess THROWS (session lapsed, "view as" preview, someone
+  // else's shoot). A rejected server action reaches the client as a redacted
+  // error in production, so the photographer would just see a button that does
+  // nothing. This action already speaks in {ok, message} — hand the guard's own
+  // words back the same way (the pattern pingFeedbackOnSlack uses).
+  try {
+    await requireShootAccess(projectId);
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "You don't have access to that shoot." };
+  }
+  const name = item.trim().replace(/\s+/g, " ").slice(0, 80);
+  if (!name) return { ok: false, message: "Name the item that was added." };
+  const detail = note.trim().slice(0, 500);
+
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { title: true, photographer: { select: { name: true } } },
+  });
+  if (!project) return { ok: false, message: "Couldn't find that shoot." };
+
+  // Who added it: the signed-in person, falling back to the assigned
+  // photographer (dev/open mode has no session).
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const who = (me?.name || project.photographer?.name || "The photographer").trim().slice(0, 80);
+
+  const street = streetOf(project.title);
+  const { etDateTime } = await import("@/lib/datetime");
+  const when = etDateTime(new Date());
+  const summary =
+    `${who} added “${name}” at the shoot on ${street} (${when} ET)` +
+    (detail ? `: ${detail}` : ".") +
+    ` Add the item to the Aryeo order so it's billed and shows up as a deliverable.`;
+
+  const dedupeKey = shootAddonKey(projectId, name);
+  const existing = await prisma.smartTask.findUnique({
+    where: { dedupeKey },
+    select: { id: true, status: true, createdAt: true },
+  });
+  if (existing) {
+    if (existing.status === "COMPLETED" || existing.status === "CANCELLED") {
+      return { ok: true, message: `“${name}” was already handled by the office.` };
+    }
+    // Same item, new detail — refresh the wording, never the status (Kyle may
+    // already be part-way through it).
+    await prisma.smartTask.update({
+      where: { id: existing.id },
+      data: { summary: summary.slice(0, 500), description: detail || null, contactName: who },
+    });
+    revalidatePath(`/upload/${projectId}`);
+    return {
+      ok: true,
+      message: `“${name}” was already on the list — updated.`,
+      row: { id: existing.id, item: name, note: detail || null, addedBy: who, addedAtISO: existing.createdAt.toISOString(), handled: false },
+    };
+  }
+
+  const kyle = await prisma.teamMember.findFirst({
+    where: { name: { contains: "Kyle" } },
+    select: { id: true },
+  });
+
+  let created;
+  try {
+    created = await prisma.smartTask.create({
+      data: {
+        taskType: "internal_instruction",
+        // The address suffix is dropped rather than truncated when a long item
+        // name would push the title past the 120-char cap — the item name is
+        // what the portal reads back out of this title.
+        title:
+          `${ADD_TO_ORDER_PREFIX}${name}`.length + 3 + street.length <= 120
+            ? `${ADD_TO_ORDER_PREFIX}${name} — ${street}`
+            : `${ADD_TO_ORDER_PREFIX}${name}`.slice(0, 120),
+        summary: summary.slice(0, 500),
+        description: detail || null,
+        reasonCreated: "The photographer logged an item the agent added at the shoot.",
+        source: "manual",
+        priority: "HIGH",
+        // Ordering paperwork is a next-morning job, which is exactly where
+        // Jordan wants it: Kyle's Ops Day the day after the shoot.
+        dueAt: new Date(Date.now() + 24 * 3600_000),
+        assignedKey: "kyle",
+        ownerId: kyle?.id ?? null,
+        projectId,
+        propertyAddress: project.title,
+        // clientId stays NULL on purpose: brain.ts MERGEABLE_TYPES includes
+        // internal_instruction, so a task carrying a clientId is a merge target
+        // for the client's next inbound message — which could retitle this and
+        // lose the item name that IS the whole point of the task.
+        contactName: who,
+        dedupeKey,
+      },
+      select: { id: true, createdAt: true },
+    });
+  } catch {
+    // Unique dedupeKey lost a race with a double-tap — the other write is the
+    // same task, so treat it as success.
+    const again = await prisma.smartTask.findUnique({ where: { dedupeKey }, select: { id: true, createdAt: true } });
+    if (!again) return { ok: false, message: "Couldn't save that — try again." };
+    created = again;
+  }
+
+  // Timeline trail so the item is visible on the project itself, not only on a
+  // task. NOTE (not SPECIAL_REQUEST/FLAG) — the upload portal renders those two
+  // as the client's requests and the photographer's problems, and this is
+  // neither.
+  await prisma.activity
+    .create({
+      data: {
+        projectId,
+        type: ActivityType.NOTE,
+        body: `Added at the shoot — ${name}${detail ? `: ${detail}` : ""} (logged by ${who}). Needs adding to the Aryeo order.`.slice(0, 1000),
+      },
+    })
+    .catch(() => {});
+
+  // Bell for the office as well as the task, so an add-on booked on a Friday
+  // afternoon isn't invisible until the next Ops Day. Best-effort, deduped per
+  // item — no body (the money clamp aside, there's nothing to add to the title).
+  try {
+    const { notifyInApp } = await import("@/lib/notify");
+    await notifyInApp({
+      kind: "shoot_add_on",
+      title: `Added at the shoot — ${name} on ${street}`,
+      href: `/projects/${projectId}`,
+      targets: [{ roles: ["ADMIN", "OWNER"] }],
+      // Keyed on the task row, not the item key — a row withdrawn and re-added
+      // is a new piece of work and deserves its own announcement.
+      dedupeKey: `shoot-add-on-${created.id}`,
+    });
+  } catch { /* bell is best-effort — the task above is the real handoff */ }
+
+  revalidatePath(`/upload/${projectId}`);
+  revalidatePath(`/projects/${projectId}`);
+  return {
+    ok: true,
+    message: `Logged — Kyle will add “${name}” to the order.`,
+    row: { id: created.id, item: name, note: detail || null, addedBy: who, addedAtISO: created.createdAt.toISOString(), handled: false },
+  };
+}
+
+/**
+ * Withdraw an add-on the photographer logged by mistake. Only ever touches a
+ * still-open task this project's own portal created (the dedupeKey prefix +
+ * projectId are both checked), so this can't be used to cancel other work.
+ */
+export async function removeShootAddOn(
+  projectId: string,
+  taskId: string,
+): Promise<{ ok: boolean; message?: string }> {
+  // Same as addShootAddOn: the guard's refusal comes back as a message the
+  // photographer can read, not an unhandled rejection.
+  try {
+    await requireShootAccess(projectId);
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "You don't have access to that shoot." };
+  }
+  const t = await prisma.smartTask.findUnique({
+    where: { id: taskId },
+    select: { id: true, projectId: true, dedupeKey: true, status: true },
+  });
+  if (!t || t.projectId !== projectId || !t.dedupeKey?.startsWith(shootAddonKeyPrefix(projectId))) {
+    return { ok: false, message: "That item isn't yours to remove." };
+  }
+  if (t.status === "COMPLETED" || t.status === "CANCELLED") {
+    return { ok: false, message: "The office already handled that one." };
+  }
+  await prisma.smartTask.update({
+    where: { id: t.id },
+    data: {
+      status: "CANCELLED",
+      completedAt: new Date(),
+      // Free the per-item key: a photographer who removes the wrong row must be
+      // able to add that same item again, and the unique dedupeKey would
+      // otherwise make the re-add look like a duplicate forever.
+      dedupeKey: null,
+    },
+  });
+  revalidatePath(`/upload/${projectId}`);
+  revalidatePath(`/projects/${projectId}`);
+  return { ok: true };
 }

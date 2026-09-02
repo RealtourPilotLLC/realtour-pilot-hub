@@ -539,7 +539,12 @@ const PRODUCT_DELIVERABLES_RAW: [string, DeliverableType[]][] = [
   ["Virtual Decluttering", ["VIRTUAL_STAGING"]],
   ["2D Floor Plan", ["FLOORPLAN"]],
   ["Matterport 3D Tour", ["MATTERPORT_3D"]],
-  ["Zillow Showcase 3D Tour Add-on", ["ZILLOW_3D", "FLOORPLAN"]],
+  // NO FLOORPLAN. Zillow Showcase generates its own floor plan as part of the
+  // tour — nobody shoots or orders one. OUR floor plan is the measured CubiCasa
+  // product, sold on its own "2D Floor Plan" line. See ZILLOW_OWN_FLOORPLAN
+  // below, which enforces this against the hand-set map too (Jordan, Sep 2 2026:
+  // 2410 E Clementine St demanded a floor-plan tick nobody ordered).
+  ["Zillow Showcase 3D Tour Add-on", ["ZILLOW_3D"]],
   ["Drone Aerial Photography", ["DRONE"]],
   ["STR Drone Aerial Photography", ["DRONE"]],
   ["Drone Photography", ["DRONE"]],
@@ -576,8 +581,12 @@ const PRODUCT_DELIVERABLES_RAW: [string, DeliverableType[]][] = [
   ["STR PRO BUNDLE", ["PHOTOS", "VIDEO", "DRONE", "FLOORPLAN", "TWILIGHT"]],
   ["GOLD BUNDLE - Comprehensive Marketing Package", ["PHOTOS", "DRONE", "VIDEO", "FLOORPLAN"]],
   ["GOLD BUNDLE - Photography, Video, Drone, 2D Floor Plan, & More!", ["PHOTOS", "VIDEO", "SOCIAL_REEL", "DRONE", "FLOORPLAN"]],
-  ["EVERYTHING BUNDLE - Photography, Video, Drone, Zillow 3D Tour/Floor Plan, & More!", ["PHOTOS", "VIDEO", "SOCIAL_REEL", "DRONE", "ZILLOW_3D", "FLOORPLAN"]],
-  ["BASICS BUNDLE - Photography, Drone Photos, Zillow 3D Tour / Floor Plan", ["PHOTOS", "DRONE", "ZILLOW_3D", "FLOORPLAN", "TWILIGHT"]],
+  // "Zillow 3D Tour/Floor Plan" in these two names is ONE thing — the tour and
+  // the floor plan Zillow derives from it. No separate measured floor plan is
+  // ordered, so no FLOORPLAN row (the BASICS variant below, sold as "2D Floor
+  // Plan", is the real CubiCasa one and keeps it).
+  ["EVERYTHING BUNDLE - Photography, Video, Drone, Zillow 3D Tour/Floor Plan, & More!", ["PHOTOS", "VIDEO", "SOCIAL_REEL", "DRONE", "ZILLOW_3D"]],
+  ["BASICS BUNDLE - Photography, Drone Photos, Zillow 3D Tour / Floor Plan", ["PHOTOS", "DRONE", "ZILLOW_3D", "TWILIGHT"]],
   ["BASICS BUNDLE - Photography, Drone Photos, 2D Floor Plan", ["PHOTOS", "DRONE", "FLOORPLAN", "TWILIGHT"]],
   ["DIAMOND BUNDLE - The Ultimate Real Estate Marketing Package", ["PHOTOS", "SOCIAL_REEL", "VIDEO", "DRONE", "FLOORPLAN"]],
   ["THE PLATINUM BUNDLE - High-End Real Estate Marketing Package", ["PHOTOS", "VIDEO", "DRONE", "FLOORPLAN"]],
@@ -730,7 +739,40 @@ function manualLabel(m: ManualMapping, type: DeliverableType, title: string): st
   return TYPE_LABEL[type] ?? title;
 }
 
+// ---------------------------------------------------------------------------
+// ZILLOW_OWN_FLOORPLAN — a Zillow Showcase tour is not a floor-plan order.
+//
+// Jordan, Sep 2 2026: "The Zillow Showcase 3D Tour does provide floor plans,
+// but we do floor plans with measurements separately with CubiCasa." Zillow
+// makes its floor plan from the tour scan; there is nothing to shoot, nothing
+// to upload and nothing to send CubiCasa. A FLOORPLAN row off a Zillow line
+// therefore puts a phantom check on the photographer's upload portal and a
+// phantom missing item on Kyle's /ops QC card (2410 E Clementine St).
+//
+// This runs on EVERY branch below — including the hand-set Settings → Products
+// map, which normally outranks the parsers. That is deliberate: the mapping
+// row for "Zillow Showcase 3D Tour Add-on" still ticks Floor plan in the
+// database, and only a human on /settings/products can untick it. The veto is
+// scoped to ONE order line, so a job that also buys a real "2D Floor Plan"
+// line keeps its floor plan from that line.
+//
+// The escape hatch is the product name itself: a line that explicitly sells a
+// 2D / measured / CubiCasa floor plan keeps it even alongside a Zillow tour.
+const MEASURED_FLOORPLAN_RE = /\b2d\s*floor[\s-]?plan|cubicasa|floor[\s-]?plans?\s*(with|w\/)\s*measur/i;
+
+function withoutZillowFloorPlan(title: string, parsed: ParsedDeliverable[]): ParsedDeliverable[] {
+  if (!parsed.some((d) => d.type === "ZILLOW_3D")) return parsed;
+  if (MEASURED_FLOORPLAN_RE.test(title)) return parsed;
+  return parsed.filter((d) => d.type !== "FLOORPLAN");
+}
+
+/** One order line → the deliverables it owes. */
 export function itemToDeliverables(item: AryeoOrderItem): ParsedDeliverable[] {
+  const title = (item.title || item.subtitle || item.sub_title || "Item").trim();
+  return withoutZillowFloorPlan(title, deliverablesForItem(item));
+}
+
+function deliverablesForItem(item: AryeoOrderItem): ParsedDeliverable[] {
   const title = (item.title || item.subtitle || item.sub_title || "Item").trim();
   const qty = item.quantity || 1;
 
@@ -1026,7 +1068,11 @@ export async function syncAryeoOrders(
           phone: cust?.phone ?? null,
           company: cust?.office_name ?? null,
           licenseNumber: cust?.license_number ?? null,
+          // The customer note comes FROM Aryeo, so the mirror is in sync the
+          // moment the row is created — stamp it, or the client card would warn
+          // about a note it just received.
           generalNotes: cust?.internal_notes ?? null,
+          notesSyncedAt: cust?.internal_notes ? new Date() : null,
           aryeoCustomerId: cust?.id ?? null,
         },
       });
@@ -1861,10 +1907,167 @@ export async function syncAryeoProducts(): Promise<{ products: number }> {
 }
 
 // ---------------------------------------------------------------------------
+// CUSTOMER NOTES — one list, and Aryeo owns it.
+//
+// Aryeo keeps a single free-text "internal notes" field per customer. That is
+// the system of record (Jordan, Sep 2: "I just want to make sure we don't have
+// different customer notes in different spots"); `Client.generalNotes` is only
+// our mirror of it, and a note typed in the hub is pushed straight back.
+//
+// Probed read-only against the LIVE API on Sep 2 2026 (Aryeo's public docs list
+// neither of the per-customer routes, so this was settled by OPTIONS, which
+// mutates nothing):
+//   GET     /customers              → the customer GROUP carries `internal_notes`
+//   GET     /customers/{id}         → same field, single record (undocumented, works)
+//   OPTIONS /customers/{id}/notes   → Allow: PUT            ← the write door
+//   OPTIONS /customers/{id}         → Allow: GET,HEAD,PATCH,DELETE  (fallback)
+//   OPTIONS /customer-users         → Allow: GET,HEAD,POST — and there is NO
+//                                     per-id route at all (GET /customer-users/{id}
+//                                     404s), so that projection can be read in
+//                                     bulk but never written.
+// `/customers/{id}/notes` is the customer twin of the documented
+// `PUT /orders/{order_id}/notes`, whose body is `{ internal_notes }` — the same
+// shape used here. Customer ids and customer-user ids are the SAME id space (all
+// 366 accounts overlap), so `Client.aryeoCustomerId` addresses either.
+//
+// Aryeo stores the note as rich text (`<div>…</div>`); the hub edits it as plain
+// text. We convert on both legs and compare on the PLAIN TEXT — markup Aryeo
+// re-serialises must never read as "someone changed the note".
+// ---------------------------------------------------------------------------
+
+// Deliberately a whitelist of the tags Aryeo's notes editor emits, not "any
+// <word>": a client note really can read "shoot the <front door> first", and
+// that has to survive verbatim rather than being eaten as markup.
+const NOTE_TAGS = "div|p|br|span|strong|b|em|i|u|ul|ol|li|h[1-6]|a|blockquote|table|tbody|tr|td|font|hr|img";
+const looksHtml = (s: string) =>
+  new RegExp(`<\\/?(?:${NOTE_TAGS})\\b[^>]*>|&(?:nbsp|amp|lt|gt|quot|apos|#\\d+);`, "i").test(s);
+
+// Aryeo's rich text → what the hub shows in a textarea. Plain text is passed
+// through UNTOUCHED (older hub notes were saved as plain text, and so is
+// anything typed in the box), which also makes this idempotent — running it
+// over an already-converted note can't eat what it converted last time.
+export function notesHtmlToText(html?: string | null): string {
+  if (!html) return "";
+  if (!looksHtml(html)) {
+    return html.replace(/\r\n?/g, "\n").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  }
+  return (
+    html
+      .replace(/\r\n?/g, "\n")
+      .replace(/<br\s*\/?>/gi, "\n")
+      // Bullets open the line; the closing </li> is left to the generic strip
+      // below, or every list item would come out double-spaced.
+      .replace(/<li[^>]*>/gi, "\n• ")
+      .replace(/<\/(?:div|p|h[1-6]|tr|ul|ol|blockquote)>/gi, "\n")
+      .replace(/<[^>]*>/g, "")
+      // Entities last, and `&amp;` LAST of all — decoding it first would turn a
+      // literal "&lt;" written by the client into a real tag.
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#0?39;|&apos;/gi, "'")
+      .replace(/&amp;/gi, "&")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+  );
+}
+
+// What the hub typed → the rich text Aryeo's own notes editor renders. One
+// `<div>` per line keeps the line breaks people actually typed.
+export function notesTextToHtml(text: string): string {
+  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return text
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => (line.trim() ? `<div>${esc(line)}</div>` : "<div><br /></div>"))
+    .join("");
+}
+
+// Same note? Compared on the plain text with whitespace collapsed, so neither
+// Aryeo's markup nor a trailing newline counts as a divergence.
+export function sameCustomerNote(a?: string | null, b?: string | null): boolean {
+  const norm = (s?: string | null) => notesHtmlToText(s).replace(/\s+/g, " ").trim();
+  return norm(a) === norm(b);
+}
+
+export type AryeoNotesRead =
+  | { ok: true; text: string; raw: string | null }
+  | { ok: false; error: string };
+
+// Read a customer's notes straight from Aryeo (the system of record).
+export async function readAryeoCustomerNotes(aryeoCustomerId: string): Promise<AryeoNotesRead> {
+  try {
+    const r = await aryeoRequest<{ data?: { internal_notes?: string | null } }>(
+      `/customers/${aryeoCustomerId}`,
+      { timeoutMs: 8000 },
+    );
+    const raw = r?.data?.internal_notes ?? null;
+    return { ok: true, text: notesHtmlToText(raw), raw };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Could not reach Aryeo." };
+  }
+}
+
+export type AryeoNotesWrite =
+  | { ok: true; text: string; raw: string | null }
+  | { ok: false; error: string };
+
+// Write a customer's notes back to Aryeo, then READ THEM BACK to prove it
+// landed. The verify leg is not belt-and-braces: these customer routes are
+// undocumented, and a field the API doesn't recognise can be accepted and
+// quietly dropped — which would look exactly like success while the two lists
+// silently diverged, the one outcome this whole path exists to prevent. Never
+// retried (a write isn't safe to replay blindly); the caller keeps the local
+// copy and shows the failure.
+export async function writeAryeoCustomerNotes(
+  aryeoCustomerId: string,
+  plainText: string,
+): Promise<AryeoNotesWrite> {
+  const text = plainText.trim();
+  const html = text ? notesTextToHtml(text) : "";
+  const body = { internal_notes: html };
+  try {
+    await aryeoRequest(`/customers/${aryeoCustomerId}/notes`, { method: "PUT", body, timeoutMs: 12000 });
+  } catch (e) {
+    // Only a MISSING route falls back to patching the customer itself. Anything
+    // else (auth, validation, a 500) is a real answer from the notes endpoint
+    // and must be reported, not papered over with a second write.
+    const status = e instanceof AryeoError ? e.status : undefined;
+    if (status !== 404 && status !== 405) {
+      return { ok: false, error: e instanceof Error ? e.message : "Aryeo rejected the note." };
+    }
+    try {
+      await aryeoRequest(`/customers/${aryeoCustomerId}`, { method: "PATCH", body, timeoutMs: 12000 });
+    } catch (e2) {
+      return { ok: false, error: e2 instanceof Error ? e2.message : "Aryeo rejected the note." };
+    }
+  }
+
+  const back = await readAryeoCustomerNotes(aryeoCustomerId);
+  if (!back.ok) {
+    return { ok: false, error: `Aryeo accepted the note but we couldn't confirm it: ${back.error}` };
+  }
+  if (!sameCustomerNote(back.text, text)) {
+    return {
+      ok: false,
+      error:
+        "Aryeo took the request but the note didn't change on their side — the notes field may be read-only for this API key.",
+    };
+  }
+  return { ok: true, text: back.text, raw: back.raw };
+}
+
+// ---------------------------------------------------------------------------
 // Enrich clients from /customer-users. The customer object embedded on orders
 // is a GROUP (name/email/phone only) — it does NOT carry the agent's license #,
 // brokerage, or internal notes. Those live on the customer-user record, so we
 // match by email and backfill any EMPTY client fields (never overwrite edits).
+// The ONE exception is customer notes: Aryeo owns those, so its copy wins — but
+// only on a client actually LINKED to an Aryeo customer, and only from that
+// linked record. Email alone can fill a blank; it can never replace words a
+// human typed. See the adopt rules inline below.
 // ---------------------------------------------------------------------------
 export async function syncAryeoCustomers(): Promise<{ enriched: number }> {
   const { prisma } = await import("@/lib/prisma");
@@ -1875,17 +2078,55 @@ export async function syncAryeoCustomers(): Promise<{ enriched: number }> {
 
   const clients = await prisma.client.findMany({
     where: { email: { not: null } },
-    select: { id: true, email: true, phone: true, company: true, licenseNumber: true, generalNotes: true },
+    select: {
+      id: true, email: true, phone: true, company: true, licenseNumber: true,
+      generalNotes: true, aryeoCustomerId: true, notesSyncError: true,
+    },
   });
   let enriched = 0;
   for (const cl of clients) {
     const cu = byEmail.get((cl.email ?? "").toLowerCase());
     if (!cu) continue;
-    const data: Record<string, string> = {};
+    const data: Record<string, string | Date> = {};
     if (!cl.phone && cu.phone) data.phone = cu.phone;
     if (!cl.company && cu.agent_company_name) data.company = cu.agent_company_name;
     if (!cl.licenseNumber && cu.agent_license_number) data.licenseNumber = cu.agent_license_number;
-    if (!cl.generalNotes && cu.internal_notes) data.generalNotes = cu.internal_notes;
+
+    // Customer notes are NOT a backfill-if-empty field like the three above:
+    // Aryeo owns them, so an edit made over there has to reach the hub or the
+    // two lists drift apart again (before this, the mirror was written once on
+    // import and never refreshed). Three guards keep the adopt safe:
+    //  1. Only a LINKED client (aryeoCustomerId) may be adopted onto. The match
+    //     above is by email ALONE — enough to fill a blank field, nowhere near
+    //     enough to replace words somebody typed. With no link there is also no
+    //     way back: saveCustomerNotes calls an unlinked client's note honestly
+    //     hub-only and clears notesSyncError, so guard 3 can never fire for it
+    //     either. Without this gate, a note Kyle wrote on an unlinked client was
+    //     silently replaced by whatever sat on a same-email Aryeo record, every
+    //     run, with nothing pushing his words back. 7 notes live on unlinked
+    //     clients today (2 of them inside this loop's email-bearing population).
+    //  2. An EMPTY note in Aryeo never overwrites words we hold — a blank remote
+    //     is far more likely to be "nobody has written one there" than "delete
+    //     what the hub has".
+    //  3. An unsynced local edit (notesSyncError) is left alone — somebody typed
+    //     here, the write-back failed, and their words must survive until the
+    //     retry lands. The client card shows that state in red.
+    const incomingText = notesHtmlToText(cu.internal_notes);
+    if (cl.aryeoCustomerId && incomingText && !cl.notesSyncError && !sameCustomerNote(cl.generalNotes, cu.internal_notes)) {
+      // The projection above only decides whether it's worth looking. The words
+      // we actually adopt come from the LINKED customer GROUP (/customers/{id}),
+      // which is both the system of record and the same door the write-back
+      // uses — never from the email-matched row. If that read fails we skip this
+      // round rather than fall back to the projection: an unconfirmed copy is
+      // exactly what this check exists to refuse, and the next run retries.
+      const authoritative = await readAryeoCustomerNotes(cl.aryeoCustomerId);
+      const incoming = authoritative.ok ? authoritative.raw : null;
+      if (notesHtmlToText(incoming) && !sameCustomerNote(cl.generalNotes, incoming)) {
+        data.generalNotes = incoming!;
+        data.notesSyncedAt = new Date();
+      }
+    }
+
     if (Object.keys(data).length > 0) {
       await prisma.client.update({ where: { id: cl.id }, data });
       enriched++;
@@ -1979,7 +2220,10 @@ export async function syncAllAryeoClients(): Promise<{ created: number; scanned:
         phone: cu.phone ?? null,
         company: cu.agent_company_name ?? null,
         licenseNumber: cu.agent_license_number ?? null,
+        // Straight from Aryeo → the mirror starts in sync (see the create in
+        // the order sync above).
         generalNotes: cu.internal_notes ?? null,
+        notesSyncedAt: cu.internal_notes ? new Date() : null,
         // Keep the Aryeo id only when it isn't already taken (it's @unique).
         aryeoCustomerId: cu.id && !usedAryeoId.has(cu.id) ? cu.id : null,
       },

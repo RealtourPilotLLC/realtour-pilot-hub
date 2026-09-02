@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { customerNote } from "@/lib/clientNotes";
 
 // ---------------------------------------------------------------------------
 // The Content Program AI pipeline:
@@ -554,7 +555,12 @@ export async function buildAgentProfileFromHistory(clientId: string): Promise<{ 
   const e = await prisma.contentEnrollment.findUnique({ where: { clientId }, select: { id: true } });
   if (!e) throw new Error("No enrollment for this client.");
   const [client, strategy, intelNotes, scripts] = await Promise.all([
-    prisma.client.findUnique({ where: { id: clientId }, select: { name: true, company: true, editingPreferences: true } }),
+    // generalNotes is THE customer note; editingPreferences is the retired
+    // column, still read as a fallback (src/lib/clientNotes.ts).
+    prisma.client.findUnique({
+      where: { id: clientId },
+      select: { name: true, company: true, generalNotes: true, editingPreferences: true },
+    }),
     prisma.contentStrategy.findFirst({ where: { enrollmentId: e.id, status: "ACTIVE" }, select: { sectionsJson: true } }),
     prisma.contentNote.findMany({ where: { clientId, intelligence: true }, orderBy: { createdAt: "desc" }, take: 60, select: { body: true } }),
     prisma.contentScript.findMany({ where: { clientId, source: "import" }, orderBy: { createdAt: "desc" }, take: 8, select: { title: true, body: true } }),
@@ -570,7 +576,11 @@ export async function buildAgentProfileFromHistory(clientId: string): Promise<{ 
   }
   if (intelNotes.length) material.push("FACTS LEARNED ON STRATEGY & DISCOVERY CALLS:\n" + intelNotes.map((n) => `- ${n.body}`).join("\n"));
   if (scripts.length) material.push("SCRIPTS THEY ACTUALLY FILMED (their real voice):\n" + scripts.map((s) => `### ${s.title}\n${s.body.slice(0, 1200)}`).join("\n\n"));
-  if (client?.editingPreferences) material.push("EXISTING EDITING NOTES:\n" + client.editingPreferences);
+  // The customer note on file. It read editingPreferences, which has had no
+  // writer since the notes cards merged (NULL on all 349 clients), so this
+  // evidence line never made it into the profile build.
+  const noteOnFile = customerNote(client);
+  if (noteOnFile) material.push("CUSTOMER NOTES ON FILE:\n" + noteOnFile);
   if (material.length < 2) return { sectionsFilled: 0, keysAdded: 0 };
 
   const { aiJson } = await import("@/lib/integrations/ai");

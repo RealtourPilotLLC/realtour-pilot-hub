@@ -397,7 +397,7 @@ function CustomerCard({
 }) {
   const isVip = segment?.key === "vip";
   const [open, setOpen] = useState(false);
-  const hasMore = !!profile || !!client.editingPreferences;
+  const hasMore = !!profile || !!client.customerNote;
 
   return (
     <section className="panel-shadow rounded-2xl border border-border bg-surface">
@@ -438,12 +438,25 @@ function CustomerCard({
       )}
       {!open && !profile && (
         <p className="px-4 pb-3 text-sm text-muted-2">
-          {client.editingPreferences ? `Editing notes: ${client.editingPreferences}` : "No working profile yet — this builds up as we do more shoots together."}
+          {client.customerNote
+            ? `Customer notes: ${client.customerNote}`
+            : "No working profile yet — this builds up as we do more shoots together."}
         </p>
       )}
 
       {open && (
         <div className="space-y-3 border-t border-border px-4 py-3">
+          {/* The customer note is what the OFFICE wrote about this client
+              ("always add his logo", "step back further in big rooms") and it
+              renders whether or not a working profile exists — the profile
+              branch used to swallow it whole, and 8 of the 17 clients with a
+              note have a profile too, so it reached nobody in the field. */}
+          {client.customerNote && (
+            <div>
+              <div className="mb-1 text-xs font-semibold text-muted">Customer notes</div>
+              <p className="whitespace-pre-line text-sm text-foreground/85">{client.customerNote}</p>
+            </div>
+          )}
           {profile ? (
             <>
               {profile.summary && <p className="text-sm text-foreground/85">{profile.summary}</p>}
@@ -462,9 +475,9 @@ function CustomerCard({
                 </div>
               )}
             </>
-          ) : (
-            <p className="text-sm text-muted">Editing notes: {client.editingPreferences}</p>
-          )}
+          ) : !client.customerNote ? (
+            <p className="text-sm text-muted-2">No working profile yet — this builds up as we do more shoots together.</p>
+          ) : null}
         </div>
       )}
     </section>
