@@ -30,7 +30,7 @@ export async function GET(req: NextRequest) {
 
   if (!code || !state || !cookieState || state !== cookieState) return fail("state");
 
-  const info = await exchangeLoginCode(code);
+  const info = await exchangeLoginCode(code, req.nextUrl.origin);
   if (!info) return fail("google");
 
   let user = await prisma.appUser.findUnique({ where: { email: info.email } });

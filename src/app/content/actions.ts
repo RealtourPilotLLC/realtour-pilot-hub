@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { appBase } from "@/lib/appUrl";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin, requireOwner } from "@/lib/auth/guards";
 import { contentProgramSweep, PACKAGE_RULES, etMonthKey } from "@/lib/contentProgram";
@@ -600,7 +601,7 @@ export async function issuePortalLink(enrollmentId: string): Promise<Result & { 
     token = randomBytes(24).toString("base64url");
     await prisma.contentEnrollment.update({ where: { id: enrollmentId }, data: { portalToken: token } });
   }
-  const base = process.env.APP_URL ?? "https://realtour-pilot-hub.vercel.app";
+  const base = appBase();
   return { ok: true, message: "Portal link ready — send it to the client whenever you choose.", url: `${base}/portal/${token}` };
 }
 

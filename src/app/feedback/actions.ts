@@ -1,6 +1,7 @@
 "use server";
 
 import { requireAdmin, requireOwner, requireRole } from "@/lib/auth/guards";
+import { appBase } from "@/lib/appUrl";
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
@@ -58,7 +59,7 @@ export async function submitPlatformFeedback(input: {
     },
   });
 
-  const base = process.env.NEXT_PUBLIC_APP_URL || "https://realtour-pilot-hub.vercel.app";
+  const base = appBase();
   const label = kind === "bug" ? "🐞 Bug report" : kind === "feedback" ? "💬 Feedback" : "✨ Feature request";
   const emailed = await notifyOwnerEmail(
     `${label}: ${title}`,
@@ -122,7 +123,7 @@ export async function decidePlatformFeedback(
   if (status !== "NEW") {
     try {
       const { opsAlert } = await import("@/lib/notify");
-      const base = process.env.NEXT_PUBLIC_APP_URL || "https://realtour-pilot-hub.vercel.app";
+      const base = appBase();
       const verb = status === "APPROVED" ? "✅ approved — into the build queue" : status === "DONE" ? "🚀 marked shipped" : "🗄 declined";
       await opsAlert(`Feedback “${fb.title}” ${verb}${fb.submittedBy ? ` (filed by ${fb.submittedBy})` : ""} → ${base}/feedback`);
     } catch { /* non-fatal */ }
@@ -151,7 +152,7 @@ export async function pingFeedbackOnSlack(
   if (!row || !member) return { ok: false, message: "Item or person not found." };
   const sender = me?.name?.split(/\s+/)[0] ?? "Jordan";
   const { etDateTime } = await import("@/lib/datetime");
-  const url = `${process.env.APP_URL ?? "https://realtour-pilot-hub.vercel.app"}/feedback`;
+  const url = `${appBase()}/feedback`;
   const text =
     `👀 *${sender}* asked you to look into this ${row.kind === "bug" ? "bug" : row.kind === "field_issue" ? "field issue" : "request"}:\n` +
     `*${row.title}*\n` +

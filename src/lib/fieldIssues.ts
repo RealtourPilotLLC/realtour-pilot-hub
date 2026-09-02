@@ -1,4 +1,5 @@
 import "server-only";
+import { appBase } from "@/lib/appUrl";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 
@@ -68,7 +69,7 @@ export async function fileFieldIssue(opts: {
     // Same field-of-view pings the rest of the board gets (best-effort).
     try {
       const { opsAlert, notifyInApp } = await import("@/lib/notify");
-      const base = process.env.NEXT_PUBLIC_APP_URL || "https://realtour-pilot-hub.vercel.app";
+      const base = appBase();
       await opsAlert(`🚩 ${opts.label}: “${opts.note.trim().slice(0, 140)}” — ${street}${submittedBy ? ` (from ${submittedBy})` : ""} → ${base}/feedback`);
       await notifyInApp({
         kind: "system",

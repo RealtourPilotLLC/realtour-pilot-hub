@@ -1,6 +1,7 @@
 "use server";
 
 import { requireAdmin, requireTaskAccess } from "@/lib/auth/guards";
+import { appBase } from "@/lib/appUrl";
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
@@ -312,7 +313,7 @@ export async function pingTaskOnSlack(
   const { etDateTime } = await import("@/lib/datetime");
   const { receivedByLabel } = await import("@/lib/taskSource");
   const receivedBy = receivedByLabel(task.source, task.sourceDetail);
-  const base = process.env.APP_URL ?? "https://realtour-pilot-hub.vercel.app";
+  const base = appBase();
   const url = `${base}/tasks?tab=board&task=${taskId}`;
   const body = (task.summary ?? task.description ?? "").trim();
   const text =

@@ -1,4 +1,5 @@
 import "server-only";
+import { appBase } from "@/lib/appUrl";
 import { prisma } from "@/lib/prisma";
 import { OpenPhone, defaultOpenPhoneNumber, phoneKey } from "@/lib/integrations/openphone";
 import { logComm } from "@/lib/commLog";
@@ -11,7 +12,7 @@ import { logComm } from "@/lib/commLog";
 // to hit 7 PM across EDT/EST; the marker makes the second firing a no-op).
 // ---------------------------------------------------------------------------
 
-const APP_URL = "https://realtour-pilot-hub.vercel.app";
+const APP_URL = appBase();
 
 function etDayKey(d: Date = new Date()): string {
   return d.toLocaleDateString("en-CA", { timeZone: "America/New_York" }); // YYYY-MM-DD

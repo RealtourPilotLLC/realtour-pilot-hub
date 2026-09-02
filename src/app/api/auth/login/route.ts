@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
   const invite = req.nextUrl.searchParams.get("invite") || "";
   const state = randomUUID();
 
-  const res = NextResponse.redirect(loginAuthorizeUrl(state));
+  const res = NextResponse.redirect(loginAuthorizeUrl(state, req.nextUrl.origin));
   const opts = { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax" as const, path: "/", maxAge: 600 };
   res.cookies.set("rtp_oauth_state", state, opts);
   res.cookies.set("rtp_oauth_next", next, opts);

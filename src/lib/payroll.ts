@@ -1,4 +1,5 @@
 import "server-only";
+import { appBase } from "@/lib/appUrl";
 import { prisma } from "@/lib/prisma";
 import { driveBetween } from "@/lib/travel";
 import { etDayKey, etDayStartUtc } from "@/lib/datetime";
@@ -713,7 +714,7 @@ export async function paydayPings(): Promise<{ pinged: number } | { skipped: str
     for (const person of people) {
       if (person.total <= 0) continue;
       const jobs = person.jobs.length;
-      const line = `💰 Payday: $${person.total.toFixed(2)} lands today (${jobs} shoot${jobs === 1 ? "" : "s"} + mileage, ${period.startKey.slice(5)}–${period.endKey.slice(5)}). Details: ${process.env.APP_URL ?? "https://realtour-pilot-hub.vercel.app"}/my-pay`;
+      const line = `💰 Payday: $${person.total.toFixed(2)} lands today (${jobs} shoot${jobs === 1 ? "" : "s"} + mileage, ${period.startKey.slice(5)}–${period.endKey.slice(5)}). Details: ${appBase()}/my-pay`;
       await prisma.pendingSms.create({ data: { teamMemberId: person.member.id, line } }).catch(() => {});
       pinged++;
     }

@@ -1,4 +1,5 @@
 import "server-only";
+import { originOrBase } from "@/lib/appUrl";
 
 // Google OAuth for LOGIN. Reuses the existing Google OAuth client
 // (GOOGLE_CLIENT_ID/SECRET, also used for Gmail) but with a distinct redirect URI
@@ -7,25 +8,22 @@ import "server-only";
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? "";
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ?? "";
 
-function appBase(): string {
-  return (
-    process.env.NEXT_PUBLIC_APP_URL ||
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000")
-  );
-}
 
 export function loginConfigured(): boolean {
   return Boolean(CLIENT_ID && CLIENT_SECRET);
 }
 
-export function loginRedirectUri(): string {
-  return `${appBase()}/api/auth/callback/google`;
+// `origin` = the host the browser is on (hub.realtourpilot.com or the
+// vercel.app host). Both are registered on the Google client; the token
+// exchange must echo the exact same redirect_uri the authorize step sent.
+export function loginRedirectUri(origin?: string | null): string {
+  return `${originOrBase(origin)}/api/auth/callback/google`;
 }
 
-export function loginAuthorizeUrl(state: string): string {
+export function loginAuthorizeUrl(state: string, origin?: string | null): string {
   const u = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   u.searchParams.set("client_id", CLIENT_ID);
-  u.searchParams.set("redirect_uri", loginRedirectUri());
+  u.searchParams.set("redirect_uri", loginRedirectUri(origin));
   u.searchParams.set("response_type", "code");
   u.searchParams.set("scope", "openid email profile");
   u.searchParams.set("state", state);
@@ -36,7 +34,7 @@ export function loginAuthorizeUrl(state: string): string {
 // Exchange the auth code for the user's verified email + name. The id_token comes
 // directly from Google's token endpoint over our server-side TLS request (not from
 // the user), so decoding its payload without re-verifying the signature is safe.
-export async function exchangeLoginCode(code: string): Promise<{ email: string; name?: string } | null> {
+export async function exchangeLoginCode(code: string, origin?: string | null): Promise<{ email: string; name?: string } | null> {
   try {
     const res = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
@@ -45,7 +43,7 @@ export async function exchangeLoginCode(code: string): Promise<{ email: string; 
         code: code.trim(),
         client_id: CLIENT_ID,
         client_secret: CLIENT_SECRET,
-        redirect_uri: loginRedirectUri(),
+        redirect_uri: loginRedirectUri(origin),
         grant_type: "authorization_code",
       }),
       cache: "no-store",
