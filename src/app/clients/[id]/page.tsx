@@ -16,11 +16,15 @@ import { ClientChat } from "@/components/clients/ClientChat";
 import { ClientEmails } from "@/components/clients/ClientEmails";
 import { ClientTodos } from "@/components/clients/ClientTodos";
 import { ClientProfileCard } from "@/components/clients/ClientProfileCard";
+import { ClientNotificationPrefs } from "@/components/clients/ClientNotificationPrefs";
 import { parseClientProfile } from "@/lib/clientProfile";
 import { ShowMore } from "@/components/ui/ShowMore";
 import { dropboxWebUrl } from "@/lib/dropboxFolders";
 import { notesHtmlToText } from "@/lib/integrations/aryeo";
 import { getClientDetail } from "@/lib/queries";
+import { autoTextRules } from "@/lib/settings";
+import { getCurrentUser } from "@/lib/auth/user";
+import { authEnforced } from "@/lib/auth/guards";
 import { stageMeta } from "@/lib/pipeline";
 import { formatMoney, stripHtml } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
@@ -49,6 +53,22 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
     )?.body ?? "";
 
   const enrollment = await prisma.contentEnrollment.findUnique({ where: { clientId: client.id }, select: { id: true } }).catch(() => null);
+
+  // Who may flip the per-client notification switches. Same shape as the other
+  // owner/admin gates on this hub: middleware already keeps creatives off
+  // /clients, and getCurrentUser() is null both in local dev (auth off ⇒ owner
+  // view) and for a revoked account still holding a valid JWT — so a null only
+  // grants edit when enforcement is off. "View as" is read-only, matching
+  // requireAdmin(), so the action can't reject a switch the screen let them flip.
+  const me = await getCurrentUser().catch(() => null);
+  const canEditPrefs = me
+    ? (me.realRole === "OWNER" || me.realRole === "ADMIN") && !me.impersonating
+    : !authEnforced();
+
+  // The LIVE automation rules, so the notification card states real timings and
+  // can say out loud when the global master switch (Settings → Automated texts)
+  // is what's actually stopping a text — not a per-client preference.
+  const autoRules = await autoTextRules().catch(() => null);
 
   return (
     <div>
@@ -228,6 +248,31 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
             aryeoLinked={!!client.aryeoCustomerId}
           />
 
+          {/* Per-client notification switches — the exception to Settings →
+              Automated texts, for the client who asked us not to text. */}
+          <ClientNotificationPrefs
+            clientId={client.id}
+            clientName={client.name}
+            hasPhone={!!client.phone}
+            // `!== false`, not a bare read: both columns are NOT NULL with a
+            // default of true, so the only way to get anything but a boolean
+            // here is a stale Prisma client mid-deploy — and rendering "off"
+            // for a client the sweep will happily text is the one lie this
+            // card must never tell. Unknown reads as ON, matching the column.
+            autoConfirmationText={client.autoConfirmationText !== false}
+            autoDeliveryText={client.autoDeliveryText !== false}
+            canEdit={canEditPrefs}
+            rules={{
+              // Settings unreadable (a DB hiccup) ⇒ describe the shipped
+              // defaults rather than render blanks; nothing here decides a send.
+              globalEnabled: autoRules?.enabled ?? true,
+              confirmationEnabled: autoRules?.confirmation.enabled ?? true,
+              deliveryEnabled: autoRules?.delivery.enabled ?? true,
+              hoursBefore: autoRules?.confirmation.hoursBefore ?? 48,
+              windowLabel: sendWindowLabel(autoRules?.sendFromHour ?? 9, autoRules?.sendUntilHour ?? 16),
+            }}
+          />
+
           <ClientTodos
             todos={client.smartTasks.map((t) => ({
               id: t.id,
@@ -241,6 +286,17 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
       </div>
     </div>
   );
+}
+
+// "9:00 AM – 4:00 PM ET" from the two 24-hour ET numbers the send window is
+// stored as. ET everywhere, like every other time on this hub.
+function sendWindowLabel(from: number, until: number): string {
+  const h12 = (h: number) => {
+    const am = h < 12 || h === 24;
+    const v = h % 12 === 0 ? 12 : h % 12;
+    return `${v}:00 ${am ? "AM" : "PM"}`;
+  };
+  return `${h12(from)} – ${h12(until)} ET`;
 }
 
 function Stat({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {

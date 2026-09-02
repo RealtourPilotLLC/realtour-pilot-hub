@@ -64,6 +64,110 @@ export type { Role };
 export type NotifyTarget = { roles: Role[]; userKey?: string; href?: string }; // href overrides the default per row
 
 // ---------------------------------------------------------------------------
+// WHAT THE BELL IS FOR (Sep 2 2026, before onboarding the team).
+//
+// Measured on the live table first: 1,314 rows since Jul 7. 940 of them (72%)
+// were role BROADCASTS nobody had to act on, and six kinds — raws_landed,
+// delivery_out, appointment_change, raws_missing, reply_sla, order_booked —
+// were 1,014 of the 1,314 (77%). Three of the seven logins (Harrison, John,
+// Kim) had NEVER opened the bell, and the owner was 1,111 rows behind his own
+// watermark — last read Jul 16. A feed nobody reads is worse than no feed: the
+// two rows that mattered were buried in ninety that didn't.
+//
+// So the bell carries only what needs a PERSON TO ACT: mentions, revisions,
+// cuts to review, new leads, and genuinely urgent things. Everything else is
+// either already on the screen where that work is done, or already goes out on
+// a channel people actually read (ops Slack, SMS).
+//
+// This is the ONE gate. Kinds are silenced HERE, at the choke point — not by
+// pulling emitters out of 29 files. Nothing is deleted: history stays, and
+// every emitter keeps its Slack ping, its task and its timeline row untouched.
+//
+//   "all"    — ring for everyone the emitter addressed (the default).
+//   "person" — ring ONLY rows addressed to a named human (tm:/editor:). Those
+//              are also the rows that bridge to SMS / a Manila Slack DM, and
+//              for an editor with a login the bell IS their channel. What gets
+//              dropped is the role broadcast that shadowed them.
+//   "off"    — no bell row at all.
+//
+// An unlisted kind RINGS (fail open). A new emitter nobody thought to classify
+// must never vanish silently — classify it here, on purpose.
+//
+// ⚠️ TWO KINDS MUST NOT BE SILENCED, however noisy they look:
+//   · reply_sla — commsSla.alreadySent() reads the bell row back by dedupeKey
+//     to decide whether tier 1 already fired. With no row, `alreadySent` is
+//     always false: the tier-1 Slack line and the tier-2 urgent ping would fire
+//     for every waiting client EVERY FIVE MINUTES. Silencing it means first
+//     moving that ledger off the Notification table (an AppSetting key or a
+//     SmartTask dedupeKey) in src/lib/commsSla.ts — a file this pass didn't own.
+//   · photos_undelivered — deliveryWatch.ts uses the same row as its "already
+//     texted staff about this job" ledger; no row means it re-texts Kyle and
+//     Jordan every afternoon, forever.
+// ---------------------------------------------------------------------------
+type BellRule = "all" | "person" | "off";
+
+const BELL_RULES: Record<string, BellRule> = {
+  // --- SILENCED, still reaches the person who has to act -------------------
+  // The ROUTED editor keeps their own row (and their Slack DM / SMS). What goes
+  // is the ADMIN copy and the EDITOR bench broadcast — and the bench IS
+  // /editing, an editor's home page, which lists every job whose raws are in.
+  // Jordan (Aug 25): "editors get their notifications on the dashboard."
+  raws_landed: "person",
+  // The assigned photographer keeps their row AND the text ("Rescheduled",
+  // "No longer yours", "New shoot"). The ADMIN broadcast duplicated a change
+  // Kyle usually made himself, and /schedule + Ops Day show every move.
+  appointment_change: "person",
+  // Both people who chase this keep their PERSONAL row and text: the
+  // photographer whose upload it is, and the creative manager (Kyle) — see
+  // creativeAlertTargets in tasks.ts, which addresses him by tm: id precisely
+  // because a role can't find him. Only the OWNER/ADMIN broadcast goes, and
+  // that one is already a task in the queue and an alert on Ops Day.
+  raws_missing: "person",
+
+  // --- SILENCED entirely: nothing to do about them --------------------------
+  // A delivery needs no one: the project page, the Dashboard's delivered rail
+  // and the client's own delivery text all say it.
+  delivery_out: "off",
+  // A new job announces itself on the Dashboard, /schedule and /projects, and
+  // mints its own tasks.
+  order_booked: "off",
+  // The same action already writes an Activity row, posts "Shoot complete …
+  // ready to upload content" into the project thread, moves the project to SHOT
+  // and runs the editor handoff. Ops Day and the /shoot Complete badge show it.
+  shoot_completed: "off",
+  // Money, and nobody chases a payment from a bell: /billing and Finance own it.
+  order_paid: "off",
+
+  // --- KEPT, deliberately: this is the whole point of the bell --------------
+  mention: "all", // someone tagged you by name
+  mention_done: "all", // …and someone finished what you tagged them on
+  note_reply: "all", // your question on a thread finally has an answer
+  revision_raised: "all", // a client wants a change
+  revision_resolved: "all", // it came back — check it and re-deliver
+  cut_ready: "all", // a cut is waiting on a verdict
+  review_ready: "all",
+  review_submitted: "all",
+  review_changes: "all", // changes asked for on a cut (the editor must act)
+  review_approved: "all", // the editor's loop closes here
+  review_feedback: "all", // capture feedback the photographer has to fix
+  feedback_shared: "all",
+  new_lead: "all", // someone is trying to give us money
+  program_signup: "all", // a website signup that needs a look — a lead by another name
+  client_feedback: "all", // a rating, and a bad one needs a person today
+  order_canceled: "all", // stop the work, refund or write off
+  photos_undelivered: "all", // the client is past due and waiting (see the warning above)
+  cull: "all", // has to happen before the edit starts
+  task_assigned: "all", // someone put a job on YOUR name
+  edit_assigned: "all", // …the editor version of the same
+  edit_finished: "all",
+  shoot_add_on: "all", // sold in the field; it doesn't get invoiced unless someone sees it
+  portal_suggestion: "all", // a client asked for a script change
+  portal_asset: "all", // a client's brand file: the bell is its ONLY signal, so it stays
+  reply_sla: "all", // the client pager (see the warning above)
+  system: "all", // integration failures — the owner is the only one who can fix them
+};
+
+// ---------------------------------------------------------------------------
 // SMS bridge: photographers have no push notifications, so person-addressed
 // bell rows for the kinds below ALSO go out as a text via OpenPhone. Rules:
 // TEAM MEMBERS ONLY (the recipient's number comes off their TeamMember row,
@@ -332,12 +436,23 @@ export async function notifyInApp(n: {
   href: string; // default deep link; a target's href wins for its row
   targets: NotifyTarget[]; // ONE Notification row per target
   dedupeKey?: string; // suffixed "-0","-1",… per target index so multi-target events insert every row
-}): Promise<{ bridged: Array<{ userKey: string; channel: EditorChannel }> }> {
+}): Promise<{ bridged: Array<{ userKey: string; channel: EditorChannel }>; silenced: number }> {
   const bridged: Array<{ userKey: string; channel: EditorChannel }> = [];
+  let silenced = 0;
   try {
     const title = n.title.slice(0, 90);
+    const rule: BellRule = BELL_RULES[n.kind] ?? "all";
     for (let i = 0; i < n.targets.length; i++) {
       const t = n.targets[i];
+      // Bell policy (BELL_RULES above) — silence the ROW, never the emitter:
+      // the caller's Slack ping, task and timeline row all still happen. `i`
+      // keeps counting through a skip, so the dedupeKey suffixes stay
+      // positional ("-0","-1",…) and the two callers that probe a concrete key
+      // (commsSla.alreadySent, deliveryWatch) still match the row they wrote.
+      if (rule === "off" || (rule === "person" && !t.userKey)) {
+        silenced++;
+        continue;
+      }
       let roles = t.roles;
       let body = n.body ? n.body.slice(0, 140) : null;
       const href = t.href ?? n.href;
@@ -394,7 +509,7 @@ export async function notifyInApp(n: {
   } catch (e) {
     console.warn("notifyInApp failed", n.kind, e);
   }
-  return { bridged };
+  return { bridged, silenced };
 }
 
 // Ping the team about a just-created task that shouldn't wait for a hub visit

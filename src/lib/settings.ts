@@ -80,6 +80,25 @@ export async function editorRouting(): Promise<EditorRoutingRules> {
 // and turn off the automations." The sweeps read this on every cron tick, so
 // a change takes effect within a minute — and OFF is honoured immediately.
 // ---------------------------------------------------------------------------
+/** Weekend / after-hours auto-reply to a client who texts in while we're shut. */
+export type AfterHoursRule = {
+  enabled: boolean;
+  /** office hours quoted back to the client (ET, 24h) */
+  openHour: number;
+  closeHour: number;
+  /** where they can self-serve in the meantime */
+  portalUrl: string;
+  /** never answer a text older than this (a cron catch-up must not reply to Friday's message on Monday) */
+  maxAgeHours: number;
+  /** the reply itself — {first} {hours} {nextDay} {portal} */
+  message: string;
+};
+
+// The three fields added Sep 2 2026 (sendUntilMinute, weekdaysOnly, afterHours)
+// are OPTIONAL on the stored shape on purpose: a row saved before they existed,
+// and the settings form that predates them, both still type-check and simply
+// fall back to the defaults below. What the sweeps actually read is
+// ResolvedAutoTextRules, where every field is present and clamped.
 export type AutoTextRules = {
   /** master switch — false stops every automated CLIENT text */
   enabled: boolean;
@@ -87,6 +106,10 @@ export type AutoTextRules = {
   sendFromHour: number;
   /** exclusive ET hour after which nothing sends; it waits for the morning */
   sendUntilHour: number;
+  /** minutes past sendUntilHour the window really shuts (Jordan: 4:30 PM) */
+  sendUntilMinute?: number;
+  /** client texts Monday-Friday only. TEAM texts are NOT governed by this. */
+  weekdaysOnly?: boolean;
   confirmation: {
     enabled: boolean;
     /** how far ahead of the shoot to confirm */
@@ -99,18 +122,60 @@ export type AutoTextRules = {
     /** monthly plans: require the batch (plan quota) before announcing delivery */
     requireMonthlyBatch: boolean;
   };
+  afterHours?: AfterHoursRule;
   /** never auto-text a client who has an unanswered question in the queue */
   skipWhenClientWaiting: boolean;
   /** at most one automated text per client per cron tick */
   onePerClientPerRun: boolean;
 };
 
-export const DEFAULT_AUTO_TEXTS: AutoTextRules = {
+/** What autoTextRules() hands the sweeps: nothing optional, everything clamped. */
+export type ResolvedAutoTextRules = Omit<AutoTextRules, "sendUntilMinute" | "weekdaysOnly" | "afterHours"> & {
+  sendUntilMinute: number;
+  weekdaysOnly: boolean;
+  afterHours: AfterHoursRule;
+};
+
+// The post-delivery text is now a FEEDBACK ASK, not a delivery announcement
+// (Jordan, Sep 2 2026: "less of a delivery text and more of a text just asking
+// for feedback. I want to make sure everything went well at the shoot. The
+// feedback form link should be sent and explain that this helps us make sure
+// they are getting a good client experience and continuously improving their
+// experience"). It only goes out once the WHOLE job has landed — see the gate
+// in lib/clientTextSweeps sweepDeliveryTexts.
+//
+// This is the built-in wording. The owner-editable version is Settings → Text
+// templates → "Delivery text" (TextTemplates.deliveryAll below): anything typed
+// there wins, so the copy can change without a deploy. Placeholders: {first},
+// {street}, {feedbackUrl}. Jordan's voice — no em dashes, no emojis.
+export const DEFAULT_DELIVERY_FEEDBACK_TEXT =
+  "Hi {first}! Now that {street} is wrapped up, how did everything go? The shoot, the turnaround, the content. Quick feedback here helps us make sure you are getting a great experience and keep making it better: {feedbackUrl} If anything is not right, just reply and we will jump on it.";
+
+// The weekend / after-hours auto-reply (Jordan, Sep 2 2026). Says the hours,
+// promises the next working morning, and points at the portal so an agent who
+// needs something at 9pm on a Saturday is not stuck waiting on us.
+export const DEFAULT_AFTER_HOURS_REPLY =
+  "Hi {first}, thanks for reaching out! Our office hours are {hours}, so we will get back to you first thing {nextDay}. In the meantime you can log in at {portal} to place an order, reschedule an appointment, and grab your content and invoices.";
+
+export const DEFAULT_AUTO_TEXTS: ResolvedAutoTextRules = {
   enabled: true,
   sendFromHour: 9,
-  sendUntilHour: 16, // Jordan: "they should never go out past 4PM"
+  // Jordan, Sep 2 2026: "All client texts Mon-Fri… Never send texts after
+  // 4:30 PM to clients. Team texts can still go out on weekends." Anything due
+  // outside this queues to the next working morning; nothing is dropped.
+  sendUntilHour: 16,
+  sendUntilMinute: 30,
+  weekdaysOnly: true,
   confirmation: { enabled: true, hoursBefore: 48 },
   delivery: { enabled: true, maxTaskAgeHours: 72, requireMonthlyBatch: true },
+  afterHours: {
+    enabled: true,
+    openHour: 9,
+    closeHour: 18, // Mon-Fri 9-6 — the OFFICE hours, wider than the send window above
+    portalUrl: "media.realtourpilot.com",
+    maxAgeHours: 12,
+    message: DEFAULT_AFTER_HOURS_REPLY,
+  },
   skipWhenClientWaiting: true,
   onePerClientPerRun: true,
 };
@@ -139,7 +204,7 @@ export async function reviewRoomRules(): Promise<ReviewRoomRules> {
   };
 }
 
-export async function autoTextRules(): Promise<AutoTextRules> {
+export async function autoTextRules(): Promise<ResolvedAutoTextRules> {
   const r = await getSetting<AutoTextRules>("auto_texts", DEFAULT_AUTO_TEXTS);
   // Clamp anything a bad save could put here — the sweeps text real clients.
   const hour = (v: unknown, fallback: number) =>
@@ -152,10 +217,41 @@ export async function autoTextRules(): Promise<AutoTextRules> {
   const valid = rawUntil > rawFrom;
   const from = valid ? rawFrom : DEFAULT_AUTO_TEXTS.sendFromHour;
   const until = valid ? rawUntil : DEFAULT_AUTO_TEXTS.sendUntilHour;
+  const d = DEFAULT_AUTO_TEXTS.afterHours;
+  // Office hours quoted to clients. Same inverted-window rule as the send
+  // window: an unusable pair falls back to BOTH defaults rather than to a state
+  // where the office reads as never open (and every text as after-hours).
+  const rawOpen = hour(r.afterHours?.openHour, d.openHour);
+  const rawClose = hour(r.afterHours?.closeHour, d.closeHour);
+  const officeOk = rawClose > rawOpen;
   return {
     enabled: r.enabled !== false,
     sendFromHour: from,
     sendUntilHour: until,
+    sendUntilMinute:
+      typeof r.sendUntilMinute === "number" && Number.isInteger(r.sendUntilMinute) && r.sendUntilMinute >= 0 && r.sendUntilMinute <= 59
+        ? r.sendUntilMinute
+        : DEFAULT_AUTO_TEXTS.sendUntilMinute,
+    weekdaysOnly: r.weekdaysOnly !== false,
+    afterHours: {
+      enabled: r.afterHours?.enabled !== false,
+      openHour: officeOk ? rawOpen : d.openHour,
+      closeHour: officeOk ? rawClose : d.closeHour,
+      // A blank/rubbish URL would send a client to nowhere — fall back rather
+      // than text out a broken link. Stored bare (no scheme) so it reads as a
+      // place to go, not a tracking link.
+      portalUrl:
+        typeof r.afterHours?.portalUrl === "string" && /^[\w.-]+\.[a-z]{2,}(\/\S*)?$/i.test(r.afterHours.portalUrl.trim())
+          ? r.afterHours.portalUrl.trim().replace(/^https?:\/\//i, "").slice(0, 120)
+          : d.portalUrl,
+      maxAgeHours:
+        typeof r.afterHours?.maxAgeHours === "number" && r.afterHours.maxAgeHours > 0 && r.afterHours.maxAgeHours <= 72
+          ? r.afterHours.maxAgeHours
+          : d.maxAgeHours,
+      // An empty box means "use the built-in wording" — a blank template can
+      // never send a blank text (same rule as textTemplates below).
+      message: typeof r.afterHours?.message === "string" && r.afterHours.message.trim() ? r.afterHours.message.slice(0, 1000) : d.message,
+    },
     confirmation: {
       enabled: r.confirmation?.enabled !== false,
       hoursBefore:

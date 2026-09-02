@@ -7,6 +7,7 @@ import { refinedDeliverableLabel } from "@/lib/pipeline";
 import { etDateTime, etDate, etDayKey, etDayStartUtc, etAddDays, etFullDate, etEndOfDay } from "@/lib/datetime";
 import type { HubTool } from "@/lib/integrations/ai";
 import { aryeoOrderUrl } from "@/lib/aryeoUrl";
+import { canSeeMoney } from "@/lib/auth/access";
 
 // ---------------------------------------------------------------------------
 // Read-only data tools for "Ask the Hub". Each tool maps to a bounded Prisma
@@ -49,7 +50,7 @@ export const HUB_TOOLS: HubTool[] = [
   },
   {
     name: "find_client",
-    description: "Look up a client by name. Returns profile: segment/tier, lifetime spend, order count, social-content plan, contact info, preferences, and their recent projects.",
+    description: "Look up a client by name. Returns profile: segment/tier, order count, social-content plan, contact info, preferences, and their recent projects. Lifetime spend is OWNER-only and is simply absent for anyone else.",
     input_schema: {
       type: "object",
       properties: { name: { type: "string", description: "Client name (partial ok)." } },
@@ -82,7 +83,7 @@ export const HUB_TOOLS: HubTool[] = [
   },
   {
     name: "get_billing",
-    description: "Outstanding accounts receivable: every delivered Aryeo job with a balance still owed, plus the grand total. Use for 'who owes us money', 'what's our outstanding AR'.",
+    description: "OWNER ONLY. Outstanding accounts receivable: every delivered Aryeo job with a balance still owed, plus the grand total. Use for 'who owes us money', 'what's our outstanding AR'. For any other viewer this returns a refusal — relay it plainly and never estimate a balance.",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -104,7 +105,7 @@ export const HUB_TOOLS: HubTool[] = [
   },
   {
     name: "search_business_knowledge",
-    description: "Search Jordan's distilled business knowledge: his preferences, decisions and their outcomes, goals, the recurring problems he has been working through, pricing/financial logic, client-handling rules, and how RealTour Pilot actually operates (learned from his history). Ground your judgment here whenever a question involves 'how do we / should we', pricing, a client situation, strategy, a recommendation, or what Jordan would want. Results are already filtered to what the current viewer is allowed to see.",
+    description: "Search Jordan's distilled business knowledge: his preferences, decisions and their outcomes, goals, the recurring problems he has been working through, pricing/financial logic, client-handling rules, and how RealTour Pilot actually operates (learned from his history). Ground your judgment here whenever a question involves 'how do we / should we', pricing, a client situation, strategy, a recommendation, or what Jordan would want. Results are already filtered to what the current viewer is allowed to see, and money knowledge (pricing, fees, financials) is OWNER-only — for anyone else it is absent and figures elsewhere are withheld.",
     input_schema: {
       type: "object",
       properties: {
@@ -242,10 +243,110 @@ function allowedRolesFor(viewer: string): string[] {
   return Object.keys(ROLE_RANK).filter((r) => ROLE_RANK[r] <= rank);
 }
 
-// Money visibility: creatives (photographers/editors) may look up schedules,
-// projects, and clients — but NEVER dollars. Prices, balances, invoice links,
-// lifetime spend, and AR are admin/owner only, matching the page-level RBAC.
-const canSeeMoney = (role: string) => (ROLE_RANK[role] ?? ROLE_RANK.CREATIVE) >= ROLE_RANK.ADMIN;
+// ---------------------------------------------------------------------------
+// Money blindness (Jordan, Sep 2 2026: "everyone filtered by role but Kyle
+// should not have access to any money related info"). canSeeMoney now means
+// OWNER only — it used to mean admin-and-up, which is why Kyle could ask the
+// Hub for AR, a client's lifetime spend, or a job's invoice total.
+//
+// The gate lives HERE, at the tool boundary, not in the system prompt. A prompt
+// is a request the model can be argued out of; a filter is a fact. If the tool
+// never returns the figure, there is nothing for the model to leak, quote, or
+// reason its way back to — and this is the one surface where a leak is silent.
+//
+// Two strengths, because Kyle still has to run operations on this data:
+//   redactMoney(text) — keeps the sentence, removes the figure, so "chase the
+//     invoice on 12 Oak" survives while "$450" does not. Sentences whose
+//     SUBJECT is internal money (margin, payroll, revenue, AR) are dropped
+//     whole: redacting the number there would still say a margin exists and
+//     what it applies to.
+//   MONEY_SUBJECT / MONEY_CATEGORIES — whole knowledge items, SOPs and
+//     resources that are ABOUT money are never fetched for a money-blind
+//     viewer, however their individual sentences read.
+// ---------------------------------------------------------------------------
+
+// Sentence-level kill list: internal financials. Deliberately narrow — verbs
+// like "paid" or "quote" are everyday ops language ("they already paid, go
+// ahead and deliver") and dropping those sentences would gut Kyle's comms
+// search for no gain, since the FIGURE in them is redacted either way.
+const MONEY_HARD =
+  /\b(margins?|markups?|profit\w*|p&l|net income|gross (?:income|revenue|profit|margin)|revenues?|payroll|payouts?|pay ?rates?|hourly rate|day rate|salar(?:y|ies)|wages?|commissions?|cogs|overhead|cash ?flow|runway|burn rate|lifetime (?:spend|value)|accounts receivable|a\/r\b|outstanding balance|balance owed|take-?home|owner draw)\b/i;
+
+// Currency figures in every shape a person or a model writes them, including
+// bare thousands-formatted numbers (a "1,200" in this business is money) and
+// per-unit rates ("0.50 per photo", "299/video"). The k/m suffix is grouped WITH
+// its space so "$3,000 starting" doesn't lose the space and read "[amount
+// withheld]starting".
+const MONEY_FIGURE =
+  /[$€£]\s?\d[\d,]*(?:\.\d+)?(?:\s?[kKmM]\b)?|\b\d[\d,]*(?:\.\d+)?\s?(?:dollars|bucks|usd)\b|\b\d[\d,]*(?:\.\d+)?\s?(?:\/|per )\s?(?:photo|image|video|reel|shoot|hour|hr|month|mo|job|listing|edit)\b|\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b/gi;
+
+// The other half of the leak: numbers that are money only because of the words
+// around them — "we charge 500", "charge 'em 30% of the total", "a processing
+// fee of approximately 4%". A currency symbol is the easy case; a live probe of
+// the 910 sales transcripts found dozens of these with no symbol at all.
+// Applied ONLY inside a sentence that names money, and even then only to
+// percentages and numbers of two digits or more, so a field SOP's "charge 2
+// batteries" and "4 hours per month" survive intact. Times (1:30), decimals
+// already handled above, and years (2026) are excluded by the lookarounds.
+const MONEY_CONTEXT =
+  /\b(fees?|charge[ds]?|charging|price[ds]?|pricing|cost(?:s|ed)?|invoiced?|paid|pay(?:s|ment|ments)?|deposit|retainer|commissions?|discounts?|refunds?|quoted?|budget|markup|margins?|salar(?:y|ies)|wages?|payouts?|upcharge|surcharge|per (?:photo|image|video|reel|shoot|edit|listing))\b/i;
+const CONTEXT_NUM =
+  /\b\d+(?:\.\d+)?\s?%|(?<![:\d.])(?!(?:19|20)\d{2}\b)\d{2,}(?:[.,]\d+)*(?![:\d])/g;
+
+const WITHHELD = "[amount withheld]";
+
+// URLs and email addresses are masked out before redaction and put back after.
+// Without this, an order link's UUID ("…/orders/01a03491-a7a0-…") sitting in a
+// sentence that says "invoice" came back as "orders/[amount withheld]a[amount
+// withheld]…" — a link Kyle needs, destroyed to hide digits that were never money.
+const URLISH = /\bhttps?:\/\/\S+|\bwww\.\S+|\b[^\s@]+@[^\s@]+\.[^\s@]+/gi;
+const MASK = "\u0001"; // a control char that cannot occur in real copy
+
+/** Keep the meaning, lose the number. Empty string if nothing survives.
+ *  Exported so the guarantee is testable from a probe, and so any future
+ *  money-blind surface reuses this rule instead of writing a weaker one (the
+ *  creative-facing stripMoneySentences in src/lib/text.ts is the narrow cousin:
+ *  it drops whole sentences and does not catch context-only numbers). */
+export function redactMoney(text: string | null | undefined): string {
+  if (!text) return "";
+  const kept: string[] = [];
+  for (const sentence of text.split(/(?<=[.!?\n])\s+/)) {
+    if (MONEY_HARD.test(sentence)) continue; // subject is internal money: drop it whole
+    // Mask/restore per sentence so a dropped sentence can't misalign the queue.
+    const links: string[] = [];
+    const masked = sentence.replace(URLISH, (u) => (links.push(u), MASK));
+    const symbolled = masked.replace(MONEY_FIGURE, WITHHELD);
+    const redacted = MONEY_CONTEXT.test(symbolled) ? symbolled.replace(CONTEXT_NUM, WITHHELD) : symbolled;
+    let i = 0;
+    kept.push(redacted.split(MASK).reduce((acc, part, idx) => acc + (idx ? links[i++] ?? "" : "") + part, ""));
+  }
+  return kept
+    .join(" ")
+    // "$1,200-$1,500" collapses to one placeholder rather than a stutter.
+    .replace(/(?:\[amount withheld\][\s\-–—to]*){2,}/g, `${WITHHELD} `)
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+/** Per-viewer scrubber: identity for the owner, redactor for everyone else. */
+function scrubberFor(role: string): (t: string | null | undefined) => string {
+  return canSeeMoney(role) ? (t) => t ?? "" : redactMoney;
+}
+
+// Whole-item topic gate. An SOP called "Pricing & packages" or a knowledge item
+// filed under `financial` is money end to end — there is no useful ops residue
+// left after redaction, so it is never fetched. Mirrors the creative filter the
+// /resources page already applies (src/app/resources/page.tsx MONEY_RE).
+const MONEY_SUBJECT =
+  /\b(pricing|price list|prices?|rate card|fees?|fee schedule|invoic\w*|billing|payments?|payouts?|payroll|financials?|finance|p&l|profit\w*|margins?|revenues?|quickbooks|stripe|venmo|bookkeeping|accounts receivable|salar(?:y|ies)|commissions?|budget\w*|cost\w*|expenses?)\b/i;
+
+// KnowledgeItem.category values that exist only to hold money knowledge.
+const MONEY_CATEGORIES = ["pricing", "fee", "financial"];
+
+// One line appended to a scrubbed tool result so the model states the boundary
+// instead of filling the hole with a guess.
+const MONEY_BLIND_NOTICE =
+  "Figures removed for this viewer's access level. Do not estimate, infer, or reconstruct any amount, price, rate, margin, or balance; if asked for one, say it is not available at their access level.";
 
 // Resolve a range keyword / explicit dates into [startUtc, endUtc).
 function resolveRange(input: { range?: string; from?: string; to?: string }): { start: Date; end: Date; label: string } {
@@ -298,7 +399,7 @@ export async function execHubTool(
           deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
         },
       });
-      const money = canSeeMoney(ctx.role); // creatives see the job, never the dollars
+      const money = canSeeMoney(ctx.role); // everyone below OWNER sees the job, never the dollars
       return {
         count: rows.length,
         projects: rows.map((p) => ({
@@ -337,6 +438,11 @@ export async function execHubTool(
       });
       if (!p) return { error: "No project with that id." };
       const ev = parseEvidence(p.statusEvidence);
+      // Free text on a project (the client's revision ask, the last few thread
+      // messages) routinely carries amounts — "we agreed $150 off", "invoice
+      // says 1,200". Redact for a money-blind viewer; keep the ops meaning.
+      const scrub = scrubberFor(ctx.role);
+      const seesMoney = canSeeMoney(ctx.role);
       return {
         id: p.id,
         address: p.title,
@@ -349,14 +455,15 @@ export async function execHubTool(
         deliverables_ordered: deliverableLabels(p.deliverables),
         delivered_categories: ev?.present ?? [],
         missing: ev?.missing ?? [],
-        in_revision: p.revisionRequestedAt ? { since: etDate(p.revisionRequestedAt), note: p.revisionNote } : null,
+        in_revision: p.revisionRequestedAt ? { since: etDate(p.revisionRequestedAt), note: scrub(p.revisionNote) || null } : null,
         // Billing block (price, balance, payment status, invoice link) is
-        // admin/owner only — creatives get the project without the money.
-        billing: canSeeMoney(ctx.role)
+        // OWNER-only — everyone else gets the project without the money.
+        billing: seesMoney
           ? { total: p.price, balance_owed: p.paidMarkedAt || p.arRemovedAt ? 0 : dollars(p.balanceAmount), payment_status: p.paymentStatus, invoice_url: p.invoiceUrl }
           : undefined,
-        open_tasks: p.smartTasks.map((t) => ({ type: t.taskType, title: t.title, priority: t.priority, due: t.dueAt ? etDate(t.dueAt) : null })),
-        recent_messages: p.messages.map((m) => ({ from: m.authorName, at: etDate(m.createdAt), text: (m.body ?? "").slice(0, 280) })),
+        open_tasks: p.smartTasks.map((t) => ({ type: t.taskType, title: scrub(t.title) || t.taskType, priority: t.priority, due: t.dueAt ? etDate(t.dueAt) : null })),
+        recent_messages: p.messages.map((m) => ({ from: m.authorName, at: etDate(m.createdAt), text: scrub((m.body ?? "").slice(0, 280)) })),
+        redaction_notice: seesMoney ? undefined : MONEY_BLIND_NOTICE,
         aryeo_url: p.aryeoOrderId ? aryeoOrderUrl(p.aryeoOrderId) : null,
         hub_url: `/projects/${p.id}`,
       };
@@ -381,8 +488,12 @@ export async function execHubTool(
         },
       });
       if (!clients.length) return { error: `No client matching "${nm}".` };
-      const money = canSeeMoney(ctx.role); // spend is money: admin/owner only
+      const money = canSeeMoney(ctx.role); // client financials are OWNER-only
+      // Free-text client notes are where "she always asks for a discount, we
+      // hold her at $325" lives. Redact for a money-blind viewer.
+      const scrubC = scrubberFor(ctx.role);
       return {
+        redaction_notice: money ? undefined : MONEY_BLIND_NOTICE,
         matches: clients.map((c) => ({
           id: c.id,
           name: c.name,
@@ -394,9 +505,9 @@ export async function execHubTool(
           completed_orders: c.transactionCount,
           total_projects: c._count.projects,
           social_plan: c.socialClient ? (c.socialPlan ?? "yes") : null,
-          preferences: c.clientPreferences || null,
-          editing_notes: c.editingPreferences || null,
-          notes: c.generalNotes || null,
+          preferences: scrubC(c.clientPreferences) || null,
+          editing_notes: scrubC(c.editingPreferences) || null,
+          notes: scrubC(c.generalNotes) || null,
           recent_projects: c.projects.map((p) => ({ id: p.id, address: p.title, status: p.status, shoot: p.shootDate ? etDate(p.shootDate) : null })),
         })),
       };
@@ -445,12 +556,15 @@ export async function execHubTool(
           project: { select: { id: true, title: true } },
         },
       });
+      // Task titles carry amounts ("Invoice Jamie $450"). Keep the to-do, drop
+      // the figure — Kyle still has to do the chasing.
+      const scrubT = scrubberFor(ctx.role);
       return {
         scope,
         count: tasks.length,
         tasks: tasks.map((t) => ({
           type: t.taskType,
-          title: t.title,
+          title: scrubT(t.title) || t.taskType,
           priority: t.priority,
           due: t.dueAt ? etDate(t.dueAt) : null,
           client: t.client?.name ?? null,
@@ -461,9 +575,11 @@ export async function execHubTool(
     }
 
     case "get_billing": {
-      // Full accounts receivable is money data: admin + owner only, never creatives.
-      if ((ROLE_RANK[ctx.role] ?? ROLE_RANK.CREATIVE) < ROLE_RANK.ADMIN) {
-        return { error: "Billing and outstanding balances are available to admin and owner roles only." };
+      // Accounts receivable IS the money. OWNER only (Jordan, Sep 2 2026) — this
+      // used to be admin-and-up, which handed Kyle every client's balance and the
+      // company's total outstanding in one call.
+      if (!canSeeMoney(ctx.role)) {
+        return { error: "Billing, invoice totals and outstanding balances are owner-only. Say so plainly and do not estimate any figure." };
       }
       const { rows, totalOutstanding } = await getBillingRows();
       return {
@@ -503,11 +619,12 @@ export async function execHubTool(
           select: { startAt: true, project: { select: { title: true } }, assignedTo: { select: { name: true } } },
         }),
       ]);
+      const scrubD = scrubberFor(ctx.role); // completed-task titles can quote amounts
       return {
         date: etFullDate(start),
         shoots: shoots.map((s) => ({ address: s.project?.title ?? null, time: s.startAt ? etDateTime(s.startAt) : null, photographer: s.assignedTo?.name ?? null })),
         deliveries: delivered.map((d) => ({ address: d.title, client: d.client?.name ?? null })),
-        completed_tasks: completed.map((t) => ({ type: t.taskType, title: t.title, address: t.project?.title ?? null })),
+        completed_tasks: completed.map((t) => ({ type: t.taskType, title: scrubD(t.title) || t.taskType, address: t.project?.title ?? null })),
         counts: { shoots: shoots.length, deliveries: delivered.length, tasks_completed: completed.length },
       };
     }
@@ -516,7 +633,17 @@ export async function execHubTool(
       const q = String(input.query ?? "").toLowerCase();
       const terms = q.split(/\s+/).filter((w) => w.length > 2);
       if (!terms.length) return { sops: [], resources: [] };
-      const [sops, resources] = await Promise.all([prisma.sop.findMany(), prisma.resource.findMany()]);
+      const [sopsAll, resourcesAll] = await Promise.all([prisma.sop.findMany(), prisma.resource.findMany()]);
+      // The SOP shelf holds the pricing sheet, the invoicing SOP and the payroll
+      // runbook alongside the shoot and delivery ones. A money-blind viewer never
+      // sees the money ones at all — same filter /resources already applies to
+      // creatives — and the ones they do see come back with figures redacted.
+      const seesMoneyK = canSeeMoney(ctx.role);
+      const scrubK = scrubberFor(ctx.role);
+      const sops = seesMoneyK ? sopsAll : sopsAll.filter((s) => !MONEY_SUBJECT.test(`${s.title} ${s.category}`));
+      const resources = seesMoneyK
+        ? resourcesAll
+        : resourcesAll.filter((r) => !MONEY_SUBJECT.test(`${r.title} ${r.category} ${r.description ?? ""}`) && !/quickbooks|stripe|venmo/i.test(r.url));
       const score = (text: string) => terms.reduce((s, t) => s + (text.toLowerCase().includes(t) ? 1 : 0), 0);
       const sopHits = sops
         .map((s) => ({ s, score: score(`${s.title} ${s.summary ?? ""} ${s.content} ${s.category}`) }))
@@ -525,8 +652,9 @@ export async function execHubTool(
         .map((r) => ({ r, score: score(`${r.title} ${r.description ?? ""} ${r.category}`) }))
         .filter((x) => x.score > 0).sort((a, b) => b.score - a.score).slice(0, 4);
       return {
-        sops: sopHits.map((h) => ({ title: h.s.title, category: h.s.category, content: h.s.content.slice(0, 1200) })),
-        resources: resHits.map((h) => ({ title: h.r.title, url: h.r.url, category: h.r.category })),
+        sops: sopHits.map((h) => ({ title: scrubK(h.s.title) || h.s.category, category: h.s.category, content: scrubK(h.s.content.slice(0, 1200)) })),
+        resources: resHits.map((h) => ({ title: scrubK(h.r.title) || h.r.category, url: h.r.url, category: h.r.category })),
+        redaction_notice: seesMoneyK ? undefined : MONEY_BLIND_NOTICE,
       };
     }
 
@@ -539,7 +667,23 @@ export async function execHubTool(
       const allowed = allowedRolesFor(ctx.role);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const where: any = { archived: false, minRole: { in: allowed } };
-      if (category) where.category = category;
+      // SECOND gate, orthogonal to minRole: money blindness. The tier gate alone
+      // is not enough — a live count on Sep 2 2026 found 98 `pricing`, 11 `fee`
+      // and ~1,600 other items sitting at minRole ADMIN, i.e. Jordan's real rate
+      // card and fee logic were one question away for Kyle. Money-subject
+      // CATEGORIES are excluded from the query, money-subject TITLES are dropped
+      // after scoring, and every surviving body is redacted.
+      const seesMoneyB = canSeeMoney(ctx.role);
+      const scrubB = scrubberFor(ctx.role);
+      if (!seesMoneyB) where.category = { notIn: MONEY_CATEGORIES };
+      if (category) {
+        // Asking for the money shelf by name gets a clean refusal, not an empty
+        // result the model would try to explain away.
+        if (!seesMoneyB && MONEY_CATEGORIES.includes(category)) {
+          return { error: `The "${category}" knowledge is owner-only. Say so plainly and do not estimate any amount.`, viewer_role: ctx.role };
+        }
+        where.category = category;
+      }
       // Keyword prefilter in SQL so the KB scales past a few hundred rows (the
       // ingested training courses add thousands of transcript chunks). Fetch
       // TITLE/tag matches (few, high-signal) and BODY matches (capped) SEPARATELY
@@ -566,20 +710,30 @@ export async function execHubTool(
       const hits = items
         .map((it) => ({ it, s: terms.length ? score(it) : 1 }))
         .filter((x) => x.s > 0)
+        // A "Reel pricing" item filed under `strategy` slipped the category gate;
+        // its title gives it away, so drop it here before it is ever quoted.
+        .filter((x) => seesMoneyB || !MONEY_SUBJECT.test(x.it.title))
         .sort((a, b) => b.s - a.s || (b.it.confidence ?? 0) - (a.it.confidence ?? 0))
         .slice(0, limit);
       return {
         viewer_role: ctx.role,
         count: hits.length,
-        knowledge: hits.map((h) => ({
-          category: h.it.category,
-          title: h.it.title,
-          // Bound the returned text so a long lesson/chunk can't blow the Hub's
-          // context (most curated facts are well under this; only long training
-          // transcript chunks get clipped).
-          insight: h.it.body.length > 2600 ? h.it.body.slice(0, 2600) + "…" : h.it.body,
-          sensitivity: h.it.minRole,
-        })),
+        knowledge: hits
+          .map((h) => {
+            // Bound the returned text so a long lesson/chunk can't blow the Hub's
+            // context (most curated facts are well under this; only long training
+            // transcript chunks get clipped), THEN redact.
+            const raw = h.it.body.length > 2600 ? h.it.body.slice(0, 2600) + "…" : h.it.body;
+            // The TITLE carries figures too — these facts are titled like
+            // sentences ("Airbnb photography rate is $350 for 0-2500 sqft").
+            // Redact it on the same rule as the body, or the headline leaks
+            // exactly what the body no longer says.
+            return { category: h.it.category, title: scrubB(h.it.title), insight: scrubB(raw), sensitivity: h.it.minRole };
+          })
+          // A fact that was nothing but money reduces to nothing: don't hand the
+          // model an empty husk with a suggestive title still attached.
+          .filter((k) => k.insight.length > 0 && k.title.length > 0),
+        redaction_notice: seesMoneyB ? undefined : MONEY_BLIND_NOTICE,
       };
     }
 
@@ -617,15 +771,21 @@ export async function execHubTool(
         take: limit,
         select: { channel: true, direction: true, clientName: true, contactName: true, subject: true, body: true, occurredAt: true },
       });
+      // Real threads quote real amounts — "invoice is $1,200", "we did 299 last
+      // time", Slack DMs about what an editor gets paid. Redact per viewer: the
+      // conversation stays readable so Kyle can answer it, the numbers go.
+      const scrubM = scrubberFor(ctx.role);
+      const seesMoneyC = canSeeMoney(ctx.role);
       return {
         count: rows.length,
         messages: rows.map((r) => ({
           when: etDateTime(r.occurredAt),
           channel: r.channel,
           who: r.direction === "out" ? "Us" : r.contactName || r.clientName || "Client",
-          subject: r.subject || undefined,
-          text: r.body.slice(0, 600),
+          subject: (r.subject ? scrubM(r.subject) : "") || undefined,
+          text: scrubM(r.body.slice(0, 600)),
         })),
+        redaction_notice: seesMoneyC ? undefined : MONEY_BLIND_NOTICE,
       };
     }
 
@@ -652,10 +812,14 @@ export async function execHubTool(
         orderBy: { occurredAt: "desc" }, take: 14,
         select: { direction: true, body: true, occurredAt: true },
       });
+      // The transcript is what the drafter reads AND what comes back to the user
+      // as context. For a money-blind viewer it is redacted before it is used, so
+      // the draft cannot contain a figure the viewer was never allowed to see.
+      const scrubDraft = scrubberFor(ctx.role);
       const transcript = comms.reverse().map((m) => ({
         role: (m.direction === "out" ? "us" : "client") as "us" | "client",
-        text: m.body, at: m.occurredAt.toISOString(),
-      }));
+        text: scrubDraft(m.body), at: m.occurredAt.toISOString(),
+      })).filter((m) => m.text.length > 0);
       const { draftReplyWithContext } = await import("@/lib/integrations/ai");
       const draft = await draftReplyWithContext({
         channel,
@@ -760,10 +924,11 @@ export async function execHubTool(
       }
       const { replyQueue } = await import("@/lib/replyQueue");
       const rq = await replyQueue();
+      const scrubR = scrubberFor(ctx.role); // inbound texts quote invoice amounts
       return {
         waiting: rq.cards.slice(0, 12).map((c) => ({
           client: c.displayName,
-          theirMessage: c.lastInbound.slice(0, 200),
+          theirMessage: scrubR(c.lastInbound.slice(0, 200)),
           canTextBack: !!c.phone,
         })),
         count: rq.cards.length,

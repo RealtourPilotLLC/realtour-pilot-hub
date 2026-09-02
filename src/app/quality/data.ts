@@ -23,6 +23,9 @@ import {
 
 const streetOf = (title?: string | null) => (title || "Shoot").split(",")[0].trim() || "Shoot";
 
+// One decimal, and null stays null — an average of "no ratings yet" is not 0.0.
+const round1 = (n: number | null | undefined) => (n == null ? null : Math.round(n * 10) / 10);
+
 export type ClientFilter = "all" | "unhappy" | "rated" | "open";
 
 export type ClientFeedbackItem = {
@@ -32,7 +35,20 @@ export type ClientFeedbackItem = {
   sentiment: string | null; // POSITIVE | NEUTRAL | NEGATIVE | null
   category: string | null;
   source: string; // form | text | email
+  /** The readable transcript of the whole response — for a form row this is the
+      three answers composed into one block (see transcript() in
+      src/app/feedback/[id]/actions.ts). Always safe to render on its own. */
   body: string;
+  // --- The three questions, as their own fields ----------------------------
+  // Only rows from the public form carry these (`source: "form"`); a row the
+  // comms brain filed off an unhappy text has words in `body` and nulls here.
+  // photographerRating is the number that belongs to `photographerName` below —
+  // it is THE per-photographer client KPI. contentRating belongs to the work.
+  photographerRating: number | null;
+  photographerNote: string | null;
+  improveNote: string | null;
+  contentRating: number | null;
+  contentNote: string | null;
   authorName: string | null;
   resolved: boolean;
   projectId: string;
@@ -57,6 +73,15 @@ export type ClientFeedbackFeed = {
   last90: number;
   avgRating: number | null;
   ratingCount: number;
+  // The two per-question averages, kept apart from avgRating on purpose:
+  // avgRating is the OVERALL score (and, when a client skipped the overall
+  // stars, the lowest thing they did rate — see effectiveOverall in the form
+  // action), so it is deliberately the pessimistic number. These two are what
+  // the photographer and the work actually scored.
+  avgPhotographerRating: number | null;
+  photographerRatingCount: number;
+  avgContentRating: number | null;
+  contentRatingCount: number;
   openNegative: number; // NEGATIVE and not yet marked handled
   formResponses: number; // came from the public form (the delivery-text link)
   delivered90: number; // jobs delivered in the last 90d — the denominator
@@ -86,7 +111,19 @@ export async function getClientFeedbackFeed(filter: ClientFilter = "all"): Promi
           ? { resolved: false }
           : {};
 
-  const [rows, total, last90, ratingAgg, openNegative, formResponses, delivered90, unhappyCount, ratedCount, openCount] =
+  const [
+    rows,
+    total,
+    last90,
+    ratingAgg,
+    questionAgg,
+    openNegative,
+    formResponses,
+    delivered90,
+    unhappyCount,
+    ratedCount,
+    openCount,
+  ] =
     await Promise.all([
       prisma.feedback.findMany({
         where,
@@ -100,6 +137,11 @@ export async function getClientFeedbackFeed(filter: ClientFilter = "all"): Promi
           category: true,
           source: true,
           body: true,
+          photographerRating: true,
+          photographerNote: true,
+          improveNote: true,
+          contentRating: true,
+          contentNote: true,
           authorName: true,
           resolved: true,
           photographerId: true,
@@ -117,6 +159,13 @@ export async function getClientFeedbackFeed(filter: ClientFilter = "all"): Promi
       prisma.feedback.count(),
       prisma.feedback.count({ where: { createdAt: { gte: since } } }),
       prisma.feedback.aggregate({ where: { rating: { not: null } }, _avg: { rating: true }, _count: { rating: true } }),
+      // One pass for both per-question averages — _count is per FIELD, so a
+      // response that rated the photographer but skipped the content stars
+      // counts in one and not the other, which is the truth.
+      prisma.feedback.aggregate({
+        _avg: { photographerRating: true, contentRating: true },
+        _count: { photographerRating: true, contentRating: true },
+      }),
       prisma.feedback.count({ where: { sentiment: "NEGATIVE", resolved: false } }),
       prisma.feedback.count({ where: { source: "form" } }),
       prisma.project.count({ where: { deliveredAt: { gte: since } } }),
@@ -149,6 +198,11 @@ export async function getClientFeedbackFeed(filter: ClientFilter = "all"): Promi
         category: r.category,
         source: r.source,
         body: r.body,
+        photographerRating: r.photographerRating,
+        photographerNote: r.photographerNote,
+        improveNote: r.improveNote,
+        contentRating: r.contentRating,
+        contentNote: r.contentNote,
         authorName: r.authorName,
         resolved: r.resolved,
         projectId: r.projectId,
@@ -165,6 +219,10 @@ export async function getClientFeedbackFeed(filter: ClientFilter = "all"): Promi
     last90,
     avgRating: ratingAgg._avg.rating != null ? Math.round(ratingAgg._avg.rating * 10) / 10 : null,
     ratingCount: ratingAgg._count.rating,
+    avgPhotographerRating: round1(questionAgg._avg.photographerRating),
+    photographerRatingCount: questionAgg._count.photographerRating,
+    avgContentRating: round1(questionAgg._avg.contentRating),
+    contentRatingCount: questionAgg._count.contentRating,
     openNegative,
     formResponses,
     delivered90,
@@ -191,6 +249,12 @@ export type PhotographerClientWord = {
   rating: number | null;
   sentiment: string | null;
   body: string;
+  /** What the client scored THIS PERSON out of 5 (form responses only). */
+  photographerRating: number | null;
+  /** Their words about this person. */
+  photographerNote: string | null;
+  /** "What would you like to see done differently?" — the coaching line. */
+  improveNote: string | null;
   authorName: string | null;
   street: string;
   projectId: string;
@@ -247,8 +311,17 @@ export type PhotographerBlock = {
   awaitingReReview: number;
   openCoaching: number;
   totalNotes: number;
+  /** Average OVERALL score on their jobs — the long-standing number, which
+      includes rows with no per-question answers (an unhappy text, a response
+      from before the three-question form). */
   avgRating: number | null;
   ratingCount: number;
+  /** THE per-photographer client KPI: the average of what clients scored this
+      person on "How was your experience with your photographer?". Separate from
+      avgRating because that one also carries the client's view of the WORK —
+      an editor's dark video should not cost the photographer a star. */
+  avgPhotographerRating: number | null;
+  photographerRatingCount: number;
   notes: CaptureNote[];
   clientWords: PhotographerClientWord[];
   flags: FieldFlag[];
@@ -265,7 +338,7 @@ export type PhotographerBoard = {
 };
 
 export async function getPhotographerBoard(): Promise<PhotographerBoard> {
-  const [roster, notes, clientRows, flags, ratingRoll] = await Promise.all([
+  const [roster, notes, clientRows, flags, ratingRoll, photographerRoll] = await Promise.all([
     // The same roster the photographers' own hub scoreboard uses, so the two
     // screens can never disagree about who owes what.
     getFeedbackRoster(),
@@ -285,6 +358,7 @@ export async function getPhotographerBoard(): Promise<PhotographerBoard> {
       take: 200,
       select: {
         id: true, rating: true, sentiment: true, body: true, authorName: true,
+        photographerRating: true, photographerNote: true, improveNote: true,
         createdAt: true, projectId: true, photographerId: true,
         project: { select: { title: true } },
       },
@@ -319,6 +393,14 @@ export async function getPhotographerBoard(): Promise<PhotographerBoard> {
       _avg: { rating: true },
       _count: { rating: true },
     }),
+    // The KPI that belongs to the person: only the answer to "How was your
+    // experience with your photographer?", never the client's view of the work.
+    prisma.feedback.groupBy({
+      by: ["photographerId"],
+      where: { photographerId: { not: null }, photographerRating: { not: null } },
+      _avg: { photographerRating: true },
+      _count: { photographerRating: true },
+    }),
   ]);
 
   // Seed from the roster, then fold in anyone who only shows up in the other
@@ -329,7 +411,8 @@ export async function getPhotographerBoard(): Promise<PhotographerBoard> {
     if (!b) {
       b = {
         memberId, name, shoots90: 0, openFixes: 0, awaitingReReview: 0, openCoaching: 0,
-        totalNotes: 0, avgRating: null, ratingCount: 0, notes: [], clientWords: [], flags: [],
+        totalNotes: 0, avgRating: null, ratingCount: 0, avgPhotographerRating: null,
+        photographerRatingCount: 0, notes: [], clientWords: [], flags: [],
       };
       blocks.set(memberId, b);
     }
@@ -365,6 +448,9 @@ export async function getPhotographerBoard(): Promise<PhotographerBoard> {
       rating: f.rating,
       sentiment: f.sentiment,
       body: f.body,
+      photographerRating: f.photographerRating,
+      photographerNote: f.photographerNote,
+      improveNote: f.improveNote,
       authorName: f.authorName,
       street: streetOf(f.project?.title),
       projectId: f.projectId,
@@ -374,8 +460,14 @@ export async function getPhotographerBoard(): Promise<PhotographerBoard> {
   for (const g of ratingRoll) {
     if (!g.photographerId) continue;
     const b = seed(g.photographerId);
-    b.avgRating = g._avg.rating != null ? Math.round(g._avg.rating * 10) / 10 : null;
+    b.avgRating = round1(g._avg.rating);
     b.ratingCount = g._count.rating;
+  }
+  for (const g of photographerRoll) {
+    if (!g.photographerId) continue;
+    const b = seed(g.photographerId);
+    b.avgPhotographerRating = round1(g._avg.photographerRating);
+    b.photographerRatingCount = g._count.photographerRating;
   }
 
   // Any member id picked up from notes/feedback that the roster didn't name.

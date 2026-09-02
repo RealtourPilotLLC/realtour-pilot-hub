@@ -7,10 +7,7 @@ import {
   Clapperboard,
   SlidersHorizontal,
   LayoutDashboard,
-  Compass,
-  Sun,
   ListTodo,
-  KanbanSquare,
   CalendarDays,
   Camera,
   MessageCircle,
@@ -65,13 +62,23 @@ const SECTIONS: NavSection[] = [
   {
     title: "Operations",
     items: [
-      { label: "Dashboard", href: "/", icon: LayoutDashboard, key: "dashboard" },
-      // Kyle's guided operating day — his MAIN dashboard (ADMIN's login home in
-      // access.ts homeFor). It had access rules and a route but no nav item, so
-      // it was unreachable unless you typed the URL (Jordan, Sep 1).
-      { label: "Ops Day", href: "/ops", icon: Compass, key: "ops" },
-      // Owner-only (ownerOnly in PAGES) — his day plan and personal to-dos.
-      { label: "My Day", href: "/day", icon: Sun, key: "day" },
+      // ONE HOME PER ROLE (Jordan, Sep 2: "I want the ops day screen essentially
+      // combined with my dashboard"). "/" is now the merged morning screen —
+      // what needs you today, the Ops Day time blocks with their live contents,
+      // today's shoots, the owner's own list, then the money. Three nav items
+      // retired into it:
+      //   · Ops Day (/ops)          — the whole screen moved here; the route is
+      //                               a redirect stub so every #block link and
+      //                               ADMIN's homeFor("/ops") still land right.
+      //   · My Day (/day)           — the owner's to-dos + business money are
+      //                               the "Your list" and money sections here.
+      //   · Project Tracker (/pipeline) — the delivery board is the Production
+      //                               Pipeline block here.
+      // The /day and /pipeline ROUTES are untouched and still reachable by URL
+      // (and /projects/[id] still links back to the tracker) — nothing in this
+      // hub is deleted for being off the menu, it just stops competing to be
+      // the home screen.
+      { label: "Home", href: "/", icon: LayoutDashboard, key: "dashboard" },
       // Today + Daily Tasks + Task History merged into the one Tasks hub
       // (tabs: Today / Board / Done) — Jordan: "the toolbar has too many things".
       { label: "Tasks", href: "/tasks", icon: ListTodo, key: "tasks" },
@@ -85,7 +92,8 @@ const SECTIONS: NavSection[] = [
       // own results on /shoot/feedback), so no new permission to grant and a
       // per-user `review` override carries here too.
       { label: "Client & Team Feedback", href: "/quality", icon: MessageSquareHeart, key: "review" },
-      { label: "Project Tracker", href: "/pipeline", icon: KanbanSquare, key: "pipeline" },
+      // "Project Tracker" (/pipeline) retired from the nav — its delivery board
+      // is the Production Pipeline block on Home. Route + PageKey stay.
       // Schedule now carries the Map as its ?view=map tab (List | Map toggle in
       // the header), so the standalone "Map" item is gone — one appointment
       // window, two views that can't drift apart.

@@ -328,6 +328,26 @@ model Client {
   socialClient Boolean @default(false)
   socialPlan   String? // Starter | Accelerator | Pro
 
+  // ---------------------------------------------------------------------------
+  // Per-client notification switches (Jordan, Sep 2 2026: "I'd like to be able
+  // to manually adjust notification preferences for each client"). Settings →
+  // Automated texts is the GLOBAL master switch; these two are the per-client
+  // exceptions to it. Both must be true for a text to auto-send.
+  //
+  // Two real boolean columns rather than one JSON prefs blob, because the text
+  // sweeps decide in the QUERY (`client: { is: { autoDeliveryText: true } }`) —
+  // a JSON column can't be filtered by Prisma without raw SQL, and every future
+  // caller would have to remember to parse + default it. Default TRUE so all
+  // 349 existing clients keep exactly today's behaviour.
+  //
+  // OFF NEVER MEANS SILENCE — it means A HUMAN SENDS IT. The sweep skips the
+  // client and leaves the confirmation_text / delivery_text SmartTask OPEN, so
+  // the reminder is still sitting on /tasks with its pre-drafted message and a
+  // Send button. Nothing about the client's care is dropped; only the robot is.
+  // ---------------------------------------------------------------------------
+  autoConfirmationText Boolean @default(true) // shoot confirmation text, ~48h before the shoot
+  autoDeliveryText     Boolean @default(true) // the post-delivery "how did we do?" feedback ask
+
   // Aryeo customer-team membership. An agency team (e.g. "The Jamie Achberger
   // Group") groups the agent + their assistants/coordinators as separate
   // customer-users. We fold the assistants under the agent (`parentClientId`)
@@ -780,10 +800,34 @@ model Feedback {
   id             String   @id @default(cuid())
   project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   projectId      String
+  // The one overall score everything already reads (avg-rating tile, sentiment,
+  // the photographer scorecards). From the public form it is what the client
+  // tapped on "Overall", and when they skipped that row it is the rounded mean
+  // of the two per-question ratings below — a client who rates their
+  // photographer 1/5 and skips "Overall" must still trip the NEGATIVE path.
   rating         Int? // 1-5 overall
   sentiment      String? // POSITIVE | NEUTRAL | NEGATIVE
   category       String? // quality | communication | turnaround | other
+  // The human-readable transcript of the whole response — every surface in the
+  // hub renders this (the /quality row, the URGENT task, the bell), so the
+  // three answers below are also composed into it. The columns are the
+  // queryable copy; this is the copy a person reads.
   body           String
+  // --- The three questions the public form asks (Jordan, Sep 2 2026) --------
+  // "I want to know how their experience was with the assigned photographer.
+  // What they would like to see done differently, and ask about the quality of
+  // their content. Then I want to be able to view that data."
+  //
+  // One column per answer so each is scoreable on its own: photographerRating
+  // is the number that belongs to the person in `photographerId` (their KPI),
+  // contentRating is the number that belongs to the WORK. Every one of them is
+  // nullable on purpose — the form submits with a single answer filled in, and
+  // a half-answered response is worth more than a bounced one.
+  photographerRating Int? // 1-5 — experience with the photographer who shot it
+  photographerNote   String? // their words about that person
+  improveNote        String? // "what would you like to see done differently?"
+  contentRating      Int? // 1-5 — quality of the content we delivered
+  contentNote        String? // their words about the content
   authorName     String?
   source         String   @default("form") // form | text | email
   photographerId String? // who shot it, for creative scorecards

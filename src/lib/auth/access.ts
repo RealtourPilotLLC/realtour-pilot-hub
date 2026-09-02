@@ -81,20 +81,30 @@ const ALL = PAGES.map((p) => p.key);
 // granted to a person via a per-user override (except owner-only pages).
 const ROLE_PAGES: Record<Role, PageKey[]> = {
   OWNER: ALL,
-  // Finance ("sales") and People ("users") are admin-visible so Kyle reaches the
-  // Unpaid tab (old /billing) and the Team tab (old /team). The *owner-only*
-  // slices — Finance's Revenue + Payroll tabs, People's Logins tab — gate on the
-  // page itself, exactly as /sales, /payouts and /users did before the merge
-  // (admins only ever saw Unpaid + the Team directory). No "map"/"billing"/
-  // "payouts"/"team" here: those merged away and canAccess() maps their legacy
-  // grants onto schedule/sales/users below.
-  // "shoot" (all-shoots window — Schedule owns it) dropped Aug 25; shooting
-  // admins (James) carry a per-user grant. "catalog" stays openable (the
-  // Resources quick-link points there) — it just has no nav item of its own.
+  // ADMIN = "full ops access, no money" (Jordan, Sep 2 2026). That sentence is
+  // now the ROLE DEFAULT, not seven hand-set toggles per person: before this,
+  // Kyle carried {sales:false,trends:false,review,upload,catalog,settings,feedback}
+  // and James carried a different blob, so a new admin arrived with the WRONG
+  // access until someone remembered to edit them. Read the list below as the
+  // policy itself.
+  //   OPS, granted: the whole run-the-business surface — the day (ops/tasks/
+  //   dashboard), the work (review, upload, editing, pipeline, schedule, shoot),
+  //   the people-facing side (communications, clients, content, users), and the
+  //   reference shelf (catalog, resources, training, assistant, feedback,
+  //   settings). "shoot" is here because an ops admin runs the field day and
+  //   James shoots; /shoot deliberately carries no pricing (per-person pay lives
+  //   on /my-pay, which is NOT a default — James holds it as a real exception).
+  //   MONEY, denied: "sales" (the Finance hub — Revenue, Unpaid AR, Payroll) and
+  //   "trends" (revenue/spend leading indicators). Both stay owner-only by
+  //   default. This matches Ask the Hub, which is money-blind below OWNER too.
+  // Genuine exceptions still work: a per-user permissions blob overrides any key
+  // in either direction (see canAccess), e.g. James's {"mypay":true}.
+  // No "map"/"billing"/"payouts"/"team" here: those merged away and canAccess()
+  // maps their legacy grants onto schedule/sales/users below.
   ADMIN: [
-    "dashboard", "ops", "tasks", "review", "pipeline", "schedule",
-    "communications", "clients", "content", "users", "upload", "editing", "sales",
-    "catalog", "resources", "training", "assistant", "feedback", "trends", "settings",
+    "dashboard", "ops", "tasks", "review", "pipeline", "schedule", "shoot",
+    "communications", "clients", "content", "users", "upload", "editing",
+    "catalog", "resources", "training", "assistant", "feedback", "settings",
   ],
   // No "dashboard": the overview page carries ops counts + owner money strips
   // that aren't an editor's business — middleware bounces them to /editing.
@@ -171,4 +181,15 @@ export function contentTier(role: string): "OWNER" | "ADMIN" | "CREATIVE" {
   if (role === "OWNER") return "OWNER";
   if (role === "ADMIN") return "ADMIN";
   return "CREATIVE";
+}
+
+// The money rule, stated once for the whole hub. Jordan, Sep 2 2026: "everyone
+// filtered by role but Kyle should not have access to any money related info."
+// Only OWNER sees dollars — revenue, P&L, margins, pay rates, client lifetime
+// spend, balances, invoice amounts. Everyone else gets the operations, never the
+// figures. Accepts an app role ("ADMIN") or a content tier ("CREATIVE") because
+// pages think in roles and Ask the Hub thinks in tiers; "OWNER" means the same
+// thing in both vocabularies, so one comparison covers both.
+export function canSeeMoney(roleOrTier: string | null | undefined): boolean {
+  return roleOrTier === "OWNER";
 }

@@ -3,7 +3,9 @@ import { redirect } from "next/navigation";
 import { Camera, Car, Wallet, ChevronRight, SlidersHorizontal, Receipt, History, TrendingUp } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { PayFlag } from "@/components/mypay/PayFlag";
+import { QuarterScoreCard } from "@/components/mypay/QuarterScoreCard";
 import { prisma } from "@/lib/prisma";
+import { quarterFor, scoreQuarter } from "@/lib/kpi";
 import { usd } from "@/lib/money";
 import { payPeriodFor, shiftPeriod } from "@/lib/payroll";
 import { payHistoryFor } from "@/lib/payHistory";
@@ -104,13 +106,22 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
   const todayKey = etDayKey(new Date());
   const prevAwaitingPayout = prev.payoutKey >= todayKey;
 
-  const [history, member, flags] = await Promise.all([
+  // The quarterly bonus scorecard rides along with the payroll pass rather than
+  // after it — payroll is network-bound (OSRM), so a serial second wait would
+  // show up as a slower page for nothing. Prior quarter too: "track their
+  // progress" needs something to have progressed FROM. A failure in either
+  // scoring pass must never take the pay page down — pay is what they came for.
+  const thisQuarter = quarterFor();
+  const lastQuarter = quarterFor(undefined, 1);
+  const [history, member, flags, kpi, kpiPrev] = await Promise.all([
     payHistoryFor(memberId),
     prisma.teamMember.findUnique({ where: { id: memberId }, select: { name: true } }),
     prisma.smartTask.findMany({
       where: { dedupeKey: { startsWith: `payflag-${memberId}-` }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
       select: { dedupeKey: true },
     }),
+    scoreQuarter({ memberId, quarter: thisQuarter }).catch(() => null),
+    scoreQuarter({ memberId, quarter: lastQuarter }).catch(() => null),
   ]);
   const person = history.person;
 
@@ -168,6 +179,13 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
             </div>
           </div>
         </div>
+
+        {/* QUARTERLY BONUS SCORECARD — their KPI tracker, live through the
+            quarter (Jordan, Sep 2026: up to $1,000 a quarter, $4k a year).
+            Sits under the year total because it is the OTHER money question a
+            photographer has, and above the period detail because it is about
+            the quarter, not this fortnight. */}
+        {kpi && <QuarterScoreCard card={kpi} previous={kpiPrev} />}
 
         {/* Period switch: the payout awaiting its payday (when there is one),
             the accruing period, and a peek at next. */}

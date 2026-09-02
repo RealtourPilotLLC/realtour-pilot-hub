@@ -2,6 +2,7 @@ import { requirePageAccess } from "@/lib/auth/guards";
 import Link from "next/link";
 import {
   Clapperboard,
+  Compass,
   ExternalLink,
   Phone,
   Calendar,
@@ -23,6 +24,7 @@ import { Aryeo } from "@/lib/integrations/aryeo";
 import { getSecret } from "@/lib/integrations/connections";
 import { getCurrentUser } from "@/lib/auth/user";
 import { contentTier } from "@/lib/auth/access";
+import { GUIDES, guideForRole } from "./guide/content";
 
 // Photographers/editors get the CREATIVE cut of this page: no client pricing,
 // fee schedules, sales SOPs, or finance tools (QuickBooks/Stripe). Jordan's
@@ -95,6 +97,8 @@ export default async function ResourcesPage() {
 
   const resourceGroups = groupBy(resources, (r) => r.category);
   const sopGroups = groupBy(sops, (s) => s.category);
+  // The walkthrough card names the guide this person will actually land on.
+  const guideTitle = GUIDES[guideForRole(me?.role)].title;
 
   return (
     <div>
@@ -103,6 +107,27 @@ export default async function ResourcesPage() {
         subtitle={creative ? "How we shoot, edit, and deliver — the standards for every job" : "Links, tools, and standard operating procedures for the team"}
       />
       <div className="space-y-8 p-6">
+        {/* Pinned FIRST: this person's own walkthrough guide. Go-live onboarding
+            (Sep 2026) — everybody gets a runbook for their day plus a
+            screen-by-screen walkthrough, and the link lands them on THEIRS
+            (/resources/guide redirects creatives straight to their own; the
+            page itself gates who may open which). */}
+        <Link
+          href="/resources/guide"
+          className="flex items-center gap-3 rounded-2xl border border-brand/40 bg-brand/[0.04] p-4 transition hover:border-brand"
+        >
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-brand/15 text-brand">
+            <Compass className="size-5" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-semibold">{guideTitle} — how the hub works</span>
+            <span className="block text-xs text-muted">
+              Your day in order, then a walkthrough of every screen you use — start here
+            </span>
+          </span>
+          <ExternalLink className="size-4 shrink-0 text-muted-2" />
+        </Link>
+
         {/* Pinned: the Video Style Guide — every role sees this card (it's the
             one reference page the editors live by, and photographers/admin
             benefit from knowing the bar too). */}
