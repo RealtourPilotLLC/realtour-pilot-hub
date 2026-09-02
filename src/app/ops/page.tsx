@@ -1,15 +1,17 @@
 import Link from "next/link";
 import {
   AlarmClock, AlertTriangle, ArrowRight, Camera, CheckCircle2, ClipboardCheck, Clapperboard, Clock,
-  CloudSun, Coffee, ExternalLink, ListChecks, MessageSquare, Moon, Plane, RefreshCw, Route, Sunrise,
-  Wrench,
+  CloudSun, Coffee, ExternalLink, Hourglass, ListChecks, MessageSquare, Moon, Plane, PlayCircle,
+  RefreshCw, Route, Sunrise, Wrench,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { requirePageAccess } from "@/lib/auth/guards";
-import { buildOpsDay, type OpsDay, type OpsShoot, type OpsQcRow } from "@/lib/opsDay";
+import { buildOpsDay, OPEN_LOOPS_CAP, type OpsDay, type OpsShoot, type OpsQcRow } from "@/lib/opsDay";
 import { AutoRefresh } from "@/components/ops/AutoRefresh";
 import { QcComplete } from "@/components/ops/QcComplete";
+import { LoopActions } from "@/components/ops/LoopActions";
+import type { VideoCutState } from "@/lib/reviewCuts";
 import { cn } from "@/lib/utils";
 import { aryeoListingUrl } from "@/lib/aryeoUrl";
 
@@ -38,28 +40,47 @@ const fmtDay = (iso: string) =>
 // "Tue 9:00 AM" — a turnaround promise needs the hour, not just the day.
 const fmtDayTime = (iso: string) =>
   new Date(iso).toLocaleString("en-US", { timeZone: ET, weekday: "short", hour: "numeric", minute: "2-digit" });
+// "3h" / "2 days" — how long something has sat, in the unit a person would use.
+function ageText(iso: string, now: Date): string {
+  const h = Math.floor((now.getTime() - Date.parse(iso)) / 3_600_000);
+  if (h < 1) return "just now";
+  if (h < 24) return `${h}h`;
+  const d = Math.floor(h / 24);
+  return `${d} day${d === 1 ? "" : "s"}`;
+}
+function loopKind(kind: string): string {
+  return kind === "comms_followup" ? "Follow-up"
+    : kind === "internal_instruction" ? "Instruction"
+    : kind === "callback" ? "Callback"
+    : kind === "client_reply" ? "Reply owed"
+    : "Follow-up";
+}
 
-type BlockDef = { key: string; from: number; to: number; time: string; title: string; icon: LucideIcon; goal: string };
+type BlockDef = { key: string; from: number; to: number; time: string; title: string; short: string; icon: LucideIcon; goal: string };
 const BLOCKS: BlockDef[] = [
-  { key: "tower", from: 9 * 60, to: 9 * 60 + 30, time: "9:00 – 9:30", title: "Morning Control Tower", icon: Sunrise, goal: "Know what's happening today, what needs attention, and what could go wrong — before the day gets moving." },
-  { key: "qc-am", from: 9 * 60 + 30, to: 10 * 60 + 15, time: "9:30 – 10:15", title: "QC + Morning Deliveries", icon: ClipboardCheck, goal: "Catch mistakes before the client does; get finished work delivered early. Only what's due today lives here — the backlog has its own card." },
-  { key: "overdue", from: 10 * 60 + 15, to: 10 * 60 + 30, time: "10:15 – 10:30", title: "Overdue Check", icon: AlarmClock, goal: "Everything past its promised date gets a decision today: chase it, close it, or tell the client. Nothing sits late in silence." },
-  { key: "comms-1", from: 10 * 60 + 30, to: 11 * 60, time: "10:30 – 11:00", title: "Client Communication Sweep #1", icon: MessageSquare, goal: "Nobody waits wondering if we got their message." },
-  { key: "prep", from: 11 * 60, to: 11 * 60 + 30, time: "11:00 – 11:30", title: "Tomorrow + Upcoming Prep", icon: Route, goal: "Tomorrow is operationally ready before today ends — problems get solved the day before, not 30 minutes before the shoot." },
-  { key: "loops", from: 11 * 60 + 30, to: 12 * 60, time: "11:30 – 12:00", title: "Open Loops + Follow-Ups", icon: RefreshCw, goal: "Nothing stays stuck because someone forgot to follow up. Ask: what am I waiting on that could become a problem?" },
-  { key: "lunch", from: 12 * 60, to: 13 * 60, time: "12:00 – 1:00", title: "Lunch", icon: Coffee, goal: "Protected — unless there's a genuine operational or client emergency." },
-  { key: "pipeline", from: 13 * 60, to: 14 * 60, time: "1:00 – 2:00", title: "Production Pipeline Check", icon: ListChecks, goal: "Know the status of every active project — and exactly what's holding each one up — before the client asks." },
-  { key: "comms-2", from: 14 * 60, to: 14 * 60 + 30, time: "2:00 – 2:30", title: "Client Communication Sweep #2", icon: MessageSquare, goal: "Proactive, not reactive — if something changed, the client hears it from us first." },
-  { key: "systems", from: 14 * 60 + 30, to: 15 * 60 + 10, time: "2:30 – 3:10", title: "Systems + Admin Work", icon: Wrench, goal: "Keep the backend organized — without letting admin work interfere with active client needs." },
-  { key: "monthly", from: 15 * 60 + 10, to: 15 * 60 + 30, time: "3:10 – 3:30", title: "Monthly Content Check", icon: Clapperboard, goal: "Personal-branding retainers run on their own rhythm — a batch of videos on a 7–10 business-day window, delivered as a set. Never mixed into listing QC." },
+  { key: "tower", from: 9 * 60, to: 9 * 60 + 30, time: "9:00 – 9:30", title: "Morning Control Tower", short: "Tower", icon: Sunrise, goal: "Know what's happening today, what needs attention, and what could go wrong — before the day gets moving." },
+  { key: "qc-am", from: 9 * 60 + 30, to: 10 * 60 + 15, time: "9:30 – 10:15", title: "QC + Morning Deliveries", short: "QC", icon: ClipboardCheck, goal: "Catch mistakes before the client does; get finished work delivered early. Only what's due today lives here — the backlog has its own card." },
+  { key: "overdue", from: 10 * 60 + 15, to: 10 * 60 + 30, time: "10:15 – 10:30", title: "Overdue Check", short: "Overdue", icon: AlarmClock, goal: "Everything past its promised date gets a decision today: chase it, close it, or tell the client. Nothing sits late in silence." },
+  { key: "comms-1", from: 10 * 60 + 30, to: 11 * 60, time: "10:30 – 11:00", title: "Client Communication Sweep #1", short: "Comms 1", icon: MessageSquare, goal: "Nobody waits wondering if we got their message." },
+  { key: "prep", from: 11 * 60, to: 11 * 60 + 30, time: "11:00 – 11:30", title: "Tomorrow + Upcoming Prep", short: "Tomorrow", icon: Route, goal: "Tomorrow is operationally ready before today ends — problems get solved the day before, not 30 minutes before the shoot." },
+  { key: "loops", from: 11 * 60 + 30, to: 12 * 60, time: "11:30 – 12:00", title: "Open Loops + Follow-Ups", short: "Loops", icon: RefreshCw, goal: "Nothing stays stuck because someone forgot to follow up. Ask: what am I waiting on that could become a problem?" },
+  { key: "lunch", from: 12 * 60, to: 13 * 60, time: "12:00 – 1:00", title: "Lunch", short: "Lunch", icon: Coffee, goal: "Protected — unless there's a genuine operational or client emergency." },
+  // Video Review (Jordan, Sep 1): "a card for videos in revision and videos
+  // waiting on review." Every uploaded cut gets a verdict here; the pipeline
+  // check moves to 1:30 so nothing overlaps.
+  { key: "video-review", from: 13 * 60, to: 13 * 60 + 30, time: "1:00 – 1:30", title: "Video Review", short: "Video", icon: PlayCircle, goal: "Every cut the editors uploaded gets a verdict today — approve it, or send it back with notes. Cuts in revisions stay listed until the next version lands." },
+  { key: "pipeline", from: 13 * 60 + 30, to: 14 * 60, time: "1:30 – 2:00", title: "Production Pipeline Check", short: "Pipeline", icon: ListChecks, goal: "Know the status of every active project — and exactly what's holding each one up — before the client asks." },
+  { key: "comms-2", from: 14 * 60, to: 14 * 60 + 30, time: "2:00 – 2:30", title: "Client Communication Sweep #2", short: "Comms 2", icon: MessageSquare, goal: "Proactive, not reactive — if something changed, the client hears it from us first." },
+  { key: "systems", from: 14 * 60 + 30, to: 15 * 60 + 10, time: "2:30 – 3:10", title: "Systems + Admin Work", short: "Admin", icon: Wrench, goal: "Keep the backend organized — without letting admin work interfere with active client needs." },
+  { key: "monthly", from: 15 * 60 + 10, to: 15 * 60 + 30, time: "3:10 – 3:30", title: "Monthly Content Check", short: "Monthly", icon: Clapperboard, goal: "Personal-branding retainers run on their own rhythm — a batch of videos on a 7–10 business-day window, delivered as a set. Never mixed into listing QC." },
   // "Final QC + Deliveries" (4:15-5:00) was dropped Sep 1 — Jordan: it duplicated
   // the morning QC + Deliveries block and the Production Pipeline Check. Its
   // slot folds into Next-Day Finalization so the timeline has no dead gap
   // (currentKey falls back to the LAST block inside a gap, which would have
   // lit up Daily Closeout at 4:15).
-  { key: "final-prep", from: 15 * 60 + 30, to: 17 * 60, time: "3:30 – 5:00", title: "Next-Day Finalization", icon: Route, goal: "By the end of this block, tomorrow is locked in and ready to go." },
-  { key: "comms-3", from: 17 * 60, to: 17 * 60 + 30, time: "5:00 – 5:30", title: "Client Communication Sweep #3", icon: MessageSquare, goal: "Don't carry simple client questions into the next business day." },
-  { key: "closeout", from: 17 * 60 + 30, to: 18 * 60, time: "5:30 – 6:00", title: "Daily Closeout", icon: Moon, goal: "Review the whole operation before ending the day — escalate anything that needs Jordan." },
+  { key: "final-prep", from: 15 * 60 + 30, to: 17 * 60, time: "3:30 – 5:00", title: "Next-Day Finalization", short: "Finalize", icon: Route, goal: "By the end of this block, tomorrow is locked in and ready to go." },
+  { key: "comms-3", from: 17 * 60, to: 17 * 60 + 30, time: "5:00 – 5:30", title: "Client Communication Sweep #3", short: "Comms 3", icon: MessageSquare, goal: "Don't carry simple client questions into the next business day." },
+  { key: "closeout", from: 17 * 60 + 30, to: 18 * 60, time: "5:30 – 6:00", title: "Daily Closeout", short: "Closeout", icon: Moon, goal: "Review the whole operation before ending the day — escalate anything that needs Jordan." },
 ];
 
 export default async function OpsDayPage() {
@@ -83,10 +104,10 @@ export default async function OpsDayPage() {
         {/* Five numbers, one per card below — "QC open" used to fold the
             overdue backlog and the monthly batches into one figure, so the
             headline never matched any list Kyle could open (Jordan, Sep 1). */}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-          <Stat label="Shoots today" value={String(d.todayShoots.length)} warn={false} />
-          <Stat label="Unanswered clients" value={String(d.unanswered.count)} warn={d.unanswered.count > 0} />
-          <Stat label="QC due today" value={String(listingQc(d).filter((q) => q.bucket === "today").length)} warn={false} />
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          <Stat label="Shoots today" value={String(d.todayShoots.length)} warn={false} href="#tower" />
+          <Stat label="Unanswered clients" value={String(d.unanswered.count)} warn={d.unanswered.count > 0} href="#comms-1" />
+          <Stat label="QC due today" value={String(listingQc(d).filter((q) => q.bucket === "today").length)} warn={false} href="#qc-am" />
           {/* Listing jobs only — the number must equal the list it links to.
               Late monthly batches are counted on the Monthly Content card. */}
           <Stat
@@ -95,8 +116,35 @@ export default async function OpsDayPage() {
             warn={listingQc(d).some((q) => q.bucket === "overdue")}
             href="#overdue"
           />
-          <Stat label="Tomorrow gaps" value={String(d.closeout.tomorrowGaps)} warn={d.closeout.tomorrowGaps > 0} />
+          <Stat label="Videos to review" value={String(d.videoReview.waiting.length)} warn={d.videoReview.waiting.length > 0} href="#video-review" />
+          <Stat label="Tomorrow gaps" value={String(d.closeout.tomorrowGaps)} warn={d.closeout.tomorrowGaps > 0} href="#prep" />
         </div>
+
+        {/* Jump bar — the day at a glance, with what's waiting in each block.
+            (Not sticky: the page header already is, and two sticky bars fought
+            for the same 60px.) */}
+        <nav className="-mx-4 flex gap-1.5 overflow-x-auto px-4 py-1 sm:-mx-6 sm:flex-wrap sm:px-6 [&::-webkit-scrollbar]:hidden" aria-label="Blocks">
+          {BLOCKS.map((b) => {
+            const n = countFor(b.key, d);
+            const cur = b.key === currentKey;
+            return (
+              <a
+                key={b.key}
+                href={`#${b.key}`}
+                className={cn(
+                  "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
+                  cur ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground",
+                )}
+              >
+                <span className="tabular-nums opacity-70">{b.time.split(" – ")[0]}</span>
+                {b.short}
+                {n != null && n > 0 && (
+                  <span className={cn("rounded-full px-1.5 text-[10px] font-semibold tabular-nums", cur ? "bg-white/20" : "bg-surface-2 text-foreground")}>{n}{plusFor(b.key, n)}</span>
+                )}
+              </a>
+            );
+          })}
+        </nav>
 
         {BLOCKS.map((b) => (
           <Block key={b.key} def={b} current={b.key === currentKey} d={d} />
@@ -137,10 +185,34 @@ function Stat({ label, value, warn, href }: { label: string; value: string; warn
   );
 }
 
+// "120+" when a capped list is full — never present a truncated count as exact.
+const plusFor = (key: string, n: number) => (key === "loops" && n >= OPEN_LOOPS_CAP ? "+" : "");
+
+// What each block has waiting — the number on its header and jump-bar chip.
+// null = the block is guidance, not a list (lunch, admin, closeout).
+function countFor(key: string, d: OpsDay): number | null {
+  switch (key) {
+    case "tower": return d.todayShoots.length;
+    case "qc-am": return listingQc(d).filter((q) => q.bucket === "today").length;
+    case "overdue": return listingQc(d).filter((q) => q.bucket === "overdue").length;
+    case "comms-1": case "comms-2": case "comms-3": return d.unanswered.count;
+    case "prep": case "final-prep": return d.tomorrowShoots.length;
+    case "loops": return d.openLoops.length;
+    case "video-review": return d.videoReview.waiting.length + d.videoReview.revising.length;
+    case "pipeline": return d.pipeline.rows.length;
+    case "monthly": return d.qc.filter((q) => q.monthly).length;
+    default: return null;
+  }
+}
+
 function Block({ def, current, d }: { def: BlockDef; current: boolean; d: OpsDay }) {
   const Icon = def.icon;
+  const n = countFor(def.key, d);
+  // scroll-mt clears the sticky PageHeader (~104px with a one-line subtitle,
+  // ~124px when it wraps on a phone) so a jump never tucks the block's title
+  // under the header (review).
   return (
-    <section id={def.key} className={cn("panel-shadow rounded-2xl border bg-surface", current && "border-brand/50 ring-1 ring-brand/30")}>
+    <section id={def.key} className={cn("panel-shadow scroll-mt-32 rounded-2xl border bg-surface md:scroll-mt-28", current && "border-brand/50 ring-1 ring-brand/30")}>
       <div className="flex items-center gap-3 border-b border-border px-5 py-3">
         <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg", current ? "bg-brand text-white" : "bg-surface-2 text-muted")}>
           <Icon className="size-4" />
@@ -152,6 +224,17 @@ function Block({ def, current, d }: { def: BlockDef; current: boolean; d: OpsDay
           </div>
           <p className="text-xs text-muted-2"><Clock className="mr-1 inline size-3 -translate-y-px" />{def.time}</p>
         </div>
+        {n != null && (
+          <span
+            className={cn(
+              "shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold tabular-nums",
+              n > 0 ? "bg-surface-2 text-foreground" : "bg-success/10 text-success",
+            )}
+            title={n > 0 ? `${n} in this block` : "Nothing waiting in this block"}
+          >
+            {n > 0 ? `${n}${plusFor(def.key, n)}` : "clear"}
+          </span>
+        )}
       </div>
       <div className="px-5 py-3.5">
         <p className="text-[13px] italic leading-relaxed text-muted">{def.goal}</p>
@@ -198,9 +281,13 @@ function BlockBody({ blockKey, d }: { blockKey: string; d: OpsDay }) {
           ) : (
             <>
               {d.unanswered.preview.map((u, i) => (
-                <div key={i} className="rounded-xl border border-border px-3.5 py-2 text-sm">
-                  <span className="font-semibold">{u.name}</span>
-                  <span className="text-muted"> · waiting {u.hours}h · &ldquo;{u.snippet}&rdquo;</span>
+                <div key={i} className="flex items-center gap-3 rounded-xl border border-border px-3.5 py-2 text-sm">
+                  <p className="min-w-0 flex-1">
+                    <span className="font-semibold">{u.name}</span>
+                    <span className={cn("ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold", u.hours >= 24 ? "bg-danger/15 text-danger" : "bg-surface-2 text-muted")}>waiting {u.hours}h</span>
+                    <span className="block truncate text-[13px] text-muted">&ldquo;{u.snippet}&rdquo;</span>
+                  </p>
+                  <Link href="/communications?tab=replies" className="shrink-0 rounded-lg border border-border px-2 py-1 text-[11px] font-medium text-muted hover:bg-surface-2 hover:text-foreground">Reply</Link>
                 </div>
               ))}
               <Link href="/tasks?tab=comms" className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white hover:opacity-90">
@@ -222,20 +309,36 @@ function BlockBody({ blockKey, d }: { blockKey: string; d: OpsDay }) {
         </div>
       );
 
-    case "loops":
+    case "loops": {
+      const now = new Date(d.nowISO);
       return (
         <div className="space-y-2">
-          {d.openLoops.length === 0 && <p className="text-sm text-muted">No follow-ups waiting on someone else.</p>}
+          {d.openLoops.length === 0 && (
+            <p className="flex items-center gap-1.5 text-sm text-success"><CheckCircle2 className="size-4" /> No follow-ups waiting on someone else.</p>
+          )}
           {/* All rendered inline — the Other tab hides comm-type tasks, so an
-              overflow link there showed none of these rows (review). */}
+              overflow link there showed none of these rows (review). Each row
+              has View + Handled (Jordan, Sep 1) instead of being one big link. */}
           {d.openLoops.map((l) => (
-            <Link key={l.taskId} href={l.projectId ? `/projects/${l.projectId}` : "/tasks"} className="flex items-center gap-2 rounded-xl border border-border px-3.5 py-2 text-sm transition-colors hover:bg-surface-2/60">
-              <span className="min-w-0 flex-1 truncate">{l.title}</span>
+            <div key={l.taskId} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-border px-3.5 py-2">
+              <div className="min-w-0 flex-1 basis-56">
+                <p className="text-sm font-medium leading-snug">{l.title}</p>
+                <p className="mt-0.5 text-[11px] text-muted">
+                  {loopKind(l.kind)}
+                  {l.projectTitle ? ` · ${l.projectTitle}` : ""}
+                  {l.dueISO ? (l.overdue ? ` · ${ageText(l.dueISO, now)} overdue` : ` · due ${fmtDay(l.dueISO)}`) : ""}
+                </p>
+              </div>
               {l.overdue && <span className="shrink-0 rounded-full bg-danger/15 px-2 py-0.5 text-[10px] font-semibold text-danger">overdue</span>}
-            </Link>
+              <LoopActions taskId={l.taskId} viewHref={l.projectId ? `/projects/${l.projectId}` : `/tasks?tab=other&task=${l.taskId}`} />
+            </div>
           ))}
         </div>
       );
+    }
+
+    case "video-review":
+      return <VideoReviewCard d={d} />;
 
     case "lunch":
       return <p className="text-sm text-muted">Eat. The hub holds the fort.</p>;
@@ -567,30 +670,20 @@ function MonthlyCard({ d }: { d: OpsDay }) {
   );
 }
 
-function DropboxChip({ label, n, stale, at }: { label: string; n: number; stale?: boolean; at?: string }) {
-  // Stale = the last sweep couldn't read Dropbox (rate limit / blip) and these
-  // are the last good counts. Say so rather than presenting them as live.
-  const when = at ? ` (last read ${fmtDayTime(at)})` : "";
+// One labelled line of the QC status grid — the same shape as the shoot
+// card's Field, so both cards read the same way.
+function StatusLine({ label, tone, children }: { label: string; tone: "success" | "warning" | "brand" | "muted" | "danger"; children: React.ReactNode }) {
+  const toneClass =
+    tone === "success" ? "text-success" : tone === "warning" ? "text-warning" : tone === "brand" ? "text-brand" : tone === "danger" ? "text-danger" : "text-foreground/90";
   return (
-    <span
-      // Hover explains the count — "Raw 150 ✓" reads as a mystery otherwise
-      // (Jordan asked what these mean).
-      title={
-        (label === "Raw"
-          ? n > 0 ? `${n} raw files are in the job's Dropbox RAW folders` : "No files found in the job's Dropbox RAW folders yet"
-          : n > 0 ? `${n} finished files are in the job's Dropbox FINAL folders` : "No finished files in the job's Dropbox FINAL folders yet") +
-        (stale ? ` — Dropbox couldn't be read on the last check, showing the previous count${when}` : "")
-      }
-      className={cn(
-        "rounded-full px-1.5 py-0.5 text-[10px] font-semibold",
-        n > 0 ? "bg-success/15 text-success" : "bg-surface-2 text-muted-2",
-        stale && "opacity-70 ring-1 ring-warning/40",
-      )}
-    >
-      {label} {n > 0 ? `${n} ✓` : "—"}{stale ? " ·stale" : ""}
-    </span>
+    <p className="text-[13px] leading-relaxed">
+      <span className={cn("font-semibold", toneClass)}>{label}: </span>
+      <span className="text-foreground/80">{children}</span>
+    </p>
   );
 }
+
+const actionBtn = "inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-[11px] font-medium text-muted hover:bg-surface-2 hover:text-foreground";
 
 function QcRow({ q, now }: { q: OpsQcRow; now?: Date }) {
   const db = q.evidence.dropbox;
@@ -599,106 +692,123 @@ function QcRow({ q, now }: { q: OpsQcRow; now?: Date }) {
     now && q.dueISO && Date.parse(q.dueISO) < now.getTime()
       ? Math.floor((now.getTime() - Date.parse(q.dueISO)) / 86_400_000)
       : null;
+  const v = q.video;
+  const videoTone =
+    !v ? "muted" :
+    v.stage === "waiting_review" ? "brand" :
+    v.stage === "in_revisions" ? "warning" :
+    v.stage === "approved" || v.stage === "delivered" ? "success" :
+    "muted";
+  const videoHref = !v ? null : v.stage === "waiting_review" ? `/review/${q.projectId}` : `/edit/${q.projectId}`;
   return (
-    <div className="rounded-xl border border-border px-3.5 py-2.5">
-      <div className="flex items-center gap-2">
-        <Link href={`/projects/${q.projectId}`} className="min-w-0 flex-1 truncate text-sm font-semibold hover:text-brand">{q.title}</Link>
-        {lateDays != null && (
-          <span className="shrink-0 rounded-full bg-danger/15 px-2 py-0.5 text-[10px] font-semibold text-danger">
-            {lateDays === 0 ? "late today" : `${lateDays} day${lateDays === 1 ? "" : "s"} late`}
-          </span>
-        )}
-        {q.videosOwed != null && (
-          <span className="shrink-0 rounded-full bg-brand/15 px-2 py-0.5 text-[10px] font-semibold text-brand" title="Videos this monthly session owes — the photographer's count, else the plan quota">
-            {q.videosOwed} video{q.videosOwed === 1 ? "" : "s"}
-          </span>
-        )}
-        {/* "Ready now" is the number that matters: checks whose media is
-            already live. The rest of itemsLeft is the card waiting on media,
-            not work — showing only the total made a job with photos live and
-            six checks waiting look identical to one where nothing had landed. */}
-        <span
-          className={cn("shrink-0 text-xs", q.actionable > 0 ? "font-semibold text-warning" : "text-muted")}
-          title={
-            q.actionable > 0
-              ? `${q.actionable} of ${q.itemsLeft} unticked boxes can be done right now — that media is live on Aryeo. The rest tick themselves as each remaining category lands.`
-              : "Unticked boxes on this job's QC task. They tick themselves as each deliverable goes live on Aryeo — nothing to check until then."
-          }
-        >
-          {q.actionable > 0
-            ? `${q.actionable} ready now`
-            : `${q.itemsLeft} check${q.itemsLeft === 1 ? "" : "s"} left`}
-        </span>
-        {q.aryeoListingId && (
-          <a
-            href={aryeoListingUrl(q.aryeoListingId)}
-            target="_blank" rel="noopener noreferrer"
-            title="Open the listing in Aryeo"
-            className="shrink-0 rounded-lg border border-border p-1.5 text-muted hover:bg-surface-2 hover:text-foreground"
+    <div className="rounded-xl border border-border">
+      {/* Header: address + who, chips on the right (wrap under on a phone) */}
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-1.5 px-3.5 pt-2.5">
+        <div className="min-w-0 flex-1 basis-52">
+          <Link href={`/projects/${q.projectId}`} className="text-sm font-semibold leading-snug hover:text-brand">{q.title}</Link>
+          <p className="mt-0.5 text-[12px] text-muted">
+            {q.clientName}
+            {q.shootISO ? ` · shot ${fmtDay(q.shootISO)}` : ""}
+            {q.photographer ? ` · ${q.photographer}` : ""}
+          </p>
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+          {lateDays != null && (
+            <span className="rounded-full bg-danger/15 px-2 py-0.5 text-[10px] font-semibold text-danger">
+              {lateDays === 0 ? "late today" : `${lateDays} day${lateDays === 1 ? "" : "s"} late`}
+            </span>
+          )}
+          {q.videosOwed != null && (
+            <span className="rounded-full bg-brand/15 px-2 py-0.5 text-[10px] font-semibold text-brand" title="Videos this monthly session owes — the photographer's count, else the plan quota">
+              {q.videosOwed} video{q.videosOwed === 1 ? "" : "s"}
+            </span>
+          )}
+          {/* "Ready now" is the number that matters: checks whose media is
+              already live. The rest of itemsLeft is the card waiting on media,
+              not work — showing only the total made a job with photos live and
+              six checks waiting look identical to one where nothing had landed. */}
+          <span
+            className={cn(
+              "rounded-full px-2 py-0.5 text-[10px] font-semibold",
+              q.actionable > 0 ? "bg-warning/15 text-warning" : "bg-surface-2 text-muted",
+            )}
+            title={
+              q.actionable > 0
+                ? `${q.actionable} of ${q.itemsLeft} unticked boxes can be done right now — that media is live on Aryeo. The rest tick themselves as each remaining category lands.`
+                : "Unticked boxes on this job's QC task. They tick themselves as each deliverable goes live on Aryeo — nothing to check until then."
+            }
           >
-            <ExternalLink className="size-3.5" />
+            {q.actionable > 0
+              ? `${q.actionable} ready now`
+              : `${q.itemsLeft} check${q.itemsLeft === 1 ? "" : "s"} left`}
+          </span>
+        </div>
+      </div>
+
+      {/* Status grid — what's live, what's owed, where the video is, what
+          Dropbox holds. Labelled lines instead of two run-on sentences. */}
+      <div className="mt-2 grid gap-x-6 gap-y-0.5 px-3.5 sm:grid-cols-2">
+        <StatusLine label="Ordered" tone="muted">{q.services.join(", ") || "—"}</StatusLine>
+        {q.evidence.present.length > 0 ? (
+          <StatusLine label="Live on Aryeo" tone="success">
+            {q.evidence.present.join(", ")}
+            {q.actionable > 0 && <> — <span className="font-semibold text-warning">{q.actionable} check{q.actionable === 1 ? "" : "s"} ready for you</span></>}
+          </StatusLine>
+        ) : (
+          <StatusLine label="Live on Aryeo" tone="muted">nothing yet</StatusLine>
+        )}
+        {/* WHY it's still open, in words — "missing: Floor plan" alone didn't
+            say whether we're waiting on the editor, on Aryeo, or on nothing at
+            all (Jordan, Sep 1: 195 Woodhill's floor plan was removed). */}
+        {q.evidence.missing.length > 0 ? (
+          <StatusLine label="Still owed" tone="warning">
+            {q.evidence.missing.join(", ")}
+            {q.nextDueISO ? ` — ${q.nextDueCategories.join(" + ").toLowerCase()} due ${fmtDayTime(q.nextDueISO)}` : ""}
+          </StatusLine>
+        ) : q.itemsLeft > 0 ? (
+          <StatusLine label="Still owed" tone="muted">nothing — everything ordered is live, finish the checks</StatusLine>
+        ) : (
+          <StatusLine label="Status" tone="success">Everything is live and checked — safe to close.</StatusLine>
+        )}
+        {/* Video status for shoots that have one (Jordan, Sep 1). */}
+        {v && (
+          <StatusLine label="Video" tone={videoTone}>
+            {v.detail}
+            {videoHref && (v.stage === "waiting_review" || v.stage === "in_revisions") && (
+              <> · <Link href={videoHref} className="font-medium text-brand hover:underline">{v.stage === "waiting_review" ? "review it" : "open edit"}</Link></>
+            )}
+          </StatusLine>
+        )}
+        <StatusLine label="Dropbox" tone="muted">
+          {db ? (
+            <>
+              Raw {db.rawPhotos + db.rawVideo} · Final {db.finalPhotos + db.finalVideo}
+              {db.stale && <span className="text-muted-2"> (last read {db.at ? fmtDay(db.at) : "earlier"})</span>}
+            </>
+          ) : (
+            // Not consulted ≠ empty. Hiding the line read as "no files".
+            <span title="The last status check didn't read Dropbox for this job (Aryeo already accounted for everything ordered, or the read failed with nothing to carry forward).">not read this pass</span>
+          )}
+        </StatusLine>
+      </div>
+
+      {/* Actions — one row, same buttons on every card */}
+      <div className="mt-2.5 flex flex-wrap items-center gap-2 border-t border-border/60 px-3.5 py-2">
+        <QcComplete taskId={q.taskId} waitingOn={q.evidence.missing} />
+        {q.aryeoListingId && (
+          <a href={aryeoListingUrl(q.aryeoListingId)} target="_blank" rel="noopener noreferrer" title="Open the listing in Aryeo" className={actionBtn}>
+            <ExternalLink className="size-3" /> Aryeo
           </a>
         )}
-      </div>
-      <p className="mt-0.5 text-[13px] text-muted">
-        {q.clientName}
-        {q.shootISO ? ` · shot ${fmtDay(q.shootISO)}` : ""}
-        {q.photographer ? ` · ${q.photographer}` : ""}
-      </p>
-      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-        {q.services.slice(0, 5).map((s) => (
-          <span key={s} className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted">{s}</span>
-        ))}
-        {db ? (
-          <>
-            <span className="mx-0.5 text-muted-2">·</span>
-            <DropboxChip label="Raw" n={db.rawPhotos + db.rawVideo} stale={db.stale} at={db.at} />
-            <DropboxChip label="Final" n={db.finalPhotos + db.finalVideo} stale={db.stale} at={db.at} />
-          </>
-        ) : (
-          // Not consulted ≠ empty. Hiding both chips read as "no files".
-          <span className="rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted-2" title="The last status check didn't read Dropbox for this job (Aryeo already accounted for everything ordered, or the read failed with nothing to carry forward).">
-            Dropbox: not read
-          </span>
+        <Link href={`/projects/${q.projectId}`} className={actionBtn}>Project</Link>
+        {v?.stage === "waiting_review" && (
+          <Link href={`/review/${q.projectId}`} className={cn(actionBtn, "border-brand/40 text-brand hover:text-brand")}>
+            <PlayCircle className="size-3" /> Review video
+          </Link>
         )}
-      </div>
-      {/* The work that's available NOW, stated first. A part-delivered job used
-          to say only "Waiting on: Video", which read as "nothing to do here"
-          even though its photos were live with six checks sitting unticked —
-          that's the morning QC Jordan expected to see and didn't. */}
-      {q.actionable > 0 && q.evidence.present.length > 0 && (
-        <p className="mt-1.5 text-[13px]">
-          <span className="font-semibold text-brand">Ready to check now:</span>{" "}
-          <span className="text-foreground/85">
-            {q.evidence.present.join(", ")} {q.evidence.present.length === 1 ? "is" : "are"} live on Aryeo —{" "}
-            {q.actionable} check{q.actionable === 1 ? "" : "s"} waiting on you.
-          </span>
-        </p>
-      )}
-      {/* WHY it's still open, in words — "missing: Floor plan" alone didn't say
-          whether we're waiting on the editor, on Aryeo, or on nothing at all
-          (Jordan, Sep 1: 195 Woodhill's floor plan was removed from the order). */}
-      <p className="mt-1.5 text-[13px]">
-        {q.evidence.missing.length > 0 ? (
-          <>
-            <span className="font-semibold text-warning">Waiting on:</span>{" "}
-            <span className="text-foreground/85">
-              {q.evidence.missing.join(", ")} — not live on Aryeo yet
-              {q.nextDueISO ? `, ${q.nextDueCategories.join(" + ").toLowerCase()} due ${fmtDayTime(q.nextDueISO)}` : ""}.
-              {" "}If it was removed from the order or already handled, mark this complete.
-            </span>
-          </>
-        ) : q.itemsLeft > 0 ? (
-          <>
-            <span className="font-semibold text-muted">Waiting on:</span>{" "}
-            <span className="text-foreground/85">your QC checks — everything ordered is live on Aryeo.</span>
-          </>
-        ) : (
-          <span className="text-success">Everything is live and checked — safe to close.</span>
+        {q.evidence.missing.length > 0 && (
+          <span className="ml-auto text-[11px] text-muted-2">Removed from the order or handled elsewhere? Mark complete.</span>
         )}
-      </p>
-      <div className="mt-1.5 flex flex-wrap items-center gap-2">
-        <QcComplete taskId={q.taskId} waitingOn={q.evidence.missing} />
       </div>
       <ShootNotes q={q} />
     </div>
@@ -718,7 +828,7 @@ function ShootNotes({ q }: { q: OpsQcRow }) {
     b.culled || b.videosFilmed != null;
   if (!has) return null;
   return (
-    <div className="mt-2 rounded-lg bg-surface-2/60 px-3 py-2">
+    <div className="mx-3.5 mb-3 rounded-lg bg-surface-2/60 px-3 py-2">
       <h4 className="text-[10px] font-bold uppercase tracking-widest text-muted-2">From the shoot</h4>
       <div className="mt-1 space-y-1 text-[13px]">
         {b.unsubmitted && (
@@ -767,5 +877,101 @@ function Pill({ warn, label, href }: { warn: boolean; label: string; href: strin
     >
       {label}
     </Link>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Video Review — every uploaded cut waiting on a verdict, and every cut that
+// went back to an editor (Jordan, Sep 1). Rows are per CUT, not per job: a
+// monthly package with four videos shows four rows, each with its own button.
+// ---------------------------------------------------------------------------
+
+function VideoReviewCard({ d }: { d: OpsDay }) {
+  const now = new Date(d.nowISO);
+  const { waiting, revising } = d.videoReview;
+  return (
+    <div className="space-y-4">
+      <VideoGroup
+        icon={PlayCircle}
+        title="Waiting on your review"
+        tone="brand"
+        cuts={waiting}
+        now={now}
+        empty="Nothing waiting — every uploaded cut has a verdict."
+        action="Review"
+        hrefFor={(c) => `/review/${c.projectId}?cut=${c.submissionId}`}
+      />
+      <VideoGroup
+        icon={Hourglass}
+        title="In revisions"
+        tone="warning"
+        cuts={revising}
+        now={now}
+        empty="No cuts are back with an editor."
+        action="Open edit"
+        hrefFor={(c) => `/edit/${c.projectId}?cut=${c.submissionId}`}
+      />
+    </div>
+  );
+}
+
+function VideoGroup({ icon: Icon, title, tone, cuts, now, empty, action, hrefFor }: {
+  icon: LucideIcon;
+  title: string;
+  tone: "brand" | "warning";
+  cuts: VideoCutState[];
+  now: Date;
+  empty: string;
+  action: string;
+  hrefFor: (c: VideoCutState) => string;
+}) {
+  const toneText = tone === "brand" ? "text-brand" : "text-warning";
+  const toneChip = tone === "brand" ? "bg-brand/15 text-brand" : "bg-warning/15 text-warning";
+  return (
+    <div>
+      <h3 className={cn("flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest", toneText)}>
+        <Icon className="size-3.5" /> {title}
+        <span className={cn("rounded-full px-1.5 text-[10px] tabular-nums", toneChip)}>{cuts.length}</span>
+      </h3>
+      {cuts.length === 0 ? (
+        <p className="mt-1.5 flex items-center gap-1.5 text-sm text-success"><CheckCircle2 className="size-4" /> {empty}</p>
+      ) : (
+        <div className="mt-2 space-y-2">
+          {cuts.map((c) => {
+            const age = ageText(c.sinceISO, now);
+            const stale = now.getTime() - Date.parse(c.sinceISO) > 48 * 3_600_000;
+            return (
+              <div key={c.submissionId} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-border px-3.5 py-2">
+                <div className="min-w-0 flex-1 basis-56">
+                  <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-sm leading-snug">
+                    <Link href={`/projects/${c.projectId}`} className="font-semibold hover:text-brand">{c.street}</Link>
+                    <span className="text-muted">· {c.cutLabel}</span>
+                    <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">v{c.round}</span>
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-muted">
+                    {c.clientName}
+                    {c.submittedByName?.startsWith("Auto") ? " · found in the Final folder" : c.submittedByName || c.editorKey ? ` · ${c.submittedByName ?? c.editorKey}` : ""}
+                    {" · "}
+                    <span className={cn(stale && "font-semibold text-danger")}>
+                      {c.status === "PENDING" ? `waiting ${age}` : age === "just now" ? "sent back just now" : `sent back ${age} ago`}
+                    </span>
+                    {c.status === "CHANGES_REQUESTED" && c.openNotes > 0 && ` · ${c.openNotes} note${c.openNotes === 1 ? "" : "s"} to fix`}
+                  </p>
+                </div>
+                <Link
+                  href={hrefFor(c)}
+                  className={cn(
+                    "inline-flex shrink-0 items-center gap-1 rounded-lg border px-2.5 py-1 text-[11px] font-semibold",
+                    tone === "brand" ? "border-brand/40 bg-brand/10 text-brand hover:bg-brand/20" : "border-border text-muted hover:bg-surface-2 hover:text-foreground",
+                  )}
+                >
+                  {action} <ArrowRight className="size-3" />
+                </Link>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }

@@ -670,3 +670,179 @@ export async function pruneReviewUploads(keepDays: number): Promise<{ pruned: nu
   }
   return { pruned, failed };
 }
+// ===========================================================================
+// VIDEO REVIEW STATE — one read for every surface that answers "where is
+// this job's video?" (Ops Day, the Dashboard, the QC card). Jordan (Sep 1):
+// "a card for videos in revision and videos waiting on review; the same on my
+// dashboard; and in morning QC, the video status for shoots that have video."
+// ===========================================================================
+
+export type VideoCutState = {
+  submissionId: string;
+  projectId: string;
+  street: string;
+  clientName: string;
+  /** "Premium Reel" / "Video 2 of 4" / the file name for legacy rows */
+  cutLabel: string;
+  round: number;
+  status: "PENDING" | "CHANGES_REQUESTED" | "APPROVED";
+  /** when this state began (uploaded / bounced / approved) */
+  sinceISO: string;
+  editorKey: string | null;
+  submittedByName: string | null;
+  /** open EDITOR-lane notes on the cut (what the editor still has to fix) */
+  openNotes: number;
+  projectStatus: string;
+};
+
+export type ProjectVideoState = {
+  projectId: string;
+  /** owed cuts on this job (0 = no video ordered) */
+  owed: number;
+  approved: number;
+  waiting: number;   // cuts awaiting a verdict
+  revising: number;  // cuts bounced back to the editor
+  uploaded: number;  // distinct cuts with any round
+  /** one-word stage for a status line */
+  stage: "none" | "not_started" | "editing" | "waiting_review" | "in_revisions" | "approved" | "delivered";
+  /** short human line, e.g. "v2 waiting on review · 1 of 4 cuts done" */
+  detail: string;
+  cuts: VideoCutState[];
+};
+
+const pureSlots = (p: { packageName: string | null; videosFilmed: number | null; deliverables: { id: string; type: string; label: string | null; quantity: number | null }[] }, monthly: boolean, quota: number) => {
+  const vids = p.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  const out: CutSlot[] = [];
+  for (const [i, d] of vids.entries()) {
+    let count = Math.max(1, d.quantity ?? 1);
+    if (monthly && i === 0) count = Math.max(count, p.videosFilmed ?? quota);
+    const base = (d.label ?? d.type).trim();
+    for (let slot = 1; slot <= count; slot++) out.push({ deliverableId: d.id, deliverableLabel: base, slot, count, label: count > 1 ? `${base} — Video ${slot} of ${count}` : base });
+  }
+  return out;
+};
+
+// "john" → "John", "tm:abc" stays as-is (a name lookup isn't worth a query here).
+const prettyKey = (k: string) => (/^[a-z]+$/.test(k) ? k[0].toUpperCase() + k.slice(1) : k);
+
+/** Batched: the video state of many projects in two queries. */
+export async function videoStatesFor(projectIds: string[]): Promise<Map<string, ProjectVideoState>> {
+  const out = new Map<string, ProjectVideoState>();
+  if (projectIds.length === 0) return out;
+  const { isMonthlyContentJob, monthlyVideoQuota } = await import("@/lib/pipeline");
+  const [projects, subs, editTasks, notes] = await Promise.all([
+    prisma.project.findMany({
+      where: { id: { in: projectIds } },
+      select: {
+        id: true, title: true, status: true, packageName: true, videosFilmed: true, statusEvidence: true,
+        client: { select: { name: true } },
+        // Same order as cutSlots() — the monthly batch count lands on the FIRST
+        // video row, so both slot builders must see the rows the same way.
+        deliverables: { where: { removedFromOrderAt: null }, orderBy: { createdAt: "asc" }, select: { id: true, type: true, label: true, quantity: true } },
+      },
+    }),
+    prisma.reviewSubmission.findMany({
+      where: { projectId: { in: projectIds }, status: { in: ["PENDING", "CHANGES_REQUESTED", "APPROVED"] } },
+      orderBy: { round: "asc" },
+      select: { id: true, projectId: true, deliverableId: true, slot: true, assetPath: true, assetUrl: true, fileName: true, round: true, status: true, createdAt: true, decidedAt: true, submittedByKey: true, submittedByName: true },
+    }),
+    prisma.smartTask.findMany({
+      where: { projectId: { in: projectIds }, taskType: "edit_video", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      select: { projectId: true, assignedKey: true },
+    }),
+    prisma.mediaNote.groupBy({
+      by: ["assetUrl"],
+      where: { projectId: { in: projectIds }, parentId: null, lane: "EDITOR", status: "OPEN", NOT: { authorKey: { startsWith: "editor:" } } },
+      _count: true,
+    }),
+  ]);
+  const notesByAsset = new Map(notes.map((n) => [n.assetUrl, n._count]));
+  const editByProject = new Map(editTasks.map((t) => [t.projectId, t.assignedKey]));
+  const subsByProject = new Map<string, typeof subs>();
+  for (const s of subs) {
+    const arr = subsByProject.get(s.projectId) ?? [];
+    arr.push(s);
+    subsByProject.set(s.projectId, arr);
+  }
+  for (const p of projects) {
+    const monthly = isMonthlyContentJob(p.deliverables, p.packageName);
+    const quota = monthlyVideoQuota([p.packageName, ...p.deliverables.map((d) => d.label)]);
+    const slots = pureSlots(p, monthly, quota);
+    const rows = subsByProject.get(p.id) ?? [];
+    // latest round per cut
+    const latest = new Map<string, (typeof rows)[number]>();
+    for (const r of rows) {
+      const k = cutKeyOf(r);
+      const cur = latest.get(k);
+      if (!cur || r.round > cur.round) latest.set(k, r);
+    }
+    const street = (p.title || "Project").split(",")[0].trim();
+    const cuts: VideoCutState[] = [...latest.values()].map((r) => {
+      const slot = slots.find((s) => s.deliverableId === r.deliverableId && s.slot === r.slot);
+      return {
+        submissionId: r.id,
+        projectId: p.id,
+        street,
+        clientName: p.client?.name ?? "",
+        cutLabel: slot?.label ?? r.fileName ?? "Video",
+        round: r.round,
+        status: r.status as VideoCutState["status"],
+        sinceISO: (r.status === "PENDING" ? r.createdAt : (r.decidedAt ?? r.createdAt)).toISOString(),
+        editorKey: r.submittedByKey ?? editByProject.get(p.id) ?? null,
+        submittedByName: r.submittedByName,
+        openNotes: (r.assetUrl ? notesByAsset.get(r.assetUrl) : 0) ?? 0,
+        projectStatus: p.status,
+      };
+    });
+    const approved = cuts.filter((c) => c.status === "APPROVED").length;
+    const waiting = cuts.filter((c) => c.status === "PENDING").length;
+    const revising = cuts.filter((c) => c.status === "CHANGES_REQUESTED").length;
+    const owed = slots.length;
+    let videoLive = false;
+    try { videoLive = ((JSON.parse(p.statusEvidence ?? "{}") as { present?: string[] }).present ?? []).includes("Video"); } catch { /* none */ }
+    let stage: ProjectVideoState["stage"] = "none";
+    if (owed > 0) {
+      if (p.status === "DELIVERED" && videoLive) stage = "delivered";
+      else if (revising > 0) stage = "in_revisions";
+      else if (waiting > 0) stage = "waiting_review";
+      // Most jobs never pass through the Review Room (folder discovery is off)
+      // — a video already live on Aryeo is done, whatever the room knows
+      // (review: 1244 West Chester Pike read "Not started" under "Live on
+      // Aryeo: Video").
+      else if (videoLive) stage = "delivered";
+      else if (owed > 0 && approved >= owed) stage = "approved";
+      else if (cuts.length > 0 || editByProject.has(p.id)) stage = "editing";
+      else stage = "not_started";
+    }
+    const done = owed > 1 ? ` · ${approved} of ${owed} cuts done` : "";
+    const ver = (c: VideoCutState) => (c.round > 1 ? `v${c.round} ` : "");
+    const first = (st: VideoCutState["status"]) => cuts.find((c) => c.status === st);
+    const detail =
+      stage === "none" ? "" :
+      stage === "delivered" ? (p.status === "DELIVERED" ? "Delivered" : "Live on Aryeo") :
+      stage === "in_revisions" ? `${ver(first("CHANGES_REQUESTED")!)}in revisions${first("CHANGES_REQUESTED")!.openNotes ? ` (${first("CHANGES_REQUESTED")!.openNotes} note${first("CHANGES_REQUESTED")!.openNotes === 1 ? "" : "s"})` : ""}${done}` :
+      stage === "waiting_review" ? `${ver(first("PENDING")!)}waiting on review${done}` :
+      stage === "approved" ? `Approved${owed > 1 ? ` — all ${owed} cuts` : ""}` :
+      stage === "editing" ? `In editing${editByProject.get(p.id) ? ` — ${prettyKey(editByProject.get(p.id) as string)}` : ""}${done}` :
+      "Not started — no cut uploaded yet";
+    out.set(p.id, { projectId: p.id, owed, approved, waiting, revising, uploaded: cuts.length, stage, detail, cuts });
+  }
+  return out;
+}
+
+/** Every cut across the business that is waiting on a verdict or back with an editor. */
+export async function videoReviewBoard(): Promise<{ waiting: VideoCutState[]; revising: VideoCutState[] }> {
+  const rows = await prisma.reviewSubmission.findMany({
+    where: { status: { in: ["PENDING", "CHANGES_REQUESTED"] }, project: { status: { notIn: ["CANCELLED", "ON_HOLD"] } } },
+    select: { projectId: true },
+    distinct: ["projectId"],
+  });
+  const states = await videoStatesFor(rows.map((r) => r.projectId));
+  const all = [...states.values()].flatMap((s) => s.cuts);
+  const byAge = (a: VideoCutState, b: VideoCutState) => a.sinceISO.localeCompare(b.sinceISO);
+  return {
+    // A delivered job's still-pending cut is not the owner's work list.
+    waiting: all.filter((c) => c.status === "PENDING" && c.projectStatus !== "DELIVERED").sort(byAge),
+    revising: all.filter((c) => c.status === "CHANGES_REQUESTED").sort(byAge),
+  };
+}

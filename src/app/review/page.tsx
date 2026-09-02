@@ -120,7 +120,7 @@ export default async function ReviewRoomPage() {
         </Section>
 
         {q.waitingOnEditor.length > 0 && (
-          <Section icon={Hourglass} title="Waiting on editor changes" count={q.waitingOnEditor.length}>
+          <Section icon={Hourglass} title="In revisions" count={q.waitingOnEditor.length}>
             <ul className="space-y-2.5">{q.waitingOnEditor.map((s) => <CutRow key={s.id} s={s} decided />)}</ul>
           </Section>
         )}

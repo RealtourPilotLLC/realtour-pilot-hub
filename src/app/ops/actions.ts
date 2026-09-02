@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { CLOSED_BY_HAND } from "@/lib/tasks";
 import { requireAdmin } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
+import { notifyMentionDone } from "@/lib/mentionDone";
 import { ActivityType } from "@prisma/client";
 
 /**
@@ -57,4 +58,56 @@ export async function completeQcTask(taskId: string, note: string): Promise<{ ok
   revalidatePath("/tasks");
   if (task.projectId) revalidatePath(`/projects/${task.projectId}`);
   return { ok: true, message: "QC closed." };
+}
+
+/**
+ * Close an open loop (follow-up / instruction / callback / reply owed) from
+ * Ops Day or the Dashboard — Jordan (Sep 1): "a button to view and a button
+ * to mark as handled." Status + completedAt only: these rows carry their own
+ * source markers (rebook-<projectId>, orphan stand-downs) that the sweeps key
+ * on, so nothing else is touched. A human Done sticks — the sweeps that mint
+ * these only re-open on a NEWER trigger.
+ */
+export async function markLoopHandled(taskId: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  const task = await prisma.smartTask.findUnique({
+    where: { id: taskId },
+    select: { id: true, projectId: true, title: true, status: true, dedupeKey: true, propertyAddress: true },
+  });
+  if (!task) return { ok: false, message: "That follow-up no longer exists." };
+  if (task.status === "COMPLETED") return { ok: true, message: "Already handled." };
+
+  const me = await getCurrentUser().catch(() => null);
+  const who = (me?.name ?? "").trim();
+  const done = await prisma.smartTask.updateMany({
+    where: { id: taskId, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    data: { status: "COMPLETED", completedAt: new Date() },
+  });
+  if (done.count === 0) return { ok: true, message: "Already handled." };
+
+  // An @mention companion task closed here must ring the tagger exactly as it
+  // does from the task board (review: the tag loop opened with a bell and
+  // closed with none).
+  await notifyMentionDone(task, who || null);
+
+  if (task.projectId) {
+    await prisma.activity
+      .create({
+        data: {
+          projectId: task.projectId,
+          type: ActivityType.SYSTEM,
+          body: `Follow-up marked handled${who ? ` by ${who}` : ""}: ${task.title.slice(0, 160)}`,
+        },
+      })
+      .catch(() => {});
+  }
+  revalidatePath("/ops");
+  revalidatePath("/");
+  revalidatePath("/tasks");
+  if (task.projectId) revalidatePath(`/projects/${task.projectId}`);
+  return { ok: true, message: "Handled." };
 }

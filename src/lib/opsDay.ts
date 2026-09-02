@@ -9,6 +9,7 @@ import { NOTHING_TO_REMOVE_SENTINEL, isFieldFlag } from "@/lib/debrief";
 import { actionableQcCount, nextPendingDue } from "@/lib/tasks";
 import { turnaroundRules } from "@/lib/settings";
 import type { StatusEvidence } from "@/lib/projectStatus";
+import { videoStatesFor, videoReviewBoard, type ProjectVideoState, type VideoCutState } from "@/lib/reviewCuts";
 
 // ---------------------------------------------------------------------------
 // Kyle's Ops Day (Jordan's "Daily Operations & Client Experience Structure",
@@ -213,6 +214,10 @@ export type OpsQcRow = {
   monthly: boolean;
   /** how many videos the batch owes (photographer's count, else the plan quota) */
   videosOwed: number | null;
+  /** where the job's video is — editing / waiting on review / in revisions /
+   *  approved — for shoots that ordered one (Jordan, Sep 1: "in morning QC I'd
+   *  like to see the video status for shoots that have video"). null = no video. */
+  video: ProjectVideoState | null;
 };
 
 export type PipelineRow = {
@@ -229,7 +234,16 @@ export type PipelineRow = {
   revision: { headline: string | null; items: string[] } | null;
 };
 
-export type OpsLoop = { taskId: string; title: string; summary: string | null; dueISO: string | null; overdue: boolean; projectId: string | null };
+export type OpsLoop = {
+  taskId: string;
+  title: string;
+  summary: string | null;
+  dueISO: string | null;
+  overdue: boolean;
+  projectId: string | null;
+  projectTitle: string | null;
+  kind: "comms_followup" | "internal_instruction" | "callback" | "client_reply" | string;
+};
 
 export type OpsDay = {
   nowISO: string;
@@ -239,6 +253,9 @@ export type OpsDay = {
   qc: OpsQcRow[];
   pipeline: { rows: PipelineRow[]; editing: number; review: number; revision: number; overdueTasks: number; dueTodayTasks: number };
   openLoops: OpsLoop[];
+  /** every uploaded cut awaiting a verdict / back with its editor — the Ops Day
+   *  "Video Review" block and the owner Dashboard card read the same list. */
+  videoReview: { waiting: VideoCutState[]; revising: VideoCutState[] };
   needsAssigning: number;
   closeout: {
     todayShootsDone: boolean;
@@ -420,15 +437,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
         orderBy: { dueAt: "asc" },
         take: 30,
       }),
-      prisma.smartTask.findMany({
-        where: {
-          status: { notIn: ["COMPLETED", "CANCELLED"] },
-          taskType: { in: ["comms_followup", "internal_instruction", "callback", "client_reply"] },
-        },
-        select: { id: true, title: true, summary: true, dueAt: true, projectId: true },
-        orderBy: [{ dueAt: "asc" }],
-        take: 40,
-      }),
+      openLoopsList(now),
       prisma.project.findMany({
         where: { status: { in: ["EDITING", "REVIEW", "REVISION"] } },
         select: {
@@ -483,7 +492,11 @@ export async function buildOpsDay(): Promise<OpsDay> {
   ]);
 
   const todayKey = today.key;
-  const turnarounds = await turnaroundRules();
+  const [turnarounds, videoStates, videoReview] = await Promise.all([
+    turnaroundRules(),
+    videoStatesFor(qcTasks.map((t) => t.projectId).filter((x): x is string => !!x)).catch(() => new Map<string, ProjectVideoState>()),
+    videoReviewBoard().catch(() => ({ waiting: [] as VideoCutState[], revising: [] as VideoCutState[] })),
+  ]);
   const qc: OpsQcRow[] = qcTasks.filter((t) => t.projectId != null).map((t) => {
     let itemsLeft = 0;
     let actionable = 0;
@@ -564,6 +577,10 @@ export async function buildOpsDay(): Promise<OpsDay> {
       notCompleted: (pr?.deliverables ?? [])
         .filter((d): d is typeof d & { notCompletedReason: string } => !!d.notCompletedReason)
         .map((d) => ({ label: d.label ?? d.type, reason: d.notCompletedReason })),
+      video: (() => {
+        const v = videoStates.get(t.projectId as string);
+        return v && v.owed > 0 ? v : null;
+      })(),
     };
   });
 
@@ -596,14 +613,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
     };
   });
 
-  const openLoops: OpsLoop[] = loopTasks.map((t) => ({
-    taskId: t.id,
-    title: t.title,
-    summary: t.summary,
-    dueISO: t.dueAt?.toISOString() ?? null,
-    overdue: !!t.dueAt && t.dueAt < now,
-    projectId: t.projectId,
-  }));
+  const openLoops = loopTasks;
 
   const [editing, review, revision, overdueTasks, dueTodayTasks] = pipelineCounts;
   const shotAlready = todayShoots.filter((s) => s.timeISO && new Date(s.timeISO) < now);
@@ -625,6 +635,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
     qc,
     pipeline: { rows: pipelineRows, editing, review, revision, overdueTasks, dueTodayTasks },
     openLoops,
+    videoReview,
     needsAssigning: needsAssigningCount,
     closeout: {
       todayShootsDone: shotAlready.length === todayShoots.length,
@@ -636,4 +647,34 @@ export async function buildOpsDay(): Promise<OpsDay> {
       openRevisions: revision,
     },
   };
+}
+
+/**
+ * Open loops — follow-ups, instructions, callbacks and replies still owed.
+ * Shared by Ops Day and the owner Dashboard, which both let a human close one
+ * out (Jordan, Sep 1: "a button to view and a button to mark as handled").
+ */
+/** Rows fetched at most — every badge renders "N+" at the cap so a truncated
+ *  list is never presented as an exact count (review). */
+export const OPEN_LOOPS_CAP = 120;
+export async function openLoopsList(now = new Date()): Promise<OpsLoop[]> {
+  const rows = await prisma.smartTask.findMany({
+    where: {
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
+      taskType: { in: ["comms_followup", "internal_instruction", "callback", "client_reply"] },
+    },
+    select: { id: true, title: true, summary: true, dueAt: true, projectId: true, taskType: true, project: { select: { title: true } } },
+    orderBy: [{ dueAt: "asc" }],
+    take: OPEN_LOOPS_CAP,
+  });
+  return rows.map((t) => ({
+    taskId: t.id,
+    title: t.title,
+    summary: t.summary,
+    dueISO: t.dueAt?.toISOString() ?? null,
+    overdue: !!t.dueAt && t.dueAt < now,
+    projectId: t.projectId,
+    projectTitle: t.project?.title?.split(",")[0]?.trim() ?? null,
+    kind: t.taskType,
+  }));
 }
