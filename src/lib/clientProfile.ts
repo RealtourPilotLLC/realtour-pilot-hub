@@ -138,8 +138,12 @@ export async function buildClientProfile(clientId: string): Promise<{ ok: boolea
 // actually costing us something, so they jump the queue ahead of the merely
 // old-but-complete ones.
 const AGE_STALE_MS = 10 * 24 * 3600_000;
-export async function refreshStaleClientProfiles(limit = 20): Promise<{ refreshed: number }> {
+export async function refreshStaleClientProfiles(limit = 20, budgetMs = 120_000): Promise<{ refreshed: number; ranOut: boolean }> {
   const cap = Math.min(limit, 60);
+  // Each profile is one AI call (~7.5s), so 20 of them is 150s of work — more
+  // than the nightly step's whole budget. Stop on time rather than letting the
+  // step time out and paint the entire run red (Sep 2 audit, fault #15).
+  const deadline = Date.now() + budgetMs;
   const real = { parentClientId: null, transactionCount: { gt: 0 } } as const;
 
   const preV2 = await prisma.client.findMany({
@@ -170,7 +174,9 @@ export async function refreshStaleClientProfiles(limit = 20): Promise<{ refreshe
     : [];
 
   let refreshed = 0;
+  let ranOut = false;
   for (const c of [...preV2, ...rest]) {
+    if (Date.now() >= deadline) { ranOut = true; break; }
     try {
       const r = await buildClientProfile(c.id);
       if (r.ok) refreshed++;
@@ -178,7 +184,9 @@ export async function refreshStaleClientProfiles(limit = 20): Promise<{ refreshe
       /* skip a single failure, keep going */
     }
   }
-  return { refreshed };
+  // Whatever is left is picked up by the next run — the queue is ordered
+  // oldest-first, so nothing starves.
+  return { refreshed, ranOut };
 }
 
 export function parseClientProfile(json: string | null | undefined): ClientProfile | null {

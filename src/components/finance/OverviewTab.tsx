@@ -7,7 +7,7 @@ import type { LucideIcon } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { FinanceTabs, type FinanceTab } from "@/components/finance/FinanceTabs";
 import { KpiCards } from "@/components/finance/KpiCards";
-import { revenueByProcessor } from "@/lib/bookkeeping";
+import { revenueByProcessor, expenseCoverage } from "@/lib/bookkeeping";
 import { categoryBreakdown, railFreshness } from "@/lib/financeCategories";
 import { BooksReview } from "@/components/finance/BooksReview";
 import { listFlaggedQbo } from "@/app/sales/booksReviewActions";
@@ -80,7 +80,7 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
   const endKey = now.toISOString().slice(0, 10);
   const monthStartKey = `${monthBounds(0).key}-01`; // yyyy-mm-01 for the current ET month
 
-  const [rev, prevYear, cats, monthCats, cash, month, monthRev, health, fresh, flagged] = await Promise.all([
+  const [rev, prevYear, cats, monthCats, cash, month, monthRev, health, coverage, fresh, flagged] = await Promise.all([
     revenueByProcessor(YEAR_START, endKey),
     revenueByProcessor("2025-01-01", "2025-12-31"),
     // ONE SOURCE OF TRUTH: the audited bank+card+Venmo ledger the Categories
@@ -94,6 +94,10 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
     // Payments sale (e.g. the $9k SalesReceipt) and understates the month badly.
     revenueByProcessor(monthStartKey, endKey),
     booksHealth(),
+    // Coverage, not recency: a single trickle transaction used to make the
+    // books look current while ~$21k of August spend had never been entered
+    // (Sep 2 audit). This is what actually decides the warning now.
+    expenseCoverage(monthStartKey, endKey),
     railFreshness(),
     listFlaggedQbo().catch(() => []),
   ]);
@@ -155,13 +159,18 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
             stopped keeping up, because every number below it is then reading
             high: revenue lands in the bank feed instantly, expenses only once
             they're entered. Silent until it matters. */}
-        {health.daysBehind != null && health.daysBehind > BOOKS_STALE_DAYS && (
+        {(coverage.verdict === "stalled" || (health.daysBehind != null && health.daysBehind > BOOKS_STALE_DAYS)) && (
           <div className="flex items-start gap-3 rounded-2xl border border-warning/40 bg-warning-soft p-4">
             <AlertTriangle className="mt-0.5 size-5 shrink-0 text-warning" />
             <div className="min-w-0 flex-1">
               <p className="text-sm font-semibold text-warning">
-                Your books are {health.daysBehind} days behind
+                {coverage.verdict === "stalled"
+                  ? `Only ${coverage.pct}% of this month's spend has been entered`
+                  : `Your books are ${health.daysBehind} days behind`}
               </p>
+              {coverage.verdict === "stalled" && (
+                <p className="mt-1 text-xs leading-relaxed text-foreground/85">{coverage.note}</p>
+              )}
               <p className="mt-1 text-xs leading-relaxed text-foreground/85">
                 The last transaction in QuickBooks is dated{" "}
                 <strong>{health.newestEntry ? etDate(health.newestEntry) : "—"}</strong>
@@ -351,12 +360,14 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
             <Stat
               label="Reconciliation"
               value={
-                health.daysBehind != null && health.daysBehind > BOOKS_STALE_DAYS
+                coverage.verdict === "stalled"
+                  ? `${coverage.pct}% entered`
+                  : health.daysBehind != null && health.daysBehind > BOOKS_STALE_DAYS
                   ? `${health.daysBehind}d behind`
                   : health.needsReview > 0 ? "In progress" : "Clean"
               }
               tone={
-                (health.daysBehind != null && health.daysBehind > BOOKS_STALE_DAYS) || health.needsReview > 0
+                coverage.verdict === "stalled" || (health.daysBehind != null && health.daysBehind > BOOKS_STALE_DAYS) || health.needsReview > 0
                   ? "warning" : "success"
               }
               sub="bank feed vs. ledger"
