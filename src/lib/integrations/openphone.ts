@@ -1,6 +1,6 @@
 import "server-only";
 import crypto from "crypto";
-import { getSecret, saveSecret } from "./connections";
+import { disconnect, getSecret, saveSecret } from "./connections";
 
 // ---------------------------------------------------------------------------
 // OpenPhone (Quo) REST client. Base: https://api.openphone.com/v1
@@ -407,8 +407,43 @@ export async function listWebhooks(): Promise<OpWebhook[]> {
   return r.data ?? [];
 }
 
+// The path part of a webhook URL, ignoring host and query string (our
+// shared-secret token rides in `?t=`). Used to recognise OUR receiver whatever
+// host it was registered under.
+function webhookPath(u: string): string {
+  try {
+    return new URL(u).pathname.replace(/\/+$/, "");
+  } catch {
+    return u.split("?")[0].replace(/^https?:\/\/[^/]+/, "").replace(/\/+$/, "");
+  }
+}
+
+// POST one webhook resource and hand back its id. The id matters: a partial
+// registration has to be able to take its OWN leftovers back out (see below).
+// Read it defensively — OpenPhone wraps created resources in `data`, but a bare
+// object would otherwise leave us holding a hook we can't identify.
+async function createWebhook(resource: string, events: string[], url: string): Promise<string | undefined> {
+  const r = await openphoneRequest<{ data?: OpWebhook; id?: string }>(`/webhooks/${resource}`, {
+    method: "POST",
+    body: { url, events, label: "RealTour Pilot Hub" },
+  });
+  return r?.data?.id ?? r?.id;
+}
+
 // Register message + call webhooks pointing at our endpoint (idempotent: clears
-// any existing hooks for the same URL first).
+// any existing hooks for the same receiver first).
+//
+// THE ORDER HERE IS THE SAFETY. The stored token is what flips the receiver
+// fail-closed, so it must be the LAST thing that changes: mint → create the
+// replacements → store the token → only then delete the old hooks. This used
+// to store the secret FIRST, before it had even talked to OpenPhone; any throw
+// after that point (a 429, an expired API key, a plan restriction) left the
+// account with the old hooks deleted, no new hooks, and a secret that rejects
+// everything — every inbound text AND call gone until someone noticed, and the
+// owner presses this button by hand. In this order the worst case is a brief
+// window where old and new hooks both fire (the receiver's externalId dedupe
+// absorbs the doubles) and where the new hooks arrive carrying `?t=` before the
+// secret exists (which the receiver already accepts, loudly, as unsigned).
 export async function registerOpenPhoneWebhooks(
   callbackUrl: string,
 ): Promise<{ created: number; transcripts: boolean }> {
@@ -417,48 +452,100 @@ export async function registerOpenPhoneWebhooks(
   // revisions. Rotated on every (re)registration; the receiver reads it back
   // from the stored "openphone_webhook" secret.
   const token = crypto.randomBytes(24).toString("hex");
-  await saveSecret("openphone_webhook", token);
   const url = `${callbackUrl}?t=${token}`;
 
+  // Snapshot the old hooks BEFORE creating anything: the delete pass at the end
+  // then works off a list that cannot possibly contain the replacements we're
+  // about to make. A failure right here aborts with nothing changed at all —
+  // old hooks still live, old token still stored, inbound comms untouched.
   const existing = await listWebhooks();
-  for (const w of existing) {
-    // Match regardless of any prior token query param.
-    if ((w.url || "").split("?")[0] === callbackUrl) {
-      await openphoneRequest(`/webhooks/${w.id}`, { method: "DELETE" }).catch(() => {});
-    }
-  }
-  await openphoneRequest("/webhooks/messages", {
-    method: "POST",
-    body: { url, events: MESSAGE_EVENTS, label: "RealTour Pilot Hub" },
-  });
-  await openphoneRequest("/webhooks/calls", {
-    method: "POST",
-    body: { url, events: CALL_EVENTS, label: "RealTour Pilot Hub" },
-  });
-  // Call transcripts have a dedicated webhook resource; not every plan exposes
-  // it, so don't let a failure here break message/call registration.
+  const receiverPath = webhookPath(callbackUrl);
+
+  const createdIds: string[] = [];
   let transcripts = false;
   try {
-    await openphoneRequest("/webhooks/call-transcripts", {
-      method: "POST",
-      body: { url, events: TRANSCRIPT_EVENTS, label: "RealTour Pilot Hub" },
-    });
-    transcripts = true;
-  } catch {
-    /* plan may not include transcripts */
+    const msgId = await createWebhook("messages", MESSAGE_EVENTS, url);
+    if (msgId) createdIds.push(msgId);
+    const callId = await createWebhook("calls", CALL_EVENTS, url);
+    if (callId) createdIds.push(callId);
+    // Call transcripts have a dedicated webhook resource; not every plan exposes
+    // it, so don't let a failure here break message/call registration.
+    try {
+      const trId = await createWebhook("call-transcripts", TRANSCRIPT_EVENTS, url);
+      if (trId) createdIds.push(trId);
+      transcripts = true;
+    } catch {
+      /* plan may not include transcripts */
+    }
+  } catch (e) {
+    // Half-registered. Nothing destructive has happened (the old hooks are still
+    // there doing the real work), but whatever we DID create carries the new
+    // token while the store still holds the previous one — so it would bounce
+    // every event it delivers and bury the genuine rejection alert under false
+    // ones. Take our own leftovers back out; best-effort, the retry's snapshot
+    // sweeps anything that survives.
+    for (const id of createdIds) {
+      await openphoneRequest(`/webhooks/${id}`, { method: "DELETE" }).catch(() => {});
+    }
+    throw e;
   }
+
+  // Both replacements are live and already carrying the new token — only NOW is
+  // it safe for the receiver to start demanding it.
+  let stored = false;
+  try {
+    await saveSecret("openphone_webhook", token);
+    stored = true;
+
+    for (const w of existing) {
+      // Never delete what we just created (the snapshot predates them, so this is
+      // belt-and-braces in case OpenPhone ever returns an already-registered id).
+      if (createdIds.includes(w.id)) continue;
+      // Match on the RECEIVER PATH, not the full URL: comparing the whole URL
+      // missed every hook registered under the old host (the app moved to
+      // hub.realtourpilot.com, Sep 2026), and those hooks keep firing — they'd
+      // double-deliver each event AND fail the freshly-rotated token, burying the
+      // real rejection alert under a flood of false ones.
+      if (webhookPath(w.url || "") === receiverPath) {
+        await openphoneRequest(`/webhooks/${w.id}`, { method: "DELETE" }).catch(() => {});
+      }
+    }
+  } catch (e) {
+    // Self-heal: if we got as far as storing the token and then couldn't finish,
+    // the receiver is gated on a registration we can't vouch for. Drop the
+    // secret. An accept-unsigned receiver still hears every text and call (and
+    // shouts about it on every request and every stored row); a fail-closed one
+    // pointed at hooks that may not carry the token hears nothing at all.
+    if (stored) await disconnect("openphone_webhook").catch(() => {});
+    throw e;
+  }
+
   return { created: transcripts ? 3 : 2, transcripts };
 }
 
 // Verify an inbound OpenPhone webhook's shared-secret token (constant-time).
-// Returns true when there's nothing to verify against yet (no token stored) so
-// the pipeline keeps working until the webhook is (re)registered with a token.
-export async function openPhoneRequestAuthorized(token: string | null): Promise<boolean> {
+//
+// `unsigned: true` means NOTHING was verified because no token is stored yet:
+// the request is still accepted so live inbound texts/calls don't stop the
+// moment this ships, but the caller MUST record it as an unsigned acceptance.
+// A bare `true` here is how the receiver ran wide open for 30 days without one
+// rejection — anyone who guessed hub.realtourpilot.com/api/webhooks/openphone
+// could post a message attributed to a named client (which mints tasks, can
+// raise a revision, and feeds the AI's memory as that client's own words).
+export type OpenPhoneAuth = { ok: true; unsigned: boolean } | { ok: false; unsigned: false };
+export async function openPhoneRequestAuthorized(token: string | null): Promise<OpenPhoneAuth> {
   const expected = await getSecret("openphone_webhook");
-  if (!expected) return true; // not yet activated — backward compatible
-  const got = token ?? "";
-  if (got.length !== expected.length) return false;
-  return crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expected));
+  if (!expected) return { ok: true, unsigned: true }; // not yet activated — accepted, but loudly
+  // Compare BYTES, and gate on BYTE length. timingSafeEqual THROWS when the two
+  // buffers differ in length, and a JS string's .length counts characters, not
+  // bytes — so a 48-character `?t=` made of multibyte characters cleared the
+  // old character gate and then blew up inside the compare, handing a prober a
+  // 500 (and a stack trace) instead of a clean 401.
+  const got = Buffer.from(token ?? "", "utf8");
+  const want = Buffer.from(expected, "utf8");
+  if (got.length !== want.length) return { ok: false, unsigned: false };
+  const match = crypto.timingSafeEqual(got, want);
+  return match ? { ok: true, unsigned: false } : { ok: false, unsigned: false };
 }
 
 export async function testOpenPhoneKey(

@@ -10,6 +10,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { getProject, getTeam } from "@/lib/queries";
 import { getCurrentUser } from "@/lib/auth/user";
+import { authEnforced } from "@/lib/auth/guards";
 import { parseClientProfile } from "@/lib/clientProfile";
 import { ClientProfileCard } from "@/components/clients/ClientProfileCard";
 import { ProjectMessages } from "@/components/project/ProjectMessages";
@@ -53,6 +54,15 @@ export default async function EditBriefPage({
   const { cut } = await searchParams;
 
   const viewer = await getCurrentUser();
+  // Fail CLOSED on a null viewer once enforcement is on (the same line /shoot/<id>
+  // now carries). pathKey() returns null for /edit/<id>, so the middleware only
+  // proves the JWT verifies — and a disabled account keeps a valid one for the
+  // full 7-day token life. Null doesn't just skip the role test below: further
+  // down it reads as owner/admin (isOwnerAdmin, canEditNotes), which would hand a
+  // revoked session EVERY editor's Review Room feedback and the client's raw,
+  // un-money-scrubbed wording. Past this line `!viewer` can only mean local dev
+  // with auth off.
+  if (!viewer && authEnforced()) redirect(`/login?next=/edit/${id}`);
   // Photographers get their own field view; everyone else (owner/admin/editor) sees this.
   if (viewer && viewer.role === "PHOTOGRAPHER") redirect(`/shoot/${id}`);
 

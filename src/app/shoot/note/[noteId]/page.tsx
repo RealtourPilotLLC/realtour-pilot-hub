@@ -2,6 +2,7 @@ import { notFound, redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
+import { homeFor } from "@/lib/auth/access";
 import { photographerMemberId } from "@/lib/shoot";
 import { isMentionedIn } from "@/lib/mentions";
 import { stripMoneySentences } from "@/lib/text";
@@ -44,8 +45,11 @@ export default async function ShootNotePage({ params }: { params: Promise<{ note
   // JWT passes the middleware, and a null user must never read as "owner-ish".
   const user = await getCurrentUser();
   if (!user && authEnforced()) redirect("/login");
-  // Editors get /edit hrefs from the mention router — this page isn't for them.
-  if (user?.role === "EDITOR") redirect("/edit");
+  // Editors get /edit/<id> hrefs from the mention router — this page isn't for
+  // them. Bounce to their HOME (/editing): there is no /edit index route, so the
+  // old redirect("/edit") handed a denied editor a 404 instead of the normal
+  // not-allowed hop.
+  if (user?.role === "EDITOR") redirect(homeFor(user.role));
   let viewerMemberId: string | null = null;
   if (user?.role === "PHOTOGRAPHER") {
     viewerMemberId = await photographerMemberId(user);

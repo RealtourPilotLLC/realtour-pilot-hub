@@ -3,6 +3,8 @@ import { Suspense } from "react";
 import { getShoot, photographerMemberId, photographerOwnsShoot } from "@/lib/shoot";
 import { getClientFeedback, getPhotographerFeedback } from "@/lib/review";
 import { getCurrentUser } from "@/lib/auth/user";
+import { authEnforced } from "@/lib/auth/guards";
+import { homeFor } from "@/lib/auth/access";
 import { etDateTime, etDaysAgo } from "@/lib/datetime";
 import { ShootScreen } from "@/components/shoot/ShootScreen";
 import { ShootPayCard, ShootPayCardSkeleton } from "@/components/shoot/ShootPayCard";
@@ -22,18 +24,34 @@ export default async function ShootDetailPage({
 }) {
   const { id } = await params;
   const { as } = await searchParams;
-  const view = await getShoot(id);
-  if (!view) notFound();
 
+  // The middleware deliberately leaves /shoot/<id> ungated (Kyle taps these
+  // links straight off Schedule), so this page is the ONLY gate on it — and the
+  // screen carries the assigned photographer's pay for the job plus the client's
+  // name, phone, email and address. Guard first, read after.
+  const user = await getCurrentUser();
+  // Fail CLOSED on a null user under enforcement (same shape as /shoot and
+  // /shoot/feedback): a disabled account's stale JWT still passes the
+  // middleware, and null falls through the role checks below as "owner-ish" —
+  // i.e. any shoot, with someone else's pay on it.
+  if (!user && authEnforced()) redirect(`/login?next=/shoot/${id}`);
   // A photographer can only open their OWN assigned shoots (by project assignment
   // or an appointment assignee). Owner / admin (and the open, pre-cutover app)
   // can open any.
-  const user = await getCurrentUser();
   let viewerMemberId: string | null = null;
   if (user?.role === "PHOTOGRAPHER") {
     viewerMemberId = await photographerMemberId(user);
     if (!viewerMemberId || !(await photographerOwnsShoot(id, viewerMemberId))) redirect("/shoot");
+  } else if (user && user.role !== "OWNER" && user.role !== "ADMIN") {
+    // Everyone else — an EDITOR above all — is bounced home (audit Sep 2: an
+    // editor could open any /shoot/<id> and read the photographer's pay for
+    // that job). The video lane's own screen is /edit/<id>; nothing links an
+    // editor here, and the mentions router already sends them to /edit.
+    redirect(homeFor(user.role));
   }
+
+  const view = await getShoot(id);
+  if (!view) notFound();
   // Whose pay/route to show: a photographer viewer always sees THEIR OWN numbers
   // (a second shooter on someone else's project must never see the primary's
   // pay); owner/admin (and ?as= previews) see the assigned photographer's.

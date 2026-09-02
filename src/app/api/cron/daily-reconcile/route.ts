@@ -39,11 +39,16 @@ export async function GET(req: NextRequest) {
   }, { maxMs: 60_000 });
   // Rebuild the Trends growth plan (cached against a hash of the numbers — a
   // no-op on a day nothing moved).
+  // 150s, not 60s: this is one long reasoning call over the whole trends
+  // dataset and it hit the 60s cap every night since July, so the growth-plan
+  // card served five-week-old advice while ~150s of the 250s budget sat unused
+  // (the steps above it measured ~41s on Sep 2). It is the LAST step, so it can
+  // safely take the rest; cronBudget clamps it to what's actually left.
   await step("growthPlan", async () => {
     const { rebuildGrowthPlan } = await import("@/lib/growthPlan");
     const r = await rebuildGrowthPlan();
     return { rebuilt: !!r.plan && !r.error, error: r.error ?? null };
-  }, { maxMs: 60_000 });
+  }, { maxMs: 150_000 });
 
   await finish();
   return NextResponse.json({ ok: true, ...out });

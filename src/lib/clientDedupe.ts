@@ -3,14 +3,35 @@ import { prisma } from "@/lib/prisma";
 import { phoneKey } from "@/lib/integrations/openphone";
 
 // ---------------------------------------------------------------------------
-// Duplicate-contact merge rule. Two clients are the same contact when:
-//   • their phone numbers match (last-10 digits) — strongest signal, OR
-//   • their NAME and COMPANY/team both match (so two different agents who only
-//     share a brokerage are NOT collapsed together).
-// On merge: the surviving email is the one with the MOST projects delivered to
-// it (priority email); any other email is kept as backupEmail. All projects,
-// tasks, and contacts are re-pointed to the survivor; empty survivor fields are
-// backfilled from the losers; then the duplicate rows are deleted.
+// Duplicate-client REVIEW — report only. Nothing in this file merges or deletes
+// a client on a schedule any more.
+//
+// What it used to do: the nightly step clustered clients and HARD-DELETED the
+// losers. It ran for the first time on 2 Sep 2026 and deleted 12 client rows —
+// no audit record, no undo. The rule that chose them ("the last 10 digits of
+// the phone match") is not identity: a household line, a team line or an office
+// line puts two DIFFERENT people in one cluster. That same night's candidate
+// list wanted to fold Melissa Fanelli — her own company, her own Aryeo customer
+// record, two orders of her own — into Bill Fanelli.
+//
+// What it does now: it finds the same candidates, records the evidence FOR and
+// AGAINST each one, and hands the decision to a human — one decision task per
+// candidate on the board, plus the machine-readable list in AppSetting for a
+// future approve-in-app flow to read. mergeClientsById() below still merges,
+// but only for ids a human picked; nothing automated may call it.
+//
+// WHAT A SAFE MATCH NEEDS, over and above a matching phone (the rule that
+// approve-in-app flow should enforce before it offers a one-click merge):
+//   • at most ONE side carries an aryeoCustomerId. Two distinct Aryeo customer
+//     ids mean Aryeo itself holds them as two customers, each with its own
+//     orders, invoices and delivery emails.
+//   • the companies agree, or one side is blank. Two different brokerages/LLCs
+//     on one number is the household/office case — i.e. two people.
+//   • at most ONE side has orders. Two clients who have each BOUGHT work are
+//     never auto-mergeable: merging rewrites whose revenue and whose delivery
+//     history it was.
+// Failing any of those doesn't hide the pair — it only means a human presses
+// merge, never a cron.
 // ---------------------------------------------------------------------------
 
 type DedupeClient = {
@@ -33,11 +54,25 @@ type DedupeClient = {
   _count: { projects: number };
 };
 
+const CLIENT_SELECT = {
+  id: true, name: true, email: true, backupEmail: true, phone: true, company: true,
+  licenseNumber: true, generalNotes: true, editingPreferences: true, clientPreferences: true,
+  brandColors: true, brandAssetsPath: true, socialClient: true, socialPlan: true,
+  aryeoCustomerId: true, updatedAt: true,
+  _count: { select: { projects: true } },
+} as const;
+
+/** Where the candidate list lives between runs — read by the (future) review UI. */
+export const DEDUPE_CANDIDATES_KEY = "client_dedupe_candidates";
+
 function norm(s: string | null | undefined): string {
   return (s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-// Group duplicate clients with a tiny union-find over phone + name|company keys.
+// Group candidate clients with a tiny union-find over phone + name|company keys.
+// NOTE the phone key is a CANDIDATE signal only (see the header): it groups a
+// couple sharing a line, an agent and their assistant on the office number, and
+// a brokerage main line just as happily as it groups one person's two records.
 function buildClusters(clients: DedupeClient[]): DedupeClient[][] {
   const parent = new Map<string, string>();
   clients.forEach((c) => parent.set(c.id, c.id));
@@ -81,117 +116,206 @@ function buildClusters(clients: DedupeClient[]): DedupeClient[][] {
   return [...groups.values()].filter((g) => g.length > 1);
 }
 
-export type MergePreview = {
-  survivor: string;
-  priorityEmail: string | null;
-  backupEmail: string | null;
-  mergedNames: string[];
-  totalProjects: number;
+export type DuplicateCandidate = {
+  /** stable per set of clients — the decision task's dedupe key rides on this */
+  key: string;
+  clients: Array<{
+    id: string;
+    name: string;
+    email: string | null;
+    company: string | null;
+    phone10: string;
+    aryeoCustomerId: string | null;
+    projects: number;
+  }>;
+  matchedOn: string[];
+  /** why a machine must NOT merge this one — empty is still only a suggestion */
+  blockers: string[];
 };
 
-export async function dedupeClients(
-  opts: { dryRun?: boolean } = {},
-): Promise<{ clustersFound: number; clientsMerged: number; previews: MergePreview[] }> {
-  const select = {
-    id: true, name: true, email: true, backupEmail: true, phone: true, company: true,
-    licenseNumber: true, generalNotes: true, editingPreferences: true, clientPreferences: true,
-    brandColors: true, brandAssetsPath: true, socialClient: true, socialPlan: true,
-    aryeoCustomerId: true, updatedAt: true,
-    _count: { select: { projects: true } },
-  } as const;
+// The evidence that says "two people", not "one person twice". Kept as text so
+// the task card and the review UI show the human the same reason the rule saw.
+function blockersFor(cluster: DedupeClient[]): string[] {
+  const out: string[] = [];
+  const aryeoIds = [...new Set(cluster.map((c) => c.aryeoCustomerId).filter(Boolean))];
+  if (aryeoIds.length > 1) out.push(`${aryeoIds.length} separate Aryeo customer records`);
+  const companies = [...new Set(cluster.map((c) => norm(c.company)).filter(Boolean))];
+  if (companies.length > 1) out.push(`different companies (${cluster.map((c) => c.company).filter(Boolean).join(" / ")})`);
+  const buyers = cluster.filter((c) => c._count.projects > 0);
+  if (buyers.length > 1) out.push(`${buyers.length} of them have their own orders`);
+  return out;
+}
 
-  const clients = (await prisma.client.findMany({ select })) as DedupeClient[];
-  const clusters = buildClusters(clients);
-
-  const previews: MergePreview[] = [];
-  let clientsMerged = 0;
-
-  for (const cluster of clusters) {
-    // Survivor = most projects, tie-break by most recently updated.
+/** Read-only: who LOOKS like a duplicate, and what the evidence says. */
+export async function findDuplicateCandidates(): Promise<DuplicateCandidate[]> {
+  const clients = (await prisma.client.findMany({ select: CLIENT_SELECT })) as DedupeClient[];
+  return buildClusters(clients).map((cluster) => {
+    // Most orders first — the row a human would most likely keep.
     const sorted = [...cluster].sort(
       (a, b) => b._count.projects - a._count.projects || b.updatedAt.getTime() - a.updatedAt.getTime(),
     );
-    const survivor = sorted[0];
-    const losers = sorted.slice(1);
-
-    // Priority email = the email with the most projects; backup = next distinct.
-    const ranked = sorted.filter((c) => norm(c.email));
-    const priorityEmail = ranked[0]?.email ?? survivor.email ?? null;
-    const backupEmail =
-      ranked.map((c) => c.email).find((e) => norm(e) && norm(e) !== norm(priorityEmail)) ??
-      survivor.backupEmail ??
-      null;
-
-    previews.push({
-      survivor: survivor.name,
-      priorityEmail,
-      backupEmail,
-      mergedNames: losers.map((l) => l.name),
-      totalProjects: cluster.reduce((s, c) => s + c._count.projects, 0),
-    });
-
-    if (opts.dryRun) continue;
-
-    // Backfill empty survivor fields from the losers (first non-empty wins).
-    const pick = <K extends keyof DedupeClient>(key: K): DedupeClient[K] => {
-      if (survivor[key]) return survivor[key];
-      for (const l of losers) if (l[key]) return l[key];
-      return survivor[key];
+    const phones = new Set(sorted.map((c) => phoneKey(c.phone)).filter((p) => p.length === 10));
+    const matchedOn: string[] = [];
+    if (phones.size === 1) matchedOn.push("same phone number");
+    if (new Set(sorted.map((c) => `${norm(c.name)}|${norm(c.company)}`)).size === 1) matchedOn.push("same name + company");
+    return {
+      key: sorted.map((c) => c.id).sort().join("+"),
+      clients: sorted.map((c) => ({
+        id: c.id,
+        name: c.name,
+        email: c.email,
+        company: c.company,
+        phone10: phoneKey(c.phone),
+        aryeoCustomerId: c.aryeoCustomerId,
+        projects: c._count.projects,
+      })),
+      matchedOn,
+      blockers: blockersFor(sorted),
     };
-    const mergedData = {
-      email: priorityEmail,
-      backupEmail,
-      phone: pick("phone"),
-      company: pick("company"),
-      licenseNumber: pick("licenseNumber"),
-      generalNotes: pick("generalNotes"),
-      editingPreferences: pick("editingPreferences"),
-      clientPreferences: pick("clientPreferences"),
-      brandColors: pick("brandColors"),
-      brandAssetsPath: pick("brandAssetsPath"),
-      socialClient: survivor.socialClient || losers.some((l) => l.socialClient),
-      socialPlan: pick("socialPlan"),
-      aryeoCustomerId: pick("aryeoCustomerId"),
-    };
-
-    const loserIds = losers.map((l) => l.id);
-    await prisma.$transaction(async (tx) => {
-      // Re-point all children to the survivor — including comms memory and the
-      // assistant→agent folding, which the original merge missed (a merged-away
-      // twin referenced as someone's parentClientId orphaned that folding).
-      await tx.project.updateMany({ where: { clientId: { in: loserIds } }, data: { clientId: survivor.id } });
-      await tx.smartTask.updateMany({ where: { clientId: { in: loserIds } }, data: { clientId: survivor.id } });
-      await tx.contact.updateMany({ where: { clientId: { in: loserIds } }, data: { clientId: survivor.id } });
-      await tx.commLog.updateMany({ where: { clientId: { in: loserIds } }, data: { clientId: survivor.id } });
-      await tx.client.updateMany({ where: { parentClientId: { in: loserIds } }, data: { parentClientId: survivor.id } });
-      // Delete the duplicates first so their unique aryeoCustomerId frees up.
-      await tx.client.deleteMany({ where: { id: { in: loserIds } } });
-      // Then apply the merged record to the survivor.
-      await tx.client.update({ where: { id: survivor.id }, data: mergedData });
-    });
-    clientsMerged += losers.length;
-  }
-
-  return { clustersFound: clusters.length, clientsMerged, previews };
+  });
 }
 
 /**
- * Merge a SPECIFIC set of client rows the automatic rule can't safely infer
- * (same person under a team inbox / a second brokerage email — verified by a
- * human or an audit). Reuses the cluster-merge semantics: survivor = most
- * projects, priority email = the one with the most projects behind it.
+ * The nightly step. Records the candidates and files ONE decision task per
+ * candidate for Jordan — it never merges. Two surfaces on purpose:
+ *   • the SmartTask is where a human actually sees it (the board is already the
+ *     place decisions land — same pattern as the "video marked not completable"
+ *     decision task), minted with a stable dedupeKey + `update: {}` so a night
+ *     that re-proposes the same pair can never re-open work someone handled;
+ *   • the AppSetting row is the machine-readable list, with the evidence, for
+ *     the approve-in-app merge flow to read (a task title can't carry ids). A
+ *     candidate stays on that list after someone deals with it — its decision
+ *     task (dedupeKey `client-dupe-<candidate.key>`) is what says it's handled.
+ *
+ * The task is deliberately taskType "todo" with NO clientId — see the two
+ * comments on the upsert below. Both are about keeping an owner-only decision
+ * where only the owner can act on it; neither is cosmetic.
+ */
+export async function reviewClientDuplicates(): Promise<{
+  candidates: number;
+  blocked: number;
+  tasksFiled: number;
+}> {
+  const candidates = await findDuplicateCandidates();
+
+  // Snapshot for the review UI. Best-effort: a settings write failure must not
+  // lose the tasks below (the tasks are the part a human actually sees).
+  try {
+    const value = JSON.stringify({
+      at: new Date().toISOString(),
+      // Bound it: the AppSetting value is one text column, and a list this long
+      // means the matching rule broke, not that we have 200 real duplicates.
+      candidates: candidates.slice(0, 50),
+    });
+    await prisma.appSetting.upsert({
+      where: { key: DEDUPE_CANDIDATES_KEY },
+      create: { key: DEDUPE_CANDIDATES_KEY, value, updatedBy: "cron:daily-clients" },
+      update: { value, updatedBy: "cron:daily-clients" },
+    });
+  } catch (e) {
+    console.warn("clientDedupe: candidate snapshot failed", e);
+  }
+
+  let tasksFiled = 0;
+  for (const c of candidates) {
+    const names = c.clients.map((x) => x.name);
+    const dedupeKey = `client-dupe-${c.key}`;
+    // Order matters: the summary is clipped at 500 chars, so the warning and the
+    // evidence come first and the per-row detail (also on each client's page,
+    // and in the AppSetting record) is what a long cluster loses.
+    const evidence = [
+      c.matchedOn.length ? `Matched on: ${c.matchedOn.join(", ")}.` : null,
+      c.blockers.length
+        ? `Against a merge: ${c.blockers.join("; ")}.`
+        : "Nothing on the rows says these are two different people.",
+      // Don't tell the owner to "merge by hand" — there is no merge in the app.
+      // mergeClientsById() has zero callers and no UI, so the only two moves that
+      // exist today are close-it or leave-it-open. Saying otherwise sends him
+      // hunting for a button that isn't there. Kept short on purpose: it sits
+      // ahead of the per-row detail in a summary clipped at 500 chars.
+      "Nothing has been merged, and the app has no merge action yet. Different people: close this. Same person: leave it open — a merge is coming and this list feeds it.",
+      c.clients.map((x) => `${x.name} — ${x.company ?? "no company"}, ${x.projects} order(s), ${x.email ?? "no email"}`).join(" · "),
+    ].filter(Boolean).join(" ");
+    try {
+      await prisma.smartTask.upsert({
+        where: { dedupeKey },
+        create: {
+          // "todo", NOT "internal_instruction" — two engines read that type and
+          // would take this decision away from the owner:
+          //   • opsDay.ts openLoopsList() pulls every open comms_followup /
+          //     internal_instruction / callback / client_reply with no owner
+          //     filter, so this landed in Kyle's and James's Open Loops behind a
+          //     one-click "Handled". With `update: {}` below, a stray click
+          //     closes the pair forever — the next night never re-files it.
+          //   • brain.ts MERGEABLE_TYPES lists internal_instruction, so the comms
+          //     router offered this task to the AI as a merge target and an
+          //     inbound message could rewrite its title and summary out from
+          //     under the decision (the Kristin case in the Sep 2 audit).
+          // "todo" is in neither list, is swept by no reconciler, and still shows
+          // on the /tasks board (boardVisibleWhere) where Jordan works. Closing it
+          // stays a real decision ("they're different people"), so the nightly step
+          // must NOT re-file a closed one — hence the type change, not a re-open.
+          taskType: "todo",
+          title: `Possible duplicate clients — ${names.join(" / ")}`.slice(0, 120),
+          summary: evidence.slice(0, 500),
+          reasonCreated: "Nightly duplicate-client scan found two client records that look like one person.",
+          source: "system",
+          priority: "MEDIUM",
+          assignedKey: "jordan", // an owner data decision, not a queue job
+          // No clientId on purpose. Belt-and-braces with the type above: a task
+          // carrying a clientId is a candidate in routeCommTask's merge query
+          // (`{ clientId, taskType in MERGEABLE_TYPES }`), and a client's next
+          // text could then retitle this decision. It is also the honest shape —
+          // the task is ABOUT a set of client rows, not filed under one of them,
+          // and picking clients[0] was an arbitrary half-truth. Every id and name
+          // already rides in the summary and in the AppSetting snapshot.
+          dedupeKey,
+        },
+        update: {}, // one decision per pair — never re-open what a human closed
+      });
+      tasksFiled++;
+    } catch (e) {
+      console.warn("clientDedupe: could not file review task", dedupeKey, e);
+    }
+  }
+
+  return {
+    candidates: candidates.length,
+    blocked: candidates.filter((c) => c.blockers.length > 0).length,
+    tasksFiled,
+  };
+}
+
+/**
+ * Merge a SPECIFIC set of client rows a human has approved (same person under a
+ * team inbox / a second brokerage email — verified by a person or an audit).
+ * Survivor = most projects, priority email = the one with the most projects
+ * behind it.
+ *
+ * DESTRUCTIVE: it deletes the loser rows. Call it only from a human action —
+ * no cron, sweep or listener may call it (see the header).
  */
 export async function mergeClientsById(ids: string[]): Promise<{ ok: boolean; survivor?: string; message?: string }> {
   if (ids.length < 2) return { ok: false, message: "Need at least two clients to merge." };
-  const select = {
-    id: true, name: true, email: true, backupEmail: true, phone: true, company: true,
-    licenseNumber: true, generalNotes: true, editingPreferences: true, clientPreferences: true,
-    brandColors: true, brandAssetsPath: true, socialClient: true, socialPlan: true,
-    aryeoCustomerId: true, updatedAt: true,
-    _count: { select: { projects: true } },
-  } as const;
-  const cluster = (await prisma.client.findMany({ where: { id: { in: ids } }, select })) as DedupeClient[];
+  const cluster = (await prisma.client.findMany({ where: { id: { in: ids } }, select: CLIENT_SELECT })) as DedupeClient[];
   if (cluster.length !== ids.length) return { ok: false, message: "Some of those clients no longer exist." };
+
+  // The content program hangs off clientId with NO foreign key, and two of its
+  // tables are one-row-per-client (ContentEnrollment, AgentProfile). Re-pointing
+  // both sides would collide on those unique columns and roll the whole merge
+  // back; saying so up front is better than a P2002 in a human's face. (Before
+  // this check the merge simply left every content row behind, orphaning an
+  // enrolled client the moment its row was deleted.)
+  const [enrollments, profiles] = await Promise.all([
+    prisma.contentEnrollment.findMany({ where: { clientId: { in: ids } }, select: { clientId: true } }),
+    prisma.agentProfile.findMany({ where: { clientId: { in: ids } }, select: { clientId: true } }),
+  ]);
+  if (enrollments.length > 1) {
+    return { ok: false, message: "Both of these clients are enrolled in the content program. End or move one enrollment first — a merge can't decide which one survives." };
+  }
+  if (profiles.length > 1) {
+    return { ok: false, message: "Both of these clients have an agent profile. Delete the one you don't want to keep first — a merge can't decide which one survives." };
+  }
 
   const sorted = [...cluster].sort(
     (a, b) => b._count.projects - a._count.projects || b.updatedAt.getTime() - a.updatedAt.getTime(),
@@ -209,12 +333,27 @@ export async function mergeClientsById(ids: string[]): Promise<{ ok: boolean; su
   };
   const loserIds = losers.map((l) => l.id);
   await prisma.$transaction(async (tx) => {
-    await tx.project.updateMany({ where: { clientId: { in: loserIds } }, data: { clientId: survivor.id } });
-    await tx.smartTask.updateMany({ where: { clientId: { in: loserIds } }, data: { clientId: survivor.id } });
-    await tx.contact.updateMany({ where: { clientId: { in: loserIds } }, data: { clientId: survivor.id } });
-    await tx.commLog.updateMany({ where: { clientId: { in: loserIds } }, data: { clientId: survivor.id } });
+    const to = { where: { clientId: { in: loserIds } }, data: { clientId: survivor.id } };
+    await tx.project.updateMany(to);
+    await tx.smartTask.updateMany(to);
+    await tx.contact.updateMany(to);
+    await tx.commLog.updateMany(to);
+    // Content program + signups + owner to-dos: plain clientId refs (and, for
+    // OwnerTodo, a SetNull FK) — nothing here errors when the client vanishes,
+    // it just quietly loses the person it belonged to. Re-point them all.
+    await tx.contentEnrollment.updateMany(to);
+    await tx.contentMonth.updateMany(to);
+    await tx.contentTopic.updateMany(to);
+    await tx.contentScript.updateMany(to);
+    await tx.contentNote.updateMany(to);
+    await tx.contentStrategy.updateMany(to);
+    await tx.agentProfile.updateMany(to);
+    await tx.programSignup.updateMany(to);
+    await tx.ownerTodo.updateMany(to);
     await tx.client.updateMany({ where: { parentClientId: { in: loserIds } }, data: { parentClientId: survivor.id } });
+    // Delete the duplicates first so their unique aryeoCustomerId frees up.
     await tx.client.deleteMany({ where: { id: { in: loserIds } } });
+    // Then apply the merged record to the survivor.
     await tx.client.update({
       where: { id: survivor.id },
       data: {

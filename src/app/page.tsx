@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { authEnforced } from "@/lib/auth/guards";
 import { redirect } from "next/navigation";
 import { ArrowRight, Camera, CheckCircle2, Hourglass, PlayCircle, RefreshCw, Sun } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -50,6 +51,10 @@ export default async function DashboardPage() {
   // this covers per-user "dashboard" permission overrides). Sessionless local
   // dev renders the full owner view.
   if (me && contentTier(me.role) === "CREATIVE") redirect(homeFor(me.role));
+  // A revoked account keeps a valid JWT for up to 7 days, and /: has no PAGES
+  // entry so middleware only checks that the token verifies — fail closed here
+  // rather than letting a null viewer read as owner (Sep 2 review).
+  if (!me && authEnforced()) redirect("/login");
   const isOwner = !me || me.role === "OWNER";
 
   const [todayCount, counts, stuck, shoots, radar, handledToday, ownerStats, pulse, dials, unanswered, videoReview, openLoops] = await Promise.all([

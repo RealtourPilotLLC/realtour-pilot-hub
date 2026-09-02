@@ -5,6 +5,7 @@ import { photographerMemberId, getShootPhotographer } from "@/lib/shoot";
 import { getFeedbackHub, getFeedbackRoster } from "@/lib/photographerFeedback";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
+import { homeFor } from "@/lib/auth/access";
 import { PageHeader } from "@/components/PageHeader";
 import { FieldTabs } from "@/components/shoot/FieldTabs";
 import { FeedbackHubView } from "@/components/shoot/FeedbackHub";
@@ -31,6 +32,14 @@ export default async function QualityFeedbackPage({
   // would hand them the whole roster + any ?as= hub.
   if (!user && authEnforced()) redirect("/login");
   const isPhotographer = user?.role === "PHOTOGRAPHER";
+  // Owner/admin (the quality desk) and photographers (their own hub) only. The
+  // middleware leaves every /shoot/* subpath ungated, so an EDITOR reaching this
+  // URL fell through as "not a photographer" and got the whole photographer
+  // scoreboard — and with ?as=<memberId>, any photographer's feedback hub
+  // (audit Sep 2). Bounce them to their own home.
+  if (user && !isPhotographer && user.role !== "OWNER" && user.role !== "ADMIN") {
+    redirect(homeFor(user.role));
+  }
   const { as } = await searchParams;
 
   const viewAs = !isPhotographer && as ? await getShootPhotographer(as) : null;

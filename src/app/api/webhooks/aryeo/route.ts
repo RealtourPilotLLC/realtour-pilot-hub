@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
-import { getConnection } from "@/lib/integrations/connections";
+import { getConnection, getSecret } from "@/lib/integrations/connections";
 import { syncAryeoOrders, syncAryeoAppointments, syncAryeoSocialPlans, syncAryeoCustomers } from "@/lib/integrations/aryeo";
 import { syncClientSegments } from "@/lib/segmentSync";
 
@@ -11,16 +11,32 @@ export const dynamic = "force-dynamic";
 // Receives Aryeo webhooks (order fulfilled, customer created, invoice paid,
 // media delivered, …). Logs every event for audit/replay, verifies the
 // signature when a webhook secret is configured, then processes known events.
+
+// Stamped on the WebhookEvent row of every event we let through WITHOUT
+// verifying it, so an unsigned acceptance is self-describing forever instead of
+// looking identical to a verified one. /connections counts rows on this prefix,
+// and the OpenPhone receiver stamps the same marker — keep the three in step.
+const UNSIGNED_MARKER = "UNSIGNED: accepted without verification — no webhook secret configured";
+
+// The signing secret for inbound Aryeo webhooks. Saved from /connections into
+// the same encrypted store as every other credential ("aryeo_webhook"); the
+// legacy PLAINTEXT Connection.webhookSecret column is still read as a fallback
+// so a secret pasted in by hand before this change keeps verifying.
+async function aryeoWebhookSecret(): Promise<string | null> {
+  return (await getSecret("aryeo_webhook")) || (await getConnection("aryeo"))?.webhookSecret || null;
+}
+
 export async function POST(req: NextRequest) {
   const raw = await req.text();
 
-  // Optional signature verification (HMAC-SHA256 of the raw body). Aryeo signs
-  // with a header literally named `Signature` (see docs: "Setting Up Webhooks").
-  // Verification only runs if we've configured a webhookSecret on the Connection;
-  // it's safe to leave off because processAryeoEvent never trusts the payload's
-  // contents — it re-fetches the authoritative record from Aryeo's API.
-  const conn = await getConnection("aryeo");
-  const secret = conn?.webhookSecret;
+  // Signature verification (HMAC-SHA256 of the raw body). Aryeo signs with a
+  // header literally named `Signature` (see docs: "Setting Up Webhooks").
+  // FAIL CLOSED once a secret exists. Until one does we still accept — pulling
+  // the plug outright would sever live order/appointment events before the
+  // owner can press the button — but every such acceptance is logged and
+  // counted as unsigned rather than silently waved through.
+  const secret = await aryeoWebhookSecret();
+  const unsigned = !secret;
   if (secret) {
     const sig =
       req.headers.get("signature") ||
@@ -28,11 +44,14 @@ export async function POST(req: NextRequest) {
       req.headers.get("x-signature") ||
       req.headers.get("aryeo-signature") ||
       "";
-    const expected = crypto.createHmac("sha256", secret).update(raw).digest("hex");
-    const provided = sig.replace(/^sha256=/, "");
-    const ok =
-      provided.length === expected.length &&
-      crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
+    // Compare BYTES, and gate on BYTE length. timingSafeEqual THROWS when the
+    // two buffers differ in length, and a JS string's .length counts characters,
+    // not bytes — so a `Signature` header of 64 multibyte characters cleared a
+    // character gate and then blew up inside the compare, turning what should be
+    // a clean 401 into a 500 (same defect as the OpenPhone `?t=` check).
+    const expected = Buffer.from(crypto.createHmac("sha256", secret).update(raw).digest("hex"), "utf8");
+    const provided = Buffer.from(sig.replace(/^sha256=/, ""), "utf8");
+    const ok = provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
     if (!ok) {
       // Log the rejection so a real-but-mismatched Aryeo signature is VISIBLE
       // (rather than a silent 401 with no trace) — makes a signing-format
@@ -48,6 +67,11 @@ export async function POST(req: NextRequest) {
       } catch { /* ignore */ }
       return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
     }
+  } else {
+    // Nothing was verified. Say so on every request (Vercel logs) as well as on
+    // the stored row — the receiver URL became guessable when the app moved to
+    // hub.realtourpilot.com, and a forged POST here reconciles real projects.
+    console.warn("[webhook] aryeo: UNSIGNED event accepted — no signing secret configured. Save one on /connections to close this.");
   }
 
   let payload: Record<string, unknown> = {};
@@ -74,7 +98,15 @@ export async function POST(req: NextRequest) {
   }
 
   const log = await prisma.webhookEvent.create({
-    data: { provider: "aryeo", eventType, externalId, payload: raw || "{}" },
+    data: {
+      provider: "aryeo",
+      eventType,
+      externalId,
+      payload: raw || "{}",
+      // Marker only — status stays on its normal RECEIVED→PROCESSED path so
+      // dedupe and the hourly retry sweep behave exactly as before.
+      error: unsigned ? UNSIGNED_MARKER : null,
+    },
   });
 
   try {

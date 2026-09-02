@@ -11,11 +11,19 @@ export const dynamic = "force-dynamic";
 // Receives OpenPhone events (message.received/delivered, call.completed/ringing/
 // recording.completed), logs them, and attaches an activity to the matching
 // client's most recent project so comms show up in real time.
+
+// Stamped on the WebhookEvent row of every event we let through WITHOUT
+// verifying it, so an unsigned acceptance is self-describing forever instead of
+// looking identical to a verified one. /connections counts rows on this prefix,
+// and the Aryeo receiver stamps the same marker — keep the three in step.
+const UNSIGNED_MARKER = "UNSIGNED: accepted without verification — no webhook token configured";
+
 export async function POST(req: NextRequest) {
   // Reject spoofed events once the webhook has been (re)registered with a shared
   // token (backward compatible: allowed until a token is stored). See
   // registerOpenPhoneWebhooks / openPhoneRequestAuthorized.
-  if (!(await openPhoneRequestAuthorized(req.nextUrl.searchParams.get("t")))) {
+  const auth = await openPhoneRequestAuthorized(req.nextUrl.searchParams.get("t"));
+  if (!auth.ok) {
     // A token IS configured and this POST failed it (no token stored = the check
     // passes) — log the rejection so it's countable/visible on /connections, and
     // spike-alert if it keeps happening. Best-effort; the 401 always goes out.
@@ -27,6 +35,13 @@ export async function POST(req: NextRequest) {
       await alertWebhookRejections("openphone");
     } catch { /* ignore */ }
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+  // Accepted, but nothing was verified. Say so on every single request (Vercel
+  // logs) as well as on the stored row — a silent accept-all is the fault:
+  // this receiver waved through 1,380 events in 30 days with no way to tell
+  // a real client text from a forged one.
+  if (auth.unsigned) {
+    console.warn("[webhook] openphone: UNSIGNED event accepted — no token configured. Press “Enable real-time” on /connections to close this.");
   }
   const raw = await req.text();
   let payload: Record<string, unknown> = {};
@@ -48,7 +63,15 @@ export async function POST(req: NextRequest) {
   }
 
   const log = await prisma.webhookEvent.create({
-    data: { provider: "openphone", eventType: type, externalId, payload: raw || "{}" },
+    data: {
+      provider: "openphone",
+      eventType: type,
+      externalId,
+      payload: raw || "{}",
+      // Marker only — status stays on its normal RECEIVED→PROCESSED path so
+      // dedupe and the hourly retry sweep behave exactly as before.
+      error: auth.unsigned ? UNSIGNED_MARKER : null,
+    },
   });
 
   try {

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
-  Mail, Phone, Camera, Palette, Star, CalendarDays,
+  Mail, Phone, MapPin, Camera, Palette, Star, CalendarDays,
   Upload, MessageSquare, Clock, ArrowRight,
 } from "lucide-react";
 import { BackLink } from "@/components/ui/BackLink";
@@ -12,16 +12,46 @@ import { PaySettings } from "@/components/team/PaySettings";
 import { getTeamMemberDetail } from "@/lib/queries";
 import { stageMeta, ROLE_META } from "@/lib/pipeline";
 import { etDateTime, etMonthDay, etTime, isTodayET } from "@/lib/datetime";
+import { requirePageAccess, authEnforced } from "@/lib/auth/guards";
+import { getCurrentUser } from "@/lib/auth/user";
 
 export const dynamic = "force-dynamic";
 
 export default async function TeamMemberPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+
+  // READ GUARD (audit Sep 2). This page had none: /team left PAGES when Team
+  // merged into People, so pathKey() returns null for /team/<id> and the
+  // middleware waves EVERY signed-in user through — an editor or photographer
+  // could open any teammate's page and read their phone, pay percent, minimum
+  // per shoot, mileage rate and HOME ADDRESS. (Only the mutations here were
+  // guarded.) It is the People page's Team-tab detail view, so it gates on the
+  // same key the tab does: "users" (which absorbed the legacy "team" key).
+  // Guard runs BEFORE the query so a denied viewer can't even time the
+  // notFound() to learn whether an id exists.
+  await requirePageAccess("users");
+
+  // The MONEY here — shoot pay %, minimum per shoot, mileage rate — is the
+  // owner's alone (Jordan, Sep 2: Kyle gets full ops access, no money), and
+  // savePaySettings() is requireOwner() so nobody else could write it anyway.
+  // The home address is NOT money: it is the origin the payroll engine measures
+  // every mile from, and the admin is the one who checks why a photographer's
+  // mileage looks wrong or whether a new shooter's address was ever filled in.
+  // So it rides with the phone/email in the contact line instead of being lost
+  // inside the owner-only card. Cached getCurrentUser: no extra DB read.
+  // No user = local dev with auth off (owner view), same shape as /users.
+  const me = await getCurrentUser().catch(() => null);
+  const canSeePay = me ? me.role === "OWNER" : !authEnforced();
+  const canSeeAddress = me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
+
   const data = await getTeamMemberDetail(id);
   if (!data) notFound();
   const { member, upcoming, recentShoots, editingNow, feedback, uploads, kpis } = data;
   const role = ROLE_META[member.role];
   const first = member.name.split(" ")[0];
+  // Who the payroll engine actually pays per shoot — the only people whose home
+  // address means anything. Gates both the address line and the pay card.
+  const paidPerShoot = member.role === "PHOTOGRAPHER" || member.isServiceProvider;
 
   // Build a one-click morning well-wish if they have a shoot today.
   const todayShoot = upcoming.find((a) => a.startAt && isTodayET(a.startAt));
@@ -51,6 +81,15 @@ export default async function TeamMemberPage({ params }: { params: Promise<{ id:
                 <a href={`tel:${member.phone}`} className="inline-flex items-center gap-1.5 hover:text-foreground">
                   <Phone className="size-3.5" /> {member.phone}
                 </a>
+              )}
+              {canSeeAddress && paidPerShoot && (
+                <span
+                  className={`inline-flex items-center gap-1.5 ${member.homeAddress ? "" : "text-muted-2"}`}
+                  title="Mileage is measured from here"
+                >
+                  <MapPin className="size-3.5" />
+                  {member.homeAddress || "No home address set (mileage origin)"}
+                </span>
               )}
             </div>
           </div>
@@ -158,7 +197,7 @@ export default async function TeamMemberPage({ params }: { params: Promise<{ id:
             </div>
           </section>
 
-          {(member.role === "PHOTOGRAPHER" || member.isServiceProvider) && (
+          {canSeePay && paidPerShoot && (
             <PaySettings
               memberId={member.id}
               homeAddress={member.homeAddress}

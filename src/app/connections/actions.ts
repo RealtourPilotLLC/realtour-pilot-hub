@@ -1,8 +1,10 @@
 "use server";
 
 import { requireOwner } from "@/lib/auth/guards";
+import { prisma } from "@/lib/prisma";
 
 import { revalidatePath } from "next/cache";
+import { appBase } from "@/lib/appUrl";
 import { saveSecret, disconnect as disconnectConn } from "@/lib/integrations/connections";
 import { testOpenPhoneKey, registerOpenPhoneWebhooks } from "@/lib/integrations/openphone";
 import { testStripeKey, syncStripe } from "@/lib/integrations/stripe";
@@ -212,19 +214,70 @@ export async function recheckStatusesNow(): Promise<ActionResult> {
 
 export async function enableOpenPhoneRealtime(): Promise<ActionResult> {
   await requireOwner();
-  const base = process.env.NEXT_PUBLIC_APP_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
-  if (!base) return { ok: false, message: "Deploy the app first — webhooks need a public URL." };
+  // One origin helper for the whole app (src/lib/appUrl) — this used to read
+  // NEXT_PUBLIC_APP_URL/VERCEL_URL by hand, so with the env var unset it would
+  // have registered OpenPhone against the ephemeral per-deploy vercel.app host
+  // instead of hub.realtourpilot.com. https-only: appBase() falls back to
+  // localhost in dev, which OpenPhone can't reach.
+  const base = appBase();
+  if (!/^https:\/\//.test(base)) return { ok: false, message: "Deploy the app first — webhooks need a public URL." };
   try {
     const r = await registerOpenPhoneWebhooks(`${base}/api/webhooks/openphone`);
+    const host = base.replace(/^https:\/\//, "");
     return {
       ok: true,
-      message: r.transcripts
-        ? "Real-time enabled — texts, calls & call transcripts will log automatically."
-        : "Real-time enabled for texts & calls (transcripts not available on this plan).",
+      message:
+        (r.transcripts
+          ? "Real-time enabled — texts, calls & call transcripts will log automatically."
+          : "Real-time enabled for texts & calls (transcripts not available on this plan).") +
+        ` Signing token stored — the receiver at ${host} now rejects anything unsigned.`,
     };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Could not register webhooks." };
   }
+}
+
+// Aryeo's inbound-webhook signing secret. Stored through the SAME encrypted
+// plumbing as every API key (saveSecret → encryptSecret), under its own
+// "aryeo_webhook" provider row — mirroring how the OpenPhone token is kept.
+// The receiver (api/webhooks/aryeo) HMAC-SHA256s the raw body with it and
+// rejects anything that doesn't match, so until this is saved the endpoint
+// accepts posts from anyone who knows the URL. The value is never read back to
+// the browser and never appears in a message.
+export async function saveAryeoWebhookSecret(
+  _prev: ActionResult | null,
+  formData: FormData,
+): Promise<ActionResult> {
+  await requireOwner();
+  const secret = String(formData.get("secret") || "").trim();
+  if (!secret) return { ok: false, message: "Paste the signing secret from Aryeo." };
+  // Guard against a pasted placeholder/truncation: a 3-character "secret" would
+  // look protected on this page while being trivially guessable.
+  if (secret.length < 12) return { ok: false, message: "That looks too short to be a signing secret — copy the whole value." };
+  await saveSecret("aryeo_webhook", secret);
+  revalidatePath("/connections");
+  return {
+    ok: true,
+    message:
+      "Saved. Aryeo webhooks are now verified — anything unsigned is rejected. If real events start bouncing (watch the Sync health panel), the secret is wrong: remove it here and re-copy it.",
+  };
+}
+
+// Escape hatch: a WRONG secret bounces every real Aryeo event at the door, so
+// the owner must be able to turn verification back off without waiting for a
+// deploy. Clears only the "aryeo_webhook" row — the Aryeo API key is untouched.
+export async function clearAryeoWebhookSecret(): Promise<ActionResult> {
+  await requireOwner();
+  await disconnectConn("aryeo_webhook");
+  // The receiver ALSO falls back to the legacy plaintext Connection.webhookSecret
+  // column on the "aryeo" row (api/webhooks/aryeo → aryeoWebhookSecret), so
+  // clearing the encrypted row alone left a hand-pasted secret still verifying:
+  // "Remove" would report success while every real event kept bouncing at the
+  // door — exactly the wedge this escape hatch exists to undo. updateMany, not
+  // update, because the "aryeo" row may not exist.
+  await prisma.connection.updateMany({ where: { provider: "aryeo" }, data: { webhookSecret: null } });
+  revalidatePath("/connections");
+  return { ok: true, message: "Signing secret removed — the Aryeo receiver is accepting unsigned posts again." };
 }
 
 export async function syncOpenPhoneContactsNow(): Promise<ActionResult> {

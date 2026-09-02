@@ -19,6 +19,8 @@ import {
   ExternalLink,
   RefreshCw,
   Loader2,
+  ShieldCheck,
+  ShieldOff,
   type LucideIcon,
 } from "lucide-react";
 import type { ProviderDef } from "@/lib/integrations/registry";
@@ -38,6 +40,8 @@ import {
   syncQuickBooksNow,
   recheckStatusesNow,
   disconnectProvider,
+  saveAryeoWebhookSecret,
+  clearAryeoWebhookSecret,
   type ActionResult,
 } from "@/app/connections/actions";
 
@@ -56,6 +60,11 @@ export type ConnState = {
 // so the card says nothing rather than something wrong).
 export type GmailSendHealth = { email: string; canSend: boolean | null };
 
+// Whether THIS provider's inbound receiver verifies what it's sent, plus how
+// many events it has already accepted unverified (last 7 days). Only the two
+// providers that POST into the hub (OpenPhone, Aryeo) pass this.
+export type WebhookSecurity = { signed: boolean; unsignedAccepted: number };
+
 export function ProviderCard({
   provider,
   conn,
@@ -63,6 +72,7 @@ export function ProviderCard({
   dropboxAuthorizeUrl,
   googleAuthorizeUrl,
   gmailSendHealth,
+  webhookSecurity,
 }: {
   provider: ProviderDef;
   conn: ConnState | null;
@@ -70,6 +80,7 @@ export function ProviderCard({
   dropboxAuthorizeUrl?: string;
   googleAuthorizeUrl?: string;
   gmailSendHealth?: GmailSendHealth[] | null;
+  webhookSecurity?: WebhookSecurity;
 }) {
   const Icon = ICONS[provider.icon] ?? Circle;
   const connected = conn?.status === "CONNECTED";
@@ -105,6 +116,25 @@ export function ProviderCard({
       )}
       {errored && conn?.lastError && (
         <div className="mt-2 rounded-lg bg-danger-soft px-2 py-1 text-xs text-danger">{conn.lastError}</div>
+      )}
+
+      {/* Webhook security, at a glance. "Connected" said nothing about whether
+          this provider's receiver checks WHO is posting to it — and both ran
+          open for 30 days without one rejection. Loud when it's open. */}
+      {webhookSecurity && connected && (
+        <div className="mt-2">
+          {webhookSecurity.signed ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-success-soft px-2 py-0.5 text-[11px] font-medium text-success">
+              <ShieldCheck className="size-3" /> Webhook signed — verified
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 rounded-full bg-danger-soft px-2 py-0.5 text-[11px] font-medium text-danger">
+              <ShieldOff className="size-3" /> Webhook UNSIGNED — anyone can post here
+              {webhookSecurity.unsignedAccepted > 0 &&
+                ` · ${webhookSecurity.unsignedAccepted.toLocaleString()} accepted unchecked in 7 days`}
+            </span>
+          )}
+        </div>
       )}
 
       {/* Gmail: what each mailbox's token can actually DO. "Connected" hid a
@@ -162,6 +192,10 @@ export function ProviderCard({
             connected={connected}
             onExpand={() => setExpanded((e) => !e)}
             expanded={expanded}
+            // OpenPhone's fix IS "Enable real-time" (it registers the hook and
+            // stores the signing token) — promote it while the receiver is open,
+            // otherwise it reads like an optional nicety next to Sync contacts.
+            urgentRealtime={webhookSecurity ? !webhookSecurity.signed : false}
           />
         ) : provider.authType === "oauth" && !deployed ? (
           <button
@@ -191,6 +225,12 @@ export function ProviderCard({
         >
           <ExternalLink className="size-3" /> API docs
         </a>
+      )}
+
+      {/* Aryeo's inbound receiver has no secret of its own until it's pasted
+          here — the API key above doesn't sign anything coming IN. */}
+      {provider.id === "aryeo" && connected && webhookSecurity && (
+        <AryeoWebhookSecret signed={webhookSecurity.signed} />
       )}
 
       {provider.id === "aryeo" && expanded && <AryeoConnectForm />}
@@ -360,6 +400,90 @@ function AryeoConnectForm() {
   );
 }
 
+// Aryeo webhook signing. Same shape as the API-key forms (password field, the
+// value is encrypted server-side and never read back), but for the secret that
+// protects the INBOUND direction. Once saved, the receiver rejects anything
+// whose `Signature` header doesn't match — including, if the secret is wrong,
+// real Aryeo events; hence the plain-English warning and the Remove button, so
+// Jordan can undo it himself instead of waiting for a deploy.
+function AryeoWebhookSecret({ signed }: { signed: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [state, action, pending] = useActionState(saveAryeoWebhookSecret, null);
+  const [clearing, startClear] = useTransition();
+  const [clearMsg, setClearMsg] = useState<ActionResult | null>(null);
+
+  if (signed && !open) {
+    return (
+      <div className="mt-3 rounded-xl border bg-surface-2 px-3 py-2">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[11px] text-muted">Inbound webhooks are signature-verified.</span>
+          <div className="flex gap-2">
+            <button onClick={() => setOpen(true)} className="text-[11px] font-medium text-brand hover:underline">
+              Replace secret
+            </button>
+            <button
+              onClick={() => startClear(async () => setClearMsg(await clearAryeoWebhookSecret()))}
+              disabled={clearing}
+              className="text-[11px] font-medium text-muted hover:text-danger disabled:opacity-60"
+              title="Turn verification off — use this if real Aryeo events start bouncing"
+            >
+              Remove
+            </button>
+          </div>
+        </div>
+        {clearMsg && <p className={`mt-1 text-[11px] ${clearMsg.ok ? "text-success" : "text-danger"}`}>{clearMsg.message}</p>}
+      </div>
+    );
+  }
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="mt-3 w-full rounded-lg border border-danger/40 bg-danger-soft px-3 py-2 text-sm font-medium text-danger hover:opacity-90"
+      >
+        Secure this webhook — add signing secret
+      </button>
+    );
+  }
+
+  return (
+    <form action={action} className="mt-3 space-y-2 rounded-xl border bg-surface-2 p-3">
+      <label className="text-xs font-medium text-foreground/80">Aryeo webhook signing secret</label>
+      <input
+        name="secret"
+        type="password"
+        autoComplete="off"
+        placeholder="Paste the signing secret"
+        className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
+      />
+      <p className="text-[11px] text-muted">
+        In Aryeo: <strong>Group Settings → Developers → Webhooks</strong> — copy the signing secret for the webhook pointing at this
+        hub. Aryeo signs every post with it; we check the signature and reject anything that doesn&apos;t match. Encrypted before it&apos;s
+        stored and never shown again.
+      </p>
+      <p className="text-[11px] text-warning">
+        If the secret is wrong, real Aryeo events will start bouncing — they show up as rejections in Sync health above, and you can
+        remove the secret here to undo it.
+      </p>
+      <div className="flex gap-2">
+        <button
+          type="submit"
+          disabled={pending}
+          className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+        >
+          {pending && <Loader2 className="size-4 animate-spin" />}
+          Save &amp; verify from now on
+        </button>
+        <button type="button" onClick={() => setOpen(false)} className="rounded-lg border px-3 py-2 text-sm font-medium hover:bg-surface">
+          Cancel
+        </button>
+      </div>
+      {state && <p className={`text-xs ${state.ok ? "text-success" : "text-danger"}`}>{state.message}</p>}
+    </form>
+  );
+}
+
 // Gmail uses a Google OAuth redirect (Connect → authorize → callback).
 function GmailActions({
   connected,
@@ -474,11 +598,13 @@ function GenericApiKeyActions({
   connected,
   onExpand,
   expanded,
+  urgentRealtime = false,
 }: {
   provider: ProviderDef;
   connected: boolean;
   onExpand: () => void;
   expanded: boolean;
+  urgentRealtime?: boolean;
 }) {
   const [pending, startTransition] = useTransition();
   const [msg, setMsg] = useState<ActionResult | null>(null);
@@ -507,9 +633,18 @@ function GenericApiKeyActions({
             <button
               onClick={() => startTransition(async () => setMsg(await enableOpenPhoneRealtime()))}
               disabled={pending}
-              className="rounded-lg border px-3 py-2 text-sm font-medium hover:bg-surface-2 disabled:opacity-60"
+              title={
+                urgentRealtime
+                  ? "Registers the webhook and stores a signing token — until then this receiver accepts anything posted to it"
+                  : "Re-register the webhook (rotates the signing token)"
+              }
+              className={`rounded-lg px-3 py-2 text-sm font-medium disabled:opacity-60 ${
+                urgentRealtime
+                  ? "border border-danger/40 bg-danger-soft text-danger hover:opacity-90"
+                  : "border hover:bg-surface-2"
+              }`}
             >
-              {pending ? <Loader2 className="size-4 animate-spin" /> : "Enable real-time"}
+              {pending ? <Loader2 className="size-4 animate-spin" /> : urgentRealtime ? "Enable real-time & sign webhooks" : "Enable real-time"}
             </button>
             <button
               onClick={() => startTransition(async () => setMsg(await syncOpenPhoneContactsNow()))}

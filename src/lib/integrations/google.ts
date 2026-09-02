@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { getSecret } from "./connections";
 import { cleanText, clip, stripQuotedReply } from "@/lib/text";
+import { originOrBase } from "@/lib/appUrl";
 
 // ---------------------------------------------------------------------------
 // Google / Gmail integration (OAuth2 with offline refresh tokens, read-only).
@@ -231,24 +232,50 @@ export function googleConfigured() {
   return Boolean(CLIENT_ID && CLIENT_SECRET);
 }
 
-function appBase() {
-  return (
-    process.env.NEXT_PUBLIC_APP_URL ||
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000")
-  );
-}
-export function googleRedirectUri() {
-  return `${appBase()}/api/google/callback`;
+// `origin` = the host the browser is on (hub.realtourpilot.com or the old
+// vercel.app host). Both are registered on the Google client, same as the login
+// flow. This has to follow the request rather than pin to appBase(): the
+// anti-forgery cookie planted by /api/google/connect is HOST-ONLY, so sending a
+// browser that started on one host back to the other would fail the state check
+// every time. Falls back to appBase() for a non-https origin.
+export function googleRedirectUri(origin?: string | null): string {
+  return `${originOrBase(origin)}/api/google/callback`;
 }
 
+/**
+ * One-shot anti-forgery cookie for the mailbox connect flow: minted by
+ * /api/google/connect, matched and cleared by /api/google/callback. Named apart
+ * from the login flow's `rtp_oauth_state` so the two round trips can never
+ * satisfy each other's check.
+ */
+export const GOOGLE_STATE_COOKIE = "rtp_gmail_state";
+
+/**
+ * Where the "Connect Gmail" button points. NOT Google's URL any more: the flow
+ * now starts at our OWN route so it can check the caller is a signed-in
+ * owner/admin and plant the state cookie before handing off to Google.
+ * Returning Google's URL directly (what this used to do) meant the callback had
+ * nothing to verify — it accepted any authorization code from anyone, and every
+ * connected mailbox is polled into the company's comms and the AI's memory
+ * every 5 minutes.
+ */
 export function googleAuthorizeUrl(): string {
+  return "/api/google/connect";
+}
+
+/**
+ * Google's real consent screen. Only /api/google/connect builds this, and only
+ * after it has authenticated the caller and minted `state`.
+ */
+export function googleConsentUrl(state: string, origin?: string | null): string {
   const u = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   u.searchParams.set("client_id", CLIENT_ID);
-  u.searchParams.set("redirect_uri", googleRedirectUri());
+  u.searchParams.set("redirect_uri", googleRedirectUri(origin));
   u.searchParams.set("response_type", "code");
   u.searchParams.set("access_type", "offline");
   u.searchParams.set("prompt", "consent");
   u.searchParams.set("scope", SCOPES.join(" "));
+  u.searchParams.set("state", state);
   return u.toString();
 }
 
@@ -264,11 +291,15 @@ async function tokenRequest(params: Record<string, string>): Promise<Record<stri
   return json;
 }
 
-export async function exchangeGoogleCode(code: string): Promise<{ refreshToken: string }> {
+// `origin` must be the SAME host the consent step used — Google rejects a token
+// exchange whose redirect_uri doesn't echo the authorize request exactly. The
+// callback runs on whatever host Google redirected to, so passing its own origin
+// through is what keeps both hosts working.
+export async function exchangeGoogleCode(code: string, origin?: string | null): Promise<{ refreshToken: string }> {
   const json = await tokenRequest({
     code: code.trim(),
     grant_type: "authorization_code",
-    redirect_uri: googleRedirectUri(),
+    redirect_uri: googleRedirectUri(origin),
   });
   const refreshToken = json.refresh_token as string | undefined;
   if (!refreshToken) throw new Error("Google did not return a refresh token. Remove the app's access and re-authorize.");

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/user";
+import { authEnforced } from "@/lib/auth/guards";
 import {
   MapPin,
   Package,
@@ -86,6 +87,13 @@ export default async function ProjectPage({
   // gate it — guard here. Photographers get the guided field view of their shoot;
   // editors (and any other non-admin role) are bounced home.
   const viewer = await getCurrentUser();
+  // Fail CLOSED on a null viewer once enforcement is on (the same line /shoot/<id>
+  // now carries). pathKey() returns null for /projects/<id>, so the middleware
+  // only proves the JWT verifies — and a disabled account keeps a valid one for
+  // the full 7-day token life. Null then falls straight THROUGH the role test
+  // below as "owner-ish", which is this page's whole payload: order pricing,
+  // invoice + payment links, balance owed, and the client's phone and email.
+  if (!viewer && authEnforced()) redirect(`/login?next=/projects/${id}`);
   if (viewer && viewer.role !== "OWNER" && viewer.role !== "ADMIN") {
     redirect(viewer.role === "PHOTOGRAPHER" ? `/shoot/${id}` : "/");
   }
