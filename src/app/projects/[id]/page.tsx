@@ -56,7 +56,9 @@ import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { photoTargetFor } from "@/lib/culling";
 import { PhotoTargetControl } from "@/components/project/PhotoTargetControl";
 import { formatMoney } from "@/lib/utils";
-import { customerNote } from "@/lib/clientNotes";
+import { canSeeMoney } from "@/lib/auth/access";
+import { redactMoney } from "@/lib/hubTools";
+import { customerNote, creativeCustomerNote } from "@/lib/clientNotes";
 import { formatDistanceToNow } from "date-fns";
 import { etDateTime, etDateYear } from "@/lib/datetime";
 import { listAssignees } from "@/lib/assignees";
@@ -76,6 +78,13 @@ const ACTIVITY_ICON: Record<string, { icon: typeof Star; color: string }> = {
   FILE: { icon: Package, color: "#64748b" },
 };
 
+// What an admin reads in place of a note that was ENTIRELY about money (the
+// whole sentence went, not just the figure — 1 activity row in 5,795 today).
+// The row keeps its slot, author and timestamp on purpose: a line that silently
+// vanished would read as "nothing happened here", which is the one thing an
+// audit trail must never say.
+const HELD_BACK = "Money detail — owner only.";
+
 export default async function ProjectPage({
   params,
 }: {
@@ -83,10 +92,11 @@ export default async function ProjectPage({
 }) {
   const { id } = await params;
 
-  // Only owner/admin see the full order detail (pricing, invoices, client
-  // financials). /projects isn't a top-level nav key, so the middleware doesn't
-  // gate it — guard here. Photographers get the guided field view of their shoot;
-  // editors (and any other non-admin role) are bounced home.
+  // Owner/admin only. /projects isn't a top-level nav key, so the middleware
+  // doesn't gate it — guard here. Photographers get the guided field view of
+  // their shoot; editors (and any other non-admin role) are bounced home.
+  // Passing this gate is NOT a money grant: an admin gets the whole job file,
+  // and the owner alone gets the figures (see showMoney below).
   const viewer = await getCurrentUser();
   // Fail CLOSED on a null viewer once enforcement is on (the same line /shoot/<id>
   // now carries). pathKey() returns null for /projects/<id>, so the middleware
@@ -99,12 +109,32 @@ export default async function ProjectPage({
     redirect(viewer.role === "PHOTOGRAPHER" ? `/shoot/${id}` : "/");
   }
 
+  // The job page is the screen Kyle and James open most, and it was the whole
+  // order file: total, balance owed, invoice + payment links, and any pricing a
+  // client happened to text us. Jordan, Sep 2 2026: an admin gets FULL ops
+  // access and NO money. canSeeMoney() is that rule stated once for the hub
+  // (src/lib/auth/access.ts) — OWNER only. It reads the EFFECTIVE role, so an
+  // owner previewing as Kyle ("view as") sees the money-blind page Kyle sees.
+  // A null viewer only survives the redirect above with enforcement off (local
+  // dev, operated by Jordan alone), which is the same call isOwnerView() makes.
+  const showMoney = viewer ? canSeeMoney(viewer.role) : !authEnforced();
+  // One money rule for every free-text block on this page. redactMoney (the
+  // hub's rule, src/lib/hubTools.ts) keeps the sentence and removes the FIGURE,
+  // so "chase the invoice on 12 Oak" still reads for Kyle while "$450" does not,
+  // and a sentence whose SUBJECT is internal money (AR, margin, payroll) goes
+  // whole. Owner text is untouched. Probe over all 5,795 activity rows: 60
+  // changed, 48 show the [amount withheld] marker, 0 residual $ figures.
+  const scrub = (t: string) => (showMoney ? t : redactMoney(t));
+
   const [project, team, assigneeList] = await Promise.all([getProject(id), getTeam(), listAssignees()]);
   if (!project) notFound();
   const assignees = assigneeList.map((a) => ({ key: a.key, name: a.name }));
-  // THE customer note — one list (src/lib/clientNotes.ts). Raw: this page is
-  // owner/admin only (everyone else was redirected above).
-  const clientNote = customerNote(project.client);
+  // THE customer note — one list (src/lib/clientNotes.ts). Owner reads it raw;
+  // everyone else gets the money-scrubbed cut, LINE BY LINE so a bulleted note
+  // keeps its shape (the flat redactor would fold this whitespace-pre-line
+  // block into one paragraph). Display only here — the note is edited on the
+  // client page, so nobody can save a scrubbed copy back over the real one.
+  const clientNote = showMoney ? customerNote(project.client) : creativeCustomerNote(project.client);
 
   const priority = PRIORITY_META[project.priority];
   const specialRequests = project.activities.filter(
@@ -118,11 +148,15 @@ export default async function ProjectPage({
     project.zip,
   ].filter(Boolean);
 
-  const hasBilling =
-    !!project.paymentStatus ||
-    project.balanceAmount != null ||
-    !!project.invoiceUrl ||
-    !!project.paymentUrl;
+  // For a money-blind viewer the card is worth showing ONLY for the payment
+  // status — the figures and links inside it are all owner-gated below, so a
+  // job with a balance but no status would otherwise render an empty card.
+  const hasBilling = showMoney
+    ? !!project.paymentStatus ||
+      project.balanceAmount != null ||
+      !!project.invoiceUrl ||
+      !!project.paymentUrl
+    : !!project.paymentStatus;
 
   // Deep links to this project's Dropbox upload folders (AutoHDR convention).
   const folders = projectFolderPaths({
@@ -468,7 +502,13 @@ export default async function ProjectPage({
             </Section>
           )}
 
-          {/* Billing (from Aryeo) — payment status + balance + links (order total lives in Order & schedule) */}
+          {/* Billing (from Aryeo) — payment STATUS for anyone who can open this
+              page, the figures and links for the OWNER only. Paid/unpaid is the
+              ops fact Kyle runs delivery off ("they've paid, go ahead") and
+              carries no amount; the balance, the invoice and the payment link
+              ARE the money and they go. The card keeps its title and says so
+              rather than disappearing — an admin must not read a silent card as
+              "nothing owed" and must know whom to ask. */}
           {hasBilling && (
             <Section
               icon={CreditCard}
@@ -486,28 +526,36 @@ export default async function ProjectPage({
               }
             >
               <div className="flex flex-wrap items-center gap-x-8 gap-y-3 text-sm">
-                {project.balanceAmount != null && (
-                  <div>
-                    <div className="text-xs text-muted">Balance due</div>
-                    <div className={project.balanceAmount > 0 ? "font-semibold text-warning" : "font-semibold text-success"}>
-                      {formatMoney(project.balanceAmount / 100)}
+                {showMoney ? (
+                  <>
+                    {project.balanceAmount != null && (
+                      <div>
+                        <div className="text-xs text-muted">Balance due</div>
+                        <div className={project.balanceAmount > 0 ? "font-semibold text-warning" : "font-semibold text-success"}>
+                          {formatMoney(project.balanceAmount / 100)}
+                        </div>
+                      </div>
+                    )}
+                    <div className="ml-auto flex gap-2">
+                      {project.invoiceUrl && (
+                        <a href={project.invoiceUrl} target="_blank" rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium hover:bg-surface-2">
+                          <FileText className="size-3.5" /> Invoice
+                        </a>
+                      )}
+                      {project.paymentUrl && project.balanceAmount != null && project.balanceAmount > 0 && (
+                        <a href={project.paymentUrl} target="_blank" rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-brand-fg hover:opacity-90">
+                          <ExternalLink className="size-3.5" /> Payment link
+                        </a>
+                      )}
                     </div>
-                  </div>
+                  </>
+                ) : (
+                  <p className="text-xs text-muted">
+                    The balance, the invoice and the payment link are owner-only — ask Jordan for the figure.
+                  </p>
                 )}
-                <div className="ml-auto flex gap-2">
-                  {project.invoiceUrl && (
-                    <a href={project.invoiceUrl} target="_blank" rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium hover:bg-surface-2">
-                      <FileText className="size-3.5" /> Invoice
-                    </a>
-                  )}
-                  {project.paymentUrl && project.balanceAmount != null && project.balanceAmount > 0 && (
-                    <a href={project.paymentUrl} target="_blank" rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-xs font-medium text-brand-fg hover:opacity-90">
-                      <ExternalLink className="size-3.5" /> Payment link
-                    </a>
-                  )}
-                </div>
               </div>
             </Section>
           )}
@@ -539,6 +587,11 @@ export default async function ProjectPage({
               {project.activities.map((a) => {
                 const meta = ACTIVITY_ICON[a.type] ?? ACTIVITY_ICON.NOTE;
                 const Icon = meta.icon;
+                // The feed replays the OpenPhone/Gmail thread verbatim, which is
+                // where per-product pricing actually reaches this page — "$50
+                // per room", "exterior only would be $200". Redacting the figure
+                // keeps the conversation Kyle needs.
+                const body = scrub(a.body);
                 return (
                   <li key={a.id} className="flex gap-3">
                     <span
@@ -548,7 +601,9 @@ export default async function ProjectPage({
                       <Icon className="size-3.5" />
                     </span>
                     <div className="min-w-0 flex-1">
-                      <div className="text-sm text-foreground/90">{a.body}</div>
+                      <div className={body ? "text-sm text-foreground/90" : "text-sm italic text-muted"}>
+                        {body || HELD_BACK}
+                      </div>
                       <div className="mt-0.5 text-xs text-muted">
                         {a.author?.name ?? "System"} ·{" "}
                         {formatDistanceToNow(a.createdAt, { addSuffix: true })}
@@ -567,11 +622,14 @@ export default async function ProjectPage({
           {specialRequests.length > 0 && (
             <Section icon={Star} title="Special requests" tone="warning" bodyClassName="py-3">
               <ul className="space-y-2">
-                {specialRequests.map((r) => (
-                  <li key={r.id} className="text-sm text-foreground/90">
-                    {r.body}
-                  </li>
-                ))}
+                {specialRequests.map((r) => {
+                  const body = scrub(r.body);
+                  return (
+                    <li key={r.id} className={body ? "text-sm text-foreground/90" : "text-sm italic text-muted"}>
+                      {body || HELD_BACK}
+                    </li>
+                  );
+                })}
               </ul>
             </Section>
           )}
@@ -582,7 +640,9 @@ export default async function ProjectPage({
               {project.packageName && (
                 <Row label="Package" value={project.packageName} />
               )}
-              {project.price != null && (
+              {/* The package NAME above is operational — an admin has to know a
+                  Premium Reel was ordered. The total is money and stops here. */}
+              {showMoney && project.price != null && (
                 <Row label="Order total" value={formatMoney(project.price)} />
               )}
               {project.squareFeet && (

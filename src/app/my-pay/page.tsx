@@ -1,14 +1,15 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { Camera, Car, Wallet, ChevronRight, SlidersHorizontal, Receipt, History, TrendingUp } from "lucide-react";
+import { Camera, Car, Wallet, ChevronRight, SlidersHorizontal, Receipt, History, TrendingUp, Upload } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { PayFlag } from "@/components/mypay/PayFlag";
 import { QuarterScoreCard } from "@/components/mypay/QuarterScoreCard";
 import { prisma } from "@/lib/prisma";
 import { quarterFor, scoreQuarter } from "@/lib/kpi";
 import { usd } from "@/lib/money";
-import { payPeriodFor, shiftPeriod } from "@/lib/payroll";
+import { payPeriodFor, periodBounds, shiftPeriod } from "@/lib/payroll";
 import { payHistoryFor } from "@/lib/payHistory";
+import { pendingWrapUpShoots } from "@/lib/shoot";
 import { etDayKey } from "@/lib/datetime";
 import { getCurrentUser } from "@/lib/auth/user";
 import { homeFor } from "@/lib/auth/access";
@@ -30,6 +31,13 @@ export const maxDuration = 60;
 // accruing one, and a peek at NEXT. Older history stays on Jordan's /payouts.
 // Anything off gets flagged straight to Jordan. Every closed period back to the
 // start of their work is browsable, and the year-to-date total sits on top.
+//
+// Shoots held by the debrief pay gate are dropped by the payroll engine before
+// this page ever sees a line, so they are re-listed separately (pendingWrapUpShoots)
+// under "waiting on your upload page". Without that a shoot silently VANISHES
+// off the pay page the day it's shot — the photographer's own record of a job
+// he did, gone, with nothing said (readiness audit, Sep 2). They carry no dollar
+// figure: the gate withholds the money, this page only stops hiding the shoot.
 
 const fmtDay = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }) : "—";
@@ -136,6 +144,13 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
   const inPeriod = (k: string) => k >= period.startKey && k <= period.endKey;
   const flagged = new Set(flags.map((f) => f.dedupeKey));
   const jobs = (person?.jobs ?? []).filter((j) => inPeriod(j.dayKey));
+  // The shoots the gate is holding back in THIS period. Cheap (one indexed
+  // project query) and it runs after payroll rather than beside it — payroll is
+  // the network-bound half, and this must never be the reason the pay page is
+  // slow. A failure here must not take the page down: the pay is what they came
+  // for, so we lose the waiting list, not the money.
+  const { start: periodStart, end: periodEnd } = periodBounds(period);
+  const pending = await pendingWrapUpShoots(memberId, periodStart, periodEnd).catch(() => []);
   const days = (person?.days ?? []).filter((d) => inPeriod(d.dayKey));
   const adjustments = (person?.adjustments ?? []).filter((a) => inPeriod(etDayKey(new Date(a.dateISO))));
   const asSuffix = sp.as ? `&as=${sp.as}` : "";
@@ -227,6 +242,15 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
               <div className="text-xl font-semibold text-success">{usd(selected.total)}</div>
             </div>
           </div>
+          {/* The total is honest about what it LEAVES OUT. Held shoots aren't in
+              it, and a photographer counting his own jobs would otherwise find
+              the number short with no explanation anywhere on the page. */}
+          {pending.length > 0 && (
+            <p className="mt-3 border-t border-border/60 pt-2.5 text-xs text-muted">
+              {pending.length} more shoot{pending.length === 1 ? "" : "s"} from this period {pending.length === 1 ? "isn't" : "aren't"} counted
+              here yet — {pending.length === 1 ? "its" : "their"} upload page {pending.length === 1 ? "hasn't" : "haven't"} been submitted. Listed below.
+            </p>
+          )}
         </div>
 
         {/* Shoots — each row shows the eligible-services invoice the pay % is
@@ -234,13 +258,16 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
         <div className="panel-shadow rounded-2xl border border-border bg-surface">
           <div className="flex items-center gap-2 border-b border-border px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-muted">
             <Camera className="size-3.5" /> Shoots
-            <span className="ml-auto rounded-full bg-surface-2 px-1.5 text-[10px] font-medium">{jobs.length}</span>
+            {/* Counts the held shoots too — they happened, they're in this
+                period, and leaving them out of the count is how one goes
+                missing without anybody noticing. */}
+            <span className="ml-auto rounded-full bg-surface-2 px-1.5 text-[10px] font-medium">{jobs.length + pending.length}</span>
           </div>
-          {jobs.length === 0 ? (
+          {jobs.length === 0 && pending.length === 0 ? (
             <p className="px-4 py-6 text-center text-sm text-muted-2">
               No shoots in this period yet — they appear here as they&apos;re scheduled and shot.
             </p>
-          ) : (
+          ) : jobs.length > 0 ? (
             <div className="divide-y divide-border/60">
               {jobs.map((j) => {
                 const key = `payflag-${memberId}-${j.projectId}-${period.startKey}`;
@@ -266,6 +293,36 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
                   </div>
                 );
               })}
+            </div>
+          ) : null}
+
+          {/* WAITING ON YOUR UPLOAD PAGE — shoots the pay gate is holding. No
+              dollar figure: the gate withholds the amount by design (Jordan,
+              Sep 1: "once submitted, this shoot will be added to your payroll").
+              What this block owes them is the shoot, the reason, and the door. */}
+          {pending.length > 0 && (
+            <div className="border-t border-border/60 bg-warning-soft/30">
+              <div className="flex items-center gap-2 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-warning">
+                <Upload className="size-3.5" /> Waiting on your upload page
+                <span className="ml-auto rounded-full bg-warning/15 px-1.5 text-[10px] font-medium">{pending.length}</span>
+              </div>
+              <div className="divide-y divide-border/60">
+                {pending.map((w) => (
+                  <Link key={w.projectId} href={`/upload/${w.projectId}`} className="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-2">
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm">{w.title.split(",")[0]}</span>
+                      <span className="block truncate text-[11px] text-muted-2">{fmtDay(w.shootISO)} · submit the upload page and this shoot joins your pay</span>
+                    </span>
+                    <span className="shrink-0 text-[11px] font-semibold text-warning">Not counted yet</span>
+                    <ChevronRight className="size-3.5 shrink-0 text-muted-2" />
+                  </Link>
+                ))}
+              </div>
+              <p className="px-4 pb-2.5 text-[11px] leading-relaxed text-muted">
+                Nothing here is lost. Files into Dropbox, tick everything off, then hit{" "}
+                <span className="font-medium text-foreground">Everything&rsquo;s uploaded — submit</span> — the shoot lands on your
+                payroll and the money shows above. Applies to shoots from Sep 2 2026 on.
+              </p>
             </div>
           )}
           <p className="border-t border-border/60 px-4 py-2 text-[11px] leading-relaxed text-muted-2">

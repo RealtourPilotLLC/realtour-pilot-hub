@@ -19,6 +19,16 @@ import { cn } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
+// The root layout titles every page "RealTour Pilot — Operations Hub"; on a
+// client's own portal that browser tab was advertising our internal software.
+// Own the title here. noindex/nofollow because the token link is the only gate:
+// if a client ever pastes it somewhere a crawler can reach, it must not become
+// a search result. (Page metadata wins over the root layout's.)
+export const metadata = {
+  title: "Your Content Program — RealTour Pilot",
+  robots: { index: false, follow: false },
+};
+
 // THE CLIENT HUB — a tabbed mini-app on the client's private token link
 // (Jordan, Aug 28, round three): Home (this month + one-spot session info +
 // scheduling) · Content Library (every session: date/time/location, videos
@@ -130,7 +140,9 @@ export default async function ClientPortalPage({
   // seed the form from the AI-built profile so the client edits from what we
   // know instead of a blank box. Their save writes the canonical Client
   // fields; the AI profile itself is never overwritten.
-  const { stripMoneySentences: scrubMoney } = await import("@/lib/text");
+  // (The money scrubber used to be imported here and never called — the real
+  // scrub happens where the strategy is read, below. Dropped: a dead top-level
+  // dynamic import loaded @/lib/text on every portal render.)
   // Prefill rules (Jordan, Aug 28): the style/preference fields seed ONLY from
   // what the client actually SAID on their calls — the intelligence facts the
   // call analyzer extracts from strategy + brand-discovery calls. Never from
@@ -221,6 +233,11 @@ export default async function ClientPortalPage({
   const terms = (termsSetting?.value?.trim() || DEFAULT_TERMS).split(/\n\s*\n/);
 
   return (
+    // The Shell renders /portal bare (isBare in src/components/Shell.tsx), so
+    // there is no staff chrome left to sit on top of. This full-viewport layer
+    // stays as the portal's own scroll surface — and as a second line of
+    // defence if that ever regresses — but it is NOT the thing hiding the hub:
+    // covering chrome never hid it from view-source or a screen reader.
     <div className="portal-light fixed inset-0 z-50 overflow-y-auto bg-background text-foreground">
       {/* aurora wash — the hub's futurist ground, tuned for the portal */}
       <div aria-hidden className="pointer-events-none fixed inset-x-0 top-0 h-72"

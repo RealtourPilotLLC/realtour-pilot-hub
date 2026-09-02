@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { etDayStartUtc, etTime } from "@/lib/datetime";
+import { etDayKey, etDayStartUtc, etTime } from "@/lib/datetime";
 import { slugForName } from "@/lib/assignees";
 import { clip, stripMoneySentences } from "@/lib/text";
 import { parseClientProfile, type ClientProfile } from "@/lib/clientProfile";
@@ -276,9 +276,22 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
   };
 }
 
+// WHY a pay card reads the way it does. A creative-facing pay surface that
+// coerces a missing pay line to zero tells the person who did the work that the
+// work was worth nothing — a completely different sentence from "not worked out
+// yet" (readiness audit, Sep 2: the shoot Harrison finished that morning read
+// "$0.00" under the heading "Your pay for this shoot"). Only "paid" carries
+// money; every other state has to be rendered as words.
+export type ShootEarningsState =
+  | "paid" // a real pay line — the figures below ARE this shoot's pay
+  | "pending" // the debrief pay gate: earned, shown once the upload page is submitted
+  | "removed" // the office took this shoot off their payroll
+  | "unavailable"; // no line and no reason we can name — say so, never invent a zero
+
 export type ShootEarnings = {
-  configured: boolean; // pay rates set on the team page
-  hasHome: boolean; // home address set (for mileage)
+  state: ShootEarningsState;
+  configured: boolean; // pay rates set on the team page — only meaningful when state === "paid"
+  hasHome: boolean; // home address set (for mileage) — ditto
   shootPay: number;
   mileageShare: number;
   total: number;
@@ -286,6 +299,7 @@ export type ShootEarnings = {
   payableMiles: number | null;
   sharedJobs: number; // shoots that day splitting the mileage
   mileageRate: number;
+  returnTrip: boolean; // this line is a second visit to the property — flat rate
 };
 
 // Mirrors computePayroll's SHOOT_HAPPENED_STATUSES (src/lib/payroll.ts): a
@@ -296,6 +310,12 @@ const SHOOT_HAPPENED_STATUSES = new Set(["SHOT", "EDITING", "REVIEW", "REVISION"
 // What the assigned photographer earns on THIS shoot — base shoot pay + their
 // share of the day's drive mileage. Reuses the canonical payroll engine, scoped
 // to one creative so a single shoot view doesn't route everyone's day.
+//
+// Returns a STATE, not bare numbers: "held until you submit the upload page",
+// "the office took this off your payroll" and "we couldn't work it out" all used
+// to collapse into $0.00, which is a lie told to the one person who can't check
+// it. `null` still means "this shoot has nothing to do with your pay" — the card
+// renders nothing at all.
 export async function shootEarnings(projectId: string, memberId: string | null): Promise<ShootEarnings | null> {
   if (!memberId) return null;
   const proj = await prisma.project.findUnique({
@@ -303,6 +323,13 @@ export async function shootEarnings(projectId: string, memberId: string | null):
     select: {
       shootDate: true,
       status: true,
+      // The debrief pay gate reads these two — see the gate check below.
+      debriefSubmittedAt: true,
+      photographerId: true,
+      // The owner taking over who's paid on a job overrides Aryeo's per-leg
+      // assignee (mirrors computePayroll) — so it also decides whether an
+      // appointment assignee is a payee here at all.
+      photographerManual: true,
       // All rows regardless of status — see computePayroll: shootDate is stale
       // (never cleared) once every appointment cancels, so it only stands in for
       // the pay date on projects that never had appointments synced at all — or
@@ -310,46 +337,155 @@ export async function shootEarnings(projectId: string, memberId: string | null):
       _count: { select: { appointments: true } },
       appointments: {
         where: { status: { not: "CANCELED" }, startAt: { not: null } },
-        select: { startAt: true },
+        select: { startAt: true, assignedToId: true },
         orderBy: { startAt: "asc" },
       },
     },
   });
+  if (!proj) return null;
+  // A cancelled job is nobody's pay: computePayroll drops it outright, so there
+  // is no line to find and nothing honest to say about one.
+  if (proj.status === "CANCELLED") return null;
   const payDate =
-    proj?.appointments[0]?.startAt ??
-    (proj && (proj._count.appointments === 0 || SHOOT_HAPPENED_STATUSES.has(proj.status)) ? proj.shootDate : null);
+    proj.appointments[0]?.startAt ??
+    (proj._count.appointments === 0 || SHOOT_HAPPENED_STATUSES.has(proj.status) ? proj.shootDate : null);
   if (!payDate) return null;
+
+  const { computePayroll, DEBRIEF_PAY_GATE_FROM } = await import("@/lib/payroll");
+
+  // A verdict with no money in it — every non-"paid" state renders as a sentence.
+  const noMoney = (state: ShootEarningsState, of?: { configured: boolean; hasHome: boolean }): ShootEarnings => ({
+    state,
+    configured: of?.configured ?? true,
+    hasHome: of?.hasHome ?? true,
+    shootPay: 0,
+    mileageShare: 0,
+    total: 0,
+    dayMiles: null,
+    payableMiles: null,
+    sharedJobs: 1,
+    mileageRate: 0,
+    returnTrip: false,
+  });
+
+  // THE DEBRIEF PAY GATE, mirrored from computePayroll (src/lib/payroll.ts): a
+  // shoot from Sep 2 2026 on that has HAPPENED but whose upload page was never
+  // submitted is withheld from creative pay until the wrap-up is in — and only
+  // for the PRIMARY photographer, whose job that wrap-up is. Keyed on shootDate
+  // exactly as the engine keys it, so the two can never disagree about which
+  // shoot is being held. Answered BEFORE the payroll pass: a held shoot shows no
+  // figures, so routing its mileage would be work done to print nothing.
+  if (
+    proj.shootDate &&
+    proj.shootDate.getTime() >= DEBRIEF_PAY_GATE_FROM &&
+    proj.shootDate.getTime() <= Date.now() &&
+    !proj.debriefSubmittedAt &&
+    proj.photographerId === memberId
+  ) {
+    return noMoney("pending");
+  }
 
   // Scope payroll to JUST this shoot's ET day, not the whole 14-day pay period.
   // The per-job numbers (shoot pay + that day's mileage share) are identical, but
   // we route one day instead of fourteen — the difference between a snappy page
   // and a multi-second OSRM stall. MileageDay caching makes repeat loads instant.
-  const { computePayroll } = await import("@/lib/payroll");
-  const start = etDayStartUtc(payDate);
-  const end = new Date(start.getTime() + 86400000 - 1);
+  //
+  // Days earliest-first: nearly every shoot is one. A property visited TWICE
+  // carries two, and this member's line can sit on either — routing only the
+  // first printed "$0.00" on shoots whose first visit was somebody else's (live,
+  // Sep 2: 3206 W Dauphin St and 2402 Hickory Hill Rd both read $0.00 while My
+  // Pay paid Harrison $100 and $105.90 for the return trip he did do). Earliest
+  // first keeps every shoot that already resolves on its primary day unchanged;
+  // capped at three passes so a much-revisited property can't turn one card into
+  // a routing job.
+  const dayKeys = [...new Set([...proj.appointments.map((a) => etDayKey(a.startAt!)), etDayKey(payDate)])].slice(0, 3);
 
-  let person;
-  try {
-    const people = await computePayroll(start, end, { memberId, forCreativeEyes: true });
-    person = people.find((x) => x.member.id === memberId);
-  } catch {
-    return null;
+  let rates: { configured: boolean; hasHome: boolean } | null = null;
+  for (const dayKey of dayKeys) {
+    const start = etDayStartUtc(new Date(`${dayKey}T12:00:00Z`));
+    const end = new Date(start.getTime() + 86400000 - 1);
+
+    let person;
+    try {
+      const people = await computePayroll(start, end, { memberId, forCreativeEyes: true });
+      person = people.find((x) => x.member.id === memberId);
+    } catch {
+      // Payroll routes mileage over the public OSRM service. A failure here used
+      // to return null and make the whole card vanish — the photographer's pay
+      // gone off the screen with nothing said about it.
+      return noMoney("unavailable", rates ?? undefined);
+    }
+    if (!person) continue;
+    rates = { configured: person.configured, hasHome: person.hasHome };
+
+    const job = person.jobs.find((j) => j.projectId === projectId);
+    if (job) {
+      const day = person.days.find((d) => d.dayKey === job.dayKey);
+      return {
+        state: "paid",
+        configured: person.configured,
+        hasHome: person.hasHome,
+        shootPay: job.shootPay,
+        mileageShare: job.mileageShare,
+        total: job.jobTotal,
+        dayMiles: day?.miles ?? null,
+        payableMiles: day?.payableMiles ?? null,
+        sharedJobs: day?.jobs ?? 1,
+        mileageRate: person.mileageRate,
+        returnTrip: job.returnTrip,
+      };
+    }
+    // The owner explicitly took this shoot off their payroll (restorable on
+    // /payouts). Worth a sentence — printing $0.00 instead read as "your work
+    // was worth nothing" (live, Sep 2: 1224 Gail Rd, one of Harrison's).
+    if (person.removedJobs.some((r) => r.projectId === projectId)) return noMoney("removed", rates);
   }
-  if (!person) return null;
 
-  const job = person.jobs.find((j) => j.projectId === projectId);
-  const day = job ? person.days.find((d) => d.dayKey === job.dayKey) : null;
-  return {
-    configured: person.configured,
-    hasHome: person.hasHome,
-    shootPay: job?.shootPay ?? 0,
-    mileageShare: job?.mileageShare ?? 0,
-    total: job?.jobTotal ?? 0,
-    dayMiles: day?.miles ?? null,
-    payableMiles: day?.payableMiles ?? null,
-    sharedJobs: day?.jobs ?? 1,
-    mileageRate: person.mileageRate,
-  };
+  // No line on any of this shoot's days. If this member is a payee here at all
+  // that's a hole in their pay and they should hear about it; if they simply
+  // aren't paid on this job (a colleague's shoot they can open), say nothing.
+  const isPayee = proj.photographerManual
+    ? proj.photographerId === memberId
+    : proj.photographerId === memberId || proj.appointments.some((a) => a.assignedToId === memberId);
+  return isPayee ? noMoney("unavailable", rates ?? undefined) : null;
+}
+
+export type PendingWrapUpShoot = {
+  projectId: string;
+  title: string;
+  shootISO: string;
+  dayKey: string; // ET day, so a caller can slot it into a pay period
+};
+
+// Shoots this creative HAS been paid for but can't see the money on yet: the
+// debrief pay gate drops them inside computePayroll, before My Pay ever sees a
+// line, so without this list a shoot just silently disappears off the pay page
+// the day it's shot. Same predicate as the gate itself (src/lib/payroll.ts:
+// shootDate from Sep 2 2026 on, the shoot has happened, no submitted upload
+// page, and only for the PRIMARY photographer whose job that wrap-up is) — the
+// two must agree or a shoot would be listed as waiting while its pay showed, or
+// the other way round.
+export async function pendingWrapUpShoots(memberId: string, start: Date, end: Date): Promise<PendingWrapUpShoot[]> {
+  const { DEBRIEF_PAY_GATE_FROM } = await import("@/lib/payroll");
+  const from = new Date(Math.max(start.getTime(), DEBRIEF_PAY_GATE_FROM));
+  const to = new Date(Math.min(end.getTime(), Date.now()));
+  if (from > to) return [];
+  const rows = await prisma.project.findMany({
+    where: {
+      photographerId: memberId,
+      debriefSubmittedAt: null,
+      shootDate: { gte: from, lte: to },
+      status: { not: "CANCELLED" },
+    },
+    select: { id: true, title: true, shootDate: true },
+    orderBy: { shootDate: "asc" },
+  });
+  return rows.map((r) => ({
+    projectId: r.id,
+    title: r.title,
+    shootISO: r.shootDate!.toISOString(),
+    dayKey: etDayKey(r.shootDate!),
+  }));
 }
 
 // The TeamMember a logged-in user shoots as — their AppUser link, or an email

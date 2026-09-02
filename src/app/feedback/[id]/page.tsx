@@ -5,9 +5,20 @@ import { FeedbackForm } from "./FeedbackForm";
 
 export const dynamic = "force-dynamic";
 
+// The root layout titles every page "RealTour Pilot — Operations Hub" — not
+// what an agent should read in the tab of a form we texted them. Own it here,
+// and keep the form out of search results: it names a real client's address.
+export const metadata = {
+  title: "How did we do? — RealTour Pilot",
+  robots: { index: false, follow: false },
+};
+
 // Public, client-facing feedback form (linked from the post-delivery text —
-// see feedbackUrl() in src/lib/delivery.ts). Renders full-screen over the app
-// shell so clients see a clean page with no hub chrome.
+// see feedbackUrl() in src/lib/delivery.ts). The Shell renders this route bare
+// (isBare in src/components/Shell.tsx) — no sidebar, no staff feedback widget,
+// no links into the hub. It used to rely on the full-screen layer below to
+// COVER the chrome, which the z-1400 staff widget sat on top of and which did
+// nothing for view-source (audit, Sep 2).
 //
 // This page is the SOURCE OF TRUTH for what the submit is about: middleware
 // treats /feedback/<one-segment> as public, and the server action reads the job

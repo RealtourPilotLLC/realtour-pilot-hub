@@ -71,7 +71,14 @@ export default async function EditorQueuePage() {
     const myNotDone = mine(notDone);
     const myUpcoming = mine(upcomingRows);
     const myDone = mine(done);
-    const overdue = myNotDone.filter((r) => r.late).length;
+    // "To edit" is work the EDITOR owes. A cut already sitting in the Review
+    // Room (or approved and waiting on delivery) is on Jordan, not on Kim — now
+    // that the row labels tell the truth (Sep 2 audit), the header has to as
+    // well, or the count re-tells the same lie one line higher up.
+    const WAITING_ON_US = new Set(["Ready for review", "Approved"]);
+    const myToEdit = myNotDone.filter((r) => !WAITING_ON_US.has(r.status));
+    const inReview = myNotDone.length - myToEdit.length;
+    const overdue = myToEdit.filter((r) => r.late).length;
     const unread = await unreadThreadCount(me.id, [...myNotDone, ...myUpcoming, ...myDone].map((r) => r.id));
 
     return (
@@ -80,9 +87,11 @@ export default async function EditorQueuePage() {
           eyebrow="Your edits"
           title={`Hi ${(me.name ?? "there").split(" ")[0]}`}
           subtitle={
-            myNotDone.length
-              ? `${myNotDone.length} to edit${overdue ? ` · ${overdue} overdue` : ""} · ${myUpcoming.length} upcoming`
-              : "Nothing waiting — you're all caught up."
+            myToEdit.length
+              ? `${myToEdit.length} to edit${overdue ? ` · ${overdue} overdue` : ""}${inReview ? ` · ${inReview} in review` : ""} · ${myUpcoming.length} upcoming`
+              : inReview
+                ? `Nothing to edit · ${inReview} waiting on review · ${myUpcoming.length} upcoming`
+                : "Nothing waiting — you're all caught up."
           }
           actions={
             <div className="flex items-center gap-2">

@@ -25,12 +25,19 @@ import { getClientDetail } from "@/lib/queries";
 import { autoTextRules } from "@/lib/settings";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
+import { canSeeMoney } from "@/lib/auth/access";
+import { redactMoney } from "@/lib/hubTools";
 import { stageMeta } from "@/lib/pipeline";
 import { formatMoney, stripHtml } from "@/lib/utils";
 import { formatDistanceToNow } from "date-fns";
 import { etDateYear, etMonthDay, etDateTime } from "@/lib/datetime";
 
 export const dynamic = "force-dynamic";
+
+// What an admin reads in place of a timeline row that was ENTIRELY about money.
+// The row keeps its slot and timestamp: a line that silently disappeared would
+// read as "nothing happened here". Same wording as the job page.
+const HELD_BACK = "Money detail — owner only.";
 
 export default async function ClientDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -64,6 +71,20 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
   const canEditPrefs = me
     ? (me.realRole === "OWNER" || me.realRole === "ADMIN") && !me.impersonating
     : !authEnforced();
+
+  // Jordan, Sep 2 2026: an admin gets full ops access and NO money. This page
+  // led with the client's LIFETIME SPEND in the header and printed the price of
+  // every order in the list — the single largest money surface below the Finance
+  // hub. canSeeMoney() is the hub's one money rule (src/lib/auth/access.ts):
+  // OWNER only. Same `me ?: !authEnforced()` shape as canEditPrefs above — the
+  // effective role (so "view as Kyle" previews the money-blind page), and a null
+  // viewer only grants when enforcement is off (local dev, Jordan alone).
+  const showMoney = me ? canSeeMoney(me.role) : !authEnforced();
+  // Free text on this page replays the client's own texts and emails, which is
+  // where pricing turns up ("$50 per room"). redactMoney (src/lib/hubTools.ts)
+  // is the hub's rule for that: keep the sentence, drop the FIGURE, and drop
+  // whole any sentence whose subject is internal money (AR, margin, payroll).
+  const scrub = (t: string) => (showMoney ? t : redactMoney(t));
 
   // The LIVE automation rules, so the notification card states real timings and
   // can say out loud when the global master switch (Settings → Automated texts)
@@ -120,8 +141,13 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
             >
               <Sparkles className="size-4" /> Ask the Hub
             </Link>
+            {/* Orders is the ops number — how much work this client gives us.
+                Lifetime spend is money and is the owner's alone. It is dropped,
+                not blanked: there is no figure here to misread as zero. */}
             <Stat icon={<Package className="size-4" />} label="Orders" value={String(orderCount)} />
-            <Stat icon={<DollarSign className="size-4" />} label="Lifetime" value={formatMoney(totalSpend)} />
+            {showMoney && (
+              <Stat icon={<DollarSign className="size-4" />} label="Lifetime" value={formatMoney(totalSpend)} />
+            )}
           </div>
         </div>
         {client.parent && (
@@ -174,7 +200,10 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
                         {p.orderedAt ? etDateYear(p.orderedAt) : ""}
                         {p.shootDate ? ` · shoot ${etMonthDay(p.shootDate)}` : ""}
                         {` · ${p.deliverables.length} item${p.deliverables.length === 1 ? "" : "s"}`}
-                        {p.price ? ` · ${formatMoney(p.price)}` : ""}
+                        {/* Item COUNT and paid/unpaid stay — both are ops facts
+                            and neither is an amount. The per-order price is the
+                            money and stops at the owner. */}
+                        {showMoney && p.price ? ` · ${formatMoney(p.price)}` : ""}
                         {p.paymentStatus ? ` · ${p.paymentStatus.toLowerCase().replace(/_/g, " ")}` : ""}
                       </div>
                     </div>
@@ -198,7 +227,13 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
             <div className="rounded-2xl border bg-surface">
               {timeline.length === 0 && <p className="p-4 text-sm text-muted">No activity yet.</p>}
               <ShowMore initial={5} className="border-t border-border">
-              {timeline.slice(0, 60).map((t) => (
+              {timeline.slice(0, 60).map((t) => {
+                // The timeline is the client's own conversation played back —
+                // the one place per-product pricing reaches this page now the
+                // header and the order rows are gated. A row the scrub empties
+                // keeps its slot and timestamp rather than vanishing.
+                const body = scrub(stripHtml(t.body));
+                return (
                 <div key={t.id} className="flex gap-3 border-b border-border px-4 py-3 last:border-0">
                   <span className="mt-1">
                     {t.kind === "feedback" ? <Star className="size-4 text-warning" /> : <ActivityIcon className="size-4 text-muted-2" />}
@@ -209,7 +244,9 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
                         Feedback{t.rating ? ` · ${t.rating}/5` : ""}{t.sentiment ? ` · ${t.sentiment.toLowerCase()}` : ""}
                       </div>
                     )}
-                    <p className="text-sm text-foreground/90">{stripHtml(t.body)}</p>
+                    <p className={body ? "text-sm text-foreground/90" : "text-sm italic text-muted"}>
+                      {body || HELD_BACK}
+                    </p>
                     <div className="mt-0.5 text-[11px] text-muted-2">
                       {formatDistanceToNow(t.at, { addSuffix: true })}
                       {t.projectTitle && (
@@ -218,7 +255,8 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
                     </div>
                   </div>
                 </div>
-              ))}
+                );
+              })}
               </ShowMore>
             </div>
           </section>

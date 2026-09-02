@@ -1,6 +1,7 @@
 "use server";
 
 import { requireAdmin, requireTaskAccess } from "@/lib/auth/guards";
+import { deliveryStamp } from "@/lib/delivery";
 import { appBase } from "@/lib/appUrl";
 
 import { prisma } from "@/lib/prisma";
@@ -576,8 +577,13 @@ export async function moveProjectStatus(projectId: string, status: ProjectStatus
     where: { id: projectId },
     data: {
       status,
-      deliveredAt:
-        status === ProjectStatus.DELIVERED ? new Date() : project.deliveredAt,
+      // Stamp the delivery date ONCE. Hand-moving a job back to Delivered after
+      // a client bounce used to overwrite the original date with today — and
+      // four things read it as the day the client got their content: the
+      // on-time %, the revenue month, the portal library order and every
+      // "Delivered <date>" line. 74 stamps already sit more than a day after
+      // the job's own first delivery marker (Sep 2 audit).
+      ...(status === ProjectStatus.DELIVERED ? deliveryStamp(project.deliveredAt) : {}),
       // Moving a job to Delivered clears any open revision request.
       ...(status === ProjectStatus.DELIVERED
         ? { revisionRequestedAt: null, revisionNote: null }

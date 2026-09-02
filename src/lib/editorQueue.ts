@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { editorRouting } from "@/lib/settings";
 import { editorForDeliverable, editorKeyForTeamName, editorMeta } from "@/lib/editors";
+import { cutKeyOf } from "@/lib/reviewCuts";
 import { videoTier } from "@/lib/projectStatus";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
@@ -15,6 +16,10 @@ import type { QueueRow } from "@/components/editing/SimpleQueue";
 // and whose are they?".
 
 // Project status → the Slack ladder's words, verbatim from the Loom.
+// APPROVED isn't a Project status: it's the video lane's own answer when every
+// cut the job owes has passed review but the job hasn't been delivered yet.
+// Such a row must stop saying "Ready for review" — nobody is waiting on a
+// human any more, so an editor reading the queue would chase a ghost.
 export const STATUS_LABEL: Record<string, string> = {
   // Past-shoot BOOKED/SCHEDULED = shot but raws not in yet → Slack's "Waiting".
   BOOKED: "Waiting",
@@ -23,6 +28,7 @@ export const STATUS_LABEL: Record<string, string> = {
   EDITING: "In editing",
   REVIEW: "Ready for review",
   REVISION: "Revisions",
+  APPROVED: "Approved",
   DELIVERED: "Completed",
 };
 
@@ -68,7 +74,7 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
   // no task yet. Without this, every row showed the current rule's editor and
   // misattributed Kim's and Luma's in-flight work to John Mark.
   const allIds = [...inflight, ...scheduled, ...deliveredRaw].map((p) => p.id);
-  const [openTasks, msgCounts] = await Promise.all([
+  const [openTasks, msgCounts, cutRows] = await Promise.all([
     prisma.smartTask.findMany({
       where: {
         projectId: { in: inflight.map((p) => p.id) },
@@ -80,6 +86,19 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
     // The Slack messages column → the job's own chat. Revisions live THERE now,
     // not in channel dumps.
     prisma.projectMessage.groupBy({ by: ["projectId"], where: { projectId: { in: allIds } }, _count: true }),
+    // What the Review Room actually holds for each in-flight job — the signal
+    // every other "where is this job's video?" surface reads (Ops Day, the
+    // Dashboard, the QC card; see reviewCuts.videoStatesFor). UPLOADING and
+    // UPLOAD_FAILED rows are not cuts (bytes still moving, or never arrived);
+    // SUPERSEDED ones were replaced by a newer version of the same cut.
+    prisma.reviewSubmission.findMany({
+      where: {
+        projectId: { in: inflight.map((p) => p.id) },
+        status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "SUPERSEDED"] },
+      },
+      orderBy: { round: "asc" },
+      select: { id: true, projectId: true, deliverableId: true, slot: true, assetPath: true, round: true, status: true },
+    }),
   ]);
   // This queue narrates the VIDEO lane only. A photo-retouch revision (Kyle's)
   // also lives on the project — it must not flip the video row to "Revisions",
@@ -100,6 +119,28 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
       revisionCount.set(t.projectId, (revisionCount.get(t.projectId) ?? 0) + 1);
   const comments = new Map(msgCounts.map((m) => [m.projectId, m._count]));
 
+  // Per job: how many cuts exist and what each one's LATEST round says. Only
+  // the newest round of a cut (deliverable × slot; legacy folder rows by file
+  // path — cutKeyOf, the identity every reader uses) speaks for it, or round
+  // 1's "changes requested" would outvote the version 2 the editor already
+  // sent back. Rows arrive round-ascending, so the last write per key wins.
+  type CutTally = { total: number; waiting: number; revising: number; approved: number };
+  const latestCut = new Map<string, { projectId: string; round: number; status: string }>();
+  for (const s of cutRows) {
+    const key = `${s.projectId}|${cutKeyOf(s)}`;
+    const cur = latestCut.get(key);
+    if (!cur || s.round > cur.round) latestCut.set(key, { projectId: s.projectId, round: s.round, status: s.status });
+  }
+  const cutTally = new Map<string, CutTally>();
+  for (const c of latestCut.values()) {
+    const t = cutTally.get(c.projectId) ?? { total: 0, waiting: 0, revising: 0, approved: 0 };
+    t.total++;
+    if (c.status === "PENDING") t.waiting++;
+    else if (c.status === "CHANGES_REQUESTED") t.revising++;
+    else if (c.status === "APPROVED") t.approved++;
+    cutTally.set(c.projectId, t);
+  }
+
   type P = (typeof inflight)[number];
   const hasVideo = (p: P) => p.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
   const toRow = (p: P, upcoming = false): QueueRow => {
@@ -109,6 +150,13 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
     const assigned = taskEditor.get(p.id) ?? null;
     const routeKey = assigned ?? editorKeyForTeamName(p.editor?.name) ?? editorForDeliverable(v?.type, v?.label, monthly, rules);
     const videos = p.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+    // The BATCH size, not the number of order rows: a monthly plan is ONE
+    // deliverable whose quantity is the batch (Starter 2 / Accelerator 4 /
+    // Pro 8), so counting rows told the editor "1 video" for a 4-video
+    // session (audit HIGH). videosFilmed, when the photographer reported it,
+    // is the most truthful number of all. It is also how many cuts have to be
+    // approved before the job's video work is finished.
+    const videosOwed = p.videosFilmed ?? videos.reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
     const folders = projectFolderPaths(p);
     // Dropbox truth (from the evidence sweep, so it refreshes hourly) — drives
     // the uploaded-or-not dot on the RAW/Final link chips and the REVISION
@@ -116,19 +164,54 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
     let rawIn = 0;
     let finalIn = 0;
     let dropboxStale = false;
+    let videoLive = false;
     try {
-      const ev = (JSON.parse(p.statusEvidence ?? "{}") as { dropbox?: { rawVideo?: number; finalVideo?: number; stale?: boolean } | null })?.dropbox;
-      rawIn = ev?.rawVideo ?? 0;
-      finalIn = ev?.finalVideo ?? 0;
-      dropboxStale = !!ev?.stale;
+      const ev = JSON.parse(p.statusEvidence ?? "{}") as { present?: string[]; dropbox?: { rawVideo?: number; finalVideo?: number; stale?: boolean } | null };
+      rawIn = ev.dropbox?.rawVideo ?? 0;
+      finalIn = ev.dropbox?.finalVideo ?? 0;
+      dropboxStale = !!ev.dropbox?.stale;
+      // Already live on Aryeo → a cut exists, whatever the Review Room knows.
+      videoLive = (ev.present ?? []).includes("Video");
     } catch { /* unreadable evidence → treat as empty */ }
-    // A REVISION project with no open VIDEO-lane revision was flipped by a
-    // photo ask — show the video's own state instead (cut in the final folder
-    // → Ready for review; otherwise still In editing). A stale zero (Dropbox
-    // couldn't be read this pass) proves nothing — keep the row where it is.
-    let effectiveStatus = p.status;
-    if (!upcoming && p.status === "REVISION" && (revisionCount.get(p.id) ?? 0) === 0) {
-      effectiveStatus = finalIn > 0 ? "REVIEW" : dropboxStale ? p.status : "EDITING";
+
+    // ---- WHERE THE JOB'S VIDEO ACTUALLY IS -------------------------------
+    // Project.status is a CLAIM — anyone can type it into the status pill, and
+    // the hourly engines move it too. The Review Room is the RECORD of what
+    // was really handed in, so the label is derived from the cuts themselves,
+    // the same signals Ops Day / the Dashboard / QC read.
+    // Why (Sep 2 readiness audit): rows said "Ready for review" for video that
+    // was still in editing — 2530 Walnut St and 160 Kennedy Ln had no cut
+    // anywhere, one of them wearing an overdue chip. John and Kim start
+    // working out of this queue this week; a row that lies about who owes the
+    // next move is worse than no row.
+    const cut = cutTally.get(p.id);
+    // Widened to string on purpose: APPROVED is a video-lane state, not one of
+    // Prisma's ProjectStatus values — nothing here is ever written back.
+    let effectiveStatus: string = p.status;
+    if (!upcoming && p.status !== "DELIVERED") {
+      if (cut) {
+        // Same precedence as reviewCuts.videoStatesFor: a cut that came back
+        // with changes outranks one still waiting — the editor owes the redo
+        // before anyone owes a verdict. "Ready for review" therefore means
+        // exactly one thing: a cut is uploaded and a human hasn't ruled yet.
+        effectiveStatus =
+          cut.revising > 0 ? "REVISION"
+          : cut.waiting > 0 ? "REVIEW"
+          : cut.approved >= Math.max(1, videosOwed) ? "APPROVED"
+          // Part of the batch passed, the rest was never handed in — a
+          // 4-video month with cut 1 approved is progress, not done.
+          : "EDITING";
+      } else if (p.status === "REVIEW" || (p.status === "REVISION" && (revisionCount.get(p.id) ?? 0) === 0)) {
+        // The Room holds nothing for this job. Most jobs never pass through it
+        // (folder discovery is off by default), so a file in the Final folder
+        // or a video already live on Aryeo still counts as a cut. Neither one
+        // present means nothing was handed in — REVIEW is a lie — and a
+        // REVISION with no open VIDEO-lane ask was flipped by a photo ask
+        // (Janice's "remove the closets photos" did exactly that). A stale
+        // zero (Dropbox couldn't be read this pass) proves nothing, so the row
+        // stays where it is rather than guessing.
+        effectiveStatus = finalIn > 0 || videoLive ? "REVIEW" : dropboxStale ? p.status : "EDITING";
+      }
     }
     return {
       id: p.id,
@@ -145,12 +228,7 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
       dueISO: upcoming ? p.shootDate?.toISOString() ?? null : p.deliveryDue?.toISOString() ?? null,
       late: !upcoming && p.status !== "DELIVERED" && !!p.deliveryDue && p.deliveryDue < now,
       priority: p.priority,
-      // The BATCH size, not the number of order rows: a monthly plan is ONE
-      // deliverable whose quantity is the batch (Starter 2 / Accelerator 4 /
-      // Pro 8), so counting rows told the editor "1 video" for a 4-video
-      // session (audit HIGH). videosFilmed, when the photographer reported it,
-      // is the most truthful number of all.
-      videos: p.videosFilmed ?? videos.reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0),
+      videos: videosOwed,
       hasScript: !!(p.reelScript || p.reelHook),
       comments: comments.get(p.id) ?? 0,
       rawUrl: dropboxWebUrl(folders.rawVideo),
