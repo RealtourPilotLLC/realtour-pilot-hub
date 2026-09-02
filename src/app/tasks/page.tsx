@@ -6,18 +6,24 @@ import { TasksTabs, type TasksTab } from "@/components/tasks/TasksTabs";
 import { BoardView, boardOpenCount } from "@/components/tasks/BoardView";
 import { DoneView, doneTodayCount } from "@/components/tasks/DoneView";
 import { CommsView, RevisionsView, SlackView, checklistCounts } from "@/components/tasks/ChecklistViews";
+import { unansweredCommsBoard } from "@/lib/commsBoard";
 
 export const dynamic = "force-dynamic";
 
 // ONE Tasks hub (Jordan: "the toolbar has too many things — today, daily tasks,
-// and task history could all be combined"), three tabs, same consolidation
-// pattern as /communications: Today = the finish-able action stack (default,
-// keeps ?guided=1 / ?focus=), Board = the full grouped queue (keeps ?who= /
-// ?task=), Done = the day-by-day ledger. Each tab renders ONLY its own data;
-// the old /today, /queue and /history routes redirect here with their params.
+// and task history could all be combined"), same consolidation pattern as
+// /communications: Comms (the front door), Revisions, Slack, Other (the grouped
+// queue — keeps ?who= / ?task=), Done (the day-by-day ledger). Each tab renders
+// ONLY its own data, and each tab's badge is that view's OWN count query, so a
+// badge can never point at a list that doesn't contain it.
+//
+// ?guided=1 was dropped from the accepted params (Sep 2): the guided one-card
+// walkthrough went with /today on Aug 31, and this router never passed the
+// param anywhere — a route that advertises a param it ignores is how a dead
+// link survives a restructure (audit fault #9). Nothing links to it now.
 
 export default async function TasksHubPage({ searchParams }: {
-  searchParams: Promise<{ tab?: string; guided?: string; focus?: string; who?: string; task?: string; via?: string }>;
+  searchParams: Promise<{ tab?: string; focus?: string; who?: string; task?: string; via?: string }>;
 }) {
   const sp = await searchParams;
   const me = await getCurrentUser().catch(() => null);
@@ -38,11 +44,22 @@ export default async function TasksHubPage({ searchParams }: {
       ? (rawTab as TasksTab)
       : "comms";
 
-  const [otherN, doneN, checklists] = await Promise.all([
+  const [otherN, doneN, checklists, phoneWaiting] = await Promise.all([
     boardOpenCount(),
     boardOnly ? 0 : doneTodayCount(),
     boardOnly ? { comms: 0, revisions: 0, slack: 0 } : checklistCounts(),
+    // Only to decide which side of Comms to open on — see commsChannel below.
+    boardOnly ? 0 : unansweredCommsBoard("phone").then((g) => g.length).catch(() => 0),
   ]);
+  // The Comms badge counts Phone + Email, so defaulting to Phone when nobody is
+  // waiting on a text lands a "Comms 5" tab on "Nobody is waiting on a text
+  // reply" — the same fault the dashboard chips were just fixed for (#9). When
+  // the phone side is empty and the badge isn't, open Email. An explicit ?via=
+  // always wins.
+  const commsChannel: "phone" | "email" =
+    sp.via === "email" ? "email"
+      : sp.via === "phone" ? "phone"
+        : phoneWaiting === 0 && checklists.comms > 0 ? "email" : "phone";
   const tabs = boardOnly ? null : (
     <TasksTabs
       tab={tab}
@@ -58,5 +75,5 @@ export default async function TasksHubPage({ searchParams }: {
   if (tab === "done") return <DoneView tabs={tabs} />;
   if (tab === "revisions") return <RevisionsView tabs={tabs} />;
   if (tab === "slack") return <SlackView tabs={tabs} />;
-  return <CommsView tabs={tabs} channel={sp.via === "email" ? "email" : "phone"} />;
+  return <CommsView tabs={tabs} channel={commsChannel} />;
 }

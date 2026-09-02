@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { Prisma } from "@prisma/client";
 import { authEnforced } from "@/lib/auth/guards";
 import { redirect } from "next/navigation";
 import { ArrowRight, Camera, CheckCircle2, Hourglass, PlayCircle, RefreshCw, Sun } from "lucide-react";
@@ -9,9 +10,14 @@ import { WeekStrip } from "@/components/dashboard/WeekStrip";
 import { PulseStrip } from "@/components/dashboard/PulseStrip";
 import { QualityDials } from "@/components/dashboard/QualityDials";
 import {
-  getTodayCardCount, getActionCounts, getStuckJobs, getShootWindow,
+  MESSAGE_TASK_TYPES, getStuckJobs, getShootWindow,
   getProactiveFlags, getHandledToday, getOwnerStats, getOwnerPulse, getOwnerDials,
 } from "@/lib/queries";
+import { prisma } from "@/lib/prisma";
+import { recentProjectWhere } from "@/lib/recency";
+import { boardVisibleWhere, isNeedsAssigning } from "@/lib/triage";
+import { clientTextWhere } from "@/lib/clientTexts";
+import { unansweredCommsBoard } from "@/lib/commsBoard";
 import { replyWaitingSummary } from "@/lib/replyQueue";
 import { videoReviewBoard, type VideoCutState } from "@/lib/reviewCuts";
 import { openLoopsList, OPEN_LOOPS_CAP } from "@/lib/opsDay";
@@ -19,19 +25,106 @@ import { LoopActions } from "@/components/ops/LoopActions";
 import { getCurrentUser } from "@/lib/auth/user";
 import { contentTier, homeFor } from "@/lib/auth/access";
 import { formatMoney } from "@/lib/utils";
-import { etDate, etFullDate, etTime } from "@/lib/datetime";
+import { etDate, etDayStartUtc, etFullDate, etTime } from "@/lib/datetime";
 
 export const dynamic = "force-dynamic";
 
 // The dashboard's ONE job: a 10-second, role-aware glance — is anything on
-// fire, and one button into where the work happens (/today). It shows COUNTS;
-// /today shows rows. It never renders a task list. Keep it to ~one phone
-// screen with exactly one primary CTA. (The old page was ~5,000px tall with
-// 154 links and no primary action — don't let it grow back.)
+// fire, and one button into where the work happens. It shows COUNTS; the
+// surfaces it links to show rows. It never renders a task list. Keep it to
+// ~one phone screen with exactly one primary CTA. (The old page was ~5,000px
+// tall with 154 links and no primary action — don't let it grow back.)
+
+// ---------------------------------------------------------------------------
+// THE RULE FOR EVERY NUMBER ON THIS PAGE (audit fault #9, Sep 2 2026):
+// a count is computed with THE QUERY OF THE LIST IT LINKS TO. Anything else is
+// a number the owner can't trust, and it doesn't ship.
 //
-// The counts are HONEST and system-wide (audit 2026-07-08: the old chips read
-// "1 replies / 0 to assign" off the brief slice while 34 tasks sat unassigned),
-// and each chip deep-links to where that pile is worked.
+// What that replaced, measured against live data the morning it was written:
+//   "39 things need you" → /tasks?tab=today — a tab that no longer exists. The
+//      hub rewrites ?tab=today to Comms, which rendered ONE sender group.
+//   "in QC 19"           → /tasks?tab=board (the Other tab), which HIDES
+//      media_qa and delivery_text: 0 of the 19 were on it.
+//   "running late 36"    → the same tab, which showed 7 overdue rows.
+//   "message to-dos 18"  → the Comms checklist, which renders the senders still
+//      waiting, not the silent SmartTasks that chip counted.
+//   "walk me through it" → the guided /today walkthrough, deleted Aug 31.
+// Only "to assign" pointed at a list that contained it, and it stays.
+//
+// The one number deliberately DELETED rather than corrected is the aggregate on
+// the button. The Tasks hub's work tabs share rows — on the day of the fix, 4 of
+// the 5 unassigned Slack to-dos were counted by BOTH the Slack tab and the Other
+// tab's "Needs assigning" pile — so no single total can equal the page it opens.
+// The hub's own tab bar is the breakdown; the button is now just the door.
+// ---------------------------------------------------------------------------
+
+// The Tasks hub's "Other" tab, exactly as BoardView builds it for a non-editor
+// (`boardWhere` in src/components/tasks/BoardView.tsx). Editors are redirected
+// off this page, so there is no editor scope to mirror.
+// TODO(cross-file): `boardWhere` belongs beside `boardVisibleWhere` in
+// src/lib/triage.ts so this can be imported instead of restated. Until it is,
+// any change there must be mirrored here or the chips start lying again.
+const BOARD_ACTIVE = [
+  "OPEN", "IN_PROGRESS", "WAITING_CLIENT", "WAITING_PHOTOGRAPHER",
+  "WAITING_EDITOR", "WAITING_VENDOR", "WAITING_JORDAN", "BLOCKED",
+];
+function otherTabWhere(): Prisma.SmartTaskWhereInput {
+  return {
+    status: { in: BOARD_ACTIVE },
+    AND: [
+      boardVisibleWhere(),
+      { OR: [{ projectId: null }, { project: recentProjectWhere() }, { taskType: { in: MESSAGE_TASK_TYPES } }] },
+    ],
+  };
+}
+
+// The Review Room's "Photo sets in QC" list, exactly as getReviewQueue reads it
+// (src/lib/reviewRoom.ts): open media_qa cards on a job that isn't cancelled or
+// on hold. That section renders one row per card under a count badge, so the
+// chip and the list are the same number by construction.
+//
+// Ops Day was the other candidate and was REJECTED on the evidence: it splits
+// the same 8 cards across three separate blocks (#qc-am "due today" = 2, the
+// Overdue block, and Monthly), so no anchor there holds the whole pile — a chip
+// reading 8 would have landed on a list of 2. Same fault, new coat of paint.
+function photoQcWhere(): Prisma.SmartTaskWhereInput {
+  return {
+    taskType: "media_qa",
+    status: { notIn: ["COMPLETED", "CANCELLED"] },
+    OR: [{ projectId: null }, { project: { status: { notIn: ["CANCELLED", "ON_HOLD"] } } }],
+  };
+}
+
+// Every chip's number, each one the destination's own query.
+async function dashboardNumbers() {
+  const [board, qc, textsToSend, emailsWaiting] = await Promise.all([
+    // The Other tab's rows themselves (a dozen or so) — "running late" and
+    // "to assign" are then counted off that set with the tab's OWN arithmetic,
+    // so a chip can never disagree with the header it lands on.
+    prisma.smartTask.findMany({
+      where: otherTabWhere(),
+      select: { assignedKey: true, taskType: true, dueAt: true },
+    }),
+    prisma.smartTask.count({ where: photoQcWhere() }),
+    // The comms Outbox lists exactly clientTextWhere() (ClientTextsPanel), and
+    // its tab badge is this same count.
+    prisma.smartTask.count({ where: clientTextWhere() }),
+    // The Comms tab's Email sub-tab renders one card per sender-group; its own
+    // "Email N" pill is this number.
+    unansweredCommsBoard("email").then((g) => g.length).catch(() => 0),
+  ]);
+  // BoardView's overdue rule verbatim: due before the START of today in ET, so
+  // something due later today is not "late".
+  const startToday = etDayStartUtc(new Date()).getTime();
+  return {
+    boardOpen: board.length,
+    late: board.filter((t) => t.dueAt !== null && t.dueAt.getTime() < startToday).length,
+    toAssign: board.filter(isNeedsAssigning).length,
+    qc,
+    textsToSend,
+    emailsWaiting,
+  };
+}
 
 function CountChip({ label, count, tone, href }: { label: string; count: number; tone: string; href: string }) {
   return (
@@ -57,9 +150,8 @@ export default async function DashboardPage() {
   if (!me && authEnforced()) redirect("/login");
   const isOwner = !me || me.role === "OWNER";
 
-  const [todayCount, counts, stuck, shoots, radar, handledToday, ownerStats, pulse, dials, unanswered, videoReview, openLoops] = await Promise.all([
-    getTodayCardCount(), // = the card count /today renders, so the button never lies
-    getActionCounts(),
+  const [counts, stuck, shoots, radar, handledToday, ownerStats, pulse, dials, unanswered, videoReview, openLoops] = await Promise.all([
+    dashboardNumbers(), // every chip = the query of the list it links to
     getStuckJobs(),
     getShootWindow(),
     getProactiveFlags(),
@@ -86,17 +178,19 @@ export default async function DashboardPage() {
   const cutsRevising = videoReview.revising.length;
 
   const firstName = me?.name?.split(" ")[0] ?? (isOwner ? "Jordan" : "there");
-  // All clear = nothing to work, nothing stuck, nothing shooting today, and
-  // nobody left hanging on a text. That last clause matters: unanswered texts
-  // are counted from the comms log, so a message from someone we never matched
-  // to a client contributes no task and no todayCount — without it the page
-  // could tell you you're clear while seven people wait on a reply. The pulse +
-  // money strips still render below; trends matter on quiet days too.
-  // An OVERDUE follow-up blocks the clear banner the same way an unanswered
-  // text does — otherwise "You're clear" renders directly above a red
-  // "overdue" callback (review).
+  // All clear = EVERY chip on this page is zero, plus nothing stuck, nothing
+  // shooting today, and nobody left hanging on a text. Built off the chip
+  // numbers themselves so the banner can't contradict the row beneath it: the
+  // old rule keyed on one /today count and could read "You're clear" with QC
+  // cards open and a dozen texts still to send. (`late`/`toAssign` are subsets
+  // of `boardOpen`, so that one covers them.)
+  // Unanswered texts are counted from the comms log, so a message from someone
+  // we never matched to a client — which produces no task at all — still blocks
+  // the banner. An OVERDUE follow-up blocks it too, otherwise "You're clear"
+  // renders directly above a red "overdue" callback (review).
   const allClear =
-    todayCount === 0 && stuck.length === 0 && shoots.today.length === 0 && unanswered.count === 0 && cutsToReview === 0 &&
+    counts.boardOpen === 0 && counts.qc === 0 && counts.textsToSend === 0 && counts.emailsWaiting === 0 &&
+    stuck.length === 0 && shoots.today.length === 0 && unanswered.count === 0 && cutsToReview === 0 &&
     !openLoops.some((l) => l.overdue);
   const nextShoot = shoots.week[0] ?? null;
 
@@ -124,32 +218,34 @@ export default async function DashboardPage() {
           </div>
         ) : (
           <>
-            {/* 2 · THE button — the page's single primary action. Its number is
-                the exact card count /today renders (shared query logic). */}
+            {/* 2 · THE button — the page's single primary action, and now just
+                a door. It carries no total: the Tasks hub's tabs share rows
+                (a Slack to-do with no owner is on BOTH the Slack tab and the
+                Other tab's "Needs assigning" pile), so any sum would count
+                real work twice. The hub's tab bar is the honest breakdown, and
+                the chips below carry the numbers that matter here. */}
             <Link
-              href="/tasks?tab=today"
+              href="/tasks"
               className="flex w-full items-center justify-between rounded-2xl bg-brand px-5 py-4 text-white shadow-lg transition-opacity hover:opacity-90"
             >
               <span className="text-base font-semibold">Start your day</span>
               <span className="flex items-center gap-2 text-sm font-medium opacity-90">
-                {todayCount} thing{todayCount === 1 ? "" : "s"} need you <ArrowRight className="size-4" />
+                Your tasks <ArrowRight className="size-4" />
               </span>
             </Link>
-            {/* Guided variant: same stack, one card at a time */}
-            <Link href="/tasks?tab=today&guided=1" className="-mt-2 block px-1 text-xs font-medium text-muted hover:text-foreground">
-              or walk me through it one at a time →
-            </Link>
 
-            {/* 3 · The numbers without the walls — system-wide truth, each one a
-                deep link into the surface where that pile gets worked. The amber
-                "to assign" chip only exists while something actually needs an
-                owner (routine work defaults to Kyle and isn't triage). */}
+            {/* 3 · The numbers. Each one is its destination's own count — open
+                the chip and the list has exactly that many rows in it. The
+                three conditional chips only exist while their pile is non-empty
+                ("to assign" in particular: routine work defaults to Kyle and
+                isn't triage). "in QC" and "running late" always render, because
+                a zero there is information too. */}
             <div className="flex flex-wrap gap-2">
               {/* Unanswered TEXTS — counted off the comms log, so it sees the
-                  messages no task was ever made for. Distinct from "message
-                  to-dos" beside it, which counts open SmartTasks of every
-                  message kind (replies, instructions, leads, vendor chases).
-                  Goes red once someone has waited a full day. */}
+                  messages no task was ever made for (a new lead, an assistant,
+                  an unsaved number). /communications?tab=replies is built on
+                  that same scan and its header prints the same number. Goes red
+                  once someone has waited a full day. */}
               {unanswered.count > 0 && (
                 <CountChip
                   label={unanswered.oldestHours >= 24 ? `unanswered · oldest ${Math.round(unanswered.oldestHours / 24)}d` : "texts unanswered"}
@@ -158,11 +254,30 @@ export default async function DashboardPage() {
                   href="/communications?tab=replies"
                 />
               )}
-              <CountChip label="message to-dos" count={counts.replies} tone="#38bdf8" href="/tasks" />
-              <CountChip label="in QC" count={counts.qc} tone="#a78bfa" href="/tasks?tab=board" />
+              {/* Email had no chip at all; the "message to-dos" chip that stood
+                  here counted silent SmartTasks nothing renders. This is the
+                  Comms tab's Email sub-tab, sender for sender. */}
+              {counts.emailsWaiting > 0 && (
+                <CountChip label="emails waiting" count={counts.emailsWaiting} tone="#38bdf8" href="/tasks?tab=comms&via=email" />
+              )}
+              {/* QC never appears on the task board — it hides media_qa
+                  outright, which is why this chip used to open a tab with none
+                  of it. The Review Room's "Photo sets in QC" section is the one
+                  list that holds the whole pile. */}
+              <CountChip label="in QC" count={counts.qc} tone="#a78bfa" href="/review" />
+              {/* The delivery/confirmation texts that used to be folded into the
+                  QC number (11 of the old 19) — they aren't QC, they're drafts
+                  sitting in the comms Outbox. */}
+              {counts.textsToSend > 0 && (
+                <CountChip label="texts to send" count={counts.textsToSend} tone="#22c55e" href="/communications?tab=outbox" />
+              )}
+              {/* Overdue ON THE TASK BOARD. Deliberately not "everything late
+                  in the business": QC lateness lives in the chip above, late
+                  client texts in the Outbox chip, and late JOBS in Stuck jobs
+                  below. One alarm per list, each one true. */}
               <CountChip label="running late" count={counts.late} tone="var(--danger)" href="/tasks?tab=other" />
               {counts.toAssign > 0 && (
-                <CountChip label="to assign" count={counts.toAssign} tone="var(--warning)" href="/tasks?tab=board&who=needs-assigning" />
+                <CountChip label="to assign" count={counts.toAssign} tone="var(--warning)" href="/tasks?tab=other&who=needs-assigning" />
               )}
             </div>
 
@@ -180,8 +295,12 @@ export default async function DashboardPage() {
               {shoots.today.length === 0 ? (
                 <p className="px-4 py-3 text-sm text-muted-2">No shoots today.</p>
               ) : (
+                /* Every shoot, not the first four: the badge above prints
+                   shoots.today.length, and a badge of 5 over a list of 4 is the
+                   same fault as the chips (audit fault #9). A day's shoot list
+                   is short by nature. */
                 <div className="divide-y divide-border/60">
-                  {shoots.today.slice(0, 4).map((s) => (
+                  {shoots.today.map((s) => (
                     <Link key={s.apptId} href={`/shoot/${s.id}`} className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm hover:bg-surface-2">
                       <span className="min-w-0 truncate">{s.title.split(",")[0]}</span>
                       <span className="shrink-0 text-xs text-muted">{etTime(s.shootDate)} · {s.photographer?.name ?? "Unassigned"}</span>
@@ -229,6 +348,17 @@ export default async function DashboardPage() {
                 </div>
               ))}
             </div>
+            {/* The badge counts the whole pile; only the eight oldest are
+                closable here. Say so, rather than letting "21" sit over eight
+                rows (audit fault #9 — same class as the chips). */}
+            {openLoops.length > 8 && (
+              <Link
+                href="/ops#loops"
+                className="block border-t border-border px-4 py-2 text-[11px] font-medium text-muted-2 hover:text-foreground"
+              >
+                {openLoops.length - 8} more{openLoops.length >= OPEN_LOOPS_CAP ? "+" : ""} on Ops Day →
+              </Link>
+            )}
           </section>
         )}
 
@@ -262,7 +392,10 @@ export default async function DashboardPage() {
             old footer also repeated the chip numbers in grey; deleted — the
             same number twice on one screen is how dashboards start lying.) */}
         <div className="flex flex-wrap items-center gap-4 px-1 text-xs text-muted-2">
-          <Link href="/tasks?tab=board" className="hover:text-foreground">Full task board</Link>
+          {/* "Full task board" pointed at the Other tab, which is not full —
+              it hides QC, comms, edits and the auto-texts. The hub with its
+              tab bar is the honest name for that link. */}
+          <Link href="/tasks" className="hover:text-foreground">All tasks</Link>
           <Link href="/pipeline" className="hover:text-foreground">Project tracker</Link>
         </div>
       </div>

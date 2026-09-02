@@ -48,7 +48,11 @@ const REVISION_PATTERNS: RegExp[] = [
   /\bdifferent (photo|image|angle|shot|version)\b/i,
 ];
 
-const PRAISE_ONLY = /\b(thank|thanks|thx|love|great|perfect|awesome|amazing|looks good|beautiful|gorgeous)\b/i;
+// Exported because the reply walk (src/lib/replyQueue.ts) needs the SAME test
+// for "this closes a thread, it doesn't open one". It used to be copied there
+// under a comment reading "keep the two in sync", which is a promise no comment
+// can keep — the copies had already drifted.
+export const PRAISE_ONLY = /\b(thank|thanks|thx|love|great|perfect|awesome|amazing|looks good|beautiful|gorgeous)\b/i;
 
 // A clear edit ask — these still count as a revision even amid scheduling talk.
 const STRONG_REVISION =
@@ -493,13 +497,55 @@ export async function raiseRevision(opts: {
   return true;
 }
 
+// Where a resolved revision GENUINELY puts the job back.
+//
+// A revision reaches REVISION two very different ways, and only one of them
+// means the client has ever seen the work:
+//   • the client asked for changes AFTER delivery (raiseRevision — it only
+//     flips a DELIVERED job), so resolving it returns the job to Delivered; and
+//   • the owner bounced a cut in the Review Room (Jordan, Aug 27), which flips
+//     a REVIEW/EDITING job that has NEVER been sent to anyone.
+// Resolving used to answer "DELIVERED + deliveredAt = now" for both (audit
+// fault #6). On a bounced job that lied twice over: it told the pipeline a job
+// was delivered that nobody had ever received, and — because the delivery-text
+// sweep gates on `status === "DELIVERED"` (clientTextSweeps.ts) — it armed an
+// automatic "Everything for <address> has been delivered, how did we do?" text
+// to a client who has never seen the video. On a genuinely delivered job it
+// still overwrote the REAL delivery date with the resolve timestamp, which is
+// what the on-time % (queries.ts) and the creative bonus (bonus.ts) measure
+// against deliveryDue.
+//
+// `deliveredAt` is the delivery signal, exactly as the Review Room's two
+// return paths already read it (review/actions.ts + reviewCuts.ts): every path
+// that writes DELIVERED stamps it, so no date means no delivery. A
+// never-delivered job goes back to where its work actually stands — Review when
+// a cut is sitting in the Review Room awaiting (or holding) a verdict, In
+// Editing when the redo is still owed — never forward to Delivered.
+type RevisionLanding = "DELIVERED" | "REVIEW" | "EDITING";
+
+async function revisionLanding(
+  projectId: string,
+  deliveredAt: Date | null,
+): Promise<RevisionLanding> {
+  // Delivered once = delivered still. The original date stands untouched below.
+  if (deliveredAt) return "DELIVERED";
+  // A cut awaiting a verdict (PENDING) or already passed (APPROVED) IS the job
+  // sitting in the Review Room. CHANGES_REQUESTED / UPLOADING / SUPERSEDED are
+  // not — those mean the editor still owes the redo.
+  const inReviewRoom = await prisma.reviewSubmission.count({
+    where: { projectId, status: { in: ["PENDING", "APPROVED"] } },
+  });
+  return inReviewRoom > 0 ? "REVIEW" : "EDITING";
+}
+
 // Clear a revision once it's been handled: drop the flag, close the task, and
-// return a reopened (REVISION) job to DELIVERED. A REVIEW job that merely
-// carried a revision note keeps its stage.
+// return the job to whatever it genuinely was — Delivered only if it really had
+// been delivered, otherwise back to Review / In Editing (see revisionLanding).
+// A REVIEW job that merely carried a revision note keeps its stage.
 export async function resolveRevision(projectId: string): Promise<void> {
   const project = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { status: true, title: true },
+    select: { status: true, title: true, deliveredAt: true },
   });
   // Who the revision was delegated to — read BEFORE the close below wipes the
   // open task, so the bell can tell that editor their revision cleared.
@@ -507,12 +553,21 @@ export async function resolveRevision(projectId: string): Promise<void> {
     where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
     select: { assignedKey: true },
   });
+  const landing =
+    project?.status === "REVISION"
+      ? await revisionLanding(projectId, project.deliveredAt)
+      : null;
   await prisma.project.update({
     where: { id: projectId },
     data: {
       revisionRequestedAt: null,
       revisionNote: null,
-      ...(project?.status === "REVISION" ? { status: "DELIVERED", deliveredAt: new Date() } : {}),
+      ...(landing ? { status: landing } : {}),
+      // deliveredAt is NEVER written here. Resolving a revision is not a
+      // delivery: a job that was delivered keeps the date it actually shipped
+      // on, and a job that never shipped must not acquire one. The real stamp
+      // happens where delivery happens (the status sweep's first arrival at
+      // DELIVERED, the pipeline board, the editor queue).
     },
   });
   await prisma.smartTask.updateMany({
@@ -525,11 +580,28 @@ export async function resolveRevision(projectId: string): Promise<void> {
   // closed the revision task — every revision left a permanently-overdue QC in
   // Kyle's list (audit crack #22). A REVIEW job that merely carried a revision
   // note keeps its stage AND its open QC work.
-  if (project?.status === "REVISION" || project?.status === "DELIVERED") {
+  //
+  // ONLY a job that genuinely lands on Delivered retires that work. Running the
+  // delivered close-out on a bounced job also completed the editor's open
+  // edit_video and Kyle's media_qa, and rang that editor's bell with
+  // "Delivered ✓" for a cut he had just been asked to redo (38 E Gay St, live
+  // on Sep 2). A never-delivered job keeps its QC and edit cards open — they
+  // are real, owed work, and the hourly sweep closes them the moment the job
+  // actually reaches DELIVERED (projectStatus.ts).
+  if (landing === "DELIVERED" || (!landing && project?.status === "DELIVERED")) {
     await closeObsoleteTasks(projectId, "DELIVERED");
   }
+  // Say what actually happened — the timeline used to read "back to Delivered"
+  // on jobs that were never delivered.
+  const { stageMeta } = await import("@/lib/pipeline");
   await prisma.activity.create({
-    data: { projectId, type: "STATUS_CHANGE", body: "Revision marked resolved — back to Delivered." },
+    data: {
+      projectId,
+      type: "STATUS_CHANGE",
+      body: landing
+        ? `Revision marked resolved — back to ${stageMeta(landing).short}.`
+        : "Revision marked resolved — flag cleared, stage unchanged.",
+    },
   });
   // Bell: ops broadcast + the editor who worked it (best-effort, never breaks
   // the resolve). Day-bucketed key so a same-day re-resolve stays quiet.

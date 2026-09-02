@@ -1,6 +1,9 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { vendorName, STRIPE_CONNECT_ACCOUNTS } from "@/lib/financeCategories";
+import { etDayKey } from "@/lib/datetime";
+
+const r2 = (n: number) => Math.round(n * 100) / 100;
 
 // ---------------------------------------------------------------------------
 // Bookkeeping engine — turn the raw QuickBooks ledger into a P&L you can trust.
@@ -395,6 +398,111 @@ export async function categoriseBooks(opts: { sinceKey?: string } = {}): Promise
 }
 
 // ---------------------------------------------------------------------------
+// ARE THE BOOKS ACTUALLY CAUGHT UP? — measured by COVERAGE, not recency.
+//
+// The old test asked "how old is the newest row in QuickBooks?". One trickle
+// transaction resets that to zero, so the warning went green while entry had
+// effectively stopped: on 2026-09-02 QuickBooks held ONE September purchase
+// ($189) against $4,244 the bank feed shows leaving — and the page said nothing.
+// August was no better: $2,963 entered against $24,496 that actually moved, 12%.
+//
+// So ask the honest question instead: of the dollars that really left the
+// accounts this period, what share has been entered as a QuickBooks purchase?
+// The bank/card ledger is the complete side (Plaid posts every line by itself,
+// no human step), so it is the denominator; QuickBooks purchases are what a
+// person has actually filed.
+//
+// CALIBRATION — 100% is NOT the target, and a threshold that assumed it would
+// cry wolf every month. The two ledgers cover different account sets: the Plaid
+// ledger spans business checking, the personal ...0942 account, the wife's
+// account, three credit cards and Venmo, while QuickBooks only really sees
+// business checking. A well-kept month therefore lands in the high 70s–80s
+// (measured: June 86%, July 77%). The bands below are set off those readings,
+// so "stalled" means entry has genuinely stopped, not that a month is untidy.
+// ---------------------------------------------------------------------------
+export const BOOKS_COVERAGE_THIN = 0.7;    // below this, entry is falling behind
+export const BOOKS_COVERAGE_STALLED = 0.4; // below this, entry has effectively stopped
+
+export type CoverageVerdict = "current" | "thin" | "stalled" | "unknown";
+
+export type ExpenseCoverage = {
+  startKey: string;
+  endKey: string;
+  entered: number;        // dollars filed as QuickBooks purchases in the window
+  enteredCount: number;
+  actual: number;         // dollars the audited bank/card ledger shows really leaving
+  actualCount: number;
+  missing: number;        // actual − entered, floored at 0
+  pct: number | null;     // entered ÷ actual; null when nothing moved (can't divide)
+  verdict: CoverageVerdict;
+  newestEntry: Date | null; // the OLD recency signal — kept as context, never the test
+  daysBehind: number | null;
+  note: string;           // plain English, safe to print verbatim
+};
+
+/**
+ * What share of this period's real spend has actually been entered in
+ * QuickBooks. `endKey` may be today — the ratio is period-relative, so a
+ * half-finished month is judged on the half that has happened.
+ */
+export async function expenseCoverage(startKey: string, endKey: string): Promise<ExpenseCoverage> {
+  const from = new Date(`${startKey}T00:00:00Z`);
+  const to = new Date(`${endKey}T23:59:59Z`);
+
+  const [qbo, ledgerRows, newest] = await Promise.all([
+    prisma.qboTransaction.aggregate({
+      where: { type: "Purchase", txnDate: { gte: from, lte: to } },
+      _sum: { amount: true }, _count: true,
+    }),
+    prisma.plaidTransaction.findMany({
+      where: { date: { gte: from, lte: to } },
+      select: { amount: true, financeKind: true },
+    }),
+    prisma.qboTransaction.aggregate({ _max: { txnDate: true } }),
+  ]);
+
+  // Same netting rule as categoryBreakdown, so this denominator and the profit
+  // on the same screen describe the identical set of dollars: money-movement
+  // (self-transfers, card paydowns, Stripe top-ups) and income are not spend,
+  // and a refund nets against the cost it reverses rather than counting as one.
+  let actual = 0, actualCount = 0;
+  for (const r of ledgerRows) {
+    const kind = r.financeKind ?? "REVIEW"; // uncategorised money still left the account
+    if (kind === "EXCLUDE" || kind === "INCOME") continue;
+    if (r.amount < 0 && kind !== "BUSINESS" && kind !== "PERSONAL") continue;
+    actual += r.amount;
+    if (r.amount > 0) actualCount++;
+  }
+  actual = r2(actual);
+  const entered = r2(qbo._sum.amount ?? 0);
+  const pct = actual > 0 ? r2(entered / actual * 100) / 100 : null;
+  const newestEntry = (newest._max.txnDate as Date | null) ?? null;
+  const daysBehind = newestEntry ? Math.floor((Date.now() - newestEntry.getTime()) / 86_400_000) : null;
+
+  const verdict: CoverageVerdict =
+    pct == null ? "unknown"
+      : pct < BOOKS_COVERAGE_STALLED ? "stalled"
+        : pct < BOOKS_COVERAGE_THIN ? "thin"
+          : "current";
+
+  const money = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
+  const note =
+    verdict === "unknown"
+      ? "No bank activity in this period, so there is nothing to measure the books against."
+      : verdict === "current"
+        ? `QuickBooks holds ${money(entered)} of the ${money(actual)} that left your accounts in this period — the books are keeping up.`
+        : `QuickBooks holds ${money(entered)} of the ${money(actual)} that actually left your accounts in this period (${Math.round((pct ?? 0) * 100)}%). About ${money(r2(Math.max(0, actual - entered)))} of real spending has not been entered${newestEntry ? `; the newest entry is dated ${etDayKey(newestEntry)}` : ""}. Any profit figure built on QuickBooks purchases is reading high by roughly that much.`;
+
+  return {
+    startKey, endKey,
+    entered, enteredCount: qbo._count,
+    actual, actualCount,
+    missing: r2(Math.max(0, actual - entered)),
+    pct, verdict, newestEntry, daysBehind, note,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // VENMO — the one rail with no API and no reliable record anywhere.
 //
 // Stephen Kennedy is the only client who pays this way, into Jordan's PERSONAL
@@ -412,6 +520,35 @@ export async function categoriseBooks(opts: { sinceKey?: string } = {}): Promise
 // (2025 = $22,698), and the two must never both be counted.
 // ---------------------------------------------------------------------------
 export const VENMO_COVERAGE_FROM = "2026-01-01";
+
+/**
+ * Where the Venmo revenue figure came from. Returned on every P&L read so no
+ * surface can show a Venmo number without also being able to say how it was
+ * arrived at — the silent swap between these was the bug (see revenueByProcessor).
+ */
+export type VenmoSource =
+  | "statement"          // the whole window sits inside the imported statements — authoritative
+  | "statement-partial"  // statements cover part of the window; the rest is UNKNOWN, not zero
+  | "gap-only"           // the window starts after the statements stop — nothing counted at all
+  | "bank-estimate"      // no statement has EVER been imported: bank cash-outs, an ESTIMATE
+  | "transcribed-list"   // last resort: the hand-typed VENMO_CHARGES list below
+  | "none";              // the window predates Venmo coverage entirely
+
+/**
+ * How far the Venmo statement import actually reaches.
+ *
+ * The `venmo` pseudo-account only moves when Jordan uploads a fresh export, so
+ * the newest row IS the coverage end — every day after it is unknown, NOT zero
+ * and NOT something another measure can stand in for.
+ */
+export async function venmoCoverageEnd(): Promise<Date | null> {
+  const newest = await prisma.plaidTransaction.findFirst({
+    where: { account: { mask: "venmo" } },
+    orderBy: { date: "desc" },
+    select: { date: true },
+  });
+  return newest?.date ?? null;
+}
 
 export const VENMO_CHARGES: { date: string; amount: number; note: string }[] = [
   { date: "2026-01-05", amount: 600, note: "2308 Christian St — photos, video, drone" },
@@ -482,40 +619,102 @@ export async function revenueByProcessor(startKey: string, endKey: string) {
 
   // Rail 3 — Venmo, counted at RECEIPT from the statement pseudo-account's
   // client-inflow rows (imported from Jordan's Venmo statements, category
-  // "Venmo revenue (client)"). This is the complete truth: it includes client
-  // money spent straight from the Venmo balance that never cashed out to a
-  // bank, and it's gross (the ~1.75% instant-transfer fee is a cost, not a
-  // revenue reduction). The old method counted bank cash-out credits — the
-  // July 2026 crosscheck showed that missed every balance-funded dollar and
-  // recorded the rest net of fees. Bank cash-outs are just the settlement leg
-  // of money already counted here, so they are no longer summed. Fallbacks
-  // (bank credits, then the transcribed list) only fire in a fresh env with no
-  // statement import.
+  // "Venmo revenue (client)"). That is the only complete record: it includes
+  // client money spent straight from the Venmo balance that never cashed out to
+  // a bank, and it is gross (the ~1.75% instant-transfer fee is a cost, not a
+  // revenue reduction).
+  //
+  // THE TRAP THIS NOW AVOIDS (Sep 2 2026 audit). The old code asked "did THIS
+  // window return any statement rows?" and, on no, silently switched to bank
+  // VENMO cash-out credits — a DIFFERENT quantity: the settlement leg of money
+  // already received, often draining a balance built up weeks earlier. With the
+  // statement import stopped on 2026-07-17, the August window found no statement
+  // rows and quietly booked $2,001.90 of cash-outs as August revenue, while the
+  // year-to-date window — which DID find January–July rows — counted none of it.
+  // Two revenue figures on one screen, $2,001.90 apart, neither one labelled.
+  //
+  // The rule now: the statement is authoritative only for the days it covers,
+  // and the days after it are UNKNOWN — never back-filled with a different
+  // measure. So adjacent windows add up exactly (Jan–Jul + Aug = YTD), and the
+  // gap is returned loudly instead of being papered over. Cash-outs seen inside
+  // the gap ride along as `venmoGapCashOut`: an upper-bound hint for the owner,
+  // deliberately NOT added to revenue, because a cash-out may well be draining
+  // money the statements already counted. Under-counting a known-missing rail is
+  // recoverable; quietly double-counting it is not.
+  //
+  // The old estimate paths survive only for a fresh environment that has never
+  // had a statement import — and they now say so in `venmoSource`.
   const coverFrom = new Date(`${VENMO_COVERAGE_FROM}T00:00:00Z`);
+  const coverEnd = await venmoCoverageEnd(); // null = no statement ever imported
   const VENMO_EXCLUDED_CENTS = new Set([297500, 124322]);
   let venmoListed = 0;
+  let venmoSource: VenmoSource = "none";
+  let venmoGapFrom: string | null = null;
+  let venmoGapDays = 0;
+  let venmoGapCashOut = 0;
+
   if (to >= coverFrom) {
-    const bankFrom = from > coverFrom ? from : coverFrom;
-    const inflows = await prisma.plaidTransaction.findMany({
-      where: { date: { gte: bankFrom, lte: to }, amount: { lt: 0 }, account: { mask: "venmo" }, financeCategory: "Venmo revenue (client)" },
-      select: { amount: true },
-    });
-    if (inflows.length > 0) {
-      venmoListed = inflows.reduce((s, c) => s + Math.abs(c.amount), 0);
+    const winFrom = from > coverFrom ? from : coverFrom;
+    if (coverEnd) {
+      // Authoritative part: the overlap between this window and the statements.
+      const winTo = to < coverEnd ? to : coverEnd;
+      if (winTo >= winFrom) {
+        const inflows = await prisma.plaidTransaction.findMany({
+          where: { date: { gte: winFrom, lte: winTo }, amount: { lt: 0 }, account: { mask: "venmo" }, financeCategory: "Venmo revenue (client)" },
+          select: { amount: true },
+        });
+        venmoListed = r2(inflows.reduce((s, c) => s + Math.abs(c.amount), 0));
+        venmoSource = "statement";
+      }
+      // Uncovered tail: report it, never fill it.
+      //
+      // Day arithmetic, carefully. Ledger rows are stored at NOON UTC precisely
+      // so their ET calendar day is unambiguous, while the window boundaries in
+      // this function are UTC midnight. Formatting a midnight boundary in ET
+      // walks it back a day — which is how the first cut of this printed a gap
+      // starting "2026-07-17" (the last COVERED day) and an August gap starting
+      // "2026-07-31". So settle on the day KEY first and build the Date from it.
+      const dayAfter = etDayKey(new Date(coverEnd.getTime() + 864e5));
+      const winFromKey = startKey > VENMO_COVERAGE_FROM ? startKey : VENMO_COVERAGE_FROM;
+      const gapKey = dayAfter > winFromKey ? dayAfter : winFromKey;
+      const gapFrom = new Date(`${gapKey}T00:00:00Z`);
+      if (to >= gapFrom) {
+        venmoGapFrom = gapKey;
+        // Inclusive count of uncovered days: Jul 18 … Sep 2 is 47 days, not 46.
+        venmoGapDays = Math.max(1, Math.round((Date.parse(`${endKey}T00:00:00Z`) - Date.parse(`${gapKey}T00:00:00Z`)) / 864e5) + 1);
+        const cashOuts = await prisma.plaidTransaction.findMany({
+          where: { date: { gte: gapFrom, lte: to }, amount: { lt: 0 }, pending: false, name: { contains: "venmo", mode: "insensitive" } },
+          select: { amount: true },
+        });
+        venmoGapCashOut = r2(
+          cashOuts
+            .filter((c) => !VENMO_EXCLUDED_CENTS.has(Math.round(Math.abs(c.amount) * 100)))
+            .reduce((s, c) => s + Math.abs(c.amount), 0),
+        );
+        venmoSource = venmoSource === "statement" ? "statement-partial" : "gap-only";
+      }
     } else {
+      // Fresh environment — nothing has ever been imported, so an estimate is
+      // the only thing on offer. It is returned clearly LABELLED as one.
       const credits = await prisma.plaidTransaction.findMany({
-        where: { date: { gte: bankFrom, lte: to }, amount: { lt: 0 }, pending: false, name: { contains: "venmo", mode: "insensitive" } },
+        where: { date: { gte: winFrom, lte: to }, amount: { lt: 0 }, pending: false, name: { contains: "venmo", mode: "insensitive" } },
         select: { amount: true },
       });
       if (credits.length > 0) {
-        venmoListed = credits
-          .filter((c) => !VENMO_EXCLUDED_CENTS.has(Math.round(Math.abs(c.amount) * 100)))
-          .reduce((s, c) => s + Math.abs(c.amount), 0);
+        venmoListed = r2(
+          credits
+            .filter((c) => !VENMO_EXCLUDED_CENTS.has(Math.round(Math.abs(c.amount) * 100)))
+            .reduce((s, c) => s + Math.abs(c.amount), 0),
+        );
+        venmoSource = "bank-estimate";
       } else {
-        venmoListed = VENMO_CHARGES
-          .map((c) => ({ at: new Date(`${c.date}T12:00:00Z`), amount: c.amount }))
-          .filter((c) => c.at >= from && c.at <= to)
-          .reduce((s, c) => s + c.amount, 0);
+        venmoListed = r2(
+          VENMO_CHARGES
+            .map((c) => ({ at: new Date(`${c.date}T12:00:00Z`), amount: c.amount }))
+            .filter((c) => c.at >= from && c.at <= to)
+            .reduce((s, c) => s + c.amount, 0),
+        );
+        venmoSource = "transcribed-list";
       }
     }
   }
@@ -527,12 +726,34 @@ export async function revenueByProcessor(startKey: string, endKey: string) {
     : [];
   const venmoFeed = venmoRows.filter((d) => /VENMO/i.test(d.memo ?? "")).reduce((s, d) => s + d.amount, 0);
 
-  const venmo = venmoListed + venmoFeed;
+  const venmo = r2(venmoListed + venmoFeed);
+
+  // One plain-English sentence the UI can print verbatim. Empty string = the
+  // rail is fully accounted for and there is nothing to warn about.
+  const venmoNote =
+    venmoSource === "statement-partial" || venmoSource === "gap-only"
+      ? `Venmo statements stop at ${etDayKey(coverEnd!)}. Client payments from ${venmoGapFrom} onward (${venmoGapDays} day${venmoGapDays === 1 ? "" : "s"}) are NOT counted in this figure — the import has to be refreshed before we can know them.` +
+        (venmoGapCashOut > 0
+          ? ` $${venmoGapCashOut.toLocaleString("en-US", { maximumFractionDigits: 0 })} of Venmo cash-outs did land in the bank over that stretch, but a cash-out can be draining money the statements already counted, so it is shown here as a ceiling — not added to revenue.`
+          : "")
+      : venmoSource === "bank-estimate"
+        ? "Venmo revenue is ESTIMATED from bank cash-outs — no Venmo statement has been imported. Cash-outs miss every dollar spent straight from the Venmo balance and arrive net of the instant-transfer fee, so the real figure is higher."
+        : venmoSource === "transcribed-list"
+          ? "Venmo revenue comes from the hand-transcribed VENMO_CHARGES list in the code — accurate only up to the last time someone typed it in."
+          : "";
+
   return {
     start: startKey, end: endKey,
     quickbooks, stripe, venmo, stripeFees,
     venmoListed, venmoFeed, venmoCharges: VENMO_CHARGES.length,
-    total: quickbooks + stripe + venmo,
+    // How the Venmo number was arrived at, and what it is missing. Any surface
+    // showing `venmo` (or `total`) should show `venmoNote` when it is non-empty
+    // — a silent rail is how the same screen came to disagree with itself.
+    venmoSource,
+    venmoIsEstimate: venmoSource === "bank-estimate" || venmoSource === "transcribed-list",
+    venmoCoverageThrough: coverEnd ? etDayKey(coverEnd) : null,
+    venmoGapFrom, venmoGapDays, venmoGapCashOut, venmoNote,
+    total: r2(quickbooks + stripe + venmo),
   };
 }
 

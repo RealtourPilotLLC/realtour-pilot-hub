@@ -168,16 +168,20 @@ export async function submitFeedback(
     };
   }
 
-  // (3) Note the loop Kyle is already on BEFORE recording, so a repeat can be
-  // folded onto it instead of stacking another URGENT card.
-  const startedAt = new Date();
-  const priorTask = await prisma.smartTask
-    .findFirst({
+  // (3) Snapshot the open feedback loops on this project BEFORE recording, so a
+  // repeat can be folded onto the one Kyle is already working instead of
+  // stacking another URGENT card. Identifying "what this call minted" by ID
+  // rather than by `createdAt > now` is deliberate: createdAt is the DATABASE
+  // clock and this snapshot is the APP clock, and a Neon instance a second
+  // behind the Vercel lambda would make a timestamp window silently miss the
+  // new row — leaving the duplicate task this whole path exists to prevent.
+  const openBefore = await prisma.smartTask
+    .findMany({
       where: { projectId, taskType: "feedback_review", status: OPEN_TASK },
       orderBy: { createdAt: "asc" },
       select: { id: true, status: true, description: true },
     })
-    .catch(() => null);
+    .catch(() => [] as { id: string; status: string; description: string | null }[]);
 
   const r = await recordFeedback({
     projectId,
@@ -188,7 +192,7 @@ export async function submitFeedback(
   });
   if (!r.ok) return { ok: false, message: "We couldn't find that project." };
 
-  if (priorTask) await foldRepeatIntoOpenTask(projectId, priorTask, startedAt);
+  if (openBefore.length) await foldRepeatIntoOpenTask(projectId, openBefore);
 
   return { ok: true, message: "Thank you! Your feedback went straight to our team." };
 }
@@ -208,16 +212,15 @@ export async function submitFeedback(
 // matters. A failure here must never turn into a failed submit for the client.
 async function foldRepeatIntoOpenTask(
   projectId: string,
-  prior: { id: string; status: string; description: string | null },
-  startedAt: Date,
+  openBefore: { id: string; status: string; description: string | null }[],
 ): Promise<void> {
+  const prior = openBefore[0]; // oldest still-open loop = the one being worked
   try {
     const minted = await prisma.smartTask.findMany({
       where: {
         projectId,
         taskType: "feedback_review",
-        id: { not: prior.id },
-        createdAt: { gte: startedAt },
+        id: { notIn: openBefore.map((t) => t.id) },
         status: OPEN_TASK,
       },
       orderBy: { createdAt: "desc" },

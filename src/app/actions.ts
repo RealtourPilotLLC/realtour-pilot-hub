@@ -15,7 +15,7 @@ import { stageMeta } from "@/lib/pipeline";
 import { Aryeo } from "@/lib/integrations/aryeo";
 import { getSecret } from "@/lib/integrations/connections";
 import { resolveRevision } from "@/lib/comms";
-import { closeObsoleteTasks } from "@/lib/tasks";
+import { closeObsoleteTasks, CLOSED_BY_HAND } from "@/lib/tasks";
 import { etEndOfDay } from "@/lib/datetime";
 
 export type ApptResult = { ok: boolean; message: string };
@@ -167,15 +167,37 @@ export async function setSmartTaskStatus(taskId: string, status: string) {
   // to complete their own queue work (audit crack #28).
   await requireTaskAccess(taskId);
   if (!TASK_STATUSES.has(status)) return; // never write a free-form status
-  const updated = await prisma.smartTask.updateMany({
-    where: { id: taskId },
-    data: { status, completedAt: status === "COMPLETED" ? new Date() : null },
-  });
-  if (updated.count === 0) return; // task no longer exists — no-op instead of throw
+  // Read BEFORE the write: a QC close has to carry the closed-by-hand marker in
+  // the SAME update, or the hourly reconciler wins the race and reopens it.
   const t = await prisma.smartTask.findUnique({
     where: { id: taskId },
-    select: { projectId: true, taskType: true, checklist: true, assignedKey: true, dedupeKey: true, title: true, propertyAddress: true },
+    select: { projectId: true, taskType: true, checklist: true, assignedKey: true, dedupeKey: true, title: true, propertyAddress: true, sourceDetail: true },
   });
+  if (!t) return; // task no longer exists — no-op instead of throw
+  // Every route into this action is a HUMAN pressing Complete (requireTaskAccess
+  // above): the project page's button, a ?task= deep link, the queue card, the
+  // Today feed, My Shoots. The reconciler in src/lib/tasks.ts reopens ANY
+  // completed QC card whose checklist still shows unticked boxes — a guard
+  // against auto-closes during a signal blip (audit crack #2) — and a human
+  // close never ticks boxes, so until now only /ops' completeQcTask survived it.
+  // Everywhere else, the card came back within the hour: 205 of 208 completed QC
+  // cards carried no marker, and 65 re-closes are on record (238 Hudson Dr was
+  // closed SEVEN times). Stamp the marker wherever the human is standing.
+  // Reopening one by hand clears it again, so the marker can never outlive the
+  // decision it records and shield a later auto-close.
+  const qcMarker =
+    t.taskType !== "media_qa"
+      ? {}
+      : status === "COMPLETED"
+        ? { sourceDetail: CLOSED_BY_HAND }
+        : t.sourceDetail === CLOSED_BY_HAND
+          ? { sourceDetail: null }
+          : {};
+  const updated = await prisma.smartTask.updateMany({
+    where: { id: taskId },
+    data: { status, completedAt: status === "COMPLETED" ? new Date() : null, ...qcMarker },
+  });
+  if (updated.count === 0) return; // lost a race with a delete — nothing else to do
   // Completing the QC card via the status button (not the checklist) must still
   // write the QcRecord — this was the third no-record completion path the July
   // 2026 audit found (30 deliveries, 0 QcRecords, owner quality dial empty).

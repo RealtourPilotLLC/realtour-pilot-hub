@@ -103,8 +103,12 @@ async function revenueForMonth(start: Date, end: Date) {
 export type MonthlyPnl = {
   key: string;
   label: string;
-  revenue: number; // the trusted top line (Stripe net if connected, else Aryeo delivered)
-  revenueIsEstimate: boolean; // true = Aryeo fallback (connect Stripe for actual)
+  revenue: number; // the trusted top line, counted at all three processors
+  revenueIsEstimate: boolean; // true = at least one rail is a guess, not a record
+  /** Non-empty when a revenue rail is stale or estimated — print it beside the
+   *  number. A rail that goes quiet without saying so is how August's P&L and
+   *  the YTD P&L on the same screen came to disagree by $2,001.90. */
+  revenueNote: string;
   invoiced: number; // Aryeo booked this month (a "booked vs collected" secondary line)
   photographerPay: number; // from the LEDGER — what actually left the accounts
   teamPay: number; // ditto (editors, Kim, Remar, Paul)
@@ -161,7 +165,12 @@ export const getMonthlyPnl = cache(async (back = 0): Promise<MonthlyPnl> => {
   const expenses = round2(monthCats.businessTotal - allPayroll - cardFees);
   return {
     key, label, revenue,
-    revenueIsEstimate: false, // counted at the processor, no longer an estimate
+    // Counted at the processor, so normally a record rather than an estimate —
+    // but the Venmo rail is a manual statement import and CAN go stale or fall
+    // back to a guess. revenueByProcessor now says which; pass it straight
+    // through rather than hard-coding honesty we can't guarantee.
+    revenueIsEstimate: rp.venmoIsEstimate,
+    revenueNote: rp.venmoNote,
     invoiced: rev.aryeoDelivered,
     photographerPay: ledgerPhotographerPay,
     teamPay: ledgerTeamPay,
@@ -182,45 +191,84 @@ export type CashPosition = {
   stripeAvailable: number | null;
   stripePending: number | null;
   arOutstanding: number; // delivered + unpaid (money owed to us)
-  comingIn30: number; // typical monthly money IN (trailing 3-mo actual bank deposits)
-  goingOut30: number; // typical monthly money OUT (trailing 3-mo actual bank outflow)
-  projected: number | null; // bank + comingIn30 − goingOut30 (a typical month from here)
+  comingIn30: number; // typical monthly money IN (trailing 3-mo audited ledger)
+  goingOut30: number; // typical monthly money OUT (trailing 3-mo audited ledger)
+  projected: number | null; // bank + comingIn30 − goingOut30, or NULL when we can't tell
+  // --- how much to trust the three numbers above -------------------------
+  /** "ledger" = measured off the audited bank/card ledger. "unknown" = we could
+   *  not measure it, `projected` is null, and `reason` says why. */
+  basis: "ledger" | "unknown";
+  /** Why `projected` is null. Written for the owner; safe to print verbatim. */
+  reason: string | null;
+  /** Honest qualifiers on a number we DID show (stale rails, thin data). */
+  caveats: string[];
+  monthsSampled: number;
+  sampledFrom: string; // ET day key of the sampled window's first day
+  sampledTo: string;   // ET day key of its last day
 };
 
+// Trailing three FULL months — a stable read of the real monthly rhythm.
+const CASH_MONTHS = 3;
+// Above this share of unclassified money-out we stop pretending to know the
+// burn. A fifth of the spend being "we don't know what this was" is enough to
+// move the answer across zero, and a blank beats a confident wrong number.
+const UNCLASSIFIED_CEILING = 0.2;
+
 export async function getCashPosition(): Promise<CashPosition> {
-  // Trailing three FULL months — a stable read of the real monthly rhythm.
   const m1 = monthBounds(1);
-  const m3 = monthBounds(3);
-  const [snap, ar, prevPnl, recurring, outflow, inflowAgg, plaidBiz] = await Promise.all([
+  const m3 = monthBounds(CASH_MONTHS);
+
+  // ---------------------------------------------------------------------------
+  // WHY THIS NO LONGER READS QUICKBOOKS (Sep 2 2026 audit).
+  //
+  // "Money out" used to be the sum of QuickBooks Purchases. Purchases only exist
+  // once a human enters them, and entry stopped: August held $2,963 against the
+  // $24,496 that really left the accounts (12%), September $189 against $4,244.
+  // The bank feed on the other side of the subtraction is automatic and complete,
+  // so the page was pairing a full inflow against a twelfth of the outflow and
+  // telling the owner a typical month would leave him +$11,537. Measured off the
+  // ledger it already trusts everywhere else, the same month is −$676. The error
+  // was $12,656/month, all of it flattering.
+  //
+  // Both sides now come from ONE source — the audited Plaid ledger that
+  // categoryBreakdown() already uses for profit — so the runway can no longer
+  // drift away from the P&L on the same screen.
+  //
+  // What counts as money OUT: every BUSINESS, PERSONAL and still-unclassified
+  // dollar, counted once. Owner draws are in deliberately — a draw is cash
+  // genuinely gone from the account this projection starts at. EXCLUDE rows are
+  // out: self-transfers, credit-card paydowns and Stripe top-ups only move money
+  // that is already counted elsewhere (the card PURCHASES are the cost, not the
+  // paydown). Refunds net against the cost they reverse, exactly as in
+  // categoryBreakdown, so the two engines describe the same dollars.
+  //
+  // What counts as money IN: INCOME credits only. Not "every deposit" — a
+  // self-transfer, an ACH reversal and a Venmo cash-out all land looking like
+  // sales, and a Stripe Capital drawdown is borrowed money, not revenue (one
+  // $15,533.56 advance once made a typical month read $5,178 richer). The
+  // categorizer already sorts those into EXCLUDE, which is why this can be a
+  // single clause instead of a growing list of memo exclusions.
+  //
+  // Stripe-side costs (Connect transfers to James/Harrison, Stripe fees,
+  // Capital paydowns) are deliberately NOT added to money-out here, even though
+  // categoryBreakdown does add them: Stripe deducts all of them BEFORE it pays
+  // out, so the payout that lands as an INCOME credit is already net of them.
+  // Verified Jun–Aug: $94,119 charged − $3,810 fees − $22,231 transferred =
+  // $68,078, against $66,415 of payout credits in the bank. Counting them again
+  // would double-charge the business roughly $8.6k a month.
+  // ---------------------------------------------------------------------------
+  const window = { gte: m3.start, lte: m1.end };
+  // Sampled month-by-month as well as in total. A whole silent month inside the
+  // window drags the average down by up to a third and looks exactly like a
+  // cheap month — which is the failure this whole fix exists to stop, just
+  // moved one ledger to the left. So check for it explicitly.
+  const sampledMonths = Array.from({ length: CASH_MONTHS }, (_, i) => monthBounds(CASH_MONTHS - i));
+  const [snap, ar, outAgg, inAgg, plaidBiz, monthCounts] = await Promise.all([
     // Latest reading; createdAt breaks ties so a same-day correction wins.
     prisma.cashSnapshot.findFirst({ orderBy: [{ asOf: "desc" }, { createdAt: "desc" }], select: { balance: true, asOf: true } }),
     getBillingRows().then((b) => b.totalOutstanding).catch(() => 0),
-    getMonthlyPnl(1), // fallback only, if the ledger is empty
-    prisma.expense.aggregate({ where: { personal: false, recurring: true }, _sum: { amount: true } }),
-    // Real money OUT of the bank: EVERY Purchase posted over the last 3 full
-    // months — contractors, software, vehicle, financing, rent, owner draws —
-    // the actual burn, not just payroll. This is the fix for a "going out" that
-    // read an (empty) manual-expense table and so wildly under-counted.
-    prisma.qboTransaction.aggregate({ where: { type: "Purchase", txnDate: { gte: m3.start, lte: m1.end } }, _sum: { amount: true } }),
-    // Real money IN to the bank: every Deposit over the same 3 full months —
-    // the cash that actually LANDS in checking. Deliberately NOT revenue, which
-    // counts Venmo (lands in a personal account) and is gross of processor fees,
-    // so revenue overstates what the business bank truly receives. For this
-    // business the gap is large (~$56k earned vs ~$42k banked) because of Venmo +
-    // Stripe detours through the personal ...0942 account.
-    // BORROWED MONEY IS NOT INCOMING REVENUE. A Stripe Capital drawdown lands as
-    // a bank Deposit exactly like a customer settlement, and QuickBooks even
-    // labels it "Stripe Capital | Loans" — counting it made a typical month look
-    // $5,178 richer than it is (Jul 2026 audit, one $15,533.56 advance). Owner
-    // contributions from the personal account are likewise not sales.
-    prisma.qboTransaction.aggregate({
-      where: {
-        type: "Deposit",
-        txnDate: { gte: m3.start, lte: m1.end },
-        NOT: { memo: { contains: "capital", mode: "insensitive" } },
-      },
-      _sum: { amount: true },
-    }),
+    prisma.plaidTransaction.groupBy({ by: ["financeKind"], where: { date: window, amount: { gt: 0 } }, _sum: { amount: true }, _count: true }),
+    prisma.plaidTransaction.groupBy({ by: ["financeKind"], where: { date: window, amount: { lt: 0 } }, _sum: { amount: true }, _count: true }),
     // LIVE business-bank balance straight from Plaid (checking/savings tagged
     // Business on /connections/banks) — refreshed by the daily sync, so the
     // owner never has to hand-type a number the hub already knows.
@@ -228,6 +276,9 @@ export async function getCashPosition(): Promise<CashPosition> {
       where: { isBusiness: true, type: "depository", currentBalance: { not: null } },
       select: { currentBalance: true, item: { select: { lastSyncedAt: true } } },
     }),
+    Promise.all(sampledMonths.map((m) =>
+      prisma.plaidTransaction.count({ where: { date: { gte: m.start, lte: m.end }, amount: { gt: 0 } } }),
+    )),
   ]);
   let stripeAvailable: number | null = null;
   let stripePending: number | null = null;
@@ -237,10 +288,22 @@ export async function getCashPosition(): Promise<CashPosition> {
     if (bal) { stripeAvailable = bal.available; stripePending = bal.pending; }
   } catch { /* not connected — degrade */ }
 
-  const burn = (outflow._sum.amount ?? 0) / 3;
-  const inflow = (inflowAgg._sum.amount ?? 0) / 3;
-  const goingOut30 = round2(burn > 0 ? burn : prevPnl.allPayroll + (recurring._sum.amount ?? 0));
-  const comingIn30 = round2(inflow > 0 ? inflow : prevPnl.revenue);
+  // null financeKind = synced but never classified. It still left the account,
+  // so it counts as spend — and it counts toward the "can we even tell?" test.
+  const debit = (k: string | null) => outAgg.find((g) => g.financeKind === k)?._sum.amount ?? 0;
+  const debitN = (k: string | null) => outAgg.find((g) => g.financeKind === k)?._count ?? 0;
+  const credit = (k: string | null) => Math.abs(inAgg.find((g) => g.financeKind === k)?._sum.amount ?? 0);
+
+  const spendGross = debit("BUSINESS") + debit("PERSONAL") + debit("REVIEW") + debit(null);
+  const refunds = credit("BUSINESS") + credit("PERSONAL"); // net against the cost they reverse
+  const spend3 = spendGross - refunds;
+  const income3 = credit("INCOME");
+  const unclassified3 = debit("REVIEW") + debit(null);
+  const spendRows = debitN("BUSINESS") + debitN("PERSONAL") + debitN("REVIEW") + debitN(null);
+
+  const goingOut30 = round2(spend3 / CASH_MONTHS);
+  const comingIn30 = round2(income3 / CASH_MONTHS);
+
   // Live Plaid balance wins over the hand-typed snapshot; the manual entry
   // remains the fallback for accounts that aren't connected.
   const liveBank = plaidBiz.length > 0 ? round2(plaidBiz.reduce((s, a) => s + (a.currentBalance ?? 0), 0)) : null;
@@ -250,8 +313,69 @@ export async function getCashPosition(): Promise<CashPosition> {
   );
   const bankLive = liveBank != null;
   const bankBalance = liveBank ?? snap?.balance ?? null;
-  // A typical month starting from today's bank: what comes in, less what goes out.
-  const projected = bankBalance != null ? round2(bankBalance + comingIn30 - goingOut30) : null;
+
+  const sampledFrom = etDayKey(m3.start);
+  const sampledTo = etDayKey(m1.end);
+
+  // --- Can we honestly answer at all? A blank beats a flattering guess. ------
+  // The old code answered YES no matter what: an empty ledger silently fell back
+  // to "last month's payroll plus the recurring-expense table", which is a
+  // fraction of the real burn and reads as a comfortable month every time.
+  let basis: CashPosition["basis"] = "ledger";
+  let reason: string | null = null;
+  const silentMonths = sampledMonths.filter((_, i) => monthCounts[i] === 0);
+  if (spendRows === 0 || spend3 <= 0) {
+    basis = "unknown";
+    reason = `No categorized bank or card activity between ${sampledFrom} and ${sampledTo}, so there is nothing to measure a typical month against. Reconnect your accounts on /connections/banks and this fills in by itself.`;
+  } else if (silentMonths.length > 0) {
+    basis = "unknown";
+    reason = `${silentMonths.map((m) => m.label).join(" and ")} ${silentMonths.length === 1 ? "has" : "have"} no bank activity at all, so a "typical month" averaged over ${sampledFrom}–${sampledTo} would read far cheaper than the real one. Re-sync your accounts on /connections/banks and the projection comes back.`;
+  } else if (unclassified3 / spendGross > UNCLASSIFIED_CEILING) {
+    basis = "unknown";
+    reason = `${Math.round((unclassified3 / spendGross) * 100)}% of the money that left your accounts between ${sampledFrom} and ${sampledTo} hasn't been classified yet ($${Math.round(unclassified3).toLocaleString("en-US")}). That is too much unknown spend to project a balance from — sort those rows and the number comes back.`;
+  } else if (bankBalance == null) {
+    reason = "No bank balance yet — connect an account on /connections/banks, or enter one on the Money tab, and this projects forward.";
+  }
+
+  const projected = basis === "ledger" && bankBalance != null
+    ? round2(bankBalance + comingIn30 - goingOut30)
+    : null;
+
+  // --- Qualifiers on a number we DID show -----------------------------------
+  const caveats: string[] = [];
+  if (basis === "ledger" && unclassified3 > 0) {
+    caveats.push(`$${Math.round(unclassified3).toLocaleString("en-US")} of the sampled spend is still unclassified and is counted as money out.`);
+  }
+  // The Venmo and Tilt "accounts" only move when Jordan uploads a statement. A
+  // stale one silently REMOVES spend from the sampled window, which biases the
+  // runway optimistic — the exact direction this whole fix is about. One
+  // sentence for all of them: three near-identical warnings read as noise and
+  // get skipped, which defeats the point of warning at all.
+  try {
+    const { railFreshness } = await import("@/lib/financeCategories");
+    const fresh = await railFreshness();
+    // Row dates are stored at noon UTC so their ET day is unambiguous; compare
+    // day KEYS rather than subtracting a noon from an ET-midnight boundary.
+    const lastSampledMs = Date.parse(`${sampledTo}T00:00:00Z`);
+    const stale = fresh.manual
+      .map((rail) => {
+        if (!rail.newest) return null;
+        const key = etDayKey(rail.newest);
+        const missedDays = Math.round((lastSampledMs - Date.parse(`${key}T00:00:00Z`)) / 864e5);
+        return missedDays >= 7 ? { label: rail.label, key, missedDays } : null; // a few days' lag isn't worth the noise
+      })
+      .filter((x): x is { label: string; key: string; missedDays: number } => x != null);
+    if (stale.length > 0) {
+      const worst = stale.reduce((a, b) => (b.missedDays > a.missedDays ? b : a));
+      const list = stale.map((s) => `${s.label} (${s.key})`).join(", ");
+      caveats.push(`${stale.length === 1 ? "One rail is" : `${stale.length} rails are`} statement-imported and have gone stale — ${list}. Up to ${worst.missedDays} days of the sampled period carry no spend from ${stale.length === 1 ? "it" : "them"} at all, so the real money-out is HIGHER than the $${Math.round(goingOut30).toLocaleString("en-US")} shown.`);
+    }
+  } catch { /* freshness is a nicety — never fail the cash card over it */ }
+  if (bankLive && liveAsOf) {
+    const staleDays = Math.floor((Date.now() - liveAsOf.getTime()) / 864e5);
+    if (staleDays >= 3) caveats.push(`The bank balance was last refreshed ${staleDays} days ago (${etDayKey(liveAsOf)}).`);
+  }
+
   return {
     bankBalance,
     bankAsOf: bankLive ? (liveAsOf ? etDayKey(liveAsOf) : null) : snap?.asOf ? etDayKey(snap.asOf) : null,
@@ -261,6 +385,9 @@ export async function getCashPosition(): Promise<CashPosition> {
     comingIn30,
     goingOut30,
     projected,
+    basis, reason, caveats,
+    monthsSampled: CASH_MONTHS,
+    sampledFrom, sampledTo,
   };
 }
 

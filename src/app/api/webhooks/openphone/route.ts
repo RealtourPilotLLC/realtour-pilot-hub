@@ -99,6 +99,54 @@ function prettyPhone(k: string): string {
   return k.length === 10 ? `(${k.slice(0, 3)}) ${k.slice(3, 6)}-${k.slice(6)}` : k;
 }
 
+// ---------------------------------------------------------------------------
+// WHICH NUMBERS ARE US
+//
+// Two kinds, and telling them apart is the whole of the direction problem:
+//
+//   • the LINE — our OpenPhone (Quo) workspace number, +1 215 645 4889. Anything
+//     it sends, we sent. OpenPhone stamps those `outgoing` and always has.
+//
+//   • a TEAM HANDSET — Jordan's, James's, Harrison's own phone. They text
+//     clients from their own handsets in group threads that carry the workspace
+//     line, so those messages arrive HERE, and OpenPhone stamps every one of
+//     them `incoming` — identical to a client writing in. (Probe over the stored
+//     webhook archive: 190 team-handset message events in the last 30 days,
+//     100% stamped `incoming`.) That single ambiguity is what logged our own
+//     words as the client's: escalations that we were "keeping a client
+//     waiting", to-dos minted from our own sentences, and a reply that ADDED a
+//     card to the queue instead of clearing one.
+//
+// Cached for ten minutes per lambda (same window as ourOpenPhoneNumberKeys), so
+// a new hire's number can be up to ten minutes late — read that cost against a
+// roster lookup on every inbound text. Best-effort: if the query fails we hand
+// back an empty team set, which degrades to the old (line-only) behaviour rather
+// than mistaking a client for one of ours.
+let teamNumbersCache: { at: number; keys: Set<string> } | null = null;
+async function ourNumberKeys(): Promise<{ line: Set<string>; team: Set<string> }> {
+  const line = await ourOpenPhoneNumberKeys();
+  if (teamNumbersCache && Date.now() - teamNumbersCache.at < 10 * 60_000) {
+    return { line, team: teamNumbersCache.keys };
+  }
+  let team = new Set<string>();
+  try {
+    // INACTIVE members included on purpose: a message Sarah sent while she was
+    // on the roster is still ours, and dropping her the day she leaves would
+    // silently re-open every one of her old threads as "a stranger waiting".
+    // (Probed: no TeamMember phone collides with a Client phone or with a
+    // synced contact linked to a client, so this can never eat a real client.)
+    const rows = await prisma.teamMember.findMany({
+      where: { phone: { not: null } },
+      select: { phone: true },
+    });
+    team = new Set(rows.map((r) => phoneKey(r.phone)).filter((k) => k.length === 10));
+    teamNumbersCache = { at: Date.now(), keys: team };
+  } catch {
+    team = teamNumbersCache?.keys ?? new Set();
+  }
+  return { line, team };
+}
+
 function collectPhones(obj: unknown, acc: string[] = []): string[] {
   if (!obj) return acc;
   if (typeof obj === "string") {
@@ -142,20 +190,50 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
   const incoming = direction.toLowerCase().startsWith("in");
   const text = (data.text as string) || (data.body as string) || "";
 
-  // Our own numbers: in a group thread our own replies echo back as "incoming"
-  // events FROM our line — those are OURS (outbound), not a client's message.
-  // Our lines are also excluded from client matching so a group thread resolves
-  // on the real participants.
-  const ourNumbers = await ourOpenPhoneNumberKeys();
+  // --- WHO WROTE THIS, AND DID IT LEAVE THE COMPANY? -----------------------
+  // OpenPhone's own `direction` cannot answer this: it describes the LINE, not
+  // the company. Everything that is not the line — a client, and equally our own
+  // photographer's handset — arrives stamped `incoming`. So we decide from the
+  // numbers on the thread (see ourNumberKeys above).
+  const { line: ourLine, team: ourTeam } = await ourNumberKeys();
+  // Neither kind is ever the CLIENT a message is about: a group thread must
+  // resolve on the real participant, and an all-hands internal thread on nobody.
+  const ourNumbers = new Set([...ourLine, ...ourTeam]);
+
   const fromPhone = phoneKey((data.from as string) || "");
-  const fromUs = fromPhone.length === 10 && ourNumbers.has(fromPhone);
+  const fromLine = fromPhone.length === 10 && ourLine.has(fromPhone);
+  const fromTeamPhone = fromPhone.length === 10 && !fromLine && ourTeam.has(fromPhone);
+
+  // Everyone this went TO, split into our own people and the outside world.
+  // (Group texts arrive with `to` as one comma-joined string — collectPhones
+  // splits it, so every participant counts, not just the first.)
+  const recipients = [...new Set(collectPhones(data.to).map((p) => phoneKey(p)).filter((k) => k.length === 10))];
+  const outsiders = recipients.filter((k) => !ourNumbers.has(k));
+
+  // OURS — the message left this company, so its direction is "out":
+  //   • anything the workspace line sent (in a group thread our own replies also
+  //     echo back as "incoming" events FROM the line — still ours), and
+  //   • anything a team member sent from their own handset with an OUTSIDE
+  //     number on the thread. That is Jordan answering Stephen Kennedy from his
+  //     pocket while the line watches: our words, our commitment, our reply.
+  //
+  // A teammate texting ONLY the office (no outsider on the thread) is NOT this.
+  // It is a real message arriving that somebody here owes an answer to — it
+  // keeps direction "in" so the reply queue can still show it, and it is
+  // structurally safe because our own numbers are filtered out of the client
+  // match below, so an internal thread can never attach to a client, never
+  // reach revision detection, and never mint a lead.
+  const fromUs = fromLine || (fromTeamPhone && outsiders.length > 0);
   const effIncoming = incoming && !fromUs;
   const isInboundText = !fromUs && (type === "message.received" || (!isCall && incoming));
 
   // Who actually sent this? (team member / client / synced contact — or nobody
-  // we know). Robo-senders (Aryeo reminders etc.) are notifications, not client
-  // messages: don't log them as such and never turn them into leads.
-  const sender = !fromUs && fromPhone.length === 10 ? await resolveSenderName(fromPhone) : null;
+  // we know). Resolved for every sender except our own workspace line, whose
+  // name we already know: the same set of lookups as before, and a team-sent row
+  // needs the name to label itself with. Robo-senders (Aryeo reminders etc.) are
+  // notifications, not client messages: don't log them as such and never turn
+  // them into leads.
+  const sender = !fromLine && fromPhone.length === 10 ? await resolveSenderName(fromPhone) : null;
   const robo = !fromUs && !!sender && AUTOMATED_SENDER_RE.test(sender.name);
 
   const match = await resolveClientByPhones(phones.filter((k) => !ourNumbers.has(k)));
@@ -182,13 +260,15 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
   // robo-texts are skipped entirely — they'd read as fake client messages.
   if (!isCall && text.trim() && !robo) {
     // The number a reply goes back to: whoever wrote in, or (on our own
-    // outbound) whoever we texted. Our own lines are excluded so a group
-    // thread resolves to a real person rather than to us.
+    // outbound) whoever we texted. An OUTSIDE recipient wins over one of our own
+    // — in a mixed group thread ("Jordan + Kyle + the client") the reply belongs
+    // to the client, and the old first-non-line pick could hand it to whichever
+    // teammate happened to sit first in the `to` list. Falling back to a
+    // non-line recipient keeps a line→teammate thread threaded on the teammate's
+    // number exactly as before.
     const counterparty = effIncoming
       ? fromPhone
-      : [...new Set(collectPhones(data.to).map((p) => phoneKey(p)))].find(
-          (k) => k.length === 10 && !ourNumbers.has(k),
-        ) ?? "";
+      : outsiders[0] ?? recipients.find((k) => !ourLine.has(k)) ?? "";
     await logComm({
       channel: "text",
       direction: effIncoming ? "in" : "out",
@@ -197,7 +277,10 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
       projectId: effProject?.id ?? null,
       fromPhone: counterparty || null,
       contactName: fromUs
-        ? "Us"
+        // A team member's own handset: name WHO on our side wrote it. The
+        // direction already marks the row as ours, and "Jordan Spackman" beats
+        // "Us" when the thread is read back months later.
+        ? (fromTeamPhone ? sender?.name ?? "Us" : "Us")
         : effIncoming
           ? sender?.name ?? match?.clientName ?? (fromPhone.length === 10 ? prettyPhone(fromPhone) : null)
           : "RealTour Pilot",
@@ -213,9 +296,13 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
     const { clientId, clientName } = match;
 
     if (effProject) {
+      // Label the project timeline with the EFFECTIVE direction, not OpenPhone's
+      // raw stamp: a text Jordan sent a client from his own handset arrives
+      // stamped "incoming", and the job's history read "OpenPhone incoming text:
+      // Absolutely! They're deleted." — our own promise, filed as the client's.
       const body = isCall
         ? `OpenPhone: ${direction || "call"} call (${type.replace("call.", "")}).`
-        : `OpenPhone ${direction || ""} text: ${text.slice(0, 140)}`.trim();
+        : `OpenPhone ${effIncoming ? "incoming" : "outgoing"} text: ${text.slice(0, 140)}`.trim();
       await prisma.activity.create({ data: { projectId: effProject.id, type: "SYSTEM", body } });
     }
 
@@ -333,8 +420,10 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
     // EVERY external recipient counts — a group text's lead can sit anywhere in
     // the `to` list (the old to[0]-only pick missed them; a comma-joined string
     // resolved to whichever number phoneKey's last-10 happened to keep).
+    // `outsiders` is already every recipient that is neither the line nor one of
+    // our own handsets, so a teammate on the thread can never be read as a lead.
     const counterparts = fromUs
-      ? [...new Set(collectPhones(data.to).map((p) => phoneKey(p)).filter((k) => k.length === 10 && !ourNumbers.has(k)))]
+      ? outsiders
       : fromPhone.length === 10 && !ourNumbers.has(fromPhone) ? [fromPhone] : [];
     const answeredCall = isCall && type === "call.completed" && (!!data.answeredAt || Number(data.duration ?? 0) > 0);
     if (!isCall || answeredCall) {
@@ -463,6 +552,74 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
   }
 }
 
+// WHICH WAY DID THIS CALL GO?
+//
+// The transcript event is the ONE call event that carries no `direction` and no
+// `participants` — just a callId, a duration and the dialogue (checked against
+// all 45 transcript payloads in the stored archive). Every transcript was
+// therefore hard-coded as inbound, which meant that of the 45 calls transcribed
+// so far, the 18 WE PLACED were all logged as the client reaching out to us:
+// the client showed as waiting on a call we had just had with them, and a
+// "Return the voicemail" card could be minted for it. Recover the truth, best
+// evidence first.
+async function callTranscriptDirection(
+  data: Record<string, unknown>,
+  callId: string,
+  dialogue: OpTranscriptLine[],
+): Promise<"in" | "out"> {
+  // 1) A direction on the transcript payload itself, should OpenPhone add one.
+  const own = String(data.direction ?? "").toLowerCase();
+  if (own.startsWith("out")) return "out";
+  if (own.startsWith("in")) return "in";
+
+  // 2) The call events we ALREADY stored for this same call. call.ringing,
+  //    call.completed and call.recording.completed all carry the real direction
+  //    and all land before the transcript does (probe: 45/45 transcripts resolve
+  //    here — 18 outgoing, 27 incoming). Bounded to a week and to OpenPhone's
+  //    own call events so this stays a small scan, not a walk of the archive,
+  //    and the id is re-checked after parsing because a payload can merely
+  //    MENTION another call's id.
+  if (callId) {
+    try {
+      const rows = await prisma.webhookEvent.findMany({
+        where: {
+          provider: "openphone",
+          eventType: { in: ["call.completed", "call.recording.completed", "call.ringing"] },
+          createdAt: { gte: new Date(Date.now() - 7 * 86_400_000) },
+          payload: { contains: callId },
+        },
+        orderBy: { createdAt: "desc" },
+        take: 6, // one call emits at most 3 of these; headroom for a false substring hit
+        select: { payload: true },
+      });
+      for (const r of rows) {
+        try {
+          const o = (JSON.parse(r.payload) as { data?: { object?: { id?: string; direction?: string } } })
+            ?.data?.object;
+          if (!o || o.id !== callId) continue;
+          const d = String(o.direction ?? "").toLowerCase();
+          if (d.startsWith("out")) return "out";
+          if (d.startsWith("in")) return "in";
+        } catch { /* try the next row */ }
+      }
+    } catch { /* fall through to the dialogue */ }
+  }
+
+  // 3) The dialogue. OpenPhone tags a line with a userId only when one of OUR
+  //    people is speaking, so a transcript in which nobody but us spoke is a
+  //    voicemail WE left. The mirror rule ("only they spoke" → inbound) is
+  //    deliberately NOT applied: an outbound call into an IVR looks exactly the
+  //    same, and the archive holds one ("Welcome to merchant serve…", outgoing).
+  if (dialogue.length && dialogue.every((l) => l.userId)) return "out";
+
+  // 4) Unknown. Hold the old assumption — a call we didn't place — but say so
+  //    out loud: a silent guess here is what put the wrong number on screen.
+  console.warn(
+    `[webhook] openphone: call ${callId || "?"} transcript carries no recoverable direction — logging it as inbound.`,
+  );
+  return "in";
+}
+
 // A completed call transcript: fetch it, attach to the client's project, and
 // run the client's portion through revision detection (calls count too).
 async function handleTranscript(data: Record<string, unknown>) {
@@ -470,11 +627,12 @@ async function handleTranscript(data: Record<string, unknown>) {
 
   // Prefer the dialogue already in the webhook payload; fall back to the API.
   const inline = data.dialogue as OpTranscriptLine[] | undefined;
+  const dialogue = Array.isArray(inline) ? inline : [];
   let full = "";
   let clientText = "";
-  if (Array.isArray(inline) && inline.length) {
-    full = inline.map((l) => l.content ?? "").join(" ").replace(/\s+/g, " ").trim();
-    clientText = inline
+  if (dialogue.length) {
+    full = dialogue.map((l) => l.content ?? "").join(" ").replace(/\s+/g, " ").trim();
+    clientText = dialogue
       .filter((l) => !l.userId)
       .map((l) => l.content ?? "")
       .join(" ")
@@ -487,15 +645,24 @@ async function handleTranscript(data: Record<string, unknown>) {
   }
   if (!full) return;
 
+  // Did we place this call, or did they? Everything below turns on it.
+  const dir = await callTranscriptDirection(data, callId, dialogue);
+  const wePlacedIt = dir === "out";
+
   // Resolve the client from phones in the payload + the transcript identifiers.
+  // Our own numbers — the line AND every team handset — are excluded, so a
+  // teammate who dialled in from their own phone is never mistaken for a client.
   const phones = [...new Set(collectPhones(data).map((p) => phoneKey(p)).filter((k) => k.length === 10))];
-  const ourNumbers = await ourOpenPhoneNumberKeys();
+  const { line: ourLine, team: ourTeam } = await ourNumberKeys();
+  const ourNumbers = new Set([...ourLine, ...ourTeam]);
   const match = await resolveClientByPhones(phones.filter((k) => !ourNumbers.has(k)));
 
-  // Unknown caller → this is a LEAD, not noise. Log the transcript (previously
-  // it vanished without a trace) and mint/upgrade the callback task with what
-  // they actually said. Requires the OTHER party to have spoken (clientText) so
-  // our own outbound voicemails don't lead on ourselves.
+  // A number we don't know. If THEY rang us, that's a LEAD, not noise: log the
+  // transcript (previously it vanished without a trace) and mint/upgrade the
+  // callback task with what they actually said. Requires the OTHER party to have
+  // spoken (clientText) so our own outbound voicemails don't lead on ourselves —
+  // and, now that the direction is known, a call WE placed is logged but never
+  // turned into a "they called us, ring them back" claim.
   if (!match) {
     const callerKey = phones.find((k) => !ourNumbers.has(k));
     if (!callerKey || !clientText) return;
@@ -503,13 +670,19 @@ async function handleTranscript(data: Record<string, unknown>) {
     if (sender && (sender.isTeam || AUTOMATED_SENDER_RE.test(sender.name))) return; // teammate / robo-call
     await logComm({
       channel: "call",
-      direction: "in",
+      direction: dir,
       clientId: null,
       contactName: sender?.name ?? prettyPhone(callerKey),
       body: full,
       source: "openphone-call",
       externalId: callId ? `op-call-${callId}` : undefined,
     });
+    // A number WE dialled did not "call us". Minting a call-them-back lead off
+    // our own outgoing call is precisely how calls we placed turned up on Kyle's
+    // queue as strangers waiting on us — keep the transcript, drop the invented
+    // callback. (If we want outbound calls to unknown numbers to become leads,
+    // that's a lead task worded as one, not this.)
+    if (wePlacedIt) return;
     await upsertPhoneLeadTask({ phone: callerKey, kind: "voicemail", senderName: sender?.name ?? null, snippet: clientText });
     return;
   }
@@ -520,7 +693,7 @@ async function handleTranscript(data: Record<string, unknown>) {
       data: {
         projectId: project.id,
         type: "SYSTEM",
-        body: `Call transcript: ${full.slice(0, 280)}${full.length > 280 ? "…" : ""}`,
+        body: `${wePlacedIt ? "Outgoing" : "Incoming"} call transcript: ${full.slice(0, 280)}${full.length > 280 ? "…" : ""}`,
       },
     });
   }
@@ -529,7 +702,7 @@ async function handleTranscript(data: Record<string, unknown>) {
   // router's most-relevant guess (a call has no parsed street), so stamp it.
   await logComm({
     channel: "call",
-    direction: "in",
+    direction: dir,
     clientId,
     clientName,
     projectId: project?.id ?? null,
@@ -553,7 +726,14 @@ async function handleTranscript(data: Record<string, unknown>) {
       // conversation reads as a ramble on its own ("Okay. Okay. There we go."),
       // and every specific they gave is an answer to something we asked.
       fullText: full,
-      kind: "voicemail",
+      // A call WE placed and they answered is not a voicemail. Labelling it one
+      // put "Return the voicemail — Voicemail from client" on a card for a
+      // conversation we had already finished having, minutes after the
+      // answered-outbound close had cleared the real callback. Their words still
+      // run through revision detection either way — that is the point of this
+      // call. (tasks.ts has no "call" kind yet; "text" is the honest one of the
+      // three it does have. Worth a real kind — noted for its owner.)
+      kind: wePlacedIt ? "text" : "voicemail",
       // Task source stays "openphone" (not "openphone-call") so the reply sweep +
       // real-time outbound close pick up voicemail callbacks like any other reply.
       source: "openphone",

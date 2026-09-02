@@ -6,11 +6,14 @@ import { etDayStartUtc, etAddDays, etDayKey } from "@/lib/datetime";
 
 import { TRIAGE_TYPES } from "@/lib/triage";
 import { getVideoSlaStatus } from "@/lib/projectStatus";
-import { getQcStats, type QcStats } from "@/lib/qc";
+import type { QcMissBucket } from "@/lib/qc";
+import { parseChecklist } from "@/lib/checklist";
+import { countQcMisses } from "@/lib/tasks";
+import { DEBRIEF_QC_LABELS } from "@/lib/debrief";
 
-// Re-export the QC quality dial's type so the dashboard can consume it without
-// reaching past this module — queries.ts is the dashboard's single data door.
-export type { QcStats } from "@/lib/qc";
+// Re-export the QC types so the dashboard can consume them without reaching
+// past this module — queries.ts is the dashboard's single data door.
+export type { QcStats, QcMissBucket } from "@/lib/qc";
 
 /** Projects for the pipeline board — current work only (last-30-day window). */
 export async function getPipelineProjects() {
@@ -553,6 +556,12 @@ export async function getStuckJobs(): Promise<StuckJob[]> {
 // hour, and open revisions. Trailing 30 days, with deltas vs the PRIOR 30 days
 // so the arrows show direction rather than noise. Deliberately NO QC-pass-rate
 // — that metric was judged gameable and is not shipped.
+//
+// BOTH delivery dials measure the BUSINESS, not the bookkeeping: rows whose
+// deliveredAt was stamped by a catch-up pass on the pipeline board are left out
+// (see backfillStampedDeliveries below). Each dial ships with a plain-English
+// `*Basis` line saying exactly what it counted and what it set aside — the
+// owner should never have to ask what a number on his own dashboard means.
 // ---------------------------------------------------------------------------
 export type OwnerPulse = {
   onTimePct: number | null; // % delivered on/before deliveryDue (30d)
@@ -562,6 +571,10 @@ export type OwnerPulse = {
   replyPct: number | null; // % inbound texts answered <1h (30d)
   replyDelta: number | null; // pct-points vs prior 30d — positive = better
   openRevisions: number; // active revision tasks right now
+  // --- what the two delivery dials actually measured (render under them) ---
+  onTimeBasis: string; // "17 of 54 jobs delivered in the last 30 days …"
+  turnaroundBasis: string; // "Median shoot → delivered across 54 jobs …"
+  backfillExcluded: number; // rows set aside as catch-up stamps (30d window)
 };
 
 function median(xs: number[]): number | null {
@@ -571,16 +584,75 @@ function median(xs: number[]): number | null {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
+// ---------------------------------------------------------------------------
+// Catch-up stamps: deliveries the hub RECORDED at a moment that has nothing to
+// do with when the client actually got their media.
+//
+// moveProjectStatus (src/app/actions.ts) writes `deliveredAt = now()` on every
+// hand-move to Delivered and logs a STATUS_CHANGE "Moved from X to Delivered."
+// One person clearing a stale board therefore mints a run of deliveries all
+// stamped seconds apart. Nobody delivers three jobs in five minutes — that is
+// bookkeeping, so we detect the RUN, not the individual move: three or more
+// hand-moves chained at <= 5 minutes apart is a board-clearing pass, and the
+// to-Delivered moves inside it are excluded from both delivery dials.
+//
+// Live proof (2 Sep 2026): one pass on 17 Aug — 16 hand-moves in 68 seconds —
+// stamped six deliveries whose shoot→stamp spans ran 13 to 76 DAYS. They alone
+// pushed median turnaround from 50h to 97h and on-time from 31% to 28%. A
+// SINGLE hand-move is left alone: that is a real "I delivered this, mark it".
+// Evidence-based flips (the hourly sweep's "Status re-evaluated: REVIEW →
+// DELIVERED. All ordered deliverables confirmed live on Aryeo.") are never
+// touched — those ARE deliveries, even when three land in the same second.
+// ---------------------------------------------------------------------------
+const BULK_PASS_GAP_MS = 5 * 60_000; // moves chained closer than this = one sitting
+const BULK_PASS_MIN_MOVES = 3; // three-plus hand moves in one sitting = a catch-up pass
+const STAMP_MATCH_MS = 2 * 60_000; // deliveredAt is written alongside its own move
+
+/** projectId → the moment a board-clearing pass stamped it Delivered. */
+async function backfillStampedDeliveries(since: Date): Promise<Map<string, Date>> {
+  const moves = await prisma.activity.findMany({
+    // Reach back one gap-width before the window so a pass straddling the
+    // boundary is still seen whole (and still counted at full size).
+    where: {
+      type: "STATUS_CHANGE",
+      body: { startsWith: "Moved from" },
+      createdAt: { gte: new Date(since.getTime() - BULK_PASS_GAP_MS) },
+    },
+    select: { createdAt: true, body: true, projectId: true },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const stamped = new Map<string, Date>();
+  let run: typeof moves = [];
+  const closeRun = () => {
+    if (run.length >= BULK_PASS_MIN_MOVES) {
+      for (const m of run) {
+        // Only the to-Delivered moves carry a deliveredAt stamp; the rest of the
+        // pass (On Hold / Cancelled / back to In Editing) is just context that
+        // proves someone was clearing the board.
+        if (m.projectId && /to Delivered\.$/.test(m.body)) stamped.set(m.projectId, m.createdAt);
+      }
+    }
+    run = [];
+  };
+  for (const m of moves) {
+    if (run.length && m.createdAt.getTime() - run[run.length - 1].createdAt.getTime() > BULK_PASS_GAP_MS) closeRun();
+    run.push(m);
+  }
+  closeRun();
+  return stamped;
+}
+
 export async function getOwnerPulse(): Promise<OwnerPulse> {
   const now = Date.now();
   const d30 = new Date(now - 30 * 86400000);
   const d60 = new Date(now - 60 * 86400000);
 
-  const [delivered, texts, openRevisions] = await Promise.all([
+  const [allDelivered, texts, openRevisions, backfilled] = await Promise.all([
     // Both 30d windows in one fetch, bucketed in JS below.
     prisma.project.findMany({
       where: { deliveredAt: { gte: d60 }, status: { not: "CANCELLED" } },
-      select: { deliveredAt: true, deliveryDue: true, shootDate: true },
+      select: { id: true, deliveredAt: true, deliveryDue: true, shootDate: true },
     }),
     // Texts only (calls/emails have different response norms), clientId set so
     // inbound/outbound can be paired per conversation. Ordered ASC so "the next
@@ -591,26 +663,45 @@ export async function getOwnerPulse(): Promise<OwnerPulse> {
       orderBy: { occurredAt: "asc" },
     }),
     prisma.smartTask.count({ where: { taskType: "revision", status: { in: BRIEF_ACTIVE } } }),
+    backfillStampedDeliveries(d60),
   ]);
+
+  // Drop the catch-up stamps from BOTH windows (current and prior) so the delta
+  // arrow compares like with like. A project is only dropped when its own
+  // deliveredAt sits alongside the hand-move that wrote it — a job the pass
+  // touched and that was LATER re-delivered for real keeps its real stamp.
+  const isBackfillStamp = (p: { id: string; deliveredAt: Date | null }) => {
+    const at = backfilled.get(p.id);
+    return !!at && !!p.deliveredAt && Math.abs(p.deliveredAt.getTime() - at.getTime()) <= STAMP_MATCH_MS;
+  };
+  const delivered = allDelivered.filter((p) => !isBackfillStamp(p));
+  const backfillExcluded = allDelivered.filter((p) => p.deliveredAt! >= d30 && isBackfillStamp(p)).length;
 
   const pct = (ok: number, total: number) => (total ? Math.round((ok / total) * 100) : null);
 
-  // (a) on-time % — only judgeable when the project carried a due date.
-  const judged = delivered.filter((p) => p.deliveredAt && p.deliveryDue);
+  // (a) on-time % — only judgeable when the project carried a due date AND the
+  // stamp sits after the shoot. A job delivered, then bounced and REBOOKED has
+  // its shootDate pushed to the new visit while deliveredAt still points at the
+  // old delivery (1224 Gail Rd: stamped 8 Aug, re-shoot 24 Aug) — judging that
+  // pair scored a free on-time win for a delivery that hasn't happened yet.
+  // The turnaround dial already refused those rows; now both dials agree.
+  const judged = delivered.filter(
+    (p) => p.deliveredAt && p.deliveryDue && (!p.shootDate || p.deliveredAt > p.shootDate),
+  );
   const curJ = judged.filter((p) => p.deliveredAt! >= d30);
   const prevJ = judged.filter((p) => p.deliveredAt! < d30);
-  const onTimePct = pct(curJ.filter((p) => p.deliveredAt! <= p.deliveryDue!).length, curJ.length);
+  const curOnTime = curJ.filter((p) => p.deliveredAt! <= p.deliveryDue!).length;
+  const onTimePct = pct(curOnTime, curJ.length);
   const onTimePrev = pct(prevJ.filter((p) => p.deliveredAt! <= p.deliveryDue!).length, prevJ.length);
 
   // (b) median shoot→delivered hours (skip rows where delivery precedes the
-  // shoot — backfilled data has a few).
+  // shoot — rebooked jobs and backfilled data have a few).
+  const measurable = (ps: typeof delivered) =>
+    ps.filter((p) => p.shootDate && p.deliveredAt && p.deliveredAt > p.shootDate);
   const turnaround = (ps: typeof delivered) =>
-    median(
-      ps
-        .filter((p) => p.shootDate && p.deliveredAt && p.deliveredAt > p.shootDate)
-        .map((p) => (p.deliveredAt!.getTime() - p.shootDate!.getTime()) / 3600000),
-    );
-  const curT = turnaround(delivered.filter((p) => p.deliveredAt! >= d30));
+    median(measurable(ps).map((p) => (p.deliveredAt!.getTime() - p.shootDate!.getTime()) / 3600000));
+  const curDelivered = delivered.filter((p) => p.deliveredAt! >= d30);
+  const curT = turnaround(curDelivered);
   const prevT = turnaround(delivered.filter((p) => p.deliveredAt! < d30));
 
   // (c) replies <1h — pair each inbound text with the NEXT outbound to the same
@@ -641,6 +732,20 @@ export async function getOwnerPulse(): Promise<OwnerPulse> {
   const replyPrev = pct(prevFast, prevIn);
 
   const delta = (a: number | null, b: number | null) => (a != null && b != null ? a - b : null);
+
+  // Say it in words, on the page, next to the number. "28%" with no basis is
+  // how a dial quietly turns into a data-quality report nobody trusts.
+  const setAside = backfillExcluded
+    ? ` ${backfillExcluded} ${backfillExcluded === 1 ? "job" : "jobs"} stamped by a catch-up pass on the board (not a real delivery moment) left out.`
+    : "";
+  const onTimeBasis = curJ.length
+    ? `${curOnTime} of ${curJ.length} jobs delivered in the last 30 days met the date we promised.${setAside}`
+    : `No job with a promised date was delivered in the last 30 days.${setAside}`;
+  const nT = measurable(curDelivered).length;
+  const turnaroundBasis = nT
+    ? `Median shoot → delivered across ${nT} ${nT === 1 ? "job" : "jobs"} in the last 30 days.${setAside}`
+    : `Nothing measurable delivered in the last 30 days.${setAside}`;
+
   return {
     onTimePct,
     onTimeDelta: delta(onTimePct, onTimePrev),
@@ -649,6 +754,9 @@ export async function getOwnerPulse(): Promise<OwnerPulse> {
     replyPct,
     replyDelta: delta(replyPct, replyPrev),
     openRevisions,
+    onTimeBasis,
+    turnaroundBasis,
+    backfillExcluded,
   };
 }
 
@@ -662,17 +770,134 @@ export async function getOwnerPulse(): Promise<OwnerPulse> {
 //     the full table. NOTE these jobs mostly ALSO appear in getStuckJobs (shot
 //     48h+ undelivered / past deliveryDue), so we never re-list them as fires —
 //     we show a compact roll-up line that links into the /editing queue.
-//   • QC quality (getQcStats, qc.ts): revision-after-delivery rate + avg misses
-//     per pass. Empty at launch (no QcRecords until Kyle completes guided-QC
-//     cards), so the page GUARDS on qcPasses === 0 and shows a "tracking starts"
-//     hint instead of a misleading 0%/NaN.
+//   • QC quality: revision-after-delivery rate + misses per pass, over the QC
+//     passes A HUMAN ACTUALLY WORKED. See ownerQcDial below for why that
+//     qualifier is the whole point. qcPasses === 0 → the page shows its
+//     "tracking starts" hint instead of a number nobody stood behind.
 //
 // Both are owner-only — call this behind the same gate as the pulse/money strips.
 // ---------------------------------------------------------------------------
 export type OwnerDials = {
   video: { inEditing: number; pastSla: number }; // in-flight video jobs / of those past SLA
-  qc: QcStats; // qcPasses === 0 → dashboard hides the QC dial (empty-state guard)
+  qc: OwnerQcDial; // qcPasses === 0 → dashboard hides the QC dial (empty-state guard)
 };
+
+// ---------------------------------------------------------------------------
+// The QC dial, measured over MANNED passes only.
+//
+// "QC misses per job 6.8" was not a quality number. Every media_qa card carries
+// failure-mode rows Kyle is supposed to tick ("Verticals & horizontals straight",
+// "People / camera in mirrors gone", …) — but the interactive checklist UI was
+// removed (see the reconciler in src/lib/tasks.ts: "The checklist is no longer
+// an interactive UI"), so nobody CAN tick them. The card then closes by machine:
+// the delivered-sweep (closeObsoleteTasks, completedBy "auto:delivered") or the
+// hourly reconciler's evidence auto-close. Both snapshot the untouched rows as
+// "misses". The dial was counting the absence of a UI.
+//
+// Live proof (2 Sep 2026): of the 83 QC cards closed in 30 days, 64 were closed
+// by the delivered-sweep and NOT ONE carried a single human tick. All time, of
+// the 148 records that carry rows a person is meant to tick, ZERO have one
+// ticked — this dial has never once measured a human. So the number is retired
+// rather than patched: `qcPasses` now counts only passes somebody actually
+// worked, and `avgMisses` / `reopenedRate` / `byMiss` are computed over exactly
+// those. With none on record the dial reports nothing at all, which is the
+// truth — not 6.8, and not a reassuring 0.
+//
+// completedBy CANNOT be used to tell human from machine: both the reconciler
+// and setSmartTaskStatus stamp `assignedKey ?? "kyle"`, and every QC card is
+// minted assigned to Kyle — which is why 19 of these passes look like "kyle"
+// and none of them were his.
+// ---------------------------------------------------------------------------
+export type OwnerQcDial = {
+  windowDays: number;
+  /** QC passes a HUMAN actually worked (at least one box ticked). 0 means the
+   *  dial has nothing to say — NOT that quality is perfect. */
+  qcPasses: number;
+  avgMisses: number; // mean unticked human rows, across manned passes only
+  reopenedRate: number; // % of manned passes a revision later bounced
+  byMiss: QcMissBucket[]; // which rows got skipped most, manned passes only
+  // --- what the dial set aside, so the page can say so out loud ---
+  totalPasses: number; // every QC card that closed in the window
+  unmannedPasses: number; // of those, closed without a single box ticked
+  deliverySweepPasses: number; // of those, closed by the delivered-sweep specifically
+  basis: string; // one plain-English line for the dashboard
+};
+
+async function ownerQcDial(days = 30): Promise<OwnerQcDial> {
+  const since = new Date(Date.now() - days * 24 * 3600_000);
+  const records = await prisma.qcRecord.findMany({
+    where: { completedAt: { gte: since } },
+    select: { itemsChecked: true, missCount: true, reopenedByRevisionAt: true, completedBy: true },
+  });
+
+  // "Is this row one Kyle has to tick?" — asked through countQcMisses so the
+  // auto-evidence rule lives in ONE place (src/lib/tasks.ts). A single unticked
+  // item scores 1 iff countQcMisses treats it as a human row; evidence rows
+  // ("QC Photos", "Deliver the gallery", the cull guidance line) score 0.
+  //
+  // ...MINUS the debrief dispatch lines, which countQcMisses does not exclude
+  // but which no human ever ticks: specsForProject emits them pre-decided from
+  // the photographer's own debrief ("Shot order noted…" is hard-coded done:true;
+  // "Verify removals…" keys off removalNotes; "Photographer submitted…" off
+  // debriefSubmittedAt — src/lib/tasks.ts ~415-433). Counting them as Kyle-ticks
+  // makes machine-set rows look like human work: without this line four cards
+  // read as "worked" on 2 Sep purely because the spec had ticked those two rows.
+  const isHumanRow = (label: string) =>
+    !DEBRIEF_QC_LABELS.has(label) && countQcMisses([{ label, done: false }]) === 1;
+
+  const manned: { misses: number; unticked: string[]; reopened: boolean }[] = [];
+  let unmannedPasses = 0;
+  // The delivered-sweep (closeObsoleteTasks) is the single biggest closer and
+  // stamps itself; the rest are the reconciler's evidence auto-close and human
+  // "Complete" presses that never touched a box. All three are unmanned — this
+  // count just lets the page name the biggest one.
+  let deliverySweepPasses = 0;
+  for (const r of records) {
+    const items = parseChecklist(r.itemsChecked);
+    const humanRows = items.filter((i) => isHumanRow(i.label));
+    // MANNED = the card had rows for a person to tick and at least ONE of them
+    // was ticked. That single tick is the only proof in the data that someone
+    // was at the checklist. Requiring ALL of them would be self-defeating: such
+    // a pass has zero misses by definition, so the miss rate could only ever
+    // read 0. A part-ticked card is the interesting one — it closed with real
+    // work left unticked, and THAT is the miss the owner wants to see.
+    if (humanRows.length === 0 || !humanRows.some((i) => i.done)) {
+      unmannedPasses++;
+      if (r.completedBy === "auto:delivered") deliverySweepPasses++;
+      continue;
+    }
+    // Misses are counted off THESE rows, not the stored missCount — that column
+    // was written by countQcMisses and so carries the debrief rows too.
+    const unticked = humanRows.filter((i) => !i.done).map((i) => i.label);
+    manned.push({ misses: unticked.length, unticked, reopened: !!r.reopenedByRevisionAt });
+  }
+
+  const missByLabel = new Map<string, number>();
+  for (const p of manned) for (const label of p.unticked) missByLabel.set(label, (missByLabel.get(label) ?? 0) + 1);
+  const byMiss: QcMissBucket[] = [...missByLabel.entries()]
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count);
+
+  const totalMisses = manned.reduce((s, p) => s + p.misses, 0);
+  const reopened = manned.filter((p) => p.reopened).length;
+  const basis = manned.length
+    ? `Counts only the ${manned.length} of ${records.length} QC ${records.length === 1 ? "card" : "cards"} closed in the last ${days} days that somebody actually worked. The other ${unmannedPasses} closed with not one box ticked (${deliverySweepPasses} of them automatically, the moment the job delivered) and are not evidence of anything.`
+    : records.length
+      ? `Not measuring QC quality: not one of the ${records.length} QC ${records.length === 1 ? "card" : "cards"} closed in the last ${days} days had a single box ticked — ${deliverySweepPasses} closed automatically the moment the job delivered, the rest were closed without opening the checklist. "Misses per job" was retired: it was counting boxes nobody was at the screen to tick.`
+      : `No QC card has closed in the last ${days} days.`;
+
+  return {
+    windowDays: days,
+    qcPasses: manned.length,
+    avgMisses: manned.length ? Math.round((totalMisses / manned.length) * 10) / 10 : 0,
+    reopenedRate: manned.length ? Math.round((reopened / manned.length) * 1000) / 10 : 0,
+    byMiss,
+    totalPasses: records.length,
+    unmannedPasses,
+    deliverySweepPasses,
+    basis,
+  };
+}
 
 export async function getOwnerDials(): Promise<OwnerDials> {
   const [projects, qc] = await Promise.all([
@@ -688,7 +913,7 @@ export async function getOwnerDials(): Promise<OwnerDials> {
         deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
       },
     }),
-    getQcStats(30),
+    ownerQcDial(30),
   ]);
 
   let inEditing = 0;

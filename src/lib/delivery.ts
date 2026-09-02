@@ -1,6 +1,91 @@
 import "server-only";
 import { parseEvidence } from "@/lib/statusEvidence";
 
+// ---------------------------------------------------------------------------
+// RULE 1 — THE DELIVERY DATE IS STAMPED ONCE.
+//
+// Project.deliveredAt is not "the last time somebody said done". It is the day
+// the client got their content, and four surfaces read it as exactly that:
+//   · the on-time percentage  (queries.ts + bonus.ts compare deliveredAt <= deliveryDue)
+//   · the revenue window      (finance.ts buckets a month by deliveredAt)
+//   · the client portal       (portalLibrary.ts orders the library by it)
+//   · every "Delivered <date>" line on a job, a payout and an AR row.
+// Re-stamping it on a later click silently moves a job into a different month
+// and can turn an on-time delivery into a late one. Live on Sep 2 2026: 25 jobs
+// carried a deliveredAt LATER than their own first delivery marker, and 7 of
+// those read LATE only because the stamp had moved (e.g. 1337 Carolannes Way,
+// due Jul 2, first delivered Jul 1, stamp moved to Aug 24).
+//
+// So no path may write `deliveredAt: new Date()` directly. Spread this patch
+// instead: the first delivery stamps, and every RE-delivery (a resolved
+// revision, a queue "Completed" on an already-delivered job, a hand-move on the
+// pipeline board) keeps the original date. A re-delivery that needs its own
+// timestamp belongs on the revision/round row, never on this field.
+//
+// Honouring the rule today: src/lib/projectStatus.ts (guarded on
+// `!p.deliveredAt`), src/app/editing/actions.ts (setQueueStatus, via this
+// helper) and src/lib/comms.ts resolveRevision (which no longer writes the
+// field at all — a resolved revision is not a new delivery).
+// STILL TO ADOPT: src/app/actions.ts moveProjectStatus — hand-moving a job to
+// Delivered on the pipeline board still writes `new Date()` unconditionally,
+// and it is the second-biggest source of moved stamps in the live data
+// (7 jobs, up to 58.7 days).
+// ---------------------------------------------------------------------------
+export function deliveryStamp(
+  existing: Date | null | undefined,
+  at: Date = new Date(),
+): { deliveredAt?: Date } {
+  return existing ? {} : { deliveredAt: at };
+}
+
+// ---------------------------------------------------------------------------
+// RULE 2 — "DELIVERED" MEANS EVERYTHING ORDERED HAS LANDED (Jordan's rule).
+//
+// The status engine already computes this per job and writes it to
+// Project.statusEvidence: `missing` is the list of ordered media categories
+// ("Photos", "Video", "Floor plan", "3D tour") that are live neither on Aryeo
+// nor in the job's Dropbox Final folder. Any human "mark it delivered" control
+// must consult it, or the hub says delivered while the reel is still unmade.
+//
+// `provenLanded` is the escape hatch for freshness, NOT for judgement: the
+// evidence read is hourly, so a caller holding harder proof that a category
+// just landed (e.g. an APPROVED Review-Room cut for every video owed — approval
+// copies the file into the job's Final folder) passes that label in and it
+// drops off the list. Unreadable/absent evidence yields an EMPTY list on
+// purpose: we block on positive proof that something is owed, never on
+// ignorance, because manual and non-Aryeo jobs legitimately have no evidence.
+// ---------------------------------------------------------------------------
+export const VIDEO_CATEGORY = "Video";
+
+export function outstandingForDelivery(
+  statusEvidence: string | null | undefined,
+  provenLanded: string[] = [],
+): string[] {
+  const missing = parseEvidence(statusEvidence)?.missing ?? [];
+  const proven = new Set(provenLanded.map((s) => s.trim().toLowerCase()));
+  return missing.filter((m) => !proven.has(m.trim().toLowerCase()));
+}
+
+// The refusal, in Jordan's voice (no em dashes, no emojis) and always with the
+// way forward. Owner/admin keep a documented override on the project page
+// (moveProjectStatus) for the case where the evidence itself is wrong.
+export function outstandingMessage(outstanding: string[]): string {
+  const items = outstanding.map((s) => s.trim().toLowerCase()).filter(Boolean);
+  // Nothing outstanding = nothing to refuse. Exported helpers get called from
+  // places their author never saw; never build a sentence about "undefined".
+  if (items.length === 0) return "Everything ordered has landed.";
+  const list = items.length > 1 ? `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}` : items[0];
+  // Verb agreement, same rule as the delivery text below: "the photos ARE
+  // still outstanding" / "the video IS still outstanding".
+  const verb = items.length > 1 || /s\s*$/i.test(items[0] ?? "") ? "are" : "is";
+  // The way forward depends on the lane: a cut goes through the Review Room,
+  // everything else lands by being delivered on Aryeo.
+  const how = items.includes(VIDEO_CATEGORY.toLowerCase())
+    ? "Send the cut to review, or deliver it on Aryeo, and this flips on its own."
+    : "Deliver it on Aryeo and this flips on its own.";
+  return `Not delivered yet: the ${list} ${verb} still outstanding. ${how} If everything really is out, mark it delivered from the project page.`;
+}
+
 // Public feedback form link for a project (lands in the post-delivery text).
 export function feedbackUrl(projectId: string): string {
   const base =

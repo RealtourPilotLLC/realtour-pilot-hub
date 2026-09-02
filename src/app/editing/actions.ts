@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin, requireRole } from "@/lib/auth/guards";
 import { editorTeamMemberId, type EditorKey } from "@/lib/editors";
+import { deliveryStamp, outstandingForDelivery, outstandingMessage, VIDEO_CATEGORY } from "@/lib/delivery";
 
 // ---------------------------------------------------------------------------
 // Server actions for the editor platform's /editing surface.
@@ -473,23 +474,84 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
+  // ONE read for everything below: the delivery gate, the once-only delivery
+  // stamp, and the Revisions branch (which used to fire its own second query).
+  const proj = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      title: true,
+      clientId: true,
+      deliveredAt: true,
+      statusEvidence: true,
+      revisionRequestedAt: true,
+      editorManual: true,
+      editor: { select: { name: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, quantity: true } },
+    },
+  });
+  if (!proj) return { ok: false, message: "That job no longer exists." };
+
+  // "Completed" is a claim about the CLIENT, not about the editor's evening.
+  // Jordan's rule: delivered means everything ordered has landed, so a job
+  // whose reel (or photos, floor plan, 3D tour) the hub can still see is
+  // missing cannot be closed from here. However they got there, 24 DELIVERED
+  // jobs carry evidence that names a missing category right now — 14 of them
+  // the Video (Sep 2 probe). This button stops adding to that pile.
+  if (status === "DELIVERED") {
+    // Freshness counter-proof for the video lane only: the evidence read is
+    // hourly, and the editor pressing this button may have finished minutes
+    // ago. An APPROVED Review-Room cut for EVERY video owed is the cut
+    // landing — approval copies the file into the job's 05-Final-Video folder
+    // and stamps completedAt — so accept it before the sweep catches up.
+    // Multi-video months need the whole set: cut 1 of 4 is progress, not done.
+    const proven: string[] = [];
+    const videosOwed = proj.deliverables
+      .filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL")
+      .reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
+    if (videosOwed > 0) {
+      try {
+        const { approvedCutCount } = await import("@/lib/reviewCuts");
+        if ((await approvedCutCount(projectId)) >= videosOwed) proven.push(VIDEO_CATEGORY);
+      } catch { /* no counter-proof available → the evidence blob decides */ }
+    }
+    const outstanding = outstandingForDelivery(proj.statusEvidence, proven);
+    if (outstanding.length > 0) return { ok: false, message: outstandingMessage(outstanding) };
+  }
+
   await prisma.project.update({
     where: { id: projectId },
-    data: { status, ...(status === "DELIVERED" ? { deliveredAt: new Date() } : {}) },
+    // deliveryStamp, not `new Date()`: this click used to overwrite the
+    // ORIGINAL delivery date every time (see the rule in src/lib/delivery.ts).
+    // 4 of the 6 "Completed" clicks on record landed on a job that was already
+    // delivered and moved its date by 1.8 to 18.0 days — 1023 Sycamore Mills
+    // Rd was delivered Aug 10 and now reads Aug 28.
+    data: { status, ...(status === "DELIVERED" ? deliveryStamp(proj.deliveredAt) : {}) },
   });
+  // This Activity row is load-bearing, not decoration: createDeliveryTextTask
+  // reads "Queue status set: Completed" as the editor's override that releases
+  // a monthly-content job's held-back delivery text. It must exist BEFORE the
+  // closer below runs.
   await prisma.activity.create({
     data: { projectId, type: "SYSTEM", body: `Queue status set: ${label}` },
   }).catch(() => {});
 
-  // "Completed" is the editor's explicit "the batch is done" — it's the human
-  // override that releases a monthly-content job's held-back delivery text
-  // (createDeliveryTextTask; dedupeKey-guarded, so this is a no-op if it
-  // already exists).
+  // "Completed" is the editor's explicit "the batch is done" — the human
+  // override, and it stays. But it has to CLOSE THE JOB the way the automatic
+  // delivery path does, which is closeObsoleteTasks: snapshot the QC card into
+  // a QcRecord (so a bypassed QC pass stays measurable), ring the editors their
+  // "Delivered ✓" receipt, complete the QC / delivery / edit_video / vendor
+  // cards, resolve the open image flags, and mint Kyle's delivery text
+  // (createDeliveryTextTask, dedupeKey-guarded, so a re-click is a no-op).
+  // Before this the click wrote DELIVERED and nothing else — and BOTH hourly
+  // engines skip delivered jobs (the status sweep and the task reconciler each
+  // scan BOOKED..REVISION only), so the QC and edit cards survived until some
+  // unrelated human action killed them: 7 Moreland Ave was clicked Aug 18 and
+  // kept 4 open cards for 6.0 days; 1023 Sycamore Mills Rd kept its QC card 3.1.
   if (status === "DELIVERED") {
     try {
-      const { createDeliveryTextTask } = await import("@/lib/tasks");
-      await createDeliveryTextTask(projectId);
-    } catch { /* best-effort */ }
+      const { closeObsoleteTasks } = await import("@/lib/tasks");
+      await closeObsoleteTasks(projectId, "DELIVERED");
+    } catch { /* best-effort — the status write above already landed */ }
   }
 
   // Flipping to Revisions IS a revision request — in Slack the flip only
@@ -500,70 +562,57 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
   const QUEUE_REV_KEY = `queue-revision-${projectId}`;
   if (status === "REVISION") {
     try {
-      const proj = await prisma.project.findUnique({
-        where: { id: projectId },
-        select: {
-          title: true,
-          clientId: true,
-          revisionRequestedAt: true,
-          editorManual: true,
-          editor: { select: { name: true } },
-          deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
-        },
+      const street = (proj.title || "this job").split(",")[0].trim();
+      // Whose lane: the open edit task's editor → the pinned editor → rules.
+      const openEdit = await prisma.smartTask.findFirst({
+        where: { projectId, taskType: "edit_video", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        select: { assignedKey: true },
       });
-      if (proj) {
-        const street = (proj.title || "this job").split(",")[0].trim();
-        // Whose lane: the open edit task's editor → the pinned editor → rules.
-        const openEdit = await prisma.smartTask.findFirst({
-          where: { projectId, taskType: "edit_video", status: { notIn: ["COMPLETED", "CANCELLED"] } },
-          select: { assignedKey: true },
-        });
-        const { editorKeyForTeamName, editorForDeliverable } = await import("@/lib/editors");
-        const { editorRouting } = await import("@/lib/settings");
-        const { isMonthlyContentJob } = await import("@/lib/pipeline");
-        const v = proj.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
-        const assignedKey =
-          openEdit?.assignedKey ??
-          (proj.editorManual ? editorKeyForTeamName(proj.editor?.name) : null) ??
-          editorForDeliverable(v?.type, v?.label, isMonthlyContentJob(proj.deliverables), await editorRouting());
-        const taskData = {
-          taskType: "revision",
-          title: `Revisions — ${street}`.slice(0, 120),
-          summary:
-            "The cut was flipped to Revisions on the Editor Queue — check the review notes and the project chat for what to change, re-cut, and send it back to review.",
-          reasonCreated: "Queue status set to Revisions",
-          source: "manual",
-          priority: "HIGH" as const,
-          dueAt: new Date(Date.now() + 24 * 3600_000),
-          assignedKey,
-          projectId,
-          clientId: proj.clientId,
-          propertyAddress: proj.title,
-          dedupeKey: QUEUE_REV_KEY,
-        };
-        const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: QUEUE_REV_KEY } });
-        if (existing) {
-          await prisma.smartTask.update({ where: { id: existing.id }, data: { ...taskData, status: "OPEN", completedAt: null } });
-        } else {
-          await prisma.smartTask.create({ data: taskData });
-        }
-        // revisionRequestedAt keeps the status engine from demoting the manual
-        // REVISION on its next sweep (computeStatus honours an open revision).
-        if (!proj.revisionRequestedAt) {
-          await prisma.project.update({ where: { id: projectId }, data: { revisionRequestedAt: new Date() } });
-        }
-        if (assignedKey === "kim" || assignedKey === "john") {
-          try {
-            const { notifyInApp } = await import("@/lib/notify");
-            await notifyInApp({
-              kind: "revision_raised",
-              title: `Revisions — ${street}`,
-              body: "The cut was flipped to Revisions on the queue — see the review notes.",
-              href: `/edit/${projectId}`,
-              targets: [{ roles: ["EDITOR"], userKey: `editor:${assignedKey}`, href: `/edit/${projectId}` }],
-            });
-          } catch { /* bell is best-effort */ }
-        }
+      const { editorKeyForTeamName, editorForDeliverable } = await import("@/lib/editors");
+      const { editorRouting } = await import("@/lib/settings");
+      const { isMonthlyContentJob } = await import("@/lib/pipeline");
+      const v = proj.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+      const assignedKey =
+        openEdit?.assignedKey ??
+        (proj.editorManual ? editorKeyForTeamName(proj.editor?.name) : null) ??
+        editorForDeliverable(v?.type, v?.label, isMonthlyContentJob(proj.deliverables), await editorRouting());
+      const taskData = {
+        taskType: "revision",
+        title: `Revisions — ${street}`.slice(0, 120),
+        summary:
+          "The cut was flipped to Revisions on the Editor Queue — check the review notes and the project chat for what to change, re-cut, and send it back to review.",
+        reasonCreated: "Queue status set to Revisions",
+        source: "manual",
+        priority: "HIGH" as const,
+        dueAt: new Date(Date.now() + 24 * 3600_000),
+        assignedKey,
+        projectId,
+        clientId: proj.clientId,
+        propertyAddress: proj.title,
+        dedupeKey: QUEUE_REV_KEY,
+      };
+      const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: QUEUE_REV_KEY } });
+      if (existing) {
+        await prisma.smartTask.update({ where: { id: existing.id }, data: { ...taskData, status: "OPEN", completedAt: null } });
+      } else {
+        await prisma.smartTask.create({ data: taskData });
+      }
+      // revisionRequestedAt keeps the status engine from demoting the manual
+      // REVISION on its next sweep (computeStatus honours an open revision).
+      if (!proj.revisionRequestedAt) {
+        await prisma.project.update({ where: { id: projectId }, data: { revisionRequestedAt: new Date() } });
+      }
+      if (assignedKey === "kim" || assignedKey === "john") {
+        try {
+          const { notifyInApp } = await import("@/lib/notify");
+          await notifyInApp({
+            kind: "revision_raised",
+            title: `Revisions — ${street}`,
+            body: "The cut was flipped to Revisions on the queue — see the review notes.",
+            href: `/edit/${projectId}`,
+            targets: [{ roles: ["EDITOR"], userKey: `editor:${assignedKey}`, href: `/edit/${projectId}` }],
+          });
+        } catch { /* bell is best-effort */ }
       }
     } catch { /* the status write above already landed — the task is best-effort */ }
   } else {
@@ -576,7 +625,12 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
     // If NO revision task remains open in any lane, clear the revision stamp —
     // otherwise the hourly status sweep reads revisionRequestedAt and flips
     // the job straight back to REVISION, silently reverting this click
-    // (Aug 18 audit).
+    // (Aug 18 audit). This clear is now the ONLY thing holding a re-delivered
+    // job at Delivered: the old code hid a surviving revision behind a fresh
+    // deliveredAt (computeStatus treats a revision stamp older than the
+    // delivery as already resolved), and keeping the original delivery date
+    // takes that cover away. That is the point — a job with a client revision
+    // still open in another lane is not delivered, and it should say so.
     try {
       const stillOpen = await prisma.smartTask.count({
         where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },

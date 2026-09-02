@@ -1,10 +1,11 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { classifyComm, isReaction } from "@/lib/comms";
+import { unansweredComms, type WaitingFamily } from "@/lib/replyQueue";
 import { notifyInApp, notifyUrgent, opsAlert } from "@/lib/notify";
 
 // ---------------------------------------------------------------------------
-// Reply-SLA escalation for inbound client texts.
+// Reply-SLA escalation for inbound client comms, and the count behind Kyle's
+// Ops Day "unanswered clients" pill.
 //
 // The task engine already files a reply task for every inbound text — but a
 // task nobody opens is a task nobody answers. A 60-day audit found 13 client
@@ -12,64 +13,30 @@ import { notifyInApp, notifyUrgent, opsAlert } from "@/lib/notify";
 // sat unanswered for 12 days. Nothing in the system escalated any of them.
 //
 // This module is that escalation. Every 5 minutes (the comms cron) it finds
-// clients whose LATEST inbound text has no outbound text after it and pings in
-// two tiers:
+// clients with an unanswered inbound and pings in two tiers:
 //   tier 1  >30 min waiting (VIP >15)  → bell to ADMIN + one Slack line
 //   tier 2  >2 h waiting   (VIP >1 h)  → ALSO bell to OWNER + urgent Slack
-// Dedupe keys make each tier fire exactly once per inbound message, so the
-// sweep can run forever without spam; replying (any outbound text to that
-// client) naturally clears them from the next sweep.
+// Dedupe keys make each tier fire exactly once per waiting episode, so the
+// sweep can run forever without spam; replying (any outbound to that client)
+// naturally clears them from the next sweep.
+//
+// WHO IS WAITING is not decided here any more — it is one walk over the comms
+// log in src/lib/replyQueue.ts (`unansweredComms`), shared with the Dashboard,
+// the Replies tab and the /tasks Comms board, so the pill can never again say
+// 1 while the Dashboard says 6. Everything in this file is the ESCALATION
+// POLICY on top of that walk.
 // ---------------------------------------------------------------------------
 
-// -- No-reply-needed filters -------------------------------------------------
-// isReaction comes straight from src/lib/comms.ts ("Liked …" / emoji-only —
-// the same filter that suppresses their reply tasks). PRAISE_RE mirrors the
-// unexported PRAISE_ONLY regex in src/lib/comms.ts — keep the two in sync.
-const PRAISE_RE = /\b(thank|thanks|thx|love|great|perfect|awesome|amazing|looks good|beautiful|gorgeous)\b/i;
-
-// A short, appreciative message with no question in it ("Thank you!!",
-// "These look amazing") closes a thread — it doesn't open one.
-function isPraiseOnly(text: string): boolean {
-  const t = (text || "").trim();
-  return t.length <= 120 && PRAISE_RE.test(t) && !t.includes("?");
-}
-
-// Conversation-closing acknowledgments ("Will do", "Yup.", "You're the man.",
-// "All good homey 🙏"). A prod probe showed these dominate the "unanswered"
-// list — without this filter the go-live sweep would page the owner over five
-// closers and zero real waits. Two shapes, both vetoed by a question mark:
-//  a) the WHOLE message (emoji/punctuation stripped) is a closer token, or
-//  b) a short message contains an unambiguous closing phrase AND doesn't read
-//     as a change request (classifyComm — the same classifier comms.ts uses).
-const ACK_EXACT_RE =
-  /^(ok(ay)?|k|kk|yes|yep|yup|yeah|no|nope|sure|cool|nice|done|perfect|will do|got it|all good|all set|sounds (good|great)|no problem|no worries|anytime|(you'?re )?welcome|see you (then|there|soon)|let'?s go|you'?re the (man|best))$/i;
-const ACK_PHRASE_RE =
-  /\b(will do|sounds (good|great)|no (problem|worries)|all good|all set|you'?re the (man|best)|looking forward to|see you (then|there|soon)|good luck|have a (good|great))\b/i;
-function isAckOnly(text: string): boolean {
-  const raw = (text || "").trim();
-  if (raw.includes("?")) return false;
-  const norm = raw.toLowerCase().replace(/[^a-z0-9' ]+/g, " ").replace(/\s+/g, " ").trim();
-  if (ACK_EXACT_RE.test(norm)) return true;
-  return raw.length <= 80 && ACK_PHRASE_RE.test(raw) && !classifyComm(raw).isRevision;
-}
-
-// Call-log artifacts a backfill wrote into the text channel ("incoming call
-// (recording.completed).") — machine breadcrumbs, not a client waiting.
-const CALL_ARTIFACT_RE = /^(incoming|outgoing|missed) call\b/i;
-
-function needsReply(text: string): boolean {
-  return !isReaction(text) && !isPraiseOnly(text) && !isAckOnly(text) && !CALL_ARTIFACT_RE.test((text || "").trim());
-}
-
 // -- Tunables ----------------------------------------------------------------
-const SCAN_DAYS = 7; // bound the sweep; anything older is an audit problem, not a live page
+// The PAGER's own window: bound the sweep — anything older is an audit problem,
+// not a live page. It matches the shared walk's window today and is kept
+// separate on purpose, so widening what the BOARDS reach back to can never
+// silently start paging people about three-week-old messages.
+const SCAN_DAYS = 7;
 const TIER1_MIN = 30;
 const TIER1_MIN_VIP = 15;
 const TIER2_MIN = 120;
 const TIER2_MIN_VIP = 60;
-// Top-tier clients get the faster clock. Same pair queries.ts treats as
-// top-of-book ("vip" is $20k+, "heavy" $5k–$20k — see src/lib/segments.ts).
-const VIP_SEGMENTS = new Set(["vip", "heavy"]);
 
 // First-tier pings only fire 8:00–19:00 ET — a 2am text shouldn't page anyone
 // at 2:05am. It escalates the moment business hours open (the dedupe key is
@@ -100,81 +67,57 @@ export type UnansweredInbound = {
   clientId: string;
   clientName: string;
   snippet: string;
+  /** the OLDEST message still owed an answer — the true start of the wait */
   occurredAt: Date;
   ageMin: number;
   isVip: boolean;
+  family: WaitingFamily;
+  channel: "text" | "call" | "email";
 };
 
-// Per client: the LATEST inbound text with no outbound text after it.
-// One indexed scan (occurredAt >= cutoff) + in-memory pairing — the text
-// volume is ~2k rows / 60 days, so a 7-day window is trivially small.
-export async function findUnansweredInbound(now: Date = new Date()): Promise<UnansweredInbound[]> {
-  const since = new Date(now.getTime() - SCAN_DAYS * 86_400_000);
-  // Both directions in one pull: any outbound AFTER an in-window inbound is
-  // itself in-window, so the single cutoff can't miss the answering text.
-  const rows = await prisma.commLog.findMany({
-    // Calls count too: an ANSWERED outbound call is an answer — Jordan kept
-    // getting "client still unanswered" pages two hours after handling it by
-    // phone (audit). A missed/unanswered outgoing call clears nothing.
-    where: { channel: { in: ["text", "call"] }, occurredAt: { gte: since }, clientId: { not: null } },
-    orderBy: { occurredAt: "asc" },
-    select: { clientId: true, clientName: true, channel: true, direction: true, body: true, occurredAt: true },
+/**
+ * Clients with something still owed an answer, oldest wait first.
+ *
+ * Defaults are the COUNTING scope — phone AND email, the walk's own 21-day
+ * window — because this is what Ops Day's pill renders, and the pill links to
+ * /tasks?tab=comms where both boards live. Unanswered EMAIL used to appear on
+ * no home screen at all; six conversations were sitting there on go-live week.
+ * The pager narrows it (see sweepReplySla).
+ *
+ * The clock starts at the OLDEST message still owed an answer, not the newest.
+ * A client who wrote three hours ago and again five minutes ago has been
+ * waiting three hours, and it also means the dedupe key stops changing every
+ * time they nudge — one page per waiting episode, not one per message.
+ */
+export async function findUnansweredInbound(
+  now: Date = new Date(),
+  opts: { families?: WaitingFamily[]; windowDays?: number } = {},
+): Promise<UnansweredInbound[]> {
+  const threads = await unansweredComms({
+    now,
+    families: opts.families,
+    windowDays: opts.windowDays,
+    includeUnmatched: false, // a page needs a client to point at
+    includeTeam: false, // "unanswered CLIENTS", not our own photographers
   });
-
-  // Walk in time order: an inbound that needs a reply becomes the client's
-  // pending message (newer inbounds replace it — LATEST wins); any outbound
-  // to that client clears it. Reactions/praise neither open nor clear.
-  const pending = new Map<string, { clientName: string | null; body: string; occurredAt: Date }>();
-  for (const r of rows) {
-    const cid = r.clientId as string;
-    if (r.direction === "out") {
-      if (r.channel === "call" && /missed|no answer|unanswered/i.test(r.body ?? "")) continue;
-      pending.delete(cid);
-    } else if (r.channel === "text" && needsReply(r.body)) {
-      pending.set(cid, { clientName: r.clientName, body: r.body, occurredAt: r.occurredAt });
-    }
-  }
-  if (pending.size === 0) return [];
-
-  // A HUMAN JUDGMENT also counts: a client_reply task completed AFTER the
-  // pending inbound means someone dealt with it (answered on a personal phone,
-  // decided no reply was needed). The pager must respect that (audit).
-  const handled = await prisma.smartTask.findMany({
-    where: {
-      clientId: { in: [...pending.keys()] },
-      taskType: "client_reply",
-      status: "COMPLETED",
-      completedAt: { gte: since },
-    },
-    select: { clientId: true, completedAt: true },
-  });
-  for (const h of handled) {
-    const pnd = h.clientId ? pending.get(h.clientId) : null;
-    if (pnd && h.completedAt && h.completedAt > pnd.occurredAt) pending.delete(h.clientId!);
-  }
-  if (pending.size === 0) return [];
-
-  // VIP lookup — a folded assistant (parentClientId) texts with the agent's
-  // urgency, so the parent's segment counts too (see comms-routing folding).
-  const clients = await prisma.client.findMany({
-    where: { id: { in: [...pending.keys()] } },
-    select: { id: true, name: true, segment: true, parent: { select: { segment: true } } },
-  });
-  const byId = new Map(clients.map((c) => [c.id, c]));
-
-  const out: UnansweredInbound[] = [];
-  for (const [clientId, p] of pending) {
-    const c = byId.get(clientId);
-    out.push({
-      clientId,
-      clientName: p.clientName || c?.name || "Unknown client",
-      snippet: snippetOf(p.body),
-      occurredAt: p.occurredAt,
-      ageMin: Math.max(0, Math.floor((now.getTime() - p.occurredAt.getTime()) / 60_000)),
-      isVip: VIP_SEGMENTS.has(c?.segment ?? "") || VIP_SEGMENTS.has(c?.parent?.segment ?? ""),
-    });
-  }
-  return out.sort((a, b) => b.ageMin - a.ageMin);
+  return threads
+    .map((t) => {
+      const oldest = t.pending[0];
+      return {
+        clientId: t.clientId as string,
+        clientName: t.displayName || t.clientName || "Unknown client",
+        // The channel is part of the truth: "Erica Walker waiting 42h" reads
+        // very differently once you know it's an email, and Ops Day renders
+        // this snippet as the whole row.
+        snippet: (t.family === "email" ? "Email: " : "") + snippetOf(oldest?.subject || oldest?.body || ""),
+        occurredAt: t.waitingSince,
+        ageMin: Math.max(0, Math.floor((now.getTime() - t.waitingSince.getTime()) / 60_000)),
+        isVip: t.isVip,
+        family: t.family,
+        channel: oldest?.channel ?? "text",
+      };
+    })
+    .sort((a, b) => b.ageMin - a.ageMin);
 }
 
 // Has this tier already been announced for this exact inbound message?
@@ -197,7 +140,14 @@ export async function sweepReplySla(): Promise<{ checked: number; tier1: number;
   const counts = { checked: 0, tier1: 0, tier2: 0 };
   try {
     const now = new Date();
-    const waiting = await findUnansweredInbound(now);
+    // PHONE ONLY, 7 days — the pager's scope, deliberately narrower than the
+    // pill's. Every message it wakes someone about is one a person can act on
+    // in the next few minutes; unanswered email is real (and now counted and
+    // listed on Ops Day and /tasks?tab=comms&via=email) but it belongs on a
+    // board, not on a 2am bell. Widening this to ["phone","email"] is the one
+    // line to change if Jordan wants email escalating too — on the day it
+    // flips, every email already waiting fires its tiers at once.
+    const waiting = await findUnansweredInbound(now, { families: ["phone"], windowDays: SCAN_DAYS });
     counts.checked = waiting.length;
     if (!waiting.length) return counts;
     const inHours = withinBusinessHours(now);

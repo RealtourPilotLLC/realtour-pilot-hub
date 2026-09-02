@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { logComm } from "@/lib/commLog";
 import { OpenPhoneError } from "@/lib/integrations/openphone";
-import { MONTHLY_BATCH_INCOMPLETE, DELIVERED_LONG_AGO } from "@/lib/tasks";
+import { MONTHLY_BATCH_INCOMPLETE, DELIVERED_LONG_AGO, SEND_UNVERIFIED } from "@/lib/tasks";
 
 // Auto-send client texts (Jordan, Sep 1 2026): confirmation texts go out on
 // their own 2 days before the shoot, and delivery texts go out on their own
@@ -23,6 +23,16 @@ import { MONTHLY_BATCH_INCOMPLETE, DELIVERED_LONG_AGO } from "@/lib/tasks";
 // - One auto-text per client per tick (the shared `texted` set) — a
 //   multi-listing client gets one text an hour, not four in a minute.
 // - Nothing sends after 4pm ET; it waits for the next morning.
+//
+// PROOF OF SEND (Jordan, Sep 2 2026 — "every number on screen is true"): a
+// completed client-text task must mean a text happened. Every successful send
+// below leaves TWO project-scoped traces — the AppSetting marker and an
+// outbound CommLog row — which is exactly what tasks.ts deliveryTextSendProof
+// reads when the 7-day sweeper decides whether a lingering task closes as done
+// (COMPLETED) or as never-sent (CANCELLED). The one case that claims a task
+// without proving a send is an AMBIGUOUS provider failure; it is stamped
+// SEND_UNVERIFIED and written onto the project timeline rather than left to
+// look like a clean send.
 
 const HOUR = 3_600_000;
 const AUTO_SOURCES = ["auto-confirmation", "auto-delivery"];
@@ -63,6 +73,22 @@ async function openPhone() {
 // human instead of auto-resending an SMS.
 function provablyNotSent(e: unknown): boolean {
   return e instanceof OpenPhoneError && typeof e.status === "number" && e.status >= 400 && e.status < 500 && e.status !== 408;
+}
+
+// An ambiguous failure HOLDS the task's claim — re-sending an SMS the client may
+// already be reading is worse than a stuck task. But a held claim reads exactly
+// like a clean send on every screen (Done ledger included), which is the lie
+// this hub is buying out. Stamp the row SEND_UNVERIFIED and put the doubt on the
+// project timeline so a human can settle it in OpenPhone. Best-effort: the
+// honesty note must never turn a send failure into a cron failure.
+async function markSendUnverified(taskIds: string[], opts: { projectId: string; label: string; clientName: string }): Promise<void> {
+  const doubt = `${opts.label} text to ${opts.clientName} could not be confirmed — OpenPhone may or may not have sent it. Nothing was re-sent (a duplicate text is worse); check the OpenPhone thread and text by hand if it never landed.`;
+  if (taskIds.length > 0) {
+    await prisma.smartTask
+      .updateMany({ where: { id: { in: taskIds } }, data: { sourceDetail: SEND_UNVERIFIED, summary: doubt.slice(0, 500) } })
+      .catch(() => {});
+  }
+  await prisma.activity.create({ data: { projectId: opts.projectId, type: "SYSTEM", body: doubt } }).catch(() => {});
 }
 
 // The client has an unanswered question in the queue — an automated text now
@@ -204,7 +230,10 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
         notes.push(`${p.title}: send failed — ${e instanceof Error ? e.message : "unknown"}`);
       } else {
         // Ambiguous (timeout/5xx after possible acceptance): hold the claim so
-        // the sweep can't double-text; a human verifies in OpenPhone.
+        // the sweep can't double-text; a human verifies in OpenPhone. The hold
+        // leaves the task COMPLETED with no proof of a send, so say so on the
+        // row and on the job instead of letting it pass as sent.
+        await markSendUnverified(taskIds, { projectId: p.id, label: "Confirmation", clientName: p.client.name });
         notes.push(`${p.title}: send failed (ambiguous — held, verify in OpenPhone before resending) — ${e instanceof Error ? e.message : "unknown"}`);
       }
     }
@@ -320,6 +349,8 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
         await prisma.smartTask.updateMany({ where: { id: t.id }, data: { status: "OPEN", completedAt: null } }).catch(() => {});
         notes.push(`${project.title}: send failed — ${e instanceof Error ? e.message : "unknown"}`);
       } else {
+        // Held claim, no proof of a send — mark the doubt (see markSendUnverified).
+        await markSendUnverified([t.id], { projectId: project.id, label: "Delivery", clientName: project.client.name });
         notes.push(`${project.title}: send failed (ambiguous — held, verify in OpenPhone before resending) — ${e instanceof Error ? e.message : "unknown"}`);
       }
     }

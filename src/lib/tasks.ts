@@ -4,7 +4,7 @@ import { NOTHING_TO_REMOVE_SENTINEL, DEBRIEF_QC_LABELS, QC_LABEL_SHOT_ORDER, QC_
 import crypto from "crypto";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { type ChecklistItem, parseChecklist, serializeChecklist, checklistComplete } from "@/lib/checklist";
-import { etDayStartUtc } from "@/lib/datetime";
+import { etAt, etDayKey, etDayStartUtc, etDateTime } from "@/lib/datetime";
 import { slugForName } from "@/lib/assignees";
 import { BRACKET_RATIO, photoTargetFor } from "@/lib/culling";
 import { isMonthlyContentJob } from "@/lib/pipeline";
@@ -1095,6 +1095,133 @@ export const DELIVERED_LONG_AGO = "delivered-long-ago";
 /** Stamped on a QC card a human closed with a reason — the reconciler must
  *  never reopen it over unticked boxes. */
 export const CLOSED_BY_HAND = "closed-by-hand";
+/** Stamped on a client-text task the sweep CLAIMED but could not prove it sent
+ *  (a timeout / 5xx after OpenPhone may already have accepted the message). The
+ *  claim is held so the sweep can never double-text — this marks the row so a
+ *  human, and any later honesty audit, can tell it apart from a clean send. */
+export const SEND_UNVERIFIED = "send-unverified";
+
+// ---------------------------------------------------------------------------
+// DELIVERY-TEXT LIFECYCLE (Jordan, Sep 2 2026: "every number on screen is true")
+//
+// Audit fault #8: of the delivery-text tasks that reached the 7-day sweeper in
+// 60 days, 12 of 12 had ZERO outbound text to that client in the whole window —
+// and the sweeper wrote COMPLETED, so the Done ledger credited a text nobody
+// sent. The confirmation twin already stamps CANCELLED when its spec vanishes
+// (see reconcileTasks); this one was never mirrored. Two rules now:
+//   · a delivery text nothing can prove was sent closes CANCELLED, with a
+//     reason on the task AND on the project timeline — never COMPLETED;
+//   · it is not born overdue (deliveryTextDueAt below).
+// ---------------------------------------------------------------------------
+
+/** When a delivery text should actually go out, as a real deadline.
+ *
+ *  It used to mint with `dueAt: new Date()` — due the millisecond it existed,
+ *  so it read "overdue" before anyone could act and 13 of the system's 33
+ *  overdue items were these. 46% of them were minted OUTSIDE the 9am-4pm ET
+ *  send window (an Aryeo fulfilment at 7pm, an overnight reconcile), so they
+ *  could not have been sent at all before the clock condemned them.
+ *
+ *  The honest deadline is the END of the send window it can first go out in:
+ *  minted inside today's window → due when today's window shuts; minted after
+ *  it (or overnight) → due when tomorrow's shuts. Nothing reads late until the
+ *  last moment it could really have been sent has passed. DST-safe via etAt.
+ *
+ *  SEAM (Jordan is changing what this text SAYS — it becomes a feedback ask
+ *  that waits for the whole job to be delivered): the copy lives in
+ *  lib/delivery `deliveryMessage`, and the "is the whole job actually out?"
+ *  gate is the statusEvidence check in sweepDeliveryTexts. If the ask needs to
+ *  wait longer than the first send window (e.g. a day after the last
+ *  deliverable lands), change WHEN here — the honest-close half needs no
+ *  change, because it asks whether a text was sent, not how long it's been. */
+export function deliveryTextDueAt(from: Date, sendUntilHour: number): Date {
+  const closesToday = etAt(etDayKey(from), sendUntilHour);
+  if (from.getTime() < closesToday.getTime()) return closesToday;
+  // +30h off THIS ET midnight lands safely inside tomorrow either side of a
+  // DST flip (the etDayStartUtc/etEndOfTodayUtc idiom used in lib/clientTexts).
+  return etAt(etDayKey(new Date(etDayStartUtc(from).getTime() + 30 * HOUR)), sendUntilHour);
+}
+
+/** Proof that a delivery text for THIS job actually reached the client.
+ *
+ *  Deliberately project-scoped, not client-scoped. Every send path leaves a
+ *  trace against the project:
+ *    · the auto-sweep      → the `auto-delivery-<projectId>` AppSetting marker
+ *    · the in-app Send     → an Activity "Delivery text sent to …" (actions.ts
+ *                            sendDeliveryText / sendAllActions sendDraftText)
+ *    · Kyle from his phone → an outbound CommLog text filed to this project by
+ *                            the OpenPhone webhook (projectGuess rows excluded:
+ *                            a router GUESS is not evidence)
+ *  Anything else — including a text to the same client about a different
+ *  address — is not proof this job's client was told. Over-cancelling is the
+ *  safe direction; crediting an unsent text is the sin Jordan is buying out.
+ *
+ *  The window opens 12h BEFORE the task was minted: Kyle regularly texts "it's
+ *  all live" before Aryeo's fulfilment reaches the hub and mints the task (of
+ *  the 12, exactly one — 1741 Hilltop Rd — was sent 2h20m before its own task
+ *  existed, and this grace is what keeps it honest). */
+export async function deliveryTextSendProof(
+  t: { projectId: string | null; clientId: string | null; createdAt: Date },
+  until: Date = new Date(),
+): Promise<{ how: string | null; at: Date | null; clientTextedAt: Date | null }> {
+  if (!t.projectId) return { how: null, at: null, clientTextedAt: null };
+  const from = new Date(t.createdAt.getTime() - 12 * HOUR);
+
+  // STRONGEST first: a real logged outbound message. logComm only runs after
+  // OpenPhone accepted the send, so this row IS a text that left the building.
+  const logged = await prisma.commLog
+    .findFirst({
+      where: { projectId: t.projectId, channel: "text", direction: "out", projectGuess: false, occurredAt: { gte: from, lte: until } },
+      select: { occurredAt: true },
+      orderBy: { occurredAt: "desc" },
+    })
+    .catch(() => null);
+  if (logged) return { how: "texted about this job", at: logged.occurredAt, clientTextedAt: null };
+
+  // The per-card Send writes no CommLog of its own (it leans on the delivery
+  // webhook, which may file the echo to a GUESSED project) — its Activity row
+  // is the only project-scoped receipt, so it has to count.
+  const act = await prisma.activity
+    .findFirst({
+      where: {
+        projectId: t.projectId,
+        type: "SYSTEM",
+        OR: [{ body: { startsWith: "Delivery text sent" } }, { body: { startsWith: "Delivery text auto-sent" } }],
+        createdAt: { gte: from, lte: until },
+      },
+      select: { createdAt: true },
+      orderBy: { createdAt: "desc" },
+    })
+    .catch(() => null);
+  if (act) return { how: "sent from the hub", at: act.createdAt, clientTextedAt: null };
+
+  // WEAKEST, and last on purpose: the auto-sweep's claim marker. It is written
+  // just BEFORE the send and released again on a provable rejection, so its
+  // presence means "sent, or ambiguous" — and the ambiguous ones are stamped
+  // SEND_UNVERIFIED (see clientTextSweeps markSendUnverified). It earns its
+  // place because logComm there is best-effort and can silently fail.
+  const marker = await prisma.appSetting
+    .findFirst({ where: { key: `auto-delivery-${t.projectId}` }, select: { value: true } })
+    .catch(() => null);
+  if (marker) {
+    const at = new Date(marker.value);
+    return { how: "the hub sent it automatically", at: isNaN(at.getTime()) ? null : at, clientTextedAt: null };
+  }
+
+  // Nothing for this job. Was the client texted AT ALL? Not proof — but it's
+  // the difference between "we talked to them about something else" and "we
+  // went silent on this person", and the close reason says which.
+  const anyText = t.clientId
+    ? await prisma.commLog
+        .findFirst({
+          where: { clientId: t.clientId, channel: "text", direction: "out", occurredAt: { gte: from, lte: until } },
+          select: { occurredAt: true },
+          orderBy: { occurredAt: "desc" },
+        })
+        .catch(() => null)
+    : null;
+  return { how: null, at: null, clientTextedAt: anyText?.occurredAt ?? null };
+}
 
 export async function createDeliveryTextTask(projectId: string): Promise<void> {
   const key = dedupe([projectId, "delivery_text"]);
@@ -1130,7 +1257,8 @@ export async function createDeliveryTextTask(projectId: string): Promise<void> {
   // every status pass, holding back here is safe and self-healing.
   let batchIncomplete = false;
   const { autoTextRules } = await import("@/lib/settings");
-  const requireBatch = (await autoTextRules()).delivery.requireMonthlyBatch;
+  const rules = await autoTextRules();
+  const requireBatch = rules.delivery.requireMonthlyBatch;
   if (requireBatch && isMonthlyContentJob(project.deliverables, project.packageName)) {
     const { parseEvidence } = await import("@/lib/statusEvidence");
     const { monthlyVideoQuota } = await import("@/lib/pipeline");
@@ -1173,7 +1301,10 @@ export async function createDeliveryTextTask(projectId: string): Promise<void> {
       // auto-sweep leaves it strictly alone.
       priority: batchIncomplete ? "HIGH" : "MEDIUM",
       ...(batchIncomplete ? { sourceDetail: MONTHLY_BATCH_INCOMPLETE } : deliveredLongAgo ? { sourceDetail: DELIVERED_LONG_AGO } : {}),
-      dueAt: new Date(),
+      // NOT `new Date()` — that minted it already overdue (see
+      // deliveryTextDueAt). The send window is the settings-driven one the
+      // sweep actually obeys, so the deadline moves with it.
+      dueAt: deliveryTextDueAt(new Date(), rules.sendUntilHour),
       projectId,
       clientId: project.clientId,
       propertyAddress: project.title,
@@ -1183,18 +1314,76 @@ export async function createDeliveryTextTask(projectId: string): Promise<void> {
   });
 }
 
-// A delivery text is a courtesy "your gallery is ready" nudge. If it's still open
-// a week after it was queued, Kyle already sent it (often straight from his phone,
-// bypassing the in-app Send button that closes it) or it's simply moot — the
-// client got the gallery via Aryeo's delivery email regardless. Close it so it
-// stops reading "overdue" forever and inflating the queue's overdue count.
-export async function closeStaleDeliveryTexts(days = 7): Promise<number> {
+// Retire delivery texts a week after they were queued — but HONESTLY.
+//
+// The old version was one blanket `updateMany` to COMPLETED on the assumption
+// that "Kyle already sent it from his phone". Live data says otherwise: 12 of
+// the 12 tasks that reached this sweeper in 60 days had no outbound text to
+// that client at all, and the Done ledger credited every one of them as a text
+// that went out. Now each row is judged on evidence (deliveryTextSendProof):
+//   · proof the client was told  → COMPLETED, as before
+//   · no proof                   → CANCELLED, with a reason on the task and a
+//                                  line on the project timeline
+// CANCELLED is the twin of what the confirmation reconciler already does — it
+// clears the overdue count exactly the same way, without claiming credit.
+export async function closeStaleDeliveryTexts(days = 7): Promise<{ sent: number; neverSent: number }> {
   const cutoff = new Date(Date.now() - days * DAY);
-  const r = await prisma.smartTask.updateMany({
+  const stale = await prisma.smartTask.findMany({
     where: { taskType: "delivery_text", status: { notIn: ["COMPLETED", "CANCELLED"] }, createdAt: { lt: cutoff } },
-    data: { status: "COMPLETED", completedAt: new Date() },
+    select: { id: true, projectId: true, clientId: true, createdAt: true, propertyAddress: true, client: { select: { name: true } } },
+    orderBy: { createdAt: "asc" },
+    // This is now evidence-per-row instead of one blanket updateMany, so cap the
+    // batch: a one-off backlog must not eat the daily cron's budget. Oldest
+    // first, and tomorrow's run takes the rest.
+    take: 200,
   });
-  return r.count;
+  let sent = 0, neverSent = 0;
+  const now = new Date();
+  for (const t of stale) {
+    const proof = await deliveryTextSendProof(t, now);
+    const who = t.client?.name ?? "the client";
+    const job = t.propertyAddress ?? "this job";
+    // Per-row and CONDITIONAL on the row still being open — the in-app Send
+    // button, the batch send and the auto-sweep all claim this same row, so a
+    // send landing mid-sweep must win rather than be overwritten.
+    const claimed = await prisma.smartTask.updateMany({
+      where: { id: t.id, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      data: proof.how
+        ? { status: "COMPLETED", completedAt: now }
+        : {
+            // NO completedAt on a cancel — same as the confirmation twin in
+            // reconcileTasks. Every "what got done" count pairs completedAt
+            // with status COMPLETED today, and a close-stamp on a never-sent
+            // row is exactly the kind of field a future query would read
+            // without the status filter and credit as work. updatedAt already
+            // records when it closed.
+            status: "CANCELLED",
+            summary: clip(
+              `Closed unsent after ${days} days. No delivery text ever reached ${who} about ${job} — nothing went out from the hub, and no outbound text to them is filed against this job. ` +
+                (proof.clientTextedAt
+                  ? `We did text ${who} on ${etDateTime(proof.clientTextedAt)} ET, but about another job. `
+                  : `${who} was not texted at all in that window. `) +
+                `It is NOT counted as done. Text them by hand if it still helps.`,
+              500,
+            ),
+          },
+    });
+    if (claimed.count === 0) continue; // someone sent it in the last second — their close stands
+    if (proof.how) { sent++; continue; }
+    neverSent++;
+    if (t.projectId) {
+      await prisma.activity
+        .create({
+          data: {
+            projectId: t.projectId,
+            type: "SYSTEM",
+            body: `No delivery text was ever sent to ${who} for this job — the reminder was closed unsent after ${days} days.`,
+          },
+        })
+        .catch(() => {});
+    }
+  }
+  return { sent, neverSent };
 }
 
 // Positive/neutral feedback mints a "review client feedback" task that nothing
@@ -2259,6 +2448,12 @@ async function syncOneProjectTasks(
                 dueAt: s.dueAt,
                 priority: computePriority({ dueAt: s.dueAt, shootDate: p.shootDate, status: p.status }),
                 description: draftConfirmation(),
+                // Re-assert the spec's summary. A reopened row kept whatever
+                // the last close wrote there — including the sweep's "could not
+                // be confirmed" doubt note (SEND_UNVERIFIED) — so a re-booked
+                // shoot showed a stale warning instead of the SOP.
+                summary: s.summary ?? null, // `undefined` would be a Prisma no-op — the point is to CLEAR a stale note
+                sourceDetail: null,
                 reasonCreated: rebooked
                   ? "Shoot was re-booked after being postponed — confirm the new time with the client"
                   : "Shoot was rescheduled after the last confirmation — confirm the new time with the client",

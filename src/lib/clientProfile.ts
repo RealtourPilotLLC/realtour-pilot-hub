@@ -274,12 +274,12 @@ function legacyEditing(p: ClientProfile): ClientProfileEditing {
   // `dos` splits in two: the standing instructions are preferences ("always add
   // his logo"), the rest is advice ("deliver clean, natural edits").
   const dosAll = Array.isArray(p.dos) ? p.dos.filter((d): d is string => typeof d === "string" && editorSafe(d)) : [];
-  const prefs = take([...dosAll.filter((d) => STANDING.test(d)), ...(p.shootNotes ?? [])]);
+  const prefs = take([...dosAll.filter((d) => STANDING.test(d)), ...(Array.isArray(p.shootNotes) ? p.shootNotes : [])]);
   const dos = take(dosAll.filter((d) => !STANDING.test(d)));
   const donts = take(p.donts);
   const customerNotes = take(p.aboutThem, 4);
 
-  const summary = (p.summary ?? "")
+  const summary = (typeof p.summary === "string" ? p.summary : "")
     .split(/(?<=[.!?])\s+/)
     .map((s) => s.trim())
     .filter((s) => editorSafe(s) && SUMMARY_CUE.test(s))
@@ -471,8 +471,11 @@ const SIG_LINE: RegExp[] = [
   /^\**\s*(?:preferred|office|cell|direct|mobile|phone|main|fax|tel|toll)\b\s*:?\s*[<(]?\+?\d/i,
   /^\(?\+?\d[\d().\s-]{7,}\)?\s*(?:[|·,-]\s*)?(?:cell|office|direct|main(?: office)?|mobile|fax|c|o)?$/i, // "610-640-9300 Main Office"
   /^\**\s*(?:realtor|realtor®|broker|associate broker|listing coordinator|transaction coordinator|owner|coach|team lead|agent|licensed)\b/i,
+  /^\**\s*[A-Z][\w.'’-]+(?:\s+[\w.'’-]+){0,3}\s*[-–|,]\s*(?:owner|realtor|broker|agent|coach|founder|ceo|president|photographer|coordinator|manager)\b/i, // "*Jordan Spackman - Owner*"
   /^\**\s*(?:re\/?max|keller williams|kw\b|coldwell|century 21|compass|berkshire|exp realty|lpt realty|long & foster|realty one|weichert|howard hanna)/i,
-  /^\**\s*[A-Za-z][A-Za-z.'&, -]{2,60}(?:llc|inc\.?|group|team|realty|realtors|properties|real estate)\s*\**$/i,
+  // Case-SENSITIVE on purpose: "Brunner Group" is a signature, "please pass
+  // this to the team" is a sentence.
+  /^\**\s*[A-Z][A-Za-z.'&, -]{2,60}(?:LLC|L\.L\.C\.|Inc\.?|Group|Team|Realty|Realtors|Properties|Real Estate)\s*\**$/,
   /^\S+@\S+\.\w{2,}$/,
   /virus-?free|avast\.com/i,
   /^sent from my /i,
@@ -531,7 +534,10 @@ function stripSignature(body: string): string {
 const OUR_VOICE =
   /\brealtour\s?pilot llc\b|realtourpilot\.com|\bjordan spackman\b|\bwe(?:'|’)?re looking forward to sending\b|\bplease let us know if you need any (?:changes|adjustments)\b/i;
 function isOurOutbound(raw: string): boolean {
-  return OUR_VOICE.test(stripQuotedReply(raw));
+  // Same two cuts askText makes: quoted history, then the wrapped "On <date> …
+  // wrote:" attribution stripQuotedReply cannot see. Without the second cut the
+  // client's own ask reads as ours the moment our reply is quoted underneath it.
+  return OUR_VOICE.test(stripQuotedReply(raw).replace(GMAIL_ATTRIBUTION, ""));
 }
 
 // Is this plausibly a request to change something we made? A revision task can
@@ -539,8 +545,13 @@ function isOurOutbound(raw: string): boolean {
 // problem, a receipt forwarded by mistake, an AI verdict of "no edit requests"
 // — and none of those belong in front of an editor.
 const NOT_AN_ASK =
-  /\bno (?:client )?(?:edit|change|revision)s?(?: requests?| asks?)?\b(?:\s+(?:found|needed|requested))?|\bnothing to (?:change|fix)\b|status update thread|\b(?:technical|account)(?:\/\w+)? (?:support )?(?:issue|problem)\b/i;
+  /\bno (?:client )?(?:edit|change|revision)s? (?:requests?|asks?)\b|\bno (?:edits?|changes?|revisions?) (?:found|needed|requested)\b|\bnothing to (?:change|fix)\b|\bstatus update thread\b|\b(?:technical|account)(?:\/(?:technical|account))? (?:support )?issue\b/i;
 const TIMESTAMPED = /\[\s*\d{1,2}:\d{2}/; // "[1:06] More stabilization here" — a cut note, always an ask
+// Verbs that are only ever said about work we delivered. "Can we take the TV
+// and stand out?" and "there is a typo in the beginning" name no deliverable at
+// all, and both are real asks, so these carry on their own.
+const STRONG_ASK =
+  /\b(typos?|misspell\w*|spelled|spelling|re-?edit\w*|revis(?:e|ed|ion)|retouch\w*|remov\w*|delet\w*|crop\w*|blur\w*|swap\w*|replac\w*|re-?cut|black out|take (?:it|them|that|this|the [\w ]{1,24}) ?out|leave (?:it|them|that) out|edit (?:out|it|this|that))\b/i;
 const CHANGE_VERB =
   /\b(chang\w*|edit\w*|remov\w*|delet\w*|take out|took out|add\w*|replac\w*|swap\w*|fix\w*|correct\w*|updat\w*|redo|re-?do|adjust\w*|crop\w*|cut|cuts|trim\w*|blur\w*|brighten\w*|darken\w*|straighten\w*|retouch\w*|tweak\w*|revis\w*|shorten\w*|lengthen\w*|reorder\w*|mut(?:e|ed|ing)|misspell\w*|spelled|spelling|typos?|wrong|error|says?|should (?:say|be)|instead of|prefer\w*|don'?t want|do not want|can'?t show|cannot show|missing|not showing|doesn'?t show|leave out|include|match\w*|make (?:it|them|the|this|that|a)|use )\b/i;
 const REQUEST_CUE =
@@ -550,10 +561,11 @@ const MEDIA_NOUN =
 
 function looksLikeChangeAsk(text: string): boolean {
   if (NOT_AN_ASK.test(text)) return false;
-  if (TIMESTAMPED.test(text)) return true;
-  return text
-    .split(/(?<=[.!?])\s+/)
-    .some((s) => MEDIA_NOUN.test(s) && (CHANGE_VERB.test(s) || REQUEST_CUE.test(s)));
+  if (TIMESTAMPED.test(text) || STRONG_ASK.test(text)) return true;
+  // Judged over the whole ask, not sentence by sentence: real requests split
+  // the two halves across sentences all the time ("238 Hudson showcase photos —
+  // Good morning! Can you please replace these?").
+  return MEDIA_NOUN.test(text) && (CHANGE_VERB.test(text) || REQUEST_CUE.test(text));
 }
 
 // One revision ask, as an editor should read it: their words, without the mail
