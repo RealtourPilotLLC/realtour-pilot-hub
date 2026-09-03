@@ -314,6 +314,13 @@ model Client {
   // External system linkage
   aryeoCustomerId String? @unique
   licenseNumber   String?
+  // The agent's headshot, mirrored from Aryeo's customer `avatar_url` (64 of
+  // 366 customers carry one — the Zillow-synced ones). Aryeo owns it: the
+  // nightly customer sync overwrites it, the hub never edits it. Shown wherever
+  // the client is named (Jordan, Sep 2: "if the agent has a profile photo in
+  // aryeo that should be shown here too as well as in other places the
+  // clients are mentioned").
+  avatarUrl       String?
 
   // Customer segmentation (computed from lifetime spend + completed-order count).
   // Mirrors the HubSpot segment model so the label is consistent everywhere a

@@ -233,6 +233,7 @@ interface AryeoCustomer {
   office_name?: string;
   license_number?: string;
   internal_notes?: string;
+  avatar_url?: string | null; // the agent's headshot (Zillow-synced on ~64 customers)
 }
 interface AryeoAddress {
   street_number?: string;
@@ -299,6 +300,7 @@ export interface AryeoCustomerUser {
   agent_company_name?: string;
   agent_license_number?: string;
   internal_notes?: string;
+  avatar_url?: string | null;
 }
 
 export interface AryeoTag {
@@ -1294,6 +1296,7 @@ export async function syncAryeoOrders(
           generalNotes: cust?.internal_notes ?? null,
           notesSyncedAt: cust?.internal_notes ? new Date() : null,
           aryeoCustomerId: cust?.id ?? null,
+          avatarUrl: cust?.avatar_url ?? null,
         },
       });
       clientsCreated++;
@@ -2310,17 +2313,20 @@ export async function syncAryeoCustomers(): Promise<{ enriched: number }> {
     where: { email: { not: null } },
     select: {
       id: true, email: true, phone: true, company: true, licenseNumber: true,
-      generalNotes: true, aryeoCustomerId: true, notesSyncError: true,
+      generalNotes: true, aryeoCustomerId: true, notesSyncError: true, avatarUrl: true,
     },
   });
   let enriched = 0;
   for (const cl of clients) {
     const cu = byEmail.get((cl.email ?? "").toLowerCase());
     if (!cu) continue;
-    const data: Record<string, string | Date> = {};
+    const data: Record<string, string | Date | null> = {};
     if (!cl.phone && cu.phone) data.phone = cu.phone;
     if (!cl.company && cu.agent_company_name) data.company = cu.agent_company_name;
     if (!cl.licenseNumber && cu.agent_license_number) data.licenseNumber = cu.agent_license_number;
+    // The headshot is a MIRROR, not a backfill: Aryeo owns it, nobody edits it
+    // here, so a photo changed or removed over there follows on the next run.
+    if ((cu.avatar_url ?? null) !== cl.avatarUrl) data.avatarUrl = cu.avatar_url ?? null;
 
     // Customer notes are NOT a backfill-if-empty field like the three above:
     // Aryeo owns them, so an edit made over there has to reach the hub or the
@@ -2456,6 +2462,7 @@ export async function syncAllAryeoClients(): Promise<{ created: number; scanned:
         notesSyncedAt: cu.internal_notes ? new Date() : null,
         // Keep the Aryeo id only when it isn't already taken (it's @unique).
         aryeoCustomerId: cu.id && !usedAryeoId.has(cu.id) ? cu.id : null,
+        avatarUrl: cu.avatar_url ?? null,
       },
     });
     byEmail.set(email, createdRow.id);
