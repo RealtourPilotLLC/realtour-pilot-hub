@@ -242,6 +242,14 @@ const EDIT_TOPIC =
 const NOT_FOR_EDITOR =
   /\b(shoot\w*|on ?site|arriv\w*|park\w*|lockbox|access|keys?|wardrobe|outfits?|on-? ?camera|schedul\w*|resched\w*|calendar|availab\w*|appointments?|book\w*|texts?|texting|texted|calls?|calling|called|phone|voicemail|e-?mails?|messag\w*|respond\w*|repl(?:y|ies|ied)|communicat\w*|check-? ?ins?|reach\w* out|follow\w* up|rapport|friendly|warmly|personable|personality|humou?r|joke[sd]?|laugh\w*|banter|conversation|small talk|complimentar\w*|faith|church|famil(?:y|ies)|kids|referrals?|relationship|trust\w*|appreciat\w*|patient|price\w*|pricing|fees?|invoices?|payments?|contracts?|weather|light\w*|driv(?:e|ing)|travel|meet\w*|visits?|offices?|walk ?through|prep\w*|declutter|hand-?hold\w*|oversight|introduce\w*|introduction|respons\w*|sign(?:s|ed|ing)? off|interactions?|effusiv\w*|enthusias\w*|mindset)\b/i;
 
+// Addressed to whoever DEALS WITH the client, not to whoever cuts the video:
+// "let her know…", "pass that along internally", "flag it to Jordan". A v1
+// profile is full of these because it was written for the whole team, and they
+// name a deliverable so the topic test keeps them — but to an editor they are
+// exactly the noise Jordan objected to.
+const ADDRESSED_TO_OPS =
+  /\b(let (?:her|him|them|the client)\s+know|tell (?:her|him|them|the client)|explain (?:to|that)\b|walk (?:her|him|them) through|set (?:her|him|them) up|pass (?:that|it|this)\b|hand (?:it|that|this) (?:off|to)|loop in|escalat\w*|flag (?:it|that|this)\b|internally|the right person|remind (?:her|him|them)|confirm with|ask (?:her|him|them)|offer (?:her|him|them)|upsell|pitch|quote|proposal)\b/i;
+
 // A standing instruction ("always add…", "never include…") rather than general
 // advice — those are what `editing.prefs` is for.
 const STANDING = /\b(always|never|make sure|ensure|be sure|must|standing|every (?:video|reel|cut|delivery|deliverable)|do not|don'?t)\b/i;
@@ -257,6 +265,12 @@ function editorSafe(line: string): boolean {
   const s = (line ?? "").trim();
   if (s.length < 8) return false;
   if (NOT_FOR_EDITOR.test(s)) return false;
+  // A v1 profile was written for the whole team, so it is full of lines aimed
+  // at whoever DEALS WITH the client — "let her know how Zillow attribution
+  // works", "pass that interest along internally". They mention a deliverable,
+  // so the topic test keeps them, but to an editor they are noise (Jordan:
+  // "not relevant or necessary for the editor to know").
+  if (ADDRESSED_TO_OPS.test(s)) return false;
   return EDIT_TOPIC.test(s);
 }
 
