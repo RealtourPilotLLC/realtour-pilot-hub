@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etMonthKey } from "@/lib/contentProgram";
+import { DELIVERED_STAMP } from "@/lib/reviewCuts";
 
 // ---------------------------------------------------------------------------
 // The client portal's data layer (interactive layer, Aug 28). EVERYTHING here
@@ -73,7 +74,7 @@ export async function portalCuts(enrollmentId: string): Promise<PortalCut[]> {
   const subs = await prisma.reviewSubmission.findMany({
     where: { projectId: { in: projects.map((p) => p.id) } },
     orderBy: { round: "asc" },
-    select: { id: true, projectId: true, status: true, assetUrl: true, assetPath: true, fileName: true, decidedAt: true, deliverableId: true, slot: true },
+    select: { id: true, projectId: true, status: true, assetUrl: true, assetPath: true, fileName: true, decidedAt: true, decidedBy: true, deliverableId: true, slot: true },
   });
   // Which submissions carry THIS client's notes — a cut they bounced (their
   // revision flips it to CHANGES_REQUESTED) stays on their page; an
@@ -91,6 +92,13 @@ export async function portalCuts(enrollmentId: string): Promise<PortalCut[]> {
   // "Updates in progress" chip tells them the new one is coming).
   const latestPerCut = new Map<string, (typeof subs)[number]>();
   for (const s of subs) {
+    // A cut auto-stamped at DELIVERY is not an invitation to review — it is the
+    // record that the job already went out. reviewCuts.ts marks those APPROVED
+    // with decidedBy "Delivered to the client", and reading that as "show it for
+    // review" put an August video Erica Walker already had back on her portal
+    // under "For your review · Request changes", with her Home tab announcing
+    // "1 video ready for your review". Delivered work belongs in the Library.
+    if (s.decidedBy === DELIVERED_STAMP) continue;
     const visible = s.status === "APPROVED" || (s.status === "CHANGES_REQUESTED" && commented.has(s.id));
     // A cut = (deliverable × slot) for uploaded rows, the file for legacy rows.
     if (visible && s.assetUrl) latestPerCut.set(`${s.projectId}:${s.deliverableId ? `${s.deliverableId}:${s.slot}` : (s.assetPath ?? s.id)}`, s);

@@ -77,9 +77,47 @@ STRICT RULES:
       },
       maxTokens: 1200,
     });
+    // NAME SCRUB — the prefill is written from call intel, and the model happily
+    // grounds a preference in somebody else: Ashley Brunner's live portal read
+    // "benchmarked against the reel produced for agent Erica", naming a current
+    // paying client to another one. (Arielle Roemer's own recorded preference is
+    // that her strategy must not be shared with agents in her markets.) Money was
+    // scrubbed here from the start; people were not. Deterministic, not a prompt
+    // instruction — this is a page the client reads.
+    //
+    // Two lists, deliberately: FULL names of every other client (unambiguous),
+    // and bare FIRST names only for the clients on the content program — that is
+    // the realistic leak ("agent Erica") and it is a set of a dozen. Surnames at
+    // large are not usable as a filter: real ones here include Good, King, West
+    // and Hey, and dropping any line containing them would delete "good
+    // lighting". Team names stay: the client already works with their crew.
+    const [otherClients, programEnrollments] = await Promise.all([
+      prisma.client.findMany({ where: { id: { not: clientId } }, select: { id: true, name: true } }),
+      prisma.contentEnrollment.findMany({
+        where: { status: { in: ["ACTIVE", "PAUSED"] }, clientId: { not: clientId } },
+        select: { clientId: true },
+      }),
+    ]);
+    const nameById = new Map(otherClients.map((c) => [c.id, (c.name ?? "").trim()]));
+    const terms = [
+      // Full name, and the first two words when the record carries a suffix or a
+      // team label ("Gary Mercer Sr" → also "Gary Mercer", which is how another
+      // client's prefill actually referred to him).
+      ...otherClients.flatMap((c) => {
+        const n = (c.name ?? "").trim();
+        const w = n.split(/\s+/);
+        return w.length >= 3 ? [n, `${w[0]} ${w[1]}`] : w.length === 2 ? [n] : [];
+      }),
+      ...programEnrollments.map((e) => (nameById.get(e.clientId) ?? "").split(/\s+/)[0]).filter((n) => n.length >= 4),
+    ].filter((n, i, a) => n && a.indexOf(n) === i);
+    const namesRe = terms.length
+      ? new RegExp(`\\b(${terms.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i")
+      : null;
+
     const clean = (arr: unknown): string =>
       (Array.isArray(arr) ? arr : [])
         .filter((x): x is string => typeof x === "string" && x.trim().length > 3)
+        .filter((x) => !namesRe || !namesRe.test(x))
         .slice(0, 6)
         .map((x) => `• ${stripMoneySentences(x.trim())}`)
         .filter((x) => x.length > 4)

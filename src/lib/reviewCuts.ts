@@ -4,6 +4,11 @@ import { dbx, DropboxError } from "@/lib/integrations/dropbox";
 import { actualFolderPaths, type FolderProject } from "@/lib/dropboxFolders";
 import { videoStyleFor } from "@/lib/videoStyles";
 
+/** Stamped on a cut row that was auto-approved BECAUSE the job was delivered —
+ *  not because anyone reviewed it. The client portal keys off this to keep
+ *  delivered work in the Library instead of asking for a verdict on it. */
+export const DELIVERED_STAMP = "Delivered to the client";
+
 // ---------------------------------------------------------------------------
 // Finished cuts → Review Room rows. ONE place that turns the files in a job's
 // Dropbox 05-Final-Video folder into ReviewSubmission rows, used by both the
@@ -159,7 +164,7 @@ export async function syncFinalCutsToReview(
         where: { id: placeholder.id },
         data: {
           assetPath: c.path, fileName: c.name, assetUrl: streamUrlFor(placeholder.id), round: 1,
-          status: "APPROVED", decidedAt: project.deliveredAt ?? new Date(), decidedBy: "Delivered to the client",
+          status: "APPROVED", decidedAt: project.deliveredAt ?? new Date(), decidedBy: DELIVERED_STAMP,
         },
       }).catch(() => {});
     }
