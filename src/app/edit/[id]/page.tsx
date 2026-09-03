@@ -3,10 +3,11 @@ import Link from "next/link";
 import {
   AlertTriangle, Film, FolderOpen, Palette, MessageSquare, ExternalLink, PlayCircle, Quote,
 } from "lucide-react";
-import { VIDEO_TIER, videoTypeForDeliverable } from "@/lib/videoStyles";
+import { VIDEO_TIER, VIDEO_TYPES, videoTypeForDeliverable } from "@/lib/videoStyles";
 import { listClientAssets } from "@/lib/clientAssets";
 import { ClientAssetsCard } from "@/components/clients/ClientAssetsCard";
 import { PageHeader } from "@/components/PageHeader";
+import { BackLink } from "@/components/ui/BackLink";
 import { Section } from "@/components/ui/Section";
 import { getProject, getTeam } from "@/lib/queries";
 import { getCurrentUser } from "@/lib/auth/user";
@@ -41,22 +42,56 @@ import { formatDistanceToNow } from "date-fns";
 
 export const dynamic = "force-dynamic";
 
+// ---------------------------------------------------------------------------
+// Style KEY ↔ Style Guide type. The keys are the shared contract that
+// Product.videoStyle and Deliverable.videoStyle are written in at sync (Sep 2
+// 2026) — the product NAME on the Aryeo order line ("Photography and Standard
+// Reel w/ Agent intro") used to be thrown away, leaving only the category
+// ("Social Reel"), so every video read as a plain Standard Reel here. The Guide
+// (src/lib/videoStyles.ts) has no separate premium cinematic entry yet, so that
+// key borrows the premium reel's notes rather than rendering blank.
+// ---------------------------------------------------------------------------
+const STYLE_KEY_TO_TYPE: Record<string, string> = {
+  standard_reel: "Standard Reel",
+  standard_reel_agent_intro: "Standard Reel with Agent Intro",
+  standard_cinematic: "Standard Cinematic Video",
+  personal_branding: "Personal Branding Reel",
+  premium_social_reel: "Premium Social Media Reel",
+  premium_cinematic: "Premium Social Media Reel",
+};
+const TYPE_TO_STYLE_KEY: Record<string, string> = {
+  "Standard Reel": "standard_reel",
+  "Standard Reel with Agent Intro": "standard_reel_agent_intro",
+  "Standard Cinematic Video": "standard_cinematic",
+  "Personal Branding Reel": "personal_branding",
+  "Premium Social Media Reel": "premium_social_reel",
+};
+// "Standard Reels don't get scripts" (Jordan, Sep 2): the agent-intro reel has
+// an intro script, and every premium and personal-branding cut is scripted; a
+// plain standard reel or cinematic is B-roll to music, so the Script card —
+// and its "No script on file yet" warning — would only send the editor
+// waiting for words that are never coming.
+const SCRIPTED_STYLE_RE = /^(standard_reel_agent_intro|premium_|personal_branding)/;
+
 // The EDITOR's brief screen for one job. Creative-safe (no pricing/financials).
 //
 // Ordered around the editor's actual job (Jordan, Sep 2: "there is too much to
 // look at"): where the media is → what to make → do the work → what the client
 // is like → history.
+//   0. Back — to the Editing Room queue, or wherever they came from in-app
 //   1. the work order (only on a bounced job — then it IS the job)
 //   2. Media — RAW, Final, brand assets, the client's asset shelf, their colors
 //      (first, so the download is running while they read — Jordan, Sep 2)
 //   3. Edit instructions — ONE card: the spec, the customer's words on this
-//      order, and everything that came off the shoot
-//   4. What to make — the deliverables with their style tier and examples
-//   5. Script — the locked words
+//      order, everything that came off the shoot, then our Additional notes
+//   4. What to make — each video with ITS style (Deliverable.videoStyle) and
+//      the Guide's notes + examples for that style
+//   5. Script — the locked words; only for styles that HAVE a script
 //   6. Cuts to deliver — upload, the cut in review, the notes on it
 //   7. Project chat
-// The right rail is client context only; reference material sits in a
-// <details> so it is there without being in the way.
+// The right rail is client context only — the same compact working-profile
+// brief for every viewer, owner included (Jordan, Sep 2, round 3); reference
+// material sits in a <details> so it is there without being in the way.
 export default async function EditBriefPage({
   params,
   searchParams,
@@ -151,6 +186,31 @@ export default async function EditBriefPage({
   const owedDeliverables = project.deliverables.filter((d) => !d.removedFromOrderAt);
   const videoDeliverables = owedDeliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
   const editDeliverables = videoDeliverables.length ? videoDeliverables : owedDeliverables;
+  // Which STYLE each video is cut in. Deliverable.videoStyle is resolved at
+  // sync from the Aryeo product ("Standard Reel with Agent Intro" →
+  // standard_reel_agent_intro) and is the truth when present. Rows synced
+  // before the column existed fall back to what this page always inferred:
+  // the label's own signal (the Guide's regex read — "intro", "premium",
+  // "cinematic", monthly plan) with the deadline's tier verdict on top, so a
+  // premium job never reads as standard just because its label is generic.
+  const monthly = isMonthlyContentJob(project.deliverables);
+  const tier = videoTier(owedDeliverables);
+  const videoStyleOf = (d: { label: string | null; videoStyle: string | null }): string => {
+    if (d.videoStyle) return d.videoStyle;
+    const byLabel = TYPE_TO_STYLE_KEY[videoTypeForDeliverable(d.label, monthly).name] ?? "standard_reel";
+    if (tier === "premium" && byLabel.startsWith("standard")) {
+      return byLabel === "standard_cinematic" ? "premium_cinematic" : "premium_social_reel";
+    }
+    return byLabel;
+  };
+  // The Style Guide entry for that style — notes, examples, hours.
+  const videoTypeOf = (d: { label: string | null; videoStyle: string | null }) =>
+    VIDEO_TYPES.find((t) => t.name === STYLE_KEY_TO_TYPE[videoStyleOf(d)]) ?? videoTypeForDeliverable(d.label, monthly);
+  // The Script card shows when any video's style is a scripted one — or when
+  // a script IS on file: words the Studio already wrote for this job outrank
+  // the inference, and hiding them would be the worse mistake.
+  const scriptOnFile = !!(project.reelHook || project.reelScript);
+  const showScript = scriptOnFile || videoDeliverables.some((d) => SCRIPTED_STYLE_RE.test(videoStyleOf(d)));
   const specialRequests = project.activities.filter((a) => a.type === ActivityType.SPECIAL_REQUEST);
   const deliverableNotes = owedDeliverables.filter((d) => d.notes?.trim());
   // The customer's OWN words from the Aryeo order intake ("Special
@@ -172,9 +232,13 @@ export default async function EditBriefPage({
   );
   const revisionOpen = videoRevisionTasks.length > 0;
   let rawsLanded = false;
+  let folderCounts = { raw: 0, final: 0, stale: false };
   try {
-    const ev = project.statusEvidence ? (JSON.parse(project.statusEvidence) as { dropbox?: { rawVideo?: number } | null }) : null;
+    const ev = project.statusEvidence ? (JSON.parse(project.statusEvidence) as { dropbox?: { rawVideo?: number; finalVideo?: number; stale?: boolean } | null }) : null;
     rawsLanded = (ev?.dropbox?.rawVideo ?? 0) > 0;
+    // Same identifiers the Editing Room shows on its rows (Jordan, Sep 2):
+    // green when the hourly sweep found files in the folder, hollow when not.
+    folderCounts = { raw: ev?.dropbox?.rawVideo ?? 0, final: ev?.dropbox?.finalVideo ?? 0, stale: !!ev?.dropbox?.stale };
   } catch { /* evidence is best-effort */ }
   const latestRound = submissions.length ? submissions[submissions.length - 1] : null;
   // The cut panel (editor's side of the review): pick the active cut like the
@@ -275,7 +339,9 @@ export default async function EditBriefPage({
     jobNote: canEditNotes ? project.notes : showJobNote,
     editorBrief: project.editorBrief,
     videoInstructions: project.videoInstructions,
-    shotOrderNotes: project.shotOrderNotes,
+    // No shotOrderNotes: the photographers file their video into folders, so
+    // the editor never needs the walk-through (Jordan, Sep 2, round 3). The
+    // project page's shoot debrief still shows it to admins.
     removalNotes: project.removalNotes,
     videosFilmed: project.videosFilmed,
     scriptConfirmNote: project.scriptConfirmNote,
@@ -296,6 +362,12 @@ export default async function EditBriefPage({
 
   return (
     <div>
+      {/* Back to where they came from — BackLink walks the in-app history
+          (the Editing Room queue for an editor, Ops Day or the project page
+          for the owner) and falls back to the queue on a cold deep link. */}
+      <div className="border-b border-border px-4 py-3 sm:px-6">
+        <BackLink href="/editing" label="Editing Room" />
+      </div>
       <PageHeader
         eyebrow="Editor brief"
         title={street}
@@ -378,10 +450,10 @@ export default async function EditBriefPage({
             <div className="space-y-3">
               <div className="flex flex-wrap gap-2">
                 <a href={rawUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-3 py-1.5 text-sm font-medium hover:bg-surface-2">
-                  <FolderOpen className="size-4 text-muted" /> RAW footage <ExternalLink className="size-3.5 text-muted-2" />
+                  <FolderOpen className="size-4 text-muted" /> RAW footage <UploadDot n={folderCounts.raw} stale={folderCounts.stale} /> <ExternalLink className="size-3.5 text-muted-2" />
                 </a>
                 <a href={finalUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-3 py-1.5 text-sm font-medium hover:bg-surface-2">
-                  <FolderOpen className="size-4 text-muted" /> Final footage <ExternalLink className="size-3.5 text-muted-2" />
+                  <FolderOpen className="size-4 text-muted" /> Final footage <UploadDot n={folderCounts.final} stale={folderCounts.stale} /> <ExternalLink className="size-3.5 text-muted-2" />
                 </a>
                 {brandUrl && (
                   <a href={brandUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg border bg-surface px-3 py-1.5 text-sm font-medium hover:bg-surface-2">
@@ -427,16 +499,23 @@ export default async function EditBriefPage({
             brief={briefFields}
           />
 
-          {/* 4 · WHAT TO MAKE, by type — each deliverable with ITS type's style
+          {/* 4 · WHAT TO MAKE, by type — each deliverable with ITS style's
               notes and live examples (same data as the Style Guide, so they
               can't drift). Jordan: "notes about the type of video should be on
-              the editing page in the What to make section, with examples." */}
+              the editing page in the What to make section, with examples." The
+              style comes from Deliverable.videoStyle (the product actually
+              ordered), and the verbatim order line sits beside it when it says
+              more than the category label does — 626 Greycliffe was "Standard
+              Reel with Agent Intro" on the order and "Social Reel" here
+              (Jordan: "That should be shown as video type"). */}
           <Section icon={Film} title="What to make">
             {editDeliverables.length === 0 && <span className="text-sm text-muted">No deliverables listed.</span>}
             <div className="space-y-4">
               {editDeliverables.map((d) => {
-                const vt = videoTypeForDeliverable(d.label, isMonthlyContentJob(project.deliverables));
+                const vt = videoTypeOf(d);
                 const tierMeta = VIDEO_TIER[vt.tier];
+                const chip = refinedDeliverableLabel(d.type, d.label);
+                const orderedAs = d.productTitle?.trim() && d.productTitle.trim() !== chip ? d.productTitle.trim() : null;
                 return (
                   <div key={d.id} className="rounded-xl border border-border bg-surface-2/40 p-3">
                     <div className="flex flex-wrap items-center gap-2">
@@ -444,9 +523,10 @@ export default async function EditBriefPage({
                         className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-sm font-medium"
                         style={{ backgroundColor: `${tierMeta.color}1a`, color: tierMeta.color }}
                       >
-                        <Film className="size-3.5" /> {refinedDeliverableLabel(d.type, d.label)}
+                        <Film className="size-3.5" /> {chip}
                       </span>
                       <span className="text-xs text-muted">{vt.name} · {tierMeta.edit}</span>
+                      {orderedAs && <span className="text-xs text-muted-2">ordered as “{orderedAs}”</span>}
                     </div>
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       {vt.style.map((s) => (
@@ -482,8 +562,10 @@ export default async function EditBriefPage({
               Writing platform by this project's id (page render + hourly cron
               + signed webhook; scripts are never written in the hub). The
               editor pastes overlay text from here — re-typing is the #1
-              typo/revision driver. */}
-          {videoDeliverables.length > 0 && (
+              typo/revision driver. Only for styles that HAVE a script (see
+              SCRIPTED_STYLE_RE): a plain Standard Reel gets no card and no
+              "No script on file yet" to wait on. */}
+          {showScript && (
             (project.reelHook || project.reelScript) ? (
               <ReelScriptCard
                 hook={project.reelHook}
@@ -620,10 +702,16 @@ export default async function EditBriefPage({
               </div>
             </Section>
           )}
+          {/* The compact brief for EVERY viewer — this is the editor's screen,
+              and Jordan reads it as OWNER to see what they see (Sep 2, round
+              3: "The working profile still hasn't changed" — the brief had
+              been gated to the EDITOR role). The full card lives on
+              /clients/<id>. */}
           <ClientProfileCard
             clientId={project.client.id}
             profile={profile}
             updatedAt={project.client.profileUpdatedAt ? formatDistanceToNow(project.client.profileUpdatedAt, { addSuffix: true }) : null}
+            variant="brief"
           />
           {/* Reference, not instruction — there when they want it, folded away
               when they don't. */}
@@ -640,5 +728,26 @@ export default async function EditBriefPage({
         </div>
       </div>
     </div>
+  );
+}
+
+// The Editing Room's upload identifier, reused on the brief's Media buttons so
+// the editor sees the same truth in both places: green = the hourly sweep found
+// files in that folder (with the count), hollow = nothing there yet, and a
+// muted dot when the last read was stale (Dropbox couldn't be read this pass).
+function UploadDot({ n, stale }: { n: number; stale: boolean }) {
+  const title = n > 0 ? `${n} file${n === 1 ? "" : "s"} uploaded (checked hourly)` : stale ? "Last Dropbox read failed — count may be behind" : "Nothing uploaded yet (checked hourly)";
+  return (
+    <span
+      title={title}
+      aria-label={title}
+      className={
+        n > 0
+          ? "ml-0.5 inline-block size-2.5 rounded-full bg-success"
+          : stale
+            ? "ml-0.5 inline-block size-2.5 rounded-full bg-muted-2/60"
+            : "ml-0.5 inline-block size-2.5 rounded-full border border-muted-2"
+      }
+    />
   );
 }

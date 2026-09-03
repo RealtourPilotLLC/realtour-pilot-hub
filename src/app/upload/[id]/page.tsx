@@ -13,6 +13,7 @@ import { BackLink } from "@/components/ui/BackLink";
 import { prisma } from "@/lib/prisma";
 import { cn } from "@/lib/utils";
 import { UploadPortal } from "@/components/upload/UploadPortal";
+import { isVideoStyleKey, type VideoStyleKey } from "@/lib/videoStyles";
 import { AppointmentFeedback } from "@/components/upload/AppointmentFeedback";
 import { AddedAtShoot } from "./AddedAtShoot";
 import { itemFromTaskTitle, shootAddonKeyPrefix, streetOf, type ShootAddOn } from "@/app/upload/shootAddOns";
@@ -20,11 +21,65 @@ import { getProjectFolderState } from "@/lib/dropboxFolders";
 import { photoPolicyFor, rawBudgetFor, rawOverageCeiling } from "@/lib/culling";
 import { ActivityType } from "@prisma/client";
 import { isFieldFlag } from "@/lib/debrief";
-import { videoStepSpec, isMonthlyContentJob } from "@/lib/pipeline";
+import { videoStepSpec, isMonthlyContentJob, type VideoStepSpec } from "@/lib/pipeline";
 import { creativeCustomerNote } from "@/lib/clientNotes";
 import { videoTier } from "@/lib/projectStatus";
 
 export const dynamic = "force-dynamic";
+
+// ---------------------------------------------------------------------------
+// WHICH video this job is (shared contract, Sep 2 2026). The Aryeo sync stamps
+// Deliverable.videoStyle from Product.videoStyle at order time, so the brief's
+// shape follows the PRODUCT the client bought — "Photography and Standard Reel
+// w/ Agent intro" used to reach here as a "Social Reel" label, and the intro
+// script was only demanded when a name regex happened to match. The stamp is
+// authoritative; a job with no stamped live row (orders synced before the
+// column existed, products nobody has mapped) falls back to exactly the Sep 2
+// name + tier logic, so nothing regresses.
+// ---------------------------------------------------------------------------
+// The most demanding brief wins when a job carries several video lines (a reel
+// + a cinematic, a bundle + an intro add-on) — the precedence videoStepSpec
+// already uses: monthly, then premium, then agent intro, then standard.
+const STYLE_RANK: Record<VideoStyleKey, number> = {
+  personal_branding: 0,
+  premium_cinematic: 1,
+  premium_social_reel: 2,
+  standard_reel_agent_intro: 3,
+  standard_cinematic: 4,
+  standard_reel: 5,
+};
+/** What the video step demands for a resolved style — the same VideoStepSpec
+ *  videoStepSpec() builds from names, so the portal (and the server gate in
+ *  upload/actions.ts once it reads the stamp) keep consuming one type. Per
+ *  Jordan: standard reels don't get scripts; agent-intro reels get the intro
+ *  script + notes; premium can't be submitted without the script; monthly
+ *  plans need every field plus the videos-filmed count. */
+function specForStyle(style: VideoStyleKey): VideoStepSpec {
+  const base = { requireScript: false, requireIntro: false, requireVideoCount: false, fullBrief: false, minimalReel: false, fixedStyle: false };
+  switch (style) {
+    case "personal_branding":
+      return { ...base, mode: "standard", requireVideoCount: true, fullBrief: true, fixedStyle: true };
+    case "premium_social_reel":
+    case "premium_cinematic":
+      return { ...base, mode: "premium-script", requireScript: true, fullBrief: true };
+    case "standard_reel_agent_intro":
+      return { ...base, mode: "agent-intro", requireIntro: true };
+    case "standard_cinematic":
+      // One box like a reel, but a full horizontal cut always needs direction
+      // — only a plain reel earns "nothing demanded" (videoStepSpec's rule).
+      return { ...base, mode: "standard", fullBrief: true };
+    case "standard_reel":
+      return { ...base, mode: "standard", minimalReel: true };
+  }
+}
+
+/** The Sep 2 tier answer as a style key — for jobs nothing has stamped yet. */
+function styleFromTier(spec: VideoStepSpec, hasFullVideo: boolean): VideoStyleKey {
+  if (spec.fixedStyle) return "personal_branding";
+  if (spec.mode === "premium-script") return hasFullVideo ? "premium_cinematic" : "premium_social_reel";
+  if (spec.mode === "agent-intro") return "standard_reel_agent_intro";
+  return hasFullVideo ? "standard_cinematic" : "standard_reel";
+}
 
 export default async function UploadProjectPage({
   params,
@@ -95,26 +150,43 @@ export default async function UploadProjectPage({
   const videoOrdered = project.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
   // Which flavor of the video step this package gets (Jordan, Sep 1): premium
   // packages require the SCRIPT; agent-intro packages require the typed INTRO
-  // script + just editing notes. Names live in the verbatim order items.
-  // Deliverables the photographer marked "couldn't complete" are excused, so
-  // they must not drive the requirements either (review).
+  // script + just editing notes. Deliverables the photographer marked
+  // "couldn't complete" are excused, so they must not drive the requirements
+  // either (review).
   const liveDeliverables = project.deliverables.filter((d) => !d.notCompletedReason);
+  const hasFullVideo = liveDeliverables.some((d) => d.type === "VIDEO");
   // Tier comes from the SETTINGS product mapping (videoTier() reads the label
   // itemToDeliverables stamped from Product.videoTier), so "Premium Video" and
   // anything else Jordan maps premium follows the premium rules automatically.
-  // The SAME answer also drives the brief itself (Jordan, Sep 2): premium is
-  // shot S-Log3 / D-LogM and gets every instruction field; standard is an
-  // iPhone reel and gets one editing-instructions box — so it's computed once
-  // here and handed to the portal, never re-derived from a name.
+  // Sep 2: premium is shot S-Log3 / D-LogM and gets every instruction field;
+  // standard is an iPhone reel and gets one editing-instructions box.
   const isPremium = videoTier(liveDeliverables) === "premium";
-  const videoSpec = videoStepSpec(
+  // The name + tier answer: THE spec when no live row is stamped, and the
+  // agent-intro signal even when one is (below). Names live in the verbatim
+  // order items.
+  const tierSpec = videoStepSpec(
     [project.packageName, ...project.orderItems.map((i) => i.title), ...liveDeliverables.map((d) => d.label)],
-    {
-      hasFullVideo: liveDeliverables.some((d) => d.type === "VIDEO"),
-      isPremium,
-      isMonthly: isMonthlyContentJob(liveDeliverables, project.packageName),
-    },
+    { hasFullVideo, isPremium, isMonthly: isMonthlyContentJob(liveDeliverables, project.packageName) },
   );
+  // The stamp — read off EVERY live row, not just the video ones: the "Agent
+  // on Camera" add-on is mapped OTHER, so its style can ride on a non-video
+  // row. Most demanding first (STYLE_RANK).
+  const stamped = liveDeliverables
+    .map((d) => d.videoStyle)
+    .filter(isVideoStyleKey)
+    .sort((a, b) => STYLE_RANK[a] - STYLE_RANK[b]);
+  let stampedStyle: VideoStyleKey | null = stamped.length ? stamped[0] : null;
+  // An agent-intro line on the order still upgrades a STANDARD stamp — the
+  // add-on is its own product and may be unmapped while the reel is mapped
+  // (Jordan: the "Agent on Camera" add-on upgrades a standard reel to
+  // agent-intro). Never a premium one: "Premium Social Media Reel (No Agent
+  // on camera …)" is live data, and videoStepSpec checks premium first.
+  if (tierSpec.mode === "agent-intro" && (stampedStyle === "standard_reel" || stampedStyle === "standard_cinematic")) {
+    stampedStyle = "standard_reel_agent_intro";
+  }
+  // Resolved ONCE here and handed to the portal, never re-derived from a name.
+  const videoStyle: VideoStyleKey = stampedStyle ?? styleFromTier(tierSpec, hasFullVideo);
+  const videoSpec: VideoStepSpec = stampedStyle ? specForStyle(stampedStyle) : tierSpec;
 
   // Video jobs: pull the shoot script from Script Studio (freshness-gated,
   // never blocks the page on a dead Studio) so the photographer confirms the
@@ -180,6 +252,7 @@ export default async function UploadProjectPage({
           rangeMode: photoPolicy.mode,
           squareFeet: project.squareFeet ?? null,
           videoSpec,
+          videoStyle,
           isPremium,
         }}
         script={scriptBody ? { body: scriptBody, hook: scriptHook, url: scriptUrl } : null}

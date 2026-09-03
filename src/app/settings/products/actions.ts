@@ -10,8 +10,35 @@ export type MappingInput = {
   addonTypes: string[]; // subset of types that are POST-SHOOT work (per-part kind)
   videoTier: string | null; // standard | premium | personal_branding
   videoQuantity?: number | null; // videos one order produces (Accelerator = 4)
+  videoStyle?: string | null; // style-guide key (VIDEO_STYLE_TIER) → Product.videoStyle
   serviceKind?: string; // legacy product-level kind; derived when absent
 };
+
+// THE VIDEO STYLE — which Style Guide type (src/lib/videoStyles.ts headings)
+// a product's video is cut as, and the tier each one belongs to. Sep 2 2026:
+// the category alone ("Social Reel") threw away the product name, so 626
+// Greycliffe's "Standard Reel with Agent Intro" reached the editor as a plain
+// reel with no intro script. These keys are the shared contract with
+// Deliverable.videoStyle (resolved at sync from this column) — the brief's
+// Edit type, "Cuts to deliver", the upload portal and the Style Guide link
+// all read the key, never the label. Mirrors VIDEO_STYLE_OPTIONS on the card
+// the same way VALID_TYPES mirrors TYPE_OPTIONS.
+const VIDEO_STYLE_TIER: Record<string, "standard" | "premium" | "personal_branding"> = {
+  standard_reel: "standard",
+  standard_reel_agent_intro: "standard",
+  standard_cinematic: "standard",
+  premium_social_reel: "premium",
+  premium_cinematic: "premium",
+  personal_branding: "personal_branding",
+};
+const VALID_VIDEO_STYLES = new Set(Object.keys(VIDEO_STYLE_TIER));
+
+// The "Agent on Camera" add-on makes no video of its own — it UPGRADES the
+// reel on the same order to agent-intro (Jordan: standard reels don't get
+// scripts; agent-intro reels get an intro script + notes). It is mapped
+// ["OTHER"], so it must be allowed a style without carrying a video type.
+// (Same test lives on the card — a "use server" file can only export actions.)
+const STYLE_UPGRADE_ADDON_RE = /agent\s*on\s*camera/i;
 
 // DRONE_PHOTO / DRONE_VIDEO are mapping-level distinctions (Jordan, Aug 24:
 // "drone can be drone video or drone photo") — the parser translates them to
@@ -32,7 +59,19 @@ export async function saveProductMapping(
   const types = input.types.filter((t) => VALID_TYPES.has(t));
   const addonTypes = input.addonTypes.filter((t) => types.includes(t));
   const hasVideo = types.includes("VIDEO") || types.includes("SOCIAL_REEL") || types.includes("DRONE_VIDEO");
-  const tier = hasVideo && ["standard", "premium", "personal_branding"].includes(input.videoTier ?? "") ? input.videoTier : null;
+  // A style is only meaningful on something that produces a video — or on
+  // the upgrade add-on, which changes the video another line produces.
+  const styleAllowed = hasVideo || STYLE_UPGRADE_ADDON_RE.test(product.title);
+  const style = styleAllowed && input.videoStyle && VALID_VIDEO_STYLES.has(input.videoStyle) ? input.videoStyle : null;
+  // The tier FOLLOWS the style when one is set: a "Premium Social Media Reel"
+  // saved on the standard tier is a contradiction the editor's SLA and pay
+  // basis would inherit. Without a style the hand-picked tier stands (a drone
+  // video add-on has a tier but no style-guide page).
+  const tier = !hasVideo
+    ? null
+    : style
+      ? VIDEO_STYLE_TIER[style]
+      : ["standard", "premium", "personal_branding"].includes(input.videoTier ?? "") ? input.videoTier : null;
   const me = await getCurrentUser().catch(() => null);
 
   await prisma.product.update({
@@ -41,6 +80,7 @@ export async function saveProductMapping(
       mediaTypes: JSON.stringify(types),
       addonTypes: JSON.stringify(addonTypes),
       videoTier: tier,
+      videoStyle: style,
       videoQuantity: hasVideo && input.videoQuantity && input.videoQuantity >= 1 ? Math.min(Math.round(input.videoQuantity), 20) : null,
       // Product-level kind = add-on only when EVERY part is post-shoot work.
       serviceKind: types.length > 0 && addonTypes.length === types.length ? "addon" : "service",
@@ -60,6 +100,25 @@ export async function saveProductMapping(
       ? `Saved — ${repaired.projects} live project${repaired.projects === 1 ? "" : "s"} updated (${repaired.added} deliverables added, ${repaired.removed} phantom${repaired.removed === 1 ? "" : "s"} removed).`
       : "Saved — no live projects carry this product right now.",
   };
+}
+
+// Shared contract (Sep 2): the parser carries each Aryeo line's verbatim name
+// and its resolved style key on the parsed deliverable, and Deliverable stores
+// both (productTitle / videoStyle). Read them defensively — only what the
+// parser actually defined is written, so a remap can never wipe a style the
+// sync set from a field this repair didn't get. This is what turns "Save &
+// apply" on the agent-intro product into an agent-intro reel on 626
+// Greycliffe today, not at the next sync.
+type StyledParsed = { productTitle?: string | null; videoStyle?: string | null };
+function styleFields(want: StyledParsed): { productTitle?: string | null; videoStyle?: string | null } {
+  return {
+    ...(want.productTitle !== undefined ? { productTitle: want.productTitle } : {}),
+    ...(want.videoStyle !== undefined ? { videoStyle: want.videoStyle } : {}),
+  };
+}
+function styleChanged(want: StyledParsed, have: StyledParsed): boolean {
+  return (want.productTitle !== undefined && want.productTitle !== have.productTitle)
+    || (want.videoStyle !== undefined && want.videoStyle !== have.videoStyle);
 }
 
 // Rebuild deliverables for NON-DELIVERED projects that ordered this product,
@@ -84,12 +143,12 @@ async function repairProjectsForProduct(title: string): Promise<{ projects: numb
       select: {
         id: true, status: true, shootDate: true,
         orderItems: { where: { isCanceled: false }, select: { title: true, quantity: true } },
-        deliverables: { select: { id: true, type: true, label: true, status: true, manual: true, removedFromOrderAt: true } },
+        deliverables: { select: { id: true, type: true, label: true, status: true, manual: true, removedFromOrderAt: true, productTitle: true, videoStyle: true } },
       },
     });
     if (!p) continue;
     const parsed = dedupeParsedDeliverables(p.orderItems.flatMap((it) => deliverablesForTitle(it.title, it.quantity)));
-    const wantByType = new Map(parsed.map((d) => [d.type as string, d]));
+    const wantByType = new Map(parsed.map((d) => [d.type as string, d as typeof d & StyledParsed]));
     let touched = false;
     // Remove phantoms: types no longer implied — PENDING rows only (real work
     // that already happened is evidence the type was real).
@@ -109,18 +168,20 @@ async function repairProjectsForProduct(title: string): Promise<{ projects: numb
       if (existing?.removedFromOrderAt) {
         await prisma.deliverable.update({
           where: { id: existing.id },
-          data: { removedFromOrderAt: null, removedFromOrderNote: null, label: want.label, quantity: want.quantity },
+          data: { removedFromOrderAt: null, removedFromOrderNote: null, label: want.label, quantity: want.quantity, ...styleFields(want) },
         });
         added++; touched = true;
         continue;
       }
       if (!existing) {
         await prisma.deliverable.create({
-          data: { projectId: p.id, type: type as never, label: want.label, quantity: want.quantity, status: "PENDING" },
+          data: { projectId: p.id, type: type as never, label: want.label, quantity: want.quantity, status: "PENDING", ...styleFields(want) },
         });
         added++; touched = true;
-      } else if (existing.label !== want.label) {
-        await prisma.deliverable.update({ where: { id: existing.id }, data: { label: want.label } });
+      } else if (existing.label !== want.label || styleChanged(want, existing)) {
+        // Label AND style fix in place — the editor brief reads the style key
+        // off the row, so a re-mapped product must reach live rows here.
+        await prisma.deliverable.update({ where: { id: existing.id }, data: { label: want.label, ...styleFields(want) } });
         touched = true;
       }
     }

@@ -19,13 +19,17 @@ import { Bullets, RecentAsks, Stat } from "@/components/clients/profileParts";
 // and wardrobe asks, that faith is part of Mike's brand, that he referred a
 // colleague, and his "LFG / My Man" texting voice.
 //
-// So this entry point is a SERVER component that resolves the viewer's role and
-// hands each audience its own card:
-//   · OWNER / ADMIN  → the whole profile (it is genuinely how Jordan and Kyle work)
-//   · everyone else  → the editor's brief below, built from editorView()
-// The filter runs here, on the server, so the rapport and comms text is never
-// serialized into an editor's browser at all. Same props as before, so the two
-// call sites (/clients/<id> and /edit/<id>) need no change.
+// So this entry point is a SERVER component with two forms:
+//   · "full"  → the whole profile (it is genuinely how Jordan and Kyle work)
+//   · "brief" → the editor's brief below, built from editorView()
+// The PAGE picks the form (`variant`), not the viewer's role: /edit/<id> is the
+// editor's brief screen, so it asks for "brief" for everyone — Jordan reads it
+// as OWNER and wants to see exactly what John and Kim see ("The working
+// profile still hasn't changed", Sep 2, round 3: the compact card had been
+// gated to the EDITOR role, so the owner kept getting the full one). Without a
+// `variant` — /clients/<id> — the role decides, and it fails NARROW when we
+// can't prove who is looking. The filter runs here, on the server, so the
+// rapport and comms text is never serialized into an editor's browser at all.
 //
 // Second round, same day, on the editor's card: "I feel like the working
 // profile should be a brief summary, with the most important information first
@@ -39,28 +43,32 @@ export async function ClientProfileCard({
   clientId,
   profile,
   updatedAt,
-  audience,
+  variant,
 }: {
   clientId: string;
   profile: ClientProfile | null;
   updatedAt: string | null;
-  /** Force a view. Omitted = decide from the signed-in viewer's role. */
-  audience?: "full" | "editor";
+  /**
+   * Which form the PAGE wants: "brief" is the compact, editor-safe card with
+   * the "More about this client" fold; "full" is the whole profile. Omitted =
+   * decide from the signed-in viewer's role (owner/admin full, others brief).
+   */
+  variant?: "full" | "brief";
 }) {
-  const viewer = await getCurrentUser();
-  // Fail to the NARROW view when we can't prove who's looking — except in local
-  // open mode, where there is no session at all and Jordan is the only user.
-  // The brief is written for the EDITOR role (John and Kim on /edit); any other
-  // non-owner/admin viewer lands on the same narrow card, never the full one.
+  // The viewer is only consulted when the page left the choice to us. Fail to
+  // the NARROW view when we can't prove who's looking — except in local open
+  // mode, where there is no session at all and Jordan is the only user. Any
+  // non-owner/admin viewer lands on the brief, never the full card.
+  const viewer = variant ? null : await getCurrentUser();
   const scope =
-    audience ??
+    variant ??
     (viewer
-      ? viewer.role === "OWNER" || viewer.role === "ADMIN" ? "full" : "editor"
-      : authEnforced() ? "editor" : "full");
+      ? viewer.role === "OWNER" || viewer.role === "ADMIN" ? "full" : "brief"
+      : authEnforced() ? "brief" : "full");
 
   const [asks, facts] = await Promise.all([recentRevisionAsks(clientId), liveProfileFacts(clientId)]);
 
-  if (scope === "editor") return <EditorProfileCard profile={editorView(profile)} facts={facts} asks={asks} updatedAt={updatedAt} />;
+  if (scope === "brief") return <EditorProfileCard profile={editorView(profile)} facts={facts} asks={asks} updatedAt={updatedAt} />;
   return <ClientProfileCardView clientId={clientId} profile={profile} facts={facts} asks={asks} updatedAt={updatedAt} />;
 }
 

@@ -6,6 +6,7 @@ import {
   DeliverableStatus,
 } from "@prisma/client";
 import { PALETTE, soft as softTint } from "@/lib/palette";
+import { MONTHLY_PLAN_RE, videoStyleFor, type VideoStyleInput } from "@/lib/videoStyles";
 
 // ---------------------------------------------------------------------------
 // Pipeline stages (the booked -> delivered workflow)
@@ -196,44 +197,33 @@ export function refinedDeliverableLabel(type: DeliverableType, label?: string | 
 // a handful of pipeline chips (Premium Reel / Monthly Content / Standard Reel /
 // the bare type word). Right for the chips, wrong for the brief: a generic
 // order item rendered as just "Video" (208 N Adams St — Jordan, Sep 2: "The
-// edit type should say the actual video type"). Aryeo's catalogue is the
-// culprit — that order's item is literally titled "Video".
-//   • a SPECIFIC label is the product's real name and is shown as typed:
-//     "Premium Horizontal Video", "Video Accelerator - 4hr Session",
-//     "Standard Reel with Agent Intro". No prettifyLabel here — the
-//     " - 4hr Session" half IS the information.
-//   • a GENERIC label ("Video", "Social Reel", "Social Media Reel", empty) is
-//     decorated with the job's tier instead: "Standard Video" / "Premium Video"
-//     / "Standard Reel" / "Premium Reel".
+// edit type should say the actual video type").
+//
+// Sep 2 2026, second pass: the "actual type" is the Style Guide's — one of
+// VIDEO_TYPES in lib/videoStyles ("Standard Reel with Agent Intro", "Premium
+// Cinematic Video", "Personal Branding Reel"), resolved by videoStyleFor()
+// from Deliverable.videoStyle → productTitle → the old label heuristics. The
+// order line's own wording was never enough: the manual product mapping kept
+// only the CATEGORY, so "Standard Reel with Agent Intro" on 626 Greycliffe
+// was a SOCIAL_REEL labelled "Social Reel" and this fact read "Standard Reel"
+// — the agent-intro signal gone. Jordan: "That should be shown as video type."
+//
 // The tier is PASSED IN, not computed here: videoTier() lives in the
 // server-only projectStatus.ts, which itself imports this module, and this
 // file is shared with "use client" components. The caller hands over
 // videoTier()'s verdict — the same call the Deadline beside this fact is
-// derived from, so the two can never disagree.
+// derived from, so the two can never disagree. The monthly verdict is the
+// project-level isMonthlyContentJob() over the same rows.
 // ---------------------------------------------------------------------------
-// The labels Aryeo uses when it is not saying anything: the bare type word or
-// the plain "Social (Media) Reel" line, with or without its "(discounted)"
-// pricing note — a money-shaped word that has no place on an editor's screen.
-const GENERIC_VIDEO_LABEL_RE = /^(video|reel|social\s+(media\s+)?reel)(\s*\(\s*discounted\s*\))?$/i;
-
 export function videoTypeLabel(
-  deliverables: { type: string; label?: string | null }[],
+  deliverables: (VideoStyleInput & { type: string })[],
   tier: "standard" | "premium" | null,
 ): string {
-  const tierWord = tier === "premium" ? "Premium" : "Standard";
+  const monthly = isMonthlyContentJob(deliverables);
   const names: string[] = [];
   for (const d of deliverables) {
     if (d.type !== DeliverableType.VIDEO && d.type !== DeliverableType.SOCIAL_REEL) continue;
-    const l = (d.label ?? "").trim();
-    let name: string;
-    if (l && !GENERIC_VIDEO_LABEL_RE.test(l)) {
-      name = l;
-    } else {
-      // "Social Reel" is a reel whatever its type column says; an empty label
-      // falls back to the type.
-      const reel = /reel/i.test(l) || d.type === DeliverableType.SOCIAL_REEL;
-      name = `${tierWord} ${reel ? "Reel" : "Video"}`;
-    }
+    const name = videoStyleFor(d, { monthly, tier }).name;
     // Two "Social Reel" rows read "Standard Reel", once — the cut uploader
     // below the tracker already lists every cut owed.
     if (!names.includes(name)) names.push(name);
@@ -254,25 +244,13 @@ export const DELIVERABLE_STATUS_META: Record<
 
 // ---------------------------------------------------------------------------
 // Is THIS project a monthly personal-branding / social-content job (7–10
-// business-day turnaround, Kim's lane), or a normal listing shoot?
-// `Client.socialClient` is a CLIENT attribute — using it alone branded every
-// listing shoot those agents booked as "monthly content" (wrong QC copy,
-// wrong SLA, wrong editor routing — caught live on 523 S Coventry / 238
-// Hudson / 419 Riverview, July 2026). Jordan's definitive rule: monthly
-// content is one of the three PLANS — Video Starter, Video Accelerator, or
-// Video Pro — and those names appear right on the order item ("Video Starter
-// - 2h session", "Video Accelerator - 4HR Content Session", …). Anything else
-// — including a one-off "Premium Social Reel" at an office address — is NOT
-// monthly. (\b after "pro" keeps "Video Production" from matching.)
+// business-day turnaround, Kim's lane), or a normal listing shoot? The regex
+// and its full rationale (Jordan's three-plans rule, the Aug 18 audit, the
+// broadened wordings) now live in lib/videoStyles beside the style resolver
+// that decides "Personal Branding Reel" from the same words — re-exported
+// here so every existing `from "@/lib/pipeline"` import keeps working.
 // ---------------------------------------------------------------------------
-// Exported: the Aryeo sync uses this to KEEP a plan title as the deliverable
-// label (a generic "Video" label destroys the monthly signal — Aug 18 audit:
-// 39 live monthly-plan jobs classified as ordinary listing videos). Also
-// broadened: "Monthly Social Media Content Session" / "August Social Media
-// Content Day" / "Branding Shoot" are monthly-content wordings the old
-// adjacent-words regex missed.
-export const MONTHLY_PLAN_RE =
-  /video\s*[-–]?\s*(starter|accelerator|pro)\b|monthly\s+(social\s+)?(media\s+)?content|social\s+(media\s+)?content|personal[-\s]*brand|content\s+(session|day)\b|branding\s+(shoot|session)\b/i;
+export { MONTHLY_PLAN_RE };
 
 // How many finished videos a monthly-content session actually owes — the same
 // numbers the content program bills on (PACKAGE_RULES in lib/contentProgram:

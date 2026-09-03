@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import {
   AlarmClock, AlertTriangle, ArrowRight, Camera, CheckCircle2, ChevronDown, Clapperboard,
   ClipboardCheck, Clock, CloudSun, Coffee, ExternalLink, Hourglass, Inbox,
-  ListChecks, MessageSquare, Moon, Plane, PlayCircle, RefreshCw, Route, Sun, Sunrise, Wrench,
+  ListChecks, MessageSquare, Moon, Plane, PlayCircle, RefreshCw, Route, Sun, Sunrise, Wrench, Zap,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -249,6 +249,44 @@ function closeoutRows(d: OpsDay): { ok: boolean; label: string }[] {
 
 // "120+" when a capped list is full — never present a truncated count as exact.
 const plusFor = (key: string, d: OpsDay) => (key === "loops" && d.openLoopsTally.capped ? "+" : "");
+
+// ---- Same-day rush (Jordan, Sep 2: "notify the morning tower about shoots
+// with same-day delivery photos or floor plans") ------------------------------
+// The flag is decided ONCE, in opsDay.ts (OpsShoot.sameDay, off the order's
+// line items, dated by the SLA engine). Everything here is the length of the
+// list it points at, per this page's number rule — the chip on the Tower is
+// the count of flagged cards in "Today's shoots", and nothing else.
+const rushShoots = (shoots: OpsShoot[]) => shoots.filter((s) => s.sameDay);
+/** "photos + floor plan" — the same words on the card, the chip and the tower row. */
+const rushWhat = (s: OpsShoot) =>
+  [s.sameDay?.photos ? "photos" : null, s.sameDay?.floorPlan ? "floor plan" : null].filter(Boolean).join(" + ");
+/** Which blocks carry a rush count beside their badge: the Tower (today's
+ *  cards) and the two tomorrow-prep blocks (tomorrow's), so the day before is
+ *  warned as loudly as the morning of. */
+function rushFor(key: string, d: OpsDay): number {
+  switch (key) {
+    case "tower": return rushShoots(d.todayShoots).length;
+    case "prep": case "final-prep": return rushShoots(d.tomorrowShoots).length;
+    default: return 0;
+  }
+}
+/** The red "⚡ N same-day" chip — one component so the header, the jump bar
+ *  and the shoots section can never phrase it three ways. */
+function RushChip({ n, small, onBrand }: { n: number; small?: boolean; onBrand?: boolean }) {
+  if (n <= 0) return null;
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-0.5 rounded-full font-bold tabular-nums",
+        small ? "px-1.5 text-[10px]" : "px-2.5 py-0.5 text-xs",
+        onBrand ? "bg-white text-danger" : "bg-danger text-white",
+      )}
+      title={`${n} shoot${n === 1 ? "" : "s"} promised same-day delivery — photos or floor plan due by end of business`}
+    >
+      <Zap className={small ? "size-2.5" : "size-3"} /> {n} same-day
+    </span>
+  );
+}
 
 // What each block has waiting — the number on its header and jump-bar chip.
 // null = the block is guidance, not a list (lunch, admin).
@@ -576,6 +614,7 @@ export default async function HomePage() {
                   {n != null && n > 0 && (
                     <span className={cn("rounded-full px-1.5 text-[10px] font-semibold tabular-nums", cur ? "bg-white/20" : "bg-surface-2 text-foreground")}>{n}{plusFor(b.key, d)}</span>
                   )}
+                  <RushChip n={rushFor(b.key, d)} small onBrand={cur} />
                 </a>
               );
             })}
@@ -595,6 +634,7 @@ export default async function HomePage() {
           <div className="flex items-center gap-2 border-b border-border px-5 py-3 text-xs font-semibold uppercase tracking-wide text-muted">
             <Camera className="size-3.5" /> Today&apos;s shoots
             <span className="ml-auto rounded-full bg-surface-2 px-1.5 text-[10px] font-medium tabular-nums">{d.todayShoots.length}</span>
+            <RushChip n={rushShoots(d.todayShoots).length} small />
           </div>
           <div className="px-4 py-3.5">
             <ShootList shoots={d.todayShoots} empty="No shoots on today's calendar." showDebrief />
@@ -812,6 +852,10 @@ function Block({ def, current, d, board, counts }: {
             {n > 0 ? `${n}${plusFor(def.key, d)}` : zeroLabel}
           </span>
         )}
+        {/* Same-day rush beside the count, not inside it: the badge stays the
+            shoot count (the list it links to), and the rush is its own red
+            number so it cannot hide inside a "3". */}
+        <RushChip n={rushFor(def.key, d)} />
         <ChevronDown className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
       </summary>
       <div className="border-t border-border px-5 py-3.5">
@@ -849,6 +893,27 @@ function BlockBody({ blockKey, d, board, counts }: {
             </span>
             <ArrowRight className="size-3.5 shrink-0 text-muted-2" />
           </a>
+          {/* Same-day rush — the one order detail that changes what today IS
+              for the whole team: those photos / that floor plan ship before
+              close of business, not tomorrow morning. Red, first, unmissable
+              (Jordan, Sep 2). Each address links to its own card below. */}
+          {rushShoots(d.todayShoots).length > 0 && (
+            <a href="#shoots" className="flex items-start gap-2 rounded-xl border border-danger/50 bg-danger/10 px-3.5 py-2.5 text-sm hover:bg-danger/15">
+              <Zap className="mt-0.5 size-4 shrink-0 text-danger" />
+              <span className="min-w-0 flex-1">
+                <span className="font-bold text-danger">
+                  {rushShoots(d.todayShoots).length} same-day deliver{rushShoots(d.todayShoots).length === 1 ? "y" : "ies"} today
+                </span>
+                <span className="text-foreground/80">
+                  {" — "}
+                  {rushShoots(d.todayShoots)
+                    .map((s) => `${s.title} (${rushWhat(s)}${s.sameDay?.dueISO ? `, by ${fmtTime(s.sameDay.dueISO)}` : ""})`)
+                    .join(" · ")}
+                </span>
+              </span>
+              <ArrowRight className="mt-0.5 size-3.5 shrink-0 text-danger" />
+            </a>
+          )}
           {/* The tower used to carry five pills: unanswered clients, overdue
               tasks, due today, open revisions, need assigning. Four of them are
               now rows in "What needs you today" — and two were computed with a
@@ -1069,6 +1134,22 @@ function ShootList({ shoots, empty, showGaps, showDebrief }: { shoots: OpsShoot[
               </a>
             )}
           </div>
+
+          {/* Same-day rush strip — the client paid to have this media TODAY.
+              Full-width, red, above every other field, so nobody reads the
+              door code and misses that the gallery is due by 5. The hour is
+              the SLA engine's (opsDay → tasks.ts sameDayDue), the same one on
+              the QC card. Tomorrow's cards carry it too, with the day. */}
+          {s.sameDay && (
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-danger/50 bg-danger/10 px-3 py-1.5 text-[13px] text-danger">
+              <span className="inline-flex items-center gap-1.5 font-bold uppercase tracking-wide">
+                <Zap className="size-4 shrink-0" /> Same-day {rushWhat(s)}
+              </span>
+              {s.sameDay.dueISO && (
+                <span className="ml-auto font-semibold tabular-nums">due {fmtDayTime(s.sameDay.dueISO)}</span>
+              )}
+            </div>
+          )}
 
           <div className="mt-2 grid gap-x-6 gap-y-1 sm:grid-cols-2">
             <Field label="Client">{s.clientName}</Field>

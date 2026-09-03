@@ -16,6 +16,7 @@ import {
   NotebookPen,
 } from "lucide-react";
 import { DELIVERABLE_META, type VideoStepSpec } from "@/lib/pipeline";
+import { videoStyleName, type VideoStyleKey } from "@/lib/videoStyles";
 import { markDeliverableUploaded, markDeliverableNotCompleted, flagIssue, finalizeUpload, submitUploadFeedback } from "@/app/upload/actions";
 import { cn } from "@/lib/utils";
 import type { DeliverableType, DeliverableStatus } from "@prisma/client";
@@ -98,7 +99,7 @@ const FULL_KEYS: readonly VidKey[] = ["vision", "summary", "mustShow", "avoid", 
 // A plain social reel needs no brief at all (Jordan, Sep 1: "if it's a
 // standard social reel, it doesn't need additional notes") — one optional
 // box, nothing demanded. Sep 2: this is ALSO the shape every standard-tier
-// video gets (see fullFields below) — the box just becomes required when the
+// video gets (see BRIEF_BY_STYLE) — the box just becomes required when the
 // order isn't a plain reel.
 const MINIMAL_KEYS: readonly VidKey[] = ["editNotes"];
 // The color profile follows the VIDEO TIER (Jordan, Sep 2): standard reels are
@@ -109,13 +110,43 @@ const COLOR_PROFILE_LINE = {
   standard: "COLOR PROFILE: iPhone",
   premium: "COLOR PROFILE: S-Log3, D-LogM",
 } as const;
+type ColorTier = keyof typeof COLOR_PROFILE_LINE;
+
+// ---------------------------------------------------------------------------
+// THE VIDEO STYLE drives the brief (shared contract, Sep 2 2026). The Aryeo
+// sync resolves Product.videoStyle onto Deliverable.videoStyle at order time
+// and /upload/[id] hands the job's resolved key down — the same VideoStyleKey
+// the Style Guide (src/lib/videoStyles.ts) and the editor brief read, so the
+// photographer's form, the editor's "What to make" and the style examples can
+// never describe three different videos. Before this, "Photography and
+// Standard Reel w/ Agent intro" arrived as a "Social Reel" label and the
+// intro script was only demanded when a name regex happened to match.
+// ---------------------------------------------------------------------------
+// style → field set → color line. ONE table, keyed by the shared union so a
+// key added to VIDEO_STYLE_KEYS fails the build here until it gets a shape:
+//   minimal     = the single editing-instructions box (MINIMAL_KEYS)
+//   agent_intro = intro script (required) + editing notes (AGENT_INTRO_KEYS)
+//   full        = the six sectioned fields + style picker (FULL_KEYS)
+//   color "tier" = personal branding isn't a camera tier of its own (Jordan:
+//                  STANDARD is iPhone, PREMIUM is S-Log3 / D-LogM, personal
+//                  branding is the monthly plans) — it keeps following the
+//                  Settings-mapped tier, exactly as before this table.
+type BriefShape = "minimal" | "agent_intro" | "full";
+const BRIEF_BY_STYLE: Record<VideoStyleKey, { shape: BriefShape; color: ColorTier | "tier" }> = {
+  standard_reel:             { shape: "minimal",     color: "standard" },
+  standard_reel_agent_intro: { shape: "agent_intro", color: "standard" },
+  standard_cinematic:        { shape: "minimal",     color: "standard" },
+  personal_branding:         { shape: "full",        color: "tier" },
+  premium_social_reel:       { shape: "full",        color: "premium" },
+  premium_cinematic:         { shape: "full",        color: "premium" },
+};
 // Parse-side match for EITHER line (mirrors the server's strip in
 // upload/actions.ts). Compose re-adds the CURRENT tier's line, so a brief
 // saved before a product was re-mapped in Settings heals itself on re-submit
 // instead of carrying two profile lines.
 const COLOR_PROFILE_RE = /^COLOR PROFILE:/;
 
-function composeVideoInstructions(style: VidStyle | null, sections: Record<VidKey, string>, isPremium: boolean): string {
+function composeVideoInstructions(style: VidStyle | null, sections: Record<VidKey, string>, colorTier: ColorTier): string {
   const hasContent = style !== null || VID_SECTIONS.some((s) => sections[s.key]?.trim());
   // Nothing filled (photo-only jobs, untouched video forms) → EMPTY, so the
   // server never persists a brief that is just the auto color-profile line
@@ -123,7 +154,7 @@ function composeVideoInstructions(style: VidStyle | null, sections: Record<VidKe
   if (!hasContent) return "";
   const parts: string[] = [];
   if (style) parts.push(`STYLE: ${VID_STYLES[style]}`);
-  parts.push(COLOR_PROFILE_LINE[isPremium ? "premium" : "standard"]);
+  parts.push(COLOR_PROFILE_LINE[colorTier]);
   for (const s of VID_SECTIONS) {
     const v = sections[s.key]?.trim();
     if (v) parts.push(`${s.label}\n${v}`);
@@ -260,8 +291,13 @@ export function UploadPortal({
     squareFeet: number | null;
     /** what this order's video step must show and demand — see videoStepSpec */
     videoSpec: VideoStepSpec;
-    /** videoTier(live deliverables) === "premium" — picks the color-profile
-     *  line and the field set (Jordan, Sep 2); the same answer videoSpec got */
+    /** THE resolved style (Deliverable.videoStyle, else the tier fallback —
+     *  resolved once in /upload/[id]/page.tsx): picks the field set and the
+     *  color-profile line via BRIEF_BY_STYLE; videoSpec was built from it */
+    videoStyle: VideoStyleKey;
+    /** videoTier(live deliverables) === "premium" — the camera tier behind the
+     *  fallback, and the color line for a style that isn't a tier of its own
+     *  (personal branding) */
     isPremium: boolean;
   };
   /** the shoot script pulled from Script Studio (null = none exists there) */
@@ -328,19 +364,23 @@ export function UploadPortal({
   // compose a phantom "STYLE: Personal Branding" brief and permanently waive
   // the vision gate (review).
   const effectiveStyle: VidStyle | null = spec.fixedStyle && policy.videoOrdered ? "branding" : vidStyle;
-  const vidInstructions = composeVideoInstructions(effectiveStyle, vidSections, policy.isPremium);
-  // The FIELD SET follows the video tier (Jordan, Sep 2: "Standard reels
-  // should just have an editing instructions box, while Premium has all of
-  // the editing instruction fields"). Monthly plans keep their own Sep 1 rule
-  // (every field, fixed style, video count). Aryeo names are too messy to
-  // switch on — one order item is literally "Video" — so this reads the
-  // Settings-mapped tier the page handed down, the same one videoSpec used.
-  const fullFields = spec.fullBrief && (policy.isPremium || spec.fixedStyle);
+  // The FIELD SET and the color line follow the resolved VIDEO STYLE (Jordan,
+  // Sep 2: "Standard reels should just have an editing instructions box,
+  // while Premium has all of the editing instruction fields"; agent-intro
+  // reels get the intro script + notes; monthly plans keep their Sep 1 rule —
+  // every field, fixed style, video count). Aryeo names are too messy to
+  // switch on — one order item is literally "Video" — so this reads the key
+  // the page resolved from Deliverable.videoStyle (tier fallback when no row
+  // is stamped yet), the same answer videoSpec was built from.
+  const brief = BRIEF_BY_STYLE[policy.videoStyle];
+  const colorTier: ColorTier = brief.color === "tier" ? (policy.isPremium ? "premium" : "standard") : brief.color;
+  const vidInstructions = composeVideoInstructions(effectiveStyle, vidSections, colorTier);
+  const fullFields = brief.shape === "full";
   // The one standard box is REQUIRED unless the order is a plain social reel
   // (Sep 1: those need nothing) or the intro script already carries the
   // photographer's words — the server gate demands their own text on every
   // other shape, so the page has to ask before the server refuses.
-  const notesRequired = !fullFields && !spec.minimalReel && !spec.requireIntro;
+  const notesRequired = brief.shape === "minimal" && !spec.minimalReel && !spec.requireIntro;
   // Which sections this order shows. The intro rides on top for agent-intro
   // packages whatever the tier: an intro ADD-ON on a premium bundle keeps that
   // bundle's full brief — the listing video is separately directed (review
@@ -905,14 +945,18 @@ export function UploadPortal({
       )}
 
       {/* ---- STEP: Video (only when a video is on the order). The step's
-          shape follows the PACKAGE (Jordan, Sep 1): premium packages show the
-          full fields and REQUIRE the script; agent-intro packages require the
-          typed intro script + just editing notes; everything else keeps the
-          vision + style flow. ---- */}
+          shape follows the resolved VIDEO STYLE (BRIEF_BY_STYLE): premium
+          styles show the full fields and REQUIRE the script; agent-intro reels
+          require the typed intro script + just editing notes; standard reels
+          and cinematics get the one box; monthly plans the fixed-style full
+          set. The subtitle names the video the order actually bought (Jordan,
+          Sep 2: "That should be shown as video type") + the camera it implies,
+          so a photographer sees WHY the form has this shape. ---- */}
       {policy.videoOrdered && (
         <StepCard
           n={stepNo++}
           title={spec.requireIntro && !fullFields ? "Video — agent intro script & notes" : "Video — script & your instructions"}
+          subtitle={`${videoStyleName(policy.videoStyle) ?? "Video"} · shot on ${colorTier === "premium" ? "S-Log3 / D-LogM" : "iPhone"}`}
           done={videoDone}
         >
           {script ? (
@@ -989,7 +1033,7 @@ export function UploadPortal({
                   Your instructions for the edit <span className="text-brand">— required</span>
                 </p>
                 <p className="mt-0.5 text-[13px] text-muted">
-                  Standard reels are cut from one box — the flow, the must-show moments, anything to avoid.
+                  Standard-tier videos are cut from one box — the flow, the must-show moments, anything to avoid.
                 </p>
               </>
             ) : spec.requireIntro && !fullFields ? (

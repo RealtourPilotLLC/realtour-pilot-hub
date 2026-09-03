@@ -30,7 +30,7 @@ export default async function ProductMappingPage() {
     orderBy: [{ title: "asc" }],
     select: {
       id: true, title: true, type: true, tags: true, description: true, minPrice: true, maxPrice: true,
-      mediaTypes: true, addonTypes: true, videoTier: true, videoQuantity: true, serviceKind: true, aryeoServiceable: true, mappedAt: true, mappedBy: true,
+      mediaTypes: true, addonTypes: true, videoTier: true, videoStyle: true, videoQuantity: true, serviceKind: true, aryeoServiceable: true, mappedAt: true, mappedBy: true,
     },
   });
 
@@ -57,6 +57,11 @@ export default async function ProductMappingPage() {
       tags: (() => { try { return p.tags ? (JSON.parse(p.tags) as string[]) : []; } catch { return []; } })(),
       addonTypes: (() => { try { return p.addonTypes ? (JSON.parse(p.addonTypes) as string[]) : []; } catch { return []; } })(),
       videoTier: p.videoTier,
+      // Style-guide key (Sep 2): the category alone lost the product name, so
+      // the card now also says WHICH video this is. Never suggested here — the
+      // card offers a one-tap suggestion instead, so nothing looks saved that
+      // isn't.
+      videoStyle: p.videoStyle,
       videoQuantity: p.videoQuantity,
       // Aryeo's own is_serviceable flag seeds the default until a human maps it.
       serviceKind: p.serviceKind ?? (p.aryeoServiceable === false || p.type === "ADDON" ? "addon" : "service"),
@@ -87,6 +92,11 @@ export default async function ProductMappingPage() {
     };
   }).filter((g) => g.main.length + g.addons.length > 0);
   const mappedCount = live.filter((c) => c.isMapped).length;
+  // Launch work queue: video products (and the Agent on Camera upgrade
+  // add-on) that still have no style — until they do, the editor brief can
+  // only call their video "Social Reel".
+  const hasVideoType = (c: ProductCard) => c.types.some((t) => t === "VIDEO" || t === "SOCIAL_REEL" || t === "DRONE_VIDEO");
+  const styleGap = live.filter((c) => (hasVideoType(c) || /agent\s*on\s*camera/i.test(c.title)) && !c.videoStyle).length;
 
   return (
     <div>
@@ -96,7 +106,7 @@ export default async function ProductMappingPage() {
       <PageHeader
         eyebrow="The source of truth for what each product produces"
         title="Product categories"
-        subtitle={`Live Aryeo catalog · ${mappedCount} of ${live.length} products mapped by hand — mapped products override every automatic parser, everywhere`}
+        subtitle={`Live Aryeo catalog · ${mappedCount} of ${live.length} products mapped by hand — mapped products override every automatic parser, everywhere${styleGap ? ` · ${styleGap} video product${styleGap === 1 ? "" : "s"} still need a video style` : ""}`}
       />
       <div className="mx-auto max-w-4xl space-y-8 p-4 pb-16 sm:p-6">
         {segments.map((seg) => (

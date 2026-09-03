@@ -60,7 +60,82 @@ export function addBusinessDays(from: Date, days: number): Date {
   return d;
 }
 
-type DueOpts = { monthlyContent?: boolean; premium?: boolean };
+type DueOpts = { monthlyContent?: boolean; premium?: boolean; sameDay?: boolean };
+
+// ---- Same-day rush add-ons (Jordan, Sep 2 2026: "notify the morning tower
+// about shoots with same-day delivery photos or floor plans") -----------------
+// Two ADDON catalog products sell the client the day back: "Same Day Photo
+// Delivery" and "Same Day 2D Floor-Plan Delivery". They are the ONE case where
+// a category is promised the SAME day as the shoot — by end of business — not
+// next morning. Until now nothing read them: the rushed media rode the
+// standard clock, so a $100 rush read "due tomorrow" on the QC card and the
+// tower never said a word.
+//
+// HOW AN ORDER IS KNOWN TO CARRY ONE — three sources, unioned, in order of
+// trust. None of them alone is enough:
+//   1. Deliverable.productTitle — the Aryeo order-item name the row came from,
+//      verbatim (shared contract, Sep 2 2026).
+//   2. Deliverable.label — rows written before productTitle existed kept the
+//      product name as their label while the product was unmapped (1526 James
+//      Rd, Jul 24: both add-ons verbatim). A MAPPED row reads "Photos" and
+//      can't say — this is the fallback for rows not yet backfilled.
+//   3. OrderItem.title — the stored line items (commercial truth; every job
+//      since the Jul 28 backfill). NOT a mere fallback: the order reconcile
+//      keeps ONE deliverable row per type, so the photo add-on (mapped
+//      ["PHOTOS"]) folds into the main Photos row and its name is gone from
+//      the deliverable side entirely. Only the line item still says it.
+// "Same Day Reschedule Fee" is a real product too — the words "same day" are
+// NOT the signal on their own; the media word after them is.
+export const SAME_DAY_PHOTOS_RE = /\bsame[-\s]?day\b[^,;|]*\bphoto/i;
+export const SAME_DAY_FLOORPLAN_RE = /\bsame[-\s]?day\b[^,;|]*\bfloor[-\s]?plan/i;
+
+export type SameDayAddOns = { photos: boolean; floorPlan: boolean };
+type RushRow = { label?: string | null; productTitle?: string | null };
+type RushLine = { title: string; isCanceled?: boolean };
+
+/** Which rush add-ons this order carries (see the three sources above). */
+export function sameDayAddOns(deliverables: RushRow[], orderItems?: RushLine[] | null): SameDayAddOns {
+  const names: string[] = [];
+  for (const d of deliverables) {
+    if (d.productTitle) names.push(d.productTitle);
+    if (d.label) names.push(d.label);
+  }
+  for (const it of orderItems ?? []) if (!it.isCanceled) names.push(it.title);
+  return {
+    photos: names.some((n) => SAME_DAY_PHOTOS_RE.test(n)),
+    floorPlan: names.some((n) => SAME_DAY_FLOORPLAN_RE.test(n)),
+  };
+}
+export const hasSameDayAddOn = (a: SameDayAddOns) => a.photos || a.floorPlan;
+
+// What each add-on pulls to the shoot day. Photos = the gallery, and drone
+// stills ship IN the gallery (dedupeTypes folds DRONE into PHOTOS for QC).
+// Twilight / staging / headshots stay on their own clocks — a twilight is shot
+// at dusk and staging is a 48h edit; neither is what "same day photos" buys.
+// Floor plan = the measured CubiCasa plan ONLY. A Zillow Showcase 3D tour is
+// not a floor plan (Jordan, Sep 2), so ZILLOW_3D / MATTERPORT_3D never move.
+const SAME_DAY_PHOTO_TYPES = ["PHOTOS", "DRONE"];
+/** The deliverable TYPES this order owes by end of the shoot day. */
+export function sameDayTypes(deliverables: RushRow[], orderItems?: RushLine[] | null): Set<string> {
+  const rush = sameDayAddOns(deliverables, orderItems);
+  const out = new Set<string>();
+  if (rush.photos) for (const t of SAME_DAY_PHOTO_TYPES) out.add(t);
+  if (rush.floorPlan) out.add("FLOORPLAN");
+  return out;
+}
+
+// "By end of business" = 5 PM ET on the shoot's ET day — the same hour
+// etEndOfDay / turnaround.ts dueAtFor already treat as the close of a promise
+// day. Floored at shoot + 3h so a late-afternoon shoot isn't "overdue" before
+// the photographer could physically have shot, uploaded and edited it — the
+// promise is the day, not a minute that precedes the work.
+export const SAME_DAY_EOB_HOUR = 17;
+const SAME_DAY_MIN_HOURS = 3;
+export function sameDayDue(shootDate: Date): Date {
+  const eob = etAt(etDayKey(shootDate), SAME_DAY_EOB_HOUR);
+  const floor = shootDate.getTime() + SAME_DAY_MIN_HOURS * HOUR;
+  return eob.getTime() < floor ? new Date(floor) : eob;
+}
 
 // Turnaround due for one deliverable from an anchor date.
 // The promise table is EDITABLE (Settings → Turnaround promises). Callers that
@@ -72,6 +147,9 @@ export function deliveryDueFrom(
   opts: DueOpts & { rules?: TurnaroundRules } = {},
 ): Date {
   const r = opts.rules;
+  // A same-day rush outranks every table below, INCLUDING the editable
+  // promises: the client bought a specific day, not a shorter hour count.
+  if (opts.sameDay) return sameDayDue(anchor);
   if (deliverableType && REEL_VIDEO_TYPES.has(deliverableType)) {
     if (opts.premium) return new Date(anchor.getTime() + (r?.premiumVideoHours ?? PREMIUM_HOURS) * HOUR);
     if (opts.monthlyContent) return addBusinessDays(anchor, r?.monthlyBusinessDays ?? 10);
@@ -104,12 +182,16 @@ const isPremiumLabel = (label?: string | null) =>
 // its ordered deliverables (premium reel/video pushes it out, monthly further).
 export function standardDeliveryDue(
   shootDate: Date,
-  deliverables: { type: string; label?: string | null }[],
+  deliverables: { type: string; label?: string | null; productTitle?: string | null }[],
   monthlyContent = false,
+  /** the stored Aryeo line items — the only place a same-day PHOTO rush still
+   *  shows once its row has folded into the main Photos row (see sameDayAddOns) */
+  orderItems?: { title: string; isCanceled?: boolean }[] | null,
 ): Date {
   if (deliverables.length === 0) return new Date(shootDate.getTime() + 48 * HOUR);
+  const rush = sameDayTypes(deliverables, orderItems);
   return deliverables
-    .map((d) => deliveryDueFrom(shootDate, d.type, { monthlyContent, premium: isPremiumLabel(d.label) }))
+    .map((d) => deliveryDueFrom(shootDate, d.type, { monthlyContent, premium: isPremiumLabel(d.label), sameDay: rush.has(d.type) }))
     .reduce((a, b) => (a > b ? a : b));
 }
 
@@ -263,7 +345,9 @@ export function actionableQcCount(
  *  job owes next, as distinct from when the whole job is late. */
 export function nextPendingDue(p: {
   shootDate: Date | null;
-  deliverables: { type: string; label?: string | null }[];
+  deliverables: { type: string; label?: string | null; productTitle?: string | null }[];
+  /** stored Aryeo line items — same-day rush detection (see sameDayAddOns) */
+  orderItems?: { title: string; isCanceled?: boolean }[] | null;
   statusEvidence?: string | null;
   monthlyContent?: boolean;
   turnarounds?: TurnaroundRules;
@@ -271,6 +355,9 @@ export function nextPendingDue(p: {
   const anchor = p.shootDate ?? new Date();
   const present = new Set(parseEvidence(p.statusEvidence)?.present ?? []);
   const premiumTypes = new Set(p.deliverables.filter((d) => isPremiumLabel(d.label)).map((d) => d.type));
+  // Rushed types are keyed on the raw type; dedupeTypes folds DRONE into
+  // PHOTOS, and PHOTOS is in the rushed set whenever DRONE is.
+  const rushTypes = sameDayTypes(p.deliverables, p.orderItems);
   const pending = dedupeTypes(p.deliverables).filter((t) => {
     const lbl = TYPE_CATEGORY_LABEL[t];
     return !lbl || !present.has(lbl);
@@ -281,6 +368,7 @@ export function nextPendingDue(p: {
     at: deliveryDueFrom(anchor, t, {
       monthlyContent: !!p.monthlyContent,
       premium: premiumTypes.has(t),
+      sameDay: rushTypes.has(t),
       rules: p.turnarounds,
     }).getTime(),
   }));
@@ -296,7 +384,9 @@ function specsForProject(p: {
   status: string;
   title: string;
   shootDate: Date | null;
-  deliverables: { type: string; label?: string | null }[];
+  deliverables: { type: string; label?: string | null; productTitle?: string | null }[];
+  /** stored Aryeo line items — same-day rush detection (see sameDayAddOns) */
+  orderItems?: { title: string; isCanceled?: boolean }[] | null;
   statusEvidence?: string | null;
   monthlyContent?: boolean;
   // Culling budget inputs — size the "gallery is over target, cull it" nudge on
@@ -320,7 +410,10 @@ function specsForProject(p: {
   const monthly = !!p.monthlyContent;
   // Which deliverable types are premium (3-4 day reel/video) on this project.
   const premiumTypes = new Set(p.deliverables.filter((d) => isPremiumLabel(d.label)).map((d) => d.type));
-  const dueOpts = (type: string) => ({ monthlyContent: monthly, premium: premiumTypes.has(type), rules: p.turnarounds });
+  // Same-day rush add-ons pull PHOTOS(+DRONE) / FLOORPLAN to end of the shoot
+  // day; qcTypes are already DRONE→PHOTOS-folded, and PHOTOS is in the set.
+  const rushTypes = sameDayTypes(p.deliverables, p.orderItems);
+  const dueOpts = (type: string) => ({ monthlyContent: monthly, premium: premiumTypes.has(type), sameDay: rushTypes.has(type), rules: p.turnarounds });
 
   // What's already live on Aryeo (from the status cross-check). Used to retire
   // QA / "deliver gallery" work for a category the moment it's delivered — even
@@ -2207,7 +2300,10 @@ export async function generateTasksForActiveProjects(): Promise<{ created: numbe
     // An order that 404s in Aryeo is a human decision, not a task mint.
     where: { status: { in: ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW", "REVISION"] }, aryeoMissingAt: null },
     include: {
-      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
+      // productTitle + the live line items: how the SLA engine sees a same-day
+      // rush add-on (sameDayAddOns explains why the row alone can't say).
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, productTitle: true } },
+      orderItems: { where: { isCanceled: false }, select: { title: true } },
       // segment drives the VIP extra-pass ticks on the guided QC checklist.
       client: { select: { id: true, name: true, socialClient: true, segment: true } },
       photographer: { select: { name: true } },
@@ -2232,7 +2328,9 @@ export async function generateTasksForProject(projectId: string): Promise<number
   const p = await prisma.project.findUnique({
     where: { id: projectId },
     include: {
-      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
+      // Same shape as generateTasks above — the same-day rush needs both.
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, productTitle: true } },
+      orderItems: { where: { isCanceled: false }, select: { title: true } },
       // segment drives the VIP extra-pass ticks on the guided QC checklist.
       client: { select: { id: true, name: true, socialClient: true, segment: true } },
       photographer: { select: { name: true } },
@@ -2253,7 +2351,9 @@ type TaskProject = {
   // own notes instead of guessing (Jordan, Sep 1).
   removalNotes: string | null; shotOrderNotes: string | null;
   cullingConfirmedAt: Date | null; debriefSubmittedAt: Date | null; videoInstructions: string | null;
-  deliverables: { type: string; label: string | null }[];
+  deliverables: { type: string; label: string | null; productTitle?: string | null }[];
+  /** live Aryeo line items (isCanceled filtered at the query) — same-day rush */
+  orderItems?: { title: string }[];
   client: { id: string; name: string | null; socialClient: boolean; segment: string | null };
   photographer: { name: string } | null;
 };
@@ -2364,6 +2464,7 @@ async function syncOneProjectTasks(
     title: p.title,
     shootDate: p.shootDate,
     deliverables: p.deliverables,
+    orderItems: p.orderItems,
     statusEvidence: p.statusEvidence,
     // PROJECT-level: a listing shoot for a social-plan client is NOT monthly
     // content — the client flag alone gave listing jobs the 7–10-day QC copy

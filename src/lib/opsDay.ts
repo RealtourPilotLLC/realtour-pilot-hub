@@ -9,7 +9,7 @@ import { cleanEmailBody } from "@/lib/commsBoard";
 import { isMonthlyContentJob, monthlyVideoQuota } from "@/lib/pipeline";
 import { cleanBrief, parseShootBrief } from "@/lib/shoot";
 import { NOTHING_TO_REMOVE_SENTINEL, isFieldFlag } from "@/lib/debrief";
-import { actionableQcCount, nextPendingDue } from "@/lib/tasks";
+import { actionableQcCount, nextPendingDue, sameDayAddOns, hasSameDayAddOn, sameDayDue } from "@/lib/tasks";
 import { turnaroundRules } from "@/lib/settings";
 import type { StatusEvidence } from "@/lib/projectStatus";
 import { videoStatesFor, videoReviewBoard, type ProjectVideoState, type VideoCutState } from "@/lib/reviewCuts";
@@ -157,6 +157,14 @@ export type OpsShoot = {
   gaps: string[];
   videoOrdered: boolean;
   droneOrdered: boolean;
+  /** The order carries a same-day rush add-on ("Same Day Photo Delivery" /
+   *  "Same Day 2D Floor-Plan Delivery") — the client paid to have that media
+   *  TODAY, by end of business, not next morning. null = no rush. dueISO is
+   *  the SLA engine's own answer (tasks.ts sameDayDue), so the card, the QC
+   *  card and the task due date all say the same hour (Jordan, Sep 2: "notify
+   *  the morning tower about shoots with same-day delivery photos or floor
+   *  plans"). */
+  sameDay: { photos: boolean; floorPlan: boolean; dueISO: string | null } | null;
   debriefSubmitted: boolean;
   aryeoListingId: string | null;
   weather: ShootWeather | null;
@@ -291,7 +299,12 @@ const SHOOT_SELECT = {
   lat: true, lng: true, aryeoListingId: true, clientId: true,
   photographer: { select: { name: true } },
   client: { select: { name: true } },
-  deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
+  // productTitle + the live line items feed the same-day rush flag. The line
+  // items are not optional: the order reconcile keeps one deliverable row per
+  // type, so "Same Day Photo Delivery" folds into the Photos row and only the
+  // OrderItem still carries its name (tasks.ts sameDayAddOns).
+  deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, productTitle: true } },
+  orderItems: { where: { isCanceled: false }, select: { title: true } },
   activities: { where: { type: "SPECIAL_REQUEST" as const }, select: { type: true, body: true } },
   appointments: { select: { description: true } },
 } as const;
@@ -301,7 +314,8 @@ type ShootRowInput = {
   lat: number | null; lng: number | null; aryeoListingId: string | null; clientId: string | null;
   photographer: { name: string } | null;
   client: { name: string };
-  deliverables: { type: string; label: string | null }[];
+  deliverables: { type: string; label: string | null; productTitle?: string | null }[];
+  orderItems: { title: string }[];
   activities: { type: string; body: string }[];
   appointments: { description: string | null }[];
 };
@@ -328,6 +342,13 @@ async function shootRow(
   const services = [...new Set(p.deliverables.map((d) => d.label ?? d.type))];
   const videoOrdered = p.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
   const droneOrdered = p.deliverables.some((d) => d.type === "DRONE");
+  // Same-day rush: the ONE order signal that changes what "today" means for
+  // this shoot. Detected the way the SLA engine detects it, dated by the SLA
+  // engine, so the tower never promises an hour the QC card disagrees with.
+  const rush = sameDayAddOns(p.deliverables, p.orderItems);
+  const sameDay = hasSameDayAddOn(rush)
+    ? { ...rush, dueISO: p.shootDate ? sameDayDue(p.shootDate).toISOString() : null }
+    : null;
   const special = p.activities.filter((a) => a.type === "SPECIAL_REQUEST").map((a) => a.body);
   const rawBrief = p.appointments.map((a) => a.description?.trim()).find(Boolean) ?? null;
   const access = parseAccessBrief(rawBrief);
@@ -368,6 +389,7 @@ async function shootRow(
     gaps,
     videoOrdered,
     droneOrdered,
+    sameDay,
     debriefSubmitted: !!p.debriefSubmittedAt,
     aryeoListingId: p.aryeoListingId,
     weather,
@@ -432,7 +454,9 @@ export async function buildOpsDay(): Promise<OpsDay> {
               title: true, shootDate: true, shotOrderNotes: true, removalNotes: true, videoInstructions: true,
               debriefSubmittedAt: true, statusEvidence: true, aryeoListingId: true,
               photographer: { select: { name: true } },
-              deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, notCompletedReason: true, notes: true } },
+              deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, productTitle: true, notCompletedReason: true, notes: true } },
+              // Same-day rush add-ons live on the line items (see SHOOT_SELECT).
+              orderItems: { where: { isCanceled: false }, select: { title: true } },
               packageName: true,
               videosFilmed: true,
               // The rest of the photographer's wrap-up. Jordan (Sep 1): every
@@ -528,6 +552,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
       ? nextPendingDue({
           shootDate: pr.shootDate,
           deliverables: pr.deliverables ?? [],
+          orderItems: pr.orderItems ?? [],
           statusEvidence: pr.statusEvidence,
           monthlyContent: monthly,
           turnarounds,

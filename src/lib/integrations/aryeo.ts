@@ -457,14 +457,126 @@ const COMPONENT_RULES: [RegExp, DeliverableType, string][] = [
   [/video|cinematic|walkthrough/i, "VIDEO", "Video"],
 ];
 
-export type ParsedDeliverable = { type: DeliverableType; label: string; quantity: number };
+// One order line → one row per media type. `type` is the CATEGORY the
+// pipeline tracks; the last two fields are the PRODUCT IDENTITY the category
+// discards (Sep 2 2026 — "Standard Reel with Agent Intro" was landing as a
+// SOCIAL_REEL labelled "Social Reel", and every downstream surface read the
+// wrong video type off it). Both are written to Deliverable at sync.
+export type ParsedDeliverable = {
+  type: DeliverableType;
+  label: string;
+  quantity: number;
+  /** the Aryeo order-item title this row came from, verbatim */
+  productTitle: string;
+  /** VIDEO_STYLE key on VIDEO / SOCIAL_REEL rows (drone video included), null elsewhere */
+  videoStyle: VideoStyleKey | null;
+  /** Settings → Products calls the product an ADDON — a merged row keeps the MAIN product's title (stripped before rows are written) */
+  addon?: boolean;
+};
+
+// ---------------------------------------------------------------------------
+// VIDEO STYLE — the Style Guide type a video row is cut as (VIDEO_TYPES in
+// src/lib/videoStyles.ts), keyed STABLE so the database never stores a display
+// name. Shared contract with every reader — editor brief "Edit type", cuts to
+// deliver, the upload portal's brief shape, the Style Guide reference: these
+// six keys and nothing else. `premium_cinematic` has no Style Guide entry yet;
+// it is the premium HORIZONTAL video (Premium Cinematic Video, Premium
+// Package's video) — readers fall back to the premium-reel treatment until the
+// guide grows one.
+// ---------------------------------------------------------------------------
+export const VIDEO_STYLE = {
+  standard_reel: "Standard Reel",
+  standard_reel_agent_intro: "Standard Reel with Agent Intro",
+  standard_cinematic: "Standard Cinematic Video",
+  personal_branding: "Personal Branding Reel",
+  premium_social_reel: "Premium Social Media Reel",
+  premium_cinematic: "Premium Cinematic Video",
+} as const;
+export type VideoStyleKey = keyof typeof VIDEO_STYLE;
+export const isVideoStyleKey = (s: unknown): s is VideoStyleKey => typeof s === "string" && s in VIDEO_STYLE;
+
+// Mapping-level video kinds (DRONE_VIDEO is translated to a VIDEO row at emit).
+const VIDEOISH = new Set<string>(["VIDEO", "SOCIAL_REEL", "DRONE_VIDEO"]);
+
+// An agent-on-camera line: the product itself ("Standard Reel with Agent
+// Intro", "Photography and Standard Reel w/ Agent intro") or the add-on that
+// upgrades a plain standard reel ("Agent on Camera", "Agent on Camera Intro",
+// "Agent Outro Add-on (Standard Reel)"). A NEGATION is not an order for one —
+// "Premium Social Media Reel (No Agent on camera or Exteriors)" is live data.
+// (pipeline.ts keeps its own AGENT_INTRO_RE for the upload-portal step; this
+// one also accepts "outro" and "w/ agent".)
+const AGENT_INTRO_RE = /agent[-\s]+(on[-\s]+cam(era)?|intro|outro)|\bw\/\s*agent\b/i;
+const NO_AGENT_RE = /\b(no|without)\s+agent\b/i;
+export const isAgentIntroTitle = (title: string | null | undefined): boolean =>
+  !!title && AGENT_INTRO_RE.test(title) && !NO_AGENT_RE.test(title);
+
+/**
+ * The style a video row is cut as. Precedence: the human-set Product.videoStyle
+ * → the product's tier (personal_branding / premium / standard; when no tier
+ * is known the name decides, same tests the label engines use) → the name.
+ * Inside a tier the ROW TYPE decides reel vs cinematic: a SOCIAL_REEL is the
+ * vertical reel, a VIDEO row (drone video included) is the horizontal
+ * cinematic video — the two shapes the Style Guide keeps separate types for.
+ * "Cinematic" / "horizontal" in the name forces cinematic either way; an
+ * agent-on-camera name forces the agent-intro type on a standard product
+ * (the intro script is the thing the brief must demand). Non-video: null.
+ */
+export function resolveVideoStyle(
+  type: string,
+  opts: { style?: string | null; tier?: string | null; title?: string | null },
+): VideoStyleKey | null {
+  if (!VIDEOISH.has(type)) return null;
+  if (isVideoStyleKey(opts.style)) return opts.style;
+  const title = opts.title ?? "";
+  const tier =
+    opts.tier ?? (MONTHLY_PLAN_RE.test(title) ? "personal_branding" : isPremiumProduct(title) ? "premium" : "standard");
+  if (tier === "personal_branding") return "personal_branding";
+  const cinematic = type !== "SOCIAL_REEL" || /cinematic|horizontal/i.test(title);
+  if (tier === "premium") return cinematic ? "premium_cinematic" : "premium_social_reel";
+  if (isAgentIntroTitle(title)) return "standard_reel_agent_intro";
+  return cinematic ? "standard_cinematic" : "standard_reel";
+}
+
+// Specificity of a style, for the dedupe tie-break below (a plain standard
+// reel must lose to the agent-intro reel bought on the same order).
+const STYLE_RANK: Record<string, number> = {
+  personal_branding: 4, premium_cinematic: 3, premium_social_reel: 3,
+  standard_reel_agent_intro: 2, standard_cinematic: 1, standard_reel: 1,
+};
+
+// May a video row be LABELLED with its verbatim product title? Only when the
+// label-reading engines — projectStatus.videoTier() (PREMIUM_VIDEO_RE +
+// STANDARD_VETO_RE, mirrored here because that module is server-only and
+// imports pipeline), isMonthlyContentJob(), and dedupe's rank — would read
+// the SAME tier off the title that the human mapping says. Otherwise the
+// tier-generic label stays, so an SLA or editor lane can never flip on a
+// name: "STR PRO BUNDLE" is mapped premium but doesn't say so; "STR Luxury
+// Cinematic Video Tour" is mapped standard but reads premium.
+const LABEL_PREMIUM_RE = /premium|influencer|cinematic|luxury|signature|elite|flagship/i;
+const LABEL_STANDARD_VETO_RE = /\bstandard\b/i;
+function labelReadsTier(title: string, tier: "standard" | "premium" | "personal_branding"): boolean {
+  const monthly = MONTHLY_PLAN_RE.test(title);
+  const readsPremium = LABEL_PREMIUM_RE.test(title) && !LABEL_STANDARD_VETO_RE.test(title);
+  if (tier === "personal_branding") return monthly;
+  if (tier === "premium") return isPremiumProduct(title) && !monthly;
+  return !readsPremium && !monthly;
+}
 
 // Collapse a project's parsed deliverables to ONE per type. Several order items
 // can each mention the same deliverable in their descriptions (e.g. a Zillow
 // add-on and a package both list "photos" + "floor plan", and an extra item like
 // "Missing Office Photo" adds another photos) — without this they'd show up two
 // or three times. One deliverable per type is what we QA/deliver/track.
-export function dedupeParsedDeliverables(parsed: ParsedDeliverable[]): ParsedDeliverable[] {
+//
+// IDENTITY RULE (Sep 2 2026): the dedupe key stays the TYPE — reconcile matches
+// rows by type and updates labels IN PLACE, so a row's id (and with it every
+// cut key `${deliverableId}:${slot}`, upload, verdict and note) survives a
+// relabel. When two lines land on one type, label + productTitle + videoStyle
+// travel TOGETHER from the line whose label ranks highest (they describe one
+// product). `itemTitles` — every live line on the order, when the caller has
+// them — lets the order-level upgrade below see an add-on whose own mapping
+// produces no row.
+export function dedupeParsedDeliverables(parsed: ParsedDeliverable[], itemTitles: string[] = []): ParsedDeliverable[] {
   const byType = new Map<DeliverableType, ParsedDeliverable>();
   // How much a label TELLS US, so first-wins can't erase the signal: a premium
   // or monthly-plan label must survive a generic "Video" from another line
@@ -476,15 +588,37 @@ export function dedupeParsedDeliverables(parsed: ParsedDeliverable[]): ParsedDel
   // SLA + routing signal, which a premium word alone can't restore.
   const rank = (label: string | null | undefined) =>
     MONTHLY_PLAN_RE.test(label ?? "") ? 3 : isPremiumProduct(label ?? "") ? 2 : 1;
+  // Tie-breaks inside one label rank, in order: the more specific video style
+  // ("Photography and Standard Reel" and "Standard Reel with Agent Intro" both
+  // rank 1 — the agent-intro one must name the row), then the MAIN product
+  // over an add-on (a package's photos row says the package, not "Same Day
+  // Photo Delivery"), then first on the order — the pre-existing behaviour.
+  const score = (d: ParsedDeliverable) =>
+    rank(d.label) * 100 + (STYLE_RANK[d.videoStyle ?? ""] ?? 0) * 10 + (d.addon ? 0 : 1);
   for (const d of parsed) {
     const ex = byType.get(d.type);
     if (!ex) byType.set(d.type, { ...d });
     else {
       ex.quantity = Math.max(ex.quantity, d.quantity);
-      if (rank(d.label) > rank(ex.label)) ex.label = d.label;
+      if (score(d) > score(ex)) {
+        ex.label = d.label;
+        ex.productTitle = d.productTitle;
+        ex.videoStyle = d.videoStyle;
+        ex.addon = d.addon;
+      }
     }
   }
-  return [...byType.values()];
+  // ORDER-LEVEL signal only the whole order can answer: an "Agent on Camera"
+  // add-on bought beside a plain standard reel makes THAT reel the agent-intro
+  // type (Jordan: agent-intro reels get an intro script + notes; standard
+  // reels get no script). Premium and monthly rows are untouched. Seen through
+  // the lines' titles — so the add-on's mapping must keep producing a row
+  // (today: OTHER) unless the caller passes itemTitles.
+  const agentAddon = [...itemTitles, ...parsed.map((d) => d.productTitle)].some(isAgentIntroTitle);
+  return [...byType.values()].map(({ addon: _addon, ...row }) => ({
+    ...row,
+    videoStyle: agentAddon && row.videoStyle === "standard_reel" ? "standard_reel_agent_intro" : row.videoStyle,
+  }));
 }
 
 // Virtual / AI add-ons creatives are NOT paid a percentage on (no work on a
@@ -678,7 +812,17 @@ export function deliverablesForTitle(title: string, quantity = 1): ParsedDeliver
 // ---------------------------------------------------------------------------
 // types may include the mapping-level pseudo-types DRONE_PHOTO / DRONE_VIDEO,
 // translated to real deliverable rows at emit time.
-export type ManualMapping = { types: string[]; tier: "standard" | "premium" | "personal_branding" | null; addOn: boolean; addonTypes: Set<string>; videoQty: number | null };
+export type ManualMapping = {
+  types: string[];
+  tier: "standard" | "premium" | "personal_branding" | null;
+  addOn: boolean;
+  addonTypes: Set<string>;
+  videoQty: number | null;
+  /** human-set VIDEO_STYLE key (Product.videoStyle); null = derive from tier + name */
+  style: string | null;
+  /** Product.type — MAIN | ADDON | LEGACY; an ADDON never names a merged row over the MAIN product */
+  catalogType: string | null;
+};
 let MANUAL_MAP: Map<string, ManualMapping> | null = null;
 let manualLoadedAt = 0;
 
@@ -688,7 +832,7 @@ export async function loadManualProductMap(force = false): Promise<void> {
     const { prisma } = await import("@/lib/prisma");
     const rows = await prisma.product.findMany({
       where: { mediaTypes: { not: null } },
-      select: { title: true, mediaTypes: true, videoTier: true, serviceKind: true, addonTypes: true, videoQuantity: true },
+      select: { title: true, type: true, mediaTypes: true, videoTier: true, videoStyle: true, serviceKind: true, addonTypes: true, videoQuantity: true },
     });
     const map = new Map<string, ManualMapping>();
     for (const r of rows) {
@@ -703,6 +847,8 @@ export async function loadManualProductMap(force = false): Promise<void> {
           addOn: r.serviceKind === "addon",
           addonTypes: new Set(addonList),
           videoQty: r.videoQuantity ?? null,
+          style: r.videoStyle ?? null,
+          catalogType: r.type ?? null,
         });
       } catch { /* one bad row must not break the map */ }
     }
@@ -730,11 +876,18 @@ function manualMappingForTitle(title: string): ManualMapping | undefined {
 // engine reads from the label text: premium → "Premium <Type>"; personal
 // branding keeps the plan TITLE (suffixed so MONTHLY_PLAN_RE always matches
 // even when the product name itself doesn't say "monthly").
-function manualLabel(m: ManualMapping, type: DeliverableType, title: string): string {
+function manualLabel(m: ManualMapping, type: DeliverableType, title: string, singleVideo: boolean): string {
   const videoish = type === "VIDEO" || type === "SOCIAL_REEL";
   if (videoish && m.tier === "personal_branding") {
     return MONTHLY_PLAN_RE.test(title) ? title : `${title} · Monthly Content`;
   }
+  // The real product name (Sep 2 2026 — "Standard Reel with Agent Intro" was
+  // labelled "Social Reel", and the editor brief's Edit type read that): when
+  // it is the ONLY video the product produces and the label-reading engines
+  // agree with the mapping about its tier (labelReadsTier). Bundles with a
+  // video AND a reel keep the tier-generic labels — the bundle name can't tell
+  // the rows apart; productTitle carries it.
+  if (videoish && singleVideo && labelReadsTier(title, m.tier ?? "standard")) return title;
   if (videoish && m.tier === "premium") return `Premium ${TYPE_LABEL[type]}`;
   return TYPE_LABEL[type] ?? title;
 }
@@ -769,7 +922,28 @@ function withoutZillowFloorPlan(title: string, parsed: ParsedDeliverable[]): Par
 /** One order line → the deliverables it owes. */
 export function itemToDeliverables(item: AryeoOrderItem): ParsedDeliverable[] {
   const title = (item.title || item.subtitle || item.sub_title || "Item").trim();
-  return withoutZillowFloorPlan(title, deliverablesForItem(item));
+  // Lines the catalogue doesn't know (static map / keyword parser) can still
+  // say they are an add-on in their name — "Agent Outro Add-on (Standard
+  // Reel)" must not out-name the "Standard Reel" it was bought for (dedupe's
+  // MAIN-over-add-on tie-break).
+  const addon = /\badd-?on\b/i.test(title);
+  return withoutZillowFloorPlan(title, deliverablesForItem(item)).map((d) => (d.addon === undefined ? { ...d, addon } : d));
+}
+
+/**
+ * Everything an ORDER owes: its live (non-canceled) lines → rows, collapsed to
+ * one per type, with the order-level signals only the whole order can answer
+ * (an "Agent on Camera" add-on upgrading the standard reel it was bought for —
+ * passed as titles so it counts even if its own mapping produces no row).
+ * The one entry point for "what does this order owe" — import, reconcile and
+ * every re-derive go through it so they can never disagree.
+ */
+export function orderDeliverables(items: AryeoOrderItem[] | null | undefined): ParsedDeliverable[] {
+  const live = (items ?? []).filter((it) => !it.is_canceled);
+  return dedupeParsedDeliverables(
+    live.flatMap(itemToDeliverables),
+    live.map((it) => (it.title || it.sub_title || it.subtitle || "").trim()).filter(Boolean),
+  );
 }
 
 function deliverablesForItem(item: AryeoOrderItem): ParsedDeliverable[] {
@@ -782,18 +956,28 @@ function deliverablesForItem(item: AryeoOrderItem): ParsedDeliverable[] {
   if (manual) {
     // Hand-set videos-per-order multiplies the line quantity (Accelerator=4).
     const vidQty = (manual.videoQty && manual.videoQty > 0 ? manual.videoQty : 1) * qty;
+    // The identity every row keeps beside its category (see ParsedDeliverable):
+    // the verbatim line title, whether the catalogue calls the product an
+    // add-on, and — video rows only — the Style Guide type, human-set on the
+    // product or derived from its tier + name.
+    const identity = (raw: string) => ({
+      productTitle: title,
+      addon: manual.catalogType === "ADDON",
+      videoStyle: resolveVideoStyle(raw, { style: manual.style, tier: manual.tier, title }),
+    });
+    const singleVideo = manual.types.filter((t) => VIDEOISH.has(t)).length === 1;
     return manual.types.map((raw) => {
       // Drone splits at the mapping level: photos stay a DRONE capture
       // deliverable (photo pipeline); drone VIDEO is a real VIDEO deliverable
       // (editor queue, video SLA) labeled so every engine reads it.
-      if (raw === "DRONE_PHOTO") return { type: "DRONE" as DeliverableType, label: "Drone Photos", quantity: qty };
+      if (raw === "DRONE_PHOTO") return { type: "DRONE" as DeliverableType, label: "Drone Photos", quantity: qty, ...identity(raw) };
       if (raw === "DRONE_VIDEO") {
         const label = manual.tier === "premium" ? "Premium Drone Video" : manual.tier === "personal_branding" ? (MONTHLY_PLAN_RE.test(title) ? title : `${title} · Monthly Content`) : "Drone Video";
-        return { type: "VIDEO" as DeliverableType, label, quantity: vidQty };
+        return { type: "VIDEO" as DeliverableType, label, quantity: vidQty, ...identity(raw) };
       }
       const type = raw as DeliverableType;
       const videoish = type === "VIDEO" || type === "SOCIAL_REEL";
-      return { type, label: manualLabel(manual, type, title), quantity: videoish ? vidQty : qty };
+      return { type, label: manualLabel(manual, type, title, singleVideo), quantity: videoish ? vidQty : qty, ...identity(raw) };
     });
   }
 
@@ -808,15 +992,24 @@ function deliverablesForItem(item: AryeoOrderItem): ParsedDeliverable[] {
     // premium word stays in it for videoTier), while "Premium Video" would
     // erase the monthly one — wrong SLA + lane for a premium-worded plan.
     const monthlyPlan = MONTHLY_PLAN_RE.test(title);
+    const tier = monthlyPlan ? "personal_branding" : premium ? "premium" : "standard";
+    // Same single-video title rule as the manual map (manualLabel) — the
+    // static map is only a fallback for products nobody has mapped yet, and
+    // the two must name rows the same way.
+    const singleVideo = mapped.filter((t) => VIDEOISH.has(t)).length === 1;
     return mapped.map((type) => ({
       type,
       label:
         monthlyPlan && (type === "SOCIAL_REEL" || type === "VIDEO")
           ? title
-          : premium && (type === "SOCIAL_REEL" || type === "VIDEO")
-            ? `Premium ${TYPE_LABEL[type]}`
-            : (TYPE_LABEL[type] ?? title),
+          : (type === "SOCIAL_REEL" || type === "VIDEO") && singleVideo && labelReadsTier(title, tier)
+            ? title
+            : premium && (type === "SOCIAL_REEL" || type === "VIDEO")
+              ? `Premium ${TYPE_LABEL[type]}`
+              : (TYPE_LABEL[type] ?? title),
       quantity: qty,
+      productTitle: title,
+      videoStyle: resolveVideoStyle(type, { tier, title }),
     }));
   }
   const text = `${item.title ?? ""} ${item.sub_title ?? item.subtitle ?? ""} ${item.description ?? ""}`;
@@ -843,16 +1036,19 @@ function deliverablesForItem(item: AryeoOrderItem): ParsedDeliverable[] {
   // label so the monthly detection reads it.
   if (found.length === 0) {
     if (MONTHLY_PLAN_RE.test(title) || /\bfilm\s*session\b/i.test(title)) {
-      return [{ type: "VIDEO", label: title, quantity: qty }];
+      return [{ type: "VIDEO", label: title, quantity: qty, productTitle: title, videoStyle: resolveVideoStyle("VIDEO", { title }) }];
     }
     // A photo package/bundle (or interior/exterior-only coverage) is, at its
     // core, photography → PHOTOS (AutoHDR). Fees/travel/misc → OTHER.
-    if (/package|bundle|interior|exterior/i.test(title)) return [{ type: "PHOTOS", label: title, quantity: qty }];
-    return [{ type: deliverableType(title), label: title, quantity: qty }];
+    if (/package|bundle|interior|exterior/i.test(title)) return [{ type: "PHOTOS", label: title, quantity: qty, productTitle: title, videoStyle: null }];
+    const type = deliverableType(title);
+    return [{ type, label: title, quantity: qty, productTitle: title, videoStyle: resolveVideoStyle(type, { title }) }];
   }
 
   // Single-service item → keep the real product name as the label.
-  if (found.length === 1) return [{ type: found[0].type, label: title, quantity: qty }];
+  if (found.length === 1) {
+    return [{ type: found[0].type, label: title, quantity: qty, productTitle: title, videoStyle: resolveVideoStyle(found[0].type, { title }) }];
+  }
 
   // Multi-service bundle → one deliverable per detected component. The video
   // components must keep the title's tier signal: a premium/monthly product
@@ -869,6 +1065,8 @@ function deliverablesForItem(item: AryeoOrderItem): ParsedDeliverable[] {
           ? `Premium ${TYPE_LABEL[c.type]}`
           : c.label,
     quantity: qty,
+    productTitle: title,
+    videoStyle: resolveVideoStyle(c.type, { title }),
   }));
 }
 
@@ -1339,7 +1537,7 @@ export async function syncAryeoOrders(
             shootDate: shootDate ? new Date(shootDate) : null,
             deliveredAt: order.fulfilled_at ? new Date(order.fulfilled_at) : null,
             deliverables: {
-              create: dedupeParsedDeliverables(items.filter((it) => !it.is_canceled).flatMap(itemToDeliverables)),
+              create: orderDeliverables(items),
             },
             // The real line items, kept verbatim beside the production view —
             // this is the only place the actual product names and per-item
@@ -1430,13 +1628,12 @@ export async function reconcileDeliverablesToOrder(
   order: AryeoOrder,
 ): Promise<{ changed: boolean; retired: string[]; restored: string[]; added: string[]; relabeled: string[] }> {
   const out = { changed: false, retired: [] as string[], restored: [] as string[], added: [] as string[], relabeled: [] as string[] };
-  const items = (order.items ?? []).filter((it) => !it.is_canceled);
-  const parsed = dedupeParsedDeliverables(items.flatMap(itemToDeliverables));
+  const parsed = orderDeliverables(order.items);
   if (parsed.length === 0) return out;
 
   const rows = await prisma.deliverable.findMany({
     where: { projectId },
-    select: { id: true, type: true, label: true, quantity: true, status: true, manual: true, removedFromOrderAt: true, uploadedAt: true },
+    select: { id: true, type: true, label: true, quantity: true, status: true, manual: true, removedFromOrderAt: true, uploadedAt: true, productTitle: true, videoStyle: true },
   });
   const want = new Map(parsed.map((p) => [p.type, p]));
   const orderNo = order.number ?? order.id ?? "?";
@@ -1469,17 +1666,28 @@ export async function reconcileDeliverablesToOrder(
         where: { id: r.id },
         data: {
           removedFromOrderAt: null, removedFromOrderNote: null,
-          label: w.label, quantity: w.quantity,
+          label: w.label, quantity: w.quantity, productTitle: w.productTitle, videoStyle: w.videoStyle,
           ...(r.status === "DONE" ? { status: "PENDING" } : {}),
         },
       });
       out.restored.push(w.label);
-    } else if ((r.label ?? "") !== w.label || r.quantity < w.quantity) {
-      // Quantity only ever RISES here: the status sweep lifts a monthly plan's
-      // video row to the plan quota (Starter 2 / Accelerator 4 / Pro 8) while
-      // the order line says 1 — writing 1 back would ping-pong hourly.
-      await prisma.deliverable.update({ where: { id: r.id }, data: { label: w.label, quantity: Math.max(r.quantity, w.quantity) } });
-      out.relabeled.push(w.label);
+    } else {
+      const relabel = (r.label ?? "") !== w.label || r.quantity < w.quantity;
+      // Product identity (Sep 2 2026) follows the same in-place rule — the
+      // row's id, and every cut/upload/verdict keyed on it, never changes.
+      const identity = (r.productTitle ?? null) !== w.productTitle || (r.videoStyle ?? null) !== w.videoStyle;
+      if (relabel || identity) {
+        // Quantity only ever RISES here: the status sweep lifts a monthly plan's
+        // video row to the plan quota (Starter 2 / Accelerator 4 / Pro 8) while
+        // the order line says 1 — writing 1 back would ping-pong hourly.
+        await prisma.deliverable.update({
+          where: { id: r.id },
+          data: { label: w.label, quantity: Math.max(r.quantity, w.quantity), productTitle: w.productTitle, videoStyle: w.videoStyle },
+        });
+        // Identity alone — a title/style filled in under a label that already
+        // matched — is a silent repair, not an "order changed" event.
+        if (relabel) out.relabeled.push(w.label);
+      }
     }
     want.delete(r.type);
   }
@@ -1489,7 +1697,7 @@ export async function reconcileDeliverablesToOrder(
   for (const [, w] of want) {
     if (rows.some((r) => r.type === w.type)) continue;
     await prisma.deliverable.create({
-      data: { projectId, type: w.type, label: w.label, quantity: w.quantity, status: "PENDING" },
+      data: { projectId, type: w.type, label: w.label, quantity: w.quantity, status: "PENDING", productTitle: w.productTitle, videoStyle: w.videoStyle },
     });
     out.added.push(w.label);
   }
@@ -3017,7 +3225,7 @@ export async function reclassifyAryeoDeliverables(): Promise<{
 
   let changed = 0, before = 0, after = 0;
   const rebuild = async (proj: Proj, items: AryeoOrderItem[]) => {
-    const parsed = dedupeParsedDeliverables(items.filter((it) => !it.is_canceled).flatMap(itemToDeliverables));
+    const parsed = orderDeliverables(items);
     if (parsed.length === 0) return;
     const prior = new Map<string, string>();
     for (const d of proj.deliverables) {
@@ -3033,6 +3241,8 @@ export async function reclassifyAryeoDeliverables(): Promise<{
           type: p.type,
           label: p.label,
           quantity: p.quantity,
+          productTitle: p.productTitle,
+          videoStyle: p.videoStyle,
           status: (proj.status === "DELIVERED" ? "DONE" : (prior.get(p.type) ?? "PENDING")) as DeliverableStatusValue,
         })),
       }),
@@ -3093,20 +3303,26 @@ export async function relabelPremiumDeliverables(): Promise<{ scanned: number; r
       aryeoOrderId: { not: null },
       deliverables: { some: { type: { in: ["VIDEO", "SOCIAL_REEL"] }, label: { startsWith: "Premium" } } },
     },
-    select: { id: true, aryeoOrderId: true, deliverables: { select: { id: true, type: true, label: true } } },
+    select: { id: true, aryeoOrderId: true, deliverables: { select: { id: true, type: true, label: true, productTitle: true, videoStyle: true } } },
   });
   let scanned = 0, relabeled = 0;
   for (const proj of projects) {
     scanned++;
     let order: AryeoOrder;
     try { order = await Aryeo.order(proj.aryeoOrderId!); } catch { continue; }
-    const parsed = dedupeParsedDeliverables((order.items ?? []).filter((it) => !it.is_canceled).flatMap(itemToDeliverables));
-    const want = new Map<string, string>();
-    for (const p of parsed) want.set(p.type, p.label);
+    const parsed = orderDeliverables(order.items);
+    const want = new Map<string, ParsedDeliverable>();
+    for (const p of parsed) want.set(p.type, p);
     for (const d of proj.deliverables) {
       const desired = want.get(d.type);
-      if (desired && desired !== d.label) {
-        await prisma.deliverable.update({ where: { id: d.id }, data: { label: desired } });
+      if (!desired) continue;
+      // Label and product identity move together, in place (same rule as the
+      // order reconcile) — the row's id is what the cuts hang off.
+      if (desired.label !== d.label || desired.productTitle !== (d.productTitle ?? null) || desired.videoStyle !== (d.videoStyle ?? null)) {
+        await prisma.deliverable.update({
+          where: { id: d.id },
+          data: { label: desired.label, productTitle: desired.productTitle, videoStyle: desired.videoStyle },
+        });
         relabeled++;
       }
     }

@@ -23,6 +23,11 @@ export type RoundRow = {
   note: string | null;
   createdAtISO: string;
   decidedAtISO: string | null;
+  /** Which cut this round belongs to — the cutSlots() label ("Personal
+      Branding Reel — Video 2 of 4"). Four "Round 1" lines on an Accelerator
+      job are unreadable without it; optional so a legacy folder row (no
+      deliverable/slot) still lists. */
+  cutLabel?: string | null;
 };
 
 // Where this VIDEO edit stands, from hard evidence. Priority order matters:
@@ -126,6 +131,7 @@ export function EditTracker({
   photographerName,
   song,
   rounds,
+  editProduct,
   revisionAsks,
   revisionAtISO,
   showSubmitAnchor,
@@ -133,11 +139,19 @@ export function EditTracker({
   stage: EditStage;
   statusLine: string;
   hadRevision: boolean;
-  /** The ACTUAL video product — videoTypeLabel() in lib/pipeline: the order
-      item's real name ("Premium Horizontal Video"), or the tier-decorated type
-      ("Standard Video") when Aryeo's label is generic. Never the bare word
-      "Video" (Jordan, Sep 2, on 208 N Adams St). */
+  /** The ACTUAL video type — videoTypeLabel() in lib/pipeline, which is the
+      Style Guide name resolved by videoStyleFor() ("Standard Reel with Agent
+      Intro", "Premium Cinematic Video", "Personal Branding Reel"; multi-type
+      jobs joined with " · "). Never the bare word "Video" (Jordan, Sep 2, on
+      208 N Adams St) and never the sync's category label ("Social Reel" —
+      626 Greycliffe: "That should be shown as video type"). */
   editType: string;
+  /** The ordered product's own name (Deliverable.productTitle — "Photography
+      and Standard Reel w/ Agent intro", "Video Accelerator - 4HR Session"),
+      shown small under the type when it says more than the type does. The
+      session length / plan name is real information for the editor; it just
+      isn't the TYPE. Omit or pass the type itself to hide it. */
+  editProduct?: string | null;
   dueISO: string | null;
   shootDateISO: string | null;
   photographerName: string | null;
@@ -174,7 +188,14 @@ export function EditTracker({
 
       {/* Order facts — the Luma card, minus anything money-shaped. */}
       <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-border pt-4 sm:grid-cols-3 lg:grid-cols-5">
-        <Fact label="Edit type">{editType}</Fact>
+        <Fact label="Edit type">
+          {editType}
+          {editProduct && editProduct.trim() && editProduct.trim() !== editType && (
+            <span className="block truncate text-xs font-normal text-muted" title={editProduct}>
+              {editProduct}
+            </span>
+          )}
+        </Fact>
         <Fact label="Deadline">
           {dueISO ? (
             <span className="inline-flex flex-wrap items-center gap-1.5">
@@ -242,6 +263,9 @@ export function EditTracker({
               const chip = ROUND_CHIP[r.status] ?? { text: r.status, cls: "bg-surface-2 text-muted" };
               return (
                 <li key={r.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
+                  {/* Multi-cut jobs: name the cut first, so four "Round 1"s read
+                      as four different videos rather than a repeated line. */}
+                  {r.cutLabel && <span className="max-w-64 truncate text-muted">{r.cutLabel} ·</span>}
                   <span className="font-medium">Round {r.round}</span>
                   <span className="text-xs text-muted-2">
                     {r.submittedByName ? `${r.submittedByName} · ` : ""}

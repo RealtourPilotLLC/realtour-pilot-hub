@@ -588,6 +588,23 @@ model Deliverable {
   projectId  String
   type       DeliverableType
   label      String? // optional override label
+  // PRODUCT IDENTITY (Sep 2 2026). `type` is a CATEGORY — mapping an Aryeo
+  // line through Settings → Products used to keep only that and a generic
+  // label ("Social Reel"), so "Standard Reel with Agent Intro" and "Photography
+  // and Standard Reel" became the same row and every downstream surface (editor
+  // brief, cuts to deliver, upload-portal brief shape, Style Guide reference)
+  // read the wrong thing (626 Greycliffe — Jordan: "That should be shown as
+  // video type"). These two columns keep the identity the category discards:
+  //   productTitle — the Aryeo order-item name this row came from, VERBATIM
+  //     (one row per type is the invariant, so a merged row keeps the title of
+  //     the item whose label won — the MAIN product over an add-on).
+  //   videoStyle — the Style Guide type, resolved at sync for VIDEO /
+  //     SOCIAL_REEL rows (drone video included), one of the VIDEO_STYLE keys in
+  //     integrations/aryeo.ts: standard_reel · standard_reel_agent_intro ·
+  //     standard_cinematic · personal_branding · premium_social_reel ·
+  //     premium_cinematic. Null on every non-video row.
+  productTitle String?
+  videoStyle   String?
   quantity   Int               @default(1)
   status     DeliverableStatus @default(PENDING)
   notes      String?
@@ -945,6 +962,14 @@ model Product {
   // parser at sync time (Aug 24: phantom floor plans / Faye's ghost video).
   mediaTypes  String? // JSON DeliverableType[] this product actually produces ([] = none, e.g. a fee)
   videoTier   String? // standard | premium | personal_branding (when a video/reel type is included)
+  // The Style Guide type this product's video is cut as (Sep 2 2026) — one of
+  // the VIDEO_STYLE keys in integrations/aryeo.ts (standard_reel ·
+  // standard_reel_agent_intro · standard_cinematic · personal_branding ·
+  // premium_social_reel · premium_cinematic). Set by a human on
+  // Settings → Products; when null the sync derives it from videoTier + the
+  // product name (an "Agent on Camera" add-on on the same order upgrades a
+  // standard reel to the agent-intro type).
+  videoStyle  String?
   serviceKind String? // service (done at the shoot) | addon (post-shoot work, e.g. photo editing)
   // Per-PART kinds: the subset of mediaTypes that are post-shoot add-on work
   // (a bundle's photos are shoot work while its virtual staging is editing).

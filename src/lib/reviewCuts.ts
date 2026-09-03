@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { dbx, DropboxError } from "@/lib/integrations/dropbox";
 import { actualFolderPaths, type FolderProject } from "@/lib/dropboxFolders";
+import { videoStyleFor } from "@/lib/videoStyles";
 
 // ---------------------------------------------------------------------------
 // Finished cuts → Review Room rows. ONE place that turns the files in a job's
@@ -297,10 +298,13 @@ export async function approvedDistinctCuts(projectId: string): Promise<number> {
 
 export type CutSlot = {
   deliverableId: string;
+  /** The Style Guide name of the cut — "Standard Reel with Agent Intro",
+   *  "Personal Branding Reel" — from videoStyleFor(), never the raw
+   *  Deliverable.label (which is the generic category the sync kept). */
   deliverableLabel: string;
   slot: number;
   count: number;
-  /** "Premium Reel" or "Video 2 of 4" */
+  /** "Standard Reel with Agent Intro" or "Personal Branding Reel — Video 2 of 4" */
   label: string;
 };
 
@@ -311,7 +315,12 @@ export function cutKeyOf(s: { deliverableId?: string | null; slot?: number | nul
 }
 
 /** Every video cut this job owes, in order. Monthly plans put the whole batch
- *  on their one video row (quantity / videosFilmed / plan quota). */
+ *  on their one video row (quantity / videosFilmed / plan quota).
+ *  Each cut is NAMED by its resolved style (Deliverable.videoStyle →
+ *  productTitle → label heuristics), with the same tier/monthly verdicts the
+ *  tracker's "Edit type" uses — so "Cuts to deliver", the Review Room
+ *  switcher, the approved file name and the brief all say one thing. Jordan
+ *  (Sep 2): a Standard Reel with Agent Intro cut must not read "Social Reel". */
 export async function cutSlots(projectId: string): Promise<CutSlot[]> {
   const p = await prisma.project.findUnique({
     where: { id: projectId },
@@ -320,13 +329,15 @@ export async function cutSlots(projectId: string): Promise<CutSlot[]> {
       deliverables: {
         where: { removedFromOrderAt: null, type: { in: ["VIDEO", "SOCIAL_REEL"] } },
         orderBy: { createdAt: "asc" },
-        select: { id: true, type: true, label: true, quantity: true },
+        select: { id: true, type: true, label: true, quantity: true, videoStyle: true, productTitle: true },
       },
     },
   });
   if (!p || p.deliverables.length === 0) return [];
   const { isMonthlyContentJob, monthlyVideoQuota } = await import("@/lib/pipeline");
+  const { videoTier } = await import("@/lib/projectStatus");
   const monthly = isMonthlyContentJob(p.deliverables, p.packageName);
+  const tier = videoTier(p.deliverables);
   const out: CutSlot[] = [];
   for (const [i, d] of p.deliverables.entries()) {
     let count = Math.max(1, d.quantity ?? 1);
@@ -334,7 +345,7 @@ export async function cutSlots(projectId: string): Promise<CutSlot[]> {
       const owed = Math.max(count, p.videosFilmed ?? monthlyVideoQuota([p.packageName, ...p.deliverables.map((x) => x.label)]));
       count = owed;
     }
-    const base = (d.label ?? d.type).trim();
+    const base = videoStyleFor(d, { monthly, tier }).name;
     for (let slot = 1; slot <= count; slot++) {
       out.push({
         deliverableId: d.id,
@@ -465,7 +476,7 @@ export async function startDropboxCopy(submissionId: string, opts: { inline?: bo
   const sub = await prisma.reviewSubmission.findUnique({
     where: { id: submissionId },
     include: {
-      deliverable: { select: { label: true, type: true, quantity: true } },
+      deliverable: { select: { label: true, type: true, quantity: true, videoStyle: true, productTitle: true } },
       project: { select: { title: true, addressLine: true, shootDate: true, createdAt: true, dropboxFolder: true, client: { select: { name: true } } } },
     },
   });
@@ -504,7 +515,9 @@ export async function startDropboxCopy(submissionId: string, opts: { inline?: bo
     await prisma.reviewSubmission.update({ where: { id: p.id }, data: { finalPath: `${folder}/superseded/${name}`, completedAt: null } }).catch(() => {});
   }
   const ext = (sub.fileName ?? "").match(/\.(mp4|mov|m4v|webm|mkv)$/i)?.[0] ?? ".mp4";
-  const base = (sub.deliverable?.label ?? sub.deliverable?.type ?? "Video").trim();
+  // The slot label (style name + "Video N of M") names the file; the bare
+  // style name is the fallback if the row is no longer on the order.
+  const base = sub.deliverable ? videoStyleFor(sub.deliverable).name : "Video";
   const slots = await cutSlots(sub.projectId).catch(() => [] as CutSlot[]);
   const mine = slots.find((s) => s.deliverableId === sub.deliverableId && s.slot === sub.slot);
   // Plain hyphens: the em dash in the slot label is not a safe filename char.
@@ -682,7 +695,8 @@ export type VideoCutState = {
   projectId: string;
   street: string;
   clientName: string;
-  /** "Premium Reel" / "Video 2 of 4" / the file name for legacy rows */
+  /** "Premium Social Media Reel" / "Personal Branding Reel — Video 2 of 4" /
+   *  the file name for legacy rows */
   cutLabel: string;
   round: number;
   status: "PENDING" | "CHANGES_REQUESTED" | "APPROVED";
@@ -710,13 +724,21 @@ export type ProjectVideoState = {
   cuts: VideoCutState[];
 };
 
-const pureSlots = (p: { packageName: string | null; videosFilmed: number | null; deliverables: { id: string; type: string; label: string | null; quantity: number | null }[] }, monthly: boolean, quota: number) => {
+// The pure twin of cutSlots() for the batched reader below — same rows, same
+// order, same NAMES (videoStyleFor with the job's tier + monthly verdicts), so
+// a cut is called the same thing on Ops Day as in the Review Room.
+const pureSlots = (
+  p: { packageName: string | null; videosFilmed: number | null; deliverables: { id: string; type: string; label: string | null; quantity: number | null; videoStyle: string | null; productTitle: string | null }[] },
+  monthly: boolean,
+  quota: number,
+  tier: "standard" | "premium" | null,
+) => {
   const vids = p.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
   const out: CutSlot[] = [];
   for (const [i, d] of vids.entries()) {
     let count = Math.max(1, d.quantity ?? 1);
     if (monthly && i === 0) count = Math.max(count, p.videosFilmed ?? quota);
-    const base = (d.label ?? d.type).trim();
+    const base = videoStyleFor(d, { monthly, tier }).name;
     for (let slot = 1; slot <= count; slot++) out.push({ deliverableId: d.id, deliverableLabel: base, slot, count, label: count > 1 ? `${base} — Video ${slot} of ${count}` : base });
   }
   return out;
@@ -730,6 +752,7 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
   const out = new Map<string, ProjectVideoState>();
   if (projectIds.length === 0) return out;
   const { isMonthlyContentJob, monthlyVideoQuota } = await import("@/lib/pipeline");
+  const { videoTier } = await import("@/lib/projectStatus");
   const [projects, subs, editTasks, notes] = await Promise.all([
     prisma.project.findMany({
       where: { id: { in: projectIds } },
@@ -738,7 +761,7 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
         client: { select: { name: true } },
         // Same order as cutSlots() — the monthly batch count lands on the FIRST
         // video row, so both slot builders must see the rows the same way.
-        deliverables: { where: { removedFromOrderAt: null }, orderBy: { createdAt: "asc" }, select: { id: true, type: true, label: true, quantity: true } },
+        deliverables: { where: { removedFromOrderAt: null }, orderBy: { createdAt: "asc" }, select: { id: true, type: true, label: true, quantity: true, videoStyle: true, productTitle: true } },
       },
     }),
     prisma.reviewSubmission.findMany({
@@ -767,7 +790,7 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
   for (const p of projects) {
     const monthly = isMonthlyContentJob(p.deliverables, p.packageName);
     const quota = monthlyVideoQuota([p.packageName, ...p.deliverables.map((d) => d.label)]);
-    const slots = pureSlots(p, monthly, quota);
+    const slots = pureSlots(p, monthly, quota, videoTier(p.deliverables));
     const rows = subsByProject.get(p.id) ?? [];
     // latest round per cut
     const latest = new Map<string, (typeof rows)[number]>();
