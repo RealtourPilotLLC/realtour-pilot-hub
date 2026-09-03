@@ -69,7 +69,12 @@ async function clientContext(enrollmentId: string): Promise<string> {
     if (!raw) continue;
     try {
       const o = JSON.parse(raw) as Record<string, string>;
-      const lines = Object.entries(o).map(([k, v]) => `- ${k}: ${v}`);
+      // Profiles built before the filter above still carry confidential lines,
+      // and a human can paste one into a profile box at any time. Drop them
+      // here too, so no route into a generation prompt is left open.
+      const lines = Object.entries(o)
+        .filter(([, v]) => !/^\s*\[CONFIDENTIAL/i.test(String(v ?? "")))
+        .map(([k, v]) => `- ${k}: ${v}`);
       if (lines.length) parts.push(`${label}:\n${lines.join("\n")}`);
     } catch { /* skip */ }
   }
@@ -562,7 +567,15 @@ export async function buildAgentProfileFromHistory(clientId: string): Promise<{ 
       select: { name: true, company: true, generalNotes: true, editingPreferences: true },
     }),
     prisma.contentStrategy.findFirst({ where: { enrollmentId: e.id, status: "ACTIVE" }, select: { sectionsJson: true } }),
-    prisma.contentNote.findMany({ where: { clientId, intelligence: true }, orderBy: { createdAt: "desc" }, take: 60, select: { body: true } }),
+    // Same guard as clientContext() above. Without it the confidentiality rule
+    // was only skin-deep: the profile builder read [CONFIDENTIAL] intel, wrote
+    // it into a profile section, and clientContext() then pasted that section
+    // into the script prompt verbatim — Ashley Brunner's unannounced brokerage
+    // move reached the script writer that way, through storiesJson.
+    prisma.contentNote.findMany({
+      where: { clientId, intelligence: true, NOT: { body: { startsWith: "[CONFIDENTIAL" } } },
+      orderBy: { createdAt: "desc" }, take: 60, select: { body: true },
+    }),
     prisma.contentScript.findMany({ where: { clientId, source: "import" }, orderBy: { createdAt: "desc" }, take: 8, select: { title: true, body: true } }),
   ]);
 
