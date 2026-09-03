@@ -56,6 +56,11 @@ import { etAt } from "@/lib/datetime";
 // look like a clean send.
 
 const HOUR = 3_600_000;
+// How close a shoot has to be before a confirmation stops waiting for a human.
+// Under this, "the client is waiting on us" no longer holds the text: not being
+// told the time at all is a worse outcome than a confirmation arriving while a
+// separate thread is open.
+const CONFIRM_FORCE_H = 24;
 // Sources the OpenPhone webhook must recognise as "the hub sent this itself".
 // An automated send answers nobody's question and closes nobody's task but its
 // own — see the `autoSent` guard in api/webhooks/openphone/route.ts, which
@@ -183,12 +188,28 @@ async function markSendUnverified(taskIds: string[], opts: { projectId: string; 
 // The client has an unanswered question in the queue — an automated text now
 // would read as our reply (the outbound webhook closes their reply task) while
 // answering nothing. Leave the whole client to a human; later ticks retry.
+//
+// An OPEN client_reply row is not enough on its own. The Smart Brain mints
+// client_reply tasks for its own to-dos ("Note builder relationship context and
+// brief team for shoot" on Erica Walker, Sep 1), and those never close — so one
+// internal note silently held every automated text for that client. Erica's
+// $1,475 shoot went unconfirmed for six ticks with nothing on screen saying why.
+//
+// So the task only holds the client while they are ACTUALLY waiting: their last
+// inbound message is newer than our last outbound one. Once we have answered,
+// the note may stay open for Kyle without gagging the robot.
 async function clientHasOpenQuestion(clientId: string): Promise<boolean> {
   const open = await prisma.smartTask.findFirst({
     where: { clientId, taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] } },
     select: { id: true },
   });
-  return !!open;
+  if (!open) return false;
+  const [lastIn, lastOut] = await Promise.all([
+    prisma.commLog.findFirst({ where: { clientId, direction: "in" }, orderBy: { occurredAt: "desc" }, select: { occurredAt: true } }),
+    prisma.commLog.findFirst({ where: { clientId, direction: "out" }, orderBy: { occurredAt: "desc" }, select: { occurredAt: true } }),
+  ]);
+  if (!lastIn) return false; // nothing inbound at all — the row is an internal note
+  return !lastOut || lastIn.occurredAt > lastOut.occurredAt;
 }
 
 /** Confirmation texts: any BOOKED/SCHEDULED shoot inside the next 48 hours
@@ -280,8 +301,32 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
       skipped++; notes.push(`${p.title}: ${p.client.name} has automatic confirmation texts off — left for a human`); continue;
     }
     if (rules.onePerClientPerRun && texted.has(p.client.id)) { skipped++; continue; } // next tick sends this one
+    // Read the open confirmation task up front: the hold below writes its reason
+    // onto it, and the claim further down reuses the same rows.
+    const taskIdsForHold = (await prisma.smartTask.findMany({
+      where: { projectId: p.id, taskType: "confirmation_text", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      select: { id: true },
+    })).map((t) => t.id);
+    // The "client is waiting on us" hold, with a floor. Leaving a confirmation
+    // to a human is right while there is still time; it is NOT right when the
+    // shoot is hours away, because the failure mode is the client never being
+    // told at all — 439 Lake George (a $1,475 shoot) sat unconfirmed through six
+    // ticks with nothing on screen saying why. Inside CONFIRM_FORCE_H the text
+    // goes regardless: it states a time, it does not pretend to answer anything.
+    // Either way the reason is written onto the task so it is visible on /tasks
+    // instead of living only in a cron note.
     if (rules.skipWhenClientWaiting && await clientHasOpenQuestion(p.client.id)) {
-      skipped++; notes.push(`${p.title}: client has an open question — left for a human`); continue;
+      const hoursOut = (p.shootDate!.getTime() - Date.now()) / HOUR;
+      if (hoursOut > CONFIRM_FORCE_H) {
+        if (taskIdsForHold.length > 0) {
+          await prisma.smartTask.updateMany({
+            where: { id: { in: taskIdsForHold } },
+            data: { summary: `On hold: ${p.client.name} has a message we have not answered, so the hub is leaving this confirmation to a person. It sends automatically if the shoot comes within ${CONFIRM_FORCE_H} hours.` },
+          }).catch(() => {});
+        }
+        skipped++; notes.push(`${p.title}: client has an open question — left for a human`); continue;
+      }
+      notes.push(`${p.title}: client has an open question, but the shoot is in ${Math.round(hoursOut)}h — confirming anyway`);
     }
     // Someone already sent it by hand (the old send button / a hand-typed text
     // the webhook recognized) → nothing owed.
@@ -304,11 +349,28 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
       });
       if (claimed.count === 0) { skipped++; continue; } // a human just sent it
     }
+    // The marker carries the shoot's ET day AND its start time. Keyed on the day
+    // alone, a shoot that moved 1:30 PM → 12:45 PM hit an existing marker, the
+    // sweep skipped — and the task it had just claimed above stayed COMPLETED,
+    // so Kyle's board said the new time was confirmed while the client still had
+    // the old one (1946 Rowan St, Sep 3). Only a move of an hour or more reopens
+    // the task at all (tasks.ts), so this cannot re-text on a trivial tweak.
     const day = p.shootDate!.toLocaleDateString("sv-SE", { timeZone: "America/New_York" });
-    const marker = `auto-confirm-${p.id}-${day}`;
+    const at = p.shootDate!.toLocaleTimeString("en-GB", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit" }).replace(":", "");
+    const marker = `auto-confirm-${p.id}-${day}-${at}`;
     try {
       await prisma.appSetting.create({ data: { key: marker, value: new Date().toISOString() } });
-    } catch { skipped++; continue; } // claimed by an earlier tick — task completion above stands (already texted)
+    } catch {
+      // Another tick owns this exact shoot time and has already texted it. Give
+      // the task back rather than leaving our claim standing as a false "sent".
+      if (taskIds.length > 0) {
+        await prisma.smartTask.updateMany({
+          where: { id: { in: taskIds }, status: "COMPLETED" },
+          data: { status: "OPEN", completedAt: null },
+        }).catch(() => {});
+      }
+      skipped++; continue;
+    }
     const body = confirmationMessage({
       title: p.title, shootDate: p.shootDate,
       client: { name: p.client.name }, photographer: p.photographer, deliverables: p.deliverables,
