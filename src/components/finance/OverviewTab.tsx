@@ -165,7 +165,7 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
             <div className="min-w-0 flex-1">
               <p className="text-sm font-semibold text-warning">
                 {coverage.verdict === "stalled"
-                  ? `Only ${coverage.pct}% of this month's spend has been entered`
+                  ? `Only ${Math.round((coverage.pct ?? 0) * 100)}% of this month's spend has been entered`
                   : `Your books are ${health.daysBehind} days behind`}
               </p>
               {coverage.verdict === "stalled" && (
@@ -178,8 +178,9 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
                   <> and <strong>{health.bankSince}</strong> business transaction{health.bankSince === 1 ? " has" : "s have"} hit the
                   bank since</>
                 )}
-                . The bank feed on this page is current, so the profit figures below are
-                running high until those are entered — the expenses simply aren&rsquo;t in yet.
+                . The profit on this page is <strong>not</strong> affected: it is built from your
+                bank and card feed, which is current. What is behind is your accountant&rsquo;s
+                books — the QuickBooks entries for those same transactions.
               </p>
               <div className="mt-2 flex flex-wrap gap-3 text-xs">
                 <Link href="/connections" className="font-medium text-brand hover:underline">Sync QuickBooks now</Link>
@@ -224,7 +225,16 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
             {
               key: "bank", icon: <Landmark className="size-4" />, accent: "#6ba3d6",
               label: "In the bank", value: m0(cash.bankBalance), tone: bankTone,
-              sub: cash.bankAsOf ? `as of ${etDate(cash.bankAsOf)}` : "connecting to your bank…",
+              // WHICH accounts — the figure counts only depository accounts tagged
+              // Business, so a bare number hides an account the income is landing in.
+              sub: cash.bankAccounts.length > 0
+                ? `${cash.bankAccounts.map((a) => a.label).join(" + ")}${cash.bankAsOf ? ` · as of ${etDate(cash.bankAsOf)}` : ""}`
+                : cash.bankAsOf ? `as of ${etDate(cash.bankAsOf)}` : "connecting to your bank…",
+              detailTitle: "Accounts counted as \u201cin the bank\u201d",
+              details: cash.bankAccounts.length > 0
+                ? [...cash.bankAccounts.map((a) => ({ label: a.label, value: m0(a.balance) })),
+                   { label: "Only accounts tagged Business", value: "", sub: "Tag accounts on Connections → Banks. Money in a Personal-tagged account is not counted here." }]
+                : undefined,
             },
             {
               key: "ar", icon: <HandCoins className="size-4" />, accent: "#d4a95f",
@@ -263,10 +273,24 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
               </p>
             </div>
           )}
+          {/* THE CAVEATS THE ENGINE ALREADY WROTE. getCashPosition computes `reason`
+              (why there is no projection) and `caveats` (what is wrong with one we
+              DID show) — both were computed and rendered nowhere, so the page
+              looked more certain than the engine was. */}
+          {cash.projected == null && cash.reason && (
+            <p className="mt-3 rounded-xl bg-surface-2/50 p-3 text-xs leading-relaxed text-muted">{cash.reason}</p>
+          )}
+          {cash.caveats.length > 0 && (
+            <ul className="mt-3 space-y-1.5 rounded-xl bg-warning-soft/40 p-3 text-xs leading-relaxed text-foreground/85">
+              {cash.caveats.map((c, i) => (
+                <li key={i} className="flex gap-2"><AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" /><span>{c}</span></li>
+              ))}
+            </ul>
+          )}
           <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
             <Stat label="In the bank" value={m0(cash.bankBalance)} sub={cash.bankAsOf ? `as of ${etDate(cash.bankAsOf)}` : "not set"} tone={bankTone} />
-            <Stat label="Money in ~30d" value={m0(cash.comingIn30)} sub="lands in checking" tone="success" />
-            <Stat label="Money out ~30d" value={m0(cash.goingOut30)} sub="out of checking" tone="muted" />
+            <Stat label="Money in ~30d" value={m0(cash.comingIn30)} sub="across all connected accounts" tone="success" />
+            <Stat label="Money out ~30d" value={m0(cash.goingOut30)} sub="across all connected accounts" tone="muted" />
             <Stat label="Owed to you (AR)" value={m0(cash.arOutstanding)} sub="delivered, unpaid" tone={cash.arOutstanding > 0 ? "success" : "muted"} />
           </div>
           {cash.arOutstanding > 0 && (
@@ -289,6 +313,13 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
             )}
           </div>
           <p className="mb-4 text-xs text-muted">Counted where the money is processed — never at the bank, so payout deposits and personal-account detours can't double-count.</p>
+          {/* bookkeeping.ts builds venmoNote precisely so any surface showing the
+              Venmo rail (or the total) states the gap. It had no render site. */}
+          {rev.venmoNote && (
+            <p className="mb-4 flex gap-2 rounded-xl bg-warning-soft/40 p-3 text-xs leading-relaxed text-foreground/85">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" /><span>{rev.venmoNote}</span>
+            </p>
+          )}
           <Donut total={revenue} rails={rails} />
         </section>
 
@@ -361,7 +392,7 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
               label="Reconciliation"
               value={
                 coverage.verdict === "stalled"
-                  ? `${coverage.pct}% entered`
+                  ? `${Math.round((coverage.pct ?? 0) * 100)}% entered`
                   : health.daysBehind != null && health.daysBehind > BOOKS_STALE_DAYS
                   ? `${health.daysBehind}d behind`
                   : health.needsReview > 0 ? "In progress" : "Clean"
@@ -390,8 +421,9 @@ export async function OverviewTab({ show }: { show: FinanceTab[] }) {
           <div className="mt-3 flex items-start gap-1.5 rounded-lg bg-surface-2/50 p-3 text-xs text-muted">
             {health.needsReview > 0 ? <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" /> : <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-success" />}
             <span>
-              Revenue is counted at the processor and is solid. Expenses are categorized from the QuickBooks ledger; the flagged
-              items above (owner-vs-client transfers, deposit matches) are the last step — a short reconciliation your accountant closes.
+              Revenue is counted at the processor and is solid. Expenses on this page are categorized from the audited bank
+              and card feed — not from QuickBooks; the flagged items above (owner-vs-client transfers, deposit matches) are the
+              last step — a short reconciliation your accountant closes.
               The ledger re-syncs and re-classifies nightly; sync QuickBooks on <Link href="/connections" className="font-medium text-brand hover:underline">Connections</Link> to pull it sooner.
             </span>
           </div>

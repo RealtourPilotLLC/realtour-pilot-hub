@@ -7,9 +7,15 @@ export const TZ = "America/New_York";
 function fmt(d: Date, opts: Intl.DateTimeFormatOptions, locale = "en-US"): string {
   return new Intl.DateTimeFormat(locale, { timeZone: TZ, ...opts }).format(d);
 }
+const DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
 const toDate = (d: Date | string | null | undefined): Date | null => {
   if (!d) return null;
-  const x = typeof d === "string" ? new Date(d) : d;
+  // A bare day key is a CALENDAR DAY, not an instant. `new Date("2026-09-02")`
+  // is UTC midnight, which is 8 PM ET the day BEFORE — so every day-key the
+  // finance and books screens printed came out one day early ("as of Tue,
+  // Sep 1" for a balance synced on the 2nd). Anchor it at noon UTC, which is
+  // the same calendar day in every US timezone.
+  const x = typeof d === "string" ? new Date(DAY_KEY.test(d) ? `${d}T12:00:00Z` : d) : d;
   return isNaN(x.getTime()) ? null : x;
 };
 

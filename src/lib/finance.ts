@@ -203,6 +203,11 @@ export type CashPosition = {
   /** Honest qualifiers on a number we DID show (stale rails, thin data). */
   caveats: string[];
   monthsSampled: number;
+  /** WHICH accounts "In the bank" adds up — every depository account tagged
+   *  Business on /connections/banks. Named on screen because the figure is a
+   *  subset of the money: an account tagged Personal is excluded even when the
+   *  business's income is landing in it, and a bare number hides that. */
+  bankAccounts: { label: string; balance: number }[];
   sampledFrom: string; // ET day key of the sampled window's first day
   sampledTo: string;   // ET day key of its last day
 };
@@ -274,7 +279,7 @@ export async function getCashPosition(): Promise<CashPosition> {
     // owner never has to hand-type a number the hub already knows.
     prisma.plaidAccount.findMany({
       where: { isBusiness: true, type: "depository", currentBalance: { not: null } },
-      select: { currentBalance: true, item: { select: { lastSyncedAt: true } } },
+      select: { currentBalance: true, name: true, mask: true, item: { select: { lastSyncedAt: true } } },
     }),
     Promise.all(sampledMonths.map((m) =>
       prisma.plaidTransaction.count({ where: { date: { gte: m.start, lte: m.end }, amount: { gt: 0 } } }),
@@ -387,6 +392,10 @@ export async function getCashPosition(): Promise<CashPosition> {
     projected,
     basis, reason, caveats,
     monthsSampled: CASH_MONTHS,
+    bankAccounts: plaidBiz.map((a) => ({
+      label: [a.name?.trim() || "Account", a.mask ? `···${a.mask}` : null].filter(Boolean).join(" "),
+      balance: round2(a.currentBalance ?? 0),
+    })),
     sampledFrom, sampledTo,
   };
 }
