@@ -37,7 +37,7 @@ export default async function MessageCenterPage({
   if (me?.role === "EDITOR" && !editorScope) {
     return (
       <div>
-        <PageHeader eyebrow="Editor Queue" title="Messages" />
+        <PageHeader eyebrow="Editing Room" title="Messages" />
         <p className="m-4 rounded-2xl border border-dashed border-border bg-surface p-6 text-sm text-muted sm:m-6">
           Your login isn&rsquo;t linked to an editor profile yet — ask Jordan to set your editor key.
         </p>
@@ -109,12 +109,12 @@ export default async function MessageCenterPage({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader
-        eyebrow="Editor Queue"
+        eyebrow="Editing Room"
         title="Messages"
         subtitle={unreadTotal > 0 ? `${unreadTotal} unread conversation${unreadTotal === 1 ? "" : "s"}` : "Every job's team chat, one place"}
         actions={
           <Link href="/editing" className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
-            <ArrowLeft className="size-3.5" /> Queue
+            <ArrowLeft className="size-3.5" /> Editing Room
           </Link>
         }
       />

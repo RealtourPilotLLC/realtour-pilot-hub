@@ -133,6 +133,10 @@ export function EditTracker({
   stage: EditStage;
   statusLine: string;
   hadRevision: boolean;
+  /** The ACTUAL video product — videoTypeLabel() in lib/pipeline: the order
+      item's real name ("Premium Horizontal Video"), or the tier-decorated type
+      ("Standard Video") when Aryeo's label is generic. Never the bare word
+      "Video" (Jordan, Sep 2, on 208 N Adams St). */
   editType: string;
   dueISO: string | null;
   shootDateISO: string | null;

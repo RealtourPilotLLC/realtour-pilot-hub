@@ -263,7 +263,7 @@ export async function addToEditorQueue(
       await notifyInApp({
         kind,
         title: isExternal ? `Dispatch to Luma — ${street}` : title,
-        body: cleanNote ? cleanNote.slice(0, 140) : "Added to your queue from the Editor Queue page.",
+        body: cleanNote ? cleanNote.slice(0, 140) : "Added to your queue from the Editing Room.",
         href: `/edit/${projectId}`,
         targets: isExternal
           ? [{ roles: ["ADMIN"] }]
@@ -283,7 +283,7 @@ export async function addToEditorQueue(
 
   // ---- PRIOR-CUT path: a new cut on a finished job = a revision. ----
   if (priorCut) {
-    const revNote = cleanNote || `New cut requested — added to the editor queue for ${editorName}.`;
+    const revNote = cleanNote || `New cut requested — added to the Editing Room for ${editorName}.`;
     await prisma.project.update({
       where: { id: projectId },
       data: {
@@ -309,7 +309,7 @@ export async function addToEditorQueue(
       title: `New cut — ${street}`.slice(0, 120),
       summary: `The owner queued a new edit on this finished job for ${editorName}: “${revNote.slice(0, 220)}”. Cut it, drop it in 05-Final-Video, and send it to review.`,
       description: revNote,
-      reasonCreated: "Owner added a finished job back to the editor queue",
+      reasonCreated: "Owner added a finished job back to the Editing Room",
       source: "manual",
       priority: "HIGH" as const,
       dueAt: new Date(Date.now() + 24 * 3600_000),
@@ -347,7 +347,7 @@ export async function addToEditorQueue(
   if (!QUEUE_STATUSES.includes(project.status)) {
     await prisma.project.update({ where: { id: projectId }, data: { status: "EDITING" } });
     await prisma.activity.create({
-      data: { projectId, type: "STATUS_CHANGE", body: `Moved to Editing — added to the editor queue.` },
+      data: { projectId, type: "STATUS_CHANGE", body: `Moved to Editing — added to the Editing Room.` },
     });
   }
 
@@ -378,7 +378,7 @@ export async function addToEditorQueue(
     data: {
       projectId,
       type: "SYSTEM",
-      body: `Added to the editor queue — routed to ${editorName}.${cleanNote ? ` Note: ${cleanNote}` : ""}`,
+      body: `Added to the Editing Room — routed to ${editorName}.${cleanNote ? ` Note: ${cleanNote}` : ""}`,
     },
   });
   await notifyQueued("edit_assigned", `New edit — ${street}`);
@@ -580,7 +580,7 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
         taskType: "revision",
         title: `Revisions — ${street}`.slice(0, 120),
         summary:
-          "The cut was flipped to Revisions on the Editor Queue — check the review notes and the project chat for what to change, re-cut, and send it back to review.",
+          "The cut was flipped to Revisions in the Editing Room — check the review notes and the project chat for what to change, re-cut, and send it back to review.",
         reasonCreated: "Queue status set to Revisions",
         source: "manual",
         priority: "HIGH" as const,

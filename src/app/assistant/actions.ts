@@ -82,7 +82,7 @@ WHO YOU ARE TALKING TO: ${ROLE_DESC[role]}
 
 ABOUT THE HUB (so you can guide people and offer useful tips): This app is RealTour Pilot's operations hub. Main pages, by section:
 - Operations: Dashboard (/) = the morning brief (today's shoots, unanswered client messages, what needs attention, next-day deliveries); Daily Tasks (/queue) = Kyle's single to-do list (QC checklists, deliveries, reply drafts, confirmations, with Send buttons); Task History (/history) = completed work by day + an AI day-recap; Project Tracker (/pipeline) = the pipeline board booked through delivered; Schedule (/schedule) = shoots by day with photographers; Map (/map) = live shoot map with weather, traffic, and drone-airspace flags; Communications (/communications) = client text/call threads incl. group chats; Clients (/clients) = the CRM, grouped by segment, each client page has orders, spend, notes, and Text/Email-draft tools; Team (/team) = team members, schedules, and KPIs.
-- Creative: Upload Portal (/upload) = photographers drop raw/final files by day; Editor Queue (/editing) = the editing pipeline and vendor routing.
+- Creative: Upload Portal (/upload) = photographers drop raw/final files by day; Editing Room (/editing) = the editing pipeline and vendor routing.
 - Sales & Finance: Sales Tracker (/sales); Billing (/billing) = outstanding AR on delivered jobs; Service Catalog (/catalog) = products/packages; Payouts (/payouts) = creative pay.
 - Knowledge: Resources & SOPs (/resources); Ask the Hub (/assistant) = you.
 - System: Feedback & requests (/feedback) = submit a feature/bug (there's also a floating Feedback button on every page); Connections (/connections) = integrations (Aryeo, OpenPhone, Gmail, Dropbox, Slack, AI).

@@ -231,7 +231,7 @@ Only on video jobs.
 
 - The script from Script Studio is shown. Press **Delivered as written**, or **Changed on site — edit it** and fix the text so the editor cuts to what was really said.
 - **Edit style**: Fast-Paced, or Timeless & Elegant (Cinematic). Ask the realtor on site which they want. Never guess, just ask. Monthly content clients are always Personal Branding and there is no dropdown.
-- Brief the editor in sections: **Vision for the edit** (required), Summary, Shots that must be shown, Areas to avoid, Realtor requests, Additional notes.
+- Brief the editor in sections: **Vision for the edit** (required), Summary, Shots that must be shown, Things to avoid, Realtor requests, Additional notes.
 - Agent-intro packages ask for the **intro script** typed word for word as filmed.
 - Monthly plans ask **how many videos did you film** — that number is what the editor cuts.
 
@@ -330,7 +330,7 @@ const EDITOR: Guide = {
   subtitle: "Your queue, the brief, the raw and the final, and how a cut gets approved",
   who: "John and Kim",
   runbook: [
-    { when: "Start of your day", what: "Open the Editor Queue. Not Done is your list — top to bottom, oldest due date first. Anything in red is late." },
+    { when: "Start of your day", what: "Open the Editing Room. Not Done is your list — top to bottom, oldest due date first. Anything in red is late." },
     { when: "Picking up a job", what: "Click the row. That opens the job page: the tracker at the top says where it stands and when it is due." },
     { when: "Before you cut", what: "Read Edit instructions — the order note, what the photographer wrote at the shoot, the vision and style. Then What to make for the style spec and examples." },
     { when: "Getting the footage", what: "Media, then RAW footage. Brand assets and the client's logo shelf are in the same card." },
@@ -348,7 +348,7 @@ const EDITOR: Guide = {
 
 Your menu is deliberately small:
 
-- **Editor Queue** — your home screen
+- **Editing Room** — your home screen
 - **Style Guide** — every video type, its style spec and real examples
 - **SOP Center** — the editing standards
 - **Training** and **Ask the Hub**
@@ -358,7 +358,7 @@ You do not get the dashboard or the company task board. Everything you need for 
 ### Money never reaches you
 Client prices, invoices and payouts are stripped from every screen you can open. If a client's own message mentioned price, you will see the rest of it and a line saying a note was held back — ask Jordan if it matters.`,
       links: [
-        { href: "/editing", label: "Editor Queue" },
+        { href: "/editing", label: "Editing Room" },
         { href: "/resources/video-styles", label: "Video Style Guide" },
       ],
     },
@@ -399,7 +399,7 @@ One card with everything you have been told to do:
 
 - the customer's own words from the order intake
 - what the photographer wrote on the upload page: their **vision for the edit**, the **style**, shots that must be shown, areas to avoid, realtor requests
-- **shot order** and **what to remove in editing**
+- **shot order** and **things to avoid in the edit**
 - **how many videos** were filmed, on monthly jobs
 - whether the script was **delivered as written** or changed on site
 
@@ -852,7 +852,7 @@ Four roles, and what each one gets by default:
 
 - **Owner** — everything.
 - **Admin** — the operations surfaces. Not the owner-only ones: My Day, Connections, and the Revenue and Payroll tabs of Finance.
-- **Editor** — the Editor Queue, the Style Guide, the SOP Center, Training and Ask the Hub. No dashboard, no task board, no client money.
+- **Editor** — the Editing Room, the Style Guide, the SOP Center, Training and Ask the Hub. No dashboard, no task board, no client money.
 - **Photographer** — My Shoots, My Pay, the Upload Portal, the SOP Center, Training and Ask the Hub.
 
 Individual pages can be granted or revoked per person on top of the role, and a revoke applies on the person's very next click, not at their next login.

@@ -82,7 +82,7 @@ const VID_SECTIONS = [
   { key: "vision", label: "VISION FOR THE EDIT", title: "Vision for the edit", required: true, placeholder: "The feel and the story — e.g. luxury and calm; let the property breathe; the hook is the double-height foyer." },
   { key: "summary", label: "SUMMARY", title: "Summary", required: false, placeholder: "The shoot in two lines — what was captured, the flow, anything unusual." },
   { key: "mustShow", label: "SHOTS THAT MUST BE SHOWN", title: "Shots that must be shown", required: false, placeholder: "e.g. drone push-in over the pool · the kitchen island reveal · sunset patio clips at the end." },
-  { key: "avoid", label: "AREAS TO AVOID", title: "Areas to avoid", required: false, placeholder: "e.g. skip the unfinished office · avoid the neighbor's yard in the drone pass." },
+  { key: "avoid", label: "THINGS TO AVOID", title: "Things to avoid", required: false, placeholder: "e.g. skip the unfinished office · avoid the neighbor's yard in the drone pass." },
   { key: "realtor", label: "REALTOR REQUESTS", title: "Realtor requests", required: false, placeholder: "Anything the agent asked for on site — features to hit, order, moments they want kept." },
   { key: "additional", label: "ADDITIONAL NOTES", title: "Additional notes", required: false, placeholder: "Anything else that shapes this edit." },
   // Agent-intro packages only (Jordan, Sep 1): the typed intro script +
@@ -97,11 +97,25 @@ const AGENT_INTRO_KEYS: readonly VidKey[] = ["intro", "editNotes"];
 const FULL_KEYS: readonly VidKey[] = ["vision", "summary", "mustShow", "avoid", "realtor", "additional"];
 // A plain social reel needs no brief at all (Jordan, Sep 1: "if it's a
 // standard social reel, it doesn't need additional notes") — one optional
-// box, nothing demanded.
+// box, nothing demanded. Sep 2: this is ALSO the shape every standard-tier
+// video gets (see fullFields below) — the box just becomes required when the
+// order isn't a plain reel.
 const MINIMAL_KEYS: readonly VidKey[] = ["editNotes"];
-const COLOR_PROFILE_LINE = "COLOR PROFILE: S-Log3, D-LogM";
+// The color profile follows the VIDEO TIER (Jordan, Sep 2): standard reels are
+// shot on iPhone, premium is S-Log3 / D-LogM. It used to be one hard-coded
+// S-Log3 line on every job, which told the editor a standard iPhone reel
+// needed a log grade it never had.
+const COLOR_PROFILE_LINE = {
+  standard: "COLOR PROFILE: iPhone",
+  premium: "COLOR PROFILE: S-Log3, D-LogM",
+} as const;
+// Parse-side match for EITHER line (mirrors the server's strip in
+// upload/actions.ts). Compose re-adds the CURRENT tier's line, so a brief
+// saved before a product was re-mapped in Settings heals itself on re-submit
+// instead of carrying two profile lines.
+const COLOR_PROFILE_RE = /^COLOR PROFILE:/;
 
-function composeVideoInstructions(style: VidStyle | null, sections: Record<VidKey, string>): string {
+function composeVideoInstructions(style: VidStyle | null, sections: Record<VidKey, string>, isPremium: boolean): string {
   const hasContent = style !== null || VID_SECTIONS.some((s) => sections[s.key]?.trim());
   // Nothing filled (photo-only jobs, untouched video forms) → EMPTY, so the
   // server never persists a brief that is just the auto color-profile line
@@ -109,7 +123,7 @@ function composeVideoInstructions(style: VidStyle | null, sections: Record<VidKe
   if (!hasContent) return "";
   const parts: string[] = [];
   if (style) parts.push(`STYLE: ${VID_STYLES[style]}`);
-  parts.push(COLOR_PROFILE_LINE);
+  parts.push(COLOR_PROFILE_LINE[isPremium ? "premium" : "standard"]);
   for (const s of VID_SECTIONS) {
     const v = sections[s.key]?.trim();
     if (v) parts.push(`${s.label}\n${v}`);
@@ -126,6 +140,9 @@ function parseVideoInstructions(text: string | null): { style: VidStyle | null; 
   let style: VidStyle | null = null;
   const lines = text.split("\n");
   const keyForLabel = new Map<string, VidKey>(VID_SECTIONS.map((s) => [s.label, s.key as VidKey]));
+  // Briefs saved before Sep 2 2026 carry the old heading; read them into the
+  // same box so nothing a photographer already wrote goes missing on re-open.
+  keyForLabel.set("AREAS TO AVOID", "avoid");
   let current: VidKey | null = null;
   const prefix: string[] = []; // content before any label line (legacy text)
   for (const raw of lines) {
@@ -136,7 +153,7 @@ function parseVideoInstructions(text: string | null): { style: VidStyle | null; 
       style = STYLE_BY_LABEL.get(v) ?? style;
       continue;
     }
-    if (line === COLOR_PROFILE_LINE) continue; // re-added automatically on compose
+    if (COLOR_PROFILE_RE.test(line)) continue; // either tier's line — re-added from the live tier on compose
     const key = keyForLabel.get(line);
     if (key) { current = key; continue; }
     if (current) sections[current] += (sections[current] ? "\n" : "") + raw;
@@ -243,6 +260,9 @@ export function UploadPortal({
     squareFeet: number | null;
     /** what this order's video step must show and demand — see videoStepSpec */
     videoSpec: VideoStepSpec;
+    /** videoTier(live deliverables) === "premium" — picks the color-profile
+     *  line and the field set (Jordan, Sep 2); the same answer videoSpec got */
+    isPremium: boolean;
   };
   /** the shoot script pulled from Script Studio (null = none exists there) */
   script: { body: string; hook: string | null; url: string | null } | null;
@@ -308,29 +328,43 @@ export function UploadPortal({
   // compose a phantom "STYLE: Personal Branding" brief and permanently waive
   // the vision gate (review).
   const effectiveStyle: VidStyle | null = spec.fixedStyle && policy.videoOrdered ? "branding" : vidStyle;
-  const vidInstructions = composeVideoInstructions(effectiveStyle, vidSections);
-  // Which sections this order shows. An agent-intro ADD-ON riding a bundle
-  // keeps the bundle's full brief — that listing video is separately directed
-  // (review HIGH) — while a standalone intro package gets intro + notes only.
-  const sectionKeys: readonly VidKey[] = spec.minimalReel
-    ? MINIMAL_KEYS
-    : spec.requireIntro
-      ? (spec.fullBrief ? (["intro", ...FULL_KEYS] as VidKey[]) : AGENT_INTRO_KEYS)
-      : FULL_KEYS;
+  const vidInstructions = composeVideoInstructions(effectiveStyle, vidSections, policy.isPremium);
+  // The FIELD SET follows the video tier (Jordan, Sep 2: "Standard reels
+  // should just have an editing instructions box, while Premium has all of
+  // the editing instruction fields"). Monthly plans keep their own Sep 1 rule
+  // (every field, fixed style, video count). Aryeo names are too messy to
+  // switch on — one order item is literally "Video" — so this reads the
+  // Settings-mapped tier the page handed down, the same one videoSpec used.
+  const fullFields = spec.fullBrief && (policy.isPremium || spec.fixedStyle);
+  // The one standard box is REQUIRED unless the order is a plain social reel
+  // (Sep 1: those need nothing) or the intro script already carries the
+  // photographer's words — the server gate demands their own text on every
+  // other shape, so the page has to ask before the server refuses.
+  const notesRequired = !fullFields && !spec.minimalReel && !spec.requireIntro;
+  // Which sections this order shows. The intro rides on top for agent-intro
+  // packages whatever the tier: an intro ADD-ON on a premium bundle keeps that
+  // bundle's full brief — the listing video is separately directed (review
+  // HIGH) — while on a standard bundle or standalone it's intro + notes only.
+  const sectionKeys: readonly VidKey[] = spec.requireIntro
+    ? (fullFields ? (["intro", ...FULL_KEYS] as VidKey[]) : AGENT_INTRO_KEYS)
+    : fullFields ? FULL_KEYS : MINIMAL_KEYS;
   // Names exactly what THIS order must fill, so the closing warning can't say
   // "vision and style" on a shape whose only required field is the intro.
   const requiredLabels = [
     spec.requireIntro ? "The intro script" : null,
     spec.requireVideoCount ? "The video count" : null,
-    spec.fullBrief ? (spec.fixedStyle ? "vision" : "vision and style") : null,
+    fullFields ? (spec.fixedStyle ? "vision" : "vision and style") : null,
+    notesRequired ? "Your editing instructions" : null,
   ].filter(Boolean) as string[];
-  const isRequiredKey = (k: VidKey) => (k === "intro" && spec.requireIntro) || (k === "vision" && spec.fullBrief);
+  const isRequiredKey = (k: VidKey) =>
+    (k === "intro" && spec.requireIntro) || (k === "vision" && fullFields) || (k === "editNotes" && notesRequired);
   const countAnswered = !spec.requireVideoCount || project.videosFilmed != null || (videosFilmedNum ?? 0) > 0;
   const vidAnswered =
     countAnswered &&
     (hadPriorBrief ||
     ((!spec.requireIntro || !!vidSections.intro.trim()) &&
-      (!spec.fullBrief || (!!vidSections.vision.trim() && effectiveStyle !== null))));
+      (!fullFields || (!!vidSections.vision.trim() && effectiveStyle !== null)) &&
+      (!notesRequired || !!vidSections.editNotes.trim())));
   const [scriptChoice, setScriptChoice] = useState<"as-written" | "edited" | null>(
     project.scriptConfirmedAt
       ? project.scriptConfirmNote?.startsWith("Edited") ? "edited" : "as-written"
@@ -469,8 +503,9 @@ export function UploadPortal({
     if (photosLive && !removal.trim() && !nothingToRemove) missing.push("answer the removal notes");
     if (videoLive && !hadPriorBrief) {
       if (spec.requireIntro && !vidSections.intro.trim()) missing.push("the agent's intro script — type it exactly as delivered");
-      if (spec.fullBrief && !vidSections.vision.trim()) missing.push("the vision for the edit");
-      if (spec.fullBrief && effectiveStyle === null) missing.push("pick an edit style");
+      if (fullFields && !vidSections.vision.trim()) missing.push("the vision for the edit");
+      if (fullFields && effectiveStyle === null) missing.push("pick an edit style");
+      if (notesRequired && !vidSections.editNotes.trim()) missing.push("your editing instructions for the editor");
     }
     if (videoLive && spec.requireVideoCount && project.videosFilmed == null && !((videosFilmedNum ?? 0) > 0)) {
       missing.push("how many videos you filmed");
@@ -877,7 +912,7 @@ export function UploadPortal({
       {policy.videoOrdered && (
         <StepCard
           n={stepNo++}
-          title={spec.requireIntro && !spec.fullBrief ? "Video — agent intro script & notes" : "Video — script & your instructions"}
+          title={spec.requireIntro && !fullFields ? "Video — agent intro script & notes" : "Video — script & your instructions"}
           done={videoDone}
         >
           {script ? (
@@ -946,7 +981,18 @@ export function UploadPortal({
               <p className="text-sm font-semibold">
                 Anything the editor should know? <span className="font-normal text-muted">— optional</span>
               </p>
-            ) : spec.requireIntro && !spec.fullBrief ? (
+            ) : notesRequired ? (
+              // Standard tier (Jordan, Sep 2): one box — no style picker, no
+              // sections — but still the photographer's own words.
+              <>
+                <p className="text-sm font-semibold">
+                  Your instructions for the edit <span className="text-brand">— required</span>
+                </p>
+                <p className="mt-0.5 text-[13px] text-muted">
+                  Standard reels are cut from one box — the flow, the must-show moments, anything to avoid.
+                </p>
+              </>
+            ) : spec.requireIntro && !fullFields ? (
               <p className="text-sm font-semibold">
                 Intro script &amp; editing notes <span className="text-brand">— intro required</span>
               </p>

@@ -21,7 +21,7 @@ import { EditorCutPanel } from "@/components/editing/EditorCutPanel";
 import { CutUploader } from "@/components/editing/CutUploader";
 import { autoSyncScript } from "@/lib/scriptSync";
 import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
-import { getVideoSlaStatus } from "@/lib/projectStatus";
+import { getVideoSlaStatus, videoTier } from "@/lib/projectStatus";
 import { SubmitCutCard } from "@/components/editing/EditorActions";
 import { EditFeedback } from "@/components/editing/EditFeedback";
 import { EditTracker, deriveEditStage, type RoundRow } from "@/components/editing/EditTracker";
@@ -33,7 +33,7 @@ import { aryeoCustomerNote } from "@/lib/shoot";
 import { customerNote } from "@/lib/clientNotes";
 import { getEditorFeedback } from "@/lib/reviewRoom";
 import { slugForName } from "@/lib/assignees";
-import { refinedDeliverableLabel, isMonthlyContentJob } from "@/lib/pipeline";
+import { refinedDeliverableLabel, isMonthlyContentJob, videoTypeLabel } from "@/lib/pipeline";
 import { stripMoneySentences } from "@/lib/text";
 import { prisma } from "@/lib/prisma";
 import { ActivityType } from "@prisma/client";
@@ -44,12 +44,13 @@ export const dynamic = "force-dynamic";
 // The EDITOR's brief screen for one job. Creative-safe (no pricing/financials).
 //
 // Ordered around the editor's actual job (Jordan, Sep 2: "there is too much to
-// look at"): what to make → where the media is → do the work → what the client
+// look at"): where the media is → what to make → do the work → what the client
 // is like → history.
 //   1. the work order (only on a bounced job — then it IS the job)
-//   2. Edit instructions — ONE card: the spec, the customer's words on this
+//   2. Media — RAW, Final, brand assets, the client's asset shelf, their colors
+//      (first, so the download is running while they read — Jordan, Sep 2)
+//   3. Edit instructions — ONE card: the spec, the customer's words on this
 //      order, and everything that came off the shoot
-//   3. Media — RAW, Final, brand assets, the client's asset shelf, their colors
 //   4. What to make — the deliverables with their style tier and examples
 //   5. Script — the locked words
 //   6. Cuts to deliver — upload, the cut in review, the notes on it
@@ -320,7 +321,10 @@ export default async function EditBriefPage({
             stage={stage}
             statusLine={statusLine}
             hadRevision={hadRevision}
-            editType={editDeliverables.map((d) => refinedDeliverableLabel(d.type, d.label)).join(" · ") || "Video edit"}
+            // The ACTUAL product name, or the tier-decorated type for a generic
+            // Aryeo label — never the bare word "Video" (208 N Adams St). The
+            // tier is the same videoTier() verdict the deadline is built on.
+            editType={videoTypeLabel(editDeliverables, videoTier(owedDeliverables)) || "Video edit"}
             dueISO={sla ? sla.due.toISOString() : null}
             shootDateISO={project.shootDate ? project.shootDate.toISOString() : null}
             photographerName={project.photographer?.name ?? null}
@@ -364,19 +368,12 @@ export default async function EditBriefPage({
             canReanalyze={isOwnerAdmin && !viewer?.impersonating}
           />
 
-          {/* 2 · WHAT TO MAKE, in words — the spec, the customer's own words on
-              this order, and everything that came off the shoot, in one card. */}
-          <EditInstructionsCard
-            projectId={project.id}
-            spec={project.editSpec ? JSON.parse(project.editSpec) : {}}
-            canEdit={isOwnerAdmin}
-            brief={briefFields}
-          />
-
-          {/* 3 · WHERE THE MEDIA IS — footage in, footage out, and everything
-              of the client's that goes on top of it. Right under the
-              instructions, so opening this page answers "what do I edit" and
-              "where is it" in the same glance (Jordan, Sep 2). */}
+          {/* 2 · WHERE THE MEDIA IS — footage in, footage out, and everything
+              of the client's that goes on top of it. ABOVE the instructions:
+              the RAW download is the slow part of starting an edit, so the
+              editor kicks it off first and reads the brief while it runs
+              (Jordan, Sep 2: "Media should be above the edit instructions so
+              they can start the download immediately"). */}
           <Section icon={FolderOpen} title="Media">
             <div className="space-y-3">
               <div className="flex flex-wrap gap-2">
@@ -420,6 +417,15 @@ export default async function EditBriefPage({
               )}
             </div>
           </Section>
+
+          {/* 3 · WHAT TO MAKE, in words — the spec, the customer's own words on
+              this order, and everything that came off the shoot, in one card. */}
+          <EditInstructionsCard
+            projectId={project.id}
+            spec={project.editSpec ? JSON.parse(project.editSpec) : {}}
+            canEdit={isOwnerAdmin}
+            brief={briefFields}
+          />
 
           {/* 4 · WHAT TO MAKE, by type — each deliverable with ITS type's style
               notes and live examples (same data as the Style Guide, so they
@@ -590,15 +596,12 @@ export default async function EditBriefPage({
 
         {/* RIGHT — what this client is like, and nothing else */}
         <div className="space-y-6">
-          <ClientProfileCard
-            clientId={project.client.id}
-            profile={profile}
-            updatedAt={project.client.profileUpdatedAt ? formatDistanceToNow(project.client.profileUpdatedAt, { addSuffix: true }) : null}
-          />
           {/* Their STANDING preferences — two registers kept apart on purpose:
               the note we hold on file, and what they typed on their portal.
               Not job instructions, so they sit with the profile, not in the
-              instruction card. */}
+              instruction card — and ABOVE the profile: the client's own words
+              outrank the AI's read of them (Jordan, Sep 2: "How they like it
+              should be above the working profile"). */}
           {(showPrefs || showTheirStyle) && (
             <Section icon={Quote} title="How they like it">
               <div className="space-y-3">
@@ -617,6 +620,11 @@ export default async function EditBriefPage({
               </div>
             </Section>
           )}
+          <ClientProfileCard
+            clientId={project.client.id}
+            profile={profile}
+            updatedAt={project.client.profileUpdatedAt ? formatDistanceToNow(project.client.profileUpdatedAt, { addSuffix: true }) : null}
+          />
           {/* Reference, not instruction — there when they want it, folded away
               when they don't. */}
           {videoDeliverables.length > 0 && (

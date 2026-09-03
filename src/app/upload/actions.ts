@@ -402,12 +402,16 @@ export async function finalizeUpload(
       // Strip the auto-added STYLE / COLOR PROFILE lines and section labels —
       // the gate demands the photographer's OWN words, not machine boilerplate
       // (review: the color-profile line vacuously satisfied a bare check).
+      // COLOR PROFILE is matched by PREFIX on purpose: the line follows the
+      // video tier ("COLOR PROFILE: iPhone" for standard, "COLOR PROFILE:
+      // S-Log3, D-LogM" for premium — Jordan, Sep 2; composed in
+      // UploadPortal.tsx), and either one must count as boilerplate here.
       const meaningful = (data.videoInstructions ?? "")
         .split("\n")
         .filter((l) => {
           const t = l.trim();
           return t && !/^STYLE:/.test(t) && !/^COLOR PROFILE:/.test(t) &&
-            !["VISION FOR THE EDIT", "SUMMARY", "SHOTS THAT MUST BE SHOWN", "AREAS TO AVOID", "REALTOR REQUESTS", "ADDITIONAL NOTES", "INTRO SCRIPT", "EDITING NOTES"].includes(t);
+            !["VISION FOR THE EDIT", "SUMMARY", "SHOTS THAT MUST BE SHOWN", "AREAS TO AVOID", "THINGS TO AVOID", "REALTOR REQUESTS", "ADDITIONAL NOTES", "INTRO SCRIPT", "EDITING NOTES"].includes(t);
         })
         .join("")
         .trim();

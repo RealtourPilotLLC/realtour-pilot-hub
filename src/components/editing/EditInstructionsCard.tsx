@@ -14,8 +14,14 @@ import { saveEditSpec } from "@/app/editing/actions";
 //   1. the spec — how it should sound, look and run (Luma-form fields, plus
 //      the batch size the photographer actually filmed);
 //   2. the customer's own words on THIS order + our own note for the job;
-//   3. what came off the shoot — the photographer's brief, shot order, things
-//      to remove, per-deliverable notes and any special request.
+//   3. what came off the shoot — the photographer's brief, shot order,
+//      per-deliverable notes and any special request. Only when there IS
+//      something: Jordan (Sep 2) doesn't want the editor told "no editing
+//      notes were submitted" — that a photographer skipped the brief is the
+//      admin's information, and Ops Day's QC card already says it to them.
+//      The photo retouch list ("Remove in editing") is likewise not here any
+//      more: it is Kyle's QC job, shown on the Ops Day QC card and the
+//      project page, not a video editor's instruction.
 // Owner/admin edit in place; the editor reads. Money is already scrubbed by
 // the caller for creative eyes.
 // ---------------------------------------------------------------------------
@@ -40,7 +46,9 @@ export type EditBrief = {
   editorBrief: string | null;
   videoInstructions: string | null;
   shotOrderNotes: string | null;
-  removalNotes: string | null;
+  // No removalNotes here on purpose — see the header. The retouch list stays
+  // with QC (opsDay.ts → Ops Day "From the shoot", projects/[id] "Shoot
+  // debrief", the editor-brief PDF); this card is what the VIDEO editor cuts.
   videosFilmed: number | null;
   scriptConfirmNote: string | null;
   deliverableNotes: { id: string; label: string; notes: string }[];
@@ -79,14 +87,19 @@ export function EditInstructionsCard({
   const [pending, start] = useTransition();
 
   const specEmpty = !spec.musicType && !spec.colorProfile && !spec.desiredLength && !spec.instructions;
+  // A whitespace-only brief is no brief — the upload portal trims before
+  // saving, but older rows and the in-place editor may not have.
+  const shootBrief = brief.editorBrief?.trim() || null;
+  // Exactly what section 3 prints, nothing more — "videos filmed" is a fact in
+  // section 1, so it does not keep an otherwise-empty shoot section alive.
   const shootEmpty =
-    !brief.editorBrief && !brief.videoInstructions && !brief.shotOrderNotes && !brief.removalNotes &&
-    brief.videosFilmed == null && !brief.scriptConfirmNote &&
+    !shootBrief && !brief.videoInstructions && !brief.shotOrderNotes && !brief.scriptConfirmNote &&
     brief.deliverableNotes.length === 0 && brief.specialRequests.length === 0;
-  // The two job notes always render (they carry their own "add a note"
-  // affordance for whoever may write), so "empty" is only about the read-only
-  // material either side of them.
-  const nothingAtAll = specEmpty && shootEmpty && !brief.orderNote && !brief.jobNote;
+  // The job note always renders for whoever may write it (it carries its own
+  // "add a note" affordance), so "empty" is only about the read-only material
+  // around it.
+  const nothingAtAll =
+    specEmpty && shootEmpty && brief.videosFilmed == null && !brief.orderNote && !brief.jobNote;
 
   const save = () =>
     start(async () => {
@@ -209,48 +222,57 @@ export function EditInstructionsCard({
           )}
 
           {/* 3 — WHAT CAME OFF THE SHOOT. The photographer's brief is the
-              anchor; everything else qualifies it. */}
-          <div className="space-y-3 border-t border-border pt-4">
-            <div>
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">From the shoot</div>
-              <JobNoteEditor
-                projectId={projectId}
-                field="shoot"
-                value={brief.editorBrief}
-                canEdit={brief.canEditNotes}
-                label=""
-                placeholder="What the editor needs to know from the shoot…"
-                empty="No editing notes were submitted on the upload."
-              />
-            </div>
-            {brief.videoInstructions && <Para label="Video — instructions from the shoot" text={brief.videoInstructions} />}
-            {brief.shotOrderNotes && <Para label="Shot order" text={brief.shotOrderNotes} />}
-            {brief.removalNotes && <Para label="Remove in editing" text={brief.removalNotes} />}
-            {brief.deliverableNotes.length > 0 && (
-              <ul className="space-y-1.5">
-                {brief.deliverableNotes.map((d) => (
-                  <li key={d.id} className="text-sm text-foreground/85">
-                    <span className="font-medium">{d.label}:</span> {d.notes}
-                  </li>
-                ))}
-              </ul>
-            )}
-            {brief.specialRequests.length > 0 && (
-              <div className="space-y-1.5 rounded-lg border border-warning/30 bg-warning-soft/40 px-3 py-2.5">
-                <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-warning">
-                  <Star className="size-3.5" /> Special requests
+              anchor; everything else qualifies it. The whole section, and the
+              brief inside it, only render when there is something to read —
+              an empty "From the shoot" is the admin's news, not the editor's
+              (Jordan, Sep 2), and Ops Day's QC card already carries it. */}
+          {!shootEmpty && (
+            <div className="space-y-3 border-t border-border pt-4">
+              {shootBrief && (
+                <div>
+                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">From the shoot</div>
+                  {/* Still a JobNoteEditor so owner/admin/photographer can fix a
+                      brief that exists; `empty` is only reachable by the person
+                      who just cleared it — the next load hides the section. */}
+                  <JobNoteEditor
+                    projectId={projectId}
+                    field="shoot"
+                    value={shootBrief}
+                    canEdit={brief.canEditNotes}
+                    label=""
+                    placeholder="What the editor needs to know from the shoot…"
+                    empty="Cleared."
+                  />
                 </div>
-                {brief.specialRequests.map((a) => (
-                  <p key={a.id} className="whitespace-pre-wrap text-sm text-foreground/85">{a.body}</p>
-                ))}
-              </div>
-            )}
-            {brief.scriptConfirmNote && (
-              <p className="text-[13px] text-muted">
-                Script: <span className="text-foreground/85">{brief.scriptConfirmNote}</span> — the confirmed text is in the Script card below.
-              </p>
-            )}
-          </div>
+              )}
+              {brief.videoInstructions && <Para label="Video — instructions from the shoot" text={brief.videoInstructions} />}
+              {brief.shotOrderNotes && <Para label="Shot order" text={brief.shotOrderNotes} />}
+              {brief.deliverableNotes.length > 0 && (
+                <ul className="space-y-1.5">
+                  {brief.deliverableNotes.map((d) => (
+                    <li key={d.id} className="text-sm text-foreground/85">
+                      <span className="font-medium">{d.label}:</span> {d.notes}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {brief.specialRequests.length > 0 && (
+                <div className="space-y-1.5 rounded-lg border border-warning/30 bg-warning-soft/40 px-3 py-2.5">
+                  <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-warning">
+                    <Star className="size-3.5" /> Special requests
+                  </div>
+                  {brief.specialRequests.map((a) => (
+                    <p key={a.id} className="whitespace-pre-wrap text-sm text-foreground/85">{a.body}</p>
+                  ))}
+                </div>
+              )}
+              {brief.scriptConfirmNote && (
+                <p className="text-[13px] text-muted">
+                  Script: <span className="text-foreground/85">{brief.scriptConfirmNote}</span> — the confirmed text is in the Script card below.
+                </p>
+              )}
+            </div>
+          )}
 
           {note && <p className="text-xs text-muted">{note}</p>}
         </div>

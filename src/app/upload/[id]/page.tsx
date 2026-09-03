@@ -102,11 +102,16 @@ export default async function UploadProjectPage({
   // Tier comes from the SETTINGS product mapping (videoTier() reads the label
   // itemToDeliverables stamped from Product.videoTier), so "Premium Video" and
   // anything else Jordan maps premium follows the premium rules automatically.
+  // The SAME answer also drives the brief itself (Jordan, Sep 2): premium is
+  // shot S-Log3 / D-LogM and gets every instruction field; standard is an
+  // iPhone reel and gets one editing-instructions box — so it's computed once
+  // here and handed to the portal, never re-derived from a name.
+  const isPremium = videoTier(liveDeliverables) === "premium";
   const videoSpec = videoStepSpec(
     [project.packageName, ...project.orderItems.map((i) => i.title), ...liveDeliverables.map((d) => d.label)],
     {
       hasFullVideo: liveDeliverables.some((d) => d.type === "VIDEO"),
-      isPremium: videoTier(liveDeliverables) === "premium",
+      isPremium,
       isMonthly: isMonthlyContentJob(liveDeliverables, project.packageName),
     },
   );
@@ -175,6 +180,7 @@ export default async function UploadProjectPage({
           rangeMode: photoPolicy.mode,
           squareFeet: project.squareFeet ?? null,
           videoSpec,
+          isPremium,
         }}
         script={scriptBody ? { body: scriptBody, hook: scriptHook, url: scriptUrl } : null}
         deliverables={project.deliverables.map((d) => ({

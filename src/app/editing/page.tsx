@@ -12,7 +12,8 @@ import { buildEditorQueue, unreadThreadCount } from "@/lib/editorQueue";
 export const dynamic = "force-dynamic";
 
 // The Editor dashboard is VIDEO-ONLY — photos are edited by AI, so editors only
-// touch video/reel jobs.
+// touch video/reel jobs. Shown to users as the "Editing Room" (Jordan, Sep 2) —
+// the /editing route, `editing` PageKey and editorQueue.ts names are unchanged.
 //   · OWNER / ADMIN → the Slack-tracker view, rebuilt in-hub (Jordan: "make
 //     this editor queue as simple as possible … I really like the way we have
 //     it set up in Slack"): Queue | Upcoming edits | Delivered, one row per
@@ -51,7 +52,7 @@ export default async function EditorQueuePage() {
   if (me?.role === "EDITOR" && !editorScope) {
     return (
       <div>
-        <PageHeader eyebrow="Video projects only" title="Editor Queue" />
+        <PageHeader eyebrow="Video projects only" title="Editing Room" />
         <p className="m-4 rounded-2xl border border-dashed border-border bg-surface p-6 text-sm text-muted sm:m-6">
           Your login isn&rsquo;t linked to an editor profile yet — ask Jordan to set your editor key and your
           queue will show up here.
@@ -113,7 +114,7 @@ export default async function EditorQueuePage() {
     <div>
       <PageHeader
         eyebrow="Video projects only"
-        title="Editor Queue"
+        title="Editing Room"
         subtitle={`${notDone.length} open · ${upcomingRows.length} upcoming`}
         // Pop-up Style Guide — a draggable floating window (remembers where
         // you put it), so the guide can sit beside the queue while working.

@@ -38,8 +38,8 @@ export default async function SettingsPage() {
           <p className="mb-4 text-sm leading-relaxed text-muted">
             When raws land on a video job, the hub routes the edit automatically.
             &ldquo;Manual&rdquo; sends the job to the pinned <strong>Needs assigning</strong> pile
-            on Tasks instead, for you or Kyle to hand off. Reassigning any single job on the
-            Editor Queue always overrides these rules.
+            on Tasks instead, for you or Kyle to hand off. Reassigning any single job in the
+            Editing Room always overrides these rules.
           </p>
           <RoutingRulesForm initial={rules} />
         </Section>

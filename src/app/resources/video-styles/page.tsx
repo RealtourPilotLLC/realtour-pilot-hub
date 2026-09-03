@@ -2,7 +2,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { StyleGuideBody } from "./guide";
 
 // The full Style Guide page (Creative nav → "Style Guide"). All content lives
-// in ./guide.tsx, shared with the /embed route the Editor Queue's floating
+// in ./guide.tsx, shared with the /embed route the Editing Room's floating
 // window iframes. Daily ISR — see the note atop guide.tsx.
 export const revalidate = 86400;
 

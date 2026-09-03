@@ -38,7 +38,7 @@ import { Section } from "@/components/ui/Section";
 // plain "watch" link, so a bad fetch degrades to what we shipped before.
 //
 // This file is NOT a route: StyleGuideBody is shared by the full page
-// (./page.tsx) and the bare /embed route the Editor Queue's floating Style
+// (./page.tsx) and the bare /embed route the Editing Room's floating Style
 // Guide window iframes (./embed/page.tsx). Route files can't export extra
 // components, hence the colocated split. Both routes set revalidate = 86400.
 

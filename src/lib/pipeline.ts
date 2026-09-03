@@ -190,6 +190,57 @@ export function refinedDeliverableLabel(type: DeliverableType, label?: string | 
   return base;
 }
 
+// ---------------------------------------------------------------------------
+// The ACTUAL video product, for the editor's "Edit type" fact on /edit/<id>.
+// refinedDeliverableLabel above deliberately collapses every video item into
+// a handful of pipeline chips (Premium Reel / Monthly Content / Standard Reel /
+// the bare type word). Right for the chips, wrong for the brief: a generic
+// order item rendered as just "Video" (208 N Adams St — Jordan, Sep 2: "The
+// edit type should say the actual video type"). Aryeo's catalogue is the
+// culprit — that order's item is literally titled "Video".
+//   • a SPECIFIC label is the product's real name and is shown as typed:
+//     "Premium Horizontal Video", "Video Accelerator - 4hr Session",
+//     "Standard Reel with Agent Intro". No prettifyLabel here — the
+//     " - 4hr Session" half IS the information.
+//   • a GENERIC label ("Video", "Social Reel", "Social Media Reel", empty) is
+//     decorated with the job's tier instead: "Standard Video" / "Premium Video"
+//     / "Standard Reel" / "Premium Reel".
+// The tier is PASSED IN, not computed here: videoTier() lives in the
+// server-only projectStatus.ts, which itself imports this module, and this
+// file is shared with "use client" components. The caller hands over
+// videoTier()'s verdict — the same call the Deadline beside this fact is
+// derived from, so the two can never disagree.
+// ---------------------------------------------------------------------------
+// The labels Aryeo uses when it is not saying anything: the bare type word or
+// the plain "Social (Media) Reel" line, with or without its "(discounted)"
+// pricing note — a money-shaped word that has no place on an editor's screen.
+const GENERIC_VIDEO_LABEL_RE = /^(video|reel|social\s+(media\s+)?reel)(\s*\(\s*discounted\s*\))?$/i;
+
+export function videoTypeLabel(
+  deliverables: { type: string; label?: string | null }[],
+  tier: "standard" | "premium" | null,
+): string {
+  const tierWord = tier === "premium" ? "Premium" : "Standard";
+  const names: string[] = [];
+  for (const d of deliverables) {
+    if (d.type !== DeliverableType.VIDEO && d.type !== DeliverableType.SOCIAL_REEL) continue;
+    const l = (d.label ?? "").trim();
+    let name: string;
+    if (l && !GENERIC_VIDEO_LABEL_RE.test(l)) {
+      name = l;
+    } else {
+      // "Social Reel" is a reel whatever its type column says; an empty label
+      // falls back to the type.
+      const reel = /reel/i.test(l) || d.type === DeliverableType.SOCIAL_REEL;
+      name = `${tierWord} ${reel ? "Reel" : "Video"}`;
+    }
+    // Two "Social Reel" rows read "Standard Reel", once — the cut uploader
+    // below the tracker already lists every cut owed.
+    if (!names.includes(name)) names.push(name);
+  }
+  return names.join(" · ");
+}
+
 export const DELIVERABLE_STATUS_META: Record<
   DeliverableStatus,
   { label: string; color: string; soft: string }

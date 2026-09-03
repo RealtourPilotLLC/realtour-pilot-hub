@@ -116,7 +116,10 @@ const SECTIONS: NavSection[] = [
       { label: "My Shoots", href: "/shoot", icon: Camera, key: "shoot" },
       { label: "My Pay", href: "/my-pay", icon: Wallet, key: "mypay" },
       { label: "Upload Portal", href: "/upload", icon: Upload, key: "upload" },
-      { label: "Editor Queue", href: "/editing", icon: Palette, key: "editing" },
+      // "Editing Room" is the label only (Jordan, Sep 2: "Instead of editor
+      // queue, I want it to be called Editing Room"). The /editing route, the
+      // `editing` PageKey and the editorQueue.ts helpers keep their names.
+      { label: "Editing Room", href: "/editing", icon: Palette, key: "editing" },
       // The editors' reference: video types, style specs, example players,
       // music + tools. Jordan: "everything all in one spot for the editors."
       // Rides the `resources` PageKey (every role has it), so no new
