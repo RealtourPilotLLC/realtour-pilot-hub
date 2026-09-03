@@ -968,17 +968,20 @@ function deliverablesForItem(item: AryeoOrderItem): ParsedDeliverable[] {
     const singleVideo = manual.types.filter((t) => VIDEOISH.has(t)).length === 1;
     return manual.types.map((raw) => {
       // Drone splits at the mapping level: photos stay a DRONE capture
-      // deliverable (photo pipeline); drone VIDEO is a real VIDEO deliverable
-      // (editor queue, video SLA) labeled so every engine reads it.
+      // deliverable (photo pipeline); drone VIDEO is footage for the order's
+      // video and never a row of its own (see the DRONE_VIDEO fold below).
       if (raw === "DRONE_PHOTO") return { type: "DRONE" as DeliverableType, label: "Drone Photos", quantity: qty, ...identity(raw) };
-      if (raw === "DRONE_VIDEO") {
-        const label = manual.tier === "premium" ? "Premium Drone Video" : manual.tier === "personal_branding" ? (MONTHLY_PLAN_RE.test(title) ? title : `${title} · Monthly Content`) : "Drone Video";
-        return { type: "VIDEO" as DeliverableType, label, quantity: vidQty, ...identity(raw) };
-      }
+      // Drone video is FOOTAGE for the order's video, never a cut of its own
+      // (Jordan, Sep 2: "drone videography is just an add-on for standard
+      // videos" — and a premium bundle's drone pass is part of its cinematic).
+      // Folding it here stops the phantom "Premium Drone Video" cut a bundle
+      // used to mint beside its reel and video. The order item keeps the
+      // "with drone video" signal via productTitle / OrderItem.title.
+      if (raw === "DRONE_VIDEO") return null;
       const type = raw as DeliverableType;
       const videoish = type === "VIDEO" || type === "SOCIAL_REEL";
       return { type, label: manualLabel(manual, type, title, singleVideo), quantity: videoish ? vidQty : qty, ...identity(raw) };
-    });
+    }).filter((d): d is NonNullable<typeof d> => d !== null);
   }
 
   const mapped = mappedTypesForTitle(title);
