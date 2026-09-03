@@ -752,7 +752,26 @@ function mappedTypesForTitle(title: string): DeliverableType[] | undefined {
       return PRODUCT_DELIVERABLES.get(key);
     }
   }
-  return undefined;
+  return bindByBaseName(title, norm, productKeysByLength, (k) => PRODUCT_DELIVERABLES.get(k));
+}
+
+// A discounted or renamed VARIANT of a product — "SOCIAL MEDIA INFLUENCER - AAP
+// Discounted" beside the catalogue's "SOCIAL MEDIA INFLUENCER - Dominate Social
+// Media, Build Your Brand." — shares the product's BASE NAME (the part before
+// the first " - " in the raw title) but not its full title, so it started
+// with neither map key, fell through to the keyword parser, derived only a
+// reel, and the reconciler retired the photos, drone and floor plan the
+// package really includes (47 Venuti Dr, Sep 2 catalogue audit). Bind on the
+// base only when exactly ONE key owns it and the variant's own suffix is pure
+// fluff (no media word, no scope/fee veto) — never on an ambiguous base.
+function bindByBaseName<T>(rawTitle: string, norm: string, keys: string[], get: (k: string) => T | undefined): T | undefined {
+  const rawBase = rawTitle.split(/\s+[-–—]\s+/)[0] ?? "";
+  const base = normProduct(rawBase);
+  if (!base || base === norm) return undefined;
+  const leftover = norm.startsWith(base + " ") ? norm.slice(base.length + 1) : "";
+  if (MEDIA_WORD_RE.test(leftover) || SUFFIX_VETO_RE.test(leftover)) return undefined;
+  const owners = keys.filter((k) => k === base || k.startsWith(base + " "));
+  return owners.length === 1 ? get(owners[0]) : undefined;
 }
 
 // Whether a product's reel/video is PREMIUM (→ Luma, 3–4 day turnaround) vs
@@ -869,19 +888,7 @@ function manualMappingForTitle(title: string): ManualMapping | undefined {
     const leftover = norm.slice(key.length + 1);
     if (!MEDIA_WORD_RE.test(leftover) && !SUFFIX_VETO_RE.test(leftover)) return MANUAL_MAP.get(key);
   }
-  // A discounted / renamed VARIANT of a catalogue product — "SOCIAL MEDIA
-  // INFLUENCER - AAP Discounted" against "SOCIAL MEDIA INFLUENCER - Dominate
-  // Social Media…" — shares the product's BASE name (the part before " - ").
-  // Without this the variant fell through to the regex parser, derived only a
-  // reel, and the reconciler retired the photos, drone and floor plan the
-  // package really includes (47 Venuti Dr, Sep 2). Base-name match only when
-  // exactly one catalogue product owns that base, so nothing ambiguous binds.
-  const base = norm.split(" - ")[0]?.trim();
-  if (base && base !== norm) {
-    const owners = [...MANUAL_MAP.keys()].filter((k) => k === base || k.startsWith(base + " - "));
-    if (owners.length === 1) return MANUAL_MAP.get(owners[0]);
-  }
-  return undefined;
+  return bindByBaseName(title, norm, [...MANUAL_MAP.keys()], (k) => MANUAL_MAP!.get(k));
 }
 
 // Labels for manually-mapped products carry the tier signal every downstream
