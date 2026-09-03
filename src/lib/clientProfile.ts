@@ -324,6 +324,35 @@ function hasEditingBlock(e: ClientProfileEditing | undefined): boolean {
 // A profile with no editing block (every pre-Sep-2 profile) is rescued by
 // legacyEditing() above rather than rendering empty; brand/style, the revision
 // picture and the counts were always editor-safe and pass through as they are.
+// The brand read, sentence by sentence. A brand paragraph mixes what the videos
+// should LOOK like ("polished but approachable", "an old man voiceover with a
+// storytelling angle") with why the client is the way they are ("faith is
+// central to his brand", "he refers business once a rapport is established").
+// Only the second kind is what Jordan objected to seeing on an editor's brief.
+//
+// NOT_FOR_EDITOR is deliberately NOT reused here: it is tuned for logistics
+// bullets, and on prose it eats the creative direction with them. This list was
+// cut down against all 211 stored brand paragraphs until it dropped nothing an
+// editor needs — every earlier draft deleted something real: "text treatments"
+// (matched `texts?`), "price points" (`price`), "single-family homes"
+// (`family`), "he trusts the editors" (`trust`), and worst of all Ashley
+// Brunner's "Logo and phone number … must appear on every video" (`phone`).
+// So this is only what Jordan named AND what cannot plausibly describe a cut.
+const BRAND_NOT_FOR_EDITOR =
+  /\b(faith|church|religio\w*|rapport|banter|humou?r|jokes?|small talk|referr(?:al|als|ed|ing)|wardrobe|outfits?|office visits?|hand-?hold\w*)\b/i;
+
+function brandForEditor(paragraph: string): string {
+  const whole = (paragraph ?? "").trim();
+  if (!whole) return "";
+  const kept = whole
+    .split(/(?<=[.!?])\s+/)
+    .map((x) => x.trim())
+    .filter((x) => x.length >= 8 && !BRAND_NOT_FOR_EDITOR.test(x) && !ADDRESSED_TO_OPS.test(x));
+  // Everything personal and nothing about the look: say nothing rather than
+  // hand the editor a paragraph about the client as a person.
+  return kept.join(" ");
+}
+
 export function editorView(profile: ClientProfile | null): EditorClientProfile | null {
   if (!profile) return null;
   const stored: ClientProfileEditing = {
@@ -338,7 +367,12 @@ export function editorView(profile: ClientProfile | null): EditorClientProfile |
     segment: profile.segment ?? null,
     stats: { totalOrders: profile.stats?.totalOrders ?? 0, revisions: profile.stats?.revisions ?? 0 },
     editing: hasEditingBlock(stored) ? stored : legacyEditing(profile),
-    brandStyle: profile.brandStyle ?? "",
+    // The brand paragraph went through UNFILTERED, so Mike Ciunci's editor brief
+    // still opened with "Mike's brand leans into faith … once a rapport is
+    // established" — the exact lines Jordan listed as not-for-editors. It is
+    // prose, not bullets, so filter it a SENTENCE at a time and keep the ones
+    // that describe the look; drop the ones about the relationship.
+    brandStyle: brandForEditor(profile.brandStyle ?? ""),
     revisions: {
       summary: profile.revisions?.summary ?? "",
       commonTypes: profile.revisions?.commonTypes ?? [],
