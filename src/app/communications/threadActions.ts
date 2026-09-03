@@ -110,7 +110,7 @@ export async function loadClientThread(
   await requireAdmin();
   const c = await prisma.client.findUnique({
     where: { id: clientId },
-    select: { id: true, name: true, phone: true, email: true, backupEmail: true, company: true, segment: true, socialClient: true, socialPlan: true },
+    select: { id: true, name: true, phone: true, email: true, backupEmail: true, company: true, segment: true, socialClient: true, socialPlan: true, avatarUrl: true },
   });
   if (!c?.phone) return { ok: false, message: "No phone number on file for this client." };
   const k = phoneKey(c.phone);

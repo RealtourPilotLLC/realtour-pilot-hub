@@ -3,10 +3,11 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronLeft, ChevronRight, MapPin, CheckCircle2, Upload as UploadIcon, Camera, X, Eye, GraduationCap, Target, Wrench } from "lucide-react";
+import { ChevronLeft, ChevronRight, CheckCircle2, Upload as UploadIcon, Camera, X, Eye, GraduationCap, Target, Wrench } from "lucide-react";
 import { etDayKey, etTime, etFullDate } from "@/lib/datetime";
 import { DELIVERABLE_META } from "@/lib/pipeline";
 import { Badge } from "@/components/ui/Badge";
+import { Avatar } from "@/components/ui/Avatar";
 import { PALETTE } from "@/lib/palette";
 import { cn } from "@/lib/utils";
 import { YourTasksCard } from "@/components/shoot/YourTasksCard";
@@ -376,7 +377,11 @@ function ShootRowCard({ r, showWho, as }: { r: MyShootRow; showWho: boolean; as:
         </div>
         <div className="mt-0.5 truncate font-semibold">{r.street}</div>
         <div className="mt-0.5 flex items-center gap-1.5 text-sm text-muted">
-          <MapPin className="size-3.5 shrink-0" />
+          {/* The agent's face where a map pin used to sit — this line is WHO
+              the shoot is for, not where it is (the street is the line above).
+              Jordan, Sep 2: show the Aryeo profile photo "in other places the
+              clients are mentioned." Initials disc when Aryeo has none. */}
+          <Avatar name={r.clientName} src={r.clientAvatarUrl} size={18} />
           <span className="truncate">{r.clientName}{showWho && r.photographerName ? ` · ${r.photographerName}` : ""}</span>
         </div>
         {types.length > 0 && <div className="mt-1.5 text-xs text-muted-2">{types.join(" · ")}</div>}

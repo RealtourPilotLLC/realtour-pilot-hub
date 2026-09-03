@@ -140,7 +140,7 @@ export default async function UploadListPage() {
 type Shoot = {
   debriefSubmittedAt: Date | null;
   id: string; title: string; status: string; shootDate: Date | null; uploadedAt: Date | null;
-  client: { name: string }; photographer: { name: string; avatarColor: string } | null;
+  client: { name: string; avatarUrl: string | null }; photographer: { name: string; avatarColor: string } | null;
   deliverables: { type: DeliverableType }[]; _count: { uploads: number };
 };
 
@@ -183,7 +183,8 @@ function JobRow({ s, overBudget }: { s: Shoot; overBudget: boolean }) {
             </span>
           )}
         </div>
-        <div className="truncate text-xs text-muted">
+        <div className="flex items-center gap-1.5 truncate text-xs text-muted">
+          <Avatar name={s.client.name} src={s.client.avatarUrl} size={16} />
           {s.client.name}
           {s.shootDate ? ` · ${etDateTime(s.shootDate)}` : ""}
           {s._count.uploads > 0 ? ` · ${s._count.uploads} file${s._count.uploads === 1 ? "" : "s"}` : ""}

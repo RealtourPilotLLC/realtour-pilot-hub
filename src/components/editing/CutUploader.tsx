@@ -233,7 +233,10 @@ export function CutUploader({ projectId, cuts, canUpload }: { projectId: string;
     <section className="panel-shadow overflow-hidden rounded-2xl border border-brand/25 bg-surface">
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3 sm:px-5">
         <CloudUpload className="size-4 text-brand" />
-        <h2 className="text-sm font-semibold">Cuts to deliver</h2>
+        {/* Named for what the panel DOES — it is how a cut gets in front of
+            the reviewer (Jordan, Sep 2: "instead of Cuts to deliver, it
+            should say Send to Review"). */}
+        <h2 className="text-sm font-semibold">Send to Review</h2>
         <span className="text-xs text-muted">
           {cuts.filter((c) => c.latest?.status === "APPROVED").length} of {cuts.length} approved
         </span>

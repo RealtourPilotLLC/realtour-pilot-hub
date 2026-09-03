@@ -215,7 +215,7 @@ export default async function ProjectPage({
       <Section icon={User} title="Client" className="mt-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
-            <Avatar name={project.client.name} size={44} color="#4f46e5" />
+            <Avatar name={project.client.name} src={project.client.avatarUrl} size={44} color="#4f46e5" />
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-1.5">
                 <Link href={`/clients/${project.client.id}`} className="text-base font-semibold hover:underline">

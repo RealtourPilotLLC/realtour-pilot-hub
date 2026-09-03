@@ -23,6 +23,7 @@ export type QueueSubmission = {
   projectId: string;
   street: string;
   clientName: string;
+  clientAvatarUrl: string | null; // the agent's Aryeo headshot, when they have one
   premium: boolean;
   round: number;
   status: string;
@@ -40,6 +41,7 @@ export type QueuePhotoQc = {
   projectId: string | null;
   street: string;
   clientName: string;
+  clientAvatarUrl: string | null;
   dueAt: string | null;
   assignedKey: string | null;
 };
@@ -80,7 +82,10 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
             id: true,
             title: true,
             status: true,
-            client: { select: { name: true, socialClient: true } },
+            // avatarUrl: Jordan (Sep 2) — "if the agent has a profile photo in
+            // Aryeo that should be shown … in other places the clients are
+            // mentioned." The queue rows are one of those places.
+            client: { select: { name: true, socialClient: true, avatarUrl: true } },
             deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
           },
         },
@@ -99,7 +104,7 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
         dueAt: true,
         assignedKey: true,
         propertyAddress: true,
-        project: { select: { title: true, client: { select: { name: true } } } },
+        project: { select: { title: true, client: { select: { name: true, avatarUrl: true } } } },
       },
     }),
     prisma.mediaNote.groupBy({
@@ -137,6 +142,7 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
     projectId: s.projectId,
     street: streetOf(s.project?.title),
     clientName: s.project?.client?.name ?? "",
+    clientAvatarUrl: s.project?.client?.avatarUrl ?? null,
     premium: videoTier(s.project?.deliverables ?? []) === "premium",
     round: s.round,
     status: s.status,
@@ -215,6 +221,7 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
       projectId: t.projectId,
       street: streetOf(t.project?.title ?? t.propertyAddress),
       clientName: t.project?.client?.name ?? "",
+      clientAvatarUrl: t.project?.client?.avatarUrl ?? null,
       dueAt: t.dueAt ? t.dueAt.toISOString() : null,
       assignedKey: t.assignedKey,
     })),
@@ -264,6 +271,7 @@ export type CutWorkspace = {
   title: string;
   status: string;
   clientName: string;
+  clientAvatarUrl: string | null; // the agent's Aryeo headshot — the workspace header shows it beside the name
   premium: boolean;
   editorBrief: string | null;
   reelHook: string | null;
@@ -321,7 +329,7 @@ export async function getCutWorkspace(projectId: string, cutId?: string | null):
       reelHook: true,
       reelScript: true,
       reelSong: true,
-      client: { select: { name: true, socialClient: true } },
+      client: { select: { name: true, socialClient: true, avatarUrl: true } },
       deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
       // An upload still in flight (or one that died) is not a cut yet.
       reviewSubmissions: { where: { status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } }, orderBy: { round: "desc" } },
@@ -371,6 +379,7 @@ export async function getCutWorkspace(projectId: string, cutId?: string | null):
     title: project.title,
     status: project.status,
     clientName: project.client?.name ?? "",
+    clientAvatarUrl: project.client?.avatarUrl ?? null,
     premium: videoTier(project.deliverables) === "premium",
     editorBrief: project.editorBrief,
     reelHook: project.reelHook,

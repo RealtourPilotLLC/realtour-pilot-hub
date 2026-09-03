@@ -6,7 +6,7 @@
 //     about the type of video should be on the editing page in the What to
 //     make section, with examples")
 //   · EVERY video label the hub prints (Sep 2 2026): the tracker's "Edit type",
-//     the "Cuts to deliver" rows, the Review Room cut switcher, the approved
+//     the "Send to Review" rows, the Review Room cut switcher, the approved
 //     file name. Jordan: "in Cuts to Deliver, it shouldn't be called 'Social
 //     Reel'; it should be called the correct thing everywhere." The type
 //     column (SOCIAL_REEL) and its generic label were all the hub kept of an

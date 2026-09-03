@@ -96,7 +96,10 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
       <div className="border-b border-border px-4 py-4 sm:px-6">
         <BackLink href="/clients" label="All clients" className="mb-3" />
         <div className="flex flex-wrap items-center gap-4">
-          <Avatar name={client.name} size={56} color="#4f46e5" />
+          {/* Jordan, Sep 2 2026: "if the agent has a profile photo in aryeo that
+              should be shown here". avatarUrl is Aryeo's customer avatar,
+              mirrored nightly; with none the disc stays initials. */}
+          <Avatar name={client.name} src={client.avatarUrl} size={56} color="#4f46e5" />
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-2xl font-semibold tracking-tight">{client.name}</h1>

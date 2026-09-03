@@ -318,7 +318,7 @@ export function cutKeyOf(s: { deliverableId?: string | null; slot?: number | nul
  *  on their one video row (quantity / videosFilmed / plan quota).
  *  Each cut is NAMED by its resolved style (Deliverable.videoStyle →
  *  productTitle → label heuristics), with the same tier/monthly verdicts the
- *  tracker's "Edit type" uses — so "Cuts to deliver", the Review Room
+ *  tracker's "Edit type" uses — so "Send to Review", the Review Room
  *  switcher, the approved file name and the brief all say one thing. Jordan
  *  (Sep 2): a Standard Reel with Agent Intro cut must not read "Social Reel". */
 export async function cutSlots(projectId: string): Promise<CutSlot[]> {
@@ -695,6 +695,7 @@ export type VideoCutState = {
   projectId: string;
   street: string;
   clientName: string;
+  clientAvatarUrl: string | null; // the agent's Aryeo headshot, beside the name on the home Video Review card
   /** "Premium Social Media Reel" / "Personal Branding Reel — Video 2 of 4" /
    *  the file name for legacy rows */
   cutLabel: string;
@@ -758,7 +759,7 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
       where: { id: { in: projectIds } },
       select: {
         id: true, title: true, status: true, packageName: true, videosFilmed: true, statusEvidence: true,
-        client: { select: { name: true } },
+        client: { select: { name: true, avatarUrl: true } },
         // Same order as cutSlots() — the monthly batch count lands on the FIRST
         // video row, so both slot builders must see the rows the same way.
         deliverables: { where: { removedFromOrderAt: null }, orderBy: { createdAt: "asc" }, select: { id: true, type: true, label: true, quantity: true, videoStyle: true, productTitle: true } },
@@ -807,6 +808,7 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
         projectId: p.id,
         street,
         clientName: p.client?.name ?? "",
+        clientAvatarUrl: p.client?.avatarUrl ?? null,
         cutLabel: slot?.label ?? r.fileName ?? "Video",
         round: r.round,
         status: r.status as VideoCutState["status"],

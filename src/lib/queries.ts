@@ -57,7 +57,9 @@ export async function getProject(id: string) {
       smartTasks: {
         where: { status: { notIn: ["COMPLETED", "CANCELLED"] } },
         orderBy: [{ priority: "asc" }, { dueAt: "asc" }],
-        include: { client: { select: { name: true } } },
+        // avatarUrl rides along with the name here and on every nested client
+        // select in this file that NAMES the client — see BriefTask.clientAvatarUrl.
+        include: { client: { select: { name: true, avatarUrl: true } } },
       },
       messages: {
         orderBy: { createdAt: "asc" },
@@ -81,6 +83,7 @@ export type ConvoMember = {
   segment: string | null;
   socialClient: boolean;
   socialPlan: string | null;
+  avatarUrl: string | null; // the agent's Aryeo headshot — null when Aryeo has none
 };
 
 // Resolve a set of phone numbers (group participants) to names/clients, for the
@@ -89,7 +92,7 @@ export async function resolveParticipants(phones: string[]): Promise<ConvoMember
   const keys = phones.map((p) => (p || "").replace(/\D/g, "").slice(-10)).filter((k) => k.length === 10);
   if (keys.length === 0) return [];
   const [clients, contacts] = await Promise.all([
-    prisma.client.findMany({ select: { id: true, name: true, phone: true, segment: true, socialClient: true, socialPlan: true } }),
+    prisma.client.findMany({ select: { id: true, name: true, phone: true, segment: true, socialClient: true, socialPlan: true, avatarUrl: true } }),
     prisma.contact.findMany({ where: { phones: { not: null } }, select: { firstName: true, lastName: true, company: true, phones: true } }),
   ]);
   const byClient = new Map<string, (typeof clients)[number]>();
@@ -115,6 +118,7 @@ export async function resolveParticipants(phones: string[]): Promise<ConvoMember
         segment: c?.segment ?? null,
         socialClient: c?.socialClient ?? false,
         socialPlan: c?.socialPlan ?? null,
+        avatarUrl: c?.avatarUrl ?? null,
       } as ConvoMember;
     })
     .filter((m): m is ConvoMember => m !== null);
@@ -130,6 +134,7 @@ export async function getConversationContext(rawPhone: string) {
     select: {
       id: true, name: true, phone: true, email: true, backupEmail: true,
       company: true, segment: true, socialClient: true, socialPlan: true,
+      avatarUrl: true, // headshot for the conversation header (ConversationView)
     },
   });
   let client = clients.find((c) => c.phone && c.phone.replace(/\D/g, "").slice(-10) === k) ?? null;
@@ -189,21 +194,21 @@ export async function getTeamMemberDetail(id: string) {
         },
         orderBy: { startAt: "asc" },
         take: 12,
-        include: { project: { select: { id: true, title: true, client: { select: { name: true } } } } },
+        include: { project: { select: { id: true, title: true, client: { select: { name: true, avatarUrl: true } } } } },
       }),
       // Recently shot (as photographer)
       prisma.project.findMany({
         where: { photographerId: id },
         orderBy: { shootDate: { sort: "desc", nulls: "last" } },
         take: 6,
-        select: { id: true, title: true, status: true, shootDate: true, client: { select: { name: true } } },
+        select: { id: true, title: true, status: true, shootDate: true, client: { select: { name: true, avatarUrl: true } } },
       }),
       // Currently editing (as editor)
       prisma.project.findMany({
         where: { editorId: id, status: { in: ["SHOT", "EDITING", "REVIEW"] } },
         orderBy: { deliveryDue: { sort: "asc", nulls: "last" } },
         take: 8,
-        select: { id: true, title: true, status: true, deliveryDue: true, client: { select: { name: true } } },
+        select: { id: true, title: true, status: true, deliveryDue: true, client: { select: { name: true, avatarUrl: true } } },
       }),
       // Feedback on their shoots (creative scorecard)
       prisma.feedback.findMany({
@@ -293,7 +298,7 @@ export async function getClientTextTasks() {
   return prisma.smartTask.findMany({
     where: clientTextWhere(),
     // Phone decides whether Send is even possible; the client name feeds chips.
-    include: { client: { select: { name: true, phone: true } } },
+    include: { client: { select: { name: true, phone: true, avatarUrl: true } } },
     // Soonest due first; no-date confirmations (a shoot date still to chase)
     // surface on top rather than sinking below every dated row.
     orderBy: { dueAt: { sort: "asc", nulls: "first" } },
@@ -312,6 +317,13 @@ export type BriefTask = {
   projectId: string | null;
   clientId: string | null;
   clientName: string | null;
+  // Jordan, Sep 2 2026: "if the agent has a profile photo in aryeo that should
+  // be shown … in other places the clients are mentioned." So every row this
+  // file returns with a clientName carries the headshot next to it
+  // (Client.avatarUrl, mirrored nightly from Aryeo's customer avatar). null
+  // means Aryeo has no photo — <Avatar src={…}> then draws the initials disc it
+  // always did, so a surface can pass it straight through with no conditional.
+  clientAvatarUrl: string | null;
   contactName: string | null;
   propertyAddress: string | null;
   overdue: boolean;
@@ -321,7 +333,7 @@ type RawTask = {
   id: string; title: string; taskType: string; priority: string;
   dueAt: Date | null; source: string; assignedKey: string | null; projectId: string | null;
   clientId: string | null; contactName: string | null;
-  propertyAddress: string | null; client: { name: string } | null;
+  propertyAddress: string | null; client: { name: string; avatarUrl: string | null } | null;
 };
 function mapTask(t: RawTask, startToday: Date): BriefTask {
   return {
@@ -335,6 +347,7 @@ function mapTask(t: RawTask, startToday: Date): BriefTask {
     projectId: t.projectId,
     clientId: t.clientId,
     clientName: t.client?.name ?? null,
+    clientAvatarUrl: t.client?.avatarUrl ?? null,
     contactName: t.contactName,
     propertyAddress: t.propertyAddress,
     overdue: !!t.dueAt && t.dueAt < startToday,
@@ -380,7 +393,7 @@ export async function getMorningBrief(): Promise<BriefTask[]> {
         ] },
       ],
     },
-    include: { client: { select: { name: true } } },
+    include: { client: { select: { name: true, avatarUrl: true } } },
     orderBy: { dueAt: "asc" },
   });
   return tasks.map((t) => mapTask(t, startToday));
@@ -399,7 +412,7 @@ export async function getOverdueTasks(): Promise<BriefTask[]> {
       taskType: { notIn: [...MESSAGE_TASK_TYPES, ...DELIVER_TASK_TYPES] },
       OR: [{ projectId: null }, { project: recentProjectWhere() }],
     },
-    include: { client: { select: { name: true } } },
+    include: { client: { select: { name: true, avatarUrl: true } } },
     orderBy: [{ priority: "asc" }, { dueAt: "asc" }],
   });
   return tasks.map((t) => mapTask(t, startToday));
@@ -958,7 +971,7 @@ export async function getShootWindow() {
     },
     orderBy: { startAt: "asc" },
     include: {
-      project: { select: { id: true, title: true, client: { select: { name: true } } } },
+      project: { select: { id: true, title: true, client: { select: { name: true, avatarUrl: true } } } },
       assignedTo: { select: { name: true } },
     },
   });
@@ -1120,6 +1133,7 @@ export type HistoryTask = {
   taskType: string;
   completedAt: string;
   clientName: string | null;
+  clientAvatarUrl: string | null; // see BriefTask.clientAvatarUrl
   propertyAddress: string | null;
   projectId: string | null;
 };
@@ -1128,6 +1142,7 @@ export type HistoryDelivery = {
   title: string;
   deliveredAt: string;
   clientName: string | null;
+  clientAvatarUrl: string | null; // see BriefTask.clientAvatarUrl
 };
 
 // Completed tasks over the last N days (newest first), for the history page.
@@ -1138,7 +1153,7 @@ export async function getTaskHistory(days = 45): Promise<HistoryTask[]> {
     orderBy: { completedAt: "desc" },
     select: {
       id: true, title: true, taskType: true, completedAt: true,
-      propertyAddress: true, projectId: true, client: { select: { name: true } },
+      propertyAddress: true, projectId: true, client: { select: { name: true, avatarUrl: true } },
     },
   });
   return tasks
@@ -1149,6 +1164,7 @@ export async function getTaskHistory(days = 45): Promise<HistoryTask[]> {
       taskType: t.taskType,
       completedAt: t.completedAt!.toISOString(),
       clientName: t.client?.name ?? null,
+      clientAvatarUrl: t.client?.avatarUrl ?? null,
       propertyAddress: t.propertyAddress,
       projectId: t.projectId,
     }));
@@ -1161,6 +1177,7 @@ export type HistoryShoot = {
   at: string;
   time: string;
   clientName: string | null;
+  clientAvatarUrl: string | null; // see BriefTask.clientAvatarUrl
   photographer: string | null;
 };
 
@@ -1172,7 +1189,7 @@ export async function getShootHistory(days = 45): Promise<HistoryShoot[]> {
     orderBy: { startAt: "desc" },
     select: {
       id: true, startAt: true,
-      project: { select: { id: true, title: true, client: { select: { name: true } } } },
+      project: { select: { id: true, title: true, client: { select: { name: true, avatarUrl: true } } } },
       assignedTo: { select: { name: true } },
     },
   });
@@ -1185,6 +1202,7 @@ export async function getShootHistory(days = 45): Promise<HistoryShoot[]> {
       at: a.startAt!.toISOString(),
       time: a.startAt!.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }),
       clientName: a.project!.client?.name ?? null,
+      clientAvatarUrl: a.project!.client?.avatarUrl ?? null,
       photographer: a.assignedTo?.name ?? null,
     }));
 }
@@ -1196,6 +1214,7 @@ export type BillingRow = {
   id: string;
   title: string;
   clientName: string | null;
+  clientAvatarUrl: string | null; // see BriefTask.clientAvatarUrl
   orderedAt: string | null;
   deliveredAt: string | null;
   invoiceTotal: number | null; // dollars
@@ -1219,7 +1238,7 @@ export type BillingRow = {
  *  so neither action is invisible, and both can be undone (review HIGH). */
 export async function getClearedArRows(): Promise<
   {
-    id: string; title: string; clientName: string; outstanding: number /* dollars */;
+    id: string; title: string; clientName: string; clientAvatarUrl: string | null; outstanding: number /* dollars */;
     kind: "removed" | "paid"; at: string; note: string | null;
   }[]
 > {
@@ -1234,7 +1253,7 @@ export async function getClearedArRows(): Promise<
     select: {
       id: true, title: true, balanceAmount: true,
       arRemovedAt: true, arRemovedNote: true, paidMarkedAt: true, paidMarkedNote: true,
-      client: { select: { name: true } },
+      client: { select: { name: true, avatarUrl: true } },
     },
     take: 100,
   });
@@ -1247,6 +1266,7 @@ export async function getClearedArRows(): Promise<
         id: r.id,
         title: r.title,
         clientName: r.client?.name ?? "Unknown",
+        clientAvatarUrl: r.client?.avatarUrl ?? null,
         outstanding: (r.balanceAmount ?? 0) / 100, // balanceAmount is CENTS
         kind: (paid ? "paid" : "removed") as "removed" | "paid",
         at: ((paid ? r.paidMarkedAt : r.arRemovedAt) as Date).toISOString(),
@@ -1279,7 +1299,7 @@ export async function getBillingRows(): Promise<{ rows: BillingRow[]; totalOutst
       id: true, title: true, orderedAt: true, deliveredAt: true,
       price: true, balanceAmount: true, paymentStatus: true, invoiceUrl: true, paymentUrl: true,
       aryeoOrderId: true, aryeoListingId: true,
-      client: { select: { name: true } },
+      client: { select: { name: true, avatarUrl: true } },
       deliverables: { select: { label: true, type: true } },
       smartTasks: { where: { status: { notIn: ["COMPLETED", "CANCELLED"] } }, select: { id: true } },
     },
@@ -1332,6 +1352,7 @@ export async function getBillingRows(): Promise<{ rows: BillingRow[]; totalOutst
     id: p.id,
     title: p.title,
     clientName: p.client?.name ?? null,
+    clientAvatarUrl: p.client?.avatarUrl ?? null,
     orderedAt: p.orderedAt ? p.orderedAt.toISOString() : null,
     deliveredAt: p.deliveredAt ? p.deliveredAt.toISOString() : null,
     invoiceTotal: p.price ?? null,
@@ -1356,11 +1377,11 @@ export async function getDeliveryHistory(days = 45): Promise<HistoryDelivery[]> 
   const projects = await prisma.project.findMany({
     where: { deliveredAt: { gte: since } },
     orderBy: { deliveredAt: "desc" },
-    select: { id: true, title: true, deliveredAt: true, client: { select: { name: true } } },
+    select: { id: true, title: true, deliveredAt: true, client: { select: { name: true, avatarUrl: true } } },
   });
   return projects
     .filter((p) => p.deliveredAt)
-    .map((p) => ({ id: p.id, title: p.title, deliveredAt: p.deliveredAt!.toISOString(), clientName: p.client?.name ?? null }));
+    .map((p) => ({ id: p.id, title: p.title, deliveredAt: p.deliveredAt!.toISOString(), clientName: p.client?.name ?? null, clientAvatarUrl: p.client?.avatarUrl ?? null }));
 }
 
 // ---------------------------------------------------------------------------

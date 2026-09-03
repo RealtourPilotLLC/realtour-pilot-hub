@@ -217,6 +217,11 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
       id: p.id,
       street: (p.addressLine || p.title.split(",")[0] || "Job").trim(),
       client: p.client.name,
+      // `include: { client: true }` above already carries Client.avatarUrl —
+      // the agent's Aryeo headshot, shown beside the name in the queue row
+      // (Jordan, Sep 2). A photo is creative-safe; nothing else from the
+      // client record joins it.
+      clientAvatarUrl: p.client.avatarUrl,
       tier,
       typeDetail: videos.map((d) => d.label || d.type).join(" · "),
       status: upcoming ? "Waiting" : STATUS_LABEL[effectiveStatus] ?? effectiveStatus,

@@ -37,7 +37,7 @@ async function ListView() {
     },
     orderBy: { startAt: "asc" },
     include: {
-      project: { select: { id: true, title: true, status: true, client: { select: { name: true } } } },
+      project: { select: { id: true, title: true, status: true, client: { select: { name: true, avatarUrl: true } } } },
       assignedTo: true,
     },
   });
@@ -82,7 +82,13 @@ async function ListView() {
                         <MapPinIcon className="size-3.5 shrink-0 text-muted-2" />
                         {p.title}
                       </div>
-                      <div className="truncate text-xs text-muted">{p.client.name}</div>
+                      {/* The agent's headshot beside their name (Jordan: show the
+                          Aryeo profile photo "in other places the clients are
+                          mentioned"); initials when Aryeo has no photo. */}
+                      <div className="mt-0.5 flex items-center gap-1.5 truncate text-xs text-muted">
+                        <Avatar name={p.client.name} src={p.client.avatarUrl} size={18} color="#4f46e5" />
+                        <span className="truncate">{p.client.name}</span>
+                      </div>
                     </div>
                     <Badge color={stage.color} soft={stage.soft}>
                       {stage.short}

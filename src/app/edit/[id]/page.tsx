@@ -9,6 +9,7 @@ import { ClientAssetsCard } from "@/components/clients/ClientAssetsCard";
 import { PageHeader } from "@/components/PageHeader";
 import { BackLink } from "@/components/ui/BackLink";
 import { Section } from "@/components/ui/Section";
+import { Avatar } from "@/components/ui/Avatar";
 import { getProject, getTeam } from "@/lib/queries";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
@@ -76,18 +77,21 @@ const SCRIPTED_STYLE_RE = /^(standard_reel_agent_intro|premium_|personal_brandin
 // The EDITOR's brief screen for one job. Creative-safe (no pricing/financials).
 //
 // Ordered around the editor's actual job (Jordan, Sep 2: "there is too much to
-// look at"): where the media is → what to make → do the work → what the client
-// is like → history.
+// look at"): where the media is → what to make → how to make it → do the work
+// → what the client is like → history.
 //   0. Back — to the Editing Room queue, or wherever they came from in-app
 //   1. the work order (only on a bounced job — then it IS the job)
 //   2. Media — RAW, Final, brand assets, the client's asset shelf, their colors
 //      (first, so the download is running while they read — Jordan, Sep 2)
-//   3. Edit instructions — ONE card: the spec, the customer's words on this
+//   3. What to make — each video with ITS style (Deliverable.videoStyle) and
+//      the Guide's notes + examples for that style. Above the instructions
+//      (Jordan, Sep 2: "What to make should be above edit instructions")
+//   4. Edit instructions — ONE card: the spec, the customer's words on this
 //      order, everything that came off the shoot, then our Additional notes
-//   4. What to make — each video with ITS style (Deliverable.videoStyle) and
-//      the Guide's notes + examples for that style
 //   5. Script — the locked words; only for styles that HAVE a script
-//   6. Cuts to deliver — upload, the cut in review, the notes on it
+//   6. Send to Review — upload a version per cut, the cut in review, the notes
+//      on it (Jordan, Sep 2: "instead of Cuts to deliver, it should say Send
+//      to Review")
 //   7. Project chat
 // The right rail is client context only — the same compact working-profile
 // brief for every viewer, owner included (Jordan, Sep 2, round 3); reference
@@ -371,7 +375,17 @@ export default async function EditBriefPage({
       <PageHeader
         eyebrow="Editor brief"
         title={street}
-        subtitle={project.client.name}
+        // The agent's headshot beside their name — Aryeo's customer avatar,
+        // mirrored to Client.avatarUrl by the nightly sync; the initials disc
+        // when they have none (Jordan, Sep 2: "if the agent has a profile
+        // photo in aryeo that should be shown here too as well as in other
+        // places the clients are mentioned").
+        subtitle={
+          <span className="inline-flex items-center gap-2">
+            <Avatar name={project.client.name} src={project.client.avatarUrl} size={20} />
+            {project.client.name}
+          </span>
+        }
         actions={
           <div className="flex items-center gap-2">
             {isOwnerAdmin && (
@@ -428,7 +442,7 @@ export default async function EditBriefPage({
       )}
 
       <div className="grid gap-6 p-4 sm:p-6 lg:grid-cols-3">
-        {/* LEFT — what to make, where the media is, the work, the history */}
+        {/* LEFT — where the media is, what to make, how to make it, the work, the history */}
         <div className="space-y-6 lg:col-span-2">
           {/* 1 · THE WORK ORDER — what the client asked for, split into items
               the editor ticks off, their own words kept whole underneath. It
@@ -490,16 +504,7 @@ export default async function EditBriefPage({
             </div>
           </Section>
 
-          {/* 3 · WHAT TO MAKE, in words — the spec, the customer's own words on
-              this order, and everything that came off the shoot, in one card. */}
-          <EditInstructionsCard
-            projectId={project.id}
-            spec={project.editSpec ? JSON.parse(project.editSpec) : {}}
-            canEdit={isOwnerAdmin}
-            brief={briefFields}
-          />
-
-          {/* 4 · WHAT TO MAKE, by type — each deliverable with ITS style's
+          {/* 3 · WHAT TO MAKE, by type — each deliverable with ITS style's
               notes and live examples (same data as the Style Guide, so they
               can't drift). Jordan: "notes about the type of video should be on
               the editing page in the What to make section, with examples." The
@@ -507,7 +512,10 @@ export default async function EditBriefPage({
               ordered), and the verbatim order line sits beside it when it says
               more than the category label does — 626 Greycliffe was "Standard
               Reel with Agent Intro" on the order and "Social Reel" here
-              (Jordan: "That should be shown as video type"). */}
+              (Jordan: "That should be shown as video type"). ABOVE the
+              instructions: the editor sees WHAT they are cutting before they
+              read how this client wants it cut (Jordan, Sep 2: "What to make
+              should be above edit instructions"). */}
           <Section icon={Film} title="What to make">
             {editDeliverables.length === 0 && <span className="text-sm text-muted">No deliverables listed.</span>}
             <div className="space-y-4">
@@ -558,6 +566,16 @@ export default async function EditBriefPage({
             </div>
           </Section>
 
+          {/* 4 · HOW TO MAKE IT, in words — the spec, the customer's own words
+              on this order, and everything that came off the shoot, in one
+              card. */}
+          <EditInstructionsCard
+            projectId={project.id}
+            spec={project.editSpec ? JSON.parse(project.editSpec) : {}}
+            canEdit={isOwnerAdmin}
+            brief={briefFields}
+          />
+
           {/* 5 · THE SCRIPT — READ-ONLY, pulled automatically from the Script
               Writing platform by this project's id (page render + hourly cron
               + signed webhook; scripts are never written in the hub). The
@@ -585,7 +603,7 @@ export default async function EditBriefPage({
             )
           )}
 
-          {/* 6 · THE WORK ITSELF — upload a version per cut, then the cut in
+          {/* 6 · SEND TO REVIEW — upload a version per cut, then the cut in
               review with the owner's timestamped notes under it. #submit-cut
               is the anchor the tracker's "Done? Send to review" jumps to. */}
           <div id="submit-cut" className="scroll-mt-20 space-y-6">

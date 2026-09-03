@@ -179,7 +179,7 @@ export function EditTracker({
             href="#submit-cut"
             className="inline-flex items-center gap-1 rounded-lg bg-success/10 px-2.5 py-1.5 text-xs font-semibold text-success hover:bg-success/20"
           >
-            <Clapperboard className="size-3.5" /> Done? Send to review <ChevronDown className="size-3" />
+            <Clapperboard className="size-3.5" /> Done? Send to Review <ChevronDown className="size-3" />
           </a>
         )}
       </div>

@@ -13,6 +13,7 @@ import { BackLink } from "@/components/ui/BackLink";
 import { ReelScriptCard } from "@/components/project/ReelScriptCard";
 import { AocPlaybookCard } from "@/components/project/AocPlaybookCard";
 import { Badge } from "@/components/ui/Badge";
+import { Avatar } from "@/components/ui/Avatar";
 import { Section } from "@/components/ui/Section";
 import { DELIVERABLE_META } from "@/lib/pipeline";
 import { PALETTE } from "@/lib/palette";
@@ -406,6 +407,10 @@ function CustomerCard({
           onClick={() => hasMore && setOpen((v) => !v)}
           className={cn("flex min-w-0 flex-1 items-center gap-2 text-left", hasMore && "cursor-pointer")}
         >
+          {/* The agent's Aryeo headshot (Jordan, Sep 2: "if the agent has a
+              profile photo in aryeo that should be shown here") — the initials
+              disc when Aryeo has none. */}
+          <Avatar name={client.name} src={client.avatarUrl} size={24} />
           {isVip && <Crown className="size-4 shrink-0 text-warning" />}
           <span className="truncate font-semibold">{client.name}</span>
           {segment && <Badge color={segment.color}>{segment.label}</Badge>}

@@ -1,4 +1,3 @@
-import { Repeat } from "lucide-react";
 import type { RevisionAsk } from "@/lib/clientProfile";
 
 // Small pieces shared by the two working-profile cards (the full owner/admin one
@@ -36,24 +35,25 @@ export function Bullets({ icon, title, items }: { icon: React.ReactNode; title: 
 // The client's actual recent change requests, read live (never baked into the
 // stored profile) so a revision asked this morning shows up this morning.
 // Dates are ET, like everywhere else in the hub.
+//
+// Just the list — no heading of its own. Both cards gather these under their
+// one "Past Revision Requests" title (Jordan, Sep 2 2026: "Revisions should be
+// titled (Past Revision Requests)"), and when this component carried its own
+// "Recent revision asks" heading the full card ended up with two stacked
+// titles about the same thing.
 export function RecentAsks({ asks }: { asks: RevisionAsk[] }) {
   if (!asks.length) return null;
   return (
-    <div>
-      <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
-        <Repeat className="size-3.5" /> Recent revision asks
-      </div>
-      <ul className="space-y-2">
-        {asks.map((a, i) => (
-          <li key={i} className="rounded-xl border bg-background/40 px-3 py-2">
-            <div className="text-[11px] text-muted-2">
-              {a.when}
-              {a.project ? ` · ${a.project}` : ""}
-            </div>
-            <p className="mt-0.5 text-sm leading-relaxed text-foreground/90">{a.text}</p>
-          </li>
-        ))}
-      </ul>
-    </div>
+    <ul className="space-y-2">
+      {asks.map((a, i) => (
+        <li key={i} className="rounded-xl border bg-background/40 px-3 py-2">
+          <div className="text-[11px] text-muted-2">
+            {a.when}
+            {a.project ? ` · ${a.project}` : ""}
+          </div>
+          <p className="mt-0.5 text-sm leading-relaxed text-foreground/90">{a.text}</p>
+        </li>
+      ))}
+    </ul>
   );
 }

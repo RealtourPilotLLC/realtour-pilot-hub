@@ -26,11 +26,16 @@ export type ChatItem = {
   media?: string[];
   from?: string;
 };
-export type ChatMember = { phone: string; key: string; name: string; clientId: string | null; segment: string | null; socialClient: boolean; socialPlan: string | null };
+export type ChatMember = { phone: string; key: string; name: string; clientId: string | null; segment: string | null; socialClient: boolean; socialPlan: string | null; avatarUrl?: string | null };
 function phoneKey10(p?: string) { return (p || "").replace(/\D/g, "").slice(-10); }
 export type ConvoClient = {
   id: string; name: string; phone: string | null; email: string | null; backupEmail: string | null;
   company: string | null; segment: string | null; socialClient: boolean; socialPlan: string | null;
+  // The agent's Aryeo headshot for the header. Optional (not `string | null`)
+  // because loadClientThread (threadActions.ts) still builds this shape from its
+  // own select without it — the /communications thread passes it, the embedded
+  // client-page chat shows initials until that select picks it up too.
+  avatarUrl?: string | null;
 } | null;
 export type ConvoProject = { id: string; title: string; status: string; shootDate: string | null; price: number | null };
 export type ConvoActivity = { id: string; body: string; createdAt: string; type: string; projectTitle: string | null };
@@ -102,7 +107,7 @@ export function ChatPanel({
         {isGroup ? (
           <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-brand-soft text-brand"><Users className="size-4" /></span>
         ) : (
-          <Avatar name={client?.name ?? title} size={32} color="#4f46e5" />
+          <Avatar name={client?.name ?? title} src={client?.avatarUrl} size={32} color="#4f46e5" />
         )}
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
@@ -235,7 +240,7 @@ export function ConversationView({
               <div className="space-y-2">
                 {members!.map((m) => (
                   <div key={m.key} className="flex items-center gap-2">
-                    <Avatar name={m.name} size={26} color="#4f46e5" />
+                    <Avatar name={m.name} src={m.avatarUrl} size={26} color="#4f46e5" />
                     <div className="min-w-0 flex-1">
                       {m.clientId ? <Link href={`/clients/${m.clientId}`} className="truncate text-sm font-medium hover:text-brand">{m.name}</Link> : <span className="truncate text-sm font-medium">{m.name}</span>}
                     </div>

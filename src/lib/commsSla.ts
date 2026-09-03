@@ -66,6 +66,7 @@ function snippetOf(body: string, max = 80): string {
 export type UnansweredInbound = {
   clientId: string;
   clientName: string;
+  clientAvatarUrl: string | null; // the agent's Aryeo headshot — the home card names them by face too
   snippet: string;
   /** the OLDEST message still owed an answer — the true start of the wait */
   occurredAt: Date;
@@ -100,12 +101,21 @@ export async function findUnansweredInbound(
     includeUnmatched: false, // a page needs a client to point at
     includeTeam: false, // "unanswered CLIENTS", not our own photographers
   });
+  // One lookup for the headshots (a few dozen ids at most) — the thread
+  // engine only carries names, and the home card shows the face beside them.
+  const ids = Array.from(new Set(threads.map((t) => t.clientId).filter((id): id is string => Boolean(id))));
+  const avatarById = new Map<string, string | null>();
+  if (ids.length) {
+    const rows = await prisma.client.findMany({ where: { id: { in: ids } }, select: { id: true, avatarUrl: true } });
+    for (const r of rows) avatarById.set(r.id, r.avatarUrl);
+  }
   return threads
     .map((t) => {
       const oldest = t.pending[0];
       return {
         clientId: t.clientId as string,
         clientName: t.displayName || t.clientName || "Unknown client",
+        clientAvatarUrl: avatarById.get(t.clientId as string) ?? null,
         // The channel is part of the truth: "Erica Walker waiting 42h" reads
         // very differently once you know it's an email, and Ops Day renders
         // this snippet as the whole row.

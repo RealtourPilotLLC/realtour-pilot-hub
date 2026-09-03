@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
+import { Avatar } from "@/components/ui/Avatar";
 import { authEnforced } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 import { contentTier, homeFor } from "@/lib/auth/access";
@@ -952,7 +953,7 @@ function BlockBody({ blockKey, d, board, counts }: {
               {d.unanswered.preview.map((u, i) => (
                 <div key={i} className="flex items-center gap-3 rounded-xl border border-border px-3.5 py-2 text-sm">
                   <p className="min-w-0 flex-1">
-                    <span className="font-semibold">{u.name}</span>
+                    <span className="font-semibold"><ClientName name={u.name} src={u.avatarUrl} size={16} /></span>
                     <span className={cn("ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold", u.hours >= 24 ? "bg-danger/15 text-danger" : "bg-surface-2 text-muted")}>waiting {u.hours}h</span>
                     <span className="block truncate text-[13px] text-muted">&ldquo;{u.snippet}&rdquo;</span>
                   </p>
@@ -1042,7 +1043,7 @@ function BlockBody({ blockKey, d, board, counts }: {
                         who it is, what it's for"). */}
                     {(r.clientName || r.services.length > 0) && (
                       <p className="mt-0.5 text-xs text-muted">
-                        {r.clientName}
+                        {r.clientName && <ClientName name={r.clientName} src={r.clientAvatarUrl} />}
                         {r.clientName && r.services.length > 0 && " · "}
                         {r.services.join(", ")}
                       </p>
@@ -1112,6 +1113,21 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+// A client's name with their Aryeo headshot in front of it, sized for a
+// one-line row. Jordan (Sep 2): "if the agent has a profile photo in aryeo that
+// should be shown … in other places the clients are mentioned." Inline-flex so
+// it sits inside the existing text runs (" · shot Aug 21 · Harrison") without
+// reflowing them; <Avatar> draws the initials disc when Aryeo has no photo, so
+// callers pass the row's clientAvatarUrl straight through.
+function ClientName({ name, src, size = 18 }: { name: string; src: string | null; size?: number }) {
+  return (
+    <span className="inline-flex max-w-full items-center gap-1.5 align-middle">
+      <Avatar name={name} src={src} size={size} />
+      <span className="truncate">{name}</span>
+    </span>
+  );
+}
+
 function ShootList({ shoots, empty, showGaps, showDebrief }: { shoots: OpsShoot[]; empty: string; showGaps?: boolean; showDebrief?: boolean }) {
   if (shoots.length === 0) return <p className="text-sm text-muted">{empty}</p>;
   return (
@@ -1152,7 +1168,7 @@ function ShootList({ shoots, empty, showGaps, showDebrief }: { shoots: OpsShoot[
           )}
 
           <div className="mt-2 grid gap-x-6 gap-y-1 sm:grid-cols-2">
-            <Field label="Client">{s.clientName}</Field>
+            <Field label="Client"><ClientName name={s.clientName} src={s.clientAvatarUrl} size={16} /></Field>
             <Field label="Creative">{s.photographer ?? <span className="font-semibold text-danger">unassigned</span>}</Field>
             <Field label="Services">{s.services.join(", ") || "—"}</Field>
             {s.access.name && <Field label="Contact">{s.access.name}{s.access.phone ? ` · ${s.access.phone}` : ""}</Field>}
@@ -1499,7 +1515,7 @@ function QcRow({ q, now }: { q: OpsQcRow; now?: Date }) {
         <div className="min-w-0 flex-1 basis-52">
           <Link href={`/projects/${q.projectId}`} className="text-sm font-semibold leading-snug hover:text-brand">{q.title}</Link>
           <p className="mt-0.5 text-[12px] text-muted">
-            {q.clientName}
+            {q.clientName && <ClientName name={q.clientName} src={q.clientAvatarUrl} />}
             {q.shootISO ? ` · shot ${fmtDay(q.shootISO)}` : ""}
             {q.photographer ? ` · ${q.photographer}` : ""}
           </p>
@@ -1740,7 +1756,7 @@ function VideoGroup({ icon: Icon, title, tone, cuts, now, empty, action, hrefFor
                     <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">v{c.round}</span>
                   </p>
                   <p className="mt-0.5 text-[11px] text-muted">
-                    {c.clientName}
+                    <ClientName name={c.clientName} src={c.clientAvatarUrl} size={16} />
                     {c.submittedByName?.startsWith("Auto") ? " · found in the Final folder" : c.submittedByName || c.editorKey ? ` · ${c.submittedByName ?? c.editorKey}` : ""}
                     {" · "}
                     <span className={cn(stale && "font-semibold text-danger")}>

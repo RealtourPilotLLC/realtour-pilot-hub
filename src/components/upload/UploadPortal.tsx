@@ -23,6 +23,7 @@ import type { DeliverableType, DeliverableStatus } from "@prisma/client";
 import { etDateTime } from "@/lib/datetime";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { Markdown } from "@/components/ui/Markdown";
+import { Avatar } from "@/components/ui/Avatar";
 import { MarkdownEditor } from "@/components/ui/MarkdownEditor";
 
 // ---------------------------------------------------------------------------
@@ -268,6 +269,8 @@ export function UploadPortal({
     uploadedAt: string | null;
     editorPdfPath: string | null;
     clientName: string;
+    /** the agent's Aryeo headshot (Client.avatarUrl); null = initials disc */
+    clientAvatarUrl: string | null;
     /** THE customer note, money-scrubbed (see src/lib/clientNotes.ts). */
     customerNote: string | null;
     photographerName: string | null;
@@ -654,7 +657,13 @@ export function UploadPortal({
         <h1 className="text-2xl font-semibold tracking-tight">{project.title.split(",")[0]}</h1>
         <p className="mt-1 text-sm text-muted">
           {addr && <span>{addr} · </span>}
-          {project.clientName}
+          {/* Headshot beside the agent's name (Jordan, Sep 2: show the Aryeo
+              profile photo wherever the client is mentioned). Inline-flex so
+              the "address · name · date" line still wraps as one sentence. */}
+          <span className="inline-flex items-center gap-1.5 align-middle">
+            <Avatar name={project.clientName} src={project.clientAvatarUrl} size={18} />
+            {project.clientName}
+          </span>
           {project.shootDate && <span> · {etDateTime(project.shootDate)}</span>}
         </p>
         {project.packageName && <p className="mt-0.5 text-[13px] text-muted-2">{project.packageName}</p>}
@@ -739,7 +748,9 @@ export function UploadPortal({
       {project.customerNote && (
         <div className="rounded-2xl border border-border bg-surface p-4">
           <div className="mb-1 flex items-center gap-2 text-sm font-semibold">
-            <NotebookPen className="size-4 text-brand" /> Customer notes · {project.clientName}
+            <NotebookPen className="size-4 text-brand" /> Customer notes ·
+            <Avatar name={project.clientName} src={project.clientAvatarUrl} size={16} />
+            {project.clientName}
           </div>
           <p className="whitespace-pre-line text-sm text-foreground/85">{project.customerNote}</p>
         </div>

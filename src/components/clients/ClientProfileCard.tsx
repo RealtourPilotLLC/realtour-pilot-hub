@@ -1,11 +1,12 @@
-import { UserRound, Palette, Repeat, ShieldCheck, ChevronDown, Ban, Check } from "lucide-react";
+import { UserRound, Palette, Repeat, ShieldCheck, Ban, Check } from "lucide-react";
 import {
   editorView, liveProfileFacts, recentRevisionAsks,
   type ClientProfile, type EditorClientProfile, type ProfileFacts, type RevisionAsk,
 } from "@/lib/clientProfile";
-import { clip } from "@/lib/text";
+import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
+import { Avatar } from "@/components/ui/Avatar";
 import { SegmentBadge } from "@/components/clients/SegmentBadge";
 import { ClientProfileCardView } from "@/components/clients/ClientProfileCardView";
 import { Bullets, RecentAsks, Stat } from "@/components/clients/profileParts";
@@ -33,10 +34,19 @@ import { Bullets, RecentAsks, Stat } from "@/components/clients/profileParts";
 //
 // Second round, same day, on the editor's card: "I feel like the working
 // profile should be a brief summary, with the most important information first
-// for the editor… it's too long and too much to sift through. Maybe add a
-// dropdown for more info, but only show the main things the editor needs to
-// know for editing and to provide a good client experience." Hence
-// EditorProfileCard is now a BRIEF with a fold — see it below.
+// for the editor… it's too long and too much to sift through." Hence
+// EditorProfileCard is a BRIEF — only the editor-safe parts, most important
+// first — see it below.
+//
+// Fourth round (Sep 2, evening), once the brief was the right size: "Working
+// Profile should say the agent's name up top, and then the dropdown isn't
+// necessary anymore because there isn't a ton of information, so it's fine to
+// show it. Also, Revisions should be titled (Past Revision Requests) And then
+// if the agent has a profile photo in aryeo that should be shown here too."
+// So the brief now opens with the agent's headshot and name, lays everything
+// out flat (the "More about this client" fold is gone), and gathers the
+// revision picture and the recent asks under one "Past Revision Requests"
+// heading.
 // ---------------------------------------------------------------------------
 
 export async function ClientProfileCard({
@@ -49,8 +59,8 @@ export async function ClientProfileCard({
   profile: ClientProfile | null;
   updatedAt: string | null;
   /**
-   * Which form the PAGE wants: "brief" is the compact, editor-safe card with
-   * the "More about this client" fold; "full" is the whole profile. Omitted =
+   * Which form the PAGE wants: "brief" is the compact, editor-safe card headed
+   * by the agent's name and photo; "full" is the whole profile. Omitted =
    * decide from the signed-in viewer's role (owner/admin full, others brief).
    */
   variant?: "full" | "brief";
@@ -66,23 +76,32 @@ export async function ClientProfileCard({
       ? viewer.role === "OWNER" || viewer.role === "ADMIN" ? "full" : "brief"
       : authEnforced() ? "brief" : "full");
 
-  const [asks, facts] = await Promise.all([recentRevisionAsks(clientId), liveProfileFacts(clientId)]);
+  // The brief is headed by the agent's name and Aryeo headshot (round 4).
+  // Aryeo owns the photo — the nightly customer sync mirrors it onto
+  // Client.avatarUrl — and Avatar falls back to initials when there is none.
+  // The full card has its own header, so the lookup is skipped for it.
+  const [asks, facts, who] = await Promise.all([
+    recentRevisionAsks(clientId),
+    liveProfileFacts(clientId),
+    scope === "brief"
+      ? prisma.client.findUnique({ where: { id: clientId }, select: { name: true, avatarUrl: true } })
+      : null,
+  ]);
 
-  if (scope === "brief") return <EditorProfileCard profile={editorView(profile)} facts={facts} asks={asks} updatedAt={updatedAt} />;
+  if (scope === "brief") return <EditorProfileCard who={who} profile={editorView(profile)} facts={facts} asks={asks} updatedAt={updatedAt} />;
   return <ClientProfileCardView clientId={clientId} profile={profile} facts={facts} asks={asks} updatedAt={updatedAt} />;
 }
 
 // ---------------------------------------------------------------------------
 // THE EDITOR'S BRIEF.
 //
-// Above the fold, only what decides the cut and keeps the client happy, most
-// important first: the standing preferences (logos, endcards, music), then the
-// hard "never" rules, then the advice lines — at most TOP_LINES of them, filled
-// in that order so a fifth preference can push an advice line under the fold
-// but never a "never" — and then a ONE-line brand/style read. Everything else
-// that is editor-safe (customer notes, the revision picture, recent asks, the
-// counts, the segment, the full brand paragraph) waits under "More about this
-// client", closed by default.
+// Everything on it is editor-safe (editorView() did the audience filtering)
+// and all of it shows — Jordan, round 4: "the dropdown isn't necessary anymore
+// because there isn't a ton of information, so it's fine to show it." Most
+// important first: the editor's summary line, then the standing preferences
+// (logos, endcards, music), the hard "never" rules and the advice lines, then
+// the brand/style paragraph, the customer notes, the past revision requests,
+// and last the live counts and the segment.
 //
 // When the editing block is empty (72 of 215 clients the day this shipped) the
 // top says so in one honest line instead of rendering empty headings.
@@ -92,32 +111,18 @@ export async function ClientProfileCard({
 // hand them "You don't have access to do that."
 // ---------------------------------------------------------------------------
 
-const TOP_LINES = 5;
-
 type BriefLine = { kind: "pref" | "never" | "do"; text: string };
 
-// The lines an editor reads before opening the timeline, in priority order.
+// The lines an editor reads before opening the timeline, in priority order:
 // `prefs` are the standing instructions for the finished video, `donts` the
-// hard rules, `dos` the advice; editorView() has already done the audience
-// filtering, so this only orders and splits at the fold.
-function briefLines(e: EditorClientProfile["editing"] | undefined): { top: BriefLine[]; rest: BriefLine[] } {
-  const all: BriefLine[] = [
+// hard rules, `dos` the advice. editorView() has already done the audience
+// filtering, so this only orders them.
+function briefLines(e: EditorClientProfile["editing"] | undefined): BriefLine[] {
+  return [
     ...(e?.prefs ?? []).map((text) => ({ kind: "pref" as const, text })),
     ...(e?.donts ?? []).map((text) => ({ kind: "never" as const, text })),
     ...(e?.dos ?? []).map((text) => ({ kind: "do" as const, text })),
   ];
-  return { top: all.slice(0, TOP_LINES), rest: all.slice(TOP_LINES) };
-}
-
-// "The one-line brand/style read." The stored brandStyle is a paragraph (Mike
-// Ciunci's runs three sentences), so the brief shows its first sentence, clipped
-// at a line's worth, and the whole paragraph waits under More.
-const BRAND_LINE = 170;
-function brandRead(s: string): { line: string; shortened: boolean } {
-  const whole = s.trim();
-  const first = whole.split(/(?<=[.!?])\s+/)[0] ?? whole;
-  const line = clip(first, BRAND_LINE);
-  return { line, shortened: line !== whole };
 }
 
 function BriefList({ lines }: { lines: BriefLine[] }) {
@@ -144,112 +149,105 @@ function BriefList({ lines }: { lines: BriefLine[] }) {
 }
 
 function EditorProfileCard({
+  who,
   profile,
   facts,
   asks,
   updatedAt,
 }: {
+  /** The agent: name for the title, Aryeo headshot when they have one. */
+  who: { name: string; avatarUrl: string | null } | null;
   profile: EditorClientProfile | null;
   facts: ProfileFacts;
   asks: RevisionAsk[];
   updatedAt: string | null;
 }) {
   const e = profile?.editing;
-  const { top, rest } = briefLines(e);
-  const brand = profile?.brandStyle ? brandRead(profile.brandStyle) : null;
+  const lines = briefLines(e);
+  const brand = profile?.brandStyle.trim() || null;
   const customerNotes = e?.customerNotes ?? [];
-  const hasRevisionPicture = Boolean(profile?.revisions.summary || profile?.revisions.commonTypes.length);
-
-  // What the fold holds, named on its handle so an editor knows whether it is
-  // worth opening. The counts are live, so they are always there.
-  const moreParts = [
-    rest.length > 0 ? `${rest.length} more editing note${rest.length === 1 ? "" : "s"}` : null,
-    customerNotes.length > 0 ? "customer notes" : null,
-    hasRevisionPicture ? "revision habits" : null,
-    asks.length > 0 ? `${asks.length} recent ask${asks.length === 1 ? "" : "s"}` : null,
-    `${facts.totalOrders} order${facts.totalOrders === 1 ? "" : "s"}`,
-  ].filter((p): p is string => Boolean(p));
+  const revisionSummary = profile?.revisions.summary ?? "";
+  const revisionTypes = profile?.revisions.commonTypes ?? [];
+  const hasRevisionPicture = Boolean(revisionSummary || revisionTypes.length);
 
   return (
     <section className="overflow-hidden rounded-2xl border bg-surface">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3">
-        <span className="flex size-7 items-center justify-center rounded-lg bg-brand-soft text-brand"><UserRound className="size-4" /></span>
-        <h2 className="text-sm font-semibold">Working profile</h2>
-        <span className="ml-auto inline-flex items-center gap-1 text-[11px] text-muted-2" title="Only the parts of this client's profile that change the edit">
+      {/* THE AGENT UP TOP — their Aryeo headshot (initials when there isn't
+          one) and their name as the title; "Working profile" is the small label
+          underneath, not the headline (Jordan, round 4). The "what matters for
+          the cut" reminder stays on the right where there is room for it. */}
+      <div className="flex items-center gap-3 border-b border-border px-5 py-3">
+        {who ? (
+          <Avatar name={who.name} src={who.avatarUrl} size={36} color="#4f46e5" />
+        ) : (
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-brand-soft text-brand"><UserRound className="size-4" /></span>
+        )}
+        <div className="min-w-0">
+          <h2 className="truncate text-sm font-semibold">{who?.name ?? "Working profile"}</h2>
+          {who && <div className="text-[11px] uppercase tracking-wide text-muted">Working profile</div>}
+        </div>
+        <span className="ml-auto hidden shrink-0 items-center gap-1 text-[11px] text-muted-2 sm:inline-flex" title="Only the parts of this client's profile that change the edit">
           <ShieldCheck className="size-3.5 text-brand" /> what matters for the cut
         </span>
       </div>
 
-      <div className="space-y-3 px-5 py-4">
+      <div className="space-y-4 px-5 py-4">
         {/* THE BRIEF — the editor's summary line (the generator writes one for
-            v2 profiles), then the ordered lines, or the one honest line. */}
-        {e?.summary && <p className="text-sm leading-relaxed text-foreground/90">{e.summary}</p>}
-
-        {top.length > 0 ? (
-          <BriefList lines={top} />
+            v2 profiles), then every editing line in priority order, or the one
+            honest line when there are none. */}
+        {e?.summary || lines.length > 0 ? (
+          <div className="space-y-3">
+            {e?.summary && <p className="text-sm leading-relaxed text-foreground/90">{e.summary}</p>}
+            {lines.length > 0 && <BriefList lines={lines} />}
+          </div>
         ) : (
-          !e?.summary && <p className="text-sm text-muted">No standing editing preferences on record.</p>
+          <p className="text-sm text-muted">No standing editing preferences on record.</p>
         )}
 
+        {/* Brand & style, the whole paragraph. Nothing is folded away any more,
+            so there is no point clipping it to a first sentence. */}
         {brand && (
           <p className="flex gap-2 text-sm leading-relaxed text-foreground/90">
             <Palette className="mt-1 size-3.5 shrink-0 text-muted" />
-            <span>{brand.line}</span>
+            <span>{brand}</span>
           </p>
         )}
 
-        {/* THE FOLD — Jordan's "dropdown for more info". Native <details>, so
-            no client JS in a server component. */}
-        <details className="group/more rounded-xl border border-border bg-surface-2/30">
-          <summary className="flex cursor-pointer list-none items-center gap-2 px-3.5 py-2 text-[13px] font-medium text-muted hover:text-foreground">
-            <ChevronDown className="size-3.5 shrink-0 -rotate-90 transition-transform group-open/more:rotate-0" />
-            More about this client
-            <span className="text-[11px] font-normal text-muted-2">— {moreParts.join(" · ")}</span>
-          </summary>
-          <div className="space-y-4 border-t border-border px-3.5 py-3">
-            {rest.length > 0 && (
-              <div>
-                <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">More editing notes</div>
-                <BriefList lines={rest} />
+        <Bullets icon={<UserRound className="size-3.5" />} title="Customer notes" items={customerNotes} />
+
+        {/* PAST REVISION REQUESTS — one section, titled the way Jordan asked
+            ("Revisions should be titled (Past Revision Requests)"): the
+            revision picture from the stored profile (how they tend to revise
+            and the kinds of changes they ask for), then their actual recent
+            asks, read live. Rendered only when there is something to show. */}
+        {(hasRevisionPicture || asks.length > 0) && (
+          <div>
+            <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted"><Repeat className="size-3.5" /> Past Revision Requests</div>
+            {revisionSummary && <p className="text-sm leading-relaxed text-foreground/90">{revisionSummary}</p>}
+            {revisionTypes.length > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {revisionTypes.map((t, i) => (
+                  <span key={i} className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{t}</span>
+                ))}
               </div>
             )}
-
-            <Bullets icon={<UserRound className="size-3.5" />} title="Customer notes" items={customerNotes} />
-
-            {brand?.shortened && (
-              <div>
-                <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted"><Palette className="size-3.5" /> Brand &amp; style, in full</div>
-                <p className="text-sm leading-relaxed text-foreground/90">{profile!.brandStyle}</p>
+            {asks.length > 0 && (
+              <div className={hasRevisionPicture ? "mt-2.5" : undefined}>
+                <RecentAsks asks={asks} />
               </div>
             )}
-
-            {profile && hasRevisionPicture && (
-              <div>
-                <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted"><Repeat className="size-3.5" /> Revisions</div>
-                {profile.revisions.summary && <p className="text-sm leading-relaxed text-foreground/90">{profile.revisions.summary}</p>}
-                {profile.revisions.commonTypes.length > 0 && (
-                  <div className="mt-1.5 flex flex-wrap gap-1.5">
-                    {profile.revisions.commonTypes.map((t, i) => (
-                      <span key={i} className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{t}</span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            <RecentAsks asks={asks} />
-
-            {/* Live counts + segment (liveProfileFacts), never the stored
-                snapshot — Mike's card once said 34 orders against a header of 36. */}
-            <div className="flex flex-wrap items-center gap-2">
-              <Stat value={facts.totalOrders} label="Orders" />
-              <Stat value={facts.revisions} label="Revisions" />
-              {facts.segment && <SegmentBadge segment={facts.segment} size="xs" />}
-            </div>
-
-            {updatedAt && <div className="border-t border-border pt-2 text-[11px] text-muted-2">Updated {updatedAt}</div>}
           </div>
-        </details>
+        )}
+
+        {/* Live counts + segment (liveProfileFacts), never the stored
+            snapshot — Mike's card once said 34 orders against a header of 36. */}
+        <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+          <Stat value={facts.totalOrders} label="Orders" />
+          <Stat value={facts.revisions} label="Revisions" />
+          {facts.segment && <SegmentBadge segment={facts.segment} size="xs" />}
+        </div>
+
+        {updatedAt && <div className="text-[11px] text-muted-2">Updated {updatedAt}</div>}
       </div>
     </section>
   );

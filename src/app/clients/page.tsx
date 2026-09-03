@@ -25,6 +25,7 @@ async function clientCards() {
     select: {
       id: true,
       name: true,
+      avatarUrl: true, // the agent's Aryeo headshot, drawn in place of the initials disc
       company: true,
       email: true,
       phone: true,
@@ -121,7 +122,7 @@ export default async function ClientsPage({ searchParams }: { searchParams: Prom
               {g.clients.map((c) => (
                 <Link key={c.id} href={`/clients/${c.id}`} className="panel-shadow lift rounded-2xl border bg-surface p-5 hover:bg-surface-2">
             <div className="flex items-center gap-3">
-              <Avatar name={c.name} size={40} color="#4f46e5" />
+              <Avatar name={c.name} src={c.avatarUrl} size={40} color="#4f46e5" />
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="truncate font-semibold">{c.name}</span>

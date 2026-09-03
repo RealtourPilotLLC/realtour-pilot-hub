@@ -164,6 +164,10 @@ export type ShootView = {
     email: string | null;
     socialClient: boolean;
     socialPlan: string | null;
+    // The agent's Aryeo headshot (Client.avatarUrl) for the shoot header —
+    // Jordan, Sep 2: "if the agent has a profile photo in aryeo that should be
+    // shown here." null = initials disc.
+    avatarUrl: string | null;
     // THE customer note (Aryeo-mirrored generalNotes + legacy editingPreferences
     // fallback), money-scrubbed — a photographer's screen never shows pricing.
     // Was `editingPreferences` alone, a column with no writer since the notes
@@ -254,6 +258,7 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
       email: p.client.email,
       socialClient: p.client.socialClient,
       socialPlan: p.client.socialPlan,
+      avatarUrl: p.client.avatarUrl,
       customerNote: creativeCustomerNote(p.client),
     },
     segment: segmentMeta(p.client.segment),
@@ -611,6 +616,8 @@ export type MyShootRow = {
   status: string;
   clientName: string;
   clientFirst: string;
+  /** the agent's Aryeo headshot beside their name on the list (see ShootView.client.avatarUrl) */
+  clientAvatarUrl: string | null;
   deliverableTypes: DeliverableType[];
   uploaded: boolean;
   completed: boolean;
@@ -657,7 +664,7 @@ export async function listMyShoots(memberId: string | null): Promise<MyShootRow[
         : {}),
     },
     include: {
-      client: { select: { name: true } },
+      client: { select: { name: true, avatarUrl: true } },
       photographer: { select: { id: true, name: true, avatarColor: true } },
       deliverables: { where: { removedFromOrderAt: null }, select: { type: true } },
       appointments: {
@@ -686,6 +693,7 @@ export async function listMyShoots(memberId: string | null): Promise<MyShootRow[
       status: p.status,
       clientName: p.client.name,
       clientFirst: firstNameOf(p.client.name),
+      clientAvatarUrl: p.client.avatarUrl,
       deliverableTypes: Array.from(new Set(p.deliverables.map((d) => d.type))),
       uploaded: p.uploadedAt != null,
       completed: appt?.completedAt != null,

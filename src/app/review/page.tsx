@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
+import { Avatar } from "@/components/ui/Avatar";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
 import { homeFor } from "@/lib/auth/access";
@@ -61,11 +62,17 @@ function CutRow({ s, decided }: { s: QueueSubmission; decided?: boolean }) {
               </span>
             )}
           </div>
-          <div className="truncate text-xs text-muted">
-            {s.clientName}
-            {s.submittedByName ? ` · from ${s.submittedByName}` : ""}
-            {" · "}
-            {decided && s.decidedAt ? `decided ${ago(s.decidedAt)}` : `submitted ${ago(s.createdAt)}`}
+          {/* The agent's headshot beside their name (Jordan, Sep 2: show the
+              Aryeo profile photo "in other places the clients are mentioned").
+              18px sits inside the text-xs line, so the row doesn't grow. */}
+          <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted">
+            {s.clientName && <Avatar name={s.clientName} src={s.clientAvatarUrl} size={18} />}
+            <span className="truncate">
+              {s.clientName}
+              {s.submittedByName ? ` · from ${s.submittedByName}` : ""}
+              {" · "}
+              {decided && s.decidedAt ? `decided ${ago(s.decidedAt)}` : `submitted ${ago(s.createdAt)}`}
+            </span>
           </div>
           {s.note && <div className="mt-1 truncate text-xs italic text-muted-2">“{s.note}”</div>}
         </div>
@@ -142,9 +149,14 @@ export default async function ReviewRoomPage() {
                     href={t.projectId ? `/projects/${t.projectId}` : "/tasks"}
                     className="flex items-center justify-between gap-3 py-2.5 hover:text-brand"
                   >
-                    <div className="min-w-0">
+                    <div className="flex min-w-0 items-center gap-2">
                       <span className="truncate text-sm font-medium">{t.street}</span>
-                      {t.clientName && <span className="ml-2 text-xs text-muted">{t.clientName}</span>}
+                      {t.clientName && (
+                        <span className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted">
+                          <Avatar name={t.clientName} src={t.clientAvatarUrl} size={18} />
+                          <span className="truncate">{t.clientName}</span>
+                        </span>
+                      )}
                     </div>
                     <span className="shrink-0 text-xs text-muted">
                       {t.assignedKey ? `${t.assignedKey} · ` : ""}

@@ -20,7 +20,7 @@ export type MappingInput = {
 // Greycliffe's "Standard Reel with Agent Intro" reached the editor as a plain
 // reel with no intro script. These keys are the shared contract with
 // Deliverable.videoStyle (resolved at sync from this column) — the brief's
-// Edit type, "Cuts to deliver", the upload portal and the Style Guide link
+// Edit type, the "Send to Review" rows, the upload portal and the Style Guide link
 // all read the key, never the label. Mirrors VIDEO_STYLE_OPTIONS on the card
 // the same way VALID_TYPES mirrors TYPE_OPTIONS.
 const VIDEO_STYLE_TIER: Record<string, "standard" | "premium" | "personal_branding"> = {

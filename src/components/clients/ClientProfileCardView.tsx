@@ -36,6 +36,12 @@ export function ClientProfileCardView({
   const [pending, start] = useTransition();
   const [err, setErr] = useState("");
   const touch = profile?.touchLevel ? TOUCH[profile.touchLevel] : null;
+  // The stored profile's revision picture. Read with `?.` like the editing
+  // block above it is: this comes off the JSON column, and a profile built
+  // before a field existed simply won't have it.
+  const revisionSummary = profile?.revisions?.summary ?? "";
+  const revisionTypes = profile?.revisions?.commonTypes ?? [];
+  const hasRevisionPicture = Boolean(revisionSummary || revisionTypes.length);
 
   function regen() {
     setErr("");
@@ -101,20 +107,30 @@ export function ClientProfileCardView({
                 <p className="text-sm leading-relaxed text-foreground/90">{profile.communication}</p>
               </div>
             )}
-            {(profile.revisions?.summary || profile.revisions?.commonTypes?.length) && (
+            {/* PAST REVISION REQUESTS — one section, titled the way Jordan asked
+                (Sep 2 2026: "Revisions should be titled (Past Revision Requests)"),
+                and laid out exactly like the editor's brief: the revision picture
+                from the stored profile, then the actual recent asks read live.
+                The list used to follow as its own "Recent revision asks" block,
+                which put two headings about the same thing back to back. */}
+            {(hasRevisionPicture || asks.length > 0) && (
               <div>
-                <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted"><Repeat className="size-3.5" /> Revisions</div>
-                {profile.revisions.summary && <p className="text-sm leading-relaxed text-foreground/90">{profile.revisions.summary}</p>}
-                {profile.revisions.commonTypes?.length > 0 && (
+                <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted"><Repeat className="size-3.5" /> Past Revision Requests</div>
+                {revisionSummary && <p className="text-sm leading-relaxed text-foreground/90">{revisionSummary}</p>}
+                {revisionTypes.length > 0 && (
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
-                    {profile.revisions.commonTypes.map((t, i) => (
+                    {revisionTypes.map((t, i) => (
                       <span key={i} className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{t}</span>
                     ))}
                   </div>
                 )}
+                {asks.length > 0 && (
+                  <div className={hasRevisionPicture ? "mt-2.5" : undefined}>
+                    <RecentAsks asks={asks} />
+                  </div>
+                )}
               </div>
             )}
-            <RecentAsks asks={asks} />
             {profile.brandStyle && (
               <div>
                 <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted"><Palette className="size-3.5" /> Brand &amp; style</div>

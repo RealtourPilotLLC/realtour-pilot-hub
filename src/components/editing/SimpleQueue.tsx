@@ -12,6 +12,7 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Avatar } from "@/components/ui/Avatar";
 import { setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
 
 // THE SLACK TRACKER, replicated — Jordan: "I want the editor queue to look
@@ -38,6 +39,7 @@ export type QueueRow = {
   id: string;
   street: string;
   client: string;
+  clientAvatarUrl: string | null; // the agent's Aryeo headshot, when they have one
   tier: "standard" | "premium" | "branding";
   typeDetail: string; // the actual video deliverable labels, like Slack's "video type details"
   status: string;
@@ -329,7 +331,13 @@ export function SimpleQueue({
                           opens the edit page in a new tab. */}
                       <Link href={`/edit/${r.id}`} onClick={swallow} className="block">
                         <span className="font-semibold">{r.street}</span>
-                        <span className="block text-xs text-muted">{r.client}</span>
+                        {/* Headshot beside the agent's name (Jordan, Sep 2). Inline
+                            and shrink-0, so the cell stays the height of the
+                            Video-type cell beside it — the row doesn't grow. */}
+                        <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted">
+                          <Avatar name={r.client} src={r.clientAvatarUrl} size={20} />
+                          <span className="truncate">{r.client}</span>
+                        </span>
                         {r.priority !== "NORMAL" && r.priority !== "LOW" && (
                           <span className="mt-0.5 inline-block rounded bg-danger-soft px-1.5 text-[10px] font-semibold text-danger">{r.priority}</span>
                         )}

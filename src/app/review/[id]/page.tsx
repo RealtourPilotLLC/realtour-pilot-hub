@@ -5,6 +5,7 @@ import { ExternalLink, Film, History, Images, MessageSquareQuote, Music, PenLine
 import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
+import { Avatar } from "@/components/ui/Avatar";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
 import { homeFor } from "@/lib/auth/access";
@@ -75,7 +76,15 @@ export default async function CutReviewPage({
       <PageHeader
         eyebrow="Review Room"
         title={w.street}
-        subtitle={w.clientName}
+        // The agent's Aryeo headshot beside their name (Jordan, Sep 2). An
+        // empty name stays hidden, exactly as the bare string used to.
+        subtitle={
+          w.clientName ? (
+            <span className="inline-flex items-center gap-2">
+              <Avatar name={w.clientName} src={w.clientAvatarUrl} size={20} /> {w.clientName}
+            </span>
+          ) : undefined
+        }
         actions={
           <div className="flex items-center gap-2">
             <Link

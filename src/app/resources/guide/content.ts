@@ -332,10 +332,10 @@ const EDITOR: Guide = {
   runbook: [
     { when: "Start of your day", what: "Open the Editing Room. Not Done is your list — top to bottom, oldest due date first. Anything in red is late." },
     { when: "Picking up a job", what: "Click the row. That opens the job page: the tracker at the top says where it stands and when it is due." },
-    { when: "Before you cut", what: "Read Edit instructions — the order note, what the photographer wrote at the shoot, the vision and style. Then What to make for the style spec and examples." },
+    { when: "Before you cut", what: "Read What to make for the style spec and examples, then Edit instructions — the order note, what the photographer wrote at the shoot, the vision and style." },
     { when: "Getting the footage", what: "Media, then RAW footage. Brand assets and the client's logo shelf are in the same card." },
     { when: "Cutting", what: "Set the queue status to In editing so everyone can see it moving." },
-    { when: "Done", what: "Cuts to deliver, then Upload version 1 on that cut. Add a Message for the reviewer if there is anything they should know." },
+    { when: "Done", what: "Send to Review, then Upload version 1 on that cut. Add a Message for the reviewer if there is anything they should know." },
     { when: "If it comes back", what: "Red banner at the top of the job: N notes to fix on this cut. Tap a timestamp to jump the player there, reply in the thread, Mark fixed, then upload the next version." },
     { when: "When it is approved", what: "Nothing to do. The file is copied into the job's Final folder in Dropbox and the cut is marked complete automatically." },
   ],
@@ -389,22 +389,22 @@ Click anywhere on a row to open the job.`,
       id: "job-page",
       icon: FileText,
       title: "Opening a job",
-      body: `The job page is ordered as: what to make, where the media is, do the work, who it is for.
+      body: `The job page is ordered as: where the media is, what to make, how to make it, do the work, who it is for.
 
 ### The tracker, at the top
 Where this edit stands in one line — booked, in the edit, ready for review, changes requested, done — plus the **Deadline** with a live countdown, the shoot date, the photographer, and the song when there is one. Every round you have sent is listed underneath with its verdict.
+
+### What to make
+One block per deliverable, each with its style tier, the style chips for that type, a short note, and links to real example videos. **Full Style Guide** opens the whole reference.
 
 ### Edit instructions
 One card with everything you have been told to do:
 
 - the customer's own words from the order intake
 - what the photographer wrote on the upload page: their **vision for the edit**, the **style**, shots that must be shown, areas to avoid, realtor requests
-- **shot order** and **things to avoid in the edit**
 - **how many videos** were filmed, on monthly jobs
 - whether the script was **delivered as written** or changed on site
-
-### What to make
-One block per deliverable, each with its style tier, the style chips for that type, a short note, and links to real example videos. **Full Style Guide** opens the whole reference.
+- **Additional notes** — the office's own note for this job, last
 
 ### The script
 Read-only, pulled automatically from Script Studio. Copy overlay text from here rather than retyping it — retyping is the single biggest source of typo revisions. If no script exists yet, the card says so; cut B-roll first or ask in the chat.`,
@@ -425,7 +425,7 @@ Below them, folded away, is **Coaching & reference** — the Agent-on-Camera pla
       id: "media",
       icon: FolderOpen,
       title: "Where the media lives",
-      body: `The **Media** card, right under the instructions:
+      body: `The **Media** card, first in the column right under the tracker (so the RAW download can be running while you read the rest):
 
 - **RAW footage** — the Dropbox folder the photographer uploaded into
 - **Final footage** — where finished cuts live
@@ -439,7 +439,7 @@ Raw video always comes from Dropbox. Finished cuts do not have to: uploading thr
       id: "upload-cut",
       icon: CloudUpload,
       title: "Uploading a cut",
-      body: `**Cuts to deliver** lists every video this job owes — one row per video, so a monthly package with four videos has four rows, each with its own status and its own button.
+      body: `**Send to Review** is where a finished cut goes in. It lists every video this job owes — one row per video, so a monthly package with four videos has four rows, each with its own status and its own button.
 
 1. Press **Upload version 1** on the row (**Upload version 2**, and so on, after that). Pick the file — MP4, MOV, M4V or WEBM.
 2. The file goes straight from your browser to the hub in resumable parts, with a progress bar. It does not pass through a server, so a big file is fine.

@@ -230,6 +230,9 @@ export default async function UploadProjectPage({
           uploadedAt: project.uploadedAt?.toISOString() ?? null,
           editorPdfPath: project.editorPdfPath,
           clientName: project.client.name,
+          // The agent's Aryeo headshot for the portal header (Jordan, Sep 2:
+          // show the profile photo "in other places the clients are mentioned").
+          clientAvatarUrl: project.client.avatarUrl,
           // THE customer note (Aryeo-mirrored generalNotes, legacy
           // editingPreferences as fallback), money-scrubbed for a field screen.
           // editingPreferences alone had no writer left, so this was null on

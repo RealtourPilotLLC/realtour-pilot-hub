@@ -152,6 +152,12 @@ export type OpsShoot = {
   photographer: string | null;
   services: string[];
   clientName: string;
+  /** The agent's Aryeo headshot (Client.avatarUrl, mirrored by the nightly
+   *  customer sync). Jordan, Sep 2 2026: "if the agent has a profile photo in
+   *  aryeo that should be shown … in other places the clients are mentioned."
+   *  null = Aryeo has none; <Avatar src={…}> then draws the initials disc, so
+   *  the home screen passes it straight through with no conditional. */
+  clientAvatarUrl: string | null;
   access: AccessInfo;
   specialRequests: string[];
   gaps: string[];
@@ -184,6 +190,7 @@ export type OpsQcRow = {
   projectId: string;
   title: string;
   clientName: string | null;
+  clientAvatarUrl: string | null; // see OpsShoot.clientAvatarUrl
   photographer: string | null;
   shootISO: string | null;
   services: string[];
@@ -236,6 +243,7 @@ export type PipelineRow = {
   title: string;
   status: string; // EDITING | REVIEW | REVISION
   clientName: string | null;
+  clientAvatarUrl: string | null; // see OpsShoot.clientAvatarUrl
   services: string[];
   editor: string | null;
   sent: string[]; // delivered categories
@@ -268,7 +276,7 @@ export type OpsDay = {
   nowISO: string;
   todayShoots: OpsShoot[];
   tomorrowShoots: OpsShoot[];
-  unanswered: { count: number; oldestHours: number | null; preview: { name: string; snippet: string; hours: number }[] };
+  unanswered: { count: number; oldestHours: number | null; preview: { name: string; avatarUrl: string | null; snippet: string; hours: number }[] };
   qc: OpsQcRow[];
   pipeline: { rows: PipelineRow[]; editing: number; review: number; revision: number; overdueTasks: number; dueTodayTasks: number };
   openLoops: OpsLoop[];
@@ -298,7 +306,7 @@ const SHOOT_SELECT = {
   id: true, title: true, shootDate: true, debriefSubmittedAt: true,
   lat: true, lng: true, aryeoListingId: true, clientId: true,
   photographer: { select: { name: true } },
-  client: { select: { name: true } },
+  client: { select: { name: true, avatarUrl: true } },
   // productTitle + the live line items feed the same-day rush flag. The line
   // items are not optional: the order reconcile keeps one deliverable row per
   // type, so "Same Day Photo Delivery" folds into the Photos row and only the
@@ -313,7 +321,7 @@ type ShootRowInput = {
   id: string; title: string; shootDate: Date | null; debriefSubmittedAt: Date | null;
   lat: number | null; lng: number | null; aryeoListingId: string | null; clientId: string | null;
   photographer: { name: string } | null;
-  client: { name: string };
+  client: { name: string; avatarUrl: string | null };
   deliverables: { type: string; label: string | null; productTitle?: string | null }[];
   orderItems: { title: string }[];
   activities: { type: string; body: string }[];
@@ -384,6 +392,7 @@ async function shootRow(
     photographer: p.photographer?.name ?? null,
     services,
     clientName: p.client.name,
+    clientAvatarUrl: p.client.avatarUrl,
     access,
     specialRequests: special,
     gaps,
@@ -470,7 +479,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
                 orderBy: { createdAt: "desc" as const },
                 take: 10,
               },
-              client: { select: { name: true } },
+              client: { select: { name: true, avatarUrl: true } },
             },
           },
         },
@@ -482,7 +491,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
         where: { status: { in: ["EDITING", "REVIEW", "REVISION"] } },
         select: {
           id: true, title: true, status: true, statusEvidence: true,
-          client: { select: { name: true } },
+          client: { select: { name: true, avatarUrl: true } },
           deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
           editor: { select: { name: true } },
           revisionBriefs: { orderBy: { createdAt: "desc" }, take: 1, select: { headline: true, itemsJson: true } },
@@ -577,6 +586,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
       projectId: t.projectId!,
       title: (pr?.title ?? t.title).split(",")[0],
       clientName: pr?.client?.name ?? null,
+      clientAvatarUrl: pr?.client?.avatarUrl ?? null,
       photographer: pr?.photographer?.name ?? null,
       shootISO: pr?.shootDate?.toISOString() ?? null,
       services: [...new Set((pr?.deliverables ?? []).map((d) => d.label ?? d.type))],
@@ -644,6 +654,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
       // WHO the job is for and WHAT was ordered — Jordan: the pipeline check
       // "should have more details on who it is, what it's for."
       clientName: p.client?.name ?? null,
+      clientAvatarUrl: p.client?.avatarUrl ?? null,
       services: [...new Set(p.deliverables.map((d) => d.label ?? d.type))],
       editor: p.editor?.name ?? null,
       sent: e.present,
@@ -671,6 +682,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
         name: u.clientName || "Unknown",
         snippet: (u.snippet ?? "").slice(0, 90),
         hours: Math.round(u.ageMin / 60),
+        avatarUrl: u.clientAvatarUrl,
       })),
     },
     qc,
