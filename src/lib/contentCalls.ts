@@ -162,16 +162,30 @@ export async function sweepDriveTranscripts(): Promise<{ ingested: number } | { 
     const f = norm(c.name).split(" ")[0];
     firstCounts.set(f, (firstCounts.get(f) ?? 0) + 1);
   }
+  const unmatched: string[] = [];
   const matchClient = (titlePrefix: string): { clientId: string; enrollmentId: string } | null => {
     const t = norm(titlePrefix);
     for (const c of clients) {
       if (t === norm(c.name) || t.startsWith(norm(c.name))) return { clientId: c.id, enrollmentId: enrollmentOf.get(c.id)! };
     }
-    const first = t.split(" ")[0];
-    if (first.length > 2 && firstCounts.get(first) === 1) {
-      const c = clients.find((x) => norm(x.name).split(" ")[0] === first);
-      if (c) return { clientId: c.id, enrollmentId: enrollmentOf.get(c.id)! };
+    // FIRST-NAME FALLBACK — only when the title carries nothing else to go on.
+    // Gemini titles a call with whatever the invite said, so "Bernadette and
+    // Jordan Spackman" is a real, matchable case. But the fallback used to run
+    // on ANY prefix whose first word was unique among the enrolled: a call with
+    // "Mike Flatley" — who is not in the program at all — matched Mike Ciunci,
+    // and would have filed a stranger's transcript onto his month, flipped it
+    // COMPLETED, and generated his topics, scripts and portal from it.
+    // A prefix with a surname in it is a FULL name: if it did not match above,
+    // this is not our client. Only a bare first name may fall through.
+    const words = t.split(" ").filter(Boolean);
+    if (words.length === 1) {
+      const first = words[0];
+      if (first.length > 2 && firstCounts.get(first) === 1) {
+        const c = clients.find((x) => norm(x.name).split(" ")[0] === first);
+        if (c) return { clientId: c.id, enrollmentId: enrollmentOf.get(c.id)! };
+      }
     }
+    unmatched.push(titlePrefix.trim());
     return null;
   };
 
@@ -238,6 +252,11 @@ export async function sweepDriveTranscripts(): Promise<{ ingested: number } | { 
       });
       ingested++;
     } catch { /* one bad doc must not stop the rest */ }
+  }
+  // Say what we could not place. A meeting-notes doc that matches nobody used to
+  // vanish silently, which is how a wrong match was preferable to no match.
+  if (unmatched.length > 0) {
+    console.warn(`[content] Drive transcripts not matched to an enrolled client: ${[...new Set(unmatched)].join(" · ")}`);
   }
   return { ingested };
 }
