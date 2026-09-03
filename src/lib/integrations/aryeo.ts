@@ -869,6 +869,18 @@ function manualMappingForTitle(title: string): ManualMapping | undefined {
     const leftover = norm.slice(key.length + 1);
     if (!MEDIA_WORD_RE.test(leftover) && !SUFFIX_VETO_RE.test(leftover)) return MANUAL_MAP.get(key);
   }
+  // A discounted / renamed VARIANT of a catalogue product — "SOCIAL MEDIA
+  // INFLUENCER - AAP Discounted" against "SOCIAL MEDIA INFLUENCER - Dominate
+  // Social Media…" — shares the product's BASE name (the part before " - ").
+  // Without this the variant fell through to the regex parser, derived only a
+  // reel, and the reconciler retired the photos, drone and floor plan the
+  // package really includes (47 Venuti Dr, Sep 2). Base-name match only when
+  // exactly one catalogue product owns that base, so nothing ambiguous binds.
+  const base = norm.split(" - ")[0]?.trim();
+  if (base && base !== norm) {
+    const owners = [...MANUAL_MAP.keys()].filter((k) => k === base || k.startsWith(base + " - "));
+    if (owners.length === 1) return MANUAL_MAP.get(owners[0]);
+  }
   return undefined;
 }
 
