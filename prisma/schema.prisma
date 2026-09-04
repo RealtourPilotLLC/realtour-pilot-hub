@@ -413,6 +413,12 @@ model Project {
   lat            Float? // from Aryeo listing.address.latitude — drives the map pins
   lng            Float? // from Aryeo listing.address.longitude
   squareFeet     Int?
+  // The size BAND the client picked when ordering, verbatim off the order's
+  // line items ("2,000-2,999 Sq. Ft."). 80% of orders carry one, against 7 of
+  // 1,701 listings with an exact figure — so this is the real source for the
+  // culling tier, and squareFeet above holds the TOP of it. Kept as text so a
+  // screen can say what was actually ordered rather than implying we measured.
+  squareFeetBand String?
   // Culling budget: target FINAL delivered photo count. Defaulted in code from
   // squareFeet (≥3500 → 80, else 50) unless the owner overrides on the project.
   // The status engine flags raw drops that blow past ~3.3× this (bracket ratio)

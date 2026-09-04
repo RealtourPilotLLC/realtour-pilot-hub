@@ -293,6 +293,9 @@ export function UploadPortal({
     range: { low: number; high: number; upper: number | null };
     rangeMode: "sop" | "legacy" | "override";
     squareFeet: number | null;
+    /** the size band the client ordered, verbatim ("2,000-2,999 Sq. Ft.") —
+     *  squareFeet holds the TOP of it, so the page must not imply we measured */
+    squareFeetBand: string | null;
     /** what this order's video step must show and demand — see videoStepSpec */
     videoSpec: VideoStepSpec;
     /** THE resolved style (Deliverable.videoStyle, else the tier fallback —
@@ -322,6 +325,8 @@ export function UploadPortal({
   // state so the range updates the moment it is saved, without a full reload.
   const [sqft, setSqft] = useState<string>(policy.squareFeet != null ? String(policy.squareFeet) : "");
   const [sqftSaved, setSqftSaved] = useState<number | null>(policy.squareFeet);
+  // The band only describes the size while nobody has typed an exact one.
+  const [bandText, setBandText] = useState<string | null>(policy.squareFeetBand);
   const [sqftBusy, setSqftBusy] = useState(false);
   const [sqftErr, setSqftErr] = useState<string | null>(null);
   // After a submit the whole checklist collapses to the confirmation — the page
@@ -645,6 +650,13 @@ export function UploadPortal({
   // wins, and a legacy shoot keeps its briefed ceiling.
   const liveRange = policy.rangeMode === "sop" ? photoRangeFor(sqftSaved) : policy.range;
   const collapsed = done && !reopened;
+  // Where the size came from, said plainly: the ordered band is a range the
+  // client picked, not a measurement, so the page never prints it as one.
+  const sizeNote = bandText
+    ? ` (${bandText.replace(/\s*\(.*\)$/, "")} on the order)`
+    : sqftSaved
+      ? ` (${sqftSaved.toLocaleString("en-US")} sq ft)`
+      : "";
 
   async function saveSqft(raw: string) {
     const trimmed = raw.replace(/[^0-9]/g, "");
@@ -655,6 +667,7 @@ export function UploadPortal({
     setSqftBusy(false);
     if (!res.ok) { setSqftErr(res.message ?? "Couldn't save that."); return; }
     setSqftSaved(value);
+    setBandText(null); // a typed figure is better than the ordered band
   }
 
   const checkbox = "size-4 shrink-0 accent-[var(--brand)]";
@@ -839,7 +852,7 @@ export function UploadPortal({
                     <span className="font-semibold">This home: aim for {photoRangeFor(sqftSaved).low}&ndash;{photoRangeFor(sqftSaved).high} finals.</span>{" "}
                     <span className="text-foreground/80">
                       Booked before the new standard, so nothing is enforced past ~{policy.photoTarget} —
-                      but the range is the goal. ({sqftSaved.toLocaleString("en-US")} sq ft)
+                      but the range is the goal.{sizeNote}
                     </span>
                   </>
                 ) : (
@@ -854,7 +867,7 @@ export function UploadPortal({
                 <span className="font-semibold">This home: aim for {liveRange.low}&ndash;{liveRange.high} finals.</span>{" "}
                 <span className="text-foreground/80">
                   {liveRange.upper} is the normal ceiling — and the ceiling is not a goal.
-                  {sqftSaved ? ` (${sqftSaved.toLocaleString("en-US")} sq ft)` : ""}
+                  {sizeNote}
                 </span>
               </>
             ) : (
@@ -897,9 +910,11 @@ export function UploadPortal({
               ? <span className="w-full text-xs text-danger">{sqftErr}</span>
               : policy.rangeMode === "override"
                 ? <span className="w-full text-xs text-muted">The office set a target for this home, so the size tier doesn&rsquo;t apply — but it&rsquo;s still worth recording.</span>
-                : sqftSaved == null
-                  ? <span className="w-full text-xs text-muted">Not on the order. Add it and the range above matches the house.</span>
-                  : null}
+                : bandText
+                  ? <span className="w-full text-xs text-muted">The order says <strong>{bandText}</strong> — a range the client picked. Type the real figure if you know it and the target sharpens.</span>
+                  : sqftSaved == null
+                    ? <span className="w-full text-xs text-muted">Not on the order. Add it and the range above matches the house.</span>
+                    : null}
           </div>
 
           <MiniHeading>The standard</MiniHeading>

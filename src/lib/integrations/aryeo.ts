@@ -256,14 +256,54 @@ export interface AryeoImage {
   original_url?: string;
   display_in_gallery?: boolean;
 }
-/** Square footage off an order's listing. Only 7 of 1,701 Aryeo listings carry
- *  one today, so most jobs still resolve to null and the photographer sets it
- *  on the upload page instead. Returns null for 0 and for nonsense values. */
-export function sqftOf(order: { listing?: AryeoListing | null }): number | null {
-  const raw = order.listing?.building?.square_feet;
-  if (raw == null) return null;
-  const n = Math.round(Number(raw));
-  return Number.isFinite(n) && n > 0 && n < 100_000 ? n : null;
+/** The size BAND the client picked when ordering. It rides on the order/
+ *  appointment LINE ITEMS as the variant subtitle — "2,000-2,999 Sq. Ft." —
+ *  and it is the real source: 80% of orders carry one, against 7 of 1,701
+ *  listings with an exact figure (measured Sep 3 2026).
+ *
+ *  Formatting is not consistent across the catalogue: separators are "-" or
+ *  " - ", thousands commas come and go, and the unit appears as "Sq. Ft.",
+ *  "Sq.Ft.", "sq. Ft." and "Sq. Ft" — so match loosely and read the numbers. */
+const SQFT_BAND_RE = /([\d][\d,]*)\s*[-–—]\s*([\d][\d,]*)\s*sq\.?\s*ft/i;
+
+export type SqftBand = { text: string; low: number; high: number };
+
+export function parseSqftBand(subtitle: string | null | undefined): SqftBand | null {
+  const m = SQFT_BAND_RE.exec(subtitle ?? "");
+  if (!m) return null;
+  const low = Number(m[1].replace(/,/g, ""));
+  const high = Number(m[2].replace(/,/g, ""));
+  if (!Number.isFinite(low) || !Number.isFinite(high) || high <= 0 || high > 60_000 || high < low) return null;
+  // A band wider than this is a catch-all price bracket ("0-6500 Sq. Ft."),
+  // not a statement about the house — sizing a photo budget off its top would
+  // hand a 1,500 sq ft home the 70-85 range. Treat it as no size at all.
+  if (high - low > 3000) return null;
+  return { text: (subtitle ?? "").trim().slice(0, 60), low, high };
+}
+
+/** The band on an order's items, if any line carries one. */
+export function orderSqftBand(items: AryeoOrderItem[] | null | undefined): SqftBand | null {
+  for (const it of items ?? []) {
+    const band = parseSqftBand(it.sub_title ?? it.subtitle);
+    if (band) return band;
+  }
+  return null;
+}
+
+/** The square footage to SIZE THE CULLING TIER on.
+ *
+ *  Preference: an exact figure on the listing, else the top of the ordered
+ *  band. The top, not the midpoint: the tiers are "≤ X" thresholds, so the
+ *  largest the home can be is the only value guaranteed to land it in a tier
+ *  big enough — and under-budgeting is the harmful error here, because it
+ *  flags a photographer for shooting what the house actually needed. */
+export function sqftOf(order: { listing?: AryeoListing | null; items?: AryeoOrderItem[] | null }): number | null {
+  const exact = order.listing?.building?.square_feet;
+  if (exact != null) {
+    const n = Math.round(Number(exact));
+    if (Number.isFinite(n) && n > 0 && n < 100_000) return n;
+  }
+  return orderSqftBand(order.items)?.high ?? null;
 }
 
 export interface AryeoListing {
@@ -1195,7 +1235,7 @@ export async function syncAryeoOrders(
           id: true, aryeoOrderId: true, status: true, clientId: true, deliveredAt: true,
           price: true, payableInvoice: true, paymentStatus: true, balanceAmount: true, title: true,
           photographerId: true, // cancel bell targets the assigned photographer
-          squareFeet: true, // so a size entered in Aryeo AFTER the import still lands
+          squareFeet: true, squareFeetBand: true, // so a size entered in Aryeo AFTER the import still lands
         },
       }),
       prisma.client.findMany({ select: { id: true, aryeoCustomerId: true, email: true, backupEmail: true, phone: true, name: true, company: true } }),
@@ -1454,8 +1494,11 @@ export async function syncAryeoOrders(
           // created (or never — only 7 of 1,701 listings carry one), so the
           // import-time read is not enough. Aryeo wins when it HAS a number;
           // a null there never wipes a size the photographer typed on site.
+          const liveBand = orderSqftBand(order.items);
           const liveSqft = sqftOf(order);
-          const sqftChanged = liveSqft != null && liveSqft !== proj.squareFeet;
+          const sqftChanged =
+            (liveSqft != null && liveSqft !== proj.squareFeet) ||
+            (liveBand?.text ?? null) !== (proj.squareFeetBand ?? null);
 
           // (deliveredAt is HUB-owned — stamped at the hub's own DELIVERED
           // transition. Aryeo's fulfilled_at lands at the FIRST media delivery,
@@ -1474,7 +1517,9 @@ export async function syncAryeoOrders(
                 paymentUrl: order.payment_url ?? null,
                 ...(newClientId !== proj.clientId ? { clientId: newClientId } : {}),
                 ...(cancelNow ? { status: "CANCELLED" } : {}),
-                ...(sqftChanged ? { squareFeet: liveSqft } : {}),
+                ...(sqftChanged
+                  ? { ...(liveSqft != null ? { squareFeet: liveSqft } : {}), squareFeetBand: liveBand?.text ?? null }
+                  : {}),
               },
             });
             if (cancelNow) {
@@ -1585,6 +1630,7 @@ export async function syncAryeoOrders(
             // which is why all 1,542 projects had null and every home was shown
             // the smallest "aim for 35-45" range regardless of size.
             squareFeet: sqftOf(order),
+            squareFeetBand: orderSqftBand(items)?.text ?? null,
             orderedAt: order.created_at ? new Date(order.created_at) : null,
             shootDate: shootDate ? new Date(shootDate) : null,
             deliveredAt: order.fulfilled_at ? new Date(order.fulfilled_at) : null,

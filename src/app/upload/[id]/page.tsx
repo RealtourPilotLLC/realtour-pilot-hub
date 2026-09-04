@@ -254,6 +254,7 @@ export default async function UploadProjectPage({
           range: photoPolicy.range,
           rangeMode: photoPolicy.mode,
           squareFeet: project.squareFeet ?? null,
+          squareFeetBand: project.squareFeetBand ?? null,
           videoSpec,
           videoStyle,
           isPremium,
