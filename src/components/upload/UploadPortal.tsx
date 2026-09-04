@@ -17,7 +17,8 @@ import {
 } from "lucide-react";
 import { DELIVERABLE_META, type VideoStepSpec } from "@/lib/pipeline";
 import { videoStyleName, type VideoStyleKey } from "@/lib/videoStyles";
-import { markDeliverableUploaded, markDeliverableNotCompleted, flagIssue, finalizeUpload, submitUploadFeedback } from "@/app/upload/actions";
+import { photoRangeFor } from "@/lib/culling";
+import { markDeliverableUploaded, markDeliverableNotCompleted, flagIssue, finalizeUpload, submitUploadFeedback, setProjectSquareFeet } from "@/app/upload/actions";
 import { cn } from "@/lib/utils";
 import type { DeliverableType, DeliverableStatus } from "@prisma/client";
 import { etDateTime } from "@/lib/datetime";
@@ -317,6 +318,16 @@ export function UploadPortal({
   const [isPending, startTransition] = useTransition();
   const [toggling, startToggle] = useTransition();
   const [done, setDone] = useState(project.uploadedAt != null);
+  // The home's size drives which culling tier the page preaches. Kept in local
+  // state so the range updates the moment it is saved, without a full reload.
+  const [sqft, setSqft] = useState<string>(policy.squareFeet != null ? String(policy.squareFeet) : "");
+  const [sqftSaved, setSqftSaved] = useState<number | null>(policy.squareFeet);
+  const [sqftBusy, setSqftBusy] = useState(false);
+  const [sqftErr, setSqftErr] = useState<string | null>(null);
+  // After a submit the whole checklist collapses to the confirmation — the page
+  // is ~1,300px of answered steps, and scrolling back into it read as "did that
+  // work?" (Jordan, Sep 3). Reopening is one tap for a correction.
+  const [reopened, setReopened] = useState(false);
   const [pdfPath, setPdfPath] = useState<string | null>(project.editorPdfPath);
   const [err, setErr] = useState<string | null>(null);
   const [processNote, setProcessNote] = useState("");
@@ -621,11 +632,29 @@ export function UploadPortal({
         }
         if (res.pdfPath) setPdfPath(res.pdfPath);
         setDone(true);
+        setReopened(false); // collapse back to the confirmation after a re-submit
         window.scrollTo({ top: 0, behavior: "smooth" });
       } catch {
         setErr("Couldn’t submit — the editors were NOT notified. Please try again.");
       }
     });
+  }
+
+  // The tier the page preaches follows the size on file RIGHT NOW, so typing a
+  // square footage re-tiers the target immediately. An office override still
+  // wins, and a legacy shoot keeps its briefed ceiling.
+  const liveRange = policy.rangeMode === "sop" ? photoRangeFor(sqftSaved) : policy.range;
+  const collapsed = done && !reopened;
+
+  async function saveSqft(raw: string) {
+    const trimmed = raw.replace(/[^0-9]/g, "");
+    const value = trimmed ? Number(trimmed) : null;
+    if (value === sqftSaved) return;
+    setSqftBusy(true); setSqftErr(null);
+    const res = await setProjectSquareFeet(project.id, value);
+    setSqftBusy(false);
+    if (!res.ok) { setSqftErr(res.message ?? "Couldn't save that."); return; }
+    setSqftSaved(value);
   }
 
   const checkbox = "size-4 shrink-0 accent-[var(--brand)]";
@@ -674,11 +703,12 @@ export function UploadPortal({
         <div className="rounded-2xl border border-success/30 bg-success-soft/50 p-4">
           <div className="flex items-center gap-2 text-success">
             <CheckCircle2 className="size-5" />
-            <span className="font-semibold">Submitted — editors notified</span>
+            <span className="font-semibold">Submitted — you&rsquo;re good to go</span>
           </div>
           <p className="mt-1 text-sm text-foreground/80">
-            Thanks! Your notes are on the editor brief, the editors know the files are in Dropbox, and{" "}
-            <strong>this shoot is on your payroll</strong> — you&rsquo;ll see it in My Pay.
+            Nothing else is needed from you on this shoot. Your notes are on the editor brief, the editors
+            know the files are in Dropbox, and <strong>this shoot is on your payroll</strong> — you&rsquo;ll
+            see it in My Pay.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             {pdfPath && (
@@ -764,6 +794,20 @@ export function UploadPortal({
         </div>
       )}
 
+      {/* Everything below is the checklist itself — hidden once submitted,
+          so the confirmation IS the page rather than a banner above a wall of
+          answered steps. `collapsed` never hides the submit bar: a re-submit
+          has to stay reachable. */}
+      {collapsed ? (
+        <button
+          onClick={() => { setReopened(true); }}
+          className="w-full rounded-2xl border border-dashed border-border bg-surface-2/40 px-4 py-3 text-left text-sm text-muted hover:border-brand hover:text-foreground"
+        >
+          <span className="font-medium text-foreground">Need to change something?</span>{" "}
+          Reopen the checklist — your answers are all still here.
+        </button>
+      ) : (
+      <>
       {/* ---- STEP: Upload to Dropbox ---- */}
       <StepCard
         n={stepNo++}
@@ -785,15 +829,32 @@ export function UploadPortal({
               </>
             ) : policy.rangeMode === "legacy" ? (
               <>
-                <span className="font-semibold">This shoot predates the new standard — ceiling ~{policy.photoTarget} finals.</span>{" "}
-                <span className="text-foreground/80">Cull to the SOP anyway: hero shots, one composition once.</span>
+                {/* A pre-SOP job keeps its more lenient briefed ceiling so a tier
+                    change can't retro-fire cull tasks — but when the size IS
+                    known, lead with the range the SOP would ask for. The ceiling
+                    without the range reads as "shoot 80", which is the opposite
+                    of the point. */}
+                {sqftSaved ? (
+                  <>
+                    <span className="font-semibold">This home: aim for {photoRangeFor(sqftSaved).low}&ndash;{photoRangeFor(sqftSaved).high} finals.</span>{" "}
+                    <span className="text-foreground/80">
+                      Booked before the new standard, so nothing is enforced past ~{policy.photoTarget} —
+                      but the range is the goal. ({sqftSaved.toLocaleString("en-US")} sq ft)
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="font-semibold">This shoot predates the new standard — ceiling ~{policy.photoTarget} finals.</span>{" "}
+                    <span className="text-foreground/80">Cull to the SOP anyway: hero shots, one composition once.</span>
+                  </>
+                )}
               </>
-            ) : policy.range.upper ? (
+            ) : liveRange.upper ? (
               <>
-                <span className="font-semibold">This home: aim for {policy.range.low}–{policy.range.high} finals.</span>{" "}
+                <span className="font-semibold">This home: aim for {liveRange.low}&ndash;{liveRange.high} finals.</span>{" "}
                 <span className="text-foreground/80">
-                  {policy.range.upper} is the normal ceiling — and the ceiling is not a goal.
-                  {policy.squareFeet ? ` (${policy.squareFeet.toLocaleString("en-US")} sq ft)` : ""}
+                  {liveRange.upper} is the normal ceiling — and the ceiling is not a goal.
+                  {sqftSaved ? ` (${sqftSaved.toLocaleString("en-US")} sq ft)` : ""}
                 </span>
               </>
             ) : (
@@ -805,6 +866,40 @@ export function UploadPortal({
                 </span>
               </>
             )}
+          </div>
+
+          {/* THE SIZE THIS TIER IS BUILT ON. Aryeo carries a square footage on
+              7 of 1,701 listings, so without this every home shows the smallest
+              range. The person standing in the house is the one who knows. */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-surface-2/40 px-3.5 py-2.5">
+            <label htmlFor="sqft" className="text-sm font-medium">
+              Square footage
+              {policy.rangeMode === "sop" && <span className="ml-1 font-normal text-muted">— sets the target above</span>}
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                id="sqft"
+                inputMode="numeric"
+                value={sqft}
+                onChange={(e) => setSqft(e.target.value.replace(/[^0-9]/g, ""))}
+                onBlur={(e) => void saveSqft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); } }}
+                placeholder="e.g. 2400"
+                className="w-28 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-brand"
+              />
+              {sqftBusy
+                ? <span className="text-xs text-muted">saving…</span>
+                : sqftSaved != null && String(sqftSaved) === sqft
+                  ? <span className="inline-flex items-center gap-1 text-xs text-success"><Check className="size-3.5" />saved</span>
+                  : null}
+            </div>
+            {sqftErr
+              ? <span className="w-full text-xs text-danger">{sqftErr}</span>
+              : policy.rangeMode === "override"
+                ? <span className="w-full text-xs text-muted">The office set a target for this home, so the size tier doesn&rsquo;t apply — but it&rsquo;s still worth recording.</span>
+                : sqftSaved == null
+                  ? <span className="w-full text-xs text-muted">Not on the order. Add it and the range above matches the house.</span>
+                  : null}
           </div>
 
           <MiniHeading>The standard</MiniHeading>
@@ -1270,9 +1365,12 @@ export function UploadPortal({
           )}
         </div>
       </StepCard>
+      </>
+      )}
 
-      {/* Submit */}
-      <div className="sticky bottom-4 rounded-2xl border bg-surface p-4 shadow-lg">
+      {/* Submit — hidden while the confirmation is collapsed, so a submitted
+          page ends on "you're good to go" rather than on another submit button. */}
+      <div className={cn("sticky bottom-4 rounded-2xl border bg-surface p-4 shadow-lg", collapsed && !ask && "hidden")}>
         {/* In-page confirmation — replaces window.confirm(), which mobile and
             in-app browsers swallow after an await (Harrison's stuck "hold on"). */}
         {ask && (

@@ -256,10 +256,29 @@ export interface AryeoImage {
   original_url?: string;
   display_in_gallery?: boolean;
 }
+/** Square footage off an order's listing. Only 7 of 1,701 Aryeo listings carry
+ *  one today, so most jobs still resolve to null and the photographer sets it
+ *  on the upload page instead. Returns null for 0 and for nonsense values. */
+export function sqftOf(order: { listing?: AryeoListing | null }): number | null {
+  const raw = order.listing?.building?.square_feet;
+  if (raw == null) return null;
+  const n = Math.round(Number(raw));
+  return Number.isFinite(n) && n > 0 && n < 100_000 ? n : null;
+}
+
 export interface AryeoListing {
   id?: string;
   address?: AryeoAddress;
-  square_feet?: number;
+  /** Verified against the live API (Sep 3 2026): the size fields sit on
+   *  `building`, NOT on the listing root. The old root-level `square_feet`
+   *  never existed, so the culling tiers had nothing to size a home on and
+   *  every property fell to the smallest range. */
+  building?: {
+    square_feet?: number | null;
+    bedrooms?: number | null;
+    bathrooms?: number | null;
+    year_built?: number | null;
+  };
   delivery_status?: string; // DELIVERED | UNDELIVERED
   thumbnail_url?: string;
   large_thumbnail_url?: string;
@@ -1176,6 +1195,7 @@ export async function syncAryeoOrders(
           id: true, aryeoOrderId: true, status: true, clientId: true, deliveredAt: true,
           price: true, payableInvoice: true, paymentStatus: true, balanceAmount: true, title: true,
           photographerId: true, // cancel bell targets the assigned photographer
+          squareFeet: true, // so a size entered in Aryeo AFTER the import still lands
         },
       }),
       prisma.client.findMany({ select: { id: true, aryeoCustomerId: true, email: true, backupEmail: true, phone: true, name: true, company: true } }),
@@ -1430,12 +1450,18 @@ export async function syncAryeoOrders(
           // re-links silently; a different person gets an activity trail.
           const clientChanged = !!cust?.id && custClientId !== undefined && custClientId !== proj.clientId;
           const clientNeedsResolve = !!cust?.id && custClientId === undefined;
+          // Square footage is usually filled in Aryeo AFTER the order is
+          // created (or never — only 7 of 1,701 listings carry one), so the
+          // import-time read is not enough. Aryeo wins when it HAS a number;
+          // a null there never wipes a size the photographer typed on site.
+          const liveSqft = sqftOf(order);
+          const sqftChanged = liveSqft != null && liveSqft !== proj.squareFeet;
 
           // (deliveredAt is HUB-owned — stamped at the hub's own DELIVERED
           // transition. Aryeo's fulfilled_at lands at the FIRST media delivery,
           // i.e. photos on day 1 of a staged listing job; mirroring it here
           // would have marked every in-production job "delivered" — review.)
-          if (moneyChanged || cancelNow || clientChanged || clientNeedsResolve) {
+          if (moneyChanged || cancelNow || clientChanged || clientNeedsResolve || sqftChanged) {
             const newClientId = clientChanged || clientNeedsResolve ? await resolveClient(cust) : proj.clientId;
             await prisma.project.update({
               where: { id: proj.id },
@@ -1448,6 +1474,7 @@ export async function syncAryeoOrders(
                 paymentUrl: order.payment_url ?? null,
                 ...(newClientId !== proj.clientId ? { clientId: newClientId } : {}),
                 ...(cancelNow ? { status: "CANCELLED" } : {}),
+                ...(sqftChanged ? { squareFeet: liveSqft } : {}),
               },
             });
             if (cancelNow) {
@@ -1552,12 +1579,12 @@ export async function syncAryeoOrders(
             zip: addr?.postal_code ?? null,
             lat: addr?.latitude ?? null,
             lng: addr?.longitude ?? null,
-            // Square footage lives on the LISTING, not the address. It was never
-            // mapped (audit: 0/153 projects had it), so the culling budget had
-            // nothing to size the 50-vs-80 photo default on — every home fell
-            // back to 50. Pull it through so large homes get the 80 target.
-            squareFeet:
-              order.listing?.square_feet != null ? Math.round(order.listing.square_feet) : null,
+            // Square footage sizes the culling tiers. It lives on
+            // listing.BUILDING (checked against the live API Sep 3 2026) — the
+            // old code read listing.square_feet, a field that does not exist,
+            // which is why all 1,542 projects had null and every home was shown
+            // the smallest "aim for 35-45" range regardless of size.
+            squareFeet: sqftOf(order),
             orderedAt: order.created_at ? new Date(order.created_at) : null,
             shootDate: shootDate ? new Date(shootDate) : null,
             deliveredAt: order.fulfilled_at ? new Date(order.fulfilled_at) : null,

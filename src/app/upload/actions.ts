@@ -200,6 +200,40 @@ export async function submitUploadFeedback(projectId: string, body: string): Pro
 // Feedback about the shoot, so: project timeline + an ops loop for Kyle. It
 // does NOT go to the Feedback & requests board; a lockbox code is not a
 // shippable update (Jordan, Sep 2).
+// The home's size, set by the person standing in it. Square footage decides the
+// culling tier (photoRangeFor), and Aryeo carries one on just 7 of 1,701
+// listings — so without this the target on the page is the smallest tier,
+// "aim for 35-45", on every home regardless of size.
+//
+// Aryeo still wins when it has a number: the hourly sync overwrites this the
+// moment somebody fills the listing's building.square_feet. Photographer-set
+// values are the floor, not a fight.
+export async function setProjectSquareFeet(
+  projectId: string,
+  squareFeet: number | null,
+): Promise<{ ok: boolean; message?: string }> {
+  await requireShootAccess(projectId);
+  if (squareFeet != null && (!Number.isFinite(squareFeet) || squareFeet < 100 || squareFeet > 60_000)) {
+    return { ok: false, message: "That doesn't look like a square footage — enter the finished living area, e.g. 2400." };
+  }
+  const value = squareFeet == null ? null : Math.round(squareFeet);
+  const before = await prisma.project.findUnique({ where: { id: projectId }, select: { squareFeet: true } });
+  if (before?.squareFeet === value) return { ok: true };
+  await prisma.project.update({ where: { id: projectId }, data: { squareFeet: value } });
+  await prisma.activity.create({
+    data: {
+      projectId,
+      type: ActivityType.NOTE,
+      body: value == null
+        ? "Square footage cleared on the upload page — the photo target falls back to the default range."
+        : `Square footage set to ${value.toLocaleString("en-US")} sq ft on the upload page — the photo target now follows that size tier.`,
+    },
+  }).catch(() => {});
+  revalidatePath(`/upload/${projectId}`);
+  revalidatePath(`/projects/${projectId}`);
+  return { ok: true };
+}
+
 export async function flagIssue(projectId: string, body: string) {
   await requireShootAccess(projectId);
   const trimmed = body.trim();
@@ -482,24 +516,40 @@ export async function finalizeUpload(
   // unreadable → don't block (unknown is not proof of absence).
   if (!data.force && prior) {
     try {
-      const { actualFolderPaths, folderFileCount } = await import("@/lib/dropboxFolders");
+      const { actualFolderPaths, folderFileCount, videoFilesUnder } = await import("@/lib/dropboxFolders");
       // The REAL folder (a rescheduled shoot's files stay where they were) —
       // the convention path made this warn "RAW-Video is empty" wrongly.
       const paths = actualFolderPaths(prior);
       const wantsVideo = liveDeliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
       const wantsPhotos = liveDeliverables.some((d) => d.type === "PHOTOS" || d.type === "DRONE");
-      const [rawPhotos, rawVideo] = await Promise.all([
+      // Video is checked across the WHOLE job folder, not just 02-RAW-Video.
+      // Clips dropped into the photos folder or the listing root are still
+      // delivered footage, and counting only the one folder is what made this
+      // warn on nearly every video submit (Jordan, Sep 3: "it's not detecting
+      // it right away... warning them every time they go to submit").
+      const [rawPhotos, video] = await Promise.all([
         wantsPhotos ? folderFileCount(paths.rawPhotos) : Promise.resolve(null),
-        wantsVideo ? folderFileCount(paths.rawVideo) : Promise.resolve(null),
+        wantsVideo ? videoFilesUnder(paths.listing) : Promise.resolve(null),
       ]);
       const missing: string[] = [];
       if (wantsPhotos && rawPhotos === 0) missing.push("the RAW-Photos folder is empty");
-      if (wantsVideo && rawVideo === 0) missing.push("the RAW-Video folder is empty (a video is ordered!)");
+      if (wantsVideo && video && video.count === 0) missing.push("no video files anywhere in this job's Dropbox folder (a video is ordered!)");
+      // Footage that landed somewhere unexpected is NOT a blocker — say where
+      // it is, let the submit through, and leave a note so the editor is not
+      // hunting for it.
+      const misfiled = wantsVideo && video && video.count > 0 && !video.where.includes("02-raw-video")
+        ? `${video.count} video file${video.count === 1 ? "" : "s"} found in ${video.where.join(" and ")} rather than 02-RAW-Video`
+        : null;
       if (missing.length > 0) {
         return {
           needsConfirm: true,
-          warning: `Hold on — ${missing.join(" and ")}. If you already uploaded, give Dropbox a minute and re-check the folder name. Submit anyway?`,
+          warning: `Hold on — ${missing.join(" and ")}. If a big upload is still running, give Dropbox a minute and press Submit again. Submit anyway?`,
         };
+      }
+      if (misfiled) {
+        await prisma.activity.create({
+          data: { projectId, type: ActivityType.NOTE, body: `Upload check: ${misfiled}.` },
+        }).catch(() => {});
       }
     } catch { /* can't check → don't block the submit */ }
   }

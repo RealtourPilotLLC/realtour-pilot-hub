@@ -247,6 +247,36 @@ export async function folderFileCount(path: string, onError?: (e: unknown) => vo
   }
 }
 
+// Video files anywhere under the job's listing folder — not just 02-RAW-Video.
+// A photographer who drops clips into 01-RAW-Photos, or straight into the
+// listing folder, HAS delivered the footage; warning them that "the RAW-Video
+// folder is empty (a video is ordered!)" every time they submit is the hub
+// being pedantic about a folder name rather than looking for the files.
+// Returns null when the read failed — unknown is never "empty".
+const VIDEO_EXT = /\.(mp4|mov|m4v|avi|mkv|mts|m2ts|mxf|braw|r3d|insv|lrv|wmv|webm|avchd|3gp)$/i;
+
+export async function videoFilesUnder(
+  listingPath: string,
+  onError?: (e: unknown) => void,
+): Promise<{ count: number; sample: string[]; where: string[] } | null> {
+  try {
+    const entries = await dropboxListFolder(listingPath, { recursive: true });
+    const vids = entries.filter((e) => e.tag === "file" && VIDEO_EXT.test(e.name));
+    // Which sub-folder each one is in, relative to the listing folder — so the
+    // page can say "12 clips are in 01-RAW-Photos" instead of "empty".
+    const where = [...new Set(vids.map((v) => {
+      const rel = (v.path ?? "").toLowerCase().slice(listingPath.toLowerCase().length + 1);
+      const seg = rel.split("/")[0];
+      return rel.includes("/") ? seg : "the listing folder";
+    }))].filter(Boolean);
+    return { count: vids.length, sample: vids.slice(0, 3).map((v) => v.name), where };
+  } catch (e) {
+    if (e instanceof DropboxError && /not_found|path_lookup/i.test(e.message)) return { count: 0, sample: [], where: [] };
+    onError?.(e);
+    return null;
+  }
+}
+
 // Web deep-link that opens a folder in the Dropbox web app (team members land
 // in the team space they have access to).
 export function dropboxWebUrl(path: string): string {
