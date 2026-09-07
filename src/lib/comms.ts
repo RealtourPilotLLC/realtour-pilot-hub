@@ -293,6 +293,43 @@ export async function recordClientCommunication(opts: {
 
 // Reopen a delivered job for changes: flag it, move DELIVERED → REVISION, and
 // raise an urgent revision task (deduped to one open revision per project).
+// WHICH MEDIUM the client is asking about — read from the ASK, not the whole
+// message. Gary Mercer's "1956 Wetherhill Dr Photos" email opened by describing
+// his shoot ("a 2nd full set with Zillow showcase and agent reel") and then
+// asked "are you able to edit these 2 photos"; testing the whole note for video
+// words found "reel" in the background sentence and sent a photo retouch to the
+// video editor's board (Jordan, Sep 7).
+//
+// So: isolate the sentences that actually carry a request, weigh photo words
+// against video words in those, and let the subject line count double — a
+// client who titles the thread "… Photos" has already said what it is about.
+// A tie is "unclear", which keeps the job with Kyle to triage rather than
+// guessing. "cut" only counts as a video word when it names a CUT (rough/final/
+// new cut, re-cut): "cut out the trash can" is a photo retouch.
+const VIDEO_WORDS = /\b(video|reel|clip|footage|(?:rough|final|first|new)\s+cut|re-?cut|music|audio|song|caption|subtitle|intro|outro|walk-?through|transition|b-?roll)\b/gi;
+const PHOTO_WORDS = /\b(photos?|pictures?|pics?|images?|shots?|stills?|headshots?|retouch\w*|edit(?:ed|ing)? (?:this|these|the)? ?(?:photo|picture|pic|image|shot)s?|twilight|floor ?plan|virtual(?:ly)? stag\w*)\b/gi;
+const REQUEST_SENTENCE = /\b(can|could|would|will|are you able|is it possible|possible to|any chance|please|need|want|send me|resend|swap|replace|remove|add)\b|\?/i;
+
+export type AskMedium = "video" | "photo" | "unclear";
+
+export function askMedium(note: string): AskMedium {
+  const text = (note ?? "").trim();
+  if (!text) return "unclear";
+  const count = (re: RegExp, s: string) => (s.match(new RegExp(re.source, "gi")) ?? []).length;
+  // The first line of a forwarded client email is the subject we prefixed —
+  // "1956 Wetherhill Dr Photos — Hi Team…" — and it is the strongest single
+  // signal about the subject matter, so it counts twice.
+  const firstLine = text.split(/\n|—/)[0] ?? "";
+  const sentences = text.split(/(?<=[.!?])\s+/).map((x) => x.trim()).filter(Boolean);
+  const asks = sentences.filter((x) => REQUEST_SENTENCE.test(x));
+  const scope = asks.length > 0 ? asks.join(" ") : text;
+  const video = count(VIDEO_WORDS, scope) + count(VIDEO_WORDS, firstLine);
+  const photo = count(PHOTO_WORDS, scope) + count(PHOTO_WORDS, firstLine);
+  if (video > photo) return "video";
+  if (photo > video) return "photo";
+  return "unclear";
+}
+
 export async function raiseRevision(opts: {
   projectId: string;
   clientId?: string | null;
@@ -325,11 +362,13 @@ export async function raiseRevision(opts: {
   // front-lawn photo" on a photos+reel job went to the video editor (audit).
   // Video terms in the ask (or a video-only job) → the video lane; otherwise
   // Kyle triages it like any photo/3D/floor-plan revision.
-  // "cut" only counts as a video word when it names a CUT (rough/final/new
-  // cut, re-cut) — "cut out the trash can" is a photo retouch ask and bare
-  // \bcut\b was misrouting those to the video editor on mixed jobs.
-  const VIDEO_ASK = /\b(video|reel|clip|footage|(?:rough|final|first|new)\s+cut|re-?cut|music|audio|song|caption|subtitle|intro|outro|walk-?through|transition|b-?roll)\b/i;
-  const primary = videoDeliv && (VIDEO_ASK.test(opts.note) || !hasNonVideo) ? videoDeliv : project.deliverables.find((d) => d.type !== "VIDEO" && d.type !== "SOCIAL_REEL") ?? project.deliverables[0];
+  const medium = askMedium(opts.note);
+  // A clearly-photo ask never goes to the video lane on a mixed job, and a
+  // video-only job still routes to video when the wording is neutral.
+  const primary =
+    videoDeliv && (medium === "video" || (!hasNonVideo && medium !== "photo"))
+      ? videoDeliv
+      : project.deliverables.find((d) => d.type !== "VIDEO" && d.type !== "SOCIAL_REEL") ?? project.deliverables[0];
   // PROJECT-level monthly test — a listing-shoot revision for a social-plan
   // client routes like any listing job, not to the monthly-content lane.
   const { editorRouting } = await import("@/lib/settings");
@@ -338,6 +377,8 @@ export async function raiseRevision(opts: {
   // today. Photo/3D/floor-plan asks keep their Kyle lane regardless of pin.
   const { editorKeyForTeamName } = await import("@/lib/editors");
   const primaryIsVideo = primary?.type === "VIDEO" || primary?.type === "SOCIAL_REEL";
+  // The work this ask actually IS — used for the per-medium work order below.
+  const primaryIsVideoWork = primaryIsVideo;
   const pinnedKey = primaryIsVideo && project.editorManual ? editorKeyForTeamName(project.editor?.name) : null;
   const assignedKey = pinnedKey ?? editorForDeliverable(
     primary?.type,
@@ -373,11 +414,22 @@ export async function raiseRevision(opts: {
   });
 
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
-  const key = dedupeKey([project.id, "revision"]);
+  // ONE WORK ORDER PER MEDIUM, not per job. Two asks about the same video are
+  // the same job of work and belong on one card; a photo ask that arrives while
+  // a video revision is open is different work for a different person, and
+  // merging them put Gary Mercer's closet-photo request onto the video editor's
+  // board underneath "remove the walk-out basement clip" (Jordan, Sep 7).
+  // Unclear asks keep the job's original single key so nothing splits on a
+  // vague follow-up.
+  // Only the PHOTO lane takes a new key. Video and unclear asks keep the
+  // original one so every revision task already open in production still
+  // matches and gets appended to, instead of every job growing a duplicate.
+  const photoLane = !primaryIsVideoWork && medium === "photo";
+  const key = dedupeKey(photoLane ? [project.id, "revision", "photo"] : [project.id, "revision"]);
   const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
   const data = {
     taskType: "revision",
-    title: `Revision — ${project.title}`,
+    title: `${photoLane ? "Photo revision" : primaryIsVideoWork ? "Video revision" : "Revision"} — ${project.title}`,
     summary: `Client asked for changes after delivery: “${clip(taskNote, 240)}” — confirm exactly what needs to change, make the edits/reshoot, then re-upload to Aryeo and re-deliver.`,
     description: taskNote,
     reasonCreated: `Client requested changes via ${opts.source} after delivery`,
