@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etDayKey, etAddDays, etDayStartUtc } from "@/lib/datetime";
 import { tierFor, dueAtFor, type Tier } from "@/lib/turnaround";
+import { parseEvidence } from "@/lib/statusEvidence";
 
 // ---------------------------------------------------------------------------
 // THE DELIVERY BOARD — Kyle's screen.
@@ -46,6 +47,15 @@ export type BoardJob = {
   items: BoardItem[];
   photos: "none" | "some" | "in" | "n/a";
   video: "none" | "some" | "in" | "n/a";
+  /** WHERE each kind actually is. "In" on its own meant only that the
+   *  deliverable had been ticked as uploaded, which Kyle reads as "done" — on
+   *  439 Lake George the video sat in Dropbox (115 files) with nothing on
+   *  Aryeo, and the board said "Video in". These say the two things apart:
+   *  raw footage sitting in Dropbox, and media live on Aryeo for the client. */
+  media: {
+    photos: { rawInDropbox: number; liveOnAryeo: number | null; ordered: boolean };
+    video: { rawInDropbox: number; liveOnAryeo: number | null; ordered: boolean };
+  };
   notes: string | null;
   deliveredAt: Date | null;
 };
@@ -138,6 +148,7 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
       client: { select: { name: true } },
       orderItems: { where: { isCanceled: false }, select: { title: true, quantity: true } },
       deliverables: { where: { removedFromOrderAt: null }, select: { type: true, status: true, uploadedAt: true } },
+      statusEvidence: true, // Dropbox raw counts + what Aryeo actually carries
       appointments: { select: { assignedTo: { select: { name: true } } }, orderBy: { startAt: "asc" }, take: 1 },
     },
     orderBy: { shootDate: "desc" },
@@ -175,6 +186,21 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
       items,
       photos: uploadState(p.deliverables.filter((d) => PHOTOISH.has(d.type))),
       video: uploadState(p.deliverables.filter((d) => VIDEOISH.has(d.type))),
+      media: (() => {
+        const ev = parseEvidence(p.statusEvidence);
+        return {
+          photos: {
+            rawInDropbox: ev?.dropbox?.rawPhotos ?? 0,
+            liveOnAryeo: ev?.aryeo ? ev.aryeo.photos : null,
+            ordered: p.deliverables.some((d) => PHOTOISH.has(d.type)),
+          },
+          video: {
+            rawInDropbox: ev?.dropbox?.rawVideo ?? 0,
+            liveOnAryeo: ev?.aryeo ? ev.aryeo.videos : null,
+            ordered: p.deliverables.some((d) => VIDEOISH.has(d.type)),
+          },
+        };
+      })(),
       notes: p.notes?.trim() || null,
       deliveredAt: p.deliveredAt,
     };

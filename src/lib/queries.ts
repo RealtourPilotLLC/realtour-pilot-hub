@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { ProjectStatus } from "@prisma/client";
+import { ProjectStatus, type Prisma } from "@prisma/client";
 import { recentProjectWhere, isProjectRecent } from "@/lib/recency";
 import { clientTextWhere, CLIENT_TEXT_TYPES } from "@/lib/clientTexts";
 import { etDayStartUtc, etAddDays, etDayKey } from "@/lib/datetime";
@@ -1500,4 +1500,76 @@ export async function getProactiveFlags(): Promise<{
 
   const rank = { high: 0, medium: 1, low: 2 };
   return { flags: flags.sort((a, b) => rank[a.severity] - rank[b.severity]).slice(0, 3), topAr };
+}
+
+// ---------------------------------------------------------------------------
+// FLAGGED FOR YOU — the top of a person's home.
+//
+// Jordan, Sep 7 2026: "When I flag something for someone, it should pop up on
+// their home screen at the top (Flagged by Jordan for immediate review and
+// resolution), with a link to the things that were flagged so they can just
+// click and see what I flagged and the feedback I gave. I think we have this
+// for the photographers but need it for Kyle."
+//
+// A flag is a SmartTask carrying flaggedBy/flaggedAt — stamped only when a
+// PERSON deliberately sends work to someone (photo flags in the lightbox, a
+// shoot issue raised on a job). System-minted rows never carry it, so this
+// banner can never fill up with the hourly engine's own output.
+// ---------------------------------------------------------------------------
+export type FlaggedItem = {
+  taskId: string;
+  title: string;
+  note: string | null;
+  flaggedBy: string;
+  flaggedAtISO: string;
+  href: string;
+  projectTitle: string | null;
+};
+
+export async function getFlaggedForMe(opts: {
+  /** the viewer's editor/assignee key ("kyle", "kim", …), when they have one */
+  assignedKey?: string | null;
+  /** the viewer's TeamMember id, when they have one */
+  memberId?: string | null;
+  role: string;
+}): Promise<FlaggedItem[]> {
+  const mine: Prisma.SmartTaskWhereInput[] = [];
+  if (opts.assignedKey) mine.push({ assignedKey: opts.assignedKey });
+  if (opts.memberId) mine.push({ ownerId: opts.memberId });
+  // An OWNER sees flags raised BY someone else for the office (a photographer's
+  // shoot issue), not the ones he raised himself — his own flag reaching his
+  // own banner would be a mirror.
+  if (mine.length === 0) return [];
+
+  const rows = await prisma.smartTask.findMany({
+    where: {
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
+      flaggedAt: { not: null },
+      OR: mine,
+    },
+    orderBy: [{ flaggedAt: "desc" }],
+    take: 6,
+    select: {
+      id: true, title: true, summary: true, description: true, projectId: true,
+      flaggedBy: true, flaggedAt: true, taskType: true,
+      project: { select: { title: true } },
+    },
+  });
+
+  return rows.map((t) => ({
+    taskId: t.id,
+    title: t.title,
+    // The FEEDBACK itself — the words the flagger typed, which is the thing
+    // worth reading. summary is the composed sentence; description carries the
+    // per-item notes when there are several.
+    note: (t.description?.trim() || t.summary?.trim() || null)?.slice(0, 400) ?? null,
+    flaggedBy: t.flaggedBy ?? "the office",
+    flaggedAtISO: t.flaggedAt!.toISOString(),
+    // Straight to the thing, not to a task list: photo flags open the job's
+    // gallery, everything else opens the job.
+    href: t.projectId
+      ? t.taskType === "image_fixes" ? `/projects/${t.projectId}?tab=flags` : `/projects/${t.projectId}`
+      : "/tasks",
+    projectTitle: t.project?.title?.split(",")[0] ?? null,
+  }));
 }

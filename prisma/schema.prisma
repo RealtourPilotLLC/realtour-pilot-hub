@@ -783,6 +783,14 @@ model SmartTask {
   summary          String? // human "what happened + what's needed" — shown in the card's expandable section
   description      String?
   reasonCreated    String?
+  // WHO flagged this and when — set only when a person deliberately flags work
+  // for somebody else (Jordan, Sep 7: "when I flag something for someone it
+  // should pop up on their home screen at the top"). Distinct from `source`,
+  // which says which SYSTEM minted the row; these two say a human sent it, and
+  // they are what the "Flagged by <name>" banner reads. Cleared when the task
+  // is closed, like any other work.
+  flaggedBy        String?
+  flaggedAt        DateTime?
   checklist        String? // JSON: string[] — retained for the consolidated QC task's auto-close (no longer a UI checklist)
   source           String    @default("system") // aryeo | openphone | gmail | slack | manual | system
   sourceDetail     String? // url / message id / note

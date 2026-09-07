@@ -5,6 +5,7 @@ import {
   AlarmClock, AlertTriangle, ArrowRight, Camera, CheckCircle2, ChevronDown, Clapperboard,
   ClipboardCheck, Clock, CloudSun, Coffee, ExternalLink, Hourglass, Inbox,
   ListChecks, MessageSquare, Moon, Plane, PlayCircle, RefreshCw, Route, Sun, Sunrise, Wrench, Zap,
+  Flag,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
@@ -14,7 +15,7 @@ import { getCurrentUser } from "@/lib/auth/user";
 import { contentTier, homeFor } from "@/lib/auth/access";
 import { prisma } from "@/lib/prisma";
 import { cn, formatMoney } from "@/lib/utils";
-import { etDate, etDayKey, etDayStartUtc, etFullDate, etTime } from "@/lib/datetime";
+import { etDate, etDayKey, etDayStartUtc, etFullDate, etTime , etDateTime } from "@/lib/datetime";
 import { AutoRefresh } from "@/components/ops/AutoRefresh";
 import { QcComplete } from "@/components/ops/QcComplete";
 import { LoopActions } from "@/components/ops/LoopActions";
@@ -37,7 +38,7 @@ import { ownerPulse } from "@/lib/ownerPulse";
 import {
   MESSAGE_TASK_TYPES, getStuckJobs, getShootWindow,
   getProactiveFlags, getHandledToday, getOwnerStats, getOwnerPulse, getOwnerDials,
-} from "@/lib/queries";
+  getFlaggedForMe } from "@/lib/queries";
 import { recentProjectWhere } from "@/lib/recency";
 import { boardVisibleWhere, isNeedsAssigning } from "@/lib/triage";
 import { clientTextWhere } from "@/lib/clientTexts";
@@ -63,6 +64,12 @@ export const dynamic = "force-dynamic";
 //   3. Today's shoots — the day's hard commitments, in full
 //   4. Your list (owner) — his own to-dos, captured and closed here
 //   5. Money + pulse + quality (OWNER ONLY — an admin's page ends at 4)
+//
+// EXCEPT FOR AN ADMIN (Jordan, Sep 7: "I don't want Kyle to see my screen at
+// the beginning. I think his should start with the morning control tower").
+// Kyle's day IS the tower, so a non-owner gets today's shoots and the guided
+// blocks first, and the decisions list underneath. Same sections, same
+// numbers, an order that matches whose day it is.
 //
 // THE RULE FOR EVERY NUMBER (audit fault #9, Sep 2 2026): a count is computed
 // with THE QUERY OF THE LIST IT LINKS TO. Where a number links to a section on
@@ -402,7 +409,7 @@ export default async function HomePage() {
   if (!me && authEnforced()) redirect("/login");
   const isOwner = !me || me.role === "OWNER";
 
-  const [d, counts, stuck, shoots, radar, handledToday, board, ownerStats, pulse, dials, money, todos] =
+  const [d, counts, stuck, shoots, radar, handledToday, board, flagged, ownerStats, pulse, dials, money, todos] =
     await Promise.all([
       // The operating day: shoots, QC, loops, comms, pipeline, video review,
       // closeout. It already resolves the viewer's own loop lane, so this page
@@ -415,6 +422,7 @@ export default async function HomePage() {
       getHandledToday(),
       // The Project Tracker's delivery board, merged into the Pipeline block.
       deliveryBoard().catch((): DeliveryBoard => ({ today: [], tomorrow: [], upcoming: [], delivered: [], overdueCount: 0 })),
+      getFlaggedForMe({ assignedKey: me?.editorKey ?? (me?.role === "ADMIN" ? "kyle" : null), memberId: me?.teamMemberId ?? null, role: me?.role ?? "OWNER" }),
       isOwner ? getOwnerStats() : Promise.resolve(null),
       isOwner ? getOwnerPulse() : Promise.resolve(null),
       // Owner-only quality dials (video-SLA roll-up + QC health) — same gate.
@@ -532,6 +540,143 @@ export default async function HomePage() {
 
   const nextShoot = shoots.week[0] ?? null;
 
+  // Flags a PERSON raised for this viewer — above everything, in both orders.
+  const flaggedSection = flagged.length > 0 ? (
+    <section className="panel-shadow overflow-hidden rounded-2xl border-2 border-danger/45 bg-danger-soft/40">
+      <div className="flex items-center gap-2 border-b border-danger/25 px-5 py-2.5">
+        <Flag className="size-4 text-danger" />
+        <h2 className="text-[15px] font-semibold text-danger">
+          Flagged by {[...new Set(flagged.map((f) => f.flaggedBy.split(" ")[0]))].join(" & ")} — for immediate review
+        </h2>
+        <span className="ml-auto rounded-full bg-danger/15 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-danger">{flagged.length}</span>
+      </div>
+      <ul className="divide-y divide-danger/15">
+        {flagged.map((f) => (
+          <li key={f.taskId}>
+            <Link href={f.href} className="block px-5 py-3 hover:bg-danger/[0.06]">
+              <p className="text-sm font-semibold leading-snug">{f.title}</p>
+              {f.note && <p className="mt-0.5 whitespace-pre-line text-[13px] leading-relaxed text-foreground/80">{f.note}</p>}
+              <p className="mt-1 text-[11px] text-muted">
+                {f.flaggedBy} · {etDateTime(f.flaggedAtISO)}
+                {f.projectTitle ? ` · ${f.projectTitle}` : ""} — open it
+              </p>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
+  ) : null;
+
+  // ---- THE SECTIONS, declared once and ORDERED BY WHOSE DAY IT IS ----------
+  // Jordan reads decisions first; Kyle's whole job starts at the tower. Same
+  // sections, same numbers — only the order changes (Jordan, Sep 7).
+  const needsSection = (
+    <>
+          {/* 2 · WHAT NEEDS YOU TODAY — decisions and blockers, above everything */}
+          {needs.length === 0 ? (
+            <div className="panel-shadow rounded-2xl border border-border bg-surface p-6 text-center">
+              <CheckCircle2 className="mx-auto size-8 text-success" />
+              <p className="mt-2 text-sm font-semibold">Nothing needs you — {handledToday} handled today.</p>
+              <p className="mt-1 text-xs text-muted">
+                Next shoot: {nextShoot ? `${etDate(nextShoot.shootDate)} ${etTime(nextShoot.shootDate)} — ${nextShoot.title.split(",")[0]} · ${nextShoot.photographer?.name ?? "unassigned"}` : "none scheduled"}
+              </p>
+            </div>
+          ) : (
+            <NeedsToday needs={needs} />
+          )}
+    </>
+  );
+  const buttonSection = (
+    <>
+          {/* THE button — the page's single primary action, and just a door. It
+              carries no total: the Tasks hub's tabs share rows (a Slack to-do
+              with no owner is on BOTH the Slack tab and the Other tab's "Needs
+              assigning" pile), so any sum would count real work twice. */}
+          <Link
+            href="/tasks"
+            className="flex w-full items-center justify-between rounded-2xl bg-brand px-5 py-4 text-white shadow-lg transition-opacity hover:opacity-90"
+          >
+            <span className="text-base font-semibold">Start your day</span>
+            <span className="flex items-center gap-2 text-sm font-medium opacity-90">
+              Your tasks <ArrowRight className="size-4" />
+            </span>
+          </Link>
+    </>
+  );
+  const stuckSection = (
+    <>
+          {/* Stuck jobs — PROJECT-level fires (late vs promise, stale revision,
+              shot-but-undelivered), not overdue admin tasks. Anchored so the
+              "stuck in production" row above lands on it. */}
+          {stuck.length > 0 && (
+            <div id="stuck" className="scroll-mt-32 md:scroll-mt-28">
+              <StuckJobs jobs={stuck} />
+            </div>
+          )}
+    </>
+  );
+  const daySection = (
+    <>
+          {/* 3 · YOUR DAY — the time blocks. Blocks with something waiting (and
+              the block you're in right now) render open; the rest are one tap.
+              Nothing is hidden: every block header carries its own count, and a
+              zero says "clear" rather than disappearing. */}
+          <div className="pt-1">
+            <h2 className="px-1 text-[11px] font-bold uppercase tracking-widest text-muted-2">Your day</h2>
+            {/* Jump bar — the day at a glance, with what's waiting in each block.
+                (Not sticky: the page header already is, and two sticky bars fought
+                for the same 60px.) */}
+            <nav className="-mx-4 mt-1.5 flex gap-1.5 overflow-x-auto px-4 py-1 sm:-mx-6 sm:flex-wrap sm:px-6 [&::-webkit-scrollbar]:hidden" aria-label="Blocks">
+              {BLOCKS.map((b) => {
+                const n = countFor(b.key, d, board);
+                const cur = b.key === currentKey;
+                return (
+                  <a
+                    key={b.key}
+                    href={`#${b.key}`}
+                    className={cn(
+                      "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
+                      cur ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground",
+                    )}
+                  >
+                    <span className="tabular-nums opacity-70">{b.time.split(" – ")[0]}</span>
+                    {b.short}
+                    {n != null && n > 0 && (
+                      <span className={cn("rounded-full px-1.5 text-[10px] font-semibold tabular-nums", cur ? "bg-white/20" : "bg-surface-2 text-foreground")}>{n}{plusFor(b.key, d)}</span>
+                    )}
+                    <RushChip n={rushFor(b.key, d)} small onBrand={cur} />
+                  </a>
+                );
+              })}
+            </nav>
+            <div className="mt-2 space-y-2.5">
+              {BLOCKS.map((b) => (
+                <Block key={b.key} def={b} current={b.key === currentKey} d={d} board={board} counts={counts} />
+              ))}
+            </div>
+          </div>
+    </>
+  );
+  const shootsSection = (
+    <>
+          {/* 4 · TODAY'S SHOOTS — the day's hard commitments, in full: access,
+              door code, weather, airspace, the last thing the client said. This
+              is the Morning Control Tower's list, hoisted out of the block so the
+              page renders it exactly once. */}
+          <section id="shoots" className="panel-shadow scroll-mt-32 rounded-2xl border border-border bg-surface md:scroll-mt-28">
+            <div className="flex items-center gap-2 border-b border-border px-5 py-3 text-xs font-semibold uppercase tracking-wide text-muted">
+              <Camera className="size-3.5" /> Today&apos;s shoots
+              <span className="ml-auto rounded-full bg-surface-2 px-1.5 text-[10px] font-medium tabular-nums">{d.todayShoots.length}</span>
+              <RushChip n={rushShoots(d.todayShoots).length} small />
+            </div>
+            <div className="px-4 py-3.5">
+              <ShootList shoots={d.todayShoots} empty="No shoots on today's calendar." showDebrief />
+            </div>
+            <WeekStrip week={shoots.week} />
+          </section>
+    </>
+  );
+
   return (
     <div>
       {/* Kyle keeps this open all day; 90s rather than Ops Day's 45s because the
@@ -552,97 +697,26 @@ export default async function HomePage() {
           </div>
         </div>
 
-        {/* 2 · WHAT NEEDS YOU TODAY — decisions and blockers, above everything */}
-        {needs.length === 0 ? (
-          <div className="panel-shadow rounded-2xl border border-border bg-surface p-6 text-center">
-            <CheckCircle2 className="mx-auto size-8 text-success" />
-            <p className="mt-2 text-sm font-semibold">Nothing needs you — {handledToday} handled today.</p>
-            <p className="mt-1 text-xs text-muted">
-              Next shoot: {nextShoot ? `${etDate(nextShoot.shootDate)} ${etTime(nextShoot.shootDate)} — ${nextShoot.title.split(",")[0]} · ${nextShoot.photographer?.name ?? "unassigned"}` : "none scheduled"}
-            </p>
-          </div>
+        {flaggedSection}
+        {isOwner ? (
+          <>
+            {needsSection}
+            {buttonSection}
+            {stuckSection}
+            {daySection}
+            {shootsSection}
+          </>
         ) : (
-          <NeedsToday needs={needs} />
+          <>
+            {/* KYLE'S ORDER — the tower first: today's shoots, then the guided
+                blocks, and only then the decisions list and his task door. */}
+            {shootsSection}
+            {daySection}
+            {needsSection}
+            {buttonSection}
+            {stuckSection}
+          </>
         )}
-
-        {/* THE button — the page's single primary action, and just a door. It
-            carries no total: the Tasks hub's tabs share rows (a Slack to-do
-            with no owner is on BOTH the Slack tab and the Other tab's "Needs
-            assigning" pile), so any sum would count real work twice. */}
-        <Link
-          href="/tasks"
-          className="flex w-full items-center justify-between rounded-2xl bg-brand px-5 py-4 text-white shadow-lg transition-opacity hover:opacity-90"
-        >
-          <span className="text-base font-semibold">Start your day</span>
-          <span className="flex items-center gap-2 text-sm font-medium opacity-90">
-            Your tasks <ArrowRight className="size-4" />
-          </span>
-        </Link>
-
-        {/* Stuck jobs — PROJECT-level fires (late vs promise, stale revision,
-            shot-but-undelivered), not overdue admin tasks. Anchored so the
-            "stuck in production" row above lands on it. */}
-        {stuck.length > 0 && (
-          <div id="stuck" className="scroll-mt-32 md:scroll-mt-28">
-            <StuckJobs jobs={stuck} />
-          </div>
-        )}
-
-        {/* 3 · YOUR DAY — the time blocks. Blocks with something waiting (and
-            the block you're in right now) render open; the rest are one tap.
-            Nothing is hidden: every block header carries its own count, and a
-            zero says "clear" rather than disappearing. */}
-        <div className="pt-1">
-          <h2 className="px-1 text-[11px] font-bold uppercase tracking-widest text-muted-2">Your day</h2>
-          {/* Jump bar — the day at a glance, with what's waiting in each block.
-              (Not sticky: the page header already is, and two sticky bars fought
-              for the same 60px.) */}
-          <nav className="-mx-4 mt-1.5 flex gap-1.5 overflow-x-auto px-4 py-1 sm:-mx-6 sm:flex-wrap sm:px-6 [&::-webkit-scrollbar]:hidden" aria-label="Blocks">
-            {BLOCKS.map((b) => {
-              const n = countFor(b.key, d, board);
-              const cur = b.key === currentKey;
-              return (
-                <a
-                  key={b.key}
-                  href={`#${b.key}`}
-                  className={cn(
-                    "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors",
-                    cur ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted hover:bg-surface-2 hover:text-foreground",
-                  )}
-                >
-                  <span className="tabular-nums opacity-70">{b.time.split(" – ")[0]}</span>
-                  {b.short}
-                  {n != null && n > 0 && (
-                    <span className={cn("rounded-full px-1.5 text-[10px] font-semibold tabular-nums", cur ? "bg-white/20" : "bg-surface-2 text-foreground")}>{n}{plusFor(b.key, d)}</span>
-                  )}
-                  <RushChip n={rushFor(b.key, d)} small onBrand={cur} />
-                </a>
-              );
-            })}
-          </nav>
-          <div className="mt-2 space-y-2.5">
-            {BLOCKS.map((b) => (
-              <Block key={b.key} def={b} current={b.key === currentKey} d={d} board={board} counts={counts} />
-            ))}
-          </div>
-        </div>
-
-        {/* 4 · TODAY'S SHOOTS — the day's hard commitments, in full: access,
-            door code, weather, airspace, the last thing the client said. This
-            is the Morning Control Tower's list, hoisted out of the block so the
-            page renders it exactly once. */}
-        <section id="shoots" className="panel-shadow scroll-mt-32 rounded-2xl border border-border bg-surface md:scroll-mt-28">
-          <div className="flex items-center gap-2 border-b border-border px-5 py-3 text-xs font-semibold uppercase tracking-wide text-muted">
-            <Camera className="size-3.5" /> Today&apos;s shoots
-            <span className="ml-auto rounded-full bg-surface-2 px-1.5 text-[10px] font-medium tabular-nums">{d.todayShoots.length}</span>
-            <RushChip n={rushShoots(d.todayShoots).length} small />
-          </div>
-          <div className="px-4 py-3.5">
-            <ShootList shoots={d.todayShoots} empty="No shoots on today's calendar." showDebrief />
-          </div>
-          <WeekStrip week={shoots.week} />
-        </section>
-
         {/* 5 · YOUR LIST — My Day's personal to-dos, merged in. Owner-only: it
             is one person's private list (the /day page was ownerOnly), and an
             admin's home ends before it. Capture, plan, close and undo all still

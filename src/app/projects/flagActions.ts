@@ -21,11 +21,22 @@ export type FlaggedImage = {
 
 export type FlagResult = { ok: boolean; message: string; created?: FlaggedImage[] };
 
+/** The signed-in person's name for the flag stamp — null when we can't tell. */
+async function flaggerName(): Promise<string | null> {
+  try {
+    const { getCurrentUser } = await import("@/lib/auth/user");
+    const u = await getCurrentUser();
+    return u ? (u.name ?? u.email) : null;
+  } catch {
+    return null;
+  }
+}
+
 const TASK_KEY = (projectId: string) => `image_fixes-${projectId}`;
 
 // Rebuild (or close) the single "fix flagged photos" task for a project from its
 // currently-OPEN flags. Many flagged images → ONE 24-hour task for Kyle.
-async function syncFixTask(projectId: string) {
+async function syncFixTask(projectId: string, flaggedBy?: string | null) {
   const open = await prisma.imageFlag.findMany({
     where: { projectId, status: "OPEN" },
     orderBy: { createdAt: "asc" },
@@ -77,8 +88,11 @@ async function syncFixTask(projectId: string) {
     ownerId: kyle?.id ?? null,
     dedupeKey: key,
   };
-  if (existing) await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } });
-  else await prisma.smartTask.create({ data });
+  // Who flagged these photos — so Kyle's home can say "Flagged by Jordan"
+  // rather than presenting an owner's review as another system-minted row.
+  const stamp = flaggedBy ? { flaggedBy, flaggedAt: new Date() } : {};
+  if (existing) await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, ...stamp, status: "OPEN", completedAt: null } });
+  else await prisma.smartTask.create({ data: { ...data, ...stamp } });
 }
 
 // Flag one or more images on a project with a shared note + tags. Builds the
@@ -117,7 +131,7 @@ export async function flagImages(
       }),
     ),
   );
-  await syncFixTask(projectId);
+  await syncFixTask(projectId, await flaggerName());
   revalidatePath(`/projects/${projectId}`);
   const created: FlaggedImage[] = rows.map((f) => ({
     id: f.id,

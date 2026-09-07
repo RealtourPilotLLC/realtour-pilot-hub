@@ -137,10 +137,14 @@ export async function fileFieldIssue(opts: {
         // "who does this?" triage (isNeedsAssigning pins every unassigned
         // internal_instruction), and a later human reassignment must survive the
         // photographer re-flagging the same thing.
-        create: { ...data, assignedKey: "kyle", dedupeKey: flagKey },
+        // reportedBy is resolved above from the session — so a flag Jordan
+        // raises is stamped with his name and surfaces on Kyle's home under
+        // "Flagged by Jordan", while a photographer's flag is stamped with
+        // theirs. Stamped on both branches: a re-flag is a fresh flag.
+        create: { ...data, assignedKey: "kyle", dedupeKey: flagKey, flaggedBy: reportedBy, flaggedAt: new Date() },
         // Re-flagged in the same words after someone closed it: reopen. A
         // problem that comes back is a problem that wasn't solved.
-        update: { ...data, status: "OPEN", completedAt: null },
+        update: { ...data, status: "OPEN", completedAt: null, flaggedBy: reportedBy, flaggedAt: new Date() },
       });
     }
 

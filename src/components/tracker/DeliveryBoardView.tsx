@@ -30,6 +30,52 @@ const UPLOAD: Record<string, { label: string; cls: string }> = {
   "n/a": { label: "—", cls: "text-muted-2" },
 };
 
+// One media kind, in the two states that matter. "on Aryeo" is what the client
+// can see; "in Dropbox" is only what we hold. A job can be either, both, or
+// neither, and conflating them is what made a job with no delivered video read
+// as finished.
+function MediaState({
+  icon, label, m, fallback,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  m: { rawInDropbox: number; liveOnAryeo: number | null; ordered: boolean };
+  fallback: string;
+}) {
+  if (!m.ordered) {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-muted-2">
+        {icon} {label} <span className="font-semibold">—</span>
+      </span>
+    );
+  }
+  // No status check has run yet (a brand-new job): fall back to the old tick
+  // rather than claiming nothing is anywhere.
+  if (m.liveOnAryeo == null && m.rawInDropbox === 0) {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        {icon} {label} <span className={`font-semibold ${UPLOAD[fallback].cls}`}>{UPLOAD[fallback].label}</span>
+      </span>
+    );
+  }
+  const live = (m.liveOnAryeo ?? 0) > 0;
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      {icon} {label}{" "}
+      {live ? (
+        <span className="font-semibold text-success">on Aryeo ({m.liveOnAryeo})</span>
+      ) : m.rawInDropbox > 0 ? (
+        <span className="font-semibold text-warning" title={`${m.rawInDropbox} raw file${m.rawInDropbox === 1 ? "" : "s"} are in Dropbox, but nothing is live on Aryeo yet — the client cannot see this.`}>
+          in Dropbox only — not on Aryeo
+        </span>
+      ) : (
+        <span className="font-semibold text-danger">nothing yet</span>
+      )}
+      {live && m.rawInDropbox > 0 && <span className="text-muted-2">· raw in Dropbox</span>}
+    </span>
+  );
+}
+
 const dayLabel = (d: Date | null) => {
   if (!d) return "no date";
   return d.toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" });
@@ -85,16 +131,15 @@ function JobCard({ j }: { j: BoardJob }) {
         )}
       </div>
 
-      {/* Are the raw files actually in? */}
+      {/* WHERE the media is — two different facts, said separately. A bare
+          "Video in" meant only that the deliverable had been ticked as
+          uploaded, and Kyle reads that as "the client has it": on 439 Lake
+          George the footage was in Dropbox (115 files) with nothing on Aryeo,
+          and the row said "Video in". Raw-in-Dropbox and live-on-Aryeo are now
+          two labels, because they are two different states of the job. */}
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-        <span className="inline-flex items-center gap-1.5">
-          <ImageIcon className="size-4 text-muted-2" />
-          Photos <span className={`font-semibold ${UPLOAD[j.photos].cls}`}>{UPLOAD[j.photos].label}</span>
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <Video className="size-4 text-muted-2" />
-          Video <span className={`font-semibold ${UPLOAD[j.video].cls}`}>{UPLOAD[j.video].label}</span>
-        </span>
+        <MediaState icon={<ImageIcon className="size-4 text-muted-2" />} label="Photos" m={j.media.photos} fallback={j.photos} />
+        <MediaState icon={<Video className="size-4 text-muted-2" />} label="Video" m={j.media.video} fallback={j.video} />
         {j.shootDate && (
           <span className="inline-flex items-center gap-1.5 text-muted">
             <Clock className="size-4 text-muted-2" /> Shot {dayLabel(j.shootDate)}
