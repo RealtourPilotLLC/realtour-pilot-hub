@@ -51,6 +51,15 @@ export type ClientFeedbackItem = {
   contentNote: string | null;
   authorName: string | null;
   resolved: boolean;
+  /** Whose problem it is — see src/lib/feedbackAttribution.ts. A photographer's
+   *  score only counts ONSITE and MIXED, so the row says which it is. */
+  attribution: "ONSITE" | "OPERATIONS" | "MIXED" | null;
+  attributionWhy: string | null;
+  attributionBy: string | null;
+  /** the email we sent back, when we have */
+  repliedAtISO: string | null;
+  replyBy: string | null;
+  clientEmail: string | null;
   projectId: string;
   street: string;
   projectTitle: string;
@@ -140,6 +149,11 @@ export async function getClientFeedbackFeed(filter: ClientFilter = "all"): Promi
           photographerRating: true,
           photographerNote: true,
           improveNote: true,
+          attribution: true,
+          attributionWhy: true,
+          attributionBy: true,
+          repliedAt: true,
+          replyBy: true,
           contentRating: true,
           contentNote: true,
           authorName: true,
@@ -150,7 +164,7 @@ export async function getClientFeedbackFeed(filter: ClientFilter = "all"): Promi
             select: {
               title: true,
               shootDate: true,
-              client: { select: { id: true, name: true } },
+              client: { select: { id: true, name: true, email: true } },
               photographer: { select: { id: true, name: true } },
             },
           },
@@ -201,6 +215,12 @@ export async function getClientFeedbackFeed(filter: ClientFilter = "all"): Promi
         photographerRating: r.photographerRating,
         photographerNote: r.photographerNote,
         improveNote: r.improveNote,
+        attribution: (r.attribution as "ONSITE" | "OPERATIONS" | "MIXED" | null) ?? null,
+        attributionWhy: r.attributionWhy,
+        attributionBy: r.attributionBy,
+        repliedAtISO: r.repliedAt?.toISOString() ?? null,
+        replyBy: r.replyBy,
+        clientEmail: r.project?.client?.email ?? null,
         contentRating: r.contentRating,
         contentNote: r.contentNote,
         authorName: r.authorName,

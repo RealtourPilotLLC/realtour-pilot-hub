@@ -2,6 +2,7 @@ import "server-only";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 import type { NotifyTarget } from "@/lib/notify";
+import { classifyFeedback } from "@/lib/feedbackAttribution";
 
 // Lightweight sentiment when there's no star rating to go on.
 const NEG = /\b(bad|terrible|awful|disappointed|unhappy|not happy|wrong|blurry|dark|reflection|issue|problem|redo|fix|mistake|poor|sloppy|rushed|late)\b/i;
@@ -61,6 +62,12 @@ export async function recordFeedback(opts: {
       authorName: opts.authorName?.slice(0, 120) || null,
       source: opts.source ?? "form",
       photographerId: project.photographerId,
+      // Whose problem it is, decided at intake so no score is ever computed
+      // from an unclassified row. An owner can overrule it on /quality.
+      ...(() => {
+        const call = classifyFeedback({ body: opts.body, photographerRating: rating });
+        return call ? { attribution: call.attribution, attributionWhy: call.why } : {};
+      })(),
     },
   });
 

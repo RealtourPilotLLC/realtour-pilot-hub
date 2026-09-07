@@ -869,6 +869,31 @@ model Feedback {
   authorName     String?
   source         String   @default("form") // form | text | email
   photographerId String? // who shot it, for creative scorecards
+  // WHOSE PROBLEM IS IT (Jordan, Sep 7 2026: "reels turned around quicker and
+  // less spelling errors ... should not affect the photographer. This is an
+  // editing and operations issue not a photographer issue. I want to make sure
+  // photographers aren't getting dinged for that").
+  //
+  //   ONSITE     — what happened at the property: the shoot itself, conduct,
+  //                punctuality, what was or wasn't captured. The photographer's.
+  //   OPERATIONS — everything after the shutter: editing, spelling, turnaround,
+  //                delivery, scheduling, billing. Not the photographer's.
+  //   MIXED      — genuinely both; counts for the photographer on the ONSITE
+  //                half only, and the note says which half.
+  //   null       — not classified yet (pre-Sep-7 rows and anything the
+  //                classifier could not read).
+  // The photographer's KPI counts ONSITE and MIXED only — see src/lib/kpi.ts.
+  attribution      String?
+  /** Why it was classified that way, in one line — shown beside the chip so an
+   *  owner can see the reasoning before overriding it. */
+  attributionWhy   String?
+  /** Set when a human confirmed or changed the classification: an owner's call
+   *  is never re-decided by the classifier on a later pass. */
+  attributionBy    String?
+  // --- The reply we sent the agent (Jordan, Sep 7) -------------------------
+  repliedAt      DateTime?
+  replyBody      String?
+  replyBy        String?
   resolved       Boolean  @default(false)
   createdAt      DateTime @default(now())
 

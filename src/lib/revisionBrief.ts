@@ -178,6 +178,68 @@ export async function analyzeRevisionText(opts: {
  * already better than the clipped paragraph it replaces) and stamps the error
  * so the card can offer a retry.
  */
+// A message that turned out to need no edits: give the job its stage back and
+// turn the URGENT revision into what it actually is — a client question for
+// Kyle. The brief stays: the analyser's reading is the audit trail, and the
+// client's words are still on the job.
+async function standDownNonRevision(briefId: string): Promise<void> {
+  try {
+    const brief = await prisma.revisionBrief.findUnique({
+      where: { id: briefId },
+      select: { taskId: true, projectId: true, headline: true, originalText: true },
+    });
+    if (!brief?.taskId) return;
+    const task = await prisma.smartTask.findUnique({
+      where: { id: brief.taskId },
+      select: { id: true, taskType: true, status: true, title: true, projectId: true },
+    });
+    if (!task || task.taskType !== "revision" || task.status === "COMPLETED" || task.status === "CANCELLED") return;
+
+    const project = await prisma.project.findUnique({
+      where: { id: brief.projectId },
+      select: { status: true, deliveredAt: true, title: true },
+    });
+    const street = (project?.title ?? "this job").split(",")[0];
+
+    // The work becomes a reply, not an edit: same row (so nothing is lost from
+    // anyone's board), new type, normal priority, due like any other reply.
+    await prisma.smartTask.update({
+      where: { id: task.id },
+      data: {
+        taskType: "client_reply",
+        title: `Client question — ${street}`.slice(0, 120),
+        summary: `${brief.headline ?? "The client asked a question rather than requesting changes"} — answer them; there is nothing to re-edit.`.slice(0, 500),
+        priority: "HIGH",
+        assignedKey: "kyle",
+        reasonCreated: "Read as a revision, but the request contains no edits — re-filed as a client question",
+      },
+    });
+
+    // A job only went to REVISION because of this message — put it back.
+    if (project?.status === "REVISION" && project.deliveredAt) {
+      await prisma.project.update({
+        where: { id: brief.projectId },
+        data: { status: "DELIVERED", revisionRequestedAt: null },
+      });
+      await prisma.activity.create({
+        data: {
+          projectId: brief.projectId,
+          type: "SYSTEM",
+          body: "Client message contained no edit requests — job returned to Delivered and the message re-filed as a question to answer.",
+        },
+      }).catch(() => {});
+      // Run the same close sweep a real DELIVERED transition runs, or the QC
+      // card the revision reopened stays open and overdue on a finished job —
+      // which is exactly how 33 Mill Race came to read "overdue" beside "Still
+      // owed: nothing".
+      try {
+        const { closeObsoleteTasks } = await import("@/lib/tasks");
+        await closeObsoleteTasks(brief.projectId, "DELIVERED");
+      } catch { /* the hourly sweep will catch it */ }
+    }
+  } catch { /* the brief and the client's words are already saved */ }
+}
+
 export async function createRevisionBrief(opts: {
   projectId: string;
   taskId?: string | null;
@@ -262,6 +324,14 @@ export async function analyzeBrief(
         analysisError: null,
       },
     });
+    // NOT EVERY MESSAGE IS A REVISION. The analyser reads the client's words
+    // and returns ZERO items when there is nothing to change — 33 Mill Race's
+    // "revision" was a portal permissions question ("I can only see it under
+    // Orders… Forbidden"), and its own headline said so: "No edit requests —
+    // client message is a technical/account support issue only". Nothing acted
+    // on that verdict, so a delivered job sat in REVISION with an URGENT
+    // overdue task and a card reading "Still owed: nothing" (Jordan, Sep 7).
+    if (analysis.items.length === 0) await standDownNonRevision(briefId);
     return true;
   } catch (e) {
     await prisma.revisionBrief

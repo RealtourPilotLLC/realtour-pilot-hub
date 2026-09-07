@@ -379,7 +379,7 @@ export async function scoreQuarter(opts: {
           { OR: [{ photographerId: opts.memberId }, { photographerId: null }] },
         ],
       },
-      select: { id: true, rating: true, photographerRating: true },
+      select: { id: true, rating: true, photographerRating: true, attribution: true, attributionWhy: true },
     }),
     shootIds.length
       ? prisma.revisionBrief.findMany({ where: onIds, select: { projectId: true }, distinct: ["projectId"] })
@@ -489,10 +489,24 @@ export async function scoreQuarter(opts: {
 
   // --- 4) CLIENT FEEDBACK SCORES -------------------------------------------
   const ratingRowsById = [...new Map(ratingRows.map((r) => [r.id, r])).values()];
-  const ratings = ratingRowsById
-    .map((r) => r.photographerRating ?? r.rating)
+  // WHAT THE PHOTOGRAPHER IS ACCOUNTABLE FOR (Jordan, Sep 7 2026): "reels
+  // turned around quicker and less spelling errors ... should not affect the
+  // photographer. This is an editing and operations issue." A response
+  // classified OPERATIONS is dropped from this area entirely — its overall
+  // rating is a verdict on turnaround or editing, and grading a shooter on it
+  // is how a good one ends up with a bad score. ONSITE and MIXED count, and so
+  // does an unclassified row that carries an explicit photographerRating (the
+  // client rated the PERSON, whatever else they wrote).
+  const opsOnly = ratingRowsById.filter((r) => r.attribution === "OPERATIONS");
+  const countable = ratingRowsById.filter(
+    (r) => r.attribution !== "OPERATIONS" || r.photographerRating != null,
+  );
+  const ratings = countable
+    // On a MIXED row only the photographer's OWN rating counts — the overall
+    // number carries the operations half too.
+    .map((r) => (r.attribution === "MIXED" ? r.photographerRating : r.photographerRating ?? r.rating))
     .filter((x): x is number => x != null);
-  const ownRatings = ratingRowsById.filter((r) => r.photographerRating != null).length;
+  const ownRatings = countable.filter((r) => r.photographerRating != null).length;
   const ratingN = ratings.length;
   const avgRating = ratingN ? ratings.reduce((s, r) => s + r, 0) / ratingN : null;
   const ratingThin = avgRating == null || ratingN < TARGETS.minRatings;
@@ -510,10 +524,16 @@ export async function scoreQuarter(opts: {
     value: ratingThin ? (ratingN === 0 ? "No ratings yet" : `${ratingN} rating${ratingN === 1 ? "" : "s"} — need ${TARGETS.minRatings}`) : `${avgRating!.toFixed(2)} out of 5 (${ratingN} ratings)`,
     target: `Full credit at ${TARGETS.ratingTarget} of 5. Needs at least ${TARGETS.minRatings} ratings to count.`,
     fraction: ratingThin ? null : upScale(avgRating!, TARGETS.ratingFloor, TARGETS.ratingTarget),
-    notes:
-      ratingN > 0 && ownRatings < ratingN
+    notes: [
+      ...(ratingN > 0 && ownRatings < ratingN
         ? [`${ratingN - ownRatings} of these came in without the photographer question answered, so the client's overall score for the job is used instead.`]
-        : [],
+        : []),
+      // Say what was left OUT and why — a score that quietly drops a bad review
+      // is as hard to trust as one that wrongly counts it.
+      ...(opsOnly.length > 0
+        ? [`${opsOnly.length} response${opsOnly.length === 1 ? " was" : "s were"} about editing, turnaround or delivery rather than the shoot, so ${opsOnly.length === 1 ? "it is" : "they are"} not counted here — that work is not yours.`]
+        : []),
+    ],
   });
 
   // --- 5) RELIABILITY -------------------------------------------------------

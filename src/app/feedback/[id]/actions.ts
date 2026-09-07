@@ -367,6 +367,18 @@ async function stampAnswers(
       console.error(`[feedback] couldn't find the row just written for project ${projectId} — answers stayed in the body only`);
       return;
     }
+    // RE-CLASSIFY with the structured answers. recordFeedback only had the
+    // composed body; "what would you like done differently?" is the field that
+    // actually carries the complaint, and it is the one that decides whether a
+    // photographer's score is touched. Never overrides a human's call.
+    const { classifyFeedback } = await import("@/lib/feedbackAttribution");
+    const call = classifyFeedback({
+      improveNote: a.improveNote,
+      photographerNote: a.photographerNote,
+      contentNote: a.contentNote,
+      body,
+      photographerRating: a.photographerRating,
+    });
     await prisma.feedback.update({
       where: { id: row.id },
       data: {
@@ -375,6 +387,7 @@ async function stampAnswers(
         improveNote: a.improveNote,
         contentRating: a.contentRating,
         contentNote: a.contentNote,
+        ...(call ? { attribution: call.attribution, attributionWhy: call.why } : {}),
       },
     });
   } catch (e) {

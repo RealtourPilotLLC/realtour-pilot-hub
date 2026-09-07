@@ -23,6 +23,7 @@ import { etDate, etDateTime } from "@/lib/datetime";
 import { cn } from "@/lib/utils";
 import { QualityTabs, type QualityTab } from "./QualityTabs";
 import { HandledToggle } from "./HandledToggle";
+import { FeedbackReply } from "./FeedbackReply";
 import {
   getClientFeedbackFeed,
   getPhotographerBoard,
@@ -317,6 +318,17 @@ function ClientRow({ f }: { f: ClientFeedbackItem }) {
           <HandledToggle id={f.id} handled={f.resolved} />
         </span>
       </div>
+
+      {/* Whose problem it is, and the reply back to the agent (Jordan, Sep 7). */}
+      <FeedbackReply
+        id={f.id}
+        attribution={f.attribution}
+        attributionWhy={f.attributionWhy}
+        attributionBy={f.attributionBy}
+        repliedAtISO={f.repliedAtISO}
+        replyBy={f.replyBy}
+        hasEmail={!!f.clientEmail}
+      />
     </li>
   );
 }
