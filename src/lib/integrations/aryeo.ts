@@ -471,6 +471,8 @@ function money(cents: number | null | undefined): number | null {
   return typeof cents === "number" ? cents / 100 : null;
 }
 
+export const UNKNOWN_CUSTOMER_NAME = "Unknown customer (no customer on the Aryeo order)";
+
 function customerName(c?: AryeoCustomer): string {
   return c?.name || c?.email || "Unknown client";
 }
@@ -1345,6 +1347,16 @@ export async function syncAryeoOrders(
           if (!hasBackupEmail.has(bySignal)) hasBackupEmail.add(bySignal);
         }
         return bySignal;
+      }
+      // NO CUSTOMER ON THE ORDER AT ALL — Aryeo itself has nobody attached (the
+      // two delivered jobs traced on Sep 7 confirmed it). Minting a fresh
+      // "Unknown client" per order is how eight of them piled up; reuse the one
+      // placeholder so the pile stops growing and the name says what happened.
+      if (!cust?.id && !cust?.email && !(cust?.name ?? "").trim()) {
+        const ph = await prisma.client.findFirst({ where: { name: UNKNOWN_CUSTOMER_NAME }, select: { id: true } })
+          ?? await prisma.client.create({ data: { name: UNKNOWN_CUSTOMER_NAME }, select: { id: true } });
+        console.warn("[aryeo] order arrived with no customer — filed under the placeholder client", ph.id);
+        return ph.id;
       }
       const created = await prisma.client.create({
         data: {

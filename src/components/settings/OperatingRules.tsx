@@ -5,6 +5,7 @@ import { Check, Loader2 } from "lucide-react";
 import { saveTurnarounds, saveInternalAlerts, saveTextTemplates, saveReviewRoomRules } from "@/app/settings/actions";
 import type { TurnaroundRules, InternalAlertRules, TextTemplates, ReviewRoomRules } from "@/lib/settings";
 import { cn } from "@/lib/utils";
+import { BUILTIN_TEMPLATE_TEXT } from "@/lib/settings";
 
 // Everything that used to be a constant in the code (Jordan, Sep 1: "I want
 // settings for turnaround promises, alert thresholds, anything currently hard
@@ -209,10 +210,10 @@ export function TextTemplateSettings({ initial }: { initial: TextTemplates }) {
             {f.hint && <span className="font-normal text-muted"> — {f.hint}</span>}
           </label>
           <textarea
-            value={t[f.key]}
+            value={t[f.key] || BUILTIN_TEMPLATE_TEXT[f.key]}
             onChange={(e) => { setT((p) => ({ ...p, [f.key]: e.target.value })); setMsg(null); }}
             rows={3}
-            placeholder="Using the built-in wording"
+            placeholder="Type the message clients should get"
             className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
           />
           <p className="mt-1 text-[11px] text-muted-2">Placeholders: {f.vars.join(" · ")}</p>

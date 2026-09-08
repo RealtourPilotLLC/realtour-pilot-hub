@@ -153,6 +153,15 @@ export async function loadReviewRoomRules(): Promise<ReviewRoomRules> {
 
 // ---- Client text wording ---------------------------------------------------
 export async function saveTextTemplates(input: TextTemplates): Promise<{ ok: boolean; message: string }> {
+  // A box that still reads exactly the built-in wording is not an override —
+  // store it empty so the built-in composer (which can also drop " for
+  // {items}" on a job with none) stays in charge (Jordan, Sep 7: the boxes
+  // now SHOW the current wording instead of sitting empty).
+  const { BUILTIN_TEMPLATE_TEXT } = await import("@/lib/settings");
+  for (const key of ["confirmation", "deliveryAll", "deliveryPartial"] as const) {
+    if ((input as Record<string, unknown>)[key] === BUILTIN_TEMPLATE_TEXT[key]) (input as Record<string, unknown>)[key] = "";
+  }
+
   try {
     const me = await requireSettingsActor();
     await putSetting("text_templates", input, me?.email ?? null);

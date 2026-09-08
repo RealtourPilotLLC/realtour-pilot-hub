@@ -183,7 +183,9 @@ export const DEFAULT_AFTER_HOURS_REPLY =
 // Placeholders: {first} {strategyCallLink} {website} {portal}. An empty box in
 // Settings falls back to this wording, so the text can never send blank.
 export const DEFAULT_WELCOME_TEXT =
-  "Hey {first}, welcome to RealTour Pilot! We're excited to work with you and get to know you. If you ever need anything you can call or text us right here. You can also book a free strategy call any time: {strategyCallLink} — and everything about what we do is at {website}.";
+  // Jordan, Sep 7: "The welcome text should mention the portal - they can access
+  // their account there, view invoices, content, and place orders, and reschedule."
+  "Hey {first}, welcome to RealTour Pilot! We're excited to work with you and get to know you. If you ever need anything you can call or text us right here. Your client portal is {portal}: that's your account, where you can see invoices and your content, place orders and reschedule. You can also book a free strategy call any time: {strategyCallLink}. Everything about what we do is at {website}.";
 
 // Where the free strategy call is booked. The default is the one live event
 // type (lib/integrations/calendly is the source of truth); it is stored on the
@@ -197,6 +199,8 @@ export const DEFAULT_WELCOME: WelcomeTextRule = {
 
 /** The public site, quoted in the welcome text as {website}. */
 export const PUBLIC_WEBSITE = "realtourpilot.com";
+/** The client portal, quoted in the welcome text as {portal}. */
+export const PUBLIC_PORTAL = "media.realtourpilot.com";
 
 export const DEFAULT_AUTO_TEXTS: ResolvedAutoTextRules = {
   enabled: true,
@@ -440,6 +444,16 @@ export async function internalAlertRules(): Promise<InternalAlertRules> {
 // blank text.
 export type TextTemplates = { confirmation: string; deliveryAll: string; deliveryPartial: string };
 export const DEFAULT_TEMPLATES: TextTemplates = { confirmation: "", deliveryAll: "", deliveryPartial: "" };
+/** What the built-in wording in src/lib/delivery.ts SAYS, as a template — so the
+ *  Settings boxes show the current message instead of sitting empty (Jordan,
+ *  Sep 7: "current templates should show"). For DISPLAY: an empty stored
+ *  template still means "use the built-in wording", which composes the same
+ *  sentences but can also drop " for {items}" when a job has none. */
+export const BUILTIN_TEMPLATE_TEXT: TextTemplates = {
+  confirmation: "Hi {first}! Confirming your shoot at {street} on {when} for {items}. Anything we should know or want us to avoid? Looking forward to it!",
+  deliveryAll: "Hi {first}! Everything for {street} has been delivered. How did we do? If anything is not exactly right, just reply here and we will jump on it. And if you have a quick minute, we would love your feedback here: {feedbackUrl}",
+  deliveryPartial: "Hi {first}! The {delivered} for {street} have been delivered, and the {remaining} are still in production and coming shortly. How is everything looking so far? If anything is not exactly right, just reply here and we will jump on it. Quick feedback means a lot to us: {feedbackUrl}",
+};
 export const TEMPLATE_PLACEHOLDERS = ["{first}", "{street}", "{when}", "{items}", "{delivered}", "{remaining}", "{feedbackUrl}"];
 
 export async function textTemplates(): Promise<TextTemplates> {

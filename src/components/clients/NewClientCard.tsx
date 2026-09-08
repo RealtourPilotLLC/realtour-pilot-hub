@@ -117,7 +117,7 @@ export function NewClientCard({ clients }: { clients: NewClientRow[] }) {
                   <span className="text-muted-2">Welcome text goes out when their first shoot is booked</span>
                 ) : (
                   // The one thing on this card a person may need to fix.
-                  <span className="font-medium text-warning">No phone number on file, so no welcome text can send</span>
+                  <span className="font-medium text-warning">No phone number on file. The welcome goes by email if we have one, otherwise it waits</span>
                 )}
               </div>
             </div>

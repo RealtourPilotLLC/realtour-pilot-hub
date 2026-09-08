@@ -480,7 +480,7 @@ export async function sweepWelcomeTexts(texted: Set<string> = new Set()): Promis
     },
     orderBy: { firstSeenAt: "asc" }, // oldest arrival first: their shoot is soonest
     take: 25,
-    select: { id: true, name: true, phone: true, autoConfirmationText: true, autoDeliveryText: true },
+    select: { id: true, name: true, phone: true, email: true, autoConfirmationText: true, autoDeliveryText: true },
   });
   if (clients.length === 0) return { sent: 0, skipped: 0, notes };
 
@@ -491,11 +491,13 @@ export async function sweepWelcomeTexts(texted: Set<string> = new Set()): Promis
   let sent = 0, skipped = 0;
   for (const c of clients) {
     const k = phoneKey(c.phone ?? "");
-    if (k.length !== 10) {
-      // Said out loud rather than swallowed: this client will NEVER get a
-      // welcome until someone puts a number on their record, and the dashboard
-      // card carries the same warning.
-      skipped++; notes.push(`${c.name}: no valid phone number on file, so no welcome text can send`); continue;
+    // No phone → the welcome goes by EMAIL instead (Jordan, Sep 7: "Email them
+    // if no phone number"). Only a client with neither is truly stuck, and that
+    // is said out loud — the dashboard card carries the same warning.
+    const noPhone = k.length !== 10;
+    const email = (c.email ?? "").trim();
+    if (noPhone && !email) {
+      skipped++; notes.push(`${c.name}: no phone number or email on file, so no welcome can send`); continue;
     }
     if (!c.autoConfirmationText && !c.autoDeliveryText) {
       skipped++; notes.push(`${c.name}: all automatic texts off — no welcome sent`); continue;
@@ -515,6 +517,27 @@ export async function sweepWelcomeTexts(texted: Set<string> = new Set()): Promis
       website: PUBLIC_WEBSITE,
       portal: rules.afterHours.portalUrl,
     });
+    if (noPhone) {
+      // Same wording, same one-shot marker. If Gmail cannot send yet (the
+      // sending scope needs Jordan's reconnect) the claim is released so the
+      // client stays eligible, and the reason lands where a person reads it.
+      const { sendGmailNew } = await import("@/lib/integrations/google");
+      const mail = await sendGmailNew({ mailbox: "info@realtourpilot.com", to: email, subject: "Welcome to RealTour Pilot", body });
+      if (!mail.ok) {
+        await prisma.appSetting.delete({ where: { key: marker } }).catch(() => {});
+        skipped++; notes.push(`${c.name}: no phone, and the welcome email could not send — ${mail.error}`); continue;
+      }
+      sent++;
+      texted.add(c.id);
+      await prisma.client.update({ where: { id: c.id }, data: { welcomeTextAt: new Date() } }).catch((e) =>
+        console.error(`[welcome] emailed ${c.name} but could not stamp welcomeTextAt`, e));
+      await logComm({
+        channel: "email", direction: "out", minRole: "ADMIN",
+        clientId: c.id, clientName: c.name, body, source: "auto-welcome",
+      }).catch(() => {});
+      notes.push(`${c.name}: no phone on file — welcomed by email (${email})`);
+      continue;
+    }
     try {
       const res = await OpenPhone.sendMessage(from, `+1${k}`, body);
       sent++;
