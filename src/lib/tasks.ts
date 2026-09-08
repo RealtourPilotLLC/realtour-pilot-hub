@@ -61,6 +61,27 @@ export function addBusinessDays(from: Date, days: number): Date {
   return d;
 }
 
+// Walk BACK N business days (skip Sat/Sun) — the mirror of addBusinessDays.
+// Used to hold the confirmation-text mint until the shoot is close: a task
+// minted at booking for a shoot 62 days out (47 Venuti Dr, Aug 4 → Oct 6) sits
+// in the open count for two months doing nothing (Sep 8 audit).
+export function businessDaysBefore(from: Date, days: number): Date {
+  const d = new Date(from);
+  let removed = 0;
+  while (removed < days) {
+    d.setUTCDate(d.getUTCDate() - 1);
+    const wd = d.getUTCDay();
+    if (wd !== 0 && wd !== 6) removed++;
+  }
+  return d;
+}
+
+// Confirmation texts are minted this many business days before the shoot —
+// always ahead of the auto-send sweep's 48h lead (3 business days ≥ 72h, and
+// the Friday "last chance" send for a Monday shoot happens ≥ 1 business day
+// after the Wednesday mint), so the row the sweep claims is always there.
+export const CONFIRMATION_MINT_BUSINESS_DAYS = 3;
+
 type DueOpts = { monthlyContent?: boolean; premium?: boolean; sameDay?: boolean };
 
 // ---- Same-day rush add-ons (Jordan, Sep 2 2026: "notify the morning tower
@@ -246,7 +267,79 @@ type TaskSpec = {
   description?: string; // pre-drafted message (e.g. the confirmation text)
   summary?: string; // "what happened / what's needed" for the card
   assignedKey?: string; // editor this is delegated to (see src/lib/editors.ts)
+  // The spec is EXPECTED (an existing row is kept, refreshed, reopened) from
+  // the moment it is emitted, but a NEW row is not created before this
+  // instant. Lets a confirmation be "expected" for the whole booking without
+  // being minted two months early — and keeps every row minted under the old
+  // rule alive instead of cancelling it as "no longer expected".
+  mintNotBefore?: Date | null;
 };
+
+// A row this reconciler parked (CANCELLED with one of these stamps in
+// sourceDetail) is NOT terminal the way a human cancel or the Aryeo-orphan
+// stand-down is: the spec re-emitting is what brings it back. Two reasons a
+// card is parked:
+/** The project went ON_HOLD (Sep 8 audit: a "QC & deliver" card on a held job
+ *  sat open 41 days, invisible on every screen but counted in "84 open"). */
+export const JOB_ON_HOLD = "job-on-hold";
+/** The job reads SHOT/EDITING/REVIEW while its shoot is still ahead — a
+ *  same-address re-shoot whose Dropbox folder already holds the FIRST shoot's
+ *  raws (1946 Rowan St #2, Sep 8: "2 ready now" for photos that don't exist). */
+export const SHOOT_NOT_YET = "shoot-not-yet";
+const REOPENABLE_CANCELS = new Set([JOB_ON_HOLD, SHOOT_NOT_YET]);
+
+// ---- Diff-before-write --------------------------------------------------
+// Every open QC and edit card used to be rewritten every hour whether or not
+// anything changed (Sep 8 audit: 10 of 11 open media_qa and 3 of 4 edit_video
+// rows all stamped 16:01:40). That makes updatedAt meaningless on exactly the
+// rows where it is later read as "when it closed" (the CANCELLED paths) and as
+// a throttle (portal/actions.ts). So a refresh writes only when a field moves.
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a instanceof Date || b instanceof Date) {
+    return a instanceof Date && b instanceof Date && a.getTime() === b.getTime();
+  }
+  return (a ?? null) === (b ?? null);
+}
+/** Keys of `patch` whose value differs from what the row already holds. */
+export function changedKeys(row: Record<string, unknown>, patch: Record<string, unknown>): string[] {
+  return Object.keys(patch).filter((k) => !sameValue(row[k], patch[k]));
+}
+
+// "The shoot is still ahead of us." Mirrors projectStatus.ts shootHappened:
+// shootDate alone is movable (a return visit points it at the FUTURE leg), so
+// any non-canceled appointment leg that already started also counts as proof
+// the shoot happened. With only the future leg on the books (Rowan #2) the
+// shoot is pending; with a past leg + a future one (1224 Gail Rd, Aug 7 + Aug
+// 24) it is not — that job's QC card was real work, completed six days
+// before its second visit.
+export function shootStillAhead(
+  shootDate: Date | null | undefined,
+  appointments?: { startAt: Date | null; status: string | null }[] | null,
+  now = Date.now(),
+): boolean {
+  if (!shootDate || shootDate.getTime() <= now) return false;
+  const pastLeg = (appointments ?? []).some(
+    (a) => (a.status || "").toUpperCase() !== "CANCELED" && a.startAt !== null && a.startAt.getTime() < now,
+  );
+  return !pastLeg;
+}
+
+// Aryeo titles a coordinate-only order "[No address provided], 40.62…,-75.37…"
+// (aryeo.ts addressTitle → unparsed_address, verbatim). A task titled with a
+// lat/lng is one nobody can read at a glance; the street line or the town is
+// what a person would say. The project title itself is left alone — Dropbox
+// folders are named from it.
+export function jobLabelFor(p: { title: string; addressLine?: string | null; city?: string | null }): string {
+  if (!/^\[?\s*no address/i.test(p.title)) return p.title;
+  const line = p.addressLine?.trim();
+  if (line) return line;
+  return p.city ? `Pin drop near ${p.city}` : "Pin drop (no address on the order)";
+}
+
+// The placeholder client an Aryeo order with no customer is filed under
+// (aryeo.ts UNKNOWN_CUSTOMER_NAME). Matched by prefix rather than imported:
+// the integration module is heavy and imports this one dynamically.
+const isUnknownCustomer = (name: string | null | undefined) => /^unknown customer\b/i.test(name ?? "");
 
 // Friendly per-deliverable label for the consolidated QC checklist.
 const QC_LABEL: Record<string, string> = {
@@ -334,9 +427,14 @@ export function actionableQcCount(
   presentCategories: string[],
 ): number {
   const hasVideo = presentCategories.includes("Video");
+  const nothingLive = presentCategories.length === 0;
   return items.filter((i) => {
     if (i.done) return false;
     if (/^QC /.test(i.label)) return false; // auto-ticks when the category lands
+    // "Photographer submitted the upload page" and "Deliver the gallery" cannot
+    // be done before anything is live — a card for a shoot that has not happened
+    // read "2 ready now" (1946 Rowan #2, 632 Greenridge; audit, Sep 8).
+    if (nothingLive && /upload page|deliver the gallery/i.test(i.label)) return false;
     if (i.label === QC_LABEL_VIDEO_BRIEF && !hasVideo) return false;
     return true;
   }).length;
@@ -381,7 +479,9 @@ export function nextPendingDue(p: {
 }
 
 // Decide the expected tasks for one project, based on its pipeline stage.
-function specsForProject(p: {
+// Pure (no I/O) and exported so a read-only probe can dry-run the gates on a
+// live row without the reconciler writing anything.
+export function specsForProject(p: {
   status: string;
   title: string;
   shootDate: Date | null;
@@ -404,9 +504,20 @@ function specsForProject(p: {
   videoInstructions?: string | null;
   /** editable promise table (Settings → Turnaround promises) */
   turnarounds?: TurnaroundRules;
+  /** Aryeo appointment legs — shootStillAhead needs a past leg to tell a
+   *  return visit from a not-yet-shot job. */
+  appointments?: { startAt: Date | null; status: string | null }[] | null;
+  /** the account client's name — the no-customer placeholder gets no confirmation */
+  clientName?: string | null;
+  /** title fallbacks for coordinate-only orders (see jobLabelFor) */
+  addressLine?: string | null;
+  city?: string | null;
 }): TaskSpec[] {
   const specs: TaskSpec[] = [];
   const shoot = p.shootDate;
+  const now = Date.now();
+  const label = jobLabelFor(p);
+  const shootAhead = shootStillAhead(shoot, p.appointments, now);
   const primary = p.deliverables[0]?.type ?? "PHOTOS";
   const monthly = !!p.monthlyContent;
   // Which deliverable types are premium (3-4 day reel/video) on this project.
@@ -435,15 +546,33 @@ function specsForProject(p: {
   // was just duplicate, often-stale noise (e.g. "missing Video" on a reel that
   // was actually on track). Removed in favor of the per-deliverable tasks.
 
-  // Only while the shoot is still ahead of us. Once the shoot day arrives (or
-  // the job advances past SCHEDULED), the confirmation is moot — dropping the
-  // spec lets the reconciler auto-close any open confirmation_text below, so it
-  // never lingers or reads "overdue" forever.
-  const shootUpcoming = !shoot || shoot.getTime() >= etDayStartUtc().getTime();
-  if ((p.status === "BOOKED" || p.status === "SCHEDULED") && shootUpcoming) {
+  // Only while the shoot is still ahead of us. Once the shoot day arrives the
+  // confirmation is moot — dropping the spec lets the reconciler auto-close any
+  // open confirmation_text below, so it never lingers or reads "overdue" forever.
+  //
+  // Gated on the SHOOT DATE, not the status (Sep 8 audit, 1946 Rowan St #2):
+  // a same-address re-shoot read SHOT a minute after import because the
+  // Dropbox folder still held the first shoot's raws, and "BOOKED/SCHEDULED
+  // only" meant tomorrow's 9 AM shoot got no confirmation text at all. The
+  // same hole swallowed every return visit on a job past SCHEDULED (1224 Gail
+  // Rd, 3206 W Dauphin: zero outbound texts in the 72h before the second leg).
+  // A job still BOOKED/SCHEDULED with no date yet keeps its dateless row (the
+  // date has to be chased — clientTexts.ts); past SCHEDULED a real upcoming
+  // date is required, otherwise a shot job that lost its slot would grow one.
+  // The shoot INSTANT, not the ET-day start: a job that shot this morning and
+  // reads SHOT kept emitting a confirmation spec all day, so its unsent row
+  // lingered overdue instead of retiring at the shoot (review, Sep 8).
+  const shootDayNotReached = !!shoot && shoot.getTime() > Date.now();
+  const preShootStage = p.status === "BOOKED" || p.status === "SCHEDULED";
+  const confirmationWanted = preShootStage ? !shoot || shootDayNotReached : shootDayNotReached;
+  // An order with no customer has nobody to text (the drafted text greeted
+  // "Unknown"; the sweep skipped it for lack of a phone; it sat until the
+  // shoot day cancelled it). When the customer lands the spec re-emits and
+  // the reopen path below puts the row back.
+  if (confirmationWanted && !isUnknownCustomer(p.clientName)) {
     specs.push({
       taskType: "confirmation_text",
-      title: `Confirmation text — ${p.title}`,
+      title: `Confirmation text — ${label}`,
       reasonCreated: "Day-before confirmation text (SOP)",
       summary: "Day before the shoot: review the drafted confirmation text and send it. Confirm access (someone meeting us or a lockbox + code), what to highlight/avoid, and offer an upgrade if it fits.",
       // No deliverableType: a confirmation is one-per-shoot, so its dedupe key must
@@ -451,6 +580,9 @@ function specsForProject(p: {
       // whose deliverables reordered could mint a SECOND confirmation task.
       deliverableType: undefined,
       dueAt: shoot ? new Date(shoot.getTime() - DAY) : null,
+      // Minted close to the shoot, not at booking (see businessDaysBefore). A
+      // dateless row is minted at once — the missing date is the work.
+      mintNotBefore: shoot ? businessDaysBefore(shoot, CONFIRMATION_MINT_BUSINESS_DAYS) : null,
       // description (the drafted text) is filled in at creation time, where the
       // client name + shoot time + photographer are available.
       checklist: guide([
@@ -466,7 +598,15 @@ function specsForProject(p: {
   // REVISION included: the reopened QC card must keep receiving evidence
   // merges (re-ticked auto rows when the corrected media lands) instead of
   // freezing until a human resolves the revision.
-  if (p.status === "SHOT" || p.status === "EDITING" || p.status === "REVIEW" || p.status === "REVISION") {
+  //
+  // Never while the shoot is still ahead (shootStillAhead): the status engine
+  // reads a same-address re-shoot as SHOT off the previous shoot's raws, and
+  // the QC card then sat in Kyle's 9:30 block as "shot Wed, Sep 9 · 2 ready
+  // now" the day BEFORE the shoot (Sep 8 audit). The reconciler parks the
+  // existing card (SHOOT_NOT_YET) and brings it back the hour the shoot has
+  // happened. A return visit with a past leg is not "ahead" — its card stays.
+  const productionStage = p.status === "SHOT" || p.status === "EDITING" || p.status === "REVIEW" || p.status === "REVISION";
+  if (productionStage && !shootAhead) {
     const anchor = shoot ?? new Date();
     // ONE consolidated QC task per project: a checkbox per deliverable category,
     // pre-checked for anything already live on Aryeo. Replaces the old per-item
@@ -559,7 +699,7 @@ function specsForProject(p: {
     if (qcTypes.length > 0 && qcItems.some((i) => !i.done)) {
       specs.push({
         taskType: "media_qa",
-        title: `QC & deliver — ${p.title}`,
+        title: `QC & deliver — ${label}`,
         reasonCreated: "Media in production — QC each deliverable, then deliver",
         summary: monthly
           ? "Monthly personal-branding / social content (7–10 business-day turnaround). QC each piece as it lands, then produce + deliver this month's content. Auto-completes once everything is live and delivered."
@@ -1074,10 +1214,22 @@ const DELIVERED_CLOSE_TYPES = [...PRODUCTION_TASK_TYPES, "image_fixes", "comms_f
 //   DELIVERED  → complete the production tasks (QA/deliver/prep/finish)
 //   CANCELLED  → cancel every open task on the job
 // Comm-driven tasks (client_reply / revision) are left alone — still actionable.
-export async function closeObsoleteTasks(projectId: string, projectStatus: string): Promise<number> {
+//
+// `sweep`: called from closeTasksOnInactiveProjects (hourly janitor) rather
+// than from the status transition. Same rules, two differences: a row a human
+// (re)opened by hand (assignedManually) is never a janitor's to close — that
+// invariant every engine respects — and no delivery text is minted here: the
+// status sweep already mints one per pass on DELIVERED jobs, and a job that
+// shipped weeks ago must not get a "how did we do?" from housekeeping.
+export async function closeObsoleteTasks(
+  projectId: string,
+  projectStatus: string,
+  opts: { sweep?: boolean } = {},
+): Promise<number> {
+  const humanKept = opts.sweep ? { assignedManually: false } : {};
   if (projectStatus === "CANCELLED") {
     const r = await prisma.smartTask.updateMany({
-      where: { projectId, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      where: { projectId, status: { notIn: ["COMPLETED", "CANCELLED"] }, ...humanKept },
       data: { status: "CANCELLED" },
     });
     return r.count;
@@ -1138,6 +1290,7 @@ export async function closeObsoleteTasks(projectId: string, projectStatus: strin
         projectId,
         taskType: { in: DELIVERED_CLOSE_TYPES },
         status: { notIn: ["COMPLETED", "CANCELLED"] },
+        ...humanKept,
       },
       data: { status: "COMPLETED", completedAt: new Date() },
     });
@@ -1171,10 +1324,73 @@ export async function closeObsoleteTasks(projectId: string, projectStatus: strin
         data: { status: "FIXED", resolvedAt: new Date() },
       })
       .catch(() => {});
-    await createDeliveryTextTask(projectId);
+    if (!opts.sweep) await createDeliveryTextTask(projectId);
     return r.count;
   }
   return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Janitor for tasks on jobs the hourly reconciler never visits. It scans only
+// active statuses, so a task left open on a DELIVERED / CANCELLED / ON_HOLD job
+// stayed open until some webhook happened to touch the project (Sep 8 audit:
+// "QC & deliver — 56 Hillview Rd" open 41 days on a held job, invisible on
+// every screen but counted in "84 open"; two confirmations on DELIVERED jobs
+// cancelled only when a webhook wandered by at 15:58). Same rules as the
+// status transition (closeObsoleteTasks, sweep mode); ON_HOLD parks the
+// production tasks — CANCELLED with the JOB_ON_HOLD stamp — and the
+// reconciler reopens exactly those when the job comes off hold. Runs every
+// hour from generateTasksForActiveProjects (one indexed query when there is
+// nothing to do); exported so the daily cron can own it instead if preferred.
+// ---------------------------------------------------------------------------
+export async function closeTasksOnInactiveProjects(): Promise<{ delivered: number; cancelled: number; onHold: number }> {
+  const stray = await prisma.smartTask.findMany({
+    where: {
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
+      assignedManually: false, // a human's reopened work is never a janitor's to close
+      projectId: { not: null },
+      OR: [
+        { project: { status: "CANCELLED" } },
+        // The SWEEP arm skips image_fixes and anything a person flagged: those are
+        // minted AFTER delivery on purpose (flagged photos, a field flag), and the
+        // hourly pass was completing them — and flipping every OPEN ImageFlag to
+        // FIXED — silently (review, Sep 8). The DELIVERED transition itself
+        // (closeObsoleteTasks) still closes pre-delivery production work.
+        { project: { status: "DELIVERED" }, taskType: { in: DELIVERED_CLOSE_TYPES.filter((t) => t !== "image_fixes") }, flaggedAt: null },
+        { project: { status: "ON_HOLD" }, taskType: { in: PRODUCTION_TASK_TYPES } },
+      ],
+    },
+    select: { id: true, projectId: true, project: { select: { status: true } } },
+  });
+  const out = { delivered: 0, cancelled: 0, onHold: 0 };
+  const byProject = new Map<string, { status: string; ids: string[] }>();
+  for (const t of stray) {
+    if (!t.projectId || !t.project) continue;
+    const e = byProject.get(t.projectId) ?? { status: t.project.status, ids: [] };
+    e.ids.push(t.id);
+    byProject.set(t.projectId, e);
+  }
+  for (const [projectId, { status, ids }] of byProject) {
+    if (status === "ON_HOLD") {
+      const r = await prisma.smartTask.updateMany({
+        where: { id: { in: ids }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        // CANCELLED, never COMPLETED: nothing happened. No completedAt for
+        // the same reason (every "what got done" count pairs it with COMPLETED).
+        data: {
+          status: "CANCELLED",
+          sourceDetail: JOB_ON_HOLD,
+          summary: "Parked — the job is on hold. This comes back on its own when the job comes off hold.",
+        },
+      });
+      out.onHold += r.count;
+      continue;
+    }
+    // DELIVERED / CANCELLED: the exact transition-time rules, in sweep mode.
+    const n = await closeObsoleteTasks(projectId, status, { sweep: true });
+    if (status === "DELIVERED") out.delivered += n;
+    else out.cancelled += n;
+  }
+  return out;
 }
 
 // When a job is delivered, queue Kyle's post-delivery client TEXT (we dropped
@@ -1489,23 +1705,6 @@ export async function closeStaleDeliveryTexts(days = 7): Promise<{ sent: number;
   return { sent, neverSent };
 }
 
-// Positive/neutral feedback mints a "review client feedback" task that nothing
-// ever closes (feedback_review is in no auto-close list — audit crack #35). A
-// week on, a "thanks, loved it!" needs no follow-up: close the non-urgent ones.
-// NEGATIVE feedback tasks are URGENT and stay open until a human resolves them.
-export async function closeStaleFeedbackReviews(days = 7): Promise<number> {
-  const cutoff = new Date(Date.now() - days * DAY);
-  const r = await prisma.smartTask.updateMany({
-    where: {
-      taskType: "feedback_review",
-      priority: { not: "URGENT" },
-      status: { notIn: ["COMPLETED", "CANCELLED"] },
-      createdAt: { lt: cutoff },
-    },
-    data: { status: "COMPLETED", completedAt: new Date() },
-  });
-  return r.count;
-}
 
 // ---------------------------------------------------------------------------
 // Vendor round-trip chase (audit crack #16). CubiCasa (floor plans) and AutoHDR
@@ -1522,6 +1721,23 @@ const VENDOR_CHASE: { category: string; vendor: string; work: string; delayDays:
   { category: "Floor plan", vendor: "CubiCasa", work: "floor plan", delayDays: 3 },
   { category: "Photos", vendor: "AutoHDR", work: "photo edits", delayDays: 2 },
 ];
+const vendorChaseKey = (projectId: string, category: string) =>
+  `vendor-chase-${projectId}-${category.toLowerCase().replace(/\s+/g, "")}`;
+
+// The chase's only close used to be DELIVERED (Sep 8 audit: "Chase CubiCasa
+// floor plan — 195 Woodhill Rd" open 7 days; once the plan lands the chase
+// would stay open until the whole job shipped, so Kyle chases a vendor who
+// already delivered). The status cross-check that minted it also proves the
+// piece arrived — a category in statusEvidence.present closes its chase.
+export async function closeVendorChasesForPresent(projectId: string, present: string[]): Promise<number> {
+  const keys = VENDOR_CHASE.filter((v) => present.includes(v.category)).map((v) => vendorChaseKey(projectId, v.category));
+  if (keys.length === 0) return 0;
+  const r = await prisma.smartTask.updateMany({
+    where: { dedupeKey: { in: keys }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    data: { status: "COMPLETED", completedAt: new Date() },
+  });
+  return r.count;
+}
 
 export async function chaseVendorsForMissing(
   projectId: string,
@@ -1542,7 +1758,7 @@ export async function chaseVendorsForMissing(
   for (const v of due) {
     // One chase per project+category, ever — a completed chase means Kyle
     // already handled it; don't nag again on the next hourly pass.
-    const key = `vendor-chase-${projectId}-${v.category.toLowerCase().replace(/\s+/g, "")}`;
+    const key = vendorChaseKey(projectId, v.category);
     if (await prisma.smartTask.findUnique({ where: { dedupeKey: key } })) continue;
     await prisma.smartTask.create({
       data: {
@@ -1562,6 +1778,10 @@ export async function chaseVendorsForMissing(
         clientId: project?.clientId ?? null,
         propertyAddress: opts.title,
         ownerId: kyle?.id ?? null,
+        // Chasing vendors is Kyle's routine, like QC and delivery — the row
+        // used to carry only ownerId, so it read "unassigned" on every screen
+        // that keys on assignedKey (Sep 8 audit: both open chases, no name).
+        assignedKey: "kyle",
         dedupeKey: key,
       },
     });
@@ -1846,8 +2066,13 @@ export async function mintEditTask(projectId: string): Promise<void> {
     ? deliveryDueFrom(p.shootDate, v.type, { premium: isPremium, monthlyContent: monthly })
     : null;
   const rawDue = videoDue ? new Date(videoDue.getTime() - 12 * HOUR) : new Date(Date.now() + 4 * HOUR);
-  // Never surface a wildly-backdated due; clamp an already-late edit to "soon".
-  const dueAt = rawDue.getTime() < Date.now() ? new Date(Date.now() + HOUR) : rawDue;
+  // Never surface a wildly-backdated due; clamp an already-late edit to "soon"
+  // when the row is BORN. On refresh the clamp is not rolled forward: doing
+  // that every hour meant a late edit read "due in an hour" forever and the
+  // row was rewritten every tick (Sep 8 audit) — the stamp it already carries
+  // stands, and an edit past its SLA reads late, which is the truth.
+  const late = rawDue.getTime() < Date.now();
+  const dueAt = late ? new Date(Date.now() + HOUR) : rawDue;
 
   const rawUrl = dropboxWebUrl(projectFolderPaths(p).rawVideo);
   const briefUrl = `/edit/${projectId}`;
@@ -1867,21 +2092,22 @@ export async function mintEditTask(projectId: string): Promise<void> {
   const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
   if (existing) {
     if (existing.status === "COMPLETED" || existing.status === "CANCELLED") return;
-    await prisma.smartTask.update({
-      where: { id: existing.id },
-      data: {
-        // A human's editor choice (reassign / manual queue-add) outlives every
-        // automatic refresh — only route when nobody picked by hand. And the
-        // auto-router may IMPROVE a route but never STRIP one: a null route
-        // (personal branding) must not un-assign work someone already owns.
-        // A project-level pin (editorManual) is a human pick too — carry it
-        // onto the task as assignedManually so every downstream engine sees it.
-        ...(existing.assignedManually || !assignedKey ? {} : { assignedKey, ...(pin.pinned ? { assignedManually: true } : {}) }),
-        dueAt,
-        priority,
-        summary: summary.slice(0, 500),
-      },
-    });
+    const refreshedDue = late && existing.dueAt ? existing.dueAt : dueAt;
+    const data = {
+      // A human's editor choice (reassign / manual queue-add) outlives every
+      // automatic refresh — only route when nobody picked by hand. And the
+      // auto-router may IMPROVE a route but never STRIP one: a null route
+      // (personal branding) must not un-assign work someone already owns.
+      // A project-level pin (editorManual) is a human pick too — carry it
+      // onto the task as assignedManually so every downstream engine sees it.
+      ...(existing.assignedManually || !assignedKey ? {} : { assignedKey, ...(pin.pinned ? { assignedManually: true } : {}) }),
+      dueAt: refreshedDue,
+      priority: computePriority({ dueAt: refreshedDue, status: "SHOT" }),
+      summary: summary.slice(0, 500),
+    };
+    // Diff-before-write: an unchanged card is not touched (see changedKeys).
+    if (changedKeys(existing, data).length === 0) return;
+    await prisma.smartTask.update({ where: { id: existing.id }, data });
     return;
   }
   await prisma.smartTask.create({
@@ -2289,19 +2515,15 @@ export async function reconcileRawsMissing(
 export async function generateTasksForActiveProjects(): Promise<{ created: number; projects: number }> {
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
   const { confirmationMessage } = await import("@/lib/delivery");
-  // Retire legacy PER-DELIVERABLE "QA <type>" tasks (they had a deliverableType).
-  // They're replaced by ONE consolidated QC task per project (deliverableType
-  // null) with a checkbox per deliverable.
-  await prisma.smartTask.updateMany({
-    where: { taskType: "media_qa", deliverableType: { not: null }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
-    data: { status: "CANCELLED" },
-  });
-  // Retire legacy "Confirmation call" tasks — we send a confirmation TEXT now
-  // (the confirmation_text task below carries the drafted message + send button).
-  await prisma.smartTask.updateMany({
-    where: { taskType: "appointment_prep", status: { notIn: ["COMPLETED", "CANCELLED"] } },
-    data: { status: "CANCELLED" },
-  });
+  // The two legacy retirement sweeps that lived here (per-deliverable "QA
+  // <type>" media_qa rows, "Confirmation call" appointment_prep rows) matched
+  // nothing for months — 0 open rows of either, every hour (Sep 8 audit U4) —
+  // and are gone. What runs in their place is the janitor for tasks stranded
+  // on jobs this reconciler never visits. Best-effort: housekeeping must never
+  // stop the mint below.
+  try {
+    await closeTasksOnInactiveProjects();
+  } catch { /* janitor is best-effort */ }
   const projects = await prisma.project.findMany({
     // An order that 404s in Aryeo is a human decision, not a task mint.
     where: { status: { in: ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW", "REVISION"] }, aryeoMissingAt: null },
@@ -2313,6 +2535,9 @@ export async function generateTasksForActiveProjects(): Promise<{ created: numbe
       // segment drives the VIP extra-pass ticks on the guided QC checklist.
       client: { select: { id: true, name: true, socialClient: true, segment: true } },
       photographer: { select: { name: true } },
+      // appointment legs: shootStillAhead tells a return visit from a job
+      // that only READS shot (same-address raws) before its shoot.
+      appointments: { select: { startAt: true, status: true } },
     },
   });
 
@@ -2340,6 +2565,7 @@ export async function generateTasksForProject(projectId: string): Promise<number
       // segment drives the VIP extra-pass ticks on the guided QC checklist.
       client: { select: { id: true, name: true, socialClient: true, segment: true } },
       photographer: { select: { name: true } },
+      appointments: { select: { startAt: true, status: true } },
     },
   });
   if (!p || !ACTIVE_TASK_STATUSES.includes(p.status)) return 0;
@@ -2362,6 +2588,11 @@ type TaskProject = {
   orderItems?: { title: string }[];
   client: { id: string; name: string | null; socialClient: boolean; segment: string | null };
   photographer: { name: string } | null;
+  /** Aryeo appointment legs (both queries include them) — see shootStillAhead */
+  appointments?: { startAt: Date | null; status: string | null }[];
+  /** title fallbacks for coordinate-only orders (scalars ride along with `include`) */
+  addressLine?: string | null;
+  city?: string | null;
 };
 
 // Dedupe-key families minted OUTSIDE this reconciler (webhooks/integrations).
@@ -2485,7 +2716,33 @@ async function syncOneProjectTasks(
     shotOrderNotes: p.shotOrderNotes,
     debriefSubmittedAt: p.debriefSubmittedAt,
     videoInstructions: p.videoInstructions,
+    appointments: p.appointments,
+    clientName: p.client.name,
+    addressLine: p.addressLine,
+    city: p.city,
   });
+  // The vendor's piece arrived (the status sweep just refreshed this
+  // evidence, and `tasks` runs right after it) → its chase is done.
+  try {
+    await closeVendorChasesForPresent(p.id, parseEvidence(p.statusEvidence)?.present ?? []);
+  } catch { /* chase close is best-effort */ }
+  // The shoot is still ahead but the job already reads shot (same-address
+  // raws): park the QC card rather than let the "no longer expected" sweep
+  // below COMPLETE it — nothing was QC'd, and a COMPLETED card would sit in
+  // the Done ledger as a QC pass for a day. CANCELLED + SHOOT_NOT_YET, and
+  // the media_qa branch below reopens it the first pass after the shoot.
+  // REVISION keeps its carve-out: a re-shoot raised mid-revision must not
+  // lose the reflectRevisionInQc card.
+  if (p.status !== "REVISION" && shootStillAhead(p.shootDate, p.appointments)) {
+    await prisma.smartTask.updateMany({
+      where: { projectId: p.id, taskType: "media_qa", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      data: {
+        status: "CANCELLED",
+        sourceDetail: SHOOT_NOT_YET,
+        summary: "Parked — the shoot is still ahead. This comes back on its own once the shoot has happened.",
+      },
+    });
+  }
   // Reconcile: close any open production task that's no longer expected. This
   // retires "QA photos" / "Deliver gallery" once the photos are live (even
   // while a reel is still rendering), and clears a stale "finish delivery"
@@ -2571,7 +2828,9 @@ async function syncOneProjectTasks(
                 summary: s.summary ?? null, // `undefined` would be a Prisma no-op — the point is to CLEAR a stale note
                 sourceDetail: null,
                 reasonCreated: rebooked
-                  ? "Shoot was re-booked after being postponed — confirm the new time with the client"
+                  ? exists.sourceDetail === JOB_ON_HOLD
+                    ? "Job came off hold — confirm the shoot time with the client"
+                    : "Shoot was re-booked after being postponed — confirm the new time with the client"
                   : "Shoot was rescheduled after the last confirmation — confirm the new time with the client",
               },
             });
@@ -2579,7 +2838,10 @@ async function syncOneProjectTasks(
         }
         continue;
       }
-      if (exists.status === "CANCELLED") continue;
+      // A card THIS reconciler parked (job on hold / shoot still ahead) comes
+      // back when its spec does; every other cancel stays terminal.
+      const parked = exists.status === "CANCELLED" && REOPENABLE_CANCELS.has(exists.sourceDetail ?? "");
+      if (exists.status === "CANCELLED" && !parked) continue;
       // For the consolidated QC task, re-sync its checklist each run: an item
       // is checked if it's live on Aryeo OR Kyle already ticked it manually
       // (manual checks are preserved). If every item ends up checked, the task
@@ -2631,6 +2893,38 @@ async function syncOneProjectTasks(
         // also logs) can't double-write. Do it BEFORE the status flip so a throw
         // can't leave a completed task with no record — recordQcCompletion swallows.
         const nowCompleting = allDone && !inRevision && exists.status !== "COMPLETED";
+        const data = {
+          checklist: serializeChecklist(merged),
+          ...(s.summary && !inRevision ? { summary: s.summary } : {}),
+          // Post-shoot QC: priced by its turnaround due date, NOT shoot proximity
+          // (a 7–10 day monthly job shouldn't read URGENT because it shot today).
+          ...(s.dueAt && !inRevision ? { dueAt: s.dueAt, priority: computePriority({ dueAt: s.dueAt, status: p.status }) } : {}),
+          ...(allDone && !inRevision
+            ? { status: "COMPLETED", completedAt: new Date(), ...(parked ? { sourceDetail: null } : {}) }
+            : exists.status === "COMPLETED" || parked
+              ? {
+                  status: "OPEN",
+                  completedAt: null,
+                  // The park stamp is spent the moment the card is back.
+                  ...(parked ? { sourceDetail: null } : {}),
+                  // Reopening a delivered-era card mid-revision (the manual
+                  // prior-cut rail flips a job to REVISION without going
+                  // through reflectRevisionInQc): stamp the revision framing
+                  // so Kyle doesn't get a weeks-overdue "QC & deliver" card.
+                  ...(inRevision
+                    ? {
+                        priority: "HIGH",
+                        dueAt: new Date(),
+                        summary: "Back into revision — re-QC the fixed items before they go back to the client.",
+                      }
+                    : {}),
+                }
+              : {}),
+        };
+        // Diff-before-write: the merged checklist, summary, due and priority
+        // are deterministic from the project, so an unchanged card is left
+        // alone — its updatedAt keeps meaning something (see changedKeys).
+        if (changedKeys(exists, data).length === 0) continue;
         if (nowCompleting) {
           try {
             await recordQcCompletion({
@@ -2641,35 +2935,7 @@ async function syncOneProjectTasks(
             });
           } catch { /* analytics only — never block auto-close */ }
         }
-        await prisma.smartTask.update({
-          where: { id: exists.id },
-          data: {
-            checklist: serializeChecklist(merged),
-            ...(s.summary && !inRevision ? { summary: s.summary } : {}),
-            // Post-shoot QC: priced by its turnaround due date, NOT shoot proximity
-            // (a 7–10 day monthly job shouldn't read URGENT because it shot today).
-            ...(s.dueAt && !inRevision ? { dueAt: s.dueAt, priority: computePriority({ dueAt: s.dueAt, status: p.status }) } : {}),
-            ...(allDone && !inRevision
-              ? { status: "COMPLETED", completedAt: new Date() }
-              : exists.status === "COMPLETED"
-                ? {
-                    status: "OPEN",
-                    completedAt: null,
-                    // Reopening a delivered-era card mid-revision (the manual
-                    // prior-cut rail flips a job to REVISION without going
-                    // through reflectRevisionInQc): stamp the revision framing
-                    // so Kyle doesn't get a weeks-overdue "QC & deliver" card.
-                    ...(inRevision
-                      ? {
-                          priority: "HIGH",
-                          dueAt: new Date(),
-                          summary: "Back into revision — re-QC the fixed items before they go back to the client.",
-                        }
-                      : {}),
-                  }
-                : {}),
-          },
-        });
+        await prisma.smartTask.update({ where: { id: exists.id }, data });
         continue;
       }
       // Other completed task types stay closed — only the confirmation (handled
@@ -2696,6 +2962,9 @@ async function syncOneProjectTasks(
       }
       continue;
     }
+    // Expected, but not yet due to exist (a confirmation for a shoot weeks
+    // out). The next pass after mintNotBefore creates it.
+    if (s.mintNotBefore && s.mintNotBefore.getTime() > Date.now()) continue;
     // Pre-shoot tasks (confirmation) factor shoot proximity; post-shoot production
     // (QC / deliver / delivery text) is priced by its turnaround due date only.
     const postShoot = ["media_qa", "delivery", "delivery_text"].includes(s.taskType);

@@ -82,6 +82,34 @@ const dayLabel = (d: Date | null) => {
 };
 const timeLabel = (d: Date) => d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric" });
 
+// A job's notes can be the whole editor brief: 632 Greenridge carried Andrea's
+// ~40-line "EDIT VISION" doc in raw **markdown**, and it pushed the six other
+// Due-today cards off Kyle's screen (audit, Sep 8 2026). The card wants ONE
+// short line — the brief itself lives on /edit/<id> — with the rest behind a
+// "more" toggle. Bold/heading markers are display noise either way.
+const NOTE_CLIP = 240;
+const unmark = (s: string) => s.replace(/\*\*|__/g, "").replace(/^#+\s*/gm, "");
+function JobNote({ notes }: { notes: string }) {
+  const [open, setOpen] = useState(false);
+  const line = unmark(notes).replace(/\s+/g, " ").trim();
+  const long = line.length > NOTE_CLIP;
+  const cut = line.lastIndexOf(" ", NOTE_CLIP);
+  const clipped = long ? `${line.slice(0, cut > NOTE_CLIP / 2 ? cut : NOTE_CLIP).trimEnd()}…` : line;
+  return (
+    <div className="mt-2 flex items-start gap-1.5 rounded-lg bg-warning/[0.08] px-2.5 py-1.5 text-sm leading-relaxed">
+      <StickyNote className="mt-0.5 size-4 shrink-0 text-warning" />
+      <div className="min-w-0 flex-1">
+        <p className={`break-words ${open ? "whitespace-pre-line" : ""}`}>{open ? unmark(notes).trim() : clipped}</p>
+        {long && (
+          <button type="button" onClick={() => setOpen(!open)} className="mt-0.5 text-xs font-medium text-brand hover:underline">
+            {open ? "less" : "more"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function JobCard({ j }: { j: BoardJob }) {
   const [open, setOpen] = useState(false);
   const b = BLOCKER[j.blocker];
@@ -147,12 +175,7 @@ function JobCard({ j }: { j: BoardJob }) {
         )}
       </div>
 
-      {j.notes && (
-        <p className="mt-2 flex items-start gap-1.5 rounded-lg bg-warning/[0.08] px-2.5 py-1.5 text-sm leading-relaxed">
-          <StickyNote className="mt-0.5 size-4 shrink-0 text-warning" />
-          <span>{j.notes}</span>
-        </p>
-      )}
+      {j.notes && <JobNote notes={j.notes} />}
 
       {j.items.length > 0 && (
         <div className="mt-2">

@@ -99,6 +99,16 @@ function prettyPhone(k: string): string {
   return k.length === 10 ? `(${k.slice(0, 3)}) ${k.slice(3, 6)}-${k.slice(6)}` : k;
 }
 
+// The street half of an Aryeo-style title ("1033 Preserve Ln, West Chester,
+// PA 19382" → "1033 preserve ln"), so two orders at one address compare equal
+// however the city/zip half was formatted ("West Chester, 19382" vs "West
+// Chester, PA 19382" both exist for the same house). Used to scope the
+// delivery-text close below.
+function streetOf(title: string | null | undefined): string | null {
+  const s = (title ?? "").split(",")[0].toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  return s.length >= 4 ? s : null;
+}
+
 // ---------------------------------------------------------------------------
 // WHICH NUMBERS ARE US
 //
@@ -368,12 +378,45 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
           // phone — that outbound text to a client with a queued delivery_text
           // IS the delivery text. Close it (audit: delivery_texts were 36% of
           // all overdue, only ever swept by a 7-day timer).
-          await prisma.smartTask
-            .updateMany({
+          //
+          // Scoped to the JOB the text is about (Sep 8 audit). This closed
+          // every open delivery_text for the client, so one "9 AM, is it not
+          // going to be vacant?" to Stephen Kennedy about 1655 N 60th St
+          // credited the feedback asks for 5318 Cedar Ave AND 5039 N Smedley
+          // St as sent — 7 of 46 closes in 30 days were a text about another
+          // job, and the Done ledger counted them. deliveryTextSendProof
+          // (tasks.ts) is deliberately project-scoped; the close now matches
+          // it: a text that names a street closes that job's ask only (a text
+          // about job A leaves job B's open), and a text naming nothing closes
+          // the client's ONE open ask — otherwise all of them wait for the
+          // 7-day proof sweep. Same single-open rule as closeReplyScoped.
+          // `effProject` is the named job only when `projectNamed`; the
+          // router's most-recent-order guess is not evidence of what a text
+          // was about.
+          //
+          // "Names the job" is by STREET, not project id: same-address orders
+          // are routine here (Mike Ciunci has six "1033 Preserve Ln" rows, a
+          // monthly shoot at his own place; 632 Greenridge Rd has a re-shoot
+          // beside the delivered order), and findClientProjectByText hands
+          // back the newest of them — which is not the one holding the ask.
+          // A text about that address is about that address.
+          const namedStreet = projectNamed && effProject ? streetOf(effProject.title) : null;
+          const openAsks = await prisma.smartTask
+            .findMany({
               where: { clientId, taskType: "delivery_text", status: { notIn: ["COMPLETED", "CANCELLED"] } },
-              data: { status: "COMPLETED", completedAt: new Date() },
+              select: { id: true, projectId: true, propertyAddress: true },
             })
-            .catch(() => {});
+            .catch(() => [] as { id: string; projectId: string | null; propertyAddress: string | null }[]);
+          const askIds = namedStreet
+            ? openAsks.filter((a) => a.projectId === effProject?.id || streetOf(a.propertyAddress) === namedStreet).map((a) => a.id)
+            : openAsks.length === 1
+              ? [openAsks[0].id]
+              : [];
+          if (askIds.length > 0) {
+            await prisma.smartTask
+              .updateMany({ where: { id: { in: askIds } }, data: { status: "COMPLETED", completedAt: new Date() } })
+              .catch(() => {});
+          }
           // Same for hand-sent confirmations: an outbound text to a client
           // whose shoot is inside the next 48h IS the confirmation — complete
           // the task so the hourly sweep doesn't send a second one. Scoped to

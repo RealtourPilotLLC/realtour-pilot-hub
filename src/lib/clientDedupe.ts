@@ -146,9 +146,18 @@ function blockersFor(cluster: DedupeClient[]): string[] {
   return out;
 }
 
+// Test records never earn an owner decision. "Bobby TEST Michael TEST" and two
+// "John Doe" rows share Jordan's own phone with his two real client records, so
+// the Sep 3 and Sep 4 scans each filed a "Possible duplicate clients — Jordan
+// Spackman / Bobby TEST Michael TEST / John Doe" task for him (Sep 8 audit).
+// Word-bounded so a real "Testa" or "Testani Realty" is not swept up with them.
+// Dropping the test rows still leaves the real rows in the cluster to review.
+export const TEST_CLIENT_NAME = /\btest\b|john doe/i;
+const isTestClient = (c: { name: string }) => TEST_CLIENT_NAME.test(c.name);
+
 /** Read-only: who LOOKS like a duplicate, and what the evidence says. */
 export async function findDuplicateCandidates(): Promise<DuplicateCandidate[]> {
-  const clients = (await prisma.client.findMany({ select: CLIENT_SELECT })) as DedupeClient[];
+  const clients = ((await prisma.client.findMany({ select: CLIENT_SELECT })) as DedupeClient[]).filter((c) => !isTestClient(c));
   return buildClusters(clients).map((cluster) => {
     // Most orders first — the row a human would most likely keep.
     const sorted = [...cluster].sort(
@@ -175,51 +184,109 @@ export async function findDuplicateCandidates(): Promise<DuplicateCandidate[]> {
   });
 }
 
+/** The decision tasks' key prefix — `client-dupe-<candidate.key>`. */
+const DUPE_TASK_PREFIX = "client-dupe-";
+// Stamped on a decision task the SCAN closed (the cluster behind it changed),
+// as opposed to one a human closed. Only these may be reopened by a later
+// scan: a human's "they're different people" is final, the scan's own
+// housekeeping is not.
+const SUPERSEDED_MARKER = "superseded-by-scan";
+
 /**
  * The nightly step. Records the candidates and files ONE decision task per
  * candidate for Jordan — it never merges. Two surfaces on purpose:
  *   • the SmartTask is where a human actually sees it (the board is already the
  *     place decisions land — same pattern as the "video marked not completable"
- *     decision task), minted with a stable dedupeKey + `update: {}` so a night
- *     that re-proposes the same pair can never re-open work someone handled;
+ *     decision task), minted with a stable dedupeKey and never re-opened once a
+ *     human closed it, so a night that re-proposes the same pair can't re-open
+ *     work someone handled;
  *   • the AppSetting row is the machine-readable list, with the evidence, for
  *     the approve-in-app merge flow to read (a task title can't carry ids). A
  *     candidate stays on that list after someone deals with it — its decision
  *     task (dedupeKey `client-dupe-<candidate.key>`) is what says it's handled.
  *
+ * SUPERSEDED CLUSTERS (Sep 8 audit): the key is the member ids, so when a
+ * cluster GROWS (a new signup lands on the same phone) tonight's task has a
+ * new key and yesterday's stays open beside it — "Jordan Spackman / Bobby
+ * TEST…" from Sep 3 sat under "Jordan Spackman / Jordan Spackman / Bobby
+ * TEST…" from Sep 4, both OPEN on Jordan's list. Now every open decision task
+ * whose key is not in tonight's candidate list is CANCELLED with a marker: the
+ * rows behind it merged, vanished, or re-clustered, so the question it asked
+ * no longer exists in that form. A task the scan cancelled that way is
+ * reopened if the same cluster comes back; a task a human closed never is.
+ *
  * The task is deliberately taskType "todo" with NO clientId — see the two
- * comments on the upsert below. Both are about keeping an owner-only decision
+ * comments on the create below. Both are about keeping an owner-only decision
  * where only the owner can act on it; neither is cosmetic.
+ *
+ * `dryRun` does every read and no write — it returns exactly what a real run
+ * would file and close, so the step can be checked against live data without
+ * touching it.
  */
-export async function reviewClientDuplicates(): Promise<{
+export async function reviewClientDuplicates(opts?: { dryRun?: boolean }): Promise<{
   candidates: number;
   blocked: number;
   tasksFiled: number;
+  /** decision tasks closed (or, on a dry run, that would be) because their cluster is gone */
+  superseded: string[];
+  /** decision tasks created or reopened (or, on a dry run, that would be) */
+  filed: string[];
 }> {
+  const dryRun = !!opts?.dryRun;
   const candidates = await findDuplicateCandidates();
 
   // Snapshot for the review UI. Best-effort: a settings write failure must not
   // lose the tasks below (the tasks are the part a human actually sees).
-  try {
-    const value = JSON.stringify({
-      at: new Date().toISOString(),
-      // Bound it: the AppSetting value is one text column, and a list this long
-      // means the matching rule broke, not that we have 200 real duplicates.
-      candidates: candidates.slice(0, 50),
-    });
-    await prisma.appSetting.upsert({
-      where: { key: DEDUPE_CANDIDATES_KEY },
-      create: { key: DEDUPE_CANDIDATES_KEY, value, updatedBy: "cron:daily-clients" },
-      update: { value, updatedBy: "cron:daily-clients" },
-    });
-  } catch (e) {
-    console.warn("clientDedupe: candidate snapshot failed", e);
+  if (!dryRun) {
+    try {
+      const value = JSON.stringify({
+        at: new Date().toISOString(),
+        // Bound it: the AppSetting value is one text column, and a list this long
+        // means the matching rule broke, not that we have 200 real duplicates.
+        candidates: candidates.slice(0, 50),
+      });
+      await prisma.appSetting.upsert({
+        where: { key: DEDUPE_CANDIDATES_KEY },
+        create: { key: DEDUPE_CANDIDATES_KEY, value, updatedBy: "cron:daily-clients" },
+        update: { value, updatedBy: "cron:daily-clients" },
+      });
+    } catch (e) {
+      console.warn("clientDedupe: candidate snapshot failed", e);
+    }
+  }
+
+  // Close what tonight's list no longer asks. Done BEFORE filing so a cluster
+  // that grew closes its old row and files its new one in the same pass.
+  const currentKeys = new Set(candidates.map((c) => `${DUPE_TASK_PREFIX}${c.key}`));
+  const superseded: string[] = [];
+  const openDecisions = await prisma.smartTask.findMany({
+    where: { dedupeKey: { startsWith: DUPE_TASK_PREFIX }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    select: { id: true, title: true, dedupeKey: true, summary: true },
+  });
+  for (const t of openDecisions) {
+    if (currentKeys.has(t.dedupeKey!)) continue;
+    superseded.push(t.title);
+    if (dryRun) continue;
+    try {
+      await prisma.smartTask.update({
+        where: { id: t.id },
+        data: {
+          status: "CANCELLED",
+          completedAt: new Date(),
+          sourceDetail: SUPERSEDED_MARKER,
+          summary: `Closed by the nightly scan: the client records behind this one changed (merged, deleted, or re-clustered), so this exact question no longer exists — if the same people still look like one person there is a newer task for them. ${t.summary ?? ""}`.slice(0, 500),
+        },
+      });
+    } catch (e) {
+      console.warn("clientDedupe: could not close superseded task", t.dedupeKey, e);
+    }
   }
 
   let tasksFiled = 0;
+  const filed: string[] = [];
   for (const c of candidates) {
     const names = c.clients.map((x) => x.name);
-    const dedupeKey = `client-dupe-${c.key}`;
+    const dedupeKey = `${DUPE_TASK_PREFIX}${c.key}`;
     // Order matters: the summary is clipped at 500 chars, so the warning and the
     // evidence come first and the per-row detail (also on each client's page,
     // and in the AppSetting record) is what a long cluster loses.
@@ -236,17 +303,37 @@ export async function reviewClientDuplicates(): Promise<{
       "Nothing has been merged, and the app has no merge action yet. Different people: close this. Same person: leave it open — a merge is coming and this list feeds it.",
       c.clients.map((x) => `${x.name} — ${x.company ?? "no company"}, ${x.projects} order(s), ${x.email ?? "no email"}`).join(" · "),
     ].filter(Boolean).join(" ");
+    const title = `Possible duplicate clients — ${names.join(" / ")}`.slice(0, 120);
     try {
-      await prisma.smartTask.upsert({
+      const prior = await prisma.smartTask.findUnique({
         where: { dedupeKey },
-        create: {
+        select: { id: true, status: true, sourceDetail: true },
+      });
+      // One decision per pair — never re-open what a human closed. The only
+      // row the scan may bring back is one the scan itself cancelled as
+      // superseded (marker above); a cluster that split and re-formed is the
+      // same question again, and a human never answered it.
+      const reopen = !!prior && prior.status === "CANCELLED" && prior.sourceDetail === SUPERSEDED_MARKER;
+      if (prior && !reopen) continue;
+      filed.push(title);
+      tasksFiled++;
+      if (dryRun) continue;
+      if (reopen) {
+        await prisma.smartTask.update({
+          where: { id: prior.id },
+          data: { status: "OPEN", completedAt: null, sourceDetail: null, title, summary: evidence.slice(0, 500) },
+        });
+        continue;
+      }
+      await prisma.smartTask.create({
+        data: {
           // "todo", NOT "internal_instruction" — two engines read that type and
           // would take this decision away from the owner:
           //   • opsDay.ts openLoopsList() pulls every open comms_followup /
           //     internal_instruction / callback / client_reply with no owner
           //     filter, so this landed in Kyle's and James's Open Loops behind a
-          //     one-click "Handled". With `update: {}` below, a stray click
-          //     closes the pair forever — the next night never re-files it.
+          //     one-click "Handled". A stray click closes the pair forever — the
+          //     next night never re-files a human-closed row.
           //   • brain.ts MERGEABLE_TYPES lists internal_instruction, so the comms
           //     router offered this task to the AI as a merge target and an
           //     inbound message could rewrite its title and summary out from
@@ -256,7 +343,7 @@ export async function reviewClientDuplicates(): Promise<{
           // stays a real decision ("they're different people"), so the nightly step
           // must NOT re-file a closed one — hence the type change, not a re-open.
           taskType: "todo",
-          title: `Possible duplicate clients — ${names.join(" / ")}`.slice(0, 120),
+          title,
           summary: evidence.slice(0, 500),
           reasonCreated: "Nightly duplicate-client scan found two client records that look like one person.",
           source: "system",
@@ -271,9 +358,7 @@ export async function reviewClientDuplicates(): Promise<{
           // already rides in the summary and in the AppSetting snapshot.
           dedupeKey,
         },
-        update: {}, // one decision per pair — never re-open what a human closed
       });
-      tasksFiled++;
     } catch (e) {
       console.warn("clientDedupe: could not file review task", dedupeKey, e);
     }
@@ -283,6 +368,8 @@ export async function reviewClientDuplicates(): Promise<{
     candidates: candidates.length,
     blocked: candidates.filter((c) => c.blockers.length > 0).length,
     tasksFiled,
+    superseded,
+    filed,
   };
 }
 

@@ -12,6 +12,7 @@ import { homeFor } from "@/lib/auth/access";
 import { getCutWorkspace } from "@/lib/reviewRoom";
 import { editorMeta } from "@/lib/editors";
 import { CutReviewPanel } from "@/components/review/CutReviewPanel";
+import { BackLink } from "@/components/ui/BackLink";
 
 export const dynamic = "force-dynamic";
 
@@ -73,6 +74,14 @@ export default async function CutReviewPage({
 
   return (
     <div>
+      {/* Back to where they came from — the in-app history (the home's Video
+          Review card, the Review Room queue), or the Room on a cold deep link.
+          This page had no way back except the sidebar, which sits behind the
+          menu on a phone — Kyle reviewed a cut and had no obvious control to
+          get back to the list (audit, Sep 8 2026). Same placement as /edit. */}
+      <div className="border-b border-border px-4 py-3 sm:px-6">
+        <BackLink href="/review" label="Review Room" />
+      </div>
       <PageHeader
         eyebrow="Review Room"
         title={w.street}

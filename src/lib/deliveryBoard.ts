@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { etDayKey, etAddDays, etDayStartUtc } from "@/lib/datetime";
 import { tierFor, dueAtFor, type Tier } from "@/lib/turnaround";
 import { parseEvidence } from "@/lib/statusEvidence";
+import { isMonthlyContentJob } from "@/lib/pipeline";
 
 // ---------------------------------------------------------------------------
 // THE DELIVERY BOARD — Kyle's screen.
@@ -26,7 +27,8 @@ export type BlockerKind =
   | "on_hold" | "revision" | "not_shot" | "awaiting_upload"
   | "editing" | "qc" | "ready" | "delivered";
 
-export type BoardItem = { title: string; quantity: number; tierLabel: string; dueAt: Date };
+/** dueAt is null while the job has no shoot date — no clock has started. */
+export type BoardItem = { title: string; quantity: number; tierLabel: string; dueAt: Date | null };
 
 export type BoardJob = {
   id: string;
@@ -145,9 +147,10 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
     select: {
       id: true, title: true, addressLine: true, city: true, status: true,
       shootDate: true, deliveredAt: true, notes: true,
+      packageName: true, // monthly-content detection (the one job kind whose clock runs without a shoot)
       client: { select: { name: true } },
       orderItems: { where: { isCanceled: false }, select: { title: true, quantity: true } },
-      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, status: true, uploadedAt: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, status: true, uploadedAt: true, label: true } },
       statusEvidence: true, // Dropbox raw counts + what Aryeo actually carries
       appointments: { select: { assignedTo: { select: { name: true } } }, orderBy: { startAt: "asc" }, take: 1 },
     },
@@ -157,17 +160,24 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
 
   const jobs: BoardJob[] = rows.map((p) => {
     // The clock starts at the shoot — that's when we take possession of the
-    // work. Monthly social content often has no shoot of its own.
-    const startedAt = p.shootDate ?? now;
+    // work. Monthly social content often has no shoot of its own, so its clock
+    // runs from now. Anything ELSE with no shoot date has no clock at all: an
+    // unscheduled BOOKED job used to anchor at `now` too, which made it "due
+    // tomorrow 5 PM" every single day — 775 Scotch Way sat in Due tomorrow
+    // for a week (audit, Sep 8 2026), padding Kyle's tomorrow count by one. It
+    // belongs in Upcoming, marked "no date", until it is on the calendar.
+    const monthly = isMonthlyContentJob(p.deliverables, p.packageName);
+    const startedAt = p.shootDate ?? (monthly ? now : null);
     const items: BoardItem[] = p.orderItems.map((oi) => {
       const tier: Tier = tierFor(oi.title);
-      return { title: oi.title, quantity: oi.quantity, tierLabel: tier.label, dueAt: dueAtFor(tier, startedAt) };
+      return { title: oi.title, quantity: oi.quantity, tierLabel: tier.label, dueAt: startedAt ? dueAtFor(tier, startedAt) : null };
     });
 
     const { kind, label } = blockerFor(p, p.deliverables);
-    const earliest = p.deliveredAt || items.length === 0
+    const dated = items.filter((i): i is BoardItem & { dueAt: Date } => i.dueAt !== null);
+    const earliest = p.deliveredAt || dated.length === 0
       ? null
-      : items.reduce((a, b) => (a.dueAt <= b.dueAt ? a : b));
+      : dated.reduce((a, b) => (a.dueAt <= b.dueAt ? a : b));
 
     return {
       id: p.id,

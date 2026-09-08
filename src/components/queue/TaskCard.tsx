@@ -12,30 +12,15 @@ import { setSmartTaskStatus, setTaskAssignee, draftTaskReply, sendDeliveryText, 
 import { resolveEmailRecipient, sendEmailReply } from "@/app/emailActions";
 import { addTaskNote } from "@/app/projects/messageActions";
 import { etDateTime, etMonthDay, etDaysAgo } from "@/lib/datetime";
-import { sourceMeta, receivedByLabel, SOURCE_CHIP, type SourceKey } from "@/lib/taskSource";
+import { sourceMeta, receivedByLabel, taskTypeLabel, SOURCE_CHIP, type SourceKey } from "@/lib/taskSource";
 import { editorMeta, isDelegated, DELEGATE_KEYS, EDITORS } from "@/lib/editors";
 import { TaskFullView } from "@/components/queue/TaskFullView";
 import { TaskSlackPing } from "@/components/queue/TaskSlackPing";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 
-// Friendly display label per task type (QA → QC, etc.).
-const TYPE_LABEL: Record<string, string> = {
-  media_qa: "QC",
-  client_reply: "reply",
-  comms_followup: "job instruction",
-  confirmation_text: "confirmation",
-  delivery: "delivery",
-  delivery_text: "delivery text",
-  revision: "revision",
-  vendor_update: "vendor update",
-  image_fixes: "photo fixes",
-  internal_instruction: "team task",
-  lead: "new lead",
-  feedback_review: "feedback",
-  appointment_prep: "shoot prep",
-  todo: "to-do",
-};
-const typeLabel = (t: string) => TYPE_LABEL[t] ?? t.replace(/_/g, " ");
+// Friendly display label per task type (QA → QC, etc.) — the one shared map in
+// src/lib/taskSource.ts, so this chip and the Done ledger can't drift apart.
+const typeLabel = taskTypeLabel;
 
 const DRAFTABLE = ["client_reply", "revision", "feedback_review", "delivery_text", "lead"];
 const LUMA_TRACKER_URL = "https://portal.lumavisuals.co/";
@@ -64,6 +49,16 @@ export type QcClientContext = {
   donts: string[];
 };
 
+// Another open task of the same kind on the same job — a revision's other
+// lane (Sep 8 audit: 1956 Wetherhill carried "Video revision → John" and
+// "Photo revision → Kyle" from one client email, and each card read as the
+// whole ask). Title + owner only: no money, no message body.
+export type SiblingTask = {
+  id: string;
+  title: string;
+  assignedKey: string | null;
+};
+
 export type QueueTask = {
   id: string;
   title: string;
@@ -85,6 +80,12 @@ export type QueueTask = {
   clientName: string | null;
   contactName: string | null;
   propertyAddress: string | null;
+  /** The PERSON who flagged this for someone (fieldIssues / photo flags) — the
+      source chip reads "Flagged by <name>" instead of "Added by hand". Optional:
+      only the board passes it; older callers of taskToView don't. */
+  flaggedBy?: string | null;
+  /** Other open tasks of this type on the same job (see SiblingTask). */
+  siblings?: SiblingTask[];
 };
 
 const PRIORITY: Record<string, { color: string; soft: string }> = {
@@ -436,8 +437,17 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
     task.taskType === "lead" && task.sourceDetail?.startsWith("phone:")
       ? task.sourceDetail.slice(6).replace(/[^\d+]/g, "")
       : null;
-  const src = sourceMeta(task.source);
+  const src = sourceMeta(task.source, { flaggedBy: task.flaggedBy, sourceDetail: task.sourceDetail });
   const SrcIcon = SOURCE_ICON[src.key];
+  // The other lane of the same ask (see SiblingTask). "Photo revision — 1956
+  // Wetherhill Dr, …" → "Photo revision → Kyle"; the street is already on this
+  // card. Links jump to the sibling card on the same board; an editor's board
+  // is scoped to their own work so the sibling isn't there to jump to.
+  const siblings = (task.siblings ?? []).map((s) => ({
+    id: s.id,
+    label: s.title.split("—")[0].trim() || s.title,
+    who: roster.find((a) => a.key === s.assignedKey)?.name ?? editorMeta(s.assignedKey)?.name ?? (s.assignedKey ? s.assignedKey.charAt(0).toUpperCase() + s.assignedKey.slice(1) : "unassigned"),
+  }));
   const receivedBy = receivedByLabel(task.source, task.sourceDetail);
   const summary = summaryText(task);
   // Project chip label: the street, when we have an address.
@@ -564,6 +574,21 @@ export function TaskCard({ task, assignees, assignPrompt, editorView }: { task: 
           </span>
         )}
       </div>
+
+      {/* The same ask's other lane — so neither card reads as the whole job. */}
+      {siblings.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-2">
+          <Repeat className="size-3" />
+          <span>Also open on this job:</span>
+          {siblings.map((s) => (
+            editorView ? (
+              <span key={s.id} className="rounded-md bg-surface-2 px-1.5 py-0.5 text-muted">{s.label} → {s.who}</span>
+            ) : (
+              <a key={s.id} href={`#task-${s.id}`} className="rounded-md bg-surface-2 px-1.5 py-0.5 text-muted hover:text-foreground">{s.label} → {s.who}</a>
+            )
+          ))}
+        </div>
+      )}
 
       {/* Expandable body — the "what happened" summary + details. */}
       {open && hasBody && (

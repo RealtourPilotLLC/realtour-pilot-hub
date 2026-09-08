@@ -515,10 +515,18 @@ export async function getStuckJobs(): Promise<StuckJob[]> {
   const projects = await prisma.project.findMany({
     where: {
       // "Active" = anything not finished — cancelled/delivered can't be stuck.
-      status: { notIn: ["CANCELLED", "DELIVERED"] },
+      // Neither can a job that was never shot (BOOKED, no shoot date) nor one
+      // parked by decision (ON_HOLD): both headlined Kyle's fire panel as
+      // "51 / 39 days late" off a deliveryDue left behind by a cancelled slot
+      // (audit5 F2, Sep 8 2026 — 2705 Graystone Rd, 56 Hillview Rd).
+      status: { notIn: ["CANCELLED", "DELIVERED", "ON_HOLD", "BOOKED"] },
       OR: [
-        // Past the delivery promise.
-        { deliveryDue: { lt: now } },
+        // Past the delivery promise — which only counts once the shoot has
+        // happened and while nothing has gone out. A job delivered on time
+        // and then reopened for a revision is "revision stuck Nd" (next
+        // branch), not "N days late": 750 E Marshall St read "4 days late"
+        // a day after the client had the gallery (audit5 skeptic).
+        { deliveryDue: { lt: now }, shootDate: { lte: now }, deliveredAt: null },
         // Stale revision — 2+ days without closure (a fresh revision is step 1
         // on /today, not a fire; flagging at minute zero triple-listed them).
         { status: "REVISION", revisionRequestedAt: { lte: new Date(now.getTime() - 2 * DAY) } },
@@ -537,7 +545,9 @@ export async function getStuckJobs(): Promise<StuckJob[]> {
   const jobs = projects
     .map((p) => {
       const candidates: { reason: string; days: number }[] = [];
-      if (p.deliveryDue && p.deliveryDue < now) {
+      // Mirrors the deliveryDue branch of the WHERE above — a row that matched
+      // on the revision branch must not pick up a "days late" reason here.
+      if (p.deliveryDue && p.deliveryDue < now && !p.deliveredAt && p.shootDate && p.shootDate <= now) {
         const d = (now.getTime() - p.deliveryDue.getTime()) / DAY;
         const whole = Math.floor(d);
         candidates.push({

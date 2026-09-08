@@ -175,7 +175,11 @@ export default async function ProjectPage({
 
   return (
     <div className="mx-auto max-w-6xl p-4 sm:p-6">
-      <BackLink href="/pipeline" label="Back to tracker" />
+      {/* In-app this walks the history (BackLink); a cold open — a Slack or
+          text deep link — falls back to Home, where every list that links here
+          lives. It used to fall back to /pipeline, the tracker Jordan retired
+          from the nav (audit, Sep 8 2026). */}
+      <BackLink href="/" label="Home" />
 
       {/* Header */}
       <div className="mt-3 flex flex-wrap items-start justify-between gap-4">

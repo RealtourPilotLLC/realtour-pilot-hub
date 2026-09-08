@@ -9,33 +9,23 @@ import { getTaskHistory, getDeliveryHistory, getShootHistory, type HistoryTask }
 import { DayRecap } from "@/components/history/DayRecap";
 import { prisma } from "@/lib/prisma";
 import { etDayKey, etDayStartUtc, etTime } from "@/lib/datetime";
+import { taskTypeMeta } from "@/lib/taskSource";
 
 // The day-by-day ledger of what got done — shoots, completed to-dos, deliveries.
 // (Moved from /history — now the Tasks hub's Done tab.)
 
 // The hub tab badge: how many tasks were completed today (ET) — one cheap count.
+// Also the Other tab's "N done today" header badge, so the two never disagree.
 export async function doneTodayCount(): Promise<number> {
   return prisma.smartTask.count({
     where: { status: "COMPLETED", completedAt: { gte: etDayStartUtc(new Date()) } },
   });
 }
 
-// Friendly label + grouping bucket per task type.
-const TYPE_META: Record<string, { label: string; bucket: string }> = {
-  client_reply: { label: "Client reply", bucket: "Replies" },
-  comms_followup: { label: "Job instruction", bucket: "Replies" },
-  confirmation_text: { label: "Confirmation sent", bucket: "Confirmations" },
-  media_qa: { label: "QC", bucket: "QC & delivery" },
-  delivery: { label: "Delivery prep", bucket: "QC & delivery" },
-  finish_delivery: { label: "Finish delivery", bucket: "QC & delivery" },
-  delivery_text: { label: "Delivery text", bucket: "QC & delivery" },
-  revision: { label: "Revision", bucket: "Revisions" },
-  image_fixes: { label: "Photo fixes", bucket: "QC & delivery" },
-  vendor_update: { label: "Vendor update", bucket: "Vendor" },
-  internal_instruction: { label: "Team task", bucket: "Team" },
-  appointment_prep: { label: "Prep", bucket: "Confirmations" },
-};
-const meta = (t: string) => TYPE_META[t] ?? { label: t.replace(/_/g, " "), bucket: "Other" };
+// Friendly label + grouping bucket per task type — the one shared map in
+// src/lib/taskSource.ts (this ledger and the board chip used to keep separate
+// copies that had already drifted: "delivery" here read "Delivery prep").
+const meta = taskTypeMeta;
 
 function friendlyDay(key: string): string {
   const today = etDayKey(new Date());

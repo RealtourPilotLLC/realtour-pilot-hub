@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etMonthKey } from "@/lib/contentProgram";
+import { etAt, etDayKey } from "@/lib/datetime";
 import { STRATEGY_CALL_BOOKING_URL } from "@/lib/integrations/calendly";
 
 // ---------------------------------------------------------------------------
@@ -73,10 +74,18 @@ export async function syncStrategyCallsFromCalendly(): Promise<{ stamped: number
           where: { id: month.id },
           data: { strategyCallStatus: "NOT_SCHEDULED", strategyCallAt: null, calendlyEventUri: null },
         });
+        // The booking that retired the invite is gone — put the ask back.
+        await reopenStrategyCallInvite(month.id, now);
         canceled++;
       }
       continue;
     }
+
+    // A live booking is on file — stamped now or on an earlier pass — so the
+    // month's "send them the link" draft is done, whichever way the stamp
+    // below resolves. (Arielle's and Mike Flatley's invites sat OPEN a week
+    // after their calls happened, Sep 8 audit.)
+    await closeStrategyCallInvite(month.id);
 
     const past = event.end_time ? new Date(event.end_time) < now : start < now;
     const target = past ? "COMPLETED" : "SCHEDULED";
@@ -250,6 +259,7 @@ export async function sweepDriveTranscripts(): Promise<{ ingested: number } | { 
           ...(month.strategyCallAt ? {} : pick.at ? { strategyCallAt: pick.at } : {}),
         },
       });
+      await closeStrategyCallInvite(month.id); // the call happened — no link to send
       ingested++;
     } catch { /* one bad doc must not stop the rest */ }
   }
@@ -262,18 +272,158 @@ export async function sweepDriveTranscripts(): Promise<{ ingested: number } | { 
 }
 
 // ---------------------------------------------------------------------------
-// First-of-month booking invites. For every ACTIVE enrollment whose current
-// month requires a call that isn't scheduled yet, draft ONE task carrying the
-// booking link + a ready-to-send message. Draft-then-send: nothing texts the
-// client automatically — the task is the reviewed draft.
+// Booking invites. For every ACTIVE enrollment whose current month requires a
+// call that isn't scheduled yet, draft ONE task carrying the booking link + a
+// ready-to-send message. Draft-then-send: nothing texts the client
+// automatically — the task is the reviewed draft.
+//
+// The Sep 8 task audit found the nine September drafts with no due date, no
+// assignee and no close path — "the one task meant to get 11 content clients
+// on a September call sits invisible with no clock" — two of them for clients
+// whose call had already happened, one for a TEST client. So an invite now
+// carries a clock and a name, and the hourly pass retires it the moment the
+// month leaves NOT_SCHEDULED, whoever moved it.
 // ---------------------------------------------------------------------------
-export async function mintStrategyCallInvites(): Promise<{ minted: number }> {
-  const key = etMonthKey();
+const INVITE_KEY_PREFIX = "content-call-invite-";
+const DONE = ["COMPLETED", "CANCELLED"];
+
+// Who sends the link. The strategy call is Jordan's client relationship (he
+// runs the call) and opsDay.ts already routes unowned content_program work to
+// the owner lane, so the row is addressed to him until he says it's Kyle's.
+export const STRATEGY_CALL_INVITE_ASSIGNEE = "jordan";
+
+// Test records reach the program through the real Aryeo webhook path ("Bobby
+// TEST Michael TEST" enrolled itself on Sep 3) and must not generate owner
+// work. Word-bounded so a real surname like Testa is not swept up.
+export const isTestClientName = (name: string | null | undefined): boolean =>
+  /\btest\b|\bjohn doe\b/i.test(name ?? "");
+
+// 5pm ET on the Nth weekday counted from (and including) an ET calendar day.
+// Weekends only — the program keeps no holiday calendar, and a link that goes
+// out on Labor Day costs nothing.
+const INVITE_BUSINESS_DAYS = 3;
+function nthWeekdayEndFrom(startDayKey: string, n: number): Date {
+  const [y, m, d] = startDayKey.split("-").map(Number);
+  // Noon UTC: a calendar day with no timezone to get wrong.
+  let day = new Date(Date.UTC(y, m - 1, d, 12));
+  for (let seen = 0; ; day = new Date(day.getTime() + 86_400_000)) {
+    const dow = day.getUTCDay();
+    if (dow !== 0 && dow !== 6 && ++seen === n) break;
+  }
+  return etAt(day.toISOString().slice(0, 10), 17);
+}
+
+/**
+ * When the link should be out: the 3rd business day of the month, 5pm ET
+ * (the audit's rule). An enrollment that arrives mid-month gets the same three
+ * business days counted from the day its invite was minted instead — a row
+ * born overdue is a row nobody trusts.
+ */
+export function strategyCallInviteDueAt(monthKey: string, mintedAt: Date): Date {
+  const byMonth = nthWeekdayEndFrom(`${monthKey}-01`, INVITE_BUSINESS_DAYS);
+  const byMint = nthWeekdayEndFrom(etDayKey(mintedAt), INVITE_BUSINESS_DAYS);
+  return byMint > byMonth ? byMint : byMonth;
+}
+
+// The month left NOT_SCHEDULED (booked, held, transcribed): the invite did its
+// job, or somebody else did it. Every writer of strategyCallStatus in this
+// file calls this at the stamp so the content page's "Sync now" retires the
+// row too; the hourly reconcile catches the writers outside this file (the
+// status buttons and transcript paste in content/actions.ts, the pipeline's
+// COMPLETED stamp).
+async function closeStrategyCallInvite(monthId: string): Promise<number> {
+  const r = await prisma.smartTask.updateMany({
+    where: { dedupeKey: `${INVITE_KEY_PREFIX}${monthId}`, status: { notIn: DONE } },
+    data: { status: "COMPLETED", completedAt: new Date() },
+  });
+  return r.count;
+}
+
+// A booking we stamped was canceled and the month is NOT_SCHEDULED again: the
+// client needs the link again, with a fresh clock. Only a COMPLETED row comes
+// back — CANCELLED means the row was moot (test client, enrollment ended) and
+// stays that way.
+async function reopenStrategyCallInvite(monthId: string, now: Date): Promise<number> {
+  const r = await prisma.smartTask.updateMany({
+    where: { dedupeKey: `${INVITE_KEY_PREFIX}${monthId}`, status: "COMPLETED" },
+    data: {
+      status: "OPEN",
+      completedAt: null,
+      dueAt: nthWeekdayEndFrom(etDayKey(now), INVITE_BUSINESS_DAYS),
+      summary: "Their Calendly booking was canceled — send the booking link again.",
+    },
+  });
+  return r.count;
+}
+
+// Every open invite checked against its month, hourly. Closes the rows whose
+// month moved on (whoever moved it), cancels the moot ones, and gives the rest
+// — including the nine minted before any of this existed — their clock, their
+// name, and HIGH priority from the 10th, when a link that still hasn't gone
+// out is costing the month. A human's pick of assignee is never overwritten.
+async function reconcileStrategyCallInvites(now: Date): Promise<{ closed: number; dated: number }> {
+  const open = await prisma.smartTask.findMany({
+    where: { dedupeKey: { startsWith: INVITE_KEY_PREFIX }, status: { notIn: DONE } },
+    select: { id: true, dedupeKey: true, dueAt: true, assignedKey: true, assignedManually: true, priority: true, createdAt: true },
+  });
+  if (open.length === 0) return { closed: 0, dated: 0 };
+  const monthIdOf = (t: { dedupeKey: string | null }) => t.dedupeKey!.slice(INVITE_KEY_PREFIX.length);
+  const months = await prisma.contentMonth.findMany({
+    where: { id: { in: open.map(monthIdOf) } },
+    select: { id: true, monthKey: true, strategyCallStatus: true, enrollmentId: true, clientId: true },
+  });
+  const [enrollments, clients] = await Promise.all([
+    prisma.contentEnrollment.findMany({ where: { id: { in: months.map((m) => m.enrollmentId) } }, select: { id: true, status: true } }),
+    prisma.client.findMany({ where: { id: { in: months.map((m) => m.clientId) } }, select: { id: true, name: true } }),
+  ]);
+  const monthOf = new Map(months.map((m) => [m.id, m]));
+  const enrollmentStatus = new Map(enrollments.map((e) => [e.id, e.status]));
+  const nameOf = new Map(clients.map((c) => [c.id, c.name]));
+
+  let closed = 0, dated = 0;
+  for (const t of open) {
+    const month = monthOf.get(monthIdOf(t));
+    // Nobody should send this link: the month is gone, the client is a test
+    // record, the enrollment ended, or the call was waived (SKIPPED /
+    // NOT_REQUIRED). Moot is CANCELLED, not COMPLETED — the Done ledger must
+    // not credit a link that was never sent (same rule as confirmation texts).
+    const moot =
+      !month ||
+      isTestClientName(nameOf.get(month.clientId)) ||
+      enrollmentStatus.get(month.enrollmentId) !== "ACTIVE" ||
+      !["NOT_SCHEDULED", "SCHEDULED", "COMPLETED"].includes(month.strategyCallStatus);
+    if (moot) {
+      await prisma.smartTask.update({ where: { id: t.id }, data: { status: "CANCELLED" } });
+      closed++;
+      continue;
+    }
+    if (month.strategyCallStatus !== "NOT_SCHEDULED") {
+      await prisma.smartTask.update({ where: { id: t.id }, data: { status: "COMPLETED", completedAt: now } });
+      closed++;
+      continue;
+    }
+    const data: { dueAt?: Date; assignedKey?: string; priority?: string } = {};
+    if (!t.dueAt) data.dueAt = strategyCallInviteDueAt(month.monthKey, t.createdAt);
+    if (!t.assignedKey && !t.assignedManually) data.assignedKey = STRATEGY_CALL_INVITE_ASSIGNEE;
+    if ((t.priority === "MEDIUM" || t.priority === "LOW") && now >= etAt(`${month.monthKey}-10`, 0)) data.priority = "HIGH";
+    if (Object.keys(data).length === 0) continue;
+    await prisma.smartTask.update({ where: { id: t.id }, data });
+    if (data.dueAt) dated++;
+  }
+  return { closed, dated };
+}
+
+// The hourly invite pass: reconcile what's open (above), then draft for every
+// current month that still needs a call and has no draft yet.
+export async function mintStrategyCallInvites(): Promise<{ minted: number; closed: number; dated: number }> {
+  const now = new Date();
+  const { closed, dated } = await reconcileStrategyCallInvites(now);
+  const key = etMonthKey(now);
   const months = await prisma.contentMonth.findMany({
     where: { monthKey: key, strategyCallStatus: "NOT_SCHEDULED", historical: false },
     select: { id: true, clientId: true, enrollmentId: true },
   });
-  if (months.length === 0) return { minted: 0 };
+  if (months.length === 0) return { minted: 0, closed, dated };
   const active = new Set(
     (await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true } })).map((e) => e.id),
   );
@@ -282,15 +432,16 @@ export async function mintStrategyCallInvites(): Promise<{ minted: number }> {
     select: { id: true, name: true },
   });
   const nameOf = new Map(clients.map((c) => [c.id, c.name]));
-  const monthName = new Date().toLocaleDateString("en-US", { month: "long", timeZone: "America/New_York" });
+  const monthName = now.toLocaleDateString("en-US", { month: "long", timeZone: "America/New_York" });
 
   let minted = 0;
   for (const m of months) {
     if (!active.has(m.enrollmentId)) continue;
-    const dedupeKey = `content-call-invite-${m.id}`;
+    const name = nameOf.get(m.clientId) ?? "the client";
+    if (isTestClientName(name)) continue;
+    const dedupeKey = `${INVITE_KEY_PREFIX}${m.id}`;
     const exists = await prisma.smartTask.findFirst({ where: { dedupeKey }, select: { id: true } });
     if (exists) continue;
-    const name = nameOf.get(m.clientId) ?? "the client";
     const firstName = name.split(/\s+/)[0];
     await prisma.smartTask.create({
       data: {
@@ -304,11 +455,13 @@ export async function mintStrategyCallInvites(): Promise<{ minted: number }> {
         source: "content_program",
         clientId: m.clientId,
         dedupeKey,
+        dueAt: strategyCallInviteDueAt(key, now),
+        assignedKey: STRATEGY_CALL_INVITE_ASSIGNEE,
       },
     });
     minted++;
   }
-  return { minted };
+  return { minted, closed, dated };
 }
 
 // ---------------------------------------------------------------------------
@@ -354,6 +507,7 @@ export async function sweepNotetakerTranscripts(): Promise<{ ingested: number } 
           strategyCallStatus: "COMPLETED",
         },
       });
+      await closeStrategyCallInvite(m.id); // the call happened — no link to send
       ingested++;
     } catch { /* one bad recap must not stop the rest */ }
   }

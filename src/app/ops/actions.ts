@@ -54,6 +54,7 @@ export async function completeQcTask(taskId: string, note: string): Promise<{ ok
       })
       .catch(() => {});
   }
+  revalidatePath("/"); // the merged home renders the same QC card (audit, Sep 8)
   revalidatePath("/ops");
   revalidatePath("/tasks");
   if (task.projectId) revalidatePath(`/projects/${task.projectId}`);

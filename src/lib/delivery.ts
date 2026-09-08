@@ -97,9 +97,43 @@ export function feedbackUrl(projectId: string): string {
 type DeliveryProject = {
   id: string;
   title: string;
+  /** Aryeo's city — the fallback place-name when the title carries no street. */
+  city?: string | null;
   statusEvidence: string | null;
   client: { name: string };
 };
+
+// ---------------------------------------------------------------------------
+// RULE 3 — A CLIENT TEXT NEVER CARRIES "[No address provided]".
+//
+// Aryeo titles a pin-only order with its own placeholder — the title of
+// Sharra Mercer's Sep 9 content session is literally
+// "[No address provided], 39.959884,-75.6062135" — and addressTitle() passes
+// it through verbatim, so `title` is not always an address. On Sep 7 2026 the
+// auto-confirmation split that title on the comma and texted her "Confirming
+// your shoot at [No address provided] on Wednesday, Sep 9, 2:30 PM"; Sarina
+// Spinelli (Sep 11) and Mike Flatley (Sep 15) were queued to get the same.
+// The street is resolved HERE, once, and every sentence below — the built-in
+// wording, an owner template's {street}, the delivery text — reads through
+// it: a real street says "at 123 Main St", a pin-only job with a city says
+// "in West Chester", and with nothing at all the place clause is dropped.
+// (`city` is optional so today's callers keep compiling; the ones that pass
+// it get the better sentence.)
+// ---------------------------------------------------------------------------
+const NO_STREET_RE = /^\s*\[?\s*no address/i;
+
+/** The street off a job title, or "" when the title is Aryeo's pin-only placeholder (or empty). */
+export function streetOf(title: string | null | undefined): string {
+  const street = (title ?? "").split(",")[0].trim();
+  return !street || NO_STREET_RE.test(street) ? "" : street;
+}
+
+/** What an owner template's {street} becomes: the street, else a phrase that
+ *  still reads after "at" / "for" — "the West Chester location", or the old
+ *  "your listing" fallback when Aryeo gave us neither. */
+function streetForTemplate(street: string, city: string): string {
+  return street || (city ? `the ${city} location` : "your listing");
+}
 
 // The post-delivery client text, written in Jordan's voice (no em dashes, no
 // emojis, warm + low-pressure). Adapts to whether everything is delivered or
@@ -114,7 +148,10 @@ export function applyTemplate(tpl: string, vars: Record<string, string>): string
 
 export function deliveryMessage(p: DeliveryProject, templates?: { deliveryAll?: string; deliveryPartial?: string }): string {
   const first = (p.client.name || "there").trim().split(/\s+/)[0] || "there";
-  const street = (p.title || "your listing").split(",")[0].trim();
+  const street = streetOf(p.title);
+  const city = p.city?.trim() ?? "";
+  // "for 123 Main St" / "from your West Chester shoot" / "from your shoot" (rule 3).
+  const forPlace = street ? ` for ${street}` : city ? ` from your ${city} shoot` : " from your shoot";
   const url = feedbackUrl(p.id);
   const ev = parseEvidence(p.statusEvidence);
   const missing = ev?.missing ?? [];
@@ -130,17 +167,19 @@ export function deliveryMessage(p: DeliveryProject, templates?: { deliveryAll?: 
     const leftVerb = missing.length > 1 || /s\s*$/i.test(missing[0]) ? "are" : "is";
     const tplPartial = templates?.deliveryPartial?.trim();
     if (tplPartial) {
-      return applyTemplate(tplPartial, { first, street, delivered: present, remaining: left, feedbackUrl: url });
+      return applyTemplate(tplPartial, { first, street: streetForTemplate(street, city), delivered: present, remaining: left, feedbackUrl: url });
     }
-    return `Hi ${first}! The ${present} for ${street} ${presentVerb} delivered, and the ${left} ${leftVerb} still in production and coming shortly. How is everything looking so far? If anything is not exactly right, just reply here and we will jump on it. Quick feedback means a lot to us: ${url}`;
+    return `Hi ${first}! The ${present}${forPlace} ${presentVerb} delivered, and the ${left} ${leftVerb} still in production and coming shortly. How is everything looking so far? If anything is not exactly right, just reply here and we will jump on it. Quick feedback means a lot to us: ${url}`;
   }
   const tplAll = templates?.deliveryAll?.trim();
-  if (tplAll) return applyTemplate(tplAll, { first, street, feedbackUrl: url });
-  return `Hi ${first}! Everything for ${street} has been delivered. How did we do? If anything is not exactly right, just reply here and we will jump on it. And if you have a quick minute, we would love your feedback here: ${url}`;
+  if (tplAll) return applyTemplate(tplAll, { first, street: streetForTemplate(street, city), feedbackUrl: url });
+  return `Hi ${first}! Everything${forPlace} has been delivered. How did we do? If anything is not exactly right, just reply here and we will jump on it. And if you have a quick minute, we would love your feedback here: ${url}`;
 }
 
 type ConfirmProject = {
   title: string;
+  /** Aryeo's city — the fallback place-name when the title carries no street. */
+  city?: string | null;
   shootDate: Date | null;
   client: { name: string };
   photographer?: { name: string } | null;
@@ -167,7 +206,10 @@ function orderedList(deliverables?: { type: string }[]): string {
 // (no em dashes, no emojis), copy-paste ready.
 export function confirmationMessage(p: ConfirmProject, template?: string): string {
   const first = (p.client.name || "there").trim().split(/\s+/)[0] || "there";
-  const street = (p.title || "your listing").split(",")[0].trim();
+  const street = streetOf(p.title);
+  const city = p.city?.trim() ?? "";
+  // "at 123 Main St" / "in West Chester" / nothing (rule 3).
+  const where = street ? ` at ${street}` : city ? ` in ${city}` : "";
   const when = p.shootDate
     ? new Date(p.shootDate).toLocaleString("en-US", {
         timeZone: "America/New_York", weekday: "long", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
@@ -175,8 +217,12 @@ export function confirmationMessage(p: ConfirmProject, template?: string): strin
     : "your upcoming shoot";
   const items = orderedList(p.deliverables);
   const forPart = items ? ` for ${items}` : "";
-  const datePart = p.shootDate ? `on ${when}` : when;
   const tpl = template?.trim();
-  if (tpl) return applyTemplate(tpl, { first, street, when, items: items || "your shoot" });
-  return `Hi ${first}! Confirming your shoot at ${street} ${datePart}${forPart}. Anything we should know or want us to avoid? Looking forward to it!`;
+  if (tpl) return applyTemplate(tpl, { first, street: streetForTemplate(street, city), when, items: items || "your shoot" });
+  const ask = "Anything we should know or want us to avoid? Looking forward to it!";
+  // No date on the job yet: say so instead of gluing "your upcoming shoot"
+  // where the date went ("...at 123 Main St your upcoming shoot for photos").
+  return p.shootDate
+    ? `Hi ${first}! Confirming your shoot${where} on ${when}${forPart}. ${ask}`
+    : `Hi ${first}! Confirming your upcoming shoot${where}${forPart}. ${ask}`;
 }

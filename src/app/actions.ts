@@ -139,6 +139,14 @@ export async function markCommsHandled(clientId: string, family: "phone" | "emai
     const key = groupKey ? emailAckKey(clientId, groupKey) : `comms-ack-email-${clientId}`;
     const value = new Date().toISOString();
     await prisma.appSetting.upsert({ where: { key }, create: { key, value }, update: { value } });
+    // The tick used to leave the gmail-born client_reply open until the 5-minute
+    // Gmail sync noticed the ack (Marcee's 54-day reply task; audit, Sep 8).
+    // Close only THIS sender group's gmail tasks — the phone branch below
+    // deliberately excludes source "gmail", this is its mirror.
+    try {
+      const { completeEmailReplyTasks } = await import("@/lib/integrations/google");
+      await completeEmailReplyTasks(clientId, groupKey ?? null);
+    } catch { /* the Gmail sync remains the backstop */ }
   } else {
     // Complete EVERY open client_reply for this client (a busy client can hold
     // several) so the tick clears the pager and the board in one motion —
@@ -245,7 +253,7 @@ export async function setSmartTaskStatus(taskId: string, status: string) {
 
 // Add a to-do by hand from the Daily Tasks page. Optional: link to a job/client
 // (matched by address then client name), a due date, a priority, and delegate it
-// to an editor. Lands in "Needs you → Replies & admin" unless delegated.
+// to an editor. Lands in "Needs Kyle → Replies & admin" unless delegated.
 export async function createManualTask(input: {
   title: string;
   notes?: string;
@@ -279,8 +287,16 @@ export async function createManualTask(input: {
 
   const { listAssignees } = await import("@/lib/assignees");
   const validKeys = new Set((await listAssignees()).map((a) => a.key));
-  const ak = input.assignedKey;
-  const assignedKey = ak && ak !== "kyle" && validKeys.has(ak) ? ak : null;
+  // Store the picked owner as-is — "kyle" included. This used to squash "kyle"
+  // to null (June: null literally meant "Kyle's default"), then "todo" joined
+  // TRIAGE_TYPES on Jul 1 and null started meaning "nobody", so the form's
+  // default assignee sent Kyle's own to-dos into "Needs assigning · Pick who
+  // owns each" and onto home's "to-dos with nobody's name on them" (Sep 8
+  // audit, F1). Every other minter and setTaskAssignee already write "kyle".
+  // An omitted assignee is Kyle's, per the contract above; a key that isn't
+  // on the roster stays null so a human picks in the triage pile.
+  const ak = input.assignedKey ?? "kyle";
+  const assignedKey = validKeys.has(ak) ? ak : null;
 
   let dueAt: Date | null = null;
   const dd = (input.dueDate || "").trim();

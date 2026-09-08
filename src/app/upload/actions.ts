@@ -248,7 +248,7 @@ export async function flagIssue(projectId: string, body: string) {
 }
 
 // The photographer's debrief on how the shoot went. "issues" routes it to ops
-// as a FLAG + a Kyle to-do; "smooth" just logs a note on the timeline.
+// as a FLAG + Kyle's loop for the job; "smooth" just logs a note on the timeline.
 export async function submitAppointmentFeedback(
   projectId: string,
   wentWell: boolean,
@@ -261,53 +261,21 @@ export async function submitAppointmentFeedback(
     data: { projectId, type: wentWell ? ActivityType.NOTE : ActivityType.FLAG, body },
   });
   if (!wentWell) {
-    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true } });
-    const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
-    await prisma.smartTask.upsert({
-      where: { dedupeKey: `shoot-issue-${projectId}` },
-      create: {
-        taskType: "internal_instruction",
-        title: `Shoot issue — ${project?.title ?? "a shoot"}`.slice(0, 120),
-        summary: `The photographer flagged a problem during the shoot debrief on ${project?.title?.split(",")[0] ?? "this job"}: “${(trimmed || "Photographer flagged an issue.").slice(0, 200)}” — review and follow up.`.slice(0, 500),
-        description: trimmed.slice(0, 400) || "Photographer flagged an issue on the shoot.",
-        reasonCreated: "Photographer flagged a problem during the appointment debrief.",
-        source: "manual",
-        priority: "HIGH",
-        dueAt: new Date(Date.now() + 4 * 3600_000),
-        ownerId: kyle?.id ?? null,
-        projectId,
-        // clientId stays NULL on purpose (same reason as the add-on task below
-        // and fileFieldIssue's loop): internal_instruction is in brain.ts's
-        // MERGEABLE_TYPES, and routeCommTask selects open tasks BY clientId as
-        // merge candidates — so the client's next inbound text could retitle the
-        // photographer's debrief flag into something unrecognisable and it would
-        // never get acted on. projectId identifies the job.
-        clientId: null,
-        propertyAddress: project?.title ?? null,
-        dedupeKey: `shoot-issue-${projectId}`,
-      },
-      // The re-open path clears clientId too, so a debrief task filed before
-      // this change stops being a merge candidate the moment it's re-flagged.
-      update: {
-        status: "OPEN",
-        completedAt: null,
-        description: trimmed.slice(0, 400) || "Photographer flagged an issue.",
-        clientId: null,
-        propertyAddress: project?.title ?? null,
-      },
-    });
-    // Alerting only — Kyle's task is the upsert right above (keyed
-    // shoot-issue-<projectId>, so the debrief card re-rendering on every portal
-    // visit refreshes one loop instead of stacking), and the debrief FLAG is
-    // already on the timeline. This puts it in Slack + the bell and leaves it
-    // on the job: a shoot debrief is not a product request (Jordan, Sep 2).
+    // The job's ONE field-flag loop (fieldIssues.ts) — the same row the
+    // "Flag a problem" box above writes to. This used to upsert its own
+    // `shoot-issue-<projectId>` task with no assignee, so a photographer who
+    // flagged a problem on site AND answered "had issues" here gave Kyle two
+    // cards for one incident, one of them in the "Needs assigning" pile
+    // (1946 Rowan St, Sep 4). Now the debrief appends to the loop, re-raises
+    // the Slack ping + the bell, and stays on the job: a shoot debrief is not
+    // a product request (Jordan, Sep 2).
     const { fileFieldIssue } = await import("@/lib/fieldIssues");
     await fileFieldIssue({
       projectId,
       note: trimmed || "Photographer flagged an issue on the shoot.",
       page: `/upload/${projectId}`,
       label: "Shoot debrief",
-      opsTaskAlreadyFiled: true,
+      priority: "HIGH", // back from the property and wrapping up — not on-site urgent
     });
   }
   revalidatePath(`/upload/${projectId}`);

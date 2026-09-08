@@ -47,6 +47,7 @@ import type { VideoCutState } from "@/lib/reviewCuts";
 import { aryeoListingUrl } from "@/lib/aryeoUrl";
 import { NewClientCard } from "@/components/clients/NewClientCard";
 import { newClientsForDashboard } from "@/lib/newClients";
+import { listAssignees, slugForName, viewerAssigneeKey } from "@/lib/assignees";
 
 export const dynamic = "force-dynamic";
 
@@ -424,7 +425,19 @@ export default async function HomePage() {
       getHandledToday(),
       // The Project Tracker's delivery board, merged into the Pipeline block.
       deliveryBoard().catch((): DeliveryBoard => ({ today: [], tomorrow: [], upcoming: [], delivered: [], overdueCount: 0 })),
-      getFlaggedForMe({ assignedKey: me?.editorKey ?? (me?.role === "ADMIN" ? "kyle" : null), memberId: me?.teamMemberId ?? null, role: me?.role ?? "OWNER" }),
+      // WHO the flags are for: the viewer's own assignee key, resolved the way
+      // openLoopsList resolves it (roster match by TeamMember → email → first
+      // name, else the first-name slug). It used to be the literal "kyle" for
+      // every ADMIN, so a flag Jordan raised for Kyle would have opened on
+      // James's home as "for immediate review" (audit5 F11). An editor's
+      // explicit editorKey still wins when there is one.
+      listAssignees().catch(() => []).then((roster) =>
+        getFlaggedForMe({
+          assignedKey: me ? me.editorKey ?? viewerAssigneeKey(me, roster) ?? (me.name ? slugForName(me.name) : null) : null,
+          memberId: me?.teamMemberId ?? null,
+          role: me?.role ?? "OWNER",
+        }),
+      ),
       isOwner ? getOwnerStats() : Promise.resolve(null),
       isOwner ? getOwnerPulse() : Promise.resolve(null),
       // Owner-only quality dials (video-SLA roll-up + QC health) — same gate.
@@ -441,6 +454,11 @@ export default async function HomePage() {
 
   const now = new Date(d.nowISO);
   const nowMin = etMinutes(now);
+  // Radar minus money. getProactiveFlags' AR branch composes "X owes $Y" with
+  // a /billing link an ADMIN can't open, and the panel sat outside the isOwner
+  // gate. Jordan's rule (access.ts): "Kyle should not have access to any money
+  // related info" — so the AR kind never reaches a non-owner (audit5 F9).
+  const radarFlags = radar.flags.filter((f) => isOwner || f.kind !== "ar");
   const currentKey =
     BLOCKS.find((b) => nowMin >= b.from && nowMin < b.to)?.key ??
     (nowMin < BLOCKS[0].from ? BLOCKS[0].key : BLOCKS[BLOCKS.length - 1].key);
@@ -528,7 +546,7 @@ export default async function HomePage() {
   add({
     key: "tomorrow", group: "risk", count: d.closeout.tomorrowGaps,
     label: `gap${d.closeout.tomorrowGaps === 1 ? "" : "s"} on tomorrow's shoots`,
-    detail: "unassigned, or no access notes on file",
+    detail: "no street address, unassigned, or no access notes on file",
     href: "#prep", tone: "warning",
   });
   add({
@@ -655,7 +673,7 @@ export default async function HomePage() {
             </nav>
             <div className="mt-2 space-y-2.5">
               {BLOCKS.map((b) => (
-                <Block key={b.key} def={b} current={b.key === currentKey} d={d} board={board} counts={counts} />
+                <Block key={b.key} def={b} current={b.key === currentKey} d={d} board={board} counts={counts} needsBelow={!isOwner} />
               ))}
             </div>
           </div>
@@ -781,7 +799,7 @@ export default async function HomePage() {
         {/* 6 · Radar — fresh risk only (≤3; creatives never reach this page) */}
         {/* New clients — say hello. Renders nothing when there are none. */}
         <NewClientCard clients={newClients} />
-        {radar.flags.length > 0 && <ProactiveFlags flags={radar.flags} />}
+        {radarFlags.length > 0 && <ProactiveFlags flags={radarFlags} />}
 
         {/* 7 · MONEY — owner only, and last on purpose. Jordan: money after
             action. The strip merges the old dashboard line (delivered, pipeline,
@@ -881,8 +899,11 @@ function MoneyStat({ label, value, sub, tone }: { label: string; value: string; 
 
 type OffPageCounts = Awaited<ReturnType<typeof offPageNumbers>>;
 
-function Block({ def, current, d, board, counts }: {
+function Block({ def, current, d, board, counts, needsBelow }: {
   def: BlockDef; current: boolean; d: OpsDay; board: DeliveryBoard; counts: OffPageCounts;
+  /** "What needs you" renders UNDER the blocks in Kyle's order (page order
+   *  is by whose day it is) — the tower's jump link has to point that way. */
+  needsBelow: boolean;
 }) {
   const Icon = def.icon;
   const n = countFor(def.key, d, board);
@@ -942,15 +963,15 @@ function Block({ def, current, d, board, counts }: {
       <div className="border-t border-border px-5 py-3.5">
         <p className="text-[13px] italic leading-relaxed text-muted">{def.goal}</p>
         <div className="mt-3">
-          <BlockBody blockKey={def.key} d={d} board={board} counts={counts} />
+          <BlockBody blockKey={def.key} d={d} board={board} counts={counts} needsBelow={needsBelow} />
         </div>
       </div>
     </details>
   );
 }
 
-function BlockBody({ blockKey, d, board, counts }: {
-  blockKey: string; d: OpsDay; board: DeliveryBoard; counts: OffPageCounts;
+function BlockBody({ blockKey, d, board, counts, needsBelow }: {
+  blockKey: string; d: OpsDay; board: DeliveryBoard; counts: OffPageCounts; needsBelow: boolean;
 }) {
   switch (blockKey) {
     case "tower":
@@ -1006,8 +1027,10 @@ function BlockBody({ blockKey, d, board, counts }: {
             <Pill warn={d.pipeline.revision > 0} label={`${d.pipeline.revision} open revision${d.pipeline.revision === 1 ? "" : "s"}`} href="/tasks?tab=revisions" />
             <Pill warn={false} label={`${counts.boardOpen} on the task board`} href="/tasks?tab=other" />
           </div>
+          {/* The arrow follows the page order: the decisions list is above
+              the blocks for Jordan and below them for Kyle (audit5 F19). */}
           <a href="#needs-you" className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-2 hover:text-foreground">
-            ↑ Everything that needs a decision today
+            {needsBelow ? "↓" : "↑"} Everything that needs a decision today
           </a>
         </div>
       );
@@ -1037,7 +1060,17 @@ function BlockBody({ blockKey, d, board, counts }: {
                     <span className={cn("ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold", u.hours >= 24 ? "bg-danger/15 text-danger" : "bg-surface-2 text-muted")}>waiting {u.hours}h</span>
                     <span className="block truncate text-[13px] text-muted">&ldquo;{u.snippet}&rdquo;</span>
                   </p>
-                  <Link href="/communications?tab=replies" className="shrink-0 rounded-lg border border-border px-2 py-1 text-[11px] font-medium text-muted hover:bg-surface-2 hover:text-foreground">Reply</Link>
+                  {/* By channel. The Replies tab is built from PHONE threads
+                      only (replyQueue → unansweredComms families: ["phone"]),
+                      so an email row sent there landed on a list without it —
+                      five of five rows on Sep 8 (audit5 F3). Email rows open
+                      the Email board, which does hold them. */}
+                  <Link
+                    href={u.family === "email" ? "/tasks?tab=comms&via=email" : "/communications?tab=replies"}
+                    className="shrink-0 rounded-lg border border-border px-2 py-1 text-[11px] font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+                  >
+                    Reply
+                  </Link>
                 </div>
               ))}
               {/* The badge counts every waiting client; only the five oldest
@@ -1072,7 +1105,7 @@ function BlockBody({ blockKey, d, board, counts }: {
         <div className="space-y-3">
           <ShootList shoots={d.tomorrowShoots} empty="Nothing on tomorrow's calendar yet." showGaps />
           {d.tomorrowShoots.length > 0 && d.closeout.tomorrowGaps === 0 && (
-            <p className="flex items-center gap-1.5 text-sm text-success"><CheckCircle2 className="size-4" /> Tomorrow looks ready — every shoot assigned with access notes on file.</p>
+            <p className="flex items-center gap-1.5 text-sm text-success"><CheckCircle2 className="size-4" /> Tomorrow looks ready — every shoot has a street address, a photographer and access notes on file.</p>
           )}
         </div>
       );
@@ -1327,7 +1360,16 @@ function ShootList({ shoots, empty, showGaps, showDebrief }: { shoots: OpsShoot[
                 )}
               </Link>
             )}
-            {showDebrief && s.timeISO && new Date(s.timeISO) < new Date() && (
+            {/* "Shot" is the appointment's END (OpsShoot.endISO), not its start:
+                at 12:04 PM both cards read "upload page not submitted" for
+                photographers still on site until 1:45 and 2:30 (audit5 F8).
+                While the shoot is running, say that instead — and only print
+                the hour when Aryeo booked one, not the 2h assumption. */}
+            {showDebrief && s.timeISO && s.endISO && !s.debriefSubmitted &&
+              new Date(s.timeISO) < new Date() && new Date(s.endISO) >= new Date() && (
+              <span className="text-muted">On site now{s.endAssumed ? "" : ` — until ${fmtTime(s.endISO)}`}</span>
+            )}
+            {showDebrief && s.endISO && (s.debriefSubmitted || new Date(s.endISO) < new Date()) && (
               <span className={cn(s.debriefSubmitted ? "text-success" : "font-semibold text-warning")}>
                 {s.debriefSubmitted ? "Upload page submitted ✓" : "Shot — upload page not submitted"}
               </span>

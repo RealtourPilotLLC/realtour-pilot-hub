@@ -1,11 +1,10 @@
 import "server-only";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { findUnansweredInbound } from "@/lib/commsSla";
-import { TRIAGE_TYPES, boardVisibleWhere } from "@/lib/triage";
+import { findUnansweredInbound, type UnansweredInbound } from "@/lib/commsSla";
 import { listAssignees, slugForName, viewerAssigneeKey, assigneeName, type Assignee } from "@/lib/assignees";
 import { getCurrentUser, type CurrentUser } from "@/lib/auth/user";
-import { cleanEmailBody } from "@/lib/commsBoard";
+import { cleanEmailBody, revisionsBoard } from "@/lib/commsBoard";
 import { isMonthlyContentJob, monthlyVideoQuota } from "@/lib/pipeline";
 import { cleanBrief, parseShootBrief } from "@/lib/shoot";
 import { NOTHING_TO_REMOVE_SENTINEL, isFieldFlag } from "@/lib/debrief";
@@ -149,6 +148,13 @@ export type OpsShoot = {
   id: string;
   title: string;
   timeISO: string | null;
+  /** When the photographer is booked to be OFF site — the Aryeo appointment's
+   *  end, else start + 2h. "Shot" means THIS has passed, not timeISO: keyed on
+   *  the start minute, the home chased upload pages at 12:04 PM from two
+   *  photographers whose appointments ran to 1:45 and 2:30 (audit5 F8, Sep 8). */
+  endISO: string | null;
+  /** endISO is the 2h assumption, not a booked end — don't print it as fact */
+  endAssumed: boolean;
   photographer: string | null;
   services: string[];
   clientName: string;
@@ -276,9 +282,20 @@ export type OpsDay = {
   nowISO: string;
   todayShoots: OpsShoot[];
   tomorrowShoots: OpsShoot[];
-  unanswered: { count: number; oldestHours: number | null; preview: { name: string; avatarUrl: string | null; snippet: string; hours: number }[] };
+  unanswered: {
+    count: number;
+    oldestHours: number | null;
+    /** family + clientId ride along so a row's Reply button can open the
+     *  board that actually holds it — every email row used to land on the
+     *  phone-only Replies tab (audit5 F3, Sep 8). */
+    preview: { name: string; avatarUrl: string | null; snippet: string; hours: number; family: UnansweredInbound["family"]; clientId: string }[];
+  };
   qc: OpsQcRow[];
-  pipeline: { rows: PipelineRow[]; editing: number; review: number; revision: number; overdueTasks: number; dueTodayTasks: number };
+  /** revision = the /tasks?tab=revisions badge's own arithmetic (revisionsBoard
+   *  job count), so the tower pill and the tab it opens are one number. The
+   *  overdue / due-today task counts that used to sit here were never rendered
+   *  — the home reads those off the Other tab's own query (offPageNumbers). */
+  pipeline: { rows: PipelineRow[]; editing: number; review: number; revision: number };
   openLoops: OpsLoop[];
   /** The same list, counted — so a header can say "14 loops, none of them
    *  yours" instead of a bare 0, and only claim "+" when it was truly cut off.
@@ -288,7 +305,6 @@ export type OpsDay = {
   /** every uploaded cut awaiting a verdict / back with its editor — the Ops Day
    *  "Video Review" block and the owner Dashboard card read the same list. */
   videoReview: { waiting: VideoCutState[]; revising: VideoCutState[] };
-  needsAssigning: number;
   closeout: {
     todayShootsDone: boolean;
     todayDebriefsIn: number;
@@ -302,9 +318,38 @@ export type OpsDay = {
 
 const DEBRIEF_GATE = Date.parse("2026-09-02T00:00:00-04:00");
 
+// ---- When is a shoot OVER? ---------------------------------------------------
+// The appointment that IS this shoot (a rebooked job keeps its CANCELED row),
+// its booked end if Aryeo gave a sane one, else start + 2h — Aryeo's median
+// booked length across 200 recent appointments (audit5 skeptic outlier.ts).
+// Capped at 6h: 1741 Hilltop Rd was booked 3:30 PM → 7:15 PM the next day and
+// would have read "hasn't happened yet" through Daily Closeout.
+type ApptTimes = { startAt: Date | null; endAt: Date | null; status: string | null };
+const SHOOT_ASSUMED_MIN = 120;
+const SHOOT_MAX_MIN = 6 * 60;
+export function shootEndFor(start: Date | null, appointments: ApptTimes[]): { end: Date; assumed: boolean } | null {
+  if (!start) return null;
+  const live = appointments.filter((a) => (a.status ?? "").toUpperCase() !== "CANCELED" && a.startAt);
+  const match =
+    live.find((a) => Math.abs(a.startAt!.getTime() - start.getTime()) < 60_000) ??
+    live.slice().sort((a, b) => a.startAt!.getTime() - b.startAt!.getTime())[0] ??
+    null;
+  const booked = match?.endAt && match.endAt > start ? match.endAt : null;
+  if (!booked) return { end: new Date(start.getTime() + SHOOT_ASSUMED_MIN * 60_000), assumed: true };
+  return { end: new Date(Math.min(booked.getTime(), start.getTime() + SHOOT_MAX_MIN * 60_000)), assumed: false };
+}
+/** The photographer is booked to be off site by now. */
+const shootOver = (start: Date | null, appointments: ApptTimes[], now: Date): boolean => {
+  const e = shootEndFor(start, appointments);
+  return !!e && e.end < now;
+};
+
 const SHOOT_SELECT = {
   id: true, title: true, shootDate: true, debriefSubmittedAt: true,
   lat: true, lng: true, aryeoListingId: true, clientId: true,
+  // The street itself — a pin-only Aryeo order arrives with addressLine null
+  // and the title "[No address provided]", and the card must call that a gap.
+  addressLine: true,
   photographer: { select: { name: true } },
   client: { select: { name: true, avatarUrl: true } },
   // productTitle + the live line items feed the same-day rush flag. The line
@@ -314,18 +359,20 @@ const SHOOT_SELECT = {
   deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, productTitle: true } },
   orderItems: { where: { isCanceled: false }, select: { title: true } },
   activities: { where: { type: "SPECIAL_REQUEST" as const }, select: { type: true, body: true } },
-  appointments: { select: { description: true } },
+  // startAt/endAt/status: when the shoot is OVER (shootEndFor), not just begun.
+  appointments: { select: { description: true, startAt: true, endAt: true, status: true } },
 } as const;
 
 type ShootRowInput = {
   id: string; title: string; shootDate: Date | null; debriefSubmittedAt: Date | null;
   lat: number | null; lng: number | null; aryeoListingId: string | null; clientId: string | null;
+  addressLine: string | null;
   photographer: { name: string } | null;
   client: { name: string; avatarUrl: string | null };
   deliverables: { type: string; label: string | null; productTitle?: string | null }[];
   orderItems: { title: string }[];
   activities: { type: string; body: string }[];
-  appointments: { description: string | null }[];
+  appointments: ({ description: string | null } & ApptTimes)[];
 };
 
 // One recent-comms row, as pulled for the shoot cards.
@@ -361,6 +408,13 @@ async function shootRow(
   const rawBrief = p.appointments.map((a) => a.description?.trim()).find(Boolean) ?? null;
   const access = parseAccessBrief(rawBrief);
   const gaps: string[] = [];
+  // No street = nowhere for the photographer to drive to. Aryeo passes its
+  // pin-only placeholder straight through (addressLine null, title "[No
+  // address provided]"), and the 11:00 / 3:30 blocks said "Tomorrow looks
+  // ready" over exactly such a card (audit5 F7, Sep 8 — Sharra Mercer's 2:30
+  // reel). addressLine only: the title is never refreshed from Aryeo, so a
+  // job whose address was later filled in would be flagged off a stale title.
+  if (!p.addressLine?.trim() || /^\[No address/i.test(p.addressLine)) gaps.push("no street address on the listing");
   if (!p.photographer) gaps.push("no photographer assigned");
   // Content, not existence: a 1,200-character brief with every access field
   // blank used to pass, so /ops promised "every shoot assigned with access
@@ -385,10 +439,13 @@ async function shootRow(
   const mine = clientRows.filter((r) => r.projectId === p.id || r.projectId == null || r.projectGuess);
   const otherCount = clientRows.length - mine.length;
   const latest = mine[0] ?? null; // rows are newest-first
+  const end = shootEndFor(p.shootDate, p.appointments);
   return {
     id: p.id,
     title: p.title.split(",")[0],
     timeISO: p.shootDate?.toISOString() ?? null,
+    endISO: end?.end.toISOString() ?? null,
+    endAssumed: end?.assumed ?? true,
     photographer: p.photographer?.name ?? null,
     services,
     clientName: p.client.name,
@@ -436,7 +493,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
   const today = etDayWindow(0);
   const tomorrow = etDayWindow(1);
 
-  const [todayProjects, tomorrowProjects, qcTasks, loopTasks, pipelineProjects, pipelineCounts, unansweredList, needsAssigningCount] =
+  const [todayProjects, tomorrowProjects, qcTasks, loopTasks, pipelineProjects, pipelineCounts, unansweredList] =
     await Promise.all([
       prisma.project.findMany({
         where: { shootDate: { gte: today.start, lt: today.end }, status: { notIn: ["CANCELLED", "ON_HOLD"] } },
@@ -462,6 +519,9 @@ export async function buildOpsDay(): Promise<OpsDay> {
             select: {
               title: true, shootDate: true, shotOrderNotes: true, removalNotes: true, videoInstructions: true,
               debriefSubmittedAt: true, statusEvidence: true, aryeoListingId: true,
+              // The QC card's "upload page never submitted" line and the shoot
+              // card's chip must agree on when a shoot is over (shootEndFor).
+              appointments: { select: { startAt: true, endAt: true, status: true } },
               photographer: { select: { name: true } },
               deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, productTitle: true, notCompletedReason: true, notes: true } },
               // Same-day rush add-ons live on the line items (see SHOOT_SELECT).
@@ -502,17 +562,16 @@ export async function buildOpsDay(): Promise<OpsDay> {
       Promise.all([
         prisma.project.count({ where: { status: "EDITING" } }),
         prisma.project.count({ where: { status: "REVIEW" } }),
-        prisma.project.count({ where: { status: "REVISION" } }),
-        // Scoped to what the destination (/tasks?tab=other) actually shows —
-        // an unscoped count read "14 overdue" while the tab hid most (review).
-        prisma.smartTask.count({ where: { status: { notIn: ["COMPLETED", "CANCELLED"] }, dueAt: { lt: now }, AND: [boardVisibleWhere()] } }),
-        prisma.smartTask.count({ where: { status: { notIn: ["COMPLETED", "CANCELLED"] }, dueAt: { gte: today.start, lt: today.end }, AND: [boardVisibleWhere()] } }),
+        // The tower's "N open revisions" pill opens /tasks?tab=revisions, whose
+        // badge is revisionsBoard's job count (ChecklistViews checklistCounts).
+        // The same function here makes the two numbers one number by
+        // construction, cap included (audit5 F20). The three task counts that
+        // used to follow (overdue, due today, needs assigning) were never
+        // rendered — the home states those off the Other tab's own query — and
+        // were re-run on every 90-second refresh.
+        revisionsBoard(now).then((groups) => groups.reduce((s, g) => s + g.jobs.length, 0)),
       ]),
       findUnansweredInbound(now).catch(() => []),
-      // Exact count, same predicate as the /tasks triage strip (no sampling).
-      prisma.smartTask.count({
-        where: { status: { notIn: ["COMPLETED", "CANCELLED"] }, assignedKey: null, taskType: { in: [...TRIAGE_TYPES] } },
-      }),
     ]);
 
   // One comms pull for every shoot client (last 72h) — the per-SHOOT filter
@@ -575,12 +634,20 @@ export async function buildOpsDay(): Promise<OpsDay> {
     // bucket on t.dueAt alone hid every one of yesterday's shoots behind their
     // video's SLA, which is exactly what Jordan hit ("Nothing due for QC today?
     // That's not true").
+    // A shoot that hasn't happened has nothing to QC, whatever the checklist
+    // says: the 1946 Rowan St re-shoot (shoot TOMORROW 9 AM) sat in "due today
+    // · 2 ready now" because its unticked "upload page" and "deliver the
+    // gallery" rows count as actionable with nothing live, after the
+    // same-address Dropbox folder flipped it to SHOT (audit5 F4, Sep 8).
+    const shootPending = !!pr?.shootDate && pr.shootDate > now;
     const bucket: OpsQcRow["bucket"] =
-      t.dueAt && t.dueAt < now
-        ? "overdue"
-        : actionable > 0 || (next && etDayKey(next.at) <= todayKey) || (t.dueAt && etDayKey(t.dueAt) === todayKey)
-          ? "today"
-          : "waiting";
+      shootPending
+        ? "waiting"
+        : t.dueAt && t.dueAt < now
+          ? "overdue"
+          : actionable > 0 || (next && etDayKey(next.at) <= todayKey) || (t.dueAt && etDayKey(t.dueAt) === todayKey)
+            ? "today"
+            : "waiting";
     return {
       taskId: t.id,
       projectId: t.projectId!,
@@ -613,7 +680,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
         // Same predicate as the QC card's line (photo-category jobs only) —
         // two surfaces must never disagree about the same shoot (review).
         unsubmitted:
-          !!pr?.shootDate && pr.shootDate.getTime() >= DEBRIEF_GATE && pr.shootDate < now && !pr.debriefSubmittedAt &&
+          !!pr?.shootDate && pr.shootDate.getTime() >= DEBRIEF_GATE && shootOver(pr.shootDate, pr.appointments, now) && !pr.debriefSubmittedAt &&
           (pr.deliverables ?? []).some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d.type)),
       },
       // The photographer's "couldn't complete + why" answers from the wrap-up —
@@ -667,8 +734,12 @@ export async function buildOpsDay(): Promise<OpsDay> {
 
   const openLoops = loopTasks;
 
-  const [editing, review, revision, overdueTasks, dueTodayTasks] = pipelineCounts;
-  const shotAlready = todayShoots.filter((s) => s.timeISO && new Date(s.timeISO) < now);
+  const [editing, review, revision] = pipelineCounts;
+  // "Shot" = the photographer is booked to be off site (OpsShoot.endISO), not
+  // merely on it — the closeout read "Today's shoots all happened" and the
+  // What-needs-you strip carried two false "no upload page" alarms for six
+  // hours a day off the start minute (audit5 F8).
+  const shotAlready = todayShoots.filter((s) => s.endISO && new Date(s.endISO) < now);
   const debriefsIn = shotAlready.filter((s) => s.debriefSubmitted).length;
 
   return {
@@ -683,14 +754,15 @@ export async function buildOpsDay(): Promise<OpsDay> {
         snippet: (u.snippet ?? "").slice(0, 90),
         hours: Math.round(u.ageMin / 60),
         avatarUrl: u.clientAvatarUrl,
+        family: u.family,
+        clientId: u.clientId,
       })),
     },
     qc,
-    pipeline: { rows: pipelineRows, editing, review, revision, overdueTasks, dueTodayTasks },
+    pipeline: { rows: pipelineRows, editing, review, revision },
     openLoops,
     openLoopsTally: tallyLoops(openLoops),
     videoReview,
-    needsAssigning: needsAssigningCount,
     closeout: {
       todayShootsDone: shotAlready.length === todayShoots.length,
       todayDebriefsIn: debriefsIn,

@@ -4,9 +4,10 @@ import { Fragment, type ReactNode } from "react";
 import type { Prisma } from "@prisma/client";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
-import { TaskCard, type QueueTask } from "@/components/queue/TaskCard";
+import { TaskCard, type QueueTask, type SiblingTask } from "@/components/queue/TaskCard";
 import { TaskFocus } from "@/components/queue/TaskFocus";
 import { AddTask } from "@/components/queue/AddTask";
+import { doneTodayCount } from "@/components/tasks/DoneView";
 import { taskToView } from "@/lib/taskView";
 import { MESSAGE_TASK_TYPES } from "@/lib/queries";
 import { prisma } from "@/lib/prisma";
@@ -149,7 +150,11 @@ export async function BoardView({ sp, tabs }: { sp: { who?: string; task?: strin
     }),
     listAssignees(),
   ]);
-  const completedCount = await prisma.smartTask.count({ where: { status: "COMPLETED" } });
+  // TODAY's completions, not all-time (Sep 8 audit: the header read "36 open ·
+  // 11 to assign · 21 overdue · 1340 done" beside a Done tab badge of 2 — the
+  // 1340 was every task ever closed). Same query as that badge, so the two
+  // numbers can't disagree.
+  const doneToday = await doneTodayCount();
   const assigneeChips = assignees.map((a) => ({ key: a.key, name: a.name }));
 
   const startToday = etDayStartUtc(new Date()).getTime();
@@ -157,7 +162,28 @@ export async function BoardView({ sp, tabs }: { sp: { who?: string; task?: strin
   const cmp = (a: QueueTask, b: QueueTask) =>
     (isOverdue(a) ? 0 : 1) - (isOverdue(b) ? 0 : 1) || rank(a) - rank(b) || dueMs(a) - dueMs(b);
 
-  const views = tasks.map(taskToView);
+  // A revision's other lane on the same job (photo lane → Kyle, video lane →
+  // the editor; comms.ts keys them separately by design). Fetched as its own
+  // small query rather than read out of `tasks`: an editor's board is scoped
+  // to their own key, so Kyle's photo revision is never in their result set —
+  // and it is precisely the card that needs to say "John also has the video".
+  const revisionProjectIds = [...new Set(tasks.filter((t) => t.taskType === "revision" && t.projectId).map((t) => t.projectId!))];
+  const siblingRows = revisionProjectIds.length
+    ? await prisma.smartTask.findMany({
+        where: { taskType: "revision", status: { in: ACTIVE }, projectId: { in: revisionProjectIds } },
+        select: { id: true, title: true, assignedKey: true, projectId: true },
+        orderBy: { createdAt: "asc" },
+      })
+    : [];
+  const siblingsOf = (t: { id: string; taskType: string; projectId: string | null }): SiblingTask[] | undefined => {
+    if (t.taskType !== "revision" || !t.projectId) return undefined;
+    const others = siblingRows.filter((s) => s.projectId === t.projectId && s.id !== t.id);
+    return others.length ? others.map((s) => ({ id: s.id, title: s.title, assignedKey: s.assignedKey })) : undefined;
+  };
+
+  // flaggedBy rides alongside taskToView's shape (which other callers build
+  // without it) so the source chip can read "Flagged by Harrison".
+  const views = tasks.map((t) => ({ ...taskToView(t), flaggedBy: t.flaggedBy, siblings: siblingsOf(t) }));
   // Pull the "needs assigning" pile out first — delegatable work with no owner
   // yet — so it surfaces in its own pinned section instead of hiding in Kyle's
   // pile. Everything else has a home (an editor, or Kyle's default routine).
@@ -262,7 +288,7 @@ export async function BoardView({ sp, tabs }: { sp: { who?: string; task?: strin
           <div className="flex items-center gap-2">
             {triage.length > 0 && <Badge color="#b45309" soft="#fef3c7">{triage.length} to assign</Badge>}
             {overdueCount > 0 && <Badge color="#dc2626" soft="#fee2e2">{overdueCount} overdue</Badge>}
-            <Badge soft="var(--surface-2)"><CheckCircle2 className="mr-1 inline size-3 text-success" />{completedCount} done</Badge>
+            <Badge soft="var(--surface-2)"><CheckCircle2 className="mr-1 inline size-3 text-success" />{doneToday} done today</Badge>
           </div>
         }
       />

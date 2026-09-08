@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { dbx, DropboxError } from "@/lib/integrations/dropbox";
 import { actualFolderPaths, type FolderProject } from "@/lib/dropboxFolders";
 import { videoStyleFor } from "@/lib/videoStyles";
+import { editorMeta } from "@/lib/editors";
 
 /** Stamped on a cut row that was auto-approved BECAUSE the job was delivered —
  *  not because anyone reviewed it. The client portal keys off this to keep
@@ -750,8 +751,14 @@ const pureSlots = (
   return out;
 };
 
-// "john" → "John", "tm:abc" stays as-is (a name lookup isn't worth a query here).
-const prettyKey = (k: string) => (/^[a-z]+$/.test(k) ? k[0].toUpperCase() + k.slice(1) : k);
+// The roster's display name when the key is on it ("john" → "John",
+// "external_agency" → "External agency"); an unknown lowercase key gets its
+// underscores spaced and a capital; "tm:abc" stays as-is (a name lookup isn't
+// worth a query here). The old rule only capitalised /^[a-z]+$/, so the vendor
+// key printed raw on Kyle's morning QC card — "Video: In editing —
+// external_agency" beside "In editing — John" (102 Knoxlyn, audit Sep 8 2026).
+const prettyKey = (k: string) =>
+  editorMeta(k)?.name ?? (/^[a-z_]+$/.test(k) ? k.replace(/_/g, " ").replace(/^[a-z]/, (c) => c.toUpperCase()) : k);
 
 /** Batched: the video state of many projects in two queries. */
 export async function videoStatesFor(projectIds: string[]): Promise<Map<string, ProjectVideoState>> {

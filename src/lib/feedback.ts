@@ -81,8 +81,8 @@ export async function recordFeedback(opts: {
 
   // NEGATIVE feedback keeps the URGENT resolve task — someone has to act NOW.
   // Positive/neutral is notification-only (the bell below): the old "Review
-  // client feedback" task was ceremony nothing ever closed, and any pre-existing
-  // rows still drain via closeStaleFeedbackReviews over the next week.
+  // client feedback" task was ceremony nothing ever closed; every one of those
+  // rows is gone (0 open on Sep 8), so nothing sweeps for them any more.
   if (negative) {
     const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
     await prisma.smartTask.create({

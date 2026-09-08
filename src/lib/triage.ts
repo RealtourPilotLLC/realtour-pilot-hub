@@ -10,6 +10,11 @@
 // the pinned "Needs assigning" pile, not vanish into the board.
 export const TRIAGE_TYPES = new Set(["internal_instruction", "todo", "revision", "lead", "vendor_update", "edit_video"]);
 
+// `source` is deliberately NOT part of this predicate: the Sep 8 audit weighed
+// a source:"manual" exemption and dropped it, because the same rule is restated
+// in SQL wherever a screen COUNTS the pile, and every restatement would have to
+// change in step. Kyle's own to-dos stay out of the pile because they now store
+// assignedKey "kyle" at creation (createManualTask), not because of source.
 export function isNeedsAssigning(t: { assignedKey: string | null; taskType: string }): boolean {
   return !t.assignedKey && TRIAGE_TYPES.has(t.taskType);
 }

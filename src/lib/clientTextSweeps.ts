@@ -4,7 +4,7 @@ import { parseEvidence } from "@/lib/statusEvidence";
 import { logComm } from "@/lib/commLog";
 import { OpenPhoneError } from "@/lib/integrations/openphone";
 import { MONTHLY_BATCH_INCOMPLETE, DELIVERED_LONG_AGO, SEND_UNVERIFIED } from "@/lib/tasks";
-import { etAt } from "@/lib/datetime";
+import { etAt, etDateTime } from "@/lib/datetime";
 
 // Auto-send client texts (Jordan, Sep 1 2026): confirmation texts go out on
 // their own 2 days before the shoot, and delivery texts go out on their own
@@ -242,12 +242,15 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
   const horizon = nextChance.getTime() > leadHorizon.getTime() ? nextChance : leadHorizon;
   const projects = await prisma.project.findMany({
     where: {
-      status: { in: ["BOOKED", "SCHEDULED"] },
+      // The spec now emits a confirmation for any ACTIVE job whose shoot is still
+      // ahead (a return visit on a job already SHOT — 1946 Rowan #2). The send
+      // must match, or the row is minted but only Kyle's Outbox can send it.
+      status: { in: ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW", "REVISION"] },
       shootDate: { gt: now, lte: horizon },
       aryeoMissingAt: null, // order gone from Aryeo → never text the client about it
     },
     select: {
-      id: true, title: true, shootDate: true,
+      id: true, title: true, city: true, shootDate: true,
       // autoConfirmationText = this client's own switch (/clients → Notifications).
       client: { select: { id: true, name: true, phone: true, autoConfirmationText: true } },
       photographer: { select: { name: true } },
@@ -372,7 +375,7 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
       skipped++; continue;
     }
     const body = confirmationMessage({
-      title: p.title, shootDate: p.shootDate,
+      title: p.title, city: p.city, shootDate: p.shootDate,
       client: { name: p.client.name }, photographer: p.photographer, deliverables: p.deliverables,
     }, tpl.confirmation);
     try {
@@ -645,9 +648,27 @@ function wholeJobOutstanding(
  *    3. a job that ordered video has positive proof a video shipped (Aryeo, the
  *       Dropbox Final folder, or an approved+copied cut). Live data, Sep 2:
  *       8 of 156 delivered jobs with video ordered had no such proof.
- *  Post-delivery revisions and the two human-decision flags stay manual, and
- *  only fresh tasks (≤72h) auto-send so a day-one deploy can't text about last
- *  week's job. */
+ *  Post-delivery revisions and the two human-decision flags stay manual.
+ *
+ *  EVERY reason this sweep does not send is written onto the task (Sep 8
+ *  audit). It used to go to the cron log only — which is clipped to 297 chars
+ *  and rendered on no screen — so "Send delivery text — 1033 Preserve Ln" and
+ *  "208 N Adams St" (both minted Sep 3, both waiting on a cut still pending in
+ *  review) sat on the Outbox as plain "overdue" with a Send button and no word
+ *  that the hub was holding them on purpose. The confirmation sweep already
+ *  writes "On hold: …" onto its task; this one now does the same, for every
+ *  gate.
+ *
+ *  There is no longer a 72-hour cut-off on the task's age. Jordan's rule is
+ *  "if it's waiting on video, wait for that video to be completed and
+ *  delivered. Then send the text" — and a cut approved on day four is exactly
+ *  the case the cut-off defeated: the task silently fell out of this query, and
+ *  the 7-day sweeper then cancelled it "closed unsent" (8 such closes in 60
+ *  days). The bound is now that honest 7-day close (tasks.ts
+ *  closeStaleDeliveryTexts). Be clear about what that means: a task that AGED
+ *  in the queue (held for a cut, or for a client's open question) can still
+ *  send on day six — the mint-time DELIVERED_LONG_AGO guard only stops rows
+ *  from being created for old jobs, it does not bound one already minted. */
 export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promise<{ sent: number; skipped: number; notes: string[] }> {
   const notes: string[] = [];
   const { autoTextRules } = await import("@/lib/settings");
@@ -663,14 +684,13 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
     where: {
       taskType: "delivery_text",
       status: { notIn: ["COMPLETED", "CANCELLED"] },
-      createdAt: { gte: new Date(Date.now() - rules.delivery.maxTaskAgeHours * HOUR) },
       projectId: { not: null },
       // Order gone from Aryeo → the job is in limbo; never text the client.
       project: { is: { aryeoMissingAt: null } },
     },
-    select: { id: true, projectId: true, sourceDetail: true },
-    // Oldest first, so a deferred (one-per-client-per-tick) task can't age out
-    // of the 72h window while newer ones keep sending.
+    select: { id: true, projectId: true, sourceDetail: true, summary: true },
+    // Oldest first: a deferred (one-per-client-per-tick) task keeps its place
+    // in line instead of newer ones sending ahead of it every tick.
     orderBy: { createdAt: "asc" },
   });
   if (tasks.length === 0) return { sent: 0, skipped: 0, notes };
@@ -679,6 +699,19 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
   const { deliveryMessage } = await import("@/lib/delivery");
   const { textTemplates, DEFAULT_DELIVERY_FEEDBACK_TEXT } = await import("@/lib/settings");
   const tpl = await textTemplates();
+
+  // The hold reason, onto the task. Diff-before-write so an unchanged hold does
+  // not churn updatedAt every hour (the CANCELLED path reads updatedAt as "when
+  // it closed"). Rows carrying a mint-time decision already say why and are the
+  // human's call — their own wording stands.
+  const hold = async (t: { id: string; summary: string | null; sourceDetail: string | null }, why: string): Promise<void> => {
+    if (t.sourceDetail === MONTHLY_BATCH_INCOMPLETE || t.sourceDetail === DELIVERED_LONG_AGO) return;
+    const summary = why.slice(0, 500);
+    if (t.summary === summary) return;
+    await prisma.smartTask
+      .updateMany({ where: { id: t.id, status: { notIn: ["COMPLETED", "CANCELLED"] } }, data: { summary } })
+      .catch(() => {});
+  };
 
   let sent = 0, skipped = 0;
   for (const t of tasks) {
@@ -698,16 +731,30 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
     if (!project) { skipped++; continue; }
     // The job must still READ delivered — a revision request (or a manual
     // status move) means "how did we do?" is the wrong text to send.
-    if (project.status !== "DELIVERED") { skipped++; continue; }
+    if (project.status !== "DELIVERED") {
+      skipped++;
+      await hold(t, `On hold: the job no longer reads Delivered in the hub (it is ${project.status.toLowerCase().replace(/_/g, " ")}) — "how did we do?" waits until it does.`);
+      continue;
+    }
     // Positive evidence only: no evidence at all (manual drag to DELIVERED,
     // stale blob) or an unverifiable order (nothing expected, no Aryeo
     // fulfilled signal) is NOT the same as "everything shipped" — stays manual.
     const ev = parseEvidence(project.statusEvidence);
-    if (!ev || ev.missing.length > 0 || (ev.expected.length === 0 && !ev.fulfilledOnAryeo)) { skipped++; continue; }
+    if (!ev || ev.missing.length > 0 || (ev.expected.length === 0 && !ev.fulfilledOnAryeo)) {
+      skipped++;
+      await hold(
+        t,
+        ev && ev.missing.length > 0
+          ? `On hold: nothing yet proves every deliverable shipped — still missing: ${ev.missing.join(", ")}. The feedback ask waits until the whole job is out.`
+          : "On hold: the hub has no delivery evidence for this order (a manual move to Delivered proves nothing), so it will not send the feedback ask on its own — send it by hand once you know everything is out.",
+      );
+      continue;
+    }
     // "Fully delivered" means the WHOLE job, video included (Jordan's rule).
     const outstanding = wholeJobOutstanding(project, ev);
     if (outstanding) {
       skipped++;
+      await hold(t, `On hold: ${outstanding} — the feedback ask waits until the whole job is delivered, then goes out on its own.`);
       notes.push(`${project.title}: ${outstanding} — the feedback ask waits`);
       continue;
     }
@@ -726,15 +773,28 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
       continue;
     }
     const k = phoneKey(project.client.phone ?? "");
-    if (k.length !== 10) { skipped++; notes.push(`${project.title}: no valid client phone`); continue; }
+    if (k.length !== 10) {
+      skipped++;
+      await hold(t, `The hub cannot send this: ${project.client.name} has no valid mobile number on file — send it by hand.`);
+      notes.push(`${project.title}: no valid client phone`);
+      continue;
+    }
     // This client's own switch is off — skip before any claim so the task stays
     // OPEN for a human to send by hand (see the Client schema comment).
     if (!project.client.autoDeliveryText) {
-      skipped++; notes.push(`${project.title}: ${project.client.name} has automatic delivery texts off — left for a human`); continue;
+      skipped++;
+      await hold(t, `On hold: ${project.client.name} has automatic delivery texts switched off (Clients → Notifications) — a person sends this one.`);
+      notes.push(`${project.title}: ${project.client.name} has automatic delivery texts off — left for a human`);
+      continue;
     }
+    // One auto-text per client per tick: a second job for the same client
+    // simply goes next tick, so nothing is written — the wait is minutes.
     if (rules.onePerClientPerRun && texted.has(project.client.id)) { skipped++; continue; }
     if (rules.skipWhenClientWaiting && await clientHasOpenQuestion(project.client.id)) {
-      skipped++; notes.push(`${project.title}: client has an open question — left for a human`); continue;
+      skipped++;
+      await hold(t, `On hold: ${project.client.name} has a message we have not answered, so the hub is leaving this feedback ask to a person. It goes out on its own once we have replied.`);
+      notes.push(`${project.title}: client has an open question — left for a human`);
+      continue;
     }
     // Atomically claim the task — the manual /texts send and the OpenPhone
     // webhook complete this same row, so whoever claims first wins alone.
@@ -757,6 +817,12 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
       const res = await OpenPhone.sendMessage(from, `+1${k}`, body);
       sent++;
       texted.add(project.client.id);
+      // Say what happened in place of the last hold: an "On hold: …" line on a
+      // COMPLETED row would be exactly the untrue screen this file exists to
+      // prevent.
+      await prisma.smartTask
+        .updateMany({ where: { id: t.id }, data: { summary: `Feedback ask sent automatically to ${project.client.name} on ${etDateTime(new Date())} ET.` } })
+        .catch(() => {});
       await prisma.activity.create({
         data: { projectId: project.id, type: "SYSTEM", body: `Delivery text auto-sent to ${project.client.name}: ${body.slice(0, 160)}` },
       }).catch(() => {});

@@ -123,16 +123,20 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
 };
 
 // Where to send a user who lands somewhere they can't access — and their
-// post-login home. Everyone starts on their WORK surface: Kyle (admin) in the
-// Tasks hub (Today tab), editors in their queue, photographers in My Shoots.
-// Only the owner lands on the overview dashboard. Used by the middleware
-// redirect — every target is in that role's ROLE_PAGES, so there's no redirect loop.
+// post-login home. Everyone starts on their WORK surface: editors in their
+// queue, photographers in My Shoots, owner and admins on Home. Used by the
+// middleware redirect — every target is in that role's ROLE_PAGES, so there's
+// no redirect loop.
 export function homeFor(role: string | null | undefined): string {
   switch (role) {
     case "PHOTOGRAPHER": return "/shoot";
     case "EDITOR": return "/editing";
-    // Kyle lands on his guided operating day (Jordan, Sep 1) — Tasks stays one tap away.
-    case "ADMIN": return "/ops";
+    // Kyle and James land on Home: the Ops Day merged into "/" (Jordan, Sep 2:
+    // "the ops day screen essentially combined with my dashboard") and /ops is
+    // a redirect stub now. Pointing here at "/ops" cost every admin login and
+    // every middleware bounce an extra hop through that stub (audit, Sep 8
+    // 2026). "dashboard" is in ADMIN's ROLE_PAGES, so there is no loop.
+    case "ADMIN": return "/";
     default: return "/";
   }
 }

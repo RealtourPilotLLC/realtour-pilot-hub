@@ -50,6 +50,8 @@ import { stripQuotedReply } from "@/lib/text";
 //     Gmail sync's own reply detection + the per-group Handled tick (email).
 //     It is a CUT POINT, not a delete — a message that arrives after the tick
 //     is waiting again.
+//  6. BULK MAIL IS NOT A PERSON WAITING, even from a matched client record: a
+//     newsletter, a marketing blast, a cold vendor pitch (see `isBulkEmail`).
 //
 // Built on CommLog rather than on open reply TASKS, deliberately. A task only
 // exists when the sender matched a client; the 30-day comms review found a
@@ -178,6 +180,53 @@ export function emailAckKey(clientId: string, groupKey: string): string {
 // definition nobody waiting on us, and one was sitting on the board.)
 const EMAIL_NOISE_SUBJECT = /^(accepted|declined|tentatively accepted|updated invitation|canceled event|cancelled event):|^(automatic reply|auto-?reply|out of (the )?office)\b|^(your |payment )?(receipt|invoice|statement|renewal|auto-?pay(ment)?)\b|subscription (on hold|paused|cancell?ed)\b|payment (failed|failure|declined|unsuccessful)\b|\b(webinar|newsletter|unsubscribe|promo code|chamber)\b|\bweekly (update|digest)\b|% off|\bsale ends\b/i;
 const EMAIL_NOISE_SENDER = /no-?reply|do-?not-?reply|notifications?@|\bbilling\b|support@|\bchamber\b|marketing@|\bnewsletter\b|mailer-daemon|\bautomated\b/i;
+
+// Bulk mail and cold pitches from a MATCHED sender — the two regexes above
+// judge the subject and the sender label, and on Sep 8 2026 both let through
+// the rows that made Kyle's "7 clients waiting on a reply" (and its red
+// "oldest has waited 7 days") wrong: Natalie Curry's "September Happenings"
+// newsletter (an agent we shot for once, blasting her list) and a "Job
+// proposal" from Growwtech Images (an outsourcing pitch the router filed
+// under Jeff Scott). Gmail would say so with List-Unsubscribe / Precedence:
+// bulk, but CommLog keeps no headers, and logComm's 6,000-char body cap can
+// cut a newsletter off above its unsubscribe footer (Natalie's was exactly
+// 6,000 chars). So this reads the SHAPE of the mail instead:
+//   · mass-mail tooling artifacts — a "View in browser" link, the run of
+//     invisible U+034F / zero-width padding Mailchimp and friends put in the
+//     preheader — which no human types;
+//   · an unsubscribe / preferences / "you are receiving this" footer, unless
+//     the sender's own words ask something (a client forwarding a newsletter
+//     with "can we do this?" on top keeps her row);
+//   · a cold pitch: an impersonal opener ("Hello Team," / "Dear Sir/Madam")
+//     plus three or more sales tells (a price list in USD, "our portfolio",
+//     "trial project", PayPal, "we are professional ... editors").
+// Conservative on purpose, the same trade isCourtesy makes: a false "needs an
+// answer" costs Kyle a click, a false "bulk" costs a client.
+const BULK_TOOLING_RE = /\bview (?:this (?:e-?mail )?)?in (?:your |a )?browser\b/i;
+const PREHEADER_PAD_RE = /(?:[\u034F\u200B\u200C\u200D\u2007\u00AD\uFEFF]\s*){12,}/;
+const BULK_FOOTER_RE =
+  /\b(?:unsubscribe|opt[- ]?out|manage (?:your )?(?:e-?mail )?preferences|update your preferences|e-?mail preferences|you(?:'re| are) receiving this (?:e-?mail|message)|why did i get this|this (?:e-?mail|message) was sent to|thanks for (?:reading|subscribing))\b/i;
+const PITCH_OPENER_RE = /^\s*(?:hello|hi|hey|dear|greetings)[\s,!]+(?:team|there|sir|madam|sir\/madam|sir or madam|business owner|owner|realtor|partner|friend)\b/i;
+const PITCH_TELLS: RegExp[] = [
+  /\b\d+(?:\.\d+)?\s?usd\b|\busd\s?\d/i, // a price list quoted in a currency code
+  /\bper (?:image|photo|picture|edit)\b/i,
+  /\bour (?:portfolio|services|best price|pricing|rates|price list|team of)\b/i,
+  /\b(?:free )?trial (?:project|images?|photos?|edits?)\b|\bfree trial\b/i,
+  /\bpaypal\b/i,
+  /\bwe(?:'re| are) (?:a |an )?(?:professional|team|company|leading)\b/i,
+  /\boutsourc/i,
+  /\bsatisfaction (?:is )?guaranteed\b/i,
+];
+
+/** Newsletter, marketing blast, or cold vendor pitch — nobody is waiting on
+ *  us. `raw` is the stored body (footers live below the quoted history the
+ *  cleaner strips); `ownWords` is the cleaned message. */
+export function isBulkEmail(raw: string, ownWords: string): boolean {
+  if (BULK_TOOLING_RE.test(raw) || PREHEADER_PAD_RE.test(raw)) return true;
+  if (BULK_FOOTER_RE.test(raw) && !ownWords.includes("?")) return true;
+  if (PITCH_OPENER_RE.test(ownWords) && PITCH_TELLS.filter((re) => re.test(ownWords)).length >= 3) return true;
+  return false;
+}
 
 /** Email bodies arrive with signature junk — `<tel:...>` / `<https://...>`
  *  angle artifacts, `[image: facebook]` blocks, mailto noise — on top of the
@@ -561,6 +610,7 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
       // Judge on the CLEANED text — raw quoted history made every "Thanks!"
       // reply look long enough to need an answer.
       body = cleanEmailBody(r.body ?? "");
+      if (isBulkEmail(r.body ?? "", body)) continue; // rule 6: a blast, not a person
       asksInSubject = /\?/.test(r.subject ?? "");
       if (!body) body = (r.subject ?? "").trim();
       if (isNoise(body) && !asksInSubject) continue;

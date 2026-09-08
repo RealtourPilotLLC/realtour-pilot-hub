@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { unansweredComms } from "@/lib/replyQueue";
+import { editorMeta } from "@/lib/editors";
 
 // ---------------------------------------------------------------------------
 // The Comms Checklist boards (Jordan, Sep 1 2026: "we don't need to turn every
@@ -83,9 +84,31 @@ export async function unansweredCommsBoard(family: "phone" | "email", now: Date 
   }));
 }
 
+// The email Handled tick's effect on the gmail-born client_reply task lives
+// with the rest of that task's lifecycle in src/lib/integrations/google.ts
+// (completeEmailReplyTasks / closeAckedEmailReplyTasks) — this file stays the
+// presentation of the walk.
+
+const OPEN_STATUS: { notIn: string[] } = { notIn: ["COMPLETED", "CANCELLED"] };
+
 // ---------------------------------------------------------------------------
-// Revisions — grouped by requester. Auto-clears when the project leaves
-// REVISION (delivery is the tick).
+// Revisions — grouped by requester, read from the OPEN `revision` tasks, not
+// from Project.status.
+//
+// Sep 8 audit: this listed projects in status REVISION (4) while 7 revision
+// tasks were open on 6 jobs. 332 Ruth Ridge and 1956 Wetherhill had been moved
+// to DELIVERED by the queue's "Completed" button, which closes nothing in the
+// revision lane — so John was being chased on the Other tab ("Needs John · 2
+// overdue") for revisions this tab said did not exist, and Kyle's photo-lane
+// ask on Wetherhill (a real open revision, raised Sep 5) was off the tab, off
+// "open revisions" and off the closeout row. The task IS the revision: it is
+// what the editor's board, the Other tab and the owner pulse already count, so
+// this board reads the same rows and the numbers agree. A row clears when its
+// task does (resolveRevision, the editor's submit, the Complete button) —
+// delivery alone is no longer the tick, because a job can read Delivered while
+// a lane is still owed. Where the two sources disagree the row says so
+// (`projectStatus`), so a finished job whose task was never closed is a tick
+// away instead of an invisible one.
 // ---------------------------------------------------------------------------
 export type RevisionGroup = {
   clientId: string | null;
@@ -99,44 +122,127 @@ export type RevisionGroup = {
     itemsDone: number;
     itemsTotal: number;
     note: string | null; // raw revision note fallback
+    /** the job's own status. "DELIVERED" here = the engine says done while the
+     *  ask is still open — the two sources disagree and a human should look. */
+    projectStatus: string;
+    /** the open revision task(s) behind this row — one per lane (video / photo) */
+    taskIds: string[];
   }[];
 };
 
 export async function revisionsBoard(now: Date = new Date()): Promise<RevisionGroup[]> {
-  const projects = await prisma.project.findMany({
-    where: { status: "REVISION" },
+  const tasks = await prisma.smartTask.findMany({
+    where: { taskType: "revision", status: OPEN_STATUS, projectId: { not: null } },
     select: {
-      id: true, title: true, revisionRequestedAt: true, updatedAt: true, revisionNote: true, clientId: true,
-      client: { select: { name: true } },
-      editor: { select: { name: true } },
-      revisionBriefs: { orderBy: { createdAt: "desc" }, take: 1, select: { headline: true, itemsJson: true, doneJson: true } },
+      id: true, projectId: true, assignedKey: true, createdAt: true, summary: true,
+      project: {
+        select: {
+          id: true, title: true, status: true, clientId: true, revisionNote: true,
+          client: { select: { name: true } },
+          editor: { select: { name: true } },
+        },
+      },
     },
-    orderBy: { updatedAt: "asc" },
-    take: 40,
+    orderBy: { createdAt: "asc" },
+    take: 80,
   });
-  const groups = new Map<string, RevisionGroup>();
-  for (const p of projects) {
-    const key = p.clientId ?? "none";
-    const brief = p.revisionBriefs[0] ?? null;
-    let itemsTotal = 0, itemsDone = 0;
-    if (brief?.itemsJson) {
-      // itemsJson is an OBJECT: { items, keep, references, questions }.
-      try { itemsTotal = ((JSON.parse(brief.itemsJson) as { items?: unknown[] }).items ?? []).length; } catch { /* ignore */ }
-      try { itemsDone = (JSON.parse(brief.doneJson ?? "[]") as unknown[]).length; } catch { /* ignore */ }
-    }
-    const g = groups.get(key) ?? { clientId: p.clientId, clientName: p.client?.name ?? "Unknown client", jobs: [] };
-    g.jobs.push({
+  if (tasks.length === 0) return [];
+  // The ask behind each task is its own brief (RevisionBrief.taskId), newest
+  // first: a re-raised ask on the same task gets a fresh brief, and the fresh
+  // one is the round the editor is on. Briefs minted before taskId existed
+  // carry none, so those fall back to the project's newest unowned brief —
+  // never another lane's, which would put the video ask on the photo row.
+  const briefs = await prisma.revisionBrief.findMany({
+    where: { projectId: { in: [...new Set(tasks.map((t) => t.projectId as string))] } },
+    orderBy: { createdAt: "desc" },
+    select: { taskId: true, projectId: true, headline: true, itemsJson: true, doneJson: true, createdAt: true },
+  });
+  type Brief = (typeof briefs)[number];
+  const briefByTask = new Map<string, Brief>();
+  const unownedByProject = new Map<string, Brief>();
+  for (const b of briefs) {
+    if (b.taskId) { if (!briefByTask.has(b.taskId)) briefByTask.set(b.taskId, b); }
+    else if (!unownedByProject.has(b.projectId)) unownedByProject.set(b.projectId, b);
+  }
+  const countItems = (b: Brief | undefined): { total: number; done: number } => {
+    if (!b?.itemsJson) return { total: 0, done: 0 };
+    let total = 0, done = 0;
+    // itemsJson is an OBJECT: { items, keep, references, questions }.
+    try { total = ((JSON.parse(b.itemsJson) as { items?: unknown[] }).items ?? []).length; } catch { /* ignore */ }
+    try { done = (JSON.parse(b.doneJson ?? "[]") as unknown[]).length; } catch { /* ignore */ }
+    return { total, done };
+  };
+
+  // One row per JOB: Wetherhill carries a video lane (John) and a photo lane
+  // (Kyle) as two tasks, and the view keys rows by projectId.
+  type Job = RevisionGroup["jobs"][number];
+  const jobs = new Map<string, Job & { askedAt: number; editors: string[]; headlines: string[] }>();
+  for (const t of tasks) {
+    const p = t.project;
+    if (!p) continue;
+    const brief = briefByTask.get(t.id) ?? unownedByProject.get(p.id);
+    const askedAt = (brief?.createdAt ?? t.createdAt).getTime();
+    const { total, done } = countItems(brief);
+    const editor = editorMeta(t.assignedKey)?.name ?? p.editor?.name ?? null;
+    const j = jobs.get(p.id) ?? {
       projectId: p.id,
       title: p.title.split(",")[0],
-      ageDays: Math.floor((now.getTime() - (p.revisionRequestedAt ?? p.updatedAt).getTime()) / 86_400_000),
-      editor: p.editor?.name ?? null,
-      headline: brief?.headline ?? null,
-      itemsDone, itemsTotal,
-      note: p.revisionNote,
+      ageDays: 0,
+      editor: null,
+      headline: null,
+      itemsDone: 0,
+      itemsTotal: 0,
+      note: p.revisionNote ?? t.summary,
+      projectStatus: p.status,
+      taskIds: [],
+      askedAt,
+      editors: [],
+      headlines: [],
+    };
+    // The wait is the OLDEST open ask on the job, not the newest lane.
+    j.askedAt = Math.min(j.askedAt, askedAt);
+    if (editor && !j.editors.includes(editor)) j.editors.push(editor);
+    if (brief?.headline) j.headlines.push(brief.headline);
+    j.itemsTotal += total;
+    j.itemsDone += done;
+    j.taskIds.push(t.id);
+    jobs.set(p.id, j);
+  }
+
+  const groups = new Map<string, RevisionGroup>();
+  for (const j of jobs.values()) {
+    const t = tasks.find((x) => x.projectId === j.projectId);
+    const p = t?.project;
+    const key = p?.clientId ?? "none";
+    const g = groups.get(key) ?? { clientId: p?.clientId ?? null, clientName: p?.client?.name ?? "Unknown client", jobs: [] };
+    g.jobs.push({
+      projectId: j.projectId,
+      title: j.title,
+      ageDays: Math.floor((now.getTime() - j.askedAt) / 86_400_000),
+      editor: j.editors.length ? j.editors.join(" / ") : null,
+      headline: j.headlines.length ? j.headlines.join(" · ") : null,
+      itemsDone: j.itemsDone,
+      itemsTotal: j.itemsTotal,
+      note: j.note,
+      projectStatus: j.projectStatus,
+      taskIds: j.taskIds,
     });
     groups.set(key, g);
   }
   return [...groups.values()].sort((a, b) => Math.max(...b.jobs.map((j) => j.ageDays)) - Math.max(...a.jobs.map((j) => j.ageDays)));
+}
+
+/** Jobs with at least one open revision task — the same source as the board
+ *  above, for home's "open revisions" pill and the closeout row (opsDay.ts
+ *  still counts Project.status === "REVISION", which is how home said "4 open
+ *  revisions" while the board owed 6). */
+export async function openRevisionJobCount(): Promise<number> {
+  const rows = await prisma.smartTask.findMany({
+    where: { taskType: "revision", status: OPEN_STATUS, projectId: { not: null } },
+    select: { projectId: true },
+    distinct: ["projectId"],
+  });
+  return rows.length;
 }
 
 // ---------------------------------------------------------------------------

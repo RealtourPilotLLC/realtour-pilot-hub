@@ -73,10 +73,6 @@ export async function GET(req: NextRequest) {
     return closeStaleDeliveryTexts(7);
   });
   // Retire week-old positive/neutral feedback-review tasks.
-  await step("staleFeedbackReviews", async () => {
-    const { closeStaleFeedbackReviews } = await import("@/lib/tasks");
-    return closeStaleFeedbackReviews(7);
-  });
   await step("webhookLogTrimmed", async () => {
     const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const r = await prisma.webhookEvent.deleteMany({ where: { createdAt: { lt: cutoff } } });

@@ -670,6 +670,126 @@ export async function fetchGmailThread(
 // Scan recent inbound emails across all connected mailboxes (hello@ + info@),
 // keep only genuine client/lead messages (no marketing, invoices, automated),
 // and turn them into tasks. Matched clients → reply task; unknown humans → lead.
+// ---------------------------------------------------------------------------
+// The email Handled tick and the gmail-born client_reply task.
+//
+// Sep 8 audit: the Comms board's tick wrote its ack marker (the unanswered walk
+// in replyQueue honours it) and stopped — the silent client_reply task this
+// sync minted for the thread stayed OPEN, and only the reply sweep's "latest
+// message in the thread is ours" check could ever close it. "Update Kimberly's
+// portal access" on Marcee McMullen's record sat open 54 days that way: it
+// gagged her automated texts (clientTextSweeps clientHasOpenQuestion) and sat
+// in Kyle's Open Loops while every "waiting" number on screen said seven days.
+// Two closers, one rule:
+//   · completeEmailReplyTasks — for the tick itself (src/app/actions.ts
+//     markCommsHandled, email branch), so the task closes on the spot;
+//   · closeAckedEmailReplyTasks — run by syncGmail's reply sweep, closes any
+//     task whose sender was ticked AFTER their last email arrived. It is the
+//     backstop for acks written before this existed and for a tick the action
+//     never reached.
+// Scope is the SENDER GROUP, exactly as the ack is: a task filed under the
+// same client record for a different human (an assistant folded to the agent)
+// is left alone — the reviewed rule for the ack was that two senders mis-filed
+// under one client record never share a tick, and the task must not become the
+// back door that breaks it.
+// ---------------------------------------------------------------------------
+
+const OPEN_REPLY: { notIn: string[] } = { notIn: ["COMPLETED", "CANCELLED"] };
+
+/** `<last>|<first>` for a sender name — the same reduction replyQueue's
+ *  emailKeyOf applies when it builds the ack key, so a task's contactName can
+ *  be held against an ack and answer "was this tick aimed at this person?". */
+function senderKeyOf(name: string | null | undefined): string | null {
+  const raw = (name ?? "").split(/,|\s[-–—|]\s/)[0];
+  if (raw.includes("@")) return raw.trim().toLowerCase();
+  const clean = raw.trim().toLowerCase().replace(/[^a-z\s'-]/g, " ").replace(/\s+/g, " ").trim();
+  if (!clean) return null;
+  const parts = clean.split(" ");
+  return parts.length < 2 ? clean : `${parts[parts.length - 1]}|${parts[0]}`;
+}
+
+/** Does an ack written for `groupKey` cover the person behind a task? No group
+ *  (the legacy per-client key) covers everyone on the record. Otherwise the
+ *  sender's key must match: same surname, first names a prefix of each other —
+ *  the walk's own "S Mercer" ⇄ "Sharra Mercer" merge rule, so a group keyed on
+ *  the fuller name still covers a task filed under the shorter one. */
+export function emailAckCoversSender(groupKey: string | null | undefined, senderName: string | null | undefined, clientId: string | null): boolean {
+  if (!groupKey) return true;
+  const want = senderKeyOf(senderName) ?? (clientId ? `client:${clientId}` : null);
+  if (!want) return false;
+  if (want === groupKey) return true;
+  const wb = want.lastIndexOf("|"), gb = groupKey.lastIndexOf("|");
+  if (wb < 0 || gb < 0) return false;
+  const wl = want.slice(0, wb), wf = want.slice(wb + 1);
+  const gl = groupKey.slice(0, gb), gf = groupKey.slice(gb + 1);
+  return wl === gl && !!wf && !!gf && (wf.startsWith(gf) || gf.startsWith(wf));
+}
+
+/** The tick: complete the gmail-born client_reply task(s) for the sender group
+ *  just marked Handled. A task with no contactName was written in by the
+ *  client themself, so the client's own name is the sender it is held against.
+ *  Returns how many closed. */
+export async function completeEmailReplyTasks(clientId: string, groupKey?: string | null): Promise<number> {
+  const open = await prisma.smartTask.findMany({
+    where: { clientId, taskType: "client_reply", source: "gmail", status: OPEN_REPLY },
+    select: { id: true, contactName: true, client: { select: { name: true } } },
+  });
+  const ids = open.filter((t) => emailAckCoversSender(groupKey, t.contactName ?? t.client?.name, clientId)).map((t) => t.id);
+  if (ids.length === 0) return 0;
+  const r = await prisma.smartTask.updateMany({
+    where: { id: { in: ids }, status: OPEN_REPLY },
+    data: { status: "COMPLETED", completedAt: new Date() },
+  });
+  return r.count;
+}
+
+/** The backstop (syncGmail's reply sweep): an open gmail-born client_reply
+ *  whose sender was ticked Handled at-or-after the client's latest inbound
+ *  email is answered as far as the humans are concerned — close it. An ack
+ *  OLDER than the latest email leaves the task alone: they wrote again since.
+ *  The reference is the client record's last inbound (not just this sender's),
+ *  so the safe direction — leaving a task open — wins whenever two people
+ *  share one record. Returns how many closed. */
+export async function closeAckedEmailReplyTasks(): Promise<number> {
+  const open = await prisma.smartTask.findMany({
+    where: { taskType: "client_reply", source: "gmail", status: OPEN_REPLY, clientId: { not: null } },
+    select: { id: true, clientId: true, contactName: true, createdAt: true, client: { select: { name: true } } },
+  });
+  if (open.length === 0) return 0;
+  const clientIds = [...new Set(open.map((t) => t.clientId as string))];
+  const acks = await prisma.appSetting.findMany({
+    where: { OR: clientIds.map((id) => ({ key: { startsWith: `comms-ack-email-${id}` } })) },
+    select: { key: true, value: true },
+  });
+  let closed = 0;
+  for (const t of open) {
+    const cid = t.clientId as string;
+    const prefix = `comms-ack-email-${cid}`;
+    const covering = acks
+      .filter((a) => a.key === prefix || a.key.startsWith(`${prefix}:`))
+      .map((a) => {
+        let group: string | null = a.key === prefix ? null : a.key.slice(prefix.length + 1);
+        try { group = group === null ? null : decodeURIComponent(group); } catch { /* keep the raw key */ }
+        return { group, at: new Date(a.value) };
+      })
+      .filter((a) => !isNaN(a.at.getTime()) && emailAckCoversSender(a.group, t.contactName ?? t.client?.name, cid));
+    if (covering.length === 0) continue;
+    const ackAt = new Date(Math.max(...covering.map((a) => a.at.getTime())));
+    const lastIn = await prisma.commLog.findFirst({
+      where: { clientId: cid, channel: "email", direction: "in" },
+      orderBy: { occurredAt: "desc" },
+      select: { occurredAt: true },
+    });
+    if (ackAt.getTime() < (lastIn?.occurredAt ?? t.createdAt).getTime()) continue;
+    const r = await prisma.smartTask.updateMany({
+      where: { id: t.id, status: OPEN_REPLY },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    });
+    closed += r.count;
+  }
+  return closed;
+}
+
 export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
   const { recordClientCommunication } = await import("@/lib/comms");
   const { logComm } = await import("@/lib/commLog");
@@ -1015,6 +1135,16 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
       closed++;
     }
   }
+  // The human's word counts too. A sender ticked "Handled" on the Comms board
+  // after their last email is answered as far as this hub is concerned — they
+  // were phoned, or replied to from a handset Gmail never saw — yet the check
+  // above only trusts the thread, so "Update Kimberly's portal access" stayed
+  // open 54 days past its tick (Sep 8 audit). The tick now completes the task
+  // itself; this is the backstop for acks written before that and for a tick
+  // the action never reached. Best-effort: it must never fail the scan.
+  try {
+    closed += await closeAckedEmailReplyTasks();
+  } catch { /* the reply sweep above already did its job */ }
   void closed;
 
   return { scanned, tasks };

@@ -4,6 +4,7 @@ import { MONTHLY_PLAN_RE } from "@/lib/pipeline";
 import { getSecret, markSynced, markError } from "./connections";
 import type { DeliverableType, ProjectStatus } from "@prisma/client";
 import type { NotifyTarget } from "@/lib/notify";
+import { streetOf } from "@/lib/delivery";
 
 // ---------------------------------------------------------------------------
 // Aryeo REST client.  Base: https://api.aryeo.com/v1  ·  Auth: Bearer {key}
@@ -3213,7 +3214,7 @@ export async function syncAryeoAppointments(
           canceled || moved || postponed || rebooked || reassigned
             ? await Promise.all([import("@/lib/notify"), import("@/lib/datetime")]).catch(() => null)
             : null;
-        const street = (titleByProject.get(projectId) || "a shoot").split(",")[0].trim();
+        const street = streetOf(titleByProject.get(projectId)) || "a shoot"; // never "[No address provided]" in a staff text (audit, Sep 8)
         if ((canceled || moved || postponed || rebooked) && bellDeps) {
           try {
             const [{ notifyInApp }, { etDateTime }] = bellDeps;
