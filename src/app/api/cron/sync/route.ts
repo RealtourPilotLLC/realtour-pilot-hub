@@ -142,6 +142,12 @@ export async function GET(req: NextRequest) {
     const { sweepConfirmationTexts } = await import("@/lib/clientTextSweeps");
     return sweepConfirmationTexts(autoTexted);
   });
+  // Welcome comes right after confirmations: to a brand-new client it matters
+  // more than a feedback ask, and it shares the one-text-per-client set.
+  await step("welcomeTexts", async () => {
+    const { sweepWelcomeTexts } = await import("@/lib/clientTextSweeps");
+    return sweepWelcomeTexts(autoTexted);
+  });
   await step("deliveryTexts", async () => {
     const { sweepDeliveryTexts } = await import("@/lib/clientTextSweeps");
     return sweepDeliveryTexts(autoTexted);

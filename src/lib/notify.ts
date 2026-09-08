@@ -152,6 +152,7 @@ const BELL_RULES: Record<string, BellRule> = {
   review_feedback: "all", // capture feedback the photographer has to fix
   feedback_shared: "all",
   new_lead: "all", // someone is trying to give us money
+  new_client: "all", // a new client to say hello to (Jordan + Kyle, Sep 7)
   program_signup: "all", // a website signup that needs a look — a lead by another name
   client_feedback: "all", // a rating, and a bad one needs a person today
   order_canceled: "all", // stop the work, refund or write off

@@ -225,7 +225,10 @@ export async function getSchedulingAvailability(opts?: {
 // Aryeo payload shapes (verified against the live v1 API). Money amounts are
 // always integer cents. customer/items/appointments embed via ?include=.
 // ---------------------------------------------------------------------------
-interface AryeoCustomer {
+// The customer GROUP as Aryeo serialises it — on an order's `customer`, and as
+// the whole body of a flat CUSTOMER webhook (verified against stored payloads).
+// Exported because upsertAryeoCustomerClient takes one straight off the wire.
+export interface AryeoCustomer {
   id?: string;
   name?: string;
   email?: string;
@@ -1356,10 +1359,18 @@ export async function syncAryeoOrders(
           generalNotes: cust?.internal_notes ?? null,
           notesSyncedAt: cust?.internal_notes ? new Date() : null,
           aryeoCustomerId: cust?.id ?? null,
+          // A client who first reaches us by placing an order is still a new
+          // client: card, brief and welcome all key off this stamp.
+          firstSeenAt: new Date(),
+          firstSeenVia: "order",
           avatarUrl: cust?.avatar_url ?? null,
         },
       });
       clientsCreated++;
+      try {
+        const { greetNewClient } = await import("@/lib/newClients");
+        await greetNewClient(created.id);
+      } catch { /* the create stands on its own */ }
       if (cust?.id) { clientByAryeoId.set(cust.id, created.id); hasAryeoId.add(created.id); }
       if (cust?.email) clientByEmail.set(cust.email.toLowerCase(), created.id);
       const cpk = phoneKey(cust?.phone);
@@ -2444,6 +2455,226 @@ export async function syncAryeoCustomers(): Promise<{ enriched: number }> {
   return { enriched };
 }
 
+// ---------------------------------------------------------------------------
+// A NEW ARYEO CONTACT BECOMES A CLIENT THE MOMENT WE HEAR ABOUT IT.
+//
+// Jordan (Sep 7 2026): "if they were not in our system before and are added as
+// a contact [which should be done via webhook with Aryeo], any new clients
+// added to Aryeo should be added here and start getting tracked."
+//
+// Before this, the CUSTOMER_* webhook only ran syncAryeoCustomers(), which
+// ENRICHES clients it can match by email and creates nobody. The only door that
+// created was syncAllAryeoClients() on the daily cron, so a contact added in
+// Aryeo at 9am was invisible here until the small hours — a whole day in which
+// nothing pinged, no profile existed and no welcome text could fire.
+//
+// THIS FUNCTION DOES NOT GET TO MINT A TWIN. That engine has been burned twice
+// (the order sync's resolveClient, then this file's own roster sweep) by
+// re-creating a client a merge had just repaired, so the match order here is
+// deliberately the SAME one those two use, strongest signal first:
+//   1. a row that already owns this Aryeo id  → it is this person, whatever
+//      their email says now (emails drift; the id does not)
+//   2. primary email
+//   3. phone AND the same name (two agents share an office line — a bare phone
+//      match would collapse them into one client)
+//   4. name + brokerage
+//   5. backupEmail AND the same name (a backup address is often a shared team
+//      inbox, and after a twin merge it is the load-bearing identity key)
+// Only a true stranger is created, and a hit only ever has EMPTY identity slots
+// filled — an occupied aryeoCustomerId or backupEmail is never overwritten.
+// ---------------------------------------------------------------------------
+
+/** What the webhook needs back: which client this was, and whether WE made it. */
+export type AryeoClientUpsert = {
+  clientId: string;
+  name: string;
+  /** True only when this call minted the row. The ping, the brief and the
+   *  welcome text all hang off this, so it must never be true for an adopt. */
+  created: boolean;
+};
+
+const CLIENT_IDENT = {
+  id: true, name: true, email: true, backupEmail: true, phone: true, aryeoCustomerId: true,
+  createdAt: true, firstSeenAt: true,
+} as const;
+
+// THE RACE THIS CLOSES. Aryeo fires CUSTOMER_CREATED and ORDER_CREATED for the
+// same new agent within seconds, and webhook delivery order is not promised. If
+// the ORDER lands first, syncAryeoOrders' resolveClient mints the row (it has
+// to — the order needs a client), and the CUSTOMER event that follows would
+// then find an existing row, report `created: false`, and silently drop the
+// ping, the brief and the welcome text for exactly the clients Jordan cares
+// most about: the ones who booked.
+//
+// So a matched row that has never been stamped and was born minutes ago is
+// still a NEW client, and gets stamped and announced. Twelve hours is far more
+// than any delivery race or webhook retry needs, and short enough that no bulk
+// import can be mistaken for an arrival. Anything older is left alone.
+const RACE_WINDOW_MS = 12 * 3600_000;
+
+export async function upsertAryeoCustomerClient(
+  cust: AryeoCustomer,
+  opts: { via?: string; altIds?: (string | null | undefined)[] } = {},
+): Promise<AryeoClientUpsert | null> {
+  const { prisma } = await import("@/lib/prisma");
+  const { phoneKey } = await import("@/lib/integrations/openphone");
+  const norm = (s: string | null | undefined) => (s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+
+  // customerName() falls back to the literal string "Unknown client" — four of
+  // those were minted through the order sync on Sep 7 alone. A nameless payload
+  // is not a person we can welcome, ping about, or write a brief for, so this
+  // door refuses it outright rather than adding to that pile.
+  // A payload with no name would otherwise be named after its email address —
+  // and then texted "Hey foo@kw.com" (review, Sep 7). Refuse it.
+  const name = (cust.name || "").trim();
+  if (!name || name.toLowerCase() === (cust.email ?? "").trim().toLowerCase()) return null;
+  const email = (cust.email ?? "").trim().toLowerCase() || null;
+  // Aryeo's flat CUSTOMER webhook is a GROUP object; the same person also has a
+  // USER id nested under `owner`/`users[0]` (identical on every live payload
+  // checked, but the API does not promise that). Both are candidates for the
+  // aryeoCustomerId slot, so we search on all of them.
+  const ids = [...new Set([cust.id, ...(opts.altIds ?? [])].filter((v): v is string => !!v && !!v.trim()))];
+
+  const pk = phoneKey(cust.phone);
+  const company = norm(cust.office_name);
+
+  // The five signals, in order. Returns the row or null — re-run after a lost
+  // claim race below, so it lives in one place.
+  const findExisting = async () => {
+    if (ids.length > 0) {
+      const byId = await prisma.client.findFirst({ where: { aryeoCustomerId: { in: ids } }, select: CLIENT_IDENT });
+      if (byId) return byId;
+    }
+    if (email) {
+      const byEmail = await prisma.client.findFirst({
+        where: { email: { equals: email, mode: "insensitive" } },
+        select: CLIENT_IDENT,
+      });
+      if (byEmail) return byEmail;
+    }
+    // Signals 3 and 4 both require the same NAME, so one query serves both:
+    // phone matching is done in JS because the stored numbers are free-form
+    // ("(610) 555-0134", "+16105550134") and only phoneKey() can compare them.
+    if (pk.length === 10 || company) {
+      const sameName = await prisma.client.findMany({
+        where: { name: { equals: name, mode: "insensitive" } },
+        select: { ...CLIENT_IDENT, company: true },
+      });
+      const named = sameName.filter((c) => norm(c.name) === norm(name));
+      if (pk.length === 10) {
+        const byPhone = named.find((c) => phoneKey(c.phone) === pk);
+        if (byPhone) return byPhone;
+      }
+      if (company) {
+        const byNameCo = named.find((c) => norm(c.company) === company);
+        if (byNameCo) return byNameCo;
+      }
+    }
+    if (email) {
+      const byBackup = await prisma.client.findFirst({
+        where: { backupEmail: { equals: email, mode: "insensitive" } },
+        select: CLIENT_IDENT,
+      });
+      // Name corroboration: a shared team inbox sitting in someone's backup slot
+      // must not swallow a different agent who happens to use it.
+      if (byBackup && norm(byBackup.name) === norm(name)) return byBackup;
+    }
+    return null;
+  };
+
+  const existing = await findExisting();
+  if (existing) {
+    // Adopt: fill EMPTY identity slots only. Step 1 already proved no row owns
+    // any of these Aryeo ids, so taking the @unique slot cannot collide.
+    const takeId = ids[0] && !existing.aryeoCustomerId ? ids[0] : null;
+    const takeBackup = email && !existing.backupEmail && norm(existing.email) !== email ? cust.email! : null;
+    // …and the race above: a row minted minutes ago by the ORDER webhook, which
+    // this is the first CUSTOMER event to reach. Stamped exactly once — a row
+    // that already carries firstSeenAt has been through here before.
+    const raceWinner =
+      !existing.firstSeenAt && existing.createdAt.getTime() > Date.now() - RACE_WINDOW_MS;
+    // An order with no customer object on it mints a row literally named
+    // "Unknown client" (customerName's last-resort fallback — four such rows
+    // were made on Sep 7 alone). That is the sync's own placeholder, never
+    // something a person typed, so when the CUSTOMER event finally brings a
+    // real name it is safe to fill in — and it stops the dashboard card and the
+    // ping from announcing "New client: Unknown client".
+    const fixName = existing.name === "Unknown client" && name !== "Unknown client" ? name : null;
+    let wrote = false;
+    if (takeId || takeBackup || raceWinner || fixName) {
+      wrote = await prisma.client
+        .update({
+          where: { id: existing.id },
+          data: {
+            ...(takeId ? { aryeoCustomerId: takeId } : {}),
+            ...(takeBackup ? { backupEmail: takeBackup } : {}),
+            ...(fixName ? { name: fixName } : {}),
+            // Their real arrival is when the ROW was made, not this moment —
+            // the welcome text's 30-day cap measures from it.
+            ...(raceWinner ? { firstSeenAt: existing.createdAt, firstSeenVia: opts.via ?? "aryeo-webhook" } : {}),
+          },
+        })
+        .then(() => true)
+        .catch(() => false);
+    }
+    // `created` gates the ping, the brief and (through firstSeenAt) the welcome
+    // text, so it may only be true if the stamp actually LANDED. Announcing a
+    // client whose firstSeenAt failed to write would put a card on the dashboard
+    // that the next render cannot find.
+    return { clientId: existing.id, name: (wrote && fixName) || existing.name, created: raceWinner && wrote };
+  }
+
+  // Nobody matched, so this would be a new person — but a payload carrying
+  // neither an Aryeo id nor an email is not a person we can identify, dedupe or
+  // ever contact. Matching on a bare name+phone is fine (it can only ever ADOPT
+  // onto someone we already know); minting off one is how the identity-less
+  // rows get made. So the guard sits here, on the create, not on the lookup.
+  if (ids.length === 0 && !email) return null;
+
+  // CLAIM BEFORE CREATING. Aryeo fires these in bursts — six byte-identical
+  // GROUP payloads for one agent inside 30 seconds on Sep 7 — and two of them
+  // in flight together would each miss the other's half-written row. The unique
+  // AppSetting key is the same atomic-claim pattern the text sweeps use.
+  const claim = `aryeo-new-client-${ids[0] ?? email}`;
+  try {
+    await prisma.appSetting.create({ data: { key: claim, value: new Date().toISOString() } });
+  } catch {
+    // Someone else owns this create. Read back what they made rather than
+    // racing them; if the row has since been merged away the daily
+    // syncAllAryeoClients sweep remains the backstop that re-creates it.
+    const again = await findExisting();
+    return again ? { clientId: again.id, name: again.name, created: false } : null;
+  }
+  try {
+    const row = await prisma.client.create({
+      data: {
+        name,
+        email: cust.email ?? null,
+        phone: cust.phone ?? null,
+        company: cust.office_name ?? null,
+        licenseNumber: cust.license_number ?? null,
+        // Straight from Aryeo → the note mirror starts in sync (same rule as the
+        // two other create sites; a fresh row must not warn about its own note).
+        generalNotes: cust.internal_notes ?? null,
+        notesSyncedAt: cust.internal_notes ? new Date() : null,
+        aryeoCustomerId: ids[0] ?? null,
+        avatarUrl: cust.avatar_url ?? null,
+        firstSeenAt: new Date(),
+        firstSeenVia: opts.via ?? "aryeo-webhook",
+      },
+      select: { id: true, name: true },
+    });
+    return { clientId: row.id, name: row.name, created: true };
+  } catch {
+    // The create failed (most likely the @unique aryeoCustomerId was taken
+    // between the search and the write). Release the claim so a later event can
+    // try again, and report whatever is actually on file now.
+    await prisma.appSetting.delete({ where: { key: claim } }).catch(() => {});
+    const again = await findExisting();
+    return again ? { clientId: again.id, name: again.name, created: false } : null;
+  }
+}
+
 // Import the FULL Aryeo client roster (every customer-user), not just the ones
 // who placed a recent order. Matches existing clients with the SAME identity
 // signals as the order sync's resolveClient — email/backupEmail, then phone +
@@ -2535,9 +2766,15 @@ export async function syncAllAryeoClients(): Promise<{ created: number; scanned:
         notesSyncedAt: cu.internal_notes ? new Date() : null,
         // Keep the Aryeo id only when it isn't already taken (it's @unique).
         aryeoCustomerId: cu.id && !usedAryeoId.has(cu.id) ? cu.id : null,
+        firstSeenAt: new Date(),
+        firstSeenVia: "roster sweep",
         avatarUrl: cu.avatar_url ?? null,
       },
     });
+    try {
+      const { greetNewClient } = await import("@/lib/newClients");
+      await greetNewClient(createdRow.id);
+    } catch { /* the create stands on its own */ }
     byEmail.set(email, createdRow.id);
     if (cu.id) usedAryeoId.add(cu.id);
     const cpk = phoneKey(cu.phone);

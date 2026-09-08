@@ -45,6 +45,8 @@ import { clientTextWhere } from "@/lib/clientTexts";
 import { unansweredCommsBoard } from "@/lib/commsBoard";
 import type { VideoCutState } from "@/lib/reviewCuts";
 import { aryeoListingUrl } from "@/lib/aryeoUrl";
+import { NewClientCard } from "@/components/clients/NewClientCard";
+import { newClientsForDashboard } from "@/lib/newClients";
 
 export const dynamic = "force-dynamic";
 
@@ -409,7 +411,7 @@ export default async function HomePage() {
   if (!me && authEnforced()) redirect("/login");
   const isOwner = !me || me.role === "OWNER";
 
-  const [d, counts, stuck, shoots, radar, handledToday, board, flagged, ownerStats, pulse, dials, money, todos] =
+  const [d, counts, stuck, shoots, radar, handledToday, board, flagged, ownerStats, pulse, dials, money, todos, newClients] =
     await Promise.all([
       // The operating day: shoots, QC, loops, comms, pipeline, video review,
       // closeout. It already resolves the viewer's own loop lane, so this page
@@ -433,6 +435,8 @@ export default async function HomePage() {
       // My Day's personal list. Owner-only: it is one person's private list,
       // exactly as /day was ownerOnly in PAGES.
       isOwner ? ownerTodoLists().catch(() => null) : Promise.resolve(null),
+      // Clients the Aryeo webhook met in the last 10 days — for Jordan AND Kyle.
+      newClientsForDashboard().catch(() => []),
     ]);
 
   const now = new Date(d.nowISO);
@@ -775,6 +779,8 @@ export default async function HomePage() {
         )}
 
         {/* 6 · Radar — fresh risk only (≤3; creatives never reach this page) */}
+        {/* New clients — say hello. Renders nothing when there are none. */}
+        <NewClientCard clients={newClients} />
         {radar.flags.length > 0 && <ProactiveFlags flags={radar.flags} />}
 
         {/* 7 · MONEY — owner only, and last on purpose. Jordan: money after

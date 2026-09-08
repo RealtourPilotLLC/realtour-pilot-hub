@@ -28,6 +28,13 @@ export type ClientProfile = ClientProfileInsights & {
   v?: number; // stored shape version (absent = v1, pre-audience-scoping)
   segment?: string | null; // the client's segment at build time (chip on the card)
   stats: { totalOrders: number; revisions: number; inboundMsgs: number };
+  // THE PROVISIONAL STATE. True while this is the first-pass new-client brief
+  // written from the Aryeo contact card alone (see buildNewClientBrief), false
+  // or absent once a real profile has been synthesized from comms and jobs.
+  // Nothing may read a `newClient` profile as a researched one — the card, the
+  // brief itself and the editor block all say so out loud.
+  newClient?: boolean;
+  newClientAt?: string; // ISO — when the provisional brief was written
 };
 
 // What an EDITOR is allowed to see. Built by explicit whitelist, never by
@@ -128,11 +135,208 @@ export async function buildClientProfile(clientId: string): Promise<{ ok: boolea
   return { ok: true };
 }
 
+// ---------------------------------------------------------------------------
+// THE NEW-CLIENT BRIEF (Jordan, Sep 7 2026: "General Real Estate Career,
+// profiled by AI, with a brief of the customer laid out on their contact page.
+// Add it to their working profile. Saying it's a new client and this is the
+// current information we have about them. Then it progressively gets more
+// personalized and better over time based on current Gmail and open phone
+// communications.")
+//
+// buildClientProfile() above has NOTHING to work with on the day someone is
+// added: no messages, no shoots, no revisions, no feedback. Asked to synthesize
+// from that it either refuses or invents, and an invented profile is worse than
+// no profile. So a brand-new contact gets this instead: the facts Aryeo handed
+// us, plus what is generally true of a real estate career, wrapped in a sentence
+// that says out loud it is provisional.
+//
+// TWO RULES MAKE IT SAFE TO SHOW:
+//  · It is MARKED (`newClient: true`) and it SAYS SO in its own first sentence,
+//    so nobody mistakes it for a researched profile.
+//  · It is REPLACED, never added to. buildClientProfile writes the whole
+//    profileJson, so the moment there is anything real to build from, the real
+//    profile takes the slot — and refreshStaleClientProfiles below hunts these
+//    down first rather than waiting out the ten-day staleness clock.
+// ---------------------------------------------------------------------------
+
+/** The line that makes the provisional state unmistakable, wherever it renders. */
+export const NEW_CLIENT_BRIEF_LEAD =
+  "New client. This is everything we know so far, and it fills in as we talk to them.";
+
+/** Is this stored profile the provisional first-pass brief? */
+export function isNewClientBrief(p: ClientProfile | null): boolean {
+  return !!p?.newClient;
+}
+
+// What the AI adds: general real estate career context, never a claim about
+// this particular person. Kept small on purpose — the brief is read in five
+// seconds on a dashboard card, and this runs inside an Aryeo webhook.
+type CareerContext = { careerContext: string; expect: string[]; firstConversation: string[] };
+
+async function generalCareerContext(input: {
+  name: string;
+  company: string | null;
+  hasLicense: boolean;
+}): Promise<CareerContext | null> {
+  try {
+    const { aiJson } = await import("@/lib/integrations/ai");
+    return await aiJson<CareerContext>({
+      maxTokens: 700,
+      system:
+        "You brief a real estate media agency's team on a brand-new client they have never worked with. You know NOTHING about this specific person beyond the contact details given, and you must not pretend otherwise: never state or imply a preference, a history, a personality or a track record for them. Everything you write is GENERAL knowledge about how a real estate agent's career and marketing needs typically work, offered as a starting expectation the team will replace with real observations. It must be appropriate for a creative to read: never mention pricing, fees, payments, invoices, balances, margins or business strategy. Warm, plain, specific. No em dashes, no emojis, no bold. Do not use the client's name as if you know them.",
+      prompt: `Brand-new client just added to our system from our booking platform.
+Name: ${input.name}
+Brokerage: ${input.company || "not on file"}
+License number on file: ${input.hasLicense ? "yes" : "no"}
+We have no messages, no shoots, no feedback and no revision history for them.
+
+Write:
+- careerContext: 2 to 3 sentences on what a real estate agent typically needs from a photo and video partner, and what usually matters to them in the first few jobs. General, not about this person.
+- expect: 3 to 4 short bullets a team member could use as a starting expectation. Each one must read as general ("Most agents...", "Usually..."), never as a fact about this client.
+- firstConversation: 2 to 3 short things worth finding out from them early, phrased as questions or prompts.`,
+      schema: {
+        type: "object",
+        properties: {
+          careerContext: { type: "string" },
+          expect: { type: "array", items: { type: "string" } },
+          firstConversation: { type: "array", items: { type: "string" } },
+        },
+        required: ["careerContext", "expect", "firstConversation"],
+      },
+    });
+  } catch {
+    // AI down or not connected. The deterministic brief below still stands on
+    // its own — a new client must never end up with a blank profile card just
+    // because a model was unreachable.
+    return null;
+  }
+}
+
+export async function buildNewClientBrief(clientId: string): Promise<{ ok: boolean; error?: string }> {
+  const client = await prisma.client.findUnique({
+    where: { id: clientId },
+    select: {
+      id: true, name: true, company: true, email: true, phone: true, licenseNumber: true,
+      generalNotes: true, segment: true, firstSeenAt: true, firstSeenVia: true,
+      profileJson: true, avatarUrl: true, transactionCount: true,
+    },
+  });
+  if (!client) return { ok: false, error: "Client not found." };
+
+  // Never stand on top of a real profile.
+  const stored = parseClientProfile(client.profileJson);
+  if (stored && !stored.newClient) return { ok: false, error: "This client already has a real working profile." };
+
+  // …and never on top of a real RELATIONSHIP. A client who booked ten minutes
+  // ago still qualifies — a future shoot on the calendar is not history — but
+  // one we have already talked to, already shot for, or already completed an
+  // order for has something to synthesize from, and buildClientProfile is the
+  // right tool. (This matters because the ORDER webhook can mint the row before
+  // the CUSTOMER one arrives, so "has a project" cannot be the test.)
+  const [past, comms] = await Promise.all([
+    prisma.project.count({ where: { clientId, shootDate: { lt: new Date() } } }),
+    prisma.commLog.count({ where: { clientId } }),
+  ]);
+  if (past > 0 || comms > 0 || client.transactionCount > 0) {
+    return { ok: false, error: "There is real history here — build the full working profile instead." };
+  }
+
+  const arrived = etDate(client.firstSeenAt ?? new Date());
+  const career = await generalCareerContext({
+    name: client.name,
+    company: client.company,
+    hasLicense: !!client.licenseNumber,
+  });
+
+  // The facts we actually hold, said as facts. Everything else on this card is
+  // labelled general, so these have to be unmistakably the real ones.
+  const known: string[] = [];
+  if (client.company) known.push(`Brokerage on file: ${client.company}.`);
+  if (client.licenseNumber) known.push(`License number on file: ${client.licenseNumber}.`);
+  if (client.email) known.push(`Email: ${client.email}.`);
+  if (client.phone) known.push(`Phone: ${client.phone}.`);
+  if (client.generalNotes?.trim()) known.push(`Note from their contact record: ${clip(client.generalNotes.trim(), 220)}`);
+  known.push(`Added ${arrived}${client.firstSeenVia === "aryeo-webhook" ? " when they were created in Aryeo" : ""}.`);
+
+  const generalBullets = (career?.expect ?? [])
+    .filter((s) => typeof s === "string" && s.trim().length > 8)
+    .slice(0, 4)
+    // Prefixed, every one of them. On a card that mixes "License number on
+    // file" with "prefers bright and airy", the reader has to be able to tell
+    // in a glance which lines came from the client and which came from a model.
+    .map((s) => `General, not observed yet: ${s.trim()}`);
+
+  const summary = [
+    NEW_CLIENT_BRIEF_LEAD,
+    `${client.name}${client.company ? ` at ${client.company}` : ""} was added on ${arrived}. Nothing has been shot, sent or discussed yet, so there is no history to read here.`,
+    (career?.careerContext ?? "").trim(),
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const profile: ClientProfile = {
+    v: CLIENT_PROFILE_VERSION,
+    newClient: true,
+    newClientAt: new Date().toISOString(),
+    segment: client.segment ?? null,
+    stats: { totalOrders: 0, revisions: 0, inboundMsgs: 0 },
+    summary,
+    touchLevel: "", // unknown, and guessing it is exactly the failure mode here
+    workingStyle: career?.careerContext
+      ? `Nothing observed yet. As a general starting point: ${career.careerContext.trim()}`
+      : "Nothing observed yet. This fills in from their messages and their first shoot.",
+    communication: "No messages on record yet. Their first text or email sets this.",
+    revisions: { summary: "No revision history yet.", commonTypes: [] },
+    brandStyle: "", // inventing a brand for someone we have never worked with is the one thing this brief must not do
+    shootNotes: [],
+    aboutThem: [...known, ...generalBullets],
+    dos: (career?.firstConversation ?? [])
+      .filter((s) => typeof s === "string" && s.trim().length > 8)
+      .slice(0, 3)
+      .map((s) => `Worth asking early: ${s.trim()}`),
+    donts: ["Nothing on this card has been confirmed by them yet, so do not quote any of it back as their preference."],
+    // EDITOR-SAFE (editorView whitelists this block and nothing else). An editor
+    // opening a first job for this client should learn two things: there are no
+    // standing instructions yet, and how the name and brokerage are spelled.
+    editing: {
+      summary:
+        "New client, first job. Nothing on file yet about how they like their videos, so cut to the house standard and flag anything they ask for so it sticks for next time.",
+      prefs: [],
+      customerNotes: [
+        `Name as it should appear on screen: ${client.name}.`,
+        ...(client.company ? [`Brokerage: ${client.company}.`] : []),
+      ],
+      dos: [],
+      donts: [],
+    },
+  };
+
+  await prisma.client.update({
+    where: { id: clientId },
+    data: {
+      profileSummary: summary,
+      profileJson: JSON.stringify(profile),
+      profileUpdatedAt: new Date(),
+    },
+  });
+  return { ok: true };
+}
+
 // Nightly: rebuild a bounded batch of missing/stale profiles for real clients,
 // so the creatives portal always has fresh context without a big one-time spend.
 // Capped per run to keep AI cost predictable.
 //
-// PRE-v2 PROFILES GO FIRST. Every profile written before Sep 2 2026 has no
+// PROVISIONAL BRIEFS GO FIRST, then pre-v2 profiles.
+//
+// A new-client brief (buildNewClientBrief) is a placeholder by design, and
+// Jordan's whole ask is that it "progressively gets more personalized and
+// better over time". The `real` filter below would never reach one — a new
+// client has no transactions yet — and even once they did, a brief written this
+// week is not "stale" for ten more days. So the moment a provisional brief has
+// ANYTHING real behind it (a job on the books, or a message either way) it is
+// promoted to the front of this queue and replaced with the real profile.
+//
+// PRE-v2 PROFILES GO NEXT. Every profile written before Sep 2 2026 has no
 // `editing` block, which means an editor opening that client's job sees only the
 // handful of fields that were always editor-safe. Those clients are the ones
 // actually costing us something, so they jump the queue ahead of the merely
@@ -146,36 +350,61 @@ export async function refreshStaleClientProfiles(limit = 20, budgetMs = 120_000)
   const deadline = Date.now() + budgetMs;
   const real = { parentClientId: null, transactionCount: { gt: 0 } } as const;
 
-  const preV2 = await prisma.client.findMany({
-    where: {
-      ...real,
-      profileJson: { not: null },
-      NOT: { profileJson: { contains: `"v":${CLIENT_PROFILE_VERSION}` } },
-    },
+  // Provisional briefs waiting to be outgrown. The `contains` test is on the
+  // stored JSON because `newClient` lives inside it, not in a column; the list
+  // is tiny (only clients the Aryeo webhook minted since this shipped), so the
+  // "is there anything real yet?" check is done row by row afterwards. Comms
+  // count as much as jobs here: CommLog has no relation to Client, so it takes
+  // its own count rather than a `some` filter.
+  const provisional = await prisma.client.findMany({
+    where: { parentClientId: null, profileJson: { contains: `"newClient":true` } },
     orderBy: [{ profileUpdatedAt: { sort: "asc", nulls: "first" } }],
     take: cap,
-    select: { id: true },
+    select: { id: true, _count: { select: { projects: true } } },
   });
+  const outgrown: { id: string }[] = [];
+  for (const c of provisional) {
+    if (outgrown.length >= cap) break;
+    const hasSomething =
+      c._count.projects > 0 ||
+      !!(await prisma.commLog.findFirst({ where: { clientId: c.id }, select: { id: true } }).catch(() => null));
+    if (hasSomething) outgrown.push({ id: c.id });
+  }
 
-  const rest = preV2.length < cap
+  const preV2 = outgrown.length < cap
     ? await prisma.client.findMany({
         where: {
           ...real,
-          id: { notIn: preV2.map((c) => c.id) },
+          id: { notIn: outgrown.map((c) => c.id) },
+          profileJson: { not: null },
+          NOT: { profileJson: { contains: `"v":${CLIENT_PROFILE_VERSION}` } },
+        },
+        orderBy: [{ profileUpdatedAt: { sort: "asc", nulls: "first" } }],
+        take: cap - outgrown.length,
+        select: { id: true },
+      })
+    : [];
+
+  const done = [...outgrown, ...preV2].map((c) => c.id);
+  const rest = done.length < cap
+    ? await prisma.client.findMany({
+        where: {
+          ...real,
+          id: { notIn: done },
           OR: [
             { profileUpdatedAt: null },
             { profileUpdatedAt: { lt: new Date(Date.now() - AGE_STALE_MS) } },
           ],
         },
         orderBy: [{ profileUpdatedAt: { sort: "asc", nulls: "first" } }],
-        take: cap - preV2.length,
+        take: cap - done.length,
         select: { id: true },
       })
     : [];
 
   let refreshed = 0;
   let ranOut = false;
-  for (const c of [...preV2, ...rest]) {
+  for (const c of [...outgrown, ...preV2, ...rest]) {
     if (Date.now() >= deadline) { ranOut = true; break; }
     try {
       const r = await buildClientProfile(c.id);

@@ -77,6 +77,18 @@ export async function saveAutoTextRules(input: AutoTextRules): Promise<{ ok: boo
       ...(input.sendUntilMinute != null ? { sendUntilMinute: Math.min(59, Math.max(0, Math.round(input.sendUntilMinute))) } : {}),
       ...(input.weekdaysOnly != null ? { weekdaysOnly: !!input.weekdaysOnly } : {}),
       ...(input.afterHours ? { afterHours: input.afterHours } : {}),
+      // The welcome text (Jordan, Sep 7). Stored trimmed and bounded; a blank
+      // message is saved as blank on purpose, because autoTextRules() reads an
+      // empty box as "use the built-in wording" rather than as an empty text.
+      ...(input.welcome
+        ? {
+            welcome: {
+              enabled: !!input.welcome.enabled,
+              strategyCallUrl: String(input.welcome.strategyCallUrl ?? "").trim().slice(0, 300),
+              message: String(input.welcome.message ?? "").slice(0, 1000),
+            },
+          }
+        : {}),
     };
     await putSetting("auto_texts", rules, me?.email ?? null);
     revalidatePath("/settings");

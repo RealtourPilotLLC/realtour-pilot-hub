@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Avatar } from "@/components/ui/Avatar";
+import { CopyButton } from "@/components/ui/CopyButton";
 import { setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
 
 // THE SLACK TRACKER, replicated — Jordan: "I want the editor queue to look
@@ -37,6 +38,10 @@ import { setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
 
 export type QueueRow = {
   id: string;
+  // The ABSOLUTE link to this job, built server-side from the hub's public
+  // origin — what the row's Copy button puts on the clipboard so Jordan can
+  // paste it straight to an editor (Jordan, Sep 7).
+  url: string;
   street: string;
   client: string;
   clientAvatarUrl: string | null; // the agent's Aryeo headshot, when they have one
@@ -82,6 +87,15 @@ const VIDEO_EDITORS = [
   { key: "john", name: "John Mark" },
   { key: "kim", name: "Kim" },
 ] as const;
+
+// Jordan, Sep 7: "I want to be able to unassign projects from editors and
+// reassign them to an external agency. That way, our editors don't see jobs
+// that are not assigned to them." Both are real destinations, not blanks —
+// picking either takes the job off John's and Kim's boards for good (the
+// server pins it so no engine routes a name back on). UNASSIGN is the empty
+// string because that's what an unset <select> already carries.
+const UNASSIGN = "";
+const EXTERNAL = "external_agency";
 
 const fmtDay = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : "—";
@@ -159,25 +173,32 @@ function StatusPill({ row }: { row: QueueRow }) {
 }
 
 // The Editor cell IS the reassign control — pick a name and the job moves
-// (open task repointed + bell, or pinned on the project for an upcoming shoot).
-// Optimistic with snap-back, same contract as the status pill.
+// (open task repointed + bell, or pinned on the project for an upcoming shoot),
+// or pick Unassigned / External agency and it leaves our editors' queues.
+// Optimistic with snap-back, same contract as the status pill; a refusal keeps
+// the server's reason on the control's tooltip instead of failing silently.
 function EditorSelect({ row }: { row: QueueRow }) {
-  const [key, setKey] = useState(row.editorKey ?? "");
+  const [key, setKey] = useState(row.editorKey ?? UNASSIGN);
   const [pending, start] = useTransition();
-  const known = VIDEO_EDITORS.some((e) => e.key === key);
+  const [err, setErr] = useState<string | null>(null);
+  const known = key === EXTERNAL || VIDEO_EDITORS.some((e) => e.key === key);
 
   const pick = (next: string) => {
-    if (!next || next === key) return;
+    if (next === key) return;
     const prev = key;
     setKey(next);
+    setErr(null);
     start(async () => {
-      const r = await setEditVideoEditor(row.id, next).catch(() => ({ ok: false }));
-      if (!r.ok) setKey(prev); // server refused — snap back
+      const r = await setEditVideoEditor(row.id, next).catch(() => ({ ok: false, message: "That didn't save." }));
+      if (!r.ok) {
+        setKey(prev); // server refused — snap back, and keep the reason on hover
+        setErr(r.message);
+      }
     });
   };
 
   return (
-    <span className="inline-flex items-center gap-1">
+    <span className="inline-flex items-center gap-1" title={err ?? undefined}>
       {pending && <Loader2 className="size-3 animate-spin text-muted" />}
       <select
         aria-label="Assign editor"
@@ -187,22 +208,27 @@ function EditorSelect({ row }: { row: QueueRow }) {
         className={cn(
           "cursor-pointer rounded-md border border-transparent bg-transparent py-0.5 pl-1 pr-5 text-xs font-medium",
           "hover:border-border hover:bg-surface-2 disabled:opacity-60",
-          key ? "text-foreground" : "text-muted-2",
+          err ? "text-danger" : key ? "text-foreground" : "text-muted-2",
         )}
       >
-        <option value="" disabled>
-          Assign…
-        </option>
+        {/* Selectable, not a disabled placeholder: taking a job OFF an editor
+            is the point of this control now. */}
+        <option value={UNASSIGN}>Unassigned</option>
         {/* A historical editor (Luma / Remar) still shows by name, but new work
-            can only go to the current video editors. */}
+            can only go to the current video editors or the outside shop. */}
         {!known && key && <option value={key} disabled>{row.editor ?? key}</option>}
-        {VIDEO_EDITORS.map((o) => (
-          <option key={o.key} value={o.key}>
-            {o.name}
-          </option>
-        ))}
+        <optgroup label="Our editors">
+          {VIDEO_EDITORS.map((o) => (
+            <option key={o.key} value={o.key}>
+              {o.name}
+            </option>
+          ))}
+        </optgroup>
+        <optgroup label="Outside">
+          <option value={EXTERNAL}>External agency</option>
+        </optgroup>
       </select>
-      {row.auto && key === (row.editorKey ?? "") && (
+      {row.auto && key === (row.editorKey ?? UNASSIGN) && (
         <span className="text-[10px] text-muted-2" title="Assigned by the routing rules — pick a name to override">
           auto
         </span>
@@ -323,30 +349,66 @@ export function SimpleQueue({
                   <tr
                     key={r.id}
                     onClick={() => router.push(`/edit/${r.id}`)}
-                    title="Open the edit page"
+                    // No row-wide tooltip: it followed the cursor across every
+                    // cell and sat on top of the controls underneath it.
                     className="cursor-pointer align-top hover:bg-surface-2/50"
                   >
-                    <td className="min-w-44 px-3 py-2.5">
-                      {/* A real link under the row click, so cmd/middle-click
-                          opens the edit page in a new tab. */}
-                      <Link href={`/edit/${r.id}`} onClick={swallow} className="block">
-                        <span className="font-semibold">{r.street}</span>
-                        {/* Headshot beside the agent's name (Jordan, Sep 2). Inline
-                            and shrink-0, so the cell stays the height of the
-                            Video-type cell beside it — the row doesn't grow. */}
-                        <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted">
-                          <Avatar name={r.client} src={r.clientAvatarUrl} size={20} />
-                          <span className="truncate">{r.client}</span>
-                        </span>
-                        {r.priority !== "NORMAL" && r.priority !== "LOW" && (
-                          <span className="mt-0.5 inline-block rounded bg-danger-soft px-1.5 text-[10px] font-semibold text-danger">{r.priority}</span>
-                        )}
-                        {r.openRevisions > 0 && (
-                          <span className="mt-0.5 ml-1 inline-block rounded bg-warning-soft px-1.5 text-[10px] font-semibold text-warning">
-                            {r.openRevisions} revision ask{r.openRevisions === 1 ? "" : "s"}
+                    {/* min-w-52, up from 44: the copy glyph took the width the
+                        address used to have, and streets like "2051 Old
+                        Sumneytown Pike" started wrapping onto a second line —
+                        every row a little taller, which is the opposite of
+                        what Jordan asked for. */}
+                    <td className="min-w-52 px-3 py-2.5">
+                      <span className="flex items-start gap-1.5">
+                        {/* A real link under the row click, so cmd/middle-click
+                            opens the edit page in a new tab. */}
+                        <Link href={`/edit/${r.id}`} onClick={swallow} title="Open the edit page" className="block min-w-0 flex-1">
+                          <span className="font-semibold">{r.street}</span>
+                          {/* Headshot beside the agent's name (Jordan, Sep 2). Inline
+                              and shrink-0, so the cell stays the height of the
+                              Video-type cell beside it — the row doesn't grow. */}
+                          <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted">
+                            <Avatar name={r.client} src={r.clientAvatarUrl} size={20} />
+                            <span className="truncate">{r.client}</span>
                           </span>
-                        )}
-                      </Link>
+                          {/* One line for both chips, not two stacked blocks —
+                              a job that is both URGENT and in revisions used to
+                              grow the row by an extra line. */}
+                          {(r.priority !== "NORMAL" && r.priority !== "LOW") || r.openRevisions > 0 ? (
+                            <span className="mt-0.5 flex flex-wrap items-center gap-1">
+                              {r.priority !== "NORMAL" && r.priority !== "LOW" && (
+                                <span className="rounded bg-danger-soft px-1.5 text-[10px] font-semibold text-danger">{r.priority}</span>
+                              )}
+                              {r.openRevisions > 0 && (
+                                <span className="rounded bg-warning-soft px-1.5 text-[10px] font-semibold text-warning">
+                                  {r.openRevisions} revision ask{r.openRevisions === 1 ? "" : "s"}
+                                </span>
+                              )}
+                            </span>
+                          ) : null}
+                        </Link>
+                        {/* COPY LINK (Jordan, Sep 7): "I want to be able to copy
+                            the project link from the editing room table and
+                            send it to an editor, and they can click it, and it
+                            opens if they are already logged in on that
+                            browser." The absolute URL is built on the server
+                            (row.url) from the hub's public origin — copying
+                            window.location here would hand Manila a localhost
+                            link off Jordan's laptop. A bare glyph, muted until
+                            you reach for it: Jordan has to be able to FIND it,
+                            so it is not hidden behind a row hover (and there is
+                            no hover at all on his phone). Outside the <Link>
+                            because a button inside an anchor is invalid HTML —
+                            and it swallows the click so the row doesn't
+                            navigate out from under the copy. */}
+                        <span onClick={swallow} className="shrink-0 pt-0.5">
+                          <CopyButton
+                            value={r.url}
+                            title={`Copy this job's link to send to an editor — ${r.url}`}
+                            className="text-muted-2 hover:text-brand"
+                          />
+                        </span>
+                      </span>
                     </td>
                     <td className="px-3 py-2.5">
                       <span className="inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold" style={{ backgroundColor: `${t.color}26`, color: t.color }}>

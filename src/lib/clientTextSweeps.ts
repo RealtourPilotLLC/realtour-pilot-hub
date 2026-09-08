@@ -65,7 +65,7 @@ const CONFIRM_FORCE_H = 24;
 // An automated send answers nobody's question and closes nobody's task but its
 // own — see the `autoSent` guard in api/webhooks/openphone/route.ts, which
 // reads exactly these strings.
-const AUTO_SOURCES = ["auto-confirmation", "auto-delivery", "auto-afterhours"];
+const AUTO_SOURCES = ["auto-confirmation", "auto-delivery", "auto-afterhours", "auto-welcome"];
 
 // ---- ET clock ---------------------------------------------------------------
 // One Intl formatter, reused: the window helpers below evaluate up to ~200
@@ -407,6 +407,146 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
         // row and on the job instead of letting it pass as sent.
         await markSendUnverified(taskIds, { projectId: p.id, label: "Confirmation", clientName: p.client.name });
         notes.push(`${p.title}: send failed (ambiguous — held, verify in OpenPhone before resending) — ${e instanceof Error ? e.message : "unknown"}`);
+      }
+    }
+  }
+  return { sent, skipped, notes };
+}
+
+// ---------------------------------------------------------------------------
+// THE WELCOME TEXT (Jordan, Sep 7 2026): "I want to send a welcome text to
+// every new client who books an appointment… 'Hey, first name, welcome to
+// Realtour Pilot. We're excited to work with you and get to know you… you can
+// always call and text us here. You can also schedule a free strategy call here
+// anytime: [Strategy call link].'"
+//
+// WHEN. Not when the contact appears in Aryeo — when they BOOK. A contact card
+// created by a coordinator who never orders anything is not a client yet, and
+// "welcome to RealTour Pilot" to someone who has not hired us reads as a cold
+// sales text. So the trigger is: a client the hub itself first saw (firstSeenAt,
+// i.e. one the Aryeo webhook minted) who now has a shoot on the books.
+//
+// ONCE, EVER. Client.welcomeTextAt is the visible proof and the pre-filter; the
+// unique `auto-welcome-<clientId>` AppSetting marker, claimed BEFORE the send,
+// is the authoritative gate — two overlapping crons cannot both claim it. There
+// is no SmartTask for this text (nothing for a human to send by hand), so the
+// marker is the whole ledger.
+//
+// WHO IT NEVER GOES TO:
+//  · a client folded under an agent (parentClientId) — an assistant is not a
+//    new client, they are the same relationship reached from a second address;
+//  · anyone from before this shipped — every one of the 364 rows already on
+//    file has firstSeenAt NULL, so the back catalogue is excluded by
+//    construction rather than by a cutoff date somebody has to maintain;
+//  · a client who has turned BOTH of their automated texts off. There is no
+//    switch named for this one, so the two we have are read honestly: someone
+//    with both off has said "do not have the robot text me", and that covers
+//    this too (the same rule the after-hours reply uses);
+//  · anyone waiting on an answer from us, under the shared skipWhenClientWaiting
+//    rule — greeting somebody whose question we have ignored is worse than
+//    saying nothing.
+//
+// A client who books more than WELCOME_MAX_AGE_DAYS after we first saw them
+// never gets one: "welcome" a month late is not a welcome, and by then Kyle has
+// spoken to them anyway.
+// ---------------------------------------------------------------------------
+const WELCOME_MAX_AGE_DAYS = 30;
+
+export async function sweepWelcomeTexts(texted: Set<string> = new Set()): Promise<{ sent: number; skipped: number; notes: string[] }> {
+  const notes: string[] = [];
+  const { autoTextRules, PUBLIC_WEBSITE } = await import("@/lib/settings");
+  const rules = await autoTextRules();
+  if (!rules.enabled || !rules.welcome.enabled) {
+    return { sent: 0, skipped: 0, notes: ["welcome texts are switched OFF in Settings → Automated texts"] };
+  }
+  const w = windowOf(rules);
+  const now = new Date();
+  if (!inSendWindow(w, now)) {
+    return {
+      sent: 0, skipped: 0,
+      notes: [`outside the ${windowLabel(w)} client-text window — queued for ${nextSendOpportunity(w, now).toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short", hour: "numeric" })} ET`],
+    };
+  }
+
+  const clients = await prisma.client.findMany({
+    where: {
+      firstSeenAt: { gt: new Date(now.getTime() - WELCOME_MAX_AGE_DAYS * 24 * HOUR) },
+      welcomeTextAt: null,
+      parentClientId: null,
+      // Their first appointment is on the books. `aryeoMissingAt` excludes a
+      // job whose order has vanished from Aryeo — the same limbo guard the
+      // other two sweeps use before saying anything to a client.
+      projects: { some: { status: { notIn: ["CANCELLED"] }, shootDate: { not: null }, aryeoMissingAt: null } },
+    },
+    orderBy: { firstSeenAt: "asc" }, // oldest arrival first: their shoot is soonest
+    take: 25,
+    select: { id: true, name: true, phone: true, autoConfirmationText: true, autoDeliveryText: true },
+  });
+  if (clients.length === 0) return { sent: 0, skipped: 0, notes };
+
+  const { phoneKey, OpenPhone, from } = await openPhone();
+  if (!from) return { sent: 0, skipped: clients.length, notes: ["OpenPhone not connected"] };
+  const { applyTemplate } = await import("@/lib/delivery");
+
+  let sent = 0, skipped = 0;
+  for (const c of clients) {
+    const k = phoneKey(c.phone ?? "");
+    if (k.length !== 10) {
+      // Said out loud rather than swallowed: this client will NEVER get a
+      // welcome until someone puts a number on their record, and the dashboard
+      // card carries the same warning.
+      skipped++; notes.push(`${c.name}: no valid phone number on file, so no welcome text can send`); continue;
+    }
+    if (!c.autoConfirmationText && !c.autoDeliveryText) {
+      skipped++; notes.push(`${c.name}: all automatic texts off — no welcome sent`); continue;
+    }
+    if (rules.onePerClientPerRun && texted.has(c.id)) { skipped++; continue; } // next tick sends this one
+    if (rules.skipWhenClientWaiting && await clientHasOpenQuestion(c.id)) {
+      skipped++; notes.push(`${c.name}: waiting on an answer from us — the welcome waits for a person`); continue;
+    }
+    // CLAIM FIRST. Nothing else gates this text, so the marker is the ledger.
+    const marker = `auto-welcome-${c.id}`;
+    try {
+      await prisma.appSetting.create({ data: { key: marker, value: now.toISOString() } });
+    } catch { skipped++; continue; } // already claimed — sent, or held after an unconfirmed send
+    const body = applyTemplate(rules.welcome.message, {
+      first: (c.name || "there").trim().split(/\s+/)[0] || "there",
+      strategyCallLink: rules.welcome.strategyCallUrl,
+      website: PUBLIC_WEBSITE,
+      portal: rules.afterHours.portalUrl,
+    });
+    try {
+      const res = await OpenPhone.sendMessage(from, `+1${k}`, body);
+      sent++;
+      texted.add(c.id);
+      // Stamped only AFTER the provider took it: welcomeTextAt is shown on the
+      // dashboard card as "Welcome text sent", so it has to mean that.
+      // The marker is already held, so a failed stamp here means the text went
+      // out but the card would say forever that it hadn't — retry once, then
+      // say so where a person will see it.
+      await prisma.client.update({ where: { id: c.id }, data: { welcomeTextAt: new Date() } }).catch(async () => {
+        await prisma.client.update({ where: { id: c.id }, data: { welcomeTextAt: new Date() } }).catch((e) =>
+          console.error(`[welcome] sent to ${c.name} but could not stamp welcomeTextAt`, e));
+      });
+      await logComm({
+        channel: "text", direction: "out", minRole: "ADMIN",
+        clientId: c.id, clientName: c.name,
+        contactName: c.name, fromPhone: k, body,
+        source: "auto-welcome",
+        externalId: res?.data?.id ? `op-${res.data.id}` : marker,
+      }).catch(() => {});
+    } catch (e) {
+      skipped++;
+      if (provablyNotSent(e)) {
+        // Cleanly rejected: release the claim so the next tick tries again.
+        await prisma.appSetting.delete({ where: { key: marker } }).catch(() => {});
+        notes.push(`${c.name}: welcome text failed — ${e instanceof Error ? e.message : "unknown"}`);
+      } else {
+        // Ambiguous (timeout / 5xx after possible acceptance). HOLD the claim —
+        // a second "welcome to RealTour Pilot" is worse than none — but leave
+        // welcomeTextAt null, because nothing proved it landed and that field is
+        // read on screen as proof. The held marker means no later tick retries.
+        notes.push(`${c.name}: welcome text unconfirmed (held, check OpenPhone before sending by hand) — ${e instanceof Error ? e.message : "unknown"}`);
       }
     }
   }

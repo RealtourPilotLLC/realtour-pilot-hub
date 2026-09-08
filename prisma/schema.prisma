@@ -355,6 +355,25 @@ model Client {
   autoConfirmationText Boolean @default(true) // shoot confirmation text, ~48h before the shoot
   autoDeliveryText     Boolean @default(true) // the post-delivery "how did we do?" feedback ask
 
+  // ---------------------------------------------------------------------------
+  // FIRST SIGHT (Jordan, Sep 7 2026: "if they were not in our system before and
+  // are added as a contact … any new clients added to Aryeo should be added
+  // here and start getting tracked").
+  //
+  // `createdAt` CANNOT answer "when did this person arrive": 349 of the 364
+  // rows on file were minted by a bulk roster import, so their createdAt is the
+  // day a sync ran, not the day the agent became our client. A welcome text
+  // keyed off createdAt would greet a client of two years. So the Aryeo webhook
+  // stamps firstSeenAt when IT creates the row, and it is deliberately left
+  // NULL on everyone already here — every downstream feature (the dashboard
+  // card, the welcome text) reads this column, so the back catalogue is out of
+  // scope for them by construction rather than by a date cutoff someone has to
+  // remember.
+  // ---------------------------------------------------------------------------
+  firstSeenAt   DateTime? // the moment the hub first learned this person exists
+  firstSeenVia  String? // "aryeo-webhook" — how they reached us (shown on the card)
+  welcomeTextAt DateTime? // the welcome text provably went out (see clientTextSweeps)
+
   // Aryeo customer-team membership. An agency team (e.g. "The Jamie Achberger
   // Group") groups the agent + their assistants/coordinators as separate
   // customer-users. We fold the assistants under the agent (`parentClientId`)
@@ -372,6 +391,10 @@ model Client {
 
   @@index([email])
   @@index([parentClientId])
+  // The home dashboard's new-client card and the welcome-text sweep both scan
+  // "arrived in the last N days"; without this they table-scan all 364 clients
+  // on every page render and every cron tick.
+  @@index([firstSeenAt])
 }
 
 // A synced OpenPhone/HubSpot contact. Lets inbound comms from ANY known number
@@ -478,6 +501,13 @@ model Project {
   // task first mints — so a pick made while the job is still upcoming (no task
   // yet) survives the shoot happening.
   editorManual       Boolean     @default(false)
+  // WHO holds the edit when it is not one of our editors. An owner can hand a
+  // job to the outside shop before any edit task exists (Jordan, Sep 7: "reassign
+  // them to an external agency ... so our editors don't see jobs that are not
+  // assigned to them"); editorId cannot say that because the agency has no
+  // TeamMember. null = not with a vendor. Read with editorManual: a pin to NO
+  // editor and NO vendor is a deliberate "nobody".
+  editorVendorKey    String?
   va                 TeamMember? @relation("VA", fields: [vaId], references: [id])
   vaId               String?
 

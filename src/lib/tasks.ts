@@ -10,6 +10,7 @@ import { BRACKET_RATIO, photoTargetFor } from "@/lib/culling";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import type { TurnaroundRules } from "@/lib/settings";
 import { clip } from "@/lib/text";
+import { pinnedEditorFor } from "@/lib/editors";
 
 // ---------------------------------------------------------------------------
 // Phase 1 of the listener-first platform: turnaround rules + due-date/priority
@@ -1704,8 +1705,8 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
         const { editorKeyForTeamName } = await import("@/lib/editors");
         // The owner's pinned editor gets the DM — same precedence as mintEditTask,
         // so the person who's pinged is the person whose queue the task lands in.
-        const pinned = p.editorManual ? editorKeyForTeamName(p.editor?.name) : null;
-        const key = pinned ?? editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.deliverables), await editorRouting());
+        const pin = pinnedEditorFor(p);
+        const key = pin.pinned ? pin.key : editorForDeliverable(v.type, v.label, isMonthlyContentJob(p.deliverables), await editorRouting());
         // Only in-house editors have a reachable channel; Luma (external) has no
         // bell/DM — its dispatch is the Kyle task below.
         if (key === "kim" || key === "john") {
@@ -1830,8 +1831,11 @@ export async function mintEditTask(projectId: string): Promise<void> {
   // still upcoming, before any task existed) beats the routing rules — that's
   // the whole point of editorManual. Falls through to the rules when the pinned
   // person doesn't map to an editor key.
-  const pinnedKey = p.editorManual ? editorKeyForTeamName(p.editor?.name) : null;
-  const assignedKey = pinnedKey ?? editorForDeliverable(v.type, v.label, monthly, await editorRouting()); // per /settings rules; null = manual
+  // pinnedEditorFor: a pin to nobody or to the outside shop is a human pick too,
+  // and the rules must not route John or Kim back onto it (review, Sep 7).
+  const pin = pinnedEditorFor(p);
+  const pinnedKey = pin.key;
+  const assignedKey = pin.pinned ? pin.key : editorForDeliverable(v.type, v.label, monthly, await editorRouting()); // per /settings rules; null = manual
   const editorName = assignedKey ? editorMeta(assignedKey)?.name ?? assignedKey : "manual assignment";
   const street = (p.title || "this job").split(",")[0].trim();
 
@@ -1872,7 +1876,7 @@ export async function mintEditTask(projectId: string): Promise<void> {
         // (personal branding) must not un-assign work someone already owns.
         // A project-level pin (editorManual) is a human pick too — carry it
         // onto the task as assignedManually so every downstream engine sees it.
-        ...(existing.assignedManually || !assignedKey ? {} : { assignedKey, ...(pinnedKey ? { assignedManually: true } : {}) }),
+        ...(existing.assignedManually || !assignedKey ? {} : { assignedKey, ...(pin.pinned ? { assignedManually: true } : {}) }),
         dueAt,
         priority,
         summary: summary.slice(0, 500),
@@ -1900,8 +1904,10 @@ export async function mintEditTask(projectId: string): Promise<void> {
       dueAt,
       assignedKey,
       // The owner picked this editor on the project before the task existed —
-      // the task inherits that as a manual assignment, not an auto route.
-      assignedManually: !!pinnedKey,
+      // the task inherits that as a manual assignment, not an auto route. A
+      // pin to nobody / the agency is manual too: it is what keeps the hourly
+      // sweep from handing the job back to an in-house editor.
+      assignedManually: pin.pinned,
       projectId,
       clientId: p.clientId,
       propertyAddress: p.title,

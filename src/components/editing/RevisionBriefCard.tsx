@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import {
   Check,
+  CheckCircle2,
   ChevronDown,
   CircleHelp,
   Inbox,
@@ -24,18 +25,34 @@ import type { BriefView } from "@/lib/revisionBrief";
 // said is organized so the editor can act on that information. Right now it
 // just shows a big paragraph and not even the full transcript."
 //
-// So the card leads with the checklist, and the raw ask is still one click
-// away — because the editor should be able to check our reading against what
-// the client actually said.
+// Sep 7, having lived with the first version: "Its way too big when you first
+// open the page. Its not clean right now… it looks extra intimidating and not
+// user-friendly." So the card now opens SHUT — one line saying what the round
+// is about and how far through it you are — and everything the old card threw
+// on screen at once is one click behind that line. Nothing was deleted: the
+// client's own words, each item's detail and quote, what to leave alone, what
+// they're sending and the questions are all still here.
+//
+// The rules the layout follows:
+//   · Collapsed by default; the header alone says the ask and "1/4 complete".
+//   · A ticked item MINIMISES to a single line and sinks to the bottom, so
+//     what's left is what you see — and it reopens with one click.
+//   · Every item goes green as it's ticked; the whole card goes green when the
+//     round is finished.
+//   · A checkbox NEVER waits on the server (see `toggle`).
+//   · The raw ask is still one click away — the editor should be able to check
+//     our reading against what the client actually said.
 
+// Whole phrases, not nouns: the old card built "from a " + the noun, which
+// read "from a email" and "from a added by hand".
 const SOURCE_LABEL: Record<string, string> = {
-  openphone: "phone call",
-  "openphone-call": "phone call",
-  gmail: "email",
-  comms: "message",
-  slack: "Slack",
-  manual: "added by hand",
-  review_room: "review notes",
+  openphone: "From a phone call",
+  "openphone-call": "From a phone call",
+  gmail: "From an email",
+  comms: "From a message",
+  slack: "From Slack",
+  manual: "Added by hand",
+  review_room: "From the review notes",
 };
 
 const fmtWhen = (iso: string) =>
@@ -59,11 +76,121 @@ export function RevisionBriefCard({
 }) {
   if (briefs.length === 0) return null;
   return (
-    <div className="space-y-4">
+    <div className="space-y-2">
       {briefs.map((b, i) => (
         <OneBrief key={b.id} brief={b} round={i + 1} rounds={briefs.length} canTick={canTick} canReanalyze={canReanalyze} />
       ))}
     </div>
+  );
+}
+
+// A small always-visible disclosure: a one-line summary you click to open.
+// Used for everything that used to be permanently on screen.
+function Fold({
+  label,
+  icon: Icon,
+  tone = "muted",
+  defaultOpen = false,
+  children,
+}: {
+  label: string;
+  icon: typeof CircleHelp;
+  tone?: "muted" | "warning" | "success" | "brand";
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const toneClass =
+    tone === "warning" ? "text-warning" : tone === "success" ? "text-success" : tone === "brand" ? "text-brand" : "text-muted";
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={cn("flex w-full items-center gap-1.5 rounded-md py-1 text-left text-[11px] font-semibold hover:bg-surface-2", toneClass)}
+      >
+        <ChevronDown className={cn("size-3 shrink-0 transition-transform", !open && "-rotate-90")} />
+        <Icon className="size-3.5 shrink-0" />
+        {label}
+      </button>
+      {open && <div className="pb-1 pl-6 pr-1">{children}</div>}
+    </div>
+  );
+}
+
+// ONE line of work. Open: the instruction, its area, and the specifics clamped
+// to a single line. Ticked: one struck-through green line — "each item ticks
+// off and minimises when done" (Jordan, Sep 7) — reopened by the same box.
+// Module-level, not nested in OneBrief: a component redeclared on every render
+// is a new type to React, which would tear down and remount every row (and any
+// open detail) on each tick.
+function Item({
+  it, isDone, canTick, showing, onToggle, onShow,
+}: {
+  it: BriefView["items"][number];
+  isDone: boolean;
+  canTick: boolean;
+  showing: boolean;
+  onToggle: () => void;
+  onShow: () => void;
+}) {
+  const hasMore = !!(it.detail || it.quote);
+  return (
+    <li className={cn("flex gap-2 rounded-lg px-1.5 py-1", isDone ? "opacity-70" : "hover:bg-surface-2/60")}>
+      <button
+        type="button"
+        disabled={!canTick}
+        onClick={onToggle}
+        aria-label={isDone ? "Mark not done" : "Mark done"}
+        aria-pressed={isDone}
+        title={canTick ? (isDone ? "Reopen this one" : "Mark done") : "Only the editor on this job can tick these off"}
+        className={cn(
+          "mt-0.5 grid size-4 shrink-0 place-items-center rounded border transition-colors",
+          isDone ? "border-success bg-success text-white" : "border-border bg-surface-2 hover:border-brand",
+          !canTick && "cursor-not-allowed opacity-60",
+        )}
+      >
+        {isDone && <Check className="size-3" />}
+      </button>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-1.5">
+          <p className={cn("min-w-0 flex-1 text-[13px] leading-snug", isDone ? "text-success line-through" : "font-medium text-foreground")}>
+            {it.ask}
+          </p>
+          {!isDone && (
+            <span className="shrink-0 rounded bg-surface-2 px-1 py-px text-[10px] font-medium text-muted-2">{it.area}</span>
+          )}
+        </div>
+        {/* The specifics stay on screen but clamped to one line until asked
+            for — the detail plus the client's verbatim quote on every item are
+            what made the old card five screens tall. Nothing is hidden from
+            the editor; it's one click, per item. */}
+        {hasMore && (
+          <>
+            {it.detail && !showing && !isDone && (
+              <p className="mt-0.5 line-clamp-1 text-[11px] leading-relaxed text-muted">{it.detail}</p>
+            )}
+            <button
+              type="button"
+              onClick={onShow}
+              className="mt-0.5 text-[10px] font-medium text-muted-2 hover:text-brand"
+            >
+              {showing ? "Hide details" : it.quote ? "Details + their words" : "Details"}
+            </button>
+            {showing && (
+              <div className="mt-1 space-y-1">
+                {it.detail && <p className="text-[11px] leading-relaxed text-muted">{it.detail}</p>}
+                {it.quote && (
+                  <p className="border-l-2 border-border pl-2 text-[11px] italic leading-relaxed text-muted-2">
+                    &ldquo;{it.quote}&rdquo;
+                  </p>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </li>
   );
 }
 
@@ -73,18 +200,51 @@ function OneBrief({
   brief: BriefView; round: number; rounds: number; canTick: boolean; canReanalyze: boolean;
 }) {
   const [done, setDone] = useState<string[]>(brief.done);
+  // Re-read replaces the items on the server; the ticks must follow, or a
+  // stale local list reads as a green "Done" card over real work (review).
+  const doneKey = brief.done.join("|");
+  useEffect(() => { setDone(brief.done); }, [doneKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Shut on arrival — Jordan, Sep 7: "Its way too big when you first open the
+  // page." The header carries the ask and the score; opening is one click.
+  const [open, setOpen] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
+  // Which items have their detail + the client's own words showing. Per item,
+  // so opening one receipt doesn't unfurl the whole card again.
+  const [shown, setShown] = useState<string[]>([]);
+  // A COUNT, not a boolean: two quick ticks each own their own save, and the
+  // header's "Saving…" only clears when the last one has answered.
+  const [saving, setSaving] = useState(0);
   const [busy, start] = useTransition();
   const [err, setErr] = useState<string | null>(null);
 
-  const toggle = (id: string) => {
-    const next = done.includes(id);
-    const optimistic = next ? done.filter((d) => d !== id) : [...done, id];
-    setDone(optimistic); // snap-back below if the server refuses
-    start(async () => {
-      const r = await setBriefItemDone(brief.id, id, !next).catch(() => ({ ok: false, message: "That didn't save." }));
-      if (!r.ok) { setDone(done); setErr(r.message); } else setErr(null);
-    });
+  // THE FIX for "the current checkboxes have a do not click symbol and are
+  // locked once clicked" (Jordan, Sep 7). The old card disabled EVERY box on
+  // one shared useTransition pending flag, so ticking one item froze all nine
+  // until the server answered — hence the not-allowed cursor and the "after
+  // clicking around a bunch it works". A tick is optimistic and instant; the
+  // ONLY thing that ever disables a box is not being allowed to tick it. If
+  // the server refuses, the box snaps back and says why.
+  const toggle = async (id: string) => {
+    if (!canTick) return;
+    const wasDone = done.includes(id);
+    setDone((d) => (wasDone ? d.filter((x) => x !== id) : [...new Set([...d, id])]));
+    setErr(null);
+    setSaving((n) => n + 1);
+    try {
+      const r = await setBriefItemDone(brief.id, id, !wasDone).catch(() => ({
+        ok: false,
+        message: "That didn't save — check your connection and try again.",
+      }));
+      if (!r.ok) {
+        // Functional, not `setDone(done)`: another tick may have landed while
+        // this one was in flight, and reverting to a stale snapshot would undo
+        // it too.
+        setDone((d) => (wasDone ? [...new Set([...d, id])] : d.filter((x) => x !== id)));
+        setErr(r.message);
+      }
+    } finally {
+      setSaving((n) => n - 1);
+    }
   };
 
   const rerun = () => {
@@ -95,183 +255,221 @@ function OneBrief({
     });
   };
 
-  // Group by area, preserving the order the client raised things in.
-  const areas: { area: string; items: typeof brief.items }[] = [];
-  for (const it of brief.items) {
-    const slot = areas.find((a) => a.area === it.area);
-    if (slot) slot.items.push(it);
-    else areas.push({ area: it.area, items: [it] });
-  }
   const total = brief.items.length;
   const ticked = brief.items.filter((i) => done.includes(i.id)).length;
-  const sourceLabel = SOURCE_LABEL[brief.source] ?? brief.source;
+  const allDone = total > 0 && ticked === total;
+  const sourceLabel = SOURCE_LABEL[brief.source] ?? `From ${brief.source}`;
+  // What's LEFT first, what's done underneath — "so what is left is what you
+  // see". Within each half the client's own order stands. The old card grouped
+  // by area under seven uppercase headings; the area is now a tag on the item
+  // itself, which says the same thing without seven rows of chrome.
+  const todo = brief.items.filter((i) => !done.includes(i.id));
+  const finished = brief.items.filter((i) => done.includes(i.id));
+
+  const line = brief.headline || brief.originalText.replace(/\s+/g, " ").trim();
+
+  const itemRow = (it: BriefView["items"][number], isDone: boolean) => (
+    <Item
+      key={it.id}
+      it={it}
+      isDone={isDone}
+      canTick={canTick}
+      showing={shown.includes(it.id)}
+      onToggle={() => void toggle(it.id)}
+      onShow={() => setShown((s) => (s.includes(it.id) ? s.filter((x) => x !== it.id) : [...s, it.id]))}
+    />
+  );
 
   return (
-    <section className="panel-shadow overflow-hidden rounded-2xl border border-danger/25 bg-surface">
-      <header className="border-b border-border bg-danger/5 px-4 py-3 sm:px-5">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 rounded-md bg-danger/10 px-2 py-0.5 text-[11px] font-semibold text-danger">
-            <Undo2 className="size-3" /> Changes requested
-          </span>
-          {rounds > 1 && (
-            <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">Round {round}</span>
+    <section
+      className={cn(
+        "overflow-hidden rounded-xl border bg-surface",
+        allDone ? "border-success/40" : "border-danger/25",
+      )}
+    >
+      {/* THE WHOLE CARD, COLLAPSED: what they asked for, and how far through it
+          you are. Everything else is behind this line. */}
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={cn(
+          "flex w-full items-center gap-2 px-3 py-2 text-left",
+          allDone ? "bg-success-soft/60 hover:bg-success-soft" : "bg-danger-soft/40 hover:bg-danger-soft/60",
+        )}
+      >
+        <ChevronDown className={cn("size-3.5 shrink-0 text-muted", !open && "-rotate-90")} />
+        <span
+          className={cn(
+            "inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-semibold",
+            allDone ? "bg-success/15 text-success" : "bg-danger/10 text-danger",
           )}
-          <span className="text-[11px] text-muted-2">
-            from a {sourceLabel} · {fmtWhen(brief.createdAtISO)}
+        >
+          {allDone ? <CheckCircle2 className="size-3" /> : <Undo2 className="size-3" />}
+          {allDone ? "Done" : "Changes requested"}
+        </span>
+        {rounds > 1 && (
+          <span className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">R{round}</span>
+        )}
+        <span className={cn("min-w-0 flex-1 truncate text-[13px] font-medium", allDone ? "text-muted" : "text-foreground")}>
+          {line}
+        </span>
+        {saving > 0 && <Loader2 className="size-3 shrink-0 animate-spin text-muted-2" />}
+        {total > 0 && (
+          <span
+            className={cn(
+              "shrink-0 whitespace-nowrap text-[11px] font-semibold tabular-nums",
+              allDone ? "text-success" : "text-muted",
+            )}
+          >
+            {ticked}/{total} complete
           </span>
-          {total > 0 && (
-            <span className={cn("ml-auto text-xs font-semibold tabular-nums", ticked === total ? "text-success" : "text-muted")}>
-              {ticked}/{total} done
-            </span>
-          )}
-        </div>
-        {brief.headline && <h3 className="mt-1.5 text-sm font-semibold leading-snug text-foreground">{brief.headline}</h3>}
-      </header>
-
-      {/* CONFIRM FIRST — the things too vague to start on. Above the list on
-          purpose: doing the wrong version of these costs a whole round. */}
-      {brief.questions.length > 0 && (
-        <div className="border-b border-border bg-warning/5 px-4 py-3 sm:px-5">
-          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-warning">
-            <CircleHelp className="size-3.5" /> Confirm before you start
-          </div>
-          <ul className="space-y-1">
-            {brief.questions.map((q, i) => (
-              <li key={i} className="flex gap-2 text-sm text-foreground/85">
-                <span className="text-warning">·</span>
-                <span>{q}</span>
-              </li>
-            ))}
-          </ul>
+        )}
+      </button>
+      {/* One flat bar of progress — reads at a glance from across the room. */}
+      {total > 0 && (
+        <div className="h-0.5 w-full bg-border">
+          <div
+            className={cn("h-full transition-all", allDone ? "bg-success" : "bg-warning")}
+            style={{ width: `${Math.round((ticked / total) * 100)}%` }}
+          />
         </div>
       )}
 
-      {/* THE WORK */}
-      {total > 0 ? (
-        <div className="divide-y divide-border/60">
-          {areas.map((group) => (
-            <div key={group.area} className="px-4 py-3 sm:px-5">
-              <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-2">{group.area}</div>
-              <ul className="space-y-2.5">
-                {group.items.map((it) => {
-                  const isDone = done.includes(it.id);
-                  return (
-                    <li key={it.id} className="flex gap-2.5">
-                      <button
-                        disabled={!canTick || busy}
-                        onClick={() => toggle(it.id)}
-                        aria-label={isDone ? "Mark not done" : "Mark done"}
-                        title={canTick ? (isDone ? "Mark not done" : "Mark done") : "Only the editor on this job can tick these off"}
-                        className={cn(
-                          "mt-0.5 grid size-4 shrink-0 place-items-center rounded border transition-colors",
-                          isDone ? "border-success bg-success text-white" : "border-border bg-surface-2 hover:border-brand",
-                          (!canTick || busy) && "cursor-not-allowed opacity-60",
-                        )}
-                      >
-                        {isDone && <Check className="size-3" />}
-                      </button>
-                      <div className="min-w-0 flex-1">
-                        <p className={cn("text-sm font-medium leading-snug", isDone ? "text-muted-2 line-through" : "text-foreground")}>
-                          {it.ask}
-                        </p>
-                        {it.detail && <p className="mt-0.5 text-xs leading-relaxed text-muted">{it.detail}</p>}
-                        {it.quote && (
-                          <p className="mt-1 border-l-2 border-border pl-2 text-xs italic leading-relaxed text-muted-2">
-                            &ldquo;{it.quote}&rdquo;
-                          </p>
-                        )}
-                      </div>
+      {open && (
+        <div className="space-y-2 border-t border-border px-3 py-2.5">
+          <p className="text-[11px] text-muted-2">
+            {sourceLabel} · {fmtWhen(brief.createdAtISO)}
+            {rounds > 1 && ` · round ${round} of ${rounds}`}
+          </p>
+          {/* The full headline — the header line above truncates it. */}
+          {brief.headline && total > 0 && (
+            <p className="text-[13px] font-semibold leading-snug text-foreground">{brief.headline}</p>
+          )}
+
+          {/* CONFIRM FIRST — the things too vague to start on. Open by default,
+              above the list, on purpose: doing the wrong version of these
+              costs a whole round. */}
+          {brief.questions.length > 0 && (
+            <div className="rounded-lg border border-warning/30 bg-warning-soft/50 px-2 py-1">
+              <Fold
+                label={`${brief.questions.length} to confirm before you start`}
+                icon={CircleHelp}
+                tone="warning"
+                defaultOpen
+              >
+                <ul className="space-y-1">
+                  {brief.questions.map((q, i) => (
+                    <li key={i} className="text-[12px] leading-relaxed text-foreground/85">
+                      {q}
                     </li>
-                  );
-                })}
-              </ul>
+                  ))}
+                </ul>
+              </Fold>
             </div>
-          ))}
-        </div>
-      ) : (
-        // No split available (AI unreachable, or a short ask that didn't need
-        // one) — the client's words ARE the work order, so show them plainly
-        // rather than an empty checklist.
-        <div className="px-4 py-3 text-sm leading-relaxed text-foreground/85 sm:px-5">
-          <p className="whitespace-pre-wrap">{brief.originalText}</p>
-          {brief.analysisError && (
-            <p className="mt-2 text-[11px] text-muted-2">
-              We couldn&rsquo;t break this into steps automatically{canReanalyze ? " — try again below." : "."}
-            </p>
           )}
-        </div>
-      )}
 
-      {/* LEAVE ALONE + WHAT THEY'RE SENDING */}
-      {(brief.keep.length > 0 || brief.references.length > 0) && (
-        <div className="grid gap-px border-t border-border bg-border sm:grid-cols-2">
+          {/* THE WORK */}
+          {total > 0 ? (
+            <div>
+              {allDone ? (
+                <p className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-success">
+                  <CheckCircle2 className="size-3.5" /> Every item on this round is ticked off.
+                </p>
+              ) : (
+                <ul>{todo.map((it) => itemRow(it, false))}</ul>
+              )}
+              {finished.length > 0 && (
+                <div className={cn(!allDone && "mt-1.5 border-t border-border/60 pt-1.5")}>
+                  {!allDone && (
+                    <div className="px-1.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-success">
+                      Done ({finished.length})
+                    </div>
+                  )}
+                  <ul>{finished.map((it) => itemRow(it, true))}</ul>
+                </div>
+              )}
+            </div>
+          ) : (
+            // No split available (AI unreachable, or a short ask that didn't
+            // need one) — the client's words ARE the work order, so show them
+            // plainly rather than an empty checklist.
+            <div className="text-[13px] leading-relaxed text-foreground/85">
+              <p className="whitespace-pre-wrap">{brief.originalText}</p>
+              {brief.analysisError && (
+                <p className="mt-2 text-[11px] text-muted-2">
+                  We couldn&rsquo;t break this into steps automatically{canReanalyze ? " — try “Re-read” below." : "."}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* LEAVE ALONE + WHAT THEY'RE SENDING — folded, not deleted. */}
           {brief.keep.length > 0 && (
-            <div className="bg-surface px-4 py-3 sm:px-5">
-              <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-success">
-                <ShieldCheck className="size-3.5" /> Leave alone
-              </div>
-              <ul className="space-y-1">
+            <Fold label={`Leave alone (${brief.keep.length})`} icon={ShieldCheck} tone="success">
+              <ul className="space-y-0.5">
                 {brief.keep.map((k, i) => (
-                  <li key={i} className="text-sm text-foreground/85">{k}</li>
+                  <li key={i} className="text-[12px] leading-relaxed text-foreground/85">{k}</li>
                 ))}
               </ul>
-            </div>
+            </Fold>
           )}
           {brief.references.length > 0 && (
-            <div className="bg-surface px-4 py-3 sm:px-5">
-              <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-brand">
-                <Paperclip className="size-3.5" /> They&rsquo;re sending
-              </div>
-              <ul className="space-y-1">
+            <Fold label={`They're sending (${brief.references.length})`} icon={Paperclip} tone="brand">
+              <ul className="space-y-0.5">
                 {brief.references.map((r, i) => (
-                  <li key={i} className="text-sm text-foreground/85">
+                  <li key={i} className="text-[12px] leading-relaxed text-foreground/85">
                     {r.what}
                     {r.where && <span className="text-muted"> — {r.where}</span>}
                   </li>
                 ))}
               </ul>
+            </Fold>
+          )}
+
+          {/* THE RECEIPT — our reading is a reading; the client's own words are
+              the truth, kept whole and one click away. */}
+          {(total > 0 || canReanalyze) && (
+            <div className="flex items-center gap-2 border-t border-border pt-1.5">
+              {/* With no split, the client's words ARE the body above — there
+                  is nothing left to unfold, so only Re-read shows. */}
+              {total > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowRaw((s) => !s)}
+                  className="flex items-center gap-1.5 rounded-md py-0.5 text-left text-[11px] font-medium text-muted hover:text-foreground"
+                >
+                  <ChevronDown className={cn("size-3 transition-transform", !showRaw && "-rotate-90")} />
+                  <MessageSquareQuote className="size-3.5" />
+                  {showRaw ? "Hide" : brief.twoSided ? "Read the full call" : "Read their full message"}
+                </button>
+              )}
+              {canReanalyze && (
+                <button
+                  type="button"
+                  onClick={rerun}
+                  title="Read the client's words again and rebuild this list (clears the tick-offs)"
+                  className="ml-auto inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[10px] font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+                >
+                  {busy ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />} Re-read
+                </button>
+              )}
             </div>
           )}
+          {showRaw && (
+            <div className="rounded-lg bg-surface-2/50 px-2.5 py-2">
+              {brief.twoSided && (
+                <p className="mb-1.5 flex items-center gap-1.5 text-[10px] text-muted-2">
+                  <Inbox className="size-3" /> Both sides of the call, exactly as transcribed — the transcription is rough in places.
+                </p>
+              )}
+              <p className="max-h-80 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed text-foreground/80">
+                {brief.originalText}
+              </p>
+            </div>
+          )}
+          {err && <p className="text-[11px] font-medium text-danger">{err}</p>}
         </div>
       )}
-
-      {/* THE RECEIPT — our reading is a reading; the client's own words are the
-          truth, kept whole and one click away. */}
-      <div className="border-t border-border">
-        <button
-          onClick={() => setShowRaw((s) => !s)}
-          className="flex w-full items-center gap-1.5 px-4 py-2.5 text-left text-[11px] font-medium text-muted hover:bg-surface-2 sm:px-5"
-        >
-          <ChevronDown className={cn("size-3.5 transition-transform", !showRaw && "-rotate-90")} />
-          <MessageSquareQuote className="size-3.5" />
-          {showRaw ? "Hide" : brief.twoSided ? "Read the full call" : "Read their full message"}
-          {total > 0 && <span className="text-muted-2">— check anything that looks off</span>}
-          {canReanalyze && (
-            <span
-              role="button"
-              tabIndex={0}
-              onClick={(e) => { e.stopPropagation(); rerun(); }}
-              onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); rerun(); } }}
-              className="ml-auto inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[10px] font-medium hover:bg-surface-2 hover:text-foreground"
-            >
-              {busy ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />} Re-read
-            </span>
-          )}
-        </button>
-        {showRaw && (
-          <div className="border-t border-border bg-surface-2/40 px-4 py-3 sm:px-5">
-            {brief.twoSided && (
-              <p className="mb-2 flex items-center gap-1.5 text-[11px] text-muted-2">
-                <Inbox className="size-3" /> Both sides of the call, exactly as transcribed — the transcription is rough in places.
-              </p>
-            )}
-            <p className="max-h-96 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-foreground/80">
-              {brief.originalText}
-            </p>
-          </div>
-        )}
-        {err && <p className="px-4 pb-2 text-[11px] text-danger sm:px-5">{err}</p>}
-      </div>
     </section>
   );
 }

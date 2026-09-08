@@ -443,7 +443,13 @@ export default async function EditBriefPage({
 
       <div className="grid gap-6 p-4 sm:p-6 lg:grid-cols-3">
         {/* LEFT — where the media is, what to make, how to make it, the work, the history */}
-        <div className="space-y-6 lg:col-span-2">
+        {/* min-w-0: a grid item's automatic minimum is its MIN-CONTENT, so one
+            line of non-wrapping text anywhere in this column stretches the
+            whole track past the screen. The revision card's one-line summary
+            (white-space: nowrap, ellipsised) did exactly that — on a 375px
+            phone the column measured 1144px and every card in it, Media
+            included, ran off the right edge. */}
+        <div className="min-w-0 space-y-6 lg:col-span-2">
           {/* 1 · THE WORK ORDER — what the client asked for, split into items
               the editor ticks off, their own words kept whole underneath. It
               renders nothing unless the job has been bounced; when it does

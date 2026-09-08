@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 import { getConnection, getSecret } from "@/lib/integrations/connections";
-import { syncAryeoOrders, syncAryeoAppointments, syncAryeoSocialPlans, syncAryeoCustomers } from "@/lib/integrations/aryeo";
+import {
+  syncAryeoOrders, syncAryeoAppointments, syncAryeoSocialPlans, syncAryeoCustomers,
+  upsertAryeoCustomerClient, type AryeoCustomer,
+} from "@/lib/integrations/aryeo";
 import { syncClientSegments } from "@/lib/segmentSync";
 
 export const runtime = "nodejs";
@@ -192,6 +195,57 @@ async function retaskProject(projectId: string) {
   } catch { /* non-fatal */ }
 }
 
+// ---------------------------------------------------------------------------
+// The CUSTOMER payload → a client row, a ping, and a first-pass brief.
+//
+// Shape, verified against 182 stored CUSTOMER_CHANGED payloads (live, Sep 7):
+//   { object:"GROUP", id, type:"AGENT", name, email, phone, avatar_url,
+//     internal_notes, office_name, license_number,
+//     owner:{ object:"USER", id, full_name, email, phone, … },
+//     users:[ …the same person… ] }
+// The agent therefore appears TWICE, at the top level and nested. On every
+// payload checked the two ids are identical, but the API does not promise that,
+// so both are handed to the matcher as candidates for the (unique)
+// aryeoCustomerId slot — and the nested record fills any blank the group left.
+// ---------------------------------------------------------------------------
+type AryeoNestedUser = {
+  id?: string; email?: string; full_name?: string; phone?: string;
+  avatar_url?: string | null; internal_notes?: string;
+};
+const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v : undefined);
+
+async function handleAryeoCustomer(payload: Record<string, unknown>) {
+  // Flat resource, or the documented ACTIVITY wrapper's `resource`/`data`.
+  const body = ((payload.resource ?? payload.data ?? payload) || {}) as Record<string, unknown>;
+  const users = Array.isArray(body.users) ? (body.users as AryeoNestedUser[]) : [];
+  const owner = ((body.owner as AryeoNestedUser | undefined) ?? users[0]) ?? null;
+
+  const cust: AryeoCustomer = {
+    id: str(body.id),
+    name: str(body.name) ?? owner?.full_name,
+    email: str(body.email) ?? owner?.email,
+    phone: str(body.phone) ?? owner?.phone,
+    office_name: str(body.office_name),
+    license_number: str(body.license_number),
+    internal_notes: str(body.internal_notes) ?? owner?.internal_notes,
+    avatar_url: str(body.avatar_url) ?? owner?.avatar_url ?? null,
+  };
+
+  const res = await upsertAryeoCustomerClient(cust, { via: "aryeo-webhook", altIds: [owner?.id] });
+  if (!res?.created) return; // already ours — enrichment below handles the rest
+
+  // The ping goes FIRST: it is the thing a person is waiting on, and it is two
+  // cheap writes. The brief makes an AI call, so it must never sit between the
+  // create and the notification Jordan and Kyle actually see.
+  // greetNewClient awaits the bell and schedules the AI brief with next/server
+  // after() — a model call inside the webhook request risked a platform timeout
+  // that left the WebhookEvent stuck in RECEIVED (review, Sep 7).
+  try {
+    const { greetNewClient } = await import("@/lib/newClients");
+    await greetNewClient(res.clientId);
+  } catch { /* the create stands on its own */ }
+}
+
 // Routes a real Aryeo event. The 10 registered subscriptions are:
 // ORDER_CREATED/FULFILLED/PAID, LISTING_UPDATED, APPOINTMENT_SCHEDULED/
 // ASSIGNED/RESCHEDULED/CANCELED, CUSTOMER_CREATED/UPDATED — but flat payloads
@@ -286,9 +340,24 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
   }
 
   // CUSTOMER_* — new/updated client (the classifier folds GROUP/USER payloads
-  // into CUSTOMER). Re-enrich, re-score segments, and refresh social-content
-  // plans. Each only writes the rows that actually changed.
+  // into CUSTOMER). CREATE first, then re-enrich, re-score segments, and
+  // refresh social-content plans. Each only writes the rows that actually
+  // changed.
   if (object === "CUSTOMER" || name.startsWith("CUSTOMER")) {
+    // A GENUINELY NEW CONTACT BECOMES A CLIENT NOW, NOT TOMORROW (Jordan,
+    // Sep 7). syncAryeoCustomers() below only ENRICHES rows it can match by
+    // email — the only door that created was syncAllAryeoClients on the daily
+    // cron, so a contact added at 9am was invisible here until the small hours.
+    // upsertAryeoCustomerClient re-uses the same identity signals that sweep
+    // does (Aryeo id, email, phone+name, name+brokerage, backupEmail+name), so
+    // this door cannot re-mint a client a merge has already repaired.
+    try {
+      await handleAryeoCustomer(payload);
+    } catch (e) {
+      // Never fail the webhook over the new-client path: the daily roster sweep
+      // is still the backstop that creates whoever this missed.
+      console.warn("[webhook] aryeo: new-client path failed", e);
+    }
     try { await syncAryeoCustomers(); } catch { /* non-fatal */ }
     try { await syncClientSegments(); } catch { /* non-fatal */ }
     try { await syncAryeoSocialPlans(); } catch { /* non-fatal */ }

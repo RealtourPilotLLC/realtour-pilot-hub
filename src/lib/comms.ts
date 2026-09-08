@@ -345,7 +345,7 @@ export async function raiseRevision(opts: {
 }): Promise<boolean> {
   const project = await prisma.project.findUnique({
     where: { id: opts.projectId },
-    select: { id: true, status: true, title: true, clientId: true, revisionRequestedAt: true, editorManual: true, editor: { select: { name: true } }, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } }, client: { select: { socialClient: true } } },
+    select: { id: true, status: true, title: true, clientId: true, revisionRequestedAt: true, editorManual: true, editorVendorKey: true, editor: { select: { name: true } }, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } }, client: { select: { socialClient: true } } },
   });
   if (!project) return false;
 
@@ -375,11 +375,14 @@ export async function raiseRevision(opts: {
   // The owner's pinned editor (queue-row / project-page pick) made this cut —
   // a VIDEO revision goes back to them, not to whoever the rules route to
   // today. Photo/3D/floor-plan asks keep their Kyle lane regardless of pin.
-  const { editorKeyForTeamName } = await import("@/lib/editors");
+  const { pinnedEditorFor } = await import("@/lib/editors");
   const primaryIsVideo = primary?.type === "VIDEO" || primary?.type === "SOCIAL_REEL";
   // The work this ask actually IS — used for the per-medium work order below.
   const primaryIsVideoWork = primaryIsVideo;
-  const pinnedKey = primaryIsVideo && project.editorManual ? editorKeyForTeamName(project.editor?.name) : null;
+  // A job pinned to nobody or to the outside shop must not bounce a revision
+  // back onto John's or Kim's board — Kyle relays it (review, Sep 7).
+  const pin = primaryIsVideo ? pinnedEditorFor(project) : { pinned: false, key: null };
+  const pinnedKey = pin.pinned ? (pin.key === "kim" || pin.key === "john" || pin.key === "remar" ? pin.key : "kyle") : null;
   const assignedKey = pinnedKey ?? editorForDeliverable(
     primary?.type,
     primary?.label,

@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin, requireRole } from "@/lib/auth/guards";
-import { editorTeamMemberId, type EditorKey } from "@/lib/editors";
+import { editorTeamMemberId, VIDEO_LANE_KEYS, type EditorKey } from "@/lib/editors";
 import { deliveryStamp, outstandingForDelivery, outstandingMessage, VIDEO_CATEGORY } from "@/lib/delivery";
 
 // ---------------------------------------------------------------------------
@@ -11,7 +11,8 @@ import { deliveryStamp, outstandingForDelivery, outstandingMessage, VIDEO_CATEGO
 //   · setEditVideoEditor — owner/admin reassign a video job to a different
 //     editor (one-click select on the tracker row). Updates the edit_video
 //     task's assignedKey AND Project.editorId when the new editor maps to a
-//     TeamMember (Kim/John); externals (Luma) clear the link.
+//     TeamMember (Kim/John); externals (Luma, the external agency) clear the
+//     link, and "" takes the job off every editor's board.
 // The editor's "Done — send to review" action moved to
 // src/app/review/actions.ts (submitCutForReview) — see the note at the bottom.
 // Fail-closed once auth is enforced (no-op in local dev).
@@ -24,18 +25,31 @@ import { deliveryStamp, outstandingForDelivery, outstandingMessage, VIDEO_CATEGO
 //   · upcoming job, no task yet → pin the pick on the Project (editorManual);
 //     mintEditTask honours the pin when the task mints at shoot time, and
 //     ensureEditorHandoff stops auto-reverting editorId to the rules.
+//
+// Sep 7 (Jordan): two destinations that are not a person.
+//   · "" = UNASSIGN. The task keeps its key null but gains assignedManually,
+//     and the project is pinned to no editor (editorManual with editorId
+//     null) — that PAIR is what stops every engine, and the queue's own
+//     routing prediction, from putting John or Kim straight back on the row.
+//     The job lands in "Needs assigning" on /tasks, where a human picks it up.
+//   · "external_agency" = the outside shop. Same pin, plus the key on the
+//     task so the row still says who has it. Like Luma, it has no login and
+//     no bell, so the dispatch ping goes to the ADMIN (Kyle) who actually
+//     hands the files over.
 export async function setEditVideoEditor(projectId: string, editorKey: string): Promise<{ ok: boolean; message: string }> {
   try {
     await requireAdmin();
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
-  if (!(VIDEO_EDITOR_KEYS as string[]).includes(editorKey)) {
-    return { ok: false, message: "Pick a video editor (Kim or John Mark)." };
+  const unassign = editorKey === "";
+  const external = editorKey === EXTERNAL_EDITOR_KEY;
+  if (!unassign && !external && !(VIDEO_EDITOR_KEYS as string[]).includes(editorKey)) {
+    return { ok: false, message: "Pick a video editor (Kim or John Mark), the external agency, or Unassigned." };
   }
-  const key = editorKey as EditorKey;
+  const key = unassign ? null : (editorKey as EditorKey);
   const { editorMeta } = await import("@/lib/editors");
-  const editorName = editorMeta(key)?.name ?? key;
+  const editorName = key ? editorMeta(key)?.name ?? key : "nobody";
 
   const project = await prisma.project.findUnique({
     where: { id: projectId },
@@ -52,49 +66,92 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
   // Re-route the open VIDEO work: the edit task, plus revision tasks that are
   // in the video lane. Scoped on purpose — a mixed job's photo-retouch revision
   // is Kyle's and must not be hijacked onto a video editor.
-  const VIDEO_LANE: string[] = ["kim", "john", "luma", "remar"];
   const moved = await prisma.smartTask.updateMany({
     where: {
       projectId,
       status: { notIn: ["COMPLETED", "CANCELLED"] },
-      OR: [{ taskType: "edit_video" }, { taskType: "revision", assignedKey: { in: VIDEO_LANE } }],
+      OR: [{ taskType: "edit_video" }, { taskType: "revision", assignedKey: { in: VIDEO_LANE_KEYS } }],
     },
+    // assignedManually either way — including on the unassign, where it is the
+    // whole point: a null key WITHOUT the flag is just "not routed yet" and
+    // mintEditTask would fill it back in on the next sweep.
     data: { assignedKey: key, assignedManually: true },
   });
 
   // Persist + pin the pick on the Project so every engine treats it as manual.
   // No TeamMember row AND no task moved = the pick would vanish (mint reads the
   // pin through Project.editor) — say so instead of pretending it stuck.
-  const tmId = await editorTeamMemberId(key);
+  const tmId = key ? await editorTeamMemberId(key) : null;
   if (tmId) {
-    await prisma.project.update({ where: { id: projectId }, data: { editorId: tmId, editorManual: true } });
+    await prisma.project.update({ where: { id: projectId }, data: { editorId: tmId, editorManual: true, editorVendorKey: null } });
+  } else if (unassign || external) {
+    // Nobody in-house holds it now. Clearing editorId with editorManual set is
+    // the "pinned to nobody" pair ensureEditorHandoff already honours — it is
+    // told not to fill editorId back in from the routing rules.
+    // editorVendorKey is what an UPCOMING job (no task yet) remembers: the
+    // agency has no TeamMember, so editorId cannot carry it.
+    await prisma.project.update({
+      where: { id: projectId },
+      data: { editorId: null, editorManual: true, editorVendorKey: key === EXTERNAL_EDITOR_KEY ? EXTERNAL_EDITOR_KEY : null },
+    });
   } else if (moved.count === 0) {
     return { ok: false, message: `Couldn't link ${editorName} — their Team row is missing. Add them on the People page first.` };
   }
 
   await prisma.activity.create({
-    data: { projectId, type: "SYSTEM", body: `Video edit reassigned to ${editorName} from the queue.` },
+    data: {
+      projectId,
+      type: "SYSTEM",
+      body: unassign
+        ? "Video edit unassigned from the queue — it is off every editor's board until someone is picked."
+        : `Video edit reassigned to ${editorName} from the queue.`,
+    },
   }).catch(() => {});
 
-  // Live work changed hands → tell the new editor. An upcoming job's pick is
-  // silent on purpose: there's nothing to edit yet, the bell comes with raws.
-  if (moved.count > 0) {
+  // Live work changed hands → tell whoever now owns it. An upcoming job's pick
+  // is silent on purpose: there's nothing to edit yet, the bell comes with
+  // raws. An unassign rings nobody — there is nobody to ring.
+  if (moved.count > 0 && key) {
     try {
       const { notifyInApp } = await import("@/lib/notify");
       const street = (project.title || "a job").split(",")[0].trim();
-      await notifyInApp({
-        kind: "edit_assigned",
-        title: `Reassigned to you — ${street}`,
-        body: "This edit was moved to your queue.",
-        href: `/edit/${projectId}`,
-        targets: [{ roles: ["EDITOR"], userKey: `editor:${key}`, href: `/edit/${projectId}` }],
-      });
+      await notifyInApp(
+        external
+          ? {
+              // The agency has no hub login, so this is Kyle's cue to send the
+              // files out — the same shape Luma dispatch has always used.
+              kind: "edit_assigned",
+              title: `Dispatch to the external agency — ${street}`,
+              body: "This edit was handed to the outside shop — send them the footage and the brief.",
+              href: `/edit/${projectId}`,
+              targets: [{ roles: ["ADMIN"] }],
+            }
+          : {
+              kind: "edit_assigned",
+              title: `Reassigned to you — ${street}`,
+              body: "This edit was moved to your queue.",
+              href: `/edit/${projectId}`,
+              targets: [{ roles: ["EDITOR"], userKey: `editor:${key}`, href: `/edit/${projectId}` }],
+            },
+      );
     } catch { /* bell is best-effort */ }
   }
 
   revalidatePath("/editing");
   revalidatePath(`/edit/${projectId}`);
-  return { ok: true, message: `Assigned to ${editorName}.` };
+  return {
+    ok: true,
+    message: unassign
+      ? "Unassigned — it's off John's and Kim's queues and waiting in “Needs assigning”."
+      : external
+        ? // An upcoming job has no edit task to carry the agency's name yet,
+          // so all we can truthfully record is "not one of ours". Say that
+          // rather than claim a hand-off the row won't show.
+          moved.count > 0
+          ? "Handed to the external agency — it's off our editors' queues."
+          : "Taken off our editors — there's no edit task on this job yet, so name the agency again once the raws land."
+        : `Assigned to ${editorName}.`,
+  };
 }
 
 // The editor's "Done — send to review" now lives in src/app/review/actions.ts
@@ -114,6 +171,9 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
 
 const QUEUE_STATUSES = ["SHOT", "EDITING", "REVIEW", "REVISION"];
 const VIDEO_EDITOR_KEYS: EditorKey[] = ["kim", "john"];
+// The outside shop. Not in VIDEO_EDITOR_KEYS: work never AUTO-routes there, a
+// human hands it over (Jordan, Sep 7).
+const EXTERNAL_EDITOR_KEY: EditorKey = "external_agency";
 
 export type QueueCandidate = {
   id: string;
@@ -484,6 +544,7 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
       deliveredAt: true,
       statusEvidence: true,
       revisionRequestedAt: true,
+      editorId: true,
       editorManual: true,
       editor: { select: { name: true } },
       deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, quantity: true } },
@@ -566,16 +627,23 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
       // Whose lane: the open edit task's editor → the pinned editor → rules.
       const openEdit = await prisma.smartTask.findFirst({
         where: { projectId, taskType: "edit_video", status: { notIn: ["COMPLETED", "CANCELLED"] } },
-        select: { assignedKey: true },
+        select: { assignedKey: true, assignedManually: true },
       });
       const { editorKeyForTeamName, editorForDeliverable } = await import("@/lib/editors");
       const { editorRouting } = await import("@/lib/settings");
       const { isMonthlyContentJob } = await import("@/lib/pipeline");
       const v = proj.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
-      const assignedKey =
-        openEdit?.assignedKey ??
-        (proj.editorManual ? editorKeyForTeamName(proj.editor?.name) : null) ??
-        editorForDeliverable(v?.type, v?.label, isMonthlyContentJob(proj.deliverables), await editorRouting());
+      // A job someone deliberately took off the bench stays off it: an
+      // edit task pinned to nobody, or a project pinned to no editor, means
+      // the revision this flip mints is unassigned too and lands in "Needs
+      // assigning" — the rules do not get to hand it back to John or Kim
+      // (the assignedManually invariant, Sep 7).
+      const takenOff = (openEdit?.assignedManually && !openEdit.assignedKey) || (proj.editorManual && !proj.editorId);
+      const assignedKey = takenOff
+        ? null
+        : openEdit?.assignedKey ??
+          (proj.editorManual ? editorKeyForTeamName(proj.editor?.name) : null) ??
+          editorForDeliverable(v?.type, v?.label, isMonthlyContentJob(proj.deliverables), await editorRouting());
       const taskData = {
         taskType: "revision",
         title: `Revisions — ${street}`.slice(0, 120),
@@ -586,6 +654,9 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
         priority: "HIGH" as const,
         dueAt: new Date(Date.now() + 24 * 3600_000),
         assignedKey,
+        // Only stamped on the deliberate no-editor case — writing `false` on
+        // every flip would wipe a pin someone set on this same task earlier.
+        ...(takenOff ? { assignedManually: true } : {}),
         projectId,
         clientId: proj.clientId,
         propertyAddress: proj.title,

@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { STRATEGY_CALL_BOOKING_URL } from "@/lib/integrations/calendly";
 import type { EditorKey } from "@/lib/editors";
 
 // ---------------------------------------------------------------------------
@@ -94,6 +95,15 @@ export type AfterHoursRule = {
   message: string;
 };
 
+/** The welcome text a brand-new client gets when their first shoot is booked. */
+export type WelcomeTextRule = {
+  enabled: boolean;
+  /** the booking link the text offers — editable so Jordan can move it without a deploy */
+  strategyCallUrl: string;
+  /** the message itself — {first} {strategyCallLink} {website} {portal} */
+  message: string;
+};
+
 // The three fields added Sep 2 2026 (sendUntilMinute, weekdaysOnly, afterHours)
 // are OPTIONAL on the stored shape on purpose: a row saved before they existed,
 // and the settings form that predates them, both still type-check and simply
@@ -123,6 +133,11 @@ export type AutoTextRules = {
     requireMonthlyBatch: boolean;
   };
   afterHours?: AfterHoursRule;
+  /** the new-client welcome text (Jordan, Sep 7 2026). Optional on the stored
+   *  shape for the same reason as the three fields above: a settings row saved
+   *  before it existed must keep loading, and it simply falls back to the
+   *  default below. */
+  welcome?: WelcomeTextRule;
   /** never auto-text a client who has an unanswered question in the queue */
   skipWhenClientWaiting: boolean;
   /** at most one automated text per client per cron tick */
@@ -130,10 +145,11 @@ export type AutoTextRules = {
 };
 
 /** What autoTextRules() hands the sweeps: nothing optional, everything clamped. */
-export type ResolvedAutoTextRules = Omit<AutoTextRules, "sendUntilMinute" | "weekdaysOnly" | "afterHours"> & {
+export type ResolvedAutoTextRules = Omit<AutoTextRules, "sendUntilMinute" | "weekdaysOnly" | "afterHours" | "welcome"> & {
   sendUntilMinute: number;
   weekdaysOnly: boolean;
   afterHours: AfterHoursRule;
+  welcome: WelcomeTextRule;
 };
 
 // The post-delivery text is now a FEEDBACK ASK, not a delivery announcement
@@ -157,6 +173,31 @@ export const DEFAULT_DELIVERY_FEEDBACK_TEXT =
 export const DEFAULT_AFTER_HOURS_REPLY =
   "Hi {first}, thanks for reaching out! Our office hours are {hours}, so we will get back to you first thing {nextDay}. In the meantime you can log in at {portal} to place an order, reschedule an appointment, and grab your content and invoices.";
 
+// THE WELCOME TEXT (Jordan, Sep 7 2026, near enough verbatim): "Hey, first
+// name, welcome to Realtour Pilot. We're excited to work with you and get to
+// know you. Just wanted to let you know that if you ever need anything, you can
+// always call and text or call us here. You can also schedule a free strategy
+// call here anytime: [Strategy call link]… and maybe including our website for
+// general."
+//
+// Placeholders: {first} {strategyCallLink} {website} {portal}. An empty box in
+// Settings falls back to this wording, so the text can never send blank.
+export const DEFAULT_WELCOME_TEXT =
+  "Hey {first}, welcome to RealTour Pilot! We're excited to work with you and get to know you. If you ever need anything you can call or text us right here. You can also book a free strategy call any time: {strategyCallLink} — and everything about what we do is at {website}.";
+
+// Where the free strategy call is booked. The default is the one live event
+// type (lib/integrations/calendly is the source of truth); it is stored on the
+// settings row so Jordan can move the link without a deploy and so the Settings
+// preview can render the real thing.
+export const DEFAULT_WELCOME: WelcomeTextRule = {
+  enabled: true,
+  strategyCallUrl: STRATEGY_CALL_BOOKING_URL,
+  message: DEFAULT_WELCOME_TEXT,
+};
+
+/** The public site, quoted in the welcome text as {website}. */
+export const PUBLIC_WEBSITE = "realtourpilot.com";
+
 export const DEFAULT_AUTO_TEXTS: ResolvedAutoTextRules = {
   enabled: true,
   sendFromHour: 9,
@@ -176,6 +217,7 @@ export const DEFAULT_AUTO_TEXTS: ResolvedAutoTextRules = {
     maxAgeHours: 12,
     message: DEFAULT_AFTER_HOURS_REPLY,
   },
+  welcome: DEFAULT_WELCOME,
   skipWhenClientWaiting: true,
   onePerClientPerRun: true,
 };
@@ -266,6 +308,21 @@ export async function autoTextRules(): Promise<ResolvedAutoTextRules> {
           ? r.delivery.maxTaskAgeHours
           : DEFAULT_AUTO_TEXTS.delivery.maxTaskAgeHours,
       requireMonthlyBatch: r.delivery?.requireMonthlyBatch !== false,
+    },
+    welcome: {
+      enabled: r.welcome?.enabled !== false,
+      // A booking link is the POINT of this text, so a blank or malformed one
+      // falls back to the live Calendly event rather than sending a client a
+      // sentence that offers a call and then names nowhere to book it.
+      strategyCallUrl:
+        typeof r.welcome?.strategyCallUrl === "string" && /^https?:\/\/[\w.-]+\.[a-z]{2,}(\/\S*)?$/i.test(r.welcome.strategyCallUrl.trim())
+          ? r.welcome.strategyCallUrl.trim().slice(0, 300)
+          : DEFAULT_WELCOME.strategyCallUrl,
+      // Empty box = the built-in wording (same rule as afterHours above).
+      message:
+        typeof r.welcome?.message === "string" && r.welcome.message.trim()
+          ? r.welcome.message.slice(0, 1000)
+          : DEFAULT_WELCOME.message,
     },
     skipWhenClientWaiting: r.skipWhenClientWaiting !== false,
     onePerClientPerRun: r.onePerClientPerRun !== false,

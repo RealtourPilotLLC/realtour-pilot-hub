@@ -14,7 +14,7 @@
 // virtual/digital STAGING direction — is the ADMIN's (Kyle), even "for the video".
 // ---------------------------------------------------------------------------
 
-export type EditorKey = "kyle" | "jordan" | "creative_director" | "kim" | "john" | "remar" | "luma" | "autohdr" | "cubicasa";
+export type EditorKey = "kyle" | "jordan" | "creative_director" | "kim" | "john" | "remar" | "luma" | "autohdr" | "cubicasa" | "external_agency";
 
 export type EditorMeta = {
   key: EditorKey;
@@ -69,7 +69,44 @@ export const EDITORS: Record<EditorKey, EditorMeta> = {
   luma: { key: "luma", name: "Luma", kind: "external", does: "premium social reels (no longer used)" },
   autohdr: { key: "autohdr", name: "AutoHDR", kind: "external", does: "AI photo editing" },
   cubicasa: { key: "cubicasa", name: "CubiCasa", kind: "external", does: "floor plans" },
+  // The outside editing shop overflow video goes to. Jordan, Sep 7: "I also
+  // want to be able to unassign projects from editors and reassign them to an
+  // external agency. That way, our editors don't see jobs that are not
+  // assigned to them." A generic key on purpose until Jordan names the shop —
+  // rename `name` here and every surface follows. Like Luma and CubiCasa it
+  // has no login, no TeamMember row and no bell: Kyle dispatches its work, so
+  // a job handed to it leaves John's and Kim's queues entirely.
+  external_agency: { key: "external_agency", name: "External agency", kind: "external", does: "overflow video editing (outside shop)" },
 };
+
+// The keys the VIDEO lane is narrated from — the Editing Room row's status,
+// its editor name, and its revision-ask chip all read only these. A photo
+// retouch is Kyle's and must never flip a video row (Janice's "remove the
+// closets photos" did all three before this scoping). One list, so the queue
+// builder and the reassign action can't drift apart.
+/**
+ * The owner's project-level pin, read the same way by every engine that routes
+ * edit work. Three answers, and the difference matters:
+ *   · pinned: false           → no human pick; the routing rules decide.
+ *   · pinned: true, key: "kim" → pinned to an in-house editor.
+ *   · pinned: true, key: "external_agency" | null → pinned AWAY from our editors
+ *     (the outside shop, or deliberately nobody). The rules must NOT fill this
+ *     back in — an unassigned upcoming job that re-routed itself to John the
+ *     moment its raws landed was exactly the bug (review, Sep 7).
+ */
+export function pinnedEditorFor(p: {
+  editorManual?: boolean | null;
+  editorVendorKey?: string | null;
+  editor?: { name?: string | null } | null;
+}): { pinned: boolean; key: EditorKey | null } {
+  if (!p.editorManual) return { pinned: false, key: null };
+  const inHouse = editorKeyForTeamName(p.editor?.name);
+  if (inHouse) return { pinned: true, key: inHouse };
+  const vendor = (p.editorVendorKey ?? null) as EditorKey | null;
+  return { pinned: true, key: vendor && vendor in EDITORS ? vendor : null };
+}
+
+export const VIDEO_LANE_KEYS: EditorKey[] = ["kim", "john", "remar", "luma", "external_agency"];
 
 // The editor keys that map to an actual person we persist on Project.editorId
 // (an in-house TeamMember). Externals (Luma) and vendors stay Kyle-dispatch and
@@ -114,7 +151,7 @@ export const EDITOR_KEYS = Object.keys(EDITORS) as EditorKey[];
 export const OPERATOR_KEYS: EditorKey[] = ["kyle", "jordan"];
 // The ones you delegate editing work to (everyone except the operators). Order =
 // how they list.
-export const DELEGATE_KEYS: EditorKey[] = ["creative_director", "kim", "john", "luma", "autohdr", "cubicasa"];
+export const DELEGATE_KEYS: EditorKey[] = ["creative_director", "kim", "john", "luma", "autohdr", "cubicasa", "external_agency"];
 
 export function editorMeta(key: string | null | undefined): EditorMeta | null {
   return key && key in EDITORS ? EDITORS[key as EditorKey] : null;

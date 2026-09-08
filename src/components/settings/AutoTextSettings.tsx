@@ -12,11 +12,17 @@ import { cn } from "@/lib/utils";
 // automations." Internal/team notifications are listed read-only below so the
 // page is a complete inventory, not just the parts that happen to be editable.
 
-const hour12 = (h: number) => {
+// A clock time, minutes included. The cutoff has ALWAYS been 4:30 (Jordan's
+// rule), but this file only had an on-the-hour formatter and pasted the minutes
+// on after the meridiem, so every window on the page read "4:00 PM:30". Same
+// output as windowLabel() in lib/clientTextSweeps, which is what actually gates
+// the send.
+const hhmm = (h: number, m = 0) => {
   const am = h < 12 || h === 24;
   const v = h % 12 === 0 ? 12 : h % 12;
-  return `${v}:00 ${am ? "AM" : "PM"}`;
+  return `${v}:${String(m).padStart(2, "0")} ${am ? "AM" : "PM"}`;
 };
+const hour12 = (h: number) => hhmm(h);
 
 function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
   return (
@@ -53,11 +59,38 @@ function Num({ value, onChange, min, max, suffix }: { value: number; onChange: (
   );
 }
 
+// What the placeholders become when the text really sends. The two links are
+// read from the saved rules, so this preview shows the REAL destinations; the
+// name is a sample, and the website is the public site (lib/settings
+// PUBLIC_WEBSITE — a client component cannot import a server-only module, so
+// this is the one place it is written twice; keep them in step).
+const SAMPLE_FIRST = "Sarah";
+const PREVIEW_WEBSITE = "realtourpilot.com";
+
+function fillPlaceholders(tpl: string, vars: Record<string, string>): string {
+  // Same rule as lib/delivery applyTemplate: an unknown placeholder is left
+  // exactly as typed rather than blanked, so a typo is visible in the preview
+  // instead of silently sending a gap.
+  return tpl.replace(/\{(\w+)\}/g, (m, k: string) => (k in vars ? vars[k] : m)).trim();
+}
+
 export function AutoTextSettings({ initial }: { initial: AutoTextRules }) {
   const [r, setR] = useState<AutoTextRules>(initial);
   const [busy, start] = useTransition();
   const [msg, setMsg] = useState<string | null>(null);
   const set = (patch: Partial<AutoTextRules>) => { setR((p) => ({ ...p, ...patch })); setMsg(null); };
+
+  // autoTextRules() always resolves `welcome`, so this fallback is unreachable
+  // at runtime; it exists because the STORED shape has the field optional (a
+  // settings row saved before the welcome text existed).
+  const welcome = r.welcome ?? { enabled: true, strategyCallUrl: "", message: "" };
+  const setWelcome = (patch: Partial<typeof welcome>) => set({ welcome: { ...welcome, ...patch } });
+  const welcomePreview = fillPlaceholders(welcome.message, {
+    first: SAMPLE_FIRST,
+    strategyCallLink: welcome.strategyCallUrl,
+    website: PREVIEW_WEBSITE,
+    portal: r.afterHours?.portalUrl ?? "media.realtourpilot.com",
+  });
 
   const save = () =>
     start(async () => {
@@ -68,7 +101,7 @@ export function AutoTextSettings({ initial }: { initial: AutoTextRules }) {
   // Reflect the real rule (Jordan, Sep 2): weekdays only, and a minute-precise
   // cutoff — "never after 4:30 PM to clients". Team texts are NOT governed here.
   const untilMin = r.sendUntilMinute ?? 30;
-  const untilLabel = `${hour12(r.sendUntilHour)}${untilMin ? `:${String(untilMin).padStart(2, "0")}` : ""}`;
+  const untilLabel = hhmm(r.sendUntilHour, untilMin);
   const windowLine = `${hour12(r.sendFromHour)} – ${untilLabel} ET${r.weekdaysOnly !== false ? ", Mon–Fri" : ""}`;
 
   return (
@@ -93,6 +126,67 @@ export function AutoTextSettings({ initial }: { initial: AutoTextRules }) {
           <Num value={r.sendUntilHour} onChange={(n) => set({ sendUntilHour: n })} min={1} max={24} suffix={`(${hour12(r.sendUntilHour)})`} />
           <span className="text-[11px] text-muted-2">24-hour ET · nothing sends at or after the cutoff{r.weekdaysOnly !== false ? " · weekdays only" : ""} · clients only, team texts are unaffected</span>
         </div>
+      </div>
+
+      {/* Welcome — first in the list because it is first in the client's life */}
+      <div className={cn("rounded-xl border border-border p-3.5", !r.enabled && "opacity-50")}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold">Welcome text</p>
+            <p className="mt-0.5 text-[13px] text-muted">
+              Goes to a brand-new client the first time they book a shoot. Once each, ever.
+            </p>
+            <p className="mt-1 text-[13px] text-foreground/80">Sends inside {windowLine}.</p>
+          </div>
+          <Toggle on={welcome.enabled} onChange={(v) => setWelcome({ enabled: v })} label="Welcome texts" />
+        </div>
+
+        <div className="mt-3 border-t border-border pt-3">
+          <label className="text-[13px] font-medium" htmlFor="welcome-link">Free strategy call link</label>
+          <input
+            id="welcome-link"
+            value={welcome.strategyCallUrl}
+            onChange={(e) => setWelcome({ strategyCallUrl: e.target.value })}
+            placeholder="https://calendly.com/…"
+            className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+          />
+          <p className="mt-1 text-[11px] text-muted-2">
+            This is what <code>{"{strategyCallLink}"}</code> becomes. Leave it blank to use the booking link on file.
+          </p>
+        </div>
+
+        <div className="mt-3">
+          <label className="text-[13px] font-medium" htmlFor="welcome-msg">Message</label>
+          <textarea
+            id="welcome-msg"
+            value={welcome.message}
+            onChange={(e) => setWelcome({ message: e.target.value })}
+            rows={4}
+            placeholder="Using the built-in wording"
+            className="mt-1 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
+          />
+          <p className="mt-1 text-[11px] text-muted-2">
+            Placeholders: <code>{"{first}"}</code> · <code>{"{strategyCallLink}"}</code> · <code>{"{website}"}</code> ·{" "}
+            <code>{"{portal}"}</code>. Anything else you type in braces is sent exactly as written. Empty box = the
+            hub&rsquo;s built-in wording.
+          </p>
+        </div>
+
+        {/* Live preview — the whole point of the box above is seeing the text a
+            real client receives, links and all, before it ever sends. */}
+        <div className="mt-3 rounded-lg border border-border bg-surface-2/60 p-3">
+          <p className="text-[11px] font-medium uppercase tracking-wide text-muted-2">
+            What {SAMPLE_FIRST} receives
+          </p>
+          <p className="mt-1 whitespace-pre-wrap text-[13px] leading-snug">
+            {welcomePreview || <span className="text-muted-2">Using the built-in wording.</span>}
+          </p>
+        </div>
+
+        <p className="mt-2 text-[11px] text-muted-2">
+          Only new contacts added since this was switched on, never your existing client list. A client with no phone
+          number on file cannot receive one, and that is called out on the new-client card on your dashboard.
+        </p>
       </div>
 
       {/* Confirmation */}

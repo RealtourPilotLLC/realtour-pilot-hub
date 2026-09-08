@@ -1,7 +1,8 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { editorRouting } from "@/lib/settings";
-import { editorForDeliverable, editorKeyForTeamName, editorMeta } from "@/lib/editors";
+import { type EditorKey, editorForDeliverable, editorKeyForTeamName, editorMeta, VIDEO_LANE_KEYS } from "@/lib/editors";
+import { appBase } from "@/lib/appUrl";
 import { cutKeyOf } from "@/lib/reviewCuts";
 import { videoTier } from "@/lib/projectStatus";
 import { isMonthlyContentJob } from "@/lib/pipeline";
@@ -81,7 +82,10 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
         taskType: { in: ["edit_video", "revision"] },
         status: { notIn: ["COMPLETED", "CANCELLED"] },
       },
-      select: { projectId: true, assignedKey: true, taskType: true },
+      // assignedManually: a NULL key on a hand-pinned task is not "nobody has
+      // got round to it yet", it is the owner deliberately taking the job off
+      // the bench (see UNPINNED below).
+      select: { projectId: true, assignedKey: true, taskType: true, assignedManually: true },
     }),
     // The Slack messages column → the job's own chat. Revisions live THERE now,
     // not in channel dumps.
@@ -104,9 +108,23 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
   // also lives on the project — it must not flip the video row to "Revisions",
   // pad the revision-ask chip, or show Kyle as the editor (Janice's "remove
   // the closets photos" ask did all three before this scoping).
-  const VIDEO_LANE = new Set(["kim", "john", "remar", "luma"]);
+  const VIDEO_LANE = new Set<string>(VIDEO_LANE_KEYS);
   const taskEditor = new Map<string, string>();
   for (const t of openTasks) if (t.projectId && t.assignedKey && t.taskType === "edit_video") taskEditor.set(t.projectId, t.assignedKey);
+  // UNASSIGNED ON PURPOSE. Jordan, Sep 7: "I want to be able to unassign
+  // projects from editors… that way, our editors don't see jobs that are not
+  // assigned to them." Without this the ladder below falls through to the
+  // routing rules and predicts John or Kim right back onto the row — the job
+  // would reappear in the queue it was just taken out of. A hand-pinned task
+  // with no key (assignedManually + assignedKey null), or a project pinned to
+  // nobody (editorManual with no editorId), is that deliberate "nobody", and
+  // it stops the prediction. An unpinned row still predicts, exactly as before
+  // — an upcoming shoot nobody has touched is still John's or Kim's on the
+  // rules, and taking that away would empty their Upcoming tab.
+  const unpinned = new Set<string>();
+  for (const t of openTasks)
+    if (t.projectId && !t.assignedKey && t.assignedManually && (t.taskType === "edit_video" || t.taskType === "revision"))
+      unpinned.add(t.projectId);
   for (const t of openTasks)
     if (t.projectId && t.assignedKey && t.taskType === "revision" && VIDEO_LANE.has(t.assignedKey) && !taskEditor.has(t.projectId))
       taskEditor.set(t.projectId, t.assignedKey);
@@ -141,6 +159,13 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
     cutTally.set(c.projectId, t);
   }
 
+  // The hub's real origin for the row's Copy-link button. Built here, on the
+  // server, NOT from window.location in the browser: Jordan copies these off
+  // his own machine to paste to John and Kim, and a localhost link would be
+  // dead on arrival in Manila. appBase() is the one place that knows the
+  // public host (hub.realtourpilot.com in production).
+  const base = appBase();
+
   type P = (typeof inflight)[number];
   const hasVideo = (p: P) => p.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
   const toRow = (p: P, upcoming = false): QueueRow => {
@@ -148,7 +173,17 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
     const monthly = isMonthlyContentJob(p.deliverables);
     const tier: QueueRow["tier"] = monthly ? "branding" : videoTier(p.deliverables) === "premium" ? "premium" : "standard";
     const assigned = taskEditor.get(p.id) ?? null;
-    const routeKey = assigned ?? editorKeyForTeamName(p.editor?.name) ?? editorForDeliverable(v?.type, v?.label, monthly, rules);
+    // "Nobody" is a real answer, not a gap: an owner who unassigned this job
+    // (task pin, or the project pinned to no editor) means it, so the routing
+    // rules do not get to guess a name back onto the row.
+    const takenOff = unpinned.has(p.id) || (p.editorManual && !p.editorId);
+    const routeKey =
+      assigned ??
+      editorKeyForTeamName(p.editor?.name) ??
+      // An upcoming job handed to the outside shop has no task and no
+      // TeamMember — the vendor key on the project is the only record of it.
+      ((p.editorVendorKey ?? null) as EditorKey | null) ??
+      (takenOff ? null : editorForDeliverable(v?.type, v?.label, monthly, rules));
     const videos = p.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
     // The BATCH size, not the number of order rows: a monthly plan is ONE
     // deliverable whose quantity is the batch (Starter 2 / Accelerator 4 /
@@ -215,6 +250,7 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
     }
     return {
       id: p.id,
+      url: `${base}/edit/${p.id}`,
       street: (p.addressLine || p.title.split(",")[0] || "Job").trim(),
       client: p.client.name,
       // `include: { client: true }` above already carries Client.avatarUrl —
