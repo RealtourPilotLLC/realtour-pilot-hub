@@ -105,3 +105,43 @@ export function stripMoneySentences(s: string): string {
   const kept = parts.filter((p) => !MONEY.test(p));
   return kept.join(" ").replace(/\s{2,}/g, " ").trim();
 }
+
+/**
+ * Redact the FIGURE and keep the sentence — for titles and one-line summaries
+ * on a non-owner screen, where dropping the whole sentence (above) would leave
+ * an empty row. "Send Andrea's updated order with $750 credit applied" reads
+ * "… with [amount] credit applied": Kyle still knows what to do, and the dollar
+ * figure never lands on an ADMIN screen (audit5 kyle-home §5, Sep 8 — Jordan's
+ * standing rule: ADMIN = full operations, no money anywhere). Catches "$750",
+ * "$1,200.50", "$1.2k", "750 dollars", "1,200 USD", "50 bucks" — and, since
+ * the Sep 8 review, money written without a symbol: "USD 750", "750$",
+ * "price is 750", "price: 1,250", "credit of 750", "750 credit". A number
+ * after a money word is left alone when a count noun follows it ("invoice
+ * for 3 listings", "paid 2 days ago", "total of 45 photos"). Idempotent.
+ */
+const MONEY_WORD = "credit|refund|discount|price|pricing|charge[ds]?|invoice|owe[ds]?|paid|pay|fee|deposit|balance|cost|quoted?|bill(?:ed)?|total";
+// "credit of 750", "price is 750", "price: 1,250", "owes 750" — but not a
+// count: "invoice for 3 listings", "paid 2 days ago", "total of 45 photos".
+const MONEY_WORD_THEN_NUMBER = new RegExp(
+  `\\b((?:${MONEY_WORD})(?:\\s+(?:of|is|was|for|at|to|about|around))?(?:\\s*:\\s*|\\s+))` +
+    // \b after the number: without it the engine backtracks "45 photos" to
+    // "4" + "5 photos" and slips past the count-noun guard below.
+    `\\d[\\d,]*(?:\\.\\d+)?(?:\\s?[kK](?![a-z]))?\\b` +
+    `(?!\\s*(?:photos?|pics?|pictures?|images?|videos?|clips?|reels?|shoots?|listings?|files?|jobs?|photographers?|editors?|clients?|batter(?:y|ies)|cards?|drives?|min(?:ute)?s?|hours?|hrs?|days?|weeks?|months?|am|pm|sq|st|nd|rd|th)\\b)`,
+  "gi",
+);
+// "750 credit", "750 refund", "1,250 fee" — the figure in front of the word.
+const NUMBER_THEN_MONEY_WORD = /\b\d[\d,]*(?:\.\d+)?(?:\s?[kK](?![a-z]))?(?=\s+(?:credit|refund|discount|fee|deposit|off)\b)/gi;
+
+export function scrubMoney(s: string): string {
+  if (!s) return s;
+  return s
+    .replace(/[$€£]\s?\d[\d,]*(?:\.\d+)?(?:\s?[kKmM](?![a-z]))?/g, "[amount]")
+    .replace(/\b\d[\d,]*(?:\.\d+)?\s?(?:dollars?|usd|bucks)\b/gi, "[amount]")
+    // Symbol or code BEFORE the number ("USD 750", "US$ 750") and AFTER it ("750$").
+    .replace(/\b(?:usd|us\$)\s?\d[\d,]*(?:\.\d+)?(?:\s?[kK](?![a-z]))?/gi, "[amount]")
+    .replace(/\b\d[\d,]*(?:\.\d+)?\s?\$(?!\d)/g, "[amount]")
+    .replace(MONEY_WORD_THEN_NUMBER, "$1[amount]")
+    .replace(NUMBER_THEN_MONEY_WORD, "[amount]")
+    .replace(/(\[amount\])(?:\s*[-–—]\s*\[amount\])+/g, "$1");
+}

@@ -52,7 +52,7 @@ import { DroneBadge, hasDroneOps } from "@/components/project/DroneBadge";
 import { DroneAdvisory } from "@/components/project/DroneAdvisory";
 import { DeliverableStatusSelect } from "@/components/project/DeliverableStatusSelect";
 import { PRIORITY_META, DELIVERABLE_META, refinedDeliverableLabel, stageMeta } from "@/lib/pipeline";
-import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
+import { actualFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { photoTargetFor } from "@/lib/culling";
 import { PhotoTargetControl } from "@/components/project/PhotoTargetControl";
 import { formatMoney } from "@/lib/utils";
@@ -158,13 +158,16 @@ export default async function ProjectPage({
       !!project.paymentUrl
     : !!project.paymentStatus;
 
-  // Deep links to this project's Dropbox upload folders (AutoHDR convention).
-  const folders = projectFolderPaths({
+  // Deep links to this project's Dropbox folders — where they ACTUALLY are
+  // (a same-street re-shoot or a month-moved shoot lives off the convention
+  // path; the Sep 9 Rowan job's nine links opened the Sep 3 folder — audit, Sep 8).
+  const folders = actualFolderPaths({
     title: project.title,
     addressLine: project.addressLine,
     shootDate: project.shootDate,
     createdAt: project.createdAt,
     client: { name: project.client.name },
+    dropboxFolder: project.dropboxFolder,
   });
   const dropboxLinks = [
     { label: "Raw Photos", url: dropboxWebUrl(folders.rawPhotos) },

@@ -5,7 +5,23 @@ import { PageHeader } from "@/components/PageHeader";
 import { Avatar } from "@/components/ui/Avatar";
 import { cn, nameColor } from "@/lib/utils";
 import { unansweredCommsBoard, revisionsBoard, slackBoard } from "@/lib/commsBoard";
+import { getCurrentUser } from "@/lib/auth/user";
+import { scrubMoney } from "@/lib/text";
 import { HandledButton, SlackDoneButton } from "@/components/tasks/ChecklistButtons";
+
+// No money on an ADMIN screen (Jordan's standing rule): a Slack to-do's title,
+// a client's revision ask, or the message a client is waiting on can carry a
+// dollar figure, and for a non-owner it is redacted before it renders (audit5
+// kyle-home §5, Sep 8). The Comms tab's message bodies go through the same
+// scrub as the home's previews of the same rows (review, Sep 8 — "no money
+// anywhere"): only the figure goes, the sentence stays, so Kyle can still
+// answer. If Jordan wants client-quoted figures visible here, drop the three
+// scrub() wraps in CommsView. Sessionless = owner, the same rule the home
+// applies.
+async function moneyScrubber(): Promise<(s: string) => string> {
+  const me = await getCurrentUser().catch(() => null);
+  return !me || me.role === "OWNER" ? (s) => s : scrubMoney;
+}
 
 // ---------------------------------------------------------------------------
 // The Comms Checklist tabs (Jordan, Sep 1): Comms (Phone | Email, grouped by
@@ -29,7 +45,7 @@ function Shell({ tabs, title, subtitle, children }: { tabs: ReactNode; title: st
 // ---------------- COMMS ----------------
 
 export async function CommsView({ tabs, channel }: { tabs: ReactNode; channel: "phone" | "email" }) {
-  const [phone, email] = await Promise.all([unansweredCommsBoard("phone"), unansweredCommsBoard("email")]);
+  const [phone, email, scrub] = await Promise.all([unansweredCommsBoard("phone"), unansweredCommsBoard("email"), moneyScrubber()]);
   const groups = channel === "phone" ? phone : email;
   const sub = "Everything still owed an answer, grouped by who's waiting. Rows clear on their own when a reply goes out — tick only what you handled outside the hub.";
   return (
@@ -74,15 +90,15 @@ export async function CommsView({ tabs, channel }: { tabs: ReactNode; channel: "
                   channel === "email" ? (
                     <div key={idx} className="text-sm">
                       <p className="font-semibold text-foreground">
-                        {i.subject || "(no subject)"}
+                        {i.subject ? scrub(i.subject) : "(no subject)"}
                         <span className="ml-2 font-normal text-muted-2">{i.ageHours}h ago</span>
                       </p>
-                      {i.body && <p className="mt-0.5 whitespace-pre-wrap text-foreground/80">{i.body}</p>}
+                      {i.body && <p className="mt-0.5 whitespace-pre-wrap text-foreground/80">{scrub(i.body)}</p>}
                     </div>
                   ) : (
                     <p key={idx} className="text-sm text-foreground/85">
                       <span className="text-muted-2">{i.ageHours}h ago · </span>
-                      &ldquo;{i.snippet}&rdquo;
+                      &ldquo;{scrub(i.snippet)}&rdquo;
                     </p>
                   ),
                 )}
@@ -101,7 +117,7 @@ const subIdle = "rounded-lg px-3 py-1.5 text-sm font-medium text-muted hover:bg-
 // ---------------- REVISIONS ----------------
 
 export async function RevisionsView({ tabs }: { tabs: ReactNode }) {
-  const groups = await revisionsBoard();
+  const [groups, scrub] = await Promise.all([revisionsBoard(), moneyScrubber()]);
   return (
     <Shell tabs={tabs} title="Revisions" subtitle="Every open revision, grouped by who asked. A row clears itself when the corrected work is delivered.">
       {groups.length === 0 ? (
@@ -126,7 +142,7 @@ export async function RevisionsView({ tabs }: { tabs: ReactNode }) {
                     </div>
                     {(j.headline || j.note) && (
                       <p className="mt-1 text-[13px] text-foreground/80">
-                        <span className="font-medium">The ask:</span> {(j.headline ?? j.note ?? "").slice(0, 180)}
+                        <span className="font-medium">The ask:</span> {scrub((j.headline ?? j.note ?? "").slice(0, 180))}
                       </p>
                     )}
                     {j.itemsTotal > 0 && (
@@ -146,7 +162,10 @@ export async function RevisionsView({ tabs }: { tabs: ReactNode }) {
 // ---------------- SLACK ----------------
 
 export async function SlackView({ tabs }: { tabs: ReactNode }) {
-  const { unassigned, assigned } = await slackBoard();
+  const [board, scrub] = await Promise.all([slackBoard(), moneyScrubber()]);
+  const scrubRow = <T extends { title: string; summary: string | null }>(t: T): T => ({ ...t, title: scrub(t.title), summary: t.summary == null ? t.summary : scrub(t.summary) });
+  const unassigned = board.unassigned.map(scrubRow);
+  const assigned = board.assigned.map(scrubRow);
   const total = unassigned.length + assigned.length;
   return (
     <Shell tabs={tabs} title="Slack tasks" subtitle="Action items parsed from Slack — assign, do, or tick them off. They no longer clog the board.">

@@ -6,8 +6,9 @@ import { appBase } from "@/lib/appUrl";
 import { cutKeyOf } from "@/lib/reviewCuts";
 import { videoTier } from "@/lib/projectStatus";
 import { isMonthlyContentJob } from "@/lib/pipeline";
-import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
+import { actualFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { etAddDays } from "@/lib/datetime";
+import { EDIT_ROUND_SUMMARY } from "@/lib/tasks";
 import type { QueueRow } from "@/components/editing/SimpleQueue";
 
 // The Editor Queue's row builder, extracted from /editing so the message
@@ -84,8 +85,9 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
       },
       // assignedManually: a NULL key on a hand-pinned task is not "nobody has
       // got round to it yet", it is the owner deliberately taking the job off
-      // the bench (see UNPINNED below).
-      select: { projectId: true, assignedKey: true, taskType: true, assignedManually: true },
+      // the bench (see UNPINNED below). summary: a "Round N — …" edit card is
+      // the video lane's redo signal (see ROUND ON THE CARD below).
+      select: { projectId: true, assignedKey: true, taskType: true, assignedManually: true, summary: true },
     }),
     // The Slack messages column → the job's own chat. Revisions live THERE now,
     // not in channel dumps.
@@ -135,6 +137,17 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
   for (const t of openTasks)
     if (t.taskType === "revision" && t.projectId && (t.assignedKey == null || VIDEO_LANE.has(t.assignedKey)))
       revisionCount.set(t.projectId, (revisionCount.get(t.projectId) ?? 0) + 1);
+  // ROUND ON THE CARD (Sep 8). A Review Room send-back and the queue's own
+  // "Revisions" flip no longer mint a revision task — they add a round to
+  // the job's edit_video card (one card per cut; tasks.addRoundToEditCard),
+  // whose summary then starts "Round N — …" until the editor hands the next
+  // version in. That open round IS the editor owing a redo, so it counts
+  // like a bounced cut: without it the flip stopped sticking — the next
+  // render put the row straight back on Ready for review / In editing off
+  // the old cut (Sep 8 review).
+  const roundOwed = new Set<string>();
+  for (const t of openTasks)
+    if (t.taskType === "edit_video" && t.projectId && EDIT_ROUND_SUMMARY.test(t.summary ?? "")) roundOwed.add(t.projectId);
   const comments = new Map(msgCounts.map((m) => [m.projectId, m._count]));
 
   // Per job: how many cuts exist and what each one's LATEST round says. Only
@@ -192,7 +205,9 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
     // is the most truthful number of all. It is also how many cuts have to be
     // approved before the job's video work is finished.
     const videosOwed = p.videosFilmed ?? videos.reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
-    const folders = projectFolderPaths(p);
+    // The job's OWN folder (a same-street re-shoot or a month-moved shoot lives
+    // off the convention path — audit, Sep 8).
+    const folders = actualFolderPaths(p);
     // Dropbox truth (from the evidence sweep, so it refreshes hourly) — drives
     // the uploaded-or-not dot on the RAW/Final link chips and the REVISION
     // guard below.
@@ -229,14 +244,17 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
         // with changes outranks one still waiting — the editor owes the redo
         // before anyone owes a verdict. "Ready for review" therefore means
         // exactly one thing: a cut is uploaded and a human hasn't ruled yet.
+        // A round still open on the edit card outranks a waiting cut too: the
+        // human said "Revisions" on the queue (or the Room bounced it) and
+        // the editor has not handed the next version in yet.
         effectiveStatus =
-          cut.revising > 0 ? "REVISION"
+          cut.revising > 0 || roundOwed.has(p.id) ? "REVISION"
           : cut.waiting > 0 ? "REVIEW"
           : cut.approved >= Math.max(1, videosOwed) ? "APPROVED"
           // Part of the batch passed, the rest was never handed in — a
           // 4-video month with cut 1 approved is progress, not done.
           : "EDITING";
-      } else if (p.status === "REVIEW" || (p.status === "REVISION" && (revisionCount.get(p.id) ?? 0) === 0)) {
+      } else if (p.status === "REVIEW" || (p.status === "REVISION" && (revisionCount.get(p.id) ?? 0) === 0 && !roundOwed.has(p.id))) {
         // The Room holds nothing for this job. Most jobs never pass through it
         // (folder discovery is off by default), so a file in the Final folder
         // or a video already live on Aryeo still counts as a cut. Neither one

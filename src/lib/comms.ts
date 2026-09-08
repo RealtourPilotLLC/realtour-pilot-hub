@@ -1,7 +1,7 @@
 import "server-only";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
-import { createCommTask, mergeIntoExistingTask, closeObsoleteTasks } from "@/lib/tasks";
+import { createCommTask, mergeIntoExistingTask, closeObsoleteTasks, revisionPriority } from "@/lib/tasks";
 import { routeCommTask } from "@/lib/brain";
 import type { NotifyTarget } from "@/lib/notify";
 import { clip } from "@/lib/text";
@@ -189,6 +189,7 @@ export async function recordClientCommunication(opts: {
           snippet: opts.text, source: opts.source,
           aiTitle: decision.title, aiDetail: decision.detail, priority: decision.priority,
           threadRef: opts.threadRef ?? null,
+          taskType: decision.taskType,
         });
       }
     }
@@ -345,7 +346,7 @@ export async function raiseRevision(opts: {
 }): Promise<boolean> {
   const project = await prisma.project.findUnique({
     where: { id: opts.projectId },
-    select: { id: true, status: true, title: true, clientId: true, revisionRequestedAt: true, editorManual: true, editorVendorKey: true, editor: { select: { name: true } }, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } }, client: { select: { socialClient: true } } },
+    select: { id: true, status: true, title: true, clientId: true, revisionRequestedAt: true, editorManual: true, editorVendorKey: true, editor: { select: { name: true } }, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } }, client: { select: { socialClient: true, segment: true } } },
   });
   if (!project) return false;
 
@@ -447,8 +448,13 @@ export async function raiseRevision(opts: {
     ]),
     source: opts.source,
     sourceDetail: opts.threadRef ?? null,
-    priority: "URGENT" as const,
-    dueAt: new Date(),
+    // No due date and HIGH, not due-now URGENT (Jordan, Sep 8: "Revisions dont
+    // promise anything"; due-fuses audit: every revision read overdue from the
+    // minute it arrived). URGENT only for a VIP/heavy client or an ask that
+    // says the client is unhappy — see revisionPriority. Age comes from
+    // createdAt on every card ("requested 3 days ago").
+    priority: revisionPriority({ segment: project.client?.segment, ask: opts.note }),
+    dueAt: null,
     clientId: opts.clientId ?? project.clientId,
     projectId: project.id,
     propertyAddress: opts.propertyAddress ?? project.title,
@@ -608,10 +614,28 @@ export async function resolveRevision(projectId: string): Promise<void> {
     where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
     select: { assignedKey: true },
   });
+  // Sep 8 (revision lifecycle): a DELIVERED job whose corrected cut went
+  // through the Review Room can be sitting in REVIEW when the approval
+  // resolves the ask (reviewCuts.correctedCutSubmitted / correctedCutApproved).
+  // Delivered once = delivered still, so it lands back on Delivered with the
+  // same close-out and bells a REVISION job gets — but ONLY when no cut is
+  // still waiting on a verdict: this function also runs from the hand paths
+  // (the task's Complete button, the last checklist tick, the project-page
+  // button), and a delivered job re-queued through the fresh rail with a
+  // PENDING cut must not be flipped DELIVERED — edit card closed, "Delivered
+  // ✓" rung, delivery text minted — off an unreviewed cut (Sep 8 review).
+  // A never-delivered REVIEW job keeps its stage, exactly as before — "a
+  // REVIEW job that merely carried a revision note keeps its stage".
+  const cutWaiting =
+    project?.status === "REVIEW" && project.deliveredAt
+      ? (await prisma.reviewSubmission.count({ where: { projectId, status: "PENDING" } })) > 0
+      : false;
   const landing =
     project?.status === "REVISION"
       ? await revisionLanding(projectId, project.deliveredAt)
-      : null;
+      : project?.status === "REVIEW" && project.deliveredAt && !cutWaiting
+        ? ("DELIVERED" as RevisionLanding)
+        : null;
   await prisma.project.update({
     where: { id: projectId },
     data: {

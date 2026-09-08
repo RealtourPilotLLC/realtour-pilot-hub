@@ -16,7 +16,7 @@ import { stageMeta } from "@/lib/pipeline";
 import { Aryeo } from "@/lib/integrations/aryeo";
 import { getSecret } from "@/lib/integrations/connections";
 import { resolveRevision } from "@/lib/comms";
-import { closeObsoleteTasks, CLOSED_BY_HAND } from "@/lib/tasks";
+import { closeObsoleteTasks, CLOSED_BY_HAND, qcGateComplete } from "@/lib/tasks";
 import { etEndOfDay } from "@/lib/datetime";
 
 export type ApptResult = { ok: boolean; message: string };
@@ -143,18 +143,41 @@ export async function markCommsHandled(clientId: string, family: "phone" | "emai
     // Gmail sync noticed the ack (Marcee's 54-day reply task; audit, Sep 8).
     // Close only THIS sender group's gmail tasks — the phone branch below
     // deliberately excludes source "gmail", this is its mirror.
+    const wasOpen = await prisma.smartTask.findMany({
+      where: { clientId, taskType: "client_reply", source: "gmail", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      select: { id: true },
+    });
     try {
       const { completeEmailReplyTasks } = await import("@/lib/integrations/google");
       await completeEmailReplyTasks(clientId, groupKey ?? null);
     } catch { /* the Gmail sync remains the backstop */ }
+    // The tick is a person's close — stamp whichever of those rows it completed.
+    if (wasOpen.length > 0) {
+      const nowDone = await prisma.smartTask.findMany({ where: { id: { in: wasOpen.map((t) => t.id) }, status: "COMPLETED" }, select: { id: true } });
+      const { getCurrentUser } = await import("@/lib/auth/user");
+      const { stampHandledByHand } = await import("@/lib/opsDay");
+      const me = await getCurrentUser().catch(() => null);
+      for (const t of nowDone) await stampHandledByHand(t.id, me?.name ?? null, me?.email ?? null);
+    }
   } else {
     // Complete EVERY open client_reply for this client (a busy client can hold
     // several) so the tick clears the pager and the board in one motion —
     // except gmail-born ones: a phone tick answers texts, not email (review).
-    const done = await prisma.smartTask.updateMany({
+    const openIds = (await prisma.smartTask.findMany({
       where: { clientId, taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] }, source: { not: "gmail" } },
+      select: { id: true },
+    })).map((t) => t.id);
+    const done = await prisma.smartTask.updateMany({
+      where: { id: { in: openIds } },
       data: { status: "COMPLETED", completedAt: new Date() },
     });
+    if (openIds.length > 0) {
+      // A person's tick — leave the trace "handled today" counts (audit, Sep 8).
+      const { getCurrentUser } = await import("@/lib/auth/user");
+      const { stampHandledByHand } = await import("@/lib/opsDay");
+      const me = await getCurrentUser().catch(() => null);
+      for (const id of openIds) await stampHandledByHand(id, me?.name ?? null, me?.email ?? null);
+    }
     if (done.count === 0) {
       await prisma.smartTask.create({
         data: {
@@ -207,6 +230,14 @@ export async function setSmartTaskStatus(taskId: string, status: string) {
     data: { status, completedAt: status === "COMPLETED" ? new Date() : null, ...qcMarker },
   });
   if (updated.count === 0) return; // lost a race with a delete — nothing else to do
+  // A person pressed Complete: leave the trace "handled today" counts (the
+  // sweeps and the janitor close far more rows than people do — audit, Sep 8).
+  if (status === "COMPLETED") {
+    const { getCurrentUser } = await import("@/lib/auth/user");
+    const { stampHandledByHand } = await import("@/lib/opsDay");
+    const me = await getCurrentUser().catch(() => null);
+    await stampHandledByHand(taskId, me?.name ?? null, me?.email ?? null);
+  }
   // Completing the QC card via the status button (not the checklist) must still
   // write the QcRecord — this was the third no-record completion path the July
   // 2026 audit found (30 deliveries, 0 QcRecords, owner quality dial empty).
@@ -476,7 +507,10 @@ export async function toggleTaskChecklistItem(
   const items = parseChecklist(t.checklist);
   if (index < 0 || index >= items.length) return { ok: false, items, completed: false };
   items[index] = { ...items[index], done: !items[index].done };
-  const completed = checklistComplete(items);
+  // A QC card completes on its EVIDENCE rows (media live, gallery out); the
+  // failure-mode ticks are optional notes, never a gate (Jordan, Sep 8:
+  // "Ticking QC should be optional"). Every other checklist keeps all-ticked.
+  const completed = t.taskType === "media_qa" ? qcGateComplete(items) : checklistComplete(items);
   // Log a QC pass when this tick is the one that finishes a media_qa card (and it
   // wasn't already complete). recordQcCompletion snapshots the ticks, counts the
   // misses, and is deduped/best-effort so it can't double-write vs the reconciler
@@ -498,8 +532,9 @@ export async function toggleTaskChecklistItem(
       checklist: serializeChecklist(items),
       // All boxes ticked → done. If they uncheck one on a completed task, reopen.
       ...(completed
-        ? { status: "COMPLETED", completedAt: new Date() }
-        : t.status === "COMPLETED"
+        ? { status: "COMPLETED", completedAt: new Date(), ...(t.taskType === "media_qa" ? { sourceDetail: CLOSED_BY_HAND } : {}) }
+        // Unticking an OPTIONAL box on a finished QC card must not reopen it.
+        : t.status === "COMPLETED" && t.taskType !== "media_qa"
           ? { status: "OPEN", completedAt: null }
           : {}),
     },

@@ -393,6 +393,58 @@ const VIP_EXTRA_PASS = [
 ] as const;
 export const VIP_SEGMENTS = new Set(["vip", "heavy"]);
 
+// ---------------------------------------------------------------------------
+// REVISIONS PROMISE NOTHING (Jordan, Sep 8: "Revisions dont promise anything").
+// A client's revision used to mint URGENT with dueAt = the raise moment, so
+// every revision card read "Overdue · <the minute it arrived>" from second
+// zero — 14 of 32 in 60 days were born overdue and the red label carried no
+// information (Sep 8 audit, due-fuses). There is no revision turnaround in
+// Settings, the playbook or the guide to point a date at, so the card carries
+// NO due date and reads its age from createdAt ("requested 3 days ago").
+// Priority is HIGH; URGENT only when the client is a VIP/heavy account or the
+// ask itself says they are unhappy. Shared by every revision-type minter
+// (comms.raiseRevision, the re-QC card, the Editing Room's new-cut rail).
+// ---------------------------------------------------------------------------
+// "again" only counts when it carries a complaint ("wrong again", "once again",
+// "again … not") — a bare `again` made "thanks again for the great video!"
+// URGENT (Sep 8 review).
+const UNHAPPY_ASK = /\b(?:unacceptable|disappointed|unhappy|frustrated|terrible|not happy|third time|(?:yet|still|once) again|again\b[^.!?]*\b(?:wrong|not|still)|(?:wrong|still)\b[^.!?]*\bagain)\b/i;
+export function revisionPriority(opts: { segment?: string | null; ask?: string | null }): "URGENT" | "HIGH" {
+  const vip = !!opts.segment && VIP_SEGMENTS.has(opts.segment);
+  const unhappy = !!opts.ask && UNHAPPY_ASK.test(opts.ask);
+  return vip || unhappy ? "URGENT" : "HIGH";
+}
+
+// ---------------------------------------------------------------------------
+// QC TICKS ARE OPTIONAL (Jordan, Sep 8: "Ticking QC should be optional").
+// The card's own promise — "auto-completes once everything is live" — was
+// false: checklistComplete needed every guided failure-mode tick too, 2.2% of
+// those were ever ticked, and 83% of QC cards died in the DELIVERED sweep
+// instead (Sep 8 audit, U1). The gate is now the EVIDENCE rows only — every
+// ordered category live ("QC <category>") and the gallery out ("Deliver the
+// gallery" / "Produce + deliver") — plus the two debrief rows that clear
+// themselves from real state: "Photographer submitted the upload page"
+// (Jordan's law — the job isn't done until it is; the submit flips it) and
+// the shot-order line (always emitted done). The other debrief rows (verify
+// the flagged removals, check the video against the brief) and the "Re-QC
+// after revision" row are human ticks that never self-clear — keeping them in
+// the gate held 632 Greenridge, 102 Knoxlyn Farm, 68 New St and 2051 Old
+// Sumneytown open on exactly those rows (Sep 8 review), which is the same
+// broken promise in a smaller box. They stay on the card as reminders, like
+// the failure-mode and VIP extra-pass ticks; none of them hold it open.
+// ---------------------------------------------------------------------------
+const QC_DELIVER_ROW = /^(Deliver the gallery|Produce \+ deliver)/;
+export function isQcGateRow(label: string): boolean {
+  return /^QC\s/.test(label) || QC_DELIVER_ROW.test(label) || label === QC_LABEL_PAGE_SUBMITTED || label === QC_LABEL_SHOT_ORDER;
+}
+export function qcGateComplete(items: ChecklistItem[]): boolean {
+  const gate = items.filter((i) => isQcGateRow(i.label));
+  // A card with no evidence rows at all (shouldn't exist) falls back to the
+  // strict rule rather than closing on nothing.
+  if (gate.length === 0) return checklistComplete(items);
+  return gate.every((i) => i.done);
+}
+
 // Media category label for a deliverable type — mirrors CATEGORY_LABEL in
 // projectStatus.ts (kept here to avoid a circular import). Lets us tell, from a
 // project's status evidence (which lists present/missing by category label),
@@ -701,9 +753,11 @@ export function specsForProject(p: {
         taskType: "media_qa",
         title: `QC & deliver — ${label}`,
         reasonCreated: "Media in production — QC each deliverable, then deliver",
+        // Sep 8: the ticks are optional (qcGateComplete) — say so, so the card
+        // never promises a close it can't deliver.
         summary: monthly
-          ? "Monthly personal-branding / social content (7–10 business-day turnaround). QC each piece as it lands, then produce + deliver this month's content. Auto-completes once everything is live and delivered."
-          : "Content is coming in for this shoot. Quality-check each deliverable as it lands on Aryeo (verticals + horizontals, no odd edits/reflections/blemishes, staging + item removal done), then deliver the gallery via Aryeo + the branded email. Auto-completes once every category is live and the gallery is out.",
+          ? "Monthly personal-branding / social content (7–10 business-day turnaround). QC each piece as it lands, then produce + deliver this month's content. The checks below are reminders, not gates — the card closes on its own once everything is live and delivered."
+          : "Content is coming in for this shoot. Quality-check each deliverable as it lands on Aryeo (verticals + horizontals, no odd edits/reflections/blemishes, staging + item removal done), then deliver the gallery via Aryeo + the branded email. The checks below are reminders, not gates — the card closes on its own once every category is live and the gallery is out.",
         // The card is due when the JOB is due — the LATEST still-pending
         // deliverable — not the earliest. Using the min made every shoot read
         // "overdue" the morning after (photos are a 20h SLA) while the video
@@ -751,10 +805,18 @@ export async function createCommTask(opts: {
   // Provenance ref (e.g. "gmail-thread:hello@…:<threadId>") so the listener can
   // auto-close the task once we've replied in that thread.
   threadRef?: string | null;
+  // The brain's call (brain.brainTaskType): a real unanswered inbound is a
+  // client_reply; bookkeeping it asked of US ("Note builder relationship
+  // context…", "Prep for Thursday 3:30 call") is a todo — the Done tab was
+  // labelling those "Client reply" (audit, Sep 8). Defaults to client_reply.
+  taskType?: "client_reply" | "todo";
 }): Promise<boolean> {
+  const taskType = opts.taskType ?? "client_reply";
   // One open reply task per (client, order) — a multi-order client's questions
   // stay separate, and replying about one order won't close another's.
-  const key = dedupe([opts.clientId, opts.projectId ?? "noproject", "client_reply"]);
+  // A todo gets its own key so a later real reply never appends onto an
+  // internal note (and vice versa).
+  const key = dedupe([opts.clientId, opts.projectId ?? "noproject", taskType === "todo" ? "brain_todo" : "client_reply"]);
   const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
   if (existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED") {
     // APPEND, don't drop (Aug 24 audit): a client sending three texts used to
@@ -813,7 +875,7 @@ export async function createCommTask(opts: {
     (opts.snippet ? `${opts.clientName} ${opts.kind === "text" ? "wrote in" : "reached out"}: “${clip(opts.snippet, 240)}”` : `${verb} ${opts.clientName}.`);
 
   const data = {
-    taskType: "client_reply",
+    taskType,
     title: title.slice(0, 120),
     summary: summary.slice(0, 500),
     description,
@@ -1160,14 +1222,24 @@ export async function reflectRevisionInQc(projectId: string, categories: string[
     return out;
   };
 
+  // Sep 8 (due-fuses audit): the re-QC card was born due-now too — "Overdue ·
+  // <raise minute>" on Kyle's list before the corrected media could exist.
+  // No due date (a revision promises nothing); HIGH, URGENT for VIP/unhappy.
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { title: true, clientId: true, client: { select: { segment: true } } },
+  });
+  if (!project) return;
+  const priority = revisionPriority({ segment: project.client?.segment, ask: reason });
+
   if (existing) {
     await prisma.smartTask.update({
       where: { id: existing.id },
       data: {
         status: "OPEN",
         completedAt: null,
-        priority: "HIGH",
-        dueAt: new Date(),
+        priority,
+        dueAt: null,
         checklist: serializeChecklist(markRevised(parseChecklist(existing.checklist))),
       },
     });
@@ -1175,8 +1247,6 @@ export async function reflectRevisionInQc(projectId: string, categories: string[
   }
 
   // No QC task (job was delivered + QC closed) → make one for the re-QC.
-  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true, clientId: true } });
-  if (!project) return;
   const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } } });
   await prisma.smartTask.create({
     data: {
@@ -1186,9 +1256,9 @@ export async function reflectRevisionInQc(projectId: string, categories: string[
       reasonCreated: "Deliverable back in revision — re-QC the new version",
       checklist: serializeChecklist(markRevised([])),
       source: "revision",
-      priority: "HIGH",
+      priority,
       assignedKey: "kyle",
-      dueAt: new Date(),
+      dueAt: null,
       projectId,
       clientId: project.clientId,
       propertyAddress: project.title,
@@ -2017,6 +2087,28 @@ export async function ensureEditorLoginNudge(editorKey: string): Promise<void> {
 // nudge" — an overdue edit is URGENT either way and a wildly-past date just
 // reads as noise.
 // ---------------------------------------------------------------------------
+/** The edit card's due rule, shared with addRoundToEditCard (Sep 8): the
+ *  video's SLA minus a 12h QC buffer. Never surface a wildly-backdated due;
+ *  clamp an already-late edit to "soon" when the row is BORN. On refresh the
+ *  clamp is not rolled forward: doing that every hour meant a late edit read
+ *  "due in an hour" forever and the row was rewritten every tick (Sep 8 audit)
+ *  — the stamp it already carries stands, and an edit past its SLA reads
+ *  late, which is the truth. */
+function editDueRule(
+  shootDate: Date | null,
+  videoType: string,
+  opts: { premium: boolean; monthlyContent: boolean },
+): { videoDue: Date | null; late: boolean; dueAt: Date } {
+  const videoDue = shootDate ? deliveryDueFrom(shootDate, videoType, opts) : null;
+  const rawDue = videoDue ? new Date(videoDue.getTime() - 12 * HOUR) : new Date(Date.now() + 4 * HOUR);
+  const late = rawDue.getTime() < Date.now();
+  return { videoDue, late, dueAt: late ? new Date(Date.now() + HOUR) : rawDue };
+}
+
+/** A bounce round on the edit card starts its summary this way — mintEditTask's
+ *  hourly refresh leaves such a summary alone (see addRoundToEditCard). */
+export const EDIT_ROUND_SUMMARY = /^Round \d+ — /;
+
 export async function mintEditTask(projectId: string): Promise<void> {
   const p = await prisma.project.findUnique({
     where: { id: projectId },
@@ -2026,6 +2118,7 @@ export async function mintEditTask(projectId: string): Promise<void> {
       shootDate: true,
       addressLine: true,
       createdAt: true,
+      dropboxFolder: true, // the RAW link must open THIS job's folder (re-shoot / moved shoot; audit, Sep 8)
       editorManual: true,
       editor: { select: { name: true } },
       client: { select: { name: true, socialClient: true } },
@@ -2039,7 +2132,7 @@ export async function mintEditTask(projectId: string): Promise<void> {
 
   const { videoTier } = await import("@/lib/projectStatus");
   const { editorForDeliverable, editorMeta, editorKeyForTeamName } = await import("@/lib/editors");
-  const { dropboxWebUrl, projectFolderPaths } = await import("@/lib/dropboxFolders");
+  const { dropboxWebUrl, actualFolderPaths } = await import("@/lib/dropboxFolders");
 
   const monthly = isMonthlyContentJob(p.deliverables);
   const tier = videoTier(p.deliverables); // standard | premium | null
@@ -2062,19 +2155,9 @@ export async function mintEditTask(projectId: string): Promise<void> {
   // Video delivery-due = shootDate + the SAME SLA the status card uses, then a
   // 12h QC buffer pulls the EDIT due earlier. No shootDate → no computable SLA,
   // fall back to a short nudge window so the task still surfaces.
-  const videoDue = p.shootDate
-    ? deliveryDueFrom(p.shootDate, v.type, { premium: isPremium, monthlyContent: monthly })
-    : null;
-  const rawDue = videoDue ? new Date(videoDue.getTime() - 12 * HOUR) : new Date(Date.now() + 4 * HOUR);
-  // Never surface a wildly-backdated due; clamp an already-late edit to "soon"
-  // when the row is BORN. On refresh the clamp is not rolled forward: doing
-  // that every hour meant a late edit read "due in an hour" forever and the
-  // row was rewritten every tick (Sep 8 audit) — the stamp it already carries
-  // stands, and an edit past its SLA reads late, which is the truth.
-  const late = rawDue.getTime() < Date.now();
-  const dueAt = late ? new Date(Date.now() + HOUR) : rawDue;
+  const { videoDue, late, dueAt } = editDueRule(p.shootDate, v.type, { premium: isPremium, monthlyContent: monthly });
 
-  const rawUrl = dropboxWebUrl(projectFolderPaths(p).rawVideo);
+  const rawUrl = dropboxWebUrl(actualFolderPaths(p).rawVideo);
   const briefUrl = `/edit/${projectId}`;
   const tierLabel = isPremium ? "Premium" : "Standard";
   const dueLabel = videoDue
@@ -2103,7 +2186,10 @@ export async function mintEditTask(projectId: string): Promise<void> {
       ...(existing.assignedManually || !assignedKey ? {} : { assignedKey, ...(pin.pinned ? { assignedManually: true } : {}) }),
       dueAt: refreshedDue,
       priority: computePriority({ dueAt: refreshedDue, status: "SHOT" }),
-      summary: summary.slice(0, 500),
+      // A bounce writes "Round N — …" here (addRoundToEditCard, Sep 8): that
+      // is the editor's current instruction and outlives the hourly refresh
+      // until the card closes. Only the plain first-cut summary is rewritten.
+      summary: EDIT_ROUND_SUMMARY.test(existing.summary ?? "") ? existing.summary : summary.slice(0, 500),
     };
     // Diff-before-write: an unchanged card is not touched (see changedKeys).
     if (changedKeys(existing, data).length === 0) return;
@@ -2140,6 +2226,109 @@ export async function mintEditTask(projectId: string): Promise<void> {
       dedupeKey: key,
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// ONE CARD PER CUT (Jordan, Sep 8: "When a cut changes after a card is made,
+// make it 1 card."). A Review Room send-back and the Editing Room's
+// "Revisions" flip used to mint a SEPARATE revision task beside the editor's
+// edit_video card (cut-changes-* / queue-revision-*) — two cards for one cut
+// on the editor's board, three with Kyle's QC (38 E Gay St; Sep 8 audit R1).
+// Now a bounce is a ROUND on the job's edit_video card: title unchanged,
+// summary "Round N — M notes to fix", the notes appended to the description,
+// due refreshed by the same SLA−12h rule mintEditTask uses, the card reopened
+// if the editor's submit had closed it. The client's own `revision` task
+// (their ask — Kyle's and Jordan's record) is a different thing and is never
+// touched here. Idempotent: the same round block is never appended twice.
+// The card keeps whoever holds it (the assignedManually invariant); a card
+// that never existed is minted through mintEditTask so the pin/routing rules
+// decide, exactly as for a first cut.
+// ---------------------------------------------------------------------------
+export async function addRoundToEditCard(
+  projectId: string,
+  opts: {
+    /** the version the editor is being asked for (bounced round + 1) */
+    round: number;
+    /** the reviewer's notes, one per line (already timestamped where they have one) */
+    notes: string[];
+    /** where the round came from, e.g. "sent back from the Review Room" */
+    reason: string;
+  },
+): Promise<{ taskId: string; assignedKey: string | null; assignedManually: boolean } | null> {
+  const key = `edit-video-${projectId}`;
+  let card = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+  if (!card) {
+    // A vendor cut / legacy job may never have had a card — mint one the
+    // normal way so the pin and routing rules pick the editor.
+    await mintEditTask(projectId);
+    card = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+  }
+  if (!card) return null; // no video deliverable → nothing to hang a round on
+  const n = opts.notes.length;
+  const header = `Round ${opts.round} — ${opts.reason}`;
+  const block = [header, ...opts.notes.map((x) => (x.trim().startsWith("•") ? x.trim() : `• ${x.trim()}`))].join("\n");
+  let description = card.description ?? "";
+  if (!description.includes(block)) description = description ? `${description}\n\n${block}` : block;
+  if (description.length > 4000) description = "…" + description.slice(-4000);
+  const summary = `Round ${opts.round} — ${n} note${n === 1 ? "" : "s"} to fix (${opts.reason}). The notes are below and on the cut at /edit/${projectId}; fix them and upload the next version.`.slice(0, 500);
+  // Due: the same SLA−12h rule as a first cut, off the job's video deliverable.
+  const p = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { shootDate: true, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } } },
+  });
+  const v = p?.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  const { videoTier } = await import("@/lib/projectStatus");
+  const { dueAt } = editDueRule(p?.shootDate ?? null, v?.type ?? "VIDEO", {
+    premium: p ? videoTier(p.deliverables) === "premium" : false,
+    monthlyContent: p ? isMonthlyContentJob(p.deliverables) : false,
+  });
+  await prisma.smartTask.update({
+    where: { id: card.id },
+    data: {
+      status: "OPEN",
+      completedAt: null,
+      summary,
+      description,
+      dueAt,
+      priority: computePriority({ dueAt, status: "SHOT" }),
+    },
+  });
+  return { taskId: card.id, assignedKey: card.assignedKey, assignedManually: card.assignedManually };
+}
+
+/** The editor handed in a version of a cut (portal upload or the Final-folder
+ *  submit). The edit card answers the way submitCutForReview always has: on a
+ *  one-video job, or once every owed cut has been through review, the card is
+ *  COMPLETED (scoped to the submitting editor's own key when one is given —
+ *  never a co-editor's work item); on a multi-video job that still owes cuts
+ *  a "Round N — …" summary is rewritten so the card stops telling the editor
+ *  to fix a version they just sent (the queue row already reads Ready for
+ *  review — Sep 8 review), and mintEditTask's hourly refresh restores the
+ *  plain brief. Before this a portal re-upload left the round summary on the
+ *  card until the reconciler's evidence close, up to an hour later. */
+export async function editCardCutSubmitted(
+  projectId: string,
+  opts: { round: number; cutLabel?: string | null; close: boolean; editorKey?: string | null },
+): Promise<void> {
+  const scope = opts.editorKey ? { assignedKey: opts.editorKey } : {};
+  if (opts.close) {
+    await prisma.smartTask.updateMany({
+      where: { projectId, taskType: "edit_video", status: { notIn: ["COMPLETED", "CANCELLED"] }, ...scope },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    }).catch(() => {});
+    return;
+  }
+  const card = await prisma.smartTask.findFirst({
+    where: { projectId, taskType: "edit_video", status: { notIn: ["COMPLETED", "CANCELLED"] }, ...scope },
+    select: { id: true, summary: true },
+  });
+  if (!card || !EDIT_ROUND_SUMMARY.test(card.summary ?? "")) return;
+  await prisma.smartTask.update({
+    where: { id: card.id },
+    data: {
+      summary: `Version ${opts.round}${opts.cutLabel ? ` of ${opts.cutLabel}` : ""} is in the Review Room waiting on the verdict — the rest of the set is still owed. Brief: /edit/${projectId}`.slice(0, 500),
+    },
+  }).catch(() => {});
 }
 
 // ---------------------------------------------------------------------------
@@ -2868,7 +3057,9 @@ async function syncOneProjectTasks(
           ...s.checklist.map((i) => ({ label: i.label, done: i.done || (prevDone.get(i.label) ?? false) })),
           ...extras,
         ];
-        const allDone = checklistComplete(merged);
+        // Sep 8: the evidence rows (+ the two self-clearing debrief rows) are
+        // the gate; every human tick is optional — see qcGateComplete.
+        const allDone = qcGateComplete(merged);
         // A COMPLETED QC whose evidence still shows unchecked work on a live
         // SHOT/EDITING/REVIEW job was almost certainly auto-closed by this
         // reconciler during a transient signal blip (a demoted-then-healed job) —
@@ -2911,10 +3102,11 @@ async function syncOneProjectTasks(
                   // prior-cut rail flips a job to REVISION without going
                   // through reflectRevisionInQc): stamp the revision framing
                   // so Kyle doesn't get a weeks-overdue "QC & deliver" card.
+                  // No due date: a revision promises nothing (Sep 8).
                   ...(inRevision
                     ? {
                         priority: "HIGH",
-                        dueAt: new Date(),
+                        dueAt: null,
                         summary: "Back into revision — re-QC the fixed items before they go back to the client.",
                       }
                     : {}),
@@ -3019,12 +3211,17 @@ export async function expireStaleSlackTasks(): Promise<{ expired: number }> {
         { dedupeKey: { startsWith: "raw-video-missing-" } },
       ],
     },
-    data: { status: "CANCELLED" },
+    data: { status: "CANCELLED", summary: "Auto-closed: a 14-day-old watchdog nudge — the job resolved another way." },
   });
   const cutoff = new Date(Date.now() - 7 * 86_400_000);
   const r = await prisma.smartTask.updateMany({
     where: { taskType: "internal_instruction", source: "slack", status: "OPEN", createdAt: { lt: cutoff } },
-    data: { status: "CANCELLED" },
+    // Say so on the row (the Done tab shows cancelled rows): a silent cancel
+    // read as "someone did this" (audit, Sep 8). Summary only — sourceDetail
+    // carries the Slack channel and taskSource.ts parses it. Text mirrors
+    // slackSync.SLACK_EXPIRED_SUMMARY; kept literal so tasks.ts does not pull
+    // the Slack client into every import.
+    data: { status: "CANCELLED", summary: "Auto-closed: 7 days with no action." },
   });
   return { expired: r.count };
 }

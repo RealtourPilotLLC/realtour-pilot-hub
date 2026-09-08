@@ -54,16 +54,36 @@ function etYearMonth(date: Date): { year: number; monthIdx: number } {
   return { year, monthIdx };
 }
 
+// The street the folder is named after — the listing's address line, else the
+// first comma-piece of the title.
+function streetOf(p: Pick<FolderProject, "title" | "addressLine">): string {
+  return (p.addressLine || p.title.split(",")[0] || "Listing").trim();
+}
+
+// "Sep 9" in ET — the disambiguator a same-street re-shoot's folder carries.
+function etShortDate(date: Date): string {
+  return new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }).format(date);
+}
+
 // Build the folder paths for a project following the Zap's naming.
 export function projectFolderPaths(p: FolderProject): ProjectFolders {
   const date = p.shootDate ?? p.createdAt;
   const { year, monthIdx } = etYearMonth(date);
   const month = MONTHS[monthIdx];
   const quarter = `Q${Math.floor(monthIdx / 3) + 1}`;
-  const street = (p.addressLine || p.title.split(",")[0] || "Listing").trim();
-  const listingName = `${street} (${p.client.name})`;
+  const listingName = `${streetOf(p)} (${p.client.name})`;
   const base = `/AutoHDR/${year}/${quarter}/${month}/${listingName}`;
   return foldersUnder(base);
+}
+
+// A same-street re-shoot's own listing name: the convention path with the ET
+// shoot date appended — "1946 Rowan St (William Hannum) — Sep 9" — and a
+// counter after that for two re-shoots on one day. Plain characters only
+// (Dropbox rejects / \ : ? * < > " |, none of which can appear here), and the
+// numbered subfolders hang under it exactly as they do under the plain name.
+export function disambiguatedListingPath(plain: string, p: Pick<FolderProject, "shootDate" | "createdAt">, n = 1): string {
+  const dated = `${plain} — ${etShortDate(p.shootDate ?? p.createdAt)}`;
+  return n <= 1 ? dated : `${dated} (${n})`;
 }
 
 function foldersUnder(base: string): ProjectFolders {
@@ -113,6 +133,29 @@ export function actualFolderPaths(p: FolderProject): ProjectFolders {
 // layer: create swallows conflicts, move refuses to clobber an existing
 // destination (returns "conflict" and leaves both for a human), archive skips
 // anything already under /Canceled/.
+//
+// ONE FOLDER PER JOB (Sep 8 2026 audit, 1946 Rowan St). The convention name
+// has no disambiguator, so a same-street re-shoot for the same client in the
+// same month computed the SAME path as the first job, and the engine adopted
+// the first job's folder as its own: the Sep 9 re-shoot inherited the Sep 3
+// job's 84 raws, flipped to SHOT at import, stamped uploadedAt, rang the
+// editor bell and told Harrison "you're good to go" before he had shot.
+// Jordan's call (Sep 8): re-shoots get their OWN folder. The rules:
+//   • the OLDEST job (createdAt) keeps the plain Zapier-era name the team
+//     knows; a later job whose plain name another live job owns gets the
+//     shoot date appended — "1946 Rowan St (William Hannum) — Sep 9"
+//   • "owns" = a non-cancelled project recorded that path, or (a Zapier-era
+//     row with no record) computes it from its own street/client/month
+//   • a folder that TWO live jobs record is never moved or archived on the
+//     younger job's behalf — the younger one gets a fresh folder of its own
+//     and the timeline says so; any files of its own that already landed in
+//     the shared folder stay put for a human to move (nothing is deleted)
+//   • a path another live job RECORDS is never taken by a job without a
+//     record, whatever its age (the older of two jobs that both record the
+//     plain name keeps it; the younger yields on its own pass)
+//   • a name once given to a job sticks (plain or dated) until the shoot
+//     month changes, so the sweep doesn't rename folders back and forth —
+//     except that a dated name follows the shoot DAY within the month
 // ---------------------------------------------------------------------------
 
 const SUBFOLDERS: (keyof ProjectFolders)[] = ["rawPhotos", "rawVideo", "backupPhotos", "finalPhotos", "finalVideo"];
@@ -120,6 +163,129 @@ const SUBFOLDERS: (keyof ProjectFolders)[] = ["rawPhotos", "rawVideo", "backupPh
 export type EnsureResult = "created" | "repaired" | "exists" | "moved" | "archived" | "conflict" | "skipped";
 
 type EnsureProject = FolderProject & { id: string; status: string; dropboxFolder: string | null };
+
+type Claimant = {
+  id: string;
+  createdAt: Date;
+  shootDate: Date | null;
+  dropboxFolder: string | null;
+  /** listing paths this job can lay claim to, lower-cased (Dropbox paths are case-insensitive) */
+  recorded: string | null;
+  derived: string | null;
+};
+
+const lc = (s: string) => s.trim().toLowerCase();
+
+// Every OTHER live project that can lay claim to a listing folder under
+// `plain` (this job's convention path): by record (Project.dropboxFolder is
+// that path or a dated variant of it) or by derivation (same client + street,
+// so its own convention path may be the same one). One query — there is no
+// index on the folder/street columns, the table is small — and the exact
+// compare happens in memory.
+async function otherClaimants(p: EnsureProject, plain: string): Promise<Claimant[]> {
+  const street = streetOf(p);
+  const rows = await prisma.project.findMany({
+    where: {
+      id: { not: p.id },
+      status: { not: "CANCELLED" },
+      OR: [
+        { dropboxFolder: { startsWith: plain, mode: "insensitive" } },
+        {
+          client: { name: p.client.name },
+          OR: [
+            { addressLine: { equals: street, mode: "insensitive" } },
+            { title: { startsWith: street, mode: "insensitive" } },
+          ],
+        },
+      ],
+    },
+    select: {
+      id: true, createdAt: true, shootDate: true, dropboxFolder: true, title: true, addressLine: true,
+      client: { select: { name: true } },
+    },
+  });
+  return rows.map((o) => ({
+    id: o.id,
+    createdAt: o.createdAt,
+    shootDate: o.shootDate,
+    dropboxFolder: o.dropboxFolder,
+    recorded: o.dropboxFolder ? lc(o.dropboxFolder) : null,
+    // No record → the Zap (or nobody) put it at the convention path. A recorded
+    // row claims ONLY its record: its convention path may have moved on.
+    derived: !o.dropboxFolder && o.client ? lc(projectFolderPaths({ ...o, client: o.client }).listing) : null,
+  }));
+}
+
+const isOlder = (o: { createdAt: Date; id: string }, p: { createdAt: Date; id: string }) =>
+  o.createdAt.getTime() < p.createdAt.getTime() || (o.createdAt.getTime() === p.createdAt.getTime() && o.id < p.id);
+
+export type OwnListingPath = {
+  /** the listing path this job owns under the CURRENT shoot month */
+  target: string;
+  /** the job's recorded folder is one another, OLDER live job also records — do not move/archive it, start fresh */
+  sharedWith: Claimant | null;
+  /** true when `target` carries the shoot-date suffix */
+  dated: boolean;
+};
+
+// Which listing path THIS job owns under its current shoot month. Reads only;
+// exported so a probe can preview the outcome for every same-street group.
+export async function resolveOwnListingPath(p: EnsureProject, plain: string = projectFolderPaths(p).listing): Promise<OwnListingPath> {
+  const claimants = await otherClaimants(p, plain);
+  const mine = p.dropboxFolder?.trim() || null;
+  // Strong claim only (a RECORD, by an older job) decides "shared": a derived
+  // claim from a Zapier-era row must not pull a job off a folder the engine
+  // created for it.
+  const sharedWith = mine ? claimants.find((o) => o.recorded === lc(mine) && isOlder(o, p)) ?? null : null;
+  const claimedByAny = (path: string) => claimants.some((o) => o.recorded === lc(path) || o.derived === lc(path));
+  const claimedByOlder = (path: string) => claimants.some((o) => (o.recorded === lc(path) || o.derived === lc(path)) && isOlder(o, p));
+  const recordedByAny = (path: string) => claimants.some((o) => o.recorded === lc(path));
+  const firstFreeDated = (): OwnListingPath | null => {
+    for (let n = 1; n <= 9; n++) {
+      const candidate = disambiguatedListingPath(plain, p, n);
+      if (!claimedByAny(candidate)) return { target: candidate, sharedWith, dated: true };
+    }
+    return null;
+  };
+
+  // Sticky: a name already given to this job under this month stands.
+  if (mine && !sharedWith && !mine.includes("/Canceled/") && (lc(mine) === lc(plain) || lc(mine).startsWith(lc(`${plain} — `)))) {
+    const dated = lc(mine) !== lc(plain);
+    // …except that a dated name follows the shoot DATE within the month
+    // (review, Sep 8): a "— Sep 9" folder for a shoot moved to Sep 15 lies to
+    // the team who navigate by it. Only when the day changed and the new name
+    // is free — the reschedule move below renames the folder (files ride
+    // along; it refuses to clobber). "(2)" siblings on the same day stay put.
+    const today = disambiguatedListingPath(plain, p);
+    const sameDay = lc(mine) === lc(today) || lc(mine).startsWith(lc(`${today} (`));
+    if (dated && !sameDay) {
+      const renamed = firstFreeDated();
+      if (renamed) return { ...renamed, sharedWith: null };
+    }
+    return { target: mine, sharedWith: null, dated };
+  }
+  // The plain name is this job's unless an OLDER live job has it (a younger
+  // one that grabbed it yields on its own pass — the sticky rule above keeps
+  // the older one on it), or ANY live job RECORDS it: a path another job's
+  // record names is never taken by a job without a record, whatever its age
+  // (review, Sep 8 — an order that was dateless at import and got scheduled
+  // into a month where a younger same-street order had already created the
+  // plain folder would otherwise adopt that folder and push the younger job,
+  // raws and all, onto a dated name).
+  if (!claimedByOlder(plain) && !recordedByAny(plain)) return { target: plain, sharedWith, dated: false };
+  const dated = firstFreeDated();
+  if (dated) return dated;
+  // Ten same-day re-shoots of one street: not a real case — fall back to the
+  // id so the engine still never adopts someone else's folder.
+  return { target: `${plain} — ${p.id.slice(-6)}`, sharedWith, dated: true };
+}
+
+// Is `path` a listing folder some OTHER live job records or derives? Used by
+// the archive step and the legacy sweep so neither acts on a shared folder.
+async function claimedByAnotherLiveJob(p: EnsureProject, path: string): Promise<boolean> {
+  const claimants = await otherClaimants(p, path);
+  return claimants.some((o) => o.recorded === lc(path) || o.derived === lc(path));
+}
 
 async function listingSubfolders(path: string): Promise<Set<string> | null> {
   try {
@@ -147,6 +313,9 @@ export async function ensureProjectFolders(p: EnsureProject): Promise<EnsureResu
   if (p.status === "CANCELLED") {
     const from = p.dropboxFolder ?? (p.shootDate ? projectFolderPaths(p).listing : null);
     if (!from || from.includes("/Canceled/")) return "skipped"; // nothing to do / already archived
+    // Never archive a folder another LIVE job owns: a cancelled re-shoot order
+    // with no record of its own computes the FIRST job's path (Sep 8 2026).
+    if (await claimedByAnotherLiveJob(p, from)) return "skipped";
     if ((await listingSubfolders(from)) === null) return "skipped"; // no folder exists — nothing to archive
     const year = from.match(/^\/AutoHDR\/(\d{4})\//)?.[1] ?? "0000";
     const to = `/AutoHDR/Canceled/${year}/${from.split("/").pop()}`;
@@ -159,33 +328,50 @@ export async function ensureProjectFolders(p: EnsureProject): Promise<EnsureResu
   // webhook/sweep runs again once the appointment lands.
   if (!p.shootDate) return "skipped";
 
-  const f = projectFolderPaths(p);
+  // The job's OWN listing path — the convention path unless an older live job
+  // already owns it (same street, same client, same month: a re-shoot), in
+  // which case the shoot date is appended. See the one-folder-per-job rules.
+  const own = await resolveOwnListingPath(p);
+  const f = foldersUnder(own.target);
+  const splitNote = own.sharedWith
+    ? `Dropbox folder split from the ${etShortDate(own.sharedWith.shootDate ?? own.sharedWith.createdAt)} job — re-shoots get their own folder: ${own.target}`
+    : null;
 
   // RESCHEDULE — we know where the folder was, and it isn't where the current
   // shoot date says it should be. Move it (files ride along), then fall
-  // through to verify the subfolders at the new location.
-  if (p.dropboxFolder && p.dropboxFolder !== f.listing && !p.dropboxFolder.includes("/Canceled/")) {
+  // through to verify the subfolders at the new location. Never when the
+  // recorded folder is another live job's too — that would carry THEIR files
+  // off under this job's name; the younger job starts fresh below instead.
+  if (p.dropboxFolder && p.dropboxFolder !== own.target && !p.dropboxFolder.includes("/Canceled/") && !own.sharedWith) {
     const oldExists = (await listingSubfolders(p.dropboxFolder)) !== null;
     if (oldExists) {
-      const ok = await dropboxMoveFolder(p.dropboxFolder, f.listing);
+      const ok = await dropboxMoveFolder(p.dropboxFolder, own.target);
       if (!ok) return "conflict"; // both old and new exist — a human must merge; do NOT clobber
-      await rememberPath(p.id, f.listing, `Dropbox folder moved (reschedule): ${p.dropboxFolder} → ${f.listing}`);
+      await rememberPath(p.id, own.target, `Dropbox folder moved (reschedule): ${p.dropboxFolder} → ${own.target}`);
       return "moved";
     }
     // Old location is gone (someone moved it by hand) — treat as fresh below.
   }
 
-  const existing = await listingSubfolders(f.listing);
+  // A folder already at the job's OWN path is adopted. resolveOwnListingPath
+  // never hands out a path another live job records or (for a Zapier-era row
+  // with no record) derives, so what sits here is this job's own folder, a
+  // Zapier-era folder nobody else can claim, or a hand-made one.
+  const existing = await listingSubfolders(own.target);
   if (existing) {
     const missing = SUBFOLDERS.filter((k) => !existing.has(f[k].split("/").pop()!));
     for (const k of missing) await dropboxCreateFolder(f[k]);
-    if (p.dropboxFolder !== f.listing) await rememberPath(p.id, f.listing);
+    if (p.dropboxFolder !== own.target) await rememberPath(p.id, own.target, splitNote ?? undefined);
     return missing.length ? "repaired" : "exists";
   }
 
-  await dropboxCreateFolder(f.listing);
+  await dropboxCreateFolder(own.target);
   for (const k of SUBFOLDERS) await dropboxCreateFolder(f[k]);
-  await rememberPath(p.id, f.listing, `Dropbox folders created: ${f.listing}`);
+  await rememberPath(
+    p.id,
+    own.target,
+    splitNote ?? `Dropbox folders created: ${own.target}${own.dated ? " (same street as an earlier job this month — re-shoots get their own folder)" : ""}`,
+  );
   return "created";
 }
 
@@ -333,7 +519,9 @@ export async function rawPhotoCounts(
   const out = new Map<FolderProject, number>();
   await Promise.all(
     projects.map(async (p) => {
-      const n = await folderFileCount(projectFolderPaths(p).rawPhotos);
+      // The job's OWN folder (a re-shoot's dated name, a rescheduled shoot's
+      // real month) — the convention path counted another job's raws (Sep 8 2026).
+      const n = await folderFileCount(actualFolderPaths(p).rawPhotos);
       // A failed read is unknown, not zero — omit the row so the over-budget
       // chip simply doesn't render rather than silently vanishing as "0 raws".
       if (n !== null) out.set(p, n);
@@ -356,14 +544,21 @@ export async function syncDropboxFolderStatus(): Promise<{
 
   const projects = await prisma.project.findMany({
     where: { source: "ARYEO", status: { in: ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW"] } },
-    include: { client: { select: { name: true } } },
+    include: { client: { select: { name: true } }, appointments: { select: { status: true, startAt: true } } },
   });
+  // The status sweep's own "the shoot happened" test (a past leg counts, a
+  // bare future shootDate does not) — dynamic import, the two modules cite
+  // each other.
+  const { shootHappenedFor } = await import("@/lib/projectStatus");
 
   let movedToShot = 0;
   let movedToReview = 0;
 
   for (const p of projects) {
-    const f = projectFolderPaths(p);
+    // The job's OWN folder, not the convention path (Sep 8 2026 audit: this
+    // legacy sweep was the third writer that could flip a re-shoot to SHOT on
+    // the first job's raws).
+    const f = actualFolderPaths(p);
     const [rawP, rawV, finP, finV] = (
       await Promise.all([
         folderFileCount(f.rawPhotos),
@@ -382,6 +577,10 @@ export async function syncDropboxFolderStatus(): Promise<{
       });
       movedToReview++;
     } else if (hasRaw && (p.status === "BOOKED" || p.status === "SCHEDULED")) {
+      // A shoot that hasn't happened has no raws of its own, and a folder
+      // another live job also claims is not evidence about this one.
+      if (!shootHappenedFor(p)) continue;
+      if (await claimedByAnotherLiveJob(p, f.listing)) continue;
       await prisma.project.update({ where: { id: p.id }, data: { status: "SHOT", uploadedAt: new Date() } });
       await prisma.activity.create({
         data: { projectId: p.id, type: "SYSTEM", body: `Raw media detected in Dropbox (${rawP + rawV} files) → moved to Shot/Uploaded.` },

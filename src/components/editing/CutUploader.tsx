@@ -42,8 +42,13 @@ const fmtBytes = (n: number) => (n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : n >= 
 const AUTO_NOTE = /^Cut detected in the Dropbox Final folder/i;
 const editorMessage = (n: string | null | undefined) => (n && !AUTO_NOTE.test(n) ? n : null);
 
-function StatusPill({ latest }: { latest: CutRow["latest"] }) {
+function StatusPill({ latest, reopened }: { latest: CutRow["latest"]; reopened?: boolean }) {
   if (!latest) return <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-muted">Not uploaded yet</span>;
+  if (latest.status === "APPROVED" && reopened) {
+    // The client asked for changes after this version was approved — the
+    // slot takes the corrected cut as the next version (Sep 8).
+    return <span className="inline-flex items-center gap-1 rounded-full bg-danger-soft px-2 py-0.5 text-[11px] font-semibold text-danger"><Undo2 className="size-3" /> v{latest.round} approved · client asked for changes</span>;
+  }
   if (latest.status === "APPROVED") {
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-semibold text-success">
@@ -171,7 +176,12 @@ function CutMessage({
   );
 }
 
-export function CutUploader({ projectId, cuts, canUpload }: { projectId: string; cuts: CutRow[]; canUpload: boolean }) {
+// revisionOpen: the client has a VIDEO-lane revision open on this job. An
+// approved cut normally takes no more versions; with a revision open the
+// corrected cut goes in as the next version of the same slot (the server's
+// startCutUpload allows exactly that — Sep 8 review: without it the editor
+// had no button for the one scenario the revision flow exists for).
+export function CutUploader({ projectId, cuts, canUpload, revisionOpen = false }: { projectId: string; cuts: CutRow[]; canUpload: boolean; revisionOpen?: boolean }) {
   const router = useRouter();
   const inputs = useRef<Record<string, HTMLInputElement | null>>({});
   const [busy, setBusy] = useState<Record<string, { pct: number; label: string }>>({});
@@ -245,8 +255,9 @@ export function CutUploader({ projectId, cuts, canUpload }: { projectId: string;
         {cuts.map((c) => {
           const key = `${c.deliverableId}:${c.slot}`;
           const b = busy[key];
-          const next = (c.latest?.status === "APPROVED") ? null : (c.latest ? c.latest.round + 1 : 1);
-          const isRedo = c.latest?.status === "CHANGES_REQUESTED";
+          const reopened = revisionOpen && c.latest?.status === "APPROVED";
+          const next = (c.latest?.status === "APPROVED" && !reopened) ? null : (c.latest ? c.latest.round + 1 : 1);
+          const isRedo = c.latest?.status === "CHANGES_REQUESTED" || reopened;
           // A message edits in place only while its version is with the
           // reviewer; otherwise the next upload is the one it describes.
           const liveTargetId = c.latest && c.latest.status === "PENDING" ? c.latest.id : null;
@@ -256,7 +267,7 @@ export function CutUploader({ projectId, cuts, canUpload }: { projectId: string;
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm font-medium">{c.label}</span>
-                  <StatusPill latest={c.latest} />
+                  <StatusPill latest={c.latest} reopened={reopened} />
                   {c.openNotes > 0 && (
                     <span className="rounded-full bg-danger-soft px-2 py-0.5 text-[11px] font-semibold text-danger">{c.openNotes} note{c.openNotes === 1 ? "" : "s"} to fix</span>
                   )}
@@ -270,7 +281,7 @@ export function CutUploader({ projectId, cuts, canUpload }: { projectId: string;
                   nextVersion={next}
                   // Approved cuts are history — the message stays readable, but
                   // nobody rewrites what the reviewer already signed off.
-                  canWrite={canUpload && c.latest?.status !== "APPROVED"}
+                  canWrite={canUpload && (c.latest?.status !== "APPROVED" || reopened)}
                   onSaved={(n) => setSaved((s) => ({ ...s, [key]: n }))}
                 />
                 {b && (

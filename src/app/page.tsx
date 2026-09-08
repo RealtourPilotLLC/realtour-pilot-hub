@@ -17,6 +17,7 @@ import { prisma } from "@/lib/prisma";
 import { cn, formatMoney } from "@/lib/utils";
 import { etDate, etDayKey, etDayStartUtc, etFullDate, etTime , etDateTime } from "@/lib/datetime";
 import { AutoRefresh } from "@/components/ops/AutoRefresh";
+import { DayBlock, DayBlockJumps } from "@/components/ops/DayBlock";
 import { QcComplete } from "@/components/ops/QcComplete";
 import { LoopActions } from "@/components/ops/LoopActions";
 import { ProactiveFlags } from "@/components/dashboard/ProactiveFlags";
@@ -29,7 +30,7 @@ import { QuickAdd } from "@/components/day/QuickAdd";
 import { TodoRow } from "@/components/day/TodoRow";
 import { FinishedList } from "@/components/day/FinishedList";
 import {
-  buildOpsDay, loopsZeroState, tallyLoops,
+  buildOpsDay, loopsZeroState, tallyLoops, handledByPeopleToday, scrubOpsDayMoney,
   type OpsDay, type OpsLoop, type OpsQcRow, type OpsShoot,
 } from "@/lib/opsDay";
 import { deliveryBoard, type DeliveryBoard } from "@/lib/deliveryBoard";
@@ -37,8 +38,9 @@ import { ownerTodoLists } from "@/lib/ownerDay";
 import { ownerPulse } from "@/lib/ownerPulse";
 import {
   MESSAGE_TASK_TYPES, getStuckJobs, getShootWindow,
-  getProactiveFlags, getHandledToday, getOwnerStats, getOwnerPulse, getOwnerDials,
+  getProactiveFlags, getOwnerStats, getOwnerPulse, getOwnerDials,
   getFlaggedForMe } from "@/lib/queries";
+import { scrubMoney } from "@/lib/text";
 import { recentProjectWhere } from "@/lib/recency";
 import { boardVisibleWhere, isNeedsAssigning } from "@/lib/triage";
 import { clientTextWhere } from "@/lib/clientTexts";
@@ -237,9 +239,9 @@ const BLOCKS: BlockDef[] = [
   { key: "monthly", from: 15 * 60 + 10, to: 15 * 60 + 30, time: "3:10 – 3:30", title: "Monthly Content Check", short: "Monthly", icon: Clapperboard, goal: "Personal-branding retainers run on their own rhythm — a batch of videos on a 7–10 business-day window, delivered as a set. Never mixed into listing QC." },
   // "Final QC + Deliveries" (4:15-5:00) was dropped Sep 1 — Jordan: it duplicated
   // the morning QC + Deliveries block and the Production Pipeline Check. Its
-  // slot folds into Next-Day Finalization so the timeline has no dead gap
-  // (currentKey falls back to the LAST block inside a gap, which would have
-  // lit up Daily Closeout at 4:15).
+  // slot folds into Next-Day Finalization so the timeline has no dead gap.
+  // (Inside a gap blockKeyForNow now picks the NEXT block, Sep 8 — the old
+  // fallback to the LAST block would have lit up Daily Closeout at 4:15.)
   { key: "final-prep", from: 15 * 60 + 30, to: 17 * 60, time: "3:30 – 5:00", title: "Next-Day Finalization", short: "Finalize", icon: Route, goal: "By the end of this block, tomorrow is locked in and ready to go." },
   { key: "comms-3", from: 17 * 60, to: 17 * 60 + 30, time: "5:00 – 5:30", title: "Client Communication Sweep #3", short: "Comms 3", icon: MessageSquare, goal: "Don't carry simple client questions into the next business day." },
   { key: "closeout", from: 17 * 60 + 30, to: 18 * 60, time: "5:30 – 6:00", title: "Daily Closeout", short: "Closeout", icon: Moon, goal: "Review the whole operation before ending the day — escalate anything that needs Jordan." },
@@ -256,6 +258,37 @@ function closeoutRows(d: OpsDay): { ok: boolean; label: string }[] {
     { ok: c.tomorrowGaps === 0, label: c.tomorrowGaps === 0 ? "Tomorrow is locked in" : `Tomorrow has ${c.tomorrowGaps} gap${c.tomorrowGaps === 1 ? "" : "s"} to close` },
     { ok: c.openRevisions === 0, label: c.openRevisions === 0 ? "No revisions outstanding" : `${c.openRevisions} revision${c.openRevisions === 1 ? "" : "s"} in flight — confirm they're assigned` },
   ];
+}
+
+// ---- Which block is "now", and which blocks open by default -----------------
+// The block whose window holds the ET clock; between windows the NEXT one
+// (before 9:00 that is the Tower); after Daily Closeout, the closeout.
+function blockKeyForNow(nowMin: number): string {
+  const inWindow = BLOCKS.find((b) => nowMin >= b.from && nowMin < b.to);
+  if (inWindow) return inWindow.key;
+  const next = BLOCKS.find((b) => b.from > nowMin);
+  return next?.key ?? BLOCKS[BLOCKS.length - 1].key;
+}
+
+// WHAT OPENS ON ITS OWN. Until Sep 8 every block with anything in it rendered
+// open, so at noon 14 of 15 were expanded and the home was a 1,100-line wall
+// with the same five comms rows printed three times (audit5 kyle-home F19).
+// Jordan, asked how much should open by default: "Not sure what you mean" —
+// so this is Claude's call, kept as one flag so it is easy to flip:
+//   "now-only"         → only the block you're in (or the next one) is open;
+//                        every other block is its header, time and count.
+//   "anything-waiting" → the old behaviour: open whenever the count is > 0.
+// Either way a click opens any block for the session and a jump opens the
+// block it lands on (DayBlock / DayBlockJumps).
+type BlockOpenPolicy = "now-only" | "anything-waiting";
+const BLOCK_OPEN_POLICY = "now-only" as BlockOpenPolicy;
+function blockOpensByDefault(def: BlockDef, current: boolean, n: number | null, d: OpsDay): boolean {
+  if (BLOCK_OPEN_POLICY === "anything-waiting") {
+    // Open Loops is the one block whose badge can read 0 with real work inside
+    // (its badge counts today's; the tail is still in the card).
+    return current || (n != null && n > 0) || (def.key === "loops" && d.openLoops.length > 0);
+  }
+  return current;
 }
 
 // "120+" when a capped list is full — never present a truncated count as exact.
@@ -412,7 +445,7 @@ export default async function HomePage() {
   if (!me && authEnforced()) redirect("/login");
   const isOwner = !me || me.role === "OWNER";
 
-  const [d, counts, stuck, shoots, radar, handledToday, board, flagged, ownerStats, pulse, dials, money, todos, newClients] =
+  const [dRaw, counts, stuck, shoots, radar, handledToday, boardRaw, flaggedRaw, ownerStats, pulse, dials, money, todos, newClients] =
     await Promise.all([
       // The operating day: shoots, QC, loops, comms, pipeline, video review,
       // closeout. It already resolves the viewer's own loop lane, so this page
@@ -422,7 +455,8 @@ export default async function HomePage() {
       getStuckJobs(),
       getShootWindow(), // only for the week-ahead strip; today's shoots come from buildOpsDay
       getProactiveFlags(),
-      getHandledToday(),
+      // Closes a PERSON made today — not the sweeps' (opsDay.ts explains).
+      handledByPeopleToday(),
       // The Project Tracker's delivery board, merged into the Pipeline block.
       deliveryBoard().catch((): DeliveryBoard => ({ today: [], tomorrow: [], upcoming: [], delivered: [], overdueCount: 0 })),
       // WHO the flags are for: the viewer's own assignee key, resolved the way
@@ -452,6 +486,21 @@ export default async function HomePage() {
       newClientsForDashboard().catch(() => []),
     ]);
 
+  // No money on an ADMIN screen (Jordan's standing rule). Everything the day
+  // renders that a person typed — Slack instructions, revision asks, wrap-up
+  // notes, message previews — passes through the figure scrub for a non-owner
+  // (audit5 kyle-home §5, Sep 8: "$750 credit" on Kyle's loop list).
+  const d = isOwner ? dRaw : scrubOpsDayMoney(dRaw);
+  const flagged = isOwner ? flaggedRaw : flaggedRaw.map((f) => ({ ...f, title: scrubMoney(f.title), note: f.note ? scrubMoney(f.note) : f.note }));
+  // The Pipeline block prints each job's notes in full (DeliveryBoardView's
+  // JobNote) — and a job's notes can be the whole editor brief, which is where
+  // Andrea's "$750 credit" would sit (audit5 F14; review, Sep 8). Same scrub,
+  // same viewer rule; the rest of a board row is addresses and product names.
+  const scrubJobs = (rows: DeliveryBoard["today"]) => rows.map((j) => (j.notes ? { ...j, notes: scrubMoney(j.notes) } : j));
+  const board: DeliveryBoard = isOwner
+    ? boardRaw
+    : { ...boardRaw, today: scrubJobs(boardRaw.today), tomorrow: scrubJobs(boardRaw.tomorrow), upcoming: scrubJobs(boardRaw.upcoming), delivered: scrubJobs(boardRaw.delivered) };
+
   const now = new Date(d.nowISO);
   const nowMin = etMinutes(now);
   // Radar minus money. getProactiveFlags' AR branch composes "X owes $Y" with
@@ -459,9 +508,7 @@ export default async function HomePage() {
   // gate. Jordan's rule (access.ts): "Kyle should not have access to any money
   // related info" — so the AR kind never reaches a non-owner (audit5 F9).
   const radarFlags = radar.flags.filter((f) => isOwner || f.kind !== "ar");
-  const currentKey =
-    BLOCKS.find((b) => nowMin >= b.from && nowMin < b.to)?.key ??
-    (nowMin < BLOCKS[0].from ? BLOCKS[0].key : BLOCKS[BLOCKS.length - 1].key);
+  const currentKey = blockKeyForNow(nowMin);
 
   const qcOverdue = listingQc(d).filter((q) => q.bucket === "overdue").length;
   const qcToday = listingQc(d).filter((q) => q.bucket === "today").length;
@@ -598,7 +645,7 @@ export default async function HomePage() {
           {needs.length === 0 ? (
             <div className="panel-shadow rounded-2xl border border-border bg-surface p-6 text-center">
               <CheckCircle2 className="mx-auto size-8 text-success" />
-              <p className="mt-2 text-sm font-semibold">Nothing needs you — {handledToday} handled today.</p>
+              <p className="mt-2 text-sm font-semibold">Nothing needs you. {handledToday === 0 ? "Nothing closed by hand yet today" : `${handledToday} thing${handledToday === 1 ? "" : "s"} you closed by hand today`}.</p>
               <p className="mt-1 text-xs text-muted">
                 Next shoot: {nextShoot ? `${etDate(nextShoot.shootDate)} ${etTime(nextShoot.shootDate)} — ${nextShoot.title.split(",")[0]} · ${nextShoot.photographer?.name ?? "unassigned"}` : "none scheduled"}
               </p>
@@ -639,11 +686,12 @@ export default async function HomePage() {
   );
   const daySection = (
     <>
-          {/* 3 · YOUR DAY — the time blocks. Blocks with something waiting (and
-              the block you're in right now) render open; the rest are one tap.
+          {/* 3 · YOUR DAY — the time blocks. The block you're in right now
+              renders open; the rest are one tap (BLOCK_OPEN_POLICY, Sep 8).
               Nothing is hidden: every block header carries its own count, and a
               zero says "clear" rather than disappearing. */}
           <div className="pt-1">
+            <DayBlockJumps />
             <h2 className="px-1 text-[11px] font-bold uppercase tracking-widest text-muted-2">Your day</h2>
             {/* Jump bar — the day at a glance, with what's waiting in each block.
                 (Not sticky: the page header already is, and two sticky bars fought
@@ -673,7 +721,7 @@ export default async function HomePage() {
             </nav>
             <div className="mt-2 space-y-2.5">
               {BLOCKS.map((b) => (
-                <Block key={b.key} def={b} current={b.key === currentKey} d={d} board={board} counts={counts} needsBelow={!isOwner} />
+                <Block key={b.key} def={b} current={b.key === currentKey} d={d} board={board} counts={counts} needsBelow={!isOwner} dayKey={todayKey} />
               ))}
             </div>
           </div>
@@ -715,7 +763,18 @@ export default async function HomePage() {
           <span className="flex size-9 items-center justify-center rounded-xl bg-brand/15 text-brand"><Sun className="size-5" /></span>
           <div>
             <h2 className="text-lg font-semibold tracking-tight">Good morning, {firstName}</h2>
-            <p className="text-xs text-muted">{handledToday} thing{handledToday === 1 ? "" : "s"} handled today</p>
+            {/* Closes a PERSON made — QC cards, follow-ups and to-dos marked
+                done by hand. The sweeps' and webhooks' closes used to be in
+                this number ("15 handled" on a day nobody had clicked
+                anything). It says "by hand", not "you": a QC card closed from
+                the task board carries no name yet, so Jordan's closes and
+                Kyle's land in the same number (review, Sep 8). */}
+            <p
+              className="text-xs text-muted"
+              title="Counts what a person closed by hand today — yours or Jordan's: QC cards, follow-ups and to-dos. Replies the hub closed for you when a text went out, and auto-sent texts, aren't in it."
+            >
+              {handledToday === 0 ? "Nothing closed by hand yet today" : `${handledToday} thing${handledToday === 1 ? "" : "s"} you closed by hand today`}
+            </p>
           </div>
         </div>
 
@@ -892,18 +951,21 @@ function MoneyStat({ label, value, sub, tone }: { label: string; value: string; 
 }
 
 // ---------------------------------------------------------------------------
-// One time block. Open when you're in it, or when it has something waiting —
-// otherwise collapsed to its header, which still carries the count. A block
-// with nothing in it is not hidden, it is answered.
+// One time block. Open when you're in it (blockOpensByDefault) — otherwise
+// collapsed to its header, which still carries the count; a click or a jump
+// opens it for the session (DayBlock). A block with nothing in it is not
+// hidden, it is answered.
 // ---------------------------------------------------------------------------
 
 type OffPageCounts = Awaited<ReturnType<typeof offPageNumbers>>;
 
-function Block({ def, current, d, board, counts, needsBelow }: {
+function Block({ def, current, d, board, counts, needsBelow, dayKey }: {
   def: BlockDef; current: boolean; d: OpsDay; board: DeliveryBoard; counts: OffPageCounts;
   /** "What needs you" renders UNDER the blocks in Kyle's order (page order
    *  is by whose day it is) — the tower's jump link has to point that way. */
   needsBelow: boolean;
+  /** ET day, so a block opened by hand stays open for today's session only */
+  dayKey: string;
 }) {
   const Icon = def.icon;
   const n = countFor(def.key, d, board);
@@ -917,56 +979,57 @@ function Block({ def, current, d, board, counts, needsBelow }: {
   // scroll-mt clears the sticky PageHeader (~104px with a one-line subtitle,
   // ~124px when it wraps on a phone) so a jump never tucks the block's title
   // under the header.
-  // Open when you're in this hour, or when the block has something in it. Open
-  // Loops is the one block whose badge can read 0 with real work inside it (its
-  // badge counts what's due TODAY, and on the owner's screen most loops sit
-  // with Kyle), so it opens on the whole pile — its collapsed body is two lines
-  // either way.
-  const open = current || (n != null && n > 0) || (def.key === "loops" && d.openLoops.length > 0);
+  // The page's default for this render (see BLOCK_OPEN_POLICY); DayBlock
+  // layers the person's own opens/closes for the session on top of it.
+  const open = blockOpensByDefault(def, current, n, d);
   return (
-    <details
+    <DayBlock
       id={def.key}
-      open={open}
+      defaultOpen={open}
+      dayKey={dayKey}
       className={cn(
         "panel-shadow group scroll-mt-32 rounded-2xl border bg-surface md:scroll-mt-28",
         current ? "border-brand/50 ring-1 ring-brand/30" : "border-border",
       )}
-    >
-      <summary className="flex cursor-pointer list-none items-center gap-3 px-5 py-3">
-        <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg", current ? "bg-brand text-white" : "bg-surface-2 text-muted")}>
-          <Icon className="size-4" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-baseline gap-2">
-            <h3 className="text-[15px] font-semibold">{def.title}</h3>
-            {current && <span className="rounded-full bg-brand-soft px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-brand">Now</span>}
-          </div>
-          <p className="text-xs text-muted-2"><Clock className="mr-1 inline size-3 -translate-y-px" />{def.time}</p>
-        </div>
-        {n != null && (
-          <span
-            className={cn(
-              "shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold tabular-nums",
-              n > 0 ? "bg-surface-2 text-foreground" : zeroLabel === "clear" ? "bg-success/10 text-success" : "bg-surface-2 text-muted",
-            )}
-            title={n > 0 ? `${n} in this block` : zeroTitle}
-          >
-            {n > 0 ? `${n}${plusFor(def.key, d)}` : zeroLabel}
+      summaryClassName="flex cursor-pointer list-none items-center gap-3 px-5 py-3"
+      summary={
+        <>
+          <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg", current ? "bg-brand text-white" : "bg-surface-2 text-muted")}>
+            <Icon className="size-4" />
           </span>
-        )}
-        {/* Same-day rush beside the count, not inside it: the badge stays the
-            shoot count (the list it links to), and the rush is its own red
-            number so it cannot hide inside a "3". */}
-        <RushChip n={rushFor(def.key, d)} />
-        <ChevronDown className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
-      </summary>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-baseline gap-2">
+              <h3 className="text-[15px] font-semibold">{def.title}</h3>
+              {current && <span className="rounded-full bg-brand-soft px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-brand">Now</span>}
+            </div>
+            <p className="text-xs text-muted-2"><Clock className="mr-1 inline size-3 -translate-y-px" />{def.time}</p>
+          </div>
+          {n != null && (
+            <span
+              className={cn(
+                "shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold tabular-nums",
+                n > 0 ? "bg-surface-2 text-foreground" : zeroLabel === "clear" ? "bg-success/10 text-success" : "bg-surface-2 text-muted",
+              )}
+              title={n > 0 ? `${n} in this block` : zeroTitle}
+            >
+              {n > 0 ? `${n}${plusFor(def.key, d)}` : zeroLabel}
+            </span>
+          )}
+          {/* Same-day rush beside the count, not inside it: the badge stays the
+              shoot count (the list it links to), and the rush is its own red
+              number so it cannot hide inside a "3". */}
+          <RushChip n={rushFor(def.key, d)} />
+          <ChevronDown className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
+        </>
+      }
+    >
       <div className="border-t border-border px-5 py-3.5">
         <p className="text-[13px] italic leading-relaxed text-muted">{def.goal}</p>
         <div className="mt-3">
           <BlockBody blockKey={def.key} d={d} board={board} counts={counts} needsBelow={needsBelow} />
         </div>
       </div>
-    </details>
+    </DayBlock>
   );
 }
 
@@ -1653,24 +1716,33 @@ function QcRow({ q, now }: { q: OpsQcRow; now?: Date }) {
               {q.videosOwed} video{q.videosOwed === 1 ? "" : "s"}
             </span>
           )}
-          {/* "Ready now" is the number that matters: checks whose media is
-              already live. The rest of itemsLeft is the card waiting on media,
-              not work — showing only the total made a job with photos live and
-              six checks waiting look identical to one where nothing had landed. */}
+          {/* The failure-mode checks are OPTIONAL — notes for Kyle, not a gate
+              (Sep 8; tasks.ts qcGateComplete). What still holds the card: every
+              ordered category live, the gallery out, the photographer's upload
+              page in (the debrief rows clear themselves when it is submitted),
+              and — after a revision bounce — the re-QC row, which wants a
+              human tick. The copy names those so it doesn't over-promise
+              (review, Sep 8). The chip says how many optional checks are on
+              media that is already live, so a job with photos up and one with
+              nothing landed don't look alike — and never reads as work owed. */}
           <span
             className={cn(
               "rounded-full px-2 py-0.5 text-[10px] font-semibold",
-              q.actionable > 0 ? "bg-warning/15 text-warning" : "bg-surface-2 text-muted",
+              q.actionable > 0 ? "bg-brand/10 text-brand" : "bg-surface-2 text-muted",
             )}
             title={
-              q.actionable > 0
-                ? `${q.actionable} of ${q.itemsLeft} unticked boxes can be done right now — that media is live on Aryeo. The rest tick themselves as each remaining category lands.`
-                : "Unticked boxes on this job's QC task. They tick themselves as each deliverable goes live on Aryeo — nothing to check until then."
+              q.itemsLeft === 0
+                ? "Every check on this card is done."
+                : q.actionable > 0
+                  ? `${q.actionable} of ${q.itemsLeft} optional checks are on media that is already live on Aryeo — notes for you, not a gate. The card completes on its own once everything ordered is live, the gallery is out and the photographer's upload page is in (a re-QC after a revision still wants your tick) — or sooner with Mark complete.`
+                  : "Optional checks — notes for you, not a gate. Their media isn't live on Aryeo yet; the card completes on its own once everything ordered is live, the gallery is out and the photographer's upload page is in (a re-QC after a revision still wants your tick)."
             }
           >
-            {q.actionable > 0
-              ? `${q.actionable} ready now`
-              : `${q.itemsLeft} check${q.itemsLeft === 1 ? "" : "s"} left`}
+            {q.itemsLeft === 0
+              ? "checks done"
+              : q.actionable > 0
+                ? `${q.actionable} optional check${q.actionable === 1 ? "" : "s"}`
+                : `${q.itemsLeft} check${q.itemsLeft === 1 ? "" : "s"} · optional`}
           </span>
         </div>
       </div>
@@ -1682,7 +1754,7 @@ function QcRow({ q, now }: { q: OpsQcRow; now?: Date }) {
         {q.evidence.present.length > 0 ? (
           <StatusLine label="Live on Aryeo" tone="success">
             {q.evidence.present.join(", ")}
-            {q.actionable > 0 && <> — <span className="font-semibold text-warning">{q.actionable} check{q.actionable === 1 ? "" : "s"} ready for you</span></>}
+            {q.actionable > 0 && <> — <span className="text-muted">{q.actionable} optional check{q.actionable === 1 ? "" : "s"} if you want {q.actionable === 1 ? "it" : "them"}</span></>}
           </StatusLine>
         ) : (
           <StatusLine label="Live on Aryeo" tone="muted">nothing yet</StatusLine>
@@ -1696,7 +1768,7 @@ function QcRow({ q, now }: { q: OpsQcRow; now?: Date }) {
             {q.nextDueISO ? ` — ${q.nextDueCategories.join(" + ").toLowerCase()} due ${fmtDayTime(q.nextDueISO)}` : ""}
           </StatusLine>
         ) : q.itemsLeft > 0 ? (
-          <StatusLine label="Still owed" tone="muted">nothing — everything ordered is live, finish the checks</StatusLine>
+          <StatusLine label="Still owed" tone="muted">nothing — everything ordered is live; the card closes itself once the gallery is out and the photographer's upload page is in (a re-QC after a revision still wants your tick; the other checks are optional)</StatusLine>
         ) : (
           <StatusLine label="Status" tone="success">Everything is live and checked — safe to close.</StatusLine>
         )}
@@ -1736,9 +1808,12 @@ function QcRow({ q, now }: { q: OpsQcRow; now?: Date }) {
             <PlayCircle className="size-3" /> Review video
           </Link>
         )}
-        {q.evidence.missing.length > 0 && (
-          <span className="ml-auto text-[11px] text-muted-2">Removed from the order or handled elsewhere? Mark complete.</span>
-        )}
+        {/* The checks never hold this card: say so where the button is. */}
+        <span className="ml-auto text-[11px] text-muted-2">
+          {q.evidence.missing.length > 0
+            ? "Removed from the order or handled elsewhere? Mark complete."
+            : "Optional checks — notes for you, not a gate. Mark complete whenever you're done."}
+        </span>
       </div>
       <ShootNotes q={q} />
     </div>

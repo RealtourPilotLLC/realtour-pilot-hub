@@ -1,9 +1,11 @@
 import "server-only";
+import { createHash } from "crypto";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { dbx, DropboxError } from "@/lib/integrations/dropbox";
 import { actualFolderPaths, type FolderProject } from "@/lib/dropboxFolders";
 import { videoStyleFor } from "@/lib/videoStyles";
-import { editorMeta } from "@/lib/editors";
+import { editorMeta, VIDEO_LANE_KEYS } from "@/lib/editors";
 
 /** Stamped on a cut row that was auto-approved BECAUSE the job was delivered —
  *  not because anyone reviewed it. The client portal keys off this to keep
@@ -417,44 +419,40 @@ export async function finalizeCutUpload(
     }).catch(() => {});
   }
   const street = (sub.project.title || "job").split(",")[0].trim();
-  const key = cutKeyOf(sub);
-  // A new version answers the open change request on THIS cut.
-  if (sub.round > 1) {
-    const { createHash } = await import("crypto");
-    const h = createHash("sha1").update(key).digest("hex").slice(0, 10);
-    await prisma.smartTask.updateMany({
-      where: { dedupeKey: `cut-changes-${sub.projectId}-${h}`, status: { notIn: ["COMPLETED", "CANCELLED"] } },
-      data: { status: "COMPLETED", completedAt: new Date() },
-    }).catch(() => {});
-  } else {
-    // Transition: the bounce may have been raised on a legacy folder row
-    // (keyed by file path) and this is the editor's FIRST upload for the cut.
-    // When exactly one cut-changes task is open on the job, this upload is
-    // the answer to it; with several, a human decides (never over-close).
-    const legacyBounced = await prisma.reviewSubmission.count({ where: { projectId: sub.projectId, deliverableId: null, status: "CHANGES_REQUESTED" } });
-    if (legacyBounced > 0) {
-      const open = await prisma.smartTask.findMany({
-        where: { projectId: sub.projectId, taskType: "revision", dedupeKey: { startsWith: `cut-changes-${sub.projectId}-` }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
-        select: { id: true },
-      });
-      if (open.length === 1) {
-        await prisma.smartTask.update({ where: { id: open[0].id }, data: { status: "COMPLETED", completedAt: new Date() } }).catch(() => {});
-      }
-    }
-  }
-  // The job is in review. A never-delivered job bounced to REVISION returns
-  // to REVIEW once no revision ask is left open (a photo-lane ask keeps it).
+  // Sep 8 (one card per cut): a Review Room bounce is a ROUND on the edit
+  // card now, not a cut-changes-* task, and this upload answers it through the
+  // reconciler's evidence close / the approval. Any straggler row from the old
+  // rail closes here so it can't outlive the cut it was about.
+  await closeStragglerCutTasks(sub.projectId);
+  // The job is in review. A client's revision the editor is answering moves
+  // to "waiting on review"; a never-delivered job returns to REVIEW once no
+  // ask stays OPEN in another lane (a photo-lane ask keeps it); a delivered
+  // job keeps REVISION until the approval — see correctedCutSubmitted.
   const st = sub.project.status;
   if (st === "EDITING" || st === "SHOT") {
     await prisma.project.update({ where: { id: sub.projectId }, data: { status: "REVIEW" } });
-  } else if (st === "REVISION" && !sub.project.deliveredAt) {
-    const stillOpen = await prisma.smartTask.count({
-      where: { projectId: sub.projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
-    });
-    if (stillOpen === 0) {
-      await prisma.project.update({ where: { id: sub.projectId }, data: { status: "REVIEW", revisionRequestedAt: null } });
-    }
+  } else {
+    await correctedCutSubmitted(sub.projectId, { round: sub.round });
   }
+  // The editor's work item answers the way the Final-folder submit always
+  // has (submitCutForReview's closeEdit): COMPLETED on a one-video job or once
+  // every owed cut has been through review, scoped to the uploading editor's
+  // own key; on a batch that still owes cuts a stale "Round N — fix them"
+  // summary is rewritten instead. Sep 8 review: a portal re-upload left the
+  // round on the card until the reconciler's evidence close, up to an hour
+  // after the queue row already read Ready for review.
+  try {
+    const slots = await cutSlots(sub.projectId).catch(() => []);
+    const owed = slots.length;
+    const distinct = await submittedDistinctCuts(sub.projectId);
+    const { editCardCutSubmitted } = await import("@/lib/tasks");
+    await editCardCutSubmitted(sub.projectId, {
+      round: sub.round,
+      cutLabel: slots.find((s) => s.deliverableId === sub.deliverableId && s.slot === sub.slot)?.label ?? sub.fileName ?? null,
+      close: owed <= 1 || distinct >= owed,
+      editorKey: sub.submittedByKey,
+    });
+  } catch { /* best-effort — the cut is already in review */ }
   await prisma.activity.create({
     data: {
       projectId: sub.projectId, type: "SYSTEM",
@@ -689,6 +687,210 @@ export async function pruneReviewUploads(keepDays: number): Promise<{ pruned: nu
   }
   return { pruned, failed };
 }
+// ===========================================================================
+// THE REVISION LIFECYCLE ON THE VIDEO LANE (Jordan, Sep 8: "A revision should
+// be changed to ready for review when an editor marks it complete and submits
+// it for review.")
+//
+// Before: the editor's "Completed" click set the job DELIVERED, left the
+// client's revision task OPEN + URGENT, rang the editor "Delivered ✓", and
+// the next per-project recompute flipped the job back to REVISION (332 Ruth
+// Ridge, 1956 Wetherhill — rev-open-after-complete audit). Now:
+//   · corrected cut submitted (portal upload, "Done — send to review", or the
+//     queue's "Completed" with a new cut) → the video-lane revision task goes
+//     IN_PROGRESS "Corrected cut submitted — waiting on review" (assignee
+//     kept) and the cut sits in the Review Room;
+//   · approved → the video-lane task closes whoever holds it; when no lane
+//     is left open the job resolves the normal way (resolveRevision: stamp
+//     cleared, a delivered job back to Delivered with the close-out + bells);
+//   · sent back with notes → the task returns to OPEN, the job stays in
+//     Revisions (review/actions.requestCutChanges).
+//
+// Project.status while the corrected cut waits: a NEVER-delivered job goes
+// to REVIEW (stamp cleared — the IN_PROGRESS task is the memory). A DELIVERED
+// job has to stay REVISION: the status engine (projectStatus.computeStatus)
+// returns REVISION whenever revisionRequestedAt is newer than deliveredAt,
+// and with the stamp cleared it would read the old media as "all live" and
+// write DELIVERED before Jordan ruled — the exact lie this rule exists to
+// stop. The queue row, the /edit tracker and the Review Room all read the
+// PENDING cut itself, so all three say "Ready for review" either way.
+//
+// "Video lane" = every revision task except Kyle's photo-lane card (its own
+// dedupe key, comms.raiseRevision): unassigned, held by a video editor, or
+// titled as video work when Kyle relays it for an outside shop.
+// ===========================================================================
+
+export const WAITING_ON_REVIEW_SUMMARY = "Corrected cut submitted — waiting on review";
+
+/** The state sentence a round trip puts in front of the client's ask line on
+ *  the revision task. Only this prefix is replaced on the next hop — the ask
+ *  itself ("Client asked for changes after delivery: “…”", raiseRevision)
+ *  survives every submit and bounce (Sep 8 review: it used to be overwritten
+ *  after one round trip and survive only in the description). */
+const REVISION_STATE_PREFIX =
+  /^(?:Corrected cut submitted — waiting on review\.?|The corrected cut came back from review with \d+ notes? — fix them \(they are on the edit card\) and upload the next version\.?)\s*/;
+export function revisionStateSummary(existing: string | null | undefined, state: string): string {
+  const ask = (existing ?? "").replace(REVISION_STATE_PREFIX, "").trim();
+  const sentence = /[.!?]$/.test(state) ? state : `${state}.`;
+  return (ask ? `${sentence} ${ask}` : sentence).slice(0, 500);
+}
+
+/** Does this cut answer the client's open ask? A re-version of a cut always
+ *  does (round > 1 / a redo of a bounced file); on a job the client already
+ *  has (deliveredAt) any cut made after the ask is the correction; on a
+ *  one-video job any cut is THE cut. A fresh video 3 on a never-delivered
+ *  monthly batch is NOT the correction to video 1 (Sep 8 review). */
+async function cutAnswersAsk(projectId: string, opts: { round?: number | null; isRedo?: boolean; deliveredAt?: Date | null }): Promise<boolean> {
+  if ((opts.round ?? 1) > 1 || opts.isRedo) return true;
+  if (opts.deliveredAt) return true;
+  const owed = (await cutSlots(projectId).catch(() => [])).length;
+  return owed <= 1;
+}
+
+/** The photo-lane revision key — the one revision row a cut never answers
+ *  (same scheme as comms.ts dedupeKey([project, "revision", "photo"])). */
+export function photoLaneRevisionKey(projectId: string): string {
+  return createHash("sha1").update(`${projectId}|revision|photo`).digest("hex").slice(0, 24);
+}
+
+/** Open revision tasks on the VIDEO lane of a job. */
+export function videoLaneRevisionWhere(projectId: string): Prisma.SmartTaskWhereInput {
+  return {
+    projectId,
+    taskType: "revision",
+    status: { notIn: ["COMPLETED", "CANCELLED"] },
+    AND: [
+      { OR: [{ dedupeKey: null }, { dedupeKey: { not: photoLaneRevisionKey(projectId) } }] },
+      {
+        OR: [
+          { assignedKey: null },
+          { assignedKey: { in: [...VIDEO_LANE_KEYS] } },
+          { title: { startsWith: "Video revision" } },
+          { title: { startsWith: "New cut" } },
+        ],
+      },
+    ],
+  };
+}
+
+/** Rows from the retired cut-changes-* / queue-revision-* rails (folded into
+ *  the edit card on Sep 8). None should be open; any straggler closes with
+ *  the next upload so it cannot outlive the cut it was about. */
+export async function closeStragglerCutTasks(projectId: string): Promise<void> {
+  await prisma.smartTask.updateMany({
+    where: {
+      projectId,
+      taskType: "revision",
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
+      OR: [{ dedupeKey: { startsWith: `cut-changes-${projectId}-` } }, { dedupeKey: `queue-revision-${projectId}` }],
+    },
+    data: { status: "COMPLETED", completedAt: new Date() },
+  }).catch(() => {});
+}
+
+/** The editor handed in the corrected cut. Idempotent — safe to call from the
+ *  portal upload, the Final-folder submit and the queue's "Completed" alike. */
+export async function correctedCutSubmitted(
+  projectId: string,
+  opts: { round?: number; isRedo?: boolean } = {},
+): Promise<{ moved: number; status: string | null }> {
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { status: true, deliveredAt: true, revisionRequestedAt: true },
+  });
+  if (!project) return { moved: 0, status: null };
+  const lane = await prisma.smartTask.findMany({ where: videoLaneRevisionWhere(projectId), select: { id: true, status: true, summary: true } });
+  // A cut that is not the correction (a fresh video on a never-delivered
+  // batch) leaves the ask — and the stage — exactly where they are. With no
+  // lane task at all (a queue flip / Room bounce that only stamped the job)
+  // the stage move below still runs, as it always did.
+  if (lane.length > 0 && !(await cutAnswersAsk(projectId, { round: opts.round, isRedo: opts.isRedo, deliveredAt: project.deliveredAt }))) {
+    return { moved: 0, status: project.status };
+  }
+  const toMove = lane.filter((t) => t.status !== "IN_PROGRESS");
+  if (toMove.length > 0) {
+    // Per row: the state sentence goes in FRONT of the client's ask line, it
+    // does not replace it (revisionStateSummary).
+    for (const t of toMove) {
+      await prisma.smartTask.update({
+        where: { id: t.id },
+        data: { status: "IN_PROGRESS", summary: revisionStateSummary(t.summary, WAITING_ON_REVIEW_SUMMARY) },
+      });
+    }
+    await prisma.activity.create({
+      data: {
+        projectId,
+        type: "SYSTEM",
+        body: `Corrected cut submitted for review${opts.round ? ` (version ${opts.round})` : ""} — the client's revision now waits on the verdict.`,
+      },
+    }).catch(() => {});
+  }
+  // Stage: a never-delivered job returns to REVIEW (and drops the stamp so the
+  // hourly sweep can't flip it straight back) once nothing is left OPEN in
+  // another lane. A delivered job keeps REVISION — see the section note.
+  let status: string = project.status;
+  if (!project.deliveredAt && (project.status === "REVISION" || project.status === "REVIEW")) {
+    const otherOpen = await prisma.smartTask.count({
+      where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED", "IN_PROGRESS"] } },
+    });
+    if (otherOpen === 0 && (project.status === "REVISION" || project.revisionRequestedAt)) {
+      await prisma.project.update({ where: { id: projectId }, data: { status: "REVIEW", revisionRequestedAt: null } });
+      status = "REVIEW";
+    }
+  }
+  return { moved: toMove.length, status };
+}
+
+/** Jordan approved a cut. When it is newer than the client's ask it answers
+ *  it: the video-lane task closes whoever holds it, and if no lane is left
+ *  open the job resolves the normal way (resolveRevision — stamp cleared, a
+ *  delivered job back to Delivered with the close-out and today's bells). */
+export async function correctedCutApproved(
+  projectId: string,
+  opts: { cutCreatedAt: Date; round?: number | null; isRedo?: boolean },
+): Promise<{ closed: number; resolved: boolean }> {
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { revisionRequestedAt: true, deliveredAt: true },
+  });
+  if (!project) return { closed: 0, resolved: false };
+  const lane = await prisma.smartTask.findMany({ where: videoLaneRevisionWhere(projectId), select: { id: true, createdAt: true } });
+  if (lane.length === 0) return { closed: 0, resolved: false };
+  // Only a cut newer than the ask answers it — approving an older pending cut
+  // (video 2 of a batch, a legacy folder row) must not close a revision that
+  // arrived after it was made. The stamp is refreshed on every raise; a task
+  // without one (queue-added) dates from its own creation. And it has to be
+  // the correction (a re-version, or any cut on a delivered / one-video job)
+  // — a fresh video on a never-delivered batch is not (cutAnswersAsk).
+  const raisedAt = project.revisionRequestedAt ?? new Date(Math.min(...lane.map((t) => t.createdAt.getTime())));
+  if (opts.cutCreatedAt.getTime() < raisedAt.getTime()) return { closed: 0, resolved: false };
+  if (!(await cutAnswersAsk(projectId, { round: opts.round, isRedo: opts.isRedo, deliveredAt: project.deliveredAt }))) return { closed: 0, resolved: false };
+  const laneIds = lane.map((t) => t.id);
+  const otherOpen = await prisma.smartTask.count({
+    where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] }, id: { notIn: laneIds } },
+  });
+  if (otherOpen === 0) {
+    // The last open lane: the whole resolve — closes the tasks, clears the
+    // stamp and note, returns the job to where it genuinely stands, and
+    // rings ops + the editor. Dynamic import: comms → tasks → (this file).
+    const { resolveRevision } = await import("@/lib/comms");
+    await resolveRevision(projectId);
+    return { closed: lane.length, resolved: true };
+  }
+  await prisma.smartTask.updateMany({
+    where: { id: { in: laneIds } },
+    data: { status: "COMPLETED", completedAt: new Date() },
+  });
+  await prisma.activity.create({
+    data: {
+      projectId,
+      type: "SYSTEM",
+      body: `Corrected cut approved — the video revision is closed; ${otherOpen} ask${otherOpen === 1 ? "" : "s"} still open in another lane.`,
+    },
+  }).catch(() => {});
+  return { closed: lane.length, resolved: false };
+}
+
 // ===========================================================================
 // VIDEO REVIEW STATE — one read for every surface that answers "where is
 // this job's video?" (Ops Day, the Dashboard, the QC card). Jordan (Sep 1):

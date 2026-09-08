@@ -280,6 +280,7 @@ export async function addToEditorQueue(
       clientId: true,
       statusEvidence: true,
       revisionRequestedAt: true,
+      client: { select: { segment: true } },
       deliverables: { where: { removedFromOrderAt: null }, select: { id: true, type: true } },
       _count: { select: { reviewSubmissions: { where: { status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } } } } },
     },
@@ -371,8 +372,10 @@ export async function addToEditorQueue(
       description: revNote,
       reasonCreated: "Owner added a finished job back to the Editing Room",
       source: "manual",
-      priority: "HIGH" as const,
-      dueAt: new Date(Date.now() + 24 * 3600_000),
+      // No due date (Jordan, Sep 8: "Revisions dont promise anything") — the
+      // card reads its age from createdAt; HIGH, URGENT for a VIP/heavy client.
+      priority: (await import("@/lib/tasks")).revisionPriority({ segment: project.client?.segment, ask: cleanNote }),
+      dueAt: null,
       assignedKey: key,
       assignedManually: true,
       projectId,
@@ -579,6 +582,73 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
     if (outstanding.length > 0) return { ok: false, message: outstandingMessage(outstanding) };
   }
 
+  // Sep 8 (Jordan: "A revision should be changed to ready for review when an
+  // editor marks it complete and submits it for review"). While a client's
+  // video-lane revision is open, neither "Completed" nor "Ready for review" is
+  // a status the editor can simply type — the corrected cut has to reach the
+  // Review Room and Jordan has to rule on it. So both labels run the same
+  // rule: a corrected cut already in the Room → the revision reads "waiting
+  // on review" (the row reads Ready for review off the PENDING cut itself);
+  // nothing uploaded since the ask → try the Final-folder submit (the same
+  // path as "Done — send to review") and otherwise refuse with the way
+  // forward. Before this, "Completed" wrote DELIVERED, left the client's ask
+  // OPEN + URGENT, rang the editor "Delivered ✓", and the next recompute
+  // flipped the job straight back to REVISION (332 Ruth Ridge, 1956
+  // Wetherhill — rev-open-after-complete); "Ready for review" wrote REVIEW
+  // and the hourly sweep flipped it back the same way (Sep 8 review).
+  // Project.status is deliberately NOT written here: a never-delivered job is
+  // moved to REVIEW by correctedCutSubmitted, and a delivered job has to stay
+  // REVISION until the verdict (see the note in reviewCuts). `ok` is true
+  // only when the pill's label is what the row will read anyway; a refusal is
+  // `ok: false` so the pill snaps back to what the cut says and shows the
+  // message.
+  if (status === "DELIVERED" || status === "REVIEW") {
+    const { videoLaneRevisionWhere, correctedCutSubmitted, correctedCutApproved } = await import("@/lib/reviewCuts");
+    const lane = await prisma.smartTask.findMany({ where: videoLaneRevisionWhere(projectId), select: { id: true, createdAt: true } });
+    if (lane.length > 0) {
+      const street = (proj.title || "this job").split(",")[0].trim();
+      const wantsReview = status === "REVIEW";
+      const done = (ok: boolean, message: string) => {
+        revalidatePath("/editing");
+        revalidatePath(`/edit/${projectId}`);
+        return { ok, message };
+      };
+      const raisedAt = proj.revisionRequestedAt ?? new Date(Math.min(...lane.map((t) => t.createdAt.getTime())));
+      const newest = await prisma.reviewSubmission.findFirst({
+        where: { projectId, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "SUPERSEDED"] }, createdAt: { gte: raisedAt } },
+        orderBy: { createdAt: "desc" },
+        select: { status: true, round: true, createdAt: true },
+      });
+      let answeredByApproval = false;
+      if (newest?.status === "APPROVED") {
+        // Jordan already approved the corrected cut (a row from before this
+        // rule): that approval answers the ask — close it; "Completed" then
+        // goes on to deliver below, "Ready for review" has nothing left to do.
+        answeredByApproval = (await correctedCutApproved(projectId, { cutCreatedAt: newest.createdAt, round: newest.round })).closed > 0;
+        if (answeredByApproval && wantsReview) {
+          return done(true, `Jordan already approved the corrected cut on ${street} — the client's revision is closed and the job is back where it stands.`);
+        }
+      }
+      if (!answeredByApproval) {
+        if (newest?.status === "PENDING") {
+          // The click is the editor's word that this pending cut IS the
+          // correction (isRedo), whatever slot it sits on.
+          await correctedCutSubmitted(projectId, { round: newest.round, isRedo: true });
+          return done(wantsReview, `${street} has a client revision open — the corrected cut is in the Review Room waiting on Jordan. It reads Ready for review until he rules, and Completed once he approves it.`);
+        }
+        if (newest?.status === "CHANGES_REQUESTED") {
+          return done(false, `The corrected cut for ${street} came back with notes — fix them and press Upload version ${newest.round + 1} on the edit page; it goes back to the Review Room from there.`);
+        }
+        const { submitCutForReview } = await import("@/app/review/actions");
+        const sent = await submitCutForReview(projectId).catch(() => ({ ok: false as const, message: "" }));
+        if (sent.ok) {
+          return done(wantsReview, `Sent to the Review Room — ${street} has a client revision open, so it reads Ready for review until Jordan rules and Completed once he approves the corrected cut.`);
+        }
+        return done(false, `${street} has a client revision open and nothing new has been uploaded since it came in. Press Upload version N on the edit page (it takes a new version even on an approved cut while the revision is open) — or drop a NEW file in 05-Final-Video and hit "Done — send to review" — and it reads Ready for review, then Completed once Jordan approves it.`);
+      }
+    }
+  }
+
   await prisma.project.update({
     where: { id: projectId },
     // deliveryStamp, not `new Date()`: this click used to overwrite the
@@ -616,58 +686,34 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
   }
 
   // Flipping to Revisions IS a revision request — in Slack the flip only
-  // recolored a cell; here it mints the video-lane work item, so the label
-  // sticks (the queue narrates the video lane from open revision tasks), the
-  // row grows its revision chip, and the editor gets the task + a bell. Moving
-  // OFF Revisions closes that same work item so the chip can't go stale.
+  // recolored a cell; here it adds a ROUND to the job's edit_video card
+  // (Jordan, Sep 8: "When a cut changes after a card is made, make it 1 card"
+  // — the separate "Revisions — <street>" task this used to mint sat beside
+  // the edit card as a second card for the same cut). The queue row reads
+  // Revisions off that round: editorQueue counts an open edit card carrying
+  // a "Round N — …" summary as the video lane's redo, the same way it counts
+  // a bounced cut (Sep 8 review — the stamp alone never reached the row).
+  // The editor's card says what round they are on and they get a bell. The
+  // card keeps whoever holds it; a card that never
+  // existed is minted through the pin/routing rules, where a deliberate
+  // unassign (Sep 7) still lands it in "Needs assigning". Moving OFF
+  // Revisions closes any straggler from the old queue-revision-* rail.
   const QUEUE_REV_KEY = `queue-revision-${projectId}`;
   if (status === "REVISION") {
     try {
       const street = (proj.title || "this job").split(",")[0].trim();
-      // Whose lane: the open edit task's editor → the pinned editor → rules.
-      const openEdit = await prisma.smartTask.findFirst({
-        where: { projectId, taskType: "edit_video", status: { notIn: ["COMPLETED", "CANCELLED"] } },
-        select: { assignedKey: true, assignedManually: true },
+      const latest = await prisma.reviewSubmission.findFirst({
+        where: { projectId, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "SUPERSEDED"] } },
+        orderBy: { round: "desc" },
+        select: { round: true },
       });
-      const { editorKeyForTeamName, editorForDeliverable } = await import("@/lib/editors");
-      const { editorRouting } = await import("@/lib/settings");
-      const { isMonthlyContentJob } = await import("@/lib/pipeline");
-      const v = proj.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
-      // A job someone deliberately took off the bench stays off it: an
-      // edit task pinned to nobody, or a project pinned to no editor, means
-      // the revision this flip mints is unassigned too and lands in "Needs
-      // assigning" — the rules do not get to hand it back to John or Kim
-      // (the assignedManually invariant, Sep 7).
-      const takenOff = (openEdit?.assignedManually && !openEdit.assignedKey) || (proj.editorManual && !proj.editorId);
-      const assignedKey = takenOff
-        ? null
-        : openEdit?.assignedKey ??
-          (proj.editorManual ? editorKeyForTeamName(proj.editor?.name) : null) ??
-          editorForDeliverable(v?.type, v?.label, isMonthlyContentJob(proj.deliverables), await editorRouting());
-      const taskData = {
-        taskType: "revision",
-        title: `Revisions — ${street}`.slice(0, 120),
-        summary:
-          "The cut was flipped to Revisions in the Editing Room — check the review notes and the project chat for what to change, re-cut, and send it back to review.",
-        reasonCreated: "Queue status set to Revisions",
-        source: "manual",
-        priority: "HIGH" as const,
-        dueAt: new Date(Date.now() + 24 * 3600_000),
-        assignedKey,
-        // Only stamped on the deliberate no-editor case — writing `false` on
-        // every flip would wipe a pin someone set on this same task earlier.
-        ...(takenOff ? { assignedManually: true } : {}),
-        projectId,
-        clientId: proj.clientId,
-        propertyAddress: proj.title,
-        dedupeKey: QUEUE_REV_KEY,
-      };
-      const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: QUEUE_REV_KEY } });
-      if (existing) {
-        await prisma.smartTask.update({ where: { id: existing.id }, data: { ...taskData, status: "OPEN", completedAt: null } });
-      } else {
-        await prisma.smartTask.create({ data: taskData });
-      }
+      const { addRoundToEditCard } = await import("@/lib/tasks");
+      const card = await addRoundToEditCard(projectId, {
+        round: (latest?.round ?? 1) + 1,
+        notes: ["Flipped to Revisions on the Editing Room queue — check the review notes and the project chat for what to change, re-cut, and send it back to review."],
+        reason: "flipped to Revisions on the queue",
+      });
+      const assignedKey = card?.assignedKey ?? null;
       // revisionRequestedAt keeps the status engine from demoting the manual
       // REVISION on its next sweep (computeStatus honours an open revision).
       if (!proj.revisionRequestedAt) {
@@ -687,8 +733,9 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
       }
     } catch { /* the status write above already landed — the task is best-effort */ }
   } else {
-    // Any other manual status closes the queue-click revision (the comms-raised
-    // revision task has its own dedupe key and its own lifecycle).
+    // Any other manual status closes a straggler from the retired
+    // queue-revision-* rail (folded into the edit card on Sep 8; the
+    // comms-raised revision task has its own dedupe key and lifecycle).
     await prisma.smartTask.updateMany({
       where: { dedupeKey: QUEUE_REV_KEY, status: { notIn: ["COMPLETED", "CANCELLED"] } },
       data: { status: "COMPLETED", completedAt: new Date() },

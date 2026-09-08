@@ -16,6 +16,7 @@ import { etDayStartUtc } from "@/lib/datetime";
 import { listAssignees, slugForName, firstName, viewerAssigneeKey } from "@/lib/assignees";
 import { isNeedsAssigning, boardVisibleWhere } from "@/lib/triage";
 import { getCurrentUser } from "@/lib/auth/user";
+import { scrubMoney } from "@/lib/text";
 import { cn } from "@/lib/utils";
 
 // The full grouped task board — every open task by person and category.
@@ -81,6 +82,33 @@ function category(taskType: string): "confirmations" | "deliveries" | "comms" | 
 
 // Triage ("needs assigning") is shared with the morning brief via src/lib/triage.
 const TRIAGE = "needs-assigning";
+
+// No money on an ADMIN screen (Jordan's standing rule). A Slack to-do's title
+// ("… with $750 credit applied"), a client's ask in a summary, a customer note
+// ("always haggles on the reel price") all render on this board, so for a
+// non-owner every figure is redacted before the card sees it — the sentence
+// stays, the number goes (audit5 kyle-home §5, Sep 8). Idempotent.
+const sm = (v: string | null | undefined) => (v == null ? v : scrubMoney(v));
+function scrubTaskMoney<T extends QueueTask>(v: T): T {
+  return {
+    ...v,
+    title: scrubMoney(v.title),
+    summary: sm(v.summary) ?? null,
+    description: sm(v.description) ?? null,
+    reasonCreated: sm(v.reasonCreated) ?? null,
+    deliverables: v.deliverables.map((d) => ({ ...d, label: scrubMoney(d.label) })),
+    qcClient: v.qcClient
+      ? {
+          ...v.qcClient,
+          customerNote: sm(v.qcClient.customerNote) ?? null,
+          usuallyAsks: v.qcClient.usuallyAsks.map(scrubMoney),
+          dos: v.qcClient.dos.map(scrubMoney),
+          donts: v.qcClient.donts.map(scrubMoney),
+        }
+      : v.qcClient,
+    siblings: v.siblings?.map((s) => ({ ...s, title: scrubMoney(s.title) })),
+  };
+}
 
 // Collapsible group panel — collapsed by default (native <details>, so no client
 // JS needed). The header (counts + overdue) stays visible; click to expand.
@@ -183,7 +211,12 @@ export async function BoardView({ sp, tabs }: { sp: { who?: string; task?: strin
 
   // flaggedBy rides alongside taskToView's shape (which other callers build
   // without it) so the source chip can read "Flagged by Harrison".
-  const views = tasks.map((t) => ({ ...taskToView(t), flaggedBy: t.flaggedBy, siblings: siblingsOf(t) }));
+  // Sessionless (local dev, a probe) renders as the owner, the same rule the
+  // home applies; "view as Kyle" carries Kyle's role and gets Kyle's scrub.
+  const isOwner = !me || me.role === "OWNER";
+  const views = tasks
+    .map((t) => ({ ...taskToView(t), flaggedBy: t.flaggedBy, siblings: siblingsOf(t) }))
+    .map((v) => (isOwner ? v : scrubTaskMoney(v)));
   // Pull the "needs assigning" pile out first — delegatable work with no owner
   // yet — so it surfaces in its own pinned section instead of hiding in Kyle's
   // pile. Everything else has a home (an editor, or Kyle's default routine).

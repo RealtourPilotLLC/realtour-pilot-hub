@@ -10,6 +10,8 @@ import { DayRecap } from "@/components/history/DayRecap";
 import { prisma } from "@/lib/prisma";
 import { etDayKey, etDayStartUtc, etTime } from "@/lib/datetime";
 import { taskTypeMeta } from "@/lib/taskSource";
+import { getCurrentUser } from "@/lib/auth/user";
+import { scrubMoney } from "@/lib/text";
 
 // The day-by-day ledger of what got done — shoots, completed to-dos, deliveries.
 // (Moved from /history — now the Tasks hub's Done tab.)
@@ -38,7 +40,12 @@ function friendlyDay(key: string): string {
 }
 
 export async function DoneView({ tabs }: { tabs: ReactNode }) {
-  const [tasks, deliveries, shoots] = await Promise.all([getTaskHistory(45), getDeliveryHistory(45), getShootHistory(45)]);
+  const [tasksRaw, deliveries, shoots, me] = await Promise.all([getTaskHistory(45), getDeliveryHistory(45), getShootHistory(45), getCurrentUser().catch(() => null)]);
+  // No money on an ADMIN screen (Jordan's standing rule): a closed Slack to-do
+  // keeps its title here, figure and all, so a non-owner's ledger is redacted
+  // the way the board is (audit5 kyle-home §5, Sep 8). Sessionless = owner.
+  const isOwner = !me || me.role === "OWNER";
+  const tasks = isOwner ? tasksRaw : tasksRaw.map((t) => ({ ...t, title: scrubMoney(t.title) }));
 
   // Group by ET calendar day.
   const dayKeys = new Set<string>();

@@ -22,7 +22,7 @@ import { AocPlaybookCard } from "@/components/project/AocPlaybookCard";
 import { EditorCutPanel } from "@/components/editing/EditorCutPanel";
 import { CutUploader } from "@/components/editing/CutUploader";
 import { autoSyncScript } from "@/lib/scriptSync";
-import { projectFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
+import { actualFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { getVideoSlaStatus, videoTier } from "@/lib/projectStatus";
 import { SubmitCutCard } from "@/components/editing/EditorActions";
 import { EditFeedback } from "@/components/editing/EditFeedback";
@@ -168,7 +168,7 @@ export default async function EditBriefPage({
   // Dropbox; editors upload here too.
   const assets = await listClientAssets(project.client.id).catch(() => null);
   const profile = parseClientProfile(project.client.profileJson);
-  const folders = projectFolderPaths(project);
+  const folders = actualFolderPaths(project); // the job's OWN folder, not the convention path (audit, Sep 8)
   const rawUrl = dropboxWebUrl(folders.rawVideo);
   const finalUrl = dropboxWebUrl(folders.finalVideo);
   const brandUrl = project.client.brandAssetsPath ? dropboxWebUrl(project.client.brandAssetsPath) : null;

@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { CLOSED_BY_HAND } from "@/lib/tasks";
+import { stampHandledByHand } from "@/lib/opsDay";
 import { requireAdmin } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 import { notifyMentionDone } from "@/lib/mentionDone";
@@ -42,6 +43,13 @@ export async function completeQcTask(taskId: string, note: string): Promise<{ ok
     data: { status: "COMPLETED", completedAt: new Date(), sourceDetail: CLOSED_BY_HAND },
   });
   if (done.count === 0) return { ok: true, message: "Already handled." };
+
+  // The by-hand stamp above says a person closed this; the marker says WHO.
+  // handledByPeopleToday already counts the stamp, so this adds nothing to
+  // today's number — it is the attribution a per-person "you handled" needs
+  // once the board's close writes it too (review, Sep 8; the board's
+  // setSmartTaskStatus is out of this file set and still leaves no name).
+  await stampHandledByHand(taskId, who, me?.email ?? null); // the count is a courtesy — never fail the close over it
 
   if (task.projectId) {
     await prisma.activity
@@ -89,6 +97,14 @@ export async function markLoopHandled(taskId: string): Promise<{ ok: boolean; me
     data: { status: "COMPLETED", completedAt: new Date() },
   });
   if (done.count === 0) return { ok: true, message: "Already handled." };
+
+  // Leave a trace that a PERSON closed this. Home's "N things you handled
+  // today" counts exactly these (opsDay.ts handledByPeopleToday); before it,
+  // the greeting counted sweeps and webhooks as Kyle's work (audit5 F19,
+  // Sep 8). The marker lives in AppSetting, not on the row: sourceDetail is
+  // where a loop keeps its provenance (the Slack channel the source chip
+  // reads, the Gmail thread a reply needs), and a stamp there would erase it.
+  await stampHandledByHand(taskId, who, me?.email ?? null); // the count is a courtesy — never fail the close over it
 
   // An @mention companion task closed here must ring the tagger exactly as it
   // does from the task board (review: the tag loop opened with a bell and

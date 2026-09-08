@@ -2,7 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { requireShootAccess } from "@/lib/auth/guards";
-import { projectFolderPaths } from "@/lib/dropboxFolders";
+import { actualFolderPaths } from "@/lib/dropboxFolders";
 
 // ---------------------------------------------------------------------------
 // Cull-BEFORE-upload (Jordan, Jul 2026): the photographer picks their card's
@@ -41,10 +41,14 @@ export async function createUploadLinks(
 
   const project = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { id: true, title: true, addressLine: true, shootDate: true, createdAt: true, client: { select: { name: true } } },
+    // dropboxFolder: the engine's memory of where THIS job's folder really is.
+    // The convention path is shared by a same-street re-shoot (1946 Rowan St,
+    // Sep 3 + Sep 9), so the in-page upload would have committed the second
+    // shoot's frames into the first job's 01-RAW-Photos (audit, Sep 8).
+    select: { id: true, title: true, addressLine: true, shootDate: true, createdAt: true, dropboxFolder: true, client: { select: { name: true } } },
   });
   if (!project) return { ok: false, message: "Project not found." };
-  const rawPhotos = projectFolderPaths(project).rawPhotos;
+  const rawPhotos = actualFolderPaths(project).rawPhotos;
 
   const { dbx, dropboxAccessToken, dropboxCreateFolder, DropboxError } = await import("@/lib/integrations/dropbox");
   let token: string;

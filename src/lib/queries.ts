@@ -1003,14 +1003,6 @@ export async function getShootWindow() {
 }
 export type ShootWindow = Awaited<ReturnType<typeof getShootWindow>>;
 
-// Tasks completed today (ET) — the dashboard's "handled" count and /today's
-// footer share this so the two never disagree.
-export async function getHandledToday(): Promise<number> {
-  return prisma.smartTask.count({
-    where: { status: "COMPLETED", completedAt: { gte: etDayStartUtc(new Date()) } },
-  });
-}
-
 // The owner's money glance — three aggregates, no row fetches. (Replaced the
 // old getDashboardData, which pulled every project row for stat cards nobody
 // acted on.)

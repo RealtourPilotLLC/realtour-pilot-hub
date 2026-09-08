@@ -179,6 +179,11 @@ export type StatusSignals = {
   /** every live appointment is postponed / unscheduled — the job needs a new date */
   postponed: boolean;
   shootDate: Date | null;
+  /** The shoot hasn't happened yet (shootDate ahead, no non-canceled leg in the
+   *  past). Files under this job's name can't be its raws — a same-street
+   *  re-shoot found the first job's 84 raws in the shared folder and read as
+   *  SHOT two days before the appointment (Sep 8 2026 audit, 1946 Rowan St). */
+  shootPending: boolean;
   // Dropbox was needed but couldn't be read (not connected, or a listing call
   // FAILED — distinct from "no folders", which is a real zero). Signals here are
   // absent, not empty; don't conclude "no media" from them.
@@ -215,16 +220,22 @@ export type StatusResult = { status: ProjectStatus; evidence: StatusEvidence };
 export function computeStatus(sig: StatusSignals): StatusResult {
   const a = sig.aryeo;
   const d = sig.dropbox;
+  // Files in the folder BEFORE the shoot happened are not this job's — a
+  // same-street re-shoot inherited the first job's raws and flipped to SHOT at
+  // import (Sep 8 2026 audit, 1946 Rowan St). The counts stay in the evidence
+  // so a human can see them; they don't drive presence or the SHOT flip.
+  const own = sig.shootPending ? null : d;
 
   const present = new Set<MediaCategory>();
-  if ((a?.photos ?? 0) > 0 || (d?.finalPhotos ?? 0) > 0) present.add("PHOTOS");
-  if ((a?.videos ?? 0) > 0 || (d?.finalVideo ?? 0) > 0) present.add("VIDEO");
+  if ((a?.photos ?? 0) > 0 || (own?.finalPhotos ?? 0) > 0) present.add("PHOTOS");
+  if ((a?.videos ?? 0) > 0 || (own?.finalVideo ?? 0) > 0) present.add("VIDEO");
   if ((a?.floorPlans ?? 0) > 0) present.add("FLOORPLAN");
   if ((a?.interactive ?? 0) > 0) present.add("THREED");
 
   const anyAryeoMedia = a ? a.photos + a.videos + a.floorPlans + a.interactive > 0 : false;
-  const anyFinalDropbox = d ? d.finalPhotos + d.finalVideo > 0 : false;
-  const anyRaw = d ? d.rawPhotos + d.rawVideo > 0 : false;
+  const anyFinalDropbox = own ? own.finalPhotos + own.finalVideo > 0 : false;
+  const anyRaw = own ? own.rawPhotos + own.rawVideo > 0 : false;
+  const strayFiles = !own && !!d && d.rawPhotos + d.rawVideo + d.finalPhotos + d.finalVideo > 0;
   const deliveredOnAryeo = a?.delivery === "DELIVERED";
   const fulfilled = sig.fulfilled || deliveredOnAryeo;
 
@@ -315,7 +326,9 @@ export function computeStatus(sig: StatusSignals): StatusResult {
     reason = "Raw files uploaded to Dropbox — awaiting editing.";
   } else if (sig.scheduled || (sig.shootDate && sig.shootDate.getTime() > Date.now())) {
     status = "SCHEDULED";
-    reason = "Shoot scheduled.";
+    reason = strayFiles
+      ? "Shoot scheduled. Files are already in its Dropbox folder, but the shoot hasn't happened — they are not counted as this job's."
+      : "Shoot scheduled.";
   } else if (sig.postponed && !sig.datedAppt) {
     // A postponed job is "order received, needs a date" — BOOKED — not
     // "scheduled with no date", which is the state that let 775 Scotch Way sit
@@ -354,6 +367,44 @@ export function computeStatus(sig: StatusSignals): StatusResult {
 }
 
 // ---- data gathering --------------------------------------------------------
+
+type ShootTiming = {
+  shootDate: Date | null;
+  appointments?: { status: string | null; startAt: Date | null }[];
+};
+
+// "The shoot already happened" — the arming condition for the sweep's
+// anti-demotion guards. shootDate alone is NOT enough: it's movable. When an
+// already-shot job gets a return visit or a forward reschedule, the appointment
+// sync points shootDate at the FUTURE leg, and a guard keyed only on
+// `shootDate < now` silently disarms — re-opening the exact demotion cascade it
+// was built to stop (audit crack #2 / 2075 Flint Hill). So any non-canceled
+// appointment leg that started in the past also counts. The shootDate test
+// still matters on its own: manual/unsynced projects have no appointment rows.
+// Exported (Sep 8 2026) so the photo counter and the legacy Dropbox sweep gate
+// on the SAME predicate instead of a bare shootDate compare.
+export function shootHappenedFor(p: ShootTiming, now: number = Date.now()): boolean {
+  return (
+    (p.shootDate !== null && p.shootDate.getTime() < now) ||
+    (p.appointments ?? []).some(
+      (a) => (a.status || "").toUpperCase() !== "CANCELED" && a.startAt !== null && a.startAt.getTime() < now,
+    )
+  );
+}
+
+// The opposite, narrowly: the shoot is KNOWN to be ahead (a future shootDate or
+// a future non-canceled leg) and no leg has happened. A job with no date at all
+// is neither — raws there keep their old meaning. Files found under a pending
+// job's name cannot be its raws (Sep 8 2026 audit, 1946 Rowan St).
+export function shootPendingFor(p: ShootTiming, now: number = Date.now()): boolean {
+  if (shootHappenedFor(p, now)) return false;
+  return (
+    (p.shootDate !== null && p.shootDate.getTime() > now) ||
+    (p.appointments ?? []).some(
+      (a) => (a.status || "").toUpperCase() !== "CANCELED" && a.startAt !== null && a.startAt.getTime() > now,
+    )
+  );
+}
 
 async function aryeoMedia(listingId: string): Promise<AryeoMediaSignal | null> {
   try {
@@ -492,6 +543,7 @@ async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<Sta
         ((a.status || "").toUpperCase() === "UNSCHEDULED" || (!!a.postponedAt && a.startAt === null)),
     ),
     shootDate: p.shootDate,
+    shootPending: shootPendingFor(p),
     // A revision stamp OLDER than the delivery is stale — that delivery WAS the
     // revision being resolved. Treating it as open resurrected delivered jobs
     // as zombie REVISION rows on every full sweep (Jul 24 + Aug 25 audits).
@@ -619,23 +671,8 @@ export async function syncProjectStatuses(
       dropboxErrors.unknown = (dropboxErrors.unknown ?? 0) + 1;
     }
     // "The shoot already happened" — the arming condition for both anti-demotion
-    // guards below. shootDate alone is NOT enough: it's movable. When an
-    // already-shot job gets a return visit or a forward reschedule, the
-    // appointment sync points shootDate at the FUTURE leg, and a guard keyed
-    // only on `shootDate < now` silently disarms — re-opening the exact
-    // demotion cascade it was built to stop (audit crack #2 / 2075 Flint Hill).
-    // So we also accept any non-canceled appointment leg that started in the
-    // past as proof a shoot happened. The shootDate test still matters on its
-    // own: manual/unsynced projects have no appointment rows at all.
-    const now = Date.now();
-    const shootHappened =
-      (p.shootDate !== null && p.shootDate.getTime() < now) ||
-      p.appointments.some(
-        (a) =>
-          (a.status || "").toUpperCase() !== "CANCELED" &&
-          a.startAt !== null &&
-          a.startAt.getTime() < now,
-      );
+    // guards below (see shootHappenedFor for why shootDate alone is not enough).
+    const shootHappened = shootHappenedFor(p);
     // Signal-fetch FAILURE is unknown, not zero. When Aryeo couldn't be read AND
     // Dropbox is unavailable for a past-shoot production job, we have no evidence
     // at all — keep the prior status/evidence untouched instead of recomputing
@@ -712,7 +749,11 @@ export async function syncProjectStatuses(
     // timestamp — so /upload kept showing "Upload" CTAs on jobs whose raws were
     // fully in, and photographers got no confirmation their drop registered
     // (July 2026 audit).
-    const rawsDetected = !!sig.dropbox && sig.dropbox.rawPhotos + sig.dropbox.rawVideo > 0;
+    // Not before the shoot: files under a pending job's name are another
+    // job's, and the stamp is what lit "Uploaded" on /upload and "Submitted —
+    // you're good to go" on Harrison's page for a shoot that hadn't happened
+    // (Sep 8 2026 audit, 1946 Rowan St).
+    const rawsDetected = !sig.shootPending && !!sig.dropbox && sig.dropbox.rawPhotos + sig.dropbox.rawVideo > 0;
     await prisma.project.update({
       where: { id: p.id },
       data: {

@@ -8,7 +8,8 @@ import { cleanEmailBody, revisionsBoard } from "@/lib/commsBoard";
 import { isMonthlyContentJob, monthlyVideoQuota } from "@/lib/pipeline";
 import { cleanBrief, parseShootBrief } from "@/lib/shoot";
 import { NOTHING_TO_REMOVE_SENTINEL, isFieldFlag } from "@/lib/debrief";
-import { actionableQcCount, nextPendingDue, sameDayAddOns, hasSameDayAddOn, sameDayDue } from "@/lib/tasks";
+import { actionableQcCount, nextPendingDue, sameDayAddOns, hasSameDayAddOn, sameDayDue, CLOSED_BY_HAND } from "@/lib/tasks";
+import { scrubMoney } from "@/lib/text";
 import { turnaroundRules } from "@/lib/settings";
 import type { StatusEvidence } from "@/lib/projectStatus";
 import { videoStatesFor, videoReviewBoard, type ProjectVideoState, type VideoCutState } from "@/lib/reviewCuts";
@@ -1047,4 +1048,123 @@ export async function openLoopsList(now = new Date(), viewer?: LoopViewer | null
   // Non-enumerable, so the list still behaves as a plain OpsLoop[] everywhere
   // (map, spread, JSON) and only loopsCapped()/tallyLoops() look for it.
   return Object.defineProperty(loops, "capped", { value: capped, enumerable: false }) as OpsLoopList;
+}
+
+// ---------------------------------------------------------------------------
+// No money on an ADMIN screen (Jordan's standing rule: ADMIN = full operations,
+// NO money anywhere). The day's text comes from people who talk about money —
+// a Slack instruction ("Send Andrea's updated order with $750 credit applied"),
+// a client's revision ask, a photographer's wrap-up note — so a non-owner's
+// OpsDay is passed through here before it renders (audit5 kyle-home §5,
+// Sep 8). Figures only: the sentence stays, so the work stays legible.
+// ---------------------------------------------------------------------------
+
+const sm = (v: string | null): string | null => (v == null ? v : scrubMoney(v));
+
+function scrubShoot(s: OpsShoot): OpsShoot {
+  return {
+    ...s,
+    access: {
+      ...s.access,
+      notes: sm(s.access.notes), lockbox: sm(s.access.lockbox), access: sm(s.access.access),
+      presence: sm(s.access.presence), special: sm(s.access.special), orderNotes: sm(s.access.orderNotes),
+    },
+    specialRequests: s.specialRequests.map(scrubMoney),
+    comms: s.comms ? { ...s.comms, latestSnippet: scrubMoney(s.comms.latestSnippet) } : null,
+  };
+}
+
+/** The same day, with every dollar figure redacted — for a non-owner viewer. */
+export function scrubOpsDayMoney(d: OpsDay): OpsDay {
+  return {
+    ...d,
+    todayShoots: d.todayShoots.map(scrubShoot),
+    tomorrowShoots: d.tomorrowShoots.map(scrubShoot),
+    unanswered: { ...d.unanswered, preview: d.unanswered.preview.map((u) => ({ ...u, snippet: scrubMoney(u.snippet) })) },
+    qc: d.qc.map((q) => ({
+      ...q,
+      debrief: {
+        ...q.debrief,
+        shotOrder: sm(q.debrief.shotOrder), removals: sm(q.debrief.removals), editorBrief: sm(q.debrief.editorBrief),
+        flags: q.debrief.flags.map(scrubMoney),
+        itemNotes: q.debrief.itemNotes.map((n) => ({ ...n, note: scrubMoney(n.note) })),
+      },
+      notCompleted: q.notCompleted.map((n) => ({ ...n, reason: scrubMoney(n.reason) })),
+    })),
+    pipeline: {
+      ...d.pipeline,
+      rows: d.pipeline.rows.map((r) => ({
+        ...r,
+        revision: r.revision ? { headline: sm(r.revision.headline), items: r.revision.items.map(scrubMoney) } : null,
+      })),
+    },
+    // A plain map would drop the non-enumerable `capped` flag that
+    // loopsZeroState reads for its "+" — carry it across.
+    openLoops: Object.defineProperty(
+      d.openLoops.map((l) => ({ ...l, title: scrubMoney(l.title), summary: sm(l.summary) })),
+      "capped",
+      { value: loopsCapped(d.openLoops), enumerable: false },
+    ) as OpsLoopList,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// "N things handled by hand today" — closes a PERSON made, not the machine's.
+// Home used to print every COMPLETED row since ET midnight, and on Sep 8 that
+// read "15 things handled today" when every one of the 15 was a sweep, the
+// reconciler or a webhook (audit5 kyle-home F19). The number is business-wide
+// (Jordan's by-hand closes and Kyle's land together — the stamp carries no
+// name), which is why the label says "by hand" rather than "you" (review,
+// Sep 8). A human close leaves one of two traces, and this counts exactly
+// those:
+//   · the by-hand stamp (sourceDetail = CLOSED_BY_HAND) — a QC card closed with
+//     "Mark complete" here or "Complete" on the board (tasks.ts guards it);
+//   · the loop marker written by the home's "Handled" button (ops/actions.ts) —
+//     kept OUT of sourceDetail because loop rows carry their provenance there
+//     (the Slack channel the chip reads, the Gmail thread a reply needs).
+// Plus rows a person made by hand (source "manual" — a typed to-do, a comms
+// "handled outside the hub" tick, a field flag): the DELIVERED sweep leaves
+// those alone (tasks.ts closeObsoleteTasks keys system to-dos by dedupeKey),
+// so a manual row that closed today was closed by someone.
+// NOT counted, on purpose: reply tasks the OpenPhone webhook closed when a
+// text went out, auto-sent confirmations/delivery texts, cards the DELIVERED
+// sweep folded, edits the reconciler closed on a cut upload. The board's
+// "Complete" on a non-QC task and the Comms "Handled ✓" tick leave no trace
+// yet (setSmartTaskStatus / markCommsHandled, out of this file set) — they
+// undercount here until they write the same marker.
+// ---------------------------------------------------------------------------
+
+/** AppSetting key prefix: `handled-by-hand:<taskId>` → { by, at }. */
+export const HANDLED_BY_HAND_PREFIX = "handled-by-hand:";
+
+/** A person closed this task: write the marker that "handled today" and a
+ *  per-person "you handled" read. Best-effort — never fails the close. */
+export async function stampHandledByHand(taskId: string, by: string | null, email?: string | null): Promise<void> {
+  const key = `${HANDLED_BY_HAND_PREFIX}${taskId}`;
+  const value = JSON.stringify({ by: by?.trim() || null, at: new Date().toISOString() });
+  await prisma.appSetting
+    .upsert({ where: { key }, create: { key, value, updatedBy: email ?? null }, update: { value, updatedBy: email ?? null } })
+    .catch(() => {});
+}
+
+export async function handledByPeopleToday(): Promise<number> {
+  const since = etDayWindow(0).start;
+  const [stamped, marked] = await Promise.all([
+    prisma.smartTask.findMany({
+      where: {
+        status: "COMPLETED",
+        completedAt: { gte: since },
+        OR: [{ sourceDetail: CLOSED_BY_HAND }, { source: "manual" }],
+      },
+      select: { id: true },
+    }),
+    prisma.appSetting.findMany({
+      where: { key: { startsWith: HANDLED_BY_HAND_PREFIX }, updatedAt: { gte: since } },
+      select: { key: true },
+    }),
+  ]);
+  // One set, so a manual row closed through "Handled" is one thing, not two.
+  const ids = new Set(stamped.map((t) => t.id));
+  for (const m of marked) ids.add(m.key.slice(HANDLED_BY_HAND_PREFIX.length));
+  return ids.size;
 }

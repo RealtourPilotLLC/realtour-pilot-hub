@@ -21,6 +21,39 @@ const DONE = ["COMPLETED", "CANCELLED"];
 // (media_qa/delivery/confirmation_text/delivery_text) so their content is safe.
 const MERGEABLE_TYPES = ["client_reply", "comms_followup", "internal_instruction", "revision", "vendor_update", "lead"];
 
+// ---------------------------------------------------------------------------
+// WHAT KIND of task the brain's read is (Sep 8 audit). The brain answers a
+// client message with one imperative to-do, and not every one is a reply:
+// "Note builder relationship context and brief team for shoot", "Prep for
+// Thursday 3:30 call", "Log Kristin's interest in brand content" are the
+// team's own bookkeeping — nothing goes back to the client. createCommTask
+// typed every one client_reply, so the Done tab called them replies and the
+// text sweep (clientTextSweeps.ts) had to learn to see through them.
+//
+// `todo` is the engine's own type for "a person should do this" (taskSource.ts
+// TASK_TYPE_META). A real reply — anything that answers, confirms, sends or
+// calls the client back — stays client_reply; a missed call or voicemail is
+// always a callback. When unsure, client_reply: a note mislabelled as a reply
+// is a cosmetic fault, a reply mislabelled as a note is a client left waiting.
+// ---------------------------------------------------------------------------
+export type CommTaskType = "client_reply" | "todo";
+
+// Opens the way the team's own notes open.
+const BOOKKEEPING_RE = /^(?:note|log|record|prep|prepare|brief|remember|await|document|track|file|save|keep|monitor|flag|make a note)\b/i;
+// Anything in the title that reaches the client keeps it a reply.
+const REPLY_RE =
+  /\b(?:reply|respond|answer|call(?:ing)?\s+(?:back|the client|them|her|him)|text(?:ing)?\s+(?:back|the client|them|her|him)|email(?:ing)?\s+(?:back|the client|them|her|him)|let\s+(?:them|her|him|the client)\s+know|get back to|confirm with|clarify|quote|send|ask|follow up with|check with|tell|update (?:the )?client)\b/i;
+
+export function brainTaskType(decision: { title: string }, channel: "text" | "call" | "email" | "slack"): CommTaskType {
+  if (channel === "call") return "client_reply";
+  const title = (decision.title ?? "").trim();
+  if (!title || !BOOKKEEPING_RE.test(title)) return "client_reply";
+  return REPLY_RE.test(title) ? "client_reply" : "todo";
+}
+
+/** The brain's decision plus the task type it should be stored as. */
+export type RoutedCommDecision = BrainDecision & { taskType: CommTaskType };
+
 export async function routeCommTask(input: {
   channel: "text" | "call" | "email" | "slack";
   message: string;
@@ -28,7 +61,7 @@ export async function routeCommTask(input: {
   clientName?: string | null;
   senderName?: string | null; // who actually sent it (for non-client senders)
   senderIsClient?: boolean;
-}): Promise<BrainDecision | null> {
+}): Promise<RoutedCommDecision | null> {
   const text = (input.message ?? "").trim();
   if (!text || !input.clientId) return null;
   const key = await getSecret("ai");
@@ -49,8 +82,20 @@ export async function routeCommTask(input: {
       prisma.smartTask.findMany({
         // Only comms-type to-dos are valid MERGE targets — never a production task
         // (media_qa / delivery / confirmation_text), whose title/summary would get
-        // clobbered if the brain picked it as "the same request".
-        where: { clientId: input.clientId, status: { notIn: DONE }, taskType: { in: MERGEABLE_TYPES } },
+        // clobbered if the brain picked it as "the same request". The second
+        // branch: since Sep 8 createCommTask stores the brain's taskType, so
+        // its bookkeeping notes ("Prep for Thursday call") are todo rows with a
+        // gmail/openphone source — comms-born, and fair game for a follow-up
+        // message to land on. A watchdog's or a person's hand-made todo
+        // (source system/manual/team) never matches here.
+        where: {
+          clientId: input.clientId,
+          status: { notIn: DONE },
+          OR: [
+            { taskType: { in: MERGEABLE_TYPES } },
+            { taskType: "todo", OR: [{ source: { startsWith: "gmail" } }, { source: { startsWith: "openphone" } }] },
+          ],
+        },
         orderBy: { createdAt: "desc" },
         take: 14,
         select: { id: true, taskType: true, title: true, projectId: true },
@@ -95,7 +140,9 @@ export async function routeCommTask(input: {
         })),
     };
 
-    return await decideCommTask(ctx, key);
+    const decision = await decideCommTask(ctx, key);
+    if (!decision) return null;
+    return { ...decision, taskType: brainTaskType(decision, input.channel) };
   } catch {
     return null;
   }
@@ -130,6 +177,11 @@ export async function routeSlackTask(opts: {
   ts: string;
   channel: string;
   senderName?: string | null;
+  /** Who the message is for (assignedKey), or null when nobody is named. When
+   *  given, only open Slack cards with that same assignedKey are offered as
+   *  merge targets — Kyle's "I'll do it" must not merge onto Jordan's card
+   *  (Sep 8 review). Leave undefined to offer every open Slack card. */
+  forKey?: string | null;
 }): Promise<SlackDecision | null> {
   const text = (opts.message ?? "").trim();
   if (!text) return null;
@@ -185,9 +237,15 @@ export async function routeSlackTask(opts: {
       }),
     );
 
-    // Open Slack to-dos this might be a continuation of (merge candidates).
+    // Open Slack to-dos this might be a continuation of (merge candidates) —
+    // the same person's cards only, when the caller says who it is for.
     const openSlack = await prisma.smartTask.findMany({
-      where: { source: "slack", taskType: "internal_instruction", status: { notIn: DONE } },
+      where: {
+        source: "slack",
+        taskType: "internal_instruction",
+        status: { notIn: DONE },
+        ...(opts.forKey !== undefined ? { assignedKey: opts.forKey } : {}),
+      },
       orderBy: { createdAt: "desc" },
       take: 12,
       select: { id: true, title: true },

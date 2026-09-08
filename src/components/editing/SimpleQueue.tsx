@@ -112,6 +112,11 @@ function StatusPill({ row }: { row: QueueRow }) {
   // the invisible fixed backdrop gives outside-click dismissal for free.
   const [menu, setMenu] = useState<{ top: number; left: number } | null>(null);
   const [status, setStatus] = useState(row.status);
+  // The server's reason when it refused (Sep 8): "Completed" on a job with a
+  // client revision open is turned away with the way forward — upload the
+  // corrected cut, it reads Completed once Jordan approves it — and that
+  // sentence has to reach the editor, not vanish into a snapped-back pill.
+  const [note, setNote] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const meta = STATUSES[status] ?? { color: "#94a3b8", selectable: false };
 
@@ -127,11 +132,20 @@ function StatusPill({ row }: { row: QueueRow }) {
     if (next === status) return;
     const prev = status;
     setStatus(next);
+    setNote(null);
     start(async () => {
       // .catch too: a rejected action (DB hiccup, deleted project) must snap
       // back like a refusal, not crash the whole queue view.
-      const r = await setQueueStatus(row.id, next).catch(() => ({ ok: false }));
-      if (!r.ok) setStatus(prev); // server refused — snap back, no silent lie
+      const r = await setQueueStatus(row.id, next).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+      if (!r.ok) {
+        setStatus(prev); // server refused — snap back, no silent lie
+        setNote(r.message || "That didn't save — try again.");
+      } else if (r.message && r.message !== "Status updated.") {
+        // The label stuck, but the server did something MORE than write it
+        // (sent the cut to the Review Room, parked a client revision as
+        // waiting on Jordan) — that sentence has to reach the editor too.
+        setNote(r.message);
+      }
     });
   };
 
@@ -139,6 +153,7 @@ function StatusPill({ row }: { row: QueueRow }) {
     <>
       <button
         onClick={toggle}
+        title={note ?? undefined}
         className="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold"
         style={{ backgroundColor: `${meta.color}26`, color: meta.color }}
       >
@@ -146,6 +161,9 @@ function StatusPill({ row }: { row: QueueRow }) {
         {status}
         <ChevronDown className="size-3 opacity-70" />
       </button>
+      {note && (
+        <span className="mt-1 block max-w-64 whitespace-normal text-[11px] leading-snug text-warning">{note}</span>
+      )}
       {menu && (
         <>
           <div className="fixed inset-0 z-30" onClick={() => setMenu(null)} />

@@ -1,6 +1,5 @@
 "use server";
 
-import crypto from "crypto";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { authEnforced, requireAdmin, requireTaskAccess } from "@/lib/auth/guards";
@@ -17,26 +16,21 @@ import { notifyInApp, type NotifyTarget } from "@/lib/notify";
 //     link, park a ReviewSubmission, flip the job to REVIEW, ring OWNER+ADMIN.
 //   owner reviews at /review/<projectId> → addCutNote() drops timestamped
 //     EDITOR-lane notes (or PHOTOGRAPHER-lane for capture problems) on the cut.
-//   requestCutChanges() → bundles the open EDITOR notes into ONE revision task
-//     back on the editor's plate (their scoped queue on /editing), rings their bell.
+//   requestCutChanges() → puts the open EDITOR notes on the job's edit_video
+//     card as the next ROUND (one card per cut — Jordan, Sep 8), rings the bell.
 //   editor re-submits → NEW round; approveCut() → APPROVED + Kyle delivers.
+//   A CLIENT's revision (comms.raiseRevision) rides the same loop: the
+//   corrected cut's submit parks it "waiting on review", the approval closes
+//   it — see reviewCuts.correctedCutSubmitted / correctedCutApproved.
 // Reads live in src/lib/reviewRoom.ts. The per-asset PHOTO pin review stays in
 // the project gallery (reviewActions.ts) — this file is the CUT loop.
 // ---------------------------------------------------------------------------
 
 const streetOf = (title?: string | null) => (title || "this job").split(",")[0].trim();
-// Per-CUT, not per-project: monthly packages have several cuts in flight, and
-// a per-project key made "request changes on video 2" OVERWRITE video 1's
-// still-open change list (adversarial review). Keyed by assetPath so a redo of
-// the same video reuses (reopens) its own task; submission id when no file.
 // A cut's identity across rounds: uploaded cuts by (deliverable, slot),
 // legacy folder rows by file path — see reviewCuts.cutKeyOf.
 const cutKeyOf = (s: { deliverableId?: string | null; slot?: number | null; assetPath?: string | null; id: string }) =>
   s.deliverableId ? `${s.deliverableId}:${s.slot ?? 1}` : (s.assetPath ?? s.id);
-const CUT_CHANGES_KEY = (projectId: string, cutKey: string) => {
-  const h = crypto.createHash("sha1").update(cutKey).digest("hex").slice(0, 10);
-  return `cut-changes-${projectId}-${h}`;
-};
 
 function refresh(projectId: string) {
   revalidatePath("/review");
@@ -236,14 +230,18 @@ export async function submitCutForReview(
   const videosOwed = Math.max(quantityOwed, monthlyOwed);
   // Distinct files now in review (the claimed/created row included).
   const distinctAfter = await submittedDistinctCuts(projectId);
-  // TYPE-SCOPED closes (adversarial review): a REDO closes the revision task
-  // (the bounce is answered) but must NOT close the edit_video item still
-  // covering unmade videos; completing the SET closes edit_video but must not
-  // eat an outstanding revision on a different cut. Single-video jobs and
-  // no-file submits keep the legacy close-everything behavior.
+  // TYPE-SCOPED (adversarial review): a REDO answers the client's revision
+  // but must NOT close the edit_video item still covering unmade videos;
+  // completing the SET closes edit_video but must not touch a revision on a
+  // different cut. Single-video jobs and no-file submits keep the legacy
+  // "this answers everything" behavior.
   const legacyClose = !cut.assetPath || videosOwed <= 1;
   const closeEdit = legacyClose || distinctAfter >= videosOwed;
-  const closeRevision = legacyClose || cut.isRedo;
+  // A job the client already has: any file made after their ask is the
+  // correction, even under a new name on a multi-video order (Sep 8 review —
+  // an approved file's path is never eligible again, so the redo often IS a
+  // new name).
+  const answersRevision = legacyClose || cut.isRedo || !!project.deliveredAt;
 
   // Rounds are PER FILE (the helper computed it): video 2's first cut is
   // "Round 1", not "Round 2" because video 1 came before it.
@@ -260,44 +258,43 @@ export async function submitCutForReview(
         select: { id: true, round: true },
       });
 
-  // Close out the editor's open work item (first submit = edit_video; a
-  // re-submit after changes = the bundled revision task). An editor's submit
-  // closes ONLY their own tasks — never a co-editor's parallel work item.
-  // On a multi-video package the edit task stays OPEN until the last video of
-  // the set is in — sending video 1 of 4 is progress, not done.
-  const closeTypes = [...(closeEdit ? ["edit_video"] : []), ...(closeRevision ? ["revision"] : [])];
-  if (closeTypes.length) {
+  // Close out the editor's open work item (edit_video). An editor's submit
+  // closes ONLY their own task — never a co-editor's parallel work item. On a
+  // multi-video package the edit task stays OPEN until the last video of the
+  // set is in — sending video 1 of 4 is progress, not done.
+  if (closeEdit) {
     await prisma.smartTask.updateMany({
       where: {
         projectId,
-        taskType: { in: closeTypes },
+        taskType: "edit_video",
         status: { notIn: ["COMPLETED", "CANCELLED"] },
         ...(myEditorKey ? { assignedKey: myEditorKey } : {}),
       },
       data: { status: "COMPLETED", completedAt: new Date() },
     });
+  } else if (cut.isRedo) {
+    // The set still owes cuts, but this redo answers the round on the card —
+    // rewrite its "Round N — fix them" summary so it stops telling the editor
+    // to fix a version they just sent (Sep 8 review).
+    try {
+      const { editCardCutSubmitted } = await import("@/lib/tasks");
+      await editCardCutSubmitted(projectId, { round: submission.round, cutLabel: cut.fileName, close: false, editorKey: myEditorKey });
+    } catch { /* best-effort — the cut is already in review */ }
   }
 
   // EDITING/SHOT → REVIEW (never demote a job already past review).
   if (project.status === "EDITING" || project.status === "SHOT") {
     await prisma.project.update({ where: { id: projectId }, data: { status: "REVIEW" } });
-  } else if (project.status === "REVISION" && !project.deliveredAt) {
-    // A NEVER-delivered job bounced in the Review Room (Jordan, Aug 27:
-    // requesting changes flips it to Revisions) — the redo landing sends it
-    // back to Ready-for-review, but only when this submit closed the LAST
-    // open revision ask (a photo-lane ask on the same job keeps it in
-    // Revisions), and clear the stamp so the hourly sweep can't flip it
-    // straight back. A delivered job's revision keeps its lifecycle:
-    // resolveRevision is what returns it to DELIVERED.
-    const stillOpen = await prisma.smartTask.count({
-      where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
-    });
-    if (stillOpen === 0) {
-      await prisma.project.update({
-        where: { id: projectId },
-        data: { status: "REVIEW", revisionRequestedAt: null },
-      });
-    }
+  } else if (answersRevision) {
+    // Sep 8 (Jordan: "A revision should be changed to ready for review when an
+    // editor marks it complete and submits it for review"): the client's
+    // video-lane revision used to be COMPLETED here, before anyone had looked
+    // at the redo. It now goes IN_PROGRESS "waiting on review" and closes on
+    // the approval; a never-delivered job returns to Ready-for-review (stamp
+    // cleared) once nothing stays OPEN in another lane, a delivered job keeps
+    // Revisions until the verdict — see reviewCuts.correctedCutSubmitted.
+    const { correctedCutSubmitted } = await import("@/lib/reviewCuts");
+    await correctedCutSubmitted(projectId, { round: submission.round, isRedo: cut.isRedo || !!project.deliveredAt });
   }
   await prisma.activity.create({
     data: {
@@ -588,6 +585,17 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
     }).catch(() => {});
   }
 
+  // Sep 8 (revision lifecycle): a cut newer than the client's ask answers it.
+  // The video-lane revision closes whoever holds it (it used to close only
+  // on the submitting editor's own key, and never on approval), and when no
+  // lane is left open the job resolves the normal way — a delivered job back
+  // to Delivered with the close-out and today's bells (resolveRevision).
+  let revisionResolved = false;
+  try {
+    const { correctedCutApproved } = await import("@/lib/reviewCuts");
+    revisionResolved = (await correctedCutApproved(submission.projectId, { cutCreatedAt: submission.createdAt, round: submission.round })).resolved;
+  } catch { /* the approval itself already landed */ }
+
   try {
     const targets: NotifyTarget[] = [{ roles: ["ADMIN"] }];
     // Only Kim/Remar have logins that can see an editor:<key> row — a Luma/
@@ -610,20 +618,26 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
   } catch { /* bell is best-effort */ }
 
   refresh(submission.projectId);
+  revalidatePath("/tasks");
+  revalidatePath(`/projects/${submission.projectId}`);
   return {
     ok: true,
     message:
       (inFlight > 0
         ? `Approved — ${inFlight} more video${inFlight === 1 ? "" : "s"} still in review on ${street}.`
-        : `Approved — every cut on ${street} is done; Kyle's been pinged to deliver.`) + copyNote,
+        : revisionResolved
+          ? `Approved — the client's revision on ${street} is closed and the job is back where it stands.`
+          : `Approved — every cut on ${street} is done; Kyle's been pinged to deliver.`) + copyNote,
   };
 }
 
-// REQUEST CHANGES: bundle the open EDITOR-lane notes on this cut into ONE
-// revision task on the editor's plate (their scoped queue on /editing shows it as a
-// red Revision chip), flip the job to REVISION ("Revisions" on the queue),
-// ring their bell. Re-sending reopens + refreshes the same task instead of
-// duplicating.
+// REQUEST CHANGES: put the open EDITOR-lane notes on this cut onto the job's
+// edit_video card as the next ROUND (Jordan, Sep 8: "When a cut changes after
+// a card is made, make it 1 card" — the separate cut-changes-* revision task
+// this used to mint sat beside the edit card as a second card for one cut),
+// flip the job to REVISION ("Revisions" on the queue), ring the bell. A
+// client's revision the cut was answering goes back to OPEN — the job stays
+// in Revisions and the client's ask stays open until a cut is approved.
 export async function requestCutChanges(submissionId: string): Promise<{ ok: boolean; message: string }> {
   try {
     await requireAdmin();
@@ -655,35 +669,65 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
     return { ok: false, message: "Add at least one note first — the editor needs to know what to change." };
   }
 
-  const editorKey = (submission.submittedByKey ?? (await projectEditorKey(submission.projectId))) as EditorKey | null;
-  if (!editorKey) return { ok: false, message: "No editor is routed to this job — assign one on the Editor Queue first." };
-
   const street = streetOf(submission.project?.title);
   const s = open.length === 1 ? "" : "s";
   const fmtT = (t: number | null) =>
     t == null ? "" : `[${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}] `;
   const lines = open.map((n) => `• ${fmtT(n.timeSec)}${n.body.trim()}`);
-  const key = CUT_CHANGES_KEY(submission.projectId, cutKeyOf(submission));
-  const data = {
-    taskType: "revision",
-    title: `Cut changes — ${street}`.slice(0, 120),
-    summary: `${open.length} change${s} requested on the round-${submission.round} cut:\n${lines.slice(0, 3).join("\n")}${open.length > 3 ? `\n…and ${open.length - 3} more` : ""}`.slice(0, 500),
-    description: lines.join("\n").slice(0, 1500),
-    reasonCreated: "Owner requested changes in the Review Room",
-    source: "system",
-    priority: "HIGH" as const,
-    dueAt: new Date(Date.now() + 24 * 3600_000),
-    assignedKey: editorKey,
-    projectId: submission.projectId,
-    clientId: submission.project?.clientId ?? null,
-    propertyAddress: submission.project?.title ?? null,
-    dedupeKey: key,
-  };
-  const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
-  if (existing) {
-    await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } });
-  } else {
-    await prisma.smartTask.create({ data });
+  // The round is on the edit card. The card keeps whoever holds it (the
+  // assignedManually invariant); a job that never had one is minted through
+  // the routing/pin rules, exactly like a first cut.
+  const { addRoundToEditCard } = await import("@/lib/tasks");
+  const { cutSlots, videoLaneRevisionWhere } = await import("@/lib/reviewCuts");
+  // Which cut, in the words the editor's page uses ("Personal Branding Reel —
+  // Video 2 of 4"); the file name for a legacy folder row.
+  let which: string | null = submission.fileName ?? null;
+  if (submission.deliverableId) {
+    const slots = await cutSlots(submission.projectId).catch(() => []);
+    which = slots.find((sl) => sl.deliverableId === submission.deliverableId && sl.slot === submission.slot)?.label ?? which;
+  }
+  const card = await addRoundToEditCard(submission.projectId, {
+    round: submission.round + 1,
+    notes: lines,
+    reason: `sent back from the Review Room${which ? ` on ${which}` : ""} (version ${submission.round})`,
+  });
+  if (!card) {
+    // No video deliverable on the job — nothing to hang a round on. Say so
+    // rather than mint a card nobody will find.
+    return { ok: false, message: "This job has no video deliverable on its order, so there is no edit card to send the notes to — add the video on the Editing Room first." };
+  }
+  // ONE owner for the round (Sep 8 review). Whoever holds the card gets the
+  // bell. A card nobody holds and nobody pinned (personal-branding routing
+  // is null by design) goes to the editor who made the cut — they are the
+  // editor of record, so the card and the bell name the same person instead
+  // of the card sitting in "Needs assigning" while the submitter is rung. A
+  // card deliberately taken off every editor (Sep 7 unassign) stays that way
+  // and Kyle is rung to pick someone.
+  let editorKey = card.assignedKey as EditorKey | null;
+  if (!editorKey && !card.assignedManually) {
+    const maker = (submission.submittedByKey ?? (await projectEditorKey(submission.projectId))) as EditorKey | null;
+    if (maker && (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(maker)) {
+      await prisma.smartTask.update({ where: { id: card.taskId }, data: { assignedKey: maker } }).catch(() => {});
+      editorKey = maker;
+    } else {
+      editorKey = maker;
+    }
+  }
+  // The client's revision this cut was answering is back with the editor —
+  // the state sentence goes in front of the ask line, never over it.
+  const { revisionStateSummary } = await import("@/lib/reviewCuts");
+  const waiting = await prisma.smartTask.findMany({
+    where: { ...videoLaneRevisionWhere(submission.projectId), status: "IN_PROGRESS" },
+    select: { id: true, summary: true },
+  });
+  for (const t of waiting) {
+    await prisma.smartTask.update({
+      where: { id: t.id },
+      data: {
+        status: "OPEN",
+        summary: revisionStateSummary(t.summary, `The corrected cut came back from review with ${open.length} note${s} — fix them (they are on the edit card) and upload the next version.`),
+      },
+    }).catch(() => {});
   }
 
   const { authorName } = await sessionAuthor();
@@ -719,12 +763,14 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
     // Kim/Remar see their own editor:<key> row; a Luma/vendor key has no login
     // or channel, so the news goes to ADMIN instead — Kyle dispatches vendor
     // changes (same split as the manual-queue bell in editing/actions.ts).
-    const isTeamEditor = (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(editorKey);
+    const isTeamEditor = !!editorKey && (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(editorKey);
     await notifyInApp({
       kind: "review_changes",
       title: isTeamEditor
         ? `Changes requested — ${street}`
-        : `Relay cut changes to ${editorMeta(editorKey)?.name ?? editorKey} — ${street}`,
+        : editorKey
+          ? `Relay cut changes to ${editorMeta(editorKey)?.name ?? editorKey} — ${street}`
+          : `Cut changes need an editor — ${street}`,
       body: `${open.length} note${s}: ${open[0].body}`.slice(0, 140),
       href: `/edit/${submission.projectId}`,
       // ADMIN always rides along: an editor:<key> row reaches NOBODY when that
@@ -741,7 +787,13 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
   } catch { /* bell is best-effort */ }
 
   refresh(submission.projectId);
-  return { ok: true, message: `Sent ${open.length} change${s} to ${editorMeta(editorKey)?.name ?? editorKey}.` };
+  revalidatePath("/tasks");
+  return {
+    ok: true,
+    message: editorKey
+      ? `Sent ${open.length} change${s} to ${editorMeta(editorKey)?.name ?? editorKey} — round ${submission.round + 1} is on their edit card.`
+      : `${open.length} change${s} added to the edit card as round ${submission.round + 1} — the job has no editor, so Kyle has been pinged; pick one on the job's row in the Editing Room (/editing) and the round goes to them.`,
+  };
 }
 
 
@@ -795,7 +847,16 @@ export async function startCutUpload(input: {
     orderBy: { round: "desc" },
     select: { round: true, status: true },
   });
-  if (last?.status === "APPROVED") return { ok: false, message: `${slot.label} is already approved — nothing more to upload.` };
+  // An approved cut takes no more versions — UNLESS the client has since asked
+  // for changes on the video lane (Sep 8 review): that is exactly the case
+  // this rule used to lock out, and the corrected cut then had no way in
+  // but a new file name in 05-Final-Video. The next round rides the same
+  // slot; approval of the new version closes the ask (correctedCutApproved).
+  if (last?.status === "APPROVED") {
+    const { videoLaneRevisionWhere } = await import("@/lib/reviewCuts");
+    const revisionOpen = (await prisma.smartTask.count({ where: videoLaneRevisionWhere(input.projectId) })) > 0;
+    if (!revisionOpen) return { ok: false, message: `${slot.label} is already approved — nothing more to upload.` };
+  }
   // Rounds count in-flight uploads too, so two tabs starting at once don't
   // both become "Version 1" (a failed one leaves a harmless gap).
   const highest = await prisma.reviewSubmission.aggregate({

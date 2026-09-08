@@ -1,7 +1,8 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
-import { projectFolderPaths } from "@/lib/dropboxFolders";
+import { actualFolderPaths } from "@/lib/dropboxFolders";
+import { shootPendingFor } from "@/lib/projectStatus";
 import { dropboxListFolder, DropboxError } from "@/lib/integrations/dropbox";
 
 // ---------------------------------------------------------------------------
@@ -23,18 +24,30 @@ export function finishedPhotos(raw: number, drone: number): number {
 }
 
 /** Count one project's raw folder and persist the result. Returns null when
- *  Dropbox couldn't be read (auth/rate-limit) — never stores a bad zero. */
+ *  Dropbox couldn't be read (auth/rate-limit) — never stores a bad zero — and
+ *  null, untouched, for a shoot that hasn't happened yet. */
 export async function countProjectPhotos(projectId: string): Promise<{ raw: number; drone: number } | null> {
   const p = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { id: true, title: true, addressLine: true, shootDate: true, createdAt: true, client: { select: { name: true } } },
+    select: {
+      id: true, title: true, addressLine: true, shootDate: true, createdAt: true, dropboxFolder: true,
+      client: { select: { name: true } },
+      appointments: { select: { status: true, startAt: true } },
+    },
   });
   if (!p || !p.client) return null;
-  const paths = projectFolderPaths({ title: p.title, addressLine: p.addressLine, shootDate: p.shootDate, createdAt: p.createdAt, client: p.client } as Parameters<typeof projectFolderPaths>[0]);
+  // A shoot that hasn't happened has no raws of its own — whatever sits under
+  // its name is another job's. The Sep 9 1946 Rowan St re-shoot was billed the
+  // Sep 3 job's 84 raws (AutoHDR cost double-counted, Harrison's culling KPI
+  // scored against them) two days before the appointment (Sep 8 2026 audit).
+  if (shootPendingFor(p)) return null;
+  // The job's OWN folder (a re-shoot's dated name, a rescheduled shoot's real
+  // month) — the convention path is where the count went wrong.
+  const paths = actualFolderPaths({ ...p, client: p.client });
   try {
     // Recursive: same counter semantics as the portal + status engine, so the
-  // billed count can't disagree with the over-budget chip (review).
-  const entries = await dropboxListFolder(paths.rawPhotos, { recursive: true });
+    // billed count can't disagree with the over-budget chip (review).
+    const entries = await dropboxListFolder(paths.rawPhotos, { recursive: true });
     const imgs = entries.filter((e) => e.tag === "file" && IMG_RE.test(e.name));
     const drone = imgs.filter((e) => DRONE_RE.test(e.name)).length;
     await prisma.project.update({
@@ -61,7 +74,9 @@ export async function sweepPhotoCounts(opts: { days?: number; max?: number } = {
   const recount = new Date(Date.now() - 10 * 864e5); // re-count jobs shot in the last 10 days
   const projects = await prisma.project.findMany({
     where: {
-      shootDate: { gte: since },
+      // Shoots that have HAPPENED. The old open-ended `gte: since` swept every
+      // upcoming shoot too, which is how a job two days out got a count (Sep 8 2026).
+      shootDate: { gte: since, lte: new Date() },
       OR: [{ photoCountedAt: null }, { shootDate: { gte: recount } }],
     },
     orderBy: { shootDate: "desc" },

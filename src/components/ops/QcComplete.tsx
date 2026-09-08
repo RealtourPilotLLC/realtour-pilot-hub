@@ -6,9 +6,11 @@ import { CheckCircle2, Loader2 } from "lucide-react";
 import { completeQcTask } from "@/app/ops/actions";
 
 // "We should have a way to mark it completed" (Jordan, Sep 1 — 195 Woodhill,
-// whose floor plan was REMOVED from the order for a $50 discount, so the hub
+// whose floor plan was REMOVED from the order for a discount, so the hub
 // waits forever for a deliverable nobody owes). Asks for the reason in page,
 // which lands on the project timeline so the close is explainable later.
+// The QC checks are notes, not a gate (Sep 8): this button never waits on a
+// tick, and its wording must not suggest it does.
 export function QcComplete({ taskId, waitingOn }: { taskId: string; waitingOn: string[] }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -27,7 +29,7 @@ export function QcComplete({ taskId, waitingOn }: { taskId: string; waitingOn: s
     return (
       <button
         onClick={() => { setOpen(true); setErr(null); }}
-        title="Mark this job's QC done — e.g. the outstanding item was removed from the order"
+        title="Close this QC card now. The checks are optional notes, not a gate — e.g. the outstanding item was removed from the order, or everything is out and you're done."
         className="shrink-0 rounded-lg border border-border px-2 py-1 text-[11px] font-medium text-muted hover:bg-success/10 hover:text-success"
       >
         Mark complete
@@ -50,7 +52,7 @@ export function QcComplete({ taskId, waitingOn }: { taskId: string; waitingOn: s
             if (e.key === "Escape") { setOpen(false); setNote(""); }
             if (e.key === "Enter" && !busy) { e.preventDefault(); submit(); }
           }}
-          placeholder="e.g. floor plan removed from the order — client discounted $50"
+          placeholder="e.g. floor plan removed from the order"
           className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs outline-none focus:border-brand"
         />
         <button

@@ -3,6 +3,7 @@
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
+import { scrubMoney } from "@/lib/text";
 
 // ---------------------------------------------------------------------------
 // The task full-view: the COMPLETE original conversation behind a task, pulled
@@ -45,6 +46,11 @@ const LOAD_FAILED: TaskFullView = {
   note: "Couldn't load the conversation — try again.",
 };
 
+// ADMIN = full operations, no money anywhere (Jordan). The card text is already
+// scrubbed for a non-owner; the live conversation behind it was not (audit, Sep 8).
+const forRole = (role: string) => (m: SourceMessage): SourceMessage =>
+  role === "OWNER" ? m : { ...m, body: scrubMoney(m.body), subject: m.subject ? scrubMoney(m.subject) : m.subject };
+
 export async function getTaskConversation(taskId: string): Promise<TaskFullView> {
   // Everything — auth lookup included — stays inside the try: a transient DB
   // blip must resolve to the friendly note, not an unhandled rejection. The
@@ -79,7 +85,7 @@ export async function getTaskConversation(taskId: string): Promise<TaskFullView>
           return {
             ok: true,
             canSeeConversation: true,
-            conversation: msgs.slice(-12).map((m) => ({ ...m, channel: "email" })),
+            conversation: msgs.slice(-12).map((m) => forRole(role)({ ...m, channel: "email" })),
           };
         }
       }
@@ -107,7 +113,7 @@ export async function getTaskConversation(taskId: string): Promise<TaskFullView>
       return {
         ok: true,
         canSeeConversation: true,
-        conversation: rows.map(rowToMessage),
+        conversation: rows.map(rowToMessage).map(forRole(role)),
         note: rows.length === 0 ? "No Slack history captured around this message." : undefined,
       };
     }
@@ -129,7 +135,7 @@ export async function getTaskConversation(taskId: string): Promise<TaskFullView>
       return {
         ok: true,
         canSeeConversation: true,
-        conversation: rows.map(rowToMessage),
+        conversation: rows.map(rowToMessage).map(forRole(role)),
         note: rows.length === 0 ? "No conversation on record for this client yet." : undefined,
       };
     }

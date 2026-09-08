@@ -71,6 +71,19 @@ export default async function CutReviewPage({
   const editorLabel =
     active?.submittedByName ??
     (active?.submittedByKey ? (editorMeta(active.submittedByKey)?.name ?? active.submittedByKey) : "the editor");
+  // Sep 8 (revision lifecycle): when this cut is the editor's answer to a
+  // CLIENT's revision, the verdict does more than approve a cut — it closes
+  // the ask and re-delivers the job (or sends it back to Revisions). Say so
+  // above the player, with the ask itself, so Jordan judges the cut against
+  // what the client wanted. Video lane only — Kyle's photo card is not this.
+  const { videoLaneRevisionWhere } = await import("@/lib/reviewCuts");
+  const clientAsk = active
+    ? await prisma.smartTask.findFirst({
+        where: videoLaneRevisionWhere(w.projectId),
+        orderBy: { createdAt: "desc" },
+        select: { status: true, description: true, summary: true, createdAt: true, assignedKey: true },
+      }).catch(() => null)
+    : null;
 
   return (
     <div>
@@ -148,6 +161,20 @@ export default async function CutReviewPage({
               </div>
               {active.note && (
                 <p className="rounded-lg bg-surface-2 px-3 py-2 text-sm italic text-foreground/80">“{active.note}”</p>
+              )}
+              {clientAsk && active.status !== "APPROVED" && (
+                <div className="rounded-xl border border-warning/40 bg-warning/10 px-3 py-2.5 text-sm">
+                  <p className="font-semibold text-foreground">
+                    {clientAsk.status === "IN_PROGRESS" ? "Corrected cut for a client revision" : "A client revision is open on this job"}
+                    <span className="font-normal text-muted"> · asked {formatDistanceToNow(new Date(clientAsk.createdAt), { addSuffix: true })}</span>
+                  </p>
+                  {(clientAsk.description ?? clientAsk.summary) && (
+                    <p className="mt-1 whitespace-pre-wrap text-foreground/85">{(clientAsk.description ?? clientAsk.summary ?? "").slice(0, 600)}</p>
+                  )}
+                  <p className="mt-1.5 text-xs text-muted">
+                    Approve → the revision closes and the job goes back to where it stands (a delivered job re-delivers, with Kyle&apos;s follow-up). Request changes → the job stays in Revisions and the ask stays open.
+                  </p>
+                </div>
               )}
               <CutReviewPanel projectId={w.projectId} submission={active} notes={w.notes} editorLabel={editorLabel} />
             </>
