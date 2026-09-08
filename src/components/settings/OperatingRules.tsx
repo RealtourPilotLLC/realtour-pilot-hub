@@ -5,7 +5,7 @@ import { Check, Loader2 } from "lucide-react";
 import { saveTurnarounds, saveInternalAlerts, saveTextTemplates, saveReviewRoomRules } from "@/app/settings/actions";
 import type { TurnaroundRules, InternalAlertRules, TextTemplates, ReviewRoomRules } from "@/lib/settings";
 import { cn } from "@/lib/utils";
-import { BUILTIN_TEMPLATE_TEXT } from "@/lib/settings";
+import { BUILTIN_TEMPLATE_TEXT } from "@/lib/textTemplateDefaults";
 
 // Everything that used to be a constant in the code (Jordan, Sep 1: "I want
 // settings for turnaround promises, alert thresholds, anything currently hard
