@@ -716,3 +716,39 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
   revalidatePath(`/edit/${projectId}`);
   return { ok: true, message: "Status updated." };
 }
+
+// ---------------------------------------------------------------------------
+// EDIT THE SCRIPT AFTER THE SHOOT (Jordan, Sep 7: "I should be able to edit the
+// script in the editor brief after it's been submitted by the photographer on
+// the upload portal"). The photographer's on-site confirm writes reelScript
+// once; until now nothing could touch it afterwards except a fresh Studio sync.
+// Owner/admin only — the editor cuts to this text, so changing it is a
+// production decision, not an editing one. The on-site provenance note is kept
+// UNDER the new one so nobody loses "typed by the photographer".
+// ---------------------------------------------------------------------------
+export async function saveReelScript(projectId: string, script: string): Promise<{ ok: boolean; message: string }> {
+  await requireAdmin();
+  const text = script.trim().slice(0, 20_000);
+  if (!text) return { ok: false, message: "The script can't be empty — delete a line, not the whole thing." };
+  const prior = await prisma.project.findUnique({ where: { id: projectId }, select: { reelScript: true, scriptConfirmNote: true, title: true } });
+  if (!prior) return { ok: false, message: "That job is gone." };
+  if ((prior.reelScript ?? "").trim() === text) return { ok: true, message: "No changes." };
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const who = me?.name ?? me?.email ?? "the office";
+  const stamp = `Edited in the hub by ${who}`;
+  const keptNote = (prior.scriptConfirmNote ?? "").replace(/^Edited in the hub by [^\n]*\n?/, "").trim();
+  await prisma.project.update({
+    where: { id: projectId },
+    data: {
+      reelScript: text,
+      reelRecipeUpdatedAt: new Date(),
+      scriptConfirmNote: keptNote ? `${stamp}\n${keptNote}`.slice(0, 2000) : stamp,
+    },
+  });
+  await prisma.activity.create({
+    data: { projectId, type: "NOTE", body: `Script edited in the editor brief by ${who} (${text.length} characters).` },
+  }).catch(() => {});
+  for (const p of [`/edit/${projectId}`, `/projects/${projectId}`, `/upload/${projectId}`, `/shoot/${projectId}`]) revalidatePath(p);
+  return { ok: true, message: "Script saved — the editor sees this version." };
+}

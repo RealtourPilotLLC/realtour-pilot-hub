@@ -1,5 +1,6 @@
 import { Clapperboard, ExternalLink, Music } from "lucide-react";
 import { Markdown } from "@/components/ui/Markdown";
+import { ReelScriptEditor } from "@/components/project/ReelScriptEditor";
 import { etDateTime } from "@/lib/datetime";
 
 // The locked reel recipe (hook · script · song · shot list) from Script
@@ -15,6 +16,8 @@ export function ReelScriptCard({
   shotList,
   updatedAt,
   studioUrl,
+  projectId,
+  canEdit,
 }: {
   hook: string | null;
   script: string | null;
@@ -22,6 +25,10 @@ export function ReelScriptCard({
   shotList: string | null;
   updatedAt: string | null;
   studioUrl?: string | null;
+  /** owner/admin on the editor brief: the script can be corrected after the
+   *  photographer's on-site submit (Jordan, Sep 7). Needs projectId. */
+  projectId?: string;
+  canEdit?: boolean;
 }) {
   if (!hook && !script) return null;
   return (
@@ -53,9 +60,13 @@ export function ReelScriptCard({
         {script && (
           <div>
             <div className="eyebrow mb-1">Script</div>
-            <div className="max-h-80 overflow-y-auto scroll-thin rounded-xl bg-surface-2/50 p-3 leading-relaxed">
-              <Markdown content={script} />
-            </div>
+            {canEdit && projectId ? (
+              <ReelScriptEditor projectId={projectId} script={script} />
+            ) : (
+              <div className="max-h-80 overflow-y-auto scroll-thin rounded-xl bg-surface-2/50 p-3 leading-relaxed">
+                <Markdown content={script} />
+              </div>
+            )}
           </div>
         )}
         {(song || shotList) && (

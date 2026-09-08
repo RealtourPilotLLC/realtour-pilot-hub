@@ -598,6 +598,8 @@ export default async function EditBriefPage({
                 shotList={project.reelShotList}
                 updatedAt={project.reelRecipeUpdatedAt ? project.reelRecipeUpdatedAt.toISOString() : null}
                 studioUrl={isOwnerAdmin ? (project.scriptingUrl ?? project.reelScriptUrl) : null}
+                projectId={project.id}
+                canEdit={isOwnerAdmin}
               />
             ) : (
               <div className="rounded-2xl border border-warning/30 bg-warning/5 px-4 py-3 text-sm text-foreground/85">
