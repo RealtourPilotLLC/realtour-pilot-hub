@@ -14,6 +14,8 @@ import type { BoardJob, BlockerKind, DeliveryBoard } from "@/lib/deliveryBoard";
 
 const BLOCKER: Record<BlockerKind, { cls: string; icon: React.ElementType }> = {
   awaiting_upload: { cls: "bg-warning/15 text-warning border-warning/30", icon: Camera },
+  // Footage in, editor not started (Sep 10) — quieter than "With the editor".
+  ready_to_edit: { cls: "bg-brand/10 text-brand border-brand/20", icon: Video },
   editing: { cls: "bg-brand/15 text-brand border-brand/30", icon: Sparkles },
   qc: { cls: "bg-accent/15 text-accent border-accent/30", icon: Check },
   ready: { cls: "bg-success/15 text-success border-success/30", icon: Truck },

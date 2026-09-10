@@ -334,7 +334,7 @@ const EDITOR: Guide = {
     { when: "Picking up a job", what: "Click the row. That opens the job page: the tracker at the top says where it stands and when it is due." },
     { when: "Before you cut", what: "Read What to make for the style spec and examples, then Edit instructions — the order note, what the photographer wrote at the shoot, the vision and style." },
     { when: "Getting the footage", what: "Media, then RAW footage. Brand assets and the client's logo shelf are in the same card." },
-    { when: "Cutting", what: "Set the queue status to In editing so everyone can see it moving." },
+    { when: "Cutting", what: "Set the queue status to In editing when you start — the job arrives as Ready for editing and nothing moves it to In editing but you. The office can put it back to Ready for editing if plans change." },
     { when: "Done", what: "Send to Review, then Upload version 1 on that cut. Add a Message for the reviewer if there is anything they should know." },
     { when: "If it comes back", what: "Red banner at the top of the job: N notes to fix on this cut. Tap a timestamp to jump the player there, reply in the thread, Mark fixed, then upload the next version." },
     { when: "When it is approved", what: "Nothing to do. The file is copied into the job's Final folder in Dropbox and the cut is marked complete automatically." },
@@ -381,7 +381,7 @@ Each row carries:
 - The last column is the number of messages on the job.
 
 ### The status ladder
-**Waiting** and **Ready for editing** set themselves — the hub watches the raw folder, so a photographer uploading flips the job to ready without anyone telling you. You choose the rest: **In editing**, **Ready for review**, **Revisions**, **Completed**.
+**Waiting** and **Ready for editing** set themselves — the hub watches the raw folder, so a photographer uploading flips the job to ready without anyone telling you. A job never moves to **In editing** on its own: you set it when you start, and it stays there until you move it on — the hub's hourly check does not undo it. You choose the rest too: **Ready for review**, **Revisions**, **Completed**. The office (Jordan or Kyle) can put a job that is In editing back to **Ready for editing** — that option is greyed out on your queue.
 
 Click anywhere on a row to open the job.`,
     },

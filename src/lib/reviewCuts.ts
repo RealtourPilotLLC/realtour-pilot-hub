@@ -926,8 +926,10 @@ export type ProjectVideoState = {
   waiting: number;   // cuts awaiting a verdict
   revising: number;  // cuts bounced back to the editor
   uploaded: number;  // distinct cuts with any round
-  /** one-word stage for a status line */
-  stage: "none" | "not_started" | "editing" | "waiting_review" | "in_revisions" | "approved" | "delivered";
+  /** one-word stage for a status line. ready_to_edit (Sep 10): the editor
+   *  has the card but nobody has said "In editing" yet — the raws-landed
+   *  state, which used to read as editing on every surface. */
+  stage: "none" | "not_started" | "ready_to_edit" | "editing" | "waiting_review" | "in_revisions" | "approved" | "delivered";
   /** short human line, e.g. "v2 waiting on review · 1 of 4 cuts done" */
   detail: string;
   cuts: VideoCutState[];
@@ -1050,7 +1052,14 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
       // Aryeo: Video").
       else if (videoLive) stage = "delivered";
       else if (owed > 0 && approved >= owed) stage = "approved";
-      else if (cuts.length > 0 || editByProject.has(p.id)) stage = "editing";
+      // "In editing" only when a human said so (the editor's click on the
+      // queue pill writes EDITING) or a cut has actually been uploaded. An
+      // open edit card on its own is footage waiting for the editor — Kyle's
+      // QC card read "Video: In editing — John Mark" for a job nobody had
+      // opened (Jordan, Sep 10: "the video projects should not automatically
+      // be in editing, it should say ready for editing").
+      else if (p.status === "EDITING" || cuts.length > 0) stage = "editing";
+      else if (editByProject.has(p.id)) stage = "ready_to_edit";
       else stage = "not_started";
     }
     const done = owed > 1 ? ` · ${approved} of ${owed} cuts done` : "";
@@ -1063,6 +1072,7 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
       stage === "waiting_review" ? `${ver(first("PENDING")!)}waiting on review${done}` :
       stage === "approved" ? `Approved${owed > 1 ? ` — all ${owed} cuts` : ""}` :
       stage === "editing" ? `In editing${editByProject.get(p.id) ? ` — ${prettyKey(editByProject.get(p.id) as string)}` : ""}${done}` :
+      stage === "ready_to_edit" ? `Ready for editing${editByProject.get(p.id) ? ` — ${prettyKey(editByProject.get(p.id) as string)}` : ""}${done}` :
       "Not started — no cut uploaded yet";
     out.set(p.id, { projectId: p.id, owed, approved, waiting, revising, uploaded: cuts.length, stage, detail, cuts });
   }

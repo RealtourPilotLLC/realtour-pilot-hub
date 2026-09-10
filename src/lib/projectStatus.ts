@@ -576,7 +576,8 @@ async function pMap<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>
 //   opts.full   → every Aryeo project (one-time backfill; run locally)
 //   default     → active + recently-changed only (serverless-safe, capped)
 // Never touches ON_HOLD (manual) or CANCELLED projects, and won't demote an
-// EDITING project back to SHOT (EDITING is a manual "editor working" superset).
+// EDITING project back to SHOT — nor move it to REVIEW while the video is still
+// owed (EDITING is the editor's own "I've started", Sep 10; see the loop).
 // ---------------------------------------------------------------------------
 export async function syncProjectStatuses(
   opts: { full?: boolean; limit?: number; projectId?: string } = {},
@@ -661,6 +662,29 @@ export async function syncProjectStatuses(
     return { p, sig, ...computeStatus(sig) };
   });
 
+  // A job a human put in front of an editor by hand — the manual "Add a job"
+  // on /editing pins its open edit card (assignedManually) — may have no media
+  // evidence at all: old footage, a video added after the booking, a null or
+  // postponed shootDate. Since Sep 10 that add lands on SHOT (Ready for
+  // editing), not EDITING, so the sticky-EDITING rule below no longer shields
+  // it; without this the hourly recompute read "no raws, no past shoot" as
+  // BOOKED/SCHEDULED and the job fell out of the Editing Room an hour after
+  // the editor was belled "added to your queue" (Sep 10 review). It arms the
+  // same Scheduled/Booked guard as shootHappened.
+  const manualQueued = new Set(
+    (
+      await prisma.smartTask.findMany({
+        where: {
+          projectId: { in: projects.map((p) => p.id) },
+          taskType: "edit_video",
+          assignedManually: true,
+          status: { notIn: ["COMPLETED", "CANCELLED"] },
+        },
+        select: { projectId: true },
+      })
+    ).flatMap((t) => (t.projectId ? [t.projectId] : [])),
+  );
+
   for (const { p, sig, status, evidence } of results) {
     if (sig.dropboxUnavailable && useDropbox && sig.dropbox?.stale !== undefined) {
       dropboxUnreadable++;
@@ -692,11 +716,25 @@ export async function syncProjectStatuses(
       continue;
     }
     // Don't demote a manually-advanced EDITING project back to SHOT — and a
-    // manually-QUEUED job (owner's "Add a job" on /editing) may have no media
-    // evidence at all, so block the Scheduled/Booked recompute too. "In
-    // editing" is a human signal; only a human may undo it (pipeline board).
+    // job may have no media evidence at all, so block the Scheduled/Booked
+    // recompute too. "In editing" is a human signal (the editor's own click on
+    // the Editing Room queue pill, Sep 10); only a human may undo it — the
+    // office's "Ready for editing" on that same pill, or the pipeline board.
+    // (The manual "Add a job" on /editing lands on SHOT now, not EDITING; a
+    // past-shoot or hand-queued SHOT job is kept off Scheduled/Booked by the
+    // guard below.)
     let final = status;
     if (p.status === "EDITING" && ["SHOT", "SCHEDULED", "BOOKED"].includes(status)) final = "EDITING";
+    // Nor to REVIEW while the video is still owed. "Photos delivered, video in
+    // production" recomputes as REVIEW (the partial-delivery branch), and that
+    // is the common shape of an in-flight video job — every "In editing" click
+    // on record was undone by the next sweep this way (617 Westbourne Rd and
+    // 99 W Bridge St on Sep 9, within the hour), which turned every surface
+    // back to "Ready for editing" while the editor's card sat IN_PROGRESS
+    // (Sep 10 review). The photos going out is not the footage leaving the
+    // editor's desk: only the VIDEO landing (live on Aryeo or in the Final
+    // folder, so "Video" is no longer missing) or a full delivery moves it on.
+    if (p.status === "EDITING" && status === "REVIEW" && evidence.missing.includes("Video")) final = "EDITING";
     // Same for REVIEW: an editor's "send to review" is a human signal the cut
     // exists (in the Review Room) that the evidence engine can't
     // see — recomputing raws-in/no-Aryeo-media as SHOT must not silently undo
@@ -712,7 +750,7 @@ export async function syncProjectStatuses(
     if (
       ["SHOT", "EDITING", "REVIEW", "REVISION"].includes(p.status) &&
       (final === "SCHEDULED" || final === "BOOKED") &&
-      shootHappened
+      (shootHappened || manualQueued.has(p.id))
     ) {
       final = p.status;
     }
@@ -727,8 +765,17 @@ export async function syncProjectStatuses(
     // raw count blows past the home's photo budget × the overage factor, stamp
     // the evidence (so the project page shows WHY) and mint ONE cull task + text
     // the photographer below. SHOT/EDITING only — never nag a delivered job.
+    // Nor one whose photos are already out: an EDITING job now survives the
+    // photos-delivered recompute (Sep 10, above), and thinning raws after the
+    // photos went out buys nothing — the text would only puzzle the photographer.
     let cullOver = false;
-    if (["SHOT", "EDITING"].includes(final) && sig.dropbox && !sig.dropbox.stale && sig.dropbox.rawPhotos > 0) {
+    if (
+      ["SHOT", "EDITING"].includes(final) &&
+      !evidence.present.includes("Photos") &&
+      sig.dropbox &&
+      !sig.dropbox.stale &&
+      sig.dropbox.rawPhotos > 0
+    ) {
       const photoTarget = photoTargetFor(p);
       const rawPhotos = sig.dropbox.rawPhotos;
       if (rawPhotos > photoTarget * RAW_OVERAGE_FACTOR) {

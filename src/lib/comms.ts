@@ -580,9 +580,13 @@ export async function raiseRevision(opts: {
 // return paths already read it (review/actions.ts + reviewCuts.ts): every path
 // that writes DELIVERED stamps it, so no date means no delivery. A
 // never-delivered job goes back to where its work actually stands — Review when
-// a cut is sitting in the Review Room awaiting (or holding) a verdict, In
-// Editing when the redo is still owed — never forward to Delivered.
-type RevisionLanding = "DELIVERED" | "REVIEW" | "EDITING";
+// a cut is sitting in the Review Room awaiting (or holding) a verdict, Ready
+// for editing (SHOT) when the redo is still owed — never forward to Delivered.
+// Sep 10 (Jordan: "the video projects should not automatically be in
+// editing"): this used to land on EDITING; now only the editor's own click on
+// the queue pill writes that, so the redo waits as Ready for editing until
+// they pick it up.
+type RevisionLanding = "DELIVERED" | "REVIEW" | "SHOT";
 
 async function revisionLanding(
   projectId: string,
@@ -596,12 +600,12 @@ async function revisionLanding(
   const inReviewRoom = await prisma.reviewSubmission.count({
     where: { projectId, status: { in: ["PENDING", "APPROVED"] } },
   });
-  return inReviewRoom > 0 ? "REVIEW" : "EDITING";
+  return inReviewRoom > 0 ? "REVIEW" : "SHOT";
 }
 
 // Clear a revision once it's been handled: drop the flag, close the task, and
 // return the job to whatever it genuinely was — Delivered only if it really had
-// been delivered, otherwise back to Review / In Editing (see revisionLanding).
+// been delivered, otherwise back to Review / Ready for editing (see revisionLanding).
 // A REVIEW job that merely carried a revision note keeps its stage.
 export async function resolveRevision(projectId: string): Promise<void> {
   const project = await prisma.project.findUnique({

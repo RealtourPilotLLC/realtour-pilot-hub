@@ -263,7 +263,11 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
         // (Janice's "remove the closets photos" did exactly that). A stale
         // zero (Dropbox couldn't be read this pass) proves nothing, so the row
         // stays where it is rather than guessing.
-        effectiveStatus = finalIn > 0 || videoLive ? "REVIEW" : dropboxStale ? p.status : "EDITING";
+        // Nothing handed in reads "Ready for editing", not "In editing" (Sep
+        // 10, Jordan: nothing is in editing until the editor says so on this
+        // pill — and the status here is REVIEW/REVISION, so nobody has). Same
+        // words Kyle's QC card gives these jobs (reviewCuts.videoStatesFor).
+        effectiveStatus = finalIn > 0 || videoLive ? "REVIEW" : dropboxStale ? p.status : "SHOT";
       }
     }
     return {

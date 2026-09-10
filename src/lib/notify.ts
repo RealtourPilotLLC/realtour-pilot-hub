@@ -160,6 +160,7 @@ const BELL_RULES: Record<string, BellRule> = {
   cull: "all", // has to happen before the edit starts
   task_assigned: "all", // someone put a job on YOUR name
   edit_assigned: "all", // …the editor version of the same
+  edit_started: "all", // the editor set the queue to In editing (owner/admin hear it; Sep 10)
   edit_finished: "all",
   shoot_add_on: "all", // sold in the field; it doesn't get invoiced unless someone sees it
   portal_suggestion: "all", // a client asked for a script change

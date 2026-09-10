@@ -164,9 +164,15 @@ export async function setEditVideoEditor(projectId: string, editorKey: string): 
 // fed automatically (Aryeo order → raws land → ensureEditorHandoff), but some
 // jobs never trip it: video added after booking, old footage without a fresh
 // shoot, non-Aryeo work. This is the human override: pick a project, pick the
-// editor, and the SAME machinery runs (video deliverable → EDITING status →
-// edit_video task → editor bell). The status sweep never demotes a manual
-// EDITING (guard in projectStatus.ts), so the add sticks.
+// editor, and the SAME machinery runs (video deliverable → SHOT status, which
+// the ladder reads as "Ready for editing" → edit_video task → editor bell).
+// Sep 10 (Jordan: "the video projects should not automatically be in editing,
+// it should say ready for editing and the editor should be able to change the
+// status to in editing"): the add used to land the job straight on In editing;
+// now nothing does — only the editor's own click on the queue pill
+// (setQueueStatus "In editing") writes EDITING. The sweep's anti-demotion
+// guard (shootHappened, projectStatus.ts) keeps a past-shoot SHOT job from
+// sliding back to Scheduled/Booked.
 // ---------------------------------------------------------------------------
 
 const QUEUE_STATUSES = ["SHOT", "EDITING", "REVIEW", "REVISION"];
@@ -248,9 +254,10 @@ export async function searchQueueCandidates(q: string): Promise<QueueCandidate[]
 
 // Put a project in the editor queue for the CHOSEN editor. Two paths, so the
 // hourly engines never fight the add (the adversarial review proved they would):
-//   · FRESH job (no prior cut anywhere) → EDITING + an edit_video task. The
-//     assignedManually flag keeps the editor choice and blocks the evidence
-//     auto-close; the widened sweep guard keeps the EDITING stage.
+//   · FRESH job (no prior cut anywhere) → SHOT ("Ready for editing") + an
+//     edit_video task. The assignedManually flag keeps the editor choice and
+//     blocks the evidence auto-close. The editor moves it to In editing
+//     themselves (Sep 10).
 //   · PRIOR-CUT job (delivered / a past Review-Room round / a final video on
 //     file) → the REVISION machinery instead: revisionRequestedAt pins the
 //     stage (computeStatus honours revisionOpen), and revision tasks are never
@@ -406,11 +413,13 @@ export async function addToEditorQueue(
     return done(`${street} is queued as a new cut — ${editorName} has it.`);
   }
 
-  // ---- FRESH path: EDITING stage + the standard edit_video work item. ----
+  // ---- FRESH path: SHOT ("Ready for editing") + the standard edit_video work item. ----
+  // Sep 10 (Jordan): a job never lands on In editing by itself — the editor
+  // says so on the queue pill when they actually start.
   if (!QUEUE_STATUSES.includes(project.status)) {
-    await prisma.project.update({ where: { id: projectId }, data: { status: "EDITING" } });
+    await prisma.project.update({ where: { id: projectId }, data: { status: "SHOT" } });
     await prisma.activity.create({
-      data: { projectId, type: "STATUS_CHANGE", body: `Moved to Editing — added to the Editing Room.` },
+      data: { projectId, type: "STATUS_CHANGE", body: `Added to the Editing Room — ready for editing.` },
     });
   }
 
@@ -510,13 +519,18 @@ export async function saveEditSpec(
 }
 
 
-// The Slack tracker's status click. "Waiting" and "Ready for editing" are NOT
-// settable — evidence flips them (that is the fix for "Kyle forgets to update
-// the tracker"). The middle of the ladder is human: the editor clicks In
-// editing when they start and Ready for review when done, exactly like Slack.
-// Owner/admin may set any selectable status; an EDITOR only on a job whose
-// open edit task is theirs (requireTaskAccess does that matching).
-const QUEUE_STATUS: Record<string, "EDITING" | "REVIEW" | "REVISION" | "DELIVERED"> = {
+// The Slack tracker's status click. "Waiting" is NOT settable — evidence flips
+// it (that is the fix for "Kyle forgets to update the tracker"), and the raw
+// folder flips Waiting → Ready for editing the same way. The middle of the
+// ladder is human: the editor clicks In editing when they start and Ready for
+// review when done, exactly like Slack. Owner/admin may set any selectable
+// status; an EDITOR only on a job whose open edit task is theirs
+// (requireTaskAccess does that matching).
+// Sep 10 (Jordan: "I should be able to put them back to ready for editing"):
+// "Ready for editing" IS settable now — by the office only (OWNER/ADMIN). It
+// writes SHOT, which is what the ladder has always read as Ready for editing.
+const QUEUE_STATUS: Record<string, "SHOT" | "EDITING" | "REVIEW" | "REVISION" | "DELIVERED"> = {
+  "Ready for editing": "SHOT",
   "In editing": "EDITING",
   "Ready for review": "REVIEW",
   Revisions: "REVISION",
@@ -526,16 +540,36 @@ const QUEUE_STATUS: Record<string, "EDITING" | "REVIEW" | "REVISION" | "DELIVERE
 export async function setQueueStatus(projectId: string, label: string): Promise<{ ok: boolean; message: string }> {
   const status = QUEUE_STATUS[label];
   if (!status) return { ok: false, message: "That status is set automatically from upload/delivery evidence." };
+  // The job's edit card comes first, the revision lane second: the card is
+  // what the pill moves below, and its assignee is "the editor" the timeline
+  // and the bell name — a photo-lane revision (Kyle's "remove the closets"
+  // ask) must never be the row that decides who started editing (Sep 10
+  // review). The access rule is unchanged: the assigned editor via
+  // requireTaskAccess, or admin when nothing is open.
+  let editCard: { id: string; assignedKey: string | null; status: string } | null = null;
   try {
-    const task = await prisma.smartTask.findFirst({
+    const open = await prisma.smartTask.findMany({
       where: { projectId, taskType: { in: ["edit_video", "revision"] }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
-      select: { id: true },
+      select: { id: true, assignedKey: true, status: true, taskType: true },
     });
+    editCard = open.find((t) => t.taskType === "edit_video") ?? null;
+    const gate = editCard ?? open[0] ?? null;
     const { requireTaskAccess, requireAdmin: reqAdmin } = await import("@/lib/auth/guards");
-    if (task) await requireTaskAccess(task.id);
+    if (gate) await requireTaskAccess(gate.id);
     else await reqAdmin();
   } catch (e) {
     return { ok: false, message: (e as Error).message };
+  }
+  // Putting a job BACK is the office's call, not the editor's (Jordan, Sep 10:
+  // "I should be able to put them back to ready for editing"). Sign-in and
+  // view-as were already checked above, so the only refusal left here is the
+  // role — say it in the editor's words instead of the guard's generic line.
+  if (status === "SHOT") {
+    try {
+      await requireRole(["OWNER", "ADMIN"]);
+    } catch {
+      return { ok: false, message: "Only the office can put a job back to Ready for editing." };
+    }
   }
   // ONE read for everything below: the delivery gate, the once-only delivery
   // stamp, and the Revisions branch (which used to fire its own second query).
@@ -543,6 +577,7 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
     where: { id: projectId },
     select: {
       title: true,
+      status: true, // In editing / Ready for editing are idempotent — a re-click must not re-log or re-ring
       clientId: true,
       deliveredAt: true,
       statusEvidence: true,
@@ -554,6 +589,14 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
     },
   });
   if (!proj) return { ok: false, message: "That job no longer exists." };
+  // "Ready for editing" is the undo of an "In editing", nothing more. On a
+  // job with a revision open the SHOT write would be flipped straight back to
+  // REVISION by the next recompute (the open ask keeps it there), leaving only
+  // a stray "Put back…" line on the timeline — so it is refused here, the
+  // same way the pill greys it out on every row but In editing (Sep 10 review).
+  if (status === "SHOT" && proj.status === "REVISION") {
+    return { ok: false, message: "A revision is open on this job — it can't be put back to Ready for editing until the ask is answered." };
+  }
 
   // "Completed" is a claim about the CLIENT, not about the editor's evening.
   // Jordan's rule: delivered means everything ordered has landed, so a job
@@ -665,6 +708,63 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
   await prisma.activity.create({
     data: { projectId, type: "SYSTEM", body: `Queue status set: ${label}` },
   }).catch(() => {});
+
+  // THE EDITOR STARTS IT / THE OFFICE PUTS IT BACK (Jordan, Sep 10). The job's
+  // edit_video card follows the pill — IN_PROGRESS while the editor is in the
+  // edit, back to OPEN when the office returns the job to Ready for editing —
+  // so /tasks and the QC card agree with the queue. Everything else on the job
+  // (the editor assignment, cuts in the Review Room, revision asks) is left
+  // exactly as it was. The card move itself is idempotent; the timeline line
+  // and the bell fire only when the job was NOT already started — judged by
+  // the card as well as the status, because the status is not the only thing
+  // that can move (the pipeline board, an engine) while the card keeps the
+  // truth: a re-click, or an "In editing" on a job whose card already sits
+  // IN_PROGRESS, must never re-ring the office for the same start (Sep 10
+  // review). The revision lane is deliberately untouched: a revision task's
+  // own IN_PROGRESS means "corrected cut submitted — waiting on review".
+  if (status === "EDITING" || status === "SHOT") {
+    const started = editCard?.status === "IN_PROGRESS";
+    const { getCurrentUser } = await import("@/lib/auth/user");
+    const { editorMeta } = await import("@/lib/editors");
+    const me = await getCurrentUser().catch(() => null);
+    const actor = me?.name ?? me?.email ?? "The office";
+    const street = (proj.title || "this job").split(",")[0].trim();
+    if (status === "EDITING") {
+      await prisma.smartTask.updateMany({
+        where: { projectId, taskType: "edit_video", status: "OPEN" },
+        data: { status: "IN_PROGRESS" },
+      }).catch(() => {});
+      if (proj.status !== "EDITING" && !started) {
+        // "<Name> started editing." names the EDITOR: the click is usually
+        // theirs, but when the office sets it on their behalf the edit card's
+        // assignee is the person who actually started, not the one who typed it.
+        const editorName = me?.role === "EDITOR" ? actor : editorMeta(editCard?.assignedKey)?.name ?? actor;
+        await prisma.activity.create({
+          data: { projectId, type: "SYSTEM", body: `${editorName} started editing.` },
+        }).catch(() => {});
+        try {
+          const { notifyInApp } = await import("@/lib/notify");
+          await notifyInApp({
+            kind: "edit_started",
+            title: `${editorName} started editing ${street}`,
+            href: `/edit/${projectId}`,
+            targets: [{ roles: ["OWNER", "ADMIN"] }],
+            // No dedupeKey on purpose: a job put back and started again is news again.
+          });
+        } catch { /* bell is best-effort */ }
+      }
+    } else {
+      await prisma.smartTask.updateMany({
+        where: { projectId, taskType: "edit_video", status: "IN_PROGRESS" },
+        data: { status: "OPEN" },
+      }).catch(() => {});
+      if (proj.status !== "SHOT" || started) {
+        await prisma.activity.create({
+          data: { projectId, type: "SYSTEM", body: `Put back to Ready for editing by ${actor}.` },
+        }).catch(() => {});
+      }
+    }
+  }
 
   // "Completed" is the editor's explicit "the batch is done" — the human
   // override, and it stays. But it has to CLOSE THE JOB the way the automatic

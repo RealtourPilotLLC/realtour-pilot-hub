@@ -38,6 +38,10 @@ export type RoundRow = {
 // still says REVISION (the redo was just submitted); an open VIDEO-lane
 // revision beats "editing". Callers must pass only video-lane revision state —
 // a photo retouch flipping this tracker was a confirmed review bug.
+// The editing dot keeps its key either way; only the words change (Sep 10,
+// Jordan): "In the edit" is said only once the editor has set the queue to
+// In editing (status EDITING) — until then the footage is "Ready for editing",
+// whether it has landed or is still on the way.
 export function deriveEditStage(input: {
   projectStatus: string;
   revisionOpen: boolean;
@@ -52,9 +56,10 @@ export function deriveEditStage(input: {
   if (latestRoundStatus === "PENDING") return { stage: "review", label: "Ready for review — with Jordan" };
   if (revisionOpen || latestRoundStatus === "CHANGES_REQUESTED")
     return { stage: "revision", label: "Changes requested — back with the editor" };
-  if (rawsLanded) return { stage: "editing", label: "In the edit — footage is in" };
+  const started = projectStatus === "EDITING";
+  if (rawsLanded) return { stage: "editing", label: started ? "In the edit — footage is in" : "Ready for editing — footage is in" };
   if (["SHOT", "EDITING", "REVIEW"].includes(projectStatus))
-    return { stage: "editing", label: "In the edit — footage on the way" };
+    return { stage: "editing", label: started ? "In the edit — footage on the way" : "Ready for editing — footage on the way" };
   return { stage: "booked", label: "Edit booked — waiting on footage" };
 }
 

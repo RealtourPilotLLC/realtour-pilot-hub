@@ -29,6 +29,15 @@ import { setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
 // revisions live on the job's own chat instead of channel dumps and
 // screenshots.
 //
+// The ladder (Jordan, Sep 10): Waiting and Ready for editing set themselves
+// from the raw folder; nothing lands on In editing by itself — the EDITOR sets
+// it when they start; the OFFICE (owner/admin) can put a job that is In
+// editing back to Ready for editing. So "Ready for editing" is a real menu
+// choice on the owner's queue — on an In editing row only, because it is an
+// undo and nothing else (a Revisions row has a client ask open that the next
+// recompute would honour anyway) — and greyed out on the editor's; the server
+// (setQueueStatus) is the guard that actually enforces both.
+//
 // Rows are DOORS, not drawers (Jordan, Aug 27): clicking a row opens the edit
 // page — the full brief, customer + shoot notes included, lives on /edit/<id>.
 // The old expand-in-place panel and the two note columns are gone; the row
@@ -73,10 +82,13 @@ const TIER = {
 } as const;
 
 // The Slack status ladder, colors matched to how a Slack List reads.
-const STATUSES: Record<string, { color: string; selectable: boolean }> = {
+// selectable: true = anyone with the pill; "office" = owner/admin only, and
+// only as the undo of an In editing row (the editor sees it greyed with the
+// reason); false = evidence sets it.
+const STATUSES: Record<string, { color: string; selectable: boolean | "office" }> = {
   Waiting: { color: "#94a3b8", selectable: false }, // photographer hasn't uploaded — evidence flips this
-  "Ready for editing": { color: "#38bdf8", selectable: false }, // raws detected — evidence flips this
-  "In editing": { color: "#a78bfa", selectable: true },
+  "Ready for editing": { color: "#38bdf8", selectable: "office" }, // raws flip it on; the office can put an In editing job back here (Sep 10)
+  "In editing": { color: "#a78bfa", selectable: true }, // the editor's own "I've started" (Sep 10)
   "Ready for review": { color: "#f59e0b", selectable: true },
   Revisions: { color: "#f87171", selectable: true },
   Completed: { color: "#34d399", selectable: true },
@@ -104,7 +116,9 @@ const fmtDay = (iso: string | null) =>
 // viewport bottom, since it renders position:fixed (see below).
 const MENU_H = 212;
 
-function StatusPill({ row }: { row: QueueRow }) {
+// office: the viewer is owner/admin (not the editor's scoped view) — unlocks
+// the "Ready for editing" option. The server rule is the real guard.
+function StatusPill({ row, office }: { row: QueueRow; office: boolean }) {
   // The menu is position:fixed, NOT absolute: the table wrapper is an
   // overflow-x-auto scroll container, which clips absolutely-positioned
   // children — on the bottom row (and short queues are all bottom rows) the
@@ -119,6 +133,18 @@ function StatusPill({ row }: { row: QueueRow }) {
   const [note, setNote] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const meta = STATUSES[status] ?? { color: "#94a3b8", selectable: false };
+  // "Ready for editing" is the office's undo of an "In editing" — Jordan (Sep
+  // 10): "put them back" — so it lights up on an In editing row only. On a
+  // Revisions row it would not be an undo: the client's ask keeps the job in
+  // Revisions on the next recompute and the click would leave nothing but a
+  // stray "Put back…" line on the timeline (Sep 10 review).
+  const canPick = (s: boolean | "office") => s === true || (s === "office" && office && status === "In editing");
+  const whyNot = (s: boolean | "office") =>
+    s !== "office"
+      ? "Set automatically from upload/delivery evidence"
+      : office
+        ? "Only a job In editing can be put back to Ready for editing"
+        : "Only the office can put a job back to Ready for editing";
 
   const toggle = (e: React.MouseEvent<HTMLButtonElement>) => {
     if (menu) return setMenu(null);
@@ -171,12 +197,12 @@ function StatusPill({ row }: { row: QueueRow }) {
             {Object.entries(STATUSES).map(([name, m]) => (
               <button
                 key={name}
-                disabled={!m.selectable}
+                disabled={!canPick(m.selectable)}
                 onClick={() => pick(name)}
-                title={m.selectable ? undefined : "Set automatically from upload/delivery evidence"}
+                title={canPick(m.selectable) ? undefined : whyNot(m.selectable)}
                 className={cn(
                   "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs font-medium",
-                  m.selectable ? "hover:bg-surface-2" : "cursor-not-allowed opacity-40",
+                  canPick(m.selectable) ? "hover:bg-surface-2" : "cursor-not-allowed opacity-40",
                 )}
               >
                 <span className="size-2 rounded-full" style={{ backgroundColor: m.color }} />
@@ -443,7 +469,9 @@ export function SimpleQueue({
                         // key = server truth: when a revalidation streams a
                         // status this component didn't set (evidence flip,
                         // another admin), remount so the pill can't go stale.
-                        <StatusPill key={r.status} row={r} />
+                        // hideEditor is the editor's scoped view — everyone
+                        // else looking at this table is the office.
+                        <StatusPill key={r.status} row={r} office={!hideEditor} />
                       )}
                     </td>
                     <td className={cn("whitespace-nowrap px-3 py-2.5 text-xs font-medium", r.late ? "text-danger" : "")}>

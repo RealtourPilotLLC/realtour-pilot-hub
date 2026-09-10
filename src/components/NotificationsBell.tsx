@@ -49,6 +49,7 @@ const KIND_ICON: Record<string, LucideIcon> = {
   appointment_change: CalendarClock,
   new_lead: UserPlus,
   raws_landed: Film,
+  edit_started: Clapperboard,
   edit_finished: Clapperboard,
   edit_assigned: Clapperboard,
   shoot_completed: Camera,

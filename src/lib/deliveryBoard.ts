@@ -25,7 +25,7 @@ import { isMonthlyContentJob } from "@/lib/pipeline";
 
 export type BlockerKind =
   | "on_hold" | "revision" | "not_shot" | "awaiting_upload"
-  | "editing" | "qc" | "ready" | "delivered";
+  | "ready_to_edit" | "editing" | "qc" | "ready" | "delivered";
 
 /** dueAt is null while the job has no shoot date — no clock has started. */
 export type BoardItem = { title: string; quantity: number; tierLabel: string; dueAt: Date | null };
@@ -126,7 +126,11 @@ function blockerFor(
   if (deliverables.length > 0 && deliverables.every((d) => d.status === "DONE")) {
     return { kind: "ready", label: "Ready to deliver" };
   }
-  return { kind: "editing", label: "With the editor" };
+  // "With the editor" only once the editor has said so (status EDITING — the
+  // queue pill). Files in on a SHOT job are footage waiting to be picked up,
+  // and the board used to call that editing (Jordan, Sep 10).
+  if (p.status === "EDITING") return { kind: "editing", label: "With the editor" };
+  return { kind: "ready_to_edit", label: "Ready for editing" };
 }
 
 /** One query for the whole board — this screen is open all day and must not fan out. */
