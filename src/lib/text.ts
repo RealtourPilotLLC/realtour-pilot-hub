@@ -101,9 +101,15 @@ export function stripQuotedReply(body: string): string {
  */
 export function stripMoneySentences(s: string): string {
   const MONEY = /[$€£]\s?\d|\b(invoice|price|pricing|charge[ds]?|refund|discount|billing|payment|paid|owe[ds]?)\b/i;
-  const parts = s.split(/(?<=[.!?\n])\s+/);
-  const kept = parts.filter((p) => !MONEY.test(p));
-  return kept.join(" ").replace(/\s{2,}/g, " ").trim();
+  // Line by line, so a multi-line note keeps its headings, bullets and blank
+  // lines — joining every sentence with a space turned the editor's copy of
+  // a 3,000-character brief into one blob (Jordan, Sep 10: 632 Greenridge).
+  return s
+    .split("\n")
+    .map((line) => line.split(/(?<=[.!?])\s+/).filter((p) => !MONEY.test(p)).join(" ").replace(/[ \t]{2,}/g, " ").trimEnd())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 /**

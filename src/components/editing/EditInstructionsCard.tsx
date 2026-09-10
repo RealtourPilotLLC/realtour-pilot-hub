@@ -257,7 +257,7 @@ export function EditInstructionsCard({
               )}
               {brief.scriptConfirmNote && (
                 <p className="text-[13px] text-muted">
-                  Script: <span className="text-foreground/85">{brief.scriptConfirmNote}</span> — the confirmed text is in the Script card below.
+                  Script: <span className="text-foreground/85">{brief.scriptConfirmNote.split("\n").map((s) => s.trim()).filter(Boolean).join(" · ")}</span> — the confirmed text is in the Script card below.
                 </p>
               )}
             </div>

@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { Loader2, Pencil } from "lucide-react";
 import { saveJobNotes } from "@/app/editing/actions";
+import { Markdown } from "@/components/ui/Markdown";
 
 // An editable job note. Reads as plain text until you click it, so the brief
 // stays a briefing and only becomes a form when someone means to change
@@ -39,9 +40,14 @@ export function JobNoteEditor({
     return (
       <div className="group">
         {label && saved && <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-2">{label}</div>}
-        <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/85">
-          {saved || <span className="text-muted-2">{empty}</span>}
-        </p>
+        {/* Read mode renders the note as light markdown — people write these
+            with **bold** section names, bullets and a pasted example link, and
+            the raw text read as one blob (Jordan, Sep 10: 632 Greenridge). */}
+        {saved ? (
+          <Markdown content={saved} className="text-sm leading-relaxed text-foreground/85" />
+        ) : (
+          <p className="text-sm leading-relaxed text-muted-2">{empty}</p>
+        )}
         {canEdit && (
           <button
             onClick={() => { setText(saved ?? ""); setOpen(true); }}

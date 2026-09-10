@@ -3,13 +3,31 @@ import React from "react";
 // Tiny, dependency-free markdown renderer for our own controlled content
 // (training summaries + SOPs): #/## headings, -/*/• bullets, 1. numbered lists,
 // **bold**, and paragraphs. Not a general-purpose parser — just what we author.
+// A bare URL becomes a link (the editor brief carries an example reel:
+// "Example: https://media.realtourpilot.com/videos/…" — Jordan, Sep 10). A
+// trailing period/comma stays outside the link.
+function linkify(text: string): React.ReactNode {
+  const bits = text.split(/(https?:\/\/[^\s<>()]+)/g);
+  if (bits.length === 1) return text;
+  return bits.map((b, i) => {
+    if (!/^https?:\/\/[^\s<>()]+$/.test(b)) return <React.Fragment key={i}>{b}</React.Fragment>;
+    const m = b.match(/^(.*?)([.,;:!?]*)$/) as RegExpMatchArray;
+    return (
+      <React.Fragment key={i}>
+        <a href={m[1]} target="_blank" rel="noreferrer" className="break-all text-brand underline decoration-brand/40 underline-offset-2 hover:decoration-brand">{m[1]}</a>
+        {m[2]}
+      </React.Fragment>
+    );
+  });
+}
+
 function inline(text: string): React.ReactNode {
   // **bold** (matched first) and *italic*.
   const parts = text.split(/(\*\*[^*]+\*\*|\*[^*\n]+\*)/g);
   return parts.map((p, i) => {
-    if (/^\*\*[^*]+\*\*$/.test(p)) return <strong key={i} className="font-semibold text-foreground">{p.slice(2, -2)}</strong>;
-    if (/^\*[^*]+\*$/.test(p)) return <em key={i}>{p.slice(1, -1)}</em>;
-    return <React.Fragment key={i}>{p}</React.Fragment>;
+    if (/^\*\*[^*]+\*\*$/.test(p)) return <strong key={i} className="font-semibold text-foreground">{linkify(p.slice(2, -2))}</strong>;
+    if (/^\*[^*]+\*$/.test(p)) return <em key={i}>{linkify(p.slice(1, -1))}</em>;
+    return <React.Fragment key={i}>{linkify(p)}</React.Fragment>;
   });
 }
 
@@ -66,6 +84,15 @@ export function Markdown({ content, className }: { content: string; className?: 
         </div>,
       );
       continue;
+    }
+
+    // A line that is nothing but **bold** is how people write a section
+    // heading in a note ("**STORY / EDIT FLOW**", "**AI CLIPS NEEDED**") —
+    // render it as one instead of a bold paragraph (Jordan, Sep 10).
+    const boldLine = t.match(/^\*\*([^*]+)\*\*:?$/);
+    if (boldLine) {
+      blocks.push(<p key={k++} className="mt-4 mb-1 text-sm font-semibold text-foreground first:mt-0">{inline(boldLine[1])}</p>);
+      i++; continue;
     }
 
     const h = t.match(/^(#{1,6})\s+(.*)$/);
