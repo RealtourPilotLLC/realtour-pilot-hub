@@ -118,7 +118,11 @@ const MENU_H = 212;
 
 // office: the viewer is owner/admin (not the editor's scoped view) — unlocks
 // the "Ready for editing" option. The server rule is the real guard.
-function StatusPill({ row, office }: { row: QueueRow; office: boolean }) {
+// onReceipt: where an ok:true sentence goes. The row it belongs to leaves
+// this tab the moment the server revalidates (a Completed job moves to Done),
+// so a note under the pill is never seen — the queue shows it above the tabs
+// instead (Sep 11 review).
+function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean; onReceipt?: (msg: string) => void }) {
   // The menu is position:fixed, NOT absolute: the table wrapper is an
   // overflow-x-auto scroll container, which clips absolutely-positioned
   // children — on the bottom row (and short queues are all bottom rows) the
@@ -169,8 +173,11 @@ function StatusPill({ row, office }: { row: QueueRow; office: boolean }) {
       } else if (r.message && r.message !== "Status updated.") {
         // The label stuck, but the server did something MORE than write it
         // (sent the cut to the Review Room, parked a client revision as
-        // waiting on Jordan) — that sentence has to reach the editor too.
-        setNote(r.message);
+        // waiting on Jordan, closed a revision for the office) — that
+        // sentence has to reach the person, above the tabs where it survives
+        // the row moving to another view.
+        if (onReceipt) onReceipt(r.message);
+        else setNote(r.message);
       }
     });
   };
@@ -341,6 +348,8 @@ export function SimpleQueue({
 }) {
   const router = useRouter();
   const [view, setView] = useState<"notdone" | "upcoming" | "done">("notdone");
+  // The last thing a status click did beyond writing the label (see StatusPill).
+  const [receipt, setReceipt] = useState<string | null>(null);
   const rows = view === "notdone" ? notDone : view === "upcoming" ? upcoming : done;
   const VIEWS = [
     { key: "notdone" as const, label: "Not Done", n: notDone.length },
@@ -353,6 +362,12 @@ export function SimpleQueue({
 
   return (
     <div>
+      {receipt && (
+        <div className="mb-3 flex items-start gap-2 rounded-xl border border-success/30 bg-success/10 px-3 py-2 text-sm text-foreground/90">
+          <span className="min-w-0 flex-1">{receipt}</span>
+          <button onClick={() => setReceipt(null)} aria-label="Dismiss" className="rounded-md px-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">Dismiss</button>
+        </div>
+      )}
       {/* Slack's saved views, as pills. */}
       <div className="mb-3 flex flex-wrap items-center gap-1.5">
         {VIEWS.map((v) => (
@@ -471,7 +486,7 @@ export function SimpleQueue({
                         // another admin), remount so the pill can't go stale.
                         // hideEditor is the editor's scoped view — everyone
                         // else looking at this table is the office.
-                        <StatusPill key={r.status} row={r} office={!hideEditor} />
+                        <StatusPill key={r.status} row={r} office={!hideEditor} onReceipt={setReceipt} />
                       )}
                     </td>
                     <td className={cn("whitespace-nowrap px-3 py-2.5 text-xs font-medium", r.late ? "text-danger" : "")}>

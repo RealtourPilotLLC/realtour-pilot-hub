@@ -645,9 +645,10 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
   // only when the pill's label is what the row will read anyway; a refusal is
   // `ok: false` so the pill snaps back to what the cut says and shows the
   // message.
+  let officeClosedRevision = 0; // asks the office closed by marking Completed (Sep 11) — shapes the final message
   if (status === "DELIVERED" || status === "REVIEW") {
-    const { videoLaneRevisionWhere, correctedCutSubmitted, correctedCutApproved } = await import("@/lib/reviewCuts");
-    const lane = await prisma.smartTask.findMany({ where: videoLaneRevisionWhere(projectId), select: { id: true, createdAt: true } });
+    const { videoLaneRevisionWhere, correctedCutSubmitted, correctedCutApproved, revisionStateSummary } = await import("@/lib/reviewCuts");
+    const lane = await prisma.smartTask.findMany({ where: videoLaneRevisionWhere(projectId), select: { id: true, createdAt: true, summary: true } });
     if (lane.length > 0) {
       const street = (proj.title || "this job").split(",")[0].trim();
       const wantsReview = status === "REVIEW";
@@ -682,12 +683,76 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
         if (newest?.status === "CHANGES_REQUESTED") {
           return done(false, `The corrected cut for ${street} came back with notes — fix them and press Upload version ${newest.round + 1} on the edit page; it goes back to the Review Room from there.`);
         }
-        const { submitCutForReview } = await import("@/app/review/actions");
-        const sent = await submitCutForReview(projectId).catch(() => ({ ok: false as const, message: "" }));
-        if (sent.ok) {
-          return done(wantsReview, `Sent to the Review Room — ${street} has a client revision open, so it reads Ready for review until Jordan rules and Completed once he approves the corrected cut.`);
+        // THE OFFICE CLOSES THE LOOP (Jordan, Sep 11: "When I change the
+        // status to completed … it didn't save" — 1244 West Chester Pike).
+        // Marcee's corrected videos were emailed to her by hand on Sep 9;
+        // nothing ever went through the Review Room, so the rule below — the
+        // Sep 8 rule for EDITORS, who hand a corrected cut to the Room and
+        // wait for Jordan — refused the owner too, and the pill's refusal read
+        // as "didn't save". The office IS the reviewer: its "Completed" says
+        // the client's ask is answered. So it takes the same hand path as the
+        // task's Complete button and the project-page button (resolveRevision):
+        // close the open asks, clear the stamp, land back on Delivered with
+        // the ORIGINAL delivery date, retire the re-QC card. Editors, and a
+        // "view as" preview of one, keep the refusal. "Ready for review" with
+        // nothing uploaded stays refused for everyone — there is nothing to
+        // review.
+        const { getCurrentUser } = await import("@/lib/auth/user");
+        const { authEnforced } = await import("@/lib/auth/guards");
+        const me = await getCurrentUser().catch(() => null);
+        const office = me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
+        if (!wantsReview && office) {
+          const actor = me?.name ?? me?.email ?? "The office";
+          const laneIds = lane.map((t) => t.id);
+          const sentence = `Closed by the office (${actor}) — delivered outside the Review Room.`;
+          const { stampHandledByHand } = await import("@/lib/opsDay");
+          // Another lane still open (Kyle's photo ask on a mixed job): close
+          // the video asks only and say so. A Delivered write here would be
+          // flipped straight back by the recompute while the stamp stands.
+          const otherOpen = await prisma.smartTask.count({
+            where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] }, id: { notIn: laneIds } },
+          });
+          if (otherOpen > 0) {
+            for (const t of lane) {
+              await prisma.smartTask.update({
+                where: { id: t.id },
+                data: { status: "COMPLETED", completedAt: new Date(), summary: revisionStateSummary(t.summary, sentence) },
+              }).catch(() => {});
+              await stampHandledByHand(t.id, actor, me?.email ?? null);
+            }
+            const still = `${otherOpen} ask${otherOpen === 1 ? " is" : "s are"} still open in another lane`;
+            await prisma.activity.create({
+              data: { projectId, type: "SYSTEM", body: `${actor} closed the video revision on the queue — delivered outside the Review Room. ${still}, so the job stays in Revisions.` },
+            }).catch(() => {});
+            return done(false, `${street}: the video ask is closed, but ${still} — the job stays in Revisions until that is answered.`);
+          }
+          // Resolve FIRST, then describe: a resolve that fails must not leave
+          // open asks wearing a "closed" sentence, and no Delivered write may
+          // follow a half-done resolve (Sep 11 review).
+          try {
+            const { resolveRevision } = await import("@/lib/comms");
+            await resolveRevision(projectId);
+          } catch {
+            return done(false, `Couldn't finish closing the revision on ${street} — check the job's timeline and try again.`);
+          }
+          for (const t of lane) {
+            await prisma.smartTask.update({ where: { id: t.id }, data: { summary: revisionStateSummary(t.summary, sentence) } }).catch(() => {});
+            await stampHandledByHand(t.id, actor, me?.email ?? null);
+          }
+          await prisma.activity.create({
+            data: { projectId, type: "SYSTEM", body: `${actor} marked Completed on the queue — client revision closed as resolved (delivered outside the Review Room).` },
+          }).catch(() => {});
+          officeClosedRevision = lane.length;
+          // fall through: the Delivered write, the "Queue status set" line and
+          // the delivered close-out below are what a Completed click always does.
+        } else {
+          const { submitCutForReview } = await import("@/app/review/actions");
+          const sent = await submitCutForReview(projectId).catch(() => ({ ok: false as const, message: "" }));
+          if (sent.ok) {
+            return done(wantsReview, `Sent to the Review Room — ${street} has a client revision open, so it reads Ready for review until Jordan rules and Completed once he approves the corrected cut.`);
+          }
+          return done(false, `${street} has a client revision open and nothing new has been uploaded since it came in. Press Upload version N on the edit page (it takes a new version even on an approved cut while the revision is open) — or drop a NEW file in 05-Final-Video and hit "Done — send to review" — and it reads Ready for review, then Completed once Jordan approves it.`);
         }
-        return done(false, `${street} has a client revision open and nothing new has been uploaded since it came in. Press Upload version N on the edit page (it takes a new version even on an approved cut while the revision is open) — or drop a NEW file in 05-Final-Video and hit "Done — send to review" — and it reads Ready for review, then Completed once Jordan approves it.`);
       }
     }
   }
@@ -861,6 +926,10 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
   const { revalidatePath } = await import("next/cache");
   revalidatePath("/editing");
   revalidatePath(`/edit/${projectId}`);
+  if (officeClosedRevision > 0) {
+    const street = (proj.title || "this job").split(",")[0].trim();
+    return { ok: true, message: `Completed — you closed the client's revision on ${street} as resolved (${officeClosedRevision} ask${officeClosedRevision === 1 ? "" : "s"}); the job is back on Delivered with its original delivery date.` };
+  }
   return { ok: true, message: "Status updated." };
 }
 
