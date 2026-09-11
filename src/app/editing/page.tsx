@@ -77,9 +77,14 @@ export default async function EditorQueuePage() {
     // that the row labels tell the truth (Sep 2 audit), the header has to as
     // well, or the count re-tells the same lie one line higher up.
     const WAITING_ON_US = new Set(["Ready for review", "Approved"]);
-    const myToEdit = myNotDone.filter((r) => !WAITING_ON_US.has(r.status));
-    const inReview = myNotDone.length - myToEdit.length;
+    // A Waiting row is not work either (Sep 11 review): the footage is not
+    // in — the office is holding the job there, or the photographer has not
+    // submitted — so it is counted on its own, never as "to edit".
+    const myWaiting = myNotDone.filter((r) => r.status === "Waiting");
+    const myToEdit = myNotDone.filter((r) => !WAITING_ON_US.has(r.status) && r.status !== "Waiting");
+    const inReview = myNotDone.length - myToEdit.length - myWaiting.length;
     const overdue = myToEdit.filter((r) => r.late).length;
+    const waitingNote = myWaiting.length ? ` · ${myWaiting.length} waiting on footage` : "";
     const unread = await unreadThreadCount(me.id, [...myNotDone, ...myUpcoming, ...myDone].map((r) => r.id));
 
     return (
@@ -89,9 +94,9 @@ export default async function EditorQueuePage() {
           title={`Hi ${(me.name ?? "there").split(" ")[0]}`}
           subtitle={
             myToEdit.length
-              ? `${myToEdit.length} to edit${overdue ? ` · ${overdue} overdue` : ""}${inReview ? ` · ${inReview} in review` : ""} · ${myUpcoming.length} upcoming`
-              : inReview
-                ? `Nothing to edit · ${inReview} waiting on review · ${myUpcoming.length} upcoming`
+              ? `${myToEdit.length} to edit${overdue ? ` · ${overdue} overdue` : ""}${inReview ? ` · ${inReview} in review` : ""}${waitingNote} · ${myUpcoming.length} upcoming`
+              : inReview || myWaiting.length
+                ? `Nothing to edit${inReview ? ` · ${inReview} waiting on review` : ""}${waitingNote} · ${myUpcoming.length} upcoming`
                 : "Nothing waiting — you're all caught up."
           }
           actions={

@@ -648,6 +648,18 @@ export async function moveProjectStatus(projectId: string, status: ProjectStatus
     },
   });
 
+  // A board move off Waiting ends the office's Waiting hold (Sep 11,
+  // queueWaiting.ts): the marker only bites on BOOKED/SCHEDULED, but left
+  // behind it would re-arm under the old name and time the day the job is
+  // dragged back to Scheduled. Delivered/Cancelled clear it inside
+  // closeObsoleteTasks as well — harmless twice.
+  if (status !== ProjectStatus.BOOKED && status !== ProjectStatus.SCHEDULED) {
+    try {
+      const { releaseWaitingHold } = await import("@/lib/queueWaiting");
+      await releaseWaitingHold(projectId);
+    } catch { /* hygiene only */ }
+  }
+
   // Close out the revision task too when manually delivered.
   if (status === ProjectStatus.DELIVERED && project.revisionRequestedAt) {
     await prisma.smartTask.updateMany({

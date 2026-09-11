@@ -9,6 +9,7 @@ import { isMonthlyContentJob } from "@/lib/pipeline";
 import { actualFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { etAddDays } from "@/lib/datetime";
 import { EDIT_ROUND_SUMMARY } from "@/lib/tasks";
+import { WAITING_HOLD_PREFIX } from "@/lib/queueWaiting";
 import type { QueueRow } from "@/components/editing/SimpleQueue";
 
 // The Editor Queue's row builder, extracted from /editing so the message
@@ -38,17 +39,27 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
   const rules = await editorRouting();
   const now = new Date();
   const deliveredCutoff = etAddDays(now, -60);
+  // Jobs the office put back to Waiting (Sep 11, queueWaiting.ts) stay in Not
+  // Done however old the shoot: the 7-day window below is for stale bookings
+  // nobody touched, and a hold is the opposite — the office is watching for
+  // that footage. Dateless (BOOKED) holds ride here too; a held job whose
+  // shoot is still ahead lands in Upcoming as before.
+  const heldIds = (
+    await prisma.appSetting.findMany({ where: { key: { startsWith: WAITING_HOLD_PREFIX } }, select: { key: true } })
+  ).map((r) => r.key.slice(WAITING_HOLD_PREFIX.length));
+  const heldSet = new Set(heldIds);
   const [inflight, scheduled, deliveredRaw] = await Promise.all([
     prisma.project.findMany({
       // Past-shoot BOOKED/SCHEDULED jobs belong here too (as "Waiting"): the
       // shoot happened but raws haven't landed — they were falling between
       // the Not-Done and Upcoming rails and vanishing entirely (Aug 18 audit:
       // four monthly jobs actively being shot were invisible). 7-day window
-      // so ancient stale bookings don't pile up.
+      // so ancient stale bookings don't pile up — except a held one (above).
       where: {
         OR: [
           { status: { in: ["SHOT", "EDITING", "REVIEW", "REVISION"] } },
           { status: { in: ["BOOKED", "SCHEDULED"] }, shootDate: { lt: now, gte: etAddDays(now, -7) } },
+          { status: { in: ["BOOKED", "SCHEDULED"] }, id: { in: heldIds }, OR: [{ shootDate: { lt: now } }, { shootDate: null }] },
         ],
         aryeoMissingAt: null,
       },
@@ -283,6 +294,11 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
       tier,
       typeDetail: videos.map((d) => d.label || d.type).join(" · "),
       status: upcoming ? "Waiting" : STATUS_LABEL[effectiveStatus] ?? effectiveStatus,
+      // The office is holding this job in Waiting (Sep 11): the pill on the
+      // editor's queue greys every option on such a row — only the office or
+      // the photographer's upload-page submit moves it on. A marker on a job
+      // that is no longer on Waiting is stale and does not count.
+      held: heldSet.has(p.id) && (p.status === "BOOKED" || p.status === "SCHEDULED"),
       editor: (assigned ? editorMeta(assigned)?.name ?? assigned : null) ?? p.editor?.name ?? (routeKey ? editorMeta(routeKey)?.name ?? routeKey : null),
       // The key behind the name, for the row's reassign select. Same truth
       // ladder as the display: open task → Project.editor → routing rules.

@@ -519,17 +519,23 @@ export async function saveEditSpec(
 }
 
 
-// The Slack tracker's status click. "Waiting" is NOT settable — evidence flips
-// it (that is the fix for "Kyle forgets to update the tracker"), and the raw
-// folder flips Waiting → Ready for editing the same way. The middle of the
-// ladder is human: the editor clicks In editing when they start and Ready for
-// review when done, exactly like Slack. Owner/admin may set any selectable
-// status; an EDITOR only on a job whose open edit task is theirs
-// (requireTaskAccess does that matching).
+// The Slack tracker's status click. Evidence sets the bottom of the ladder
+// (that is the fix for "Kyle forgets to update the tracker"): the raw folder
+// flips Waiting → Ready for editing. The middle is human: the editor clicks In
+// editing when they start and Ready for review when done, exactly like Slack.
+// Owner/admin may set any selectable status; an EDITOR only on a job whose
+// open edit task is theirs (requireTaskAccess does that matching).
 // Sep 10 (Jordan: "I should be able to put them back to ready for editing"):
-// "Ready for editing" IS settable now — by the office only (OWNER/ADMIN). It
+// "Ready for editing" IS settable — by the office only (OWNER/ADMIN). It
 // writes SHOT, which is what the ladder has always read as Ready for editing.
-const QUEUE_STATUS: Record<string, "SHOT" | "EDITING" | "REVIEW" | "REVISION" | "DELIVERED"> = {
+// Sep 11 (Jordan: "I should also be able to change projects back to waiting
+// but its blocked off"): "Waiting" is settable too — office only, from Ready
+// for editing / In editing with nothing handed in. It writes SCHEDULED when
+// the job has a shoot date, else BOOKED (the two statuses the ladder reads as
+// Waiting) plus a HOLD marker (src/lib/queueWaiting.ts) that both sweeps
+// honour — or the same raws would flip it straight back within the hour.
+const QUEUE_STATUS: Record<string, "WAITING" | "SHOT" | "EDITING" | "REVIEW" | "REVISION" | "DELIVERED"> = {
+  Waiting: "WAITING",
   "Ready for editing": "SHOT",
   "In editing": "EDITING",
   "Ready for review": "REVIEW",
@@ -538,8 +544,8 @@ const QUEUE_STATUS: Record<string, "SHOT" | "EDITING" | "REVIEW" | "REVISION" | 
 };
 
 export async function setQueueStatus(projectId: string, label: string): Promise<{ ok: boolean; message: string }> {
-  const status = QUEUE_STATUS[label];
-  if (!status) return { ok: false, message: "That status is set automatically from upload/delivery evidence." };
+  const target = QUEUE_STATUS[label];
+  if (!target) return { ok: false, message: "That status is set automatically from upload/delivery evidence." };
   // The job's edit card comes first, the revision lane second: the card is
   // what the pill moves below, and its assignee is "the editor" the timeline
   // and the bell name — a photo-lane revision (Kyle's "remove the closets"
@@ -561,14 +567,15 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
     return { ok: false, message: (e as Error).message };
   }
   // Putting a job BACK is the office's call, not the editor's (Jordan, Sep 10:
-  // "I should be able to put them back to ready for editing"). Sign-in and
-  // view-as were already checked above, so the only refusal left here is the
-  // role — say it in the editor's words instead of the guard's generic line.
-  if (status === "SHOT") {
+  // "I should be able to put them back to ready for editing"; Sep 11: "change
+  // projects back to waiting"). Sign-in and view-as were already checked
+  // above, so the only refusal left here is the role — say it in the editor's
+  // words instead of the guard's generic line.
+  if (target === "SHOT" || target === "WAITING") {
     try {
       await requireRole(["OWNER", "ADMIN"]);
     } catch {
-      return { ok: false, message: "Only the office can put a job back to Ready for editing." };
+      return { ok: false, message: `Only the office can put a job back to ${target === "WAITING" ? "Waiting" : "Ready for editing"}.` };
     }
   }
   // ONE read for everything below: the delivery gate, the once-only delivery
@@ -577,7 +584,9 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
     where: { id: projectId },
     select: {
       title: true,
-      status: true, // In editing / Ready for editing are idempotent — a re-click must not re-log or re-ring
+      status: true, // In editing / Ready for editing / Waiting are idempotent — a re-click must not re-log or re-ring
+      shootDate: true, // Waiting = SCHEDULED with a date, BOOKED without
+      debriefSubmittedAt: true, // the photographer's real submit — decides whether Waiting clears the sweep's uploadedAt stamp
       clientId: true,
       deliveredAt: true,
       statusEvidence: true,
@@ -589,11 +598,138 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
     },
   });
   if (!proj) return { ok: false, message: "That job no longer exists." };
-  // "Ready for editing" is the undo of an "In editing", nothing more. On a
+
+  // Is the office holding this job in Waiting right now? One read, only on a
+  // row that reads Waiting (BOOKED/SCHEDULED) — the marker is inert anywhere
+  // else. Feeds the editor refusal just below and the Waiting branch's
+  // idempotence check.
+  const { loadWaitingHolds, stampWaitingHold, releaseWaitingHold, whyNotWaiting } = await import("@/lib/queueWaiting");
+  const onWaiting = proj.status === "BOOKED" || proj.status === "SCHEDULED";
+  const heldNow = onWaiting && (await loadWaitingHolds([projectId])).has(projectId);
+  // A HELD job is the office's to move, full stop (Jordan, Sep 11: it stays
+  // Waiting "until the photographer submits the upload page or the office
+  // moves it on" — an editor is neither). The row still shows on the
+  // editor's scoped queue (its edit card stays OPEN and assigned), so the
+  // pill greys every option there and this is the guard behind the greying:
+  // an editor's In editing / Ready for review on a held row would have
+  // walked straight past the hold and deleted the office's marker (Sep 11
+  // review).
+  if (heldNow && target !== "WAITING" && target !== "SHOT") {
+    try {
+      await requireRole(["OWNER", "ADMIN"]);
+    } catch {
+      const street = (proj.title || "this job").split(",")[0].trim();
+      return { ok: false, message: `${street} is held in Waiting by the office — it can't be started until the footage is in.` };
+    }
+  }
+
+  // ---- WAITING (Jordan, Sep 11: "I should also be able to change projects
+  // back to waiting but its blocked off"). Only from Ready for editing / In
+  // editing with NOTHING handed in: a cut in the Review Room, a client
+  // revision, a delivery — each is a reason the job can't be un-shot, and
+  // each is said back in plain words (whyNotWaiting, shared with the probe).
+  // The marker is written BEFORE the status: a Waiting nobody is holding
+  // would be flipped back by the next recompute, which is the very thing this
+  // fixes. The edit card stays, back on OPEN — the row reads Waiting so nobody
+  // works it, and the release (upload-page submit, or the office moving it on)
+  // finds the card where it was. Idempotent: a re-click on a job already held
+  // refreshes nothing and logs nothing.
+  if (target === "WAITING") {
+    const street = (proj.title || "this job").split(",")[0].trim();
+    const cuts = await prisma.reviewSubmission.count({
+      where: { projectId, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "SUPERSEDED"] } },
+    });
+    const refusal = whyNotWaiting({ status: proj.status, street, cuts });
+    if (refusal) return { ok: false, message: refusal };
+    if (heldNow) return { ok: true, message: "Status updated." };
+    const { getCurrentUser } = await import("@/lib/auth/user");
+    const me = await getCurrentUser().catch(() => null);
+    const actor = me?.name ?? me?.email ?? "The office";
+    try {
+      await stampWaitingHold(projectId, actor, me?.email ?? null);
+    } catch {
+      return { ok: false, message: `Couldn't hold ${street} in Waiting — try again.` };
+    }
+    if (!onWaiting) {
+      await prisma.activity.create({ data: { projectId, type: "SYSTEM", body: `Queue status set: ${label}` } }).catch(() => {});
+    }
+    // This line is load-bearing, so it is NOT best-effort: notifyRawsLanded
+    // reads the newest "Put back to Waiting by" row to decide that the raws-in
+    // bell is owed again once the hold releases (tasks.ts). Written before the
+    // status so a failed log takes the marker back out and refuses — a held
+    // job with no line would release into silence (Sep 11 review).
+    try {
+      await prisma.activity.create({
+        data: {
+          projectId,
+          type: "SYSTEM",
+          body: `Put back to Waiting by ${actor} — the hub holds it there until the photographer submits the upload page or the office moves it on.`,
+        },
+      });
+    } catch {
+      await releaseWaitingHold(projectId);
+      return { ok: false, message: `Couldn't hold ${street} in Waiting — try again.` };
+    }
+    await prisma.project.update({
+      where: { id: projectId },
+      data: {
+        status: proj.shootDate ? "SCHEDULED" : "BOOKED",
+        // The sweep's uploadedAt stamp goes with the status (Sep 11 review):
+        // every Ready for editing job the office would hold already wears
+        // one, off the same raws the office is saying are not this job's —
+        // and that stamp is what reads "Uploaded" on /upload and opens the
+        // photographer's page on "Submitted — you're good to go" with the
+        // submit hidden, so nobody would learn the hub is waiting on them.
+        // A real submit (debriefSubmittedAt) keeps its stamp: the office is
+        // holding the job, not un-saying the photographer's word.
+        ...(proj.debriefSubmittedAt ? {} : { uploadedAt: null }),
+      },
+    });
+    await prisma.smartTask.updateMany({
+      where: { projectId, taskType: "edit_video", status: "IN_PROGRESS" },
+      data: { status: "OPEN" },
+    }).catch(() => {});
+    // Park the QC card the way the reconciler parks a re-shoot (Sep 11
+    // review): the media_qa spec is emitted for SHOT/EDITING/REVIEW/REVISION
+    // only, so on a held SCHEDULED job the hourly "no longer expected" sweep
+    // would COMPLETE it — a QC pass in the Done ledger with no QcRecord, for
+    // the length of the hold. CANCELLED + SHOOT_NOT_YET is the stamp that
+    // sweep skips and the media_qa branch reopens the first pass after the
+    // job reads Ready for editing again.
+    try {
+      const { SHOOT_NOT_YET } = await import("@/lib/tasks");
+      await prisma.smartTask.updateMany({
+        where: { projectId, taskType: "media_qa", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        data: {
+          status: "CANCELLED",
+          sourceDetail: SHOOT_NOT_YET,
+          summary: "Parked — the office put the job back to Waiting. This comes back on its own once the footage is in.",
+        },
+      });
+    } catch { /* the card is best-effort — the hold itself already landed */ }
+    // Rewrite the evidence NOW rather than in an hour (Sep 11 review): the
+    // project page and the edit page read statusEvidence.reason, and until
+    // the next sweep they would still say "Raw files uploaded to Dropbox —
+    // awaiting editing." under a Waiting status. The hold is already on
+    // file, so this single-project pass takes the held path and writes
+    // "Held in Waiting by the office…" — the same code the hourly sweep runs.
+    try {
+      const { syncProjectStatuses } = await import("@/lib/projectStatus");
+      await syncProjectStatuses({ projectId });
+    } catch { /* the hourly sweep writes the same reason */ }
+    revalidatePath("/editing");
+    revalidatePath(`/edit/${projectId}`);
+    revalidatePath(`/projects/${projectId}`);
+    return { ok: true, message: `${street} is back on Waiting — the hub holds it there until the photographer submits the upload page or you move it on.` };
+  }
+  const status = target;
+
+  // "Ready for editing" is the undo of an "In editing" — or, since Sep 11,
+  // the office moving a Waiting job on (which releases its hold below). On a
   // job with a revision open the SHOT write would be flipped straight back to
   // REVISION by the next recompute (the open ask keeps it there), leaving only
   // a stray "Put back…" line on the timeline — so it is refused here, the
-  // same way the pill greys it out on every row but In editing (Sep 10 review).
+  // same way the pill greys it out on every other row (Sep 10 review).
   if (status === "SHOT" && proj.status === "REVISION") {
     return { ok: false, message: "A revision is open on this job — it can't be put back to Ready for editing until the ask is answered." };
   }
@@ -757,6 +893,15 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
     }
   }
 
+  // Every forward write releases the office's Waiting hold (Sep 11): a human
+  // moving the job on is the second of the two things that end it. After the
+  // refusals above on purpose — a refused "Completed" must not quietly drop
+  // the hold and let the next sweep flip the job. On a HELD row only the
+  // office reaches this line (the guard above); a stale marker on a job that
+  // is not on Waiting is deleted by whoever clicked, so it can't spring back
+  // the day the office parks that job again by hand.
+  const holdReleased = await releaseWaitingHold(projectId);
+
   await prisma.project.update({
     where: { id: projectId },
     // deliveryStamp, not `new Date()`: this click used to overwrite the
@@ -823,7 +968,21 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
         where: { projectId, taskType: "edit_video", status: "IN_PROGRESS" },
         data: { status: "OPEN" },
       }).catch(() => {});
-      if (proj.status !== "SHOT" || started) {
+      // From a Waiting row this is not an undo but the office moving the job
+      // ON (Sep 11) — say so, and run the handoff now rather than in an hour:
+      // ensureEditorHandoff is idempotent, and its raws-in bell rings again
+      // after a hold (notifyRawsLanded keys off the "Put back to Waiting" line
+      // and, as the fallback, any line carrying "Waiting hold released" — keep
+      // that phrase if the wording ever changes).
+      if (onWaiting) {
+        await prisma.activity.create({
+          data: { projectId, type: "SYSTEM", body: `Moved on to Ready for editing by ${actor}${holdReleased ? " — Waiting hold released" : ""}.` },
+        }).catch(() => {});
+        try {
+          const { ensureEditorHandoff } = await import("@/lib/tasks");
+          await ensureEditorHandoff(projectId);
+        } catch { /* the hourly sweep is the backstop */ }
+      } else if (proj.status !== "SHOT" || started) {
         await prisma.activity.create({
           data: { projectId, type: "SYSTEM", body: `Put back to Ready for editing by ${actor}.` },
         }).catch(() => {});
@@ -923,7 +1082,10 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
       }
     } catch { /* stamp clear is best-effort */ }
   }
-  const { revalidatePath } = await import("next/cache");
+  // The module-level import, not a function-scoped re-import: a `const`
+  // re-import here shadowed it for the WHOLE function, so the `done()` helper
+  // in the revision branch above (and the Waiting branch) reached a binding
+  // that had not been declared yet (Sep 11).
   revalidatePath("/editing");
   revalidatePath(`/edit/${projectId}`);
   if (officeClosedRevision > 0) {

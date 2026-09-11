@@ -550,6 +550,12 @@ export async function syncDropboxFolderStatus(): Promise<{
   // bare future shootDate does not) — dynamic import, the two modules cite
   // each other.
   const { shootHappenedFor } = await import("@/lib/projectStatus");
+  // The office's Waiting hold (Sep 11, queueWaiting.ts): a job the office put
+  // back to Waiting must not be flipped to SHOT by this sweep either — the
+  // raws it sees are the very files the office said are not this job's.
+  // Loaded once; the same submit-after-hold test the status sweep uses.
+  const { loadWaitingHolds, holdStands } = await import("@/lib/queueWaiting");
+  const holds = await loadWaitingHolds(projects.map((p) => p.id));
 
   let movedToShot = 0;
   let movedToReview = 0;
@@ -580,6 +586,7 @@ export async function syncDropboxFolderStatus(): Promise<{
       // A shoot that hasn't happened has no raws of its own, and a folder
       // another live job also claims is not evidence about this one.
       if (!shootHappenedFor(p)) continue;
+      if (holdStands(holds.get(p.id), p.debriefSubmittedAt)) continue;
       if (await claimedByAnotherLiveJob(p, f.listing)) continue;
       await prisma.project.update({ where: { id: p.id }, data: { status: "SHOT", uploadedAt: new Date() } });
       await prisma.activity.create({

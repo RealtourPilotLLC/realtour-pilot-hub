@@ -208,6 +208,18 @@ export async function completeShoot(projectId: string): Promise<{ ok: boolean; m
   // Captured → advance to SHOT (unless already further along the pipeline).
   if (project.status === "BOOKED" || project.status === "SCHEDULED") {
     await prisma.project.update({ where: { id: projectId }, data: { status: "SHOT" } });
+    // The office's Waiting hold (Sep 11, queueWaiting.ts) ends with the
+    // photographer's own word that the shoot happened — the same word the
+    // upload page carries. SHOT is off the hold's rails anyway; deleting the
+    // marker keeps it from re-arming if the job is ever parked again by hand.
+    try {
+      const { releaseWaitingHold } = await import("@/lib/queueWaiting");
+      if (await releaseWaitingHold(projectId)) {
+        await prisma.activity.create({
+          data: { projectId, type: "SYSTEM", body: "Waiting hold released — the photographer marked the shoot complete on-site." },
+        }).catch(() => {});
+      }
+    } catch { /* hygiene only — the SHOT write above stands */ }
     // Refresh the evidence + run the editor handoff NOW instead of waiting up
     // to an hour for the cron. The old button set SHOT and told no one — the
     // sweep saw no transition, so the editor's task never minted (July 2026

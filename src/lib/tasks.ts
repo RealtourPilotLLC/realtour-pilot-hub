@@ -1297,6 +1297,18 @@ export async function closeObsoleteTasks(
   opts: { sweep?: boolean } = {},
 ): Promise<number> {
   const humanKept = opts.sweep ? { assignedManually: false } : {};
+  // A delivered or cancelled job has no Waiting hold left to honour (Sep 11
+  // review): the marker (queueWaiting.ts) is inert on any status but
+  // BOOKED/SCHEDULED, but left behind it would re-arm under the old name and
+  // time the day a board drag puts the job back on Scheduled. Every delivery
+  // and cancel path — the board, the queue pill, the sweep, the janitor,
+  // Aryeo's cancel — comes through here.
+  if (projectStatus === "CANCELLED" || projectStatus === "DELIVERED") {
+    try {
+      const { releaseWaitingHold } = await import("@/lib/queueWaiting");
+      await releaseWaitingHold(projectId);
+    } catch { /* hygiene only — never blocks the close */ }
+  }
   if (projectStatus === "CANCELLED") {
     const r = await prisma.smartTask.updateMany({
       where: { projectId, status: { notIn: ["COMPLETED", "CANCELLED"] }, ...humanKept },
@@ -1963,10 +1975,31 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
   const street = (p.title || "this job").split(",")[0].trim();
 
   // Ping ops once per project — if either path (portal finalize / Dropbox sweep)
-  // already announced it, don't re-ping.
+  // already announced it, don't re-ping. Once per HOLD, that is (Sep 11): a
+  // job the office put back to Waiting (setQueueStatus → queueWaiting.ts) was
+  // announced off raws that were not really its footage, so when the hold
+  // releases (upload-page submit, or the office moving it on) the editors are
+  // owed a fresh "Raws in". Only a marker newer than the latest hold line
+  // counts as spent, and the bell's dedupe key carries that line's time so
+  // the row inserts again. The boundary is the newest of the "Put back to
+  // Waiting by" line (setQueueStatus) and, as the fallback, any line carrying
+  // "Waiting hold released" (the sweep, finalizeUpload, the office's Ready
+  // for editing) — every release path writes its line BEFORE the handoff
+  // runs, so a lost hold line still rings once (Sep 11 review). While the
+  // hold stands nothing calls this at all: the status sweep runs the handoff
+  // for SHOT/EDITING/REVIEW only, and a held job is kept on SCHEDULED/BOOKED.
   const MARKER = `Raws in for ${street}`;
+  const lastHold = await prisma.activity.findFirst({
+    where: {
+      projectId,
+      type: "SYSTEM",
+      OR: [{ body: { startsWith: "Put back to Waiting by" } }, { body: { contains: "Waiting hold released" } }],
+    },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true },
+  });
   const already = await prisma.activity.findFirst({
-    where: { projectId, type: "SYSTEM", body: { startsWith: MARKER } },
+    where: { projectId, type: "SYSTEM", body: { startsWith: MARKER }, ...(lastHold ? { createdAt: { gt: lastHold.createdAt } } : {}) },
     select: { id: true },
   });
   if (!already) {
@@ -2010,7 +2043,9 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
         title: `Raws in — ${street}`,
         href: "/editing",
         targets,
-        dedupeKey: `raws-${projectId}`,
+        // After a hold the key changes, or the P2002 dedupe would swallow the
+        // second, real announcement.
+        dedupeKey: lastHold ? `raws-${projectId}-h${lastHold.createdAt.getTime()}` : `raws-${projectId}`,
       });
       // Stamp the truth onto the timeline row.
       let outcome = "— posted to the editor bench (bell) + ops Slack.";

@@ -29,14 +29,22 @@ import { setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
 // revisions live on the job's own chat instead of channel dumps and
 // screenshots.
 //
-// The ladder (Jordan, Sep 10): Waiting and Ready for editing set themselves
-// from the raw folder; nothing lands on In editing by itself — the EDITOR sets
-// it when they start; the OFFICE (owner/admin) can put a job that is In
-// editing back to Ready for editing. So "Ready for editing" is a real menu
-// choice on the owner's queue — on an In editing row only, because it is an
-// undo and nothing else (a Revisions row has a client ask open that the next
-// recompute would honour anyway) — and greyed out on the editor's; the server
-// (setQueueStatus) is the guard that actually enforces both.
+// The ladder (Jordan, Sep 10 + 11): Waiting and Ready for editing set
+// themselves from the raw folder; nothing lands on In editing by itself — the
+// EDITOR sets it when they start. The OFFICE (owner/admin) can walk a job
+// BACK: In editing → Ready for editing (Sep 10), and Ready for editing / In
+// editing → Waiting (Sep 11: "I should also be able to change projects back
+// to waiting but its blocked off"). A Waiting the office set is a HOLD — the
+// server writes a marker the hourly recompute honours, so the same raws that
+// flipped the job can't flip it straight back; it releases when the
+// photographer submits the upload page or the office moves the job on (Ready
+// for editing lights up on a Waiting row for exactly that). Both are undo
+// moves and nothing else: a Revisions row has a client ask open that the next
+// recompute would honour anyway, and a cut already handed in can't be
+// un-handed. Greyed out on the editor's queue — and on a HELD Waiting row
+// the editor's pill greys every option: the job is the office's to move, not
+// theirs to start (Sep 11 review). The server (setQueueStatus) is the guard
+// that actually enforces every one of these.
 //
 // Rows are DOORS, not drawers (Jordan, Aug 27): clicking a row opens the edit
 // page — the full brief, customer + shoot notes included, lives on /edit/<id>.
@@ -57,6 +65,7 @@ export type QueueRow = {
   tier: "standard" | "premium" | "branding";
   typeDetail: string; // the actual video deliverable labels, like Slack's "video type details"
   status: string;
+  held: boolean; // the office put this job back to Waiting and is holding it there (Sep 11) — the editor's pill greys out
   editor: string | null;
   editorKey: string | null; // key behind the name, drives the reassign select
   auto: boolean;
@@ -83,11 +92,11 @@ const TIER = {
 
 // The Slack status ladder, colors matched to how a Slack List reads.
 // selectable: true = anyone with the pill; "office" = owner/admin only, and
-// only as the undo of an In editing row (the editor sees it greyed with the
-// reason); false = evidence sets it.
+// only as an undo — see OFFICE_FROM in the pill for which rows (the editor
+// sees it greyed with the reason); false = evidence sets it.
 const STATUSES: Record<string, { color: string; selectable: boolean | "office" }> = {
-  Waiting: { color: "#94a3b8", selectable: false }, // photographer hasn't uploaded — evidence flips this
-  "Ready for editing": { color: "#38bdf8", selectable: "office" }, // raws flip it on; the office can put an In editing job back here (Sep 10)
+  Waiting: { color: "#94a3b8", selectable: "office" }, // raws flip it off; the office can put a Ready for editing / In editing job back here (Sep 11)
+  "Ready for editing": { color: "#38bdf8", selectable: "office" }, // raws flip it on; the office can put an In editing job back here (Sep 10) or move a Waiting one on (Sep 11)
   "In editing": { color: "#a78bfa", selectable: true }, // the editor's own "I've started" (Sep 10)
   "Ready for review": { color: "#f59e0b", selectable: true },
   Revisions: { color: "#f87171", selectable: true },
@@ -117,7 +126,8 @@ const fmtDay = (iso: string | null) =>
 const MENU_H = 212;
 
 // office: the viewer is owner/admin (not the editor's scoped view) — unlocks
-// the "Ready for editing" option. The server rule is the real guard.
+// the two undo options, "Ready for editing" and "Waiting". The server rule is
+// the real guard.
 // onReceipt: where an ok:true sentence goes. The row it belongs to leaves
 // this tab the moment the server revalidates (a Completed job moves to Done),
 // so a note under the pill is never seen — the queue shows it above the tabs
@@ -137,18 +147,34 @@ function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean
   const [note, setNote] = useState<string | null>(null);
   const [pending, start] = useTransition();
   const meta = STATUSES[status] ?? { color: "#94a3b8", selectable: false };
-  // "Ready for editing" is the office's undo of an "In editing" — Jordan (Sep
-  // 10): "put them back" — so it lights up on an In editing row only. On a
-  // Revisions row it would not be an undo: the client's ask keeps the job in
-  // Revisions on the next recompute and the click would leave nothing but a
-  // stray "Put back…" line on the timeline (Sep 10 review).
-  const canPick = (s: boolean | "office") => s === true || (s === "office" && office && status === "In editing");
-  const whyNot = (s: boolean | "office") =>
-    s !== "office"
-      ? "Set automatically from upload/delivery evidence"
-      : office
-        ? "Only a job In editing can be put back to Ready for editing"
-        : "Only the office can put a job back to Ready for editing";
+  // The office's two undo moves (Jordan, Sep 10 "put them back"; Sep 11 "change
+  // projects back to waiting"), each only on the rows where it IS an undo:
+  // "Ready for editing" on an In editing row (put it back) or a Waiting row
+  // (move it on — that releases the hold); "Waiting" on a Ready for editing or
+  // In editing row. On a Revisions row neither would stick: the client's ask
+  // keeps the job in Revisions on the next recompute and the click would leave
+  // nothing but a stray "Put back…" line on the timeline (Sep 10 review). A
+  // cut already in the Review Room is refused by the server with the reason.
+  const OFFICE_FROM: Record<string, string[]> = {
+    Waiting: ["Ready for editing", "In editing"],
+    "Ready for editing": ["In editing", "Waiting"],
+  };
+  // A job the office is HOLDING in Waiting is nobody else's to move (Sep 11
+  // review): the editor's pill greys every option on it — In editing there
+  // would have walked past the hold. The server refuses the same click.
+  const heldFromEditor = !office && row.held && status === "Waiting";
+  const canPick = (name: string, s: boolean | "office") =>
+    !heldFromEditor && (s === true || (s === "office" && office && (OFFICE_FROM[name] ?? []).includes(status)));
+  const whyNot = (name: string, s: boolean | "office") =>
+    heldFromEditor
+      ? "The office is holding this job in Waiting — it can't be started until the footage is in"
+      : s !== "office"
+        ? "Set automatically from upload/delivery evidence"
+        : !office
+          ? `Only the office can put a job back to ${name}`
+          : name === "Waiting"
+            ? "Only a job on Ready for editing or In editing can be put back to Waiting"
+            : "Only a job In editing or Waiting can be put to Ready for editing";
 
   const toggle = (e: React.MouseEvent<HTMLButtonElement>) => {
     if (menu) return setMenu(null);
@@ -204,12 +230,12 @@ function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean
             {Object.entries(STATUSES).map(([name, m]) => (
               <button
                 key={name}
-                disabled={!canPick(m.selectable)}
+                disabled={!canPick(name, m.selectable)}
                 onClick={() => pick(name)}
-                title={canPick(m.selectable) ? undefined : whyNot(m.selectable)}
+                title={canPick(name, m.selectable) ? undefined : whyNot(name, m.selectable)}
                 className={cn(
                   "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs font-medium",
-                  canPick(m.selectable) ? "hover:bg-surface-2" : "cursor-not-allowed opacity-40",
+                  canPick(name, m.selectable) ? "hover:bg-surface-2" : "cursor-not-allowed opacity-40",
                 )}
               >
                 <span className="size-2 rounded-full" style={{ backgroundColor: m.color }} />

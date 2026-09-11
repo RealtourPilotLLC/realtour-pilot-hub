@@ -11,6 +11,7 @@ import { photoTargetFor, RAW_OVERAGE_FACTOR, BRACKET_RATIO } from "@/lib/culling
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { reviewRoomRules } from "@/lib/settings";
+import { holdStands, loadWaitingHolds, releaseWaitingHold } from "@/lib/queueWaiting";
 
 // ---------------------------------------------------------------------------
 // Smart project-status engine.
@@ -442,6 +443,9 @@ type StatusProject = {
   aryeoListingId: string | null;
   deliveredAt: Date | null;
   uploadedAt: Date | null;
+  // The photographer's upload-page submit — the release signal for the office's
+  // Waiting hold (queueWaiting.ts). Only finalizeUpload writes it.
+  debriefSubmittedAt: Date | null;
   coverImageUrl: string | null;
   shootDate: Date | null;
   addressLine: string | null;
@@ -578,6 +582,9 @@ async function pMap<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>
 // Never touches ON_HOLD (manual) or CANCELLED projects, and won't demote an
 // EDITING project back to SHOT — nor move it to REVIEW while the video is still
 // owed (EDITING is the editor's own "I've started", Sep 10; see the loop).
+// Honours the office's Waiting hold (queueWaiting.ts, Sep 11): a job put back
+// to Waiting on the queue pill stays there whatever the folder says, until the
+// photographer submits the upload page or the office moves it on.
 // ---------------------------------------------------------------------------
 export async function syncProjectStatuses(
   opts: { full?: boolean; limit?: number; projectId?: string } = {},
@@ -630,6 +637,7 @@ export async function syncProjectStatuses(
       aryeoListingId: true,
       deliveredAt: true,
       uploadedAt: true,
+      debriefSubmittedAt: true,
       coverImageUrl: true,
       shootDate: true,
       addressLine: true,
@@ -684,6 +692,19 @@ export async function syncProjectStatuses(
       })
     ).flatMap((t) => (t.projectId ? [t.projectId] : [])),
   );
+
+  // THE OFFICE'S WAITING HOLD (Jordan, Sep 11: "I should also be able to
+  // change projects back to waiting but its blocked off"). The queue pill's
+  // Waiting writes SCHEDULED/BOOKED plus a `queue-waiting:<id>` marker; the
+  // raws that made the job read Ready for editing are still in the folder,
+  // so without this the anyRaw branch would flip it straight back within the
+  // hour (the Sep 8 shape: 1946 Rowan St #2 wearing another job's raws).
+  // Loaded once per batch, like manualQueued. A hold stands until the
+  // photographer submits the upload page AFTER it — debriefSubmittedAt, the
+  // one stamp only finalizeUpload writes (uploadedAt is stamped by this very
+  // sweep on a folder read, so it can't be the release signal) — or the
+  // office moves the job on from the pill, which deletes the marker itself.
+  const waitingHolds = await loadWaitingHolds(projects.map((p) => p.id));
 
   for (const { p, sig, status, evidence } of results) {
     if (sig.dropboxUnavailable && useDropbox && sig.dropbox?.stale !== undefined) {
@@ -754,6 +775,27 @@ export async function syncProjectStatuses(
     ) {
       final = p.status;
     }
+    // The office's Waiting hold (waitingHolds above). A submit stamped after
+    // it releases it: the job advances normally below and the marker goes.
+    // Standing, it keeps a BOOKED/SCHEDULED job put whatever the folder
+    // computed — SHOT off the raws, or the partial-delivery REVIEW — and says
+    // why in the evidence, so the project page and the queue's green RAW dot
+    // don't read as a disagreement. DELIVERED and REVISION still move: a full
+    // delivery or a client ask is bigger news than the hold.
+    const hold = waitingHolds.get(p.id);
+    let held = false;
+    if (hold && !holdStands(hold, p.debriefSubmittedAt)) {
+      if (await releaseWaitingHold(p.id)) {
+        await prisma.activity.create({
+          data: { projectId: p.id, type: "SYSTEM", body: "Waiting hold released — the photographer submitted the upload page." },
+        }).catch(() => {});
+      }
+    } else if (hold && ["BOOKED", "SCHEDULED"].includes(p.status) && ["SHOT", "EDITING", "REVIEW"].includes(final)) {
+      held = true;
+      final = p.status;
+      const seen = status === "SHOT" ? "raw files are in the folder" : "media is already showing for this job";
+      evidence.reason = `Held in Waiting by the office${hold.by ? ` (${hold.by})` : ""}; ${seen} — it stays Waiting until the photographer submits the upload page or the office moves it on.`;
+    }
 
     if (evidence.partial) partials++;
     byStatus[final] = (byStatus[final] ?? 0) + 1;
@@ -800,7 +842,10 @@ export async function syncProjectStatuses(
     // job's, and the stamp is what lit "Uploaded" on /upload and "Submitted —
     // you're good to go" on Harrison's page for a shoot that hadn't happened
     // (Sep 8 2026 audit, 1946 Rowan St).
-    const rawsDetected = !sig.shootPending && !!sig.dropbox && sig.dropbox.rawPhotos + sig.dropbox.rawVideo > 0;
+    // Nor while the office holds the job in Waiting (Sep 11): the office has
+    // said the files in the folder are not this job's footage, and the stamp
+    // is what lights "Uploaded" on /upload for a page nobody submitted.
+    const rawsDetected = !sig.shootPending && !held && !!sig.dropbox && sig.dropbox.rawPhotos + sig.dropbox.rawVideo > 0;
     await prisma.project.update({
       where: { id: p.id },
       data: {

@@ -625,6 +625,29 @@ export async function finalizeUpload(
     },
   });
 
+  // The office's Waiting hold ends here (Jordan, Sep 11): this submit is the
+  // photographer's own word that the footage is in — the first of the two
+  // things that release a job the office put back to Waiting (the other is
+  // the office moving it on from the queue pill; src/lib/queueWaiting.ts).
+  // Every submit, not just the first: debriefSubmittedAt keeps its original
+  // stamp on a re-submit, so the sweep's stamp-after-hold test alone would
+  // miss a job held after its first submit. Best-effort — the SHOT write
+  // below moves the job on regardless. `holdReleased` also re-runs the
+  // raws-landed handoff below: the office's Waiting clears the sweep's
+  // uploadedAt stamp, so this submit is usually the first finalize anyway,
+  // but a job held AFTER a real submit keeps its stamp and would otherwise
+  // wait an hour for its editor bell (Sep 11 review).
+  let holdReleased = false;
+  try {
+    const { releaseWaitingHold } = await import("@/lib/queueWaiting");
+    holdReleased = await releaseWaitingHold(projectId);
+    if (holdReleased) {
+      await prisma.activity.create({
+        data: { projectId, type: ActivityType.SYSTEM, body: "Waiting hold released — the photographer submitted the upload page." },
+      }).catch(() => {});
+    }
+  } catch { /* the marker is best-effort here — the SHOT write below stands on its own */ }
+
   // Advance into the editing pipeline if still pre-shoot.
   const project = await prisma.project.findUnique({ where: { id: projectId } });
   if (
@@ -661,8 +684,10 @@ export async function finalizeUpload(
   // waiting up to an hour for the cron. The old wiring only pinged Slack and
   // never minted the editor's work item (July 2026 audit: "both photographer
   // 'done' buttons suppress the editor handoff"). syncProjectStatuses re-reads
-  // Aryeo/Dropbox and calls the idempotent ensureEditorHandoff inside.
-  if (firstFinalize) {
+  // Aryeo/Dropbox and calls the idempotent ensureEditorHandoff inside. A
+  // submit that just released the office's Waiting hold runs it too (Sep 11):
+  // the editors are owed a fresh "Raws in" the moment the job moves on.
+  if (firstFinalize || holdReleased) {
     try {
       const { syncProjectStatuses } = await import("@/lib/projectStatus");
       await syncProjectStatuses({ projectId });
