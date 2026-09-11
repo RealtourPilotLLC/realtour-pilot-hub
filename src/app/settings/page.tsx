@@ -1,7 +1,7 @@
 import { requirePageAccess } from "@/lib/auth/guards";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { SlidersHorizontal, Route, Package, ArrowRight , MessageSquareText, Clock, BellRing, Clapperboard } from "lucide-react";
+import { SlidersHorizontal, Route, Package, ArrowRight , MessageSquareText, Clock, BellRing, Clapperboard, Smartphone } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { RoutingRulesForm } from "@/components/settings/RoutingRulesForm";
@@ -10,6 +10,8 @@ import { authEnforced } from "@/lib/auth/guards";
 import { editorRouting, autoTextRules, turnaroundRules, internalAlertRules, textTemplates, reviewRoomRules } from "@/lib/settings";
 import { AutoTextSettings } from "@/components/settings/AutoTextSettings";
 import { TurnaroundSettings, InternalAlertSettings, TextTemplateSettings, ReviewRoomSettings } from "@/components/settings/OperatingRules";
+import { OwnerTextSettings } from "@/components/settings/OwnerTextSettings";
+import { ownerSmsSettings } from "@/lib/smsPrefs";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +28,12 @@ export default async function SettingsPage() {
   const [rules, textRules, turns, alerts, templates, reviewRoom] = await Promise.all([
     editorRouting(), autoTextRules(), turnaroundRules(), internalAlertRules(), textTemplates(), reviewRoomRules(),
   ]);
+  // The owner's own phone (Jordan, Sep 11) — his card, nobody else's. Open
+  // mode (no session) renders as the owner, the same way the rest of the
+  // page does.
+  const ownerTexts = !me || me.role === "OWNER"
+    ? await ownerSmsSettings(me ? { teamMemberId: me.teamMemberId, email: me.email } : null).catch(() => null)
+    : null;
 
   return (
     <div>
@@ -63,6 +71,12 @@ export default async function SettingsPage() {
         <Section icon={BellRing} title="Internal alerts">
           <InternalAlertSettings initial={alerts} />
         </Section>
+
+        {ownerTexts && (
+          <Section icon={Smartphone} title="Text me">
+            <OwnerTextSettings initial={ownerTexts.prefs} phoneMasked={ownerTexts.phoneMasked} linked={!!ownerTexts.teamMemberId} />
+          </Section>
+        )}
 
         <Section icon={Clapperboard} title="Review Room">
           <ReviewRoomSettings initial={reviewRoom} />

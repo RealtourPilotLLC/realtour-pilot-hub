@@ -1,6 +1,8 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { slackNotify, slackChannels } from "@/lib/integrations/slack";
+import { appBase } from "@/lib/appUrl";
+import { HUB_SMS_PREFIX } from "@/lib/hubSms";
 import type { Role } from "@/lib/auth/access";
 
 // ---------------------------------------------------------------------------
@@ -16,12 +18,9 @@ import type { Role } from "@/lib/auth/access";
 // Posting to a user id opens the bot's DM with him.
 const KYLE_SLACK_ID = "U07SCBTPDC7";
 
-function appBase(): string {
-  return (
-    process.env.NEXT_PUBLIC_APP_URL ||
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000")
-  );
-}
+// Absolute links come from the one origin helper (src/lib/appUrl.ts) — the
+// local copy this file carried lacked the APP_URL fallback and the scheme
+// normalisation every other text already gets (Sep 11).
 
 // Where alerts go: SLACK_ALERT_CHANNEL env (a channel id or #name) wins; else
 // the ops channel the bot is already in (#rp-project-tracker family); else
@@ -61,7 +60,17 @@ export async function opsAlert(text: string): Promise<boolean> {
 // ---------------------------------------------------------------------------
 
 export type { Role };
-export type NotifyTarget = { roles: Role[]; userKey?: string; href?: string }; // href overrides the default per row
+export type NotifyTarget = {
+  roles: Role[];
+  userKey?: string;
+  href?: string; // overrides the default per row
+  /** Sep 11: the exact digest line the OWNER's phone gets when this row
+   *  bridges to his text (see the owner branch in notifyInApp). Leave it OFF
+   *  and the row is bell-only for him — the emitter's way of saying "he did
+   *  this himself" (his own upload, a self-tag). Photographer rows never read
+   *  it — they stay title + link (money clamp). */
+  ownerSms?: string;
+};
 
 // ---------------------------------------------------------------------------
 // WHAT THE BELL IS FOR (Sep 2 2026, before onboarding the team).
@@ -180,6 +189,10 @@ const BELL_RULES: Record<string, BellRule> = {
 // number; quiet hours 7:00–22:00 ET (the bell row still lands — the text just
 // doesn't wake anyone); only fires when the bell row was NEWLY created, so a
 // deduped re-announcement can't re-text.
+//
+// Sep 11: the OWNER rides the same queue for two kinds of his own — a cut
+// waiting on his verdict and an @mention of him — switched on /settings
+// (src/lib/smsPrefs.ts, default ON). See the owner branch in notifyInApp.
 // ---------------------------------------------------------------------------
 const SMS_KINDS = new Set([
   "appointment_change", "order_canceled", "mention", "review_feedback", "cull", "raws_missing", "task_assigned",
@@ -220,8 +233,16 @@ function withinTextingHours(tz = "America/New_York"): boolean {
 const SMS_BATCH_WINDOW_MS = 30 * 60_000;
 
 async function smsPhotographer(teamMemberId: string, title: string, href: string): Promise<void> {
+  await queueStaffSms(teamMemberId, `${title} → ${appBase()}${href}`);
+}
+
+// One digest line into a team member's queue — the ONLY way onto the bridge.
+// The photographer path builds "title → link"; the owner path (Sep 11) hands
+// in its own sentence. Everything downstream is shared: the 30-minute window,
+// quiet hours, the claim-then-send flush.
+async function queueStaffSms(teamMemberId: string, line: string): Promise<void> {
   try {
-    await prisma.pendingSms.create({ data: { teamMemberId, line: `${title} → ${appBase()}${href}` } });
+    await prisma.pendingSms.create({ data: { teamMemberId, line } });
     const recentSend = await prisma.pendingSms.findFirst({
       where: { teamMemberId, sentAt: { gte: new Date(Date.now() - SMS_BATCH_WINDOW_MS) } },
       select: { id: true },
@@ -231,7 +252,7 @@ async function smsPhotographer(teamMemberId: string, title: string, href: string
     // combines it into one message shortly.
     if (!recentSend && withinTextingHours()) await flushMemberSms(teamMemberId);
   } catch (e) {
-    console.warn("smsPhotographer failed", e);
+    console.warn("queueStaffSms failed", e);
   }
 }
 
@@ -269,8 +290,8 @@ async function flushMemberSms(teamMemberId: string): Promise<boolean> {
   const to = phone.startsWith("+") ? phone : `+1${phoneKey(phone)}`;
   const body =
     mine.length === 1
-      ? `⚙️ RealTour Hub: ${mine[0].line}`
-      : `⚙️ RealTour Hub — ${mine.length} updates:\n` + mine.map((r) => `• ${r.line}`).join("\n");
+      ? `${HUB_SMS_PREFIX}: ${mine[0].line}`
+      : `${HUB_SMS_PREFIX} — ${mine.length} updates:\n` + mine.map((r) => `• ${r.line}`).join("\n");
   try {
     await OpenPhone.sendMessage(from, to, body.slice(0, 1500));
   } catch (e) {
@@ -342,7 +363,7 @@ export async function notifyStaffSms(teamMemberIds: string[], text: string): Pro
     const ours = await ourOpenPhoneNumberKeys().catch(() => new Set<string>());
     // Resolved ONCE — defaultOpenPhoneNumber is a live API round trip.
     const from = ids.length ? await defaultOpenPhoneNumber() : null;
-    const body = `⚙️ RealTour Hub: ${text}`;
+    const body = `${HUB_SMS_PREFIX}: ${text}`;
 
     for (const m of members) {
       // Slack first — Jordan (Aug 24): "instead of texting Kyle, message him
@@ -480,10 +501,34 @@ export async function notifyInApp(n: {
             dedupeKey: n.dedupeKey ? `${n.dedupeKey}-${i}` : null,
           },
         });
-        // Row is NEW (a dedupe hit threw P2002 above) — bridge person-addressed
-        // photographer rows to SMS so shoot changes reach the field without push.
-        if (SMS_KINDS.has(n.kind) && t.userKey?.startsWith("tm:") && roles.includes("PHOTOGRAPHER")) {
-          await smsPhotographer(t.userKey.slice(3), title, href);
+        // Row is NEW (a dedupe hit threw P2002 above) — the bridges below fire
+        // once per row, which is what makes a re-announcement unable to re-text.
+        const tmId = t.userKey?.startsWith("tm:") ? t.userKey.slice(3) : null;
+        // THE OWNER'S TEXT (Jordan, Sep 11: "make sure I get a text when a
+        // video is in review or I'm mentioned in a chat"). A cut landing in the
+        // Review Room rings OWNER+ADMIN as a broadcast; a mention rings his
+        // tm: row. Either way the row reaches him — so the row itself is the
+        // trigger and the dedupe, no second bell. Which kinds he wants is his
+        // switch on /settings (smsPrefs.ts; no row = both ON). The line is the
+        // emitter's own sentence (ownerSms) so the text reads "Video in review
+        // — 1033 Preserve Ln (Kim, v2). <link>" rather than a bell title. Same
+        // queue as the photographers': quiet hours and the 30-minute digest
+        // apply, and a text that can't go out yet waits in PendingSms.
+        const { ownerSmsRecipient } = await import("@/lib/smsPrefs");
+        const owner = await ownerSmsRecipient(n.kind, { tmId, roles });
+        // Only a row that brought its own sentence texts him. An emitter that
+        // leaves ownerSms off is saying "bell only": the owner's own upload,
+        // a self-tag (reviewer, Sep 11) — and a future emitter of these kinds
+        // that has not yet thought about his phone stays quiet by default.
+        if (owner.textTo && t.ownerSms) {
+          await queueStaffSms(owner.textTo, t.ownerSms);
+        }
+        // …and bridge person-addressed photographer rows to SMS so shoot changes
+        // reach the field without push. NOT for the owner's own row on a kind
+        // his switch governs: Jordan is PHOTOGRAPHER on the roster, and the
+        // switch has to be the only thing deciding whether he is texted.
+        if (!owner.ownerRow && SMS_KINDS.has(n.kind) && tmId && roles.includes("PHOTOGRAPHER")) {
+          await smsPhotographer(tmId, title, href);
         }
         // …and bridge person-addressed EDITOR rows (editor:<key>) to Slack/SMS so
         // raws-landed / a revision / a review-back reaches Kim/Remar in Manila.

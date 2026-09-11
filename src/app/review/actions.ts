@@ -304,16 +304,28 @@ export async function submitCutForReview(
     },
   });
 
-  try {
-    await notifyInApp({
+  // Bell + the owner's text, deduped on the submission id (Sep 11) — the same
+  // announcer the portal upload and the hourly discovery use. Only a row this
+  // press CREATED announces: a row it CLAIMED was discovered and rung by the
+  // sweep already — under whatever key that day's code used, and six pre-
+  // Sep-11 rows (1033 Preserve Ln ×5, 38 E Gay St) still carry the old
+  // `autocut-…` key, so a claim of one would otherwise ring and text a cut
+  // that has sat in the Room since August (reviewer, Sep 11). The owner
+  // pressing on an editor's behalf is not texted about his own press.
+  if (!sync.claimed) {
+    const { announceCutInReview } = await import("@/lib/reviewCuts");
+    await announceCutInReview({
       kind: "review_submitted",
-      title: `Cut ready to review — ${street}`,
-      body: cut.fileName ?? undefined,
-      href: `/review/${projectId}`,
-      targets: [{ roles: ["OWNER", "ADMIN"] }],
-      dedupeKey: `review-sub-${submission.id}`,
+      projectId,
+      submissionId: submission.id,
+      round: submission.round,
+      street,
+      fileName: cut.fileName,
+      editorKey,
+      editorName: authorName,
+      ownerActed: authorKey === "owner",
     });
-  } catch { /* bell is best-effort */ }
+  }
 
   refresh(projectId);
   const multiProgress =
@@ -408,7 +420,7 @@ export async function addCutNote(input: {
   });
   {
     const { notifyMentions } = await import("@/lib/mentions");
-    await notifyMentions({ text: body, projectId: input.projectId, authorName, context: "a cut note", noteId: note.id });
+    await notifyMentions({ text: body, projectId: input.projectId, authorKey, authorName, context: "a cut note", noteId: note.id });
   }
   refresh(input.projectId);
   return { ok: true };
@@ -456,6 +468,7 @@ export async function replyCutNote(noteId: string, body: string): Promise<{ ok: 
     const excludeTmIds = await notifyMentions({
       text,
       projectId: root.projectId,
+      authorKey,
       authorName,
       context: "a cut-note comment",
       noteId: root.id,

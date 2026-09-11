@@ -39,6 +39,56 @@ const AUTO_NAME = "Auto — Final folder";
 /** The stable URL stored on a submission; the route re-mints the real link. */
 export const streamUrlFor = (submissionId: string) => `/api/review/cut/${submissionId}/stream`;
 
+/**
+ * A cut has landed in the Room waiting on a verdict: ring the office, and —
+ * through the bell row it makes — text the owner (Jordan, Sep 11: "make sure
+ * I get a text when a video is in review"). ONE announcer for the three ways
+ * in (the portal upload, the Final-folder submit, the hourly discovery), so
+ * the text reads the same whichever door the cut came through, and ONE
+ * dedupe key per SUBMISSION rather than per door: a row the sweep discovered
+ * and the editor's button later claimed used to ring twice under two keys,
+ * and now it can't; a new version is a new submission id and rings again.
+ * The owner's line is the exact sentence his phone gets (notify.ts prefixes
+ * it): "Video in review — 1033 Preserve Ln (Kim, v2). <link to the cut>".
+ * `ownerActed` = the owner put the cut there himself (a vendor's file from
+ * his own login): the office still gets the bell, his phone stays quiet —
+ * he knows (reviewer, Sep 11). Best-effort like every bell: never throws.
+ */
+export async function announceCutInReview(input: {
+  kind: "cut_ready" | "review_submitted";
+  projectId: string;
+  submissionId: string;
+  round: number;
+  street: string;
+  fileName?: string | null;
+  editorKey?: string | null;
+  editorName?: string | null;
+  ownerActed?: boolean;
+}): Promise<void> {
+  try {
+    const { notifyInApp } = await import("@/lib/notify");
+    const { appBase } = await import("@/lib/appUrl");
+    const href = `/review/${input.projectId}?cut=${input.submissionId}`;
+    // The editor by roster name when the key resolves ("Kim"), else whoever
+    // handed it in — the owner or Kyle uploading on an editor's behalf.
+    const editor = editorMeta(input.editorKey)?.name ?? input.editorName ?? "editor";
+    await notifyInApp({
+      kind: input.kind,
+      title: `${input.round > 1 ? `Version ${input.round}` : "Cut"} ready to review — ${input.street}${input.fileName ? ` · ${input.fileName}` : ""}`,
+      body: input.fileName ?? undefined,
+      href,
+      targets: [{
+        roles: ["OWNER", "ADMIN"],
+        // No sentence = no text (notify.ts): the owner's own upload is bell-only.
+        ...(input.ownerActed
+          ? {}
+          : { ownerSms: `Video in review — ${input.street} (${editor}, v${input.round}). ${appBase()}${href}` }),
+      }],
+      dedupeKey: `cut-in-review-${input.submissionId}`,
+    });
+  } catch { /* bell is best-effort */ }
+}
+
 /** Video files in the job's Final folder, oldest first. [] = folder missing or
  *  empty (a trustworthy zero); null = Dropbox couldn't be read (unknown). */
 export async function listFinalCuts(project: FolderProject): Promise<FinalCut[] | null> {
@@ -264,18 +314,19 @@ export async function discoverCutsForReview(projectId: string, title: string | n
   });
   if (r.created.length === 0) return 0;
   const street = (title || "job").split(",")[0].trim();
-  const { notifyInApp } = await import("@/lib/notify");
-  const { createHash } = await import("crypto");
   for (const row of r.created) {
-    // Per-file key: the second video of a batch must ring too.
-    const fileKey = createHash("sha1").update(row.assetPath).digest("hex").slice(0, 10);
-    await notifyInApp({
+    // One row per (file, round) already — the submission id IS the per-file
+    // key, so the second video of a batch rings too, and the editor's later
+    // claim of this same row can't ring it again (announceCutInReview).
+    await announceCutInReview({
       kind: "cut_ready",
-      title: `Cut ready to review — ${street} · ${row.fileName}`,
-      href: `/review/${projectId}?cut=${row.id}`,
-      targets: [{ roles: ["OWNER", "ADMIN"] }],
-      dedupeKey: `autocut-${projectId}-${fileKey}-r${row.round}`,
-    }).catch(() => {});
+      projectId,
+      submissionId: row.id,
+      round: row.round,
+      street,
+      fileName: row.fileName,
+      editorName: "Final folder",
+    });
   }
   return r.created.length;
 }
@@ -459,16 +510,23 @@ export async function finalizeCutUpload(
       body: `Cut uploaded for review — ${sub.fileName ?? "video"} (version ${sub.round})${sub.submittedByName ? ` by ${sub.submittedByName}` : ""}.`,
     },
   }).catch(() => {});
-  try {
-    const { notifyInApp } = await import("@/lib/notify");
-    await notifyInApp({
-      kind: "cut_ready",
-      title: `${sub.round > 1 ? `Version ${sub.round}` : "Cut"} ready to review — ${street}${sub.fileName ? ` · ${sub.fileName}` : ""}`,
-      href: `/review/${sub.projectId}?cut=${sub.id}`,
-      targets: [{ roles: ["OWNER", "ADMIN"] }],
-      dedupeKey: `cut-uploaded-${sub.id}`,
-    });
-  } catch { /* bell is best-effort */ }
+  // A version the owner uploaded himself rings the bell but does not text
+  // him (reviewer, Sep 11). The store's completion callback carries no
+  // session, so the row's own name is the only witness: an owner/admin row
+  // (no editor key) whose name is one of the owner's (smsPrefs.ownerActedBy).
+  const { ownerActedBy } = await import("@/lib/smsPrefs");
+  const ownerActed = !sub.submittedByKey && (await ownerActedBy(sub.submittedByName));
+  await announceCutInReview({
+    kind: "cut_ready",
+    projectId: sub.projectId,
+    submissionId: sub.id,
+    round: sub.round,
+    street,
+    fileName: sub.fileName,
+    editorKey: sub.submittedByKey,
+    editorName: sub.submittedByName,
+    ownerActed,
+  });
   return { ok: true, message: `Version ${sub.round} is in the Review Room.` };
 }
 

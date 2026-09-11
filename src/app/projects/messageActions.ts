@@ -92,8 +92,15 @@ export async function postProjectMessage(
       const tmId = await editorTeamMemberId(key);
       if (tmId) editorTmIds.set(tmId, key);
     }
+    // The owner's roster row(s): a tag of himself in his own message rings the
+    // bell and nothing more (reviewer, Sep 11). His login may not resolve to
+    // a TeamMember by name above, so the roster is asked directly.
+    const owners = me?.role === "OWNER"
+      ? await (await import("@/lib/smsPrefs")).ownerTeamMemberIds().catch(() => [] as string[])
+      : [];
     for (const t of tagged) {
       const editorKey = editorTmIds.get(t.id) ?? null;
+      const selfTag = t.id === authorId || owners.includes(t.id);
       // A tagged photographer who doesn't own this shoot gets bounced off
       // /shoot/<id> to the bare list — send them to the list directly (their
       // tag task carries the context); the owning shooter still deep-links.
@@ -132,11 +139,19 @@ export async function postProjectMessage(
       // money clamp strips the body for creative roles automatically.
       try {
         const { notifyInApp } = await import("@/lib/notify");
+        const { appBase } = await import("@/lib/appUrl");
+        const { clip } = await import("@/lib/text");
         const targets: import("@/lib/notify").NotifyTarget[] = [
           {
             roles: editorKey ? ["OWNER", "ADMIN", "EDITOR"] : ["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"],
             userKey: `tm:${t.id}`,
             href,
+            // The owner's text (Sep 11) when this row is his — the thread lives
+            // on the project page, so that is the link. Off on a self-tag (no
+            // sentence = no text, notify.ts).
+            ...(selfTag
+              ? {}
+              : { ownerSms: `${authorName ?? "A teammate"} mentioned you on ${street}: “${clip(text, 90)}” ${appBase()}/projects/${projectId}` }),
           },
         ];
         if (editorKey) targets.push({ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${projectId}` });

@@ -4,6 +4,7 @@ import { phoneKey, callTranscriptText, openPhoneRequestAuthorized, ourOpenPhoneN
 import { resolveClientByPhones, resolveSenderName, findActiveProjectByText, findClientProjectByText } from "@/lib/contacts";
 import { recordClientCommunication } from "@/lib/comms";
 import { logComm } from "@/lib/commLog";
+import { HUB_REPLY_SOURCE, HUB_SMS_SOURCES, isHubSms } from "@/lib/hubSms";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -132,13 +133,79 @@ function streetOf(title: string | null | undefined): string | null {
 // roster lookup on every inbound text. Best-effort: if the query fails we hand
 // back an empty team set, which degrades to the old (line-only) behaviour rather
 // than mistaking a client for one of ours.
-let teamNumbersCache: { at: number; keys: Set<string> } | null = null;
-async function ourNumberKeys(): Promise<{ line: Set<string>; team: Set<string> }> {
+// The staff texts that predate the "⚙️ RealTour Hub" prefix — the upload-page
+// digest, its 10 PM chaser and the one-time intro (src/lib/uploadDigest.ts,
+// "Hi Jordan — RealTour Pilot here…") — are known by the comms row the sender
+// logs the moment the send returns: the same words, to one of these numbers,
+// in the last half hour. Reviewer, Sep 11: their echo was still landing as an
+// "Us" → Jordan row, which the reply queue reads as "we answered him".
+// Best-effort — a lookup failure leaves that echo on the old path; it can
+// never drop a client's message, because the caller already knows nobody
+// outside the company is on the thread.
+async function hubSentToStaff(text: string, recipients: string[]): Promise<boolean> {
+  const body = text.trim().slice(0, 6_000); // logComm stores the trimmed body, capped the same way
+  if (!body || recipients.length === 0) return false;
+  try {
+    const row = await prisma.commLog.findFirst({
+      where: {
+        source: { in: [...HUB_SMS_SOURCES] },
+        direction: "out",
+        fromPhone: { in: recipients },
+        body,
+        createdAt: { gte: new Date(Date.now() - 30 * 60_000) },
+      },
+      select: { id: true },
+    });
+    return !!row;
+  } catch {
+    return false;
+  }
+}
+
+// Did the hub text the owner in the last two hours? (The prefixed lines leave
+// a sent PendingSms row; the pre-prefix chasers leave a comms row on his
+// number.) His next text to the office is then a reply to the hub, not a
+// question for Kyle — see `hubReply` below. Best-effort false.
+async function recentHubTextTo(fromPhone: string): Promise<boolean> {
+  const since = new Date(Date.now() - 2 * 3600_000);
+  try {
+    const { ownerTeamMemberIds } = await import("@/lib/smsPrefs");
+    const ids = await ownerTeamMemberIds();
+    if (ids.length > 0) {
+      const sent = await prisma.pendingSms.findFirst({
+        where: { teamMemberId: { in: ids }, sentAt: { gte: since } },
+        select: { id: true },
+      });
+      if (sent) return true;
+    }
+    const chaser = await prisma.commLog.findFirst({
+      where: { source: { in: [...HUB_SMS_SOURCES] }, direction: "out", fromPhone, createdAt: { gte: since } },
+      select: { id: true },
+    });
+    return !!chaser;
+  } catch {
+    return false;
+  }
+}
+
+let teamNumbersCache: { at: number; keys: Set<string>; owner: Set<string> } | null = null;
+async function ourNumberKeys(): Promise<{ line: Set<string>; team: Set<string>; owner: Set<string> }> {
   const line = await ourOpenPhoneNumberKeys();
   if (teamNumbersCache && Date.now() - teamNumbersCache.at < 10 * 60_000) {
-    return { line, team: teamNumbersCache.keys };
+    return { line, team: teamNumbersCache.keys, owner: teamNumbersCache.owner };
   }
   let team = new Set<string>();
+  // The OWNER's own handset(s), a subset of `team` (smsPrefs.ownerPhoneKeys —
+  // resolved from the login roster, never a hard-coded number). Read for the
+  // echo guard below; a lookup failure leaves it empty, which only means his
+  // texts are treated like any other teammate's.
+  let owner = new Set<string>();
+  try {
+    const { ownerPhoneKeys } = await import("@/lib/smsPrefs");
+    owner = await ownerPhoneKeys();
+  } catch {
+    owner = teamNumbersCache?.owner ?? new Set();
+  }
   try {
     // INACTIVE members included on purpose: a message Sarah sent while she was
     // on the roster is still ours, and dropping her the day she leaves would
@@ -150,11 +217,11 @@ async function ourNumberKeys(): Promise<{ line: Set<string>; team: Set<string> }
       select: { phone: true },
     });
     team = new Set(rows.map((r) => phoneKey(r.phone)).filter((k) => k.length === 10));
-    teamNumbersCache = { at: Date.now(), keys: team };
+    teamNumbersCache = { at: Date.now(), keys: team, owner };
   } catch {
     team = teamNumbersCache?.keys ?? new Set();
   }
-  return { line, team };
+  return { line, team, owner };
 }
 
 function collectPhones(obj: unknown, acc: string[] = []): string[] {
@@ -205,7 +272,7 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
   // the company. Everything that is not the line — a client, and equally our own
   // photographer's handset — arrives stamped `incoming`. So we decide from the
   // numbers on the thread (see ourNumberKeys above).
-  const { line: ourLine, team: ourTeam } = await ourNumberKeys();
+  const { line: ourLine, team: ourTeam, owner: ourOwner } = await ourNumberKeys();
   // Neither kind is ever the CLIENT a message is about: a group thread must
   // resolve on the real participant, and an all-hands internal thread on nobody.
   const ourNumbers = new Set([...ourLine, ...ourTeam]);
@@ -236,6 +303,41 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
   const fromUs = fromLine || (fromTeamPhone && outsiders.length > 0);
   const effIncoming = incoming && !fromUs;
   const isInboundText = !fromUs && (type === "message.received" || (!isCall && incoming));
+
+  // --- THE HUB TALKING TO ITS OWN PEOPLE (Sep 11) ----------------------------
+  // The hub texts staff from this same line — "⚙️ RealTour Hub: Video in
+  // review…", a mention, payday, photos-not-delivered — and every one of those
+  // echoes back here as an outgoing message to a teammate's number. Before
+  // this guard the echo was logged as a conversation ("Us" → Jordan), and a
+  // direction-"out" row on his number is exactly what the reply queue reads as
+  // "we answered him": a payday notice could clear a question Jordan had
+  // asked Kyle an hour earlier (replyQueue.clearFor kills the row's own
+  // bucket). Probed Sep 11: 154 such echoes in 60 days, none attached to a
+  // client. So a hub-prefixed text on a thread with nobody outside the
+  // company is INTERNAL: archived as a WebhookEvent like everything else, and
+  // then nothing — no comms row, no client match, no task close, no reply
+  // credit, no brain, no lead. The prefix is the contract (src/lib/hubSms.ts),
+  // and the two chasers that predate it are recognised by the row they log
+  // (hubSentToStaff). Kyle's own human texts from the line carry neither and
+  // keep the old path — they legitimately answer a teammate's question.
+  const staffOnly = outsiders.length === 0;
+  if (!isCall && fromLine && staffOnly && (isHubSms(text) || (await hubSentToStaff(text, recipients)))) return;
+  // And the owner answering that text from his pocket ("Approved", "looks
+  // good, 1033 Preserve Ln") must never be minted into a to-do by the
+  // project-routing pass below — that pass exists for a photographer or a
+  // coordinator giving the office an instruction, and the owner texting the
+  // office alone is a conversation with Kyle, which the comms row (still
+  // written, still his name) and the reply queue already carry. Probed Sep
+  // 11: zero comms_followup tasks from his number in 60 days, so nothing
+  // real is lost. Keyed on the TeamMember roster first (ourOwner ⊂ ourTeam),
+  // so a Client row that ever carried his number could not turn it back on.
+  const ownerToOffice = fromTeamPhone && staffOnly && ourOwner.has(fromPhone);
+  // …and when his text follows a hub text to him by less than two hours, the
+  // row is stamped source "hub-reply": kept for the record (Kyle's handset is
+  // the line, so he read it on his phone anyway), skipped by the reply queue,
+  // which otherwise listed "Jordan Spackman: Approved" as a thread Kyle owed
+  // an answer to and pre-drafted one (reviewer, Sep 11).
+  const hubReply = ownerToOffice && !isCall && incoming && (await recentHubTextTo(fromPhone));
 
   // Who actually sent this? (team member / client / synced contact — or nobody
   // we know). Resolved for every sender except our own workspace line, whose
@@ -295,7 +397,7 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
           ? sender?.name ?? match?.clientName ?? (fromPhone.length === 10 ? prettyPhone(fromPhone) : null)
           : "RealTour Pilot",
       body: text,
-      source: "openphone",
+      source: hubReply ? HUB_REPLY_SOURCE : "openphone",
       externalId: data.id ? `op-${data.id as string}` : undefined,
       projectGuess,
     });
@@ -494,7 +596,7 @@ export async function processOpenPhoneEvent(type: string, payload: Record<string
   // Harrison, a coordinator like Ruthie), becomes an instruction task on that
   // exact project. Works even when the sender isn't a client at all.
   let routedToProject = false; // a project instruction isn't a lead (see below)
-  if (isInboundText && text.trim()) {
+  if (isInboundText && text.trim() && !ownerToOffice) {
     if (fromPhone.length === 10) {
       const hitProject = await findActiveProjectByText(text);
       // Don't make tasks from automated/system senders (Aryeo reminders,

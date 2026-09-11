@@ -1,5 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { appBase } from "@/lib/appUrl";
+import { clip } from "@/lib/text";
 
 // ---------------------------------------------------------------------------
 // @mentions in note comments. The note/reply actions call notifyMentions with
@@ -70,6 +72,9 @@ export async function isMentionedIn(texts: string[], teamMemberId: string): Prom
 export async function notifyMentions(opts: {
   text: string;
   projectId: string;
+  /** The writer's session key ("owner" | "tm:<id>" | "editor:<key>" | …) — a
+   *  tag of THEMSELVES rings the bell and nothing more. */
+  authorKey?: string | null;
   authorName?: string | null;
   /** Short context for the ping, e.g. "a review note" | "a cut note". */
   context?: string;
@@ -106,9 +111,18 @@ export async function notifyMentions(opts: {
     }
     const editorKeyFor = (tmId: string): string | null => editorTmIds.get(tmId) ?? null;
 
+    // The owner's roster row(s), so "@Jordan" in the owner's own note is
+    // recognised as a self-tag (his session key is "owner", not tm:).
+    const owners = opts.authorKey === "owner"
+      ? await (await import("@/lib/smsPrefs")).ownerTeamMemberIds().catch(() => [] as string[])
+      : [];
+
     const { notifyInApp } = await import("@/lib/notify");
     for (const t of tagged) {
       const editorKey = editorKeyFor(t.id);
+      // A self-tag rings the bell and nothing more — no text about what he
+      // just wrote himself (reviewer, Sep 11).
+      const selfTag = opts.authorKey === `tm:${t.id}` || owners.includes(t.id);
       let href: string;
       if (t.role === "PHOTOGRAPHER") {
         // A tagged photographer may NOT own this shoot — /shoot/<id> bounces
@@ -163,6 +177,11 @@ export async function notifyMentions(opts: {
           roles: editorKey ? ["OWNER", "ADMIN", "EDITOR"] : ["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"],
           userKey: `tm:${t.id}`,
           href,
+          // The owner's text (Sep 11), read only when this tm: row is his: who,
+          // where, the first ~90 characters, and the note itself — the note
+          // page opens for the owner and shows the whole thread. Off on a
+          // self-tag (no sentence = no text, notify.ts).
+          ...(selfTag ? {} : { ownerSms: `${author} mentioned you on ${street}: “${clip(opts.text, 90)}” ${appBase()}${href}` }),
         },
       ];
       if (editorKey) {

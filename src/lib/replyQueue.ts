@@ -5,6 +5,7 @@ import { contentTier } from "@/lib/auth/access";
 import { phoneKey } from "@/lib/integrations/openphone";
 import { classifyComm, isReaction, PRAISE_ONLY } from "@/lib/comms";
 import { stripQuotedReply } from "@/lib/text";
+import { HUB_REPLY_SOURCE, isHubSms, isHubSmsSource } from "@/lib/hubSms";
 
 // ---------------------------------------------------------------------------
 // THE ONE ANSWER TO "WHO IS WAITING ON A REPLY".
@@ -584,6 +585,12 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
       // Automated confirmation/delivery texts answer nothing — a client's
       // unanswered question must not vanish because the robot texted.
       if ((r.source ?? "").startsWith("auto-")) continue;
+      // Nor do the hub's own staff texts: a "⚙️ RealTour Hub:" line (its echo
+      // was logged as "Us" → the teammate until Sep 11, and older rows still
+      // sit in the window) or an upload-page chaser, which logs a row on the
+      // teammate's number itself. Before this a payday notice read as Kyle
+      // answering Jordan (reviewer, Sep 11).
+      if (isHubSmsSource(r.source) || isHubSms(r.body)) continue;
       // A missed / unanswered outgoing call clears nothing either; an ANSWERED
       // outbound call IS an answer (Jordan kept getting "still unanswered"
       // pages two hours after handling it by phone).
@@ -591,6 +598,10 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
       clearFor(r, id.key, ours);
       continue;
     }
+
+    // The owner answering a hub text from his pocket ("Approved"): kept in the
+    // dialogue above for context, owed nothing by the office (Sep 11).
+    if (r.source === HUB_REPLY_SOURCE) continue;
 
     // Inbound. Work out what it is and whether it asks anything of us.
     let subject: string | null = null;

@@ -35,19 +35,21 @@ function Num({ value, onChange, min, max, suffix, wide }: { value: number; onCha
   );
 }
 
-function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
+// Exported (Sep 11) so the owner's "Text me" card uses the same switch and
+// Save row as the rest of the page rather than a look-alike.
+export function Toggle({ on, onChange, label, disabled }: { on: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {
   return (
     <button
-      type="button" role="switch" aria-checked={on} aria-label={label}
+      type="button" role="switch" aria-checked={on} aria-label={label} disabled={disabled}
       onClick={() => onChange(!on)}
-      className={cn("relative h-6 w-11 shrink-0 rounded-full transition-colors", on ? "bg-success" : "bg-surface-2 ring-1 ring-border")}
+      className={cn("relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50", on ? "bg-success" : "bg-surface-2 ring-1 ring-border")}
     >
       <span className={cn("absolute top-0.5 size-5 rounded-full bg-white shadow transition-all", on ? "left-[22px]" : "left-0.5")} />
     </button>
   );
 }
 
-function SaveRow({ onSave, msg, busy }: { onSave: () => void; msg: string | null; busy: boolean }) {
+export function SaveRow({ onSave, msg, busy }: { onSave: () => void; msg: string | null; busy: boolean }) {
   return (
     <div className="mt-3 flex flex-wrap items-center gap-3">
       <button onClick={onSave} disabled={busy} className="inline-flex items-center gap-2 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg hover:opacity-90 disabled:opacity-50">

@@ -165,7 +165,7 @@ export async function addMediaNote(input: {
     },
   });
   const { notifyMentions } = await import("@/lib/mentions");
-  await notifyMentions({ text: body, projectId: input.projectId, authorName, context: "a review note", noteId: note.id });
+  await notifyMentions({ text: body, projectId: input.projectId, authorKey, authorName, context: "a review note", noteId: note.id });
   refresh(input.projectId);
   return { ok: true, id: note.id };
 }
@@ -216,6 +216,7 @@ export async function replyMediaNote(noteId: string, body: string): Promise<{ ok
   const excludeTmIds = await notifyMentions({
     text,
     projectId: root.projectId,
+    authorKey,
     authorName,
     context: "a note comment",
     noteId: root.id,
