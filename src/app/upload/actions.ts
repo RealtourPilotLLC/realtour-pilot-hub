@@ -657,7 +657,10 @@ export async function finalizeUpload(
   ) {
     await prisma.project.update({
       where: { id: projectId },
-      data: { status: ProjectStatus.SHOT },
+      // The photographer's submit is a human status write, and a human write
+      // ends the office's status pin (Sep 13, editOverrides.ts) — a pinned
+      // Waiting gives way the same way the office's Waiting hold does.
+      data: { status: ProjectStatus.SHOT, statusPinnedAt: null },
     });
   }
 

@@ -1622,7 +1622,10 @@ export async function createDeliveryTextTask(projectId: string): Promise<void> {
     where: { id: projectId },
     select: {
       id: true, title: true, clientId: true, statusEvidence: true, packageName: true, shootDate: true, deliveredAt: true,
-      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
+      // The batch this job owes, the office's number first (Sep 13) — see
+      // effectiveVideosOwed below.
+      videosOwedOverride: true, videosFilmed: true,
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, quantity: true } },
       client: { select: { name: true } },
     },
   });
@@ -1655,12 +1658,46 @@ export async function createDeliveryTextTask(projectId: string): Promise<void> {
     const { parseEvidence } = await import("@/lib/statusEvidence");
     const { monthlyVideoQuota } = await import("@/lib/pipeline");
     const videos = parseEvidence(project.statusEvidence)?.aryeo?.videos ?? 0;
-    const quota = monthlyVideoQuota([project.packageName, ...project.deliverables.map((d) => d.label)]);
-    // The editor's explicit override on the Editor Queue (setQueueStatus).
-    const markedComplete = await prisma.activity.findFirst({
-      where: { projectId, type: "SYSTEM", body: { contains: "Queue status set: Completed" } },
-      select: { id: true },
+    // The batch: the office's number when it set one (Sep 13, editOverrides
+    // — "videos owed 6" on a 4-video month holds the text until six are
+    // live); otherwise the plan quota, raised to the photographer's own count
+    // when they filmed more (the same ladder cutSlots owes against).
+    const { effectiveVideosOwed } = await import("@/lib/editOverrides");
+    const quota =
+      project.videosOwedOverride ??
+      Math.max(
+        monthlyVideoQuota([project.packageName, ...project.deliverables.map((d) => d.label)]),
+        effectiveVideosOwed(project, project.deliverables),
+      );
+    // The editor's explicit override on the Editor Queue (setQueueStatus), or
+    // the office forcing Completed through the override dialog (Sep 13) —
+    // either is a human saying the batch is done. Only when it is the LATEST
+    // human status word on the job (review, Sep 13): those rows are
+    // permanent, and a job put back to In editing after a Completed used to
+    // read "marked complete" forever, so the text went the moment it next
+    // read Delivered — with the batch still short. The newest "Queue status
+    // set: …" / "Override by …: status …" row decides; any later one that is
+    // not a Completed hands the decision back to the evidence.
+    const latestStatusWord = await prisma.activity.findFirst({
+      where: {
+        projectId,
+        type: "SYSTEM",
+        OR: [
+          { body: { startsWith: "Queue status set:" } },
+          // describeOverrides puts the status part first: "Override by
+          // <name>: status A → B …" — so a note that merely says "status"
+          // can't pass as a status row.
+          { body: { startsWith: "Override by", contains: ": status " } },
+        ],
+      },
+      orderBy: { createdAt: "desc" },
+      select: { body: true },
     });
+    const markedComplete =
+      !!latestStatusWord &&
+      (latestStatusWord.body.startsWith("Queue status set: Completed") ||
+        (latestStatusWord.body.startsWith("Override by") &&
+          (latestStatusWord.body.includes("→ Completed") || latestStatusWord.body.includes("pinned on Completed"))));
     if (videos < quota && !markedComplete) {
       // Not there yet. Keep waiting UNLESS the promised turnaround has already
       // passed — then a human must decide rather than the job going silent.
@@ -2155,6 +2192,11 @@ export async function mintEditTask(projectId: string): Promise<void> {
       createdAt: true,
       dropboxFolder: true, // the RAW link must open THIS job's folder (re-shoot / moved shoot; audit, Sep 8)
       editorManual: true,
+      // The office's due / priority for this edit (Sep 13, editOverrides.ts)
+      // — they win over the SLA rule below, on the first mint AND every
+      // hourly refresh.
+      dueOverrideAt: true,
+      priorityOverride: true,
       editor: { select: { name: true } },
       client: { select: { name: true, socialClient: true } },
       deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
@@ -2190,7 +2232,14 @@ export async function mintEditTask(projectId: string): Promise<void> {
   // Video delivery-due = shootDate + the SAME SLA the status card uses, then a
   // 12h QC buffer pulls the EDIT due earlier. No shootDate → no computable SLA,
   // fall back to a short nudge window so the task still surfaces.
-  const { videoDue, late, dueAt } = editDueRule(p.shootDate, v.type, { premium: isPremium, monthlyContent: monthly });
+  // THE OFFICE'S DUE (Sep 13): when dueOverrideAt is set the card is due at
+  // exactly that instant — no QC buffer, no late-clamp — and the summary
+  // names that date. The hourly refresh below reads the same column, so it
+  // can never roll the office's date back to the SLA.
+  const rule = editDueRule(p.shootDate, v.type, { premium: isPremium, monthlyContent: monthly });
+  const videoDue = p.dueOverrideAt ?? rule.videoDue;
+  const dueAt = p.dueOverrideAt ?? rule.dueAt;
+  const late = p.dueOverrideAt ? false : rule.late;
 
   const rawUrl = dropboxWebUrl(actualFolderPaths(p).rawVideo);
   const briefUrl = `/edit/${projectId}`;
@@ -2200,11 +2249,14 @@ export async function mintEditTask(projectId: string): Promise<void> {
     : "soon";
 
   const summary =
-    `${tierLabel} reel for ${street}. Raws are in — cut the video. Delivery due ${dueLabel} (edit due 12h earlier for QC). ` +
+    `${tierLabel} reel for ${street}. Raws are in — cut the video. Delivery due ${dueLabel}${p.dueOverrideAt ? " (set by the office)" : " (edit due 12h earlier for QC)"}. ` +
     `RAW footage: ${rawUrl} · Brief: ${briefUrl}`;
 
   const key = `edit-video-${projectId}`;
-  const priority = computePriority({ dueAt, status: "SHOT" });
+  // The office's priority pins the card (Sep 13); otherwise it is priced by
+  // the due date as always.
+  const priorityFor = (due: Date) => p.priorityOverride ?? computePriority({ dueAt: due, status: "SHOT" });
+  const priority = priorityFor(dueAt);
   // Upsert so a re-detected SHOT keeps ONE task and refreshes its route/due,
   // but a COMPLETED one is never resurrected (the reconciler owns re-open).
   const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
@@ -2220,7 +2272,7 @@ export async function mintEditTask(projectId: string): Promise<void> {
       // onto the task as assignedManually so every downstream engine sees it.
       ...(existing.assignedManually || !assignedKey ? {} : { assignedKey, ...(pin.pinned ? { assignedManually: true } : {}) }),
       dueAt: refreshedDue,
-      priority: computePriority({ dueAt: refreshedDue, status: "SHOT" }),
+      priority: priorityFor(refreshedDue),
       // A bounce writes "Round N — …" here (addRoundToEditCard, Sep 8): that
       // is the editor's current instruction and outlives the hourly refresh
       // until the card closes. Only the plain first-cut summary is rewritten.
@@ -2306,17 +2358,20 @@ export async function addRoundToEditCard(
   if (!description.includes(block)) description = description ? `${description}\n\n${block}` : block;
   if (description.length > 4000) description = "…" + description.slice(-4000);
   const summary = `Round ${opts.round} — ${n} note${n === 1 ? "" : "s"} to fix (${opts.reason}). The notes are below and on the cut at /edit/${projectId}; fix them and upload the next version.`.slice(0, 500);
-  // Due: the same SLA−12h rule as a first cut, off the job's video deliverable.
+  // Due: the same SLA−12h rule as a first cut, off the job's video deliverable
+  // — unless the office set the due / priority on the job (Sep 13), which a
+  // round refresh must not undo any more than the hourly one may.
   const p = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { shootDate: true, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } } },
+    select: { shootDate: true, dueOverrideAt: true, priorityOverride: true, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } } },
   });
   const v = p?.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
   const { videoTier } = await import("@/lib/projectStatus");
-  const { dueAt } = editDueRule(p?.shootDate ?? null, v?.type ?? "VIDEO", {
+  const rule = editDueRule(p?.shootDate ?? null, v?.type ?? "VIDEO", {
     premium: p ? videoTier(p.deliverables) === "premium" : false,
     monthlyContent: p ? isMonthlyContentJob(p.deliverables) : false,
   });
+  const dueAt = p?.dueOverrideAt ?? rule.dueAt;
   await prisma.smartTask.update({
     where: { id: card.id },
     data: {
@@ -2325,7 +2380,7 @@ export async function addRoundToEditCard(
       summary,
       description,
       dueAt,
-      priority: computePriority({ dueAt, status: "SHOT" }),
+      priority: p?.priorityOverride ?? computePriority({ dueAt, status: "SHOT" }),
     },
   });
   return { taskId: card.id, assignedKey: card.assignedKey, assignedManually: card.assignedManually };
@@ -2398,6 +2453,7 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
       deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, notCompletedReason: true, quantity: true } },
       packageName: true,
       videosFilmed: true,
+      videosOwedOverride: true, // the office's batch size (Sep 13) — wins below
     },
   });
   if (!p) return;
@@ -2513,7 +2569,9 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
     const quantityOwed = p.deliverables
       .filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL")
       .reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
-    const owed = Math.max(quantityOwed, p.videosFilmed ?? monthlyVideoQuota([p.packageName, ...p.deliverables.map((d) => d.label)]));
+    // The office's number wins over the order row, the photographer's count
+    // and the plan quota alike (Sep 13, editOverrides.ts).
+    const owed = p.videosOwedOverride ?? Math.max(quantityOwed, p.videosFilmed ?? monthlyVideoQuota([p.packageName, ...p.deliverables.map((d) => d.label)]));
     // SUBMITTED files, not approved — the editor's item closes when the set is
     // in (submitCutForReview's closeEdit), and gating on approvals here would
     // keep re-minting between "all in" and "all approved".
@@ -2817,6 +2875,9 @@ type TaskProject = {
   /** title fallbacks for coordinate-only orders (scalars ride along with `include`) */
   addressLine?: string | null;
   city?: string | null;
+  /** the office's batch size / the photographer's count (Sep 13, editOverrides) — ride along with `include` */
+  videosOwedOverride?: number | null;
+  videosFilmed?: number | null;
 };
 
 // Dedupe-key families minted OUTSIDE this reconciler (webhooks/integrations).
@@ -2889,7 +2950,14 @@ async function syncOneProjectTasks(
       if (isMonthlyContentJob(vids)) {
         finalVideoLanded = p.status === "DELIVERED";
       } else {
-        const videosOwed = vids.reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
+        // The office's number first (Sep 13, editOverrides.effectiveVideosOwed):
+        // "videos owed 2" on a one-reel listing keeps the card open until the
+        // second cut is in, exactly as the queue cell and the cut slots say.
+        const { effectiveVideosOwed } = await import("@/lib/editOverrides");
+        const videosOwed = effectiveVideosOwed(
+          { videosOwedOverride: p.videosOwedOverride ?? null, videosFilmed: p.videosFilmed ?? null },
+          vids,
+        );
         if (videosOwed > 1) {
           // Distinct CUTS (deliverable × slot for uploads, file for legacy
           // folder rows) — uploaded cuts carry no Dropbox path.

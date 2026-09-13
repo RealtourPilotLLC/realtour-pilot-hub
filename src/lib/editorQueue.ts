@@ -10,6 +10,17 @@ import { actualFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { etAddDays } from "@/lib/datetime";
 import { EDIT_ROUND_SUMMARY } from "@/lib/tasks";
 import { WAITING_HOLD_PREFIX } from "@/lib/queueWaiting";
+import {
+  computedVideosOwed,
+  computedView,
+  effectiveDue,
+  effectivePriority,
+  effectiveTier,
+  effectiveTypeDetail,
+  effectiveVideosOwed,
+  overrideView,
+  statusPinned,
+} from "@/lib/editOverrides";
 import type { QueueRow } from "@/components/editing/SimpleQueue";
 
 // The Editor Queue's row builder, extracted from /editing so the message
@@ -60,6 +71,10 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
           { status: { in: ["SHOT", "EDITING", "REVIEW", "REVISION"] } },
           { status: { in: ["BOOKED", "SCHEDULED"] }, shootDate: { lt: now, gte: etAddDays(now, -7) } },
           { status: { in: ["BOOKED", "SCHEDULED"] }, id: { in: heldIds }, OR: [{ shootDate: { lt: now } }, { shootDate: null }] },
+          // A Waiting the office PINNED through the override dialog (Sep 13,
+          // editOverrides.ts) is the same kind of watched job as a hold: it
+          // stays in Not Done past the 7-day window until the office moves it.
+          { status: { in: ["BOOKED", "SCHEDULED"] }, statusPinnedAt: { not: null }, OR: [{ shootDate: { lt: now } }, { shootDate: null }] },
         ],
         aryeoMissingAt: null,
       },
@@ -195,7 +210,11 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
   const toRow = (p: P, upcoming = false): QueueRow => {
     const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
     const monthly = isMonthlyContentJob(p.deliverables);
-    const tier: QueueRow["tier"] = monthly ? "branding" : videoTier(p.deliverables) === "premium" ? "premium" : "standard";
+    // The hub's own verdict; the office's override (Sep 13) is applied to the
+    // row below, and both travel on it (`computed` / `overrides`) so the
+    // dialog can show what "Use the hub's value" hands back.
+    const computedTier: QueueRow["tier"] = monthly ? "branding" : videoTier(p.deliverables) === "premium" ? "premium" : "standard";
+    const tier: QueueRow["tier"] = effectiveTier(p, computedTier);
     const assigned = taskEditor.get(p.id) ?? null;
     // "Nobody" is a real answer, not a gap: an owner who unassigned this job
     // (task pin, or the project pinned to no editor) means it, so the routing
@@ -215,7 +234,9 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
     // session (audit HIGH). videosFilmed, when the photographer reported it,
     // is the most truthful number of all. It is also how many cuts have to be
     // approved before the job's video work is finished.
-    const videosOwed = p.videosFilmed ?? videos.reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
+    // The office's number (videosOwedOverride) wins over both (Sep 13).
+    const computedVideos = computedVideosOwed(p, videos);
+    const videosOwed = effectiveVideosOwed(p, videos);
     // The job's OWN folder (a same-street re-shoot or a month-moved shoot lives
     // off the convention path — audit, Sep 8).
     const folders = actualFolderPaths(p);
@@ -281,6 +302,17 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
         effectiveStatus = finalIn > 0 || videoLive ? "REVIEW" : dropboxStale ? p.status : "SHOT";
       }
     }
+    // THE OFFICE'S PIN (Sep 13, editOverrides.ts). A pinned status is the
+    // office's word over the cuts: the row reads Project.status itself — the
+    // value the override dialog wrote and every engine now leaves alone —
+    // instead of the cut-derived ladder above, and `overrides.statusPinned`
+    // is the marker the row draws the pin from. Upcoming rows too: a pinned
+    // job reads what was pinned, wherever its shoot date sits.
+    const pinned = statusPinned(p);
+    if (pinned) effectiveStatus = p.status;
+    const computedTypeDetail = videos.map((d) => d.label || d.type).join(" · ");
+    const computedDue = upcoming ? null : p.deliveryDue ?? null;
+    const due = upcoming ? p.shootDate ?? null : effectiveDue(p, computedDue);
     return {
       id: p.id,
       url: `${base}/edit/${p.id}`,
@@ -292,8 +324,8 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
       // client record joins it.
       clientAvatarUrl: p.client.avatarUrl,
       tier,
-      typeDetail: videos.map((d) => d.label || d.type).join(" · "),
-      status: upcoming ? "Waiting" : STATUS_LABEL[effectiveStatus] ?? effectiveStatus,
+      typeDetail: effectiveTypeDetail(p, computedTypeDetail),
+      status: upcoming && !pinned ? "Waiting" : STATUS_LABEL[effectiveStatus] ?? effectiveStatus,
       // The office is holding this job in Waiting (Sep 11): the pill on the
       // editor's queue greys every option on such a row — only the office or
       // the photographer's upload-page submit moves it on. A marker on a job
@@ -304,10 +336,22 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
       // ladder as the display: open task → Project.editor → routing rules.
       editorKey: routeKey,
       auto: !assigned && !p.editor && !!routeKey,
-      dueISO: upcoming ? p.shootDate?.toISOString() ?? null : p.deliveryDue?.toISOString() ?? null,
-      late: !upcoming && p.status !== "DELIVERED" && !!p.deliveryDue && p.deliveryDue < now,
-      priority: p.priority,
+      // Upcoming rows show the shoot date here (no clock has started); every
+      // other row shows the delivery due — the office's date when set.
+      dueISO: due?.toISOString() ?? null,
+      late: !upcoming && p.status !== "DELIVERED" && !!due && due < now,
+      priority: effectivePriority(p, p.priority),
       videos: videosOwed,
+      // What the office set (null = nothing) and what the hub would say on its
+      // own — the two columns of the override dialog (Sep 13).
+      overrides: overrideView(p),
+      computed: computedView({
+        dueAt: computedDue,
+        videosOwed: computedVideos,
+        tier: computedTier,
+        typeDetail: computedTypeDetail,
+        priority: p.priority,
+      }),
       hasScript: !!(p.reelScript || p.reelHook),
       comments: comments.get(p.id) ?? 0,
       rawUrl: dropboxWebUrl(folders.rawVideo),

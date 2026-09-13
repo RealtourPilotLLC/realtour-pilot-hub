@@ -1540,7 +1540,10 @@ export async function syncAryeoOrders(
                 invoiceUrl: order.invoice_url ?? null,
                 paymentUrl: order.payment_url ?? null,
                 ...(newClientId !== proj.clientId ? { clientId: newClientId } : {}),
-                ...(cancelNow ? { status: "CANCELLED" } : {}),
+                // A cancel from Aryeo always wins over the office's status
+                // pin (Sep 13, editOverrides.ts) — the order is gone; the pin
+                // goes with it.
+                ...(cancelNow ? { status: "CANCELLED", statusPinnedAt: null } : {}),
                 ...(sqftChanged
                   ? { ...(liveSqft != null ? { squareFeet: liveSqft } : {}), squareFeetBand: liveBand?.text ?? null }
                   : {}),

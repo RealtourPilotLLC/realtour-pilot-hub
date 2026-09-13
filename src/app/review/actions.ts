@@ -283,8 +283,11 @@ export async function submitCutForReview(
   }
 
   // EDITING/SHOT → REVIEW (never demote a job already past review).
+  // A submit is a human status write, and a human write ends the office's
+  // status pin (Sep 13, editOverrides.ts) — the pin only ever holds off the
+  // engines.
   if (project.status === "EDITING" || project.status === "SHOT") {
-    await prisma.project.update({ where: { id: projectId }, data: { status: "REVIEW" } });
+    await prisma.project.update({ where: { id: projectId }, data: { status: "REVIEW", statusPinnedAt: null } });
   } else if (answersRevision) {
     // Sep 8 (Jordan: "A revision should be changed to ready for review when an
     // editor marks it complete and submits it for review"): the client's
@@ -761,7 +764,10 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
   if (st === "REVIEW" || st === "EDITING" || st === "REVISION") {
     await prisma.project.update({
       where: { id: submission.projectId },
-      data: { status: "REVISION", revisionRequestedAt: new Date() },
+      // A bounce is a human status write, and a human write ends the office's
+      // status pin (Sep 13, editOverrides.ts) — the pin only ever holds off
+      // the engines.
+      data: { status: "REVISION", revisionRequestedAt: new Date(), statusPinnedAt: null },
     });
   }
   await prisma.activity.create({

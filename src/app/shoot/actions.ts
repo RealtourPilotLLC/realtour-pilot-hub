@@ -206,8 +206,11 @@ export async function completeShoot(projectId: string): Promise<{ ok: boolean; m
   }
 
   // Captured → advance to SHOT (unless already further along the pipeline).
+  // The photographer's word is a human status write, and a human write ends
+  // the office's status pin (Sep 13, editOverrides.ts) — a pinned Waiting
+  // gives way the same day the office's Waiting hold does.
   if (project.status === "BOOKED" || project.status === "SCHEDULED") {
-    await prisma.project.update({ where: { id: projectId }, data: { status: "SHOT" } });
+    await prisma.project.update({ where: { id: projectId }, data: { status: "SHOT", statusPinnedAt: null } });
     // The office's Waiting hold (Sep 11, queueWaiting.ts) ends with the
     // photographer's own word that the shoot happened — the same word the
     // upload page carries. SHOT is off the hold's rails anyway; deleting the

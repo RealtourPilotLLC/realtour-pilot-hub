@@ -197,7 +197,7 @@ async function standDownNonRevision(briefId: string): Promise<void> {
 
     const project = await prisma.project.findUnique({
       where: { id: brief.projectId },
-      select: { status: true, deliveredAt: true, title: true },
+      select: { status: true, deliveredAt: true, title: true, statusPinnedAt: true },
     });
     const street = (project?.title ?? "this job").split(",")[0];
 
@@ -216,7 +216,10 @@ async function standDownNonRevision(briefId: string): Promise<void> {
     });
 
     // A job only went to REVISION because of this message — put it back.
-    if (project?.status === "REVISION" && project.deliveredAt) {
+    // Not while the office has pinned the status (Sep 13, editOverrides.ts):
+    // this is an engine write, and the pin is the office's word over every
+    // engine — a human unpins it.
+    if (project?.status === "REVISION" && project.deliveredAt && !project.statusPinnedAt) {
       await prisma.project.update({
         where: { id: brief.projectId },
         data: { status: "DELIVERED", revisionRequestedAt: null },

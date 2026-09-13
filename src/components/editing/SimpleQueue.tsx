@@ -10,11 +10,14 @@ import {
   FolderUp,
   Loader2,
   MessageSquare,
+  Pin,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Avatar } from "@/components/ui/Avatar";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
+import { EditOverridesButton, OverrideChip, hasOverride } from "@/components/editing/EditOverridesDialog";
+import type { EditComputedView, EditOverrideView } from "@/lib/editOverrideDefaults";
 
 // THE SLACK TRACKER, replicated — Jordan: "I want the editor queue to look
 // just like our Slack. It's been working, so I don't want to fix what isn't
@@ -52,6 +55,18 @@ import { setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
 // keeps only what you triage by (status, due, editor, links). In-row controls
 // (status pill, editor select, link chips) swallow the click and never
 // navigate.
+//
+// THE OVERRIDE (Jordan, Sep 13: "I want to be able to change the status,
+// amount of deliverables, the due date and all other information for the
+// edits in the editing room. I want to be able to override anything."): the
+// sliders glyph beside the status pill (office only) opens a dialog that sets
+// any of it — status past the pill's guardrails (and PINS it so the sweeps
+// stop moving it), editor, videos owed, due, priority, tier, video type — on
+// top of what the hub works out. Every row value below is AFTER overrides;
+// `computed` keeps what the hub would have said, so the dialog can show both
+// and hand a field back. A row wearing any override shows the Override chip
+// (hover = who, when, note) and a pinned status wears a pin on its pill. The
+// pill and the editor select keep working exactly as before.
 
 export type QueueRow = {
   id: string;
@@ -82,6 +97,12 @@ export type QueueRow = {
   shootISO: string | null;
   photographer: string | null;
   openRevisions: number;
+  // What the office set on this job (Sep 13) — null on a field = no override.
+  // statusPinned = the row's status label is the pinned Project.status, not
+  // the cut-derived reading, and the pill wears a pin.
+  overrides: EditOverrideView;
+  // What the hub would say on its own — the row's values BEFORE overrides.
+  computed: EditComputedView;
 };
 
 const TIER = {
@@ -208,15 +229,26 @@ function StatusPill({ row, office, onReceipt }: { row: QueueRow; office: boolean
     });
   };
 
+  // A PINNED status (the office set it in the override dialog, Sep 13): the
+  // label is Project.status held in place, not the cut-derived reading — the
+  // pin says so, and hover says who. The pill itself still works: a pick here
+  // is a human status write, which the server treats as the human's newer
+  // word (it clears or renews the pin).
+  const pinned = row.overrides.statusPinned;
+  const pinTitle = pinned
+    ? `Pinned by the office — the hub won't move it${row.overrides.by ? ` (override by ${row.overrides.by})` : ""}`
+    : null;
+
   return (
     <>
       <button
         onClick={toggle}
-        title={note ?? undefined}
+        title={note ?? pinTitle ?? undefined}
         className="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold"
         style={{ backgroundColor: `${meta.color}26`, color: meta.color }}
       >
         {pending ? <Loader2 className="size-3 animate-spin" /> : null}
+        {pinned && <Pin className="size-3" aria-label="Pinned by the office" />}
         {status}
         <ChevronDown className="size-3 opacity-70" />
       </button>
@@ -456,10 +488,12 @@ export function SimpleQueue({
                             <Avatar name={r.client} src={r.clientAvatarUrl} size={20} />
                             <span className="truncate">{r.client}</span>
                           </span>
-                          {/* One line for both chips, not two stacked blocks —
+                          {/* One line for all the chips, not stacked blocks —
                               a job that is both URGENT and in revisions used to
-                              grow the row by an extra line. */}
-                          {(r.priority !== "NORMAL" && r.priority !== "LOW") || r.openRevisions > 0 ? (
+                              grow the row by an extra line. The Override chip
+                              (Sep 13) rides the same line: only a row the
+                              office actually touched grows by it. */}
+                          {(r.priority !== "NORMAL" && r.priority !== "LOW") || r.openRevisions > 0 || hasOverride(r.overrides) ? (
                             <span className="mt-0.5 flex flex-wrap items-center gap-1">
                               {r.priority !== "NORMAL" && r.priority !== "LOW" && (
                                 <span className="rounded bg-danger-soft px-1.5 text-[10px] font-semibold text-danger">{r.priority}</span>
@@ -469,6 +503,8 @@ export function SimpleQueue({
                                   {r.openRevisions} revision ask{r.openRevisions === 1 ? "" : "s"}
                                 </span>
                               )}
+                              {/* Who set it, when, and the note — on hover. */}
+                              <OverrideChip overrides={r.overrides} />
                             </span>
                           ) : null}
                         </Link>
@@ -502,20 +538,62 @@ export function SimpleQueue({
                       {r.typeDetail && <span title={r.typeDetail} className="mt-0.5 block max-w-40 truncate text-[11px] text-muted">{r.typeDetail}</span>}
                     </td>
                     <td className="px-3 py-2.5" onClick={swallow}>
-                      {view === "upcoming" ? (
-                        <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold" style={{ backgroundColor: "#94a3b826", color: "#94a3b8" }}>
-                          Waiting
-                        </span>
-                      ) : (
-                        // key = server truth: when a revalidation streams a
-                        // status this component didn't set (evidence flip,
-                        // another admin), remount so the pill can't go stale.
-                        // hideEditor is the editor's scoped view — everyone
-                        // else looking at this table is the office.
-                        <StatusPill key={r.status} row={r} office={!hideEditor} onReceipt={setReceipt} />
-                      )}
+                      <span className="inline-flex items-center gap-1">
+                        {view === "upcoming" ? (
+                          // An Upcoming row reads Waiting — unless the office
+                          // PINNED it somewhere (Sep 13): editorQueue then puts
+                          // the pinned label on r.status, and the row shows it
+                          // with the pin the same way the live pill does.
+                          <span
+                            className="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-semibold"
+                            style={{ backgroundColor: "#94a3b826", color: "#94a3b8" }}
+                            title={r.overrides.statusPinned ? `Pinned by the office — the hub won't move it${r.overrides.by ? ` (override by ${r.overrides.by})` : ""}` : undefined}
+                          >
+                            {r.overrides.statusPinned && <Pin className="size-3" aria-label="Pinned by the office" />}
+                            {r.overrides.statusPinned ? r.status : "Waiting"}
+                          </span>
+                        ) : (
+                          // key = server truth: when a revalidation streams a
+                          // status this component didn't set (evidence flip,
+                          // another admin), remount so the pill can't go stale.
+                          // hideEditor is the editor's scoped view — everyone
+                          // else looking at this table is the office.
+                          <StatusPill key={r.status} row={r} office={!hideEditor} onReceipt={setReceipt} />
+                        )}
+                        {/* THE OVERRIDE (Sep 13) — office only. A bare glyph
+                            beside the pill, muted until you reach for it, and
+                            always there (no row hover: Jordan has to be able
+                            to FIND it, and there is no hover on his phone).
+                            Its receipt goes above the tabs like the pill's.
+                            The dialog it opens is a child of this cell, so
+                            the cell's swallow keeps clicks inside it from
+                            opening the edit page. key = server truth again:
+                            a fresh row from a revalidation remounts it with
+                            the values the server now holds. */}
+                        {!hideEditor && (
+                          <EditOverridesButton
+                            key={`${r.status}|${r.editorKey ?? ""}|${r.overrides.at ?? ""}`}
+                            job={{
+                              projectId: r.id,
+                              street: r.street,
+                              status: r.status,
+                              editorKey: r.editorKey,
+                              editorName: r.editor,
+                              editorAuto: r.auto,
+                              overrides: r.overrides,
+                              computed: r.computed,
+                            }}
+                            onReceipt={setReceipt}
+                          />
+                        )}
+                      </span>
                     </td>
-                    <td className={cn("whitespace-nowrap px-3 py-2.5 text-xs font-medium", r.late ? "text-danger" : "")}>
+                    <td
+                      className={cn("whitespace-nowrap px-3 py-2.5 text-xs font-medium", r.late ? "text-danger" : "")}
+                      // An office-set due says so on hover, with what the hub
+                      // would have said.
+                      title={view !== "upcoming" && r.overrides.dueAt ? `Due set by the office (the hub would say ${fmtDay(r.computed.dueAt)})` : undefined}
+                    >
                       {view === "upcoming" ? `Shoots ${fmtDay(r.shootISO)}` : fmtDay(r.dueISO)}{r.late ? " · late" : ""}
                       {view === "upcoming" && r.photographer && <span className="block text-muted">📷 {r.photographer}</span>}
                     </td>
@@ -532,7 +610,12 @@ export function SimpleQueue({
                         )}
                       </td>
                     )}
-                    <td className="px-3 py-2.5 text-center text-xs">{r.videos}</td>
+                    <td
+                      className="px-3 py-2.5 text-center text-xs"
+                      title={r.overrides.videosOwed != null ? `Videos owed set by the office (the hub would say ${r.computed.videosOwed})` : undefined}
+                    >
+                      {r.videos}
+                    </td>
                     <td className="whitespace-nowrap px-3 py-2.5" onClick={swallow}>
                       <span className="inline-flex items-center gap-1">
                         {r.rawUrl && (

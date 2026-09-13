@@ -25,6 +25,12 @@ export const dynamic = "force-dynamic";
 //     pings stay in the bell (Jordan, Aug 27: no For-you card here). The old
 //     bespoke EditorDay worklist is gone.
 // Row building lives in src/lib/editorQueue.ts, shared with the message center.
+//   · THE OVERRIDE (Jordan, Sep 13: "I want to be able to override anything")
+//     lives on the row itself (SimpleQueue → EditOverridesDialog): the
+//     sliders glyph beside the status pill, office only — the editor's scoped
+//     view (hideEditor) never renders it, and the server refuses it anyway.
+//     Row values arrive from editorQueue.ts AFTER overrides, so the counts in
+//     the editor's header line below already honour them.
 
 // The door to the message center, with the viewer's unread count.
 function MessagesButton({ unread }: { unread: number }) {

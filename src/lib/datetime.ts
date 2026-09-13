@@ -39,19 +39,40 @@ export const isTodayET = (d: Date) => etDaysAgo(d) === 0;
 export const isYesterdayET = (d: Date) => etDaysAgo(d) === 1;
 
 // ET day boundaries as UTC Date objects, for DB range queries.
+// UTC − ET at the instant `d` (4h in summer, 5h in winter), read off Intl's
+// own ET wall clock. The old version parsed two toLocaleString() strings
+// through `new Date(...)`, i.e. through the MACHINE's zone — exact on Vercel
+// (UTC), but on a Mac set to New York the two parses straddle the local DST
+// flip on the two changeover days and come back an hour short, which put
+// every ET wall-clock between midnight and 2 AM on those days an hour off
+// (review, Sep 13: "2026-03-08T01:30" → 12:30 AM). Intl never goes through
+// the local zone, so this reads the same everywhere.
+const ET_PARTS = new Intl.DateTimeFormat("en-US", {
+  timeZone: TZ, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+});
 function etOffsetMs(d: Date): number {
-  const asUtc = new Date(d.toLocaleString("en-US", { timeZone: "UTC" }));
-  const asEt = new Date(d.toLocaleString("en-US", { timeZone: TZ }));
-  return asUtc.getTime() - asEt.getTime();
+  const parts = ET_PARTS.formatToParts(d);
+  const n = (t: Intl.DateTimeFormatPartTypes) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+  const wall = Date.UTC(n("year"), n("month") - 1, n("day"), n("hour") % 24, n("minute"), n("second"));
+  return d.getTime() - wall;
 }
 export function etDayStartUtc(d: Date = new Date()): Date {
-  const utcMidnightOfEtDate = Date.parse(etDayKey(d) + "T00:00:00Z");
+  const dayKey = etDayKey(d);
+  const utcMidnightOfEtDate = Date.parse(dayKey + "T00:00:00Z");
   // Refine once: DST flips at 2am, never midnight, so the offset AT the
   // guessed midnight (within ±1h of the true one) is always the right one.
   // Sampling only at `d` was an hour off whenever d sat on the other side of
   // a transition from the midnight it was deriving (every DST eve/day).
   const guess = new Date(utcMidnightOfEtDate + etOffsetMs(d));
-  return new Date(utcMidnightOfEtDate + etOffsetMs(guess));
+  const refined = new Date(utcMidnightOfEtDate + etOffsetMs(guess));
+  // Belt and braces: hand back the candidate that Intl itself reads as
+  // 00:00 on this ET day. The refine is right by construction now, but a
+  // midnight that is an hour off is exactly the bug this file has had twice,
+  // so check the answer rather than trust the derivation.
+  for (const m of [refined, guess, new Date(refined.getTime() - 3_600_000), new Date(refined.getTime() + 3_600_000)]) {
+    if (etDayKey(m) === dayKey && etTime(m) === "12:00 AM") return m;
+  }
+  return refined;
 }
 export const etAddDays = (d: Date, days: number) => new Date(d.getTime() + days * 86400000);
 
@@ -66,10 +87,35 @@ export const etAddDays = (d: Date, days: number) => new Date(d.getTime() + days 
  * @param dayKey ET calendar day, "YYYY-MM-DD" (as produced by etDayKey)
  */
 export function etAt(dayKey: string, hour: number, minute = 0): Date {
-  // Noon UTC is 7-8am ET — the same ET day as dayKey either side of a DST flip,
-  // which is all etDayStartUtc needs to resolve the correct midnight.
-  const midnight = etDayStartUtc(new Date(`${dayKey}T12:00:00Z`));
-  return new Date(midnight.getTime() + (hour * 60 + minute) * 60_000);
+  // Not "midnight + hour × 60 minutes" any more (review, Sep 13): on the two
+  // changeover days the day is 23 or 25 hours long, so counting minutes from
+  // midnight put every wall clock after the 2 AM flip an hour off — 5 PM on
+  // Mar 8 2026 came out 6 PM EDT, and the 5 PM default due of etEndOfDay
+  // with it. Instead: read the wall clock as if it were UTC, pull it back by
+  // the ET offset AT that instant, refine (the first guess can sit on the
+  // other side of the flip from the answer), and check with Intl that the
+  // instant really reads as the wall clock asked for.
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dayKey);
+  if (!m) return new Date(NaN);
+  const naive = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), hour, minute);
+  const n = new Date(naive);
+  const pad = (x: number) => String(x).padStart(2, "0");
+  const want = `${n.getUTCFullYear()}-${pad(n.getUTCMonth() + 1)}-${pad(n.getUTCDate())}T${pad(n.getUTCHours())}:${pad(n.getUTCMinutes())}`;
+  let guess = new Date(naive + etOffsetMs(n));
+  for (let i = 0; i < 2; i++) {
+    if (etWallMinute(guess) === want) return guess;
+    guess = new Date(naive + etOffsetMs(guess));
+  }
+  // A wall clock that does not exist (2:30 AM on spring-forward day) has no
+  // exact answer; this lands an hour either side of it, consistently.
+  return guess;
+}
+// "YYYY-MM-DDTHH:mm" on the ET wall clock — what etAt() is asked for, read
+// back off the instant it produced.
+function etWallMinute(d: Date): string {
+  const parts = ET_PARTS.formatToParts(d);
+  const g = (t: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === t)?.value ?? "00";
+  return `${g("year")}-${g("month")}-${g("day")}T${g("hour") === "24" ? "00" : g("hour")}:${g("minute")}`;
 }
 
 /** End of the working day (5pm ET) — the default when a due date has no time. */

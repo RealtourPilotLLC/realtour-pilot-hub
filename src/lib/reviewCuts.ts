@@ -6,6 +6,7 @@ import { dbx, DropboxError } from "@/lib/integrations/dropbox";
 import { actualFolderPaths, type FolderProject } from "@/lib/dropboxFolders";
 import { videoStyleFor } from "@/lib/videoStyles";
 import { editorMeta, VIDEO_LANE_KEYS } from "@/lib/editors";
+import { effectiveSlotCounts } from "@/lib/editOverrides";
 
 /** Stamped on a cut row that was auto-approved BECAUSE the job was delivered —
  *  not because anyone reviewed it. The client portal keys off this to keep
@@ -385,6 +386,7 @@ export async function cutSlots(projectId: string): Promise<CutSlot[]> {
     where: { id: projectId },
     select: {
       packageName: true, videosFilmed: true,
+      videosOwedOverride: true, // the office's batch size (Sep 13) — wins over every rule below
       deliverables: {
         where: { removedFromOrderAt: null, type: { in: ["VIDEO", "SOCIAL_REEL"] } },
         orderBy: { createdAt: "asc" },
@@ -397,13 +399,21 @@ export async function cutSlots(projectId: string): Promise<CutSlot[]> {
   const { videoTier } = await import("@/lib/projectStatus");
   const monthly = isMonthlyContentJob(p.deliverables, p.packageName);
   const tier = videoTier(p.deliverables);
-  const out: CutSlot[] = [];
-  for (const [i, d] of p.deliverables.entries()) {
+  // The hub's own count per row, then the office's total laid over it
+  // (Sep 13, editOverrides.effectiveSlotCounts): "videos owed 6" on a 4-video
+  // month makes six slots here, six on the QC card, six before the approved
+  // gate opens.
+  const baseCounts = p.deliverables.map((d, i) => {
     let count = Math.max(1, d.quantity ?? 1);
     if (monthly && i === 0) {
-      const owed = Math.max(count, p.videosFilmed ?? monthlyVideoQuota([p.packageName, ...p.deliverables.map((x) => x.label)]));
-      count = owed;
+      count = Math.max(count, p.videosFilmed ?? monthlyVideoQuota([p.packageName, ...p.deliverables.map((x) => x.label)]));
     }
+    return count;
+  });
+  const counts = effectiveSlotCounts(p, baseCounts);
+  const out: CutSlot[] = [];
+  for (const [i, d] of p.deliverables.entries()) {
+    const count = counts[i];
     const base = videoStyleFor(d, { monthly, tier }).name;
     for (let slot = 1; slot <= count; slot++) {
       out.push({
@@ -481,7 +491,10 @@ export async function finalizeCutUpload(
   // job keeps REVISION until the approval — see correctedCutSubmitted.
   const st = sub.project.status;
   if (st === "EDITING" || st === "SHOT") {
-    await prisma.project.update({ where: { id: sub.projectId }, data: { status: "REVIEW" } });
+    // An upload is the editor's own status write, and a human write ends the
+    // office's status pin (Sep 13, editOverrides.ts) — the pin only ever
+    // holds off the engines.
+    await prisma.project.update({ where: { id: sub.projectId }, data: { status: "REVIEW", statusPinnedAt: null } });
   } else {
     await correctedCutSubmitted(sub.projectId, { round: sub.round });
   }
@@ -892,7 +905,9 @@ export async function correctedCutSubmitted(
       where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED", "IN_PROGRESS"] } },
     });
     if (otherOpen === 0 && (project.status === "REVISION" || project.revisionRequestedAt)) {
-      await prisma.project.update({ where: { id: projectId }, data: { status: "REVIEW", revisionRequestedAt: null } });
+      // The editor's resubmit is a human status write, and a human write
+      // ends the office's status pin (Sep 13, editOverrides.ts).
+      await prisma.project.update({ where: { id: projectId }, data: { status: "REVIEW", revisionRequestedAt: null, statusPinnedAt: null } });
       status = "REVIEW";
     }
   }
@@ -997,16 +1012,23 @@ export type ProjectVideoState = {
 // order, same NAMES (videoStyleFor with the job's tier + monthly verdicts), so
 // a cut is called the same thing on Ops Day as in the Review Room.
 const pureSlots = (
-  p: { packageName: string | null; videosFilmed: number | null; deliverables: { id: string; type: string; label: string | null; quantity: number | null; videoStyle: string | null; productTitle: string | null }[] },
+  p: { packageName: string | null; videosFilmed: number | null; videosOwedOverride: number | null; deliverables: { id: string; type: string; label: string | null; quantity: number | null; videoStyle: string | null; productTitle: string | null }[] },
   monthly: boolean,
   quota: number,
   tier: "standard" | "premium" | null,
 ) => {
   const vids = p.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
-  const out: CutSlot[] = [];
-  for (const [i, d] of vids.entries()) {
+  // Same rule as cutSlots(): the hub's count per row, the office's total over
+  // it (Sep 13, editOverrides.effectiveSlotCounts).
+  const baseCounts = vids.map((d, i) => {
     let count = Math.max(1, d.quantity ?? 1);
     if (monthly && i === 0) count = Math.max(count, p.videosFilmed ?? quota);
+    return count;
+  });
+  const counts = effectiveSlotCounts(p, baseCounts);
+  const out: CutSlot[] = [];
+  for (const [i, d] of vids.entries()) {
+    const count = counts[i];
     const base = videoStyleFor(d, { monthly, tier }).name;
     for (let slot = 1; slot <= count; slot++) out.push({ deliverableId: d.id, deliverableLabel: base, slot, count, label: count > 1 ? `${base} — Video ${slot} of ${count}` : base });
   }
@@ -1033,6 +1055,7 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
       where: { id: { in: projectIds } },
       select: {
         id: true, title: true, status: true, packageName: true, videosFilmed: true, statusEvidence: true,
+        videosOwedOverride: true, // the office's batch size (Sep 13)
         client: { select: { name: true, avatarUrl: true } },
         // Same order as cutSlots() — the monthly batch count lands on the FIRST
         // video row, so both slot builders must see the rows the same way.

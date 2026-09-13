@@ -140,10 +140,15 @@ export function EditTracker({
   revisionAsks,
   revisionAtISO,
   showSubmitAnchor,
+  overridden,
 }: {
   stage: EditStage;
   statusLine: string;
   hadRevision: boolean;
+  /** Which facts the office set by hand in the override dialog (Sep 13) —
+      the deadline and/or the edit type wear a small "office" tag so nobody
+      mistakes an override for the turnaround engine's or the order's word. */
+  overridden?: { due?: boolean; editType?: boolean };
   /** The ACTUAL video type — videoTypeLabel() in lib/pipeline, which is the
       Style Guide name resolved by videoStyleFor() ("Standard Reel with Agent
       Intro", "Premium Cinematic Video", "Personal Branding Reel"; multi-type
@@ -171,6 +176,12 @@ export function EditTracker({
   const dotColor =
     stage === "done" ? "text-success" : stage === "revision" ? "text-danger" : stage === "review" ? "text-warning" : "text-brand";
   const songIsUrl = !!song && /^https?:\/\//i.test(song.trim());
+  // The tag an office-set fact wears (see `overridden`).
+  const officeTag = (
+    <span title="Set by the office in the override dialog" className="rounded bg-brand-soft px-1 text-[10px] font-semibold text-brand">
+      office
+    </span>
+  );
 
   return (
     <div className="rounded-2xl border bg-surface p-4 sm:p-5">
@@ -195,6 +206,7 @@ export function EditTracker({
       <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-border pt-4 sm:grid-cols-3 lg:grid-cols-5">
         <Fact label="Edit type">
           {editType}
+          {overridden?.editType && <> {officeTag}</>}
           {editProduct && editProduct.trim() && editProduct.trim() !== editType && (
             <span className="block truncate text-xs font-normal text-muted" title={editProduct}>
               {editProduct}
@@ -205,6 +217,7 @@ export function EditTracker({
           {dueISO ? (
             <span className="inline-flex flex-wrap items-center gap-1.5">
               {etDate(dueISO)}
+              {overridden?.due && officeTag}
               {/* The clock stops once the cut is approved — a delivered job
                   reading "OVERDUE" forever is noise, not urgency. */}
               {stage !== "done" && <SlaCountdown dueISO={dueISO} />}

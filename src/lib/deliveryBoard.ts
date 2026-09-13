@@ -152,6 +152,7 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
       id: true, title: true, addressLine: true, city: true, status: true,
       shootDate: true, deliveredAt: true, notes: true,
       packageName: true, // monthly-content detection (the one job kind whose clock runs without a shoot)
+      dueOverrideAt: true, // the office's due for the job (Sep 13, editOverrides.ts) — wins over every promise below
       client: { select: { name: true } },
       orderItems: { where: { isCanceled: false }, select: { title: true, quantity: true } },
       deliverables: { where: { removedFromOrderAt: null }, select: { type: true, status: true, uploadedAt: true, label: true } },
@@ -182,6 +183,12 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
     const earliest = p.deliveredAt || dated.length === 0
       ? null
       : dated.reduce((a, b) => (a.dueAt <= b.dueAt ? a : b));
+    // THE OFFICE'S DUE (Sep 13, editOverrides.ts): when Jordan set a date on
+    // the job, that is the promise Kyle is chasing — it replaces the earliest
+    // product promise and is labelled as the office's, not a tier's. A
+    // delivered job has no outstanding promise either way.
+    const officeDue = !p.deliveredAt && p.dueOverrideAt ? p.dueOverrideAt : null;
+    const dueAt = officeDue ?? earliest?.dueAt ?? null;
 
     return {
       id: p.id,
@@ -191,10 +198,10 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
       status: p.status,
       shootDate: p.shootDate,
       photographer: p.appointments[0]?.assignedTo?.name ?? null,
-      dueAt: earliest?.dueAt ?? null,
-      dueTierLabel: earliest?.tierLabel ?? null,
-      dueFor: earliest?.title ?? null,
-      overdue: !!earliest && earliest.dueAt < now,
+      dueAt,
+      dueTierLabel: officeDue ? "office override" : earliest?.tierLabel ?? null,
+      dueFor: officeDue ? earliest?.title ?? "the whole job" : earliest?.title ?? null,
+      overdue: !!dueAt && dueAt < now,
       blocker: kind,
       blockerLabel: label,
       items,

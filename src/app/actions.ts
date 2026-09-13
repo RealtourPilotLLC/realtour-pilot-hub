@@ -628,6 +628,10 @@ export async function moveProjectStatus(projectId: string, status: ProjectStatus
     where: { id: projectId },
     data: {
       status,
+      // A board move is a human status write, and a human write ends the
+      // office's status pin (Sep 13, editOverrides.ts) — the board stays the
+      // human's tool; the pin only ever holds off the engines.
+      statusPinnedAt: null,
       // Stamp the delivery date ONCE. Hand-moving a job back to Delivered after
       // a client bounce used to overwrite the original date with today — and
       // four things read it as the day the client got their content: the

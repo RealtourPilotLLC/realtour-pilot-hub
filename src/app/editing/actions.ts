@@ -5,6 +5,18 @@ import { prisma } from "@/lib/prisma";
 import { requireAdmin, requireRole } from "@/lib/auth/guards";
 import { editorTeamMemberId, VIDEO_LANE_KEYS, type EditorKey } from "@/lib/editors";
 import { deliveryStamp, outstandingForDelivery, outstandingMessage, VIDEO_CATEGORY } from "@/lib/delivery";
+import { EDIT_PRIORITIES, EDIT_STATUS_LABELS, EDIT_TIERS, type EditOverrideInput, type EditTier } from "@/lib/editOverrideDefaults";
+import {
+  OVERRIDE_SELECT,
+  anyOverrideSet,
+  describeOverrides,
+  effectiveDue,
+  effectivePriority,
+  effectiveTier,
+  effectiveTypeDetail,
+  effectiveVideosOwed,
+  type OverrideSnapshot,
+} from "@/lib/editOverrides";
 
 // ---------------------------------------------------------------------------
 // Server actions for the editor platform's /editing surface.
@@ -417,7 +429,10 @@ export async function addToEditorQueue(
   // Sep 10 (Jordan): a job never lands on In editing by itself — the editor
   // says so on the queue pill when they actually start.
   if (!QUEUE_STATUSES.includes(project.status)) {
-    await prisma.project.update({ where: { id: projectId }, data: { status: "SHOT" } });
+    // A queue-add is a human status write, and a human write ends the
+    // office's status pin (Sep 13, editOverrides.ts) — the pin only ever
+    // holds off the engines.
+    await prisma.project.update({ where: { id: projectId }, data: { status: "SHOT", statusPinnedAt: null } });
     await prisma.activity.create({
       data: { projectId, type: "STATUS_CHANGE", body: `Added to the Editing Room — ready for editing.` },
     });
@@ -593,6 +608,8 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
       revisionRequestedAt: true,
       editorId: true,
       editorManual: true,
+      videosFilmed: true, // the videos-owed ladder for the Completed gate (Sep 13, effectiveVideosOwed)
+      videosOwedOverride: true,
       editor: { select: { name: true } },
       deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, quantity: true } },
     },
@@ -674,6 +691,10 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
       where: { id: projectId },
       data: {
         status: proj.shootDate ? "SCHEDULED" : "BOOKED",
+        // The pill is a human's status write, and a human write ends the
+        // office's status pin (Sep 13, editOverrides.ts) — the hold below is
+        // what keeps this Waiting, not the pin.
+        statusPinnedAt: null,
         // The sweep's uploadedAt stamp goes with the status (Sep 11 review):
         // every Ready for editing job the office would hold already wears
         // one, off the same raws the office is saying are not this job's —
@@ -748,9 +769,12 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
     // and stamps completedAt — so accept it before the sweep catches up.
     // Multi-video months need the whole set: cut 1 of 4 is progress, not done.
     const proven: string[] = [];
-    const videosOwed = proj.deliverables
-      .filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL")
-      .reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
+    // The office's number, the photographer's count, then the order rows
+    // (Sep 13, editOverrides.effectiveVideosOwed) — the same count the cut
+    // slots and the queue cell owe against.
+    const videosOwed = proj.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL")
+      ? effectiveVideosOwed(proj, proj.deliverables)
+      : 0;
     if (videosOwed > 0) {
       try {
         const { approvedCutCount } = await import("@/lib/reviewCuts");
@@ -909,7 +933,10 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
     // 4 of the 6 "Completed" clicks on record landed on a job that was already
     // delivered and moved its date by 1.8 to 18.0 days — 1023 Sycamore Mills
     // Rd was delivered Aug 10 and now reads Aug 28.
-    data: { status, ...(status === "DELIVERED" ? deliveryStamp(proj.deliveredAt) : {}) },
+    // statusPinnedAt: a human's click on the pill ends the office's status
+    // pin (Sep 13, editOverrides.ts) — the pill and the board stay the
+    // human's tools; the pin only ever holds off the engines.
+    data: { status, statusPinnedAt: null, ...(status === "DELIVERED" ? deliveryStamp(proj.deliveredAt) : {}) },
   });
   // This Activity row is load-bearing, not decoration: createDeliveryTextTask
   // reads "Queue status set: Completed" as the editor's override that releases
@@ -1129,4 +1156,344 @@ export async function saveReelScript(projectId: string, script: string): Promise
   }).catch(() => {});
   for (const p of [`/edit/${projectId}`, `/projects/${projectId}`, `/upload/${projectId}`, `/shoot/${projectId}`]) revalidatePath(p);
   return { ok: true, message: "Script saved — the editor sees this version." };
+}
+
+// ---------------------------------------------------------------------------
+// THE OFFICE OVERRIDES A JOB (Jordan, Sep 13: "I want to be able to change the
+// status, amount of deliverables, the due date and all other information for
+// the edits in the editing room. I want to be able to override anything.").
+//
+// The pill above is deliberately guarded — it refuses a Completed with the
+// video still missing, a Waiting with a cut handed in, an editor's Waiting at
+// all. This is the other tool: the office's word over every rule, written to
+// the hub-owned override columns on Project (src/lib/editOverrides.ts) that
+// every reader prefers and no engine ever writes.
+//   · a status = a DIRECT Project.status write that bypasses those guardrails
+//     and PINS it (statusPinnedAt = now): the hourly status sweep, the folder
+//     sweep, the per-project recheck and the Aryeo sync all leave it alone
+//     until a human moves it (the pill, the board, this dialog's "Let the hub
+//     manage the status again"), Aryeo cancels the order, or a client asks
+//     for changes. It releases any Waiting hold (the pin is the stronger
+//     grip), moves the edit card the way the pill would (IN_PROGRESS for In
+//     editing, OPEN otherwise, COMPLETED through closeObsoleteTasks for
+//     Completed — with deliveryStamp so an original delivery date stands),
+//     and a Completed closes any open client revision the way the office's
+//     Completed on the pill does (resolveRevision).
+//   · editor = the same road as the row's select (setEditVideoEditor: pin,
+//     card, bell, its own timeline line).
+//   · due / videos owed / tier / video type / priority = the override
+//     columns; null clears one back to the hub's value.
+// One Activity row per save (describeOverrides) says exactly what moved.
+// Idempotent: a re-save with nothing different writes nothing.
+// ---------------------------------------------------------------------------
+
+// Project.status ↔ the queue ladder's words, for the sentence and the write.
+const OVERRIDE_STATUS_LABEL: Record<string, string> = {
+  BOOKED: "Waiting",
+  SCHEDULED: "Waiting",
+  SHOT: "Ready for editing",
+  EDITING: "In editing",
+  REVIEW: "Ready for review",
+  REVISION: "Revisions",
+  DELIVERED: "Completed",
+  ON_HOLD: "On hold",
+  CANCELLED: "Cancelled",
+};
+const EDITOR_SELECT_KEYS = new Set<string>(["", "kim", "john", "external_agency"]);
+
+export async function saveEditOverrides(projectId: string, input: EditOverrideInput): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireRole(["OWNER", "ADMIN"]);
+  } catch {
+    return { ok: false, message: "Only the office can override a job." };
+  }
+
+  // ---- Validate every field before touching anything. ----
+  if (input.status != null && !(EDIT_STATUS_LABELS as readonly string[]).includes(input.status)) {
+    return { ok: false, message: "Pick one of the six queue statuses." };
+  }
+  if (input.videosOwed != null && !(Number.isInteger(input.videosOwed) && input.videosOwed >= 1 && input.videosOwed <= 40)) {
+    return { ok: false, message: "Videos owed has to be a whole number from 1 to 40." };
+  }
+  let dueAt: Date | null | undefined = undefined;
+  if (input.dueAt !== undefined) {
+    if (input.dueAt === null) dueAt = null;
+    else {
+      const d = new Date(input.dueAt);
+      if (Number.isNaN(d.getTime())) return { ok: false, message: "That due date isn't a real date." };
+      dueAt = d;
+    }
+  }
+  if (input.priority != null && !(EDIT_PRIORITIES as readonly string[]).includes(input.priority)) {
+    return { ok: false, message: "Priority has to be Low, Normal, High or Urgent." };
+  }
+  if (input.tier != null && !(EDIT_TIERS as readonly string[]).includes(input.tier)) {
+    return { ok: false, message: "Tier has to be Standard, Premium or Personal Branding." };
+  }
+  const typeDetail = input.typeDetail === undefined ? undefined : (input.typeDetail ?? "").trim() || null;
+  if (typeDetail && typeDetail.length > 120) return { ok: false, message: "Keep the video type under 120 characters." };
+  const note = input.note === undefined ? undefined : input.note.trim() || null;
+  if (note && note.length > 300) return { ok: false, message: "Keep the note under 300 characters." };
+  const wantsEditor = input.editorKey != null;
+  if (wantsEditor && !EDITOR_SELECT_KEYS.has(input.editorKey as string)) {
+    return { ok: false, message: "Pick a video editor (Kim or John Mark), the external agency, or Unassigned." };
+  }
+
+  const proj = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      id: true,
+      title: true,
+      status: true,
+      priority: true,
+      shootDate: true,
+      deliveredAt: true,
+      deliveryDue: true,
+      revisionRequestedAt: true,
+      editorManual: true,
+      editorVendorKey: true,
+      editor: { select: { name: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, quantity: true } },
+      ...OVERRIDE_SELECT,
+    },
+  });
+  if (!proj) return { ok: false, message: "That job no longer exists." };
+  if (proj.status === "CANCELLED") return { ok: false, message: "That job is cancelled — un-cancel it on the project page first." };
+  const street = (proj.title || "this job").split(",")[0].trim();
+
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const actor = me?.name ?? me?.email ?? "The office";
+  const now = new Date();
+
+  // ---- The job as it reads NOW (effective values), for the sentence. ----
+  const { isMonthlyContentJob } = await import("@/lib/pipeline");
+  const { videoTier } = await import("@/lib/projectStatus");
+  const { editorMeta, editorKeyForTeamName } = await import("@/lib/editors");
+  const videos = proj.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  const monthly = isMonthlyContentJob(proj.deliverables);
+  const computedTier: EditTier = monthly ? "branding" : videoTier(proj.deliverables) === "premium" ? "premium" : "standard";
+  const computedTypeDetail = videos.map((d) => d.label || d.type).join(" · ");
+  // Who has it: the open edit card, else the project's editor, else the vendor
+  // pin — the queue row's own ladder.
+  const card = await prisma.smartTask.findFirst({
+    where: { projectId, taskType: "edit_video", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    select: { assignedKey: true },
+  });
+  const currentEditorKey = card?.assignedKey ?? editorKeyForTeamName(proj.editor?.name) ?? proj.editorVendorKey ?? null;
+  const currentEditorName = currentEditorKey ? editorMeta(currentEditorKey)?.name ?? currentEditorKey : proj.editor?.name ?? null;
+  // The status the office SAW when it opened the dialog (the queue row's
+  // cut-derived label, when the dialog passed it) rather than the stored
+  // status's word — so the sentence can't read "Ready for review → Revisions"
+  // for a row that already said Revisions (review, Sep 13). Sentence only;
+  // the write and `statusChanged` still go off Project.status.
+  const fromLabel = typeof input.fromLabel === "string" ? input.fromLabel.trim().slice(0, 40) : "";
+  const before: OverrideSnapshot = {
+    status: fromLabel || OVERRIDE_STATUS_LABEL[proj.status] || proj.status,
+    pinned: !!proj.statusPinnedAt,
+    editor: currentEditorName,
+    dueAt: effectiveDue(proj, proj.deliveryDue),
+    videosOwed: effectiveVideosOwed(proj, videos),
+    tier: effectiveTier(proj, computedTier),
+    typeDetail: effectiveTypeDetail(proj, computedTypeDetail),
+    priority: effectivePriority(proj, proj.priority),
+    note: proj.overrideNote,
+  };
+
+  // ---- What changes. ----
+  const target = input.status ? QUEUE_STATUS[input.status] : null;
+  const targetStatus: "BOOKED" | "SCHEDULED" | "SHOT" | "EDITING" | "REVIEW" | "REVISION" | "DELIVERED" | null =
+    target === "WAITING" ? (proj.shootDate ? "SCHEDULED" : "BOOKED") : target;
+  const statusChanged = !!targetStatus && targetStatus !== proj.status;
+  const pinNow = !!targetStatus || input.pinStatus === true;
+  const unpin = !targetStatus && input.pinStatus === false;
+  const pinChanged = (pinNow && !proj.statusPinnedAt) || (unpin && !!proj.statusPinnedAt);
+  const editorChanged = wantsEditor && (input.editorKey as string) !== (currentEditorKey ?? "");
+
+  const merged = {
+    dueOverrideAt: dueAt === undefined ? proj.dueOverrideAt : dueAt,
+    videosOwedOverride: input.videosOwed === undefined ? proj.videosOwedOverride : input.videosOwed,
+    tierOverride: input.tier === undefined ? proj.tierOverride : input.tier,
+    typeDetailOverride: typeDetail === undefined ? proj.typeDetailOverride : typeDetail,
+    priorityOverride: input.priority === undefined ? proj.priorityOverride : input.priority,
+    overrideNote: note === undefined ? proj.overrideNote : note,
+    statusPinnedAt: unpin ? null : pinNow ? now : proj.statusPinnedAt,
+  };
+  const sameInstant = (a: Date | null, b: Date | null) => (a?.getTime() ?? null) === (b?.getTime() ?? null);
+  const columnsChanged =
+    !sameInstant(merged.dueOverrideAt, proj.dueOverrideAt) ||
+    merged.videosOwedOverride !== proj.videosOwedOverride ||
+    merged.tierOverride !== proj.tierOverride ||
+    merged.typeDetailOverride !== proj.typeDetailOverride ||
+    merged.priorityOverride !== proj.priorityOverride ||
+    merged.overrideNote !== proj.overrideNote;
+  if (!columnsChanged && !statusChanged && !pinChanged && !editorChanged) {
+    return { ok: true, message: "Nothing changed." };
+  }
+
+  const nextEditorName = !wantsEditor
+    ? currentEditorName
+    : input.editorKey === ""
+      ? null
+      : editorMeta(input.editorKey as string)?.name ?? (input.editorKey as string);
+  const after: OverrideSnapshot = {
+    status: OVERRIDE_STATUS_LABEL[targetStatus ?? proj.status] ?? proj.status,
+    pinned: !!merged.statusPinnedAt,
+    editor: nextEditorName,
+    dueAt: effectiveDue(merged, proj.deliveryDue),
+    videosOwed: effectiveVideosOwed({ ...merged, videosFilmed: proj.videosFilmed }, videos),
+    tier: effectiveTier(merged, computedTier),
+    typeDetail: effectiveTypeDetail(merged, computedTypeDetail),
+    priority: effectivePriority(merged, proj.priority),
+    note: merged.overrideNote,
+  };
+
+  // ---- The editor, through the row's own road. A job that is Completed
+  // refuses a reassign there (no live work to hand off), so when this save
+  // also moves the job OFF Completed the editor step runs after the status
+  // write instead. Nothing else has been written when a refusal returns here.
+  const editorStep = async () => (editorChanged ? setEditVideoEditor(projectId, input.editorKey as string) : { ok: true, message: "" });
+  const editorAfterStatus = editorChanged && proj.status === "DELIVERED" && statusChanged;
+  if (editorChanged && !editorAfterStatus) {
+    const r = await editorStep();
+    if (!r.ok) return r;
+  }
+
+  // ---- The columns + the status, one write. Nothing left set, nothing
+  // pinned and no note = no override on the job any more, so the who/when go
+  // too (the timeline keeps the history). A note on its own STAYS (review,
+  // Sep 13): it used to be written to the timeline and then cleared off the
+  // row in the same save, so the chip never wore it and the office's words
+  // were gone from the job.
+  const nothingLeft = !anyOverrideSet(merged) && !merged.overrideNote;
+  await prisma.project.update({
+    where: { id: projectId },
+    data: {
+      dueOverrideAt: merged.dueOverrideAt,
+      videosOwedOverride: merged.videosOwedOverride,
+      tierOverride: merged.tierOverride,
+      typeDetailOverride: merged.typeDetailOverride,
+      priorityOverride: merged.priorityOverride,
+      statusPinnedAt: merged.statusPinnedAt,
+      overrideBy: nothingLeft ? null : actor,
+      overrideAt: nothingLeft ? null : now,
+      overrideNote: nothingLeft ? null : merged.overrideNote,
+      ...(targetStatus
+        ? {
+            status: targetStatus,
+            // The ORIGINAL delivery date stands on a re-delivery (delivery.ts rule 1).
+            ...(targetStatus === "DELIVERED" ? deliveryStamp(proj.deliveredAt) : {}),
+          }
+        : {}),
+    },
+  });
+
+  // ONE timeline row, before the close-outs below: createDeliveryTextTask
+  // reads an "Override by … → Completed" line as the office's word that a
+  // monthly batch is done (the same release the pill's "Queue status set:
+  // Completed" gives), so it must exist before closeObsoleteTasks mints.
+  const sentence = describeOverrides(before, after, actor);
+  await prisma.activity.create({ data: { projectId, type: "SYSTEM", body: sentence } }).catch(() => {});
+
+  // ---- A forced status: the hold, the card, the close-outs. ----
+  if (targetStatus) {
+    // The pin is the stronger grip — a Waiting hold under it would only
+    // spring back the day the pin is lifted (queueWaiting.ts).
+    try {
+      const { releaseWaitingHold } = await import("@/lib/queueWaiting");
+      await releaseWaitingHold(projectId);
+    } catch { /* hygiene only */ }
+    const EDIT_KEY = `edit-video-${projectId}`;
+    if (targetStatus === "DELIVERED") {
+      // Close any open client revision the way the office's Completed on the
+      // pill does: asks closed, stamp cleared, re-QC card retired. The status
+      // is already Delivered, so resolveRevision keeps it there (its landing
+      // only moves a REVISION/REVIEW job) and runs the delivered close-out.
+      const openAsks = await prisma.smartTask.count({ where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } } });
+      if (openAsks > 0 || proj.revisionRequestedAt) {
+        try {
+          const { resolveRevision } = await import("@/lib/comms");
+          await resolveRevision(projectId);
+        } catch { /* the close-out below still runs */ }
+      }
+      try {
+        const { closeObsoleteTasks } = await import("@/lib/tasks");
+        await closeObsoleteTasks(projectId, "DELIVERED");
+      } catch { /* best-effort — the status write above already landed */ }
+    } else {
+      // Off Completed and back to work: the edit card the delivery closed is
+      // real work again. assignedManually keeps whoever held it and stops the
+      // reconciler's evidence close (the old cut is still live) from folding
+      // it straight back — the assignedManually invariant every engine
+      // respects. Then the standard refresh (due/priority off the overrides).
+      if (proj.status === "DELIVERED") {
+        await prisma.smartTask.updateMany({
+          where: { dedupeKey: EDIT_KEY, status: { in: ["COMPLETED", "CANCELLED"] } },
+          data: { status: "OPEN", completedAt: null, assignedManually: true },
+        }).catch(() => {});
+        try {
+          const { mintEditTask } = await import("@/lib/tasks");
+          await mintEditTask(projectId);
+        } catch { /* the hourly handoff is the backstop */ }
+      }
+      if (targetStatus === "EDITING") {
+        await prisma.smartTask.updateMany({ where: { dedupeKey: EDIT_KEY, status: "OPEN" }, data: { status: "IN_PROGRESS" } }).catch(() => {});
+      } else {
+        await prisma.smartTask.updateMany({ where: { dedupeKey: EDIT_KEY, status: "IN_PROGRESS" }, data: { status: "OPEN" } }).catch(() => {});
+      }
+      if (targetStatus === "SCHEDULED" || targetStatus === "BOOKED") {
+        // Park the QC card the way the pill's Waiting does (Sep 11): on a
+        // Waiting job the hourly "no longer expected" sweep would COMPLETE it
+        // — a QC pass in the Done ledger with no QcRecord. CANCELLED +
+        // SHOOT_NOT_YET is the stamp that sweep skips and the media_qa branch
+        // reopens once the job reads Ready for editing again.
+        try {
+          const { SHOOT_NOT_YET } = await import("@/lib/tasks");
+          await prisma.smartTask.updateMany({
+            where: { projectId, taskType: "media_qa", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+            data: { status: "CANCELLED", sourceDetail: SHOOT_NOT_YET, summary: "Parked — the office set the job back to Waiting. This comes back on its own once the job moves on." },
+          });
+        } catch { /* the card is best-effort — the status already landed */ }
+      }
+    }
+    // Rewrite the evidence now rather than in an hour: the project page and
+    // the edit page read statusEvidence.reason, and the pinned pass writes
+    // "Status pinned by the office…" — the same code the hourly sweep runs.
+    try {
+      const { syncProjectStatuses } = await import("@/lib/projectStatus");
+      await syncProjectStatuses({ projectId });
+    } catch { /* the hourly sweep writes the same reason */ }
+  } else if (dueAt !== undefined || input.priority !== undefined) {
+    // A due / priority change alone: a LIVE edit card follows now, not at the
+    // next hourly refresh (mintEditTask reads the same columns). Only a live
+    // one — mintEditTask has no status gate and would CREATE an OPEN "Raws
+    // are in — cut the video" card for any video job, so a due set ahead of
+    // the shoot on an Upcoming row (or on a Done job that never had a card)
+    // used to put a phantom job on the editor's board days before the raws
+    // existed (review, Sep 13). A job with no card picks the override up
+    // when ensureEditorHandoff mints it after the raws land.
+    const live = await prisma.smartTask.findFirst({
+      where: { dedupeKey: `edit-video-${projectId}`, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      select: { id: true },
+    });
+    if (live) {
+      try {
+        const { mintEditTask } = await import("@/lib/tasks");
+        await mintEditTask(projectId);
+      } catch { /* the hourly refresh is the backstop */ }
+    }
+  }
+
+  let editorNote = "";
+  if (editorAfterStatus) {
+    const r = await editorStep();
+    if (!r.ok) editorNote = ` The editor didn't change: ${r.message}`;
+  }
+
+  for (const path of ["/editing", `/edit/${projectId}`, `/projects/${projectId}`, "/", "/pipeline"]) revalidatePath(path);
+  const receipt = sentence.replace(/^Override by [^:]+: /, "");
+  return {
+    ok: !editorNote,
+    message: `${street}: ${receipt}.${editorNote}`,
+  };
 }

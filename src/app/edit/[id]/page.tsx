@@ -27,6 +27,10 @@ import { getVideoSlaStatus, videoTier } from "@/lib/projectStatus";
 import { SubmitCutCard } from "@/components/editing/EditorActions";
 import { EditFeedback } from "@/components/editing/EditFeedback";
 import { EditTracker, deriveEditStage, type RoundRow } from "@/components/editing/EditTracker";
+import { EditOverridesButton } from "@/components/editing/EditOverridesDialog";
+import { computedView, computedVideosOwed, effectiveDue, effectiveTypeDetail, overrideView } from "@/lib/editOverrides";
+import { STATUS_LABEL } from "@/lib/editorQueue";
+import { editorKeyForTeamName, editorMeta } from "@/lib/editors";
 import { RevisionBriefCard } from "@/components/editing/RevisionBriefCard";
 import { getRevisionBriefs } from "@/lib/revisionBrief";
 import { aryeoCustomerNote } from "@/lib/shoot";
@@ -329,6 +333,37 @@ export default async function EditBriefPage({
   // The tracker narrates a VIDEO edit — a photos-only or cancelled job has no
   // edit lifecycle to track (the brief below still renders for reference).
   const showTracker = videoDeliverables.length > 0 && project.status !== "CANCELLED";
+
+  // ---- THE OFFICE'S OVERRIDES (Jordan, Sep 13: "I want to be able to
+  // override anything") ------------------------------------------------------
+  // What the office set on this job, read straight off the project row (the
+  // same overrideView the queue row carries), and what the hub would say on
+  // its own — the same sources this page already shows (the SLA deadline,
+  // the order's video count, the tier verdict). The header's Override button
+  // hands both to the dialog so each field can show the hub's value beside
+  // the override; the tracker below prefers the override where one is set,
+  // like every other reader of these columns.
+  const overrides = overrideView(project);
+  const computed = computedView({
+    dueAt: sla?.due ?? null,
+    videosOwed: computedVideosOwed(project, videoDeliverables),
+    tier: monthly ? "branding" : tier === "premium" ? "premium" : "standard",
+    typeDetail: videoDeliverables.map((d) => d.label || d.type).join(" · "),
+    priority: project.priority,
+  });
+  // The editor as the hub records it: the open edit task's key, else the
+  // TeamMember on the project, else the vendor key (the outside shop has no
+  // TeamMember). The routing rules' guess is the queue's business, not this
+  // page's — an untouched Editor field sends nothing.
+  const editorKey =
+    project.smartTasks.find((t) => t.taskType === "edit_video" && t.assignedKey)?.assignedKey ??
+    editorKeyForTeamName(project.editor?.name) ??
+    project.editorVendorKey ??
+    null;
+  const editorName = editorKey ? editorMeta(editorKey)?.name ?? project.editor?.name ?? editorKey : null;
+  // The effective deadline and type for the tracker: the office's word wins.
+  const trackerDue = effectiveDue(project, sla?.due ?? null);
+  const trackerEditType = effectiveTypeDetail(project, videoTypeLabel(editDeliverables, videoTier(owedDeliverables)) || "Video edit");
   // ---- ONE instruction card ----------------------------------------------
   // Everything the editor is TOLD to do, gathered from the three cards that
   // used to say it separately ("Edit instructions", "Editing notes", and the
@@ -388,6 +423,25 @@ export default async function EditBriefPage({
         }
         actions={
           <div className="flex items-center gap-2">
+            {/* THE OVERRIDE (Jordan, Sep 13) — office only, and never from a
+                "view as" preview (read-only; the server re-checks). Wears the
+                Override chip when one is set; its receipt shows as a note
+                under the button. */}
+            {isOwnerAdmin && !viewer?.impersonating && (
+              <EditOverridesButton
+                variant="header"
+                job={{
+                  projectId: project.id,
+                  street,
+                  status: STATUS_LABEL[project.status] ?? project.status,
+                  editorKey,
+                  editorName,
+                  editorAuto: false,
+                  overrides,
+                  computed,
+                }}
+              />
+            )}
             {isOwnerAdmin && (
               <Link href={`/projects/${project.id}`} className="inline-flex items-center gap-1 rounded-lg border bg-surface px-2.5 py-1.5 text-xs font-medium text-muted hover:text-foreground">
                 Full details <ExternalLink className="size-3.5" />
@@ -410,8 +464,11 @@ export default async function EditBriefPage({
             // The ACTUAL product name, or the tier-decorated type for a generic
             // Aryeo label — never the bare word "Video" (208 N Adams St). The
             // tier is the same videoTier() verdict the deadline is built on.
-            editType={videoTypeLabel(editDeliverables, videoTier(owedDeliverables)) || "Video edit"}
-            dueISO={sla ? sla.due.toISOString() : null}
+            // The office's override, when set, outranks both (Sep 13) — and
+            // the facts say so with a tag.
+            editType={trackerEditType}
+            dueISO={trackerDue ? trackerDue.toISOString() : null}
+            overridden={{ due: overrides.dueAt != null, editType: overrides.typeDetail != null }}
             shootDateISO={project.shootDate ? project.shootDate.toISOString() : null}
             photographerName={project.photographer?.name ?? null}
             song={project.reelSong}

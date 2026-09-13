@@ -576,6 +576,11 @@ export async function syncDropboxFolderStatus(): Promise<{
     const hasRaw = rawP + rawV > 0;
     const hasFinal = finP + finV > 0;
 
+    // The office's status pin (Sep 13, editOverrides.ts): a pinned status is
+    // no engine's to move, this legacy sweep included — the same rule the
+    // hourly status sweep runs. `include` above already carries the column.
+    if (p.statusPinnedAt) continue;
+
     if (hasFinal && (p.status === "SHOT" || p.status === "EDITING")) {
       await prisma.project.update({ where: { id: p.id }, data: { status: "REVIEW" } });
       await prisma.activity.create({

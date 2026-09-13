@@ -346,7 +346,7 @@ export async function raiseRevision(opts: {
 }): Promise<boolean> {
   const project = await prisma.project.findUnique({
     where: { id: opts.projectId },
-    select: { id: true, status: true, title: true, clientId: true, revisionRequestedAt: true, editorManual: true, editorVendorKey: true, editor: { select: { name: true } }, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } }, client: { select: { socialClient: true, segment: true } } },
+    select: { id: true, status: true, title: true, clientId: true, revisionRequestedAt: true, statusPinnedAt: true, editorManual: true, editorVendorKey: true, editor: { select: { name: true } }, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } }, client: { select: { socialClient: true, segment: true } } },
   });
   if (!project) return false;
 
@@ -399,13 +399,22 @@ export async function raiseRevision(opts: {
   // stays on revisionNote/activity, which are admin surfaces).
   const { stripMoneySentences } = await import("@/lib/text");
   const taskNote = (assignedKey && assignedKey !== "kyle" ? stripMoneySentences(note) : note) || clip(note, 240);
+  // A client asking for changes outranks the office's status pin (Sep 13,
+  // editOverrides.ts): the pin is the office's word over the hub's guesses,
+  // not over the client. The ask clears it and, on a job the office had
+  // pinned somewhere else, moves the job to Revisions now rather than an hour
+  // later when the sweep (which the pin was holding off) would have — so the
+  // queue row and the timeline agree the moment the ask lands.
+  const pinned = !!project.statusPinnedAt;
   await prisma.project.update({
     where: { id: project.id },
     data: {
       revisionRequestedAt: new Date(),
       revisionNote: note,
-      // Only a delivered job changes stage; REVIEW/REVISION keep their stage.
-      ...(project.status === "DELIVERED" ? { status: "REVISION" } : {}),
+      statusPinnedAt: null,
+      // Only a delivered (or pinned) job changes stage; REVIEW/REVISION keep
+      // their stage.
+      ...(project.status === "DELIVERED" || (pinned && project.status !== "REVISION") ? { status: "REVISION" } : {}),
     },
   });
 
@@ -645,7 +654,10 @@ export async function resolveRevision(projectId: string): Promise<void> {
     data: {
       revisionRequestedAt: null,
       revisionNote: null,
-      ...(landing ? { status: landing } : {}),
+      // The landing is a human status write (the approval, the task's
+      // Complete, the project-page button), and a human write ends the
+      // office's status pin (Sep 13, editOverrides.ts).
+      ...(landing ? { status: landing, statusPinnedAt: null } : {}),
       // deliveredAt is NEVER written here. Resolving a revision is not a
       // delivery: a job that was delivered keeps the date it actually shipped
       // on, and a job that never shipped must not acquire one. The real stamp

@@ -529,6 +529,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
               orderItems: { where: { isCanceled: false }, select: { title: true } },
               packageName: true,
               videosFilmed: true,
+              videosOwedOverride: true, // the office's batch size (Sep 13, editOverrides.ts)
               // The rest of the photographer's wrap-up. Jordan (Sep 1): every
               // upload-portal note except the video editing brief belongs on
               // the QC card, in full — QC is where those notes get acted on.
@@ -552,6 +553,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
         where: { status: { in: ["EDITING", "REVIEW", "REVISION"] } },
         select: {
           id: true, title: true, status: true, statusEvidence: true,
+          dueOverrideAt: true, // the office's due (Sep 13) — the QC card's "video due" reads it before the evidence
           client: { select: { name: true, avatarUrl: true } },
           deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
           editor: { select: { name: true } },
@@ -690,8 +692,10 @@ export async function buildOpsDay(): Promise<OpsDay> {
       actionable,
       nextDueISO: next?.at.toISOString() ?? null,
       nextDueCategories: next?.categories ?? [],
+      // The office's number first (Sep 13), then the photographer's count,
+      // then the plan quota — the same ladder the cut slots owe against.
       videosOwed: monthly
-        ? pr?.videosFilmed ?? monthlyVideoQuota([pr?.packageName, ...(pr?.deliverables ?? []).map((d) => d.label)])
+        ? pr?.videosOwedOverride ?? pr?.videosFilmed ?? monthlyVideoQuota([pr?.packageName, ...(pr?.deliverables ?? []).map((d) => d.label)])
         : null,
       notCompleted: (pr?.deliverables ?? [])
         .filter((d): d is typeof d & { notCompletedReason: string } => !!d.notCompletedReason)
@@ -727,8 +731,11 @@ export async function buildOpsDay(): Promise<OpsDay> {
       editor: p.editor?.name ?? null,
       sent: e.present,
       waitingOn: e.missing,
-      videoDueISO: ev?.videoDue ?? null,
-      videoOverdue: !!ev?.videoOverdue,
+      // The office's due wins the moment it is saved (Sep 13, editOverrides
+      // effectiveDue) — the evidence carries the same date after the next
+      // hourly sweep, but Kyle's card must not lag an hour behind Jordan.
+      videoDueISO: p.dueOverrideAt ? p.dueOverrideAt.toISOString() : ev?.videoDue ?? null,
+      videoOverdue: p.dueOverrideAt ? e.missing.includes("Video") && p.dueOverrideAt < now : !!ev?.videoOverdue,
       revision: p.status === "REVISION" ? { headline: brief?.headline ?? null, items } : null,
     };
   });

@@ -465,6 +465,11 @@ type StatusProject = {
   appointments: { status: string | null; startAt: Date | null; postponedAt?: Date | null }[];
   /** the previous pass's evidence — last-known-good Dropbox counts live here */
   statusEvidence?: string | null;
+  // The office's overrides (Sep 13, editOverrides.ts): a pinned status is
+  // never written over by this sweep; a due the office set replaces the SLA
+  // date the status card shows.
+  statusPinnedAt?: Date | null;
+  dueOverrideAt?: Date | null;
 };
 
 async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<StatusSignals> {
@@ -561,6 +566,21 @@ async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<Sta
   };
 }
 
+// The queue ladder's words for the pin note in the evidence (Sep 13) — the
+// same labels editorQueue.STATUS_LABEL prints, kept here so this module does
+// not import the queue builder.
+const STATUS_WORD: Record<string, string> = {
+  BOOKED: "Waiting",
+  SCHEDULED: "Waiting",
+  SHOT: "Ready for editing",
+  EDITING: "In editing",
+  REVIEW: "Ready for review",
+  REVISION: "Revisions",
+  DELIVERED: "Completed",
+  ON_HOLD: "On hold",
+  CANCELLED: "Cancelled",
+};
+
 // Simple bounded-concurrency map so a full backfill doesn't hammer the APIs.
 async function pMap<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
@@ -656,6 +676,10 @@ export async function syncProjectStatuses(
       deliverables: { where: { removedFromOrderAt: null }, select: { id: true, type: true, label: true, status: true, quantity: true } },
       appointments: { select: { status: true, startAt: true, postponedAt: true } },
       statusEvidence: true,
+      // Loaded with the batch, no extra query: the office's pin and due
+      // (Sep 13) — see the guards in the loop.
+      statusPinnedAt: true,
+      dueOverrideAt: true,
     },
   })) as StatusProject[];
 
@@ -796,6 +820,36 @@ export async function syncProjectStatuses(
       const seen = status === "SHOT" ? "raw files are in the folder" : "media is already showing for this job";
       evidence.reason = `Held in Waiting by the office${hold.by ? ` (${hold.by})` : ""}; ${seen} — it stays Waiting until the photographer submits the upload page or the office moves it on.`;
     }
+    // THE OFFICE'S STATUS PIN (Jordan, Sep 13: "I want to be able to override
+    // anything"). While Project.statusPinnedAt is set, the status the office
+    // forced through the override dialog is the status, full stop: this sweep
+    // — the hourly pass, the per-project recheck, the Aryeo media webhook —
+    // never writes over it, whatever the evidence computed. Sits beside the
+    // sticky-EDITING / Waiting-hold / manualQueued guards above and outranks
+    // them all; loaded with the batch (statusPinnedAt in the select), no
+    // extra query. The evidence still records what the hub WOULD say, so the
+    // project page explains the disagreement instead of hiding it. Only a
+    // human ends it — the pill, the pipeline board, the dialog's "Let the hub
+    // manage the status again" — or Aryeo cancelling the order (aryeo.ts,
+    // which clears the pin as it writes CANCELLED), or a client revision
+    // arriving (comms.raiseRevision — client news outranks a pin).
+    // computeStatus never yields CANCELLED, so there is no exception to make
+    // here.
+    if (p.statusPinnedAt) {
+      if (final !== p.status) {
+        const wouldBe = STATUS_WORD[final] ?? final;
+        evidence.reason = `Status pinned by the office on ${STATUS_WORD[p.status] ?? p.status} (${p.statusPinnedAt.toLocaleDateString("en-US", { month: "short", day: "numeric" })}); on its own the hub would read ${wouldBe} — ${evidence.reason}`;
+      }
+      final = p.status;
+    }
+    // THE OFFICE'S DUE (Sep 13): the status card's "video due" is the date
+    // the office set, not the SLA's — and "overdue" is judged against it.
+    // Only while the video is still owed; a delivered video has no due.
+    if (p.dueOverrideAt && evidence.missing.includes("Video")) {
+      evidence.videoDue = p.dueOverrideAt.toISOString();
+      evidence.videoOverdue = Date.now() > p.dueOverrideAt.getTime();
+      evidence.reason += ` Video due ${p.dueOverrideAt.toLocaleDateString("en-US", { month: "short", day: "numeric" })} (set by the office).`;
+    }
 
     if (evidence.partial) partials++;
     byStatus[final] = (byStatus[final] ?? 0) + 1;
@@ -845,7 +899,11 @@ export async function syncProjectStatuses(
     // Nor while the office holds the job in Waiting (Sep 11): the office has
     // said the files in the folder are not this job's footage, and the stamp
     // is what lights "Uploaded" on /upload for a page nobody submitted.
-    const rawsDetected = !sig.shootPending && !held && !!sig.dropbox && sig.dropbox.rawPhotos + sig.dropbox.rawVideo > 0;
+    // A Waiting the office PINNED through the override dialog (Sep 13) is the
+    // same word said harder — the override releases the hold and relies on
+    // the pin, so the pin has to carry this rule too.
+    const pinnedWaiting = !!p.statusPinnedAt && (p.status === "BOOKED" || p.status === "SCHEDULED");
+    const rawsDetected = !sig.shootPending && !held && !pinnedWaiting && !!sig.dropbox && sig.dropbox.rawPhotos + sig.dropbox.rawVideo > 0;
     await prisma.project.update({
       where: { id: p.id },
       data: {

@@ -552,6 +552,28 @@ model Project {
   // the photographer reports how many they actually filmed on the wrap-up —
   // the editor needs the count to know how many cuts to produce (Jordan, Sep 1).
   videosFilmed       Int?
+
+  // ---- OFFICE OVERRIDES (Jordan, Sep 13: "I want to be able to change the
+  // status, amount of deliverables, the due date and all other information
+  // for the edits in the editing room. I want to be able to override
+  // anything."). Hub-owned: no sweep, sync or reconciler ever writes these;
+  // every reader prefers them over the computed value. null = no override.
+  // statusPinnedAt: while set, no ENGINE may write Project.status (the hourly
+  // status/folder sweeps, the task reconciler, the Aryeo sync); a human status
+  // write (queue pill, pipeline board, the override dialog) clears or renews it.
+  statusPinnedAt      DateTime?
+  // The delivery due the office set — wins over the turnaround engine on the
+  // queue row, the edit card, the tracker, the delivery board and the QC card.
+  dueOverrideAt       DateTime?
+  // How many videos this job owes — wins over videosFilmed and the order's
+  // deliverable quantity everywhere (queue, cut slots, monthly quota).
+  videosOwedOverride  Int?
+  tierOverride        String?   // standard | premium | branding
+  typeDetailOverride  String?   // the row's "video type" text
+  priorityOverride    String?   // LOW | NORMAL | HIGH | URGENT — pins the edit card's priority
+  overrideBy          String?   // who last saved an override
+  overrideAt          DateTime?
+  overrideNote        String?   // their reason, shown on the row and the timeline
   cullingConfirmedAt DateTime? // ticked "culled to the standard, extras in Backup"
   debriefSubmittedAt DateTime? // the photographer SUBMITTED the upload page (finalizeUpload) — distinct from uploadedAt, which the Dropbox sweep can auto-stamp; gates My Pay visibility for shoots from Sep 2 2026
   shotOrderNotes     String?   // "Shot front to back." or the actual order + why (organizing unseen photos burns office time)
