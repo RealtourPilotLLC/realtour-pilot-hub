@@ -11,6 +11,7 @@ import {
   MessageSquare,
   Users,
   MessageCircle,
+  Music,
   Send,
   Sparkles,
   CheckCircle2,
@@ -43,11 +44,12 @@ import {
   disconnectProvider,
   saveAryeoWebhookSecret,
   clearAryeoWebhookSecret,
+  testEpidemicSoundNow,
   type ActionResult,
 } from "@/app/connections/actions";
 
 const ICONS: Record<string, LucideIcon> = {
-  Camera, CreditCard, Calculator, Folder, Mail, Phone, MessageSquare, Users, MessageCircle, Send, Sparkles,
+  Camera, CreditCard, Calculator, Folder, Mail, Phone, MessageSquare, Users, MessageCircle, Send, Sparkles, Music,
 };
 
 export type ConnState = {
@@ -708,6 +710,18 @@ function GenericApiKeyActions({
             className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
           >
             {pending ? <Loader2 className="size-4 animate-spin" /> : "Check folders → update status"}
+          </button>
+        )}
+        {/* Epidemic Sound (Sep 15): the key works + what the agreement
+            reaches — moods, collections, full search or curated only. */}
+        {provider.id === "epidemic_sound" && (
+          <button
+            onClick={() => startTransition(async () => setMsg(await testEpidemicSoundNow()))}
+            disabled={pending}
+            title="Re-check the key and what the partner agreement reaches (moods, collections, catalogue search)"
+            className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+          >
+            {pending ? <Loader2 className="size-4 animate-spin" /> : "Test connection"}
           </button>
         )}
         <button

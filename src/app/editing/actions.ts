@@ -526,8 +526,17 @@ export async function saveEditSpec(
     desiredLength: (spec.desiredLength ?? "").trim().slice(0, 60) || undefined,
     instructions: (spec.instructions ?? "").trim().slice(0, 4000) || undefined,
   };
-  const hasAny = Object.values(clean).some(Boolean);
-  await prisma.project.update({ where: { id: projectId }, data: { editSpec: hasAny ? JSON.stringify(clean) : null } });
+  // The job's Epidemic Sound pick lives in the same JSON under `music`
+  // (Sep 15, src/lib/musicPick.ts) and is written by the Music card, not this
+  // form — carry it through so saving the spec never silently drops the track.
+  const { readMusicPick } = await import("@/lib/musicPick");
+  const existing = await prisma.project.findUnique({ where: { id: projectId }, select: { editSpec: true } });
+  const music = readMusicPick(existing?.editSpec);
+  const hasAny = Object.values(clean).some(Boolean) || !!music;
+  await prisma.project.update({
+    where: { id: projectId },
+    data: { editSpec: hasAny ? JSON.stringify({ ...clean, ...(music ? { music } : {}) }) : null },
+  });
   const { revalidatePath } = await import("next/cache");
   revalidatePath(`/edit/${projectId}`);
   return { ok: true, message: "Instructions saved." };

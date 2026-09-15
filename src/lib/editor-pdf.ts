@@ -5,6 +5,7 @@ import type { FullProject } from "@/lib/queries";
 import { ActivityType } from "@prisma/client";
 import { isFieldFlag } from "@/lib/debrief";
 import { creativeCustomerNote } from "@/lib/clientNotes";
+import { musicPickLine, readMusicPick } from "@/lib/musicPick";
 
 // Standard PDF fonts use WinAnsi encoding and throw on characters they can't
 // represent (emoji, smart quotes from some keyboards, etc). Map the common ones
@@ -190,6 +191,21 @@ export async function buildEditorBriefPdf(project: FullProject): Promise<Uint8Ar
     // Studio scripts are Markdown — flatten the syntax for the plain-text PDF
     // (a literal "**Hook**" or "## " in the editor's hands reads as noise).
     if (project.reelScript) text(stripMarkdownSyntax(project.reelScript), { size: 10 });
+  }
+
+  // ---- Music ------------------------------------------------------------
+  // The Epidemic Sound track picked on the brief's Music card (Sep 15) — the
+  // same line the card and the spec show, plus where the MP3 sits.
+  const music = readMusicPick(project.editSpec);
+  if (music) {
+    heading("Music");
+    text(musicPickLine(music), { size: 11, f: bold, gap: 2 });
+    text(
+      music.dropboxPath
+        ? `In the job folder: 02-RAW-Video/Music/${music.dropboxPath.split("/").pop() ?? ""}`
+        : `Picked by ${music.pickedBy || "the office"} - not downloaded yet; use the Music card on the job page.`,
+      { size: 10, color: MUTED },
+    );
   }
 
   // ---- Photographer's brief --------------------------------------------

@@ -6,6 +6,7 @@ import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { Section } from "@/components/ui/Section";
 import { JobNoteEditor } from "@/components/editing/JobNoteEditor";
 import { saveEditSpec } from "@/app/editing/actions";
+import { musicPickLine, type MusicPick } from "@/lib/musicPick";
 
 // ---------------------------------------------------------------------------
 // ONE card for everything the editor is told to do (Jordan, Sep 2: "Edit
@@ -36,6 +37,8 @@ export type EditSpec = {
   colorProfile?: string;
   desiredLength?: string;
   instructions?: string;
+  /** the Epidemic Sound track picked on the Music card (Sep 15) — read here, written there */
+  music?: MusicPick | null;
 };
 
 // Everything the old "Editing notes" and "Customer notes" cards used to show
@@ -92,7 +95,7 @@ export function EditInstructionsCard({
   const [note, setNote] = useState<string | null>(null);
   const [pending, start] = useTransition();
 
-  const specEmpty = !spec.musicType && !spec.colorProfile && !spec.desiredLength && !spec.instructions;
+  const specEmpty = !spec.musicType && !spec.colorProfile && !spec.desiredLength && !spec.instructions && !spec.music;
   // A whitespace-only brief is no brief — the upload portal trims before
   // saving, but older rows and the in-place editor may not have.
   const shootBrief = brief.editorBrief?.trim() || null;
@@ -117,6 +120,11 @@ export function EditInstructionsCard({
   // The quick facts — how it should sound, look, run, and how many to cut.
   const facts: { label: string; value: string; hint?: string; strong?: boolean }[] = [
     ...FIELDS.flatMap((f) => (spec[f.key] ? [{ label: f.label, value: spec[f.key] as string }] : [])),
+    // The track itself, beside the music TYPE — picked on the Music card
+    // (Sep 15); "in the job folder" once the MP3 is in Dropbox.
+    ...(spec.music
+      ? [{ label: "Music track", value: musicPickLine(spec.music), hint: spec.music.dropboxPath ? "· in the job folder" : `· picked by ${spec.music.pickedBy || "the office"}` }]
+      : []),
     ...(brief.videosFilmed != null
       ? [{ label: "Videos to cut", value: String(brief.videosFilmed), hint: "filmed on this session", strong: true }]
       : []),

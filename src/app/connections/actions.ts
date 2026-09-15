@@ -12,6 +12,7 @@ import { exchangeDropboxCode, testDropboxRefreshToken } from "@/lib/integrations
 import { testSlackKey, testSlackUserKey } from "@/lib/integrations/slack";
 import { testAiKey } from "@/lib/integrations/ai";
 import { testCalendlyKey } from "@/lib/integrations/calendly";
+import { epidemicSoundReach, testEpidemicSoundKey } from "@/lib/integrations/epidemicSound";
 import { syncGmail } from "@/lib/integrations/google";
 import { generateTasksForActiveProjects } from "@/lib/tasks";
 import { syncProjectStatuses } from "@/lib/projectStatus";
@@ -81,7 +82,33 @@ const TESTERS: Record<string, (key: string) => Promise<{ ok: true; label: string
   ai: testAiKey,
   stripe: testStripeKey,
   calendly: testCalendlyKey,
+  epidemic_sound: testEpidemicSoundKey,
 };
+
+// Epidemic Sound "Test connection" (Sep 15): re-runs the same probe the
+// connect step ran — the key still works, and what the partner agreement
+// reaches (moods, collections, full-catalogue search or curated only) — so
+// Jordan can see at a glance why an editor's search came back empty.
+export async function testEpidemicSoundNow(): Promise<ActionResult> {
+  await requireOwner();
+  try {
+    const r = await epidemicSoundReach();
+    revalidatePath("/connections");
+    return { ok: true, message: r.note };
+  } catch (e) {
+    const { esFriendlyMessage } = await import("@/lib/integrations/epidemicSoundCore");
+    const f = esFriendlyMessage(e);
+    return {
+      ok: false,
+      message:
+        f.kind === "unauthorized" || f.kind === "forbidden"
+          ? "Epidemic Sound rejected the key — paste a fresh one."
+          : f.kind === "rate_limited"
+            ? "Epidemic Sound is rate limiting us — try again in a minute."
+            : f.message,
+    };
+  }
+}
 
 // Pull the real books from QuickBooks on demand. This is the number that has
 // been missing everywhere else: revenue processed outside Stripe, plus the

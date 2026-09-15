@@ -25,6 +25,7 @@
     "@vercel/blob": "^2.8.0",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
+    "hls.js": "^1.7.3",
     "html2canvas-pro": "^2.1.1",
     "jose": "^6.2.3",
     "leaflet": "^1.9.4",

@@ -18,6 +18,9 @@ import { ClientProfileCard } from "@/components/clients/ClientProfileCard";
 import { ProjectMessages } from "@/components/project/ProjectMessages";
 import { ReelScriptCard } from "@/components/project/ReelScriptCard";
 import { EditInstructionsCard } from "@/components/editing/EditInstructionsCard";
+import { MusicCard } from "@/components/editing/MusicCard";
+import { epidemicSoundConnected } from "@/lib/integrations/epidemicSound";
+import { parseEditSpec, musicPickOf } from "@/lib/musicPick";
 import { AocPlaybookCard } from "@/components/project/AocPlaybookCard";
 import { EditorCutPanel } from "@/components/editing/EditorCutPanel";
 import { CutUploader } from "@/components/editing/CutUploader";
@@ -46,6 +49,11 @@ import { ActivityType } from "@prisma/client";
 import { formatDistanceToNow } from "date-fns";
 
 export const dynamic = "force-dynamic";
+// The Music card's "Download to the job folder" action posts to this segment:
+// a signed-MP3 fetch plus a Dropbox upload of up to 60 MB can outrun the
+// default function budget (review, Sep 15) — the same ceiling /my-pay and
+// /sales use.
+export const maxDuration = 60;
 
 // ---------------------------------------------------------------------------
 // Style KEY ↔ Style Guide type. The keys are the shared contract that
@@ -172,8 +180,25 @@ export default async function EditBriefPage({
   // Dropbox; editors upload here too.
   const assets = await listClientAssets(project.client.id).catch(() => null);
   const profile = parseClientProfile(project.client.profileJson);
+  // The job's spec JSON — the office's Luma-form fields plus, since Sep 15,
+  // the Epidemic Sound pick under `music` (src/lib/musicPick.ts).
+  const editSpec = parseEditSpec(project.editSpec);
+  const musicPick = musicPickOf(editSpec);
+  // Is the music catalogue wired? Owner/admin see the card either way (with a
+  // "connect it" note until the key is in); editors only once it works.
+  const musicConnected = await epidemicSoundConnected().catch(() => false);
   const folders = actualFolderPaths(project); // the job's OWN folder, not the convention path (audit, Sep 8)
   const rawUrl = dropboxWebUrl(folders.rawVideo);
+  // The pick's "Open in Dropbox" link, built here (dropboxFolders is
+  // server-only) from the path the download recorded, so it survives a
+  // reload instead of living only in the session that clicked Download
+  // (review, Sep 15).
+  const musicPickUrl = (() => {
+    const p = musicPick?.dropboxPath;
+    if (!p) return null;
+    const cut = p.lastIndexOf("/");
+    return cut > 0 ? `${dropboxWebUrl(p.slice(0, cut))}?preview=${encodeURIComponent(p.slice(cut + 1))}` : dropboxWebUrl(p);
+  })();
   const finalUrl = dropboxWebUrl(folders.finalVideo);
   const brandUrl = project.client.brandAssetsPath ? dropboxWebUrl(project.client.brandAssetsPath) : null;
   const brandColors = (project.client.brandColors ?? "")
@@ -629,12 +654,31 @@ export default async function EditBriefPage({
             </div>
           </Section>
 
+          {/* 3b · MUSIC — right under What to make (Jordan, Sep 15: "they
+              should be able to find music in the editor brief for copyright
+              free music"): search, preview, pick and download a licensed
+              Epidemic Sound track for this job. Video jobs only. Photographers
+              never reach this page; editors see the card once the key is
+              connected, the office sees the "connect it" note until then;
+              a "view as" preview can look but not pick or download. */}
+          {videoDeliverables.length > 0 && (musicConnected || isOwnerAdmin) && (
+            <MusicCard
+              projectId={project.id}
+              connected={musicConnected}
+              isOffice={isOwnerAdmin}
+              canAct={!viewer?.impersonating && (isOwnerAdmin || viewer?.role === "EDITOR")}
+              pick={musicPick}
+              pickUrl={musicPickUrl}
+              musicType={typeof editSpec.musicType === "string" ? editSpec.musicType : null}
+            />
+          )}
+
           {/* 4 · HOW TO MAKE IT, in words — the spec, the customer's own words
               on this order, and everything that came off the shoot, in one
               card. */}
           <EditInstructionsCard
             projectId={project.id}
-            spec={project.editSpec ? JSON.parse(project.editSpec) : {}}
+            spec={{ ...editSpec, music: musicPick }}
             canEdit={isOwnerAdmin}
             brief={briefFields}
           />

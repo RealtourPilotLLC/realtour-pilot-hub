@@ -147,6 +147,30 @@ export const PROVIDERS: ProviderDef[] = [
     ready: true,
   },
   {
+    // Licensed music for the video editors (Jordan, Sep 15: "add API access to
+    // epidemic sound so the editor can browse and download songs … in the
+    // editing room"). Partner Content API key, pasted by the owner; the
+    // editors search, preview, pick and download from the brief's Music card
+    // and never see the key.
+    id: "epidemic_sound",
+    name: "Epidemic Sound",
+    blurb: "Licensed music for the editors, from the brief",
+    segment: "Files",
+    authType: "apikey",
+    icon: "Music",
+    color: "#111827",
+    keyLabel: "API key (starts with epidemic_live_)",
+    keyHelp:
+      "Partner Content API key from the Epidemic Sound partner account — pasted here by the owner, stored encrypted; editors never see it. The partner agreement decides the reach (curated collections vs the full catalogue) — Test & connect says which.",
+    docsUrl: "https://developers.epidemicsound.com/docs/",
+    capabilities: [
+      "Editors search, preview and pick a track from the job brief",
+      "Download the MP3 straight into the job's Dropbox folder",
+      "Every download reported to Epidemic Sound under the agreement",
+    ],
+    ready: true,
+  },
+  {
     id: "hubspot",
     name: "HubSpot",
     blurb: "CRM sync (migrate off, or run alongside)",
