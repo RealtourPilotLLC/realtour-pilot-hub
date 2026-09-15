@@ -10,14 +10,16 @@ import { clip, stripInvisible, scrubMoney, escapeSlack } from "@/lib/text";
 // tagged on this job" task per (project, person) that refreshes on re-tags,
 // plus a bell per comment. The bell's link lands on the surface that person
 // can actually open (photographer → their shoot page, editor → their brief,
-// everyone else → the project page), and editors ALSO get their channel row
-// (editor:<key> → Slack DM/SMS via the notify bridge, "mention" is in both
-// SMS_KINDS and EDITOR_CHANNEL_KINDS). Since Sep 15 every person-addressed
-// row also carries the Slack DM sentence (slackDm, built by slackMentionDm
-// below) — Jordan: "if I type at John or at Kyle, a notification is sent to
-// them directly in Slack with a link to the message and a summary". Best-
-// effort by contract — a mention hiccup must never fail the comment that
-// carried it.
+// everyone else → the project page), and editors ALSO get their editor:<key>
+// row (the one their EDITOR login sees). Since Sep 15 every person-addressed
+// row carries the emitter's sentence (slackDm, built by slackMentionDm below)
+// — Jordan: "if I type at John or at Kyle, a notification is sent to them
+// directly in Slack with a link to the message and a summary" — and the
+// bridge in notify.ts sends it as a Slack DM and/or a text by THAT PERSON's
+// row on /settings → Team notifications (James and Harrison: a text with the
+// link; the editors: Slack). A row's roles decide only who can see it in the
+// bell. Best-effort by contract — a mention hiccup must never fail the
+// comment that carried it.
 // ---------------------------------------------------------------------------
 
 // Match "@Full Name" (as the composer inserts) plus hand-typed "@FirstName"
@@ -80,12 +82,14 @@ export async function isMentionedIn(texts: string[], teamMemberId: string): Prom
 //   💬 Jordan Spackman mentioned you on 123 Main St — a cut note
 //   > the message, first ~240 characters, one line
 //   https://hub.realtourpilot.com/edit/<id>
-// A reply opens "↩︎ <Author> replied to you on <street> — …" instead. The
-// quote is scrubbed of money for anyone but the owner (creatives never see
-// pricing, and a Slack DM is even leakier than the bell), invisible characters
-// are stripped, and the cut lands on a word boundary. Slack markup is escaped
-// so a client's "<3" or "photos & video" arrive as typed; the "> " prefix is
-// Slack's own quote.
+// A reply opens "↩︎ <Author> replied to you on <street> — …" instead, and a
+// message on a job the recipient is editing (Sep 15, notifyProjectMessage)
+// "💬 <Author> posted on <street> — …". The quote is scrubbed of money for
+// anyone but the owner (creatives never see pricing, and a Slack DM is even
+// leakier than the bell), invisible characters are stripped, and the cut
+// lands on a word boundary. Slack markup is escaped so a client's "<3" or
+// "photos & video" arrive as typed; the "> " prefix is Slack's own quote. The
+// same sentence is what a text carries, in plain-text form (notify.ts).
 // ---------------------------------------------------------------------------
 export function slackMentionDm(opts: {
   author: string;
@@ -95,6 +99,8 @@ export function slackMentionDm(opts: {
   /** In-app href — the DM carries the absolute link (appBase()). */
   href: string;
   reply?: boolean;
+  /** A message on a job the recipient edits, not a tag of them. */
+  posted?: boolean;
   /** The recipient IS the owner → money stays in the quote. */
   ownerRecipient?: boolean;
 }): string {
@@ -102,7 +108,9 @@ export function slackMentionDm(opts: {
   const summary = clip(opts.ownerRecipient ? oneLine : scrubMoney(oneLine), 240);
   const head = opts.reply
     ? `↩︎ ${opts.author} replied to you on ${opts.street} — ${opts.context}`
-    : `💬 ${opts.author} mentioned you on ${opts.street} — ${opts.context}`;
+    : opts.posted
+      ? `💬 ${opts.author} posted on ${opts.street} — ${opts.context}`
+      : `💬 ${opts.author} mentioned you on ${opts.street} — ${opts.context}`;
   return `${escapeSlack(head)}\n> ${escapeSlack(summary)}\n${appBase()}${opts.href}`;
 }
 
@@ -186,7 +194,8 @@ export async function notifyMentions(opts: {
     const street = project?.title?.split(",")[0]?.trim() || "a job";
     const author = opts.authorName ?? "A teammate";
 
-    // kim/remar tags should reach Manila through the editor channel bridge.
+    // kim/john tags also need their editor:<key> row — the one their EDITOR
+    // login sees on the bell.
     const { slugForName } = await import("@/lib/assignees");
     const editorTmIds = await editorTmIdMap(); // TeamMember id → editor key
     const editorKeyFor = (tmId: string): string | null => editorTmIds.get(tmId) ?? null;
@@ -256,31 +265,25 @@ export async function notifyMentions(opts: {
       else await prisma.smartTask.create({ data }).catch(() => {});
 
       // Visibility needs the person's APP role in the audience (the bell API
-      // matches audience AND userKey), so the tm: row stays broad — EXCEPT for
-      // editors: dropping PHOTOGRAPHER there disarms the SMS bridge (which keys
-      // on tm: + PHOTOGRAPHER-in-roles and texts on ET quiet hours), so a Manila
-      // editor is reached ONLY via their editor:<key> channel row below, in
-      // their own timezone — no 3am texts, no double delivery. An editor's app
-      // role is never PHOTOGRAPHER, so they lose no visibility.
+      // matches audience AND userKey), so the tm: row stays broad. Roles are
+      // visibility ONLY since Sep 15 — which channels the row goes out on is
+      // the person's matrix row (notify.ts bridgePerson), so an editor's
+      // tm: row simply drops the role they never hold.
       const targets: import("@/lib/notify").NotifyTarget[] = [
         {
           roles: editorKey ? ["OWNER", "ADMIN", "EDITOR"] : ["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"],
           userKey: `tm:${t.id}`,
           href,
-          // The owner's text (Sep 11), read only when this tm: row is his: who,
-          // where, the first ~90 characters, and the note itself — the note
-          // page opens for the owner and shows the whole thread. Off on a
-          // self-tag (no sentence = no text, notify.ts).
-          ...(selfTag ? {} : { ownerSms: `${author} mentioned you on ${street}: “${clip(opts.text, 90)}” ${appBase()}${href}` }),
-          // The Slack DM (Sep 15): who, where, the first ~240 characters and
-          // the same deep link the bell row carries. Off on a self-tag.
+          // The sentence (Sep 15): who, where, the first ~240 characters and
+          // the same deep link the bell row carries — the Slack DM, and the
+          // text in plain-text form (the owner's Sep 11 text included: his
+          // "tagged" row on /settings). Off on a self-tag = bell only.
           ...(slackDm ? { slackDm } : {}),
         },
       ];
       if (editorKey) {
-        // Channel row: the Slack/SMS bridge only fires for editor:<key> rows,
-        // with quiet hours in the EDITOR's timezone. It carries the same DM
-        // sentence — notify.ts sends ONE per person, whichever row is new.
+        // The row the EDITOR login sees. It carries the same sentence —
+        // notify.ts delivers ONCE per person, whichever row is new first.
         targets.push({ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${opts.projectId}`, ...(slackDm ? { slackDm } : {}) });
       }
       await notifyInApp({
@@ -310,7 +313,9 @@ export async function notifyMentions(opts: {
 // rotted invisibly (audit #31). On every saved reply, ping the thread's OTHER
 // participants (root author + prior repliers + the note's implicit addressee),
 // minus the replier, minus anyone the reply already @-mentioned. Same contract
-// as notifyMentions: best-effort, never fails the saved reply.
+// as notifyMentions: best-effort, never fails the saved reply. Returns the
+// roster ids it reached, so the job-message ping (notifyProjectMessage) can
+// leave them alone — one ping per message.
 // ---------------------------------------------------------------------------
 export async function notifyThreadReply(opts: {
   rootId: string;
@@ -321,7 +326,8 @@ export async function notifyThreadReply(opts: {
   projectId: string;
   surface: "gallery" | "cut";
   excludeTmIds: string[]; // already pinged via @mention on this reply
-}): Promise<void> {
+}): Promise<string[]> {
+  const reached: string[] = [];
   try {
     const [thread, project] = await Promise.all([
       prisma.mediaNote.findMany({
@@ -331,7 +337,7 @@ export async function notifyThreadReply(opts: {
       prisma.project.findUnique({ where: { id: opts.projectId }, select: { title: true } }),
     ]);
     const root = thread.find((n) => n.id === opts.rootId);
-    if (!root) return;
+    if (!root) return reached;
     const street = project?.title?.split(",")[0]?.trim() || "a job";
     const author = opts.replierName ?? "A teammate";
     const firstName = author.split(/\s+/)[0];
@@ -385,6 +391,7 @@ export async function notifyThreadReply(opts: {
         const ownerRows = owners.filter((id) => !excluded.has(id) && !seenHumans.has(`t:${id}`));
         for (const id of ownerRows) {
           seenHumans.add(`t:${id}`);
+          reached.push(id);
           targets.push({ roles: ["OWNER"], userKey: `tm:${id}`, href: ownerHref, slackDm: replyDm(ownerHref, id) });
         }
         if (owners.length === 0 && !ownerAdded) {
@@ -403,10 +410,11 @@ export async function notifyThreadReply(opts: {
         if (tmId) {
           if (excluded.has(tmId)) continue;
           seenHumans.add(`t:${tmId}`);
-          // Visibility row (tm:, no PHOTOGRAPHER role → SMS bridge stays cold).
+          reached.push(tmId);
+          // Visibility row (tm:) — roles say who can see it, not where it goes.
           targets.push({ roles: ["OWNER", "ADMIN", "EDITOR"], userKey: `tm:${tmId}`, href: editHref, slackDm: replyDm(editHref, tmId) });
         }
-        // Channel row → Slack DM/SMS in the editor's timezone.
+        // The row the EDITOR login sees; the bridge delivers once per person.
         targets.push({ roles: ["EDITOR"], userKey: `editor:${ek}`, href: editHref, slackDm: replyDm(editHref, tmId) });
         continue;
       }
@@ -415,20 +423,22 @@ export async function notifyThreadReply(opts: {
         if (excluded.has(tmId) || seenHumans.has(`t:${tmId}`)) continue;
         const ek = editorTmIds.get(tmId);
         if (ek) {
-          // This human is an editor — route through their editor channel instead.
+          // This human is an editor — the same pair of rows a tag gives them.
           if (seenHumans.has(`e:${ek}`)) continue;
           seenHumans.add(`e:${ek}`);
           seenHumans.add(`t:${tmId}`);
+          reached.push(tmId);
           const editHref = `/edit/${opts.projectId}`;
           targets.push({ roles: ["OWNER", "ADMIN", "EDITOR"], userKey: `tm:${tmId}`, href: editHref, slackDm: replyDm(editHref, tmId) });
           targets.push({ roles: ["EDITOR"], userKey: `editor:${ek}`, href: editHref, slackDm: replyDm(editHref, tmId) });
           continue;
         }
         seenHumans.add(`t:${tmId}`);
+        reached.push(tmId);
         const member = await prisma.teamMember.findUnique({ where: { id: tmId }, select: { role: true } });
         if (member?.role === "PHOTOGRAPHER") {
-          // PHOTOGRAPHER in roles arms the tm: SMS bridge (note_reply ∈ SMS_KINDS);
-          // the note page admits the thread's participants, so link it directly.
+          // The note page admits the thread's participants, so link it
+          // directly. Their matrix row (text by default) carries the sentence.
           const noteHref = `/shoot/note/${opts.rootId}`;
           targets.push({
             roles: ["OWNER", "ADMIN", "PHOTOGRAPHER"],
@@ -437,13 +447,13 @@ export async function notifyThreadReply(opts: {
             slackDm: replyDm(noteHref, tmId),
           });
         } else {
-          // Kyle/staff: bell (and, since Sep 15, the Slack DM) — never SMS.
+          // Kyle/staff: the project page; Slack by their default row.
           const projHref = `/projects/${opts.projectId}`;
           targets.push({ roles: ["OWNER", "ADMIN"], userKey: `tm:${tmId}`, href: projHref, slackDm: replyDm(projHref, tmId) });
         }
       }
     }
-    if (targets.length === 0) return;
+    if (targets.length === 0) return reached;
     await notifyInApp({
       kind: "note_reply",
       title: `${firstName} replied — ${street}`,
@@ -456,6 +466,7 @@ export async function notifyThreadReply(opts: {
   } catch (e) {
     console.warn("notifyThreadReply failed (reply already saved)", e);
   }
+  return reached;
 }
 
 // ---------------------------------------------------------------------------
@@ -466,7 +477,8 @@ export async function notifyThreadReply(opts: {
 // the link. So: ping the parent message's author with one bell row (the same
 // role-aware shape the tags use) carrying the reply DM sentence. Skipped when
 // the reply is their own, or the reply already @-tagged them (the mention
-// ping carried the DM). Best-effort; never fails the saved reply.
+// ping carried the DM). Best-effort; never fails the saved reply. Returns the
+// roster id it reached (if any) so the job-message ping leaves them alone.
 // ---------------------------------------------------------------------------
 export async function notifyMessageReply(opts: {
   projectId: string;
@@ -483,18 +495,18 @@ export async function notifyMessageReply(opts: {
   text: string;
   /** Already pinged via @mention on this reply. */
   excludeTmIds: string[];
-}): Promise<void> {
+}): Promise<string[]> {
   try {
     const parent = await prisma.projectMessage.findUnique({ where: { id: opts.replyToId }, select: { authorId: true } });
     const targetId = parent?.authorId;
-    if (!targetId || targetId === opts.replierTmId || opts.excludeTmIds.includes(targetId)) return;
+    if (!targetId || targetId === opts.replierTmId || opts.excludeTmIds.includes(targetId)) return [];
     const owners = await (await import("@/lib/smsPrefs")).ownerTeamMemberIds().catch(() => [] as string[]);
-    if (opts.inferOwnerReplier && owners.includes(targetId)) return; // the owner answering his own message
+    if (opts.inferOwnerReplier && owners.includes(targetId)) return []; // the owner answering his own message
     const [member, project] = await Promise.all([
       prisma.teamMember.findUnique({ where: { id: targetId }, select: { id: true, name: true, role: true, active: true } }),
       prisma.project.findUnique({ where: { id: opts.projectId }, select: { title: true } }),
     ]);
-    if (!member?.active) return;
+    if (!member?.active) return [];
     const street = project?.title?.split(",")[0]?.trim() || "a job";
     const author = opts.replierName ?? "A teammate";
     const editorKey = (await editorTmIdMap()).get(member.id) ?? null;
@@ -504,8 +516,8 @@ export async function notifyMessageReply(opts: {
     const targets: import("@/lib/notify").NotifyTarget[] = [];
     let href: string;
     if (editorKey) {
-      // Same pair as a tag: visibility row (no PHOTOGRAPHER role → SMS bridge
-      // stays cold) + the editor channel row; notify.ts sends ONE DM.
+      // Same pair as a tag: the visibility row + the row the EDITOR login
+      // sees; notify.ts delivers once per person.
       href = `/edit/${opts.projectId}`;
       targets.push({ roles: ["OWNER", "ADMIN", "EDITOR"], userKey: `tm:${member.id}`, href, slackDm: dm(href) });
       targets.push({ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href, slackDm: dm(href) });
@@ -516,7 +528,8 @@ export async function notifyMessageReply(opts: {
       targets.push({ roles: ["OWNER", "ADMIN", "PHOTOGRAPHER"], userKey: `tm:${member.id}`, href, slackDm: dm(href) });
     } else {
       // Kyle/staff — and the owner, whose roster role is PHOTOGRAPHER but who
-      // reads the thread on the project page: bell + Slack, never SMS.
+      // reads the thread on the project page. Their matrix row decides the
+      // channels (the owner's "tagged" row: text + Slack by default).
       href = `/projects/${opts.projectId}`;
       targets.push({ roles: ["OWNER", "ADMIN"], userKey: `tm:${member.id}`, href, slackDm: dm(href) });
     }
@@ -529,8 +542,103 @@ export async function notifyMessageReply(opts: {
       targets,
       dedupeKey: `msg-reply-${opts.messageId}`,
     });
+    return [member.id];
   } catch (e) {
     console.warn("notifyMessageReply failed (reply already saved)", e);
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// "A message was sent on their project" (Jordan, Sep 15). A tag reaches the
+// person tagged; a reply reaches the person answered; but a plain post on a
+// job — Kyle's "client wants the pool shot first" in the team chat, a reply
+// on a cut note between Jordan and the photographer — reached the job's
+// EDITOR only if they happened to be tagged. Now the job's current editor
+// hears every message on their job, once: kind "project_message", their own
+// row on /settings (Slack by default). Skipped when the editor wrote it, or
+// was already reached by the tag / reply ping for the same message (one ping
+// per message: mention wins). Editors only — people with an editor key —
+// never the office. Root review notes are NOT routed here on purpose: a cut
+// note is bundled into the round the editor is rung for ("Changes requested
+// —", job_ping), and a photo-review note is Kyle's or the photographer's.
+// Best-effort; never fails the saved message.
+// ---------------------------------------------------------------------------
+
+// The job's current editor: whoever holds the open edit_video card, else the
+// project's editor of record — and only when that person is an in-house
+// editor with a roster row (a vendor key has nobody to DM).
+export async function currentEditorForProject(projectId: string): Promise<{ tmId: string; editorKey: string } | null> {
+  try {
+    const { TEAM_MEMBER_EDITOR_KEYS, editorTeamMemberId } = await import("@/lib/editors");
+    const card = await prisma.smartTask.findFirst({
+      where: { projectId, taskType: "edit_video", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      orderBy: { createdAt: "desc" },
+      select: { assignedKey: true },
+    });
+    if (card?.assignedKey) {
+      // An open card names the holder. In-house (kim/john/remar) → that
+      // person; anyone else — Kyle's own edit, a vendor, the outside shop —
+      // → nobody. Project.editorId may still name the editor of record from
+      // before the hand-off (only the external_agency path clears it), and
+      // pinging them about a job someone else now holds is the wrong ping
+      // (review, Sep 15). Only a job with NO open card falls through to the
+      // editor of record below.
+      if (!(TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(card.assignedKey)) return null;
+      const tmId = await editorTeamMemberId(card.assignedKey);
+      return tmId ? { tmId, editorKey: card.assignedKey } : null;
+    }
+    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { editorId: true } });
+    if (!project?.editorId) return null;
+    const editorKey = (await editorTmIdMap()).get(project.editorId);
+    return editorKey ? { tmId: project.editorId, editorKey } : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function notifyProjectMessage(opts: {
+  projectId: string;
+  /** The message or reply just saved — the dedupe key. */
+  messageId: string;
+  /** The writer's OWN roster row (exact, like the self-tag rule). */
+  authorTmId: string | null;
+  /** The writer's session key — an editor login is keyed editor:<key>. */
+  authorKey?: string | null;
+  authorName: string | null;
+  text: string;
+  /** Where it was said: "the job's team chat" | "a cut-note comment" | … */
+  context: string;
+  /** Already pinged by the tag or reply notifier for this message. */
+  excludeTmIds: string[];
+}): Promise<void> {
+  try {
+    const editor = await currentEditorForProject(opts.projectId);
+    if (!editor) return;
+    if (editor.tmId === opts.authorTmId || opts.authorKey === `editor:${editor.editorKey}` || opts.authorKey === `tm:${editor.tmId}`) return;
+    if (opts.excludeTmIds.includes(editor.tmId)) return;
+    const member = await prisma.teamMember.findUnique({ where: { id: editor.tmId }, select: { active: true } });
+    if (!member?.active) return;
+    const project = await prisma.project.findUnique({ where: { id: opts.projectId }, select: { title: true } });
+    const street = project?.title?.split(",")[0]?.trim() || "a job";
+    const author = opts.authorName ?? "A teammate";
+    const href = `/edit/${opts.projectId}`;
+    // An editor is never the owner: money is scrubbed from the quote.
+    const slackDm = slackMentionDm({ author, street, context: opts.context, text: opts.text, href, posted: true });
+    const { notifyInApp } = await import("@/lib/notify");
+    await notifyInApp({
+      kind: "project_message",
+      title: `${author} posted on ${street}`,
+      body: opts.text.slice(0, 140), // auto-nulled by the money clamp on the EDITOR rows
+      href,
+      targets: [
+        { roles: ["OWNER", "ADMIN", "EDITOR"], userKey: `tm:${editor.tmId}`, href, slackDm },
+        { roles: ["EDITOR"], userKey: `editor:${editor.editorKey}`, href, slackDm },
+      ],
+      dedupeKey: `project-message-${opts.messageId}-${editor.tmId}`,
+    });
+  } catch (e) {
+    console.warn("notifyProjectMessage failed (message already saved)", e);
   }
 }
 

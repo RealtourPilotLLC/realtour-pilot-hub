@@ -4,7 +4,8 @@ import { notifyInApp, type NotifyTarget } from "@/lib/notify";
 
 /**
  * Closing an @mention companion task rings the TAGGER's bell (bell-only —
- * "mention_done" is deliberately not in SMS_KINDS): the loop that opened with
+ * "mention_done" is deliberately bell-only under eventForKind in
+ * src/lib/notifyPrefs.ts): the loop that opened with
  * "@James check this" closes with "James finished your tag". Shared by every
  * human completion path — the task board (setSmartTaskStatus) and the Handled
  * button on Ops Day / the Dashboard (markLoopHandled) — so a tag never closes

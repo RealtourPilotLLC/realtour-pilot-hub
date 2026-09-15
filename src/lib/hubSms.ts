@@ -29,3 +29,17 @@ export function isHubSmsSource(source: string | null | undefined): boolean {
 // the record; the reply queue skips it, because nobody at the office owes it
 // an answer (reviewer, Sep 11).
 export const HUB_REPLY_SOURCE = "hub-reply";
+
+// The number an automated staff text can go to — a US/Canada line only,
+// because the office OpenPhone line can't text anything else: Kim's +63
+// roster phone passed the old "last ten digits" check, and her queued lines
+// bounced off OpenPhone every five minutes for a week (Sep 3–10; review,
+// Sep 15). Ten digits, or eleven starting with 1; anything else is "no
+// number" to the sender (notify.ts), the Settings matrix and the save
+// message alike, so the three can never disagree about who is textable.
+// Returns the E.164 form plus the 10-digit key OpenPhone matching uses.
+export function staffTextNumber(phone: string | null | undefined): { to: string; key: string } | null {
+  const digits = (phone ?? "").replace(/\D/g, "");
+  const key = digits.length === 10 ? digits : digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : null;
+  return key ? { to: `+1${key}`, key } : null;
+}

@@ -29,7 +29,8 @@ const taskKey = (mailbox: string) => `gmail-reconnect-${mailbox.toLowerCase()}`;
 export async function reportGmailSendBroken(context: string, mailbox = "unknown"): Promise<void> {
   const mb = mailbox.toLowerCase();
   // Owner bell — day-bucketed dedupe so a burst of failed sends rings once,
-  // not once per attempt. kind "system" is not in SMS_KINDS: bell only.
+  // not once per attempt. kind "system" is bell-only under eventForKind
+  // (src/lib/notifyPrefs.ts) — no text, no Slack DM.
   await notifyInApp({
     kind: "system",
     title: `Gmail can't send${mb !== "unknown" ? ` (${mb})` : ""} — reconnect Google`,

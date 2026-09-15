@@ -89,10 +89,10 @@ export async function postProjectMessage(
     const tagged = await prisma.teamMember.findMany({ where: { id: { in: mentions } }, select: { id: true, name: true, role: true } });
     const street = project?.title?.split(",")[0] ?? "a project";
     // Editor resolution + role-aware routing — the SAME shape as the note-comment
-    // mentions (src/lib/mentions.ts): an editor's tm: row must drop PHOTOGRAPHER
-    // (that role in the audience arms the ET-quiet-hours SMS bridge → 3am Manila
-    // texts) and they're reached via their editor:<key> channel row instead,
-    // with an href their role can actually open.
+    // mentions (src/lib/mentions.ts): an editor gets their tm: row plus the
+    // editor:<key> row their login sees, with an href their role can actually
+    // open. Roles are visibility only (Sep 15) — which channels a row goes out
+    // on is the person's row on /settings → Team notifications (notify.ts).
     const { TEAM_MEMBER_EDITOR_KEYS, editorTeamMemberId } = await import("@/lib/editors");
     const { slugForName } = await import("@/lib/assignees");
     const editorTmIds = new Map<string, string>();
@@ -153,13 +153,13 @@ export async function postProjectMessage(
       // money clamp strips the body for creative roles automatically.
       try {
         const { notifyInApp } = await import("@/lib/notify");
-        const { appBase } = await import("@/lib/appUrl");
-        const { clip } = await import("@/lib/text");
         const { slackMentionDm } = await import("@/lib/mentions");
-        // The Slack DM (Jordan, Sep 15: "if I type at John or at Kyle, a
+        // The sentence (Jordan, Sep 15: "if I type at John or at Kyle, a
         // notification is sent to them directly in Slack with a link to the
         // message and a summary"): who, where, the first ~240 characters, and
-        // the same link the bell row carries. Off on a self-tag.
+        // the same link the bell row carries — the Slack DM, and the text in
+        // plain-text form (James and Harrison's default; the owner's Sep 11
+        // text rides it too). Off on a self-tag = bell only.
         const slackDm = selfTag
           ? null
           : slackMentionDm({
@@ -175,17 +175,11 @@ export async function postProjectMessage(
             roles: editorKey ? ["OWNER", "ADMIN", "EDITOR"] : ["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"],
             userKey: `tm:${t.id}`,
             href,
-            // The owner's text (Sep 11) when this row is his — the thread lives
-            // on the project page, so that is the link. Off on a self-tag (no
-            // sentence = no text, notify.ts).
-            ...(selfTag
-              ? {}
-              : { ownerSms: `${authorName ?? "A teammate"} mentioned you on ${street}: “${clip(text, 90)}” ${appBase()}/projects/${projectId}` }),
             ...(slackDm ? { slackDm } : {}),
           },
         ];
-        // The editor channel row carries the same sentence — notify.ts sends
-        // ONE DM per person, whichever of the two rows is new.
+        // The row the EDITOR login sees carries the same sentence — notify.ts
+        // delivers ONCE per person, whichever of the two rows is new first.
         if (editorKey) targets.push({ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${projectId}`, ...(slackDm ? { slackDm } : {}) });
         await notifyInApp({
           kind: "mention",
@@ -203,10 +197,11 @@ export async function postProjectMessage(
   // reply arrow only quoted the parent; the author heard nothing unless the
   // reply also @-tagged them. The tagged people above already got their ping
   // (and DM), so they are excluded here. Best-effort: the message is saved.
+  const reached = new Set(mentions);
   if (replyToId) {
     try {
       const { notifyMessageReply } = await import("@/lib/mentions");
-      await notifyMessageReply({
+      for (const id of await notifyMessageReply({
         projectId,
         messageId: msg.id,
         replyToId,
@@ -215,9 +210,26 @@ export async function postProjectMessage(
         replierName: authorName,
         text,
         excludeTmIds: mentions,
-      });
+      })) reached.add(id);
     } catch { /* the reply ping is best-effort */ }
   }
+
+  // …and the job's EDITOR hears every message on their job (Jordan, Sep 15:
+  // "a message was sent on their project"), once — unless they wrote it or
+  // were already reached above. Their row on /settings decides the channel.
+  try {
+    const { notifyProjectMessage } = await import("@/lib/mentions");
+    await notifyProjectMessage({
+      projectId,
+      messageId: msg.id,
+      authorTmId: authorId,
+      authorKey: me?.editorKey ? `editor:${me.editorKey}` : null,
+      authorName,
+      text,
+      context: "the job's team chat",
+      excludeTmIds: [...reached],
+    });
+  } catch { /* the job-message ping is best-effort */ }
 
   revalidatePath(`/projects/${projectId}`);
   revalidatePath("/editing");

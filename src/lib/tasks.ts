@@ -2042,7 +2042,9 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
   if (!already) {
     // Marker row FIRST (crash-safe idempotence: a re-run after a mid-flight
     // crash must not re-ping) with neutral wording; the concrete outcome is
-    // stamped on after we know what channelForEditor actually did — the old
+    // stamped on after we know what the notify bridge actually did (the
+    // editor's own row on Settings → Team notifications decides Slack, text
+    // or bell — src/lib/notify.ts bridgePerson, Sep 15) — the old
     // hard-coded "notified via Slack" claimed delivery that often never
     // happened (John has no Slack/phone yet; audit #33 honesty residue).
     const marker = await prisma.activity.create({

@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { slackNotify, slackChannels } from "@/lib/integrations/slack";
 import { appBase } from "@/lib/appUrl";
-import { HUB_SMS_PREFIX } from "@/lib/hubSms";
+import { HUB_SMS_PREFIX, staffTextNumber } from "@/lib/hubSms";
 import type { Role } from "@/lib/auth/access";
 
 // ---------------------------------------------------------------------------
@@ -81,17 +81,21 @@ export type NotifyTarget = {
   roles: Role[];
   userKey?: string;
   href?: string; // overrides the default per row
-  /** Sep 11: the exact digest line the OWNER's phone gets when this row
-   *  bridges to his text (see the owner branch in notifyInApp). Leave it OFF
-   *  and the row is bell-only for him — the emitter's way of saying "he did
-   *  this himself" (his own upload, a self-tag). Photographer rows never read
-   *  it — they stay title + link (money clamp). */
+  /** Sep 11: the exact line the OWNER's phone gets from an OWNER+ADMIN
+   *  broadcast — today only the Review Room's "cut ready" row (reviewCuts.ts
+   *  announceCutInReview). Since Sep 15 it is read only for that broadcast,
+   *  and only when his "video in review" row on /settings → Team
+   *  notifications says text (or Slack). Leave it OFF and the row is bell-
+   *  only for him — the emitter's way of saying "he did this himself" (his
+   *  own upload). Person-addressed rows carry slackDm instead. */
   ownerSms?: string;
-  /** Sep 15: the exact Slack DM this row earns the person it is addressed to
-   *  (tm:<id>, or editor:<key> resolved to its TeamMember) — sent the moment
-   *  the row is new, when their roster row carries a Slack ID. The emitter's
-   *  own sentence, money already scrubbed for a non-owner (mentions.ts
-   *  slackMentionDm). Leave it OFF for a self-tag, exactly like ownerSms. */
+  /** Sep 15: the emitter's own sentence for the person this row is addressed
+   *  to (tm:<id>, or editor:<key> resolved to its TeamMember) — who, where,
+   *  the summary, the link; money already scrubbed for a non-owner
+   *  (mentions.ts slackMentionDm). The bridge sends it as their Slack DM
+   *  and, in plain-text form, as their text — whichever their matrix row
+   *  says. Leave it OFF for a self-tag: a tag or reply row with no sentence
+   *  goes nowhere but the bell. */
   slackDm?: string;
 };
 
@@ -174,6 +178,7 @@ const BELL_RULES: Record<string, BellRule> = {
   mention: "all", // someone tagged you by name
   mention_done: "all", // …and someone finished what you tagged them on
   note_reply: "all", // your question on a thread finally has an answer
+  project_message: "all", // a message on a job you are editing (Jordan, Sep 15; always person-addressed — mentions.ts)
   revision_raised: "all", // a client wants a change
   revision_resolved: "all", // it came back — check it and re-deliver
   cut_ready: "all", // a cut is waiting on a verdict
@@ -203,42 +208,36 @@ const BELL_RULES: Record<string, BellRule> = {
 };
 
 // ---------------------------------------------------------------------------
-// SMS bridge: photographers have no push notifications, so person-addressed
-// bell rows for the kinds below ALSO go out as a text via OpenPhone. Rules:
-// TEAM MEMBERS ONLY (the recipient's number comes off their TeamMember row,
-// never a client contact — the drafts-only policy for client texting is not
-// weakened here); title + deep link only, never the body (money-clamp
-// philosophy: an SMS is even leakier than the bell); "⚙️ RealTour Hub:" prefix
-// so an automated text is never mistaken for Kyle texting from the same
-// number; quiet hours 7:00–22:00 ET (the bell row still lands — the text just
-// doesn't wake anyone); only fires when the bell row was NEWLY created, so a
-// deduped re-announcement can't re-text.
-//
-// Sep 11: the OWNER rides the same queue for two kinds of his own — a cut
-// waiting on his verdict and an @mention of him — switched on /settings
-// (src/lib/smsPrefs.ts, default ON). See the owner branch in notifyInApp.
+// THE CHANNEL BRIDGE (Sep 15). A person-addressed bell row — tm:<id>, or
+// editor:<key> resolved through the roster — that is NEW also goes out on the
+// channels THAT PERSON has switched on for the row's event: the matrix on
+// /settings → Team notifications (src/lib/notifyPrefs.ts; the default table
+// in notifyPrefDefaults.ts). Jordan: "I want to make sure the editors are
+// getting pinged on slack when they are tagged in a message or a message was
+// sent on their project. James and harrison can get texted with the links
+// when they are tagged in a message."
+//   · Slack DM — immediately (Slack has its own do-not-disturb): the
+//     emitter's own sentence (slackDm — who, where, the summary, the link),
+//     else the title and the link.
+//   · Text — the same sentence in plain-text form, through the staff SMS
+//     queue below: 7:00–22:00 quiet hours (ET; an editor's own timezone),
+//     the 30-minute digest, the "⚙️ RealTour Hub:" prefix, TEAM MEMBERS ONLY
+//     (the number comes off the roster row, never a client contact — the
+//     drafts-only policy for client texting is not weakened here), and never
+//     our own OpenPhone line.
+//   Both go when both are on. ONE delivery per person per event, on whichever
+//   of their rows is new first (an editor is addressed twice — tm: and
+//   editor: — and is one human). A tag or reply row with NO sentence is a
+//   self-tag (the emitters leave slackDm off) and goes nowhere but the bell.
+//   A role broadcast (no userKey) stays bell-only — except the Review Room's
+//   OWNER+ADMIN "cut ready" row, which still reaches the owner when his
+//   "video in review" row says so (the Sep 11 text, now a matrix row).
+// This REPLACES the three rules that predate it — PHOTOGRAPHER-in-audience →
+// text (SMS_KINDS), editor:<key> → Slack-or-no-login-SMS (channelForEditor),
+// and the owner's own sms-prefs switch (ownerSmsRecipient). A row's roles now
+// decide only who can SEE it in the bell. Only a NEWLY created row bridges,
+// so a deduped re-announcement can never re-text or re-DM.
 // ---------------------------------------------------------------------------
-const SMS_KINDS = new Set([
-  "appointment_change", "order_canceled", "mention", "review_feedback", "cull", "raws_missing", "task_assigned",
-  // Someone answered on a note thread the photographer is part of — their
-  // question finally has a reply; reach the field. (feedback_shared stays
-  // NON-SMS: the share-text flow already sends its own text.)
-  "note_reply",
-]);
-// The video editors (Kim/Remar) have no push either, and the whole point of the
-// editor platform is that raws-landed / a revision / a review-back actually
-// REACH them — in Manila. These kinds bridge an `editor:<key>` bell row to their
-// channel (Slack DM if we have their id, else SMS via their TeamMember phone),
-// gated by quiet hours in THEIR timezone (see channelForEditor).
-const EDITOR_CHANNEL_KINDS = new Set([
-  "raws_landed", "revision_raised", "revision_resolved", "mention", "edit_finished",
-  // Review Room round-trips: changes requested on a cut / cut approved.
-  "review_changes", "review_approved",
-  // Owner/admin manually put a job in this editor's queue (/editing → Add a job).
-  "edit_assigned",
-  // A reply landed on a note thread this editor is part of.
-  "note_reply",
-]);
 
 // Quiet hours in a SPECIFIC timezone (7:00–22:00 local). Photographer texting
 // stays ET via the default; editor texting passes the recipient's tz so a
@@ -256,16 +255,27 @@ function withinTextingHours(tz = "America/New_York"): boolean {
 // next morning's digest instead of silently vanishing.
 const SMS_BATCH_WINDOW_MS = 30 * 60_000;
 
-async function smsPhotographer(teamMemberId: string, title: string, href: string): Promise<void> {
-  await queueStaffSms(teamMemberId, `${title} → ${appBase()}${href}`);
-}
-
-// One digest line into a team member's queue — the ONLY way onto the bridge.
-// The photographer path builds "title → link"; the owner path (Sep 11) hands
-// in its own sentence. Everything downstream is shared: the 30-minute window,
-// quiet hours, the claim-then-send flush.
-async function queueStaffSms(teamMemberId: string, line: string): Promise<void> {
+// One digest line into a team member's queue — the ONLY way onto the text
+// bridge. The line is the emitter's sentence in plain-text form (or "title →
+// link" for a row that brought none). Everything downstream is shared: the
+// 30-minute window, quiet hours (`tz` = the recipient's, ET by default), the
+// claim-then-send flush. Refuses a member with no usable number — a US/Canada
+// line (staffTextNumber in hubSms.ts; a queued line with nowhere to go would
+// sit in PendingSms being retried every five minutes, which is exactly what
+// Kim's +63 number did under the old "last ten digits" check) — and our OWN
+// OpenPhone line (Kyle's roster phone is the company number; texting it from
+// itself echoes back through the inbound webhook as a fake client message).
+// Returns whether the line was queued.
+async function queueStaffSms(teamMemberId: string, line: string, tz?: string): Promise<boolean> {
   try {
+    const member = await prisma.teamMember.findUnique({ where: { id: teamMemberId }, select: { name: true, phone: true } });
+    const num = staffTextNumber(member?.phone);
+    if (!num) return false;
+    const { ourOpenPhoneNumberKeys } = await import("@/lib/integrations/openphone");
+    if ((await ourOpenPhoneNumberKeys().catch(() => new Set<string>())).has(num.key)) {
+      console.warn(`queueStaffSms: ${member?.name ?? teamMemberId}'s number is our own OpenPhone line — not texting it to itself`);
+      return false;
+    }
     await prisma.pendingSms.create({ data: { teamMemberId, line } });
     const recentSend = await prisma.pendingSms.findFirst({
       where: { teamMemberId, sentAt: { gte: new Date(Date.now() - SMS_BATCH_WINDOW_MS) } },
@@ -274,14 +284,31 @@ async function queueStaffSms(teamMemberId: string, line: string): Promise<void> 
     // First ping in the window and daytime → deliver immediately (flushing
     // everything queued for them along the way). Otherwise the flusher cron
     // combines it into one message shortly.
-    if (!recentSend && withinTextingHours()) await flushMemberSms(teamMemberId);
+    if (!recentSend && withinTextingHours(tz)) {
+      // A refused send un-claims the rows for the 5-minute cron — the line is
+      // still queued, so this is still "delivered to the queue".
+      await flushMemberSms(teamMemberId).catch((e) => console.warn("queueStaffSms immediate flush failed (queued for the cron)", e));
+    }
+    return true;
   } catch (e) {
     console.warn("queueStaffSms failed", e);
+    return false;
   }
 }
 
 // Send EVERYTHING queued for one member as a single text.
 async function flushMemberSms(teamMemberId: string): Promise<boolean> {
+  // The number BEFORE the claim: a member whose roster phone can't be texted
+  // (none, or not a US number) leaves the rows unclaimed and unsent rather
+  // than claiming them and bouncing off OpenPhone every five minutes — the
+  // three lines the retired no-login editor path queued for Kim (Sep 3–10)
+  // are exactly that, and they wait here until the office clears them.
+  const member = await prisma.teamMember.findUnique({ where: { id: teamMemberId }, select: { name: true, phone: true } });
+  const num = staffTextNumber(member?.phone);
+  if (!num) {
+    console.warn(`flushMemberSms: ${member?.name ?? teamMemberId} has no textable number — queued lines left unsent`);
+    return false;
+  }
   const rows = await prisma.pendingSms.findMany({
     where: { teamMemberId, sentAt: null },
     orderBy: { createdAt: "asc" },
@@ -305,19 +332,15 @@ async function flushMemberSms(teamMemberId: string): Promise<boolean> {
   if (mine.length === 0) return false;
   const unclaim = () =>
     prisma.pendingSms.updateMany({ where: { id: { in: mine.map((r) => r.id) } }, data: { sentAt: null } }).catch(() => {});
-  const member = await prisma.teamMember.findUnique({ where: { id: teamMemberId }, select: { phone: true } });
-  const phone = member?.phone?.replace(/[^\d+]/g, "");
-  if (!phone) { await unclaim(); return false; }
-  const { OpenPhone, defaultOpenPhoneNumber, phoneKey } = await import("@/lib/integrations/openphone");
+  const { OpenPhone, defaultOpenPhoneNumber } = await import("@/lib/integrations/openphone");
   const from = await defaultOpenPhoneNumber();
   if (!from) { await unclaim(); return false; }
-  const to = phone.startsWith("+") ? phone : `+1${phoneKey(phone)}`;
   const body =
     mine.length === 1
       ? `${HUB_SMS_PREFIX}: ${mine[0].line}`
       : `${HUB_SMS_PREFIX} — ${mine.length} updates:\n` + mine.map((r) => `• ${r.line}`).join("\n");
   try {
-    await OpenPhone.sendMessage(from, to, body.slice(0, 1500));
+    await OpenPhone.sendMessage(from, num.to, body.slice(0, 1500));
   } catch (e) {
     await unclaim(); // failed send → rows go back in the queue for the next flush
     throw e;
@@ -326,19 +349,28 @@ async function flushMemberSms(teamMemberId: string): Promise<boolean> {
 }
 
 // Cron flusher (every 5 min): deliver queued digests once the batch window has
-// passed (or daylight returns after quiet hours). Never inside quiet hours.
+// passed (or daylight returns after quiet hours). Never inside the RECIPIENT's
+// quiet hours: until Sep 15 this checked ET for everyone, so a line the
+// immediate send in queueStaffSms had rightly held for a Manila editor's
+// night went out here in ET daytime — still their night (review, Sep 15).
+// An editor's timezone comes off editors.ts; everyone else is ET.
 export async function flushPendingSms(): Promise<{ flushed: number; failed: string[] }> {
-  if (!withinTextingHours()) return { flushed: 0, failed: [] };
   const pending = await prisma.pendingSms.groupBy({
     by: ["teamMemberId"],
     where: { sentAt: null },
     _min: { createdAt: true },
   });
+  if (pending.length === 0) return { flushed: 0, failed: [] };
+  const { editorKeysByTeamMemberId } = await import("@/lib/notifyPrefs");
+  const { editorMeta, DEFAULT_EDITOR_TZ } = await import("@/lib/editors");
+  const editorKeys = await editorKeysByTeamMemberId();
   let flushed = 0;
   const failed: string[] = [];
   for (const p of pending) {
     const oldest = p._min.createdAt;
     if (!oldest) continue;
+    const editorKey = editorKeys.get(p.teamMemberId);
+    if (!withinTextingHours(editorKey ? editorMeta(editorKey)?.tz ?? DEFAULT_EDITOR_TZ : undefined)) continue;
     const recentSend = await prisma.pendingSms.findFirst({
       where: { teamMemberId: p.teamMemberId, sentAt: { gte: new Date(Date.now() - SMS_BATCH_WINDOW_MS) } },
       select: { id: true },
@@ -383,7 +415,7 @@ export async function notifyStaffSms(teamMemberIds: string[], text: string): Pro
   try {
     const members = await prisma.teamMember.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, phone: true, slackId: true } });
     const quiet = !withinTextingHours();
-    const { OpenPhone, defaultOpenPhoneNumber, phoneKey, ourOpenPhoneNumberKeys } = await import("@/lib/integrations/openphone");
+    const { OpenPhone, defaultOpenPhoneNumber, ourOpenPhoneNumberKeys } = await import("@/lib/integrations/openphone");
     const ours = await ourOpenPhoneNumberKeys().catch(() => new Set<string>());
     // Resolved ONCE — defaultOpenPhoneNumber is a live API round trip.
     const from = ids.length ? await defaultOpenPhoneNumber() : null;
@@ -399,13 +431,12 @@ export async function notifyStaffSms(teamMemberIds: string[], text: string): Pro
           continue;
         }
       }
-      const digits = m.phone?.replace(/[^\d+]/g, "") ?? "";
-      const key = digits ? phoneKey(digits) : "";
-      if (!digits || key.length !== 10) {
+      const num = staffTextNumber(m.phone);
+      if (!num) {
         out.push({ teamMemberId: m.id, name: m.name, outcome: "no-phone" });
         continue;
       }
-      if (ours.has(key)) {
+      if (ours.has(num.key)) {
         // Loud, not silent: this is a data problem someone has to fix.
         console.warn(`notifyStaffSms: ${m.name}'s number is our own OpenPhone line — cannot text, relaying to ops`);
         out.push({ teamMemberId: m.id, name: m.name, outcome: "own-line" });
@@ -420,7 +451,7 @@ export async function notifyStaffSms(teamMemberIds: string[], text: string): Pro
       }
       try {
         if (!from) throw new Error("no OpenPhone number");
-        await OpenPhone.sendMessage(from, digits.startsWith("+") ? digits : `+1${key}`, body);
+        await OpenPhone.sendMessage(from, num.to, body);
         out.push({ teamMemberId: m.id, name: m.name, outcome: "sent" });
       } catch (e) {
         console.warn("notifyStaffSms send failed", m.name, e);
@@ -440,41 +471,9 @@ export async function notifyStaffSms(teamMemberIds: string[], text: string): Pro
 
 // What actually happened when we tried to reach an editor — callers use this
 // to log the truth ("texted" vs "relayed to ops") instead of assuming Slack.
+// Since Sep 15 the bridge answers "slack" | "sms" | "bell" (the matrix
+// decides; a Manila editor with a login and no switches on hears the bell).
 export type EditorChannel = "slack" | "sms" | "relay" | "quiet" | "none" | "bell";
-
-// Reach an editor addressed by `editor:<key>` (Kim/Remar) on THEIR channel:
-//   · Slack DM if the roster carries a slackUserId (preferred — same path as
-//     Kyle's DM, no phone dependency, no quiet-hours phone leak);
-//   · else SMS via their TeamMember phone (Kim has one; Remar until Jordan adds
-//     hers — the lookup no-ops cleanly when absent).
-// Quiet hours are checked in the EDITOR's timezone (default Asia/Manila) so an
-// offshore editor isn't pinged at 3am. Title + deep link only (money clamp —
-// same as photographer SMS). Best-effort; never throws — returns which channel
-// actually carried the ping.
-async function channelForEditor(editorKey: string, title: string, href: string): Promise<EditorChannel> {
-  // Jordan (Aug 25): editors get their notifications ON THE DASHBOARD — the
-  // in-app bell row plus the editor home's feed. ONE exception (review): an
-  // editor with NO hub login can't see any dashboard — until their login
-  // exists, a phone on file gets the queued-SMS fallback (PendingSms handles
-  // batching + quiet hours), so work pings don't land in a room nobody enters.
-  const { editorMeta, editorTeamMemberId } = await import("@/lib/editors");
-  const meta = editorMeta(editorKey);
-  if (!meta) return "none";
-  try {
-    const tmId = await editorTeamMemberId(editorKey);
-    if (tmId) {
-      const [login, member] = await Promise.all([
-        prisma.appUser.findFirst({ where: { OR: [{ editorKey }, { teamMemberId: tmId }], status: "ACTIVE" }, select: { id: true } }),
-        prisma.teamMember.findUnique({ where: { id: tmId }, select: { phone: true } }),
-      ]);
-      if (!login && member?.phone) {
-        await prisma.pendingSms.create({ data: { teamMemberId: tmId, line: `${title} → ${appBase()}${href}` } });
-        return "sms";
-      }
-    }
-  } catch { /* fall through to bell */ }
-  return "bell";
-}
 
 export async function notifyInApp(n: {
   kind: string;
@@ -486,11 +485,11 @@ export async function notifyInApp(n: {
 }): Promise<{ bridged: Array<{ userKey: string; channel: EditorChannel }>; silenced: number }> {
   const bridged: Array<{ userKey: string; channel: EditorChannel }> = [];
   let silenced = 0;
-  // TeamMember id → did a Slack DM go out for them in THIS call. An editor is
+  // TeamMember id → what went out for them in THIS call. An editor is
   // addressed through both a tm: row and an editor: row, and both resolve to
-  // the same person; they get one DM, not two — and the second row still
-  // learns the DM landed, so its text fallback stands down too.
-  const slackDmDone = new Map<string, boolean>();
+  // the same person; they get one DM and one text, not two — the second row
+  // reads what the first already did.
+  const delivered = new Map<string, Delivery>();
   try {
     const title = n.title.slice(0, 90);
     const rule: BellRule = BELL_RULES[n.kind] ?? "all";
@@ -530,63 +529,28 @@ export async function notifyInApp(n: {
             dedupeKey: n.dedupeKey ? `${n.dedupeKey}-${i}` : null,
           },
         });
-        // Row is NEW (a dedupe hit threw P2002 above) — the bridges below fire
+        // Row is NEW (a dedupe hit threw P2002 above) — the bridge below fires
         // once per row, which is what makes a re-announcement unable to re-text.
         const tmId = t.userKey?.startsWith("tm:") ? t.userKey.slice(3) : null;
-        // THE SLACK DM (Jordan, Sep 15: "anytime someone is messaged in the
-        // Ops Hub a notification gets sent via Slack to whoever was mentioned
-        // … with a link to the message and a summary"). A person-addressed
-        // row that brought its own sentence goes straight to that person's
-        // Slack DM when their roster row carries a Slack ID. Immediately: no
-        // hub quiet hours and no digest — Slack has its own do-not-disturb,
-        // and a mention is one person asking another. ONE DM per person per
-        // event (slackDmDone). A self-tag never carries slackDm — the
-        // emitters leave it off, exactly like ownerSms. It runs FIRST: when
-        // the DM lands, the photographer text and the no-login editor text
-        // below stand down (reviewer, Sep 15 — one mention, one delivery);
-        // no Slack ID on file, and those fallbacks fire as before while the
-        // office is nudged once a week. The owner's text is his own switch
-        // on /settings and is not touched by the DM either way.
-        const dmSent = t.slackDm ? await bridgeSlackDm(t, tmId, slackDmDone) : false;
-        // THE OWNER'S TEXT (Jordan, Sep 11: "make sure I get a text when a
-        // video is in review or I'm mentioned in a chat"). A cut landing in the
-        // Review Room rings OWNER+ADMIN as a broadcast; a mention rings his
-        // tm: row. Either way the row reaches him — so the row itself is the
-        // trigger and the dedupe, no second bell. Which kinds he wants is his
-        // switch on /settings (smsPrefs.ts; no row = both ON). The line is the
-        // emitter's own sentence (ownerSms) so the text reads "Video in review
-        // — 1033 Preserve Ln (Kim, v2). <link>" rather than a bell title. Same
-        // queue as the photographers': quiet hours and the 30-minute digest
-        // apply, and a text that can't go out yet waits in PendingSms.
-        const { ownerSmsRecipient } = await import("@/lib/smsPrefs");
-        const owner = await ownerSmsRecipient(n.kind, { tmId, roles });
-        // Only a row that brought its own sentence texts him. An emitter that
-        // leaves ownerSms off is saying "bell only": the owner's own upload,
-        // a self-tag (reviewer, Sep 11) — and a future emitter of these kinds
-        // that has not yet thought about his phone stays quiet by default.
-        if (owner.textTo && t.ownerSms) {
-          await queueStaffSms(owner.textTo, t.ownerSms);
-        }
-        // …and bridge person-addressed photographer rows to SMS so shoot changes
-        // reach the field without push. NOT for the owner's own row on a kind
-        // his switch governs: Jordan is PHOTOGRAPHER on the roster, and the
-        // switch has to be the only thing deciding whether he is texted.
-        if (!dmSent && !owner.ownerRow && SMS_KINDS.has(n.kind) && tmId && roles.includes("PHOTOGRAPHER")) {
-          await smsPhotographer(tmId, title, href);
-        }
-        // …and bridge person-addressed EDITOR rows (editor:<key>) to Slack/SMS so
-        // raws-landed / a revision / a review-back reaches Kim/Remar in Manila.
-        // A DM that already landed IS their channel for this event.
-        if (EDITOR_CHANNEL_KINDS.has(n.kind) && t.userKey?.startsWith("editor:") && roles.includes("EDITOR")) {
-          const channel = dmSent ? "slack" : await channelForEditor(t.userKey.slice(7), title, href);
-          bridged.push({ userKey: t.userKey, channel });
+        const editorKey = t.userKey?.startsWith("editor:") ? t.userKey.slice(7) : null;
+        if (tmId || editorKey) {
+          // A person: their matrix row for this event decides Slack / text /
+          // both / neither (see the bridge header above and bridgePerson).
+          const out = await bridgePerson(n.kind, t, { tmId, editorKey, title, href }, delivered);
+          if (editorKey && roles.includes("EDITOR")) {
+            bridged.push({ userKey: t.userKey!, channel: out.slack ? "slack" : out.sms ? "sms" : "bell" });
+          }
+        } else if (roles.includes("OWNER") && t.ownerSms) {
+          // A broadcast is bell-only — except the Review Room's OWNER+ADMIN
+          // "cut ready" row, which carries the owner's sentence (Sep 11).
+          await bridgeOwnerBroadcast(n.kind, t.ownerSms, delivered);
         }
         // A NEW editor-addressed bell row with no login to see it → nudge Jordan
         // once (deduped inside) to send that editor their Hub invite.
-        if (t.userKey?.startsWith("editor:")) {
+        if (editorKey) {
           try {
             const { ensureEditorLoginNudge } = await import("@/lib/tasks");
-            await ensureEditorLoginNudge(t.userKey.slice(7));
+            await ensureEditorLoginNudge(editorKey);
           } catch { /* the nudge must never break the bell */ }
         }
       } catch (e) {
@@ -604,40 +568,130 @@ export async function notifyInApp(n: {
   return { bridged, silenced };
 }
 
-// The Slack leg of a person-addressed bell row (see the call in notifyInApp).
-// Resolves the person (tm:<id> directly; editor:<key> through the roster),
-// DMs their Slack ID, or — with no ID — raises the weekly People nudge.
-// Returns whether a DM reached this person for this event — on THIS row or
-// an earlier one (an editor's tm: row DMs, their editor: row then learns it
-// landed and skips its text fallback). A refused DM counts as not sent, so
-// the fallbacks still carry the ping. Best-effort by contract: the note or
-// message that carried the mention is already saved, so nothing here may
-// throw past the bell.
-async function bridgeSlackDm(t: NotifyTarget, tmId: string | null, done: Map<string, boolean>): Promise<boolean> {
+// What went out for one person in one notifyInApp call (the `delivered` map).
+type Delivery = { slack: boolean; sms: boolean };
+
+// The events whose rows ALWAYS carry the emitter's sentence unless the row
+// is a self-tag (mentions.ts, messageActions.ts leave slackDm off exactly
+// then). No sentence on one of these = nothing but the bell — never a
+// generic "title + link" DM about something the person just wrote themselves.
+const SENTENCE_EVENTS = new Set<string>(["mention", "project_message"]);
+
+// The person leg of a NEW bell row (see the call in notifyInApp). Resolves
+// the person (tm:<id> directly; editor:<key> through the roster), reads their
+// matrix row for the event (notifyPrefs.ts) and delivers on what it says:
+//   · Slack — the sentence (or title + link) to their Slack ID; no ID on file
+//     and Slack wanted → the weekly People nudge instead;
+//   · text — the sentence's plain-text form (or "title → link") through the
+//     staff queue, quiet hours in the recipient's timezone.
+// Returns what went out for this person — on THIS row or an earlier one in
+// the same call. A refused DM counts as not sent. Best-effort by contract:
+// the note or message that carried the ping is already saved, so nothing
+// here may throw past the bell.
+async function bridgePerson(
+  kind: string,
+  t: NotifyTarget,
+  ctx: { tmId: string | null; editorKey: string | null; title: string; href: string },
+  delivered: Map<string, Delivery>,
+): Promise<Delivery> {
+  const none: Delivery = { slack: false, sms: false };
   try {
-    let personId = tmId;
-    if (!personId && t.userKey?.startsWith("editor:")) {
+    const { eventForKind, notifyPrefsFor, editorKeysByTeamMemberId } = await import("@/lib/notifyPrefs");
+    const event = eventForKind(kind);
+    if (!event) return none; // an unclassified kind is bell-only
+    let personId = ctx.tmId;
+    if (!personId && ctx.editorKey) {
       const { editorTeamMemberId } = await import("@/lib/editors");
-      personId = await editorTeamMemberId(t.userKey.slice(7));
+      personId = await editorTeamMemberId(ctx.editorKey);
     }
-    if (!personId) return false;
-    if (done.has(personId)) return done.get(personId) === true;
-    done.set(personId, false); // one DM (or one nudge) per person per event, whatever happens below
-    const member = await prisma.teamMember.findUnique({ where: { id: personId }, select: { name: true, slackId: true } });
-    if (!member) return false;
-    if (member.slackId) {
-      const { slackDmUser } = await import("@/lib/integrations/slack");
-      const sent = await slackDmUser(member.slackId, t.slackDm ?? "");
-      if (!sent) console.warn("slack mention DM failed (bell row kept)", member.name);
-      done.set(personId, sent);
-      return sent;
+    if (!personId) return none; // a vendor key (luma/external_agency) has no person
+    const prior = delivered.get(personId);
+    if (prior) return prior; // one delivery per person per event
+    const state: Delivery = { slack: false, sms: false };
+    delivered.set(personId, state);
+    if (SENTENCE_EVENTS.has(event) && !t.slackDm) return state; // a self-tag
+    const member = await prisma.teamMember.findUnique({
+      where: { id: personId },
+      select: { name: true, slackId: true, phone: true, active: true },
+    });
+    if (!member?.active) return state;
+    const want = (await notifyPrefsFor(personId))[event];
+    if (!want.slack && !want.sms) return state;
+    const link = `${appBase()}${ctx.href}`;
+    if (want.slack) {
+      if (member.slackId) {
+        const { slackDmUser } = await import("@/lib/integrations/slack");
+        const { escapeSlack } = await import("@/lib/text");
+        state.slack = await slackDmUser(member.slackId, t.slackDm ?? `${escapeSlack(ctx.title)}\n${link}`);
+        if (!state.slack) console.warn("slack DM failed (bell row kept)", kind, member.name);
+      } else {
+        await nudgeMissingSlackId(personId, member.name);
+      }
     }
-    await nudgeMissingSlackId(personId, member.name);
-    return false;
+    if (want.sms) {
+      const { ownerTeamMemberIds } = await import("@/lib/smsPrefs");
+      const isOwner = (await ownerTeamMemberIds()).includes(personId);
+      // The sentence, as text. ownerSms is read only for the owner: on a
+      // non-owner it was built unscrubbed (it never used to reach anyone
+      // else) — slackDm is the money-safe one for everybody.
+      const line = t.slackDm ? smsLineFromSlackDm(t.slackDm) : isOwner && t.ownerSms ? t.ownerSms : `${ctx.title} → ${link}`;
+      // Quiet hours in the recipient's own timezone: a Manila editor's night
+      // is exactly the ET texting window.
+      const editorKey = ctx.editorKey ?? (await editorKeysByTeamMemberId()).get(personId) ?? null;
+      const { editorMeta, DEFAULT_EDITOR_TZ } = await import("@/lib/editors");
+      const tz = editorKey ? editorMeta(editorKey)?.tz ?? DEFAULT_EDITOR_TZ : undefined;
+      state.sms = await queueStaffSms(personId, line, tz);
+    }
+    return state;
   } catch (e) {
-    console.warn("slack mention DM bridge failed (bell row kept)", e);
-    return false;
+    console.warn("notify bridge failed (bell row kept)", kind, e);
+    return none;
   }
+}
+
+// The Review Room's OWNER+ADMIN broadcast ("cut ready to review") is the one
+// role row that reaches a phone. Sep 11 (Jordan: "make sure I get a text when
+// a video is in review") texted him off his sms-prefs switch; since Sep 15
+// the same sentence goes out on whichever channels HIS "video in review" row
+// on /settings → Team notifications says — text by default, Slack if he flips
+// it. Every owner roster row (two logins may share the role), each once per
+// event. No sentence (his own upload) never gets here.
+async function bridgeOwnerBroadcast(kind: string, sentence: string, delivered: Map<string, Delivery>): Promise<void> {
+  try {
+    const { eventForKind, notifyPrefsFor } = await import("@/lib/notifyPrefs");
+    if (eventForKind(kind) !== "review_ready") return;
+    const { ownerTeamMemberIds } = await import("@/lib/smsPrefs");
+    for (const id of await ownerTeamMemberIds()) {
+      if (delivered.has(id)) continue;
+      const state: Delivery = { slack: false, sms: false };
+      delivered.set(id, state);
+      const want = (await notifyPrefsFor(id)).review_ready;
+      if (!want.slack && !want.sms) continue;
+      const member = await prisma.teamMember.findUnique({ where: { id }, select: { name: true, slackId: true, active: true } });
+      if (!member?.active) continue;
+      if (want.slack && member.slackId) {
+        const { slackDmUser } = await import("@/lib/integrations/slack");
+        const { escapeSlack } = await import("@/lib/text");
+        state.slack = await slackDmUser(member.slackId, escapeSlack(sentence));
+      }
+      if (want.sms) state.sms = await queueStaffSms(id, sentence);
+    }
+  } catch (e) {
+    console.warn("owner broadcast bridge failed (bell row kept)", kind, e);
+  }
+}
+
+// The plain-text form of a Slack DM sentence, for a phone: the head, the
+// quoted summary in quotes, the link — one line, Slack's escapes undone and
+// its "> " quote prefix dropped. Money was already scrubbed for a non-owner
+// when the sentence was built (mentions.ts slackMentionDm).
+function smsLineFromSlackDm(dm: string): string {
+  const un = (s: string) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  const lines = dm.split("\n").map((l) => l.trim()).filter(Boolean);
+  const head = un(lines[0] ?? "");
+  const quote = lines.slice(1).filter((l) => l.startsWith(">")).map((l) => un(l.replace(/^>\s?/, ""))).join(" ");
+  const rest = lines.slice(1).filter((l) => !l.startsWith(">")).map(un).join(" ");
+  return [quote ? `${head}: “${quote}”` : head, rest].filter(Boolean).join(" ");
 }
 
 // The office hears ONCE a week per person that a mention had nowhere to go on

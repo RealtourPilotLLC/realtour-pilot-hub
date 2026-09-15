@@ -217,8 +217,10 @@ export async function replyMediaNote(noteId: string, body: string): Promise<{ ok
   });
   // Reply is saved — everything below is best-effort notification fan-out.
   // Mentions ring first (they carry the note deep-link); whoever they reached
-  // is excluded from the thread-participant ping so nobody hears it twice.
-  const { notifyMentions, notifyThreadReply } = await import("@/lib/mentions");
+  // is excluded from the thread-participant ping so nobody hears it twice;
+  // and the job's editor hears the reply if neither ping reached them
+  // (Jordan, Sep 15: "a message was sent on their project").
+  const { notifyMentions, notifyThreadReply, notifyProjectMessage } = await import("@/lib/mentions");
   const excludeTmIds = await notifyMentions({
     text,
     projectId: root.projectId,
@@ -228,7 +230,7 @@ export async function replyMediaNote(noteId: string, body: string): Promise<{ ok
     context: "a note comment",
     noteId: root.id,
   });
-  await notifyThreadReply({
+  const replied = await notifyThreadReply({
     rootId: root.id,
     replyId: reply.id,
     replierKey: authorKey,
@@ -237,6 +239,16 @@ export async function replyMediaNote(noteId: string, body: string): Promise<{ ok
     projectId: root.projectId,
     surface: "gallery",
     excludeTmIds,
+  });
+  await notifyProjectMessage({
+    projectId: root.projectId,
+    messageId: reply.id,
+    authorTmId: authorTmId ?? null,
+    authorKey,
+    authorName,
+    text,
+    context: "a note comment",
+    excludeTmIds: [...excludeTmIds, ...replied],
   });
   refresh(root.projectId);
   return { ok: true };
@@ -374,9 +386,12 @@ export async function setMediaVerdict(
 
 // Bundle a lane's OPEN notes and hand them off: EDIT → ONE deduped 24h task on
 // Kyle's plate (+ admin bell); PHOTOGRAPHER → "fix" notes become ONE follow-up
-// task on Jordan's plate, and the photographer gets a bell (+ SMS via the
-// notify bridge — "review_feedback" is in SMS_KINDS) pointing at their shoot
-// page. Re-sending reopens + refreshes the same task instead of duplicating.
+// task on Jordan's plate, and the photographer gets a bell pointing at their
+// shoot page. The text with the link is the owner's explicit share button
+// below (shareShootFeedback, with Shared/Seen receipts) — since Sep 15
+// "review_feedback" is bell-only in the channel bridge (notifyPrefs.ts
+// eventForKind), so this send no longer auto-texts the photographer.
+// Re-sending reopens + refreshes the same task instead of duplicating.
 export async function sendReviewToLane(projectId: string, lane: NoteLane): Promise<{ ok: boolean; message: string }> {
   try {
     await requireAdmin();
@@ -476,9 +491,9 @@ export async function sendReviewToLane(projectId: string, lane: NoteLane): Promi
     }
   }
 
-  // One bell for ALL open notes (fix + coaching). The SMS bridge sends TITLE +
-  // link only, so keep the title short + money-free; the body would carry the
-  // note text but the clamp nulls bodies on creative-visible rows anyway.
+  // One bell for ALL open notes (fix + coaching). Keep the title short and
+  // money-free; the body would carry the note text but the clamp nulls
+  // bodies on creative-visible rows anyway.
   await notifyInApp({
     kind: "review_feedback",
     title: `Shoot feedback — ${street}`,
@@ -573,8 +588,9 @@ export async function shareShootFeedback(projectId: string): Promise<{ ok: boole
     await rebuildShootFocusSummary(memberId);
   } catch { /* the daily cron rebuilds as the backstop */ }
   // Bell too (their own person-addressed row), deduped per share round.
-  // Kind "feedback_shared" is deliberately NOT in SMS_KINDS — the custom-worded
-  // text above is the one SMS; the bridge must not send a second one.
+  // Kind "feedback_shared" is deliberately bell-only in the channel bridge
+  // (notifyPrefs.ts eventForKind) — the custom-worded text above is the one
+  // SMS; the bridge must not send a second one.
   await notifyInApp({
     kind: "feedback_shared",
     title: `${author} left feedback — ${street}`,

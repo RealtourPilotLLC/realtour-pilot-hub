@@ -1,6 +1,5 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { getSetting } from "@/lib/settings";
 
 // ---------------------------------------------------------------------------
 // The OWNER's text preferences (Jordan, Sep 11: "make sure I get a text when a
@@ -18,6 +17,17 @@ import { getSetting } from "@/lib/settings";
 // Who the owner is comes from the login roster (AppUser role OWNER → its
 // linked TeamMember, else the TeamMember on the same email) — never a
 // hard-coded id, so a change of hands is a roster edit.
+//
+// Sep 15 (Jordan: "I should be able to manage team notifications in
+// settings"): the owner's two switches are now two cells of the Team
+// notifications matrix (src/lib/notifyPrefs.ts, store `notify-prefs:<id>`),
+// where every active person has a row. What stays here is the owner
+// identity (ownerTeamMemberIds / ownerPhoneKeys / ownerActedBy — read by the
+// OpenPhone webhook, the Slack sync and the Review Room) and the legacy
+// readers, which now answer through the matrix: ownerSmsKinds reads
+// notifyPrefsFor, and a `sms-prefs` row is honoured only until a matrix row
+// exists for him. notify.ts no longer calls ownerSmsRecipient — the bridge
+// decides by the matrix — but the function stays for any other caller.
 // ---------------------------------------------------------------------------
 
 /** The two kinds the owner can switch: a cut waiting on his verdict in the
@@ -84,21 +94,28 @@ export async function ownerPhoneKeys(): Promise<Set<string>> {
   }
 }
 
-/** What this team member has switched on. Absence of the row = the default
- *  (ON for both) when they are the owner; nobody else has a default. */
+/** What this team member has switched on — since Sep 15 the owner's two
+ *  cells of the Team notifications matrix (mention.sms / review_ready.sms),
+ *  defaults ON for the owner; a pre-matrix `sms-prefs` row is honoured until
+ *  a matrix row exists. Nobody but the owner has these kinds. */
 export async function ownerSmsKinds(teamMemberId: string): Promise<Set<OwnerSmsKind>> {
   const owners = await ownerTeamMemberIds();
   if (!owners.includes(teamMemberId)) return new Set();
-  const prefs = await getSetting<SmsPrefs>(smsPrefsKey(teamMemberId), DEFAULT_OWNER_SMS);
-  const kinds = Array.isArray(prefs.kinds) ? prefs.kinds : DEFAULT_OWNER_SMS.kinds;
-  return new Set(kinds.filter((k): k is OwnerSmsKind => (OWNER_SMS_KINDS as string[]).includes(k)));
+  const { notifyPrefsFor } = await import("@/lib/notifyPrefs");
+  const prefs = await notifyPrefsFor(teamMemberId);
+  const kinds = new Set<OwnerSmsKind>();
+  if (prefs.mention.sms) kinds.add("mention");
+  if (prefs.review_ready.sms) kinds.add("review_ready");
+  return kinds;
 }
 
 /**
- * The bridge's question, answered in one place: does this bell row earn the
- * owner a text? `tmId` is the row's tm: target (null on a role broadcast);
- * `roles` is the row's audience after the money clamp. Returns the
- * TeamMember to text, or null.
+ * LEGACY (pre-Sep 15) — the bridge in notify.ts now decides by the matrix
+ * (bridgePerson / bridgeOwnerBroadcast) and no longer calls this. Kept for
+ * any other caller; it answers through the matrix like ownerSmsKinds.
+ * The question: does this bell row earn the owner a text? `tmId` is the
+ * row's tm: target (null on a role broadcast); `roles` is the row's audience
+ * after the money clamp. Returns the TeamMember to text, or null.
  *   · a row addressed to the owner's own tm: key → him, if the kind is on;
  *   · a broadcast that includes OWNER → the (first) owner, if the kind is on;
  *   · anything else → null (the photographer bridge decides as before).

@@ -9,6 +9,7 @@ import { ProjectStatus } from "@prisma/client";
 import { PeopleTabs, type PeopleTab } from "./PeopleTabs";
 import { SlackIdField } from "./SlackIdField";
 import { SlackTestDmButton } from "./SlackTestDmButton";
+import { SlackSyncButton } from "./SlackSyncButton";
 
 // Team tab = the old /team directory (workload cards linking to each person's
 // /team/[id] detail page). Admin-visible. Runs its own TeamMember query — the
@@ -17,7 +18,11 @@ import { SlackTestDmButton } from "./SlackTestDmButton";
 // hub reach them on Slack (Jordan: "if I type at John or at Kyle, a
 // notification is sent to them directly in Slack"). The card stopped being
 // one big Link for that: the field has buttons, and a button inside a link
-// navigates instead of saving.
+// navigates instead of saving. Sep 15 (later): the owner-only self test
+// became a per-card "Send test DM" for the office, and the header grew a
+// one-click sync that fills empty IDs from the workspace list — what each
+// person then GETS (Slack DM vs. text, per event) is set under Settings →
+// Team notifications, not here.
 
 // In-flight project statuses — what "active assignments" should actually count
 // (not every project the person has ever touched).
@@ -25,7 +30,9 @@ const ACTIVE_STATUSES: ProjectStatus[] = [
   "BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW", "REVISION",
 ];
 
-export async function TeamTab({ show, canEditSlack, isOwner }: { show: PeopleTab[]; canEditSlack: boolean; isOwner: boolean }) {
+// `isOwner` is still passed by the page (its tab gating) but nothing on this
+// tab is owner-only any more — the office (owner + admin) gets every button.
+export async function TeamTab({ show, canEditSlack }: { show: PeopleTab[]; canEditSlack: boolean; isOwner: boolean }) {
   const activeWhere = { status: { in: ACTIVE_STATUSES } };
   const team = await prisma.teamMember.findMany({
     orderBy: { role: "asc" },
@@ -47,13 +54,14 @@ export async function TeamTab({ show, canEditSlack, isOwner }: { show: PeopleTab
         eyebrow="Directory"
         title="People"
         subtitle={`${team.length} people · ${withSlack} on Slack`}
-        actions={isOwner ? <SlackTestDmButton /> : undefined}
+        actions={canEditSlack ? <SlackSyncButton /> : undefined}
       />
       <div className="p-4 sm:p-6">
         <PeopleTabs tab="team" show={show} />
         <p className="mb-4 text-xs text-muted">
-          An @mention or a reply anywhere in the hub DMs the person on Slack — with the summary and the link — when their
-          Slack member ID is on their card. No ID: the bell (and any text fallback) only.
+          An @mention, a reply or a message on their job reaches the person on Slack — with the summary and the link — when
+          their Slack member ID is on their card; a text needs a phone on the row. Which pings go where, per person, is set
+          under <Link href="/settings" className="font-medium text-brand hover:underline">Settings → Team notifications</Link>.
         </p>
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {team.map((m) => {
@@ -87,6 +95,7 @@ export async function TeamTab({ show, canEditSlack, isOwner }: { show: PeopleTab
                   {load} active assignment{load === 1 ? "" : "s"}
                 </div>
                 <SlackIdField memberId={m.id} firstName={m.name.split(/\s+/)[0]} slackId={m.slackId} canEdit={canEditSlack} />
+                {canEditSlack && <SlackTestDmButton memberId={m.id} firstName={m.name.split(/\s+/)[0]} slackId={m.slackId} />}
               </div>
             );
           })}

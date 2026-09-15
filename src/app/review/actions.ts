@@ -472,9 +472,11 @@ export async function replyCutNote(noteId: string, body: string): Promise<{ ok: 
   });
   // Reply is saved — everything below is best-effort notification fan-out.
   // Mentions ring first (they carry the note deep-link); whoever they reached
-  // is excluded from the thread-participant ping so nobody hears it twice.
+  // is excluded from the thread-participant ping so nobody hears it twice;
+  // and the job's editor hears the reply if neither ping reached them
+  // (Jordan, Sep 15: "a message was sent on their project").
   {
-    const { notifyMentions, notifyThreadReply } = await import("@/lib/mentions");
+    const { notifyMentions, notifyThreadReply, notifyProjectMessage } = await import("@/lib/mentions");
     const excludeTmIds = await notifyMentions({
       text,
       projectId: root.projectId,
@@ -484,7 +486,7 @@ export async function replyCutNote(noteId: string, body: string): Promise<{ ok: 
       context: "a cut-note comment",
       noteId: root.id,
     });
-    await notifyThreadReply({
+    const replied = await notifyThreadReply({
       rootId: root.id,
       replyId: reply.id,
       replierKey: authorKey,
@@ -493,6 +495,16 @@ export async function replyCutNote(noteId: string, body: string): Promise<{ ok: 
       projectId: root.projectId,
       surface: "cut",
       excludeTmIds,
+    });
+    await notifyProjectMessage({
+      projectId: root.projectId,
+      messageId: reply.id,
+      authorTmId: authorTmId ?? null,
+      authorKey,
+      authorName,
+      text,
+      context: "a cut-note comment",
+      excludeTmIds: [...excludeTmIds, ...replied],
     });
   }
   refresh(root.projectId);

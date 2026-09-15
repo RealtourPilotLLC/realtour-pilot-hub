@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/auth/user";
-import { requireAdmin, requireOwner } from "@/lib/auth/guards";
+import { requireAdmin } from "@/lib/auth/guards";
 import {
   editorRouting, putSetting, ROUTABLE_EDITORS, autoTextRules, DEFAULT_AUTO_TEXTS,
   turnaroundRules, internalAlertRules, textTemplates,
@@ -11,6 +11,8 @@ import {
   reviewRoomRules, type ReviewRoomRules,
 } from "@/lib/settings";
 import type { EditorKey } from "@/lib/editors";
+import { NOTIFY_EVENTS, parseNotifyPrefs, type NotifyPrefs } from "@/lib/notifyPrefDefaults";
+import { staffTextNumber } from "@/lib/hubSms";
 
 // Settings writes: owner or admin (Kyle) — requireAdmin is the house guard
 // (blocks view-as, passes sessionless local dev, always enforced in prod).
@@ -135,26 +137,39 @@ export async function loadInternalAlerts(): Promise<InternalAlertRules> {
   return internalAlertRules();
 }
 
-// ---- The owner's texts (Jordan, Sep 11: "make sure I get a text when a video
-// is in review or I'm mentioned in a chat") -----------------------------------
-// Owner only — this is HIS phone. The row is keyed on the owner's own
-// TeamMember, resolved server-side from the login (never from the form), and
-// the bridge in notify.ts reads it on the next bell row: no cron, no wait.
-export async function saveOwnerSmsPrefs(input: { reviewReady: boolean; mention: boolean }): Promise<{ ok: boolean; message: string }> {
+// ---- Team notifications (Jordan, Sep 15: "I should be able to manage team
+// notifications in settings") ---------------------------------------------
+// Replaces the Sep 11 owner-only "Text me" save: every active person is a
+// row now, the owner included, and the same store (notify-prefs:<id>) is what
+// the bridge in notify.ts reads on the next bell row — no cron, no wait. Owner
+// or admin (Kyle): a switch on the wrong row would text or DM the wrong
+// person, so the id is checked against the roster before anything is written.
+export async function saveTeamNotifyPrefs(teamMemberId: string, prefs: NotifyPrefs): Promise<{ ok: boolean; message: string }> {
   try {
-    await requireOwner();
-    const me = await getCurrentUser().catch(() => null);
-    const { ownerSmsSettings, smsPrefsKey } = await import("@/lib/smsPrefs");
-    const { teamMemberId } = await ownerSmsSettings(me ? { teamMemberId: me.teamMemberId, email: me.email } : null);
-    if (!teamMemberId) {
-      return { ok: false, message: "Your login isn't linked to a team-member row yet — add your number on People first." };
+    const me = await requireSettingsActor();
+    if (typeof teamMemberId !== "string" || !/^[a-z0-9_-]{8,64}$/i.test(teamMemberId)) {
+      return { ok: false, message: "That row doesn't point at a person — reload and try again." };
     }
-    const kinds = [...(input.reviewReady ? ["review_ready" as const] : []), ...(input.mention ? ["mention" as const] : [])];
-    await putSetting(smsPrefsKey(teamMemberId), { kinds }, me?.email ?? null);
+    const clean = parseNotifyPrefs(prefs);
+    if (!clean) return { ok: false, message: "Something's off with what was sent — reload the page and try again." };
+    const { prisma } = await import("@/lib/prisma");
+    const member = await prisma.teamMember.findUnique({ where: { id: teamMemberId }, select: { name: true, slackId: true, phone: true } });
+    if (!member) return { ok: false, message: "That person isn't on the roster any more." };
+    const first = member.name.split(/\s+/)[0];
+    const { saveNotifyPrefs } = await import("@/lib/notifyPrefs");
+    await saveNotifyPrefs(teamMemberId, clean, me?.email ?? null);
     revalidatePath("/settings");
+    const onSlack = NOTIFY_EVENTS.filter((e) => clean[e.key].slack).map((e) => e.short.toLowerCase());
+    const onSms = NOTIFY_EVENTS.filter((e) => clean[e.key].sms).map((e) => e.short.toLowerCase());
+    const parts: string[] = [];
+    if (onSlack.length) parts.push(`Slack: ${onSlack.join(", ")}${member.slackId ? "" : " (once a Slack ID is on the card)"}`);
+    // The same number rule the sender applies (a US/Canada line) — a +63 on
+    // the roster is "no phone" to the text bridge, and the message says so.
+    if (onSms.length) parts.push(`texts: ${onSms.join(", ")}${staffTextNumber(member.phone) ? "" : " (once a US phone is on the roster)"}`);
+    const summary = parts.length ? parts.join(" · ") : "bell only";
     return {
       ok: true,
-      message: kinds.length === 0 ? "Saved — no texts; the bell still rings." : "Saved — the next one texts you (7 AM–10 PM ET; later ones wait for the morning).",
+      message: `Saved for ${first} — ${summary}. Applies from the next ping.`,
     };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Failed." };

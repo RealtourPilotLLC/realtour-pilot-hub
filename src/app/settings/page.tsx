@@ -1,7 +1,7 @@
 import { requirePageAccess } from "@/lib/auth/guards";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { SlidersHorizontal, Route, Package, ArrowRight , MessageSquareText, Clock, BellRing, Clapperboard, Smartphone } from "lucide-react";
+import { SlidersHorizontal, Route, Package, ArrowRight, MessageSquareText, Clock, BellRing, Clapperboard, Users } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { RoutingRulesForm } from "@/components/settings/RoutingRulesForm";
@@ -10,8 +10,8 @@ import { authEnforced } from "@/lib/auth/guards";
 import { editorRouting, autoTextRules, turnaroundRules, internalAlertRules, textTemplates, reviewRoomRules } from "@/lib/settings";
 import { AutoTextSettings } from "@/components/settings/AutoTextSettings";
 import { TurnaroundSettings, InternalAlertSettings, TextTemplateSettings, ReviewRoomSettings } from "@/components/settings/OperatingRules";
-import { OwnerTextSettings } from "@/components/settings/OwnerTextSettings";
-import { ownerSmsSettings } from "@/lib/smsPrefs";
+import { TeamNotifications } from "@/components/settings/TeamNotifications";
+import { teamNotifyRows } from "@/lib/notifyPrefs";
 
 export const dynamic = "force-dynamic";
 
@@ -25,15 +25,14 @@ export default async function SettingsPage() {
   if (!me && authEnforced()) redirect("/login?next=/settings");
   if (me && me.role !== "OWNER" && me.role !== "ADMIN") redirect("/");
 
-  const [rules, textRules, turns, alerts, templates, reviewRoom] = await Promise.all([
+  // Team notifications (Jordan, Sep 15) — every active person, the owner
+  // included; the Sep 11 owner-only "Text me" card folded into this matrix. A
+  // roster read that fails renders the card empty rather than taking the
+  // page down with it.
+  const [rules, textRules, turns, alerts, templates, reviewRoom, notifyRows] = await Promise.all([
     editorRouting(), autoTextRules(), turnaroundRules(), internalAlertRules(), textTemplates(), reviewRoomRules(),
+    teamNotifyRows().catch(() => []),
   ]);
-  // The owner's own phone (Jordan, Sep 11) — his card, nobody else's. Open
-  // mode (no session) renders as the owner, the same way the rest of the
-  // page does.
-  const ownerTexts = !me || me.role === "OWNER"
-    ? await ownerSmsSettings(me ? { teamMemberId: me.teamMemberId, email: me.email } : null).catch(() => null)
-    : null;
 
   return (
     <div>
@@ -72,11 +71,9 @@ export default async function SettingsPage() {
           <InternalAlertSettings initial={alerts} />
         </Section>
 
-        {ownerTexts && (
-          <Section icon={Smartphone} title="Text me">
-            <OwnerTextSettings initial={ownerTexts.prefs} phoneMasked={ownerTexts.phoneMasked} linked={!!ownerTexts.teamMemberId} />
-          </Section>
-        )}
+        <Section icon={Users} title="Team notifications" count={notifyRows.length}>
+          <TeamNotifications rows={notifyRows} />
+        </Section>
 
         <Section icon={Clapperboard} title="Review Room">
           <ReviewRoomSettings initial={reviewRoom} />
