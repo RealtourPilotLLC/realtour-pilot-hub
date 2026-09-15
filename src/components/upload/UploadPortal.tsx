@@ -26,6 +26,7 @@ import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { Markdown } from "@/components/ui/Markdown";
 import { Avatar } from "@/components/ui/Avatar";
 import { MarkdownEditor } from "@/components/ui/MarkdownEditor";
+import { WhatYouSubmitted, type SubmittedItem } from "@/components/upload/WhatYouSubmitted";
 
 // ---------------------------------------------------------------------------
 // The shoot debrief portal (rebuilt Aug 31 2026 per Jordan; readability pass
@@ -255,6 +256,9 @@ export function UploadPortal({
   policy,
   script,
   foldersSlot,
+  submission,
+  viewerIsOffice,
+  payGateFromMs,
 }: {
   project: {
     id: string;
@@ -268,6 +272,8 @@ export function UploadPortal({
     status: string;
     editorBrief: string | null;
     uploadedAt: string | null;
+    /** the human submit (finalizeUpload) — null while only the sweep has stamped uploadedAt */
+    debriefSubmittedAt: string | null;
     editorPdfPath: string | null;
     clientName: string;
     /** the agent's Aryeo headshot (Client.avatarUrl); null = initials disc */
@@ -311,6 +317,18 @@ export function UploadPortal({
   script: { body: string; hook: string | null; url: string | null } | null;
   /** the Dropbox folders card, rendered by the server page */
   foldersSlot: React.ReactNode;
+  /** the read-back of a submitted page (Sep 15) — who, when, add-ons, files */
+  submission: {
+    submittedBy: string | null;
+    lastEdited: { by: string; atISO: string } | null;
+    addOns: { item: string; note: string | null; addedBy: string | null; handled: boolean }[];
+    files: { name: string; size: number }[];
+  };
+  /** owner/admin — the reopen button reads "Edit this upload" for them */
+  viewerIsOffice: boolean;
+  /** DEBRIEF_PAY_GATE_FROM (lib/payroll is server-only, so the page passes
+   *  the number): shoots from this instant on are done only on the SUBMIT */
+  payGateFromMs: number;
 }) {
   const [uploaded, setUploaded] = useState<Record<string, boolean>>(
     Object.fromEntries(deliverables.map((d) => [d.id, initialUploaded(d)])),
@@ -320,7 +338,15 @@ export function UploadPortal({
   const [flagInput, setFlagInput] = useState("");
   const [isPending, startTransition] = useTransition();
   const [toggling, startToggle] = useTransition();
-  const [done, setDone] = useState(project.uploadedAt != null);
+  // Collapsed = submitted. Before the Sep 2 payroll gate the sweep's
+  // uploadedAt was the only stamp a finished job had, so those still read
+  // as done off it; from the gate on, raws in Dropbox without a submit is an
+  // OPEN page — it must not say "you're good to go … on your payroll" while
+  // the /upload row says "Submit to add to payroll" (review, Sep 15).
+  const [done, setDone] = useState(
+    project.debriefSubmittedAt != null ||
+      (project.uploadedAt != null && (project.shootDate == null || Date.parse(project.shootDate) < payGateFromMs)),
+  );
   // The home's size drives which culling tier the page preaches. Kept in local
   // state so the range updates the moment it is saved, without a full reload.
   const [sqft, setSqft] = useState<string>(policy.squareFeet != null ? String(policy.squareFeet) : "");
@@ -334,6 +360,9 @@ export function UploadPortal({
   // work?" (Jordan, Sep 3). Reopening is one tap for a correction.
   const [reopened, setReopened] = useState(false);
   const [pdfPath, setPdfPath] = useState<string | null>(project.editorPdfPath);
+  // "Last edited by" on the read-back card — the server's answer until a
+  // re-submit lands on this page, then "you" without a reload.
+  const [lastEdited, setLastEdited] = useState(submission.lastEdited);
   const [err, setErr] = useState<string | null>(null);
   const [processNote, setProcessNote] = useState("");
   const [processNoteSent, setProcessNoteSent] = useState(false);
@@ -636,6 +665,7 @@ export function UploadPortal({
           return;
         }
         if (res.pdfPath) setPdfPath(res.pdfPath);
+        if (done) setLastEdited({ by: "you", atISO: new Date().toISOString() });
         setDone(true);
         setReopened(false); // collapse back to the confirmation after a re-submit
         window.scrollTo({ top: 0, behavior: "smooth" });
@@ -718,11 +748,18 @@ export function UploadPortal({
             <CheckCircle2 className="size-5" />
             <span className="font-semibold">Submitted — you&rsquo;re good to go</span>
           </div>
-          <p className="mt-1 text-sm text-foreground/80">
-            Nothing else is needed from you on this shoot. Your notes are on the editor brief, the editors
-            know the files are in Dropbox, and <strong>this shoot is on your payroll</strong> — you&rsquo;ll
-            see it in My Pay.
-          </p>
+          {viewerIsOffice ? (
+            <p className="mt-1 text-sm text-foreground/80">
+              The notes are on the editor brief and the editors know the files are in Dropbox. Everything
+              submitted reads back below; reopen it to make a correction.
+            </p>
+          ) : (
+            <p className="mt-1 text-sm text-foreground/80">
+              Nothing else is needed from you on this shoot. Your notes are on the editor brief, the editors
+              know the files are in Dropbox, and <strong>this shoot is on your payroll</strong> — you&rsquo;ll
+              see it in My Pay.
+            </p>
+          )}
           <div className="mt-3 flex flex-wrap gap-2">
             {pdfPath && (
               <a href={pdfPath} target="_blank" rel="noopener noreferrer"
@@ -812,13 +849,60 @@ export function UploadPortal({
           answered steps. `collapsed` never hides the submit bar: a re-submit
           has to stay reachable. */}
       {collapsed ? (
-        <button
-          onClick={() => { setReopened(true); }}
-          className="w-full rounded-2xl border border-dashed border-border bg-surface-2/40 px-4 py-3 text-left text-sm text-muted hover:border-brand hover:text-foreground"
-        >
-          <span className="font-medium text-foreground">Need to change something?</span>{" "}
-          Reopen the checklist — your answers are all still here.
-        </button>
+        <>
+          {/* The read-back (Jordan, Sep 15: "see ... what was uploaded and
+              the notes for them"): every answer verbatim, above the reopen
+              button, so nobody reopens a 1,300px form just to read it. Item
+              states come from THIS page's state so a re-submit's changes
+              show without a reload. */}
+          <WhatYouSubmitted
+            submittedAtISO={project.debriefSubmittedAt}
+            uploadedAtISO={project.uploadedAt}
+            submittedBy={submission.submittedBy ?? project.photographerName}
+            lastEdited={lastEdited}
+            items={deliverables.map((d): SubmittedItem => ({
+              label: DELIVERABLE_META[d.type].label,
+              quantity: d.quantity,
+              state: uploaded[d.id] ? "uploaded" : notDone[d.id] ? "not_completed" : "pending",
+              reason: uploaded[d.id] ? null : notDone[d.id] ?? null,
+            }))}
+            cullingConfirmedAtISO={project.cullingConfirmedAt}
+            squareFeet={sqftSaved}
+            squareFeetBand={bandText}
+            shotOrderNotes={project.shotOrderNotes}
+            removalNotes={project.removalNotes}
+            videoInstructions={project.videoInstructions}
+            videosFilmed={project.videosFilmed}
+            scriptConfirmedAtISO={project.scriptConfirmedAt}
+            scriptConfirmNote={project.scriptConfirmNote}
+            scriptBody={script?.body ?? null}
+            editorBrief={project.editorBrief}
+            addOns={submission.addOns}
+            files={submission.files}
+            flags={flags}
+          />
+          <button
+            onClick={() => { setReopened(true); }}
+            className="w-full rounded-2xl border border-dashed border-border bg-surface-2/40 px-4 py-3 text-left text-sm text-muted hover:border-brand hover:text-foreground"
+          >
+            {viewerIsOffice ? (
+              // The office's wording (Sep 15): they are correcting a record,
+              // not finishing their own job. Reopening prefills exactly as it
+              // does for the photographer; a re-submit here only rewrites the
+              // notes (finalizeUpload leaves the hold, the status and the
+              // payroll stamp alone for anyone but the shoot's photographer).
+              <>
+                <span className="font-medium text-foreground">Edit this upload</span>{" "}
+                Reopen the checklist to change the notes or the checked-off items — every answer is prefilled.
+              </>
+            ) : (
+              <>
+                <span className="font-medium text-foreground">Need to change something?</span>{" "}
+                Reopen the checklist — your answers are all still here.
+              </>
+            )}
+          </button>
+        </>
       ) : (
       <>
       {/* ---- STEP: Upload to Dropbox ---- */}

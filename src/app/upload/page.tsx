@@ -15,6 +15,11 @@ import { DEBRIEF_PAY_GATE_FROM } from "@/lib/payroll";
 import { stageMeta, DELIVERABLE_META } from "@/lib/pipeline";
 import { DeliverableType } from "@prisma/client";
 import { etDateTime, etDaysAgo } from "@/lib/datetime";
+import {
+  historyPhotographers, listUploadHistory, ownedBy, uploadWindowStart,
+  UPLOAD_PENDING_STATUSES, UPLOAD_PENDING_WHERE, type UploadViewerScope,
+} from "@/lib/uploadHistory";
+import { UploadHistory } from "@/components/upload/UploadHistory";
 
 export const dynamic = "force-dynamic";
 
@@ -52,10 +57,34 @@ export default async function UploadListPage() {
   }
   const mine = user?.role === "PHOTOGRAPHER" ? ((await photographerMemberId(user)) ?? "__none__") : null;
 
+  // Which jobs the buckets carry (Jordan, Sep 15: "It actually shows ones
+  // that were submitted too but I'm not seeing all of them"). The old filter
+  // was status ∈ {BOOKED, SCHEDULED, SHOT}, so a job vanished from Today /
+  // Yesterday / Past 7 days the moment it advanced to editing — 8 of 15 jobs
+  // in the window on Sep 15, every one of them submitted. Now:
+  //   · inside the 7-day window: every non-cancelled status, submitted or not;
+  //   · Upcoming: the pending statuses, as before;
+  //   · Previous weeks / Unscheduled: UPLOAD_PENDING_WHERE — a pending-status
+  //     job whose page was never SUBMITTED. Raws the sweep detected do not
+  //     retire it from here (review, Sep 15): it still owes the photographer's
+  //     submit and keeps its "Submit to add to payroll" chip. "Past uploads"
+  //     below excludes exactly that set, so a job is never listed twice.
+  const now = new Date();
+  const windowStart = uploadWindowStart(now);
+  const scopeWhere = mine ? ownedBy(mine) : {};
   const shoots = await prisma.project.findMany({
     where: {
-      status: { in: ["BOOKED", "SCHEDULED", "SHOT"] },
-      ...(mine ? { OR: [{ photographerId: mine }, { appointments: { some: { assignedToId: mine } } }] } : {}),
+      AND: [
+        scopeWhere,
+        {
+          OR: [
+            { status: { not: "CANCELLED" }, shootDate: { gte: windowStart, lte: now } },
+            { status: { in: UPLOAD_PENDING_STATUSES }, shootDate: { gt: now } },
+            { ...UPLOAD_PENDING_WHERE, shootDate: null },
+            { ...UPLOAD_PENDING_WHERE, shootDate: { lt: windowStart } },
+          ],
+        },
+      ],
     },
     orderBy: [{ shootDate: "desc" }, { createdAt: "desc" }],
     include: {
@@ -94,6 +123,16 @@ export default async function UploadListPage() {
 
   const pendingToday = (grouped.get("today") ?? []).filter((s) => !s.uploadedAt).length;
 
+  // Past uploads — first page server-rendered; search / chips / paging go
+  // through the searchUploadHistory action (same scope, re-derived there).
+  // requirePageAccess above already vetted the viewer, so the scope is just
+  // the `mine` pin resolved for the buckets.
+  const scope: UploadViewerScope = { mine, office: mine === null };
+  const [history, photographers] = await Promise.all([
+    listUploadHistory(scope, {}, now),
+    historyPhotographers(scope, now),
+  ]);
+
   return (
     <div>
       <PageHeader
@@ -103,7 +142,7 @@ export default async function UploadListPage() {
       <div className="mx-auto max-w-3xl space-y-8 p-6">
         <CullingReminder />
 
-        {shoots.length === 0 && <p className="text-sm text-muted">No shoots ready for upload right now.</p>}
+        {shoots.length === 0 && <p className="text-sm text-muted">No shoots in the last week or coming up.</p>}
 
         {BUCKETS.map(({ key, label }) => {
           const items = grouped.get(key);
@@ -122,7 +161,7 @@ export default async function UploadListPage() {
               </div>
               <div className="space-y-2">
                 {items.map((s) => (
-                  <JobRow key={s.id} s={s} overBudget={overBudget.has(s.id)} />
+                  <JobRow key={s.id} s={s} overBudget={overBudget.has(s.id)} nowMs={now.getTime()} />
                 ))}
               </div>
             </section>
@@ -130,8 +169,10 @@ export default async function UploadListPage() {
         })}
 
         {pendingToday === 0 && (grouped.get("today")?.length ?? 0) > 0 && (
-          <p className="text-center text-sm text-success">All of today's jobs are uploaded. Nice work.</p>
+          <p className="text-center text-sm text-success">All of today&rsquo;s jobs are uploaded. Nice work.</p>
         )}
+
+        <UploadHistory initial={history} photographers={photographers} officeView={scope.office} />
       </div>
     </div>
   );
@@ -148,14 +189,15 @@ type Shoot = {
 // once the upload page is SUBMITTED (debriefSubmittedAt — not the Dropbox
 // auto-stamp). The row says so until they do.
 
-function JobRow({ s, overBudget }: { s: Shoot; overBudget: boolean }) {
+// `nowMs` comes from the page's one `now` (a render must not read the clock).
+function JobRow({ s, overBudget, nowMs }: { s: Shoot; overBudget: boolean; nowMs: number }) {
   const stage = stageMeta(s.status as Parameters<typeof stageMeta>[0]);
   const uploaded = s.uploadedAt != null;
   const payrollPending =
     !s.debriefSubmittedAt &&
     s.shootDate != null &&
     s.shootDate.getTime() >= DEBRIEF_PAY_GATE_FROM &&
-    s.shootDate.getTime() <= Date.now();
+    s.shootDate.getTime() <= nowMs;
   // Distinct deliverable types = the checklist of what to capture/upload.
   const types = [...new Set(s.deliverables.map((d) => d.type))];
   return (
@@ -164,13 +206,19 @@ function JobRow({ s, overBudget }: { s: Shoot; overBudget: boolean }) {
         {uploaded ? <CheckCircle2 className="size-5" /> : <Camera className="size-5" />}
       </span>
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <span className="truncate font-semibold">{s.title}</span>
-          {uploaded ? (
+          {/* The pipeline status always shows now that submitted jobs stay
+              listed (Sep 15) — "Uploaded" alone hid whether a job was still
+              waiting on the office or already in editing. The submit stamp
+              (debriefSubmittedAt — the human submit, never the sweep's
+              uploadedAt) rides beside it. */}
+          <Badge color={stage.color} soft={stage.soft}>{stage.short}</Badge>
+          {s.debriefSubmittedAt ? (
+            <Badge color="#34d399" soft="rgba(52,211,153,0.14)">Submitted ✓ {etDateTime(s.debriefSubmittedAt)}</Badge>
+          ) : uploaded ? (
             <Badge color="#34d399" soft="rgba(52,211,153,0.14)">Uploaded</Badge>
-          ) : (
-            <Badge color={stage.color} soft={stage.soft}>{stage.short}</Badge>
-          )}
+          ) : null}
           {/* Raw pile blew past this home's budget — cull before it goes to edit. */}
           {overBudget && (
             <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-semibold text-warning">
@@ -201,7 +249,7 @@ function JobRow({ s, overBudget }: { s: Shoot; overBudget: boolean }) {
       </div>
       {s.photographer && <Avatar name={s.photographer.name} color={s.photographer.avatarColor} size={28} />}
       <span className="flex shrink-0 items-center gap-1 text-sm font-medium text-brand">
-        {uploaded ? "Review" : <><FolderOpen className="size-4" /> Upload</>} <ArrowRight className="size-4" />
+        {s.debriefSubmittedAt ? "View" : uploaded ? "Review" : <><FolderOpen className="size-4" /> Upload</>} <ArrowRight className="size-4" />
       </span>
     </Link>
   );

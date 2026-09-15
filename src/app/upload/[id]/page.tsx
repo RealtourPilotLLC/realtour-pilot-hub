@@ -24,6 +24,8 @@ import { isFieldFlag } from "@/lib/debrief";
 import { videoStepSpec, isMonthlyContentJob, type VideoStepSpec } from "@/lib/pipeline";
 import { creativeCustomerNote } from "@/lib/clientNotes";
 import { videoTier } from "@/lib/projectStatus";
+import { submissionTrail, UPLOAD_COMPLETED_BODY, UPLOAD_EDITED_BY_PREFIX, UPLOAD_SUBMITTED_BY_PREFIX } from "@/lib/uploadSummary";
+import { DEBRIEF_PAY_GATE_FROM } from "@/lib/payroll";
 
 export const dynamic = "force-dynamic";
 
@@ -115,9 +117,34 @@ export default async function UploadProjectPage({
         where: { type: { in: [ActivityType.SPECIAL_REQUEST, ActivityType.FLAG] } },
         orderBy: { createdAt: "desc" },
       },
+      // Files uploaded through this page — read back on the submitted card.
+      uploads: { select: { originalName: true, size: true }, orderBy: { createdAt: "asc" } },
     },
   });
   if (!project) notFound();
+
+  // Who submitted / last edited the page (Sep 15): read off the timeline
+  // lines finalizeUpload writes — see submissionTrail for the rules.
+  const trailRows = await prisma.activity.findMany({
+    where: {
+      projectId: project.id,
+      OR: [
+        { type: ActivityType.FILE, body: UPLOAD_COMPLETED_BODY },
+        { body: { startsWith: UPLOAD_SUBMITTED_BY_PREFIX } },
+        { body: { startsWith: UPLOAD_EDITED_BY_PREFIX } },
+      ],
+    },
+    select: { type: true, body: true, createdAt: true },
+    orderBy: { createdAt: "asc" },
+  });
+  const trail = submissionTrail(
+    trailRows.map((a) => ({ type: a.type, body: a.body, createdAtISO: a.createdAt.toISOString() })),
+    { photographerName: project.photographer?.name ?? null, submittedAtISO: project.debriefSubmittedAt?.toISOString() ?? null },
+  );
+  // The office edits a record; the photographer finishes a job — the portal
+  // words its reopen button for each (Sep 15). OPEN mode (no session) reads
+  // as the office, the same way the list page does.
+  const viewerIsOffice = !viewer || viewer.role === "OWNER" || viewer.role === "ADMIN";
 
   const folderState = await getProjectFolderState(project);
 
@@ -228,6 +255,7 @@ export default async function UploadProjectPage({
           status: project.status,
           editorBrief: project.editorBrief,
           uploadedAt: project.uploadedAt?.toISOString() ?? null,
+          debriefSubmittedAt: project.debriefSubmittedAt?.toISOString() ?? null,
           editorPdfPath: project.editorPdfPath,
           clientName: project.client.name,
           // The agent's Aryeo headshot for the portal header (Jordan, Sep 2:
@@ -278,6 +306,14 @@ export default async function UploadProjectPage({
           // whole email thread — neither is a problem the photographer raised.
           .filter((a) => a.type === ActivityType.FLAG && isFieldFlag(a.body))
           .map((a) => a.body)}
+        submission={{
+          submittedBy: trail.submittedBy,
+          lastEdited: trail.lastEdited,
+          addOns: addOns.map((a) => ({ item: a.item, note: a.note, addedBy: a.addedBy, handled: a.handled })),
+          files: project.uploads.map((u) => ({ name: u.originalName, size: u.size })),
+        }}
+        viewerIsOffice={viewerIsOffice}
+        payGateFromMs={DEBRIEF_PAY_GATE_FROM}
       />
 
       {/* Anything the agent added on site that the order doesn't know about —

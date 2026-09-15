@@ -14,6 +14,7 @@ import {
 import { revalidatePath } from "next/cache";
 import { ProjectStatus, DeliverableStatus, ActivityType } from "@prisma/client";
 import { saveUpload, deleteFile } from "@/lib/storage";
+import { UPLOAD_COMPLETED_BODY, UPLOAD_EDITED_BY_PREFIX, UPLOAD_SUBMITTED_BY_PREFIX } from "@/lib/uploadSummary";
 
 // Provenance marker for a script the photographer typed on site (no Script
 // Studio draft existed). Kept as a constant so the re-submit guard and the
@@ -346,6 +347,29 @@ export async function finalizeUpload(
     },
   });
   const firstFinalize = !prior?.uploadedAt;
+  // WHO is submitting (Jordan, Sep 15: the office can now re-open a submitted
+  // page from /upload history "and also make adjustments"). A submitted page
+  // is the photographer's word that the footage is in, and everything that
+  // word triggers — the Waiting-hold release, the move to Ready for editing,
+  // the raws-in handoff — must stay the photographer's: an office edit of the
+  // notes must not release a hold the office itself set, or move a held job
+  // on. So each of those runs only on the first human submit
+  // (debriefSubmittedAt unset) or when the submitter is the shoot's own
+  // photographer. Resolved once here; every side effect below reads it.
+  const everSubmitted = !!prior?.debriefSubmittedAt;
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  let submitterIsPhotographer = false;
+  if (me) {
+    const { photographerMemberId, photographerOwnsShoot } = await import("@/lib/shoot");
+    const mid = await photographerMemberId(me);
+    submitterIsPhotographer = !!mid && (await photographerOwnsShoot(projectId, mid));
+  }
+  const submitterName = (me?.name?.trim() || me?.email || "the office").slice(0, 80);
+  /** a re-submit by someone other than the shoot's photographer — notes only */
+  const officeEdit = everSubmitted && !submitterIsPhotographer;
+  /** may this submit move the job on (hold release, Waiting → Ready for editing)? */
+  const mayAdvance = !everSubmitted || submitterIsPhotographer;
   // A deliverable marked "couldn't complete + why" is EXCUSED from the gates —
   // demanding video instructions for a reel the agent canceled on site forces
   // the photographer to fabricate answers (review HIGH). The reason itself is
@@ -482,7 +506,11 @@ export async function finalizeUpload(
   // actually in the raw folders; a mismatch bounces back for an explicit
   // confirm instead of silently handing editors an empty folder. Dropbox
   // unreadable → don't block (unknown is not proof of absence).
-  if (!data.force && prior) {
+  // Not on an office edit of the notes (Sep 15): the office isn't attesting
+  // to footage, and an old job's folder may have moved since — "the RAW-Photos
+  // folder is empty" on a delivered job is a false alarm. A photographer's own
+  // re-submit (a job the office put back to Waiting, say) still gets checked.
+  if (!data.force && prior && !officeEdit) {
     try {
       const { actualFolderPaths, folderFileCount, videoFilesUnder } = await import("@/lib/dropboxFolders");
       // The REAL folder (a rescheduled shoot's files stay where they were) —
@@ -554,6 +582,12 @@ export async function finalizeUpload(
           ? priorNote // keep the existing what-changed detail
           : "Edited on site"
       : "Delivered as written";
+  // The script confirmation keeps its first stamp unless the ANSWER changed
+  // (Sep 15): the re-opened page always sends state "as-written", and "What
+  // you submitted" reads scriptConfirmedAt as when the photographer confirmed
+  // the script — an office notes edit must not move it to the edit date.
+  const scriptAnswerChanged =
+    !prior?.scriptConfirmedAt || scriptTextChanged || (nextConfirmNote !== undefined && nextConfirmNote !== priorNote);
   await prisma.project.update({
     where: { id: projectId },
     data: {
@@ -564,7 +598,10 @@ export async function finalizeUpload(
       // submitted, this shoot will be added to your payroll") — keep the
       // original stamp on re-submits.
       ...(prior?.debriefSubmittedAt ? {} : { debriefSubmittedAt: new Date() }),
-      ...(data.cullingConfirmed ? { cullingConfirmedAt: new Date() } : {}),
+      // The cull confirmation keeps its first stamp too (Sep 15): the
+      // re-opened page sends the four ticks pre-checked, and "What you
+      // submitted" reads this as WHEN the cull was confirmed.
+      ...(data.cullingConfirmed && !prior?.cullingConfirmedAt ? { cullingConfirmedAt: new Date() } : {}),
       ...(data.shotOrder
         ? {
             shotOrderNotes: (() => {
@@ -595,7 +632,7 @@ export async function finalizeUpload(
         : {}),
       ...(data.scriptConfirm
         ? {
-            scriptConfirmedAt: new Date(),
+            ...(scriptAnswerChanged ? { scriptConfirmedAt: new Date() } : {}),
             scriptConfirmNote: nextConfirmNote,
             // An on-site edit replaces the working script — the editor must cut
             // to what was actually filmed, not what Studio drafted.
@@ -621,7 +658,13 @@ export async function finalizeUpload(
             scriptConfirmNote: `${PROVIDED_ON_SITE} — typed by the photographer`,
           }
         : {}),
-      uploadedAt: new Date(),
+      // uploadedAt is WHEN THE RAWS LANDED — first stamp only (Sep 15). It
+      // used to be re-stamped on every submit, so an office edit of the notes
+      // weeks later would have moved the raws-in time the on-time KPI
+      // (kpi.ts) scores the photographer's bonus on. The Waiting hold clears
+      // this stamp on an unsubmitted job, so the photographer's next real
+      // submit still lands a fresh one.
+      ...(prior?.uploadedAt ? {} : { uploadedAt: new Date() }),
     },
   });
 
@@ -637,21 +680,29 @@ export async function finalizeUpload(
   // uploadedAt stamp, so this submit is usually the first finalize anyway,
   // but a job held AFTER a real submit keeps its stamp and would otherwise
   // wait an hour for its editor bell (Sep 11 review).
+  // Sep 15: ONLY the first submit or the photographer's own re-submit
+  // (mayAdvance) — the office re-opening a submitted page to fix the notes is
+  // not the photographer's word, and must not release a hold the office set.
   let holdReleased = false;
-  try {
-    const { releaseWaitingHold } = await import("@/lib/queueWaiting");
-    holdReleased = await releaseWaitingHold(projectId);
-    if (holdReleased) {
-      await prisma.activity.create({
-        data: { projectId, type: ActivityType.SYSTEM, body: "Waiting hold released — the photographer submitted the upload page." },
-      }).catch(() => {});
-    }
-  } catch { /* the marker is best-effort here — the SHOT write below stands on its own */ }
+  if (mayAdvance) {
+    try {
+      const { releaseWaitingHold } = await import("@/lib/queueWaiting");
+      holdReleased = await releaseWaitingHold(projectId);
+      if (holdReleased) {
+        await prisma.activity.create({
+          data: { projectId, type: ActivityType.SYSTEM, body: "Waiting hold released — the photographer submitted the upload page." },
+        }).catch(() => {});
+      }
+    } catch { /* the marker is best-effort here — the SHOT write below stands on its own */ }
+  }
 
-  // Advance into the editing pipeline if still pre-shoot.
+  // Advance into the editing pipeline if still pre-shoot. Same rule as the
+  // hold (Sep 15): an office edit of the notes on a job the office holds in
+  // Waiting must leave it in Waiting.
   const project = await prisma.project.findUnique({ where: { id: projectId } });
   if (
     project &&
+    mayAdvance &&
     (project.status === ProjectStatus.BOOKED ||
       project.status === ProjectStatus.SCHEDULED)
   ) {
@@ -674,13 +725,27 @@ export async function finalizeUpload(
     data: { editorPdfPath: pdfPath },
   });
 
-  await prisma.activity.create({
-    data: {
-      projectId,
-      type: ActivityType.FILE,
-      body: "Photographer completed upload. Editor brief is ready for the editors.",
-    },
-  });
+  // The timeline line. The photographer's submit — first or re-submit — logs
+  // the same FILE line it always has. An office re-submit logs WHO edited
+  // instead (Sep 15): "Photographer completed upload" would be untrue, and
+  // the job page's "What you submitted" card reads the editor's name off
+  // this line (submissionTrail in lib/uploadSummary.ts). An office FIRST
+  // submit keeps the FILE line (it is the raws-in handoff line) and adds
+  // who did it, for the same reader.
+  if (officeEdit) {
+    await prisma.activity.create({
+      data: { projectId, type: ActivityType.NOTE, body: `${UPLOAD_EDITED_BY_PREFIX}${submitterName}.` },
+    });
+  } else {
+    await prisma.activity.create({
+      data: { projectId, type: ActivityType.FILE, body: UPLOAD_COMPLETED_BODY },
+    });
+    if (!everSubmitted && me && !submitterIsPhotographer) {
+      await prisma.activity.create({
+        data: { projectId, type: ActivityType.NOTE, body: `${UPLOAD_SUBMITTED_BY_PREFIX}${submitterName}.` },
+      }).catch(() => {});
+    }
+  }
 
   // Raws are in → refresh the evidence and run the FULL editor handoff now
   // (bench ping + edit_video task + Luma dispatch + editorId), instead of
