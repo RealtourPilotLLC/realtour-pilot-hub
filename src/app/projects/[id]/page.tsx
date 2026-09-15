@@ -63,7 +63,7 @@ import { formatDistanceToNow } from "date-fns";
 import { etDateTime, etDateYear } from "@/lib/datetime";
 import { listAssignees } from "@/lib/assignees";
 import { ActivityType } from "@prisma/client";
-import { aryeoOrderUrl } from "@/lib/aryeoUrl";
+import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
 
 export const dynamic = "force-dynamic";
 
@@ -203,9 +203,13 @@ export default async function ProjectPage({
         </div>
         <div className="flex flex-wrap items-start justify-end gap-2">
           {(project.aryeoOrderId || project.aryeoListingId) && <RefreshFromAryeo projectId={project.id} />}
-          {project.aryeoOrderId && (
+          {/* The LISTING editor (…/admin/listings/<id>/edit) — the same link the
+              QC cards use and the one that opens for Kyle; the order page does
+              not (Jordan, Sep 15). The order is the fallback for a job with no
+              listing on record. */}
+          {(project.aryeoListingId || project.aryeoOrderId) && (
             <a
-              href={aryeoOrderUrl(project.aryeoOrderId)}
+              href={project.aryeoListingId ? aryeoListingUrl(project.aryeoListingId) : aryeoOrderUrl(project.aryeoOrderId as string)}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium hover:bg-surface-2"

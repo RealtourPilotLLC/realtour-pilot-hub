@@ -6,7 +6,7 @@ import { parseEvidence } from "@/lib/statusEvidence";
 import { refinedDeliverableLabel } from "@/lib/pipeline";
 import { etDateTime, etDate, etDayKey, etDayStartUtc, etAddDays, etFullDate, etEndOfDay } from "@/lib/datetime";
 import type { HubTool } from "@/lib/integrations/ai";
-import { aryeoOrderUrl } from "@/lib/aryeoUrl";
+import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
 import { canSeeMoney } from "@/lib/auth/access";
 
 // ---------------------------------------------------------------------------
@@ -423,7 +423,7 @@ export async function execHubTool(
         select: {
           id: true, title: true, status: true, shootDate: true, deliveryDue: true, deliveredAt: true,
           price: true, balanceAmount: true, paymentStatus: true, invoiceUrl: true, paidMarkedAt: true, arRemovedAt: true,
-          aryeoOrderId: true, statusEvidence: true, revisionNote: true, revisionRequestedAt: true, notes: true,
+          aryeoOrderId: true, aryeoListingId: true, statusEvidence: true, revisionNote: true, revisionRequestedAt: true, notes: true,
           client: { select: { id: true, name: true, segment: true } },
           photographer: { select: { name: true } },
           deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, status: true } },
@@ -464,7 +464,7 @@ export async function execHubTool(
         open_tasks: p.smartTasks.map((t) => ({ type: t.taskType, title: scrub(t.title) || t.taskType, priority: t.priority, due: t.dueAt ? etDate(t.dueAt) : null })),
         recent_messages: p.messages.map((m) => ({ from: m.authorName, at: etDate(m.createdAt), text: scrub((m.body ?? "").slice(0, 280)) })),
         redaction_notice: seesMoney ? undefined : MONEY_BLIND_NOTICE,
-        aryeo_url: p.aryeoOrderId ? aryeoOrderUrl(p.aryeoOrderId) : null,
+        aryeo_url: p.aryeoListingId ? aryeoListingUrl(p.aryeoListingId) : p.aryeoOrderId ? aryeoOrderUrl(p.aryeoOrderId) : null, // the listing editor opens for everyone; the order page does not (Sep 15)
         hub_url: `/projects/${p.id}`,
       };
     }
