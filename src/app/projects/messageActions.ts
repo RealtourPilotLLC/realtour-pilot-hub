@@ -34,26 +34,25 @@ export async function postProjectMessage(
   let authorId: string | null = null;
   let authorName: string | null = null;
   const myName = me?.name?.trim();
-  if (myName) {
-    const first = myName.split(/\s+/)[0];
+  if (me) {
+    // The login's LINKED Team row first (reviewer, Sep 15: the self-tag and
+    // self-reply rules below compare this id exactly, so it has to be the
+    // writer's own row, not a name lookalike), then the exact display name,
+    // then the roster email, then the first name. A logged-in user with no
+    // row still posts as THEMSELVES (name or email), never as a client-chosen
+    // TeamMember — the passed authorId is a spoof vector once a session
+    // exists (adversarial review).
+    const select = { id: true, name: true };
+    const first = myName?.split(/\s+/)[0];
     const tm =
-      (await prisma.teamMember.findFirst({
-        where: { name: { equals: myName, mode: "insensitive" } },
-        select: { id: true, name: true },
-      })) ??
-      (first
-        ? await prisma.teamMember.findFirst({
-            where: { name: { contains: first, mode: "insensitive" } },
-            select: { id: true, name: true },
-          })
-        : null);
+      (me.teamMemberId ? await prisma.teamMember.findUnique({ where: { id: me.teamMemberId }, select }) : null) ??
+      (myName ? await prisma.teamMember.findFirst({ where: { name: { equals: myName, mode: "insensitive" } }, select }) : null) ??
+      (me.email
+        ? await prisma.teamMember.findFirst({ where: { email: { equals: me.email, mode: "insensitive" }, active: true }, select })
+        : null) ??
+      (first ? await prisma.teamMember.findFirst({ where: { name: { contains: first, mode: "insensitive" } }, select }) : null);
     authorId = tm?.id ?? null;
-    authorName = tm?.name ?? myName;
-  } else if (me) {
-    // A logged-in user with no display name still posts as THEMSELVES (their
-    // email), never as a client-chosen TeamMember — the passed authorId is a
-    // spoof vector once a session exists (adversarial review).
-    authorName = me.email ?? "Team";
+    authorName = tm?.name ?? myName ?? me.email ?? "Team";
   } else if (!authEnforced() && clientAuthorId) {
     // Sessionless local dev only — no identity exists to derive.
     const m = await prisma.teamMember.findUnique({ where: { id: clientAuthorId }, select: { name: true } });
@@ -61,7 +60,16 @@ export async function postProjectMessage(
     authorName = m?.name ?? null;
   }
 
-  const mentions = Array.from(new Set(mentionIds.filter(Boolean)));
+  // The composer resolves only the full names it inserted itself ("@John
+  // Mark"); a hand-typed "@John" posted without picking rang nobody. Jordan,
+  // Sep 15: "if I type at John or at Kyle, a notification is sent to them" —
+  // so the roster-aware matcher the note surfaces use runs here too (an
+  // ambiguous first name still needs the full name; "info@kim…" is not Kim).
+  const { matchMentions } = await import("@/lib/mentions");
+  const roster = text.includes("@")
+    ? await prisma.teamMember.findMany({ where: { active: true }, select: { id: true, name: true } }).catch(() => [])
+    : [];
+  const mentions = Array.from(new Set([...mentionIds.filter(Boolean), ...matchMentions(text, roster).map((p) => p.id)]));
   const msg = await prisma.projectMessage.create({
     data: {
       projectId,
@@ -92,15 +100,21 @@ export async function postProjectMessage(
       const tmId = await editorTeamMemberId(key);
       if (tmId) editorTmIds.set(tmId, key);
     }
-    // The owner's roster row(s): a tag of himself in his own message rings the
-    // bell and nothing more (reviewer, Sep 11). His login may not resolve to
-    // a TeamMember by name above, so the roster is asked directly.
-    const owners = me?.role === "OWNER"
-      ? await (await import("@/lib/smsPrefs")).ownerTeamMemberIds().catch(() => [] as string[])
-      : [];
+    // The owner's roster row(s): a DM TO the owner keeps money in its quote
+    // (Sep 15), so the loop needs to know who he is whoever is writing (read
+    // every time, cached ten minutes). They also stand in for the writer on
+    // a SESSIONLESS request (dev) that named nobody.
+    const owners = await (await import("@/lib/smsPrefs")).ownerTeamMemberIds().catch(() => [] as string[]);
+    // A tag of himself in his own message rings the bell and nothing more
+    // (reviewer, Sep 11) — decided by the writer's OWN row, exactly, now that
+    // authorId comes off the login's linked row (reviewer, Sep 15: a second
+    // owner login with no Team row tagging "@Jordan" is not Jordan tagging
+    // himself, and must reach him). The owners inference only when nothing
+    // identified the writer at all.
+    const inferOwner = !me && !authorId;
     for (const t of tagged) {
       const editorKey = editorTmIds.get(t.id) ?? null;
-      const selfTag = t.id === authorId || owners.includes(t.id);
+      const selfTag = t.id === authorId || (inferOwner && owners.includes(t.id));
       // A tagged photographer who doesn't own this shoot gets bounced off
       // /shoot/<id> to the bare list — send them to the list directly (their
       // tag task carries the context); the owning shooter still deep-links.
@@ -141,6 +155,21 @@ export async function postProjectMessage(
         const { notifyInApp } = await import("@/lib/notify");
         const { appBase } = await import("@/lib/appUrl");
         const { clip } = await import("@/lib/text");
+        const { slackMentionDm } = await import("@/lib/mentions");
+        // The Slack DM (Jordan, Sep 15: "if I type at John or at Kyle, a
+        // notification is sent to them directly in Slack with a link to the
+        // message and a summary"): who, where, the first ~240 characters, and
+        // the same link the bell row carries. Off on a self-tag.
+        const slackDm = selfTag
+          ? null
+          : slackMentionDm({
+              author: authorName ?? "A teammate",
+              street,
+              context: "the job's team chat",
+              text,
+              href,
+              ownerRecipient: owners.includes(t.id),
+            });
         const targets: import("@/lib/notify").NotifyTarget[] = [
           {
             roles: editorKey ? ["OWNER", "ADMIN", "EDITOR"] : ["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"],
@@ -152,9 +181,12 @@ export async function postProjectMessage(
             ...(selfTag
               ? {}
               : { ownerSms: `${authorName ?? "A teammate"} mentioned you on ${street}: “${clip(text, 90)}” ${appBase()}/projects/${projectId}` }),
+            ...(slackDm ? { slackDm } : {}),
           },
         ];
-        if (editorKey) targets.push({ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${projectId}` });
+        // The editor channel row carries the same sentence — notify.ts sends
+        // ONE DM per person, whichever of the two rows is new.
+        if (editorKey) targets.push({ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${projectId}`, ...(slackDm ? { slackDm } : {}) });
         await notifyInApp({
           kind: "mention",
           title: `${authorName ?? "Team"} mentioned you — ${street}`,
@@ -165,6 +197,26 @@ export async function postProjectMessage(
         });
       } catch { /* bell is best-effort */ }
     }
+  }
+
+  // A reply answers a PERSON — reach them (Jordan, Sep 15). Until now the
+  // reply arrow only quoted the parent; the author heard nothing unless the
+  // reply also @-tagged them. The tagged people above already got their ping
+  // (and DM), so they are excluded here. Best-effort: the message is saved.
+  if (replyToId) {
+    try {
+      const { notifyMessageReply } = await import("@/lib/mentions");
+      await notifyMessageReply({
+        projectId,
+        messageId: msg.id,
+        replyToId,
+        replierTmId: authorId,
+        inferOwnerReplier: !me && !authorId,
+        replierName: authorName,
+        text,
+        excludeTmIds: mentions,
+      });
+    } catch { /* the reply ping is best-effort */ }
   }
 
   revalidatePath(`/projects/${projectId}`);

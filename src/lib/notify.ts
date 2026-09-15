@@ -15,8 +15,25 @@ import type { Role } from "@/lib/auth/access";
 // ---------------------------------------------------------------------------
 
 // Kyle's Slack user id — same DM the comms-memory sync reads (slackSync.ts).
-// Posting to a user id opens the bot's DM with him.
+// Posting to a user id opens the bot's DM with him. Since Sep 15 the roster
+// (TeamMember.slackId, editable on People) is the source of truth and the
+// literal is only the fallback for a roster that has lost the row — cached
+// ten minutes, the alert path runs on every ping.
 const KYLE_SLACK_ID = "U07SCBTPDC7";
+let kyleCache: { at: number; id: string } | null = null;
+async function kyleSlackId(): Promise<string> {
+  if (kyleCache && Date.now() - kyleCache.at < 10 * 60_000) return kyleCache.id;
+  let id = KYLE_SLACK_ID;
+  try {
+    const kyle = await prisma.teamMember.findFirst({
+      where: { name: { contains: "Kyle", mode: "insensitive" }, active: true },
+      select: { slackId: true },
+    });
+    if (kyle?.slackId) id = kyle.slackId;
+  } catch { /* the literal */ }
+  kyleCache = { at: Date.now(), id };
+  return id;
+}
 
 // Absolute links come from the one origin helper (src/lib/appUrl.ts) — the
 // local copy this file carried lacked the APP_URL fallback and the scheme
@@ -30,7 +47,7 @@ export async function alertDestination(): Promise<string> {
   const env = process.env.SLACK_ALERT_CHANNEL;
   if (env) return env;
   if (destCache && Date.now() - destCache.at < 3600_000) return destCache.channel;
-  let channel = KYLE_SLACK_ID;
+  let channel = await kyleSlackId();
   try {
     const chans = await slackChannels();
     const ops = chans.find((c) => c.is_member && /project-tracker|alert|ops|notif/i.test(c.name));
@@ -70,6 +87,12 @@ export type NotifyTarget = {
    *  this himself" (his own upload, a self-tag). Photographer rows never read
    *  it — they stay title + link (money clamp). */
   ownerSms?: string;
+  /** Sep 15: the exact Slack DM this row earns the person it is addressed to
+   *  (tm:<id>, or editor:<key> resolved to its TeamMember) — sent the moment
+   *  the row is new, when their roster row carries a Slack ID. The emitter's
+   *  own sentence, money already scrubbed for a non-owner (mentions.ts
+   *  slackMentionDm). Leave it OFF for a self-tag, exactly like ownerSms. */
+  slackDm?: string;
 };
 
 // ---------------------------------------------------------------------------
@@ -176,6 +199,7 @@ const BELL_RULES: Record<string, BellRule> = {
   portal_asset: "all", // a client's brand file: the bell is its ONLY signal, so it stays
   reply_sla: "all", // the client pager (see the warning above)
   system: "all", // integration failures — the owner is the only one who can fix them
+  slack_id_missing: "all", // a mention had no Slack ID to go to — the office fixes that on People (Sep 15)
 };
 
 // ---------------------------------------------------------------------------
@@ -462,6 +486,11 @@ export async function notifyInApp(n: {
 }): Promise<{ bridged: Array<{ userKey: string; channel: EditorChannel }>; silenced: number }> {
   const bridged: Array<{ userKey: string; channel: EditorChannel }> = [];
   let silenced = 0;
+  // TeamMember id → did a Slack DM go out for them in THIS call. An editor is
+  // addressed through both a tm: row and an editor: row, and both resolve to
+  // the same person; they get one DM, not two — and the second row still
+  // learns the DM landed, so its text fallback stands down too.
+  const slackDmDone = new Map<string, boolean>();
   try {
     const title = n.title.slice(0, 90);
     const rule: BellRule = BELL_RULES[n.kind] ?? "all";
@@ -504,6 +533,21 @@ export async function notifyInApp(n: {
         // Row is NEW (a dedupe hit threw P2002 above) — the bridges below fire
         // once per row, which is what makes a re-announcement unable to re-text.
         const tmId = t.userKey?.startsWith("tm:") ? t.userKey.slice(3) : null;
+        // THE SLACK DM (Jordan, Sep 15: "anytime someone is messaged in the
+        // Ops Hub a notification gets sent via Slack to whoever was mentioned
+        // … with a link to the message and a summary"). A person-addressed
+        // row that brought its own sentence goes straight to that person's
+        // Slack DM when their roster row carries a Slack ID. Immediately: no
+        // hub quiet hours and no digest — Slack has its own do-not-disturb,
+        // and a mention is one person asking another. ONE DM per person per
+        // event (slackDmDone). A self-tag never carries slackDm — the
+        // emitters leave it off, exactly like ownerSms. It runs FIRST: when
+        // the DM lands, the photographer text and the no-login editor text
+        // below stand down (reviewer, Sep 15 — one mention, one delivery);
+        // no Slack ID on file, and those fallbacks fire as before while the
+        // office is nudged once a week. The owner's text is his own switch
+        // on /settings and is not touched by the DM either way.
+        const dmSent = t.slackDm ? await bridgeSlackDm(t, tmId, slackDmDone) : false;
         // THE OWNER'S TEXT (Jordan, Sep 11: "make sure I get a text when a
         // video is in review or I'm mentioned in a chat"). A cut landing in the
         // Review Room rings OWNER+ADMIN as a broadcast; a mention rings his
@@ -527,13 +571,14 @@ export async function notifyInApp(n: {
         // reach the field without push. NOT for the owner's own row on a kind
         // his switch governs: Jordan is PHOTOGRAPHER on the roster, and the
         // switch has to be the only thing deciding whether he is texted.
-        if (!owner.ownerRow && SMS_KINDS.has(n.kind) && tmId && roles.includes("PHOTOGRAPHER")) {
+        if (!dmSent && !owner.ownerRow && SMS_KINDS.has(n.kind) && tmId && roles.includes("PHOTOGRAPHER")) {
           await smsPhotographer(tmId, title, href);
         }
         // …and bridge person-addressed EDITOR rows (editor:<key>) to Slack/SMS so
         // raws-landed / a revision / a review-back reaches Kim/Remar in Manila.
+        // A DM that already landed IS their channel for this event.
         if (EDITOR_CHANNEL_KINDS.has(n.kind) && t.userKey?.startsWith("editor:") && roles.includes("EDITOR")) {
-          const channel = await channelForEditor(t.userKey.slice(7), title, href);
+          const channel = dmSent ? "slack" : await channelForEditor(t.userKey.slice(7), title, href);
           bridged.push({ userKey: t.userKey, channel });
         }
         // A NEW editor-addressed bell row with no login to see it → nudge Jordan
@@ -557,6 +602,67 @@ export async function notifyInApp(n: {
     console.warn("notifyInApp failed", n.kind, e);
   }
   return { bridged, silenced };
+}
+
+// The Slack leg of a person-addressed bell row (see the call in notifyInApp).
+// Resolves the person (tm:<id> directly; editor:<key> through the roster),
+// DMs their Slack ID, or — with no ID — raises the weekly People nudge.
+// Returns whether a DM reached this person for this event — on THIS row or
+// an earlier one (an editor's tm: row DMs, their editor: row then learns it
+// landed and skips its text fallback). A refused DM counts as not sent, so
+// the fallbacks still carry the ping. Best-effort by contract: the note or
+// message that carried the mention is already saved, so nothing here may
+// throw past the bell.
+async function bridgeSlackDm(t: NotifyTarget, tmId: string | null, done: Map<string, boolean>): Promise<boolean> {
+  try {
+    let personId = tmId;
+    if (!personId && t.userKey?.startsWith("editor:")) {
+      const { editorTeamMemberId } = await import("@/lib/editors");
+      personId = await editorTeamMemberId(t.userKey.slice(7));
+    }
+    if (!personId) return false;
+    if (done.has(personId)) return done.get(personId) === true;
+    done.set(personId, false); // one DM (or one nudge) per person per event, whatever happens below
+    const member = await prisma.teamMember.findUnique({ where: { id: personId }, select: { name: true, slackId: true } });
+    if (!member) return false;
+    if (member.slackId) {
+      const { slackDmUser } = await import("@/lib/integrations/slack");
+      const sent = await slackDmUser(member.slackId, t.slackDm ?? "");
+      if (!sent) console.warn("slack mention DM failed (bell row kept)", member.name);
+      done.set(personId, sent);
+      return sent;
+    }
+    await nudgeMissingSlackId(personId, member.name);
+    return false;
+  } catch (e) {
+    console.warn("slack mention DM bridge failed (bell row kept)", e);
+    return false;
+  }
+}
+
+// The office hears ONCE a week per person that a mention had nowhere to go on
+// Slack — a bell row to OWNER/ADMIN linking to People, where the ID is typed.
+// The first name stands in for a pronoun: the roster carries none.
+async function nudgeMissingSlackId(tmId: string, name: string): Promise<void> {
+  const first = name.split(/\s+/)[0] || name;
+  await notifyInApp({
+    kind: "slack_id_missing",
+    title: `${first} has no Slack ID on file — add it on People so mentions reach ${first} on Slack`,
+    body: `${name} was mentioned in the hub but has no Slack member ID, so no Slack DM went out (the bell row and any text fallback still did). People → ${first} → Slack member ID.`,
+    href: "/users?tab=team",
+    targets: [{ roles: ["OWNER", "ADMIN"] }],
+    dedupeKey: `slack-id-missing-${tmId}-${isoWeekKey(new Date())}`,
+  });
+}
+
+// "2026-W38" — ISO-8601 week (Monday start), in UTC. Only ever a dedupe bucket.
+function isoWeekKey(d: Date): string {
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const day = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - day);
+  const yearStart = Date.UTC(t.getUTCFullYear(), 0, 1);
+  const week = Math.ceil(((t.getTime() - yearStart) / 86400000 + 1) / 7);
+  return `${t.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
 // Ping the team about a just-created task that shouldn't wait for a hub visit
@@ -615,11 +721,7 @@ export async function kyleMorningDigest(): Promise<{ sent: boolean; reason?: str
     return { sent: false, reason: "already sent today" };
   }
   try {
-    const kyle = await prisma.teamMember.findFirst({
-      where: { name: { contains: "Kyle", mode: "insensitive" }, active: true },
-      select: { slackId: true },
-    });
-    const slackId = kyle?.slackId ?? KYLE_SLACK_ID;
+    const slackId = await kyleSlackId();
     const { slackDmUser } = await import("@/lib/integrations/slack");
     const { getMorningBrief, getOverdueTasks, getClientTextTasks } = await import("@/lib/queries");
     const [brief, overdue, texts] = await Promise.all([
@@ -669,11 +771,7 @@ export async function kyleAfternoonDigest(): Promise<{ sent: boolean; reason?: s
     return { sent: false, reason: "already sent today" };
   }
   try {
-    const kyle = await prisma.teamMember.findFirst({
-      where: { name: { contains: "Kyle", mode: "insensitive" }, active: true },
-      select: { slackId: true },
-    });
-    const slackId = kyle?.slackId ?? KYLE_SLACK_ID;
+    const slackId = await kyleSlackId();
     const { slackDmUser } = await import("@/lib/integrations/slack");
     const { getMorningBrief, getOverdueTasks, getClientTextTasks } = await import("@/lib/queries");
     const [brief, overdue, texts] = await Promise.all([

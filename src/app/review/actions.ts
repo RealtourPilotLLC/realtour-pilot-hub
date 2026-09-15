@@ -43,25 +43,32 @@ function refresh(projectId: string) {
 // photographer through the live roster-email fallback, and never alias a
 // signed-in NON-owner to "owner" — that key is an identity in the thread-reply
 // notifier (it suppresses Jordan's ping and can self-ping the addressee).
-async function sessionAuthor(): Promise<{ authorKey: string; authorName: string | null }> {
+// authorTmId is the writer's OWN roster row (reviewer, Sep 15): the self-tag
+// rule compares it exactly — so an editor keyed editor:<key> tagging
+// themselves still counts as a self-tag, and a second owner login tagging
+// "@Jordan" reaches Jordan. Only the sessionless dev fallback leaves it
+// undefined and lets the "owner" key stand in for his row.
+async function sessionAuthor(): Promise<{ authorKey: string; authorTmId?: string | null; authorName: string | null }> {
   const u = await getCurrentUser().catch(() => null);
   if (!u) return { authorKey: "owner", authorName: "Jordan" };
   const name = u.name ?? u.email;
-  if (u.role === "OWNER") return { authorKey: "owner", authorName: name };
+  const { authorTeamMemberId } = await import("@/lib/mentions");
+  const authorTmId = await authorTeamMemberId(u);
+  if (u.role === "OWNER") return { authorKey: "owner", authorTmId, authorName: name };
   // An EDITOR is keyed editor:<key> FIRST — tm:<id> winning meant editor-
   // authored notes dodged every "authored by the editor" filter and their
   // submissions were credited to a tm: identity (Aug 18 audit).
-  if (u.role === "EDITOR" && u.editorKey) return { authorKey: `editor:${u.editorKey}`, authorName: name };
-  if (u.teamMemberId) return { authorKey: `tm:${u.teamMemberId}`, authorName: name };
-  if (u.editorKey) return { authorKey: `editor:${u.editorKey}`, authorName: name };
+  if (u.role === "EDITOR" && u.editorKey) return { authorKey: `editor:${u.editorKey}`, authorTmId, authorName: name };
+  if (u.teamMemberId) return { authorKey: `tm:${u.teamMemberId}`, authorTmId, authorName: name };
+  if (u.editorKey) return { authorKey: `editor:${u.editorKey}`, authorTmId, authorName: name };
   if (u.role === "PHOTOGRAPHER") {
     try {
       const { photographerMemberId } = await import("@/lib/shoot");
       const mid = await photographerMemberId(u);
-      if (mid) return { authorKey: `tm:${mid}`, authorName: name };
+      if (mid) return { authorKey: `tm:${mid}`, authorTmId: authorTmId ?? mid, authorName: name };
     } catch { /* fall through to the neutral key */ }
   }
-  return { authorKey: `user:${u.id}`, authorName: name };
+  return { authorKey: `user:${u.id}`, authorTmId, authorName: name };
 }
 
 // Which editor a project's video work routes to — prefer who actually
@@ -401,7 +408,7 @@ export async function addCutNote(input: {
       photographerId = appt?.assignedToId ?? null;
     }
   }
-  const { authorKey, authorName } = await sessionAuthor();
+  const { authorKey, authorTmId, authorName } = await sessionAuthor();
 
   const note = await prisma.mediaNote.create({
     data: {
@@ -423,7 +430,7 @@ export async function addCutNote(input: {
   });
   {
     const { notifyMentions } = await import("@/lib/mentions");
-    await notifyMentions({ text: body, projectId: input.projectId, authorKey, authorName, context: "a cut note", noteId: note.id });
+    await notifyMentions({ text: body, projectId: input.projectId, authorKey, authorTmId, authorName, context: "a cut note", noteId: note.id });
   }
   refresh(input.projectId);
   return { ok: true };
@@ -445,7 +452,7 @@ export async function replyCutNote(noteId: string, body: string): Promise<{ ok: 
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
-  const { authorKey, authorName } = await sessionAuthor();
+  const { authorKey, authorTmId, authorName } = await sessionAuthor();
   const reply = await prisma.mediaNote.create({
     data: {
       projectId: root.projectId,
@@ -472,6 +479,7 @@ export async function replyCutNote(noteId: string, body: string): Promise<{ ok: 
       text,
       projectId: root.projectId,
       authorKey,
+      authorTmId,
       authorName,
       context: "a cut-note comment",
       noteId: root.id,

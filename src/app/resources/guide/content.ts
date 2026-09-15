@@ -488,6 +488,8 @@ Then upload the next version on the same row. The button is red on a redo, so yo
 
 You get pinged in the hub, not on your phone at 3am — see the time zone note below.
 
+**Slack, too.** When someone @mentions you anywhere in the hub — the job's chat, a cut note, a review note — or replies to a message of yours, a Slack DM lands straight away: who said it, the first lines of the message, and a link that opens it. That needs your Slack member ID on your People card; Jordan or Kyle add it (in Slack: click your name → ⋯ → Copy member ID). No ID on file means the bell only.
+
 For anything that is a conversation rather than a task, use the job's **Project chat** at the bottom of the page, or the **Messages** centre off the queue: every job's thread in one place with unread dots. Type @ to tag someone in either one.`,
       links: [{ href: "/editing/messages", label: "Messages" }],
     },
@@ -701,6 +703,7 @@ The daily closeout block is where escalation happens: run its six checks and sen
 - **4 PM Slack DM** — open to-dos and things to check before the day closes.
 - **Ops alerts** — raw files still missing about 30 hours after a shoot (you get a chase task, the photographer gets the nudge), and photos shot yesterday that still have not reached the client.
 - **The bell** in the hub — mentions, revisions raised, new bookings and cancellations.
+- **A Slack DM on every @mention and reply** — anyone who tags you in a job's chat, a review note or a cut note, or replies to a message of yours, lands in your Slack DMs at once: who, a summary, and the link to the message. It reads your Slack member ID off your People card. Add everyone else's there too (People → the person → Slack member ID, or Find on Slack), or their mentions only ring the bell — and once a week the bell tells you whose ID is still missing.
 
 None of these replace Ops Day; they are the nudge when you are not looking at it.`,
     },

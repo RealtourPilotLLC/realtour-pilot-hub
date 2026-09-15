@@ -9,7 +9,33 @@ import { etAt, etDayKey } from "@/lib/datetime";
 // editor channels + Jordan's DMs with Kyle/Kim/Remar. Idempotent (logComm
 // dedups on externalId=slack-<channel>-<ts>), so overlapping windows are safe.
 
-const ME = "U07D2KJH1JP"; // Jordan
+// Jordan's Slack user id. Since Sep 15 the roster (TeamMember.slackId on his
+// People card) is the source of truth and the literal is only the fallback
+// for a roster that has lost it — cached ten minutes; the poll runs hourly.
+const ME_FALLBACK = "U07D2KJH1JP"; // Jordan
+let meCache: { at: number; id: string } | null = null;
+async function jordanSlackId(): Promise<string> {
+  if (meCache && Date.now() - meCache.at < 10 * 60_000) return meCache.id;
+  let id = ME_FALLBACK;
+  try {
+    const { prisma } = await import("@/lib/prisma");
+    const { ownerTeamMemberIds } = await import("@/lib/smsPrefs");
+    const ids = await ownerTeamMemberIds();
+    if (ids.length) {
+      // Jordan's row first (Lauren is an owner login too); any owner with an
+      // id after that.
+      const row =
+        (await prisma.teamMember.findFirst({
+          where: { id: { in: ids }, slackId: { not: null }, name: { startsWith: "Jordan", mode: "insensitive" } },
+          select: { slackId: true },
+        })) ??
+        (await prisma.teamMember.findFirst({ where: { id: { in: ids }, slackId: { not: null } }, select: { slackId: true } }));
+      if (row?.slackId) id = row.slackId;
+    }
+  } catch { /* the literal */ }
+  meCache = { at: Date.now(), id };
+  return id;
+}
 const TARGET_DM_USERS: Record<string, string> = {
   U07SCBTPDC7: "Kyle Smith",
   U0ASP9C1WRK: "Kim",
@@ -245,7 +271,7 @@ export function resolveSlackAddressee(opts: {
  *  DM partners are known statically, the roster's slackId column next, and any
  *  id still unresolved is looked up once (cached ~1h in slack.ts). Best-effort. */
 async function slackIdNamesFor(text: string, roster: SlackRosterEntry[]): Promise<Record<string, string>> {
-  const idNames: Record<string, string> = { [ME]: "Jordan", ...TARGET_DM_USERS };
+  const idNames: Record<string, string> = { [await jordanSlackId()]: "Jordan", ...TARGET_DM_USERS };
   for (const r of roster) if (r.slackId) idNames[r.slackId] = r.name;
   const unknown = [...text.matchAll(/(?:<@|@)(U[A-Z0-9]{6,})\b/g)].map((m) => m[1]).filter((id) => !idNames[id]);
   if (unknown.length > 0) {
@@ -528,14 +554,15 @@ async function recentHistory(token: string, channel: string, oldest: string): Pr
 
 async function ingest(channel: string, messages: any[], minRole: string, source: string, otherName: string | undefined, resolve: (t: string) => string, userMap: Record<string, string>): Promise<number> {
   let n = 0;
+  const me = await jordanSlackId();
   for (const m of messages) {
     if (m.subtype && m.subtype !== "thread_broadcast") continue;
     const text = resolve(m.text || "");
     if (!text.trim()) continue;
-    const senderName = m.user === ME ? "Jordan" : userMap[m.user] || otherName || m.user || "Slack";
+    const senderName = m.user === me ? "Jordan" : userMap[m.user] || otherName || m.user || "Slack";
     const created = await logComm({
       channel: "slack",
-      direction: m.user === ME ? "out" : "in",
+      direction: m.user === me ? "out" : "in",
       minRole,
       contactName: senderName,
       body: text,

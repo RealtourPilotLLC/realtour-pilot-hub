@@ -24,6 +24,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { ProviderDef } from "@/lib/integrations/registry";
+import { SLACK_SCOPE_NEEDS } from "@/lib/slackScopes";
 import { ink } from "@/components/ui/Badge";
 import { etDateTime } from "@/lib/datetime";
 import Link from "next/link";
@@ -65,6 +66,10 @@ export type GmailSendHealth = { email: string; canSend: boolean | null };
 // providers that POST into the hub (OpenPhone, Aryeo) pass this.
 export type WebhookSecurity = { signed: boolean; unsignedAccepted: number };
 
+// The Slack bot token's granted scopes (auth.test, read-only). Null = the
+// probe failed; the card then says nothing rather than something wrong.
+export type SlackScopeHealth = { scopes: string[]; team: string | null };
+
 export function ProviderCard({
   provider,
   conn,
@@ -73,6 +78,7 @@ export function ProviderCard({
   googleAuthorizeUrl,
   gmailSendHealth,
   webhookSecurity,
+  slackScopes,
 }: {
   provider: ProviderDef;
   conn: ConnState | null;
@@ -81,6 +87,7 @@ export function ProviderCard({
   googleAuthorizeUrl?: string;
   gmailSendHealth?: GmailSendHealth[] | null;
   webhookSecurity?: WebhookSecurity;
+  slackScopes?: SlackScopeHealth | null;
 }) {
   const Icon = ICONS[provider.icon] ?? Circle;
   const connected = conn?.status === "CONNECTED";
@@ -161,6 +168,45 @@ export function ProviderCard({
           )}
         </div>
       )}
+
+      {/* Slack: what the bot token can actually DO, against what the hub
+          needs (Sep 15). "Connected" hid a token that can post but cannot
+          look anyone up — People's "Find on Slack" needs users:read +
+          users:read.email — so the pending re-install click is informed. */}
+      {provider.id === "slack" && connected && slackScopes && (() => {
+        const have = new Set(slackScopes.scopes);
+        const missing = SLACK_SCOPE_NEEDS.filter((n) => n.required && !have.has(n.scope)).map((n) => n.scope);
+        return (
+          <div className="mt-2 space-y-1.5" data-slack-scopes>
+            <div className="flex flex-wrap gap-1.5">
+              {SLACK_SCOPE_NEEDS.map((n) =>
+                have.has(n.scope) ? (
+                  <span key={n.scope} title={n.why} className="inline-flex items-center gap-1 rounded-full bg-success-soft px-2 py-0.5 text-[11px] font-medium text-success">
+                    <CheckCircle2 className="size-3" /> {n.scope} ✓
+                  </span>
+                ) : n.required ? (
+                  <span key={n.scope} title={n.why} className="inline-flex items-center gap-1 rounded-full bg-warning-soft px-2 py-0.5 text-[11px] font-medium text-warning">
+                    <AlertCircle className="size-3" /> {n.scope} — needed: {n.why}
+                  </span>
+                ) : (
+                  <span key={n.scope} title={n.why} className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-muted">
+                    <Circle className="size-3" /> {n.scope} — optional
+                  </span>
+                ),
+              )}
+            </div>
+            {missing.length > 0 && (
+              <p className="text-[11px] text-warning">
+                Re-install the Ops Hub Slack app with <span className="font-mono">{missing.join(", ")}</span> added (Slack app → OAuth &amp;
+                Permissions → Bot Token Scopes → Reinstall to Workspace), then paste the bot token again here if Slack issued a new one.
+              </p>
+            )}
+            <p className="text-[11px] text-muted-2">
+              Token scopes now: {slackScopes.scopes.length ? slackScopes.scopes.join(", ") : "none reported"}
+            </p>
+          </div>
+        );
+      })()}
 
       {/* Capabilities */}
       <ul className="mt-3 space-y-1">

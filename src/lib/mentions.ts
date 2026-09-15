@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { appBase } from "@/lib/appUrl";
-import { clip } from "@/lib/text";
+import { clip, stripInvisible, scrubMoney, escapeSlack } from "@/lib/text";
 
 // ---------------------------------------------------------------------------
 // @mentions in note comments. The note/reply actions call notifyMentions with
@@ -12,8 +12,12 @@ import { clip } from "@/lib/text";
 // can actually open (photographer → their shoot page, editor → their brief,
 // everyone else → the project page), and editors ALSO get their channel row
 // (editor:<key> → Slack DM/SMS via the notify bridge, "mention" is in both
-// SMS_KINDS and EDITOR_CHANNEL_KINDS). Best-effort by contract — a mention
-// hiccup must never fail the comment that carried it.
+// SMS_KINDS and EDITOR_CHANNEL_KINDS). Since Sep 15 every person-addressed
+// row also carries the Slack DM sentence (slackDm, built by slackMentionDm
+// below) — Jordan: "if I type at John or at Kyle, a notification is sent to
+// them directly in Slack with a link to the message and a summary". Best-
+// effort by contract — a mention hiccup must never fail the comment that
+// carried it.
 // ---------------------------------------------------------------------------
 
 // Match "@Full Name" (as the composer inserts) plus hand-typed "@FirstName"
@@ -69,12 +73,95 @@ export async function isMentionedIn(texts: string[], teamMemberId: string): Prom
   }
 }
 
+// ---------------------------------------------------------------------------
+// The Slack DM sentence (Jordan, Sep 15). One shape for every surface, so a
+// DM reads the same whether the tag was on a review note, a cut note, or the
+// Editing Room's job chat:
+//   💬 Jordan Spackman mentioned you on 123 Main St — a cut note
+//   > the message, first ~240 characters, one line
+//   https://hub.realtourpilot.com/edit/<id>
+// A reply opens "↩︎ <Author> replied to you on <street> — …" instead. The
+// quote is scrubbed of money for anyone but the owner (creatives never see
+// pricing, and a Slack DM is even leakier than the bell), invisible characters
+// are stripped, and the cut lands on a word boundary. Slack markup is escaped
+// so a client's "<3" or "photos & video" arrive as typed; the "> " prefix is
+// Slack's own quote.
+// ---------------------------------------------------------------------------
+export function slackMentionDm(opts: {
+  author: string;
+  street: string;
+  context: string;
+  text: string;
+  /** In-app href — the DM carries the absolute link (appBase()). */
+  href: string;
+  reply?: boolean;
+  /** The recipient IS the owner → money stays in the quote. */
+  ownerRecipient?: boolean;
+}): string {
+  const oneLine = stripInvisible(opts.text).replace(/\s+/g, " ").trim();
+  const summary = clip(opts.ownerRecipient ? oneLine : scrubMoney(oneLine), 240);
+  const head = opts.reply
+    ? `↩︎ ${opts.author} replied to you on ${opts.street} — ${opts.context}`
+    : `💬 ${opts.author} mentioned you on ${opts.street} — ${opts.context}`;
+  return `${escapeSlack(head)}\n> ${escapeSlack(summary)}\n${appBase()}${opts.href}`;
+}
+
+// The writer's OWN roster row — what the self-tag rule compares against
+// (reviewer, Sep 15). Until now the owner's session key was "owner" (not a
+// tm:) so "did he tag himself?" was inferred from the owners list — which
+// made a SECOND owner login with no Team row tagging "@Jordan" look like
+// Jordan tagging himself: no text, and no Slack DM. So: the session's linked
+// TeamMember; an editor login keyed only by editor key resolves through the
+// roster; otherwise the active row carrying the login's email. null = a real
+// login with no roster row at all, who therefore cannot tag THEMSELVES. A
+// sessionless dev request passes nothing and the old inference stands.
+export async function authorTeamMemberId(u: {
+  teamMemberId: string | null;
+  editorKey: string | null;
+  email: string | null;
+}): Promise<string | null> {
+  try {
+    if (u.teamMemberId) return u.teamMemberId;
+    if (u.editorKey) {
+      const { editorTeamMemberId } = await import("@/lib/editors");
+      const id = await editorTeamMemberId(u.editorKey);
+      if (id) return id;
+    }
+    if (u.email) {
+      const row = await prisma.teamMember.findFirst({
+        where: { email: { equals: u.email, mode: "insensitive" }, active: true },
+        select: { id: true },
+      });
+      if (row) return row.id;
+    }
+  } catch { /* unknown → not a self-tag */ }
+  return null;
+}
+
+// TeamMember id → editor key, for the in-house editors that have a roster row
+// (kim/john/remar). Resolution is EXACT (editor key → its TeamMember id), never
+// a name substring — a future "Kimberly" must not ring editor Kim's channel.
+async function editorTmIdMap(): Promise<Map<string, string>> {
+  const { TEAM_MEMBER_EDITOR_KEYS, editorTeamMemberId } = await import("@/lib/editors");
+  const map = new Map<string, string>();
+  for (const key of TEAM_MEMBER_EDITOR_KEYS) {
+    const tmId = await editorTeamMemberId(key);
+    if (tmId) map.set(tmId, key);
+  }
+  return map;
+}
+
 export async function notifyMentions(opts: {
   text: string;
   projectId: string;
   /** The writer's session key ("owner" | "tm:<id>" | "editor:<key>" | …) — a
    *  tag of THEMSELVES rings the bell and nothing more. */
   authorKey?: string | null;
+  /** The writer's OWN roster row (authorTeamMemberId) — the self-tag rule
+   *  compares ids exactly when this is given (null = a login with no row,
+   *  who cannot self-tag). Leave it undefined only for a sessionless dev
+   *  request, where the "owner" key still stands in for his row. */
+  authorTmId?: string | null;
   authorName?: string | null;
   /** Short context for the ping, e.g. "a review note" | "a cut note". */
   context?: string;
@@ -100,29 +187,28 @@ export async function notifyMentions(opts: {
     const author = opts.authorName ?? "A teammate";
 
     // kim/remar tags should reach Manila through the editor channel bridge.
-    // Resolution is EXACT (editor key → its TeamMember id), never a name
-    // substring — a future "Kimberly" must not ring editor Kim's channel.
-    const { TEAM_MEMBER_EDITOR_KEYS, editorTeamMemberId } = await import("@/lib/editors");
     const { slugForName } = await import("@/lib/assignees");
-    const editorTmIds = new Map<string, string>(); // TeamMember id → editor key
-    for (const key of TEAM_MEMBER_EDITOR_KEYS) {
-      const tmId = await editorTeamMemberId(key);
-      if (tmId) editorTmIds.set(tmId, key);
-    }
+    const editorTmIds = await editorTmIdMap(); // TeamMember id → editor key
     const editorKeyFor = (tmId: string): string | null => editorTmIds.get(tmId) ?? null;
 
-    // The owner's roster row(s), so "@Jordan" in the owner's own note is
-    // recognised as a self-tag (his session key is "owner", not tm:).
-    const owners = opts.authorKey === "owner"
-      ? await (await import("@/lib/smsPrefs")).ownerTeamMemberIds().catch(() => [] as string[])
-      : [];
+    // The owner's roster row(s): a DM TO the owner keeps money in its quote
+    // (Sep 15), so the list is read every time (cached ten minutes in
+    // smsPrefs.ts). It also stands in for his identity on a SESSIONLESS
+    // request (dev), where "@Jordan" under the "owner" key is a self-tag.
+    const owners = await (await import("@/lib/smsPrefs")).ownerTeamMemberIds().catch(() => [] as string[]);
 
     const { notifyInApp } = await import("@/lib/notify");
     for (const t of tagged) {
       const editorKey = editorKeyFor(t.id);
       // A self-tag rings the bell and nothing more — no text about what he
-      // just wrote himself (reviewer, Sep 11).
-      const selfTag = opts.authorKey === `tm:${t.id}` || owners.includes(t.id);
+      // just wrote himself (reviewer, Sep 11), and no Slack DM (Sep 15).
+      // Exact by roster id when the caller resolved the writer (reviewer,
+      // Sep 15: a second owner login tagging "@Jordan" is NOT Jordan tagging
+      // himself); the owners-list inference only when nothing identified them.
+      const selfTag =
+        t.id === opts.authorTmId ||
+        opts.authorKey === `tm:${t.id}` ||
+        (opts.authorTmId === undefined && opts.authorKey === "owner" && owners.includes(t.id));
       let href: string;
       if (t.role === "PHOTOGRAPHER") {
         // A tagged photographer may NOT own this shoot — /shoot/<id> bounces
@@ -136,6 +222,10 @@ export async function notifyMentions(opts: {
         }
       } else if (editorKey) href = `/edit/${opts.projectId}`;
       else href = `/projects/${opts.projectId}`;
+
+      const slackDm = selfTag
+        ? null
+        : slackMentionDm({ author, street, context: opts.context ?? "a note", text: opts.text, href, ownerRecipient: owners.includes(t.id) });
 
       // The companion task must carry the note link too — a photographer's
       // task board can't deep-link a note it doesn't know about.
@@ -182,12 +272,16 @@ export async function notifyMentions(opts: {
           // page opens for the owner and shows the whole thread. Off on a
           // self-tag (no sentence = no text, notify.ts).
           ...(selfTag ? {} : { ownerSms: `${author} mentioned you on ${street}: “${clip(opts.text, 90)}” ${appBase()}${href}` }),
+          // The Slack DM (Sep 15): who, where, the first ~240 characters and
+          // the same deep link the bell row carries. Off on a self-tag.
+          ...(slackDm ? { slackDm } : {}),
         },
       ];
       if (editorKey) {
         // Channel row: the Slack/SMS bridge only fires for editor:<key> rows,
-        // with quiet hours in the EDITOR's timezone.
-        targets.push({ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${opts.projectId}` });
+        // with quiet hours in the EDITOR's timezone. It carries the same DM
+        // sentence — notify.ts sends ONE per person, whichever row is new.
+        targets.push({ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${opts.projectId}`, ...(slackDm ? { slackDm } : {}) });
       }
       await notifyInApp({
         kind: "mention",
@@ -239,14 +333,18 @@ export async function notifyThreadReply(opts: {
     const root = thread.find((n) => n.id === opts.rootId);
     if (!root) return;
     const street = project?.title?.split(",")[0]?.trim() || "a job";
-    const firstName = (opts.replierName ?? "A teammate").split(/\s+/)[0];
+    const author = opts.replierName ?? "A teammate";
+    const firstName = author.split(/\s+/)[0];
+    // The Slack DM sentence for every person this reply reaches (Sep 15):
+    // "↩︎ <Author> replied to you on <street> — a cut note". Money stays in
+    // the quote only for the owner.
+    const context = opts.surface === "cut" ? "a cut note" : "a review note";
+    const owners = await (await import("@/lib/smsPrefs")).ownerTeamMemberIds().catch(() => [] as string[]);
+    const replyDm = (href: string, tmId: string | null) =>
+      slackMentionDm({ author, street, context, text: opts.text, href, reply: true, ownerRecipient: !!tmId && owners.includes(tmId) });
 
     const { TEAM_MEMBER_EDITOR_KEYS, editorTeamMemberId } = await import("@/lib/editors");
-    const editorTmIds = new Map<string, string>(); // TeamMember id → editor key
-    for (const key of TEAM_MEMBER_EDITOR_KEYS) {
-      const tmId = await editorTeamMemberId(key);
-      if (tmId) editorTmIds.set(tmId, key);
-    }
+    const editorTmIds = await editorTmIdMap(); // TeamMember id → editor key
 
     // Participants: every distinct authorKey on the thread, plus the implicit
     // addressee of the root note (the photographer/editor it's addressed to).
@@ -256,12 +354,17 @@ export async function notifyThreadReply(opts: {
     if (root.lane === "EDITOR" && root.editorKey) keys.add(`editor:${root.editorKey}`);
     keys.delete(opts.replierKey);
     // A replier identified by tm: id that maps to an editor key (or vice versa)
-    // is the same human — drop both spellings of them.
+    // is the same human — drop both spellings of them. The owner shoots too,
+    // so his roster row can sit on a photographer-lane thread as tm:<id>
+    // while his notes carry "owner" — same human, same rule.
     if (opts.replierKey.startsWith("tm:")) {
       const ek = editorTmIds.get(opts.replierKey.slice(3));
       if (ek) keys.delete(`editor:${ek}`);
+      if (owners.includes(opts.replierKey.slice(3))) keys.delete("owner");
     } else if (opts.replierKey.startsWith("editor:")) {
       for (const [tmId, ek] of editorTmIds) if (`editor:${ek}` === opts.replierKey) keys.delete(`tm:${tmId}`);
+    } else if (opts.replierKey === "owner") {
+      for (const id of owners) keys.delete(`tm:${id}`);
     }
 
     const { notifyInApp } = await import("@/lib/notify");
@@ -271,11 +374,21 @@ export async function notifyThreadReply(opts: {
     const seenHumans = new Set<string>(); // tm ids / editor keys already targeted
     for (const key of keys) {
       if (key === "owner") {
-        if (!ownerAdded) {
-          targets.push({
-            roles: ["OWNER"],
-            href: opts.surface === "cut" ? `/review/${opts.projectId}` : `/projects/${opts.projectId}`,
-          });
+        // Jordan writes most review/cut notes, and until Sep 15 his
+        // participant row was a bare OWNER broadcast — no userKey, so no
+        // Slack DM ever reached him for a reply on his own note (reviewer).
+        // Now: one tm: row per owner roster row carrying the reply DM (his
+        // row holds his Slack ID); the bare broadcast stands only when no
+        // owner row resolves. Excluded = he was @-tagged in this reply and
+        // the mention ping already carried his DM.
+        const ownerHref = opts.surface === "cut" ? `/review/${opts.projectId}` : `/projects/${opts.projectId}`;
+        const ownerRows = owners.filter((id) => !excluded.has(id) && !seenHumans.has(`t:${id}`));
+        for (const id of ownerRows) {
+          seenHumans.add(`t:${id}`);
+          targets.push({ roles: ["OWNER"], userKey: `tm:${id}`, href: ownerHref, slackDm: replyDm(ownerHref, id) });
+        }
+        if (owners.length === 0 && !ownerAdded) {
+          targets.push({ roles: ["OWNER"], href: ownerHref });
           ownerAdded = true;
         }
         continue;
@@ -286,14 +399,15 @@ export async function notifyThreadReply(opts: {
         if (seenHumans.has(`e:${ek}`)) continue;
         seenHumans.add(`e:${ek}`);
         const tmId = await editorTeamMemberId(ek);
+        const editHref = `/edit/${opts.projectId}`;
         if (tmId) {
           if (excluded.has(tmId)) continue;
           seenHumans.add(`t:${tmId}`);
           // Visibility row (tm:, no PHOTOGRAPHER role → SMS bridge stays cold).
-          targets.push({ roles: ["OWNER", "ADMIN", "EDITOR"], userKey: `tm:${tmId}`, href: `/edit/${opts.projectId}` });
+          targets.push({ roles: ["OWNER", "ADMIN", "EDITOR"], userKey: `tm:${tmId}`, href: editHref, slackDm: replyDm(editHref, tmId) });
         }
         // Channel row → Slack DM/SMS in the editor's timezone.
-        targets.push({ roles: ["EDITOR"], userKey: `editor:${ek}`, href: `/edit/${opts.projectId}` });
+        targets.push({ roles: ["EDITOR"], userKey: `editor:${ek}`, href: editHref, slackDm: replyDm(editHref, tmId) });
         continue;
       }
       if (key.startsWith("tm:")) {
@@ -305,8 +419,9 @@ export async function notifyThreadReply(opts: {
           if (seenHumans.has(`e:${ek}`)) continue;
           seenHumans.add(`e:${ek}`);
           seenHumans.add(`t:${tmId}`);
-          targets.push({ roles: ["OWNER", "ADMIN", "EDITOR"], userKey: `tm:${tmId}`, href: `/edit/${opts.projectId}` });
-          targets.push({ roles: ["EDITOR"], userKey: `editor:${ek}`, href: `/edit/${opts.projectId}` });
+          const editHref = `/edit/${opts.projectId}`;
+          targets.push({ roles: ["OWNER", "ADMIN", "EDITOR"], userKey: `tm:${tmId}`, href: editHref, slackDm: replyDm(editHref, tmId) });
+          targets.push({ roles: ["EDITOR"], userKey: `editor:${ek}`, href: editHref, slackDm: replyDm(editHref, tmId) });
           continue;
         }
         seenHumans.add(`t:${tmId}`);
@@ -314,14 +429,17 @@ export async function notifyThreadReply(opts: {
         if (member?.role === "PHOTOGRAPHER") {
           // PHOTOGRAPHER in roles arms the tm: SMS bridge (note_reply ∈ SMS_KINDS);
           // the note page admits the thread's participants, so link it directly.
+          const noteHref = `/shoot/note/${opts.rootId}`;
           targets.push({
             roles: ["OWNER", "ADMIN", "PHOTOGRAPHER"],
             userKey: `tm:${tmId}`,
-            href: `/shoot/note/${opts.rootId}`,
+            href: noteHref,
+            slackDm: replyDm(noteHref, tmId),
           });
         } else {
-          // Kyle/staff: bell only, never SMS.
-          targets.push({ roles: ["OWNER", "ADMIN"], userKey: `tm:${tmId}`, href: `/projects/${opts.projectId}` });
+          // Kyle/staff: bell (and, since Sep 15, the Slack DM) — never SMS.
+          const projHref = `/projects/${opts.projectId}`;
+          targets.push({ roles: ["OWNER", "ADMIN"], userKey: `tm:${tmId}`, href: projHref, slackDm: replyDm(projHref, tmId) });
         }
       }
     }
@@ -337,6 +455,82 @@ export async function notifyThreadReply(opts: {
     });
   } catch (e) {
     console.warn("notifyThreadReply failed (reply already saved)", e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A reply in a job's team chat — the Editing Room's "Project chat", the
+// project page thread, the Messages centre — pinged NOBODY unless it also
+// @-tagged them (the reply arrow only quoted the parent). Jordan, Sep 15: a
+// reply has to reach the person it answers, on Slack, with the summary and
+// the link. So: ping the parent message's author with one bell row (the same
+// role-aware shape the tags use) carrying the reply DM sentence. Skipped when
+// the reply is their own, or the reply already @-tagged them (the mention
+// ping carried the DM). Best-effort; never fails the saved reply.
+// ---------------------------------------------------------------------------
+export async function notifyMessageReply(opts: {
+  projectId: string;
+  /** The reply just saved — the dedupe key. */
+  messageId: string;
+  replyToId: string;
+  /** The replier's OWN roster row — exact, like the self-tag rule. */
+  replierTmId: string | null;
+  /** Nothing identified the replier (sessionless dev): treat the owner's
+   *  roster rows as theirs. Never true for a real login — a second owner
+   *  login answering Jordan's message must reach him (reviewer, Sep 15). */
+  inferOwnerReplier: boolean;
+  replierName: string | null;
+  text: string;
+  /** Already pinged via @mention on this reply. */
+  excludeTmIds: string[];
+}): Promise<void> {
+  try {
+    const parent = await prisma.projectMessage.findUnique({ where: { id: opts.replyToId }, select: { authorId: true } });
+    const targetId = parent?.authorId;
+    if (!targetId || targetId === opts.replierTmId || opts.excludeTmIds.includes(targetId)) return;
+    const owners = await (await import("@/lib/smsPrefs")).ownerTeamMemberIds().catch(() => [] as string[]);
+    if (opts.inferOwnerReplier && owners.includes(targetId)) return; // the owner answering his own message
+    const [member, project] = await Promise.all([
+      prisma.teamMember.findUnique({ where: { id: targetId }, select: { id: true, name: true, role: true, active: true } }),
+      prisma.project.findUnique({ where: { id: opts.projectId }, select: { title: true } }),
+    ]);
+    if (!member?.active) return;
+    const street = project?.title?.split(",")[0]?.trim() || "a job";
+    const author = opts.replierName ?? "A teammate";
+    const editorKey = (await editorTmIdMap()).get(member.id) ?? null;
+    const dm = (href: string) =>
+      slackMentionDm({ author, street, context: "the job's team chat", text: opts.text, href, reply: true, ownerRecipient: owners.includes(member.id) });
+
+    const targets: import("@/lib/notify").NotifyTarget[] = [];
+    let href: string;
+    if (editorKey) {
+      // Same pair as a tag: visibility row (no PHOTOGRAPHER role → SMS bridge
+      // stays cold) + the editor channel row; notify.ts sends ONE DM.
+      href = `/edit/${opts.projectId}`;
+      targets.push({ roles: ["OWNER", "ADMIN", "EDITOR"], userKey: `tm:${member.id}`, href, slackDm: dm(href) });
+      targets.push({ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href, slackDm: dm(href) });
+    } else if (member.role === "PHOTOGRAPHER" && !owners.includes(member.id)) {
+      // A photographer who doesn't own this shoot bounces off /shoot/<id>.
+      const { photographerOwnsShoot } = await import("@/lib/shoot");
+      href = (await photographerOwnsShoot(opts.projectId, member.id).catch(() => false)) ? `/shoot/${opts.projectId}` : "/shoot";
+      targets.push({ roles: ["OWNER", "ADMIN", "PHOTOGRAPHER"], userKey: `tm:${member.id}`, href, slackDm: dm(href) });
+    } else {
+      // Kyle/staff — and the owner, whose roster role is PHOTOGRAPHER but who
+      // reads the thread on the project page: bell + Slack, never SMS.
+      href = `/projects/${opts.projectId}`;
+      targets.push({ roles: ["OWNER", "ADMIN"], userKey: `tm:${member.id}`, href, slackDm: dm(href) });
+    }
+    const { notifyInApp } = await import("@/lib/notify");
+    await notifyInApp({
+      kind: "note_reply",
+      title: `${author.split(/\s+/)[0]} replied — ${street}`,
+      body: opts.text.slice(0, 140), // auto-nulled by the money clamp on creative rows
+      href,
+      targets,
+      dedupeKey: `msg-reply-${opts.messageId}`,
+    });
+  } catch (e) {
+    console.warn("notifyMessageReply failed (reply already saved)", e);
   }
 }
 

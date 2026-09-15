@@ -122,7 +122,7 @@ export const PROVIDERS: ProviderDef[] = [
     icon: "MessageSquare",
     color: "#4a154b",
     keyLabel: "Slack bot token (xoxb-…)",
-    keyHelp: "Slack app → OAuth & Permissions → add the chat:write scope → Install to Workspace → copy the Bot User OAuth Token (xoxb-…).",
+    keyHelp: "Slack app → OAuth & Permissions → Bot Token Scopes: chat:write, users:read, users:read.email → Install (or Reinstall) to Workspace → copy the Bot User OAuth Token (xoxb-…). users:read + users:read.email are what People's “Find on Slack” needs (Sep 15).",
     docsUrl: "https://api.slack.com/web",
     capabilities: ["Notify the right people automatically", "Post pipeline updates", "Flag issues"],
     ready: true,

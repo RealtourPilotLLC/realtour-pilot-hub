@@ -112,18 +112,52 @@ export async function slackUserName(id: string): Promise<string> {
   return slackUserCache?.map[id] ?? id;
 }
 
-// Resolve a Slack user by email (users.lookupByEmail). Null when the scope is
-// missing or the email has no Slack account — callers fall back to the ops
-// channel rather than failing the ping.
-export async function slackUserByEmail(email: string): Promise<string | null> {
+// Resolve a Slack user by email (users.lookupByEmail), keeping Slack's own
+// error code. The People page's "Find on Slack" (Sep 15) has to tell "the bot
+// token lacks users:read.email" (missing_scope → re-install the app) apart
+// from "no Slack account on that email" (users_not_found → paste the member
+// ID by hand); a bare null said neither.
+export type SlackLookup = { ok: true; id: string } | { ok: false; error: string };
+export async function slackLookupByEmail(email: string): Promise<SlackLookup> {
   try {
     const token = await getSecret("slack");
-    if (!token) return null;
+    if (!token) return { ok: false, error: "not_connected" };
     const res = await fetch(`https://slack.com/api/users.lookupByEmail?email=${encodeURIComponent(email)}`, {
       headers: { Authorization: `Bearer ${token}` }, cache: "no-store",
     });
-    const json = (await res.json()) as { ok?: boolean; user?: { id?: string } };
-    return json.ok && json.user?.id ? json.user.id : null;
+    const json = (await res.json()) as { ok?: boolean; error?: string; user?: { id?: string } };
+    if (json.ok && json.user?.id) return { ok: true, id: json.user.id };
+    return { ok: false, error: json.error || "lookup_failed" };
+  } catch { return { ok: false, error: "unreachable" }; }
+}
+
+// Null when the scope is missing or the email has no Slack account — callers
+// fall back to the ops channel rather than failing the ping.
+export async function slackUserByEmail(email: string): Promise<string | null> {
+  const r = await slackLookupByEmail(email);
+  return r.ok ? r.id : null;
+}
+
+// What the bot token can actually DO. Slack returns the granted scopes on
+// every auth.test response (the x-oauth-scopes header) — read-only, no scope
+// needed to ask. Null when Slack is not connected or unreachable. Backs the
+// Connections card (Sep 15) so the re-install click is informed: the People
+// page's "Find on Slack" needs users:read + users:read.email, and the token
+// installed today carries neither.
+export async function slackBotScopes(): Promise<{ scopes: string[]; team: string | null } | null> {
+  try {
+    const token = await getSecret("slack");
+    if (!token) return null;
+    const res = await fetch("https://slack.com/api/auth.test", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
+    const json = (await res.json().catch(() => ({ ok: false }))) as { ok?: boolean; team?: string };
+    if (!json.ok) return null;
+    const header = res.headers.get("x-oauth-scopes") ?? "";
+    const scopes = header.split(",").map((s) => s.trim()).filter(Boolean);
+    return { scopes, team: json.team ?? null };
   } catch { return null; }
 }
 

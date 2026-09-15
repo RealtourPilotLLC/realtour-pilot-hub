@@ -54,5 +54,10 @@ export default async function PeoplePage({
 
   if (tab === "logins") return <LoginsTab show={show} me={me} />;
   if (tab === "activity") return <ActivityTab show={show} />;
-  return <TeamTab show={show} />;
+  // Slack IDs (Sep 15) are owner/admin-editable — the server actions behind
+  // the field are requireAdmin() either way; this only decides whether the
+  // buttons render. A per-page override that lets someone else see this tab
+  // still shows them the chips, read-only.
+  const canEditSlack = me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
+  return <TeamTab show={show} canEditSlack={canEditSlack} isOwner={isOwner} />;
 }

@@ -7,6 +7,7 @@ import { PROVIDERS, SEGMENTS } from "@/lib/integrations/registry";
 import { getAllConnections, getSecret } from "@/lib/integrations/connections";
 import { dropboxAuthorizeUrl, dropboxConfigured } from "@/lib/integrations/dropbox";
 import { googleAuthorizeUrl, googleConfigured, gmailSendHealth } from "@/lib/integrations/google";
+import { slackBotScopes } from "@/lib/integrations/slack";
 import { webhookErrorCount, webhookHealthByProvider } from "@/lib/webhookRetry";
 import { SyncHealth, type CronJobHealth } from "@/components/connections/SyncHealth";
 import { prisma } from "@/lib/prisma";
@@ -132,6 +133,7 @@ export default async function ConnectionsPage({
     unsignedAccepted,
     openphoneWebhookSecret,
     aryeoWebhookSecret,
+    slackScopes,
   ] = await Promise.all([
     webhookErrorCount(),
     webhookHealthByProvider().catch(() => []),
@@ -155,6 +157,19 @@ export default async function ConnectionsPage({
     // hiccup can't 500 the page — and it lands on "unsigned", the loud side.
     getSecret("openphone_webhook").catch(() => null),
     getSecret("aryeo_webhook").catch(() => null),
+    // The Slack bot token's REAL scopes (Sep 15), read off auth.test — so the
+    // pending re-install click knows what to tick: People's "Find on Slack"
+    // needs users:read + users:read.email, which today's install lacks.
+    // Capped like the Gmail probe; null = unknown, the card omits the line.
+    byProvider.get("slack")?.status === "CONNECTED"
+      ? (() => {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          return Promise.race([
+            slackBotScopes().catch(() => null),
+            new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 4000); }),
+          ]).finally(() => clearTimeout(timer)); // no stray 4s timer once Slack has answered
+        })()
+      : Promise.resolve(null),
   ]);
 
   // Per-receiver webhook security. A receiver is "signed" once a secret exists
@@ -349,6 +364,7 @@ export default async function ConnectionsPage({
                         provider.id === "gmail" && googleConfigured() ? googleAuthorizeUrl() : undefined
                       }
                       gmailSendHealth={provider.id === "gmail" ? gmailSend : undefined}
+                      slackScopes={provider.id === "slack" ? slackScopes : undefined}
                       // Only the two providers that POST into this app have a
                       // receiver to secure; every other card omits the chip.
                       webhookSecurity={

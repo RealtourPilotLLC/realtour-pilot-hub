@@ -49,21 +49,27 @@ function refresh(projectId: string) {
 // no signed-in NON-owner is ever aliased to "owner": that key is an identity
 // in the thread-reply notifier (it suppresses Jordan's ping and can self-ping
 // the addressee), so an unresolvable user gets a neutral key instead.
-async function sessionAuthor(): Promise<{ authorKey: string; authorName: string | null }> {
+// authorTmId is the writer's OWN roster row (reviewer, Sep 15) — the
+// self-tag rule compares it exactly, so a second owner login tagging
+// "@Jordan" reaches Jordan; only the sessionless dev fallback leaves it
+// undefined and lets the "owner" key stand in for his row.
+async function sessionAuthor(): Promise<{ authorKey: string; authorTmId?: string | null; authorName: string | null }> {
   const u = await getCurrentUser().catch(() => null);
   if (!u) return { authorKey: "owner", authorName: "Jordan" };
   const name = u.name ?? u.email;
-  if (u.role === "OWNER") return { authorKey: "owner", authorName: name };
-  if (u.teamMemberId) return { authorKey: `tm:${u.teamMemberId}`, authorName: name };
-  if (u.editorKey) return { authorKey: `editor:${u.editorKey}`, authorName: name };
+  const { authorTeamMemberId } = await import("@/lib/mentions");
+  const authorTmId = await authorTeamMemberId(u);
+  if (u.role === "OWNER") return { authorKey: "owner", authorTmId, authorName: name };
+  if (u.teamMemberId) return { authorKey: `tm:${u.teamMemberId}`, authorTmId, authorName: name };
+  if (u.editorKey) return { authorKey: `editor:${u.editorKey}`, authorTmId, authorName: name };
   if (u.role === "PHOTOGRAPHER") {
     try {
       const { photographerMemberId } = await import("@/lib/shoot");
       const mid = await photographerMemberId(u);
-      if (mid) return { authorKey: `tm:${mid}`, authorName: name };
+      if (mid) return { authorKey: `tm:${mid}`, authorTmId: authorTmId ?? mid, authorName: name };
     } catch { /* fall through to the neutral key */ }
   }
-  return { authorKey: `user:${u.id}`, authorName: name };
+  return { authorKey: `user:${u.id}`, authorTmId, authorName: name };
 }
 
 // Whose capture feedback a PHOTOGRAPHER-lane note is: the project's assigned
@@ -144,7 +150,7 @@ export async function addMediaNote(input: {
 
   // PHOTOGRAPHER lane: pin the feedback to whoever shot it (scopes their view).
   const photographerId = input.lane === "PHOTOGRAPHER" ? await projectPhotographerId(input.projectId) : null;
-  const { authorKey, authorName } = await sessionAuthor();
+  const { authorKey, authorTmId, authorName } = await sessionAuthor();
 
   const note = await prisma.mediaNote.create({
     data: {
@@ -165,7 +171,7 @@ export async function addMediaNote(input: {
     },
   });
   const { notifyMentions } = await import("@/lib/mentions");
-  await notifyMentions({ text: body, projectId: input.projectId, authorKey, authorName, context: "a review note", noteId: note.id });
+  await notifyMentions({ text: body, projectId: input.projectId, authorKey, authorTmId, authorName, context: "a review note", noteId: note.id });
   refresh(input.projectId);
   return { ok: true, id: note.id };
 }
@@ -191,7 +197,7 @@ export async function replyMediaNote(noteId: string, body: string): Promise<{ ok
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
-  const { authorKey, authorName } = await sessionAuthor();
+  const { authorKey, authorTmId, authorName } = await sessionAuthor();
 
   const reply = await prisma.mediaNote.create({
     data: {
@@ -217,6 +223,7 @@ export async function replyMediaNote(noteId: string, body: string): Promise<{ ok
     text,
     projectId: root.projectId,
     authorKey,
+    authorTmId,
     authorName,
     context: "a note comment",
     noteId: root.id,

@@ -21,6 +21,16 @@ export function stripInvisible(s: string): string {
   return s.replace(/[​-‍⁠﻿­]/g, "");
 }
 
+/**
+ * Slack mrkdwn escape for text WE compose into a DM: Slack reads a bare "<"
+ * as link/mention markup and "&" as an entity start, so a client's "<3" or
+ * "photos & video" quoted into a mention DM would otherwise arrive mangled
+ * (Sep 15). Only these three; everything else Slack shows as typed.
+ */
+export function escapeSlack(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 /** One-call cleanup for inbound message text. */
 export function cleanText(s: string): string {
   return stripInvisible(decodeEntities(s)).replace(/\r/g, "").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
