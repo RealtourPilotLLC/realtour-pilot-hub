@@ -13,6 +13,9 @@ export function aryeoListingUrl(listingId: string): string {
   return `${BASE}/listings/${listingId}/edit`;
 }
 
+// Orders take the same /edit tail: the bare /admin/orders/<id> does not open
+// for Kyle, /admin/orders/<id>/edit does (Jordan, Sep 15 — "if he adds /edit
+// at the end of the URL it works"). Listings already carried it since Sep 1.
 export function aryeoOrderUrl(orderId: string): string {
-  return `${BASE}/orders/${orderId}`;
+  return `${BASE}/orders/${orderId}/edit`;
 }
