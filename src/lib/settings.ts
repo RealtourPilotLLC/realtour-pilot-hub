@@ -524,7 +524,17 @@ export type TopazSettings = {
   audioCodec: string;
   audioTransfer: string;
   container: string;
-  /** Topaz's output `dynamicCompressionLevel`. "Low" keeps the most detail. */
+  /** H264 · H265 · AV1 · VP9 · ProRes. See DEFAULT_TOPAZ for why this is H264
+   *  and must stay H264 unless somebody has checked the whole chain. */
+  videoEncoder: string;
+  /** Profile for the chosen encoder — "High" for H264. */
+  videoProfile: string;
+  /** Constant bitrate, e.g. "12m". Topaz treats this as MUTUALLY EXCLUSIVE with
+   *  dynamicCompressionLevel, so setting this switches the other off. Empty
+   *  string = let dynamicCompressionLevel decide (not recommended: see below). */
+  videoBitrate: string;
+  /** Topaz's automatic quality picker: Low · Mid · High. Only consulted when
+   *  videoBitrate is empty. */
   dynamicCompressionLevel: string;
 
   // ---- SPEND GUARDS (every one enforced server-side, in topazJobs.ts) -----
@@ -656,6 +666,23 @@ export const DEFAULT_TOPAZ: TopazSettings = {
   audioCodec: "aac",
   audioTransfer: "Copy",
   container: "mp4",
+  // H264/High, EXPLICITLY. Measured on the first real render (Sep 16): with no
+  // encoder named, Topaz returned VP9 — which their own table says is only ever
+  // wrapped in mp4, and VP9-in-mp4 is exactly the file Aryeo and Zillow
+  // Showcase are most likely to refuse and QuickTime cannot open at all. Their
+  // documented default is H265, which is better but still not what a listing
+  // portal or a social platform reliably accepts. H264 High is the one every
+  // one of them takes. Do not change this without checking Aryeo, Showcase and
+  // the social targets end to end.
+  videoEncoder: "H264",
+  videoProfile: "High",
+  // 12 Mbit at 1080p. The same first render came back at 1.06 Mbit — a 60 Mbit
+  // 4K master run through detail recovery and then crushed to a tenth of what
+  // 1080p delivery needs, which undoes the entire point of the pass and costs
+  // credits to do it. An explicit bitrate is the only way to be sure: Topaz's
+  // automatic picker chose that 1.06, and its scale is not documented anywhere.
+  videoBitrate: "12m",
+  // Only consulted if videoBitrate is cleared. Kept so the choice stays visible.
   dynamicCompressionLevel: "Low",
   maxCreditsPerVideo: 20, // ≈2.5 min at 1080p; a 10-minute walkthrough should be a decision, not an accident
   maxRendersPerDay: 15,
@@ -695,6 +722,14 @@ export async function topazSettings(): Promise<TopazSettings> {
     audioCodec: free(r.audioCodec, d.audioCodec),
     audioTransfer: free(r.audioTransfer, d.audioTransfer),
     container: free(r.container, d.container),
+    videoEncoder: str(r.videoEncoder, d.videoEncoder as "H264", ["AV1", "H264", "H265", "ProRes", "VP9"] as const),
+    videoProfile: free(r.videoProfile, d.videoProfile),
+    // An empty string is meaningful here (= use dynamicCompressionLevel), so it
+    // cannot go through free(), which treats empty as "fall back to default".
+    videoBitrate:
+      typeof r.videoBitrate === "string" && (r.videoBitrate === "" || /^\d{1,5}(k|m)$/i.test(r.videoBitrate.trim()))
+        ? r.videoBitrate.trim()
+        : d.videoBitrate,
     dynamicCompressionLevel: free(r.dynamicCompressionLevel, d.dynamicCompressionLevel),
     maxCreditsPerVideo: num(r.maxCreditsPerVideo, d.maxCreditsPerVideo, 1, 400),
     maxRendersPerDay: int(r.maxRendersPerDay, d.maxRendersPerDay, 0, 200),

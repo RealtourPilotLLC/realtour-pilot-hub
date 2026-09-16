@@ -192,7 +192,14 @@ export type TopazOutput = {
   audioCodec: string;
   audioTransfer: string;
   frameRate: number;
-  dynamicCompressionLevel: string;
+  /** AV1 · H264 · H265 · ProRes · VP9. Topaz documents H265 as the default and
+   *  returned VP9 when we named none, so this is always sent explicitly. */
+  videoEncoder?: string;
+  videoProfile?: string;
+  /** Constant bitrate ("12m"). MUTUALLY EXCLUSIVE with
+   *  dynamicCompressionLevel — sending both is a 400 INVALID_INPUT. */
+  videoBitrate?: string;
+  dynamicCompressionLevel?: string;
   container: string;
 };
 

@@ -6,6 +6,13 @@ import { getConnection, getSecret } from "@/lib/integrations/connections";
 // already in this route's startup graph for constantTimeEqual, so deferring the
 // rest would only disguise where the arming decision comes from.
 import { constantTimeEqual, readArmState, noteRefusalWhileArmed, noteVerifiedDelivery, TOKEN_HEADERS } from "@/lib/webhookArming";
+// Also static, and for the same reason: lib/aryeoDelivery's own imports are
+// prisma and integrations/aryeo, both already in this route's startup graph
+// above, so it costs nothing to load here — and the list of activity names it
+// owns has to live in ONE place or the receiver and the handler will drift
+// apart. Everything heavy it needs (the status engine, the task reconciler,
+// the Topaz jobs) it imports dynamically inside itself.
+import { isAryeoDeliveryActivity, handleAryeoActivity } from "@/lib/aryeoDelivery";
 import {
   syncAryeoOrders, syncAryeoAppointments, syncAryeoSocialPlans, syncAryeoCustomers,
   upsertAryeoCustomerClient, orderIdForListing, type AryeoCustomer,
@@ -442,6 +449,42 @@ async function handleAryeoCustomer(payload: Record<string, unknown>) {
 export async function processAryeoEvent(eventType: string, payload: Record<string, unknown>) {
   const name = eventType.toUpperCase();
   const { object, id } = classifyAryeoPayload(payload);
+
+  // THE NAMED DELIVERY ACTIVITIES, FIRST (Sep 16 2026).
+  //
+  // Kyle uploads and delivers by hand in Aryeo's web UI — there is no API that
+  // can do it, and there never will be — but Aryeo tells us the instant he
+  // does, through the ACTIVITY envelope: LISTING_DELIVERED,
+  // LISTING_CONTENT_DOWNLOADED, MEDIA_REQUEST_DELIVERED. Nothing in the hub
+  // acted on any of them until now; a delivery only reached us when the hourly
+  // status sweep next happened to read that listing.
+  //
+  // This block sits ABOVE the resource-routed branches deliberately: every one
+  // of these names also starts with "LISTING"/"MEDIA", so the generic branch
+  // below would swallow them and do only half the job (a restatus, but no
+  // closing of Kyle's upload card and no timeline line). lib/aryeoDelivery
+  // confirms the fact against Aryeo's own API before writing anything, claims
+  // the activity so a 10-second retry cannot run it twice, and falls through to
+  // nothing at all if the event is not really ours. See that file for the
+  // forgery and idempotency reasoning — it is the whole point of it.
+  //
+  // `handled` is about the NAME, not about whether anything moved: one of these
+  // three events is this hub's business whatever the body turns out to contain,
+  // so it never falls through to the branches below. That is deliberate. The
+  // one thing falling through would add is the generic LISTING branch's
+  // unbounded syncAryeoOrders() sweep for a listing nothing is linked to, which
+  // is exactly the lever an unauthenticated post must not have — and the
+  // handler already does the useful half itself (it re-checks any job that IS
+  // linked, even when Aryeo will not confirm the event). It reads listing ids
+  // out of the same three places classifyAryeoPayload does, so there is no
+  // shape that reaches here with an id and leaves without one being tried.
+  if (isAryeoDeliveryActivity(name)) {
+    const r = await handleAryeoActivity(name, payload);
+    if (r.handled) {
+      console.info(`[webhook] aryeo ${name}: ${r.note}`);
+      return;
+    }
+  }
 
   // ORDER — created, fulfilled (delivery), paid, or unknown-verb flat change.
   // Refresh the order table, then re-run the smart status engine + task

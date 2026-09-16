@@ -464,6 +464,22 @@ model Project {
   deliveryDue DateTime?
   deliveredAt DateTime?
 
+  // ---- THE CLIENT ACTUALLY TOOK THE FILES (Sep 16 2026) --------------------
+  // deliveredAt means "we sent it". These two mean "they picked it up", which
+  // is a different and much better-evidenced fact: Aryeo fires a
+  // LISTING_CONTENT_DOWNLOADED activity when an agent downloads content off a
+  // delivered listing, and lib/aryeoDelivery records it here. Nothing sends or
+  // decides anything on them yet — read the FEEDBACK ASK handover in that file
+  // before wiring them to the client-text sweep.
+  // NOT in statusEvidence: the status engine rewrites that blob whole on every
+  // hourly pass, so a fact we are told once and can never re-derive would be
+  // erased within the hour.
+  //   contentDownloadedAt     — the FIRST download Aryeo has told us about
+  //   contentDownloadedLastAt — the most recent one (an agent coming back for
+  //                             the reel a week later is worth seeing)
+  contentDownloadedAt     DateTime?
+  contentDownloadedLastAt DateTime?
+
   // Billing (from Aryeo order)
   paymentStatus String? // PAID | UNPAID | PARTIALLY_PAID | ...
   balanceAmount Int? // cents still owed

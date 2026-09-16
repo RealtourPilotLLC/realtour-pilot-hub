@@ -917,7 +917,21 @@ function wholeJobOutstanding(
  *  closeStaleDeliveryTexts). Be clear about what that means: a task that AGED
  *  in the queue (held for a cut, or for a client's open question) can still
  *  send on day six — the mint-time DELIVERED_LONG_AGO guard only stops rows
- *  from being created for old jobs, it does not bound one already minted. */
+ *  from being created for old jobs, it does not bound one already minted.
+ *
+ *  A BETTER MOMENT EXISTS, AND IS NOT WIRED IN YET (Sep 16 2026). Aryeo fires
+ *  LISTING_CONTENT_DOWNLOADED when the agent actually downloads the files, and
+ *  lib/aryeoDelivery now records it on Project.contentDownloadedAt — the first
+ *  hard evidence the hub has ever had that a client PICKED THE WORK UP, rather
+ *  than that we sent it. Asking "how did we do?" after that is plainly better
+ *  than asking before it. It is deliberately not wired into this sweep: Aryeo
+ *  publishes no read that can confirm a download, the receiver is accepting
+ *  unsigned posts while the lane is in WATCHING mode, and an unconfirmable body
+ *  must not get to decide when a real client gets a real text. The staged plan
+ *  (hold for N hours OR the download, whichever comes first — so a job that
+ *  never fires the event keeps exactly today's timing) is written out in full
+ *  in lib/aryeoDelivery, above onContentDownloaded. Do it only once that lane
+ *  is signed and armed. */
 export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promise<{ sent: number; skipped: number; notes: string[] }> {
   const notes: string[] = [];
   const { autoTextRules } = await import("@/lib/settings");

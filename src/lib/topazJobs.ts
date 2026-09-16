@@ -611,7 +611,19 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
       // Frame interpolation is OFF in Jordan's preset ("30 FPS original, no
       // slow motion"), so the output frame rate is simply the source's.
       frameRate: meta.frameRate,
-      dynamicCompressionLevel: s.dynamicCompressionLevel,
+      // NAME THE ENCODER. Left unnamed on the first real render, Topaz returned
+      // VP9 at 1.06 Mbit — a file Aryeo and Zillow Showcase are likely to
+      // refuse, QuickTime cannot open, and which threw away the detail the pass
+      // had just paid to recover. H264/High is what every downstream target
+      // takes; see DEFAULT_TOPAZ.
+      videoEncoder: s.videoEncoder,
+      videoProfile: s.videoProfile,
+      // videoBitrate and dynamicCompressionLevel are MUTUALLY EXCLUSIVE in
+      // Topaz's schema — sending both is a 400. An explicit bitrate wins when
+      // there is one, because their automatic picker is what chose 1.06 Mbit.
+      ...(s.videoBitrate
+        ? { videoBitrate: s.videoBitrate }
+        : { dynamicCompressionLevel: s.dynamicCompressionLevel }),
       container: s.container,
     },
     filters,
