@@ -359,7 +359,14 @@ export type TopazStatus = {
 export async function videoStatus(requestId: string): Promise<TopazStatus> {
   const raw = await topazFetch<unknown>(`/video/${encodeURIComponent(requestId)}/status`, { timeoutMs: 30_000 });
   const status = String(pick(raw, "status", "state", "requestStatus") ?? "unknown").toLowerCase();
-  const dl = pick(raw, "downloadUrl", "download_url", "url", "downloadLink", "output");
+  // "download" FIRST — it is the key Topaz actually sends, measured on a real
+  // finished render (Sep 16): {"status":"complete","progress":100,
+  // "download":{"url":"https://…/enhanced.mp4?X-Amz-…","expiresAt":…}}.
+  // It was missing from this list, so a render that had genuinely finished and
+  // been PAID FOR looked unfinished for ever: the job sat in `processing` until
+  // the four-hour stall check failed it, and the file would have been left on
+  // Topaz's servers to expire. The nested read below is what recovers the URL.
+  const dl = pick(raw, "download", "downloadUrl", "download_url", "url", "downloadLink", "output");
   let downloadUrl: string | null = typeof dl === "string" && dl.startsWith("http") ? dl : null;
   if (!downloadUrl && dl && typeof dl === "object") {
     const nested = pick(dl, "url", "downloadUrl", "download_url", "link");
@@ -368,7 +375,14 @@ export async function videoStatus(requestId: string): Promise<TopazStatus> {
   return {
     status,
     downloadUrl,
-    credits: asNum(pick(raw, "credits", "creditsUsed", "creditsCharged", "cost")),
+    // Topaz does not report what it finally charged: a finished render still
+    // answers with the same estimate RANGE it opened with ("estimates":
+    // {"cost":[24,27]}). Read the range's low end — on the real render measured
+    // Sep 16 the balance moved by exactly that (569 → 545 on a [24,27] quote) —
+    // and let the caller prefer its own balance-delta when it has one.
+    credits:
+      fromRange(pick(raw, "credits", "creditsUsed", "creditsCharged"), "max") ??
+      fromRange(pick(pick(raw, "estimates", "estimate") ?? {}, "cost"), "min"),
     progress: asNum(pick(raw, "progress", "percent", "percentComplete")),
     message: typeof pick(raw, "message", "error", "detail") === "string" ? (pick(raw, "message", "error", "detail") as string) : null,
     raw,

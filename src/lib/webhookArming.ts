@@ -626,6 +626,16 @@ export const ARYEO_EVENTS = [
   "ORDER_FULFILLED",
   "ORDER_PAID",
   "LISTING_UPDATED",
+  // Sep 16: asked for because Aryeo gives us no way to CAUSE a delivery — there
+  // is no upload endpoint and no deliver endpoint in their whole API — but they
+  // do tell us when one HAPPENS. LISTING_DELIVERED is what lets Kyle's
+  // "upload the 1080p file to Aryeo" card close itself instead of waiting to be
+  // ticked, and LISTING_CONTENT_DOWNLOADED is the first moment we know the
+  // agent actually took the files, which is a truer trigger for the feedback
+  // ask than a guessed delay after delivery. Requested in the same breath as
+  // the rest: a second email to enable one event is a second wait.
+  "LISTING_DELIVERED",
+  "LISTING_CONTENT_DOWNLOADED",
   "APPOINTMENT_SCHEDULED",
   "APPOINTMENT_ASSIGNED",
   "APPOINTMENT_RESCHEDULED",
