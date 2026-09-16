@@ -179,7 +179,22 @@ export async function armAryeoChecking(): Promise<ActionResult> {
         "There is no secret saved that the hub can read, so there is nothing to check posts against. Generate one first.",
     };
   }
-  const { armNow } = await import("@/lib/webhookArming");
+  // NOTHING VERIFIED YET = NOTHING TO ARM AGAINST (Sep 16). This button was
+  // pressed by hand at 20:07 on the day it shipped, on a lane where no post had
+  // ever verified, which put the hub straight back into the state that took
+  // Aryeo off the air on 8 September: demanding a signature the other side does
+  // not have. The hub arms ITSELF the moment a post verifies — that is the
+  // whole design — so a manual arm before any proof exists is never the right
+  // move, only a faster way to break the feed. Refuse it and say why.
+  const { armNow, peekArmState } = await import("@/lib/webhookArming");
+  const state = await peekArmState("aryeo");
+  if (!state?.proof) {
+    return {
+      ok: false,
+      message:
+        "Not yet — no Aryeo post has ever been signed with this secret, so switching checking on now would refuse everything Aryeo sends, which is exactly what took the feed down on 8 September. Get the secret to Aryeo first (the message for their support is on this card). The hub turns checking on by itself the moment a post arrives correctly signed, and tells you when it does.",
+    };
+  }
   const who = await getCurrentUser().catch(() => null);
   await armNow("aryeo", secret, who?.email ?? null);
   revalidatePath("/connections");

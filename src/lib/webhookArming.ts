@@ -655,6 +655,15 @@ export function aryeoSupportMessage(opts: { url: string; silentSince: Date | nul
     "",
     "I'd like to set up (or re-enable) the webhook endpoint for our account.",
     "",
+    // Aryeo's own setup page invites this: "Reach out to our team with your use
+    // case to help us craft our upcoming feature roadmap." Answering the
+    // question they actually asked costs two lines and is the difference
+    // between a ticket and a conversation.
+    "Our use case: we run an in-house operations platform that mirrors every",
+    "Aryeo order, appointment and customer so our team schedules, edits and",
+    "delivers from one place. Today we poll hourly to stay in step; webhooks",
+    "would let the board move the moment something changes in Aryeo.",
+    "",
     "Endpoint URL:",
     opts.url,
     "",
@@ -666,9 +675,18 @@ export function aryeoSupportMessage(opts: { url: string; silentSince: Date | nul
     "1) Please make sure this endpoint is signed. Your documentation says any",
     "   arbitrary string can be used as the signing secret, and that the",
     "   signature arrives in the Signature header as an HMAC SHA-256 of the",
-    "   request body. I already have a secret generated at my end. If I can",
-    "   enter it myself in the dashboard, please point me to where. If you need",
-    "   it from me, tell me the best way to send it to you.",
+    "   request body. I already have a secret generated at my end.",
+    "",
+    // Jordan, Sep 16: "on aryeo I dont have group settings, developers, or
+    // webhooks. I just have API keys." So there is no self-serve path at all,
+    // and the old wording ("if I can enter it myself, point me to where")
+    // invited a reply telling him to do the thing he cannot do. Say it plainly
+    // and ask for the one decision only they can make.
+    "   Our account only shows API Keys — there's no webhooks or developer",
+    "   section visible to us — so I can't enter any of this myself. Could you",
+    "   either enable those settings on our account, or set the endpoint and",
+    "   secret up on your side? If you need the secret from me, just tell me",
+    "   the best way to get it to you securely.",
     "",
     // The one round trip this message exists to prevent. Aryeo's docs offer
     // custom headers as well as signing, and their support may only be able to
