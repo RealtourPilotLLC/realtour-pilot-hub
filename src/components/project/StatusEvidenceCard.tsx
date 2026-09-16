@@ -1,5 +1,6 @@
-import { ShieldCheck, CircleAlert, CheckCircle2, Camera, Video, Ruler, Box, RefreshCcw, FolderOpen, ExternalLink } from "lucide-react";
-import { parseEvidence } from "@/lib/statusEvidence";
+import { ShieldCheck, CircleAlert, CheckCircle2, Camera, Video, Ruler, Box, RefreshCcw, FolderOpen, ExternalLink, Clock, HelpCircle } from "lucide-react";
+import { parseEvidence, evidenceTone, etStamp, type EvidenceToneKind } from "@/lib/statusEvidence";
+import type { BoardPromise } from "@/lib/deliveryBoard";
 import { stageMeta } from "@/lib/pipeline";
 import { RevisionResolveButton } from "@/components/project/RevisionResolveButton";
 import { RecheckStatusButton } from "@/components/project/RecheckStatusButton";
@@ -9,15 +10,218 @@ import type { ProjectStatus } from "@prisma/client";
 
 export type DropboxLink = { label: string; url: string };
 
+// ---------------------------------------------------------------------------
+// TONE, NOT ALARM (RTP-16, Sep 16 audit).
+//
+// This card used to paint ANY missing output red and tell the reader to upload
+// the rest. 35 jobs rendered that alarm and 27 of them had not been shot yet:
+// 2549 Crestline Dr [SCHEDULED] showed a red-bordered card whose red sentence
+// was "No shoot scheduled yet." Nothing was wrong; nothing was late.
+//
+// The colour now follows the PROMISE, and the rule lives in ONE place
+// (statusEvidence.evidenceTone) so this card, the chips and the queue can
+// never disagree about what is late:
+//   neutral  awaiting production — owed, not yet due
+//   amber    at risk             — due inside a day, or fulfilled-but-unseen
+//   red      overdue             — past the promise
+//   grey     unknown             — the read failed or is stale; a stale zero
+//                                  is never "nothing delivered", and a stale
+//                                  count is never a new delivery
+// ---------------------------------------------------------------------------
+const TONE: Record<EvidenceToneKind, { border: string; icon: typeof ShieldCheck; iconCls: string; text: string; chip: string }> = {
+  clear:       { border: "border-border",        icon: ShieldCheck, iconCls: "text-success",  text: "text-foreground/85",           chip: "bg-surface-2 text-muted" },
+  awaiting:    { border: "border-border",        icon: Clock,       iconCls: "text-muted-2",  text: "text-foreground/85",           chip: "bg-surface-2 text-muted" },
+  at_risk:     { border: "border-warning/40",    icon: CircleAlert, iconCls: "text-warning",  text: "font-medium text-warning",     chip: "bg-warning/10 text-warning" },
+  overdue:     { border: "border-danger/40",     icon: CircleAlert, iconCls: "text-danger",   text: "font-medium text-danger",      chip: "bg-danger/10 text-danger" },
+  unknown:     { border: "border-border",        icon: HelpCircle,  iconCls: "text-muted-2",  text: "text-muted",                   chip: "bg-surface-2 text-muted-2" },
+  unconfirmed: { border: "border-border",        icon: ShieldCheck, iconCls: "text-muted-2",  text: "text-foreground/85",           chip: "bg-surface-2 text-muted" },
+};
+
+const CHIP_SUFFIX: Record<EvidenceToneKind, string> = {
+  clear: "",
+  awaiting: " — still to come",
+  at_risk: " — still to come",
+  overdue: " — overdue",
+  unknown: " — not checked",
+  unconfirmed: " — not confirmed by the hub",
+};
+
+// The engine's own sentence still carries an instruction this card must not
+// give on a job nobody has proved is late ("Video overdue — was due Sep 14.
+// Confirm it was delivered to the client, or upload it."). The two strings are
+// fixed and live in projectStatus.ts; drop the imperative and keep the facts.
+// HANDOVER (audit): the source strings should lose it too.
+const IMPERATIVES = [
+  " Confirm it was delivered to the client, or upload it.",
+  "Confirm it was delivered to the client, or upload it.",
+];
+const justTheFacts = (reason: string) =>
+  IMPERATIVES.reduce((acc, s) => acc.split(s).join("").trim(), reason).replace(/\s{2,}/g, " ");
+
+// Older stored sentences open by naming the client ("Client requested changes
+// after delivery: …" — 56 Hillview's blob still does). On a job where the hub
+// does NOT know who raised the ask, that prefix flatly contradicts the line
+// three rows above it, which says we have no record (review, Sep 16). Keep the
+// words that were said; drop the claim about whose they were.
+const ATTRIBUTED = /^\s*(?:the\s+)?client requested changes(?:\s+after delivery)?(?:\s+via\s+[^:]*?)?\s*(?::\s*)?/i;
+const unattributed = (reason: string) => {
+  const m = reason.match(ATTRIBUTED);
+  if (!m || !m[0].trim()) return reason;
+  const rest = reason.slice(m[0].length).trim();
+  return rest ? `Changes requested: ${rest}` : "Changes requested.";
+};
+
+// WHO ASKED (RTP-16). The card called every revision "Client requested changes
+// after delivery" — on 893 S Matlack, a job that was never delivered and whose
+// revision came from the owner's own Review Room bounce. The requester is on
+// the record in two places (ReviewSubmission.decidedBy for a bounce,
+// RevisionBrief.source for a comms ask); this reads both and says "unknown"
+// when neither matches, rather than blaming the client by default.
+type RevisionWho = {
+  label: string;
+  /** false when the hub genuinely has no record of who raised it */
+  known: boolean;
+  /** …and false again when the lookup itself failed, which is a different
+   *  thing to say (review, Sep 16): "we have no record" vs "we couldn't look". */
+  lookupFailed: boolean;
+  afterDelivery: boolean;
+};
+
+type StatusContext = {
+  shootDate: Date | null;
+  /** RTP-06's freshness split, read straight off the project. Null on every
+   *  row until the status engine writes it — that means "no failure
+   *  recorded", never "the read failed". */
+  attemptedAt: Date | null;
+  succeededAt: Date | null;
+  error: string | null;
+  /** The promise, from deliveryBoard's engine — the SAME function Kyle's board
+   *  reads, so the two screens turn red on the same minute (review, Sep 16). */
+  promise: BoardPromise | null;
+  who: RevisionWho | null;
+};
+
+/** One lookup for the three things this card cannot get from its props: how
+ *  fresh the evidence read is, when the job is actually promised, and who
+ *  raised the outstanding revision. Everything here is optional — a failure
+ *  leaves the card rendering as it would have without it, and SAYS so rather
+ *  than quietly reverting to the anonymous "Changes requested".
+ *
+ *  HANDOVER (review, Sep 16): src/app/projects/[id]/page.tsx already loads the
+ *  project; passing shootDate / evidenceAttemptedAt / evidenceSucceededAt /
+ *  evidenceError (and, once it loads them, deliverables + orderItems +
+ *  appointments) as props would let this whole query go. The props exist. */
+async function statusContext(
+  projectId: string,
+  isRevision: boolean,
+  askedAt: Date | null,
+): Promise<StatusContext | null> {
+  try {
+    const { prisma } = await import("@/lib/prisma");
+    const { outstandingPromise } = await import("@/lib/deliveryBoard");
+    const { turnaroundRules } = await import("@/lib/settings");
+    const { OWED_DELIVERABLE_WHERE } = await import("@/lib/tasks");
+    const [project, bounce, brief, turnarounds] = await Promise.all([
+      prisma.project.findUnique({
+        where: { id: projectId },
+        select: {
+          status: true,
+          deliveredAt: true,
+          shootDate: true,
+          revisionRequestedAt: true,
+          dueOverrideAt: true,
+          tierOverride: true,
+          packageName: true,
+          statusEvidence: true,
+          evidenceAttemptedAt: true,
+          evidenceSucceededAt: true,
+          evidenceError: true,
+          client: { select: { name: true } },
+          orderItems: { where: { isCanceled: false }, select: { title: true, quantity: true } },
+          deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, status: true, uploadedAt: true, label: true } },
+          appointments: { select: { startAt: true, status: true }, orderBy: { startAt: "asc" } },
+        },
+      }),
+      isRevision
+        ? prisma.reviewSubmission.findFirst({
+            // A WITHDRAWN bounce is a round somebody took back — it must never
+            // put a name on a live ask (review, Sep 16).
+            where: { projectId, status: "CHANGES_REQUESTED", withdrawnAt: null },
+            orderBy: { decidedAt: "desc" },
+            select: { decidedAt: true, decidedBy: true },
+          })
+        : null,
+      isRevision
+        ? prisma.revisionBrief.findFirst({
+            where: { projectId },
+            orderBy: { createdAt: "desc" },
+            select: { source: true, createdAt: true },
+          })
+        : null,
+      turnaroundRules().catch(() => undefined),
+    ]);
+    const base = {
+      shootDate: project?.shootDate ?? null,
+      attemptedAt: project?.evidenceAttemptedAt ?? null,
+      succeededAt: project?.evidenceSucceededAt ?? null,
+      error: project?.evidenceError ?? null,
+      promise: project ? outstandingPromise(project, { turnarounds }) : null,
+    };
+    if (!isRevision) return { ...base, who: null };
+
+    const deliveredAt = project?.deliveredAt ?? null;
+    const afterDelivery = !!deliveredAt && (!askedAt || askedAt > deliveredAt);
+    // Match the witness to THIS ask: a two-hour window either side of the
+    // stamp, newest first. An older bounce on a job whose current revision came
+    // from the client must not put the reviewer's name on the client's words.
+    // With NO stamp there is nothing to match against, so nothing matches — an
+    // ancient Review Room bounce on a status-only REVISION used to be printed
+    // as today's requester (review, Sep 16).
+    const near = (at: Date | null | undefined) =>
+      !!at && !!askedAt && Math.abs(at.getTime() - askedAt.getTime()) < 2 * 3_600_000;
+    const hit = [
+      bounce?.decidedAt && near(bounce.decidedAt)
+        ? { at: bounce.decidedAt, source: "review_room", by: bounce.decidedBy }
+        : null,
+      brief?.createdAt && near(brief.createdAt)
+        ? { at: brief.createdAt, source: brief.source, by: null as string | null }
+        : null,
+    ]
+      .filter((c): c is { at: Date; source: string; by: string | null } => c !== null)
+      .sort((a, b) => b.at.getTime() - a.at.getTime())[0];
+
+    const client = project?.client?.name?.trim() || null;
+    if (!hit) return { ...base, who: { label: "Changes requested", known: false, lookupFailed: false, afterDelivery } };
+    if (hit.source === "review_room") {
+      return { ...base, who: { label: `${hit.by?.trim() || "The office"} asked for changes in the Review Room`, known: true, lookupFailed: false, afterDelivery } };
+    }
+    if (hit.source === "openphone" || hit.source === "gmail") {
+      return { ...base, who: { label: `${client || "The client"} asked for changes`, known: true, lookupFailed: false, afterDelivery } };
+    }
+    return { ...base, who: { label: "Changes requested in the hub", known: true, lookupFailed: false, afterDelivery } };
+  } catch {
+    // The card still renders — but a lost name is said out loud rather than
+    // silently becoming the anonymous "Changes requested" (review, Sep 16).
+    return {
+      shootDate: null, attemptedAt: null, succeededAt: null, error: null, promise: null,
+      who: isRevision ? { label: "Changes requested", known: false, lookupFailed: true, afterDelivery: false } : null,
+    };
+  }
+}
+
 // Renders the smart-status engine's reasoning: what was ordered, what's
 // confirmed live on Aryeo / sitting in Dropbox, and what's still missing.
-export function StatusEvidenceCard({
+export async function StatusEvidenceCard({
   status,
   evidence,
   checkedAt,
   projectId,
   revisionNote,
   revisionRequestedAt,
+  shootDate,
+  evidenceAttemptedAt,
+  evidenceSucceededAt,
+  evidenceError,
   dropboxLinks,
   dropboxRootUrl,
 }: {
@@ -27,42 +231,56 @@ export function StatusEvidenceCard({
   projectId: string;
   revisionNote?: string | null;
   revisionRequestedAt?: Date | null;
+  shootDate?: Date | null;
+  /** RTP-06's freshness split. Null on every row until the engine writes it —
+   *  read as "no failure recorded", never as "the read failed". */
+  evidenceAttemptedAt?: Date | null;
+  evidenceSucceededAt?: Date | null;
+  evidenceError?: string | null;
   dropboxLinks?: DropboxLink[];
   dropboxRootUrl?: string;
 }) {
-  const isRevision = status === "REVISION" || !!revisionRequestedAt;
+  // A cancelled job is not in revisions, whatever stamp it still carries
+  // (265 Koser Rd rendered the revision banner twice — audit).
+  const isRevision = status !== "CANCELLED" && (status === "REVISION" || !!revisionRequestedAt);
   const e = parseEvidence(evidence);
   if (!e && !isRevision) return null;
 
   const stage = stageMeta(status);
-  // A DELIVERED job's missing list is NOT an alarm (Sep 16, Kyle call). The
-  // office has told the client the work is out; what the list says is "the
-  // hub hasn't been able to confirm this piece yet" — 39 Saratoga Ln's photos
-  // were live on Aryeo the whole time under a listing the hub had never been
-  // given. Red border, red sentence and the partial-delivery banner all read
-  // as "you delivered this too early", which is an accusation the evidence
-  // cannot support. Grey chips + the Recheck button instead.
-  const delivered = status === "DELIVERED";
+  const ctx = await statusContext(projectId, isRevision, revisionRequestedAt ?? null);
+  const tone = evidenceTone({
+    status,
+    evidence: e,
+    shootDate: shootDate ?? ctx?.shootDate ?? null,
+    // ONE promise for the whole hub. Without it this card only ever knew the
+    // VIDEO's date, so a late Photos job read "No promise has been set for it
+    // yet" while Kyle's board had it due that afternoon — and where both did
+    // have a date they disagreed by hours (review, Sep 16).
+    dueAt: ctx?.promise?.at ?? null,
+    dueFor: ctx?.promise?.label ?? null,
+    promiseResolved: !!ctx && ctx.promise !== null,
+    checkedAt,
+    attemptedAt: evidenceAttemptedAt ?? ctx?.attemptedAt,
+    succeededAt: evidenceSucceededAt ?? ctx?.succeededAt,
+    error: evidenceError ?? ctx?.error,
+  });
+  const t = TONE[tone.kind];
+  const ToneIcon = t.icon;
   const missingCount = e?.missing.length ?? 0;
-  const hasMissing = missingCount > 0;
-  const alarm = hasMissing && !delivered;
+  const who = ctx?.who ?? null;
+  const anonymous = !!who && !who.known;
+  // Strip the older "Client requested changes…" opening when we have just told
+  // the reader we don't know who asked (review, Sep 16).
+  const reason = e?.reason ? justTheFacts(anonymous ? unattributed(e.reason) : e.reason) : "";
 
   return (
-    <section
-      className={
-        "rounded-2xl border bg-surface " + (alarm ? "border-danger/40" : "border-border")
-      }
-    >
+    <section className={"rounded-2xl border bg-surface " + t.border}>
       <div className="flex items-center justify-between gap-2 border-b px-5 py-3.5">
         <h2 className="flex items-center gap-2 text-sm font-semibold">
           {isRevision ? (
             <RefreshCcw className="size-4 text-[#ea580c] light:text-[#c2410c]" />
-          ) : alarm ? (
-            <CircleAlert className="size-4 text-danger" />
-          ) : hasMissing ? (
-            <ShieldCheck className="size-4 text-muted-2" />
           ) : (
-            <ShieldCheck className="size-4 text-success" />
+            <ToneIcon className={"size-4 " + t.iconCls} />
           )}
           Status check
         </h2>
@@ -75,14 +293,23 @@ export function StatusEvidenceCard({
       </div>
 
       <div className="space-y-3 px-5 py-4">
-        {/* Revision banner — client asked for changes after delivery */}
+        {/* Revision banner — named, and only "after delivery" when it was. */}
         {isRevision && (
           <div className="rounded-lg border border-[#ea580c]/30 bg-[#ea580c]/10 px-3 py-2.5">
             <div className="flex items-center gap-1.5 text-xs font-semibold text-[#ea580c] light:text-[#c2410c]">
-              <RefreshCcw className="size-3.5" /> Client requested changes after delivery
+              <RefreshCcw className="size-3.5" />
+              {(who?.label ?? "Changes requested") + (who?.afterDelivery ? " after delivery" : "")}
+              {revisionRequestedAt ? ` · ${etStamp(revisionRequestedAt)}` : ""}
             </div>
             {revisionNote && (
               <p className="mt-1 text-sm text-foreground/85">&ldquo;{revisionNote}&rdquo;</p>
+            )}
+            {anonymous && (
+              <p className="mt-1 text-[11px] text-muted">
+                {who!.lookupFailed
+                  ? "The hub couldn't check who raised this one just now — reload, or look at the job's notes and the Review Room, before telling the client it was theirs."
+                  : "The hub has no record of who raised this one — check the job's notes or the Review Room before telling the client it was theirs."}
+              </p>
             )}
             <div className="mt-2">
               <RevisionResolveButton projectId={projectId} />
@@ -90,19 +317,27 @@ export function StatusEvidenceCard({
           </div>
         )}
 
-        {e && (
-          <p className={"text-sm " + (alarm ? "font-medium text-danger" : "text-foreground/85")}>
-            {e.reason}
-          </p>
-        )}
+        {/* The verdict, in the tone the promise justifies. */}
+        <div>
+          <p className={"text-sm " + t.text}>{tone.headline}</p>
+          {tone.detail && <p className="mt-0.5 text-[13px] text-muted">{tone.detail}</p>}
+          {/* The engine's own sentence, kept as supporting detail — it carries
+              facts the tone line doesn't (which tier, what else is missing). */}
+          {reason && reason !== tone.headline && (
+            <p className="mt-1 text-[11px] text-muted-2">Cross-check: {reason}</p>
+          )}
+        </div>
 
-        {e?.partial && !delivered && (
-          <div className="rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger">
-            ⚠ Aryeo marked this order fulfilled, but the cross-check found missing deliverables.
-            Don&apos;t treat it as done until the rest is uploaded.
+        {/* Aryeo says fulfilled, the hub can't see it all. A discrepancy worth
+            a look — not an instruction to go and upload something (Sep 16). */}
+        {e?.partial && tone.kind !== "unconfirmed" && (
+          <div className="rounded-lg bg-warning/10 px-3 py-2 text-xs font-medium text-warning">
+            Aryeo has this order marked fulfilled, but the cross-check can&apos;t see{" "}
+            {e.missing.join(", ")}. Worth confirming where {missingCount === 1 ? "it" : "they"} went before the
+            client asks.
           </div>
         )}
-        {delivered && hasMissing && (
+        {tone.kind === "unconfirmed" && (
           <div className="rounded-lg bg-surface-2/60 px-3 py-2 text-xs text-muted">
             The office delivered this job. {missingCount === 1 ? "One item is" : `${missingCount} items are`}{" "}
             still unconfirmed by the cross-check — usually a listing the hub isn&apos;t linked to, or a vendor piece
@@ -110,7 +345,7 @@ export function StatusEvidenceCard({
           </div>
         )}
 
-        {/* Expected deliverables, color-coded by present / missing */}
+        {/* Expected deliverables, colour-coded by present / missing / tone */}
         {e && e.expected.length > 0 && (
           <div>
             <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-2">
@@ -124,16 +359,12 @@ export function StatusEvidenceCard({
                     key={cat}
                     className={
                       "inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium " +
-                      (present
-                        ? "bg-success/10 text-success"
-                        : delivered
-                        ? "bg-surface-2 text-muted"
-                        : "bg-danger/10 text-danger")
+                      (present ? "bg-success/10 text-success" : t.chip)
                     }
                   >
                     {present ? <CheckCircle2 className="size-3" /> : <CircleAlert className="size-3" />}
                     {cat}
-                    {!present && (delivered ? " — not confirmed by the hub" : " — missing")}
+                    {!present && CHIP_SUFFIX[tone.kind]}
                   </span>
                 );
               })}
@@ -145,9 +376,10 @@ export function StatusEvidenceCard({
         {e && (
         <div className="grid gap-3 sm:grid-cols-2">
           {e.aryeo && (
-            <div className="rounded-lg border bg-surface-2/50 px-3 py-2">
+            <div className={`rounded-lg border bg-surface-2/50 px-3 py-2 ${e.aryeo.stale ? "border-warning/40" : ""}`}>
               <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-2">
                 Live on Aryeo {e.aryeo.delivery ? `· ${e.aryeo.delivery.toLowerCase()}` : ""}
+                {e.aryeo.stale ? " · last known" : ""}
               </div>
               <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-foreground/80">
                 <Count icon={Camera} n={e.aryeo.photos} label="photos" />
@@ -155,6 +387,15 @@ export function StatusEvidenceCard({
                 <Count icon={Ruler} n={e.aryeo.floorPlans} label="floor plans" />
                 <Count icon={Box} n={e.aryeo.interactive} label="3D" />
               </div>
+              {/* Same rule as Dropbox below: a count we couldn't refresh is a
+                  memory, not a measurement. */}
+              {e.aryeo.stale && (
+                <p className="mt-1 text-[11px] text-warning">
+                  Aryeo couldn&apos;t be read on the latest check
+                  {e.aryeo.readError ? ` (${e.aryeo.readError})` : ""} — showing the last good read
+                  {e.aryeo.at ? ` from ${etStamp(new Date(e.aryeo.at), true)}` : ""}.
+                </p>
+              )}
             </div>
           )}
           {e.dropbox && (
@@ -173,7 +414,7 @@ export function StatusEvidenceCard({
                 <p className="mt-1 text-[11px] text-warning">
                   Dropbox couldn&apos;t be read on the latest check
                   {e.dropbox.readError ? ` (${e.dropbox.readError})` : ""} — showing the last good read
-                  {e.dropbox.at ? ` from ${new Date(e.dropbox.at).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}.
+                  {e.dropbox.at ? ` from ${etStamp(new Date(e.dropbox.at), true)}` : ""}.
                 </p>
               )}
             </div>
@@ -214,11 +455,14 @@ export function StatusEvidenceCard({
         )}
 
         {/* Last check + on-demand re-check, so a just-fixed flag clears now
-            instead of on the next hourly cron (audit crack #41). */}
+            instead of on the next hourly cron (audit crack #41). A check that
+            was ATTEMPTED and didn't finish is not freshness (RTP-06) — say
+            when the last one that worked was. */}
         <div className="flex flex-wrap items-center justify-between gap-2">
-          {checkedAt ? (
+          {tone.freshness.at || checkedAt ? (
             <div className="text-[11px] text-muted-2">
-              Cross-checked {formatDistanceToNow(checkedAt, { addSuffix: true })} · Aryeo media + Dropbox folders
+              {tone.freshness.known ? "Cross-checked" : "Last complete cross-check"}{" "}
+              {formatDistanceToNow(tone.freshness.at ?? checkedAt!, { addSuffix: true })} · Aryeo media + Dropbox folders
             </div>
           ) : (
             <span />

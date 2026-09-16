@@ -2,9 +2,16 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { logComm } from "@/lib/commLog";
-import { OpenPhoneError } from "@/lib/integrations/openphone";
 import { MONTHLY_BATCH_INCOMPLETE, DELIVERED_LONG_AGO, SEND_UNVERIFIED } from "@/lib/tasks";
 import { etAt, etDateTime } from "@/lib/datetime";
+import {
+  sendThroughOutbox,
+  confirmationKey,
+  deliveryKey,
+  welcomeKey,
+  afterHoursKey,
+  type OutboxSendResult,
+} from "@/lib/outbox";
 
 // Auto-send client texts (Jordan, Sep 1 2026): confirmation texts go out on
 // their own 2 days before the shoot, and delivery texts go out on their own
@@ -12,13 +19,24 @@ import { etAt, etDateTime } from "@/lib/datetime";
 // send-button tasks before; the tasks still exist (history + reconciler) but
 // complete themselves the moment the sweep sends.
 //
-// Safety model (review-hardened):
-// - The TASK row is claimed atomically first — the same row the manual /texts
-//   send button and the OpenPhone webhook contend on, so a human send racing
-//   the sweep can never double-text.
-// - An AppSetting marker is then CLAIMED before the send (unique create — two
-//   overlapping crons can't double-text, and a re-minted task for an
-//   already-texted project stays silent).
+// Safety model (review-hardened; re-cut Sep 16 for RTP-08):
+// - THE OUTBOX IS THE CLAIM. Every text below goes out through
+//   lib/outbox.sendThroughOutbox: one durable row per message, claimed on a
+//   unique dedupeKey, leased while it is in flight, and closed with the
+//   provider's own message id. Two overlapping crons, a human on /tasks and
+//   this sweep all race on that one key, and a process killed between the
+//   claim and the send leaves a row a person can see instead of a text that
+//   silently never happened.
+// - THE TASK IS COMPLETED AFTER THE PROVIDER ANSWERS, not before. Until Sep 16
+//   the SmartTask was flipped to COMPLETED first and rolled back in a catch
+//   block — which a kill -9 never runs. The task is still the human's ledger;
+//   it just no longer stands in for the send.
+// - THE AppSetting MARKER MOVED WITH IT. `auto-confirm-*`, `auto-delivery-*`,
+//   `auto-welcome-*` and `auto-afterhours-*` still exist, still mean "this went
+//   out (or may have)", and are still what tasks.ts reads — but they are now
+//   written AFTER acceptance rather than claimed before the send. They are read
+//   first as the settled record of an earlier send (including every send that
+//   predates the outbox); the outbox key is what two live workers contend on.
 // - A client with an OPEN question (client_reply task) is never auto-texted —
 //   the webhook would read our text as "we answered them".
 // - One auto-text per client per tick (the shared `texted` set) — a
@@ -46,14 +64,22 @@ import { etAt, etDateTime } from "@/lib/datetime";
 // only ever fires outside office hours and by definition can't wait.
 //
 // PROOF OF SEND (Jordan, Sep 2 2026 — "every number on screen is true"): a
-// completed client-text task must mean a text happened. Every successful send
-// below leaves TWO project-scoped traces — the AppSetting marker and an
-// outbound CommLog row — which is exactly what tasks.ts deliveryTextSendProof
-// reads when the 7-day sweeper decides whether a lingering task closes as done
-// (COMPLETED) or as never-sent (CANCELLED). The one case that claims a task
-// without proving a send is an AMBIGUOUS provider failure; it is stamped
-// SEND_UNVERIFIED and written onto the project timeline rather than left to
-// look like a clean send.
+// completed client-text task must mean a text happened. Every accepted send
+// below leaves THREE traces — the outbox row carrying OpenPhone's own message
+// id, the AppSetting marker, and an outbound CommLog row — and the first of
+// those is now the authority. tasks.ts deliveryTextSendProof still reads the
+// other two when the 7-day sweeper decides whether a lingering task closes as
+// done (COMPLETED) or as never-sent (CANCELLED); it should ask the outbox
+// first, because only the outbox can tell an accepted send from an unconfirmed
+// one (handover, Sep 16).
+//
+// AN UNCONFIRMED SEND NO LONGER PASSES AS A CLEAN ONE. A timeout or 5xx after
+// OpenPhone may already have taken the message leaves the outbox row `unknown`:
+// the identity is held for ever so nothing retries it blindly, the task is
+// stamped SEND_UNVERIFIED with the doubt in plain words and LEFT OPEN (it used
+// to be held COMPLETED, which read as a clean send on every screen including
+// the Done ledger), and the row surfaces on Connections with its age and a
+// Retry only a person can press.
 
 const HOUR = 3_600_000;
 // How close a shoot has to be before a confirmation stops waiting for a human.
@@ -155,31 +181,211 @@ export function clientTextDueAt(
   return etAt(etMoment(firstChance).dayKey, w.untilHour, w.untilMinute);
 }
 
+// The sweeps still resolve the sending number up front — not to send with, but
+// as a gate: "OpenPhone not connected" is a reason worth reporting once per
+// sweep rather than once per client. The send itself goes through the outbox.
 async function openPhone() {
-  const { phoneKey, OpenPhone, defaultOpenPhoneNumber } = await import("@/lib/integrations/openphone");
+  const { phoneKey, defaultOpenPhoneNumber } = await import("@/lib/integrations/openphone");
   const from = await defaultOpenPhoneNumber();
-  return { phoneKey, OpenPhone, from };
+  return { phoneKey, from };
 }
 
-// A 4xx (except 408) means OpenPhone REJECTED the send — safe to retry next
-// tick. A timeout / 5xx after the API may have accepted it is AMBIGUOUS: the
-// text may already be in the client's hands, so hold the claim and flag for a
-// human instead of auto-resending an SMS.
-function provablyNotSent(e: unknown): boolean {
-  return e instanceof OpenPhoneError && typeof e.status === "number" && e.status >= 400 && e.status < 500 && e.status !== 408;
+// ---- the dedupe markers, after the fact (RTP-08, Sep 16) --------------------
+// These AppSetting rows used to BE the claim: created before the send, deleted
+// again on a provable rejection. The outbox holds the claim now, so a marker
+// means only one thing — a message with this identity has been handed to a
+// provider and either accepted or left unconfirmed. Their KEYS and their
+// meaning are unchanged, which is what keeps tasks.ts and the missed-shoot scan
+// reading exactly as they did.
+
+/** Has this exact message already gone out (or been held)? Read BEFORE
+ *  queueing, so a send that predates the outbox — every marker on file today —
+ *  still silences the sweep. Not a claim: two live workers are separated by the
+ *  outbox's unique key, not by this. */
+async function alreadyMarked(key: string): Promise<boolean> {
+  const row = await prisma.appSetting.findUnique({ where: { key }, select: { key: true } }).catch(() => null);
+  return !!row;
 }
 
-// An ambiguous failure HOLDS the task's claim — re-sending an SMS the client may
-// already be reading is worse than a stuck task. But a held claim reads exactly
-// like a clean send on every screen (Done ledger included), which is the lie
-// this hub is buying out. Stamp the row SEND_UNVERIFIED and put the doubt on the
-// project timeline so a human can settle it in OpenPhone. Best-effort: the
-// honesty note must never turn a send failure into a cron failure.
+/** Write the marker once the provider has answered. Best-effort on purpose: a
+ *  P2002 here says the marker is already on file, which is what we were about
+ *  to write, and a marker that fails to write must never turn an accepted send
+ *  into a cron failure — the outbox row is the record that matters. */
+async function stampMarker(key: string): Promise<void> {
+  await prisma.appSetting.create({ data: { key, value: new Date().toISOString() } }).catch(() => {});
+}
+
+/** THE BOOKKEEPING FOR A MESSAGE WHOSE CALLER IS GONE (review, Sep 16).
+ *
+ *  The recovery drain (api/cron/gmail → outbox.drainPending) sends rows a
+ *  stopped worker queued but never handed over. The SEND is durable — that is
+ *  the whole point of the outbox — but the caller's own records are not: the
+ *  AppSetting marker, Client.welcomeTextAt, the task's completion and the comm
+ *  log are all written by code that died with the worker. Left unwritten they
+ *  do real damage: a drained welcome leaves welcomeTextAt null, so the client
+ *  stays a candidate on every single tick for ever (each one enqueues, meets its
+ *  own accepted row, notes a duplicate and resolves nothing), and a drained
+ *  confirmation leaves its task open for ever.
+ *
+ *  Everything below is derived from the message's own identity, so it needs
+ *  nothing the dead worker was holding. Best-effort throughout: the text has
+ *  already gone out, and a marker that fails to write must never read as a
+ *  failed send. Returns a line for the cron log, or null for a kind it does not
+ *  own (staff digests are reconciled in lib/notify). */
+export async function recordDrainedSend(
+  row: {
+    dedupeKey: string | null;
+    channel: string;
+    toRef: string;
+    body: string;
+    clientId: string | null;
+    projectId: string | null;
+    taskId: string | null;
+  },
+  providerId: string | null,
+): Promise<string | null> {
+  const [kind, head, ...rest] = (row.dedupeKey ?? "").split(":");
+  const tail = rest.join(":");
+  if (!head) return null;
+  // The marker keys are the identity, spelled the way the sweeps spell them —
+  // `confirmation:<project>:<day>-<hhmm>` is `auto-confirm-<project>-<day>-<hhmm>`.
+  const marker =
+    kind === "delivery" ? `auto-delivery-${head}`
+    : kind === "confirmation" ? `auto-confirm-${head}-${tail}`
+    : kind === "welcome" ? `auto-welcome-${head}`
+    : kind === "afterhours" ? `${AFTER_HOURS_MARKER}${head}-${tail}`
+    : null;
+  if (!marker) return null;
+  await stampMarker(marker);
+
+  const projectId = row.projectId;
+  const clientId = row.clientId ?? (kind === "welcome" || kind === "afterhours" ? head : null);
+  const client = clientId
+    ? await prisma.client.findUnique({ where: { id: clientId }, select: { name: true, welcomeTextAt: true } }).catch(() => null)
+    : null;
+  const who = client?.name ?? "the client";
+
+  if (kind === "welcome" && clientId && !client?.welcomeTextAt) {
+    // The card on the dashboard reads this field as "Welcome text sent", and now
+    // it has been.
+    await prisma.client.update({ where: { id: clientId }, data: { welcomeTextAt: new Date() } }).catch(() => {});
+  }
+  if ((kind === "confirmation" || kind === "delivery") && projectId) {
+    // Every open reminder of this kind on the job, not just the row the dead
+    // worker happened to be holding: one text per job means one text, and a
+    // second open row would simply be sent by hand tomorrow.
+    const taskType = kind === "confirmation" ? "confirmation_text" : "delivery_text";
+    await prisma.smartTask
+      .updateMany({
+        where: { projectId, taskType, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        data: {
+          status: "COMPLETED",
+          completedAt: new Date(),
+          summary: `${kind === "confirmation" ? "Confirmation" : "Feedback ask"} sent to ${who} on ${etDateTime(new Date())} ET (recovered and sent by the hub after an interrupted run).`,
+        },
+      })
+      .catch(() => {});
+    await prisma.activity
+      .create({
+        data: {
+          projectId,
+          type: "SYSTEM",
+          body: `${kind === "confirmation" ? "Confirmation" : "Delivery"} text sent to ${who} by the hub's recovery pass (it was queued but never handed over before): ${row.body.slice(0, 160)}`,
+        },
+      })
+      .catch(() => {});
+  }
+  await logComm({
+    channel: row.channel === "email" ? "email" : "text",
+    direction: "out",
+    minRole: "ADMIN",
+    clientId,
+    clientName: client?.name ?? null,
+    ...(projectId ? { projectId } : {}),
+    ...(row.channel === "email" ? {} : { contactName: client?.name ?? "RealTour Pilot", fromPhone: row.toRef }),
+    body: row.body,
+    source:
+      kind === "confirmation" ? "auto-confirmation"
+      : kind === "delivery" ? "auto-delivery"
+      : kind === "welcome" ? "auto-welcome"
+      : "auto-afterhours",
+    externalId: row.channel === "email" ? undefined : providerId ? `op-${providerId}` : marker,
+  }).catch(() => {});
+  return `recovered and sent the ${kind} text to ${who}`;
+}
+
+/** Is the client-text window open right now? Exported for the recovery cron:
+ *  a message a stopped worker left queued must not be drained out at 4:39pm
+ *  just because a retry happened to land there (Jordan: never after 4:30). */
+export async function clientTextWindowOpen(at: Date = new Date()): Promise<boolean> {
+  const { autoTextRules } = await import("@/lib/settings");
+  const rules = await autoTextRules();
+  if (!rules.enabled) return false;
+  return inSendWindow(windowOf(rules), at);
+}
+
+/** sendThroughOutbox with the DATABASE failure caught. A Neon blip while
+ *  queueing must not abort the whole sweep and leave the rest of the clients
+ *  untried — and it must never be read as "already sent" (the untyped catches
+ *  this file used to carry). If a row was written before the blip, the
+ *  five-minute watchdog settles it; nothing here guesses. */
+async function trySend(what: string, msg: Parameters<typeof sendThroughOutbox>[0], notes: string[]): Promise<OutboxSendResult> {
+  try {
+    return await sendThroughOutbox(msg);
+  } catch (e) {
+    notes.push(`${what}: the hub could not queue this text — ${e instanceof Error ? e.message : "database error"}. Nothing was sent; the next tick tries again.`);
+    return { outcome: "busy", id: "" };
+  }
+}
+
+/** One sentence for a send that did not go out, in the vocabulary /tasks and
+ *  the cron notes already use. Empty for a plain lease race — another worker
+ *  holding the row for a few hundred milliseconds is not news (and trySend has
+ *  already said its piece when the cause was a database blip). */
+function outcomeNote(what: string, r: OutboxSendResult): string {
+  switch (r.outcome) {
+    case "failed":
+      return `${what}: send failed — ${r.error}`;
+    case "unknown":
+      return `${what}: send unconfirmed (held — verify in OpenPhone before sending by hand) — ${r.error}`;
+    case "duplicate":
+      if (r.state === "unknown") return `${what}: an earlier send could not be confirmed and is being held — nothing re-sent`;
+      if (r.state === "failed") return `${what}: another worker released this one — the next tick picks it up`;
+      return `${what}: already claimed by another send (${r.state})`;
+    default:
+      return "";
+  }
+}
+
+// An ambiguous failure HOLDS the message's identity in the outbox — re-sending
+// an SMS the client may already be reading is worse than a stuck message. Until
+// Sep 16 it also held the TASK's claim, so the row read COMPLETED and the Done
+// ledger counted it: a clean send on every screen. Now the task is simply never
+// completed — it stays open, stamped SEND_UNVERIFIED, carrying the doubt in
+// plain words, and the same doubt goes on the project timeline so a human can
+// settle it in OpenPhone. Best-effort: the honesty note must never turn a send
+// failure into a cron failure.
+//
+// SAY IT ONCE (review, Sep 16). The delivery sweep re-enters the held branch on
+// EVERY tick while a send is unconfirmed — the task is open by design now, so it
+// stays in the sweep's query — and an unconditional write here put a fresh
+// SYSTEM row on the job's timeline and churned SmartTask.updatedAt eight times a
+// business day for the seven days before the stale-closer retires the task. So
+// this diffs before it writes, exactly like `hold` below: nothing to change
+// means nothing is written and nothing is said again.
 async function markSendUnverified(taskIds: string[], opts: { projectId: string; label: string; clientName: string }): Promise<void> {
   const doubt = `${opts.label} text to ${opts.clientName} could not be confirmed — OpenPhone may or may not have sent it. Nothing was re-sent (a duplicate text is worse); check the OpenPhone thread and text by hand if it never landed.`;
+  const summary = doubt.slice(0, 500);
   if (taskIds.length > 0) {
+    const rows = await prisma.smartTask
+      .findMany({ where: { id: { in: taskIds } }, select: { id: true, sourceDetail: true, summary: true } })
+      .catch(() => [] as { id: string; sourceDetail: string | null; summary: string | null }[]);
+    const stale = rows.filter((t) => t.sourceDetail !== SEND_UNVERIFIED || t.summary !== summary).map((t) => t.id);
+    // Every task already carries the doubt (or the rows are gone): this tick has
+    // nothing new to say, on the task OR on the timeline.
+    if (stale.length === 0) return;
     await prisma.smartTask
-      .updateMany({ where: { id: { in: taskIds } }, data: { sourceDetail: SEND_UNVERIFIED, summary: doubt.slice(0, 500) } })
+      .updateMany({ where: { id: { in: stale } }, data: { sourceDetail: SEND_UNVERIFIED, summary } })
       .catch(() => {});
   }
   await prisma.activity.create({ data: { projectId: opts.projectId, type: "SYSTEM", body: doubt } }).catch(() => {});
@@ -287,7 +493,7 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
   }
 
   if (projects.length === 0) return { sent: 0, skipped: 0, notes };
-  const { phoneKey, OpenPhone, from } = await openPhone();
+  const { phoneKey, from } = await openPhone();
   if (!from) return { sent: 0, skipped: projects.length, notes: ["OpenPhone not connected"] };
   const { confirmationMessage } = await import("@/lib/delivery");
   const { textTemplates } = await import("@/lib/settings");
@@ -338,50 +544,66 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
       select: { id: true },
     });
     if (already) { skipped++; continue; }
-    // Atomically claim any open confirmation_text task — the same row a manual
-    // send claims, so racing a human send loses cleanly (no double-text).
+    // The open confirmation task(s) for this job. They are no longer CLAIMED
+    // before the send (RTP-08): a claim written before OpenPhone answers is a
+    // COMPLETED row for a text that a killed process never sent. They are
+    // completed below, once the provider has taken the message.
     const openTasks = await prisma.smartTask.findMany({
       where: { projectId: p.id, taskType: "confirmation_text", status: { notIn: ["COMPLETED", "CANCELLED"] } },
       select: { id: true },
     });
     const taskIds = openTasks.map((t) => t.id);
-    if (taskIds.length > 0) {
-      const claimed = await prisma.smartTask.updateMany({
-        where: { id: { in: taskIds }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
-        data: { status: "COMPLETED", completedAt: new Date() },
-      });
-      if (claimed.count === 0) { skipped++; continue; } // a human just sent it
-    }
-    // The marker carries the shoot's ET day AND its start time. Keyed on the day
-    // alone, a shoot that moved 1:30 PM → 12:45 PM hit an existing marker, the
-    // sweep skipped — and the task it had just claimed above stayed COMPLETED,
-    // so Kyle's board said the new time was confirmed while the client still had
-    // the old one (1946 Rowan St, Sep 3). Only a move of an hour or more reopens
-    // the task at all (tasks.ts), so this cannot re-text on a trivial tweak.
+    // The identity carries the shoot's ET day AND its start time. Keyed on the
+    // day alone, a shoot that moved 1:30 PM → 12:45 PM hit an existing marker
+    // and the sweep skipped — while the task it had already claimed stayed
+    // COMPLETED, so Kyle's board said the new time was confirmed while the
+    // client still had the old one (1946 Rowan St, Sep 3). Only a move of an
+    // hour or more reopens the task at all (tasks.ts), so this cannot re-text
+    // on a trivial tweak.
     const day = p.shootDate!.toLocaleDateString("sv-SE", { timeZone: "America/New_York" });
     const at = p.shootDate!.toLocaleTimeString("en-GB", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit" }).replace(":", "");
     const marker = `auto-confirm-${p.id}-${day}-${at}`;
-    try {
-      await prisma.appSetting.create({ data: { key: marker, value: new Date().toISOString() } });
-    } catch {
-      // Another tick owns this exact shoot time and has already texted it. Give
-      // the task back rather than leaving our claim standing as a false "sent".
-      if (taskIds.length > 0) {
-        await prisma.smartTask.updateMany({
-          where: { id: { in: taskIds }, status: "COMPLETED" },
-          data: { status: "OPEN", completedAt: null },
-        }).catch(() => {});
-      }
-      skipped++; continue;
-    }
+    // A marker on file means this exact shoot time was already texted (or held
+    // after an unconfirmed send) — including by the pre-outbox code, whose
+    // markers are all we have for the back catalogue.
+    if (await alreadyMarked(marker)) { skipped++; continue; }
     const body = confirmationMessage({
       title: p.title, city: p.city, shootDate: p.shootDate,
       client: { name: p.client.name }, photographer: p.photographer, deliverables: p.deliverables,
     }, tpl.confirmation);
-    try {
-      const res = await OpenPhone.sendMessage(from, `+1${k}`, body);
+    // LAST LOOK BEFORE THE SEND (review, Sep 16). The atomic task claim that used
+    // to sit on this line is gone — the outbox holds the claim now, and it holds
+    // it against the /tasks panel and every other cron. What it does NOT yet
+    // cover is the per-card Send button (app/actions.ts sendConfirmationText),
+    // which still calls OpenPhone directly with no claim at all; HANDOVER says
+    // to route it through the same identity. Until it does, a person pressing
+    // Send in the seconds after the query above would be a SECOND text to the
+    // client, so the task's status is re-read as late as possible. One indexed
+    // query; it narrows the window to milliseconds.
+    const handledSince = await prisma.smartTask.findFirst({
+      where: { projectId: p.id, taskType: "confirmation_text", status: { in: ["COMPLETED", "CANCELLED"] } },
+      select: { id: true },
+    });
+    if (handledSince) { skipped++; continue; }
+    const res = await trySend(p.title, {
+      channel: "sms",
+      toRef: k,
+      body,
+      dedupeKey: confirmationKey(p.id, p.shootDate),
+      clientId: p.client.id,
+      projectId: p.id,
+      taskId: taskIds[0] ?? null,
+      requestedBy: "sweep:confirmation",
+    }, notes);
+    if (res.outcome === "accepted") {
       sent++;
       texted.add(p.client.id);
+      await stampMarker(marker); // AFTER acceptance now — see the header
+      if (taskIds.length > 0) {
+        await prisma.smartTask
+          .updateMany({ where: { id: { in: taskIds }, status: { notIn: ["COMPLETED", "CANCELLED"] } }, data: { status: "COMPLETED", completedAt: new Date() } })
+          .catch(() => {});
+      }
       await prisma.activity.create({
         data: { projectId: p.id, type: "SYSTEM", body: `Confirmation text auto-sent to ${p.client.name}: ${body.slice(0, 160)}` },
       }).catch(() => {});
@@ -392,26 +614,40 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
         source: "auto-confirmation",
         // The provider message id — the webhook echo dedupes into THIS row
         // instead of adding a second outbound that would clear the comms board.
-        externalId: res?.data?.id ? `op-${res.data.id}` : marker,
+        externalId: res.providerId ? `op-${res.providerId}` : marker,
       }).catch(() => {});
-    } catch (e) {
-      skipped++;
-      if (provablyNotSent(e)) {
-        // Clean rejection: release everything so the next tick retries.
-        await prisma.appSetting.delete({ where: { key: marker } }).catch(() => {});
-        if (taskIds.length > 0) {
-          await prisma.smartTask.updateMany({ where: { id: { in: taskIds } }, data: { status: "OPEN", completedAt: null } }).catch(() => {});
-        }
-        notes.push(`${p.title}: send failed — ${e instanceof Error ? e.message : "unknown"}`);
-      } else {
-        // Ambiguous (timeout/5xx after possible acceptance): hold the claim so
-        // the sweep can't double-text; a human verifies in OpenPhone. The hold
-        // leaves the task COMPLETED with no proof of a send, so say so on the
-        // row and on the job instead of letting it pass as sent.
-        await markSendUnverified(taskIds, { projectId: p.id, label: "Confirmation", clientName: p.client.name });
-        notes.push(`${p.title}: send failed (ambiguous — held, verify in OpenPhone before resending) — ${e instanceof Error ? e.message : "unknown"}`);
-      }
+      continue;
     }
+    skipped++;
+    if (res.outcome === "unknown") {
+      // It may be in the client's hands. Hold the identity (the outbox already
+      // does), stamp the marker so nothing here or in tasks.ts treats the shoot
+      // as unconfirmed-and-untried, and leave the TASK OPEN with the doubt on
+      // it — a held claim that reads COMPLETED is the lie this ticket removes.
+      texted.add(p.client.id);
+      await stampMarker(marker);
+      await markSendUnverified(taskIds, { projectId: p.id, label: "Confirmation", clientName: p.client.name });
+    } else if (res.outcome === "duplicate" && res.state === "accepted") {
+      // A confirmation for this exact shoot time HAS gone out under somebody
+      // else's row — the recovery drain, the panel, another cron — and this
+      // sweep's own bookkeeping never ran. The outbox is the authority, so the
+      // marker and the task are made to read it rather than the sweep meeting
+      // the same accepted row again on every tick (review, Sep 16).
+      await stampMarker(marker);
+      if (taskIds.length > 0) {
+        await prisma.smartTask
+          .updateMany({
+            where: { id: { in: taskIds }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+            data: { status: "COMPLETED", completedAt: new Date(), summary: `Confirmation text already sent to ${p.client.name} for this shoot time — nothing was re-sent.` },
+          })
+          .catch(() => {});
+      }
+    } else if (res.outcome === "duplicate" && res.state === "unknown") {
+      await stampMarker(marker);
+      await markSendUnverified(taskIds, { projectId: p.id, label: "Confirmation", clientName: p.client.name });
+    }
+    const note = outcomeNote(p.title, res);
+    if (note) notes.push(note);
   }
   return { sent, skipped, notes };
 }
@@ -429,11 +665,16 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
 // sales text. So the trigger is: a client the hub itself first saw (firstSeenAt,
 // i.e. one the Aryeo webhook minted) who now has a shoot on the books.
 //
-// ONCE, EVER. Client.welcomeTextAt is the visible proof and the pre-filter; the
-// unique `auto-welcome-<clientId>` AppSetting marker, claimed BEFORE the send,
-// is the authoritative gate — two overlapping crons cannot both claim it. There
-// is no SmartTask for this text (nothing for a human to send by hand), so the
-// marker is the whole ledger.
+// ONCE, EVER. Client.welcomeTextAt is the visible proof and the pre-filter. The
+// authoritative gate is the OUTBOX row on `welcome:<clientId>` (RTP-08, Sep 16):
+// its unique dedupeKey is what two overlapping crons contend on, and it is taken
+// before the provider is called. The unique `auto-welcome-<clientId>` AppSetting
+// marker still exists and still means "a welcome for this client has been handed
+// to a provider", but it is now written AFTER the provider answers rather than
+// claimed before the send — it is read first as the settled record of an earlier
+// welcome (including every one sent before the outbox existed), not as a claim.
+// There is no SmartTask for this text (nothing for a human to send by hand), so
+// between them the outbox row and that marker are the whole ledger.
 //
 // WHO IT NEVER GOES TO:
 //  · a client folded under an agent (parentClientId) — an assistant is not a
@@ -487,7 +728,7 @@ export async function sweepWelcomeTexts(texted: Set<string> = new Set()): Promis
   });
   if (clients.length === 0) return { sent: 0, skipped: 0, notes };
 
-  const { phoneKey, OpenPhone, from } = await openPhone();
+  const { phoneKey, from } = await openPhone();
   if (!from) return { sent: 0, skipped: clients.length, notes: ["OpenPhone not connected"] };
   const { applyTemplate } = await import("@/lib/delivery");
 
@@ -509,72 +750,80 @@ export async function sweepWelcomeTexts(texted: Set<string> = new Set()): Promis
     if (rules.skipWhenClientWaiting && await clientHasOpenQuestion(c.id)) {
       skipped++; notes.push(`${c.name}: waiting on an answer from us — the welcome waits for a person`); continue;
     }
-    // CLAIM FIRST. Nothing else gates this text, so the marker is the ledger.
+    // ONCE, EVER. The outbox row on `welcome:<clientId>` is what two workers
+    // race on now; the marker is read first as the settled record (every
+    // welcome sent before the outbox existed left one, and nothing else gates
+    // this text) and written again once the provider has answered.
     const marker = `auto-welcome-${c.id}`;
-    try {
-      await prisma.appSetting.create({ data: { key: marker, value: now.toISOString() } });
-    } catch { skipped++; continue; } // already claimed — sent, or held after an unconfirmed send
+    if (await alreadyMarked(marker)) { skipped++; continue; } // sent, or held after an unconfirmed send
     const body = applyTemplate(rules.welcome.message, {
       first: (c.name || "there").trim().split(/\s+/)[0] || "there",
       strategyCallLink: rules.welcome.strategyCallUrl,
       website: PUBLIC_WEBSITE,
       portal: rules.afterHours.portalUrl,
     });
-    if (noPhone) {
-      // Same wording, same one-shot marker. If Gmail cannot send yet (the
-      // sending scope needs Jordan's reconnect) the claim is released so the
-      // client stays eligible, and the reason lands where a person reads it.
-      const { sendGmailNew } = await import("@/lib/integrations/google");
-      const mail = await sendGmailNew({ mailbox: "info@realtourpilot.com", to: email, subject: "Welcome to RealTour Pilot", body });
-      if (!mail.ok) {
-        await prisma.appSetting.delete({ where: { key: marker } }).catch(() => {});
-        skipped++; notes.push(`${c.name}: no phone, and the welcome email could not send — ${mail.error}`); continue;
-      }
+    // Same wording, same one-shot identity, whichever rail it goes down: a
+    // client with no phone is welcomed by email (Jordan, Sep 7) and the outbox
+    // holds `welcome:<clientId>` either way, so the two can never both fire.
+    const res = await trySend(`${c.name}: welcome`, {
+      channel: noPhone ? "email" : "sms",
+      toRef: noPhone ? email : k,
+      body,
+      dedupeKey: welcomeKey(c.id),
+      clientId: c.id,
+      requestedBy: "sweep:welcome",
+    }, notes);
+    if (res.outcome === "accepted") {
       sent++;
       texted.add(c.id);
-      await prisma.client.update({ where: { id: c.id }, data: { welcomeTextAt: new Date() } }).catch((e) =>
-        console.error(`[welcome] emailed ${c.name} but could not stamp welcomeTextAt`, e));
-      await logComm({
-        channel: "email", direction: "out", minRole: "ADMIN",
-        clientId: c.id, clientName: c.name, body, source: "auto-welcome",
-      }).catch(() => {});
-      notes.push(`${c.name}: no phone on file — welcomed by email (${email})`);
-      continue;
-    }
-    try {
-      const res = await OpenPhone.sendMessage(from, `+1${k}`, body);
-      sent++;
-      texted.add(c.id);
+      await stampMarker(marker);
       // Stamped only AFTER the provider took it: welcomeTextAt is shown on the
-      // dashboard card as "Welcome text sent", so it has to mean that.
-      // The marker is already held, so a failed stamp here means the text went
-      // out but the card would say forever that it hadn't — retry once, then
-      // say so where a person will see it.
+      // dashboard card as "Welcome text sent", so it has to mean that. A failed
+      // stamp means the text went out but the card would say forever that it
+      // hadn't — retry once, then say so where a person will see it.
       await prisma.client.update({ where: { id: c.id }, data: { welcomeTextAt: new Date() } }).catch(async () => {
         await prisma.client.update({ where: { id: c.id }, data: { welcomeTextAt: new Date() } }).catch((e) =>
           console.error(`[welcome] sent to ${c.name} but could not stamp welcomeTextAt`, e));
       });
       await logComm({
-        channel: "text", direction: "out", minRole: "ADMIN",
+        channel: noPhone ? "email" : "text", direction: "out", minRole: "ADMIN",
         clientId: c.id, clientName: c.name,
-        contactName: c.name, fromPhone: k, body,
+        ...(noPhone ? {} : { contactName: c.name, fromPhone: k }),
+        body,
         source: "auto-welcome",
-        externalId: res?.data?.id ? `op-${res.data.id}` : marker,
+        // Texts dedupe against the OpenPhone webhook echo on the provider's own
+        // id. The EMAIL rail carries none: Gmail's id would have to match the
+        // `gmail-<account>:<id>` key the inbox sync mints, and a near-miss makes
+        // a duplicate rather than preventing one. Gmail's id is on the outbox
+        // row, which is where the proof belongs.
+        externalId: noPhone ? undefined : res.providerId ? `op-${res.providerId}` : marker,
       }).catch(() => {});
-    } catch (e) {
-      skipped++;
-      if (provablyNotSent(e)) {
-        // Cleanly rejected: release the claim so the next tick tries again.
-        await prisma.appSetting.delete({ where: { key: marker } }).catch(() => {});
-        notes.push(`${c.name}: welcome text failed — ${e instanceof Error ? e.message : "unknown"}`);
-      } else {
-        // Ambiguous (timeout / 5xx after possible acceptance). HOLD the claim —
-        // a second "welcome to RealTour Pilot" is worse than none — but leave
-        // welcomeTextAt null, because nothing proved it landed and that field is
-        // read on screen as proof. The held marker means no later tick retries.
-        notes.push(`${c.name}: welcome text unconfirmed (held, check OpenPhone before sending by hand) — ${e instanceof Error ? e.message : "unknown"}`);
-      }
+      if (noPhone) notes.push(`${c.name}: no phone on file — welcomed by email (${email})`);
+      continue;
     }
+    skipped++;
+    if (res.outcome === "unknown") {
+      // HOLD it — a second "welcome to RealTour Pilot" is worse than none — but
+      // leave welcomeTextAt null, because nothing proved it landed and that
+      // field is read on screen as proof. The marker stops any later tick from
+      // trying, and the row waits on Connections for a person.
+      texted.add(c.id);
+      await stampMarker(marker);
+    } else if (res.outcome === "duplicate" && res.state === "accepted") {
+      // A welcome for this client HAS gone out under somebody else's row (the
+      // recovery drain, or an overlapping cron) and this sweep's bookkeeping
+      // never ran. Without writing it, `welcomeTextAt` stays null, this client
+      // stays a candidate, and every tick from here to eternity re-enqueues and
+      // re-notes the same duplicate (review, Sep 16).
+      await stampMarker(marker);
+      await prisma.client.update({ where: { id: c.id }, data: { welcomeTextAt: new Date() } }).catch(() => {});
+    } else if (res.outcome === "duplicate" && res.state === "unknown") {
+      // Held, not proven: the marker keeps later ticks off it, welcomeTextAt
+      // stays null because nothing proved the welcome landed.
+      await stampMarker(marker);
+    }
+    const note = outcomeNote(`${c.name}: welcome`, res);
+    if (note) notes.push(note);
   }
   return { sent, skipped, notes };
 }
@@ -694,7 +943,7 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
     orderBy: { createdAt: "asc" },
   });
   if (tasks.length === 0) return { sent: 0, skipped: 0, notes };
-  const { phoneKey, OpenPhone, from } = await openPhone();
+  const { phoneKey, from } = await openPhone();
   if (!from) return { sent: 0, skipped: tasks.length, notes: ["OpenPhone not connected"] };
   const { deliveryMessage } = await import("@/lib/delivery");
   const { textTemplates, DEFAULT_DELIVERY_FEEDBACK_TEXT } = await import("@/lib/settings");
@@ -706,6 +955,11 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
   // human's call — their own wording stands.
   const hold = async (t: { id: string; summary: string | null; sourceDetail: string | null }, why: string): Promise<void> => {
     if (t.sourceDetail === MONTHLY_BATCH_INCOMPLETE || t.sourceDetail === DELIVERED_LONG_AGO) return;
+    // A task carrying an unconfirmed send keeps the doubt on it (review, Sep 16):
+    // "On hold: the job no longer reads Delivered" over the top of "OpenPhone may
+    // or may not have sent it" loses the only line that tells a person to go and
+    // look at the thread.
+    if (t.sourceDetail === SEND_UNVERIFIED) return;
     const summary = why.slice(0, 500);
     if (t.summary === summary) return;
     await prisma.smartTask
@@ -796,32 +1050,79 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
       notes.push(`${project.title}: client has an open question — left for a human`);
       continue;
     }
-    // Atomically claim the task — the manual /texts send and the OpenPhone
-    // webhook complete this same row, so whoever claims first wins alone.
-    const claimed = await prisma.smartTask.updateMany({
-      where: { id: t.id, status: { notIn: ["COMPLETED", "CANCELLED"] } },
-      data: { status: "COMPLETED", completedAt: new Date() },
-    });
-    if (claimed.count === 0) { skipped++; continue; } // a human just handled it
+    // ONE feedback ask per job, whoever sends it. The identity is the job, so
+    // the manual /texts send, the batch panel and this sweep all contend on the
+    // same outbox row — and the task is completed only once OpenPhone has taken
+    // the message. It used to be claimed COMPLETED here, four lines before the
+    // send, and a non-conflict database error on the marker below left it
+    // COMPLETED, unsent and un-stamped (audit RTP-08(3)).
     const marker = `auto-delivery-${project.id}`;
-    try {
-      await prisma.appSetting.create({ data: { key: marker, value: new Date().toISOString() } });
-    } catch { skipped++; continue; } // already auto-texted for this project — task completion stands
+    if (await alreadyMarked(marker)) {
+      // A text with this identity has already gone out — or is being held after
+      // one nobody could confirm. WHICH it is, only the outbox can say, and
+      // that is exactly the difference between a task that is genuinely done
+      // and one standing in for a send nothing proves (RTP-08 item 3).
+      skipped++;
+      const { outboxStateOf } = await import("@/lib/outbox");
+      const ob = await outboxStateOf(deliveryKey(project.id));
+      if (ob?.state === "unknown") {
+        await markSendUnverified([t.id], { projectId: project.id, label: "Delivery", clientName: project.client.name });
+        notes.push(`${project.title}: an earlier feedback ask could not be confirmed — held for a person`);
+        continue;
+      }
+      // Sent (or sent before the outbox existed, which is every marker on file
+      // today): the reminder is moot, so close it saying so.
+      await prisma.smartTask
+        .updateMany({
+          where: { id: t.id, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+          data: {
+            status: "COMPLETED",
+            completedAt: new Date(),
+            summary: `Feedback ask already sent to ${project.client.name} for this job — nothing was re-sent.`,
+          },
+        })
+        .catch(() => {});
+      continue;
+    }
     // The wording: whatever Jordan typed into Settings → Text templates →
     // "Delivery text" wins; a blank box falls back to the built-in feedback ask
     // (lib/settings DEFAULT_DELIVERY_FEEDBACK_TEXT) rather than to the older
     // "everything has been delivered" announcement. The partial variant is
     // never reached from here — the gate above guarantees nothing is missing.
     const body = deliveryMessage(project, { ...tpl, deliveryAll: tpl.deliveryAll.trim() || DEFAULT_DELIVERY_FEEDBACK_TEXT });
-    try {
-      const res = await OpenPhone.sendMessage(from, `+1${k}`, body);
+    // LAST LOOK BEFORE THE SEND (review, Sep 16) — same reason as the
+    // confirmation sweep: the per-card Send button (app/actions.ts
+    // sendDeliveryText) still texts OpenPhone directly and then completes this
+    // task, so until that is routed through the outbox (HANDOVER) the only thing
+    // standing between a hand-send and this sweep is how fresh the status is.
+    const status = (await prisma.smartTask.findUnique({ where: { id: t.id }, select: { status: true } }))?.status;
+    if (status === "COMPLETED" || status === "CANCELLED") { skipped++; continue; }
+    const res = await trySend(project.title, {
+      channel: "sms",
+      toRef: k,
+      body,
+      dedupeKey: deliveryKey(project.id),
+      clientId: project.client.id,
+      projectId: project.id,
+      taskId: t.id,
+      requestedBy: "sweep:delivery",
+    }, notes);
+    if (res.outcome === "accepted") {
       sent++;
       texted.add(project.client.id);
-      // Say what happened in place of the last hold: an "On hold: …" line on a
-      // COMPLETED row would be exactly the untrue screen this file exists to
-      // prevent.
+      await stampMarker(marker); // AFTER acceptance now — see the header
       await prisma.smartTask
-        .updateMany({ where: { id: t.id }, data: { summary: `Feedback ask sent automatically to ${project.client.name} on ${etDateTime(new Date())} ET.` } })
+        .updateMany({
+          where: { id: t.id, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+          data: {
+            status: "COMPLETED",
+            completedAt: new Date(),
+            // Say what happened in place of the last hold: an "On hold: …" line
+            // on a COMPLETED row would be exactly the untrue screen this file
+            // exists to prevent.
+            summary: `Feedback ask sent automatically to ${project.client.name} on ${etDateTime(new Date())} ET.`,
+          },
+        })
         .catch(() => {});
       await prisma.activity.create({
         data: { projectId: project.id, type: "SYSTEM", body: `Delivery text auto-sent to ${project.client.name}: ${body.slice(0, 160)}` },
@@ -831,20 +1132,41 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
         clientId: project.client.id, clientName: project.client.name, projectId: project.id,
         contactName: project.client.name, fromPhone: k, body,
         source: "auto-delivery",
-        externalId: res?.data?.id ? `op-${res.data.id}` : marker,
+        externalId: res.providerId ? `op-${res.providerId}` : marker,
       }).catch(() => {});
-    } catch (e) {
-      skipped++;
-      if (provablyNotSent(e)) {
-        await prisma.appSetting.delete({ where: { key: marker } }).catch(() => {});
-        await prisma.smartTask.updateMany({ where: { id: t.id }, data: { status: "OPEN", completedAt: null } }).catch(() => {});
-        notes.push(`${project.title}: send failed — ${e instanceof Error ? e.message : "unknown"}`);
-      } else {
-        // Held claim, no proof of a send — mark the doubt (see markSendUnverified).
-        await markSendUnverified([t.id], { projectId: project.id, label: "Delivery", clientName: project.client.name });
-        notes.push(`${project.title}: send failed (ambiguous — held, verify in OpenPhone before resending) — ${e instanceof Error ? e.message : "unknown"}`);
-      }
+      continue;
     }
+    skipped++;
+    if (res.outcome === "unknown") {
+      // Held, unproven, and NOT counted as done: the task stays open with the
+      // doubt on it (see markSendUnverified) instead of reading COMPLETED.
+      texted.add(project.client.id);
+      await stampMarker(marker);
+      await markSendUnverified([t.id], { projectId: project.id, label: "Delivery", clientName: project.client.name });
+    } else if (res.outcome === "failed") {
+      // Nothing was sent and the identity is free again — the next tick tries.
+      await hold(t, `The hub tried to send this and OpenPhone refused it (${res.error}). Nothing went out; it will try again on the next pass.`);
+    } else if (res.outcome === "duplicate" && res.state === "accepted") {
+      // The outbox says a feedback ask for this job HAS gone out and the task
+      // simply never heard (a marker or a task write that failed after the
+      // send). The outbox is the authority, so let the task read it.
+      await prisma.smartTask
+        .updateMany({
+          where: { id: t.id, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+          data: {
+            status: "COMPLETED",
+            completedAt: new Date(),
+            summary: `Feedback ask already sent to ${project.client.name} for this job — nothing was re-sent.`,
+          },
+        })
+        .catch(() => {});
+      await stampMarker(marker);
+    } else if (res.outcome === "duplicate" && res.state === "unknown") {
+      await markSendUnverified([t.id], { projectId: project.id, label: "Delivery", clientName: project.client.name });
+      await stampMarker(marker);
+    }
+    const note = outcomeNote(project.title, res);
+    if (note) notes.push(note);
   }
   return { sent, skipped, notes };
 }
@@ -863,9 +1185,12 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
 // client per closed period that is 60 replies in 60 days: about one a day.
 //
 // NEVER A LOOP:
-//  · one AppSetting marker per (client, closed period), created before the send,
-//    so two overlapping crons and two texts from the same person get ONE reply
-//    (Friday 6pm to Monday 9am is a single period);
+//  · one message identity per (client, closed period) — `afterhours:<clientId>:
+//    <period>` in the outbox, taken before the provider is called, so two
+//    overlapping crons and two texts from the same person get ONE reply (Friday
+//    6pm to Monday 9am is a single period). The matching `auto-afterhours-*`
+//    AppSetting marker is written after the provider answers (RTP-08, Sep 16)
+//    and read first as the settled record of an earlier reply;
 //  · we never answer our own words — the row must be an INBOUND text, and any
 //    number belonging to our line or a teammate's handset is excluded outright
 //    (the OpenPhone webhook logs a teammate's own handset as inbound on
@@ -999,7 +1324,7 @@ export async function sweepAfterHoursReplies(texted: Set<string> = new Set()): P
   });
   if (inbound.length === 0) return { sent: 0, skipped: 0, notes };
 
-  const { phoneKey, OpenPhone, from } = await openPhone();
+  const { phoneKey, from } = await openPhone();
   if (!from) return { sent: 0, skipped: inbound.length, notes: [...notes, "OpenPhone not connected"] };
   const { ourOpenPhoneNumberKeys } = await import("@/lib/integrations/openphone");
   const ourKeys = await ourOpenPhoneNumberKeys().catch(() => new Set<string>());
@@ -1060,12 +1385,12 @@ export async function sweepAfterHoursReplies(texted: Set<string> = new Set()): P
       notes.push(`${client.name}: all automatic texts off — their message is waiting for a human`);
       continue;
     }
-    // CLAIM FIRST: unique key per (client, closed period). Two overlapping
-    // crons, or a second text from them at 11pm, can never earn a second reply.
+    // ONE reply per (client, closed period). The outbox row on that identity is
+    // what two overlapping crons race on; the marker is read first as the
+    // settled record (including every reply sent before the outbox) and written
+    // once the provider has answered.
     const marker = `${AFTER_HOURS_MARKER}${clientId}-${period.key}`;
-    try {
-      await prisma.appSetting.create({ data: { key: marker, value: now.toISOString() } });
-    } catch { skipped++; continue; }
+    if (await alreadyMarked(marker)) { skipped++; continue; }
     // Greet the human who wrote in (msg.name), falling back to the account.
     const name = (msg.name || client?.name || "").trim();
     const body = applyTemplate(rules.afterHours.message, {
@@ -1074,28 +1399,42 @@ export async function sweepAfterHoursReplies(texted: Set<string> = new Set()): P
       nextDay: nextWorkingMorning(now, rules.afterHours.openHour),
       portal: rules.afterHours.portalUrl,
     });
-    try {
-      const res = await OpenPhone.sendMessage(from, `+1${msg.phone}`, body);
+    const res = await trySend(`after-hours reply to ${client?.name ?? "client"}`, {
+      channel: "sms",
+      toRef: msg.phone,
+      body,
+      dedupeKey: afterHoursKey(clientId, period.key),
+      clientId,
+      requestedBy: "sweep:afterhours",
+    }, notes);
+    if (res.outcome === "accepted") {
       sent++;
       texted.add(clientId);
+      await stampMarker(marker);
       await logComm({
         channel: "text", direction: "out", minRole: "ADMIN",
         clientId, clientName: client?.name ?? msg.name ?? null,
         contactName: "RealTour Pilot", fromPhone: msg.phone, body,
         source: "auto-afterhours",
-        externalId: res?.data?.id ? `op-${res.data.id}` : marker,
+        externalId: res.providerId ? `op-${res.providerId}` : marker,
       }).catch(() => {});
-    } catch (e) {
-      skipped++;
-      if (provablyNotSent(e)) {
-        // Cleanly rejected: release the claim so the next tick tries again.
-        await prisma.appSetting.delete({ where: { key: marker } }).catch(() => {});
-        notes.push(`after-hours reply to ${client?.name ?? "client"} failed — ${e instanceof Error ? e.message : "unknown"}`);
-      } else {
-        // Ambiguous: hold the claim. A duplicate auto-reply is worse than none.
-        notes.push(`after-hours reply to ${client?.name ?? "client"} unconfirmed (held, check OpenPhone) — ${e instanceof Error ? e.message : "unknown"}`);
-      }
+      continue;
     }
+    skipped++;
+    if (res.outcome === "unknown") {
+      // Hold it. A duplicate auto-reply is worse than none, and the row waits
+      // on Connections for a person to settle in OpenPhone.
+      texted.add(clientId);
+      await stampMarker(marker);
+    } else if (res.outcome === "duplicate" && (res.state === "accepted" || res.state === "unknown")) {
+      // Somebody else's row owns this (client, closed period) — the recovery
+      // drain or an overlapping cron. Write the marker this sweep would have
+      // written, so the next tick stops at the gate instead of re-enqueueing
+      // against an answered identity (review, Sep 16).
+      await stampMarker(marker);
+    }
+    const note = outcomeNote(`after-hours reply to ${client?.name ?? "client"}`, res);
+    if (note) notes.push(note);
   }
   return { sent, skipped, notes };
 }

@@ -36,18 +36,63 @@ const UPLOAD: Record<string, { label: string; cls: string }> = {
 // can see; "in Dropbox" is only what we hold. A job can be either, both, or
 // neither, and conflating them is what made a job with no delivered video read
 // as finished.
+// Why a count isn't known, said accurately (review, Sep 16). The row asserted
+// "the hub could not complete its last check" for every un-fresh job — on 265
+// Koser and 2705 Graystone nothing had FAILED, the hourly sweep simply hadn't
+// been back since Sep 1, and on a held job it never runs at all.
+function notKnownWhy(reason: BoardJob["media"]["reason"], stamp: string | null): string {
+  if (reason === "failed") return "The hub's last check didn't complete.";
+  if (reason === "never") return "The hub has never cross-checked this job.";
+  return stamp ? `Nothing has re-checked this job since ${stamp}.` : "Nothing has re-checked this job recently.";
+}
+
 function MediaState({
-  icon, label, m, fallback,
+  icon, label, m, fallback, known, checkedAt, reason, postShoot,
 }: {
   icon: React.ReactNode;
   label: string;
   m: { rawInDropbox: number; liveOnAryeo: number | null; ordered: boolean };
   fallback: string;
+  /** false = the last evidence read failed or is stale (RTP-16, Sep 16). */
+  known: boolean;
+  checkedAt: Date | null;
+  reason: BoardJob["media"]["reason"];
+  /** the shoot has happened, so "nothing uploaded" is a real finding and not
+   *  just an un-swept new job (review, Sep 16). */
+  postShoot: boolean;
 }) {
   if (!m.ordered) {
     return (
       <span className="inline-flex items-center gap-1.5 text-muted-2">
         {icon} {label} <span className="font-semibold">—</span>
+      </span>
+    );
+  }
+  const live = (m.liveOnAryeo ?? 0) > 0;
+  const nothingSeen = !live && m.rawInDropbox === 0;
+  // The photographer's own tick is a SEPARATE witness — a positive one still
+  // shows below, whatever the cross-check managed to read.
+  const tickSaysIn = fallback === "in" || fallback === "some";
+  // "We couldn't look" is not "nothing is there" (RTP-16, Sep 16). A Dropbox
+  // 429 or a listing read that never completed leaves the last counts behind,
+  // and a stale ZERO used to render as a confident red "nothing yet" — the one
+  // thing the evidence cannot support. A stale POSITIVE gets the same
+  // treatment in the other direction: it is last-known, not a new delivery.
+  const stamp = checkedAt
+    ? checkedAt.toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })
+    : null;
+  // …but a POST-SHOOT job whose tick says "none" is a real finding: the
+  // photographer hasn't uploaded, and the tick is its own witness with nothing
+  // stale about it. Hiding that behind "not checked" would lose the one thing
+  // Kyle needs to chase (review, Sep 16).
+  const tickSaysNothing = fallback === "none" && postShoot;
+  if (nothingSeen && !known && !tickSaysIn && !tickSaysNothing) {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        {icon} {label}{" "}
+        <span className="font-semibold text-muted-2" title={`${notKnownWhy(reason, stamp)} Nothing here says the work is missing.`}>
+          not checked{stamp ? ` since ${stamp}` : ""}
+        </span>
       </span>
     );
   }
@@ -60,12 +105,13 @@ function MediaState({
       </span>
     );
   }
-  const live = (m.liveOnAryeo ?? 0) > 0;
   return (
     <span className="inline-flex items-center gap-1.5">
       {icon} {label}{" "}
       {live ? (
-        <span className="font-semibold text-success">on Aryeo ({m.liveOnAryeo})</span>
+        <span className={`font-semibold ${known ? "text-success" : "text-muted"}`} title={known ? undefined : `Last known${stamp ? ` from ${stamp}` : ""}. ${notKnownWhy(reason, stamp)}`}>
+          on Aryeo ({m.liveOnAryeo}){known ? "" : " · last known"}
+        </span>
       ) : m.rawInDropbox > 0 ? (
         <span className="font-semibold text-warning" title={`${m.rawInDropbox} raw file${m.rawInDropbox === 1 ? "" : "s"} are in Dropbox, but nothing is live on Aryeo yet — the client cannot see this.`}>
           in Dropbox only — not on Aryeo
@@ -116,6 +162,11 @@ function JobCard({ j }: { j: BoardJob }) {
   const [open, setOpen] = useState(false);
   const b = BLOCKER[j.blocker];
   const BIcon = b.icon;
+  // Past the shoot (or past every stage that implies one): an empty upload
+  // tick means something here, and must not be swallowed by "not checked".
+  const postShoot =
+    (!!j.shootDate && j.shootDate <= new Date()) ||
+    ["SHOT", "EDITING", "REVIEW", "REVISION", "DELIVERED"].includes(j.status);
 
   return (
     <div
@@ -134,7 +185,10 @@ function JobCard({ j }: { j: BoardJob }) {
           </div>
         </div>
         <div className="shrink-0 text-right">
-          {j.deliveredAt ? (
+          {/* The green delivery date belongs to a job that is DONE. A job
+              delivered in August and reopened in September is live work, and
+              showing it the delivery date was the whole of RTP-04 (Sep 16). */}
+          {j.settled ? (
             <div className="text-sm font-medium text-success">{dayLabel(j.deliveredAt)}</div>
           ) : (
             <>
@@ -144,6 +198,16 @@ function JobCard({ j }: { j: BoardJob }) {
                 {j.dueAt && ` ${timeLabel(j.dueAt)}`}
               </div>
               {j.dueTierLabel && <div className="text-xs text-muted-2">{j.dueTierLabel}</div>}
+              {/* Why there is no date: a REOPENED job's order promises were
+                  all met, and the ask has no clock until Jordan sets the
+                  revision turnaround. Say it rather than print "no date". A
+                  never-delivered job in revisions keeps the promise it is
+                  breaking, so this line never appears on one (review, Sep 16). */}
+              {!j.dueAt && (j.blocker === "revision" || j.blocker === "on_hold") && (
+                <div className="text-xs text-muted-2">
+                  {j.blocker === "revision" ? "no revision date set" : "no new date while held"}
+                </div>
+              )}
             </>
           )}
         </div>
@@ -154,7 +218,16 @@ function JobCard({ j }: { j: BoardJob }) {
         <span className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-sm font-semibold ${b.cls}`}>
           <BIcon className="size-4" /> {j.blockerLabel}
         </span>
-        {!j.deliveredAt && j.dueFor && (
+        {j.reopened && (
+          // The history, said as history: this job DID go out, and it is owed
+          // again. Project.deliveredAt is never cleared (RTP-04).
+          <span className="inline-flex items-center gap-1 text-sm text-muted">
+            <RotateCcw className="size-3.5 text-muted-2" />
+            Delivered {dayLabel(j.deliveredAt)}
+            {j.revisionAskedAt ? ` · reopened ${dayLabel(j.revisionAskedAt)}` : " · reopened"}
+          </span>
+        )}
+        {!j.settled && j.dueFor && (
           // The date is the earliest promise the job STILL OWES (Sep 16): a
           // product already live on Aryeo no longer sets it, so a job whose
           // photos went out on time stopped reading LATE for the photos while
@@ -174,8 +247,8 @@ function JobCard({ j }: { j: BoardJob }) {
           and the row said "Video in". Raw-in-Dropbox and live-on-Aryeo are now
           two labels, because they are two different states of the job. */}
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-        <MediaState icon={<ImageIcon className="size-4 text-muted-2" />} label="Photos" m={j.media.photos} fallback={j.photos} />
-        <MediaState icon={<Video className="size-4 text-muted-2" />} label="Video" m={j.media.video} fallback={j.video} />
+        <MediaState icon={<ImageIcon className="size-4 text-muted-2" />} label="Photos" m={j.media.photos} fallback={j.photos} known={j.media.known} checkedAt={j.media.checkedAt} reason={j.media.reason} postShoot={postShoot} />
+        <MediaState icon={<Video className="size-4 text-muted-2" />} label="Video" m={j.media.video} fallback={j.video} known={j.media.known} checkedAt={j.media.checkedAt} reason={j.media.reason} postShoot={postShoot} />
         {j.shootDate && (
           <span className="inline-flex items-center gap-1.5 text-muted">
             <Clock className="size-4 text-muted-2" /> Shot {dayLabel(j.shootDate)}

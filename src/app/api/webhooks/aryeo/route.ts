@@ -29,24 +29,25 @@ async function aryeoWebhookSecret(): Promise<string | null> {
   return (await getSecret("aryeo_webhook")) || (await getConnection("aryeo"))?.webhookSecret || null;
 }
 
+// Which header Aryeo signed with, so a header-NAME mismatch is diagnosable
+// instead of looking like a wrong secret. Order matters only for the label.
+const SIG_HEADERS = ["signature", "x-aryeo-signature", "x-signature", "aryeo-signature"] as const;
+
 export async function POST(req: NextRequest) {
   const raw = await req.text();
 
   // Signature verification (HMAC-SHA256 of the raw body). Aryeo signs with a
   // header literally named `Signature` (see docs: "Setting Up Webhooks").
-  // FAIL CLOSED once a secret exists. Until one does we still accept — pulling
-  // the plug outright would sever live order/appointment events before the
-  // owner can press the button — but every such acceptance is logged and
-  // counted as unsigned rather than silently waved through.
+  // FAIL CLOSED once a secret exists. When one does NOT, what happens is a
+  // per-provider SETTING (RTP-28, Sep 16) whose default is this receiver's
+  // long-standing behaviour — accept, and stamp the row unsigned. Nothing
+  // changes here until the office flips "verify every post" on /connections;
+  // flipping it in code is how Aryeo went off the air on Sep 8.
   const secret = await aryeoWebhookSecret();
   const unsigned = !secret;
   if (secret) {
-    const sig =
-      req.headers.get("signature") ||
-      req.headers.get("x-aryeo-signature") ||
-      req.headers.get("x-signature") ||
-      req.headers.get("aryeo-signature") ||
-      "";
+    const headerName = SIG_HEADERS.find((h) => req.headers.get(h)) ?? null;
+    const sig = (headerName ? req.headers.get(headerName) : "") || "";
     // Compare BYTES, and gate on BYTE length. timingSafeEqual THROWS when the
     // two buffers differ in length, and a JS string's .length counts characters,
     // not bytes — so a `Signature` header of 64 multibyte characters cleared a
@@ -56,21 +57,28 @@ export async function POST(req: NextRequest) {
     const provided = Buffer.from(sig.replace(/^sha256=/, ""), "utf8");
     const ok = provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
     if (!ok) {
-      // Log the rejection so a real-but-mismatched Aryeo signature is VISIBLE
-      // (rather than a silent 401 with no trace) — makes a signing-format
-      // mismatch diagnosable. Best-effort; never block the response on it.
-      try {
-        await prisma.webhookEvent.create({
-          data: { provider: "aryeo", eventType: "signature.rejected", status: "REJECTED", payload: (raw || "{}").slice(0, 2000) },
-        });
-        // Spike alert: >5 rejections in an hour means real events are bouncing
-        // at the door (this ran silent for 13 days once). Best-effort.
-        const { alertWebhookRejections } = await import("@/lib/notify");
-        await alertWebhookRejections("aryeo");
-      } catch { /* ignore */ }
+      // Record the refusal WITH the evidence needed to diagnose it offline: the
+      // header that carried the digest, the digest itself, and the whole body
+      // (the old 2,000-char slice is why not one of the 36 Sep 8 rejections can
+      // be replayed against a candidate secret today). refuseWebhook also runs
+      // the hourly spike alert. Best-effort; never block the response on it.
+      const { refuseWebhook } = await import("@/lib/webhookRetry");
+      await refuseWebhook("aryeo", { code: "bad-signature", rawBody: raw, header: headerName, sig });
+      // The CALLER is told nothing but "invalid": the plain-English refusal lives
+      // on the stored row and the owner-only Connections strip. A refused post is
+      // unauthenticated by definition, and "no secret is saved" / "the app secret
+      // changed" is a map of how the door is hung (RTP-28 review, Sep 16).
       return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
     }
   } else {
+    // No usable secret. The office setting decides: refuse (and say why), or
+    // accept and stamp the row so the acceptance is self-describing forever.
+    const { gateMissingSecret, refuseWebhook } = await import("@/lib/webhookRetry");
+    const gate = await gateMissingSecret("aryeo", "aryeo_webhook");
+    if (!gate.allow) {
+      await refuseWebhook("aryeo", { code: gate.code, rawBody: raw, header: null, sig: null });
+      return NextResponse.json({ error: "Unverified" }, { status: 401 });
+    }
     // Nothing was verified. Say so on every request (Vercel logs) as well as on
     // the stored row — the receiver URL became guessable when the app moved to
     // hub.realtourpilot.com, and a forged POST here reconciles real projects.

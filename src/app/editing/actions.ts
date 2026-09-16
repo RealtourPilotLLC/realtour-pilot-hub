@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { requireAdmin, requireRole } from "@/lib/auth/guards";
+import { requireAdmin, requireRole, requireShootAccess } from "@/lib/auth/guards";
 import { editorTeamMemberId, VIDEO_LANE_KEYS, type EditorKey } from "@/lib/editors";
 import { deliveryStamp, outstandingForDelivery, outstandingMessage, VIDEO_CATEGORY } from "@/lib/delivery";
 import { EDIT_PRIORITIES, EDIT_STATUS_LABELS, EDIT_TIERS, type EditOverrideInput, type EditTier } from "@/lib/editOverrideDefaults";
@@ -496,7 +496,14 @@ export async function saveJobNotes(
   try {
     // Editors are deliberately absent: they READ the brief, they don't rewrite
     // what the customer or the photographer said.
-    await requireRole(["OWNER", "ADMIN", "PHOTOGRAPHER"]);
+    //
+    // …and a photographer may only rewrite THEIR OWN job (RTP-02, Sep 16).
+    // The role gate alone let any photographer login post this action with any
+    // projectId and overwrite the customer note and the editor brief on all
+    // 1,427 jobs that are not theirs. The UI never offers it — /edit/<id>
+    // redirects them to /shoot/<id> — but a "use server" action is reachable
+    // by POST whatever the UI renders, which is what guards.ts exists for.
+    await requireShootAccess(projectId);
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }

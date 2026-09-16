@@ -13,10 +13,11 @@ import { MESSAGE_TASK_TYPES } from "@/lib/queries";
 import { prisma } from "@/lib/prisma";
 import { recentProjectWhere } from "@/lib/recency";
 import { etDayStartUtc } from "@/lib/datetime";
-import { listAssignees, slugForName, firstName, viewerAssigneeKey } from "@/lib/assignees";
+import { listAssignees, firstName, viewerAssigneeKey } from "@/lib/assignees";
 import { isNeedsAssigning, boardVisibleWhere } from "@/lib/triage";
 import { slackOpenCount } from "@/lib/commsBoard";
 import { getCurrentUser } from "@/lib/auth/user";
+import { editorScopeOf, isUnmappedEditor, UNMAPPED_EDITOR_MESSAGE } from "@/lib/auth/guards";
 import { scrubMoney } from "@/lib/text";
 import { cn } from "@/lib/utils";
 
@@ -29,11 +30,12 @@ const rank = (t: QueueTask) => PRIORITY_RANK[t.priority] ?? 9;
 const dueMs = (t: QueueTask) => (t.dueAt ? new Date(t.dueAt).getTime() : Infinity);
 
 // Editors are scoped to their OWN delegated work — never the whole team's
-// queue. editorKey = kim/remar/…; fall back to their first-name slug.
-type Me = Awaited<ReturnType<typeof getCurrentUser>>;
-function editorScopeOf(me: Me): string | null {
-  return me?.role === "EDITOR" ? (me.editorKey || (me.name ? slugForName(me.name) : null)) : null;
-}
+// queue. editorKey = kim/remar/…, else their first-name slug, else the
+// fail-closed sentinel: a keyless EDITOR login used to resolve to null, and
+// null here means "no filter", so an editor invited with the name box blank
+// opened this page on the OFFICE board — 28 rows across 10 clients, the same
+// list the owner sees (RTP-01, Sep 16). editorScopeOf now lives in
+// auth/guards beside the same rule /edit/<id> applies to Review Room notes.
 
 // The board's where clause — shared by the board query and the hub tab badge so
 // the "open" count always matches what the tab renders (incl. editor scoping).
@@ -156,6 +158,24 @@ function FilterChip({ href, label, count, active }: { href: string; label: strin
 export async function BoardView({ sp, tabs }: { sp: { who?: string; task?: string }; tabs: ReactNode }) {
   const me = await getCurrentUser().catch(() => null);
   const editorScope = editorScopeOf(me);
+  // An EDITOR login that maps to no editor profile gets NOTHING, and is told
+  // why (RTP-01, Sep 16). Before this it fell through to the office board —
+  // "All caught up 🎉" would be a lie here, and showing the team's work would
+  // be the fault itself, so this branch renders ahead of every query.
+  if (isUnmappedEditor(editorScope)) {
+    return (
+      <div>
+        <PageHeader eyebrow="Eastern time" title="Tasks" subtitle="Nothing is linked to this account yet" />
+        <div className="space-y-5 p-4 sm:p-6">
+          {tabs}
+          <div className="rounded-2xl border border-dashed bg-surface p-8 text-center">
+            <UserPlus className="mx-auto mb-2 size-6 text-muted-2" />
+            <p className="text-sm text-muted">{UNMAPPED_EDITOR_MESSAGE}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
   // A ?task= deep link (Slack pings, bell notifications) must always render
   // its card, even when the task's type is hidden from this board — otherwise
   // the recipient lands on an unrelated list with no highlight (review).

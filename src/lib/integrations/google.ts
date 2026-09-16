@@ -234,22 +234,31 @@ export async function sendGmailReply(opts: {
 // ability to write an email response to the agent, thanking them for their
 // feedback and addressing their feedback"). Same account, same scope, same
 // 403-means-reconnect contract as sendGmailReply.
+// RTP-08 (Sep 16): it now answers with Gmail's OWN message id on success and
+// the HTTP status on failure. The outbox (lib/outbox.ts) records the provider's
+// id as proof a message really left, and it has to be able to tell a refusal
+// (4xx — nothing was sent, offer it again) from a 5xx or a transport failure
+// (it may have gone — hold it and ask a person). `ok`/`error`/`needsReconnect`
+// are unchanged, so every existing caller reads exactly as before.
 export async function sendGmailNew(opts: {
   mailbox: string;
   to: string;
   subject: string;
   body: string;
-}): Promise<{ ok: true; to: string } | { ok: false; error: string; needsReconnect?: boolean }> {
+}): Promise<
+  | { ok: true; to: string; id: string | null }
+  | { ok: false; error: string; needsReconnect?: boolean; status?: number }
+> {
   const to = opts.to.trim();
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return { ok: false, error: "That doesn't look like an email address." };
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return { ok: false, error: "That doesn't look like an email address.", status: 400 };
   const accounts = await gmailAccounts();
   const acct = accounts.find((a) => a.email === opts.mailbox) ?? accounts[0];
-  if (!acct) return { ok: false, error: "No Gmail account is connected." };
+  if (!acct) return { ok: false, error: "No Gmail account is connected.", status: 401 };
   let token: string;
   try {
     token = await accessTokenFor(acct.refreshToken);
   } catch {
-    return { ok: false, error: "Google token expired — reconnect Gmail in Connections.", needsReconnect: true };
+    return { ok: false, error: "Google token expired — reconnect Gmail in Connections.", needsReconnect: true, status: 401 };
   }
   const mime = [
     `To: ${to}`,
@@ -267,10 +276,16 @@ export async function sendGmailNew(opts: {
     body: JSON.stringify({ raw }),
   });
   if (res.status === 403) {
-    return { ok: false, error: "Gmail can read but not send yet — reconnect Google in Connections to grant sending.", needsReconnect: true };
+    return { ok: false, error: "Gmail can read but not send yet — reconnect Google in Connections to grant sending.", needsReconnect: true, status: 403 };
   }
-  if (!res.ok) return { ok: false, error: `Gmail send failed (${res.status}).` };
-  return { ok: true, to };
+  if (!res.ok) return { ok: false, error: `Gmail send failed (${res.status}).`, status: res.status };
+  // Gmail names what it accepted. Read it defensively — a body we can't parse
+  // is still an accepted send, it just leaves the outbox without an id.
+  const id = await res
+    .json()
+    .then((j: unknown) => (typeof (j as { id?: unknown })?.id === "string" ? ((j as { id: string }).id) : null))
+    .catch(() => null);
+  return { ok: true, to, id };
 }
 
 export function googleConfigured() {

@@ -1,4 +1,5 @@
 import "server-only";
+import { slugForName } from "@/lib/assignees";
 import { getCurrentUser } from "./user";
 
 type AppRole = "OWNER" | "ADMIN" | "EDITOR" | "PHOTOGRAPHER";
@@ -40,6 +41,145 @@ export async function requireRole(
   }
 }
 
+// ---------------------------------------------------------------------------
+// WHO THIS LOGIN IS, IN KEY SPACE — and which jobs it holds (RTP-01 / RTP-02,
+// Sep 16). Three surfaces used to answer these questions three ways, and the
+// loosest of the three answered "everything": a board that read a null editor
+// scope as "no filter", a cut-stream route that asked only "is anyone signed
+// in", and a file route that asked only "is the path ours". One resolution
+// now, and every one of them FAILS CLOSED.
+// ---------------------------------------------------------------------------
+
+/**
+ * The scope an EDITOR surface must filter by. Never null for an EDITOR: an
+ * editor login that maps to no editor profile gets a sentinel that matches no
+ * row, because null means "don't filter" to every caller downstream and that
+ * handed a keyless editor the whole office board (RTP-01). A password-invited
+ * editor with the name box left blank is exactly that account.
+ */
+export const EDITOR_SCOPE_NONE = "__none__";
+
+/**
+ * editorKey (kim/john/…), else their first-name slug, else the fail-closed
+ * sentinel. null ONLY for a non-editor, where it correctly means "no editor
+ * filter applies". The one definition — /tasks and /edit/<id> both read it.
+ */
+export function editorScopeOf(
+  me: { role?: string | null; editorKey?: string | null; name?: string | null } | null | undefined,
+): string | null {
+  if (!me || me.role !== "EDITOR") return null;
+  return me.editorKey || (me.name ? slugForName(me.name) : null) || EDITOR_SCOPE_NONE;
+}
+
+/** True when a scope is the fail-closed sentinel (i.e. an unmapped editor). */
+export const isUnmappedEditor = (scope: string | null): boolean => scope === EDITOR_SCOPE_NONE;
+
+/** The message an unmapped editor sees in place of somebody else's work. */
+export const UNMAPPED_EDITOR_MESSAGE =
+  "Your account is not linked to an editor profile yet — ask Jordan or Kyle to finish the invite.";
+
+type Viewer = Awaited<ReturnType<typeof getCurrentUser>>;
+
+/**
+ * Every assignment key this human is addressable by — their editor key and
+ * their roster (TeamMember) name slug, else (and only else) the slug of the
+ * name on their own login. Hoisted out of requireTaskAccess so the job
+ * predicate below matches work the exact same way the task guard does. Never
+ * contains "" and never contains the sentinel.
+ *
+ * WHY THE LOGIN NAME IS A LAST RESORT (review, Sep 16). An editorKey and a
+ * roster row are ASSIGNED — Jordan or Kyle set them. The name on an AppUser is
+ * free text the account holder can edit, and slugForName keeps only the first
+ * name, so "Kyle Cabrera" slugs to `kyle`. That was tolerable while these keys
+ * only decided who may tick their own task; since Sep 16 they also decide who
+ * may STREAM a cut and fetch a job's files (canViewProject), and a first-name
+ * collision would hand one person every job carrying the other's key. When an
+ * assigned identity exists it is the whole answer; the login name only stands
+ * in for an account that has neither, which is where it came from (an AppUser
+ * renamed away from the roster spelling still acts on their own work — but
+ * that case now resolves through the roster row, not around it).
+ */
+export async function addressableKeys(u: Viewer): Promise<Set<string>> {
+  const keys = new Set<string>();
+  if (!u) return keys;
+  if (u.role === "EDITOR" && u.editorKey) keys.add(u.editorKey);
+  if (u.teamMemberId) {
+    const { prisma } = await import("@/lib/prisma");
+    const tm = await prisma.teamMember.findUnique({ where: { id: u.teamMemberId }, select: { name: true } });
+    if (tm?.name) keys.add(slugForName(tm.name));
+  }
+  keys.delete("");
+  keys.delete(EDITOR_SCOPE_NONE);
+  if (keys.size === 0 && u.name) {
+    const slug = slugForName(u.name);
+    if (slug && slug !== EDITOR_SCOPE_NONE) keys.add(slug);
+  }
+  return keys;
+}
+
+/**
+ * Does an EDITOR hold this job? The Editing Room's truth ladder, read back:
+ * the project's pinned editor (TeamMember or vendor key), an open/closed task
+ * delegated to them on it, or a cut they themselves sent to review. The last
+ * clause matters — a cut REASSIGNED to another job or another editor must not
+ * lock the editor who CUT it out of their own review history (Review Room
+ * batch), and WITHDRAWN rows count for the same reason.
+ */
+async function editorHoldsProject(projectId: string, keys: Set<string>): Promise<boolean> {
+  if (keys.size === 0) return false;
+  const { prisma } = await import("@/lib/prisma");
+  const { editorKeyForTeamName } = await import("@/lib/editors");
+  const p = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { editorVendorKey: true, editor: { select: { name: true } } },
+  });
+  if (!p) return false;
+  if (p.editorVendorKey && keys.has(p.editorVendorKey)) return true;
+  const teamName = p.editor?.name ?? null;
+  if (teamName && (keys.has(slugForName(teamName)) || keys.has(editorKeyForTeamName(teamName) ?? ""))) return true;
+  const list = [...keys];
+  const [task, sub] = await Promise.all([
+    prisma.smartTask.findFirst({ where: { projectId, assignedKey: { in: list } }, select: { id: true } }),
+    prisma.reviewSubmission.findFirst({ where: { projectId, submittedByKey: { in: list } }, select: { id: true } }),
+  ]);
+  return !!task || !!sub;
+}
+
+/**
+ * May the person asking SEE this job's material — its cuts, its uploaded
+ * files, its thread? Owner/admin always; the editor who holds it; the
+ * photographer who shot it. Everyone else: no. Read gate, so it answers for
+ * the EFFECTIVE identity — an owner previewing as Kim sees what Kim sees,
+ * which is the point of the preview.
+ *
+ * A no-op in local dev / pre-cutover ONLY, exactly like every guard above.
+ */
+export async function canViewProject(projectId: string, viewer?: Viewer): Promise<boolean> {
+  if (!enforced()) return true;
+  const u = viewer !== undefined ? viewer : await getCurrentUser().catch(() => null);
+  if (!u) return false;
+  if (u.role === "OWNER" || u.role === "ADMIN") return true;
+  if (u.role === "PHOTOGRAPHER") {
+    const { photographerMemberId, photographerOwnsShoot } = await import("@/lib/shoot");
+    const mid = await photographerMemberId(u);
+    return !!mid && (await photographerOwnsShoot(projectId, mid));
+  }
+  if (u.role === "EDITOR") return editorHoldsProject(projectId, await addressableKeys(u));
+  return false;
+}
+
+/**
+ * Is this deliverable part of this job? Guards the related-record writes that
+ * ran a shoot-level check and then wrote whatever id the form sent (RTP-02).
+ * ONE helper on purpose: when the "two Aryeo rows, one job" work lands, the
+ * sibling leg is admitted HERE and every caller inherits it.
+ */
+export async function deliverableInProject(deliverableId: string, projectId: string): Promise<boolean> {
+  const { prisma } = await import("@/lib/prisma");
+  const d = await prisma.deliverable.findUnique({ where: { id: deliverableId }, select: { projectId: true } });
+  return !!d && d.projectId === projectId;
+}
+
 export const requireOwner = () => requireRole(["OWNER"]);
 export const requireAdmin = () => requireRole(["OWNER", "ADMIN"]);
 
@@ -67,15 +207,9 @@ export async function requireTaskAccess(taskId: string): Promise<void> {
     // (TeamMember) name's slug — so an AppUser renamed away from the roster
     // spelling doesn't lose the ability to act on their own work.
     const { prisma } = await import("@/lib/prisma");
-    const { slugForName } = await import("@/lib/assignees");
-    const myKeys = new Set<string>();
-    if (u.realRole === "EDITOR" && u.editorKey) myKeys.add(u.editorKey);
-    if (u.name) myKeys.add(slugForName(u.name));
-    if (u.teamMemberId) {
-      const tm = await prisma.teamMember.findUnique({ where: { id: u.teamMemberId }, select: { name: true } });
-      if (tm?.name) myKeys.add(slugForName(tm.name));
-    }
-    myKeys.delete("");
+    // One resolution, shared with the job predicate above (Sep 16) so a task
+    // guard and a job guard can never drift into disagreeing about who this is.
+    const myKeys = await addressableKeys(u);
     if (myKeys.size > 0) {
       const t = await prisma.smartTask.findUnique({ where: { id: taskId }, select: { assignedKey: true } });
       if (t?.assignedKey && myKeys.has(t.assignedKey)) return;

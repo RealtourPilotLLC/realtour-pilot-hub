@@ -17,22 +17,49 @@ export const dynamic = "force-dynamic";
 // Verifies the HMAC signature when SCRIPTING_WEBHOOK_SECRET is set (must equal
 // HUB_WEBHOOK_SECRET on the Studio server). The webhook is the fast-path; we
 // re-fetch the authoritative project by external_id before mirroring anything.
+
+// Stamped on the WebhookEvent row of every event we let through WITHOUT
+// verifying it, so an unsigned acceptance is self-describing forever instead of
+// looking identical to a verified one (RTP-28, Sep 16: this receiver was the one
+// of the three that left NO record either way, so its rows could not be told
+// apart). /connections counts rows on this prefix — keep the three in step.
+const UNSIGNED_MARKER = "UNSIGNED: accepted without verification — no webhook secret configured";
+
 export async function POST(req: NextRequest) {
   const raw = await req.text();
 
   const secret = process.env.SCRIPTING_WEBHOOK_SECRET || "";
+  const unsigned = !secret;
   if (secret) {
-    const provided = (req.headers.get("x-scripting-signature") || "").replace(/^sha256=/, "");
+    const headerName = "x-scripting-signature";
+    const sig = req.headers.get(headerName) || "";
+    const provided = sig.replace(/^sha256=/, "");
     const expected = crypto.createHmac("sha256", secret).update(raw).digest("hex");
     const ok =
       provided.length === expected.length &&
       crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
     if (!ok) {
-      await prisma.webhookEvent
-        .create({ data: { provider: "scripting", eventType: "signature.rejected", status: "REJECTED", payload: (raw || "{}").slice(0, 2000) } })
-        .catch(() => {});
+      const { refuseWebhook } = await import("@/lib/webhookRetry");
+      await refuseWebhook("scripting", { code: "bad-signature", rawBody: raw, header: headerName, sig });
+      // Reason to the stored row and the owner-only Connections strip, not to the
+      // caller — a refused post is unauthenticated (RTP-28 review, Sep 16).
       return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
     }
+  } else {
+    // RTP-28 (Sep 16): SCRIPTING_WEBHOOK_SECRET is an env var, so what Vercel
+    // actually holds is NOT readable from the hub — which means nobody can
+    // prove this receiver is verifying in production. Until Jordan confirms it,
+    // this lane stays on its CURRENT default (accept, and say so on the row);
+    // the office can flip it to "verify every post" on /connections the moment
+    // he does. Turning it on from here would silence Script Studio the way the
+    // Sep 8 Aryeo cutover silenced order and media events.
+    const { gateMissingSecret, refuseWebhook } = await import("@/lib/webhookRetry");
+    const gate = await gateMissingSecret("scripting", "scripting_webhook");
+    if (!gate.allow) {
+      await refuseWebhook("scripting", { code: gate.code, rawBody: raw, header: null, sig: null });
+      return NextResponse.json({ error: "Unverified" }, { status: 401 });
+    }
+    console.warn("[webhook] scripting: UNSIGNED event accepted — SCRIPTING_WEBHOOK_SECRET is not set on this deployment.");
   }
 
   let body: { event?: string; data?: StudioProject & Record<string, unknown> } = {};
@@ -41,7 +68,17 @@ export async function POST(req: NextRequest) {
   const data = (body.data || {}) as StudioProject & Record<string, unknown>;
 
   const evt = await prisma.webhookEvent
-    .create({ data: { provider: "scripting", eventType: event, externalId: data.id ? String(data.id) : null, payload: raw.slice(0, 12000) } })
+    .create({
+      data: {
+        provider: "scripting",
+        eventType: event,
+        externalId: data.id ? String(data.id) : null,
+        payload: raw.slice(0, 12000),
+        // Marker only — status stays on its normal RECEIVED→PROCESSED path so
+        // dedupe and the hourly retry sweep behave exactly as before.
+        error: unsigned ? UNSIGNED_MARKER : null,
+      },
+    })
     .catch(() => null);
 
   try {
@@ -60,7 +97,15 @@ export async function POST(req: NextRequest) {
     const message = (e instanceof Error ? e.message : String(e)).slice(0, 300);
     if (evt) {
       await prisma.webhookEvent
-        .update({ where: { id: evt.id }, data: { status: "ERROR", error: message.slice(0, 500) } })
+        .update({
+          where: { id: evt.id },
+          // Keep the UNSIGNED marker alongside the failure. Overwriting `error`
+          // here stripped it, so an unsigned event that ALSO failed to process
+          // stopped being self-describing — which is the one gap the marker was
+          // added to close (RTP-28 review, Sep 16). readRetryState only strips
+          // its own [[…]] tails, so the marker survives the retry bookkeeping.
+          data: { status: "ERROR", error: (unsigned ? `${UNSIGNED_MARKER} · ${message}` : message).slice(0, 500) },
+        })
         .catch(() => {});
     }
     return NextResponse.json({ ok: false, message }, { status: 200 });

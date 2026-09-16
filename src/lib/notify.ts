@@ -404,9 +404,14 @@ async function parkUntextableSms(teamMemberId: string, reason: string): Promise<
 // Send EVERYTHING queued for one member as a single text.
 //   "sent"   — OpenPhone accepted one text carrying every unsent line;
 //   "none"   — nothing to send (or another flush claimed the rows first);
-//   "parked" — the member can't be texted; the lines were parked (above).
-// Throws when OpenPhone refuses, after un-claiming the rows for the next tick.
-async function flushMemberSms(teamMemberId: string): Promise<"sent" | "none" | "parked"> {
+//   "parked" — the member can't be texted; the lines were parked (above);
+//   "held"   — OpenPhone did not confirm (RTP-08, Sep 16). The lines stay
+//              claimed and are NEVER re-queued: a digest that may already be on
+//              someone's phone must not arrive twice. Until Sep 16 an ambiguous
+//              failure unclaimed the rows exactly like a refusal, so an
+//              accepted-then-timed-out digest went out again five minutes later.
+// Throws when OpenPhone REFUSES, after un-claiming the rows for the next tick.
+async function flushMemberSms(teamMemberId: string): Promise<"sent" | "none" | "parked" | "held"> {
   // The number BEFORE the claim: a member whose roster phone can't be texted
   // (none, or not a US number) must not claim rows and bounce off OpenPhone
   // every five minutes. Until Sep 16 the rows were simply left unsent — and
@@ -453,9 +458,9 @@ async function flushMemberSms(teamMemberId: string): Promise<"sent" | "none" | "
         return logDelivery({ teamMemberId, kind: m?.kind ?? "staff_sms", notificationId: m?.notificationId ?? null, channel: "sms", status, detail: detail ?? r.id });
       }),
     );
-  const { OpenPhone, defaultOpenPhoneNumber } = await import("@/lib/integrations/openphone");
-  const from = await defaultOpenPhoneNumber();
-  if (!from) {
+  const { defaultOpenPhoneNumber } = await import("@/lib/integrations/openphone");
+  // A gate, not the send: the outbox resolves the sending number itself.
+  if (!(await defaultOpenPhoneNumber())) {
     await unclaim();
     await logAll("failed", "no OpenPhone number to send from");
     return "none";
@@ -464,16 +469,161 @@ async function flushMemberSms(teamMemberId: string): Promise<"sent" | "none" | "
     mine.length === 1
       ? `${HUB_SMS_PREFIX}: ${mine[0].line}`
       : `${HUB_SMS_PREFIX} — ${mine.length} updates:\n` + mine.map((r) => `• ${r.line}`).join("\n");
+  // Through the outbox (RTP-08): one durable row per digest, keyed on the claim
+  // stamp this flush won — so the send survives a killed worker with a record,
+  // and OpenPhone's own message id is kept as the proof that it went.
+  const { sendThroughOutbox, outboxStateOf, staffKey } = await import("@/lib/outbox");
+  const key = staffKey(teamMemberId, claimStamp);
+  // WHY THE CLAIM STILL COMES FIRST HERE (review, Sep 16). On the client rails
+  // the outbox row IS the claim; a staff digest cannot work that way, because
+  // its body is built from exactly the lines this claim won — enqueueing first
+  // would mean texting lines a competing flush is also sending (the partial-claim
+  // finding this file already carries). So the claim stays first, and the gap it
+  // leaves — killed after the claim, before this row exists — is closed from the
+  // other end by recoverUnclaimedStaffSms() on the 5-minute flusher, which puts
+  // lines back in the queue when no outbox row was ever written under this key.
+  let res;
   try {
-    await OpenPhone.sendMessage(from, num.to, body.slice(0, 1500));
+    res = await sendThroughOutbox({
+      channel: "sms",
+      toRef: num.key,
+      body: body.slice(0, 1500),
+      dedupeKey: key,
+      requestedBy: FLUSH_REQUESTED_BY,
+    });
   } catch (e) {
-    await unclaim(); // failed send → rows go back in the queue for the next flush
-    await logAll("failed", e instanceof Error ? e.message : "send failed");
-    throw e;
+    // A database failure while queueing. Ask the outbox itself whether a row
+    // got written before deciding: NO row means nothing was ever handed over,
+    // so the lines go back in the queue; a row means the watchdog owns it and
+    // these lines must not be re-sent.
+    const wrote = await outboxStateOf(key).catch(() => null);
+    const why = e instanceof Error ? e.message : "queue failed";
+    if (!wrote) {
+      await unclaim();
+      await logAll("failed", why);
+      throw e;
+    }
+    await logAll("failed", `unconfirmed — not re-sent: ${why}`);
+    return "held";
   }
-  // Sent — one row per line so "Last reached: text" names the kind that went.
-  await logAll("sent");
-  return "sent";
+  if (res.outcome === "accepted") {
+    // Sent — one row per line so "Last reached: text" names the kind that went.
+    await logAll("sent", res.providerId ? `op-${res.providerId}` : undefined);
+    return "sent";
+  }
+  if (res.outcome === "failed") {
+    await unclaim(); // REFUSED → nothing went out, so the rows go back in the queue
+    await logAll("failed", res.error);
+    throw new Error(res.error);
+  }
+  // Unconfirmed (or another worker holds this exact claim): the digest may be on
+  // their phone already. Keep the claim, say so in the log, and let a person
+  // settle it — Connections lists every unconfirmed send with its age.
+  const why = res.outcome === "unknown" ? res.error : `another worker holds this flush (${res.outcome})`;
+  await logAll("failed", `unconfirmed — not re-sent: ${why}`);
+  console.warn(`flushMemberSms: ${teamMemberId}'s digest could not be confirmed — held, not re-queued (${why})`);
+  return "held";
+}
+
+// The identity every staff digest is queued under, kept in one place: the
+// watchdog below uses it to tell "this flush reached the outbox" from "this
+// flush died before it ever did".
+const FLUSH_REQUESTED_BY = "notify:flushMemberSms";
+
+/** THE DIGEST THAT NOBODY IS SENDING (review, Sep 16). flushMemberSms claims its
+ *  lines (sentAt = the claim stamp) and only then writes the outbox row that
+ *  makes the send durable. A worker killed in the gap leaves those lines
+ *  claimed, unsent and invisible to every later flush — they no longer match
+ *  `sentAt: null` — which is exactly the claim-before-send loss RTP-08 removed
+ *  from the client rails.
+ *
+ *  A claimed line may only be released when we can PROVE nothing was handed
+ *  over, and the proof is the absence of an outbox row under that flush's own
+ *  identity (`staff:<member>:<claim stamp>`). Two guards keep that proof honest:
+ *   · nothing is touched until the outbox has handled at least one staff digest.
+ *     Before that, "no outbox row" only means "sent by the code that predates
+ *     the outbox", and releasing those would re-text digests that did go out;
+ *   · a five-minute margin after that first row, because a rolling deploy can
+ *     leave an old instance finishing a flush while the new one starts.
+ *  Lines claimed in the last 15 minutes are left alone — their flush may still
+ *  be in flight — and anything we cannot read is left claimed, because a stuck
+ *  digest beats a duplicate one. */
+async function recoverUnclaimedStaffSms(): Promise<number> {
+  const { outboxStateOf, staffKey } = await import("@/lib/outbox");
+  const firstStaff = await prisma.outboxMessage
+    .findFirst({ where: { requestedBy: FLUSH_REQUESTED_BY }, orderBy: { createdAt: "asc" }, select: { createdAt: true } })
+    .catch(() => null);
+  if (!firstStaff) return 0; // the outbox has never carried a staff digest here
+  const from = new Date(firstStaff.createdAt.getTime() + 5 * 60_000);
+  const until = new Date(Date.now() - 15 * 60_000);
+  if (from >= until) return 0;
+  const claimed = await prisma.pendingSms
+    .findMany({ where: { sentAt: { gt: from, lt: until }, skippedAt: null }, select: { id: true, teamMemberId: true, sentAt: true }, take: 200 })
+    .catch(() => [] as { id: string; teamMemberId: string; sentAt: Date | null }[]);
+  if (claimed.length === 0) return 0;
+  // One group per flush: the claim stamp names it, which is what makes the
+  // outbox key reconstructible from the rows alone.
+  const byFlush = new Map<string, { teamMemberId: string; sentAt: Date; ids: string[] }>();
+  for (const r of claimed) {
+    if (!r.sentAt) continue;
+    const key = staffKey(r.teamMemberId, r.sentAt);
+    const g = byFlush.get(key) ?? { teamMemberId: r.teamMemberId, sentAt: r.sentAt, ids: [] };
+    g.ids.push(r.id);
+    byFlush.set(key, g);
+  }
+  let recovered = 0;
+  for (const [key, g] of byFlush) {
+    let held: unknown;
+    try {
+      held = await outboxStateOf(key);
+    } catch {
+      continue; // can't tell → leave it claimed
+    }
+    if (held) continue; // the outbox owns this flush: accepted, held, or queued for the drain
+    const back = await prisma.pendingSms
+      .updateMany({ where: { id: { in: g.ids }, sentAt: g.sentAt }, data: { sentAt: null } })
+      .catch(() => ({ count: 0 }));
+    if (back.count > 0) {
+      recovered += back.count;
+      console.warn(`flushPendingSms: ${g.teamMemberId} — ${back.count} digest line(s) were claimed but never handed to OpenPhone; put back in the queue`);
+    }
+  }
+  return recovered;
+}
+
+/** The drain sent a staff digest whose flush is gone (api/cron/gmail →
+ *  outbox.drainPending). The lines were already claimed under this flush's stamp
+ *  — that is what the identity encodes — so all that is missing is the delivery
+ *  log that makes "Last reached: text" true on the People page. */
+export async function recordDrainedStaffSms(
+  row: { dedupeKey: string | null },
+  providerId: string | null,
+): Promise<string | null> {
+  const key = row.dedupeKey ?? "";
+  if (!key.startsWith("staff:")) return null;
+  const rest = key.slice("staff:".length);
+  const cut = rest.indexOf(":");
+  if (cut < 1) return null;
+  const teamMemberId = rest.slice(0, cut);
+  const claimStamp = new Date(rest.slice(cut + 1)); // an ISO instant, colons and all
+  if (Number.isNaN(claimStamp.getTime())) return null;
+  const mine = await prisma.pendingSms
+    .findMany({ where: { teamMemberId, sentAt: claimStamp }, select: { id: true } })
+    .catch(() => [] as { id: string }[]);
+  if (mine.length === 0) return null;
+  const meta = await queuedMeta(mine.map((r) => r.id));
+  for (const r of mine) {
+    const m = meta.get(r.id);
+    await logDelivery({
+      teamMemberId,
+      kind: m?.kind ?? "staff_sms",
+      notificationId: m?.notificationId ?? null,
+      channel: "sms",
+      status: "sent",
+      detail: providerId ? `op-${providerId} (recovered)` : `${r.id} (recovered)`,
+    });
+  }
+  return `recovered and sent ${mine.length} queued text line(s) for ${teamMemberId}`;
 }
 
 // Cron flusher (every 5 min): deliver queued digests once the batch window has
@@ -482,19 +632,26 @@ async function flushMemberSms(teamMemberId: string): Promise<"sent" | "none" | "
 // immediate send in queueStaffSms had rightly held for a Manila editor's
 // night went out here in ET daytime — still their night (review, Sep 15).
 // An editor's timezone comes off editors.ts; everyone else is ET. `skipped`
-// (Sep 16) counts lines parked because the member can never be texted.
-export async function flushPendingSms(): Promise<{ flushed: number; failed: string[]; skipped: number }> {
+// (Sep 16) counts lines parked because the member can never be texted, and
+// `held` (Sep 16, RTP-08) counts digests OpenPhone did not confirm — those are
+// NOT re-queued, they wait on Connections for a person. `recovered` (review,
+// Sep 16) counts lines a killed flush left claimed and unsent, put back in the
+// queue by the watchdog above — it runs FIRST, and before the early return,
+// because those lines are claimed and so never appear in the pending groups.
+export async function flushPendingSms(): Promise<{ flushed: number; failed: string[]; skipped: number; held: number; recovered: number }> {
+  const recovered = await recoverUnclaimedStaffSms().catch(() => 0);
   const pending = await prisma.pendingSms.groupBy({
     by: ["teamMemberId"],
     where: { sentAt: null, skippedAt: null },
     _min: { createdAt: true },
   });
-  if (pending.length === 0) return { flushed: 0, failed: [], skipped: 0 };
+  if (pending.length === 0) return { flushed: 0, failed: [], skipped: 0, held: 0, recovered };
   const { editorKeysByTeamMemberId } = await import("@/lib/notifyPrefs");
   const { editorMeta, DEFAULT_EDITOR_TZ } = await import("@/lib/editors");
   const editorKeys = await editorKeysByTeamMemberId();
   let flushed = 0;
   let skipped = 0;
+  let held = 0;
   const failed: string[] = [];
   for (const p of pending) {
     const oldest = p._min.createdAt;
@@ -526,11 +683,12 @@ export async function flushPendingSms(): Promise<{ flushed: number; failed: stri
       const r = await flushMemberSms(p.teamMemberId);
       if (r === "sent") flushed++;
       else if (r === "parked") skipped++;
+      else if (r === "held") held++;
     } catch (e) {
       failed.push(`${p.teamMemberId}: ${e instanceof Error ? e.message : "send failed"}`);
     }
   }
-  return { flushed, failed, skipped };
+  return { flushed, failed, skipped, held, recovered };
 }
 
 // INTERNAL STAFF SMS. For alerts that must reach a named person's phone rather

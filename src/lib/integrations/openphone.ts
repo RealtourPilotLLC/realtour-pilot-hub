@@ -20,7 +20,11 @@ type Query = Record<string, string | number | boolean | string[] | undefined>;
 
 export async function openphoneRequest<T = unknown>(
   path: string,
-  opts: { method?: string; query?: Query; body?: unknown; key?: string } = {},
+  // `timeoutMs` (RTP-08, Sep 16) is used by the SEND call alone: a hung POST
+  // used to hold a cron step open until the platform killed it, which is the
+  // one shape of failure that loses a message with no record. Bounded, it
+  // becomes a normal ambiguous outcome the outbox can hold and show.
+  opts: { method?: string; query?: Query; body?: unknown; key?: string; timeoutMs?: number } = {},
 ): Promise<T> {
   const key = opts.key ?? (await getSecret("openphone"));
   if (!key) throw new OpenPhoneError("OpenPhone is not connected.", 401);
@@ -32,15 +36,27 @@ export async function openphoneRequest<T = unknown>(
     else url.searchParams.set(k, String(v));
   }
 
-  const res = await fetch(url, {
-    method: opts.method ?? "GET",
-    headers: {
-      Authorization: key,
-      "Content-Type": "application/json",
-    },
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-    cache: "no-store",
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: opts.method ?? "GET",
+      headers: {
+        Authorization: key,
+        "Content-Type": "application/json",
+      },
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+      cache: "no-store",
+      ...(opts.timeoutMs ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
+    });
+  } catch (e) {
+    // A timed-out send is AMBIGUOUS, never a rejection: OpenPhone may have
+    // taken the message before it stopped answering. 408 is the status the
+    // outbox's classifier reads as "we cannot tell" (lib/outbox.ts).
+    if ((e as { name?: string } | null)?.name === "TimeoutError" || (e as { name?: string } | null)?.name === "AbortError") {
+      throw new OpenPhoneError(`OpenPhone did not answer within ${Math.round((opts.timeoutMs ?? 0) / 1000)}s`, 408);
+    }
+    throw e;
+  }
 
   const text = await res.text();
   let json: unknown;
@@ -175,10 +191,19 @@ export const OpenPhone = {
   // + delivery sweeps in clientTextSweeps.ts, which text CLIENTS under strict
   // idempotency claims and a 9am-8pm ET gate. Everything else client-facing
   // stays human-initiated (a person clicks Send).
+  //
+  // Sep 16 (RTP-08): the CLIENT-text rails (both sweeps and the Send-all panel)
+  // and the staff digest now reach this through the durable outbox
+  // (lib/outbox.ts), which keeps `data.id` as the proof a message really left.
+  // The remaining direct callers — app/actions.ts, the per-screen send buttons,
+  // uploadDigest — are still to move. The 30s bound applies to all of them: it
+  // turns "the request hung until the platform killed the function" into a
+  // recorded, ambiguous outcome instead of a message nothing remembers.
   sendMessage: (from: string, to: string | string[], content: string, mediaUrls?: string[]) =>
     openphoneRequest<{ data: OpMessage }>("/messages", {
       method: "POST",
       body: { content, from, to: Array.isArray(to) ? to : [to], ...(mediaUrls?.length ? { mediaUrls } : {}) },
+      timeoutMs: 30_000,
     }),
 };
 
@@ -532,10 +557,18 @@ export async function registerOpenPhoneWebhooks(
 // rejection — anyone who guessed hub.realtourpilot.com/api/webhooks/openphone
 // could post a message attributed to a named client (which mints tasks, can
 // raise a revision, and feeds the AI's memory as that client's own words).
-export type OpenPhoneAuth = { ok: true; unsigned: boolean } | { ok: false; unsigned: false };
+//
+// RTP-28 (Sep 16): the failure now carries WHY. "No token on the request" and
+// "a token that doesn't match" are different faults — the first is a hook
+// registered without the `?t=` query, the second a rotated token — and the
+// receiver writes the reason onto the REJECTED row so /connections can say
+// which one bounced instead of "unsigned: token missing or mismatched".
+export type OpenPhoneAuth =
+  | { ok: true; unsigned: boolean }
+  | { ok: false; unsigned: false; reason: "no token on the request" | "token did not match the saved one" };
 export async function openPhoneRequestAuthorized(token: string | null): Promise<OpenPhoneAuth> {
   const expected = await getSecret("openphone_webhook");
-  if (!expected) return { ok: true, unsigned: true }; // not yet activated — accepted, but loudly
+  if (!expected) return { ok: true, unsigned: true }; // not yet activated — the receiver's setting decides
   // Compare BYTES, and gate on BYTE length. timingSafeEqual THROWS when the two
   // buffers differ in length, and a JS string's .length counts characters, not
   // bytes — so a 48-character `?t=` made of multibyte characters cleared the
@@ -543,9 +576,11 @@ export async function openPhoneRequestAuthorized(token: string | null): Promise<
   // 500 (and a stack trace) instead of a clean 401.
   const got = Buffer.from(token ?? "", "utf8");
   const want = Buffer.from(expected, "utf8");
-  if (got.length !== want.length) return { ok: false, unsigned: false };
+  if (got.length !== want.length) {
+    return { ok: false, unsigned: false, reason: token ? "token did not match the saved one" : "no token on the request" };
+  }
   const match = crypto.timingSafeEqual(got, want);
-  return match ? { ok: true, unsigned: false } : { ok: false, unsigned: false };
+  return match ? { ok: true, unsigned: false } : { ok: false, unsigned: false, reason: "token did not match the saved one" };
 }
 
 export async function testOpenPhoneKey(

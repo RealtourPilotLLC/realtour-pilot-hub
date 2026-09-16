@@ -12,10 +12,36 @@ import { dropboxUpload, dropboxDownload, dropboxDelete } from "./integrations/dr
 // of the team's Dropbox.
 export const STORAGE_PREFIX = "/RealTour Pilot/Hub";
 
-/** True if a Dropbox path is inside our app-owned storage prefix. */
+/**
+ * True if a Dropbox path is inside our app-owned storage prefix.
+ *
+ * A ".." segment is refused outright (review, Sep 16). Dropbox resolves
+ * nothing — it treats `…/projects/<id>/../../Personal/taxes.pdf` as a literal
+ * name and answers 404 — so this is not an escape today. But this check is the
+ * only thing standing between /api/file and the rest of the team's Dropbox,
+ * and it must not quietly depend on a remote API's parsing staying literal.
+ * It would also have let a traversal path pass the new "whose job is this?"
+ * attribution by naming a real project id on its way out of the prefix.
+ */
 export function withinStorage(p: string): boolean {
   const norm = p.startsWith("/") ? p : "/" + p;
+  if (norm.split("/").includes("..")) return false;
   return norm === STORAGE_PREFIX || norm.startsWith(STORAGE_PREFIX + "/");
+}
+
+/**
+ * The project a stored path belongs to, read back out of the convention below
+ * (`<prefix>/projects/<projectId>/…`). /api/file uses it to answer "whose file
+ * is this?" for anything written here that has no UploadedFile row of its own
+ * (RTP-01, Sep 16). Null when the path is ours but names no project — which
+ * the route treats as a refusal, not as permission.
+ */
+export function projectIdFromStoragePath(p: string): string | null {
+  if (!withinStorage(p)) return null;
+  const norm = p.startsWith("/") ? p : "/" + p;
+  const rest = norm.slice(STORAGE_PREFIX.length + 1); // drop the prefix and its "/"
+  const [folder, projectId] = rest.split("/");
+  return folder === "projects" && projectId ? projectId : null;
 }
 
 /** A human-friendly "Dropbox path" we show in the UI for a shoot's media folder. */

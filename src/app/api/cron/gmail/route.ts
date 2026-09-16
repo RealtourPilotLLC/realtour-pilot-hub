@@ -49,6 +49,53 @@ export async function GET(req: NextRequest) {
     const { flushPendingSms } = await import("@/lib/notify");
     return flushPendingSms();
   });
+  // RTP-08 (Sep 16): the outbox watchdog. Every message the hub sends now lives
+  // in a durable row, and a worker that stops mid-send leaves that row behind.
+  // Every five minutes:
+  //   · an expired lease that never reached a provider goes back to pending;
+  //   · one that HAD reached a provider becomes `unknown` and is never retried
+  //     blindly — it may already be in the client's hands. It surfaces on
+  //     Connections with its age and a Retry only a person can press.
+  //   · a young pending row a stopped worker left behind is sent — but ONLY if
+  //     the client-text window is still open, so a recovery can never put a
+  //     client text out after Jordan's 4:30pm cutoff. An older one is released
+  //     to its own sweep, which re-checks every gate before offering it again.
+  // A drained row's CALLER is gone, so this step also writes the records that
+  // caller would have written — the AppSetting marker, Client.welcomeTextAt, the
+  // task's completion, the comm log (review, Sep 16). Without them the send is
+  // real but invisible, and the sweep that queued it meets its own accepted row
+  // on every tick for ever.
+  await step("outboxRecover", async () => {
+    const { recoverExpiredLeases, drainPending, unknownSendCount, outboxKind, isClientKind } = await import("@/lib/outbox");
+    const { clientTextWindowOpen, recordDrainedSend } = await import("@/lib/clientTextSweeps");
+    const leases = await recoverExpiredLeases();
+    let windowOpen: boolean | null = null; // one settings read per run, not per row
+    const recovered: string[] = [];
+    const drained = await drainPending({
+      workerId: `cron-gmail-${Date.now().toString(36)}`,
+      limit: 10,
+      canSend: async (row) => {
+        if (!isClientKind(outboxKind(row.dedupeKey))) return true; // team texts ignore the window by design
+        if (windowOpen === null) windowOpen = await clientTextWindowOpen();
+        return windowOpen;
+      },
+      onAccepted: async (row, providerId) => {
+        // Each kind's bookkeeping lives with the code that owns it: client texts
+        // in clientTextSweeps, staff digests in notify (where the PendingSms
+        // lines behind the digest are).
+        const note = isClientKind(outboxKind(row.dedupeKey))
+          ? await recordDrainedSend(row, providerId)
+          : await import("@/lib/notify").then(({ recordDrainedStaffSms }) => recordDrainedStaffSms(row, providerId));
+        if (note) recovered.push(note);
+      },
+    });
+    return {
+      leases: { returned: leases.returned, toUnknown: leases.unknown, released: leases.released },
+      drained,
+      ...(recovered.length > 0 ? { recovered } : {}),
+      unconfirmed: await unknownSendCount(),
+    };
+  });
   await step("kyleMorning", async () => {
     const { kyleMorningDigest } = await import("@/lib/notify");
     return kyleMorningDigest();

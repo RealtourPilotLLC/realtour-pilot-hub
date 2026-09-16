@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth/user";
-import { authEnforced } from "@/lib/auth/guards";
+import { addressableKeys, authEnforced } from "@/lib/auth/guards";
 import { canAccess } from "@/lib/auth/access";
 import { TasksTabs, type TasksTab } from "@/components/tasks/TasksTabs";
 import { BoardView, boardOpenCount } from "@/components/tasks/BoardView";
@@ -48,8 +48,17 @@ export default async function TasksHubPage({ searchParams }: {
   // at ?tab=other. Rather than leave those dead, resolve the row's source and
   // send it where it lives. One indexed lookup, only when ?task= is present.
   if (!boardOnly && sp.task && tab !== "done") {
+    // …and it reads only a row this viewer is allowed to read (RTP-01, Sep
+    // 16): findUnique on a bare ?task= id resolved ANY task in the table
+    // before any per-row check, which told a caller whether an id exists and
+    // where it came from. The office sees the whole board, so it stays
+    // unscoped for them; anyone else must own the row by one of their keys.
+    const office = !me || me.role === "OWNER" || me.role === "ADMIN";
     const t = await prisma.smartTask
-      .findUnique({ where: { id: sp.task }, select: { source: true } })
+      .findFirst({
+        where: office ? { id: sp.task } : { id: sp.task, assignedKey: { in: [...(await addressableKeys(me))] } },
+        select: { source: true },
+      })
       .catch(() => null);
     if (t?.source === "slack") tab = "slack";
   }

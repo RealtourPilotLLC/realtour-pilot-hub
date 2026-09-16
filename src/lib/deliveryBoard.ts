@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etDayKey, etAddDays, etDayStartUtc } from "@/lib/datetime";
 import { tierFor, dueAtFor, type Tier } from "@/lib/turnaround";
-import { parseEvidence } from "@/lib/statusEvidence";
+import { parseEvidence, evidenceFreshness, type EvidenceFreshness, type ParsedEvidence } from "@/lib/statusEvidence";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 // The product-name → category read and the category labels live in the light,
 // client-safe qcCategories.ts (review, Sep 16): the only thing this board wanted
@@ -64,9 +64,28 @@ export type BoardJob = {
   media: {
     photos: { rawInDropbox: number; liveOnAryeo: number | null; ordered: boolean };
     video: { rawInDropbox: number; liveOnAryeo: number | null; ordered: boolean };
+    /** false = the last evidence read failed or is stale, so a zero above is
+     *  "we couldn't look", not "nothing is there" (RTP-16, Sep 16). */
+    known: boolean;
+    /** the last read we know succeeded — what "last known" refers to */
+    checkedAt: Date | null;
+    /** WHY it isn't known. "The last check failed" and "nothing has looked
+     *  since Sep 1" are different facts, and the row used to assert the first
+     *  for both — on a held job, which the sweep skips entirely, that was
+     *  simply untrue (review, Sep 16). */
+    reason: EvidenceFreshness["reason"];
   };
   notes: string | null;
+  /** HISTORY. The original delivery, kept exactly as it is — it never decides
+   *  which column this job sits in (RTP-04, Sep 16). */
   deliveredAt: Date | null;
+  /** When the outstanding ask was raised, on a job that has one. */
+  revisionAskedAt: Date | null;
+  /** No obligation left: a terminal status with no open revision. THIS is the
+   *  live/delivered split — not the deliveredAt stamp. */
+  settled: boolean;
+  /** Delivered once, and owed again since. */
+  reopened: boolean;
 };
 
 export type DeliveryBoard = {
@@ -104,6 +123,178 @@ function uploadState(rows: { uploadedAt: Date | null; status: string }[]): "none
   return up === 0 ? "none" : up === rows.length ? "in" : "some";
 }
 
+// ---------------------------------------------------------------------------
+// WHAT DOES THIS JOB STILL OWE? (RTP-04, Sep 16 audit)
+//
+// The obligation decides everything on this board — which column a job sits
+// in, whether it has a promise, and what the blocker chip says. Project
+// .deliveredAt is HISTORY and is never asked: 1337 Carolannes went out on Aug
+// 28 and the client sent recorded notes on Sep 14, so "delivered" is a true
+// fact about August and a lie about today. The stamp itself is never touched.
+// ---------------------------------------------------------------------------
+
+/** The two ends of the line. Everything else is live work, at any age. */
+const TERMINAL_STATUSES = new Set(["DELIVERED", "CANCELLED"]);
+
+/** An ask raised since the last delivery is still open — the same rule
+ *  reviewCuts.ts applies (revisionRequestedAt newer than deliveredAt). A job
+ *  delivered AFTER the ask (332 Ruth Ridge: asked Sep 1, delivered Sep 2) is
+ *  settled, and a REVISION status with no stamp is its own witness. */
+function hasOpenRevision(p: { status: string; deliveredAt: Date | null; revisionRequestedAt: Date | null }): boolean {
+  if (p.status === "REVISION") return true;
+  if (!p.revisionRequestedAt) return false;
+  return !p.deliveredAt || p.revisionRequestedAt > p.deliveredAt;
+}
+
+/** Nothing outstanding: a terminal stage with no reopened ask. */
+function isSettled(p: { status: string; deliveredAt: Date | null; revisionRequestedAt: Date | null }): boolean {
+  return TERMINAL_STATUSES.has(p.status) && !hasOpenRevision(p);
+}
+
+// ---------------------------------------------------------------------------
+// ONE PROMISE ENGINE (review, Sep 16).
+//
+// The board and the project page's Status check card each worked out their own
+// answer to "when was this due", and they disagreed: on 358 N Church the board
+// said Sep 17 05:00 UTC while the card said Sep 18 17:00, so one would have
+// gone red hours before the other. Worse, the card only ever had the VIDEO's
+// date, so a late Photos job (2358 Buck Mountain, due today on the board) read
+// "No promise has been set for it yet."
+//
+// Everything below is pure and exported: deliveryBoard() calls it per row, and
+// StatusEvidenceCard calls it for the one job it is rendering. They cannot
+// drift, because there is only one of it.
+// ---------------------------------------------------------------------------
+
+/** Exactly what the promise needs off a project row. */
+export type PromiseInput = {
+  status: string;
+  shootDate: Date | null;
+  deliveredAt: Date | null;
+  revisionRequestedAt: Date | null;
+  dueOverrideAt: Date | null;
+  tierOverride: string | null;
+  packageName: string | null;
+  statusEvidence: string | null;
+  orderItems: { title: string; quantity: number }[];
+  deliverables: { type: string; status: string; uploadedAt: Date | null; label: string | null }[];
+  appointments: { startAt: Date | null; status: string | null }[];
+};
+
+export type BoardPromise = {
+  /** null = this job has no clock at all (see the reopened rule below). */
+  at: Date | null;
+  /** what the date is FOR — the product or category being chased. */
+  label: string | null;
+  tierLabel: string | null;
+  /** the office set this date by hand; it outranks every product promise. */
+  office: boolean;
+};
+
+export type TurnaroundRuleSet = Awaited<ReturnType<typeof turnaroundRules>> | undefined;
+
+// The clock starts at the shoot — that's when we take possession of the work.
+// Monthly social content often has no shoot of its own, so its clock runs from
+// now. Anything ELSE with no shoot date has no clock at all: an unscheduled
+// BOOKED job used to anchor at `now` too, which made it "due tomorrow 5 PM"
+// every single day — 775 Scotch Way sat in Due tomorrow for a week (audit, Sep
+// 8 2026), padding Kyle's tomorrow count by one. It belongs in Upcoming,
+// marked "no date", until it is on the calendar.
+function clockStart(p: Pick<PromiseInput, "shootDate" | "deliverables" | "packageName">, now: Date): Date | null {
+  return p.shootDate ?? (isMonthlyContentJob(p.deliverables, p.packageName) ? now : null);
+}
+
+/** Every ordered product with its own tier and promise — the "n products
+ *  ordered" list on the card, and the raw material for the date below. */
+export function boardItems(p: Pick<PromiseInput, "shootDate" | "deliverables" | "packageName" | "orderItems">, now = new Date()): BoardItem[] {
+  const startedAt = clockStart(p, now);
+  return p.orderItems.map((oi) => {
+    const tier: Tier = tierFor(oi.title);
+    return { title: oi.title, quantity: oi.quantity, tierLabel: tier.label, dueAt: startedAt ? dueAtFor(tier, startedAt) : null };
+  });
+}
+
+/**
+ * THE EARLIEST OUTSTANDING PROMISE (Kyle call, Sep 16).
+ *
+ * The header has always said "a job's due date is the EARLIEST outstanding
+ * item", but the code took the min over EVERY item — so a job whose photos
+ * went out on time read LATE for the photo promise while the thing actually
+ * owed (the video) sat two days out. An item is settled when every category it
+ * implies is live on Aryeo; an item the label parser can't classify ("Social
+ * Influencer") stays outstanding, because we can't prove it's done.
+ */
+export function outstandingPromise(
+  p: PromiseInput,
+  opts: { now?: Date; turnarounds?: TurnaroundRuleSet; evidence?: ParsedEvidence | null } = {},
+): BoardPromise {
+  const now = opts.now ?? new Date();
+  const ev = opts.evidence !== undefined ? opts.evidence : parseEvidence(p.statusEvidence);
+  const missingCategories = ev ? ev.missing : null;
+  const settled = isSettled(p);
+  // REOPENED, not merely "has an open ask" (review, Sep 16). 1337 Carolannes
+  // met every promise its order carried back in August and is owed the
+  // client's Sep 14 notes; printing "LATE · Aug 26" would date it against a
+  // promise it kept. A revision has no clock of its own yet — that is Jordan's
+  // open question (a fixed turnaround from the ask, or Kyle sets it by hand) —
+  // so until he answers, the honest answer is no date and the card says so in
+  // words. A job that was NEVER delivered keeps the promise it is breaking:
+  // 893 S Matlack is a REVISION with no delivery, five days past its 48-hour
+  // video, and gating on the ask alone quietly took it off Kyle's late list.
+  const reopened = !settled && !!p.deliveredAt;
+
+  const startedAt = clockStart(p, now);
+  const dated = boardItems(p, now).filter((i): i is BoardItem & { dueAt: Date } => i.dueAt !== null);
+  const outstandingItems = missingCategories
+    ? dated.filter((i) => {
+        const cats = categoryLabelsForLabel(i.title);
+        return cats.length === 0 || cats.some((c) => missingCategories.includes(c));
+      })
+    : dated;
+  // A missing category the order items never name still has a promise — the
+  // deliverable rows carry it, and tasks.ts is the one SLA engine (premium
+  // 72h, same-day rushes, monthly batches) the QC card is dated by.
+  // startedAt guard: with no shoot date there is no clock at all, and
+  // pendingDuesByCategory anchors on `now` — which is how an unscheduled
+  // BOOKED job used to read "due tomorrow 5 PM" every single day.
+  const categoryDues =
+    startedAt && missingCategories && missingCategories.length > 0 && outstandingItems.length === 0
+      ? pendingDuesByCategory({
+          shootDate: startedAt,
+          deliverables: p.deliverables,
+          orderItems: p.orderItems,
+          statusEvidence: p.statusEvidence,
+          monthlyContent: isMonthlyContentJob(p.deliverables, p.packageName),
+          turnarounds: opts.turnarounds,
+          // The office's tier, same ladder as the QC card and the status
+          // engine (Sep 16) — a job re-sold as a branding package must not
+          // keep reading LATE here on a 48h reel clock.
+          tier: slaTierOf(p),
+          appointments: p.appointments,
+        }).filter((d) => missingCategories.includes(d.category))
+      : [];
+  const earliestItem = settled || outstandingItems.length === 0
+    ? null
+    : outstandingItems.reduce((a, b) => (a.dueAt <= b.dueAt ? a : b));
+  const earliestCategory = settled || categoryDues.length === 0 ? null : categoryDues[0];
+  // Nothing outstanding at all (every category live, nothing to date): the job
+  // is between QC and delivery — keep the old whole-order date so the card
+  // still says when it was promised rather than falling into Upcoming.
+  const fallback = settled || dated.length === 0 ? null : dated.reduce((a, b) => (a.dueAt <= b.dueAt ? a : b));
+  const earliest = reopened
+    ? null
+    : earliestItem ?? (earliestCategory ? { title: earliestCategory.category, tierLabel: null as string | null, dueAt: earliestCategory.at } : fallback);
+
+  // THE OFFICE'S DUE (Sep 13, editOverrides.ts): when Jordan set a date on the
+  // job, that is the promise Kyle is chasing — it replaces the earliest product
+  // promise and is labelled as the office's, not a tier's. It still stands on a
+  // reopened job; only a settled one has no promise at all.
+  if (!settled && p.dueOverrideAt) {
+    return { at: p.dueOverrideAt, label: earliest?.title ?? "the whole job", tierLabel: "office override", office: true };
+  }
+  return { at: earliest?.dueAt ?? null, label: earliest?.title ?? null, tierLabel: earliest?.tierLabel ?? null, office: false };
+}
+
 /**
  * What is holding this job up, in the words Kyle would use.
  *
@@ -112,16 +303,21 @@ function uploadState(rows: { uploadedAt: Date | null; status: string }[]): "none
  * thing that needs doing.
  */
 function blockerFor(
-  p: { status: string; shootDate: Date | null; deliveredAt: Date | null },
+  p: { status: string; shootDate: Date | null; deliveredAt: Date | null; revisionRequestedAt: Date | null },
   deliverables: { type: string; status: string; uploadedAt: Date | null }[],
   /** the status engine's own answer — categories ordered but not live on
    *  Aryeo. Null when the job has no evidence yet (then the rows decide). */
   missingCategories: string[] | null,
 ): { kind: BlockerKind; label: string } {
-  if (p.deliveredAt) return { kind: "delivered", label: "Delivered" };
+  // THE OBLIGATION IS TESTED FIRST (RTP-04, Sep 16). This used to open with
+  // `if (p.deliveredAt) return "Delivered"`, which read a job delivered months
+  // ago and reopened today as done and put it in the Delivered column with a
+  // green chip — with nothing on the card saying changes were outstanding.
   if (p.status === "ON_HOLD") return { kind: "on_hold", label: "On hold" };
   // Neutral: a revision is the client's ask OR the owner bouncing a cut in review.
-  if (p.status === "REVISION") return { kind: "revision", label: "Changes requested" };
+  if (hasOpenRevision(p)) return { kind: "revision", label: "Changes requested" };
+  // Only now may the history speak, and only for a job that is genuinely done.
+  if (isSettled(p)) return { kind: "delivered", label: "Delivered" };
 
   const now = new Date();
   if (!p.shootDate || p.shootDate > now) {
@@ -199,15 +395,34 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
   const rows = await prisma.project.findMany({
     where: {
       status: { not: "CANCELLED" },
+      // RTP-04 (Sep 16): the ten-day window ages out FINISHED work only. It
+      // used to key on the deliveredAt stamp, so a job with an old delivery
+      // date fell off the board no matter what it owed today — 1337
+      // Carolannes (delivered Aug 28, client notes Sep 14) and 56 Hillview
+      // (held since Jul 30 with the client's complaint on the record) were on
+      // no screen at all. A non-terminal status is live work at any age; the
+      // tail is for genuinely delivered rows.
       OR: [
-        { deliveredAt: null },
-        // A short delivered tail, so Kyle can confirm what just went out.
+        { status: { not: "DELIVERED" } },
         { deliveredAt: { gte: etAddDays(etDayStartUtc(), -10) } },
+        // …and any row the obligation still calls live. isSettled() reads a
+        // DELIVERED row whose ask is newer than its delivery as unfinished, so
+        // the window has to keep it too — otherwise the same job goes invisible
+        // again at ten days, which is the whole of RTP-04 (review, Sep 16).
+        // Zero rows today (comms.ts flips such a job to REVISION), so this is a
+        // guard against the two rules drifting apart, not a live fix.
+        { revisionRequestedAt: { gt: prisma.project.fields.deliveredAt } },
       ],
     },
     select: {
       id: true, title: true, addressLine: true, city: true, status: true,
       shootDate: true, deliveredAt: true, notes: true,
+      // The outstanding ask (RTP-04): a reopened job is live work, and the
+      // card says when it was reopened rather than showing a green delivery.
+      revisionRequestedAt: true,
+      // "We couldn't look" vs "we looked and saw nothing" (RTP-16). All three
+      // are new and may be null on every row today — read defensively.
+      statusCheckedAt: true, evidenceAttemptedAt: true, evidenceSucceededAt: true, evidenceError: true,
       packageName: true, // monthly-content detection (the one job kind whose clock runs without a shoot)
       dueOverrideAt: true, // the office's due for the job (Sep 13, editOverrides.ts) — wins over every promise below
       tierOverride: true, // the office's tier (Sep 16) — branding → the monthly window, premium → 72h
@@ -226,75 +441,21 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
   });
 
   const jobs: BoardJob[] = rows.map((p) => {
-    // The clock starts at the shoot — that's when we take possession of the
-    // work. Monthly social content often has no shoot of its own, so its clock
-    // runs from now. Anything ELSE with no shoot date has no clock at all: an
-    // unscheduled BOOKED job used to anchor at `now` too, which made it "due
-    // tomorrow 5 PM" every single day — 775 Scotch Way sat in Due tomorrow
-    // for a week (audit, Sep 8 2026), padding Kyle's tomorrow count by one. It
-    // belongs in Upcoming, marked "no date", until it is on the calendar.
-    const monthly = isMonthlyContentJob(p.deliverables, p.packageName);
-    const startedAt = p.shootDate ?? (monthly ? now : null);
-    const items: BoardItem[] = p.orderItems.map((oi) => {
-      const tier: Tier = tierFor(oi.title);
-      return { title: oi.title, quantity: oi.quantity, tierLabel: tier.label, dueAt: startedAt ? dueAtFor(tier, startedAt) : null };
-    });
+    const items = boardItems(p, now);
 
     const ev = parseEvidence(p.statusEvidence);
     const missingCategories = ev ? ev.missing : null;
     const { kind, label } = blockerFor(p, p.deliverables, missingCategories);
+    // THE OBLIGATION, once, for the column, the promise and the card.
+    const settled = isSettled(p);
+    const openAsk = !settled && hasOpenRevision(p);
+    const reopened = !settled && !!p.deliveredAt;
 
-    // ---- THE EARLIEST OUTSTANDING PROMISE (Kyle call, Sep 16) -------------
-    // The header has always said "a job's due date is the EARLIEST outstanding
-    // item", but the code took the min over EVERY item — so a job whose photos
-    // went out on time read LATE for the photo promise while the thing actually
-    // owed (the video) sat two days out. An item is settled when every category
-    // it implies is live on Aryeo; an item the label parser can't classify
-    // ("Social Influencer") stays outstanding, because we can't prove it's done.
-    const dated = items.filter((i): i is BoardItem & { dueAt: Date } => i.dueAt !== null);
-    const outstandingItems = missingCategories
-      ? dated.filter((i) => {
-          const cats = categoryLabelsForLabel(i.title);
-          return cats.length === 0 || cats.some((c) => missingCategories.includes(c));
-        })
-      : dated;
-    // A missing category the order items never name still has a promise — the
-    // deliverable rows carry it, and tasks.ts is the one SLA engine (premium
-    // 72h, same-day rushes, monthly batches) the QC card is dated by.
-    // startedAt guard: with no shoot date there is no clock at all, and
-    // pendingDuesByCategory anchors on `now` — which is how an unscheduled
-    // BOOKED job used to read "due tomorrow 5 PM" every single day.
-    const categoryDues =
-      startedAt && missingCategories && missingCategories.length > 0 && outstandingItems.length === 0
-        ? pendingDuesByCategory({
-            shootDate: startedAt,
-            deliverables: p.deliverables,
-            orderItems: p.orderItems,
-            statusEvidence: p.statusEvidence,
-            monthlyContent: monthly,
-            turnarounds,
-            // The office's tier, same ladder as the QC card and the status
-            // engine (Sep 16) — a job re-sold as a branding package must not
-            // keep reading LATE here on a 48h reel clock.
-            tier: slaTierOf(p),
-            appointments: p.appointments,
-          }).filter((d) => missingCategories.includes(d.category))
-        : [];
-    const earliestItem = p.deliveredAt || outstandingItems.length === 0
-      ? null
-      : outstandingItems.reduce((a, b) => (a.dueAt <= b.dueAt ? a : b));
-    const earliestCategory = p.deliveredAt || categoryDues.length === 0 ? null : categoryDues[0];
-    // Nothing outstanding at all (every category live, nothing to date): the
-    // job is between QC and delivery — keep the old whole-order date so the
-    // card still says when it was promised rather than falling into Upcoming.
-    const fallback = p.deliveredAt || dated.length === 0 ? null : dated.reduce((a, b) => (a.dueAt <= b.dueAt ? a : b));
-    const earliest = earliestItem ?? (earliestCategory ? { title: earliestCategory.category, tierLabel: null as string | null, dueAt: earliestCategory.at } : fallback);
-    // THE OFFICE'S DUE (Sep 13, editOverrides.ts): when Jordan set a date on
-    // the job, that is the promise Kyle is chasing — it replaces the earliest
-    // product promise and is labelled as the office's, not a tier's. A
-    // delivered job has no outstanding promise either way.
-    const officeDue = !p.deliveredAt && p.dueOverrideAt ? p.dueOverrideAt : null;
-    const dueAt = officeDue ?? earliest?.dueAt ?? null;
+    // The promise — the same function the project page's Status check card
+    // reads, so the two screens can never call a job late on different days
+    // (review, Sep 16).
+    const promise = outstandingPromise(p, { now, turnarounds, evidence: ev });
+    const dueAt = promise.at;
 
     return {
       id: p.id,
@@ -305,8 +466,8 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
       shootDate: p.shootDate,
       photographer: p.appointments[0]?.assignedTo?.name ?? null,
       dueAt,
-      dueTierLabel: officeDue ? "office override" : earliest?.tierLabel ?? null,
-      dueFor: officeDue ? earliest?.title ?? "the whole job" : earliest?.title ?? null,
+      dueTierLabel: promise.tierLabel,
+      dueFor: promise.label,
       overdue: !!dueAt && dueAt < now,
       blocker: kind,
       blockerLabel: label,
@@ -314,6 +475,18 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
       photos: uploadState(p.deliverables.filter((d) => PHOTOISH.has(d.type))),
       video: uploadState(p.deliverables.filter((d) => VIDEOISH.has(d.type))),
       media: (() => {
+        // RTP-16 (Sep 16): carry the freshness with the counts. A failed
+        // Dropbox read leaves a stale ZERO behind, and the row rendered that
+        // as a confident red "nothing yet" — a source failure must never look
+        // like a trustworthy fact.
+        const fresh = evidenceFreshness({
+          evidence: ev,
+          attemptedAt: p.evidenceAttemptedAt,
+          succeededAt: p.evidenceSucceededAt,
+          error: p.evidenceError,
+          checkedAt: p.statusCheckedAt,
+          now,
+        });
         return {
           photos: {
             rawInDropbox: ev?.dropbox?.rawPhotos ?? 0,
@@ -325,22 +498,43 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
             liveOnAryeo: ev?.aryeo ? ev.aryeo.videos : null,
             ordered: p.deliverables.some((d) => VIDEOISH.has(d.type)),
           },
+          known: fresh.known,
+          checkedAt: fresh.at,
+          reason: fresh.reason,
         };
       })(),
       notes: p.notes?.trim() || null,
       deliveredAt: p.deliveredAt,
+      revisionAskedAt: openAsk ? p.revisionRequestedAt : null,
+      settled,
+      reopened,
     };
   });
 
-  const live = jobs.filter((j) => !j.deliveredAt);
+  // THE SPLIT IS THE OBLIGATION, NOT THE STAMP (RTP-04, Sep 16).
+  const live = jobs.filter((j) => !j.settled);
   const byDue = (a: BoardJob, b: BoardJob) => (a.dueAt?.getTime() ?? Infinity) - (b.dueAt?.getTime() ?? Infinity);
 
   // Overdue rides in Today. A day late is more urgent than due-at-5pm, and a
   // separate Overdue tab is a tab nobody opens until it's already too late.
   const today = live.filter((j) => j.dueAt && etDayKey(j.dueAt) <= todayKey).sort(byDue);
   const tomorrow = live.filter((j) => j.dueAt && etDayKey(j.dueAt) === tomorrowKey).sort(byDue);
-  const upcoming = live.filter((j) => !j.dueAt || etDayKey(j.dueAt) > tomorrowKey).sort(byDue);
-  const delivered = jobs.filter((j) => j.deliveredAt).sort((a, b) => b.deliveredAt!.getTime() - a.deliveredAt!.getTime());
+  // Work with no clock sorts to the TOP of Upcoming, not the bottom: a
+  // reopened or held job has no promise yet (see the fallback above), and
+  // Infinity would bury the one card on this board that nobody is chasing
+  // underneath thirty future shoots.
+  const upcoming = live
+    .filter((j) => !j.dueAt || etDayKey(j.dueAt) > tomorrowKey)
+    .sort((a, b) => {
+      const owedNoClock = (j: BoardJob) => (!j.dueAt && (j.blocker === "revision" || j.blocker === "on_hold") ? 0 : 1);
+      return owedNoClock(a) - owedNoClock(b) || byDue(a, b);
+    });
+  // The delivered tail. Sorted on the stamp where there is one — a terminal
+  // row with no stamp (four 2022 imports) has no place in a ten-day tail and
+  // is already filtered out by the query.
+  const delivered = jobs
+    .filter((j) => j.settled)
+    .sort((a, b) => (b.deliveredAt?.getTime() ?? 0) - (a.deliveredAt?.getTime() ?? 0));
 
   return { today, tomorrow, upcoming, delivered, overdueCount: today.filter((j) => j.overdue).length };
 }

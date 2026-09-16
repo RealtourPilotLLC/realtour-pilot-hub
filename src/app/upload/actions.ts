@@ -1,6 +1,6 @@
 "use server";
 
-import { requireDeliverableAccess, requireShootAccess, requireUploadFileAccess } from "@/lib/auth/guards";
+import { deliverableInProject, requireDeliverableAccess, requireShootAccess, requireUploadFileAccess } from "@/lib/auth/guards";
 
 import { prisma } from "@/lib/prisma";
 import { NOTHING_TO_REMOVE_SENTINEL, FRONT_TO_BACK_SENTINEL, INTERIOR_EXTERIOR_SENTINEL } from "@/lib/debrief";
@@ -28,6 +28,12 @@ export async function uploadFiles(
   formData: FormData,
 ) {
   await requireShootAccess(projectId);
+  // The guard above proves this shoot is theirs; it says nothing about the
+  // deliverable id the form sent (RTP-02, Sep 16). Unchecked, a photographer
+  // on their own job could file an upload against — and flip to UPLOADED —
+  // another client's line item. Drop a foreign id rather than throw: the files
+  // still belong on this job, they just land unattached.
+  if (deliverableId && !(await deliverableInProject(deliverableId, projectId))) deliverableId = null;
   const files = formData.getAll("files").filter((f): f is File => f instanceof File);
   const created = [];
   for (const file of files) {
@@ -568,12 +574,16 @@ export async function finalizeUpload(
   // Persist per-deliverable notes when provided (the simplified checklist portal
   // doesn't send these, but other callers may).
   for (const [deliverableId, note] of Object.entries(data.itemNotes ?? {})) {
-    if (note?.trim()) {
-      await prisma.deliverable.update({
-        where: { id: deliverableId },
-        data: { notes: note.trim() },
-      });
-    }
+    if (!note?.trim()) continue;
+    // Same rule as uploadFiles (RTP-02, Sep 16): requireShootAccess vouched
+    // for the JOB, so every related id the submit carries has to be shown to
+    // belong to it before it is written. A note for another job's deliverable
+    // is silently skipped — it was never this form's to send.
+    if (!(await deliverableInProject(deliverableId, projectId))) continue;
+    await prisma.deliverable.update({
+      where: { id: deliverableId },
+      data: { notes: note.trim() },
+    });
   }
 
   const scriptEdited = data.scriptConfirm?.state === "edited";

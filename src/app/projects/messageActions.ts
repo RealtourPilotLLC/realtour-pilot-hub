@@ -16,15 +16,50 @@ const requireStaff = () => requireRole(["OWNER", "ADMIN", "EDITOR"]);
 
 async function requireThreadAccess(projectId: string): Promise<void> {
   await requireRole(["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"]);
-  const { authEnforced } = await import("@/lib/auth/guards");
+  const { authEnforced, canViewProject } = await import("@/lib/auth/guards");
   if (!authEnforced()) return;
   const { getCurrentUser } = await import("@/lib/auth/user");
   const u = await getCurrentUser();
-  if (u?.realRole !== "PHOTOGRAPHER") return;
-  const { photographerMemberId, photographerOwnsShoot } = await import("@/lib/shoot");
-  const mid = await photographerMemberId(u);
-  if (mid && (await photographerOwnsShoot(projectId, mid))) return;
-  throw new Error("You can only message on your own shoots.");
+  // Owner/admin anywhere; the photographer on their own shoot (Sep 16, Kyle
+  // call); and — new with RTP-02, Sep 16 — the EDITOR on a job they hold.
+  // The editor half had no assignment check at all, so any editor login could
+  // post on any of 1,575 jobs, on threads whose contents they never see.
+  // canViewProject is deliberately generous about "hold": the project's
+  // pinned editor, a task delegated to them, or a cut they sent to review —
+  // so an editor covering a job keeps the thread the moment work lands on
+  // them, and a reassignment doesn't silence the person who did the edit.
+  if (await canViewProject(projectId)) return;
+  // …and once they have spoken on a job they keep the conversation, whatever
+  // happened to the assignment afterwards (Jordan's call on scoping editors:
+  // narrowing must not cut somebody out of a thread mid-exchange).
+  if (u?.realRole === "EDITOR" && u.teamMemberId) {
+    const prior = await prisma.projectMessage.findFirst({
+      where: { projectId, authorId: u.teamMemberId },
+      select: { id: true },
+    });
+    if (prior) return;
+  }
+  throw new Error(
+    u?.realRole === "PHOTOGRAPHER"
+      ? "You can only message on your own shoots."
+      : "You can only message on jobs assigned to you.",
+  );
+}
+
+// A reply has to answer a message ON THIS JOB (RTP-02, Sep 16).
+// ProjectMessage.replyToId is a bare self-relation with no project constraint,
+// and every surface that renders a thread includes the parent unconditionally
+// — so a reply pointed at another job's message would quote that job's words
+// into this one, on six screens, and notifyMessageReply would ring its author
+// about a conversation they are not in. Returns the id to store: null drops a
+// foreign or missing parent and keeps the message, which is the kind thing to
+// do to a stale tab.
+async function safeReplyTo(projectId: string, replyToId: string | null | undefined): Promise<string | null> {
+  if (!replyToId) return null;
+  const parent = await prisma.projectMessage
+    .findUnique({ where: { id: replyToId }, select: { projectId: true } })
+    .catch(() => null);
+  return parent && parent.projectId === projectId ? replyToId : null;
 }
 
 // Any new message REOPENS the conversation for everyone (Sep 16): "Close
@@ -50,6 +85,7 @@ export async function postProjectMessage(
   await requireThreadAccess(projectId);
   const text = body.trim();
   if (!text) return { ok: false, message: "Write a message first." };
+  const parentId = await safeReplyTo(projectId, replyToId);
 
   const { getCurrentUser } = await import("@/lib/auth/user");
   const { authEnforced } = await import("@/lib/auth/guards");
@@ -61,19 +97,27 @@ export async function postProjectMessage(
     // The login's LINKED Team row first (reviewer, Sep 15: the self-tag and
     // self-reply rules below compare this id exactly, so it has to be the
     // writer's own row, not a name lookalike), then the exact display name,
-    // then the roster email, then the first name. A logged-in user with no
-    // row still posts as THEMSELVES (name or email), never as a client-chosen
-    // TeamMember — the passed authorId is a spoof vector once a session
-    // exists (adversarial review).
+    // then the roster email. A logged-in user with no row still posts as
+    // THEMSELVES (name or email), never as a client-chosen TeamMember — the
+    // passed authorId is a spoof vector once a session exists (adversarial
+    // review).
+    //
+    // THREE RUNGS, NOT FOUR (review, Sep 16). There used to be a fourth:
+    // `name: { contains: <first name> }`, which matched a substring anywhere
+    // in anyone's roster name — so a login called "Kim" could be attributed to
+    // "Kimberly Vance", and "Mark" to "John Mark". That id is not cosmetic: it
+    // decides whose "you were tagged" task auto-closes, who counts as tagging
+    // themselves, who a reply rings, and (since RTP-02) which editor keeps a
+    // thread they have already spoken on. A GUESS must not open any of those.
+    // When nothing matches exactly we now leave authorId null and post under
+    // the person's own name — which is what every unmatched login already did.
     const select = { id: true, name: true };
-    const first = myName?.split(/\s+/)[0];
     const tm =
       (me.teamMemberId ? await prisma.teamMember.findUnique({ where: { id: me.teamMemberId }, select }) : null) ??
       (myName ? await prisma.teamMember.findFirst({ where: { name: { equals: myName, mode: "insensitive" } }, select }) : null) ??
       (me.email
         ? await prisma.teamMember.findFirst({ where: { email: { equals: me.email, mode: "insensitive" }, active: true }, select })
-        : null) ??
-      (first ? await prisma.teamMember.findFirst({ where: { name: { contains: first, mode: "insensitive" } }, select }) : null);
+        : null);
     authorId = tm?.id ?? null;
     authorName = tm?.name ?? myName ?? me.email ?? "Team";
   } else if (!authEnforced() && clientAuthorId) {
@@ -100,7 +144,7 @@ export async function postProjectMessage(
       authorName,
       body: text.slice(0, 2000),
       mentions: mentions.length ? JSON.stringify(mentions) : null,
-      replyToId: replyToId || null,
+      replyToId: parentId,
     },
   });
   await reopenThread(projectId);
@@ -228,13 +272,13 @@ export async function postProjectMessage(
   // reply also @-tagged them. The tagged people above already got their ping
   // (and DM), so they are excluded here. Best-effort: the message is saved.
   const reached = new Set(mentions);
-  if (replyToId) {
+  if (parentId) {
     try {
       const { notifyMessageReply } = await import("@/lib/mentions");
       for (const id of await notifyMessageReply({
         projectId,
         messageId: msg.id,
-        replyToId,
+        replyToId: parentId,
         replierTmId: authorId,
         inferOwnerReplier: !me && !authorId,
         replierName: authorName,
@@ -338,7 +382,16 @@ export async function reopenConversation(projectId: string): Promise<MsgResult> 
 // Leave a note from a task — it posts into that task's project team-message
 // thread (so notes live with the job, visible to the crew).
 export async function addTaskNote(taskId: string, note: string): Promise<MsgResult> {
+  // The staff role AND the task's own guard (RTP-02, Sep 16): this writes into
+  // a project thread chosen by the task id the caller sends, so "is this
+  // person staff" was only half the question — an editor could name any task
+  // and post on its job. requireTaskAccess adds "…and is it yours" (owner/admin,
+  // or the person it is assigned to); requireStaff keeps photographers on their
+  // own /shoot flow as before. The board only ever renders this button on rows
+  // the viewer already holds, so nothing legitimate changes.
   await requireStaff();
+  const { requireTaskAccess } = await import("@/lib/auth/guards");
+  await requireTaskAccess(taskId);
   const text = note.trim();
   if (!text) return { ok: false, message: "Write a note first." };
   const task = await prisma.smartTask.findUnique({

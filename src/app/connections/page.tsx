@@ -8,8 +8,9 @@ import { getAllConnections, getSecret } from "@/lib/integrations/connections";
 import { dropboxAuthorizeUrl, dropboxConfigured } from "@/lib/integrations/dropbox";
 import { googleAuthorizeUrl, googleConfigured, gmailSendHealth } from "@/lib/integrations/google";
 import { slackBotScopes } from "@/lib/integrations/slack";
-import { webhookErrorCount, webhookHealthByProvider } from "@/lib/webhookRetry";
+import { webhookHealthByProvider, webhookLaneHealth, unresolvedWebhookFailures, webhookErrorCount } from "@/lib/webhookRetry";
 import { SyncHealth, type CronJobHealth } from "@/components/connections/SyncHealth";
+import { WebhookHealthStrip } from "@/components/connections/WebhookHealthStrip";
 import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
@@ -125,7 +126,13 @@ export default async function ConnectionsPage({
   const connections = await getAllConnections();
   const byProvider = new Map(connections.map((c) => [c.provider, c]));
   const [
-    webhookErrors,
+    // RTP-28 (Sep 16): per-lane delivery health. Best-effort — a screen that
+    // 500s tells the office nothing about a dead webhook — but a FAILED read
+    // lands on null, not [], so the strip can say "I couldn't look" instead of
+    // rendering an all-clear it never checked (RTP-28 review, Sep 16).
+    webhookLanes,
+    webhookFailures,
+    webhookUnresolvedTotal,
     webhookHealth,
     { crons, ready: cronLogReady },
     gmailSend,
@@ -135,7 +142,9 @@ export default async function ConnectionsPage({
     aryeoWebhookSecret,
     slackScopes,
   ] = await Promise.all([
-    webhookErrorCount(),
+    webhookLaneHealth().catch(() => null),
+    unresolvedWebhookFailures().catch(() => null),
+    webhookErrorCount().catch(() => null),
     webhookHealthByProvider().catch(() => []),
     cronHealth(),
     // Live per-mailbox send-scope probe (finding #41: "connected" hid a token
@@ -280,21 +289,22 @@ export default async function ConnectionsPage({
           </div>
         )}
 
+        {/* Webhook health (RTP-28, Sep 16): per provider, when something last
+            ARRIVED, when something was last REFUSED and why, the plain sentence
+            for the office, the per-provider verification switch, and every
+            unresolved event with Retry/Dismiss. Above Sync health because a
+            provider that stopped talking to us outranks how the crons ran.
+            This replaced a standalone "N events failed in the last 7 days"
+            banner whose 7-day window was itself hiding the oldest failures. */}
+        <WebhookHealthStrip
+          lanes={webhookLanes ?? []}
+          failures={webhookFailures ?? []}
+          unresolvedTotal={webhookUnresolvedTotal}
+          degraded={webhookLanes === null || webhookFailures === null}
+        />
+
         {/* Sync health: cron run history + webhook rejections + unsigned receivers. */}
         <SyncHealth crons={crons} webhooks={webhookHealth} unsignedProviders={unsignedProviders} cronLogReady={cronLogReady} reconcile={reconcile} />
-        {webhookErrors > 0 && (
-          <div className="flex items-start gap-3 rounded-2xl border border-warning/40 bg-warning/10 p-4">
-            <AlertTriangle className="mt-0.5 size-5 shrink-0 text-warning" />
-            <div className="text-sm">
-              <p className="font-medium">{webhookErrors} incoming event{webhookErrors === 1 ? "" : "s"} failed to process in the last 7 days.</p>
-              <p className="text-muted">
-                These are auto-retried once on the hourly sync. Any that still show here couldn’t be
-                recovered — a delivered/paid/inbound event may not have registered. Usually a transient
-                blip; if the number keeps climbing, a provider connection likely needs attention.
-              </p>
-            </div>
-          </div>
-        )}
         <div className="flex items-start gap-3 rounded-2xl border bg-brand-soft/40 p-4">
           <ShieldCheck className="mt-0.5 size-5 shrink-0 text-brand" />
           <div className="text-sm">
@@ -369,7 +379,15 @@ export default async function ConnectionsPage({
                       // receiver to secure; every other card omits the chip.
                       webhookSecurity={
                         provider.id in webhookSigned
-                          ? { signed: webhookSigned[provider.id], unsignedAccepted: unsignedAccepted.get(provider.id) ?? 0 }
+                          ? {
+                              signed: webhookSigned[provider.id],
+                              unsignedAccepted: unsignedAccepted.get(provider.id) ?? 0,
+                              // Whether this receiver currently REFUSES what it
+                              // can't verify (RTP-28). Default is each
+                              // receiver's long-standing behaviour, so an
+                              // untouched hub reads exactly as it did before.
+                              enforced: webhookLanes?.find((l) => l.provider === provider.id)?.enforced ?? false,
+                            }
                           : undefined
                       }
                     />

@@ -24,27 +24,36 @@ export async function POST(req: NextRequest) {
   // token (backward compatible: allowed until a token is stored). See
   // registerOpenPhoneWebhooks / openPhoneRequestAuthorized.
   const auth = await openPhoneRequestAuthorized(req.nextUrl.searchParams.get("t"));
+  const raw = await req.text();
   if (!auth.ok) {
     // A token IS configured and this POST failed it (no token stored = the check
-    // passes) — log the rejection so it's countable/visible on /connections, and
-    // spike-alert if it keeps happening. Best-effort; the 401 always goes out.
-    try {
-      await prisma.webhookEvent.create({
-        data: { provider: "openphone", eventType: "signature.rejected", status: "REJECTED", error: "unsigned: token missing or mismatched", payload: "{}" },
-      });
-      const { alertWebhookRejections } = await import("@/lib/notify");
-      await alertWebhookRejections("openphone");
-    } catch { /* ignore */ }
+    // passes) — record the refusal so it's countable/visible on /connections
+    // with its reason, and spike-alert if it keeps happening. Best-effort; the
+    // 401 always goes out. RTP-28 (Sep 16): the body is kept too, so a token
+    // mismatch can be replayed against a candidate on /connections.
+    const { refuseWebhook } = await import("@/lib/webhookRetry");
+    await refuseWebhook("openphone", { code: "bad-signature", rawBody: raw, header: "?t= query token", sig: null });
+    console.warn(`[webhook] openphone: REFUSED — ${auth.reason}.`);
+    // Reason to the log and the stored row, never to the caller — see the note in
+    // webhookRetry's REFUSALS block (RTP-28 review, Sep 16).
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
-  // Accepted, but nothing was verified. Say so on every single request (Vercel
-  // logs) as well as on the stored row — a silent accept-all is the fault:
-  // this receiver waved through 1,380 events in 30 days with no way to tell
-  // a real client text from a forged one.
   if (auth.unsigned) {
+    // No token stored. The per-provider office setting decides whether this
+    // receiver still accepts (its default, and its behaviour to date) or
+    // refuses — RTP-28's coordinated cutover, not a code flip.
+    const { gateMissingSecret, refuseWebhook } = await import("@/lib/webhookRetry");
+    const gate = await gateMissingSecret("openphone", "openphone_webhook");
+    if (!gate.allow) {
+      await refuseWebhook("openphone", { code: gate.code, rawBody: raw, header: null, sig: null });
+      return NextResponse.json({ error: "unverified" }, { status: 401 });
+    }
+    // Accepted, but nothing was verified. Say so on every single request (Vercel
+    // logs) as well as on the stored row — a silent accept-all is the fault:
+    // this receiver waved through 1,380 events in 30 days with no way to tell
+    // a real client text from a forged one.
     console.warn("[webhook] openphone: UNSIGNED event accepted — no token configured. Press “Enable real-time” on /connections to close this.");
   }
-  const raw = await req.text();
   let payload: Record<string, unknown> = {};
   try {
     payload = raw ? JSON.parse(raw) : {};

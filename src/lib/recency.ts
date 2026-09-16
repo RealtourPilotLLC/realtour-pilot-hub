@@ -16,9 +16,17 @@ import type { Prisma, ProjectStatus } from "@prisma/client";
 
 export const RECENT_DAYS = 14;
 
-// Every non-terminal stage — never aged out of the day-to-day views.
+// Every non-terminal stage (everything but DELIVERED and CANCELLED) — never
+// aged out of the day-to-day views.
+//
+// ON_HOLD belongs here (RTP-04, Sep 16 audit). It was the one non-terminal
+// stage left out, and the hole was not theoretical: 56 Hillview Rd has been
+// held since Jul 30 with the client's own words on the record ("the video that
+// I just received … is supposed to be edited differently"), and because a held
+// job matches no date in the window either, it appeared on NO screen at all.
+// A hold is a decision to pause work, not a decision to stop watching it.
 export const ACTIVE_STATUSES: ProjectStatus[] = [
-  "BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW", "REVISION",
+  "BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW", "REVISION", "ON_HOLD",
 ];
 
 export function recentCutoff(days = RECENT_DAYS): Date {

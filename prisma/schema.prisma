@@ -645,6 +645,13 @@ model Project {
   @@index([editorId])
   @@index([shootDate])
   @@index([deliveredAt])
+  // ---- RTP-06 (Sep 16 audit): "we could not look" must be distinguishable
+  // from "we looked and saw nothing". statusCheckedAt is stamped even when the
+  // evidence read fails wholesale, so two readers already treat a failure as
+  // freshness. attempted/succeeded split; a stale zero never proves absence.
+  evidenceAttemptedAt DateTime?
+  evidenceSucceededAt DateTime?
+  evidenceError       String?
 }
 
 model Deliverable {
@@ -2268,4 +2275,36 @@ model NotificationDelivery {
 
   @@index([teamMemberId, createdAt])
   @@index([notificationId])
+}
+
+// ---- RTP-08 (Sep 16 audit): a durable outbox for every client message.
+// Today both the manual path and the automatic sweeps write their claim BEFORE
+// the provider answers, so a process killed in between loses the message with
+// no way to tell a lost send from a delivered one. States: pending → attempting
+// → accepted | failed | unknown. `unknown` is the honest outcome of a timeout
+// after the provider may already have sent — it is never retried blindly.
+model OutboxMessage {
+  id            String    @id @default(cuid())
+  channel       String    // sms | email
+  toRef         String    // phone key or email address (never rendered raw to non-owners)
+  clientId      String?
+  projectId     String?
+  taskId        String?   // the SmartTask this send answers, when there is one
+  body          String
+  state         String    @default("pending")
+  attempts      Int       @default(0)
+  leaseUntil    DateTime? // a worker's claim; an expired lease is recoverable
+  leaseBy       String?
+  providerId    String?   // the provider's own message id once accepted
+  providerError String?
+  dedupeKey     String?   @unique // one send per (what, whom, when) — a unique violation is a duplicate claim, nothing else
+  requestedBy   String?   // the person, or the sweep that queued it
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  acceptedAt    DateTime?
+  resolvedAt    DateTime?
+
+  @@index([state, createdAt])
+  @@index([projectId])
+  @@index([clientId])
 }

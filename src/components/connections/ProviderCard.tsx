@@ -66,7 +66,10 @@ export type GmailSendHealth = { email: string; canSend: boolean | null };
 // Whether THIS provider's inbound receiver verifies what it's sent, plus how
 // many events it has already accepted unverified (last 7 days). Only the two
 // providers that POST into the hub (OpenPhone, Aryeo) pass this.
-export type WebhookSecurity = { signed: boolean; unsignedAccepted: number };
+// `enforced` (RTP-28, Sep 16) is the office setting: with no secret AND
+// enforcement on, the receiver isn't open — it's refusing everything, which is
+// a different emergency and must not read as "anyone can post here".
+export type WebhookSecurity = { signed: boolean; unsignedAccepted: number; enforced: boolean };
 
 // The Slack bot token's granted scopes (auth.test, read-only). Null = the
 // probe failed; the card then says nothing rather than something wrong.
@@ -138,9 +141,16 @@ export function ProviderCard({
             </span>
           ) : (
             <span className="inline-flex items-center gap-1 rounded-full bg-danger-soft px-2 py-0.5 text-[11px] font-medium text-danger">
-              <ShieldOff className="size-3" /> Webhook UNSIGNED — anyone can post here
-              {webhookSecurity.unsignedAccepted > 0 &&
-                ` · ${webhookSecurity.unsignedAccepted.toLocaleString()} accepted unchecked in 7 days`}
+              <ShieldOff className="size-3" />
+              {webhookSecurity.enforced ? (
+                <>Webhook has no secret — every post is being REFUSED. Save the secret, or switch this receiver back in Webhook health.</>
+              ) : (
+                <>
+                  Webhook UNSIGNED — anyone can post here
+                  {webhookSecurity.unsignedAccepted > 0 &&
+                    ` · ${webhookSecurity.unsignedAccepted.toLocaleString()} accepted unchecked in 7 days`}
+                </>
+              )}
             </span>
           )}
         </div>
@@ -511,8 +521,11 @@ function AryeoWebhookSecret({ signed }: { signed: boolean }) {
         stored and never shown again.
       </p>
       <p className="text-[11px] text-warning">
-        If the secret is wrong, real Aryeo events will start bouncing — they show up as rejections in Sync health above, and you can
-        remove the secret here to undo it.
+        Prove it before you save it. A secret saved on 8 Sep didn&apos;t match what Aryeo signs with: 36 real events bounced that
+        morning and Aryeo stopped delivering for eight days — the hourly sync covered it, so nothing looked wrong. Use{" "}
+        <strong>Test a secret</strong> in Webhook health at the top of this page: it checks a candidate against a post Aryeo already
+        sent, without calling Aryeo. If events do start bouncing, they show up there as refusals and you can remove the secret here to
+        undo it.
       </p>
       <div className="flex gap-2">
         <button

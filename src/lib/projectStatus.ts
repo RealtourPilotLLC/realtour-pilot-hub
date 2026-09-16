@@ -221,7 +221,61 @@ export type StatusSignals = {
   videoTier: VideoTier | null; // standard | premium (null = no video ordered)
   videoType?: string | null; // the reel/video deliverable type (SOCIAL_REEL | VIDEO)
   monthlyContent: boolean; // recurring social-plan content (longer turnaround)
+  /** RTP-06 (Sep 16 audit): what each evidence SOURCE actually did on this
+   *  pass. It feeds the attempted/succeeded/error stamps and NOTHING else —
+   *  computeStatus never reads it, because a status must not change shape
+   *  because a read failed (that is what the anti-demotion guards are for).
+   *  Optional so every existing StatusSignals literal still compiles. */
+  read?: EvidenceReadOutcome;
 };
+
+/** Per-source outcome of one evidence pass.
+ *    ok           — we read it and believe the numbers
+ *    failed       — the call errored; the counts here are unknown, not zero
+ *    skipped      — we chose not to spend the call (Aryeo already accounts for
+ *                   everything ordered, so Dropbox was not asked)
+ *    unavailable  — there was nothing to read from (no listing id) or the
+ *                   integration is not connected at all
+ *  Only `failed` makes a pass unsuccessful: a skipped source was never a
+ *  question, and a stale zero from a failed one is not an absence. */
+export type SourceOutcome = "ok" | "failed" | "skipped" | "unavailable";
+export type EvidenceReadOutcome = { aryeo: SourceOutcome; dropbox: SourceOutcome; error: string | null };
+
+/** The three stamps for one project's pass (RTP-06). attemptedAt moves every
+ *  time we look; succeededAt ONLY when a source actually answered and nothing
+ *  we tried to read failed;
+ *  evidenceError carries the reason, or clears on a clean pass. Deliberately
+ *  separate from statusCheckedAt, which keeps its existing meaning ("the
+ *  status engine ran") because two readers and three other batches read it. */
+export function evidenceStamps(
+  read: EvidenceReadOutcome | undefined,
+  now: Date = new Date(),
+): { evidenceAttemptedAt: Date; evidenceSucceededAt?: Date; evidenceError: string | null } {
+  const failed = read ? read.aryeo === "failed" || read.dropbox === "failed" : false;
+  // A pass that read NOTHING is not a successful cross-check either. Both
+  // sources `unavailable` — no listing id AND Dropbox not connected (that one
+  // is decided batch-wide) — used to fall through to the success branch and
+  // stamp a fresh succeededAt, so the card said "Cross-checked 3 minutes ago"
+  // about a job nobody had looked at (Sep 16 review of RTP-06). 52 live jobs
+  // carry no listing id, so the whole set would go confidently green the
+  // moment the Dropbox token lapsed. Success means at least one source
+  // actually answered.
+  const anyRead = !!read && (read.aryeo === "ok" || read.dropbox === "ok");
+  if (!read || failed || !anyRead) {
+    // Three different "not a success", and the reason says which: a caller
+    // that recorded no outcome, a source that errored, or nothing to read.
+    // In every one of them succeededAt stays where it was.
+    return {
+      evidenceAttemptedAt: now,
+      evidenceError: !read
+        ? "read outcome not recorded"
+        : failed
+          ? (read.error ?? "evidence read failed").slice(0, 200)
+          : (read.error ?? "no evidence source could be read").slice(0, 200),
+    };
+  }
+  return { evidenceAttemptedAt: now, evidenceSucceededAt: now, evidenceError: null };
+}
 
 export type StatusEvidence = {
   expected: string[];
@@ -444,7 +498,11 @@ export function shootPendingFor(p: ShootTiming, now: number = Date.now()): boole
 // engine.
 export { videoAnchorFor };
 
-async function aryeoMedia(listingId: string): Promise<AryeoMediaSignal | null> {
+// `onError` (Sep 16, RTP-06): the failure was always swallowed here, so a
+// caller could not tell "the listing has no video" from "Aryeo would not
+// answer". The signal is still null either way — only the STAMPS learn the
+// difference, never the status decision.
+async function aryeoMedia(listingId: string, onError?: (e: unknown) => void): Promise<AryeoMediaSignal | null> {
   try {
     const l = await Aryeo.listing(listingId);
     // First gallery image (same preference order getListingMedia uses) — the
@@ -459,7 +517,8 @@ async function aryeoMedia(listingId: string): Promise<AryeoMediaSignal | null> {
       delivery: l.delivery_status ?? null,
       cover: l.thumbnail_url ?? first?.thumbnail_url ?? first?.large_url ?? null,
     };
-  } catch {
+  } catch (e) {
+    onError?.(e);
     return null;
   }
 }
@@ -514,7 +573,14 @@ type StatusProject = {
 async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<StatusSignals> {
   const expected = expectedCategories(p.deliverables);
   const sla = slaTierOf(p);
-  const aryeo = p.aryeoListingId ? await aryeoMedia(p.aryeoListingId) : null;
+  // RTP-06: remember WHY each source is null, for the stamps only.
+  let aryeoError: string | null = null;
+  const aryeo = p.aryeoListingId
+    ? await aryeoMedia(p.aryeoListingId, (e) => {
+        aryeoError = (e instanceof Error ? e.message : String(e)).slice(0, 80);
+      })
+    : null;
+  const aryeoOutcome: SourceOutcome = !p.aryeoListingId ? "unavailable" : aryeo ? "ok" : "failed";
 
   // Only spend Dropbox calls when Aryeo doesn't already account for everything
   // ordered — Aryeo is the delivery source of truth; Dropbox explains the
@@ -530,6 +596,10 @@ async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<Sta
 
   let dropbox: DropboxSignal | null = null;
   let dropboxUnavailable = !useDropbox;
+  // "unconfigured" and "we didn't need to ask" are both honest non-failures;
+  // only a read that errored makes the pass unsuccessful (RTP-06).
+  let dropboxOutcome: SourceOutcome = !useDropbox ? "unavailable" : aryeoSatisfies ? "skipped" : "ok";
+  let dropboxError: string | null = null;
   if (useDropbox && !aryeoSatisfies) {
     // The REAL folder — a rescheduled shoot's files stay put while the
     // convention path moves, and reading the wrong path counted 0 media
@@ -551,6 +621,8 @@ async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<Sta
     // signal — partial counts would read as "media vanished". Unknown beats wrong.
     if ([rawPhotos, rawVideo, finalPhotos, finalVideo].some((c) => c === null)) {
       dropboxUnavailable = true;
+      dropboxOutcome = "failed";
+      dropboxError = readError ?? "folder read failed";
       // Unknown is not zero — and it is not "forget what we knew" either. Keep
       // the last good counts (marked stale) so a rate-limited pass can't blank
       // the evidence Ops Day, the editor handoff and the delivery gate read.
@@ -610,6 +682,15 @@ async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<Sta
     videoTier: videoTier(p.deliverables) === null ? null : sla === "premium" ? "premium" : "standard",
     monthlyContent: sla === "branding",
     videoType: p.deliverables.find((d) => expectedCategories([d]).has("VIDEO"))?.type ?? null,
+    // The stamps' only input. Nothing above this line reads it.
+    read: {
+      aryeo: aryeoOutcome,
+      dropbox: dropboxOutcome,
+      error:
+        [aryeoOutcome === "failed" ? `aryeo: ${aryeoError ?? "unreadable"}` : null, dropboxOutcome === "failed" ? `dropbox: ${dropboxError ?? "unreadable"}` : null]
+          .filter(Boolean)
+          .join(" · ") || null,
+    },
   };
 }
 
@@ -827,7 +908,18 @@ export async function syncProjectStatuses(
       (shootHappened || p.status === "DELIVERED")
     ) {
       byStatus[p.status] = (byStatus[p.status] ?? 0) + 1;
-      await prisma.project.update({ where: { id: p.id }, data: { statusCheckedAt: new Date() } });
+      // RTP-06 (Sep 16): this is the branch where the hub could not look at
+      // all, and until now it stamped the same column a successful pass
+      // stamps — so StatusEvidenceCard read "Cross-checked 3 minutes ago ·
+      // Aryeo media + Dropbox folders" over evidence nobody had managed to
+      // read, and deliveryWatch's photos-not-delivered text could fire on a
+      // stale zero. statusCheckedAt keeps its old meaning ("the engine ran")
+      // because other readers and batches depend on it; the honest pair is
+      // evidenceAttemptedAt (moves) and evidenceSucceededAt (does NOT).
+      await prisma.project.update({
+        where: { id: p.id },
+        data: { statusCheckedAt: new Date(), ...evidenceStamps(sig.read) },
+      });
       continue;
     }
     // Don't demote a manually-advanced EDITING project back to SHOT — and a
@@ -1055,6 +1147,14 @@ export async function syncProjectStatuses(
         status: final,
         statusEvidence: JSON.stringify(evidence),
         statusCheckedAt: new Date(),
+        // The honest read (RTP-06). A pass that got everything it asked for
+        // advances succeededAt and clears the error; a pass where ONE source
+        // failed — Aryeo 503, a Dropbox 429 — advances only attemptedAt and
+        // records why, even though the evidence below is still written from
+        // the counts we do have (carried forward and marked stale). A stale
+        // zero never proves absence; a stale positive never proves a new
+        // delivery. Nothing here changes the status decision above.
+        ...evidenceStamps(sig.read),
         ...(deliveryDue ? { deliveryDue } : {}),
         ...(final === "DELIVERED" && !p.deliveredAt ? { deliveredAt: new Date() } : {}),
         ...(rawsDetected && !p.uploadedAt ? { uploadedAt: new Date() } : {}),
