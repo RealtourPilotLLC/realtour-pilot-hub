@@ -629,7 +629,7 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
 
   // Two opinions on the price, and we plan against the higher one: Topaz's own
   // estimate, and their published Proteus rate card (1080p ≈ 8 credits/minute).
-  const local = localCreditEstimate(output, meta.durationSec);
+  const local = localCreditEstimate(output, meta.durationSec, meta);
   const credits = Math.max(est.credits, local);
 
   // Record the price BEFORE deciding anything with it, and WITHOUT releasing

@@ -33,15 +33,18 @@ export const TOPAZ_PROVIDER = "topaz";
 
 const API = "https://api.topazlabs.com";
 
-// Endpoint paths. The five above are VERIFIED from Topaz's developer docs. The
-// three below are documented as existing but their exact paths are not written
-// down anywhere we could read, so they are our best reading of the same shape
-// — and every caller treats them as best-effort: a 404 here must never stop a
-// render, strand a file, or be shown to Jordan as a failure. Overridable
-// without a deploy if Topaz's support answers differently.
-const PATH_CANCEL_REQUEST = process.env.TOPAZ_PATH_CANCEL ?? "/video/{id}/cancel";
-const PATH_CANCEL_ESTIMATE = process.env.TOPAZ_PATH_CANCEL_ESTIMATE ?? "/video/{id}/cancel-estimate";
-const PATH_DELETE_FILES = process.env.TOPAZ_PATH_DELETE_FILES ?? "/video/{id}/files";
+// Endpoint paths — ALL VERIFIED against Topaz's reference docs on Sep 16.
+// Two of the three housekeeping paths had been guessed, and both guesses were
+// wrong: cancelling is a DELETE on the request itself (not PATCH …/cancel), and
+// the file purge is …/media (not …/files). A wrong cancel path is not cosmetic
+// — accepting a request RESERVES credits, so a cancel that 404s silently leaves
+// Jordan's credits reserved against a render nobody is waiting for.
+// …/cancel-estimate exists but is a GET that PREVIEWS what cancelling would
+// cost; it is not a way to release anything, so releasing an estimate we
+// decided not to accept uses the cancel endpoint too. Still overridable without
+// a deploy if Topaz moves them.
+const PATH_CANCEL_REQUEST = process.env.TOPAZ_PATH_CANCEL ?? "/video/{id}";
+const PATH_DELETE_FILES = process.env.TOPAZ_PATH_DELETE_FILES ?? "/video/{id}/media";
 
 export class TopazError extends Error {
   constructor(
@@ -217,22 +220,36 @@ const asNum = (v: unknown): number | null => {
  *  a null credits figure means "we could not read a price", and the caller's
  *  rule is that no price means no spend. Guessing a number here would be the
  *  one bug that bills Jordan silently. */
+function fromRange(v: unknown, take: "max" | "min"): number | null {
+  // Topaz answers with a RANGE. Measured against the live API on Sep 16:
+  //   {"requestId":"…","estimates":{"cost":[8,9],"time":[1211,1287]}}
+  // A scalar is still read, in case the shape ever settles down.
+  if (Array.isArray(v)) {
+    const nums = v.map(asNum).filter((n): n is number => n !== null);
+    if (!nums.length) return null;
+    return take === "max" ? Math.max(...nums) : Math.min(...nums);
+  }
+  return asNum(v);
+}
+
 export function estimateFrom(raw: unknown): { credits: number | null; seconds: number | null } {
-  const roots = [raw, pick(raw, "estimate", "estimates", "cost", "data")].filter(Boolean);
+  const roots = [raw, pick(raw, "estimate", "estimates", "data")].filter(Boolean);
   let credits: number | null = null;
   let seconds: number | null = null;
   for (const r of roots) {
-    credits ??= asNum(pick(r, "credits", "estimatedCredits", "creditCost", "cost_credits", "creditsRequired"));
+    credits ??= fromRange(pick(r, "cost", "credits", "estimatedCredits", "creditCost", "cost_credits", "creditsRequired"), "max");
     const costObj = pick(r, "cost");
-    if (credits === null && costObj && typeof costObj === "object") {
-      credits = asNum(pick(costObj, "credits", "estimatedCredits", "amount", "value"));
+    if (credits === null && costObj && typeof costObj === "object" && !Array.isArray(costObj)) {
+      credits = fromRange(pick(costObj, "credits", "estimatedCredits", "amount", "value", "max"), "max");
     }
-    seconds ??= asNum(pick(r, "estimatedSeconds", "seconds", "processingTime", "estimatedTime", "eta"));
+    seconds ??= fromRange(pick(r, "time", "estimatedSeconds", "seconds", "processingTime", "estimatedTime", "eta"), "max");
     const timeObj = pick(r, "time");
-    if (seconds === null && timeObj && typeof timeObj === "object") {
-      seconds = asNum(pick(timeObj, "seconds", "estimatedSeconds", "value"));
+    if (seconds === null && timeObj && typeof timeObj === "object" && !Array.isArray(timeObj)) {
+      seconds = fromRange(pick(timeObj, "seconds", "estimatedSeconds", "value", "max"), "max");
     }
   }
+  // The TOP of the range, always. This number is what every spend guard is
+  // checked against, so the cautious end is the only honest one to plan with.
   return { credits, seconds: seconds === null ? null : Math.round(seconds) };
 }
 
@@ -315,7 +332,8 @@ export async function putUploadPart(
  *  claims the right to make it with a compare-and-swap first (TopazJob
  *  .completeUploadAt), so exactly one invocation can ever fire it for a job. */
 export async function completeUpload(requestId: string, uploadResults: TopazUploadResult[]): Promise<void> {
-  await topazFetch(`/video/${encodeURIComponent(requestId)}/complete-upload`, {
+  // Trailing slash is Topaz's published path: PATCH /video/{requestId}/complete-upload/
+  await topazFetch(`/video/${encodeURIComponent(requestId)}/complete-upload/`, {
     method: "PATCH",
     body: { uploadResults },
     timeoutMs: 60_000,
@@ -360,8 +378,12 @@ export async function videoStatus(requestId: string): Promise<TopazStatus> {
 /** Topaz's own words for "there is a finished file" and "this will never
  *  finish". Anything else is read as still running — the safe reading, because
  *  a job we wrongly call finished loses the render we already paid for. */
+// Topaz's documented status vocabulary (from the cancel-estimate schema, the
+// only place they publish the enum): requested · accepted · initializing ·
+// preprocessing · processing · postprocessing · complete · canceling ·
+// canceled · failed. The extra synonyms below cost nothing and cover a rename.
 export const TOPAZ_DONE = new Set(["complete", "completed", "finished", "done", "success", "succeeded"]);
-export const TOPAZ_DEAD = new Set(["failed", "error", "cancelled", "canceled", "rejected", "expired"]);
+export const TOPAZ_DEAD = new Set(["failed", "error", "cancelled", "canceled", "canceling", "rejected", "expired"]);
 /**
  * Bytes are still owed — complete-upload has not been accepted yet.
  *
@@ -393,22 +415,20 @@ const fill = (tpl: string, id: string) => tpl.replace("{id}", encodeURIComponent
  *  stuck job — the point is to stop paying for it. */
 export async function cancelVideoRequest(requestId: string): Promise<boolean> {
   try {
-    await topazFetch(fill(PATH_CANCEL_REQUEST, requestId), { method: "PATCH", timeoutMs: 20_000 });
+    await topazFetch(fill(PATH_CANCEL_REQUEST, requestId), { method: "DELETE", timeoutMs: 20_000 });
     return true;
   } catch {
     return false;
   }
 }
 
-/** Release an estimate we asked for and decided not to accept, so it is not
- *  left holding a reservation. Free either way. */
+/** Release an estimate we asked for and decided not to accept. There is no
+ *  separate "release an estimate" call — …/cancel-estimate only PREVIEWS the
+ *  settlement — so this is the ordinary cancel, which Topaz documents as
+ *  refunding everything when a request has not started processing. Free at that
+ *  point, by their own words. */
 export async function cancelEstimate(requestId: string): Promise<boolean> {
-  try {
-    await topazFetch(fill(PATH_CANCEL_ESTIMATE, requestId), { method: "PATCH", timeoutMs: 20_000 });
-    return true;
-  } catch {
-    return false;
-  }
+  return cancelVideoRequest(requestId);
 }
 
 /** Hygiene: once the finished file is safely in Dropbox, there is no reason for
@@ -445,11 +465,23 @@ export function plannedOutput(
   return { width: even(source.width * scale), height: even(source.height * scale) };
 }
 
-/** Topaz's published Proteus price list, as a per-minute rate by output class.
- *  Used ONLY as a second opinion next to the API's own estimate — never as a
- *  substitute for it. (1080p: 1 min = 8, 5 min = 38, 10 min = 76 credits.) */
-export function localCreditEstimate(output: { width: number; height: number }, durationSec: number): number {
-  const pixels = output.width * output.height;
+/** Topaz's published Proteus price list, as a per-minute rate. Used ONLY as a
+ *  second opinion next to the API's own estimate — never as a substitute.
+ *  (1080p: 1 min = 8, 5 min = 38, 10 min = 76 credits. 4K: 1 min = 31.)
+ *
+ *  PRICING FOLLOWS THE BIGGER OF SOURCE AND OUTPUT, not the output alone.
+ *  Measured Sep 16 on a real cut: a 3840x2160 source rendered DOWN to
+ *  1920x1080 was quoted 27 credits, which is the 4K rate for its 50 seconds —
+ *  not the 7 an output-only reading predicted. The model still has to read
+ *  every 4K frame, so downscaling buys quality, not a discount. Reading this
+ *  the old way under-quoted 4K jobs four-fold, which matters because this
+ *  number is one of the two the spend ceiling is checked against. */
+export function localCreditEstimate(
+  output: { width: number; height: number },
+  durationSec: number,
+  source?: { width: number; height: number } | null,
+): number {
+  const pixels = Math.max(output.width * output.height, source ? source.width * source.height : 0);
   const perMinute = pixels >= 3840 * 2160 * 0.9 ? 31 : pixels >= 1920 * 1080 * 0.9 ? 8 : 4;
   return Math.ceil((Math.max(1, durationSec) / 60) * perMinute);
 }
