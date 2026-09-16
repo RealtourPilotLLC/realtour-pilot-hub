@@ -15,6 +15,7 @@ import { recentProjectWhere } from "@/lib/recency";
 import { etDayStartUtc } from "@/lib/datetime";
 import { listAssignees, slugForName, firstName, viewerAssigneeKey } from "@/lib/assignees";
 import { isNeedsAssigning, boardVisibleWhere } from "@/lib/triage";
+import { slackOpenCount } from "@/lib/commsBoard";
 import { getCurrentUser } from "@/lib/auth/user";
 import { scrubMoney } from "@/lib/text";
 import { cn } from "@/lib/utils";
@@ -183,6 +184,14 @@ export async function BoardView({ sp, tabs }: { sp: { who?: string; task?: strin
   // 1340 was every task ever closed). Same query as that badge, so the two
   // numbers can't disagree.
   const doneToday = await doneTodayCount();
+  // WHERE THE SLACK ASKS WENT (Sep 16). This tab no longer lists them — they
+  // have one home now — but every link minted before today still points here,
+  // including the 8am Slack DM, which lists overdue rows (Slack rows among
+  // them) and then drops Kyle on this page. A list that silently stops
+  // containing what a digest just named is the exact fault Kyle reported, so
+  // the tab says out loud where they live. Editors never had Slack asks routed
+  // away from them, so this is for the office only.
+  const slackElsewhere = editorScope ? 0 : await slackOpenCount().catch(() => 0);
   const assigneeChips = assignees.map((a) => ({ key: a.key, name: a.name }));
 
   const startToday = etDayStartUtc(new Date()).getTime();
@@ -328,6 +337,24 @@ export async function BoardView({ sp, tabs }: { sp: { who?: string; task?: strin
       <div className="space-y-5 p-4 sm:p-6">
         {tabs}
         <AddTask assignees={assigneeChips} />
+
+        {/* The signpost for everything that used to be on this tab. Rendered
+            above the filter chips so it survives the empty state too — the
+            morning DM can land here on a day when this board is clear. */}
+        {slackElsewhere > 0 && (
+          <Link
+            href="/tasks?tab=slack"
+            className="flex items-center gap-2 rounded-xl border border-border bg-surface-2 px-3.5 py-2.5 text-[13px] text-muted transition-colors hover:bg-surface hover:text-foreground"
+          >
+            <MessageSquare className="size-4 shrink-0 text-brand" />
+            <span>
+              <span className="font-semibold text-foreground">
+                {slackElsewhere} Slack ask{slackElsewhere === 1 ? "" : "s"}
+              </span>{" "}
+              live on the Slack tab — they are not listed here.
+            </span>
+          </Link>
+        )}
 
         {/* Person filter — see everyone, just you, or one teammate's tasks.
             Hidden for editors, who are locked to their own work. */}

@@ -18,7 +18,7 @@ import { cn, formatMoney } from "@/lib/utils";
 import { etDate, etDayKey, etDayStartUtc, etFullDate, etTime , etDateTime } from "@/lib/datetime";
 import { AutoRefresh } from "@/components/ops/AutoRefresh";
 import { DayBlock, DayBlockJumps } from "@/components/ops/DayBlock";
-import { QcComplete } from "@/components/ops/QcComplete";
+import { QcComplete, QcCategoryDone } from "@/components/ops/QcComplete";
 import { LoopActions } from "@/components/ops/LoopActions";
 import { ProactiveFlags } from "@/components/dashboard/ProactiveFlags";
 import { StuckJobs } from "@/components/dashboard/StuckJobs";
@@ -46,7 +46,7 @@ import { boardVisibleWhere, isNeedsAssigning } from "@/lib/triage";
 import { clientTextWhere } from "@/lib/clientTexts";
 import { unansweredCommsBoard } from "@/lib/commsBoard";
 import type { VideoCutState } from "@/lib/reviewCuts";
-import { aryeoListingUrl } from "@/lib/aryeoUrl";
+import { aryeoJobUrl, aryeoJobTitle } from "@/lib/aryeoUrl";
 import { NewClientCard } from "@/components/clients/NewClientCard";
 import { newClientsForDashboard } from "@/lib/newClients";
 import { listAssignees, slugForName, viewerAssigneeKey } from "@/lib/assignees";
@@ -1315,11 +1315,15 @@ function ShootList({ shoots, empty, showGaps, showDebrief }: { shoots: OpsShoot[
             <Camera className="size-4 shrink-0 text-muted-2" />
             <Link href={`/projects/${s.id}`} className="min-w-0 flex-1 truncate text-[15px] font-semibold hover:text-brand">{s.title}</Link>
             {s.timeISO && <span className="shrink-0 text-sm font-semibold tabular-nums text-brand">{fmtTime(s.timeISO)}</span>}
-            {s.aryeoListingId && (
+            {/* The listing editor when the job has a listing, the ORDER
+                editor when it doesn't: a job imported from a ghost order
+                (39 Saratoga Ln) had an Aryeo button on its project page and
+                none here (Kyle call, Sep 16). */}
+            {aryeoJobUrl(s) && (
               <a
-                href={aryeoListingUrl(s.aryeoListingId)}
+                href={aryeoJobUrl(s)!}
                 target="_blank" rel="noopener noreferrer"
-                title="Open the listing in Aryeo"
+                title={aryeoJobTitle(s)}
                 className="shrink-0 rounded-lg border border-border p-1.5 text-muted hover:bg-surface-2 hover:text-foreground"
               >
                 <ExternalLink className="size-3.5" />
@@ -1573,7 +1577,20 @@ function LoopRow({ l, now, muted }: { l: OpsLoop; now: Date; muted?: boolean }) 
         </p>
       </div>
       {l.overdue && <span className="shrink-0 rounded-full bg-danger/15 px-2 py-0.5 text-[10px] font-semibold text-danger">overdue</span>}
-      <LoopActions taskId={l.taskId} viewHref={l.projectId ? `/projects/${l.projectId}` : `/tasks?tab=other&task=${l.taskId}`} />
+      {/* A Slack ask's one home is the Slack tab (Sep 16) — the Other tab
+          stopped listing them, so the old deep link landed on a page that did
+          not contain the row. Everything else still opens its job, or the
+          Other tab's deep link. */}
+      <LoopActions
+        taskId={l.taskId}
+        viewHref={
+          l.source === "slack"
+            ? `/tasks?tab=slack&task=${l.taskId}`
+            : l.projectId
+              ? `/projects/${l.projectId}`
+              : `/tasks?tab=other&task=${l.taskId}`
+        }
+      />
     </div>
   );
 }
@@ -1600,6 +1617,10 @@ function LoopsCard({ d }: { d: OpsDay }) {
       </p>
     );
   }
+  // How many of these came out of Slack. Kyle's call (Sep 16): the Slack
+  // reminders were "hard to find" — they render here AND on the Slack tab, and
+  // the home never said so. One line, one link.
+  const slackCount = [...act, ...later, ...elsewhere].filter((l) => l.source === "slack").length;
   const shown = act.slice(0, LOOPS_SHOWN);
   const restOfAct = act.slice(LOOPS_SHOWN);
   const moreCount = restOfAct.length + later.length + elsewhere.length;
@@ -1654,6 +1675,15 @@ function LoopsCard({ d }: { d: OpsDay }) {
         </details>
       )}
 
+      {slackCount > 0 && (
+        <Link
+          href="/tasks?tab=slack"
+          className="inline-flex items-center gap-1 text-[11px] font-medium text-brand hover:underline"
+        >
+          {slackCount} of these came in on Slack — open the Slack asks list
+        </Link>
+      )}
+
       {d.openLoopsTally.capped && (
         <p className="text-[11px] text-muted-2">
           Showing the first {d.openLoops.length} — there are more open than this block can load.
@@ -1678,8 +1708,62 @@ function StatusLine({ label, tone, children }: { label: string; tone: "success" 
 
 const actionBtn = "inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-[11px] font-medium text-muted hover:bg-surface-2 hover:text-foreground";
 
+// Who we are actually waiting on when a category has not landed. "Missing"
+// alone never said whether the editor has it, CubiCasa owes it, or nobody is
+// on it (Kyle call, Sep 16).
+const WAITING_ON: Record<string, string> = {
+  Photos: "waiting on the photo edit",
+  Video: "waiting on the editor",
+  "Floor plan": "waiting on CubiCasa",
+  "3D tour": "waiting on the 3D tour",
+};
+const catNoun = (c: string) => (c === "Photos" ? "photos" : c === "Video" ? "video" : `the ${c.toLowerCase()}`);
+
+/** One ordered category, in the three states Kyle cares about: done, live and
+ *  waiting for his pass (with the one-press button), or not landed yet. */
+function QcCategoryLine({ taskId, c }: { taskId: string; c: OpsQcRow["categories"][number] }) {
+  if (c.done) {
+    return <span className="inline-flex items-center gap-1 text-[12px] font-medium text-success">{c.label} ✓ done</span>;
+  }
+  if (c.live) {
+    const left = c.total - c.ticked;
+    return (
+      <span className="inline-flex items-center gap-1.5 text-[12px] text-foreground/80">
+        <span className="font-medium">{c.label}</span> — live{left > 0 ? `, ${left} check${left === 1 ? "" : "s"}` : ""}
+        <QcCategoryDone taskId={taskId} category={c.label} />
+      </span>
+    );
+  }
+  if (c.overdue && c.dueISO) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[12px] font-medium text-danger">
+        {c.label} — late since {fmtDayTime(c.dueISO)}
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-[12px] text-muted">
+      {c.label} — {WAITING_ON[c.label] ?? "not on Aryeo yet"}{c.dueISO ? `, due ${fmtDayTime(c.dueISO)}` : ""}
+    </span>
+  );
+}
+
 function QcRow({ q, now }: { q: OpsQcRow; now?: Date }) {
   const db = q.evidence.dropbox;
+  // Per-category state — the card's headline and its one-press buttons. Live =
+  // on Aryeo; done = live and every optional check ticked (Photos done).
+  const liveCats = q.categories.filter((c) => c.live);
+  const owedCats = q.categories.filter((c) => !c.live);
+  const liveUnticked = liveCats.filter((c) => !c.done);
+  // Everything that landed has been QC'd and the job is just waiting on the
+  // rest — the state Kyle had no way to say (he closed the whole card instead,
+  // and the video's QC went with it).
+  const handledHeadline =
+    liveCats.length > 0 && liveUnticked.length === 0 && owedCats.length > 0
+      ? `${liveCats.map((c) => c.label).join(" + ")} done ✓ · Waiting on ${catNoun(owedCats[0].label)}${
+          owedCats[0].dueISO ? ` — ${owedCats[0].overdue ? "late since" : "due"} ${fmtDayTime(owedCats[0].dueISO)}` : ""
+        }`
+      : null;
   // How late, in plain days — "due Aug 21" makes Kyle do the subtraction.
   const lateDays =
     now && q.dueISO && Date.parse(q.dueISO) < now.getTime()
@@ -1728,46 +1812,77 @@ function QcRow({ q, now }: { q: OpsQcRow; now?: Date }) {
           <span
             className={cn(
               "rounded-full px-2 py-0.5 text-[10px] font-semibold",
-              q.actionable > 0 ? "bg-brand/10 text-brand" : "bg-surface-2 text-muted",
+              handledHeadline ? "bg-success/15 text-success" : q.actionable > 0 ? "bg-brand/10 text-brand" : "bg-surface-2 text-muted",
             )}
             title={
-              q.itemsLeft === 0
-                ? "Every check on this card is done."
-                : q.actionable > 0
-                  ? `${q.actionable} of ${q.itemsLeft} optional checks are on media that is already live on Aryeo — notes for you, not a gate. The card completes on its own once everything ordered is live, the gallery is out and the photographer's upload page is in (a re-QC after a revision still wants your tick) — or sooner with Mark complete.`
-                  : "Optional checks — notes for you, not a gate. Their media isn't live on Aryeo yet; the card completes on its own once everything ordered is live, the gallery is out and the photographer's upload page is in (a re-QC after a revision still wants your tick)."
+              handledHeadline
+                ? `Everything live on Aryeo has been QC'd. The card stays open for ${owedCats.map((c) => c.label.toLowerCase()).join(" + ")} and comes back the moment it lands.`
+                : q.itemsLeft === 0
+                  ? "Every check on this card is done."
+                  : q.actionable > 0
+                    ? `${q.actionable} of ${q.itemsLeft} optional checks are on media that is already live on Aryeo — notes for you, not a gate. The card completes on its own once everything ordered is live, the gallery is out and the photographer's upload page is in (a re-QC after a revision still wants your tick) — or sooner with Mark complete.`
+                    : "Optional checks — notes for you, not a gate. Their media isn't live on Aryeo yet; the card completes on its own once everything ordered is live, the gallery is out and the photographer's upload page is in (a re-QC after a revision still wants your tick)."
             }
           >
-            {q.itemsLeft === 0
-              ? "checks done"
-              : q.actionable > 0
-                ? `${q.actionable} optional check${q.actionable === 1 ? "" : "s"}`
-                : `${q.itemsLeft} check${q.itemsLeft === 1 ? "" : "s"} · optional`}
+            {handledHeadline
+              ? `${liveCats.map((c) => c.label).join(" + ").toLowerCase()} done`
+              : q.itemsLeft === 0
+                ? "checks done"
+                : q.actionable > 0
+                  ? `${q.actionable} optional check${q.actionable === 1 ? "" : "s"}`
+                  : `${q.itemsLeft} check${q.itemsLeft === 1 ? "" : "s"} · optional`}
           </span>
         </div>
       </div>
+
+      {/* WHAT IS LEFT, per category (Kyle call, Sep 16). One "8 optional
+          checks" chip made a job with the photos QC'd and delivered look
+          exactly like one nobody had opened — so each ordered category says
+          its own state, and the live ones carry the one-press button that
+          checks them off without closing the card. */}
+      {q.categories.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 px-3.5">
+          {handledHeadline ? (
+            <>
+              <span className="text-[12px] font-medium text-success">{handledHeadline}</span>
+              {/* anything else still owed keeps its own line — 358 N Church
+                  owes a floor plan as well as the video */}
+              {owedCats.slice(1).map((c) => <QcCategoryLine key={c.label} taskId={q.taskId} c={c} />)}
+            </>
+          ) : (
+            q.categories.map((c) => <QcCategoryLine key={c.label} taskId={q.taskId} c={c} />)
+          )}
+        </div>
+      )}
 
       {/* Status grid — what's live, what's owed, where the video is, what
           Dropbox holds. Labelled lines instead of two run-on sentences. */}
       <div className="mt-2 grid gap-x-6 gap-y-0.5 px-3.5 sm:grid-cols-2">
         <StatusLine label="Ordered" tone="muted">{q.services.join(", ") || "—"}</StatusLine>
-        {q.evidence.present.length > 0 ? (
+        {/* The per-category strip above already answers "what's live" and
+            "what's owed, and when" line by line, so these two said the same
+            thing again in other words (review, Sep 16). They stay for a card
+            with no ordered categories to report — a monthly-content job, or a
+            checklist the status engine has never put a "QC <x>" row on. */}
+        {q.categories.length === 0 && (q.evidence.present.length > 0 ? (
           <StatusLine label="Live on Aryeo" tone="success">
             {q.evidence.present.join(", ")}
             {q.actionable > 0 && <> — <span className="text-muted">{q.actionable} optional check{q.actionable === 1 ? "" : "s"} if you want {q.actionable === 1 ? "it" : "them"}</span></>}
           </StatusLine>
         ) : (
           <StatusLine label="Live on Aryeo" tone="muted">nothing yet</StatusLine>
-        )}
+        ))}
         {/* WHY it's still open, in words — "missing: Floor plan" alone didn't
             say whether we're waiting on the editor, on Aryeo, or on nothing at
-            all (Jordan, Sep 1: 195 Woodhill's floor plan was removed). */}
-        {q.evidence.missing.length > 0 ? (
+            all (Jordan, Sep 1: 195 Woodhill's floor plan was removed). The
+            "nothing owed" lines below are NOT duplicates of the strip: they
+            answer why a card with everything live is still open at all. */}
+        {q.evidence.missing.length > 0 ? (q.categories.length === 0 && (
           <StatusLine label="Still owed" tone="warning">
             {q.evidence.missing.join(", ")}
             {q.nextDueISO ? ` — ${q.nextDueCategories.join(" + ").toLowerCase()} due ${fmtDayTime(q.nextDueISO)}` : ""}
           </StatusLine>
-        ) : q.itemsLeft > 0 ? (
+        )) : q.itemsLeft > 0 ? (
           <StatusLine label="Still owed" tone="muted">nothing — everything ordered is live; the card closes itself once the gallery is out and the photographer's upload page is in (a re-QC after a revision still wants your tick; the other checks are optional)</StatusLine>
         ) : (
           <StatusLine label="Status" tone="success">Everything is live and checked — safe to close.</StatusLine>
@@ -1796,9 +1911,9 @@ function QcRow({ q, now }: { q: OpsQcRow; now?: Date }) {
 
       {/* Actions — one row, same buttons on every card */}
       <div className="mt-2.5 flex flex-wrap items-center gap-2 border-t border-border/60 px-3.5 py-2">
-        <QcComplete taskId={q.taskId} waitingOn={q.evidence.missing} />
-        {q.aryeoListingId && (
-          <a href={aryeoListingUrl(q.aryeoListingId)} target="_blank" rel="noopener noreferrer" title="Open the listing in Aryeo" className={actionBtn}>
+        <QcComplete taskId={q.taskId} waitingOn={q.evidence.missing} liveUnticked={liveUnticked.map((c) => c.label)} />
+        {aryeoJobUrl(q) && (
+          <a href={aryeoJobUrl(q)!} target="_blank" rel="noopener noreferrer" title={aryeoJobTitle(q)} className={actionBtn}>
             <ExternalLink className="size-3" /> Aryeo
           </a>
         )}
@@ -1811,7 +1926,9 @@ function QcRow({ q, now }: { q: OpsQcRow; now?: Date }) {
         {/* The checks never hold this card: say so where the button is. */}
         <span className="ml-auto text-[11px] text-muted-2">
           {q.evidence.missing.length > 0
-            ? "Removed from the order or handled elsewhere? Mark complete."
+            ? liveUnticked.length > 0
+              ? `Done with the ${liveUnticked[0].label.toLowerCase()}? Press ${liveUnticked[0].label} done — the card stays open for the rest.`
+              : "Removed from the order or handled elsewhere? Mark complete."
             : "Optional checks — notes for you, not a gate. Mark complete whenever you're done."}
         </span>
       </div>

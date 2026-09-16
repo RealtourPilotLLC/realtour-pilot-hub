@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { NOTHING_TO_REMOVE_SENTINEL, DEBRIEF_QC_LABELS, QC_LABEL_SHOT_ORDER, QC_LABEL_REMOVALS, QC_LABEL_VIDEO_BRIEF, QC_LABEL_PAGE_SUBMITTED } from "@/lib/debrief";
+import { QC_LABEL, QC_FAILURE_MODES, VIP_EXTRA_PASS, TYPE_CATEGORY_LABEL, qcCategoryOfRow, qcCategoriesLanded } from "@/lib/qcCategories";
 import crypto from "crypto";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { type ChecklistItem, parseChecklist, serializeChecklist, checklistComplete } from "@/lib/checklist";
@@ -11,6 +12,7 @@ import { isMonthlyContentJob } from "@/lib/pipeline";
 import type { TurnaroundRules } from "@/lib/settings";
 import { clip } from "@/lib/text";
 import { pinnedEditorFor } from "@/lib/editors";
+import { effectiveTier } from "@/lib/editOverrides";
 
 // ---------------------------------------------------------------------------
 // Phase 1 of the listener-first platform: turnaround rules + due-date/priority
@@ -19,6 +21,37 @@ import { pinnedEditorFor } from "@/lib/editors";
 
 const HOUR = 3600_000;
 const DAY = 24 * HOUR;
+
+// ---------------------------------------------------------------------------
+// WHAT A JOB STILL OWES — one WHERE, used by every reader (Kyle call, Sep 16).
+//
+// Two ways an ordered item stops being owed, and they are NOT the same thing:
+//   · removedFromOrderAt — Aryeo no longer carries the line (the order
+//     reconcile owns it, and it re-instates the row the moment the line comes
+//     back — which a PACKAGE-implied type does immediately).
+//   · waivedAt — the OFFICE said "not required on this job" (195 Woodhill's
+//     floor plan was discounted off the Essentials Package; 68 New St's moved
+//     to another order). Hub-owned: no sync, sweep or reconcile ever clears it,
+//     because nothing on the Aryeo order will ever say the floor plan was
+//     dropped. Only a human unwaives it.
+// Every "is this owed?" query spreads this constant, so a new reader cannot
+// quietly forget the waiver the way each one used to have to remember
+// removedFromOrderAt by hand.
+// ---------------------------------------------------------------------------
+export const OWED_DELIVERABLE_WHERE = { removedFromOrderAt: null, waivedAt: null } as const;
+
+// The three tiers the office can set on a job (editOverrides.ts EDIT_TIERS).
+// Repeated here as a plain union so the pure SLA helpers below stay free of
+// server-only imports.
+export type SlaTier = "standard" | "premium" | "branding";
+
+/** What a tier means to the turnaround table: branding is the monthly window
+ *  (7–10 business days), premium 72h, standard 48h. Null = no tier was stated,
+ *  so the caller's own per-label reading stands. */
+export function slaOptsForTier(tier: SlaTier | null | undefined): { premium: boolean; monthlyContent: boolean } | null {
+  if (!tier) return null;
+  return { premium: tier === "premium", monthlyContent: tier === "branding" };
+}
 
 // Turnaround targets in hours by deliverable type (admin-editable later).
 const TURNAROUND_HOURS: Record<string, number> = {
@@ -200,6 +233,26 @@ const isPremiumLabel = (label?: string | null) =>
   // (aligned with projectStatus.ts + aryeo.ts isPremiumProduct).
   !/\bstandard\b/i.test(label);
 
+/**
+ * THE JOB'S TIER, office first (Sep 16, Kyle call). The hub's own reading is
+ * the same ladder the editor queue draws its row chip from — monthly/branding
+ * plan → "branding", a premium reel/video label → "premium", else "standard" —
+ * and `Project.tierOverride` (the override dialog's picker) wins over it.
+ * Feeding it to the SLA helpers is what finally makes that picker move the
+ * deadline instead of only the label. Kept here, beside the promise table, so
+ * lib/projectStatus can call it without importing the queue.
+ */
+export function slaTierOf(p: {
+  tierOverride?: string | null;
+  packageName?: string | null;
+  deliverables: { type: string; label?: string | null }[];
+}): SlaTier {
+  const monthly = isMonthlyContentJob(p.deliverables, p.packageName ?? null);
+  const premium = p.deliverables.some((d) => REEL_VIDEO_TYPES.has(d.type) && isPremiumLabel(d.label));
+  const computed: SlaTier = monthly ? "branding" : premium ? "premium" : "standard";
+  return effectiveTier({ tierOverride: p.tierOverride ?? null }, computed);
+}
+
 // A project's overall delivery due = shoot date + the LONGEST turnaround among
 // its ordered deliverables (premium reel/video pushes it out, monthly further).
 export function standardDeliveryDue(
@@ -209,11 +262,26 @@ export function standardDeliveryDue(
   /** the stored Aryeo line items — the only place a same-day PHOTO rush still
    *  shows once its row has folded into the main Photos row (see sameDayAddOns) */
   orderItems?: { title: string; isCanceled?: boolean }[] | null,
+  /** the office's tier on the job (Sep 16). A tier is a statement about the
+   *  VIDEO's clock, so it only re-dates the reel/video rows: Sharra Mercer's
+   *  #1584 became a branding package after booking, and until now the tier
+   *  moved the queue's LABEL while the 48h reel SLA kept firing overdue. */
+  /** the last leg that actually happened (videoAnchorFor). The VIDEO rows date
+   *  from it rather than from shootDate on a multi-visit job (Sep 16). */
+  opts: { tier?: SlaTier | null; videoAnchor?: Date | null } = {},
 ): Date {
   if (deliverables.length === 0) return new Date(shootDate.getTime() + 48 * HOUR);
   const rush = sameDayTypes(deliverables, orderItems);
+  const tierOpts = slaOptsForTier(opts.tier);
   return deliverables
-    .map((d) => deliveryDueFrom(shootDate, d.type, { monthlyContent, premium: isPremiumLabel(d.label), sameDay: rush.has(d.type) }))
+    .map((d) => {
+      const video = REEL_VIDEO_TYPES.has(d.type);
+      return deliveryDueFrom(video && opts.videoAnchor ? opts.videoAnchor : shootDate, d.type, {
+        monthlyContent: video && tierOpts ? tierOpts.monthlyContent : monthlyContent,
+        premium: video && tierOpts ? tierOpts.premium : isPremiumLabel(d.label),
+        sameDay: rush.has(d.type),
+      });
+    })
     .reduce((a, b) => (a > b ? a : b));
 }
 
@@ -324,6 +392,46 @@ export function shootStillAhead(
   return !pastLeg;
 }
 
+// WHERE THE VIDEO CLOCK STARTS (Sep 16, Kyle call — 99 W Bridge St).
+//
+// Project.shootDate is ONE date: the appointment sync points it at whichever
+// leg it considers current. A job shot over two visits — stills on Monday, the
+// reel filmed on Friday — therefore dated its reel from Monday and declared it
+// overdue on Sep 11 while the video was being filmed that morning. The reel is
+// cut from the footage that exists, so its window opens with the LAST leg that
+// has actually happened. A future leg is not an anchor (nothing is shot yet),
+// and a job with no past leg keeps its shootDate exactly as before.
+// Deliberately narrow: this is the job's OWN legs, never "some later shoot at
+// the same address" — a second Aryeo order is a different job.
+//
+// Lives HERE beside the promise table (Sep 16 review): the queue's per-category
+// dates (pendingDuesByCategory, specsForProject) need the same anchor the
+// status engine uses, and projectStatus already imports this module — a second
+// copy would drift, an import the other way would be a cycle. projectStatus
+// re-exports it, so every existing caller is unchanged.
+export function videoAnchorFor(
+  p: { shootDate: Date | null; appointments?: { status: string | null; startAt: Date | null }[] | null },
+  now: number = Date.now(),
+): Date | null {
+  // A leg only anchors the clock if the visit ACTUALLY happened: cancelled is
+  // out, and so is UNSCHEDULED — the office postponed it and it has no slot
+  // yet, so a stale time on the row is not a shoot (Sep 16 review).
+  // `postponedAt` itself is NOT a disqualifier, checked against the live rows:
+  // all 37 dated postponed legs are SCHEDULED re-times of a moved booking, on
+  // jobs that delivered off them; a postponed leg still waiting for a new time
+  // carries startAt = null and is already excluded by the date test.
+  const past = (p.appointments ?? [])
+    .filter((a) => {
+      const s = (a.status || "").toUpperCase();
+      return !s.startsWith("CANCEL") && s !== "UNSCHEDULED" && a.startAt !== null && a.startAt.getTime() < now;
+    })
+    .map((a) => a.startAt!.getTime());
+  const shoot = p.shootDate && p.shootDate.getTime() < now ? p.shootDate.getTime() : null;
+  const candidates = [...past, ...(shoot !== null ? [shoot] : [])];
+  if (candidates.length === 0) return p.shootDate;
+  return new Date(Math.max(...candidates));
+}
+
 // Aryeo titles a coordinate-only order "[No address provided], 40.62…,-75.37…"
 // (aryeo.ts addressTitle → unparsed_address, verbatim). A task titled with a
 // lat/lng is one nobody can read at a glance; the street line or the town is
@@ -341,56 +449,17 @@ export function jobLabelFor(p: { title: string; addressLine?: string | null; cit
 // the integration module is heavy and imports this one dynamically.
 const isUnknownCustomer = (name: string | null | undefined) => /^unknown customer\b/i.test(name ?? "");
 
-// Friendly per-deliverable label for the consolidated QC checklist.
-const QC_LABEL: Record<string, string> = {
-  PHOTOS: "Photos", DRONE: "Drone / aerial", TWILIGHT: "Twilight", HEADSHOT: "Headshots",
-  VIRTUAL_STAGING: "Virtual staging", VIDEO: "Video", SOCIAL_REEL: "Reel",
-  FLOORPLAN: "Floor plan", MATTERPORT_3D: "Matterport 3D", ZILLOW_3D: "Zillow 3D tour", OTHER: "Other",
-};
+// The QC checklist vocabulary (friendly labels, the guided failure modes, the
+// VIP extra pass, type → category) lives in the client-safe qcCategories.ts
+// since Sep 16: the /tasks card needs the same "which category is this row"
+// read as the reconciler and the one-press "Photos done". Re-exported here so
+// server callers keep their import path.
+export {
+  QC_LABEL, QC_FAILURE_MODES, VIP_EXTRA_PASS, TYPE_CATEGORY_LABEL, QC_CATEGORIES,
+  qcCategoryOfRow, qcCategoryStates, qcWaitingOnMediaOnly, qcCategoriesLanded, qcCategoryNoun, qcNotLiveMessage,
+  type QcCategory, type QcCategoryState,
+} from "@/lib/qcCategories";
 const guide = (steps: string[]): ChecklistItem[] => steps.map((label) => ({ label, done: false }));
-
-// Guided QC failure modes — the SPECIFIC things Kyle must actually eyeball before
-// a category ships. These exist because QC was blind: his written guidance was one
-// static sentence and the checklist had nothing to tick, so revisions ran ~13.7%
-// and the sampled bounce-back reasons were EXACTLY the misses below (crooked
-// verticals/perspective, item-removal left undone, reflections, sign/clutter). The
-// vocabulary is keyed to IMAGE_FLAG_TAGS so a later auto-QA model trains on the
-// same labels. Keyed by media CATEGORY (Photos / Video / Floor plan) — one block
-// per category, appended to the checklist ONLY once that category is live on Aryeo
-// (so we never ask Kyle to verify photos that haven't landed yet, and nothing gates
-// prematurely). Labels are STABLE strings: the reconciler merge keys on label to
-// preserve Kyle's manual ticks across syncs, so these must never change wording
-// once shipped or a re-sync would drop the tick and silently re-open the gate.
-const QC_FAILURE_MODES: Record<string, string[]> = {
-  // Photos (covers PHOTOS / DRONE / TWILIGHT / HEADSHOT / VIRTUAL_STAGING — all
-  // fold to the "Photos" category in TYPE_CATEGORY_LABEL and QC together).
-  Photos: [
-    "Verticals & horizontals straight (perspective)",
-    "Blemishes / AI errors removed",
-    "Colors & lighting consistent",
-    "Clutter + our yard sign removed",
-    "People / camera in mirrors & reflections gone",
-    "Virtual staging / item removal done (if ordered)",
-  ],
-  // Video covers VIDEO + SOCIAL_REEL (both "Video" category).
-  Video: [
-    "Text on screen spelled right",
-    "Music + branding correct",
-  ],
-  "Floor plan": [
-    "Square footage matches the listing",
-  ],
-};
-
-// The two extra passes we ask for on VIP / heavy clients — 38% of deliveries are
-// VIP-segment (66% VIP+heavy) yet QC was client-blind. These are the two misses
-// that most often bounce a high-value client. Prefixed "VIP —" so the card can
-// render them as a distinct extra-pass section; they're real Kyle-ticks and gate
-// auto-close like any other failure-mode item.
-const VIP_EXTRA_PASS = [
-  "VIP — Mirrors/reflections re-checked frame by frame",
-  "VIP — Clutter sweep on every room",
-] as const;
 export const VIP_SEGMENTS = new Set(["vip", "heavy"]);
 
 // ---------------------------------------------------------------------------
@@ -445,17 +514,6 @@ export function qcGateComplete(items: ChecklistItem[]): boolean {
   return gate.every((i) => i.done);
 }
 
-// Media category label for a deliverable type — mirrors CATEGORY_LABEL in
-// projectStatus.ts (kept here to avoid a circular import). Lets us tell, from a
-// project's status evidence (which lists present/missing by category label),
-// whether a given ordered deliverable is already live on Aryeo.
-const TYPE_CATEGORY_LABEL: Record<string, string> = {
-  PHOTOS: "Photos", DRONE: "Photos", TWILIGHT: "Photos", HEADSHOT: "Photos", VIRTUAL_STAGING: "Photos",
-  VIDEO: "Video", SOCIAL_REEL: "Video",
-  FLOORPLAN: "Floor plan",
-  MATTERPORT_3D: "3D tour", ZILLOW_3D: "3D tour",
-};
-
 // ---------------------------------------------------------------------------
 // When does a QC card actually become WORK? Two different dates, and conflating
 // them hid yesterday's shoots from the morning QC block (Jordan, Sep 1):
@@ -492,9 +550,7 @@ export function actionableQcCount(
   }).length;
 }
 
-/** The SOONEST still-undelivered deliverable and when it is promised — what the
- *  job owes next, as distinct from when the whole job is late. */
-export function nextPendingDue(p: {
+type PendingDueInput = {
   shootDate: Date | null;
   deliverables: { type: string; label?: string | null; productTitle?: string | null }[];
   /** stored Aryeo line items — same-day rush detection (see sameDayAddOns) */
@@ -502,8 +558,29 @@ export function nextPendingDue(p: {
   statusEvidence?: string | null;
   monthlyContent?: boolean;
   turnarounds?: TurnaroundRules;
-}): { at: Date; categories: string[] } | null {
+  /** the office's tier on the job (Sep 16) — branding → the monthly window,
+   *  premium → 72h, standard → 48h. It re-dates the VIDEO rows only; when it
+   *  is absent every row is read exactly as before. */
+  tier?: SlaTier | null;
+  /** The job's appointment legs. The VIDEO rows date from the LAST leg that
+   *  actually happened (videoAnchorFor), not from Project.shootDate — a reel
+   *  filmed on the second visit is not late against the first (99 W Bridge,
+   *  Sep 16). Callers that don't load legs keep the shootDate reading. */
+  appointments?: { status: string | null; startAt: Date | null }[] | null;
+};
+
+/** EVERY still-undelivered category and when it is promised, soonest first —
+ *  one row per category (VIDEO and SOCIAL_REEL both land on "Video"; the
+ *  earlier promise wins). The QC card says it per line now ("Video — waiting
+ *  on the editor, due Fri"), so the per-category dates have to come from the
+ *  same arithmetic as the whole job's (Kyle call, Sep 16). */
+export function pendingDuesByCategory(p: PendingDueInput): { category: string; at: Date }[] {
   const anchor = p.shootDate ?? new Date();
+  // The reel dates from the last leg that happened; everything else from the
+  // job's shoot date (Sep 16 review — the multi-leg anchor was landing in the
+  // status engine only, so the QC card and the delivery board still called a
+  // second-visit video late).
+  const videoAnchor = videoAnchorFor({ shootDate: p.shootDate, appointments: p.appointments }) ?? anchor;
   const present = new Set(parseEvidence(p.statusEvidence)?.present ?? []);
   const premiumTypes = new Set(p.deliverables.filter((d) => isPremiumLabel(d.label)).map((d) => d.type));
   // Rushed types are keyed on the raw type; dedupeTypes folds DRONE into
@@ -513,20 +590,37 @@ export function nextPendingDue(p: {
     const lbl = TYPE_CATEGORY_LABEL[t];
     return !lbl || !present.has(lbl);
   });
-  if (pending.length === 0) return null;
-  const dues = pending.map((t) => ({
-    category: TYPE_CATEGORY_LABEL[t] ?? labelFor(t),
-    at: deliveryDueFrom(anchor, t, {
-      monthlyContent: !!p.monthlyContent,
-      premium: premiumTypes.has(t),
+  // The office's tier speaks for the video rows; everything else keeps its own
+  // label-derived reading (Sep 16 — the tier picker in the override dialog is
+  // now the one switch that moves a video's deadline).
+  const tierOpts = slaOptsForTier(p.tier);
+  const soonestByCategory = new Map<string, number>();
+  for (const t of pending) {
+    const category = TYPE_CATEGORY_LABEL[t] ?? labelFor(t);
+    const video = REEL_VIDEO_TYPES.has(t);
+    const at = deliveryDueFrom(video ? videoAnchor : anchor, t, {
+      monthlyContent: video && tierOpts ? tierOpts.monthlyContent : !!p.monthlyContent,
+      premium: video && tierOpts ? tierOpts.premium : premiumTypes.has(t),
       sameDay: rushTypes.has(t),
       rules: p.turnarounds,
-    }).getTime(),
-  }));
-  const soonest = Math.min(...dues.map((d) => d.at));
+    }).getTime();
+    const prev = soonestByCategory.get(category);
+    if (prev === undefined || at < prev) soonestByCategory.set(category, at);
+  }
+  return [...soonestByCategory.entries()]
+    .sort((a, b) => a[1] - b[1])
+    .map(([category, at]) => ({ category, at: new Date(at) }));
+}
+
+/** The SOONEST still-undelivered deliverable and when it is promised — what the
+ *  job owes next, as distinct from when the whole job is late. */
+export function nextPendingDue(p: PendingDueInput): { at: Date; categories: string[] } | null {
+  const dues = pendingDuesByCategory(p);
+  if (dues.length === 0) return null;
+  const soonest = dues[0].at.getTime();
   return {
     at: new Date(soonest),
-    categories: [...new Set(dues.filter((d) => d.at === soonest).map((d) => d.category))],
+    categories: dues.filter((d) => d.at.getTime() === soonest).map((d) => d.category),
   };
 }
 
@@ -564,6 +658,8 @@ export function specsForProject(p: {
   /** title fallbacks for coordinate-only orders (see jobLabelFor) */
   addressLine?: string | null;
   city?: string | null;
+  /** the office's tier (Sep 16) — the video rows' clock, see PendingDueInput */
+  tier?: SlaTier | null;
 }): TaskSpec[] {
   const specs: TaskSpec[] = [];
   const shoot = p.shootDate;
@@ -577,7 +673,17 @@ export function specsForProject(p: {
   // Same-day rush add-ons pull PHOTOS(+DRONE) / FLOORPLAN to end of the shoot
   // day; qcTypes are already DRONE→PHOTOS-folded, and PHOTOS is in the set.
   const rushTypes = sameDayTypes(p.deliverables, p.orderItems);
-  const dueOpts = (type: string) => ({ monthlyContent: monthly, premium: premiumTypes.has(type), sameDay: rushTypes.has(type), rules: p.turnarounds });
+  // The office's tier re-dates the VIDEO rows only (Sep 16) — see standardDeliveryDue.
+  const tierOpts = slaOptsForTier(p.tier);
+  const dueOpts = (type: string) => {
+    const video = REEL_VIDEO_TYPES.has(type);
+    return {
+      monthlyContent: video && tierOpts ? tierOpts.monthlyContent : monthly,
+      premium: video && tierOpts ? tierOpts.premium : premiumTypes.has(type),
+      sameDay: rushTypes.has(type),
+      rules: p.turnarounds,
+    };
+  };
 
   // What's already live on Aryeo (from the status cross-check). Used to retire
   // QA / "deliver gallery" work for a category the moment it's delivered — even
@@ -660,6 +766,12 @@ export function specsForProject(p: {
   const productionStage = p.status === "SHOT" || p.status === "EDITING" || p.status === "REVIEW" || p.status === "REVISION";
   if (productionStage && !shootAhead) {
     const anchor = shoot ?? new Date();
+    // The video rows date from the last leg that actually happened (Sep 16
+    // review): on a two-visit job the QC card's due is the LATEST pending
+    // item, so anchoring the reel on the first visit made the whole card read
+    // overdue while the reel was still being filmed.
+    const videoAnchor = videoAnchorFor({ shootDate: shoot, appointments: p.appointments }) ?? anchor;
+    const anchorFor = (type: string) => (REEL_VIDEO_TYPES.has(type) ? videoAnchor : anchor);
     // ONE consolidated QC task per project: a checkbox per deliverable category,
     // pre-checked for anything already live on Aryeo. Replaces the old per-item
     // "QA <type>" tasks. Due at the SOONEST pending item's turnaround. Only the
@@ -747,7 +859,7 @@ export function specsForProject(p: {
         done: true,
       });
     }
-    const pendingDues = qcTypes.filter((d) => !isDelivered(d)).map((d) => deliveryDueFrom(anchor, d, dueOpts(d)).getTime());
+    const pendingDues = qcTypes.filter((d) => !isDelivered(d)).map((d) => deliveryDueFrom(anchorFor(d), d, dueOpts(d)).getTime());
     if (qcTypes.length > 0 && qcItems.some((i) => !i.done)) {
       specs.push({
         taskType: "media_qa",
@@ -764,7 +876,7 @@ export function specsForProject(p: {
         // still had a day to run, so Kyle's QC list cried wolf on jobs that
         // were perfectly on time (Jordan, Sep 1: 208 N Adams, 2009 Garrison,
         // 263 Towamensing). Per-item SLAs still drive the per-item chases.
-        dueAt: pendingDues.length ? new Date(Math.max(...pendingDues)) : deliveryDueFrom(anchor, primary, dueOpts(primary)),
+        dueAt: pendingDues.length ? new Date(Math.max(...pendingDues)) : deliveryDueFrom(anchorFor(primary), primary, dueOpts(primary)),
         checklist: qcItems,
       });
     }
@@ -786,6 +898,30 @@ function labelFor(t: string) {
 // Create a "client reply / callback" task from an inbound communication, matched
 // to a client (+ their latest project). One open reply task per client is kept
 // (deduped) so a burst of texts doesn't spawn duplicates.
+
+// ---------------------------------------------------------------------------
+// A DISMISSAL IS A DECISION, NOT A TIMEOUT (Kyle's call, Sep 16).
+//
+// Both routers below REOPEN a closed row when a new message lands on the same
+// dedupe key — correct for real messages, and the reason a cancel was never a
+// durable "no". But when a person has dismissed the row by hand ("already
+// done", "not needed"), a "thanks!" or a 👍 must not drag it straight back
+// onto the board; that is the loop Kyle described. A real question still
+// reopens it, because a real question is a real ask.
+// ---------------------------------------------------------------------------
+async function dismissedAndOnlyCourtesy(
+  existing: { status: string; summary: string | null } | null,
+  text: string | null | undefined,
+): Promise<boolean> {
+  if (!existing || existing.status !== "CANCELLED") return false;
+  const { isDismissedSummary } = await import("@/lib/triage");
+  if (!isDismissedSummary(existing.summary)) return false; // a sweep closed it — reopen freely
+  const t = (text ?? "").trim();
+  if (!t) return true; // nothing said = nothing new
+  const { isCourtesyMessage } = await import("@/lib/replyQueue");
+  return isCourtesyMessage(t);
+}
+
 export async function createCommTask(opts: {
   clientId: string;
   clientName: string;
@@ -818,6 +954,9 @@ export async function createCommTask(opts: {
   // internal note (and vice versa).
   const key = dedupe([opts.clientId, opts.projectId ?? "noproject", taskType === "todo" ? "brain_todo" : "client_reply"]);
   const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+  // A row someone dismissed by hand stays dismissed until there is something
+  // real to say (Sep 16).
+  if (await dismissedAndOnlyCourtesy(existing, opts.snippet ?? opts.aiDetail)) return false;
   if (existing && existing.status !== "COMPLETED" && existing.status !== "CANCELLED") {
     // APPEND, don't drop (Aug 24 audit): a client sending three texts used to
     // leave the task showing only the FIRST — Kyle answered stale asks. One
@@ -947,6 +1086,9 @@ export async function createProjectFollowupTask(opts: {
   const summary =
     opts.aiDetail?.trim() || `${opts.senderName} messaged about ${street}: “${clip(opts.text, 240)}”`;
   const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key } });
+  // Same rule as createCommTask: a hand-dismissed follow-up is not resurrected
+  // by a courtesy note (Sep 16).
+  if (await dismissedAndOnlyCourtesy(existing, opts.text)) return false;
   const data = {
     taskType: "comms_followup",
     title,
@@ -1396,6 +1538,45 @@ export async function closeObsoleteTasks(
       },
       data: { status: "COMPLETED", completedAt: new Date() },
     });
+    // TEAM + SLACK INSTRUCTIONS DIE WITH THE JOB (Kyle's call, Sep 16: "several
+    // tasks describe work that's already done"). Delivery used to close only
+    // PRODUCTION work, so a Slack ask and a teammate's job-prep note sat open
+    // on a shipped gallery until the 7-day sweep silently cancelled it or
+    // nobody ever touched it: 14 open rows on DELIVERED jobs on Sep 16,
+    // including "Confirm showcase video has been removed for 204 Spring Ln"
+    // and "Pay question — James · 921 Hummingbird Ln" (14 days).
+    //
+    // The 24-hour floor is the whole safety margin: an ask raised WHILE the job
+    // was being delivered is usually about the delivery itself, and closing it
+    // in the same minute would eat real work. Three carve-outs stay open:
+    //   · assignedManually / flaggedAt — a person put it there on purpose,
+    //     the invariant every engine in this file respects;
+    //   · a field flag ("Shoot issue …", source "manual") — that belongs to
+    //     the field-flag owner, not to housekeeping;
+    //   · an @mention companion ("<name> tagged you — <address>") — someone was
+    //     asked a question directly, and it gets a full week (the janitor's
+    //     rule below).
+    // CANCELLED, not COMPLETED, with the reason on the row: nothing happened
+    // here, and a silent close is what made the board untrustworthy.
+    const extra = await prisma.smartTask.updateMany({
+      where: {
+        projectId,
+        status: { notIn: ["COMPLETED", "CANCELLED"] },
+        assignedManually: false,
+        flaggedAt: null,
+        createdAt: { lt: new Date(Date.now() - 24 * 3600_000) },
+        // dedupeKey is NULLABLE, and in SQL a NOT on a null column is neither
+        // true nor false — a bare `NOT: { startsWith }` silently drops every
+        // row that has no key at all (14 of 1820 rows today). Spelled out so a
+        // future slack/team ask minted without a key is still closed (review).
+        AND: [{ OR: [{ dedupeKey: null }, { NOT: { dedupeKey: { startsWith: "mention-" } } }] }],
+        OR: [
+          { taskType: "internal_instruction", source: { in: ["slack", "team"] } },
+          { taskType: "todo", source: "brain" },
+        ],
+      },
+      data: { status: "CANCELLED", summary: "Job delivered — closed by the hub." },
+    });
     // Closing the image_fixes task without resolving its ImageFlag rows left
     // the Flags tab lying ("3 open flags" on a delivered gallery) — and ONE new
     // flag resurrected every stale one into Kyle's 24h fix task (audit). The
@@ -1407,7 +1588,9 @@ export async function closeObsoleteTasks(
       })
       .catch(() => {});
     if (!opts.sweep) await createDeliveryTextTask(projectId);
-    return r.count;
+    // Both closes count: the janitor's step log is how anyone knows the sweep
+    // is doing anything, and dropping `extra` under-reported it (review).
+    return r.count + extra.count;
   }
   return 0;
 }
@@ -1439,6 +1622,23 @@ export async function closeTasksOnInactiveProjects(): Promise<{ delivered: numbe
         // FIXED — silently (review, Sep 8). The DELIVERED transition itself
         // (closeObsoleteTasks) still closes pre-delivery production work.
         { project: { status: "DELIVERED" }, taskType: { in: DELIVERED_CLOSE_TYPES.filter((t) => t !== "image_fixes") }, flaggedAt: null },
+        // Sep 16: a DELIVERED job whose ONLY open row is a Slack ask or a
+        // teammate's note was never SELECTED here, so the new delivery rule in
+        // closeObsoleteTasks would never have run for it — the job has no
+        // production task left to bring it into this sweep. Six of the 14 open
+        // rows on delivered jobs on Sep 16 were exactly that shape.
+        {
+          project: { status: "DELIVERED" },
+          flaggedAt: null,
+          createdAt: { lt: new Date(Date.now() - 24 * 3600_000) },
+          // Same nullable-column spelling as the rule this selects for — a
+          // bare NOT on a null dedupeKey matches nothing (review).
+          AND: [{ OR: [{ dedupeKey: null }, { NOT: { dedupeKey: { startsWith: "mention-" } } }] }],
+          OR: [
+            { taskType: "internal_instruction", source: { in: ["slack", "team"] } },
+            { taskType: "todo", source: "brain" },
+          ],
+        },
         { project: { status: "ON_HOLD" }, taskType: { in: PRODUCTION_TASK_TYPES } },
       ],
     },
@@ -1472,6 +1672,28 @@ export async function closeTasksOnInactiveProjects(): Promise<{ delivered: numbe
     if (status === "DELIVERED") out.delivered += n;
     else out.cancelled += n;
   }
+
+  // @MENTION COMPANIONS ON A SHIPPED JOB (Kyle's call, Sep 16). "Jordan
+  // Spackman tagged you — 632 Greenridge Rd" is one row per tagged person
+  // (mentions.ts, dedupeKey mention-<project>-<person>), and the ONLY thing
+  // that ever closed one was a human clicking Handled — replying on the note
+  // itself does not. Three of them sat on one delivered job. A week after the
+  // gallery shipped, the question is moot: close it with the reason on the
+  // row, and leave anything a person put on their own plate alone. Deliberately
+  // a week, not a day: being tagged is someone asking YOU something.
+  const mentions = await prisma.smartTask.updateMany({
+    where: {
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
+      assignedManually: false,
+      flaggedAt: null,
+      dedupeKey: { startsWith: "mention-" },
+      createdAt: { lt: new Date(Date.now() - 7 * 86_400_000) },
+      project: { status: "DELIVERED" },
+    },
+    data: { status: "CANCELLED", summary: "Job delivered a week ago — closed by the hub." },
+  });
+  out.delivered += mentions.count;
+
   return out;
 }
 
@@ -1487,6 +1709,21 @@ export const DELIVERED_LONG_AGO = "delivered-long-ago";
 /** Stamped on a QC card a human closed with a reason — the reconciler must
  *  never reopen it over unticked boxes. */
 export const CLOSED_BY_HAND = "closed-by-hand";
+/** Stamped (with the categories appended, "|"-separated — category names carry
+ *  spaces) on a by-hand-closed QC card the reconciler brought back because a
+ *  NEW category landed on Aryeo after the close — "closed the photos, the
+ *  video showed up two days later" (Kyle call, Sep 16). It is both the audit
+ *  trail and the loop-stop: a reopened card is OPEN and no longer carries
+ *  CLOSED_BY_HAND, so the reopen rule can only fire again after a human closes
+ *  it again — by which time the landed category is part of what he closed on. */
+export const REOPENED_FOR_PREFIX = "reopened-for:";
+/** Every category a reopen is waiting on. Plural since the review: a video AND
+ *  a floor plan can land between two hourly passes, and reopening for only the
+ *  first silently ticked the other's checks as QC'd by nobody. */
+export const reopenedForCategories = (sourceDetail: string | null | undefined): string[] =>
+  sourceDetail?.startsWith(REOPENED_FOR_PREFIX)
+    ? sourceDetail.slice(REOPENED_FOR_PREFIX.length).split("|").map((c) => c.trim()).filter(Boolean)
+    : [];
 /** Stamped on a client-text task the sweep CLAIMED but could not prove it sent
  *  (a timeout / 5xx after OpenPhone may already have accepted the message). The
  *  claim is held so the sweep can never double-text — this marks the row so a
@@ -1625,7 +1862,7 @@ export async function createDeliveryTextTask(projectId: string): Promise<void> {
       // The batch this job owes, the office's number first (Sep 13) — see
       // effectiveVideosOwed below.
       videosOwedOverride: true, videosFilmed: true,
-      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, quantity: true } },
+      deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true, quantity: true } },
       client: { select: { name: true } },
     },
   });
@@ -1848,12 +2085,48 @@ const vendorChaseKey = (projectId: string, category: string) =>
 // would stay open until the whole job shipped, so Kyle chases a vendor who
 // already delivered). The status cross-check that minted it also proves the
 // piece arrived — a category in statusEvidence.present closes its chase.
-export async function closeVendorChasesForPresent(projectId: string, present: string[]): Promise<number> {
-  const keys = VENDOR_CHASE.filter((v) => present.includes(v.category)).map((v) => vendorChaseKey(projectId, v.category));
-  if (keys.length === 0) return 0;
+export async function closeVendorChasesForPresent(
+  projectId: string,
+  present: string[],
+  /** what the job is EXPECTED to deliver at all (statusEvidence.expected). A
+   *  chase for a category the job turns out never to have owed is not "still
+   *  outstanding", it is a mistake with a task attached: Sharra Mercer's #1584
+   *  chased AutoHDR for photos because the word "Package" in a video-only
+   *  product implied a gallery (Sep 16). When the expected set stops naming
+   *  the category, the chase goes with it. Omitted = don't judge. */
+  expected?: string[],
+): Promise<number> {
+  // Arrived → the chase is DONE. Never owed → the chase is CANCELLED: a task
+  // nobody should have been given does not belong in the Done ledger as work.
+  const arrived = VENDOR_CHASE.filter((v) => present.includes(v.category)).map((v) => vendorChaseKey(projectId, v.category));
+  const unowed =
+    expected !== undefined && expected.length > 0
+      ? VENDOR_CHASE.filter((v) => !present.includes(v.category) && !expected.includes(v.category)).map((v) => vendorChaseKey(projectId, v.category))
+      : [];
+  let n = 0;
+  if (arrived.length > 0) {
+    n += (await prisma.smartTask.updateMany({
+      where: { dedupeKey: { in: arrived }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    })).count;
+  }
+  if (unowed.length > 0) {
+    n += (await prisma.smartTask.updateMany({
+      where: { dedupeKey: { in: unowed }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      data: { status: "CANCELLED", sourceDetail: "Not ordered on this job" },
+    })).count;
+  }
+  return n;
+}
+
+/** The office said a category is not required on this job (deliverableActions
+ *  .waiveDeliverable) — its vendor chase is answered, not outstanding. */
+export async function cancelVendorChaseFor(projectId: string, category: string): Promise<number> {
+  const v = VENDOR_CHASE.find((x) => x.category === category);
+  if (!v) return 0;
   const r = await prisma.smartTask.updateMany({
-    where: { dedupeKey: { in: keys }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
-    data: { status: "COMPLETED", completedAt: new Date() },
+    where: { dedupeKey: vendorChaseKey(projectId, category), status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    data: { status: "CANCELLED" },
   });
   return r.count;
 }
@@ -1864,9 +2137,44 @@ export async function chaseVendorsForMissing(
 ): Promise<number> {
   if (!opts.shootDate || opts.missing.length === 0) return 0;
   const daysSinceShoot = (Date.now() - opts.shootDate.getTime()) / DAY;
-  const due = VENDOR_CHASE.filter(
+  let due = VENDOR_CHASE.filter(
     (v) => opts.missing.includes(v.category) && daysSinceShoot >= v.delayDays,
   );
+  if (due.length === 0) return 0;
+
+  // THE PHOTOGRAPHER ALREADY ANSWERED (Sep 16, Kyle call). James wrote "no
+  // floor plan for this one" on the upload page on Sep 9 and the hub chased
+  // CubiCasa for it on Sep 11 anyway — the reason was an Admin-visible note
+  // and no engine read it. It still isn't a waiver (only the office waives,
+  // see the Confirm card minted below), but it IS a reason not to chase a
+  // vendor for something the field says nobody ordered.
+  const owed = await prisma.deliverable.findMany({
+    where: { projectId, ...OWED_DELIVERABLE_WHERE },
+    select: { id: true, type: true, label: true, notCompletedReason: true },
+  });
+  const answered = new Set(
+    due
+      .filter((v) => {
+        const rows = owed.filter((d) => (TYPE_CATEGORY_LABEL[d.type] ?? labelFor(d.type)) === v.category);
+        return rows.length > 0 && rows.every((d) => !!d.notCompletedReason);
+      })
+      .map((v) => v.category),
+  );
+  // SUPPRESSION ALWAYS COSTS A QUESTION (Sep 16 review). Swallowing the chase
+  // and asking nobody would be worse than the chase: 322 N 62nd St carries two
+  // field reasons written before any of this existed, so no waive-confirm card
+  // was ever minted for them and the job would sit "missing Floor plan" in
+  // silence forever. Whatever the reason suppresses here, the office gets the
+  // one deduped "is it really not required?" card in its place (deduped and
+  // never re-asked once answered — see confirmNotRequiredTask).
+  if (answered.size > 0) {
+    for (const d of owed) {
+      if (!d.notCompletedReason) continue;
+      if (!answered.has(TYPE_CATEGORY_LABEL[d.type] ?? labelFor(d.type))) continue;
+      await confirmNotRequiredTask(d.id).catch(() => { /* best-effort: never break the sweep */ });
+    }
+  }
+  due = due.filter((v) => !answered.has(v.category));
   if (due.length === 0) return 0;
 
   const street = (opts.title || "this job").split(",")[0].trim();
@@ -1907,6 +2215,76 @@ export async function chaseVendorsForMissing(
     created++;
   }
   return created;
+}
+
+// ---------------------------------------------------------------------------
+// "COULDN'T COMPLETE" → ONE QUESTION FOR THE OFFICE (Sep 16, Kyle call).
+//
+// The photographer already tells us on the upload page when an item was not
+// wanted ("Client did not need 2d floor plan", 322 N 62nd St). Until now that
+// answer was a note nobody's engine read, so the hub kept the item owed, kept
+// it in "still missing", and chased CubiCasa for it three days later.
+//
+// It does NOT waive the item — the field says what happened at the property,
+// the office says what the client bought (68 New St's floor plan really did
+// move to another order; 195 Woodhill's was discounted off the package). So
+// this mints ONE deduped question on Kyle's plate with a one-tap link to the
+// job's deliverables, where "Not required" is a single press. Withdrawing the
+// reason on the upload page cancels the question again.
+// ---------------------------------------------------------------------------
+export const waiveConfirmKey = (deliverableId: string) => `waive-confirm-${deliverableId}`;
+
+export async function confirmNotRequiredTask(deliverableId: string): Promise<void> {
+  const d = await prisma.deliverable.findUnique({
+    where: { id: deliverableId },
+    select: {
+      id: true, type: true, label: true, notCompletedReason: true, waivedAt: true, removedFromOrderAt: true,
+      project: { select: { id: true, title: true, clientId: true, status: true, photographer: { select: { name: true } } } },
+    },
+  });
+  if (!d?.project) return;
+  const key = waiveConfirmKey(d.id);
+  const open = { status: { notIn: ["COMPLETED", "CANCELLED"] } };
+  // The reason was withdrawn, the office already waived it, or the order lost
+  // the line — there is nothing left to ask.
+  if (!d.notCompletedReason || d.waivedAt || d.removedFromOrderAt || ["CANCELLED", "ON_HOLD"].includes(d.project.status)) {
+    await prisma.smartTask.updateMany({ where: { dedupeKey: key, ...open }, data: { status: "CANCELLED" } }).catch(() => {});
+    return;
+  }
+  const category = TYPE_CATEGORY_LABEL[d.type] ?? labelFor(d.type);
+  const street = (d.project.title || "this job").split(",")[0].trim();
+  const who = d.project.photographer?.name?.split(" ")[0] ?? "the photographer";
+  const title = `Confirm: ${category} not required on ${street}? (${who}: ${clip(d.notCompletedReason, 40)})`.slice(0, 120);
+  const summary = [
+    `${who} marked the ${category.toLowerCase()} not completed at the shoot: "${clip(d.notCompletedReason, 220)}".`,
+    `If the client really didn't buy it, mark it "Not required" on the job — it then stops counting as missing, stops the ${category === "Floor plan" ? "CubiCasa" : "vendor"} chase, and stays on the record with your note.`,
+    `If it IS still owed, leave it: /projects/${d.project.id}#deliverables`,
+  ].join(" ");
+  const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: key }, select: { id: true, status: true } });
+  if (existing) {
+    if (existing.status === "COMPLETED" || existing.status === "CANCELLED") return; // answered once, never re-asked
+    await prisma.smartTask.update({ where: { id: existing.id }, data: { title, summary: summary.slice(0, 500) } }).catch(() => {});
+    return;
+  }
+  const kyle = await prisma.teamMember.findFirst({ where: { name: { contains: "Kyle" } }, select: { id: true } });
+  await prisma.smartTask.create({
+    data: {
+      taskType: "internal_instruction",
+      title,
+      summary: summary.slice(0, 500),
+      reasonCreated: `The photographer marked the ${category.toLowerCase()} not completed — only the office can say it is not required.`,
+      source: "system",
+      priority: "MEDIUM",
+      dueAt: new Date(Date.now() + 24 * HOUR),
+      projectId: d.project.id,
+      clientId: d.project.clientId,
+      propertyAddress: d.project.title,
+      ownerId: kyle?.id ?? null,
+      assignedKey: "kyle",
+      deliverableType: d.type,
+      dedupeKey: key,
+    },
+  }).catch(() => { /* a race on the unique key is a no-op */ });
 }
 
 // ---------------------------------------------------------------------------
@@ -2005,7 +2383,7 @@ export async function notifyRawsLanded(projectId: string): Promise<void> {
       editorManual: true,
       editor: { select: { name: true } },
       client: { select: { socialClient: true } },
-      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
+      deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true } },
     },
   });
   if (!p) return;
@@ -2201,7 +2579,7 @@ export async function mintEditTask(projectId: string): Promise<void> {
       priorityOverride: true,
       editor: { select: { name: true } },
       client: { select: { name: true, socialClient: true } },
-      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
+      deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true } },
     },
   });
   if (!p) return;
@@ -2365,7 +2743,7 @@ export async function addRoundToEditCard(
   // round refresh must not undo any more than the hourly one may.
   const p = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { shootDate: true, dueOverrideAt: true, priorityOverride: true, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } } },
+    select: { shootDate: true, dueOverrideAt: true, priorityOverride: true, deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true } } },
   });
   const v = p?.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
   const { videoTier } = await import("@/lib/projectStatus");
@@ -2452,7 +2830,7 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
       photographerId: true,
       photographer: { select: { name: true } },
       client: { select: { socialClient: true } },
-      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, notCompletedReason: true, quantity: true } },
+      deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true, notCompletedReason: true, quantity: true } },
       packageName: true,
       videosFilmed: true,
       videosOwedOverride: true, // the office's batch size (Sep 13) — wins below
@@ -2814,7 +3192,7 @@ export async function generateTasksForActiveProjects(): Promise<{ created: numbe
     include: {
       // productTitle + the live line items: how the SLA engine sees a same-day
       // rush add-on (sameDayAddOns explains why the row alone can't say).
-      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, productTitle: true } },
+      deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true, productTitle: true } },
       orderItems: { where: { isCanceled: false }, select: { title: true } },
       // segment drives the VIP extra-pass ticks on the guided QC checklist.
       client: { select: { id: true, name: true, socialClient: true, segment: true } },
@@ -2844,7 +3222,7 @@ export async function generateTasksForProject(projectId: string): Promise<number
     where: { id: projectId },
     include: {
       // Same shape as generateTasks above — the same-day rush needs both.
-      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, productTitle: true } },
+      deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true, productTitle: true } },
       orderItems: { where: { isCanceled: false }, select: { title: true } },
       // segment drives the VIP extra-pass ticks on the guided QC checklist.
       client: { select: { id: true, name: true, socialClient: true, segment: true } },
@@ -2880,6 +3258,9 @@ type TaskProject = {
   /** the office's batch size / the photographer's count (Sep 13, editOverrides) — ride along with `include` */
   videosOwedOverride?: number | null;
   videosFilmed?: number | null;
+  /** the office's tier (Sep 13 column, honoured by the clock from Sep 16) */
+  tierOverride?: string | null;
+  packageName?: string | null;
 };
 
 // Dedupe-key families minted OUTSIDE this reconciler (webhooks/integrations).
@@ -2943,7 +3324,7 @@ async function syncOneProjectTasks(
     // have been through review before this evidence-close may fire.
     if (finalVideoLanded) {
       const vids = await prisma.deliverable.findMany({
-        where: { projectId: p.id, type: { in: ["VIDEO", "SOCIAL_REEL"] }, removedFromOrderAt: null },
+        where: { projectId: p.id, type: { in: ["VIDEO", "SOCIAL_REEL"] }, ...OWED_DELIVERABLE_WHERE },
         select: { quantity: true, label: true, type: true },
       });
       // MONTHLY jobs deliver an open-ended SET (2–5 videos, stored quantity is
@@ -3014,11 +3395,19 @@ async function syncOneProjectTasks(
     clientName: p.client.name,
     addressLine: p.addressLine,
     city: p.city,
+    // THE OFFICE'S TIER (Sep 16, Kyle call): until now the tier picker in the
+    // override dialog moved the queue's label and nothing else, so Sharra
+    // Mercer's #1584 — booked as a premium reel, re-sold as a 16-video
+    // branding package — kept its 48h reel clock and every card it owned read
+    // overdue. Branding now means the monthly window, here and on the status
+    // card, off the one column.
+    tier: slaTierOf(p),
   });
   // The vendor's piece arrived (the status sweep just refreshed this
   // evidence, and `tasks` runs right after it) → its chase is done.
   try {
-    await closeVendorChasesForPresent(p.id, parseEvidence(p.statusEvidence)?.present ?? []);
+    const chaseEv = parseEvidence(p.statusEvidence);
+    await closeVendorChasesForPresent(p.id, chaseEv?.present ?? [], chaseEv?.expected);
   } catch { /* chase close is best-effort */ }
   // The shoot is still ahead but the job already reads shot (same-address
   // raws): park the QC card rather than let the "no longer expected" sweep
@@ -3162,9 +3551,80 @@ async function syncOneProjectTasks(
           ...s.checklist.map((i) => ({ label: i.label, done: i.done || (prevDone.get(i.label) ?? false) })),
           ...extras,
         ];
+        // --- A by-hand close is not the end of QC (Kyle call, Sep 16) --------
+        // Kyle closes the card when the photos are out and the video is still
+        // days away; today that is FINAL (the guard below), so the video is
+        // never QC'd from this card. If a category LANDS after the close — its
+        // "QC <x>" evidence row was unticked then and is ticked now — bring the
+        // card back with ONLY the landed categories outstanding: every other
+        // human row is ticked, because he already decided about those. The
+        // stamp records what brought it back and is what stops this from firing
+        // hourly: a reopened card is OPEN and no longer CLOSED_BY_HAND, so the
+        // rule can only run again after another by-hand close, whose snapshot
+        // then includes the landed category.
+        //
+        // ALL of them, not the first (review): a video and a floor plan can
+        // both land between two hourly passes — 358 N Church and 99 W Bridge
+        // owe exactly that pair today — and reopening for the video alone
+        // ticked "Square footage matches the listing" as QC'd by nobody.
+        const reopenFor = exists.status === "COMPLETED" && exists.sourceDetail === CLOSED_BY_HAND
+          ? [...qcCategoriesLanded(prev, merged)].filter((c) =>
+              merged.some((i) => !i.done && qcCategoryOfRow(i.label) === c))
+          : [];
+        if (reopenFor.length > 0) {
+          // Only the landed categories' rows stay open. Gate rows are evidence,
+          // never ours to tick — a "QC Floor plan" ticked by hand here would
+          // tell the whole hub a missing floor plan had been checked.
+          const stillOpen = new Set<string>(reopenFor);
+          const reopened: ChecklistItem[] = merged.map((i) => {
+            const c = qcCategoryOfRow(i.label);
+            return (c && stillOpen.has(c)) || isQcGateRow(i.label) ? i : { ...i, done: true };
+          });
+          const named = reopenFor.join(" + ");
+          await prisma.smartTask.update({
+            where: { id: exists.id },
+            data: {
+              status: "OPEN",
+              completedAt: null,
+              sourceDetail: `${REOPENED_FOR_PREFIX}${reopenFor.join("|")}`,
+              checklist: serializeChecklist(reopened),
+              summary: `${named} landed after this card was closed — check ${reopenFor.length === 1 ? "it" : "them"} before ${reopenFor.length === 1 ? "it goes" : "they go"} out.`,
+              // A revision promises nothing (Sep 8) — the same carve-out the
+              // normal path makes four lines below. Without it a card that
+              // came back mid-revision carried the spec's shoot-anchored date
+              // and read weeks overdue the moment it reopened (review).
+              ...(p.status === "REVISION"
+                ? { dueAt: null, priority: "HIGH" as const }
+                : s.dueAt
+                  ? { dueAt: s.dueAt, priority: computePriority({ dueAt: s.dueAt, status: p.status }) }
+                  : {}),
+            },
+          });
+          await prisma.activity
+            .create({
+              data: {
+                projectId: p.id,
+                type: "SYSTEM",
+                body: `QC reopened — ${named} landed on Aryeo after the card was closed by hand.`,
+              },
+            })
+            .catch(() => {});
+          continue;
+        }
         // Sep 8: the evidence rows (+ the two self-clearing debrief rows) are
         // the gate; every human tick is optional — see qcGateComplete.
-        const allDone = qcGateComplete(merged);
+        // A card the rule above brought back holds open until the landed
+        // category's own rows are ticked (or a human closes it again) —
+        // otherwise the very next pass would auto-close it on the evidence
+        // that reopened it, and the card would flicker instead of being QC'd.
+        const reopenedFor = new Set(reopenedForCategories(exists.sourceDetail));
+        const reopenedWorkLeft =
+          reopenedFor.size > 0 &&
+          merged.some((i) => {
+            const c = qcCategoryOfRow(i.label);
+            return !i.done && !!c && reopenedFor.has(c);
+          });
+        const allDone = qcGateComplete(merged) && !reopenedWorkLeft;
         // A COMPLETED QC whose evidence still shows unchecked work on a live
         // SHOT/EDITING/REVIEW job was almost certainly auto-closed by this
         // reconciler during a transient signal blip (a demoted-then-healed job) —
@@ -3191,7 +3651,10 @@ async function syncOneProjectTasks(
         const nowCompleting = allDone && !inRevision && exists.status !== "COMPLETED";
         const data = {
           checklist: serializeChecklist(merged),
-          ...(s.summary && !inRevision ? { summary: s.summary } : {}),
+          // A reopened card keeps its own headline until the landed category
+          // is checked off; the spec's generic summary would erase why it is
+          // back on Kyle's plate.
+          ...(s.summary && !inRevision && !reopenedWorkLeft ? { summary: s.summary } : {}),
           // Post-shoot QC: priced by its turnaround due date, NOT shoot proximity
           // (a 7–10 day monthly job shouldn't read URGENT because it shot today).
           ...(s.dueAt && !inRevision ? { dueAt: s.dueAt, priority: computePriority({ dueAt: s.dueAt, status: p.status }) } : {}),
@@ -3318,7 +3781,83 @@ export async function expireStaleSlackTasks(): Promise<{ expired: number }> {
     },
     data: { status: "CANCELLED", summary: "Auto-closed: a 14-day-old watchdog nudge — the job resolved another way." },
   });
+  // A CONFIRMATION TEXT FOR A SHOOT THAT ALREADY HAPPENED (Kyle's call,
+  // Sep 16). Two of these had been open since Aug 4 and Aug 20. The text is
+  // sent the day BEFORE — once the shoot date is behind us there is nothing
+  // left to confirm, and the row is just noise on the board and in the 4
+  // o'clock digest. A rebooked job gets a NEW shoot date and a fresh card, so
+  // this only ever catches the genuinely stranded ones. Anything a person put
+  // on their own plate (assignedManually) or deliberately flagged (flaggedAt)
+  // is left alone, the carve-out every other close rule in this file carries.
+  await prisma.smartTask.updateMany({
+    where: {
+      taskType: "confirmation_text",
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
+      assignedManually: false,
+      flaggedAt: null,
+      project: { shootDate: { lt: new Date() } },
+    },
+    data: { status: "CANCELLED", summary: "Stale — shoot date passed." },
+  });
+
   const cutoff = new Date(Date.now() - 7 * 86_400_000);
+
+  // SAY SOMETHING BEFORE IT DIES (Kyle's call, Sep 16). In 30 days, 108 Slack
+  // asks were minted and 50 were cancelled — 9 of them by this sweep, with
+  // nobody told. A row that expires in silence teaches the office that the
+  // board forgets things, which is the reason Kyle stopped trusting it. So on
+  // day 6 the person it is assigned to gets one nudge with the link; on day 7
+  // it closes as before. Deduped per task, so the nudge goes exactly once.
+  try {
+    const warnFrom = new Date(Date.now() - 7 * 86_400_000);
+    const warnTo = new Date(Date.now() - 6 * 86_400_000);
+    const soon = await prisma.smartTask.findMany({
+      where: {
+        taskType: "internal_instruction",
+        source: "slack",
+        status: { notIn: ["COMPLETED", "CANCELLED"] },
+        assignedKey: { not: null },
+        createdAt: { gte: warnFrom, lt: warnTo },
+      },
+      select: { id: true, title: true, assignedKey: true, propertyAddress: true },
+      take: 30,
+    });
+    if (soon.length > 0) {
+      const { notifyInApp } = await import("@/lib/notify");
+      const { slugForName } = await import("@/lib/assignees");
+      const roster = await prisma.teamMember.findMany({ select: { id: true, name: true } });
+      const byKey = new Map(roster.map((m) => [slugForName(m.name), m.id]));
+      for (const t of soon) {
+        const tmId = t.assignedKey ? byKey.get(t.assignedKey) : undefined;
+        if (!tmId) continue; // nobody to tell — it still expires tomorrow
+        const href = `/tasks?tab=slack&task=${t.id}`;
+        // BELL ONLY, for now, and the wording downstream says so. notify.ts's
+        // bridge only pushes a kind it can map to one of the person's notify
+        // switches (notifyPrefs.ts KIND_TO_EVENT), and "task_expiring" is not
+        // in that map yet — so the slackDm below is carried but not sent. It
+        // is left in place deliberately: the day the kind is classified
+        // (notifyPrefs.ts is B4's file, Sep 16 handover) the DM starts going
+        // out with no change here. Until then the cancel summary and the guide
+        // say "posted in the hub", which is what actually happens (review).
+        await notifyInApp({
+          kind: "task_expiring",
+          title: `Still needed? “${t.title.slice(0, 50)}” closes tomorrow`,
+          body: "It closes tomorrow unless you act.",
+          href,
+          targets: [
+            {
+              roles: ["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"],
+              userKey: `tm:${tmId}`,
+              href,
+              slackDm: `This Slack ask has been open a week: “${t.title.slice(0, 120)}”${t.propertyAddress ? ` (${t.propertyAddress.split(",")[0]})` : ""}. Still needed? It closes tomorrow unless you act. ${href}`,
+            },
+          ],
+          dedupeKey: `slack-expiring-${t.id}`,
+        });
+      }
+    }
+  } catch { /* the nudge is a courtesy — it must never stop the sweep below */ }
+
   const r = await prisma.smartTask.updateMany({
     where: { taskType: "internal_instruction", source: "slack", status: "OPEN", createdAt: { lt: cutoff } },
     // Say so on the row (the Done tab shows cancelled rows): a silent cancel
@@ -3326,7 +3865,7 @@ export async function expireStaleSlackTasks(): Promise<{ expired: number }> {
     // carries the Slack channel and taskSource.ts parses it. Text mirrors
     // slackSync.SLACK_EXPIRED_SUMMARY; kept literal so tasks.ts does not pull
     // the Slack client into every import.
-    data: { status: "CANCELLED", summary: "Auto-closed: 7 days with no action." },
+    data: { status: "CANCELLED", summary: "Auto-closed: 7 days with no action. A reminder was posted in the hub yesterday." },
   });
   return { expired: r.count };
 }

@@ -11,6 +11,8 @@ import { Badge } from "@/components/ui/Badge";
 import { setSmartTaskStatus, setTaskAssignee, draftTaskReply, sendDeliveryText, sendConfirmationText, toggleTaskChecklistItem } from "@/app/actions";
 import { resolveEmailRecipient, sendEmailReply } from "@/app/emailActions";
 import { addTaskNote } from "@/app/projects/messageActions";
+import { acknowledgeQcCategory } from "@/app/ops/actions";
+import { qcCategoryStates } from "@/lib/qcCategories";
 import { etDateTime, etMonthDay, etDaysAgo } from "@/lib/datetime";
 import { sourceMeta, receivedByLabel, taskTypeLabel, SOURCE_CHIP, type SourceKey } from "@/lib/taskSource";
 import { editorMeta, isDelegated, DELEGATE_KEYS, EDITORS } from "@/lib/editors";
@@ -104,7 +106,8 @@ const STATUSES = [
   "WAITING_VENDOR",
   "WAITING_JORDAN",
   "BLOCKED",
-  "CANCELLED",
+  // "CANCELLED" is no longer offered raw: dismissing asks for a reason and
+  // stamps who did it (dismissTask, Sep 16) so the Done tab can say why.
 ];
 
 const SOURCE_ICON: Record<SourceKey, typeof Hash> = {
@@ -210,12 +213,43 @@ function QcChecklist({ taskId, items, qcClient, interactive }: {
   const evidence = local.map((it, i) => ({ it, i })).filter(({ it }) => isEvidenceRow(it.label));
   const ticks = local.map((it, i) => ({ it, i })).filter(({ it }) => !isEvidenceRow(it.label) && !isVipTick(it.label));
   const vip = local.map((it, i) => ({ it, i })).filter(({ it }) => isVipTick(it.label));
+  // Per-category state, from the same pure read the home card and the
+  // reconciler use (src/lib/qcCategories.ts). No status evidence here — the
+  // "QC <x>" row's own tick stands in for "live on Aryeo", which is exactly
+  // what it means.
+  const cats = qcCategoryStates(local);
+
+  // A refusal has to SAY so. This card reads "live" off the "QC <x>" row's own
+  // tick, which the reconciler merge makes sticky, while the action asks the
+  // project's status evidence — so a category pulled back off the Aryeo listing
+  // still shows the button, and a press that the server declines used to do
+  // nothing at all (review, Sep 16). Same treatment as QcCategoryDone on the home.
+  const [catErr, setCatErr] = useState<string | null>(null);
+  const ackCategory = (category: string) => {
+    if (!interactive || busy !== null) return;
+    setBusy(-1);
+    setCatErr(null);
+    void (async () => {
+      try {
+        const r = await acknowledgeQcCategory(taskId, category).catch(() => null);
+        if (!r) { setCatErr("Couldn’t save — try again."); return; }
+        if (!r.ok) { setCatErr(r.message); return; }
+        if (r.items.length > 0) setLocal(r.items);
+      } finally {
+        setBusy(null);
+      }
+    })();
+  };
 
   return (
     <div className="space-y-2.5">
-      {/* Evidence: what's live vs. pending on Aryeo — non-interactive. */}
+      {/* Evidence: what's live vs. pending on Aryeo — non-interactive, EXCEPT
+          the one-press "Photos done" on a category whose media is live and
+          whose checks are still open (Kyle call, Sep 16: photos QC'd and
+          delivered, video still days out, and his only button closed the
+          whole card). It ticks that category's rows and nothing else. */}
       {evidence.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           {evidence.map(({ it, i }) => (
             <span
               key={i}
@@ -226,6 +260,35 @@ function QcChecklist({ taskId, items, qcClient, interactive }: {
               <span className="opacity-70">{it.done ? "live" : "pending"}</span>
             </span>
           ))}
+        </div>
+      )}
+      {/* Per-category state for what HAS landed — the pending ones already say
+          so in the pills above. A live category with checks left carries the
+          one-press button; a finished one reads "Photos ✓ done" so the state
+          Kyle wanted to record is visible on this card too. */}
+      {cats.some((c) => c.live) && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
+          {cats.filter((c) => c.live).map((c) =>
+            c.done ? (
+              <span key={c.label} className="font-medium text-success">{c.label} ✓ done</span>
+            ) : (
+              <span key={c.label} className="inline-flex items-center gap-1.5 text-muted">
+                {c.label} — {c.total - c.ticked} check{c.total - c.ticked === 1 ? "" : "s"} left
+                {interactive && (
+                  <button
+                    type="button"
+                    onClick={() => ackCategory(c.label)}
+                    disabled={busy !== null}
+                    title={`Tick every ${c.label.toLowerCase()} check in one press — the card stays open for the rest of the job.`}
+                    className="inline-flex items-center gap-1 rounded-md border border-success/40 px-1.5 py-0.5 font-medium text-success hover:bg-success/10 disabled:opacity-50"
+                  >
+                    {busy === -1 ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />} {c.label} done
+                  </button>
+                )}
+              </span>
+            ),
+          )}
+          {catErr && <span className="w-full font-medium text-danger">{catErr}</span>}
         </div>
       )}
 

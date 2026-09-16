@@ -47,6 +47,47 @@ export function itemFromTaskTitle(title: string, street: string): string {
   return s.trim();
 }
 
+// ---------------------------------------------------------------------------
+// "Kyle added it to the order" — proven by the order, not by a tick.
+//
+// Sep 16 (Kyle call, 2 Grace Cir): the add-on card is the office's to-do, and
+// the thing that finishes it is the line appearing on the Aryeo order. The
+// reconcile (integrations/aryeo.ts) creates the deliverable row and closes the
+// card whose slug names that category — so the loop shuts on its own instead
+// of leaving "Add to the order: 2D Floorplan" open on a job that delivered ten
+// days ago. Deliberately conservative: only words that NAME the category
+// count, so a vague item ("extra stuff") keeps its card until a human ticks it.
+// ---------------------------------------------------------------------------
+const ADDON_TYPE_WORDS: Record<string, RegExp> = {
+  FLOORPLAN: /\bfloor\s?plans?\b|\b2d\b|cubicasa|iguide/i,
+  MATTERPORT_3D: /matterport|3d\s?tour|virtual\s?tour/i,
+  ZILLOW_3D: /zillow/i,
+  TWILIGHT: /twilight|dusk/i,
+  DRONE: /drone|aerial/i,
+  HEADSHOT: /headshot|portrait/i,
+  VIRTUAL_STAGING: /virtual\s?stag/i,
+  SOCIAL_REEL: /\breels?\b|social/i,
+  VIDEO: /\bvideo\b|cinematic|walk\s?through/i,
+  PHOTOS: /\bphotos?\b|photography|\bhdr\b|gallery|images?/i,
+};
+
+/** Does the item slug inside a `shoot-addon-<projectId>-<slug>` key name this
+ *  deliverable type? (The slug is the photographer's own words, hyphenated.)
+ *
+ *  PHOTOS is the fallback, never the first answer: "drone photos" and "twilight
+ *  photos" both contain the word, and closing the office's "Add to the order:
+ *  Drone Photos" card because a plain photo gallery appeared would tick off a
+ *  billing memo for work nobody added (Sep 16 review). A specific add-on word
+ *  wins; PHOTOS only matches a slug that names no add-on at all. */
+export function addonSlugNamesType(slug: string, type: string): boolean {
+  const re = ADDON_TYPE_WORDS[type];
+  if (!re) return false;
+  const words = slug.replace(/-/g, " ");
+  if (!re.test(words)) return false;
+  if (type !== "PHOTOS") return true;
+  return !Object.entries(ADDON_TYPE_WORDS).some(([t, r]) => t !== "PHOTOS" && r.test(words));
+}
+
 export type ShootAddOn = {
   id: string;
   item: string;

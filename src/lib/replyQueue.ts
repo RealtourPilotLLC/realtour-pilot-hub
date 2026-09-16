@@ -47,10 +47,12 @@ import { HUB_REPLY_SOURCE, isHubSms, isHubSmsSource } from "@/lib/hubSms";
 //     Kennedy case — see `authoredByUs`, and note it stays correct once the
 //     receiver's direction bug is fixed, because it is an OR, not a guess).
 //     An automated confirmation/delivery text answers nothing.
-//  5. A HUMAN JUDGMENT closes it: a COMPLETED client_reply task (phone) or the
-//     Gmail sync's own reply detection + the per-group Handled tick (email).
-//     It is a CUT POINT, not a delete — a message that arrives after the tick
-//     is waiting again.
+//  5. A HUMAN JUDGMENT closes it: a COMPLETED client_reply task (phone), the
+//     Gmail sync's own reply detection + the per-group Handled tick (email),
+//     or — since Sep 16 — a THREAD tick on any row at all, client record or
+//     not (`comms-ack-thread:<family>:<key>`; see below). It is a CUT POINT,
+//     not a delete — a message that arrives after the tick is waiting again.
+//     A number marked spam is muted outright until someone un-mutes it.
 //  6. BULK MAIL IS NOT A PERSON WAITING, even from a matched client record: a
 //     newsletter, a marketing blast, a cold vendor pitch (see `isBulkEmail`).
 //
@@ -89,6 +91,24 @@ const VIP_SEGMENTS = new Set(["vip", "heavy"]);
 
 export type WaitingFamily = "phone" | "email";
 export type ReplyTurn = { role: "client" | "us"; text: string; at: string };
+
+/** CommLog.source on an outbound row the Gmail sync lifted out of Sent
+ *  (src/lib/integrations/google.ts). Shared so the walk and the writer can
+ *  never drift on the spelling. */
+export const GMAIL_SENT_SOURCE = "gmail-sent";
+
+/** One mail thread's identity, from its subject: "Re: Fwd: Your listing content
+ *  is ready!" and "Your listing content is ready!" are the same conversation.
+ *  Empty string = nothing to match on (a subject-less send), and the caller
+ *  must not treat that as a match. */
+function threadSubject(subject: string | null | undefined): string {
+  let s = (subject ?? "").replace(/\s+/g, " ").trim();
+  // Stripped one prefix at a time: "Re: Fwd: …" carries two, and an anchored
+  // global replace only ever fires at position 0.
+  const PREFIX = /^(?:re|fwd?|aw|sv)\s*(?:\[\d+\])?\s*:\s*/i;
+  while (PREFIX.test(s)) s = s.replace(PREFIX, "");
+  return s.toLowerCase();
+}
 
 // ---------------------------------------------------------------------------
 // What counts as a message that needs answering
@@ -142,6 +162,10 @@ function isNoise(text: string | null): boolean {
  *  Deliberately conservative — a false "needs an answer" costs a click, a false
  *  "handled" costs a client. Anything with a question mark, a number (a time, an
  *  address, a price) or a real ask in it falls through to the queue. */
+export function isCourtesyMessage(text: string): boolean {
+  return isCourtesy(text);
+}
+
 function isCourtesy(text: string): boolean {
   const t = text.replace(/\s+/g, " ").trim();
   if (!t) return true;
@@ -169,6 +193,76 @@ function isCourtesy(text: string): boolean {
 // (comms-ack-email-<cid>) written before this existed are still honored.
 export function emailAckKey(clientId: string, groupKey: string): string {
   return `comms-ack-email-${clientId}:${encodeURIComponent(groupKey)}`;
+}
+
+// ---------------------------------------------------------------------------
+// DISMISS, FOR EVERY ROW — NOT JUST THE ONES WITH A CLIENT RECORD.
+//
+// Kyle's call (Sep 16): "there's no way to get rid of things I've already
+// dealt with." The human-judgment cut (rule 5) was keyed on `clientId`, so an
+// unmatched number, a teammate's status text and a spam blast had NO exit at
+// all — the only way to clear James Livingston's six-day row was to text him
+// back from the company line. On Sep 16 the Replies tab read "2 waiting ·
+// oldest has been 6 day(s)" and BOTH rows were our own photographers.
+//
+// So the cut now has a thread-scoped twin that works on any key:
+//   comms-ack-thread:<family>:<threadKey>   value: "<ISO>" or "<ISO>|<reason>"
+// It behaves EXACTLY like the client cut — a CUT POINT, not a delete. Messages
+// at-or-before it drop; a new one after it is waiting again; CommLog is never
+// touched, so the Inbox still holds the whole conversation.
+//
+// Spam goes one step further and mutes the NUMBER (comms-mute:<phoneKey>), so
+// the same blaster doesn't need a tick a day. Muting is reversible from the
+// Replies tab and is refused on a teammate's number (app/actions.ts).
+// ---------------------------------------------------------------------------
+
+/** The reasons a person can give for clearing a conversation by hand. */
+export const COMMS_DISMISS_REASONS = ["answered elsewhere", "no reply needed", "spam"] as const;
+export type CommsDismissReason = (typeof COMMS_DISMISS_REASONS)[number];
+
+/** AppSetting key for a thread-scoped "handled" cut. Family-scoped so a text
+ *  tick can never hide a genuinely unanswered email. */
+export function threadAckKey(family: WaitingFamily, threadKey: string): string {
+  return `comms-ack-thread:${family}:${encodeURIComponent(threadKey)}`;
+}
+
+/** AppSetting key muting one 10-digit number: it stops opening rows until
+ *  someone un-mutes it. History is never deleted. */
+export function commsMuteKey(phone: string): string {
+  return `comms-mute:${phone}`;
+}
+
+/** An ack/mute value is "<ISO>" or "<ISO>|<reason>" — one column, two facts. */
+export function ackValue(at: Date, reason?: string | null): string {
+  return reason ? `${at.toISOString()}|${reason}` : at.toISOString();
+}
+
+/** Split one back out. Returns null when the stored value isn't a date. */
+export function parseAckValue(raw: string | null | undefined): { at: Date; reason: string | null } | null {
+  const s = (raw ?? "").trim();
+  if (!s) return null;
+  const bar = s.indexOf("|");
+  const at = new Date(bar < 0 ? s : s.slice(0, bar));
+  if (isNaN(at.getTime())) return null;
+  return { at, reason: bar < 0 ? null : s.slice(bar + 1).trim() || null };
+}
+
+export type MutedNumber = { phone: string; since: string; reason: string | null };
+
+/** Every number currently muted, newest first — the Replies tab's un-mute fold
+ *  (a mute nobody can see is a mute nobody can undo). */
+export async function mutedNumbers(): Promise<MutedNumber[]> {
+  const rows = await prisma.appSetting.findMany({
+    where: { key: { startsWith: "comms-mute:" } },
+    select: { key: true, value: true },
+  });
+  return rows
+    .map((r) => {
+      const v = parseAckValue(r.value);
+      return v ? { phone: r.key.slice("comms-mute:".length), since: v.at.toISOString(), reason: v.reason } : null;
+    })
+    .filter((m): m is MutedNumber => !!m)
+    .sort((a, b) => (a.since < b.since ? 1 : -1));
 }
 
 // Automated / non-client email noise: payment failures, receipts, newsletters,
@@ -530,6 +624,34 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
       kill.add(`e:${emailGroupKey(r.contactName, r.clientId)}`);
       kill.add(`e:${emailGroupKey(r.clientName, r.clientId)}`);
       kill.add(`e:client:${r.clientId}`);
+      // A reply WE sent, pulled back out of Gmail's Sent folder (Sep 16,
+      // google.ts): the row is stamped "Us", so the two group keys above are
+      // our own label, not the person we wrote to. The THREAD is what tells us
+      // who we answered — the sent row carries the subject we replied under,
+      // and Gmail's own "Re:" chain is the only handle on the recipient that
+      // survives the "Us" stamp.
+      //
+      // Scoped by that subject, NOT by the client record (review). A
+      // client-wide kill would clear Arielle's genuinely unanswered mail the
+      // moment we replied to Matthew on the record they share — and this
+      // module's whole doctrine is that a false "handled" costs a client while
+      // a false "waiting" costs a glance. The client-wide fallback survives
+      // only where it cannot hurt: one email conversation on the record in the
+      // window, so there is nobody else it could be. Either way it stays a CUT
+      // POINT — a newer inbound on that thread is waiting again.
+      if (r.source === GMAIL_SENT_SOURCE && r.clientId) {
+        const cid = r.clientId;
+        const onRecord = [...buckets.entries()].filter(([, b]) => b.family === "email" && b.clientIds.includes(cid));
+        const thread = threadSubject(r.subject);
+        const sameThread = thread
+          ? onRecord.filter(([, b]) =>
+              b.rows.some((x) => threadSubject(x.subject) === thread) ||
+              [...b.pending, ...b.courtesy].some((m) => threadSubject(m.subject) === thread),
+            )
+          : [];
+        const target = sameThread.length > 0 ? sameThread : onRecord.length === 1 ? onRecord : [];
+        for (const [k] of target) kill.add(k);
+      }
     } else {
       if (r.clientId) kill.add(`c:${r.clientId}`);
       // On a genuine outbound `fromPhone` is who we TEXTED. On a row a teammate
@@ -689,11 +811,27 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
   if (live.length === 0) return [];
   const allClientIds = [...new Set(live.flatMap((b) => (b.clientId ? [b.clientId] : [])))];
 
-  const ackKeys = live
-    .filter((b) => b.family === "email" && b.clientId)
-    .flatMap((b) => [emailAckKey(b.clientId!, b.groupKey), `comms-ack-email-${b.clientId}`]);
+  const ackKeys = [
+    ...live
+      .filter((b) => b.family === "email" && b.clientId)
+      .flatMap((b) => [emailAckKey(b.clientId!, b.groupKey), `comms-ack-email-${b.clientId}`]),
+    // The thread-scoped twin (Sep 16) — every row, client record or not.
+    ...live.map((b) => threadAckKey(b.family, b.key)),
+  ];
+  // Muted numbers, read for the phone buckets that could be muted. A client's
+  // own thread is never muted (there is no control for it) but the key is
+  // checked anyway: whatever wrote it meant it.
+  const muteKeys = [
+    ...new Set(
+      live
+        .filter((b) => b.family === "phone")
+        .flatMap((b) => [b.phone, b.key.startsWith("p:") ? b.key.slice(2) : null])
+        .filter((p): p is string => !!p && p.length === 10)
+        .map(commsMuteKey),
+    ),
+  ];
 
-  const [handledTasks, emailAcks, openTasks, clients] = await Promise.all([
+  const [handledTasks, emailAcks, mutes, openTasks, clients] = await Promise.all([
     allClientIds.length
       ? prisma.smartTask.findMany({
           where: {
@@ -707,6 +845,9 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
       : Promise.resolve([] as { clientId: string | null; completedAt: Date | null; source: string }[]),
     ackKeys.length
       ? prisma.appSetting.findMany({ where: { key: { in: [...new Set(ackKeys)] } } })
+      : Promise.resolve([] as { key: string; value: string }[]),
+    muteKeys.length
+      ? prisma.appSetting.findMany({ where: { key: { in: muteKeys } }, select: { key: true, value: true } })
       : Promise.resolve([] as { key: string; value: string }[]),
     allClientIds.length
       ? prisma.smartTask.findMany({
@@ -739,14 +880,27 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
   }
   const ackByKey = new Map<string, Date>();
   for (const a of emailAcks) {
-    const at = new Date(a.value);
-    if (!isNaN(at.getTime())) ackByKey.set(a.key, at);
+    // "<ISO>" (the email ticks written before Sep 16) and "<ISO>|<reason>"
+    // (every thread ack) both parse here — one reader, two vintages.
+    const v = parseAckValue(a.value);
+    if (v) ackByKey.set(a.key, v.at);
+  }
+  const mutedPhones = new Set<string>();
+  for (const m of mutes) {
+    if (parseAckValue(m.value)) mutedPhones.add(m.key.slice("comms-mute:".length));
   }
   const openTaskByClient = new Map(openTasks.filter((t) => t.clientId).map((t) => [t.clientId as string, t]));
   const clientById = new Map(clients.map((c) => [c.id, c]));
 
   const out: WaitingThread[] = [];
   for (const b of live) {
+    // A MUTED number opens nothing (Sep 16, "spam"). The conversation is still
+    // in the Inbox and in comms memory — this drops the ROW, not the history,
+    // and the Replies tab's muted fold un-mutes it.
+    if (b.family === "phone") {
+      const p = b.phone ?? (b.key.startsWith("p:") ? b.key.slice(2) : null);
+      if (p && mutedPhones.has(p)) continue;
+    }
     // The ack/handled timestamp is a CUT POINT, not an all-or-nothing delete:
     // messages at-or-before it are answered and drop away; anything newer stays
     // visible with its wait measured from the first surviving message.
@@ -761,6 +915,10 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
         if (a2) cut.push(a2);
       }
     }
+    // The thread-scoped tick (Sep 16) — the ONLY exit an unmatched number, a
+    // teammate's status text or a spam blast has. Same cut-point rule.
+    const threadAck = ackByKey.get(threadAckKey(b.family, b.key));
+    if (threadAck) cut.push(threadAck);
     if (cut.length) {
       const at = new Date(Math.max(...cut.map((d) => d.getTime())));
       b.pending = b.pending.filter((i) => i.at > at);
@@ -853,6 +1011,9 @@ async function viewerRoles(): Promise<string[]> {
 
 export type ReplyCard = {
   key: string; // stable id for this conversation (clientId or phone key)
+  /** which lane the Handled/Dismiss tick writes into — the Replies tab is
+   *  phone-only today, but the ack key is family-scoped and must say so */
+  family: WaitingFamily;
   clientId: string | null;
   clientName: string | null;
   displayName: string; // who Kyle sees: client, contact, or a formatted number
@@ -886,6 +1047,7 @@ function toCard(t: WaitingThread): ReplyCard {
   const latest = list[list.length - 1];
   return {
     key: t.key,
+    family: t.family,
     clientId: t.clientId,
     clientName: t.clientName,
     displayName: t.displayName,
@@ -911,13 +1073,23 @@ export async function replyQueue(): Promise<ReplyQueue> {
     includeCourtesy: true, // the fold below the queue
     minRoles: await viewerRoles(),
   });
-  const cards = threads.filter((t) => !t.courtesyOnly).map(toCard);
-  const handled = threads.filter((t) => t.courtesyOnly).map(toCard);
+  // OUR OWN TEAM IS NOT A CLIENT WAITING (Kyle's call, Sep 16). Harrison's
+  // "Photos uploaded" and James's shoot questions are status texts to the
+  // office, not a customer sitting on an unanswered message — and counting
+  // them here while the Comms tab and the /ops pill (both includeTeam:false)
+  // did not is exactly how the Replies tab came to read "2 waiting" on a
+  // morning when no client was waiting at all. They still RENDER, under the
+  // same fold as the thank-yous, so Kyle can answer or dismiss them; they are
+  // simply never part of the number.
+  const waiting = threads.filter((t) => !t.courtesyOnly && !t.isTeam);
+  const aside = threads.filter((t) => t.courtesyOnly || t.isTeam);
+  const cards = waiting.map(toCard);
+  const handled = aside.map(toCard);
   return {
     cards,
     handled,
     clientCount: cards.filter((c) => c.isClient).length,
-    teamCount: cards.filter((c) => c.isTeam).length,
+    teamCount: handled.filter((c) => c.isTeam).length,
     // The MAX, not the first row — VIPs jump the queue, so position no longer
     // means age and a "oldest 3d" badge read off cards[0] would understate it.
     oldestHours: cards.reduce((m, c) => Math.max(m, c.hoursWaiting), 0),
@@ -937,7 +1109,10 @@ export async function replyWaitingSummary(): Promise<{
   email: number;
   total: number;
 }> {
-  const threads = await unansweredComms({ minRoles: await viewerRoles() });
+  // includeTeam:false, same as the Comms board and the /ops pill (Sep 16): a
+  // teammate's status text is not a client waiting on a reply, and the badge
+  // this feeds has to match the list it links to.
+  const threads = await unansweredComms({ includeTeam: false, minRoles: await viewerRoles() });
   const phone = threads.filter((t) => t.family === "phone");
   const email = threads.filter((t) => t.family === "email");
   return {

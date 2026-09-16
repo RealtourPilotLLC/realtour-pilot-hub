@@ -53,9 +53,14 @@ export async function GET(req: NextRequest) {
     const { kyleMorningDigest } = await import("@/lib/notify");
     return kyleMorningDigest();
   });
+  // Sep 16 (Kyle's call): the 4 o'clock check now leads with the Slack asks —
+  // each line carrying the client, the property and its own deep link — and
+  // lands on /tasks?tab=slack instead of /today, which redirected to a Comms
+  // tab that did not contain a single row it had just listed. Same once-a-day
+  // claim key as the old digest, so there is no way to double-send.
   await step("kyleDigest", async () => {
-    const { kyleAfternoonDigest } = await import("@/lib/notify");
-    return kyleAfternoonDigest();
+    const { afternoonSlackDigest } = await import("@/lib/commsBoard");
+    return afternoonSlackDigest();
   });
   // Reply-SLA escalation: page the team when an inbound client text sits
   // unanswered (30m → ADMIN bell + Slack, 2h → OWNER + urgent; VIPs faster).

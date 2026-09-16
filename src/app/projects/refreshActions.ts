@@ -90,6 +90,7 @@ export async function refreshFromAryeo(projectId: string): Promise<RefreshResult
     where: { id: projectId },
     select: {
       status: true, shootDate: true, price: true, paymentStatus: true, statusEvidence: true,
+      aryeoListingId: true,
       photographer: { select: { name: true } },
       _count: { select: { deliverables: true, appointments: true } },
     },
@@ -101,6 +102,13 @@ export async function refreshFromAryeo(projectId: string): Promise<RefreshResult
   const changed: string[] = [];
   const fmt = (d: Date | null) =>
     d ? d.toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "none";
+  // THE LISTING LINK (Sep 16, Kyle call — 39 Saratoga Ln). It is the single
+  // biggest thing this button can fix and it used to be invisible: the job had
+  // no listing id, so there was no media to compare, so the button reported
+  // "Up to date" on a page showing "Photos missing" beside 77 delivered
+  // photos. Report it first, and say what it bought us.
+  const listingLinked = !before.aryeoListingId && !!after.aryeoListingId;
+  if (listingLinked) changed.push("Listing linked");
   if (before.status !== after.status) changed.push(`stage ${before.status} → ${after.status}`);
   if ((before.shootDate?.getTime() ?? 0) !== (after.shootDate?.getTime() ?? 0)) {
     changed.push(`shoot ${fmt(before.shootDate)} → ${fmt(after.shootDate)}`);
@@ -131,20 +139,43 @@ export async function refreshFromAryeo(projectId: string): Promise<RefreshResult
   }
 
   const parse = (raw: string | null) => {
-    try { return JSON.parse(raw ?? "{}") as { aryeo?: { photos?: number; videos?: number; floorPlans?: number; interactive?: number } }; }
-    catch { return {}; }
+    try {
+      return JSON.parse(raw ?? "{}") as {
+        aryeo?: { photos?: number; videos?: number; floorPlans?: number; interactive?: number };
+        missing?: string[];
+      };
+    } catch { return {}; }
   };
-  const a0 = parse(before.statusEvidence).aryeo ?? {};
-  const a1 = parse(after.statusEvidence).aryeo ?? {};
+  const e0 = parse(before.statusEvidence);
+  const e1 = parse(after.statusEvidence);
+  const a0 = e0.aryeo ?? {};
+  const a1 = e1.aryeo ?? {};
   const media = {
     photos: a1.photos ?? 0, videos: a1.videos ?? 0,
     floorPlans: a1.floorPlans ?? 0, interactive: a1.interactive ?? 0,
   };
+  const noun = (k: string) => (k === "floorPlans" ? "floor plans" : k === "interactive" ? "3D/tour items" : k);
   const mediaDelta = (["photos", "videos", "floorPlans", "interactive"] as const)
     .map((k) => ({ k, d: (a1[k] ?? 0) - (a0[k] ?? 0) }))
     .filter((x) => x.d !== 0);
   for (const m of mediaDelta) {
-    changed.push(`${m.d > 0 ? "+" : ""}${m.d} ${m.k === "floorPlans" ? "floor plans" : m.k === "interactive" ? "3D/tour items" : m.k}`);
+    // After a link the delta is not "77 new photos arrived" — they were always
+    // there. Say what actually changed: the hub can see them now.
+    changed.push(listingLinked && m.d > 0 ? `${m.d} ${noun(m.k)} now visible` : `${m.d > 0 ? "+" : ""}${m.d} ${noun(m.k)}`);
+  }
+  // What the cross-check can no longer confirm — or has stopped complaining
+  // about. On a delivered job this is the whole point of pressing the button.
+  const m0 = e0.missing ?? [];
+  const m1 = e1.missing ?? [];
+  if (m0.join("|") !== m1.join("|")) {
+    // "Still missing" is only true when the list SHRANK — a list that grew is
+    // news, and calling it "still" would bury it (Sep 16 review).
+    const grew = m1.some((c) => !m0.includes(c));
+    changed.push(
+      m1.length === 0
+        ? `nothing missing now (was ${m0.join(", ")})`
+        : `${grew ? "now" : "still"} missing ${m1.join(", ")}`,
+    );
   }
 
   revalidatePath(`/projects/${projectId}`);

@@ -16,19 +16,97 @@
 // These switches decide what ALSO reaches Slack or the person's phone.
 // ---------------------------------------------------------------------------
 
+/** The four groups a roster row falls into on the Settings card
+ *  (notifyGroupLabel below) — and the unit `appliesTo` speaks in. */
+export type NotifyGroup = "Owner" | "Editor" | "Photographer" | "Office";
+
+// `appliesTo` (Sep 16, Kyle call): which groups an emitter actually addresses
+// for the event. A switch the bridge can never fire used to render live —
+// Kyle's "Video in review" was on the card but no emitter ever wrote a row to
+// him, and the audit found the toggle inert. Now the card greys a switch out
+// for a group nothing addresses ("Nothing addresses Kyle for this event
+// yet") and the save action clears it, so a saved matrix can only hold
+// switches that can fire. Keep this in step with the emitters:
+//   mention         — everyone (mentions.ts, messageActions.ts);
+//   project_message — the job's editor, the assigned photographer while the
+//                     job is undelivered, and the office (mentions.ts
+//                     notifyProjectMessage);
+//   job_ping        — the edit lane ONLY: every raws_landed / revision_* /
+//                     edit_* / review_* person-leg is an editor:<key> or the
+//                     job editor's tm: row (tasks.ts, comms.ts,
+//                     editing/actions.ts, review/actions.ts). A photographer
+//                     is never addressed with one — their task_assigned
+//                     rides shoot_change — so "Photographer" came off this
+//                     row in the Sep 16 review: Harrison's and James's Job
+//                     pings switch rendered live and inert, the exact
+//                     dishonesty this table exists to remove;
+//   review_ready    — the Review Room's OWNER+ADMIN broadcast, bridged to
+//                     the owner and the office (notify.ts bridgeBroadcast);
+//   shoot_change    — the assigned photographer, the owner because he
+//                     shoots, and the OFFICE: tasks.ts creativeAlertTargets
+//                     addresses whoever carries TeamMember.creativeManager
+//                     by tm:<id> for raws_missing whatever their group, so
+//                     the day that flag moves from James to Kyle his row
+//                     must still be switchable (Sep 16 review).
 export const NOTIFY_EVENTS = [
-  { key: "mention", label: "Tagged in a message, or replied to", short: "Tags" },
-  { key: "project_message", label: "A message posted on one of their jobs", short: "Job messages" },
-  { key: "job_ping", label: "Job pings — footage landed, a revision, a review verdict, reassigned", short: "Job pings" },
-  { key: "review_ready", label: "A video waiting on review", short: "Video in review" },
-  { key: "shoot_change", label: "Shoot changes & feedback — reschedule, cancel, footage missing, cull, review feedback", short: "Shoot changes" },
-] as const;
+  { key: "mention", label: "Tagged in a message, or replied to", short: "Tags", appliesTo: ["Owner", "Editor", "Photographer", "Office"] },
+  { key: "project_message", label: "A message posted on one of their jobs", short: "Job messages", appliesTo: ["Editor", "Photographer", "Office"] },
+  { key: "job_ping", label: "Job pings — footage landed, a revision, a review verdict, reassigned", short: "Job pings", appliesTo: ["Editor"] },
+  { key: "review_ready", label: "A video waiting on review", short: "Video in review", appliesTo: ["Owner", "Office"] },
+  { key: "shoot_change", label: "Shoot changes & feedback — reschedule, cancel, footage missing, cull, review feedback", short: "Shoot changes", appliesTo: ["Photographer", "Owner", "Office"] },
+] as const satisfies readonly { key: string; label: string; short: string; appliesTo: readonly NotifyGroup[] }[];
 
 export type NotifyEvent = (typeof NOTIFY_EVENTS)[number]["key"];
 export const NOTIFY_EVENT_KEYS: NotifyEvent[] = NOTIFY_EVENTS.map((e) => e.key);
 
+/** Does any emitter address this group for this event? (The card greys the
+ *  row out otherwise; the save action clears it.) */
+export function eventAppliesTo(event: NotifyEvent, group: NotifyGroup): boolean {
+  const e = NOTIFY_EVENTS.find((x) => x.key === event);
+  return !!e && (e.appliesTo as readonly NotifyGroup[]).includes(group);
+}
+
 export type NotifyChannels = { slack: boolean; sms: boolean };
 export type NotifyPrefs = Record<NotifyEvent, NotifyChannels>;
+
+/** What the delivery log (NotificationDelivery, Sep 16) last recorded for a
+ *  person — the newest Slack DM that went, the newest text that went, and
+ *  the newest failure on either. ISO timestamps: this crosses the server →
+ *  client boundary as props. */
+export type LastReached = {
+  slack?: { at: string; kind: string };
+  sms?: { at: string; kind: string };
+  failed?: { at: string; detail: string };
+};
+
+/** A bell kind in the words the card uses — "Tue 4:12 PM (tagged)". Unlisted
+ *  kinds show as themselves; nothing here decides delivery. */
+export const NOTIFY_KIND_LABELS: Record<string, string> = {
+  mention: "tagged",
+  note_reply: "replied to",
+  project_message: "job message",
+  raws_landed: "raws in",
+  revision_raised: "revision",
+  revision_resolved: "revision back",
+  edit_finished: "edit finished",
+  edit_assigned: "reassigned",
+  edit_started: "edit started",
+  review_changes: "changes requested",
+  review_approved: "cut approved",
+  cut_ready: "video in review",
+  review_submitted: "video in review",
+  review_feedback: "shoot feedback",
+  appointment_change: "shoot change",
+  order_canceled: "cancelled",
+  raws_missing: "footage missing",
+  cull: "cull",
+  task_assigned: "task",
+  photos_undelivered: "photos not delivered",
+  staff_sms: "staff alert",
+};
+export function notifyKindLabel(kind: string): string {
+  return NOTIFY_KIND_LABELS[kind] ?? kind.replace(/_/g, " ");
+}
 
 /** What the Settings card gets per person — built server-side by
  *  teamNotifyRows() in src/lib/notifyPrefs.ts. `explicit` = a saved row
@@ -48,6 +126,9 @@ export type TeamNotifyRow = {
   phoneNote?: "company_line" | "non_us";
   prefs: NotifyPrefs;
   explicit: boolean;
+  /** Sep 16: what the delivery log last recorded for them (Settings shows
+   *  "Last reached: Slack · Tue 4:12 PM (tagged)" and a red last failure). */
+  lastReached?: LastReached;
 };
 
 const off: NotifyChannels = { slack: false, sms: false };
@@ -107,12 +188,22 @@ export function defaultPrefsForRow(row: Pick<TeamNotifyRow, "role" | "isEditor" 
   return defaultPrefsFor(row.isEditor ? "EDITOR" : row.role, row.isOwner);
 }
 
-/** The group a person's defaults come from — the chip on the Settings card. */
-export function notifyGroupLabel(row: Pick<TeamNotifyRow, "role" | "isEditor" | "isOwner">): "Owner" | "Editor" | "Photographer" | "Office" {
+/** The group a person's defaults come from — the chip on the Settings card,
+ *  and the unit `appliesTo` greys switches by. */
+export function notifyGroupLabel(row: Pick<TeamNotifyRow, "role" | "isEditor" | "isOwner">): NotifyGroup {
   if (row.isOwner) return "Owner";
   if (row.isEditor) return "Editor";
   if ((row.role || "").toUpperCase() === "PHOTOGRAPHER") return "Photographer";
   return "Office";
+}
+
+/** Sep 16: a copy of `prefs` with every switch nothing addresses for this
+ *  group turned off — what the save action persists, so the store can never
+ *  hold a switch the bridge ignores. */
+export function clearInapplicable(prefs: NotifyPrefs, group: NotifyGroup): NotifyPrefs {
+  const out = mergeNotifyPrefs(prefs, {});
+  for (const key of NOTIFY_EVENT_KEYS) if (!eventAppliesTo(key, group)) out[key] = { slack: false, sms: false };
+  return out;
 }
 
 /**

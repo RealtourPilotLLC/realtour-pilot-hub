@@ -1,13 +1,16 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { CheckCircle2, Mail, Phone, Star } from "lucide-react";
+import { CheckCircle2, ExternalLink, Mail, Phone, Star } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Avatar } from "@/components/ui/Avatar";
 import { cn, nameColor } from "@/lib/utils";
 import { unansweredCommsBoard, revisionsBoard, slackBoard } from "@/lib/commsBoard";
 import { getCurrentUser } from "@/lib/auth/user";
 import { scrubMoney } from "@/lib/text";
-import { HandledButton, SlackDoneButton } from "@/components/tasks/ChecklistButtons";
+import { HandledButton, SlackDoneButton, NotNeededButton, SlackAssignPicker } from "@/components/tasks/ChecklistButtons";
+import type { SlackTaskRow } from "@/lib/commsBoard";
+import { etTime } from "@/lib/datetime";
+import { TaskFocus } from "@/components/queue/TaskFocus";
 
 // No money on an ADMIN screen (Jordan's standing rule): a Slack to-do's title,
 // a client's revision ask, or the message a client is waiting on can carry a
@@ -161,50 +164,117 @@ export async function RevisionsView({ tabs }: { tabs: ReactNode }) {
 
 // ---------------- SLACK ----------------
 
-export async function SlackView({ tabs }: { tabs: ReactNode }) {
-  const [board, scrub] = await Promise.all([slackBoard(), moneyScrubber()]);
-  const scrubRow = <T extends { title: string; summary: string | null }>(t: T): T => ({ ...t, title: scrub(t.title), summary: t.summary == null ? t.summary : scrub(t.summary) });
-  const unassigned = board.unassigned.map(scrubRow);
-  const assigned = board.assigned.map(scrubRow);
-  const total = unassigned.length + assigned.length;
+// THE SLACK ASKS PAGE (Kyle's call, Sep 16: "the Slack reminders are hard to
+// find, and you can't tell what they're about"). One sequential list — the
+// unassigned at the top, then oldest first — and every row now says who asked,
+// who it is for, which client and which property, what was actually said (with
+// a link straight back into Slack) and what the required action is. Two ways
+// to clear it: Done ✓ when it happened, "Not needed" when it didn't and won't.
+export async function SlackView({ tabs, focusTaskId }: { tabs: ReactNode; focusTaskId?: string | null }) {
+  const { listAssignees } = await import("@/lib/assignees");
+  const [board, scrub, assignees] = await Promise.all([
+    slackBoard(new Date(), { withPermalinks: true }),
+    moneyScrubber(),
+    listAssignees().catch(() => []),
+  ]);
+  const assignOptions = assignees.map((a) => ({ key: a.key, name: a.name }));
+  const rows = board.rows.map((t) => ({
+    ...t,
+    title: scrub(t.title),
+    summary: t.summary == null ? t.summary : scrub(t.summary),
+    quote: t.quote == null ? t.quote : scrub(t.quote),
+  }));
+  // The counts describe the rows ON THE PAGE, except `total`, which is every
+  // open ask counted in SQL. When the page can't hold them all it says so
+  // rather than quoting a capped list as the whole pile (review, Sep 16).
+  const sub =
+    board.total === 0
+      ? "Action items parsed from Slack — assign, do, or tick them off."
+      : `${board.total} open${board.capped ? ` · showing the oldest ${rows.length}` : ""}${board.unassignedCount ? ` · ${board.unassignedCount} still need assigning` : ""}${board.overdueCount ? ` · ${board.overdueCount} overdue` : ""}. Oldest first.`;
   return (
-    <Shell tabs={tabs} title="Slack tasks" subtitle="Action items parsed from Slack — assign, do, or tick them off. They no longer clog the board.">
-      {total === 0 ? (
+    <Shell tabs={tabs} title="Slack asks" subtitle={sub}>
+      {rows.length === 0 ? (
         <p className="flex items-center gap-2 rounded-2xl border border-success/20 bg-success/[0.05] px-5 py-4 text-[15px] text-success">
           <CheckCircle2 className="size-5" /> Slack is clear.
         </p>
       ) : (
-        <div className="space-y-5">
-          {unassigned.length > 0 && (
-            <div>
-              <h2 className="mb-2 text-xs font-bold uppercase tracking-widest text-brand">Needs assigning</h2>
-              <div className="space-y-2">{unassigned.map((t) => <SlackRow key={t.taskId} t={t} />)}</div>
-            </div>
-          )}
-          {assigned.length > 0 && (
-            <div>
-              <h2 className="mb-2 text-xs font-bold uppercase tracking-widest text-muted-2">Assigned</h2>
-              <div className="space-y-2">{assigned.map((t) => <SlackRow key={t.taskId} t={t} />)}</div>
-            </div>
-          )}
+        <div className="space-y-2.5">
+          {rows.map((t) => <SlackRow key={t.taskId} t={t} focused={t.taskId === focusTaskId} assignOptions={assignOptions} />)}
         </div>
       )}
+      <p className="mt-4 text-xs text-muted-2">
+        A Slack ask closes itself a week after it arrives, and whoever it is assigned to gets a
+        &ldquo;still needed?&rdquo; reminder in the hub the day before.
+      </p>
+      {/* ?task=<id> from a Slack digest line: scroll to the row and flash it. */}
+      <TaskFocus />
     </Shell>
   );
 }
 
-function SlackRow({ t }: { t: { taskId: string; title: string; summary: string | null; ageDays: number; assignedKey: string | null; overdue: boolean } }) {
+function SlackRow({ t, focused, assignOptions }: { t: SlackTaskRow; focused?: boolean; assignOptions: { key: string; name: string }[] }) {
+  const who = [t.askedBy, t.forWhom].filter(Boolean);
+  const context = [t.clientName, t.propertyAddress?.split(",")[0]?.trim()].filter(Boolean);
   return (
-    <div className="flex items-start gap-3 rounded-2xl border bg-surface px-4 py-3">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="min-w-0 flex-1 text-sm font-medium">{t.title}</span>
-          {t.overdue && <span className="shrink-0 rounded-full bg-danger/15 px-2 py-0.5 text-[10px] font-semibold text-danger">overdue</span>}
-          <span className="shrink-0 text-xs text-muted">{t.ageDays}d old{t.assignedKey ? ` · ${t.assignedKey}` : ""}</span>
+    <div
+      id={`task-${t.taskId}`}
+      className={cn(
+        "scroll-mt-24 rounded-2xl border bg-surface px-4 py-3",
+        focused ? "border-brand ring-2 ring-brand/30" : !t.assignedKey ? "border-brand/40" : "border-border",
+      )}
+    >
+      <div className="flex flex-wrap items-start gap-2">
+        <div className="min-w-0 flex-1 basis-64">
+          {/* WHO → WHO, then the client and the property: the four facts that
+              tell Kyle whether this row is his problem before he reads it. */}
+          <p className="text-[11px] font-medium text-muted-2">
+            {who.length === 2 ? `${who[0]} → ${who[1]}` : who[0] ?? "Slack"}
+            {!t.assignedKey && <span className="ml-1.5 font-bold uppercase tracking-wide text-brand">needs assigning</span>}
+            {context.length > 0 && <span> · {context.join(" · ")}</span>}
+          </p>
+          <p className="mt-0.5 text-sm font-medium leading-snug">{t.title}</p>
+          {t.summary && t.summary !== t.title && (
+            <p className="mt-0.5 text-[13px] text-muted">{t.summary.slice(0, 220)}</p>
+          )}
         </div>
-        {t.summary && <p className="mt-0.5 text-[13px] text-muted">{t.summary.slice(0, 160)}</p>}
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <span className={cn("text-xs", t.overdue ? "font-semibold text-danger" : "text-muted")}>
+            {t.dueISO ? (t.overdue ? "overdue" : `due ${etTime(new Date(t.dueISO))}`) : "no date"} · {t.ageDays}d old
+          </span>
+          <div className="flex flex-wrap items-center justify-end gap-1.5">
+            {!t.assignedKey && <SlackAssignPicker taskId={t.taskId} options={assignOptions} />}
+            <SlackDoneButton taskId={t.taskId} />
+            <NotNeededButton taskId={t.taskId} />
+          </div>
+        </div>
       </div>
-      <SlackDoneButton taskId={t.taskId} />
+      {(t.quote || t.permalink) && (
+        <details className="group/q mt-2 border-t border-border pt-2">
+          <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-2 hover:text-foreground">
+            They said
+          </summary>
+          {t.quote && (
+            <p className="mt-1 whitespace-pre-wrap text-[13px] leading-relaxed text-foreground/80">
+              &ldquo;{t.quote.slice(0, 900)}&rdquo;
+            </p>
+          )}
+          {t.permalink && (
+            <a
+              href={t.permalink}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline"
+            >
+              <ExternalLink className="size-3.5" /> Open in Slack
+            </a>
+          )}
+        </details>
+      )}
+      {t.projectId && (
+        <Link href={`/projects/${t.projectId}`} className="mt-1.5 inline-block text-xs font-medium text-brand hover:underline">
+          Open the job
+        </Link>
+      )}
     </div>
   );
 }
@@ -220,6 +290,6 @@ export async function checklistCounts(): Promise<{ comms: number; revisions: num
   return {
     comms: phone.length + email.length,
     revisions: revs.reduce((s, g) => s + g.jobs.length, 0),
-    slack: slack.unassigned.length + slack.assigned.length,
+    slack: slack.total,
   };
 }

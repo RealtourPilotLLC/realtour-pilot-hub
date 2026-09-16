@@ -2,7 +2,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import {
   History, CheckCircle2, PackageCheck, MessageCircle, MessageSquareText, ClipboardCheck,
-  RefreshCw, ImageIcon, Wrench, Users as UsersIcon, Camera,
+  RefreshCw, ImageIcon, Wrench, Users as UsersIcon, Camera, XCircle,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { getTaskHistory, getDeliveryHistory, getShootHistory, type HistoryTask } from "@/lib/queries";
@@ -12,6 +12,7 @@ import { etDayKey, etDayStartUtc, etTime } from "@/lib/datetime";
 import { taskTypeMeta } from "@/lib/taskSource";
 import { getCurrentUser } from "@/lib/auth/user";
 import { scrubMoney } from "@/lib/text";
+import { isDismissedSummary, dismissedReason, dismissedBy } from "@/lib/triage";
 
 // The day-by-day ledger of what got done — shoots, completed to-dos, deliveries.
 // (Moved from /history — now the Tasks hub's Done tab.)
@@ -39,17 +40,73 @@ function friendlyDay(key: string): string {
   return new Date(y, m - 1, d).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
 }
 
+// ---------------------------------------------------------------------------
+// WHAT GOT CLEARED WITHOUT GETTING DONE (Kyle's call, Sep 16).
+//
+// This ledger listed status COMPLETED only, so a CANCELLED row — a dismissal,
+// the 7-day Slack expiry, the delivery sweep — vanished from every list in the
+// hub the moment it closed. "I dealt with it" and "the board quietly forgot"
+// were indistinguishable afterwards, which is most of why Kyle stopped
+// trusting the page. They show here now, under their own heading, each with
+// the reason on it.
+//
+// They are NOT in the "N done" badge or the day's recap counts: a dismissal is
+// a decision, not an output, and nothing may read "done" without the thing
+// having happened (Jordan's standing rule).
+// ---------------------------------------------------------------------------
+type ClosedRow = {
+  id: string;
+  title: string;
+  taskType: string;
+  summary: string | null;
+  at: Date;
+  projectId: string | null;
+  byHand: boolean;
+  reason: string | null;
+  who: string | null;
+};
+
+async function closedWithoutDoing(days: number): Promise<ClosedRow[]> {
+  const rows = await prisma.smartTask.findMany({
+    where: { status: "CANCELLED", updatedAt: { gte: new Date(Date.now() - days * 86_400_000) } },
+    // CANCELLED rows carry no completedAt on purpose (every "what got done"
+    // count pairs it with COMPLETED), so the ledger dates them by the write.
+    orderBy: { updatedAt: "desc" },
+    take: 200,
+    select: { id: true, title: true, taskType: true, summary: true, updatedAt: true, projectId: true },
+  });
+  return rows.map((t) => ({
+    id: t.id,
+    title: t.title,
+    taskType: t.taskType,
+    summary: t.summary,
+    at: t.updatedAt,
+    projectId: t.projectId,
+    byHand: isDismissedSummary(t.summary),
+    reason: dismissedReason(t.summary),
+    who: dismissedBy(t.summary),
+  }));
+}
+
 export async function DoneView({ tabs }: { tabs: ReactNode }) {
-  const [tasksRaw, deliveries, shoots, me] = await Promise.all([getTaskHistory(45), getDeliveryHistory(45), getShootHistory(45), getCurrentUser().catch(() => null)]);
+  const [tasksRaw, deliveries, shoots, me, closedRaw] = await Promise.all([
+    getTaskHistory(45),
+    getDeliveryHistory(45),
+    getShootHistory(45),
+    getCurrentUser().catch(() => null),
+    closedWithoutDoing(45).catch(() => [] as ClosedRow[]),
+  ]);
   // No money on an ADMIN screen (Jordan's standing rule): a closed Slack to-do
   // keeps its title here, figure and all, so a non-owner's ledger is redacted
   // the way the board is (audit5 kyle-home §5, Sep 8). Sessionless = owner.
   const isOwner = !me || me.role === "OWNER";
   const tasks = isOwner ? tasksRaw : tasksRaw.map((t) => ({ ...t, title: scrubMoney(t.title) }));
+  const closed = isOwner ? closedRaw : closedRaw.map((t) => ({ ...t, title: scrubMoney(t.title), summary: t.summary == null ? t.summary : scrubMoney(t.summary) }));
 
   // Group by ET calendar day.
   const dayKeys = new Set<string>();
   const tasksByDay = new Map<string, HistoryTask[]>();
+  const closedByDay = new Map<string, ClosedRow[]>();
   const deliveriesByDay = new Map<string, typeof deliveries>();
   const shootsByDay = new Map<string, typeof shoots>();
   for (const t of tasks) {
@@ -66,6 +123,11 @@ export async function DoneView({ tabs }: { tabs: ReactNode }) {
     const k = etDayKey(new Date(s.at));
     dayKeys.add(k);
     (shootsByDay.get(k) ?? shootsByDay.set(k, []).get(k)!).push(s);
+  }
+  for (const c of closed) {
+    const k = etDayKey(c.at);
+    dayKeys.add(k);
+    (closedByDay.get(k) ?? closedByDay.set(k, []).get(k)!).push(c);
   }
   const orderedDays = [...dayKeys].sort((a, b) => (a < b ? 1 : -1)); // newest first
 
@@ -85,6 +147,7 @@ export async function DoneView({ tabs }: { tabs: ReactNode }) {
           const dayTasks = tasksByDay.get(key) ?? [];
           const dayDeliveries = deliveriesByDay.get(key) ?? [];
           const dayShoots = shootsByDay.get(key) ?? [];
+          const dayClosed = closedByDay.get(key) ?? [];
           // Build the one-line recap: counts per bucket.
           const buckets = new Map<string, number>();
           for (const t of dayTasks) buckets.set(meta(t.taskType).bucket, (buckets.get(meta(t.taskType).bucket) ?? 0) + 1);
@@ -103,6 +166,9 @@ export async function DoneView({ tabs }: { tabs: ReactNode }) {
                   )}
                   {dayDeliveries.length > 0 && (
                     <span className="inline-flex items-center gap-1"><PackageCheck className="size-3.5 text-brand" /> {dayDeliveries.length} delivered</span>
+                  )}
+                  {dayClosed.length > 0 && (
+                    <span className="inline-flex items-center gap-1"><XCircle className="size-3.5 text-muted-2" /> {dayClosed.length} closed without doing</span>
                   )}
                 </div>
               </div>
@@ -155,6 +221,37 @@ export async function DoneView({ tabs }: { tabs: ReactNode }) {
                     </li>
                   );
                 })}
+                {dayClosed.length > 0 && (
+                  <li className="bg-surface-2/30 px-4 py-2.5">
+                    <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-2">
+                      Dismissed &amp; auto-closed
+                    </p>
+                    <ul className="space-y-1.5">
+                      {dayClosed.map((c) => (
+                        <li key={c.id} className="flex items-start gap-2.5">
+                          <XCircle className="mt-0.5 size-4 shrink-0 text-muted-2" />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-x-2 text-sm">
+                              {c.projectId ? (
+                                <Link href={`/projects/${c.projectId}`} className="font-medium text-foreground/80 hover:text-brand">{c.title}</Link>
+                              ) : (
+                                <span className="font-medium text-foreground/80">{c.title}</span>
+                              )}
+                              <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-2">{meta(c.taskType).label}</span>
+                            </div>
+                            <div className="text-[11px] text-muted-2">
+                              {c.byHand
+                                ? `${c.who ?? "Someone"} — ${c.reason ?? "dismissed"}`
+                                : (c.summary?.split("\n")[0] ?? "Closed by the hub")}
+                              {" · "}
+                              {etTime(c.at)}
+                            </div>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </li>
+                )}
               </ul>
             </section>
           );

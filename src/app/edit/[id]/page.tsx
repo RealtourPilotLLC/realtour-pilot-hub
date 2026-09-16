@@ -146,6 +146,22 @@ export default async function EditBriefPage({
     }),
   ]);
   if (!project) notFound();
+
+  // Opening the edit page reads its Project chat (Sep 16, Kyle call): only the
+  // message centre stamped the ThreadRead watermark, so a thread read HERE —
+  // where the editor actually works — stayed bold on the Messages badge and on
+  // Communications → Team. Same upsert as the centre, seenAt only (a closed
+  // conversation stays closed), never from a "view as" preview.
+  if (viewer && !viewer.impersonating) {
+    await prisma.threadRead
+      .upsert({
+        where: { userKey_projectId: { userKey: viewer.id, projectId: project.id } },
+        update: { seenAt: new Date() },
+        create: { userKey: viewer.id, projectId: project.id },
+      })
+      .catch(() => {});
+  }
+
   // The cuts this job owes (deliverable × slot) with the newest version of
   // each — the editor's upload panel and the cut switcher both hang off it.
   const { cutSlots } = await import("@/lib/reviewCuts");
@@ -210,6 +226,12 @@ export default async function EditBriefPage({
   const sla = getVideoSlaStatus({
     shootDate: project.shootDate,
     status: project.status,
+    // The legs and the office's tier (B2 handover, Sep 16): a second-visit reel
+    // dates from the visit that shot it, and Personal Branding runs on the
+    // 7–10 business-day clock — the header must not read the 48h video rule.
+    appointments: project.appointments,
+    tierOverride: project.tierOverride,
+    packageName: project.packageName,
     deliverables: project.deliverables.filter((d) => !d.removedFromOrderAt),
     client: { socialClient: project.client.socialClient },
   });

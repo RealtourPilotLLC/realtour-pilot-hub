@@ -53,15 +53,19 @@ export function ownerSmsKindFor(bellKind: string): OwnerSmsKind | null {
   return BELL_KIND_TO_PREF[bellKind] ?? null;
 }
 
-// Owner TeamMember ids, cached ten minutes per lambda (the bridge runs on
-// every bell row; the roster changes a few times a year). Best-effort: a
-// lookup failure returns the last known set, or none — never throws.
-let ownerCache: { at: number; ids: string[] } | null = null;
-export async function ownerTeamMemberIds(): Promise<string[]> {
-  if (ownerCache && Date.now() - ownerCache.at < 10 * 60_000) return ownerCache.ids;
+// The ACTIVE logins of one role → their roster rows (AppUser.teamMemberId,
+// else the active TeamMember on the same email), cached ten minutes per
+// lambda per role (the bridge runs on every bell row; the roster changes a
+// few times a year). Best-effort: a lookup failure returns the last known
+// set, or none — never throws. Sep 16: generalised from the owner-only
+// lookup so the office (ADMIN logins) can be addressed the same way.
+const loginCache = new Map<string, { at: number; ids: string[] }>();
+export async function teamMemberIdsForLoginRole(role: "OWNER" | "ADMIN" | "EDITOR" | "PHOTOGRAPHER"): Promise<string[]> {
+  const hit = loginCache.get(role);
+  if (hit && Date.now() - hit.at < 10 * 60_000) return hit.ids;
   try {
     const logins = await prisma.appUser.findMany({
-      where: { role: "OWNER", status: "ACTIVE" },
+      where: { role, status: "ACTIVE" },
       select: { email: true, teamMemberId: true },
     });
     const ids = new Set(logins.map((l) => l.teamMemberId).filter((id): id is string => !!id));
@@ -73,10 +77,41 @@ export async function ownerTeamMemberIds(): Promise<string[]> {
       });
       for (const t of byEmail) ids.add(t.id);
     }
-    ownerCache = { at: Date.now(), ids: [...ids] };
-    return ownerCache.ids;
+    const out = [...ids];
+    loginCache.set(role, { at: Date.now(), ids: out });
+    return out;
   } catch {
-    return ownerCache?.ids ?? [];
+    return loginCache.get(role)?.ids ?? [];
+  }
+}
+
+// Owner TeamMember ids — the OWNER logins' roster rows.
+export async function ownerTeamMemberIds(): Promise<string[]> {
+  return teamMemberIdsForLoginRole("OWNER");
+}
+
+/**
+ * "The office" (Sep 16, Kyle call): the ADMIN logins' roster rows, minus
+ * anyone the card files elsewhere — an owner, an editor (Kim's roster role is
+ * MANAGER but her key makes her an editor), or a shooter (James logs in as
+ * ADMIN but is PHOTOGRAPHER on the roster and hears a job through the
+ * photographer leg). Exactly the "Office" group of the Settings card, so what
+ * the bridge addresses and what the matrix greys out agree. Kyle today.
+ */
+export async function officeTeamMemberIds(): Promise<string[]> {
+  const [admins, owners] = await Promise.all([teamMemberIdsForLoginRole("ADMIN"), ownerTeamMemberIds()]);
+  const candidates = admins.filter((id) => !owners.includes(id));
+  if (candidates.length === 0) return [];
+  try {
+    const { editorKeysByTeamMemberId } = await import("@/lib/notifyPrefs");
+    const editors = await editorKeysByTeamMemberId();
+    const rows = await prisma.teamMember.findMany({
+      where: { id: { in: candidates }, active: true },
+      select: { id: true, role: true },
+    });
+    return rows.filter((r) => String(r.role).toUpperCase() !== "PHOTOGRAPHER" && !editors.has(r.id)).map((r) => r.id);
+  } catch {
+    return [];
   }
 }
 
@@ -111,7 +146,7 @@ export async function ownerSmsKinds(teamMemberId: string): Promise<Set<OwnerSmsK
 
 /**
  * LEGACY (pre-Sep 15) — the bridge in notify.ts now decides by the matrix
- * (bridgePerson / bridgeOwnerBroadcast) and no longer calls this. Kept for
+ * (bridgePerson / bridgeBroadcast) and no longer calls this. Kept for
  * any other caller; it answers through the matrix like ownerSmsKinds.
  * The question: does this bell row earn the owner a text? `tmId` is the
  * row's tm: target (null on a role broadcast); `roles` is the row's audience

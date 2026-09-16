@@ -81,13 +81,16 @@ export type NotifyTarget = {
   roles: Role[];
   userKey?: string;
   href?: string; // overrides the default per row
-  /** Sep 11: the exact line the OWNER's phone gets from an OWNER+ADMIN
-   *  broadcast — today only the Review Room's "cut ready" row (reviewCuts.ts
-   *  announceCutInReview). Since Sep 15 it is read only for that broadcast,
-   *  and only when his "video in review" row on /settings → Team
-   *  notifications says text (or Slack). Leave it OFF and the row is bell-
-   *  only for him — the emitter's way of saying "he did this himself" (his
-   *  own upload). Person-addressed rows carry slackDm instead. */
+  /** Sep 11: the exact sentence a phone (or a Slack DM) gets from an
+   *  OWNER+ADMIN broadcast — today only the Review Room's "cut ready" row
+   *  (reviewCuts.ts announceCutInReview). Read only for that broadcast, and
+   *  delivered to each owner AND office roster row whose "video in review"
+   *  row on /settings → Team notifications says text or Slack (Sep 16: Kyle's
+   *  switch was inert because only the owner was ever iterated). Because it
+   *  now reaches the office, the bridge scrubs money out of it for anyone but
+   *  an owner — write it money-free anyway. Leave it OFF and the row is
+   *  bell-only for everyone — the emitter's way of saying "the owner did this
+   *  himself" (his own upload). Person-addressed rows carry slackDm instead. */
   ownerSms?: string;
   /** Sep 15: the emitter's own sentence for the person this row is addressed
    *  to (tm:<id>, or editor:<key> resolved to its TeamMember) — who, where,
@@ -230,14 +233,78 @@ const BELL_RULES: Record<string, BellRule> = {
 //   editor: — and is one human). A tag or reply row with NO sentence is a
 //   self-tag (the emitters leave slackDm off) and goes nowhere but the bell.
 //   A role broadcast (no userKey) stays bell-only — except the Review Room's
-//   OWNER+ADMIN "cut ready" row, which still reaches the owner when his
-//   "video in review" row says so (the Sep 11 text, now a matrix row).
+//   OWNER+ADMIN "cut ready" row, which reaches the owner and the office when
+//   their "video in review" row says so (the Sep 11 text, now a matrix row;
+//   the office leg since Sep 16 — bridgeBroadcast).
 // This REPLACES the three rules that predate it — PHOTOGRAPHER-in-audience →
 // text (SMS_KINDS), editor:<key> → Slack-or-no-login-SMS (channelForEditor),
 // and the owner's own sms-prefs switch (ownerSmsRecipient). A row's roles now
 // decide only who can SEE it in the bell. Only a NEWLY created row bridges,
 // so a deduped re-announcement can never re-text or re-DM.
+//
+// THE DELIVERY LOG (Sep 16, Kyle call: "is delivery verifiable?"). Until now
+// a bell row was durable, a text was only a claim stamp set BEFORE OpenPhone
+// answered, and a Slack DM left no record at all — a refused DM still left
+// the bell row looking delivered. Every send point below now writes one
+// NotificationDelivery row per person per channel: the bell row itself
+// (channel bell, sent), a Slack DM (sent, or failed with Slack's own words),
+// a text (queued with the PendingSms id when it enters the digest queue,
+// sent once OpenPhone accepts, failed with the error), and skipped with the
+// reason when a switch is on but there is nowhere to send (no Slack ID, no
+// US number, our own line). Settings → Team notifications reads the newest
+// rows back as "Last reached". Best-effort like everything here: a log miss
+// never blocks a send.
 // ---------------------------------------------------------------------------
+
+type DeliveryChannel = "slack" | "sms" | "bell";
+type DeliveryStatus = "sent" | "queued" | "failed" | "skipped";
+type DeliveryLog = {
+  notificationId?: string | null;
+  teamMemberId: string;
+  kind: string;
+  channel: DeliveryChannel;
+  status: DeliveryStatus;
+  detail?: string | null;
+};
+
+/** One row in the delivery log. Never throws; a failure is a console line.
+ *  Nothing prunes this table yet (review, Sep 16): it grows by a handful of
+ *  rows a day, and the sweep belongs with the other nightly housekeeping in
+ *  the cron route rather than on the send path. */
+export async function logDelivery(d: DeliveryLog): Promise<void> {
+  try {
+    await prisma.notificationDelivery.create({
+      data: {
+        notificationId: d.notificationId ?? null,
+        teamMemberId: d.teamMemberId,
+        kind: d.kind,
+        channel: d.channel,
+        status: d.status,
+        detail: d.detail ? d.detail.slice(0, 500) : null,
+      },
+    });
+  } catch (e) {
+    console.warn("delivery log write failed", d.channel, d.status, e);
+  }
+}
+
+/** What the queue was told about a line when it was queued — read back by
+ *  the flusher so the "sent" / "failed" / "skipped" rows carry the same kind
+ *  and bell row as the "queued" one. Lines queued outside queueStaffSms (the
+ *  quiet-hours branch of notifyStaffSms, the payroll digest) have no queued
+ *  row and log under "staff_sms". */
+async function queuedMeta(pendingIds: string[]): Promise<Map<string, { kind: string; notificationId: string | null }>> {
+  const out = new Map<string, { kind: string; notificationId: string | null }>();
+  if (pendingIds.length === 0) return out;
+  try {
+    const rows = await prisma.notificationDelivery.findMany({
+      where: { channel: "sms", status: "queued", detail: { in: pendingIds } },
+      select: { detail: true, kind: true, notificationId: true },
+    });
+    for (const r of rows) if (r.detail) out.set(r.detail, { kind: r.kind, notificationId: r.notificationId });
+  } catch { /* the log is best-effort */ }
+  return out;
+}
 
 // Quiet hours in a SPECIFIC timezone (7:00–22:00 local). Photographer texting
 // stays ET via the default; editor texting passes the recipient's tz so a
@@ -265,18 +332,31 @@ const SMS_BATCH_WINDOW_MS = 30 * 60_000;
 // Kim's +63 number did under the old "last ten digits" check) — and our OWN
 // OpenPhone line (Kyle's roster phone is the company number; texting it from
 // itself echoes back through the inbound webhook as a fake client message).
-// Returns whether the line was queued.
-async function queueStaffSms(teamMemberId: string, line: string, tz?: string): Promise<boolean> {
+// Returns whether the line was queued. `meta` (Sep 16) names the bell row and
+// kind the line came from, for the delivery log: queued with the PendingSms
+// id, or skipped with the reason when there is nowhere to send.
+async function queueStaffSms(
+  teamMemberId: string,
+  line: string,
+  tz?: string,
+  meta: { kind: string; notificationId?: string | null } = { kind: "staff_sms" },
+): Promise<boolean> {
+  const skip = (detail: string) => logDelivery({ ...meta, teamMemberId, channel: "sms", status: "skipped", detail });
   try {
     const member = await prisma.teamMember.findUnique({ where: { id: teamMemberId }, select: { name: true, phone: true } });
     const num = staffTextNumber(member?.phone);
-    if (!num) return false;
+    if (!num) {
+      await skip((member?.phone ?? "").replace(/\D/g, "").length >= 7 ? "no US number on file" : "no phone on file");
+      return false;
+    }
     const { ourOpenPhoneNumberKeys } = await import("@/lib/integrations/openphone");
     if ((await ourOpenPhoneNumberKeys().catch(() => new Set<string>())).has(num.key)) {
       console.warn(`queueStaffSms: ${member?.name ?? teamMemberId}'s number is our own OpenPhone line — not texting it to itself`);
+      await skip("roster phone is our own OpenPhone line");
       return false;
     }
-    await prisma.pendingSms.create({ data: { teamMemberId, line } });
+    const queued = await prisma.pendingSms.create({ data: { teamMemberId, line }, select: { id: true } });
+    await logDelivery({ ...meta, teamMemberId, channel: "sms", status: "queued", detail: queued.id });
     const recentSend = await prisma.pendingSms.findFirst({
       where: { teamMemberId, sentAt: { gte: new Date(Date.now() - SMS_BATCH_WINDOW_MS) } },
       select: { id: true },
@@ -292,28 +372,60 @@ async function queueStaffSms(teamMemberId: string, line: string, tz?: string): P
     return true;
   } catch (e) {
     console.warn("queueStaffSms failed", e);
+    await logDelivery({ ...meta, teamMemberId, channel: "sms", status: "failed", detail: e instanceof Error ? e.message : "queue failed" });
     return false;
   }
 }
 
+// Park every unsent line for a member who can never be texted (Sep 16): a
+// terminal skippedAt + reason ONCE, plus a "skipped" delivery row per line,
+// instead of a console warning on every 5-minute tick for a week. The rows
+// stay (history), they just leave the unsent set. Returns how many parked.
+async function parkUntextableSms(teamMemberId: string, reason: string): Promise<number> {
+  const rows = await prisma.pendingSms.findMany({
+    where: { teamMemberId, sentAt: null, skippedAt: null },
+    select: { id: true },
+  });
+  if (rows.length === 0) return 0;
+  const ids = rows.map((r) => r.id);
+  const parked = await prisma.pendingSms.updateMany({
+    where: { id: { in: ids }, sentAt: null, skippedAt: null },
+    data: { skippedAt: new Date(), skipReason: reason },
+  });
+  if (parked.count === 0) return 0;
+  const meta = await queuedMeta(ids);
+  for (const id of ids) {
+    const m = meta.get(id);
+    await logDelivery({ teamMemberId, kind: m?.kind ?? "staff_sms", notificationId: m?.notificationId ?? null, channel: "sms", status: "skipped", detail: `${reason} (${id})` });
+  }
+  return parked.count;
+}
+
 // Send EVERYTHING queued for one member as a single text.
-async function flushMemberSms(teamMemberId: string): Promise<boolean> {
+//   "sent"   — OpenPhone accepted one text carrying every unsent line;
+//   "none"   — nothing to send (or another flush claimed the rows first);
+//   "parked" — the member can't be texted; the lines were parked (above).
+// Throws when OpenPhone refuses, after un-claiming the rows for the next tick.
+async function flushMemberSms(teamMemberId: string): Promise<"sent" | "none" | "parked"> {
   // The number BEFORE the claim: a member whose roster phone can't be texted
-  // (none, or not a US number) leaves the rows unclaimed and unsent rather
-  // than claiming them and bouncing off OpenPhone every five minutes — the
-  // three lines the retired no-login editor path queued for Kim (Sep 3–10)
-  // are exactly that, and they wait here until the office clears them.
+  // (none, or not a US number) must not claim rows and bounce off OpenPhone
+  // every five minutes. Until Sep 16 the rows were simply left unsent — and
+  // the three lines the retired no-login editor path queued for Kim (Sep
+  // 3–10) tripped this warning on every tick for a week. Now they are parked
+  // once (skippedAt) and the flusher stops seeing them.
   const member = await prisma.teamMember.findUnique({ where: { id: teamMemberId }, select: { name: true, phone: true } });
   const num = staffTextNumber(member?.phone);
   if (!num) {
-    console.warn(`flushMemberSms: ${member?.name ?? teamMemberId} has no textable number — queued lines left unsent`);
-    return false;
+    const reason = !member ? "no roster row" : (member.phone ?? "").replace(/\D/g, "").length >= 7 ? "no US number on file" : "no phone on file";
+    const n = await parkUntextableSms(teamMemberId, reason);
+    if (n > 0) console.warn(`flushMemberSms: ${member?.name ?? teamMemberId} — ${reason}; parked ${n} queued line${n === 1 ? "" : "s"}`);
+    return n > 0 ? "parked" : "none";
   }
   const rows = await prisma.pendingSms.findMany({
-    where: { teamMemberId, sentAt: null },
+    where: { teamMemberId, sentAt: null, skippedAt: null },
     orderBy: { createdAt: "asc" },
   });
-  if (rows.length === 0) return false;
+  if (rows.length === 0) return "none";
   // CLAIM before sending — the immediate flush and the 5-minute cron can race
   // on the same unsent rows and text the digest twice (audit). The claim stamp
   // is a unique instant; the body is then built from EXACTLY the rows this
@@ -324,17 +436,30 @@ async function flushMemberSms(teamMemberId: string): Promise<boolean> {
     where: { id: { in: rows.map((r) => r.id) }, sentAt: null },
     data: { sentAt: claimStamp },
   });
-  if (claimed.count === 0) return false;
+  if (claimed.count === 0) return "none";
   const mine = await prisma.pendingSms.findMany({
     where: { teamMemberId, sentAt: claimStamp },
     orderBy: { createdAt: "asc" },
   });
-  if (mine.length === 0) return false;
+  if (mine.length === 0) return "none";
   const unclaim = () =>
     prisma.pendingSms.updateMany({ where: { id: { in: mine.map((r) => r.id) } }, data: { sentAt: null } }).catch(() => {});
+  // The bell rows and kinds behind these lines, for the log (one lookup).
+  const meta = await queuedMeta(mine.map((r) => r.id));
+  const logAll = (status: "sent" | "failed", detail?: string) =>
+    Promise.all(
+      mine.map((r) => {
+        const m = meta.get(r.id);
+        return logDelivery({ teamMemberId, kind: m?.kind ?? "staff_sms", notificationId: m?.notificationId ?? null, channel: "sms", status, detail: detail ?? r.id });
+      }),
+    );
   const { OpenPhone, defaultOpenPhoneNumber } = await import("@/lib/integrations/openphone");
   const from = await defaultOpenPhoneNumber();
-  if (!from) { await unclaim(); return false; }
+  if (!from) {
+    await unclaim();
+    await logAll("failed", "no OpenPhone number to send from");
+    return "none";
+  }
   const body =
     mine.length === 1
       ? `${HUB_SMS_PREFIX}: ${mine[0].line}`
@@ -343,9 +468,12 @@ async function flushMemberSms(teamMemberId: string): Promise<boolean> {
     await OpenPhone.sendMessage(from, num.to, body.slice(0, 1500));
   } catch (e) {
     await unclaim(); // failed send → rows go back in the queue for the next flush
+    await logAll("failed", e instanceof Error ? e.message : "send failed");
     throw e;
   }
-  return true;
+  // Sent — one row per line so "Last reached: text" names the kind that went.
+  await logAll("sent");
+  return "sent";
 }
 
 // Cron flusher (every 5 min): deliver queued digests once the batch window has
@@ -353,23 +481,36 @@ async function flushMemberSms(teamMemberId: string): Promise<boolean> {
 // quiet hours: until Sep 15 this checked ET for everyone, so a line the
 // immediate send in queueStaffSms had rightly held for a Manila editor's
 // night went out here in ET daytime — still their night (review, Sep 15).
-// An editor's timezone comes off editors.ts; everyone else is ET.
-export async function flushPendingSms(): Promise<{ flushed: number; failed: string[] }> {
+// An editor's timezone comes off editors.ts; everyone else is ET. `skipped`
+// (Sep 16) counts lines parked because the member can never be texted.
+export async function flushPendingSms(): Promise<{ flushed: number; failed: string[]; skipped: number }> {
   const pending = await prisma.pendingSms.groupBy({
     by: ["teamMemberId"],
-    where: { sentAt: null },
+    where: { sentAt: null, skippedAt: null },
     _min: { createdAt: true },
   });
-  if (pending.length === 0) return { flushed: 0, failed: [] };
+  if (pending.length === 0) return { flushed: 0, failed: [], skipped: 0 };
   const { editorKeysByTeamMemberId } = await import("@/lib/notifyPrefs");
   const { editorMeta, DEFAULT_EDITOR_TZ } = await import("@/lib/editors");
   const editorKeys = await editorKeysByTeamMemberId();
   let flushed = 0;
+  let skipped = 0;
   const failed: string[] = [];
   for (const p of pending) {
     const oldest = p._min.createdAt;
     if (!oldest) continue;
     const editorKey = editorKeys.get(p.teamMemberId);
+    // A member with no textable number is parked regardless of the hour —
+    // there is nothing to wait for (Sep 16).
+    const member = await prisma.teamMember.findUnique({ where: { id: p.teamMemberId }, select: { phone: true } });
+    if (!staffTextNumber(member?.phone)) {
+      try {
+        if ((await flushMemberSms(p.teamMemberId)) === "parked") skipped++;
+      } catch (e) {
+        failed.push(`${p.teamMemberId}: ${e instanceof Error ? e.message : "park failed"}`);
+      }
+      continue;
+    }
     if (!withinTextingHours(editorKey ? editorMeta(editorKey)?.tz ?? DEFAULT_EDITOR_TZ : undefined)) continue;
     const recentSend = await prisma.pendingSms.findFirst({
       where: { teamMemberId: p.teamMemberId, sentAt: { gte: new Date(Date.now() - SMS_BATCH_WINDOW_MS) } },
@@ -382,12 +523,14 @@ export async function flushPendingSms(): Promise<{ flushed: number; failed: stri
     // failed the 5-minute comms cron every run (audit HIGH). Isolate per
     // member: a permanent rejection is that person's problem, not the team's.
     try {
-      if (await flushMemberSms(p.teamMemberId)) flushed++;
+      const r = await flushMemberSms(p.teamMemberId);
+      if (r === "sent") flushed++;
+      else if (r === "parked") skipped++;
     } catch (e) {
       failed.push(`${p.teamMemberId}: ${e instanceof Error ? e.message : "send failed"}`);
     }
   }
-  return { flushed, failed };
+  return { flushed, failed, skipped };
 }
 
 // INTERNAL STAFF SMS. For alerts that must reach a named person's phone rather
@@ -408,7 +551,12 @@ export async function flushPendingSms(): Promise<{ flushed: number; failed: stri
 // ---------------------------------------------------------------------------
 export type StaffSmsResult = { teamMemberId: string; name: string; outcome: "sent" | "slack" | "no-phone" | "own-line" | "quiet-hours" | "failed" };
 
-export async function notifyStaffSms(teamMemberIds: string[], text: string): Promise<StaffSmsResult[]> {
+// `kind` (Sep 16) names the alert in the delivery log. No caller names one
+// yet — deliveryWatch's "photos still not delivered" (deliveryWatch.ts) is
+// the only one, and it logs under the "staff_sms" default, which is how the
+// Settings card labels it ("staff alert"). Pass a kind when an alert wants
+// its own name on that line.
+export async function notifyStaffSms(teamMemberIds: string[], text: string, kind = "staff_sms"): Promise<StaffSmsResult[]> {
   const ids = [...new Set(teamMemberIds.filter(Boolean))];
   if (ids.length === 0) return [];
   const out: StaffSmsResult[] = [];
@@ -420,41 +568,51 @@ export async function notifyStaffSms(teamMemberIds: string[], text: string): Pro
     // Resolved ONCE — defaultOpenPhoneNumber is a live API round trip.
     const from = ids.length ? await defaultOpenPhoneNumber() : null;
     const body = `${HUB_SMS_PREFIX}: ${text}`;
+    const log = (teamMemberId: string, channel: DeliveryChannel, status: DeliveryStatus, detail?: string) =>
+      logDelivery({ teamMemberId, kind, channel, status, detail });
 
     for (const m of members) {
       // Slack first — Jordan (Aug 24): "instead of texting Kyle, message him
       // on Slack." Anyone with a Slack id gets a DM; SMS is the fallback.
       if (m.slackId) {
-        const { slackDmUser } = await import("@/lib/integrations/slack");
-        if (await slackDmUser(m.slackId, text)) {
+        const { slackDmUserDetailed } = await import("@/lib/integrations/slack");
+        const dm = await slackDmUserDetailed(m.slackId, text);
+        if (dm.ok) {
+          await log(m.id, "slack", "sent");
           out.push({ teamMemberId: m.id, name: m.name, outcome: "slack" });
           continue;
         }
+        await log(m.id, "slack", "failed", dm.error);
       }
       const num = staffTextNumber(m.phone);
       if (!num) {
+        await log(m.id, "sms", "skipped", (m.phone ?? "").replace(/\D/g, "").length >= 7 ? "no US number on file" : "no phone on file");
         out.push({ teamMemberId: m.id, name: m.name, outcome: "no-phone" });
         continue;
       }
       if (ours.has(num.key)) {
         // Loud, not silent: this is a data problem someone has to fix.
         console.warn(`notifyStaffSms: ${m.name}'s number is our own OpenPhone line — cannot text, relaying to ops`);
+        await log(m.id, "sms", "skipped", "roster phone is our own OpenPhone line");
         out.push({ teamMemberId: m.id, name: m.name, outcome: "own-line" });
         continue;
       }
       if (quiet) {
         // Queue for the morning flusher instead of dropping (audit: quiet-hours
         // staff alerts vanished — not sent, not queued, excluded from the relay).
-        await prisma.pendingSms.create({ data: { teamMemberId: m.id, line: text } }).catch(() => {});
+        const queued = await prisma.pendingSms.create({ data: { teamMemberId: m.id, line: text }, select: { id: true } }).catch(() => null);
+        await log(m.id, "sms", queued ? "queued" : "failed", queued ? queued.id : "could not queue for the morning");
         out.push({ teamMemberId: m.id, name: m.name, outcome: "quiet-hours" });
         continue;
       }
       try {
         if (!from) throw new Error("no OpenPhone number");
         await OpenPhone.sendMessage(from, num.to, body);
+        await log(m.id, "sms", "sent");
         out.push({ teamMemberId: m.id, name: m.name, outcome: "sent" });
       } catch (e) {
         console.warn("notifyStaffSms send failed", m.name, e);
+        await log(m.id, "sms", "failed", e instanceof Error ? e.message : "send failed");
         out.push({ teamMemberId: m.id, name: m.name, outcome: "failed" });
       }
     }
@@ -518,7 +676,7 @@ export async function notifyInApp(n: {
         }
       }
       try {
-        await prisma.notification.create({
+        const row = await prisma.notification.create({
           data: {
             kind: n.kind,
             title,
@@ -528,6 +686,7 @@ export async function notifyInApp(n: {
             userKey: t.userKey ?? null,
             dedupeKey: n.dedupeKey ? `${n.dedupeKey}-${i}` : null,
           },
+          select: { id: true },
         });
         // Row is NEW (a dedupe hit threw P2002 above) — the bridge below fires
         // once per row, which is what makes a re-announcement unable to re-text.
@@ -536,14 +695,15 @@ export async function notifyInApp(n: {
         if (tmId || editorKey) {
           // A person: their matrix row for this event decides Slack / text /
           // both / neither (see the bridge header above and bridgePerson).
-          const out = await bridgePerson(n.kind, t, { tmId, editorKey, title, href }, delivered);
+          const out = await bridgePerson(n.kind, t, { tmId, editorKey, title, href, notificationId: row.id }, delivered);
           if (editorKey && roles.includes("EDITOR")) {
             bridged.push({ userKey: t.userKey!, channel: out.slack ? "slack" : out.sms ? "sms" : "bell" });
           }
-        } else if (roles.includes("OWNER") && t.ownerSms) {
+        } else if ((roles.includes("OWNER") || roles.includes("ADMIN")) && t.ownerSms) {
           // A broadcast is bell-only — except the Review Room's OWNER+ADMIN
-          // "cut ready" row, which carries the owner's sentence (Sep 11).
-          await bridgeOwnerBroadcast(n.kind, t.ownerSms, delivered);
+          // "cut ready" row, which carries a sentence for the owner (Sep 11)
+          // and, since Sep 16, the office (bridgeBroadcast).
+          await bridgeBroadcast(n.kind, t.ownerSms, { roles, notificationId: row.id }, delivered);
         }
         // A NEW editor-addressed bell row with no login to see it → nudge Jordan
         // once (deduped inside) to send that editor their Hub invite.
@@ -587,18 +747,19 @@ const SENTENCE_EVENTS = new Set<string>(["mention", "project_message"]);
 // Returns what went out for this person — on THIS row or an earlier one in
 // the same call. A refused DM counts as not sent. Best-effort by contract:
 // the note or message that carried the ping is already saved, so nothing
-// here may throw past the bell.
+// here may throw past the bell. Every outcome lands in the delivery log
+// (Sep 16): the bell row itself, a DM sent or failed with Slack's words, a
+// text queued/skipped (queueStaffSms), and "skipped: no Slack ID on file"
+// when the switch is on but the card has no ID.
 async function bridgePerson(
   kind: string,
   t: NotifyTarget,
-  ctx: { tmId: string | null; editorKey: string | null; title: string; href: string },
+  ctx: { tmId: string | null; editorKey: string | null; title: string; href: string; notificationId: string },
   delivered: Map<string, Delivery>,
 ): Promise<Delivery> {
   const none: Delivery = { slack: false, sms: false };
   try {
     const { eventForKind, notifyPrefsFor, editorKeysByTeamMemberId } = await import("@/lib/notifyPrefs");
-    const event = eventForKind(kind);
-    if (!event) return none; // an unclassified kind is bell-only
     let personId = ctx.tmId;
     if (!personId && ctx.editorKey) {
       const { editorTeamMemberId } = await import("@/lib/editors");
@@ -609,22 +770,37 @@ async function bridgePerson(
     if (prior) return prior; // one delivery per person per event
     const state: Delivery = { slack: false, sms: false };
     delivered.set(personId, state);
-    if (SENTENCE_EVENTS.has(event) && !t.slackDm) return state; // a self-tag
     const member = await prisma.teamMember.findUnique({
       where: { id: personId },
       select: { name: true, slackId: true, phone: true, active: true },
     });
     if (!member?.active) return state;
+    // The bell row is a delivery too — logged before any channel question, so
+    // "bell only" is visible as such and not as silence. It sits BELOW the
+    // per-person dedupe and the active check (review, Sep 16): an editor
+    // addressed twice on one event (tm: and editor:) used to log two bell
+    // rows, and a deactivated member logged one for a bell nobody reads.
+    await logDelivery({ notificationId: ctx.notificationId, teamMemberId: personId, kind, channel: "bell", status: "sent" });
+    const event = eventForKind(kind);
+    if (!event) return state; // an unclassified kind is bell-only
+    if (SENTENCE_EVENTS.has(event) && !t.slackDm) return state; // a self-tag
     const want = (await notifyPrefsFor(personId))[event];
     if (!want.slack && !want.sms) return state;
     const link = `${appBase()}${ctx.href}`;
+    const meta = { kind, notificationId: ctx.notificationId };
     if (want.slack) {
       if (member.slackId) {
-        const { slackDmUser } = await import("@/lib/integrations/slack");
+        const { slackDmUserDetailed } = await import("@/lib/integrations/slack");
         const { escapeSlack } = await import("@/lib/text");
-        state.slack = await slackDmUser(member.slackId, t.slackDm ?? `${escapeSlack(ctx.title)}\n${link}`);
-        if (!state.slack) console.warn("slack DM failed (bell row kept)", kind, member.name);
+        const dm = await slackDmUserDetailed(member.slackId, t.slackDm ?? `${escapeSlack(ctx.title)}\n${link}`);
+        state.slack = dm.ok;
+        if (dm.ok) await logDelivery({ ...meta, teamMemberId: personId, channel: "slack", status: "sent" });
+        else {
+          console.warn("slack DM failed (bell row kept)", kind, member.name, dm.error);
+          await logDelivery({ ...meta, teamMemberId: personId, channel: "slack", status: "failed", detail: dm.error });
+        }
       } else {
+        await logDelivery({ ...meta, teamMemberId: personId, channel: "slack", status: "skipped", detail: "no Slack ID on file" });
         await nudgeMissingSlackId(personId, member.name);
       }
     }
@@ -640,7 +816,7 @@ async function bridgePerson(
       const editorKey = ctx.editorKey ?? (await editorKeysByTeamMemberId()).get(personId) ?? null;
       const { editorMeta, DEFAULT_EDITOR_TZ } = await import("@/lib/editors");
       const tz = editorKey ? editorMeta(editorKey)?.tz ?? DEFAULT_EDITOR_TZ : undefined;
-      state.sms = await queueStaffSms(personId, line, tz);
+      state.sms = await queueStaffSms(personId, line, tz, meta);
     }
     return state;
   } catch (e) {
@@ -650,34 +826,68 @@ async function bridgePerson(
 }
 
 // The Review Room's OWNER+ADMIN broadcast ("cut ready to review") is the one
-// role row that reaches a phone. Sep 11 (Jordan: "make sure I get a text when
-// a video is in review") texted him off his sms-prefs switch; since Sep 15
-// the same sentence goes out on whichever channels HIS "video in review" row
-// on /settings → Team notifications says — text by default, Slack if he flips
-// it. Every owner roster row (two logins may share the role), each once per
-// event. No sentence (his own upload) never gets here.
-async function bridgeOwnerBroadcast(kind: string, sentence: string, delivered: Map<string, Delivery>): Promise<void> {
+// role row that reaches a phone or a DM. Sep 11 (Jordan: "make sure I get a
+// text when a video is in review") texted him off his sms-prefs switch;
+// since Sep 15 the same sentence goes out on whichever channels a person's
+// "video in review" row on /settings → Team notifications says. Until Sep 16
+// only the OWNER logins' roster rows were iterated, so Kyle's switch on the
+// card could never fire (Kyle call, item 4). Now: every active roster row
+// whose login role the broadcast addresses — the owner rows for OWNER, the
+// office rows (smsPrefs.ts officeTeamMemberIds) for ADMIN — each once per
+// event, each by their own row: the owner texts by default, Kyle's default
+// stays off and his switch works when he flips it. The bell row is logged
+// per addressed person, then the DM (Slack's words on failure) and the text
+// (queueStaffSms, which refuses the company line and logs why). No sentence
+// (the owner's own upload) never gets here — bell-only for everyone.
+async function bridgeBroadcast(
+  kind: string,
+  sentence: string,
+  ctx: { roles: Role[]; notificationId: string },
+  delivered: Map<string, Delivery>,
+): Promise<void> {
   try {
     const { eventForKind, notifyPrefsFor } = await import("@/lib/notifyPrefs");
     if (eventForKind(kind) !== "review_ready") return;
-    const { ownerTeamMemberIds } = await import("@/lib/smsPrefs");
-    for (const id of await ownerTeamMemberIds()) {
+    const { ownerTeamMemberIds, officeTeamMemberIds } = await import("@/lib/smsPrefs");
+    const { escapeSlack, scrubMoney } = await import("@/lib/text");
+    const owners = new Set(await ownerTeamMemberIds());
+    const ids = new Set<string>();
+    if (ctx.roles.includes("OWNER")) for (const id of owners) ids.add(id);
+    if (ctx.roles.includes("ADMIN")) for (const id of await officeTeamMemberIds()) ids.add(id);
+    const meta = { kind, notificationId: ctx.notificationId };
+    for (const id of ids) {
       if (delivered.has(id)) continue;
       const state: Delivery = { slack: false, sms: false };
       delivered.set(id, state);
-      const want = (await notifyPrefsFor(id)).review_ready;
-      if (!want.slack && !want.sms) continue;
       const member = await prisma.teamMember.findUnique({ where: { id }, select: { name: true, slackId: true, active: true } });
       if (!member?.active) continue;
-      if (want.slack && member.slackId) {
-        const { slackDmUser } = await import("@/lib/integrations/slack");
-        const { escapeSlack } = await import("@/lib/text");
-        state.slack = await slackDmUser(member.slackId, escapeSlack(sentence));
+      await logDelivery({ ...meta, teamMemberId: id, channel: "bell", status: "sent" });
+      const want = (await notifyPrefsFor(id)).review_ready;
+      if (!want.slack && !want.sms) continue;
+      // ownerSms was written for the owner's eyes; since Sep 16 this bridge
+      // also hands it to the office, so a non-owner reads it scrubbed (review,
+      // Sep 16 — the Room's sentence carries no money today, but the guard the
+      // contract on NotifyTarget.ownerSms promises must still be here).
+      const line = owners.has(id) ? sentence : scrubMoney(sentence);
+      if (want.slack) {
+        if (member.slackId) {
+          const { slackDmUserDetailed } = await import("@/lib/integrations/slack");
+          const dm = await slackDmUserDetailed(member.slackId, escapeSlack(line));
+          state.slack = dm.ok;
+          if (dm.ok) await logDelivery({ ...meta, teamMemberId: id, channel: "slack", status: "sent" });
+          else {
+            console.warn("slack DM failed (bell row kept)", kind, member.name, dm.error);
+            await logDelivery({ ...meta, teamMemberId: id, channel: "slack", status: "failed", detail: dm.error });
+          }
+        } else {
+          await logDelivery({ ...meta, teamMemberId: id, channel: "slack", status: "skipped", detail: "no Slack ID on file" });
+          await nudgeMissingSlackId(id, member.name);
+        }
       }
-      if (want.sms) state.sms = await queueStaffSms(id, sentence);
+      if (want.sms) state.sms = await queueStaffSms(id, line, undefined, meta);
     }
   } catch (e) {
-    console.warn("owner broadcast bridge failed (bell row kept)", kind, e);
+    console.warn("broadcast bridge failed (bell row kept)", kind, e);
   }
 }
 
@@ -795,9 +1005,14 @@ export async function kyleMorningDigest(): Promise<{ sent: boolean; reason?: str
     for (const t of openToday.slice(0, 10)) lines.push(`• ${t.title}`);
     if (openToday.length > 10) lines.push(`  …and ${openToday.length - 10} more`);
     if (texts.length > 0) lines.push(`✉️ ${texts.length} client text${texts.length === 1 ? "" : "s"} drafted & ready in the Outbox`);
-    // The guided Today walkthrough is gone (Sep 1 restructure) — land on the
-    // Other tab, where the listed to-dos actually live.
+    // Land where the listed rows actually live: Slack asks moved to their own
+    // tab on Sep 16 (the Other tab now excludes them), so a digest that lists
+    // both must offer both doors rather than one that shows half the list.
+    const slackAsks = await prisma.smartTask.count({
+      where: { source: "slack", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    }).catch(() => 0);
     lines.push(`${appBase()}/tasks?tab=other`);
+    if (slackAsks > 0) lines.push(`Slack asks (${slackAsks}): ${appBase()}/tasks?tab=slack`);
     await slackDmUser(slackId, lines.join("\n"));
     return { sent: true };
   } catch (e) {

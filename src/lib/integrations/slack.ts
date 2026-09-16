@@ -76,6 +76,119 @@ export async function slackPostMessage(channel: string, text: string): Promise<v
   await slackApi("chat.postMessage", { channel, text, unfurl_links: false });
 }
 
+// ---------------------------------------------------------------------------
+// "OPEN IN SLACK" (Kyle's call, Sep 16: the Slack tab showed a title and an
+// age and nothing you could act on). Every Slack-born to-do already stores
+// `channel <id> · <ts>` in sourceDetail — enough to reconstruct the message,
+// but there was no way to GET to it. chat.getPermalink turns that pair into
+// the real archive URL, including the workspace domain we can't guess.
+//
+// The result is immutable, so it is cached in AppSetting per (channel, ts) and
+// looked up once in the life of a row. Best-effort in both directions: a
+// missing token, a channel the bot isn't in, or a Slack hiccup returns null
+// and the row simply renders without the link rather than failing the page.
+// ---------------------------------------------------------------------------
+const PERMALINK_PREFIX = "slack-permalink:";
+
+export async function slackPermalink(channel: string, ts: string): Promise<string | null> {
+  const ch = (channel ?? "").trim();
+  const stamp = (ts ?? "").trim();
+  if (!ch || !stamp) return null;
+  const { prisma } = await import("@/lib/prisma");
+  const key = `${PERMALINK_PREFIX}${ch}:${stamp}`;
+  const cached = await prisma.appSetting.findUnique({ where: { key }, select: { value: true } }).catch(() => null);
+  // "" is a cached MISS Slack itself gave us (a deleted message, a channel the
+  // bot isn't in) — remembered so a dead row doesn't cost a call on every
+  // render of the tab.
+  if (cached) return cached.value || null;
+
+  // chat.getPermalink is one of the handful of Web API methods that reads its
+  // arguments from the QUERY STRING only: posting them as JSON returns
+  // "invalid_arguments — missing required field: channel" (verified against
+  // the live workspace, Sep 16). So it does NOT go through slackApi(), which
+  // posts a JSON body. Getting this wrong is silent — every row simply renders
+  // with no link — which is why the failure is only cached when SLACK answered.
+  let url = "";
+  let answered = false;
+  try {
+    const token = await getSecret("slack");
+    if (token) {
+      const u = new URL("https://slack.com/api/chat.getPermalink");
+      u.searchParams.set("channel", ch);
+      u.searchParams.set("message_ts", stamp);
+      const res = await fetch(u, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+      const json = (await res.json().catch(() => null)) as { ok?: boolean; permalink?: string; error?: string } | null;
+      if (json) {
+        answered = true;
+        url = (json.ok && json.permalink) || "";
+      }
+    }
+  } catch { /* unreachable — not Slack's answer, so nothing is remembered */ }
+  // Only a real answer is cached. A missing token or a network blip must never
+  // write a permanent "this row has no link".
+  if (answered) {
+    await prisma.appSetting
+      .upsert({ where: { key }, create: { key, value: url }, update: { value: url } })
+      .catch(() => {});
+  }
+  return url || null;
+}
+
+/** A whole tab's worth of permalinks at once, keyed `<channel>:<ts>`.
+ *
+ *  The Slack asks page renders up to 60 rows, and calling slackPermalink()
+ *  inside that loop meant 60 sequential AppSetting reads and, on first sight,
+ *  60 sequential HTTPS round trips — all of them blocking the server render
+ *  (review, Sep 16). One indexed read covers every row, and only the genuine
+ *  misses go to Slack, in parallel. The misses pay one redundant cache read
+ *  each (slackPermalink checks again) on purpose: the fetch/cache/"only
+ *  remember an answer Slack gave" rules stay in exactly one place. */
+export async function slackPermalinks(
+  pairs: { channel: string | null; ts: string | null }[],
+): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>();
+  const unique = new Map<string, { channel: string; ts: string }>();
+  for (const p of pairs) {
+    const ch = (p.channel ?? "").trim();
+    const stamp = (p.ts ?? "").trim();
+    if (ch && stamp) unique.set(`${ch}:${stamp}`, { channel: ch, ts: stamp });
+  }
+  if (unique.size === 0) return out;
+  const { prisma } = await import("@/lib/prisma");
+  const rows = await prisma.appSetting
+    .findMany({
+      where: { key: { in: [...unique.keys()].map((id) => `${PERMALINK_PREFIX}${id}`) } },
+      select: { key: true, value: true },
+    })
+    .catch(() => [] as { key: string; value: string }[]);
+  const cached = new Map(rows.map((r) => [r.key, r.value]));
+  const misses: string[] = [];
+  for (const id of unique.keys()) {
+    const hit = cached.get(`${PERMALINK_PREFIX}${id}`);
+    // "" is a remembered MISS (a deleted message, a channel the bot isn't in).
+    if (hit !== undefined) out.set(id, hit || null);
+    else misses.push(id);
+  }
+  const fetched = await Promise.all(
+    misses.map(async (id) => {
+      const p = unique.get(id)!;
+      return [id, await slackPermalink(p.channel, p.ts).catch(() => null)] as const;
+    }),
+  );
+  for (const [id, url] of fetched) out.set(id, url);
+  return out;
+}
+
+/** `channel <id> · <ts>` (slackSync.maybeCreateSlackTask) → the two parts.
+ *  Rows minted before the channel was recorded carry the bare ts. */
+export function parseSlackSourceDetail(sourceDetail: string | null | undefined): { channel: string | null; ts: string | null } {
+  const raw = (sourceDetail ?? "").trim();
+  if (!raw) return { channel: null, ts: null };
+  const m = raw.match(/^channel\s+(\S+)\s*·\s*(\S+)$/);
+  if (m) return { channel: m[1], ts: m[2] };
+  return { channel: null, ts: /^\d+\.\d+$/.test(raw) ? raw : null };
+}
+
 // Best-effort notification: never throws (so it can't break the calling flow).
 export async function slackNotify(channel: string, text: string): Promise<boolean> {
   try {

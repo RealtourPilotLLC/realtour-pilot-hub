@@ -304,16 +304,26 @@ export function slackAskDueAt(from: Date = new Date()): Date {
   return etAt(etDayKey(d), 17);
 }
 
-// The daily 7-day expiry (tasks.ts expireStaleSlackTasks) cancels an
+// The daily 7-day expiry (tasks.ts expireStaleSlackTasks) used to cancel an
 // unactioned Slack ask silently — 76 of 178 in 60 days, with nothing on the
-// row saying why. The summary is what the cancelled row should say ("Auto-
-// closed: 7 days with no action"). The marker is for APPENDING to
+// row saying why, and (until Sep 16) nowhere to read it afterwards either:
+// the Done tab listed COMPLETED only, so a cancelled row left no trace at
+// all. It now shows under "Dismissed & auto-closed", and the summary below is
+// what that row says. The marker is for APPENDING to
 // sourceDetail (" · slack-expired-7d"), never for replacing it the way
 // closeTasksOnInactiveProjects stamps JOB_ON_HOLD: a Slack row's sourceDetail
 // is "channel <id> · <ts>" and taskSource.ts receivedByLabel parses the
 // channel out of it (Sep 8 review). Writing the summary alone is enough.
 export const SLACK_EXPIRED = "slack-expired-7d";
-export const SLACK_EXPIRED_SUMMARY = "Auto-closed: 7 days with no action.";
+// Sep 16 (Kyle's call): the assignee now gets one "still needed? it closes
+// tomorrow" nudge on day 6 (tasks.ts expireStaleSlackTasks), so the cancelled
+// row can say the office was warned instead of reading like the board quietly
+// forgot. "Posted in the hub", not "went out": that nudge is a bell row — the
+// DM half is dead until task_expiring is classified in notifyPrefs.ts — and a
+// summary that claims a message nobody received is exactly the kind of small
+// lie that cost the board its credibility (review). Text mirrored literally in
+// tasks.ts — keep the two in step.
+export const SLACK_EXPIRED_SUMMARY = "Auto-closed: 7 days with no action. A reminder was posted in the hub yesterday.";
 
 // Instruction detection (shared with the real-time Slack webhook).
 const INSTRUCTION_RE =

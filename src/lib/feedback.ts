@@ -14,18 +14,41 @@ const POS = /\b(love|loved|great|amazing|awesome|perfect|beautiful|excellent|fan
 // must NOT render for the photographer (negative client feedback never reaches
 // creatives — Jordan reads it first and briefs them himself).
 export function hasNegativeCues(body: string | null | undefined): boolean {
+  // Deliberately NOT denial-aware (see DENIED below): this gate decides whether
+  // a creative ever sees a client's words, and it fails closed on purpose.
   return !!body && NEG.test(body);
 }
 
+// A client naming a problem word to DENY it is not a complaint — "no issues at
+// all, loved it" read NEGATIVE because the criticism words are tested first
+// (Sep 16, Kyle call, item 10; latent until now because every live form row
+// carries a star rating, which outranks the words). Strip the denial, then
+// test as before.
+// Widened Sep 16 (review): "nothing wrong at all" and "no real issues" still
+// read NEGATIVE because the criticism word survived the strip — one optional
+// adjective between the denial and the noun, and the "nothing wrong/bad" form,
+// are the two shapes clients actually write.
+const DENIED =
+  /\b(?:(?:no|not any|without any|zero|didn'?t have any|haven'?t had any|never had any)\s+(?:\w+\s+)?(?:issues?|problems?|complaints?|mistakes?|errors?)|nothing\s+(?:\w+\s+)?(?:wrong|bad|off|to fix|to complain about))\b/gi;
+
 function deriveSentiment(body: string, rating: number | null): "POSITIVE" | "NEUTRAL" | "NEGATIVE" {
   if (rating != null) return rating <= 2 ? "NEGATIVE" : rating === 3 ? "NEUTRAL" : "POSITIVE";
-  if (NEG.test(body)) return "NEGATIVE";
-  if (POS.test(body)) return "POSITIVE";
+  const t = body.replace(DENIED, " ");
+  if (NEG.test(t)) return "NEGATIVE";
+  if (POS.test(t)) return "POSITIVE";
   return "NEUTRAL";
 }
 
 function dedupeKey(parts: string[]): string {
   return crypto.createHash("sha1").update(parts.join("|")).digest("hex").slice(0, 24);
+}
+
+// The URGENT "Resolve client feedback" task minted for a NEGATIVE row below.
+// Exported so /quality can CLOSE it when an owner re-reads the row as Neutral/
+// Happy or dismisses it as not feedback (Sep 16 review) — otherwise correcting
+// a row on /quality left Kyle's queue card standing with nothing to act on.
+export function feedbackTaskKey(feedbackId: string): string {
+  return dedupeKey([feedbackId, "feedback"]);
 }
 
 // Record client feedback: store it, drop it on the project timeline, alert Kyle,
@@ -58,6 +81,10 @@ export async function recordFeedback(opts: {
       projectId: project.id,
       rating,
       sentiment,
+      // What the hub read it as, kept verbatim even after an owner re-reads the
+      // row on /quality (Sep 16, Kyle call, item 10) — `sentiment` is the value
+      // every count uses, and a human's override lands there instead.
+      sentimentAuto: sentiment,
       body: opts.body.slice(0, 2000),
       authorName: opts.authorName?.slice(0, 120) || null,
       source: opts.source ?? "form",
@@ -107,7 +134,7 @@ export async function recordFeedback(opts: {
         clientId: project.clientId,
         propertyAddress: project.title,
         ownerId: kyle?.id ?? null,
-        dedupeKey: dedupeKey([fb.id, "feedback"]),
+        dedupeKey: feedbackTaskKey(fb.id),
       },
     });
   }

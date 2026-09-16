@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
 import { prisma } from "@/lib/prisma";
+import { feedbackTaskKey } from "@/lib/feedback";
 
 // Mark one piece of client feedback handled (or put it back). `Feedback.resolved`
 // has existed since the model was written and nothing has ever set it — an
@@ -123,6 +124,134 @@ export async function sendFeedbackReply(
   }
   revalidatePath("/quality");
   return { ok: true, message: `Sent to ${res.to}.` };
+}
+
+// ---------------------------------------------------------------------------
+// CORRECTING WHAT THE HUB READ (Sep 16, Kyle call, item 10). Jamie's "still
+// waiting on 2844 Edgemont Dr" text sat on /quality as "Unhappy" for eleven
+// weeks because the only levers were Mark handled (clears the tile, keeps the
+// badge and the count) and deleting the row. Two corrections, both keeping the
+// original: re-read the sentiment (Unhappy / Neutral / Happy) with who/when/
+// why, or dismiss the row as "not feedback" with a reason and an undo.
+//
+// `sentiment` stays the one column every count reads, so a human's value is
+// honoured everywhere the moment it is written; `sentimentAuto` keeps what the
+// classifier said. Once sentimentBy is set no classifier pass may re-decide
+// it — the same rule attributionBy already has.
+// ---------------------------------------------------------------------------
+
+export type SentimentValue = "POSITIVE" | "NEUTRAL" | "NEGATIVE";
+const SENTIMENTS = new Set<SentimentValue>(["POSITIVE", "NEUTRAL", "NEGATIVE"]);
+
+async function whoAmI(): Promise<string> {
+  const me = await getCurrentUser().catch(() => null);
+  return (me as { name?: string | null; email?: string } | null)?.name ?? (me as { email?: string } | null)?.email ?? "the office";
+}
+
+// Correcting a row has to clear the URGENT card it minted. recordFeedback puts
+// a "Resolve client feedback" SmartTask on Kyle's queue for every NEGATIVE row;
+// re-read that row as Neutral/Happy, or dismiss it as not feedback, and the
+// card used to stand there with nothing behind it (Sep 16 review). Best-effort
+// — the correction on the feedback row is what matters.
+async function closeFeedbackTask(feedbackId: string): Promise<void> {
+  try {
+    await prisma.smartTask.updateMany({
+      where: { dedupeKey: feedbackTaskKey(feedbackId), status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    });
+  } catch (e) {
+    console.error("[quality] closeFeedbackTask failed", { feedbackId, error: e });
+  }
+}
+
+function saveFailure(e: unknown, what: string): { ok: false; message: string } {
+  console.error(`[quality] ${what} failed`, e);
+  const gone = e instanceof Error && "code" in e && (e as { code?: string }).code === "P2025";
+  return { ok: false, message: gone ? "That feedback is no longer there — refresh the page." : "That didn't save. Try again." };
+}
+
+/** Owner/admin re-reads a row's sentiment. The hub's own read is kept in sentimentAuto. */
+export async function setFeedbackSentiment(
+  feedbackId: string,
+  sentiment: SentimentValue,
+  note?: string | null,
+): Promise<{ ok: boolean; message?: string }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "You don't have access to do that." };
+  }
+  if (!SENTIMENTS.has(sentiment)) return { ok: false, message: "That isn't a sentiment." };
+  const who = await whoAmI();
+  const why = (note ?? "").trim().slice(0, 300) || null;
+  try {
+    // Read-then-write so the FIRST override backfills sentimentAuto from the
+    // value the classifier left — rows written before Sep 16 carry no auto
+    // column, and the provenance line needs "read as Unhappy by the hub".
+    const cur = await prisma.feedback.findUnique({ where: { id: feedbackId }, select: { sentiment: true, sentimentAuto: true } });
+    if (!cur) return { ok: false, message: "That feedback is no longer there — refresh the page." };
+    await prisma.feedback.update({
+      where: { id: feedbackId },
+      data: {
+        sentiment,
+        sentimentAuto: cur.sentimentAuto ?? cur.sentiment ?? null,
+        sentimentBy: who,
+        sentimentAt: new Date(),
+        sentimentNote: why,
+      },
+    });
+  } catch (e) {
+    return saveFailure(e, "setFeedbackSentiment");
+  }
+  // No longer unhappy → Kyle's URGENT "resolve this" card has nothing to resolve.
+  if (sentiment !== "NEGATIVE") {
+    await closeFeedbackTask(feedbackId);
+  }
+  revalidatePath("/quality");
+  revalidatePath("/tasks");
+  return { ok: true };
+}
+
+/** "Not feedback" — hidden from every count, row kept, undo below. */
+export async function dismissFeedback(feedbackId: string, reason: string): Promise<{ ok: boolean; message?: string }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "You don't have access to do that." };
+  }
+  const why = (reason ?? "").trim().slice(0, 300);
+  if (!why) return { ok: false, message: "Say why it isn't feedback." };
+  const who = await whoAmI();
+  try {
+    await prisma.feedback.update({
+      where: { id: feedbackId },
+      data: { dismissedAt: new Date(), dismissedBy: who, dismissReason: why },
+    });
+  } catch (e) {
+    return saveFailure(e, "dismissFeedback");
+  }
+  await closeFeedbackTask(feedbackId);
+  revalidatePath("/quality");
+  revalidatePath("/tasks");
+  return { ok: true };
+}
+
+export async function undismissFeedback(feedbackId: string): Promise<{ ok: boolean; message?: string }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "You don't have access to do that." };
+  }
+  try {
+    await prisma.feedback.update({
+      where: { id: feedbackId },
+      data: { dismissedAt: null, dismissedBy: null, dismissReason: null },
+    });
+  } catch (e) {
+    return saveFailure(e, "undismissFeedback");
+  }
+  revalidatePath("/quality");
+  return { ok: true };
 }
 
 /** Owner/admin overrules the on-site vs operations call. */

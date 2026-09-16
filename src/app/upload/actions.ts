@@ -121,6 +121,11 @@ export async function markDeliverableNotCompleted(
       where: { id: deliverableId },
       data: { notCompletedReason: null, notCompletedAt: null },
     });
+    // …and the question it put on the office's plate goes with it.
+    try {
+      const { confirmNotRequiredTask } = await import("@/lib/tasks");
+      await confirmNotRequiredTask(deliverableId);
+    } catch { /* best-effort */ }
     revalidatePath(`/upload/${d.projectId}`);
     revalidatePath(`/projects/${d.projectId}`);
     return { ok: true };
@@ -153,6 +158,17 @@ export async function markDeliverableNotCompleted(
       data: { projectId: d.projectId, type: ActivityType.FLAG, body: `${NOT_COMPLETED_FLAG_PREFIX}${label}: ${trimmed}` },
     }).catch(() => {});
   }
+  // ONE QUESTION FOR THE OFFICE (Sep 16, Kyle call). Until now this answer was
+  // a note on a card: the hub kept the item owed, kept saying "still missing",
+  // and chased CubiCasa for a floor plan James had already told us nobody
+  // ordered. It still isn't a waiver — only the office can say what the client
+  // bought — so it becomes one deduped card on Kyle's plate with a one-tap
+  // link to the job's deliverables. Best-effort: the photographer's answer is
+  // saved either way.
+  try {
+    const { confirmNotRequiredTask } = await import("@/lib/tasks");
+    await confirmNotRequiredTask(deliverableId);
+  } catch { /* the hourly reconcile is not a backstop for this — see above */ }
   revalidatePath(`/upload/${d.projectId}`);
   revalidatePath(`/projects/${d.projectId}`);
   return { ok: true };

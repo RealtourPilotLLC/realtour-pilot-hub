@@ -174,8 +174,20 @@ export function videoStyleName(key: string | null | undefined): string | null {
 // because the personal-branding style is decided by the same words and
 // pipeline.ts imports this module — a second copy of the regex would drift,
 // and an import the other way would be a cycle.
+// Sep 16 (Kyle call, Sharra Mercer #1584): "Custom Branding Video Package 16
+// Videos Total" is a branding package sold OUTSIDE the three named plans — the
+// premium reel she booked was swapped for it after the shoot. Nothing here
+// matched it ("branding shoot/session" did not cover "branding video
+// package"), so a 16-video branding job ran on the 48-hour single-reel clock
+// and every card it owned read overdue from Sep 11. `branding` followed by the
+// product word now counts, and so does an explicit "N videos total" batch —
+// both are statements that this is a content package, not one listing reel.
+// The batch arm is floored at FOUR (Sep 16 review): a listing product can say
+// "2 Videos Total" and still be two 48-hour reels, but nobody sells four or
+// more videos off one shoot except as a content package, so a small batch
+// keeps its ordinary clock.
 export const MONTHLY_PLAN_RE =
-  /video\s*[-–]?\s*(starter|accelerator|pro)\b|monthly\s+(social\s+)?(media\s+)?content|social\s+(media\s+)?content|personal[-\s]*brand|content\s+(session|day)\b|branding\s+(shoot|session)\b/i;
+  /video\s*[-–]?\s*(starter|accelerator|pro)\b|monthly\s+(social\s+)?(media\s+)?content|social\s+(media\s+)?content|personal[-\s]*brand|content\s+(session|day)\b|branding\s+(shoot|session|video|package|content)\b|\b(?:[4-9]|\d{2,})\s+videos?\s+total\b/i;
 
 // The tier words, as videoTier() / aryeo.ts isPremiumProduct read them, with
 // the same explicit-"standard" veto ("Standard Cinematic Video" is standard;

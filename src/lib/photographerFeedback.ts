@@ -92,8 +92,10 @@ export async function getFeedbackHub(memberId: string): Promise<FeedbackHub | nu
       prisma.project.count({
         where: { ...ownsShoot(memberId), status: { not: "CANCELLED" }, shootDate: { gte: prevSince, lt: since } },
       }),
+      // Both feedback reads skip rows an owner dismissed as "not feedback" on
+      // /quality (Sep 16); `sentiment` is already the human-corrected value.
       prisma.feedback.aggregate({
-        where: { photographerId: memberId, rating: { not: null } },
+        where: { photographerId: memberId, rating: { not: null }, dismissedAt: null },
         _avg: { rating: true },
         _count: { rating: true },
       }),
@@ -105,7 +107,7 @@ export async function getFeedbackHub(memberId: string): Promise<FeedbackHub | nu
       }),
       // Latest client praise, creative-safe (see HubPraise).
       prisma.feedback.findMany({
-        where: { photographerId: memberId, sentiment: { in: ["POSITIVE", "NEUTRAL"] }, body: { not: "" } },
+        where: { photographerId: memberId, sentiment: { in: ["POSITIVE", "NEUTRAL"] }, body: { not: "" }, dismissedAt: null },
         orderBy: { createdAt: "desc" },
         take: 3,
         select: { rating: true, body: true, authorName: true, createdAt: true, project: { select: { title: true } } },

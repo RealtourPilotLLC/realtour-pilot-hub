@@ -254,7 +254,7 @@ export async function sweepConfirmationTexts(texted: Set<string> = new Set()): P
       // autoConfirmationText = this client's own switch (/clients → Notifications).
       client: { select: { id: true, name: true, phone: true, autoConfirmationText: true } },
       photographer: { select: { name: true } },
-      deliverables: { where: { removedFromOrderAt: null }, select: { type: true } },
+      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, waivedAt: true } }, // waived items are not read out to the client (Sep 16)
     },
   });
 

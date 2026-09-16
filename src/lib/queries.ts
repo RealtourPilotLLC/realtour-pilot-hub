@@ -210,9 +210,10 @@ export async function getTeamMemberDetail(id: string) {
         take: 8,
         select: { id: true, title: true, status: true, deliveryDue: true, client: { select: { name: true, avatarUrl: true } } },
       }),
-      // Feedback on their shoots (creative scorecard)
+      // Feedback on their shoots (creative scorecard). Rows an owner dismissed
+      // as "not feedback" on /quality never reach a scorecard (Sep 16).
       prisma.feedback.findMany({
-        where: { photographerId: id },
+        where: { photographerId: id, dismissedAt: null },
         orderBy: { createdAt: "desc" },
         take: 8,
       }),
@@ -933,6 +934,9 @@ export async function getOwnerDials(): Promise<OwnerDials> {
         shootDate: true,
         status: true,
         client: { select: { socialClient: true } },
+        tierOverride: true,
+        packageName: true,
+        appointments: { select: { status: true, startAt: true } },
         deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
       },
     }),
@@ -947,6 +951,11 @@ export async function getOwnerDials(): Promise<OwnerDials> {
     const sla = getVideoSlaStatus({
       shootDate: p.shootDate,
       status: p.status,
+      // Same handover as /edit's header: the owner's past-SLA dial must read
+      // the office tier and the latest leg (Sep 16).
+      appointments: p.appointments,
+      tierOverride: p.tierOverride,
+      packageName: p.packageName,
       deliverables: p.deliverables,
       client: p.client,
     });
@@ -1078,8 +1087,10 @@ export async function getClientDetail(id: string) {
       orderBy: { createdAt: "desc" },
       take: 60,
     }),
+    // `sentiment` is the effective value (an owner's re-read on /quality lands
+    // there); a row dismissed as "not feedback" stays off the timeline (Sep 16).
     prisma.feedback.findMany({
-      where: { projectId: { in: projectIds } },
+      where: { projectId: { in: projectIds }, dismissedAt: null },
       orderBy: { createdAt: "desc" },
     }),
   ]);

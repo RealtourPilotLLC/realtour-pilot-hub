@@ -5,8 +5,9 @@ import Link from "next/link";
 import { ChevronDown, ChevronRight, MessageSquare, RotateCcw, Smartphone } from "lucide-react";
 import { saveTeamNotifyPrefs } from "@/app/settings/actions";
 import {
-  NOTIFY_EVENTS, defaultPrefsForRow, notifyGroupLabel, notifyPrefsEqual,
-  type NotifyChannels, type NotifyEvent, type NotifyPrefs, type TeamNotifyRow,
+  NOTIFY_EVENTS, clearInapplicable, defaultPrefsForRow, eventAppliesTo, notifyGroupLabel,
+  notifyKindLabel, notifyPrefsEqual,
+  type LastReached, type NotifyChannels, type NotifyEvent, type NotifyPrefs, type TeamNotifyRow,
 } from "@/lib/notifyPrefDefaults";
 import { Toggle, SaveRow } from "@/components/settings/OperatingRules";
 import { cn } from "@/lib/utils";
@@ -18,6 +19,14 @@ import { cn } from "@/lib/utils";
 // on review, by text — the same two answers, in the same store the bridge
 // reads). Client-safe on purpose: the only imports are the server action, a
 // dependency-free defaults module, and the page's own Toggle/SaveRow.
+//
+// Sep 16 (Kyle call — "is any of this actually getting to people?"): the card
+// stops promising things it can't do. Every block shows what the delivery log
+// (NotificationDelivery) last recorded for that person — "Last reached: Slack ·
+// Tue 4:12 PM (tagged)" — and the newest failure in red; and a switch no
+// emitter can ever fire for that person's group is greyed out and says so
+// instead of sitting there looking live (Kyle's "Video in review" was on, and
+// inert, until the broadcast bridge learned to reach the office).
 
 const CHANNELS: { key: keyof NotifyChannels; label: string; Icon: typeof MessageSquare }[] = [
   { key: "slack", label: "Slack DM", Icon: MessageSquare },
@@ -25,6 +34,52 @@ const CHANNELS: { key: keyof NotifyChannels; label: string; Icon: typeof Message
 ];
 
 const PEOPLE_HREF = "/users?tab=team";
+
+// When something went out, in the office's timezone — the ET-everywhere rule.
+// Inside the last six days it reads as a weekday ("Tue 4:12 PM"); older than
+// that it carries the date, because "Tue" a fortnight ago tells nobody
+// anything. A timestamp we can't parse simply doesn't render.
+function whenLabel(iso: string): string | null {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const recent = Date.now() - d.getTime() < 6 * 86400_000;
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    ...(recent ? { weekday: "short" } : { month: "short", day: "numeric" }),
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(d).replace(",", "");
+}
+
+// "Last reached: Slack · Tue 4:12 PM (tagged) · text · Mon 9:03 AM (shoot
+// change)", plus the newest failure in red with Slack's or OpenPhone's own
+// words. Read straight off the delivery log (Sep 16): a queued text is not
+// "reached" yet and a skip is not a failure, so neither appears here.
+function LastReachedLine({ reached, first }: { reached: LastReached | undefined; first: string }) {
+  const parts: string[] = [];
+  if (reached?.slack) {
+    const w = whenLabel(reached.slack.at);
+    if (w) parts.push(`Slack · ${w} (${notifyKindLabel(reached.slack.kind)})`);
+  }
+  if (reached?.sms) {
+    const w = whenLabel(reached.sms.at);
+    if (w) parts.push(`text · ${w} (${notifyKindLabel(reached.sms.kind)})`);
+  }
+  const failWhen = reached?.failed ? whenLabel(reached.failed.at) : null;
+  if (parts.length === 0 && !failWhen) {
+    return <span className="text-muted-2">Last reached: nothing logged yet — the bell is {first}&rsquo;s only record so far</span>;
+  }
+  return (
+    <>
+      {parts.length > 0 && <span>Last reached: {parts.join(" · ")}</span>}
+      {failWhen && reached?.failed && (
+        <span className={cn("font-medium text-danger", parts.length > 0 && "ml-2")}>
+          last failed: {failWhen} — {reached.failed.detail}
+        </span>
+      )}
+    </>
+  );
+}
 
 export function TeamNotifications({ rows }: { rows: TeamNotifyRow[] }) {
   if (rows.length === 0) {
@@ -43,6 +98,10 @@ export function TeamNotifications({ rows }: { rows: TeamNotifyRow[] }) {
           person&rsquo;s own time zone (ET; Manila for the editors) — later ones wait for the morning, and several within half an hour arrive as one text.
           Only a US number can be texted, and never the office line itself.
         </p>
+        <p className="mt-2">
+          Each block says when that person was <b className="font-medium text-foreground">last reached</b>, and on which channel — recorded as
+          the hub sends, so a Slack DM that bounced shows up in red instead of looking delivered. A switch nothing rings yet is greyed out.
+        </p>
       </div>
       <div className="space-y-3">
         {rows.map((row) => (
@@ -54,18 +113,22 @@ export function TeamNotifications({ rows }: { rows: TeamNotifyRow[] }) {
 }
 
 function PersonBlock({ row }: { row: TeamNotifyRow }) {
+  const group = notifyGroupLabel(row);
   const defaults = defaultPrefsForRow(row);
-  const [saved, setSaved] = useState<NotifyPrefs>(row.prefs);
-  const [draft, setDraft] = useState<NotifyPrefs>(row.prefs);
+  // A switch nothing addresses for this group is off here, whatever the store
+  // says (Sep 16) — the save action clears it too, so the card and the bridge
+  // can never disagree about what is live.
+  const initial = clearInapplicable(row.prefs, group);
+  const [saved, setSaved] = useState<NotifyPrefs>(initial);
+  const [draft, setDraft] = useState<NotifyPrefs>(initial);
   const [explicit, setExplicit] = useState(row.explicit);
   const [open, setOpen] = useState(true);
   const [busy, start] = useTransition();
   const [msg, setMsg] = useState<string | null>(null);
 
   const first = row.name.split(/\s+/)[0];
-  const group = notifyGroupLabel(row);
   const dirty = !notifyPrefsEqual(draft, saved);
-  const atDefaults = notifyPrefsEqual(draft, defaults);
+  const atDefaults = notifyPrefsEqual(draft, clearInapplicable(defaults, group));
   const canSlack = !!row.slackId;
   const canSms = row.hasPhone;
   const panelId = `notify-${row.teamMemberId}`;
@@ -76,8 +139,11 @@ function PersonBlock({ row }: { row: TeamNotifyRow }) {
   };
 
   // What is on right now — the one line that makes the collapsed block (and a
-  // long roster) readable at a glance. Draft, not saved: it follows the switches.
-  const onFor = (channel: keyof NotifyChannels) => NOTIFY_EVENTS.filter((e) => draft[e.key][channel]).map((e) => e.short);
+  // long roster) readable at a glance. Draft, not saved: it follows the
+  // switches; and only switches that can actually fire for this group count
+  // (Sep 16), so the summary never advertises a dead one.
+  const onFor = (channel: keyof NotifyChannels) =>
+    NOTIFY_EVENTS.filter((e) => eventAppliesTo(e.key, group) && draft[e.key][channel]).map((e) => e.short);
   const summary = CHANNELS.map((c) => {
     const on = onFor(c.key);
     return `${c.label}: ${on.length ? on.join(", ") : "off"}`;
@@ -104,7 +170,11 @@ function PersonBlock({ row }: { row: TeamNotifyRow }) {
     );
   }
 
-  const reason = (channel: keyof NotifyChannels, on: boolean): string | undefined => {
+  // Why a switch is greyed. "Nothing addresses <first> for this event yet"
+  // comes FIRST: a missing Slack ID is beside the point when no emitter would
+  // ever write that person a row of this kind (Sep 16, Kyle call).
+  const reason = (event: NotifyEvent, channel: keyof NotifyChannels, on: boolean): string | undefined => {
+    if (!eventAppliesTo(event, group)) return `Nothing addresses ${first} for this event yet.`;
     if (channel === "slack" && !canSlack) return on ? `Set, but ${first} has no Slack ID on file — add it on People and this starts working.` : `No Slack ID on ${first}'s card — add it on People first.`;
     if (channel === "sms" && !canSms) {
       if (phoneWhy) return `${phoneWhy}.`;
@@ -138,6 +208,9 @@ function PersonBlock({ row }: { row: TeamNotifyRow }) {
           {missing.map((m, i) => <span key={i}>{i > 0 && " · "}{m}</span>)}
         </p>
       )}
+      <p className="border-t border-border px-3 py-1.5 text-[12px] text-muted">
+        <LastReachedLine reached={row.lastReached} first={first} />
+      </p>
       {open && (
         <div id={panelId} className="border-t border-border px-3 pb-3 pt-1">
           <div className="overflow-x-auto">
@@ -153,29 +226,35 @@ function PersonBlock({ row }: { row: TeamNotifyRow }) {
                 </tr>
               </thead>
               <tbody>
-                {NOTIFY_EVENTS.map((e) => (
-                  <tr key={e.key} className="border-t border-border">
-                    <th scope="row" className="py-2 pr-3 text-left font-normal">
-                      {e.label}
-                    </th>
-                    {CHANNELS.map((c) => {
-                      const on = draft[e.key][c.key];
-                      const can = c.key === "slack" ? canSlack : canSms;
-                      return (
-                        <td key={c.key} className="py-2 text-center">
-                          <span className={cn("inline-flex", !can && "opacity-60")} title={reason(c.key, on)}>
-                            <Toggle
-                              on={on}
-                              onChange={flip(e.key, c.key)}
-                              disabled={!can}
-                              label={`${c.label} ${first} when ${e.label.toLowerCase()}`}
-                            />
-                          </span>
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
+                {NOTIFY_EVENTS.map((e) => {
+                  const applies = eventAppliesTo(e.key, group);
+                  return (
+                    <tr key={e.key} className="border-t border-border">
+                      <th scope="row" className={cn("py-2 pr-3 text-left font-normal", !applies && "text-muted-2")}>
+                        {e.label}
+                        {!applies && (
+                          <span className="ml-1.5 text-[11px] text-muted-2">— nothing addresses {first} for this yet</span>
+                        )}
+                      </th>
+                      {CHANNELS.map((c) => {
+                        const on = applies && draft[e.key][c.key];
+                        const can = applies && (c.key === "slack" ? canSlack : canSms);
+                        return (
+                          <td key={c.key} className="py-2 text-center">
+                            <span className={cn("inline-flex", !can && "opacity-60")} title={reason(e.key, c.key, on)}>
+                              <Toggle
+                                on={on}
+                                onChange={flip(e.key, c.key)}
+                                disabled={!can}
+                                label={`${c.label} ${first} when ${e.label.toLowerCase()}`}
+                              />
+                            </span>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -187,7 +266,7 @@ function PersonBlock({ row }: { row: TeamNotifyRow }) {
             })} />
             <button
               type="button"
-              onClick={() => { setDraft(defaults); setMsg(atDefaults ? null : "Back to the defaults for this role — Save to keep."); }}
+              onClick={() => { setDraft(clearInapplicable(defaults, group)); setMsg(atDefaults ? null : "Back to the defaults for this role — Save to keep."); }}
               disabled={busy || atDefaults}
               className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-[12px] font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               title={atDefaults ? `${first} is on the ${group.toLowerCase()} defaults` : `Put ${first} back on the ${group.toLowerCase()} defaults`}

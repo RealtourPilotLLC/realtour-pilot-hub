@@ -8,8 +8,31 @@ import { prisma } from "@/lib/prisma";
 export type MsgResult = { ok: boolean; message: string };
 
 // Editors post in the team thread from the editor queue, so allow all staff
-// roles (photographers use the shoot-app messaging instead).
+// roles. Photographers too since Sep 16 (Kyle call) — on THEIR OWN shoots
+// only: a tag used to send them to /shoot/<id>, which had no thread to read,
+// let alone answer. requireRole is the role gate; the ownership check below
+// is the same one /shoot/<id> and requireShootAccess make (fail closed).
 const requireStaff = () => requireRole(["OWNER", "ADMIN", "EDITOR"]);
+
+async function requireThreadAccess(projectId: string): Promise<void> {
+  await requireRole(["OWNER", "ADMIN", "EDITOR", "PHOTOGRAPHER"]);
+  const { authEnforced } = await import("@/lib/auth/guards");
+  if (!authEnforced()) return;
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const u = await getCurrentUser();
+  if (u?.realRole !== "PHOTOGRAPHER") return;
+  const { photographerMemberId, photographerOwnsShoot } = await import("@/lib/shoot");
+  const mid = await photographerMemberId(u);
+  if (mid && (await photographerOwnsShoot(projectId, mid))) return;
+  throw new Error("You can only message on your own shoots.");
+}
+
+// Any new message REOPENS the conversation for everyone (Sep 16): "Close
+// conversation" is a per-viewer fold (ThreadRead.closedAt), and a thread
+// someone writes into is, by definition, open again.
+async function reopenThread(projectId: string): Promise<void> {
+  await prisma.threadRead.updateMany({ where: { projectId, closedAt: { not: null } }, data: { closedAt: null } }).catch(() => {});
+}
 
 // Post a message to a project's team thread. The author is WHOEVER IS LOGGED
 // IN — Jordan: "the project chat should not have the name selector and just be
@@ -24,7 +47,7 @@ export async function postProjectMessage(
   mentionIds: string[] = [],
   replyToId?: string | null,
 ): Promise<MsgResult> {
-  await requireStaff();
+  await requireThreadAccess(projectId);
   const text = body.trim();
   if (!text) return { ok: false, message: "Write a message first." };
 
@@ -80,6 +103,12 @@ export async function postProjectMessage(
       replyToId: replyToId || null,
     },
   });
+  await reopenThread(projectId);
+
+  // Every link below lands ON the message (Sep 16): the board gives each
+  // message id="msg-<id>", so a Slack DM, a text or a bell row opens the
+  // page scrolled to the words that rang, not the top of the job file.
+  const anchor = `#msg-${msg.id}`;
 
   // Notify each tagged teammate with a to-do so the mention isn't missed. One open
   // "you were tagged on this job" task per (project, member) — a later tag
@@ -117,8 +146,9 @@ export async function postProjectMessage(
       const selfTag = t.id === authorId || (inferOwner && owners.includes(t.id));
       // A tagged photographer who doesn't own this shoot gets bounced off
       // /shoot/<id> to the bare list — send them to the list directly (their
-      // tag task carries the context); the owning shooter still deep-links.
-      let photogHref = `/shoot/${projectId}`;
+      // tag task carries the context); the owning shooter still deep-links
+      // to the thread on their shoot screen (Sep 16: it has one now).
+      let photogHref = `/shoot/${projectId}${anchor}`;
       if (t.role === "PHOTOGRAPHER") {
         try {
           const { photographerOwnsShoot } = await import("@/lib/shoot");
@@ -126,7 +156,7 @@ export async function postProjectMessage(
         } catch { /* keep the deep link on lookup hiccups */ }
       }
       const href =
-        t.role === "PHOTOGRAPHER" ? photogHref : editorKey ? `/edit/${projectId}` : `/projects/${projectId}`;
+        t.role === "PHOTOGRAPHER" ? photogHref : editorKey ? `/edit/${projectId}${anchor}` : `/projects/${projectId}${anchor}`;
       const data = {
         taskType: "internal_instruction",
         title: `${authorName ?? "Team"} tagged you — ${street}`.slice(0, 120),
@@ -180,7 +210,7 @@ export async function postProjectMessage(
         ];
         // The row the EDITOR login sees carries the same sentence — notify.ts
         // delivers ONCE per person, whichever of the two rows is new first.
-        if (editorKey) targets.push({ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${projectId}`, ...(slackDm ? { slackDm } : {}) });
+        if (editorKey) targets.push({ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${projectId}${anchor}`, ...(slackDm ? { slackDm } : {}) });
         await notifyInApp({
           kind: "mention",
           title: `${authorName ?? "Team"} mentioned you — ${street}`,
@@ -231,11 +261,78 @@ export async function postProjectMessage(
     });
   } catch { /* the job-message ping is best-effort */ }
 
+  // Answering in the thread closes YOUR OWN "tagged you" task (Kyle call, Sep
+  // 16): 6 of 6 mention-* tasks were sitting OPEN on the Tasks page with the
+  // reply already posted, because only a hand-tick ever closed one. Narrow on
+  // purpose — the poster's own companion key on this job, nobody else's —
+  // and it rings the tagger exactly as a hand-tick does (mentionDone.ts),
+  // landing them on this reply.
+  await completeOwnMentionTask(projectId, authorId, authorName, anchor);
+
   revalidatePath(`/projects/${projectId}`);
   revalidatePath("/editing");
   revalidatePath("/editing/messages"); // the message center renders these threads too
+  revalidatePath("/communications"); // …and Communications → Team (Sep 16)
   revalidatePath(`/edit/${projectId}`);
+  revalidatePath(`/shoot/${projectId}`); // the photographer's board (Sep 16)
   return { ok: true, message: mentions.length ? "Posted & tagged." : "Posted." };
+}
+
+async function completeOwnMentionTask(projectId: string, authorTmId: string | null, authorName: string | null, anchor: string): Promise<void> {
+  if (!authorTmId) return;
+  try {
+    const task = await prisma.smartTask.findUnique({
+      where: { dedupeKey: `mention-${projectId}-${authorTmId}` },
+      select: { id: true, title: true, projectId: true, propertyAddress: true, dedupeKey: true, status: true },
+    });
+    if (!task || task.status === "COMPLETED" || task.status === "CANCELLED") return;
+    const done = await prisma.smartTask.updateMany({
+      where: { id: task.id, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    });
+    if (done.count === 0) return;
+    const { notifyMentionDone } = await import("@/lib/mentionDone");
+    // quiet: the tagger hears about it, the OWNER/ADMIN desk does not — this
+    // path fires on every reply, not on a deliberate hand-tick (review, Sep 16).
+    await notifyMentionDone(task, authorName, { href: `/projects/${projectId}${anchor}`, quiet: true });
+    revalidatePath("/tasks");
+    revalidatePath("/queue");
+  } catch { /* closing the tag is a courtesy — the reply is already posted */ }
+}
+
+// "Close conversation" (Kyle call, Sep 16): folds a job's thread under Closed
+// on the message center and Communications → Team for THIS viewer — a
+// finished conversation shouldn't sit in the active list forever. It is a
+// read watermark with a lid, not a lock: any new message on the job clears
+// closedAt for everyone (reopenThread above), and reading a closed thread
+// leaves it closed. Never from a "view as" preview (requireRole blocks it).
+export async function closeConversation(projectId: string): Promise<MsgResult> {
+  await requireStaff();
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  if (!me) return { ok: false, message: "Sign in to close a conversation." };
+  const now = new Date();
+  await prisma.threadRead.upsert({
+    where: { userKey_projectId: { userKey: me.id, projectId } },
+    update: { seenAt: now, closedAt: now },
+    create: { userKey: me.id, projectId, seenAt: now, closedAt: now },
+  });
+  revalidatePath("/editing/messages");
+  revalidatePath("/communications");
+  revalidatePath("/editing");
+  return { ok: true, message: "Conversation closed — a new message reopens it." };
+}
+
+export async function reopenConversation(projectId: string): Promise<MsgResult> {
+  await requireStaff();
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  if (!me) return { ok: false, message: "Sign in to reopen a conversation." };
+  await prisma.threadRead.updateMany({ where: { userKey: me.id, projectId }, data: { closedAt: null } });
+  revalidatePath("/editing/messages");
+  revalidatePath("/communications");
+  revalidatePath("/editing");
+  return { ok: true, message: "Conversation reopened." };
 }
 
 // Leave a note from a task — it posts into that task's project team-message
@@ -256,6 +353,7 @@ export async function addTaskNote(taskId: string, note: string): Promise<MsgResu
       body: `📝 ${task.title}\n${text}`.slice(0, 2000),
     },
   });
+  await reopenThread(task.projectId); // a note is a message: the thread is open again (Sep 16)
   revalidatePath(`/projects/${task.projectId}`);
   revalidatePath("/queue");
   return { ok: true, message: "Note added to project messages." };

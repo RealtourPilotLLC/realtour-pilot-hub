@@ -2,7 +2,7 @@ import {
   AlertTriangle, Bell, Camera, CheckCircle2, ClipboardCheck, Clock, CloudUpload, Compass,
   Crown, FileText, FolderOpen, IdCard, LayoutDashboard, LifeBuoy, ListChecks, LogIn,
   MapPin, MessageSquare, MessageSquareHeart, MessageSquareQuote, Music, PackagePlus, PlayCircle, Plug,
-  RefreshCw, RotateCcw, Scissors, SlidersHorizontal, TrendingUp, Upload, Wallet,
+  RefreshCw, RotateCcw, Scissors, SlidersHorizontal, StickyNote, TrendingUp, Upload, Wallet,
   type LucideIcon,
 } from "lucide-react";
 
@@ -254,6 +254,23 @@ That becomes a job for the office to put on the order. The row shows **waiting o
 Under that, **How did the shoot go?** — **Went smoothly** or **Had issues** plus a note. That is the debrief: access, parking, the property, anything the office should change on their end.`,
     },
     {
+      id: "requests-and-chat",
+      icon: MessageSquareQuote,
+      title: "Requests from the office, and the job's chat",
+      body: `### A Request
+When the office needs both you and the editor to know something about a job, they post a **Request** on it. You get it three ways: a text with the link, the amber **Special requests** box at the top of the **Access & shoot brief**, and the same box on your upload page. The editor is reading the identical words on their side. Anything in that box came from the office or the client and is part of the job — if it cannot be done, flag it on site rather than leaving it.
+
+An office **Note** on a job is not this; those stay with the office and never reach you. So if something matters to you, it will be in the amber box.
+
+### The job chat
+Under **Notes for the editor** on the shoot screen is **Job chat** — this job's thread, the same one Kyle and the editor are in. Before, being tagged on a job sent you here with nothing to read; now the conversation is on the page and you can answer it.
+
+- Type **@** to tag someone — Kyle, the editor, Jordan.
+- When someone tags you, your text links straight to **their message**.
+- **Replying in the thread closes your "tagged you" to-do** on its own.
+- It is your own shoots only, and it is internal — the client never sees a word of it. Anything the client should hear goes through the message buttons in the bottom bar.`,
+    },
+    {
       id: "pay",
       icon: Wallet,
       title: "Your pay",
@@ -407,7 +424,8 @@ One card with everything you have been told to do:
 - what the photographer wrote on the upload page: their **vision for the edit**, the **style**, shots that must be shown, areas to avoid, realtor requests
 - **how many videos** were filmed, on monthly jobs
 - whether the script was **delivered as written** or changed on site
-- **Additional notes** — the office's own note for this job, last
+- **Special requests** in an amber block — when the office posts a **Request** on a job it appears here and on the photographer's shoot screen at the same time, and you get a ping with the link. That is the one note both of you are looking at
+- **Additional notes** — the office's own note for this job, last. This one is yours alone; the photographer never sees it
 
 ### The script
 Read-only, pulled automatically from Script Studio. Copy overlay text from here rather than retyping it — retyping is the single biggest source of typo revisions. If no script exists yet, the card says so; cut B-roll first or ask in the chat.`,
@@ -503,7 +521,9 @@ You get pinged in the hub, not on your phone at 3am — see the time zone note b
 
 **Slack, too.** When someone @mentions you anywhere in the hub — the job's chat, a cut note, a review note — or replies to a message of yours, a Slack DM lands straight away: who said it, the first lines of the message, and a link that opens it. The same DM arrives when anyone posts on a job you are editing, even without tagging you, and when the job itself moves — footage in, a revision, a verdict on your cut, a job handed to you. That needs your Slack member ID on your People card; the office keeps it there. Which of these reach Slack (or your phone) is set per person in Settings → Team notifications, so if the pings feel wrong, say so rather than muting them.
 
-For anything that is a conversation rather than a task, use the job's **Project chat** at the bottom of the page, or the **Messages** centre off the queue: every job's thread in one place with unread dots. Type @ to tag someone in either one.`,
+For anything that is a conversation rather than a task, use the job's **Project chat** at the bottom of the page, or the **Messages** centre off the queue: every job's thread in one place with unread dots — your own jobs only. Type @ to tag someone in either one. They are the same thread, so it does not matter which one you write in.
+
+A link in one of those DMs now opens **on the message itself**, not the top of the page. Reading a thread anywhere — the centre, the job page — clears its dot everywhere, and **replying to a tag closes the "tagged you" to-do for you**; you do not have to go and tick it off. **Close conversation** on the thread header folds a finished job away until someone posts on it again.`,
       links: [{ href: "/editing/messages", label: "Messages" }],
     },
     {
@@ -639,7 +659,11 @@ It splits three ways:
 - **Not due yet** — listed so nothing creeps up on you.
 - **With someone else — chase, don't do** — waiting on another person. The count of overdue ones is called out without expanding the list.
 
-Every row has **View** and **Handled**. Handled closes the loop from right here; you never have to leave the page to tidy up. The badge counts what needs a move today, so "none due" with rows still open is the honest reading, not a lie.
+Every row has **View**, **Handled** and **Not needed**. Handled closes the loop from right here; you never have to leave the page to tidy up. **Not needed** is for the other case — the row describes something that already happened, or is not going to happen. Pick a reason (already done, not needed, duplicate, spam) and it closes with your name and that reason on it, shows up under **Dismissed & auto-closed** on the Done tab, and counts towards "things handled by hand today". It is never counted as done, because it wasn't.
+
+If a row came in on Slack, **View** takes you to the Slack asks list rather than the general queue, and a line under the block says how many of your loops came from Slack.
+
+The badge counts what needs a move today, so "none due" with rows still open is the honest reading, not a lie.
 
 The same loops appear on the dashboard, eight at a time, with the same buttons.`,
       links: [{ href: "/ops#loops", label: "Open loops" }],
@@ -658,12 +682,53 @@ Two kinds go out without you: **shoot confirmations** about 48 hours before the 
 
 Everything else waits for a human. The comms **Outbox** holds drafted texts ready to send, and the dashboard's **texts to send** chip counts exactly that list.
 
+### Getting rid of something you have already dealt with
+Every conversation on the **Replies** view now has a **Dismiss** button — a client, a number we have never saved, one of our own photographers, a blast from a stranger. Say why: *answered elsewhere*, *no reply needed*, or *spam*. The row goes; the messages stay in the Inbox, and nothing is deleted. It is a line drawn under what has been said so far, so if that person writes again afterwards they come straight back. **Spam** also mutes that number until you un-mute it — the list of muted numbers sits at the bottom of the same page, and one of our own team's numbers can never be muted.
+
+Our own photographers and editors texting the office no longer count as "waiting on a reply" anywhere. They still show, folded in under the thank-yous, so you can answer or dismiss them — they are simply not a client sitting on an unanswered message, and the Replies badge, the Comms tab and the home pill now agree on that.
+
 ### The rest of the Tasks hub
-**Comms** (phone and email), **Revisions**, **Slack**, **Other** (the general queue, including anything that needs assigning), and **Done** (today's ledger).`,
+**Comms** (phone and email), **Revisions**, **Slack asks**, **Other** (the general queue, including anything that needs assigning), and **Done** (today's ledger, plus what got closed without being done). The tab strip carries each tab's own count and the time the page last read the database, so you can see at a glance that it is live.
+
+**Slack asks** is the one home for anything parsed out of Slack — they no longer also sit in Other, and Other carries a line at the top saying how many are on the Slack tab, so an older link that lands you there still tells you where they went. Each row says who asked and who it is for, the client and the property, what was actually said (with **Open in Slack** straight back to the message), what needs doing and when it is due. Unassigned ones lead the list and have an **Assign** dropdown. Clear one with **Done ✓** or **Not needed**. A Slack ask closes itself a week after it arrives, and the day before, whoever it is assigned to gets a "still needed?" reminder in the hub (the bell, and on their row), so nothing disappears in silence.
+
+If nobody is waiting on a reply and there are Slack asks open, **Tasks** opens on the Slack asks list rather than an empty Comms tab. Click any tab and it stays where you put it.`,
       links: [
         { href: "/communications?tab=replies", label: "Replies" },
         { href: "/tasks?tab=comms", label: "Tasks · Comms" },
+        { href: "/tasks?tab=slack", label: "Tasks · Slack asks" },
         { href: "/communications?tab=outbox", label: "Outbox" },
+      ],
+    },
+    {
+      id: "job-notes",
+      icon: StickyNote,
+      title: "Telling the crew something: Request, Note, Additional notes",
+      body: `Four boxes on a job look alike and go to different people. This is the whole rule.
+
+| You type it in | Who reads it |
+| --- | --- |
+| **Request** (job page, Activity & notes) | The photographer **and** the editor |
+| **Note** (same box) | The office only — you and Jordan |
+| **Flag** (same box) | The office, and it shows on the QC card |
+| **Additional notes for the editor** (job page and the edit page) | The editor only |
+
+**Request** is the one that reaches everybody. Post it on the job page and it lands in the amber **Special requests** box on the photographer's shoot screen, on their upload page, in the editor's brief on the edit page and in the editor brief PDF — and it pings both of them the way their own row in Settings → Team notifications says: Harrison and James by text with the link, John and Kim by Slack DM. Your name is on it.
+
+**Additional notes for the editor** is the note Jordan points you at on the edit page — the same field, now readable and editable from the job page too, with the caption saying exactly that. It is editor-only. If the photographer also has to know, it is a Request, not a note. Editing it now leaves a line on the job's timeline with your name on it.
+
+> One ask, one box. Typing the same thing into a Note and into Additional notes is how a client request reaches the editor twice and the photographer never.
+
+### The team chat, by property
+**Communications → Team** is every job's thread in one place: a conversation list down the left — street, client, last line, a green dot when there is something new — and the thread on the right. Jobs with a thread come first, then everything in flight, so a job nobody has written on yet is still one click from a first message. Search by street or client. The Editing Room's **Messages** button opens the same centre; editors see only their own lane there.
+
+- Type **@** to tag someone. They get a to-do and a ping, and their link opens **on the message**, not the top of the page.
+- **Answering a tag in the thread closes your own "tagged you" to-do** and tells whoever tagged you it is done. You no longer have to tick it off the Tasks page.
+- **Close conversation** on the thread header folds a finished one under **Closed** for you. Anyone posting on that job puts it straight back in the active list for everyone.
+- Reading a thread anywhere — the centre, the job page, the edit page — clears its dot everywhere.`,
+      links: [
+        { href: "/communications?tab=team", label: "Team chat" },
+        { href: "/editing/messages", label: "Editing Room · Messages" },
       ],
     },
     {
@@ -715,7 +780,8 @@ The daily closeout block is where escalation happens: run its six checks and sen
       icon: Bell,
       title: "What the hub sends you",
       body: `- **Morning Slack DM**, between 8 and 10am ET — overdue items, today's list, and how many client texts are drafted and ready.
-- **4 PM Slack DM** — open to-dos and things to check before the day closes.
+- **4 PM Slack DM** — the Slack asks first (up to eight, oldest first, each with the client, the property and a link straight to that row), then anything overdue on the board, then how many client texts are drafted and waiting. Every line links to the page that actually holds it.
+- **A "still needed?" reminder in the hub** — the bell, the day before a Slack ask expires, to whoever it is assigned to.
 - **Ops alerts** — raw files still missing about 30 hours after a shoot (you get a chase task, the photographer gets the nudge), and photos shot yesterday that still have not reached the client.
 - **The bell** in the hub — mentions, revisions raised, new bookings and cancellations.
 - **A Slack DM on every @mention and reply** — anyone who tags you in a job's chat, a review note or a cut note, or replies to a message of yours, lands in your Slack DMs at once: who, a summary, and the link to the message. It reads your Slack member ID off your People card. Add everyone else's there too (People → the person → Slack member ID, Find on Slack, or **Sync Slack IDs from the workspace**, which fills every empty row it can match by email or a unique first name), or their mentions only ring the bell — and once a week the bell tells you whose ID is still missing. **Send test DM** on a row proves the bot can reach that person.

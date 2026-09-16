@@ -178,6 +178,13 @@ export type ShootView = {
   profile: ClientProfile | null;
   deliverables: ShootDeliverable[];
   specialRequests: string[];
+  /** The subset of specialRequests typed AFTER this job's upload landed (Sep
+   *  16 review). A Request is one field for both crews, so one typed while the
+   *  job is already in editing is an EDIT instruction — it still shows on the
+   *  shoot screen (the photographer may be the one who has to answer it), but
+   *  it must never join the amber "Don't leave without" capture list, which is
+   *  a list of things to shoot. Empty until the upload lands. */
+  editRequests: string[];
   flags: string[];
   photographer: { id: string; name: string } | null;
   zillowTourUrl: string | null; // a Zillow 3D tour link found in the order notes
@@ -209,6 +216,17 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
   const addressFull = [p.addressLine, p.city, p.state, p.zip].filter(Boolean).join(", ") || p.title;
   const phone = p.client.phone ?? null;
   const k = phoneKey(phone);
+
+  // When this job left the field. The upload stamp is the true marker, but it
+  // is NULL on 4 of the 5 jobs that carry a request today (probe, Sep 16) —
+  // older orders were closed out without one — so a job already past the
+  // field falls back to "a full day after the shoot started": a request typed
+  // on the shoot day itself is still something the photographer can go and
+  // get, one typed the next day on a job in editing plainly is not.
+  const PAST_FIELD = new Set(["SHOT", "EDITING", "REVIEW", "REVISION", "DELIVERED"]);
+  const fieldDoneAt: Date | null =
+    p.uploadedAt ??
+    (PAST_FIELD.has(p.status) && p.shootDate ? new Date(p.shootDate.getTime() + 24 * 60 * 60 * 1000) : null);
 
   return {
     project: {
@@ -273,6 +291,12 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
       uploadCount: d.uploads.length,
     })),
     specialRequests: p.activities.filter((a) => a.type === ActivityType.SPECIAL_REQUEST).map((a) => a.body),
+    // Anything asked for after the job left the field is for the EDIT — the
+    // shoot it would have changed is already done, so it must not land on the
+    // amber capture list (review, Sep 16).
+    editRequests: p.activities
+      .filter((a) => a.type === ActivityType.SPECIAL_REQUEST && fieldDoneAt != null && a.createdAt > fieldDoneAt)
+      .map((a) => a.body),
     // Human field flags only — FLAG also carries machine-written client
     // revision rows (whole email threads) and the wrap-up's own echo.
     flags: p.activities.filter((a) => a.type === ActivityType.FLAG).map((a) => a.body).filter(isFieldFlag),

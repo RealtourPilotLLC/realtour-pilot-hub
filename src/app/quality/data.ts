@@ -56,6 +56,23 @@ export type ClientFeedbackItem = {
   attribution: "ONSITE" | "OPERATIONS" | "MIXED" | null;
   attributionWhy: string | null;
   attributionBy: string | null;
+  // --- Correcting the hub's read (Sep 16, Kyle call, item 10) ---------------
+  /** What the classifier said (never rewritten). `sentiment` above is the
+   *  effective value — a human override lands there. */
+  sentimentAuto: string | null;
+  sentimentBy: string | null;
+  sentimentAtISO: string | null;
+  sentimentNote: string | null;
+  /** "Not feedback": kept in the list (greyed), skipped by every count. */
+  dismissedAtISO: string | null;
+  dismissedBy: string | null;
+  dismissReason: string | null;
+  /** The CommLog id a comms-filed row came from, when stamped. */
+  sourceRef: string | null;
+  /** Where to read the conversation a text/email row came from — the client's
+   *  page carries the live text thread and the mailbox. Null for form rows. */
+  conversationHref: string | null;
+  conversationLabel: string | null;
   /** the email we sent back, when we have */
   repliedAtISO: string | null;
   replyBy: string | null;
@@ -77,7 +94,10 @@ export type ClientFeedbackFeed = {
   items: ClientFeedbackItem[];
   filter: ClientFilter;
   // Counts are over EVERYTHING, never the filtered slice — the strip must not
-  // change meaning when you click a chip.
+  // change meaning when you click a chip. `total` is every row the list can
+  // show, dismissed ones included, so the Responses tile and the All chip can
+  // never disagree (Sep 16 review); the tile's sub-line says how many of them
+  // were dismissed as not feedback.
   total: number;
   last90: number;
   avgRating: number | null;
@@ -94,15 +114,22 @@ export type ClientFeedbackFeed = {
   openNegative: number; // NEGATIVE and not yet marked handled
   formResponses: number; // came from the public form (the delivery-text link)
   delivered90: number; // jobs delivered in the last 90d — the denominator
+  /** Rows an owner dismissed as "not feedback" — still listed under All, greyed. */
+  dismissed: number;
   counts: Record<ClientFilter, number>;
 };
+
+// Every count and every filter but "all" skips rows an owner dismissed as
+// "not feedback" (Sep 16, Kyle call, item 10). "all" keeps them, greyed, so the
+// original is never hidden from the person who has to trust the numbers.
+const LIVE = { dismissedAt: null } as const;
 
 // The two tab badges. Deliberately loaded on BOTH tabs (two cheap counts) so a
 // badge never changes or vanishes just because you switched tab — a number that
 // only exists on its own tab reads as a bug.
 export async function getTabCounts(): Promise<{ clients: number; photographers: number }> {
   const [clients, photographers] = await Promise.all([
-    prisma.feedback.count({ where: { resolved: false } }),
+    prisma.feedback.count({ where: { resolved: false, ...LIVE } }),
     prisma.mediaNote.count({ where: { lane: "PHOTOGRAPHER", parentId: null, status: "OPEN", kind: "fix" } }),
   ]);
   return { clients, photographers };
@@ -113,16 +140,15 @@ export async function getClientFeedbackFeed(filter: ClientFilter = "all"): Promi
 
   const where =
     filter === "unhappy"
-      ? { sentiment: "NEGATIVE" }
+      ? { sentiment: "NEGATIVE", ...LIVE }
       : filter === "rated"
-        ? { rating: { not: null } }
+        ? { rating: { not: null }, ...LIVE }
         : filter === "open"
-          ? { resolved: false }
+          ? { resolved: false, ...LIVE }
           : {};
 
   const [
     rows,
-    total,
     last90,
     ratingAgg,
     questionAgg,
@@ -132,6 +158,8 @@ export async function getClientFeedbackFeed(filter: ClientFilter = "all"): Promi
     unhappyCount,
     ratedCount,
     openCount,
+    dismissedCount,
+    listCount,
   ] =
     await Promise.all([
       prisma.feedback.findMany({
@@ -143,6 +171,14 @@ export async function getClientFeedbackFeed(filter: ClientFilter = "all"): Promi
           createdAt: true,
           rating: true,
           sentiment: true,
+          sentimentAuto: true,
+          sentimentBy: true,
+          sentimentAt: true,
+          sentimentNote: true,
+          dismissedAt: true,
+          dismissedBy: true,
+          dismissReason: true,
+          sourceRef: true,
           category: true,
           source: true,
           body: true,
@@ -170,22 +206,25 @@ export async function getClientFeedbackFeed(filter: ClientFilter = "all"): Promi
           },
         },
       }),
-      prisma.feedback.count(),
-      prisma.feedback.count({ where: { createdAt: { gte: since } } }),
-      prisma.feedback.aggregate({ where: { rating: { not: null } }, _avg: { rating: true }, _count: { rating: true } }),
+      prisma.feedback.count({ where: { createdAt: { gte: since }, ...LIVE } }),
+      prisma.feedback.aggregate({ where: { rating: { not: null }, ...LIVE }, _avg: { rating: true }, _count: { rating: true } }),
       // One pass for both per-question averages — _count is per FIELD, so a
       // response that rated the photographer but skipped the content stars
       // counts in one and not the other, which is the truth.
       prisma.feedback.aggregate({
+        where: LIVE,
         _avg: { photographerRating: true, contentRating: true },
         _count: { photographerRating: true, contentRating: true },
       }),
-      prisma.feedback.count({ where: { sentiment: "NEGATIVE", resolved: false } }),
-      prisma.feedback.count({ where: { source: "form" } }),
+      prisma.feedback.count({ where: { sentiment: "NEGATIVE", resolved: false, ...LIVE } }),
+      prisma.feedback.count({ where: { source: "form", ...LIVE } }),
       prisma.project.count({ where: { deliveredAt: { gte: since } } }),
-      prisma.feedback.count({ where: { sentiment: "NEGATIVE" } }),
-      prisma.feedback.count({ where: { rating: { not: null } } }),
-      prisma.feedback.count({ where: { resolved: false } }),
+      prisma.feedback.count({ where: { sentiment: "NEGATIVE", ...LIVE } }),
+      prisma.feedback.count({ where: { rating: { not: null }, ...LIVE } }),
+      prisma.feedback.count({ where: { resolved: false, ...LIVE } }),
+      prisma.feedback.count({ where: { dismissedAt: { not: null } } }),
+      // What "All" actually lists — live rows plus the dismissed ones, greyed.
+      prisma.feedback.count(),
     ]);
 
   // Feedback.photographerId has no Prisma relation (it's a plain scorecard
@@ -200,15 +239,48 @@ export async function getClientFeedbackFeed(filter: ClientFilter = "all"): Promi
     for (const m of members) nameById.set(m.id, m.name);
   }
 
+  // "Open the conversation": a comms-filed row links to the client whose
+  // thread it came from. sourceRef (the CommLog id, stamped since Sep 16) is
+  // the exact message — it names the client and the channel; older rows fall
+  // back to the job's client, which is where the thread lives anyway.
+  const refIds = [...new Set(rows.map((r) => r.sourceRef).filter((x): x is string => !!x))];
+  const commById = new Map<string, { clientId: string | null; channel: string; occurredAt: Date }>();
+  if (refIds.length > 0) {
+    const logs = await prisma.commLog.findMany({
+      where: { id: { in: refIds } },
+      select: { id: true, clientId: true, channel: true, occurredAt: true },
+    });
+    for (const l of logs) commById.set(l.id, { clientId: l.clientId, channel: l.channel, occurredAt: l.occurredAt });
+  }
+  const conversationFor = (r: { source: string; sourceRef: string | null; project: { client: { id: string } | null } }) => {
+    if (r.source === "form") return { href: null, label: null };
+    const log = r.sourceRef ? commById.get(r.sourceRef) ?? null : null;
+    const clientId = log?.clientId ?? r.project?.client?.id ?? null;
+    if (!clientId) return { href: null, label: null };
+    const what = log ? (log.channel === "email" ? "email" : log.channel === "call" ? "call" : "text") : r.source === "email" ? "email" : "text";
+    return { href: `/clients/${clientId}`, label: `Open the conversation (${what})` };
+  };
+
   return {
     filter,
     items: rows.map((r) => {
       const stamped = r.photographerId ? nameById.get(r.photographerId) ?? null : null;
+      const conv = conversationFor(r);
       return {
         id: r.id,
         createdAt: r.createdAt.toISOString(),
         rating: r.rating,
         sentiment: r.sentiment,
+        sentimentAuto: r.sentimentAuto,
+        sentimentBy: r.sentimentBy,
+        sentimentAtISO: r.sentimentAt?.toISOString() ?? null,
+        sentimentNote: r.sentimentNote,
+        dismissedAtISO: r.dismissedAt?.toISOString() ?? null,
+        dismissedBy: r.dismissedBy,
+        dismissReason: r.dismissReason,
+        sourceRef: r.sourceRef,
+        conversationHref: conv.href,
+        conversationLabel: conv.label,
         category: r.category,
         source: r.source,
         body: r.body,
@@ -235,7 +307,7 @@ export async function getClientFeedbackFeed(filter: ClientFilter = "all"): Promi
         photographerInferred: !stamped && !!r.project.photographer?.name,
       };
     }),
-    total,
+    total: listCount,
     last90,
     avgRating: ratingAgg._avg.rating != null ? Math.round(ratingAgg._avg.rating * 10) / 10 : null,
     ratingCount: ratingAgg._count.rating,
@@ -246,7 +318,8 @@ export async function getClientFeedbackFeed(filter: ClientFilter = "all"): Promi
     openNegative,
     formResponses,
     delivered90,
-    counts: { all: total, unhappy: unhappyCount, rated: ratedCount, open: openCount },
+    dismissed: dismissedCount,
+    counts: { all: listCount, unhappy: unhappyCount, rated: ratedCount, open: openCount },
   };
 }
 
@@ -373,7 +446,7 @@ export async function getPhotographerBoard(): Promise<PhotographerBoard> {
       },
     }),
     prisma.feedback.findMany({
-      where: { photographerId: { not: null } },
+      where: { photographerId: { not: null }, ...LIVE },
       orderBy: { createdAt: "desc" },
       take: 200,
       select: {
@@ -409,7 +482,7 @@ export async function getPhotographerBoard(): Promise<PhotographerBoard> {
     }),
     prisma.feedback.groupBy({
       by: ["photographerId"],
-      where: { photographerId: { not: null }, rating: { not: null } },
+      where: { photographerId: { not: null }, rating: { not: null }, ...LIVE },
       _avg: { rating: true },
       _count: { rating: true },
     }),
@@ -417,7 +490,7 @@ export async function getPhotographerBoard(): Promise<PhotographerBoard> {
     // experience with your photographer?", never the client's view of the work.
     prisma.feedback.groupBy({
       by: ["photographerId"],
-      where: { photographerId: { not: null }, photographerRating: { not: null } },
+      where: { photographerId: { not: null }, photographerRating: { not: null }, ...LIVE },
       _avg: { photographerRating: true },
       _count: { photographerRating: true },
     }),

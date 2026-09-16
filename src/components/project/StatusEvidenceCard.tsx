@@ -35,20 +35,32 @@ export function StatusEvidenceCard({
   if (!e && !isRevision) return null;
 
   const stage = stageMeta(status);
-  const hasMissing = (e?.missing.length ?? 0) > 0;
+  // A DELIVERED job's missing list is NOT an alarm (Sep 16, Kyle call). The
+  // office has told the client the work is out; what the list says is "the
+  // hub hasn't been able to confirm this piece yet" — 39 Saratoga Ln's photos
+  // were live on Aryeo the whole time under a listing the hub had never been
+  // given. Red border, red sentence and the partial-delivery banner all read
+  // as "you delivered this too early", which is an accusation the evidence
+  // cannot support. Grey chips + the Recheck button instead.
+  const delivered = status === "DELIVERED";
+  const missingCount = e?.missing.length ?? 0;
+  const hasMissing = missingCount > 0;
+  const alarm = hasMissing && !delivered;
 
   return (
     <section
       className={
-        "rounded-2xl border bg-surface " + (hasMissing ? "border-danger/40" : "border-border")
+        "rounded-2xl border bg-surface " + (alarm ? "border-danger/40" : "border-border")
       }
     >
       <div className="flex items-center justify-between gap-2 border-b px-5 py-3.5">
         <h2 className="flex items-center gap-2 text-sm font-semibold">
           {isRevision ? (
             <RefreshCcw className="size-4 text-[#ea580c] light:text-[#c2410c]" />
-          ) : hasMissing ? (
+          ) : alarm ? (
             <CircleAlert className="size-4 text-danger" />
+          ) : hasMissing ? (
+            <ShieldCheck className="size-4 text-muted-2" />
           ) : (
             <ShieldCheck className="size-4 text-success" />
           )}
@@ -79,15 +91,22 @@ export function StatusEvidenceCard({
         )}
 
         {e && (
-          <p className={"text-sm " + (hasMissing ? "font-medium text-danger" : "text-foreground/85")}>
+          <p className={"text-sm " + (alarm ? "font-medium text-danger" : "text-foreground/85")}>
             {e.reason}
           </p>
         )}
 
-        {e?.partial && (
+        {e?.partial && !delivered && (
           <div className="rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger">
             ⚠ Aryeo marked this order fulfilled, but the cross-check found missing deliverables.
             Don&apos;t treat it as done until the rest is uploaded.
+          </div>
+        )}
+        {delivered && hasMissing && (
+          <div className="rounded-lg bg-surface-2/60 px-3 py-2 text-xs text-muted">
+            The office delivered this job. {missingCount === 1 ? "One item is" : `${missingCount} items are`}{" "}
+            still unconfirmed by the cross-check — usually a listing the hub isn&apos;t linked to, or a vendor piece
+            that never synced to Aryeo. Recheck below once it lands; nothing here changes the delivery.
           </div>
         )}
 
@@ -105,12 +124,16 @@ export function StatusEvidenceCard({
                     key={cat}
                     className={
                       "inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium " +
-                      (present ? "bg-success/10 text-success" : "bg-danger/10 text-danger")
+                      (present
+                        ? "bg-success/10 text-success"
+                        : delivered
+                        ? "bg-surface-2 text-muted"
+                        : "bg-danger/10 text-danger")
                     }
                   >
                     {present ? <CheckCircle2 className="size-3" /> : <CircleAlert className="size-3" />}
                     {cat}
-                    {!present && " — missing"}
+                    {!present && (delivered ? " — not confirmed by the hub" : " — missing")}
                   </span>
                 );
               })}

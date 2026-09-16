@@ -63,6 +63,8 @@ import { formatDistanceToNow } from "date-fns";
 import { etDateTime, etDateYear } from "@/lib/datetime";
 import { listAssignees } from "@/lib/assignees";
 import { ActivityType } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
+import { JobNoteEditor } from "@/components/editing/JobNoteEditor";
 import { aryeoListingUrl, aryeoOrderUrl } from "@/lib/aryeoUrl";
 
 export const dynamic = "force-dynamic";
@@ -87,10 +89,16 @@ const HELD_BACK = "Money detail — owner only.";
 
 export default async function ProjectPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  // `notice` carries the waive/unwaive action's own words back to the page —
+  // a plain form post has nowhere else to put them, and a press that quietly
+  // did nothing is the worst outcome of the three (Sep 16 review).
+  searchParams?: Promise<{ notice?: string }>;
 }) {
   const { id } = await params;
+  const notice = (await searchParams)?.notice?.slice(0, 200) ?? null;
 
   // Owner/admin only. /projects isn't a top-level nav key, so the middleware
   // doesn't gate it — guard here. Photographers get the guided field view of
@@ -118,6 +126,11 @@ export default async function ProjectPage({
   // A null viewer only survives the redirect above with enforcement off (local
   // dev, operated by Jordan alone), which is the same call isOwnerView() makes.
   const showMoney = viewer ? canSeeMoney(viewer.role) : !authEnforced();
+  // Who gets the "Not required" control. The role test is already done above
+  // (editors and photographers never reach this page), so what is left is the
+  // preview: "view as" is read-only, requireAdmin refuses it, and a button
+  // that cannot work should not be on the screen (Sep 16 review).
+  const canWaive = !viewer?.impersonating;
   // One money rule for every free-text block on this page. redactMoney (the
   // hub's rule, src/lib/hubTools.ts) keeps the sentence and removes the FIGURE,
   // so "chase the invoice on 12 Oak" still reads for Kyle while "$450" does not,
@@ -126,8 +139,47 @@ export default async function ProjectPage({
   // changed, 48 show the [amount withheld] marker, 0 residual $ figures.
   const scrub = (t: string) => (showMoney ? t : redactMoney(t));
 
+  // The office's waiver, wired straight to the deliverables list below (Sep 16,
+  // Kyle call). Plain form posts on purpose: no client bundle for two buttons
+  // that need a page refresh anyway, and the guard lives in the action
+  // (requireAdmin) rather than in anything the browser can skip.
+  //
+  // Whatever the action answers comes BACK to the page as ?notice= (Sep 16
+  // review): requireAdmin refuses an owner who is previewing as someone else,
+  // and the old wrapper swallowed that into a button that looked like it
+  // worked. Success says so too — the row moves, but the sentence names what
+  // changed everywhere else.
+  async function waive(formData: FormData) {
+    "use server";
+    const { waiveDeliverable } = await import("@/app/projects/deliverableActions");
+    const r = await waiveDeliverable(String(formData.get("id") ?? ""), String(formData.get("note") ?? ""));
+    redirect(`/projects/${id}?notice=${encodeURIComponent(r.message)}#deliverables`);
+  }
+  async function unwaive(formData: FormData) {
+    "use server";
+    const { unwaiveDeliverable } = await import("@/app/projects/deliverableActions");
+    const r = await unwaiveDeliverable(String(formData.get("id") ?? ""));
+    redirect(`/projects/${id}?notice=${encodeURIComponent(r.message)}#deliverables`);
+  }
+
   const [project, team, assigneeList] = await Promise.all([getProject(id), getTeam(), listAssignees()]);
   if (!project) notFound();
+
+  // Reading the job file reads its thread (Sep 16, Kyle call): the message
+  // centre stamped the ThreadRead watermark, this page and /edit/<id> did not,
+  // so a conversation read HERE stayed bold on Communications → Team and on
+  // the Editing Room's Messages badge forever. Same upsert, seenAt only — a
+  // closed thread stays closed — and never from a "view as" preview, which is
+  // read-only by contract (Jordan looking as Kyle isn't Kyle reading).
+  if (viewer && !viewer.impersonating) {
+    await prisma.threadRead
+      .upsert({
+        where: { userKey_projectId: { userKey: viewer.id, projectId: project.id } },
+        update: { seenAt: new Date() },
+        create: { userKey: viewer.id, projectId: project.id },
+      })
+      .catch(() => {});
+  }
   const assignees = assigneeList.map((a) => ({ key: a.key, name: a.name }));
   // THE customer note — one list (src/lib/clientNotes.ts). Owner reads it raw;
   // everyone else gets the money-scrubbed cut, LINE BY LINE so a bulleted note
@@ -327,19 +379,29 @@ export default async function ProjectPage({
           {/* Ordered deliverables — retired rows (item removed from the Aryeo
               order) stay visible, dimmed, with why: retire-not-delete only
               pays off if a human can see what happened. */}
-          <Section icon={Package} title="Ordered deliverables" count={project.deliverables.filter((d) => !d.removedFromOrderAt).length || null} flush>
+          {/* "Not required on this job" (Sep 16, Kyle call) — the office's
+              waiver. Retired-by-Aryeo and waived-by-us are different facts and
+              read differently here: a package still implies the floor plan
+              195 Woodhill's client was never charged for, so only a human can
+              say it isn't owed. The row stays, with who said so and why. */}
+          <div id="deliverables" className="scroll-mt-20">
+          <Section icon={Package} title="Ordered deliverables" count={project.deliverables.filter((d) => !d.removedFromOrderAt && !d.waivedAt).length || null} flush>
             <div className="divide-y">
+              {/* What the last press actually did (or why it didn't). */}
+              {notice && (
+                <p className="bg-surface-2/60 px-5 py-2.5 text-xs text-muted">{notice}</p>
+              )}
               {project.deliverables.length === 0 && (
                 <p className="px-5 py-4 text-sm text-muted">Nothing ordered yet.</p>
               )}
               {project.deliverables.map((d) => (
-                <div key={d.id} className={`flex items-center justify-between gap-3 px-5 py-3 ${d.removedFromOrderAt ? "opacity-60" : ""}`}>
+                <div key={d.id} className={`flex flex-wrap items-center justify-between gap-3 px-5 py-3 ${d.removedFromOrderAt || d.waivedAt ? "opacity-60" : ""}`}>
                   <div className="flex min-w-0 items-center gap-3">
                     <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-muted">
                       <Package className="size-4" />
                     </span>
                     <div className="min-w-0">
-                      <div className={`flex flex-wrap items-center gap-2 text-sm font-medium ${d.removedFromOrderAt ? "line-through decoration-muted-2" : ""}`}>
+                      <div className={`flex flex-wrap items-center gap-2 text-sm font-medium ${d.removedFromOrderAt || d.waivedAt ? "line-through decoration-muted-2" : ""}`}>
                         {refinedDeliverableLabel(d.type, d.label)}
                         {d.quantity > 1 && (
                           <span className="text-muted"> ×{d.quantity}</span>
@@ -348,6 +410,9 @@ export default async function ProjectPage({
                         {d.manual && (
                           <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-semibold text-muted" title="Added by hand in the hub — not from the Aryeo order">manual</span>
                         )}
+                        {d.waivedAt && (
+                          <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10px] font-semibold text-muted" title="The office said this isn't required on this job — nothing counts it as owed">not required</span>
+                        )}
                       </div>
                       {d.removedFromOrderAt && (
                         <div className="text-xs text-warning">
@@ -355,14 +420,62 @@ export default async function ProjectPage({
                           {d.removedFromOrderNote ? ` — ${d.removedFromOrderNote}` : ""}
                         </div>
                       )}
+                      {/* The waiver, in the words of whoever made the call. */}
+                      {d.waivedAt && (
+                        <div className="text-xs text-muted">
+                          Not required — {d.waivedBy ?? "the office"}
+                          {d.waivedNote ? `, ${d.waivedNote}` : ""}
+                          {" · "}
+                          {new Date(d.waivedAt).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}
+                        </div>
+                      )}
+                      {/* What the photographer said on the upload page. Kyle's
+                          one-press answer is the form on the right. */}
+                      {!d.waivedAt && !d.removedFromOrderAt && d.notCompletedReason && (
+                        <div className="text-xs text-warning">
+                          Photographer couldn&rsquo;t complete it: {d.notCompletedReason}
+                        </div>
+                      )}
                       {d.notes && <div className="text-xs text-muted">{d.notes}</div>}
                     </div>
                   </div>
-                  {!d.removedFromOrderAt && <DeliverableStatusSelect id={d.id} status={d.status} />}
+                  <div className="flex items-center gap-2">
+                    {!d.removedFromOrderAt && !d.waivedAt && <DeliverableStatusSelect id={d.id} status={d.status} />}
+                    {!d.removedFromOrderAt && canWaive && (
+                      d.waivedAt ? (
+                        <form action={unwaive}>
+                          <input type="hidden" name="id" value={d.id} />
+                          <button type="submit" className="rounded-lg border px-2.5 py-1 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
+                            It is owed after all
+                          </button>
+                        </form>
+                      ) : (
+                        <details className="group">
+                          <summary className="cursor-pointer list-none rounded-lg border px-2.5 py-1 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
+                            Not required
+                          </summary>
+                          <form action={waive} className="mt-2 flex flex-wrap items-center gap-2">
+                            <input type="hidden" name="id" value={d.id} />
+                            <input
+                              name="note"
+                              required
+                              maxLength={300}
+                              placeholder={d.notCompletedReason ? d.notCompletedReason.slice(0, 60) : "Why isn't it required? (kept on the job)"}
+                              className="w-64 rounded-lg border bg-surface-2/50 px-2.5 py-1 text-xs"
+                            />
+                            <button type="submit" className="rounded-lg bg-brand px-2.5 py-1 text-xs font-semibold text-white">
+                              Mark not required
+                            </button>
+                          </form>
+                        </details>
+                      )
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
           </Section>
+          </div>
 
           {/* Appointments (from Aryeo) */}
           {project.appointments.length > 0 && (
@@ -513,6 +626,30 @@ export default async function ProjectPage({
             </Section>
           )}
 
+          {/* ADDITIONAL NOTES — the editor's note, readable and editable from
+              the job file (Kyle call, Sep 16). Project.notes only ever rendered
+              on /edit/<id>, so Kyle had to open the Editing Room to read or
+              write the note Jordan pointed him at — and, believing it reached
+              the crew, he typed the same client ask twice on 358 N Church St
+              (once here as a Note, once there) and it reached the photographer
+              neither time. Same component as /edit, same server action, same
+              audience caption: this field is the EDITOR's. Anything the
+              photographer must also see is a Request in the composer below. */}
+          <Section icon={StickyNote} title="Additional notes for the editor">
+            <JobNoteEditor
+              projectId={project.id}
+              field="customer"
+              // Raw for whoever may edit it — saving a scrubbed rendering back
+              // would destroy the held-back text (the rule /edit already
+              // states); a read-only "view as" preview gets the scrub.
+              value={viewer?.impersonating ? (project.notes ? scrub(project.notes) : null) : project.notes}
+              canEdit={!viewer?.impersonating}
+              label=""
+              placeholder="Anything else the editor should know about this customer or job…"
+              empty="Nothing added."
+            />
+          </Section>
+
           {/* Billing (from Aryeo) — payment STATUS for anyone who can open this
               page, the figures and links for the OWNER only. Paid/unpaid is the
               ops fact Kyle runs delivery off ("they've paid, go ahead") and
@@ -593,7 +730,7 @@ export default async function ProjectPage({
 
           {/* Activity */}
           <Section icon={History} title="Activity & notes" bodyClassName="space-y-4">
-            <ActivityComposer projectId={project.id} />
+            <ActivityComposer projectId={project.id} readOnly={!!viewer?.impersonating} />
             <ol className="space-y-3">
               {project.activities.map((a) => {
                 const meta = ACTIVITY_ICON[a.type] ?? ACTIVITY_ICON.NOTE;

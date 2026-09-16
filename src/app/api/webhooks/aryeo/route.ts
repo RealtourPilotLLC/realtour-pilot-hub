@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getConnection, getSecret } from "@/lib/integrations/connections";
 import {
   syncAryeoOrders, syncAryeoAppointments, syncAryeoSocialPlans, syncAryeoCustomers,
-  upsertAryeoCustomerClient, type AryeoCustomer,
+  upsertAryeoCustomerClient, orderIdForListing, type AryeoCustomer,
 } from "@/lib/integrations/aryeo";
 import { syncClientSegments } from "@/lib/segmentSync";
 
@@ -292,6 +292,27 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
         await retaskProject(project.id);
         return;
       }
+      // NO PROJECT CARRIES THIS LISTING (Sep 16, Kyle call — 39 Saratoga Ln).
+      // That is not "a listing we don't know about": far more often it is one
+      // of ours whose project was created from a thin/ghost ORDER webhook
+      // before the listing existed, so aryeoListingId was never written. The
+      // old fallback — a bare incremental order sweep — could not repair it
+      // either (the update pass ignored the listing id, and the sweep stops at
+      // a 45-day floor). Go the other way: ask the listing which ORDER it
+      // belongs to and re-sync THAT order, which now backfills the link and
+      // lets the status engine finally see the media. Cheap: two calls.
+      try {
+        const orderId = await orderIdForListing(id);
+        if (orderId) {
+          await syncAryeoOrders({ orderId });
+          const linked = await prisma.project.findUnique({ where: { aryeoOrderId: orderId }, select: { id: true } });
+          if (linked) {
+            try { await restatusProject(linked.id); } catch { /* non-fatal */ }
+            await retaskProject(linked.id);
+            return;
+          }
+        }
+      } catch { /* fall through to the sweep below */ }
     }
     await syncAryeoOrders(); // listing may not be linked yet — refresh orders
     return;

@@ -3,7 +3,6 @@ import Link from "next/link";
 import { Mail, MessageCircle, Phone, Reply, Send, User, Users } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Badge } from "@/components/ui/Badge";
-import { Avatar } from "@/components/ui/Avatar";
 import { prisma } from "@/lib/prisma";
 import { getSecret } from "@/lib/integrations/connections";
 import { OpenPhone, phoneKey, recentOpenPhoneConversations, type OpConversation } from "@/lib/integrations/openphone";
@@ -12,7 +11,8 @@ import { ClientTextsPanel } from "@/components/texts/ClientTextsPanel";
 import { SendAllTexts } from "@/components/tasks/SendAllTexts";
 import { getEmailThreads } from "@/components/comms/emailThreads";
 import { EmailThreadList } from "@/components/comms/EmailThreadList";
-import { TeamMessagesPanel } from "@/components/comms/TeamMessagesPanel";
+import { TeamMessagesPanel, loadTeamChat } from "@/components/comms/TeamMessagesPanel";
+import { getCurrentUser } from "@/lib/auth/user";
 import { ReplyQueue } from "@/components/comms/ReplyQueue";
 import { replyQueue, replyWaitingSummary } from "@/lib/replyQueue";
 import { formatDistanceToNow } from "date-fns";
@@ -81,7 +81,7 @@ function CommsTabs({ tab, pending, emailFresh = 0, waiting = 0 }: { tab: CommsTa
   );
 }
 
-export default async function CommunicationsPage({ searchParams }: { searchParams: Promise<{ tab?: string }> }) {
+export default async function CommunicationsPage({ searchParams }: { searchParams: Promise<{ tab?: string; t?: string; q?: string }> }) {
   await requirePageAccess("communications");
   const sp = await searchParams;
   const tab: CommsTab =
@@ -166,15 +166,35 @@ export default async function CommunicationsPage({ searchParams }: { searchParam
   // Team: internal project-message threads across every job — one stream, no
   // external providers touched. Rows deep-link to the project's composer.
   if (tab === "team") {
+    // The two-pane chat by property (Kyle call, Sep 16): the office sees every
+    // job that has a thread plus the active ones — the same center the Editing
+    // Room opens, scoped differently. Selecting a thread stamps the read
+    // watermark inside loadTeamChat; a "view as" preview reads only.
+    const me = await getCurrentUser().catch(() => null);
+    const chat = await loadTeamChat({
+      scope: { kind: "office" },
+      viewer: me ? { id: me.id, impersonating: !!me.impersonating } : null,
+      selectedId: sp.t,
+      q: sp.q,
+    });
     return (
       <div>
         <PageHeader
           title="Communications"
-          subtitle="Team messages across all projects — click a thread to reply on the project page."
+          subtitle={
+            chat.unreadTotal > 0
+              ? `Team messages by property — ${chat.unreadTotal} conversation${chat.unreadTotal === 1 ? "" : "s"} with something new.`
+              : "Team messages by property — pick a job to read and reply."
+          }
         />
         <div className="p-4 sm:p-6">
           <CommsTabs tab="team" pending={pendingTexts} waiting={waiting} />
-          <TeamMessagesPanel />
+          <TeamMessagesPanel
+            data={chat}
+            base={{ pathname: "/communications", params: { tab: "team" } }}
+            open={{ pathname: "/projects", label: "Open the job file" }}
+            readOnly={!!me?.impersonating}
+          />
         </div>
       </div>
     );

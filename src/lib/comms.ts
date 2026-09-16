@@ -62,8 +62,35 @@ const STRONG_REVISION =
 const SCHEDULING_RE =
   /\b(re-?schedul|booking|book (a|the|us|me|it|an)|appointment|availab|what time|when can|come (out|back)|next (week|month)|this (week|coming)|push (it|the)|move the (shoot|appointment|date)|soonest|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
 // Client unhappiness — log for happiness/issue tracking even if not a revision.
-const NEGATIVE_RE =
-  /\b(disappoint|unhappy|not happy|frustrat|upset|annoyed|let down|taking (too )?long|too long|been waiting|still waiting|where (is|are)|no one|nobody (got|called|responded)|ridiculous|unacceptable)\b/i;
+//
+// Sep 16 (Kyle call, item 10): the one row this ever filed was Jamie's "We're
+// still waiting on 2844 Edgemont Dr, but I'll let you know when we hear back!"
+// — a seller-confirmation FYI that sat on /quality as "Unhappy" for eleven
+// weeks. Replaying the old regex over ~120 days of inbound comms found five
+// hits and zero real complaints. So the terms are split in two: STRONG words
+// are a complaint on their own; the WEAK "waiting / where is" words only count
+// when the same message names something we deliver ("still waiting on the
+// photos" yes, "still waiting on 2844 Edgemont Dr" no).
+// (\w* on the stems: the old `\b(disappoint|frustrat)\b` could never match
+// "disappointed" or "frustrating" — the boundary sat inside the word.)
+const NEGATIVE_STRONG_RE =
+  /\b(disappoint\w*|unhappy|not happy|frustrat\w*|upset|annoyed|let down|nobody (got|called|responded)|ridiculous|unacceptable)\b/i;
+const NEGATIVE_WEAK_RE = /\b(taking (too )?long|too long|been waiting|still waiting|where (is|are)|no one)\b/i;
+const DELIVERABLE_RE =
+  /\b(photos?|pictures?|pics?|images?|videos?|reels?|gallery|links?|edits?|floor ?plans?|delivery|deliver(ed)?|invoice|files?|download|tour|zillow|matterport|drone|twilight|headshots?)\b/i;
+// A message that laughs at itself is not a complaint ("you'll know if I'm
+// unhappy lol" was one of the five).
+const JOKING_RE = /\b(lol|lmao|haha+|jk|just kidding|kidding)\b|😂|🤣|😅/i;
+// Scheduling talk the ORIGINAL regex above does not name, learned from the
+// five false positives: a seller/listing we are waiting to hear back on, and a
+// client narrating their arrival ("I'm here at the office … a little early …
+// I see no one is here"). Kept apart from SCHEDULING_RE so the revision veto
+// in classifyComm keeps its exact, older behaviour.
+const SCHEDULING_EXTRA_RE =
+  /\b(hear back|let you know|keep you posted|waiting (on|for) (the |a |an |our )?(seller|owner|agent|client|buyer|listing|confirmation|approval|go-?ahead|closing)|waiting on \d+\s+\S+\s+(dr|drive|st|street|rd|road|ln|lane|ave|avenue|ct|court|blvd|way|pl|place|cir|circle|ter|terrace|trail|pike|hwy)\b|i'?m (here|at the|early|late|outside)|running (late|behind)|on (my|our) way|a (little|bit) early|be there|arriv(ed|ing)|content session)\b/i;
+// Bulk mail that happens to say "unhappy" (an "owners spend hours a day in
+// email" newsletter was one of the five).
+const BULK_MAIL_RE = /\bunsubscribe\b|view (this|it) in (your )?browser|manage (your )?(email )?preferences/i;
 // iMessage/SMS reactions ("Liked …", emoji-only) — no reply needed.
 const REACTION_RE = /^(liked|loved|disliked|laughed at|emphasi[sz]ed|questioned|reacted (to|with))\b|^reacted\b/i;
 
@@ -75,9 +102,28 @@ export function isReaction(text: string): boolean {
   if (t.length <= 8 && !/[a-z0-9]/i.test(t)) return true;
   return false;
 }
+/** A complaint in its own right — "unacceptable", "really disappointed", "upset". */
+export function hasStrongComplaint(text: string): boolean {
+  return NEGATIVE_STRONG_RE.test((text || "").trim());
+}
+
 export function isNegativeSentiment(text: string): boolean {
   const t = (text || "").trim();
-  return NEGATIVE_RE.test(t) && !PRAISE_ONLY.test(t);
+  if (!t) return false;
+  // A STRONG term stands on its own. The courtesy and joke vetoes only disarm
+  // the WEAK "waiting / where is" terms (Sep 16 review): most complaint emails
+  // open with "Thanks for getting back to me, but honestly I'm very
+  // disappointed…", and "lol this is unacceptable" is still unacceptable —
+  // under the old order a single "thanks" or "lol" anywhere in the message
+  // meant the hub read it as not a complaint at all.
+  if (hasStrongComplaint(t)) return true;
+  if (PRAISE_ONLY.test(t) || JOKING_RE.test(t)) return false;
+  return NEGATIVE_WEAK_RE.test(t) && DELIVERABLE_RE.test(t);
+}
+/** Booking / availability / arrival talk — the message is about WHEN, not about the work. */
+export function isSchedulingTalk(text: string): boolean {
+  const t = (text || "").trim();
+  return SCHEDULING_RE.test(t) || SCHEDULING_EXTRA_RE.test(t);
 }
 
 export type CommClassification = { isRevision: boolean; matched: string[] };
@@ -105,6 +151,73 @@ function dedupeKey(parts: (string | null | undefined)[]): string {
 // is in final QC). On earlier stages the same message is just a special request.
 const DELIVERED_ISH = new Set(["DELIVERED", "REVISION", "REVIEW"]);
 
+// ---------------------------------------------------------------------------
+// WHEN A TEXT OR EMAIL BECOMES AN "UNHAPPY" FEEDBACK ROW (Sep 16, Kyle call,
+// item 10). One pure rule, shared by recordClientCommunication and the
+// read-only replay probe, so what the hub files and what the probe predicts
+// can never drift. A NEGATIVE row is filed only when ALL of these hold:
+//   1. the words read as a complaint (isNegativeSentiment — strong term, or a
+//      weak "waiting" term that names a deliverable; never a joke or praise);
+//   2. it is not bulk mail;
+//   3. the job it lands on is DELIVERED / REVISION / REVIEW — before delivery
+//      there is nothing to be unhappy about yet, only something to schedule;
+//   4. it is not scheduling talk (SCHEDULING_RE + the learned extras);
+//   5. the Smart Brain judged the message actionable — its own "no action
+//      needed — purely informational FYI" used to be logged three seconds AFTER
+//      the feedback row was already written.
+// Everything else stays exactly where it was: the reply task, the revision
+// gate, the client's timeline line.
+// ---------------------------------------------------------------------------
+export type NegativeFeedbackGate = { file: boolean; reason: string };
+
+export function negativeFeedbackGate(input: {
+  text: string;
+  projectStatus: string | null | undefined;
+  /** The brain's call; null when no brain/AI was available (treated as actionable). */
+  actionable: boolean | null;
+}): NegativeFeedbackGate {
+  const t = (input.text || "").trim();
+  if (!isNegativeSentiment(t)) return { file: false, reason: "no complaint term (weak term without a deliverable, praise, or a joke)" };
+  if (BULK_MAIL_RE.test(t)) return { file: false, reason: "bulk mail" };
+  if (!input.projectStatus) return { file: false, reason: "no job attached" };
+  if (!DELIVERED_ISH.has(input.projectStatus)) return { file: false, reason: `job not delivered yet (${input.projectStatus})` };
+  // The scheduling veto exists to disarm the WEAK "still waiting / where is"
+  // terms, so it must not swallow a STRONG complaint (Sep 16 review): a client
+  // chasing a late delivery almost always names a day — "You told me Friday
+  // and the photos still are not here. This is unacceptable." was reading as
+  // scheduling talk and filing nothing at all.
+  if (!hasStrongComplaint(t) && isSchedulingTalk(t)) return { file: false, reason: "scheduling talk" };
+  if (input.actionable === false) return { file: false, reason: "Smart Brain: no action needed" };
+  return { file: true, reason: "complaint on a delivered job" };
+}
+
+// The CommLog row this message was logged as — logComm runs just before
+// recordClientCommunication in every caller, so the newest inbound row for the
+// client in the last few minutes is it. Callers that have the id pass it
+// (opts.commLogId) and skip the lookup. Best-effort: a null just means the
+// /quality row has no "Open the conversation" link.
+async function findSourceCommLog(opts: { clientId: string; text: string }): Promise<string | null> {
+  try {
+    const since = new Date(Date.now() - 10 * 60_000);
+    const rows = await prisma.commLog.findMany({
+      where: { clientId: opts.clientId, direction: "in", createdAt: { gte: since } },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+      select: { id: true, body: true },
+    });
+    const head = opts.text.trim().slice(0, 80);
+    const exact = head ? rows.find((r) => r.body.includes(head)) : undefined;
+    // Only an actual body match. The old "…else the newest inbound row" guess
+    // stamped sourceRef with a DIFFERENT message's id, and /quality reads that
+    // id for the channel label on "Open the conversation" — a provenance
+    // column that can name the wrong message is worse than an empty one
+    // (Sep 16 review). With null the link still resolves via the job's client.
+    return exact?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // Single entry point for an inbound client communication from ANY source.
 // Creates the reply task and, when warranted, raises a revision.
 export async function recordClientCommunication(opts: {
@@ -125,26 +238,19 @@ export async function recordClientCommunication(opts: {
   // The real human who sent this, when different from the folded account client
   // (e.g. an assistant emailing on the agent's behalf). Shown as the task person.
   contactName?: string | null;
+  // The CommLog row this message was logged as, when the caller has it — the
+  // "Open the conversation" link on a /quality row (Feedback.sourceRef).
+  // Resolved by lookup when absent (see findSourceCommLog).
+  commLogId?: string | null;
 }): Promise<{ replyTask: boolean; revision: boolean }> {
   // A "Liked …" / emoji reaction needs no reply — log nothing, make no task.
   if (isReaction(opts.text)) return { replyTask: false, revision: false };
 
   const cls = classifyComm(opts.text);
 
-  // Track client happiness: clear unhappiness → a NEGATIVE feedback entry on the
-  // project (shows on the client + photographer scorecards), separate from a revision.
-  if (opts.projectId && isNegativeSentiment(opts.text)) {
-    await prisma.feedback.create({
-      data: {
-        projectId: opts.projectId,
-        sentiment: "NEGATIVE",
-        category: "communication",
-        body: clip(opts.text, 300),
-        authorName: opts.clientName,
-        source: opts.kind === "email" ? "email" : "text",
-      },
-    }).catch(() => {});
-  }
+  // (The NEGATIVE feedback row used to be written HERE, before the brain ran,
+  // on the pre-brain project guess. Since Sep 16 it is filed below, after the
+  // decision — see negativeFeedbackGate.)
 
   // Route through the Smart Brain: it cross-checks the client's orders, the recent
   // conversation, and existing open to-dos, then creates OR merges the right task
@@ -154,6 +260,9 @@ export async function recordClientCommunication(opts: {
   let effProjectId = opts.projectId ?? null;
   let effProjectStatus = opts.projectStatus ?? null;
   let effPropertyAddress = opts.propertyAddress ?? null;
+  // The fallback helper's own "no action needed" — the brain gate below reads
+  // it when the brain itself was unavailable.
+  let fallbackNoAction = false;
 
   const decision = opts.clientId
     ? await routeCommTask({
@@ -219,6 +328,7 @@ export async function recordClientCommunication(opts: {
       /* fall back to the generic task */
     }
     const noAction = aiTitle != null && /no action needed/i.test(aiTitle);
+    fallbackNoAction = noAction;
     replyTask = noAction
       ? false
       : await createCommTask({
@@ -240,38 +350,83 @@ export async function recordClientCommunication(opts: {
   // booking/scheduling/pricing message from an actual "redo the delivered work"
   // ask); fall back to the keyword classifier only when the brain is unavailable.
   const revisionSignal = decision ? decision.isRevisionRequest : cls.isRevision;
-  let revision = false;
-  if (revisionSignal && effProjectId) {
-    // A revision ask anchored to a PRE-delivery job is usually a mis-anchor,
-    // not an in-flight special request: the relevance-based project pick
-    // prefers the client's upcoming shoot, but "redo the kitchen photos" is
-    // about their newest delivered/in-review job. Re-anchor before the gate
-    // decides — without this the revision silently degrades to an activity
-    // line on the wrong project (audit crack #33's silent-loss class). Two
-    // anchors we TRUST and never override: the Smart Brain's explicit pick,
-    // and a project whose street the client actually named in the message.
-    let revProjectId = effProjectId;
-    let revStatus = effProjectStatus;
-    let revAddress = effPropertyAddress ?? null;
+  const negativeWords = !!effProjectId && isNegativeSentiment(opts.text);
+
+  // ONE re-anchor, read by BOTH gates below. A client message anchored to a
+  // PRE-delivery job is usually a mis-anchor, not an in-flight special
+  // request: the relevance-based project pick prefers the client's upcoming
+  // shoot, but "redo the kitchen photos" — and "these photos are
+  // unacceptable" — are about their newest delivered/in-review job. Without
+  // it the revision degrades to an activity line on the wrong project (audit
+  // crack #33's silent-loss class) and the complaint is dropped as "job not
+  // delivered yet" (Sep 16 review — the feedback gate used to read the raw
+  // pick while the revision gate re-anchored, for exactly this reason).
+  // Two anchors we TRUST and never override: the Smart Brain's explicit pick,
+  // and a project whose street the client actually named in the message.
+  // Only computed when something downstream needs it, so a plain "sounds
+  // good" still costs no extra query.
+  let anchorProjectId = effProjectId;
+  let anchorStatus = effProjectStatus;
+  let anchorAddress = effPropertyAddress ?? null;
+  if (effProjectId && (revisionSignal || negativeWords)) {
+    // Callers usually pass the status; look it up when they didn't, so a job
+    // that IS delivered keeps the message rather than being re-anchored off it.
+    if (!anchorStatus) {
+      const p = await prisma.project.findUnique({ where: { id: effProjectId }, select: { status: true } }).catch(() => null);
+      anchorStatus = p?.status ?? null;
+    }
     const brainPicked = !!decision?.projectId && decision.projectId === effProjectId && decision.projectId !== opts.projectId;
     const streetNamed = (() => {
-      const core = (revAddress ?? "").split(",")[0].trim().replace(/^\d+\s+/, "").replace(/\s+\S+$/, "");
+      const core = (anchorAddress ?? "").split(",")[0].trim().replace(/^\d+\s+/, "").replace(/\s+\S+$/, "");
       if (core.length < 5) return false;
       return new RegExp(`\\b${core.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(opts.text);
     })();
-    if (!(revStatus && DELIVERED_ISH.has(revStatus)) && opts.clientId && !brainPicked && !streetNamed) {
+    if (!(anchorStatus && DELIVERED_ISH.has(anchorStatus)) && opts.clientId && !brainPicked && !streetNamed) {
       try {
         const { mostRecentDeliveredIsh } = await import("@/lib/contacts");
         const d = await mostRecentDeliveredIsh(opts.clientId);
-        if (d) { revProjectId = d.id; revStatus = d.status; revAddress = d.title; }
+        if (d) { anchorProjectId = d.id; anchorStatus = d.status; anchorAddress = d.title; }
       } catch { /* fall through to the in-flight branch */ }
     }
-    if (revStatus && DELIVERED_ISH.has(revStatus)) {
+  }
+
+  // Track client happiness: a real complaint on a DELIVERED job → a NEGATIVE
+  // feedback row on the job this landed on (shows on /quality and the client
+  // timeline), separate from a revision. Filed AFTER the brain so its "no
+  // action needed" can veto it, and stamped with the CommLog it came from so
+  // /quality can open the conversation. See negativeFeedbackGate (Sep 16).
+  if (anchorProjectId && negativeWords) {
+    const gate = negativeFeedbackGate({
+      text: opts.text,
+      projectStatus: anchorStatus,
+      actionable: decision ? decision.actionable : fallbackNoAction ? false : null,
+    });
+    if (gate.file) {
+      const sourceRef = opts.commLogId ?? (await findSourceCommLog({ clientId: opts.clientId, text: opts.text }));
+      await prisma.feedback.create({
+        data: {
+          projectId: anchorProjectId,
+          sentiment: "NEGATIVE",
+          // What the hub decided, kept even after an owner re-reads the row.
+          sentimentAuto: "NEGATIVE",
+          category: "communication",
+          body: clip(opts.text, 300),
+          authorName: opts.clientName,
+          source: opts.kind === "email" ? "email" : "text",
+          sourceRef,
+        },
+      }).catch(() => {});
+    }
+  }
+
+  let revision = false;
+  if (revisionSignal && anchorProjectId) {
+    if (anchorStatus && DELIVERED_ISH.has(anchorStatus)) {
       revision = await raiseRevision({
-        projectId: revProjectId,
+        projectId: anchorProjectId,
         clientId: opts.clientId,
         clientName: opts.clientName,
-        propertyAddress: revAddress,
+        propertyAddress: anchorAddress,
         note: opts.text,
         source: opts.source ?? "comms",
         threadRef: opts.threadRef,
@@ -279,9 +434,11 @@ export async function recordClientCommunication(opts: {
       });
     } else {
       // In-flight job: capture the ask as a special request, no status churn.
+      // (Same job the brain chose — the re-anchor above only ever swaps in a
+      // delivered-ish job, which takes the branch above.)
       await prisma.activity.create({
         data: {
-          projectId: effProjectId,
+          projectId: anchorProjectId,
           type: "SPECIAL_REQUEST",
           body: `Client request (${opts.source ?? "comms"}): ${clip(opts.text, 280)}`,
         },

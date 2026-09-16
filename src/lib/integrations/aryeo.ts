@@ -332,6 +332,10 @@ export interface AryeoListing {
   floor_plans?: unknown[];
   interactive_content?: unknown[];
   files?: unknown[];
+  /** The orders this listing belongs to — only present with `include=orders`
+   *  (verified live Sep 16 2026; `include=order` is rejected). The reverse
+   *  link the LISTING webhook needs when no project carries the listing id. */
+  orders?: { id?: string; number?: number }[];
 }
 
 export interface AryeoProductVariant {
@@ -1016,6 +1020,51 @@ export function itemToDeliverables(item: AryeoOrderItem): ParsedDeliverable[] {
   return withoutZillowFloorPlan(title, deliverablesForItem(item)).map((d) => (d.addon === undefined ? { ...d, addon } : d));
 }
 
+// ---------------------------------------------------------------------------
+// "MOVED TO ORDER #N" — a line that is a NEGATION, not a deliverable.
+//
+// Sep 16 (Kyle call, 68 New St / 2 Grace Cir). James shot one floor plan
+// across two adjacent bookings, so the office moved the line: order #1608
+// carries "2D Floorplan - Moved to Order#1611" at $0 and #1611 carries "2D
+// Floorplan - From Order #1608". The keyword parser read both as a floor plan,
+// and #1608's Essentials Package implied one anyway — so the source order read
+// "Partial delivery — still missing Floor plan" for nine days until Kyle
+// closed it twice by hand.
+//
+// The receiving side already works (a real row is created there). This is the
+// source side: the line NAMES the category it is taking away, so the type it
+// implies is struck off this order — even when a package still implies it —
+// and reconcileDeliverablesToOrder retires the row with the destination in the
+// note. "From Order #N" deliberately does not match.
+// ---------------------------------------------------------------------------
+const MOVED_TO_ORDER_RE = /moved\s+to\s+order\s*#?\s*(\d+)/i;
+
+/** Types this order has explicitly moved away, → the order number they went to. */
+export function movedAwayTypes(items: AryeoOrderItem[] | null | undefined): Map<DeliverableType, string> {
+  const out = new Map<DeliverableType, string>();
+  for (const it of items ?? []) {
+    if (it.is_canceled) continue;
+    const title = (it.title || it.sub_title || it.subtitle || "").trim();
+    const m = MOVED_TO_ORDER_RE.exec(title);
+    if (!m) continue;
+    // Read the line for what it names WITHOUT the marker, so "2D Floorplan -
+    // Moved to Order#1611" still resolves to FLOORPLAN.
+    const types = deliverablesForTitle(title.replace(MOVED_TO_ORDER_RE, "").replace(/[-–—\s]+$/, "").trim() || title);
+    // ONE line moves ONE thing. An add-on title carries the base gallery with
+    // it in the parser ("Drone Photos" → PHOTOS + DRONE, "Twilight Photos" →
+    // PHOTOS + TWILIGHT), so striking everything the title implies would take
+    // the whole shoot off the order — no QC gate, no chase, nothing "missing".
+    // Take the SPECIFIC category the line names and leave the base gallery
+    // owed; only a line that names nothing else ("Listing Photography - Moved
+    // to Order#9") strikes PHOTOS itself.
+    const specific = types.filter((d) => d.type !== "PHOTOS");
+    for (const d of specific.length > 0 ? specific : types) {
+      if (!out.has(d.type)) out.set(d.type, m[1]);
+    }
+  }
+  return out;
+}
+
 /**
  * Everything an ORDER owes: its live (non-canceled) lines → rows, collapsed to
  * one per type, with the order-level signals only the whole order can answer
@@ -1026,10 +1075,14 @@ export function itemToDeliverables(item: AryeoOrderItem): ParsedDeliverable[] {
  */
 export function orderDeliverables(items: AryeoOrderItem[] | null | undefined): ParsedDeliverable[] {
   const live = (items ?? []).filter((it) => !it.is_canceled);
-  return dedupeParsedDeliverables(
+  const moved = movedAwayTypes(items);
+  const parsed = dedupeParsedDeliverables(
     live.flatMap(itemToDeliverables),
     live.map((it) => (it.title || it.sub_title || it.subtitle || "").trim()).filter(Boolean),
   );
+  // A type this order moved to another order is not owed here, however many
+  // packages on the line-up imply it (see MOVED_TO_ORDER_RE).
+  return moved.size === 0 ? parsed : parsed.filter((d) => !moved.has(d.type));
 }
 
 function deliverablesForItem(item: AryeoOrderItem): ParsedDeliverable[] {
@@ -1242,6 +1295,11 @@ export async function syncAryeoOrders(
           price: true, payableInvoice: true, paymentStatus: true, balanceAmount: true, title: true,
           photographerId: true, // cancel bell targets the assigned photographer
           squareFeet: true, squareFeetBand: true, // so a size entered in Aryeo AFTER the import still lands
+          // The listing id and the address: both are written at import and were
+          // never revisited, which is the 39 Saratoga Ln bug — see the backfill
+          // in the update pass below.
+          aryeoListingId: true,
+          addressLine: true, city: true, state: true, zip: true, lat: true, lng: true,
         },
       }),
       prisma.client.findMany({ select: { id: true, aryeoCustomerId: true, email: true, backupEmail: true, phone: true, name: true, company: true } }),
@@ -1524,11 +1582,39 @@ export async function syncAryeoOrders(
             (liveSqft != null && liveSqft !== proj.squareFeet) ||
             (liveBand?.text ?? null) !== (proj.squareFeetBand ?? null);
 
+          // ---- THE LISTING ID (Sep 16, Kyle call — 39 Saratoga Ln) ---------
+          // The listing is where ALL the media lives: projectStatus only calls
+          // Aryeo when aryeoListingId is set, so a project without one can
+          // never see a photo, whatever is live. It was written ONCE, at
+          // import (`order.listing?.id ?? null`), and orders created by the
+          // webhook from a thin/ghost payload ("Imported from Aryeo (order
+          // #-1)") arrive before a listing exists — so Saratoga's 77 delivered
+          // photos read as "Photos missing" and Refresh from Aryeo could
+          // report nothing, because the one field it needed was the one field
+          // this pass never wrote. Backfill it the moment the order carries
+          // one; never overwrite a listing id we already have (that is a
+          // re-point, and no Aryeo order changes its listing under us).
+          const listingLinked = !proj.aryeoListingId && !!order.listing?.id;
+
+          // ---- THE ADDRESS ------------------------------------------------
+          // Same shape, same cause: an order re-addressed in Aryeo (#1615 was
+          // re-pointed from 245 S Bryn Mawr Ave to 99 Bridge St, Phoenixville)
+          // kept the hub's import-time title forever. Aryeo wins when it HAS a
+          // street; a blank there never wipes what we hold.
+          const addr = order.address;
+          const liveStreet = [addr?.street_number, addr?.street_name].filter(Boolean).join(" ") || null;
+          // Compared loosely (case + spacing) so a formatting difference in an
+          // old import doesn't re-title half the history on the next full
+          // sweep — only a genuinely different street counts.
+          const sameStreet = (a: string | null, b: string | null) =>
+            (a ?? "").trim().toLowerCase().replace(/\s+/g, " ") === (b ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+          const addressChanged = !!liveStreet && !sameStreet(liveStreet, proj.addressLine ?? null);
+
           // (deliveredAt is HUB-owned — stamped at the hub's own DELIVERED
           // transition. Aryeo's fulfilled_at lands at the FIRST media delivery,
           // i.e. photos on day 1 of a staged listing job; mirroring it here
           // would have marked every in-production job "delivered" — review.)
-          if (moneyChanged || cancelNow || clientChanged || clientNeedsResolve || sqftChanged) {
+          if (moneyChanged || cancelNow || clientChanged || clientNeedsResolve || sqftChanged || listingLinked || addressChanged) {
             const newClientId = clientChanged || clientNeedsResolve ? await resolveClient(cust) : proj.clientId;
             await prisma.project.update({
               where: { id: proj.id },
@@ -1539,6 +1625,18 @@ export async function syncAryeoOrders(
                 balanceAmount: order.balance_amount ?? null,
                 invoiceUrl: order.invoice_url ?? null,
                 paymentUrl: order.payment_url ?? null,
+                ...(listingLinked ? { aryeoListingId: order.listing!.id } : {}),
+                ...(addressChanged
+                  ? {
+                      title: addressTitle(order),
+                      addressLine: liveStreet,
+                      city: addr?.city ?? proj.city,
+                      state: addr?.state_or_province ?? proj.state,
+                      zip: addr?.postal_code ?? proj.zip,
+                      ...(addr?.latitude != null ? { lat: addr.latitude } : {}),
+                      ...(addr?.longitude != null ? { lng: addr.longitude } : {}),
+                    }
+                  : {}),
                 ...(newClientId !== proj.clientId ? { clientId: newClientId } : {}),
                 // A cancel from Aryeo always wins over the office's status
                 // pin (Sep 13, editOverrides.ts) — the order is gone; the pin
@@ -1581,6 +1679,20 @@ export async function syncAryeoOrders(
                 data: { projectId: proj.id, type: "SYSTEM", body: `Client re-linked to match the order's current Aryeo customer (${customerName(cust)}).` },
               }).catch(() => {});
             }
+            if (listingLinked) {
+              // Said out loud on the timeline: the media the hub is about to
+              // start seeing did not appear, it was always there — we just had
+              // nowhere to look. (Refresh from Aryeo reads this line back so
+              // the button can report "Listing linked" instead of "Up to date".)
+              await prisma.activity.create({
+                data: { projectId: proj.id, type: "SYSTEM", body: "Listing linked from the order — the hub can now see this job's media on Aryeo." },
+              }).catch(() => {});
+            }
+            if (addressChanged) {
+              await prisma.activity.create({
+                data: { projectId: proj.id, type: "SYSTEM", body: `Address updated from Aryeo: ${proj.addressLine ?? "no address"} → ${liveStreet}.`.slice(0, 1000) },
+              }).catch(() => {});
+            }
             // First flip to PAID → owner bell (same "paid" literal /billing keys
             // off). Checked against the PRE-update proj so it fires exactly once;
             // the dedupe key backstops any re-read race. Best-effort.
@@ -1603,6 +1715,10 @@ export async function syncAryeoOrders(
               balanceAmount: order.balance_amount ?? null,
               clientId: newClientId,
               status: cancelNow ? "CANCELLED" : proj.status,
+              // …so a second page carrying the same order is a true no-op
+              // (and the listing link is never logged twice).
+              ...(listingLinked ? { aryeoListingId: order.listing!.id } : {}),
+              ...(addressChanged ? { addressLine: liveStreet } : {}),
             });
             updated++;
           }
@@ -1734,6 +1850,22 @@ export async function syncAryeoOrders(
   }
 }
 
+// WHICH ORDER DOES THIS LISTING BELONG TO? (Sep 16, Kyle call.)
+//
+// The hub links a project to a listing at import, from the ORDER side. When
+// that fails — a thin/ghost order webhook fires before the listing exists, as
+// it did for 39 Saratoga Ln — every later LISTING event about the job looks
+// like a listing we have never heard of. `include=orders` on the listing is
+// the reverse link (verified live Sep 16 2026; `include=order` is rejected by
+// the API, and there is no working listing filter on /orders). Returns null
+// when the listing exists but carries no order, which really does mean "not
+// ours"; a listing id Aryeo has never heard of THROWS (a plain 404 out of
+// aryeoRequest), so every caller keeps it inside a try.
+export async function orderIdForListing(listingId: string): Promise<string | null> {
+  const r = await aryeoRequest<{ data: AryeoListing }>(`/listings/${listingId}`, { query: { include: "orders" } });
+  return r?.data?.orders?.find((o) => !!o?.id)?.id ?? null;
+}
+
 // ---- Order items → deliverables (re-sync) ----------------------------------
 // Bring a project's Deliverable rows in line with the order's CURRENT line
 // items. Compares by TYPE (one row per type is the invariant), because a
@@ -1762,17 +1894,24 @@ export async function reconcileDeliverablesToOrder(
   });
   const want = new Map(parsed.map((p) => [p.type, p]));
   const orderNo = order.number ?? order.id ?? "?";
+  // Types this order says it moved elsewhere — orderDeliverables has already
+  // struck them off `want`; this is only for the wording of the retire note.
+  const moved = movedAwayTypes(order.items);
 
   for (const r of rows) {
     if (r.manual || /added manually/i.test(r.label ?? "")) continue;
     const w = want.get(r.type);
     if (!w) {
       if (!r.removedFromOrderAt) {
+        const movedTo = moved.get(r.type);
         await prisma.deliverable.update({
           where: { id: r.id },
           data: {
             removedFromOrderAt: new Date(),
-            removedFromOrderNote: `'${r.label ?? r.type}' is no longer on Aryeo order #${orderNo}`.slice(0, 300),
+            removedFromOrderNote: (movedTo
+              ? `'${r.label ?? r.type}' moved to Aryeo order #${movedTo}`
+              : `'${r.label ?? r.type}' is no longer on Aryeo order #${orderNo}`
+            ).slice(0, 300),
             // The photographer's "couldn't complete" excuse is moot for an
             // item the order no longer carries.
             notCompletedReason: null,
@@ -1780,9 +1919,20 @@ export async function reconcileDeliverablesToOrder(
           },
         });
         out.retired.push(r.label ?? r.type);
+        // The office's "is this really not required?" card, if one was minted
+        // off the photographer's note, is answered by the order itself now.
+        try {
+          const { confirmNotRequiredTask } = await import("@/lib/tasks");
+          await confirmNotRequiredTask(r.id);
+        } catch { /* best-effort */ }
       }
       continue;
     }
+    // Back on the order — and note what is NOT reset here: Deliverable.waivedAt.
+    // The waiver is the OFFICE's word ("not required on this job"), and the
+    // Aryeo order will never say a package-implied floor plan was discounted
+    // off, so a restore must not quietly re-owe it. Only a human unwaives
+    // (projects/deliverableActions.ts).
     if (r.removedFromOrderAt) {
       // Back on the order. A previously-DONE row stays DONE only if its work
       // is still on the site — safest is PENDING unless the photographer
@@ -1825,6 +1975,16 @@ export async function reconcileDeliverablesToOrder(
       data: { projectId, type: w.type, label: w.label, quantity: w.quantity, status: "PENDING", productTitle: w.productTitle, videoStyle: w.videoStyle },
     });
     out.added.push(w.label);
+    // THE ADD-ON TASK IS ANSWERED BY THE ORDER ITSELF (Sep 16, Kyle call).
+    // A photographer who logs an item the agent bought on site puts one
+    // "Add to the order: <item>" card on Kyle's plate (upload/shootAddOns).
+    // Kyle adds the line, this reconcile creates the row — and the card sat
+    // OPEN anyway, because SHOOT_ADDON_PREFIX had no consumer: 2 Grace Cir's
+    // "Add to the order: 2D Floorplan" was still open ten days after the
+    // floor plan was added, delivered and paid for. Best-effort.
+    try {
+      await completeShootAddonTasksFor(projectId, w.type);
+    } catch { /* closing a stale card never breaks the reconcile */ }
   }
 
   // Stored line items: replace wholesale when the set differs (same shape as
@@ -1900,6 +2060,26 @@ export async function reconcileDeliverablesToOrder(
     }
   }
   return out;
+}
+
+/** Close the office's "Add to the order: <item>" cards whose item names this
+ *  category — the line is now ON the order, which is the only proof that
+ *  matters. Never re-opens anything and never touches a card a human already
+ *  finished. */
+async function completeShootAddonTasksFor(projectId: string, type: DeliverableType): Promise<number> {
+  const { shootAddonKeyPrefix, addonSlugNamesType } = await import("@/app/upload/shootAddOns");
+  const prefix = shootAddonKeyPrefix(projectId);
+  const open = await prisma.smartTask.findMany({
+    where: { dedupeKey: { startsWith: prefix }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    select: { id: true, dedupeKey: true },
+  });
+  const hits = open.filter((t) => addonSlugNamesType((t.dedupeKey ?? "").slice(prefix.length), type)).map((t) => t.id);
+  if (hits.length === 0) return 0;
+  const r = await prisma.smartTask.updateMany({
+    where: { id: { in: hits } },
+    data: { status: "COMPLETED", completedAt: new Date() },
+  });
+  return r.count;
 }
 
 // ---- Postponed shoots -------------------------------------------------------

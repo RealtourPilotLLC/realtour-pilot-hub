@@ -525,21 +525,110 @@ function isLikelyHuman(fromEmail: string, listUnsubscribe: string, subject: stri
   return true;
 }
 
-// True if the most recent message in the thread was sent by us — i.e. we've
-// already replied, so there's nothing for Kyle to action.
-async function threadAlreadyAnswered(threadId: string, token: string): Promise<boolean> {
+// ---------------------------------------------------------------------------
+// "WE ALREADY ANSWERED THIS" — and, since Sep 16, the RECEIPT for it.
+//
+// The sync has always known when a thread's last message is ours; it just
+// threw the fact away ("still logged to comms memory below, but it won't
+// create a task"). And because the inbox query is `-from:me`, our own replies
+// were never logged either — 0 outbound email rows in 30 days. So the one walk
+// (replyQueue.ts) saw an inbound email, no outbound row, no completed task and
+// no ack, and put it back on the board. That is exactly what happened to Rick
+// Schultz on Sep 15: Jordan had answered him in Gmail, the hub still said he
+// was waiting, and the only way out was a manual Handled tick.
+//
+// `lastFromUs` now returns the message ITSELF so the caller can log it as an
+// outbound CommLog row. Rule 4 of the walk ("our side answering closes it")
+// then clears the thread with no new mechanism at all.
+// ---------------------------------------------------------------------------
+type SentMessage = { id: string; at: Date; to: string; subject: string };
+
+/** The newest message in this thread that WE sent, when it is also the LAST
+ *  message — i.e. the thread is answered. Null when the counterparty spoke
+ *  last, when the thread is a single message we sent (a fresh mail answers
+ *  nothing), or when Gmail can't be read (never suppress on ignorance). */
+async function lastFromUs(threadId: string, token: string): Promise<SentMessage | null> {
   try {
     const thread = await gmail<GmailThread>(
-      `/threads/${threadId}?format=metadata&metadataHeaders=From`,
+      `/threads/${threadId}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`,
       token,
     );
     const msgs = thread.messages ?? [];
-    if (msgs.length === 0) return false;
+    // A one-message thread from us is an outgoing mail, not a reply. Keying on
+    // "the last message is from our domain" alone would log a cold forward as
+    // an answer to a conversation that never happened.
+    if (msgs.length < 2) return null;
     const last = msgs[msgs.length - 1];
     const from = header(last, "From").toLowerCase();
-    return from.includes("@" + OUR_DOMAIN);
+    if (!from.includes("@" + OUR_DOMAIN)) return null;
+    const when = Number(last.internalDate);
+    const at = Number.isFinite(when) && when > 0 ? new Date(when) : new Date(header(last, "Date"));
+    return {
+      id: last.id,
+      at: isNaN(at.getTime()) ? new Date() : at,
+      to: header(last, "To"),
+      subject: header(last, "Subject"),
+    };
   } catch {
-    return false; // if we can't tell, don't suppress
+    return null; // if we can't tell, don't suppress
+  }
+}
+
+// True if the most recent message in the thread was sent by us — i.e. we've
+// already replied, so there's nothing for Kyle to action.
+async function threadAlreadyAnswered(threadId: string, token: string): Promise<boolean> {
+  return (await lastFromUs(threadId, token)) !== null;
+}
+
+/** Log one of OUR replies into comms memory as an outbound row, so the
+ *  unanswered walk clears the thread on the next pass (and Ask the Hub can
+ *  recall what we actually said). Idempotent on externalId; best-effort.
+ *  Returns true when a new row landed. */
+async function logSentReply(opts: {
+  threadId: string;
+  msg: SentMessage;
+  mailbox: string;
+  token: string;
+  clientId: string | null;
+  clientName: string | null;
+  projectId: string | null;
+}): Promise<boolean> {
+  try {
+    const { logComm } = await import("@/lib/commLog");
+    const { GMAIL_SENT_SOURCE } = await import("@/lib/replyQueue");
+    const externalId = `gmail-sent-${opts.threadId}-${opts.msg.id}`;
+    // Already logged? Then don't spend a second Gmail call on the body. This
+    // is the common case on every pass after the first.
+    if (await prisma.commLog.findUnique({ where: { externalId }, select: { id: true } })) return false;
+    // Our OWN WORDS, not a note that we replied — Ask the Hub, the client
+    // page's thread and the reply drafter all read this back.
+    let body = "";
+    try {
+      const full = await gmail<GmailMsg>(`/messages/${opts.msg.id}?format=full`, opts.token);
+      body = stripQuotedReply(extractBody(full.payload)) || cleanText(full.snippet ?? "");
+    } catch { /* fall back to the one-line receipt below */ }
+    if (!body.trim()) body = `Replied${opts.msg.to ? ` to ${opts.msg.to}` : ""} from ${opts.mailbox}.`;
+    return await logComm({
+      channel: "email",
+      direction: "out",
+      // info@ is Jordan's personal mailbox; its rows stay owner-tier for a
+      // sender we can't place, exactly as the inbound side files them.
+      minRole: isPersonalMailbox(opts.mailbox) && !opts.clientId ? "OWNER" : undefined,
+      clientId: opts.clientId,
+      clientName: opts.clientName,
+      projectId: opts.projectId,
+      // "Us" is the label every receiver stamps on our own sends, and the walk
+      // reads it as ours (replyQueue.ts OUR_LABELS) whichever way `direction`
+      // was written.
+      contactName: "Us",
+      subject: opts.msg.subject || null,
+      body: clip(body, 5_500),
+      occurredAt: opts.msg.at,
+      source: GMAIL_SENT_SOURCE,
+      externalId,
+    });
+  } catch {
+    return false; // comms memory is a courtesy here — never fail the scan
   }
 }
 
@@ -938,8 +1027,12 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
         if (!senderClient && !isLikelyHuman(email, listUnsub, subject, name)) return 0;
 
         // Already replied to (latest thread message is from us)? Still logged to
-        // comms memory below, but it won't create a task.
-        const answered = await threadAlreadyAnswered(threadId, token);
+        // comms memory below, but it won't create a task — and since Sep 16 our
+        // reply is logged too (see `sentReply` at the end of this handler), so
+        // the unanswered walk clears the thread on its own next pass instead of
+        // waiting for a manual tick.
+        const sentReply = await lastFromUs(threadId, token);
+        const answered = sentReply !== null;
 
         // Which listing is this about? Prefer a property named in the subject/body
         // within the sender's OWN orders; otherwise match it GLOBALLY (a coordinator
@@ -1008,6 +1101,22 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
           externalId: `gmail-${dedupe}`,
           projectGuess: !!project && !projectNamed,
         });
+
+        if (sentReply) {
+          // THE RECEIPT (Sep 16). One outbound row, keyed on the message id, so
+          // it lands once however many times this thread is re-scanned. Without
+          // it the walk has no way to know we answered: the inbox query is
+          // `-from:me`, so our side of every email conversation was invisible.
+          await logSentReply({
+            threadId,
+            msg: sentReply,
+            mailbox: account.email,
+            token,
+            clientId: resolvedClientId,
+            clientName: resolvedClientName,
+            projectId: project?.id ?? null,
+          });
+        }
 
         if (answered) {
           // Skip only the reply-task creation for handled mail — still run
@@ -1146,6 +1255,83 @@ export async function syncGmail(): Promise<{ scanned: number; tasks: number }> {
     closed += await closeAckedEmailReplyTasks();
   } catch { /* the reply sweep above already did its job */ }
   void closed;
+
+  // ---- the UNTASKED sweep (Sep 16) ----------------------------------------
+  // The two sweeps above both ride on a TASK. Rick Schultz never had one: he
+  // wrote on Sep 15, `threadAlreadyAnswered` was already true at scan time, so
+  // no client_reply was minted — and with our reply unlogged, the walk kept
+  // him on the board with no way out but a manual tick. So: take the inbound
+  // client emails of the last week that carry NO reply task and NO logged
+  // answer, ask Gmail once per thread whether we've since replied, and log the
+  // receipt when we have. Capped and cached — one threads.get per thread, and
+  // only for threads that are actually still showing as waiting.
+  try {
+    const since = new Date(Date.now() - 7 * 86_400_000);
+    const inbound = await prisma.commLog.findMany({
+      where: { channel: "email", direction: "in", source: "gmail", clientId: { not: null }, occurredAt: { gte: since } },
+      orderBy: { occurredAt: "desc" },
+      select: { clientId: true, clientName: true, projectId: true, externalId: true, occurredAt: true },
+      take: 120,
+    });
+    // Clients whose thread we already know we answered, and clients whose open
+    // reply task the sweeps above handle — neither needs a Gmail call.
+    const clientIds = [...new Set(inbound.map((r) => r.clientId as string))];
+    const [answeredRows, taskRows] = await Promise.all([
+      clientIds.length
+        ? prisma.commLog.findMany({
+            where: { channel: "email", direction: "out", clientId: { in: clientIds }, occurredAt: { gte: since } },
+            select: { clientId: true, occurredAt: true },
+          })
+        : Promise.resolve([] as { clientId: string | null; occurredAt: Date }[]),
+      clientIds.length
+        ? prisma.smartTask.findMany({
+            where: { clientId: { in: clientIds }, taskType: "client_reply", source: "gmail", status: OPEN_REPLY },
+            select: { clientId: true },
+          })
+        : Promise.resolve([] as { clientId: string | null }[]),
+    ]);
+    const answeredAt = new Map<string, number>();
+    for (const a of answeredRows) {
+      if (!a.clientId) continue;
+      answeredAt.set(a.clientId, Math.max(answeredAt.get(a.clientId) ?? 0, a.occurredAt.getTime()));
+    }
+    const hasTask = new Set(taskRows.map((t) => t.clientId).filter((x): x is string => !!x));
+    const threadSeen = new Set<string>();
+    let checks = 0;
+    for (const r of inbound) {
+      if (checks >= 15) break; // one run's budget — the rest catch the next tick
+      const cid = r.clientId as string;
+      if (hasTask.has(cid)) continue; // the task sweeps above own this one
+      if ((answeredAt.get(cid) ?? 0) >= r.occurredAt.getTime()) continue; // already on record
+      // externalId is `gmail-<mailbox>:<messageId>` (logComm, above).
+      const raw = (r.externalId ?? "").replace(/^gmail-/, "");
+      const at = raw.lastIndexOf(":");
+      if (at <= 0) continue;
+      const mailbox = raw.slice(0, at);
+      const msgId = raw.slice(at + 1);
+      const tk = tokens.get(mailbox);
+      if (!tk || !msgId) continue;
+      checks++;
+      let threadId: string | null = null;
+      try {
+        const m = await gmail<GmailMsg>(`/messages/${msgId}?format=minimal`, tk);
+        threadId = m.threadId ?? null;
+      } catch { continue; }
+      if (!threadId || threadSeen.has(threadId)) continue;
+      threadSeen.add(threadId);
+      const sent = await lastFromUs(threadId, tk);
+      if (!sent) continue;
+      await logSentReply({
+        threadId,
+        msg: sent,
+        mailbox,
+        token: tk,
+        clientId: cid,
+        clientName: r.clientName,
+        projectId: r.projectId,
+      });
+    }
+  } catch { /* best-effort: the boards are no worse off than before */ }
 
   return { scanned, tasks };
 }

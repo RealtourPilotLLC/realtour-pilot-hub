@@ -703,6 +703,12 @@ model Deliverable {
   reviewSubmissions ReviewSubmission[]
 
   @@index([projectId])
+  // ---- Sep 16 (Kyle call, item 9): "not required on this job". Hub-owned —
+  // the Aryeo reconcile never clears it (unlike removedFromOrderAt, which a
+  // package-implied type un-retires). Every "owed" reader honours it.
+  waivedAt   DateTime?
+  waivedBy   String?
+  waivedNote String?
 }
 
 // A file uploaded through the photographer portal. The actual bytes live in
@@ -952,6 +958,18 @@ model Feedback {
   @@index([projectId])
   @@index([photographerId])
   @@index([sentiment])
+  // ---- Sep 16 (Kyle call, item 10): correct an automated read without losing
+  // the original. sentimentAuto = what the classifier decided (never rewritten);
+  // a human override records who/when/why; dismissed = "not feedback" (hidden
+  // from every count, row kept); sourceRef = CommLog id for comms-filed rows.
+  sentimentAuto String?
+  sentimentBy   String?
+  sentimentAt   DateTime?
+  sentimentNote String?
+  dismissedAt   DateTime?
+  dismissedBy   String?
+  dismissReason String?
+  sourceRef     String?
 }
 
 // A lightweight team chat thread on a project — Kyle ↔ editors ↔ photographers
@@ -1013,6 +1031,10 @@ model ThreadRead {
 
   @@unique([userKey, projectId])
   @@index([userKey])
+  // Sep 16 (Kyle call): "Close conversation" hides a job thread from this
+  // viewer's active list until a new message reopens it (postProjectMessage
+  // clears it for every viewer of the project).
+  closedAt DateTime?
 }
 
 // Service catalogue synced from Aryeo /products.
@@ -2193,6 +2215,10 @@ model PendingSms {
 
   @@index([teamMemberId, sentAt])
   @@index([sentAt])
+  // Sep 16: a line that can never send (non-US number) is parked once instead
+  // of being retried every five minutes.
+  skippedAt  DateTime?
+  skipReason String?
 }
 
 // Who changed what on the login roster — the Kyle role-flip (Aug 18) was
@@ -2207,4 +2233,21 @@ model AuditLog {
 
   @@index([createdAt])
   @@index([target])
+}
+
+// Sep 16 (Kyle call, item 4): what actually went out, per person and channel —
+// bell rows are durable, texts were only a claim stamp and Slack DMs were not
+// recorded at all. Written at the three send points in src/lib/notify.ts.
+model NotificationDelivery {
+  id             String   @id @default(cuid())
+  notificationId String?
+  teamMemberId   String
+  kind           String
+  channel        String   // slack | sms | bell
+  status         String   // sent | queued | failed | skipped
+  detail         String?  // Slack error text, PendingSms id, or the skip reason
+  createdAt      DateTime @default(now())
+
+  @@index([teamMemberId, createdAt])
+  @@index([notificationId])
 }

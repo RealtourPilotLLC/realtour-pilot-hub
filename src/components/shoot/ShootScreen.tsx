@@ -51,7 +51,7 @@ const CAPTURE_GUIDE: Record<string, string> = {
 const POST_PRODUCTION_TYPES = new Set<string>(["VIRTUAL_STAGING"]);
 
 export function ShootScreen({
-  view, pay, map, whenText, timing, media, backHref = "/shoot",
+  view, pay, map, whenText, timing, media, chat = null, backHref = "/shoot",
 }: {
   view: ShootView;
   pay: React.ReactNode;
@@ -59,6 +59,8 @@ export function ShootScreen({
   whenText: string;
   timing: "today" | "upcoming" | "past" | null;
   media: React.ReactNode;
+  /** The job's team chat (Sep 16) — server-rendered, sits under the editor notes. */
+  chat?: React.ReactNode;
   backHref?: string;
 }) {
   const { project, appointment, client, segment, profile, deliverables } = view;
@@ -78,9 +80,15 @@ export function ShootScreen({
   const isVideo = deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
   // Hard, order-specific must-dos (amber "don't leave without"): the order's
   // special instructions + any logged special requests for this property.
+  // …minus anything typed AFTER the upload landed: that is an instruction for
+  // the edit, not something to go and shoot (review, Sep 16). It still shows
+  // in the Special requests block on the brief, labelled for what it is.
   const mustGets = Array.from(
     new Set(
-      [...(appointment?.parsed?.special ? [appointment.parsed.special] : []), ...view.specialRequests]
+      [
+        ...(appointment?.parsed?.special ? [appointment.parsed.special] : []),
+        ...view.specialRequests.filter((r) => !view.editRequests.includes(r)),
+      ]
         // Strip the "Client request (openphone):" provenance prefix logged on
         // special-request activities so the checklist reads as a clean instruction.
         .map((s) => s.replace(/^Client request \([^)]*\):\s*/i, "").trim())
@@ -155,6 +163,10 @@ export function ShootScreen({
         {isVideo && <AocPlaybookCard context="shoot" />}
         <CustomerCard client={client} segment={segment} profile={profile} />
         <NotesCard projectId={project.id} initial={project.editorBrief ?? ""} flash={flash} />
+        {/* The job's own thread (Sep 16, Kyle call) — being tagged on a job
+            used to send a photographer here with nothing to read and no way to
+            answer. Under the editor notes: same part of the day, wrap-up. */}
+        {chat}
         <MediaCard media={media} uploaded={project.uploadedAt != null} />
         {pay}
       </div>
@@ -544,7 +556,7 @@ function ZillowCta({ url }: { url: string }) {
 }
 
 function BriefCard({ view, flash }: { view: ShootView; flash: (k: "ok" | "err", t: string) => void }) {
-  const { appointment, specialRequests, project } = view;
+  const { appointment, specialRequests, editRequests, project } = view;
   const [flags, setFlags] = useState(view.flags);
   const [input, setInput] = useState("");
   const [pending, start] = useTransition();
@@ -565,7 +577,16 @@ function BriefCard({ view, flash }: { view: ShootView; flash: (k: "ok" | "err", 
         <div className="rounded-xl border border-warning/30 bg-warning-soft/40 p-3">
           <div className="mb-1 text-xs font-semibold text-warning">Special requests</div>
           <ul className="ml-4 list-disc space-y-0.5 text-sm text-foreground/85">
-            {specialRequests.map((r, i) => <li key={i}>{r}</li>)}
+            {specialRequests.map((r, i) => (
+              <li key={i}>
+                {r}
+                {/* Asked for after the upload — nothing to go back and shoot
+                    unless the office says so (Sep 16). */}
+                {editRequests.includes(r) && (
+                  <span className="ml-1 text-xs text-muted-2">· asked after upload — for the edit</span>
+                )}
+              </li>
+            ))}
           </ul>
         </div>
       )}

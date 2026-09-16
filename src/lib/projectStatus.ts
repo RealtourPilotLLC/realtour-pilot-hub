@@ -5,7 +5,7 @@ import { Aryeo } from "@/lib/integrations/aryeo";
 import { dropboxConfigured } from "@/lib/integrations/dropbox";
 import { getSecret } from "@/lib/integrations/connections";
 import { actualFolderPaths, folderFileCount } from "@/lib/dropboxFolders";
-import { standardDeliveryDue, deliveryDueFrom } from "@/lib/tasks";
+import { standardDeliveryDue, deliveryDueFrom, slaTierOf, videoAnchorFor, OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 import type { NotifyTarget } from "@/lib/notify";
 import { photoTargetFor, RAW_OVERAGE_FACTOR, BRACKET_RATIO } from "@/lib/culling";
 import { isMonthlyContentJob } from "@/lib/pipeline";
@@ -42,9 +42,17 @@ const CATEGORY_KEYWORDS: [RegExp, MediaCategory][] = [
   [/floor\s?plan|2d plan|iguide/i, "FLOORPLAN"],
   [/matterport|3d tour|3-d|zillow 3d|virtual tour|interactive tour/i, "THREED"],
   [/reel|video|cinematic|walkthrough|walk-through|motion|social media|teaser|vertical/i, "VIDEO"],
-  // Photos last + broad: packages/bundles/tiers, plus photo add-ons that are
-  // delivered as listing images (twilight, drone, headshots, virtual staging).
-  [/photo|hdr|image|gallery|package|bundle|bronze|silver|gold|platinum|diamond|essential|twilight|dusk|drone|aerial|headshot|portrait|virtual stag/i, "PHOTOS"],
+  // Photos: only words that NAME photography — the photo add-ons that are
+  // delivered as listing images (twilight, drone, headshots, virtual staging)
+  // included. The bundle words (package|bundle|bronze|silver|gold|platinum|
+  // diamond|essential) used to live here too, and that was the bug: a label is
+  // scanned for EXTRA categories beyond the row's own type, so "Custom
+  // Branding Video Package 16 Videos Total" — a video-only product — expected
+  // Photos, read "Partial delivery — still missing Photos" and minted a false
+  // "Chase AutoHDR photo edits" (Sharra Mercer #1584, Sep 16 audit; 1 of 38
+  // live jobs). Packages belong to the product mapping in aryeo.ts, which
+  // already expands them into typed rows — this scan must not second-guess it.
+  [/photo|hdr|image|gallery|twilight|dusk|drone|aerial|headshot|portrait|virtual stag/i, "PHOTOS"],
 ];
 
 export function categoriesForLabel(label: string): MediaCategory[] {
@@ -92,16 +100,32 @@ export function getVideoSlaStatus(p: {
   status?: string | null;
   deliverables: { type: string; label: string | null }[];
   client?: { socialClient?: boolean | null } | null;
+  /** the job's appointment legs — the video clock runs from the LAST one that
+   *  has happened, not from Project.shootDate (see videoAnchorFor). Optional:
+   *  a caller that hasn't loaded them keeps the old shootDate reading.
+   *
+   *  NOTE for whoever owns those files: the two live callers — /edit/[id]'s
+   *  header ("cut due") and lib/queries.ts's owner dial (the past-SLA count) —
+   *  still pass only { shootDate, status, deliverables, client }, so BOTH
+   *  still date a second-visit reel from the first visit and ignore the
+   *  office's tier. Each needs appointments + tierOverride + packageName added
+   *  to its select and passed through here; left alone on purpose, those two
+   *  files are outside this batch's file set. */
+  appointments?: { status: string | null; startAt: Date | null }[];
+  /** the office's tier (Sep 16) — branding → monthly, premium → 72h */
+  tierOverride?: string | null;
+  packageName?: string | null;
 }): { tier: VideoTier; due: Date; overdue: boolean; msRemaining: number } | null {
   const tier = videoTier(p.deliverables);
   if (!tier || !p.shootDate) return null;
   const v = p.deliverables.find((d) => expectedCategories([d]).has("VIDEO"));
-  // PROJECT-level test — a listing shoot for a social-plan client is NOT
-  // monthly content (see isMonthlyContentJob).
-  const monthly = isMonthlyContentJob(p.deliverables);
-  const due = deliveryDueFrom(p.shootDate, v?.type ?? "SOCIAL_REEL", {
-    premium: tier === "premium",
-    monthlyContent: monthly,
+  // THE OFFICE'S TIER decides the window when it is set; otherwise the hub's
+  // own reading of the product (slaTierOf is that ladder, stated once).
+  const sla = slaTierOf({ tierOverride: p.tierOverride ?? null, packageName: p.packageName ?? null, deliverables: p.deliverables });
+  const anchor = videoAnchorFor(p) ?? p.shootDate;
+  const due = deliveryDueFrom(anchor, v?.type ?? "SOCIAL_REEL", {
+    premium: sla === "premium",
+    monthlyContent: sla === "branding",
   });
   const msRemaining = due.getTime() - Date.now();
   // A video already delivered isn't "overdue" even past its window.
@@ -180,6 +204,9 @@ export type StatusSignals = {
   /** every live appointment is postponed / unscheduled — the job needs a new date */
   postponed: boolean;
   shootDate: Date | null;
+  /** where the VIDEO's window opens — the last leg that has happened, which is
+   *  not always shootDate on a two-visit job (videoAnchorFor) */
+  videoAnchor: Date | null;
   /** The shoot hasn't happened yet (shootDate ahead, no non-canceled leg in the
    *  past). Files under this job's name can't be its raws — a same-street
    *  re-shoot found the first job's 84 raws in the shared folder and read as
@@ -257,8 +284,10 @@ export function computeStatus(sig: StatusSignals): StatusResult {
   // delivery. Not for shoots that haven't happened yet (present is empty there).
   if (missing.includes("VIDEO") && present.size > 0 && sig.videoTier && sig.shootDate) {
     // Use the SAME turnaround the task engine uses, so the status card, the
-    // project's delivery-due, and the QA task all agree on one date.
-    videoDue = deliveryDueFrom(sig.shootDate, sig.videoType ?? "SOCIAL_REEL", {
+    // project's delivery-due, and the QA task all agree on one date — anchored
+    // on the leg the footage came from (videoAnchorFor), not on a shootDate a
+    // reschedule may have moved.
+    videoDue = deliveryDueFrom(sig.videoAnchor ?? sig.shootDate, sig.videoType ?? "SOCIAL_REEL", {
       premium: sig.videoTier === "premium",
       monthlyContent: sig.monthlyContent,
     });
@@ -407,6 +436,14 @@ export function shootPendingFor(p: ShootTiming, now: number = Date.now()): boole
   );
 }
 
+// WHERE THE VIDEO CLOCK STARTS: videoAnchorFor now lives in lib/tasks beside
+// the promise table it dates (Sep 16 review), so the queue's per-category due
+// dates and this engine's SLA read the SAME anchor — the last leg that really
+// happened, not whichever leg the appointment sync last pointed shootDate at.
+// Re-exported here because every existing caller imports it from the status
+// engine.
+export { videoAnchorFor };
+
 async function aryeoMedia(listingId: string): Promise<AryeoMediaSignal | null> {
   try {
     const l = await Aryeo.listing(listingId);
@@ -470,10 +507,13 @@ type StatusProject = {
   // date the status card shows.
   statusPinnedAt?: Date | null;
   dueOverrideAt?: Date | null;
+  /** the office's tier (Sep 16) — the video's window, via tasks.slaTierOf */
+  tierOverride?: string | null;
 };
 
 async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<StatusSignals> {
   const expected = expectedCategories(p.deliverables);
+  const sla = slaTierOf(p);
   const aryeo = p.aryeoListingId ? await aryeoMedia(p.aryeoListingId) : null;
 
   // Only spend Dropbox calls when Aryeo doesn't already account for everything
@@ -552,6 +592,7 @@ async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<Sta
         ((a.status || "").toUpperCase() === "UNSCHEDULED" || (!!a.postponedAt && a.startAt === null)),
     ),
     shootDate: p.shootDate,
+    videoAnchor: videoAnchorFor(p),
     shootPending: shootPendingFor(p),
     // A revision stamp OLDER than the delivery is stale — that delivery WAS the
     // revision being resolved. Treating it as open resurrected delivered jobs
@@ -560,9 +601,15 @@ async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<Sta
       !!p.revisionRequestedAt &&
       !(p.deliveredAt && p.revisionRequestedAt.getTime() <= p.deliveredAt.getTime()),
     revisionNote: p.revisionNote,
-    videoTier: videoTier(p.deliverables),
+    // THE OFFICE'S TIER DRIVES THE CLOCK (Sep 16, Kyle call). slaTierOf is the
+    // one ladder — the hub's reading of the product, with Project.tierOverride
+    // on top — so the status card, the delivery-due, the QC card and the
+    // editor queue can't disagree about how long a video has. Sharra Mercer's
+    // #1584 ran a 48h reel clock while the queue chip already said Personal
+    // Branding. null still means "no video was ordered".
+    videoTier: videoTier(p.deliverables) === null ? null : sla === "premium" ? "premium" : "standard",
+    monthlyContent: sla === "branding",
     videoType: p.deliverables.find((d) => expectedCategories([d]).has("VIDEO"))?.type ?? null,
-    monthlyContent: isMonthlyContentJob(p.deliverables),
   };
 }
 
@@ -640,10 +687,23 @@ export async function syncProjectStatuses(
     ? { source: "ARYEO" as const, status: { notIn: ["ON_HOLD", "CANCELLED"] as ProjectStatus[] }, aryeoMissingAt: null }
     : {
         source: "ARYEO" as const,
-        status: { in: ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW", "REVISION"] as ProjectStatus[] },
         // An order that 404s in Aryeo has no listing to read — recomputing
         // would only erase evidence. flagOrphanedOrders owns these jobs.
         aryeoMissingAt: null,
+        OR: [
+          { status: { in: ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW", "REVISION"] as ProjectStatus[] } },
+          // A RECENTLY DELIVERED job rides along (Sep 16, Kyle call). Its
+          // status is now untouchable from evidence (see the DELIVERED guard
+          // in the loop), but its EVIDENCE has to keep catching up: 39
+          // Saratoga Ln was hand-delivered at 8:10pm on Sep 15 and its card
+          // still read "Raw files uploaded — awaiting editing / Photos
+          // missing" the next afternoon, because the hourly pass had stopped
+          // looking at it the moment it was delivered. Seven days is long
+          // enough for a listing id to land, a floor plan to sync or a vendor
+          // to come back; after that the job is history and we stop paying
+          // for the API calls.
+          { status: "DELIVERED" as ProjectStatus, deliveredAt: { gte: new Date(Date.now() - 7 * 24 * 3600_000) } },
+        ],
       };
 
   const projects = (await prisma.project.findMany({
@@ -671,15 +731,19 @@ export async function syncProjectStatuses(
       photoTarget: true,
       photographer: { select: { name: true } },
       client: { select: { name: true, socialClient: true } },
-      // Owed rows only — an item removed from the Aryeo order must not be
-      // "expected" (632 Greenridge read "video overdue" for a week).
-      deliverables: { where: { removedFromOrderAt: null }, select: { id: true, type: true, label: true, status: true, quantity: true } },
+      // Owed rows only — an item removed from the Aryeo order, or waived by
+      // the office as not required on this job, must not be "expected" (632
+      // Greenridge read "video overdue" for a week; 195 Woodhill kept a floor
+      // plan the client never bought). OWED_DELIVERABLE_WHERE is that rule,
+      // stated once for every reader (tasks.ts).
+      deliverables: { where: OWED_DELIVERABLE_WHERE, select: { id: true, type: true, label: true, status: true, quantity: true } },
       appointments: { select: { status: true, startAt: true, postponedAt: true } },
       statusEvidence: true,
-      // Loaded with the batch, no extra query: the office's pin and due
-      // (Sep 13) — see the guards in the loop.
+      // Loaded with the batch, no extra query: the office's pin, due and tier
+      // (Sep 13 / Sep 16) — see the guards in the loop and slaTierOf.
       statusPinnedAt: true,
       dueOverrideAt: true,
+      tierOverride: true,
     },
   })) as StatusProject[];
 
@@ -750,11 +814,17 @@ export async function syncProjectStatuses(
     // (With counts carried forward, sig.dropbox is non-null on a failed read —
     // the old `!sig.dropbox` term here would have disarmed this guard on the
     // very pass it exists for: Aryeo AND Dropbox both unreadable.)
+    // DELIVERED joined this list on Sep 16, the day delivered jobs joined the
+    // hourly pass: a delivered job has no "shoot happened" question left, and
+    // recomputing one from two unreadable APIs would rewrite its evidence to
+    // "the hub cannot see: Photos" and walk every DONE deliverable back to
+    // PENDING — the same cascade this guard exists to stop, on the jobs where
+    // it would be most alarming to Kyle.
     if (
       !sig.aryeo &&
       sig.dropboxUnavailable &&
-      ["SHOT", "EDITING", "REVIEW", "REVISION"].includes(p.status) &&
-      shootHappened
+      ["SHOT", "EDITING", "REVIEW", "REVISION", "DELIVERED"].includes(p.status) &&
+      (shootHappened || p.status === "DELIVERED")
     ) {
       byStatus[p.status] = (byStatus[p.status] ?? 0) + 1;
       await prisma.project.update({ where: { id: p.id }, data: { statusCheckedAt: new Date() } });
@@ -785,6 +855,39 @@ export async function syncProjectStatuses(
     // see — recomputing raws-in/no-Aryeo-media as SHOT must not silently undo
     // it (July 2026 audit: REVIEW→SHOT was written unconditionally).
     if (p.status === "REVIEW" && status === "SHOT") final = "REVIEW";
+    // A HAND DELIVERY STICKS (Sep 16, Kyle call — 39 Saratoga Ln, 195
+    // Woodhill Rd, 68 New St, 632 Greenridge Rd).
+    //
+    // `fulfilled` is `!!deliveredAt`, which is true the moment the office
+    // moves a job to Delivered by hand — so the partial-delivery branch read
+    // "fulfilled, but a category is missing" and computed REVIEW. Nothing
+    // stopped it being written: this sweep, Refresh from Aryeo and the Aryeo
+    // webhook all call syncProjectStatuses, and moveProjectStatus clears the
+    // status pin on its way out. Kyle would have watched four jobs he
+    // delivered himself walk back into "Review / QC" the next time anyone
+    // pressed anything.
+    //
+    // Delivery is a HUMAN fact — the client has the files — and no cross-check
+    // of Aryeo and Dropbox gets to overrule it. What the evidence may still
+    // do is say, plainly, what the hub has not been able to confirm. A client
+    // revision (computed REVISION) is the one thing bigger than the delivery,
+    // exactly as it outranks the office's status pin.
+    if (p.status === "DELIVERED" && status !== "REVISION") {
+      final = "DELIVERED";
+      // Not a "partial delivery" any more: that banner exists to stop Kyle
+      // treating a half-delivered job as done, and he is the one who
+      // delivered it.
+      evidence.partial = false;
+      if (evidence.missing.length > 0) {
+        const on = p.deliveredAt
+          ? ` on ${p.deliveredAt.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}`
+          : "";
+        evidence.reason = `Delivered by the office${on}; the hub still cannot see: ${evidence.missing.join(", ")}.`;
+      }
+      // …and when the missing list empties (the listing id lands, the floor
+      // plan syncs), computeStatus's own "All ordered deliverables confirmed
+      // live on Aryeo." stands untouched. The sentence clears itself.
+    }
     // A job whose shoot already happened can NEVER go back to Scheduled/Booked.
     // Zero detected media there means either a transient Aryeo/Dropbox failure or
     // raws not uploaded yet — un-shooting the job is always wrong, and the demotion
@@ -835,20 +938,53 @@ export async function syncProjectStatuses(
     // arriving (comms.raiseRevision — client news outranks a pin).
     // computeStatus never yields CANCELLED, so there is no exception to make
     // here.
+    // THE OFFICE'S DUE (Sep 13): the status card's "video due" is the date
+    // the office set, not the SLA's — and "overdue" is judged against it.
+    // Only while the video is still owed; a delivered video has no due.
+    //
+    // Sep 16 (Kyle call): it REWRITES the sentence instead of appending to it.
+    // 99 W Bridge St read "Video overdue — was due Sep 11. Confirm it was
+    // delivered to the client, or upload it. Also missing Floor plan. Video
+    // due Sep 19 (set by the office)." — the hub calling a video late and
+    // giving it three more days in the same breath. Only the SLA sentence is
+    // replaced: a SHOT job's "Raw files uploaded to Dropbox" is not a claim
+    // about the video's deadline, so that one still just gets the date added.
+    // Runs BEFORE the pin block so a pinned job's prefix wraps the final
+    // sentence rather than being overwritten by it.
+    if (p.dueOverrideAt && evidence.missing.includes("Video")) {
+      const officeDue = p.dueOverrideAt;
+      const when = officeDue.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
+      // Sep 16 review: a DELIVERED job keeps the delivery sentence. The office
+      // hand-delivering a job whose video the hub still cannot see is exactly
+      // the 99 W Bridge shape, and rewriting "Delivered by the office on Sep
+      // 16; the hub still cannot see: Video." into "Premium video due Sep 19"
+      // would put a job Kyle has already delivered back on the clock.
+      const delivered = p.status === "DELIVERED" && status !== "REVISION";
+      const builtFromSla = evidence.videoDue !== null && !delivered;
+      evidence.videoDue = officeDue.toISOString();
+      // A delivered video is never late (same rule getVideoSlaStatus applies).
+      evidence.videoOverdue = !delivered && Date.now() > officeDue.getTime();
+      if (delivered) {
+        // The date is still worth showing beside the delivery sentence.
+        evidence.reason += ` The office's video date was ${when}.`;
+      } else if (builtFromSla) {
+        const others = evidence.missing.filter((m) => m !== "Video");
+        const tierWord = sig.videoTier === "premium" ? "Premium" : "Standard";
+        const lead = evidence.present.includes("Photos") ? "Photos delivered." : "Delivery underway.";
+        evidence.reason = evidence.videoOverdue
+          ? `Video overdue — the office's date was ${when}. Confirm it was delivered to the client, or upload it.`
+          : `${lead} ${tierWord} video due ${when} (set by the office).`;
+        if (others.length) evidence.reason += ` Also missing ${others.join(", ")}.`;
+      } else {
+        evidence.reason += ` Video due ${when} (set by the office).`;
+      }
+    }
     if (p.statusPinnedAt) {
       if (final !== p.status) {
         const wouldBe = STATUS_WORD[final] ?? final;
         evidence.reason = `Status pinned by the office on ${STATUS_WORD[p.status] ?? p.status} (${p.statusPinnedAt.toLocaleDateString("en-US", { month: "short", day: "numeric" })}); on its own the hub would read ${wouldBe} — ${evidence.reason}`;
       }
       final = p.status;
-    }
-    // THE OFFICE'S DUE (Sep 13): the status card's "video due" is the date
-    // the office set, not the SLA's — and "overdue" is judged against it.
-    // Only while the video is still owed; a delivered video has no due.
-    if (p.dueOverrideAt && evidence.missing.includes("Video")) {
-      evidence.videoDue = p.dueOverrideAt.toISOString();
-      evidence.videoOverdue = Date.now() > p.dueOverrideAt.getTime();
-      evidence.reason += ` Video due ${p.dueOverrideAt.toLocaleDateString("en-US", { month: "short", day: "numeric" })} (set by the office).`;
     }
 
     if (evidence.partial) partials++;
@@ -884,8 +1020,17 @@ export async function syncProjectStatuses(
     // below; drives the one-time "Delivered" bell inside the statusChanged block.
     const justDelivered = final === "DELIVERED" && !p.deliveredAt;
     // Standard delivery due = shoot date + longest turnaround of what was ordered.
+    // The office's tier moves this promise too (Sep 16) — the editor queue's
+    // due cell and the delivery board both read Project.deliveryDue, so a
+    // branding job re-sold after booking has to stop reading "due in 48h"
+    // there as well as on the card.
     const deliveryDue = p.shootDate
-      ? standardDeliveryDue(p.shootDate, p.deliverables, isMonthlyContentJob(p.deliverables))
+      ? standardDeliveryDue(p.shootDate, p.deliverables, isMonthlyContentJob(p.deliverables), null, {
+          tier: slaTierOf(p),
+          // …and the reel's half of that promise runs from the leg it was
+          // filmed on, not from whichever leg shootDate points at (Sep 16).
+          videoAnchor: sig.videoAnchor,
+        })
       : null;
     // Raws detected in Dropbox → stamp uploadedAt (first time only). This sweep
     // is the path that ACTUALLY detects uploads in prod, but it never wrote the
@@ -1020,7 +1165,22 @@ export async function syncProjectStatuses(
     try {
       const { isMonthlyContentJob, monthlyVideoQuota } = await import("@/lib/pipeline");
       if (final !== "CANCELLED" && isMonthlyContentJob(p.deliverables, p.packageName)) {
-        const quota = monthlyVideoQuota([p.packageName, ...p.deliverables.map((d) => d.label)]);
+        const names = [p.packageName, ...p.deliverables.map((d) => d.label)];
+        // A product that STATES its batch outranks the plan table (Sep 16,
+        // Kyle call): "Custom Branding Video Package 16 Videos Total" is a
+        // 16-video package sold outside Starter/Accelerator/Pro, and
+        // monthlyVideoQuota would file it under the generic 4. The number is
+        // written on the product; read it rather than guess.
+        const stated = names
+          .map((n) => /(\d{1,2})\s+videos?\b/i.exec(n ?? "")?.[1])
+          .filter(Boolean)
+          .map(Number)
+          .filter((n) => n > 0 && n <= 60);
+        // Never LOWER the plan's own number with a stated one (Sep 16 review):
+        // a Pro label that happens to say "4 videos" in its blurb must not
+        // drop the quota from 8. The bigger of the two wins, and this whole
+        // block never lowers a row's quantity either.
+        const quota = Math.max(...stated, monthlyVideoQuota(names));
         for (const d of p.deliverables) {
           if (d.type !== "VIDEO" && d.type !== "SOCIAL_REEL") continue;
           if ((d.quantity ?? 1) >= quota) continue;

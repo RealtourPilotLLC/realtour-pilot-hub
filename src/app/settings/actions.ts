@@ -11,7 +11,7 @@ import {
   reviewRoomRules, type ReviewRoomRules,
 } from "@/lib/settings";
 import type { EditorKey } from "@/lib/editors";
-import { NOTIFY_EVENTS, parseNotifyPrefs, type NotifyPrefs } from "@/lib/notifyPrefDefaults";
+import { NOTIFY_EVENTS, clearInapplicable, parseNotifyPrefs, type NotifyPrefs } from "@/lib/notifyPrefDefaults";
 import { staffTextNumber } from "@/lib/hubSms";
 
 // Settings writes: owner or admin (Kyle) — requireAdmin is the house guard
@@ -150,13 +150,20 @@ export async function saveTeamNotifyPrefs(teamMemberId: string, prefs: NotifyPre
     if (typeof teamMemberId !== "string" || !/^[a-z0-9_-]{8,64}$/i.test(teamMemberId)) {
       return { ok: false, message: "That row doesn't point at a person — reload and try again." };
     }
-    const clean = parseNotifyPrefs(prefs);
-    if (!clean) return { ok: false, message: "Something's off with what was sent — reload the page and try again." };
+    const parsed = parseNotifyPrefs(prefs);
+    if (!parsed) return { ok: false, message: "Something's off with what was sent — reload the page and try again." };
     const { prisma } = await import("@/lib/prisma");
     const member = await prisma.teamMember.findUnique({ where: { id: teamMemberId }, select: { name: true, slackId: true, phone: true } });
     if (!member) return { ok: false, message: "That person isn't on the roster any more." };
     const first = member.name.split(/\s+/)[0];
-    const { saveNotifyPrefs } = await import("@/lib/notifyPrefs");
+    const { saveNotifyPrefs, notifyGroupFor } = await import("@/lib/notifyPrefs");
+    // Sep 16 (Kyle call): the store may only hold switches an emitter can
+    // actually fire for this person's group — the card greys the rest out, and
+    // clearing them here means a stale tab or a hand-rolled call can't plant a
+    // switch that looks on forever and never rings (Kyle's "Video in review"
+    // was exactly that until the broadcast bridge learned to reach the office).
+    const group = await notifyGroupFor(teamMemberId).catch(() => null);
+    const clean = group ? clearInapplicable(parsed, group) : parsed;
     await saveNotifyPrefs(teamMemberId, clean, me?.email ?? null);
     revalidatePath("/settings");
     const onSlack = NOTIFY_EVENTS.filter((e) => clean[e.key].slack).map((e) => e.short.toLowerCase());

@@ -155,7 +155,13 @@ function JobCard({ j }: { j: BoardJob }) {
           <BIcon className="size-4" /> {j.blockerLabel}
         </span>
         {!j.deliveredAt && j.dueFor && (
-          <span className="text-sm text-muted">
+          // The date is the earliest promise the job STILL OWES (Sep 16): a
+          // product already live on Aryeo no longer sets it, so a job whose
+          // photos went out on time stopped reading LATE for the photos while
+          // the video was the thing actually owed. When no line item names the
+          // outstanding thing (a video inside "Standard Package"), this is the
+          // category itself.
+          <span className="text-sm text-muted" title="The earliest thing this job still owes. Products already delivered no longer set the date.">
             for <span className="font-medium text-foreground">{j.dueFor}</span>
           </span>
         )}

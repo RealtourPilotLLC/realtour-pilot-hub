@@ -501,11 +501,30 @@ export async function saveJobNotes(
   if (notes.shoot !== undefined) data.editorBrief = notes.shoot.trim().slice(0, 4000) || null;
   if (Object.keys(data).length === 0) return { ok: true, message: "Nothing to save." };
 
-  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true } });
+  const p = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true, notes: true, editorBrief: true } });
   if (!p) return { ok: false, message: "That job no longer exists." };
   await prisma.project.update({ where: { id: projectId }, data });
+
+  // Leave a trace on the job's timeline (Kyle call, Sep 16): these edits left
+  // no audit row at all, so nobody could tell who changed the editor's
+  // Additional notes or when. One SYSTEM line per field that actually
+  // changed, under the editor's own name when the login has a roster row.
+  // Courtesy only — the save above must never fail over it.
+  try {
+    const { getCurrentUser } = await import("@/lib/auth/user");
+    const me = await getCurrentUser().catch(() => null);
+    const who = me?.name?.trim() || me?.email || "the office";
+    const lines: string[] = [];
+    if (data.notes !== undefined && (data.notes ?? null) !== (p.notes ?? null)) lines.push(`Additional notes updated by ${who}.`);
+    if (data.editorBrief !== undefined && (data.editorBrief ?? null) !== (p.editorBrief ?? null)) lines.push(`Shoot brief for the editor updated by ${who}.`);
+    for (const body of lines) {
+      await prisma.activity.create({ data: { projectId, type: "SYSTEM", body, authorId: me?.teamMemberId ?? null } });
+    }
+  } catch { /* the timeline line is a courtesy */ }
+
   revalidatePath("/editing");
   revalidatePath(`/edit/${projectId}`);
+  revalidatePath(`/projects/${projectId}`); // the Additional notes card renders there too (Sep 16)
   return { ok: true, message: "Saved." };
 }
 
@@ -951,8 +970,20 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
   // reads "Queue status set: Completed" as the editor's override that releases
   // a monthly-content job's held-back delivery text. It must exist BEFORE the
   // closer below runs.
+  // SAY WHAT IS STILL MISSING (Kyle's call, Sep 16). A "Completed" only gets
+  // this far when the outstanding check above passed — either nothing was
+  // owed, or an APPROVED Review-Room cut proved the video landed while the
+  // hourly evidence read still says it is missing. That second case is exactly
+  // the one worth writing down: the cut is in the job's Final folder, but
+  // nothing has been published to Aryeo, which is precisely the gap Kyle hit
+  // (photos out, video never QC'd or delivered). The evidence blob, unproven,
+  // is what the line reports. Empty evidence says nothing.
+  const stillMissing = status === "DELIVERED" ? outstandingForDelivery(proj.statusEvidence) : [];
+  const missingClause = stillMissing.length
+    ? ` — with ${stillMissing.map((c) => c.toLowerCase()).join(", ")} still missing on Aryeo`
+    : "";
   await prisma.activity.create({
-    data: { projectId, type: "SYSTEM", body: `Queue status set: ${label}` },
+    data: { projectId, type: "SYSTEM", body: `Queue status set: ${label}${missingClause}` },
   }).catch(() => {});
 
   // THE EDITOR STARTS IT / THE OFFICE PUTS IT BACK (Jordan, Sep 10). The job's
@@ -1261,6 +1292,9 @@ export async function saveEditOverrides(projectId: string, input: EditOverrideIn
       revisionRequestedAt: true,
       editorManual: true,
       editorVendorKey: true,
+      // Read for the timeline line below: an override to Completed says what
+      // was still outstanding when the office forced it (Kyle's call, Sep 16).
+      statusEvidence: true,
       editor: { select: { name: true } },
       deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, quantity: true } },
       ...OVERRIDE_SELECT,
@@ -1401,7 +1435,18 @@ export async function saveEditOverrides(projectId: string, input: EditOverrideIn
   // reads an "Override by … → Completed" line as the office's word that a
   // monthly batch is done (the same release the pill's "Queue status set:
   // Completed" gives), so it must exist before closeObsoleteTasks mints.
-  const sentence = describeOverrides(before, after, actor);
+  // SAY WHAT IS STILL MISSING (Kyle's call, Sep 16). The override dialog is
+  // the control that FORCES Completed past every check the pill makes, so it
+  // is the one human path most likely to mark a job delivered while the
+  // evidence still says a category never landed — Kyle's exact fault (photos
+  // out, the video never QC'd or published). The line now carries what was
+  // outstanding at the moment of the force, so the timeline shows it. Empty or
+  // unreadable evidence says nothing (delivery.ts rule 2: we speak only on
+  // positive proof that something is owed).
+  const stillMissing = targetStatus === "DELIVERED" ? outstandingForDelivery(proj.statusEvidence) : [];
+  const sentence =
+    describeOverrides(before, after, actor) +
+    (stillMissing.length ? ` — with ${stillMissing.map((c) => c.toLowerCase()).join(", ")} still missing on Aryeo` : "");
   await prisma.activity.create({ data: { projectId, type: "SYSTEM", body: sentence } }).catch(() => {});
 
   // ---- A forced status: the hold, the card, the close-outs. ----

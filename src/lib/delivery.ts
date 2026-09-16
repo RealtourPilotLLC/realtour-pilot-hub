@@ -183,7 +183,11 @@ type ConfirmProject = {
   shootDate: Date | null;
   client: { name: string };
   photographer?: { name: string } | null;
-  deliverables?: { type: string }[];
+  /** owed rows only — a waived item is not something to confirm back to the
+   *  client (Sep 16). Callers query with tasks.OWED_DELIVERABLE_WHERE; the
+   *  filter here is the belt to that braces, for a caller who selected the
+   *  column but not the filter. */
+  deliverables?: { type: string; waivedAt?: Date | null }[];
 };
 
 // Friendly, agent-facing names for what was ordered (for the confirmation text).
@@ -192,8 +196,24 @@ const ORDER_LABEL: Record<string, string> = {
   ZILLOW_3D: "Zillow 3D tour", TWILIGHT: "twilight", VIRTUAL_STAGING: "virtual staging",
   SOCIAL_REEL: "social reel", VIDEO: "video", HEADSHOT: "headshots",
 };
-function orderedList(deliverables?: { type: string }[]): string {
-  const names = Array.from(new Set((deliverables ?? []).map((d) => ORDER_LABEL[d.type]).filter(Boolean)));
+function orderedList(deliverables?: { type: string; waivedAt?: Date | null }[]): string {
+  const names = Array.from(
+    new Set(
+      (deliverables ?? [])
+        // "Confirming your shoot for photos, drone and floor plan" must not
+        // name a floor plan the office has said isn't required (Sep 16).
+        //
+        // NOTE for whoever owns the send paths: this filter only bites when
+        // the caller SELECTS waivedAt. Three selects still don't, and each
+        // needs `where: { removedFromOrderAt: null, waivedAt: null }` (the
+        // shared tasks.OWED_DELIVERABLE_WHERE) — lib/clientTextSweeps.ts (the
+        // auto-send), app/actions.ts and app/tasks/sendAllActions.ts. Left to
+        // them on purpose: those files are outside this batch's file set.
+        .filter((d) => !d.waivedAt)
+        .map((d) => ORDER_LABEL[d.type])
+        .filter(Boolean),
+    ),
+  );
   if (names.length === 0) return "";
   if (names.length === 1) return names[0];
   if (names.length === 2) return `${names[0]} and ${names[1]}`;

@@ -8,7 +8,8 @@ import { cleanEmailBody, revisionsBoard } from "@/lib/commsBoard";
 import { isMonthlyContentJob, monthlyVideoQuota } from "@/lib/pipeline";
 import { cleanBrief, parseShootBrief } from "@/lib/shoot";
 import { NOTHING_TO_REMOVE_SENTINEL, isFieldFlag } from "@/lib/debrief";
-import { actionableQcCount, nextPendingDue, sameDayAddOns, hasSameDayAddOn, sameDayDue, CLOSED_BY_HAND } from "@/lib/tasks";
+import { actionableQcCount, nextPendingDue, pendingDuesByCategory, sameDayAddOns, hasSameDayAddOn, sameDayDue, slaTierOf, OWED_DELIVERABLE_WHERE, CLOSED_BY_HAND } from "@/lib/tasks";
+import { qcCategoryStates, qcWaitingOnMediaOnly } from "@/lib/qcCategories";
 import { scrubMoney } from "@/lib/text";
 import { turnaroundRules } from "@/lib/settings";
 import type { StatusEvidence } from "@/lib/projectStatus";
@@ -180,6 +181,8 @@ export type OpsShoot = {
   sameDay: { photos: boolean; floorPlan: boolean; dueISO: string | null } | null;
   debriefSubmitted: boolean;
   aryeoListingId: string | null;
+  /** order-only jobs open the ORDER editor instead — see aryeoJobUrl */
+  aryeoOrderId: string | null;
   weather: ShootWeather | null;
   airspace: Airspace | null; // drone jobs only
   comms: { count: number; latestSnippet: string; latestAgoH: number; latestInbound: boolean; otherCount: number } | null;
@@ -192,6 +195,23 @@ export type QcEvidence = {
   dropbox: { rawPhotos: number; rawVideo: number; finalPhotos: number; finalVideo: number; at?: string; stale?: boolean } | null;
 };
 
+/** One ordered media category on a QC card: is it live, how much of Kyle's
+ *  pass is left on it, and when it is promised. The card used to roll all of
+ *  this into one "8 optional checks" chip, which is why a job with the photos
+ *  out and the video two days away looked identical to a job nobody had
+ *  touched (Kyle call, Sep 16). */
+export type OpsQcCategory = {
+  label: string; // Photos | Video | Floor plan | 3D tour
+  live: boolean;
+  total: number;
+  ticked: number;
+  /** live and every optional row ticked — "Photos ✓ done" */
+  done: boolean;
+  /** when this category is promised, while it is still outstanding */
+  dueISO: string | null;
+  overdue: boolean;
+};
+
 export type OpsQcRow = {
   taskId: string;
   projectId: string;
@@ -202,6 +222,11 @@ export type OpsQcRow = {
   shootISO: string | null;
   services: string[];
   aryeoListingId: string | null;
+  /** order-only jobs (imported from a ghost order before the listing existed)
+   *  open the ORDER editor — see aryeoJobUrl */
+  aryeoOrderId: string | null;
+  /** per ordered category, in card order — what is done and what is still owed */
+  categories: OpsQcCategory[];
   itemsLeft: number;
   /** of those, the ones Kyle can actually do now — the media is live (see
    *  actionableQcCount). The rest are rows waiting on media to land. */
@@ -277,6 +302,10 @@ export type OpsLoop = {
   mine: boolean;
   /** the person it sits with, when that isn't the viewer ("Kim") */
   withWhom: string | null;
+  /** where the row came from ("slack", "team", "openphone", …). Sep 16: a
+   *  Slack ask's "View" has to land on the Slack tab, which is its one home
+   *  now — it used to point at the Other tab, which no longer lists them. */
+  source: string;
 };
 
 export type OpsDay = {
@@ -347,7 +376,7 @@ const shootOver = (start: Date | null, appointments: ApptTimes[], now: Date): bo
 
 const SHOOT_SELECT = {
   id: true, title: true, shootDate: true, debriefSubmittedAt: true,
-  lat: true, lng: true, aryeoListingId: true, clientId: true,
+  lat: true, lng: true, aryeoListingId: true, aryeoOrderId: true, clientId: true,
   // The street itself — a pin-only Aryeo order arrives with addressLine null
   // and the title "[No address provided]", and the card must call that a gap.
   addressLine: true,
@@ -357,7 +386,7 @@ const SHOOT_SELECT = {
   // items are not optional: the order reconcile keeps one deliverable row per
   // type, so "Same Day Photo Delivery" folds into the Photos row and only the
   // OrderItem still carries its name (tasks.ts sameDayAddOns).
-  deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, productTitle: true } },
+  deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true, productTitle: true } },
   orderItems: { where: { isCanceled: false }, select: { title: true } },
   activities: { where: { type: "SPECIAL_REQUEST" as const }, select: { type: true, body: true } },
   // startAt/endAt/status: when the shoot is OVER (shootEndFor), not just begun.
@@ -366,7 +395,7 @@ const SHOOT_SELECT = {
 
 type ShootRowInput = {
   id: string; title: string; shootDate: Date | null; debriefSubmittedAt: Date | null;
-  lat: number | null; lng: number | null; aryeoListingId: string | null; clientId: string | null;
+  lat: number | null; lng: number | null; aryeoListingId: string | null; aryeoOrderId: string | null; clientId: string | null;
   addressLine: string | null;
   photographer: { name: string } | null;
   client: { name: string; avatarUrl: string | null };
@@ -459,6 +488,7 @@ async function shootRow(
     sameDay,
     debriefSubmitted: !!p.debriefSubmittedAt,
     aryeoListingId: p.aryeoListingId,
+    aryeoOrderId: p.aryeoOrderId,
     weather,
     airspace,
     comms: latest || otherCount > 0
@@ -519,17 +549,22 @@ export async function buildOpsDay(): Promise<OpsDay> {
           project: {
             select: {
               title: true, shootDate: true, shotOrderNotes: true, removalNotes: true, videoInstructions: true,
-              debriefSubmittedAt: true, statusEvidence: true, aryeoListingId: true,
+              debriefSubmittedAt: true, statusEvidence: true, aryeoListingId: true, aryeoOrderId: true,
+              // The office's due (Sep 13) — it replaces the video's promise on
+              // the card's per-category line, exactly as it does on the
+              // Pipeline row below.
+              dueOverrideAt: true,
               // The QC card's "upload page never submitted" line and the shoot
               // card's chip must agree on when a shoot is over (shootEndFor).
               appointments: { select: { startAt: true, endAt: true, status: true } },
               photographer: { select: { name: true } },
-              deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, productTitle: true, notCompletedReason: true, notes: true } },
+              deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true, productTitle: true, notCompletedReason: true, notes: true } },
               // Same-day rush add-ons live on the line items (see SHOOT_SELECT).
               orderItems: { where: { isCanceled: false }, select: { title: true } },
               packageName: true,
               videosFilmed: true,
               videosOwedOverride: true, // the office's batch size (Sep 13, editOverrides.ts)
+              tierOverride: true, // the office's tier (Sep 16) — it dates the video line below
               // The rest of the photographer's wrap-up. Jordan (Sep 1): every
               // upload-portal note except the video editing brief belongs on
               // the QC card, in full — QC is where those notes get acted on.
@@ -555,7 +590,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
           id: true, title: true, status: true, statusEvidence: true,
           dueOverrideAt: true, // the office's due (Sep 13) — the QC card's "video due" reads it before the evidence
           client: { select: { name: true, avatarUrl: true } },
-          deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
+          deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true } },
           editor: { select: { name: true } },
           revisionBriefs: { orderBy: { createdAt: "desc" }, take: 1, select: { headline: true, itemsJson: true } },
         },
@@ -611,24 +646,52 @@ export async function buildOpsDay(): Promise<OpsDay> {
   const qc: OpsQcRow[] = qcTasks.filter((t) => t.projectId != null).map((t) => {
     let itemsLeft = 0;
     let actionable = 0;
+    let items: { label: string; done?: boolean }[] = [];
     const pr = t.project;
     const { qc: evidence } = parseEvidence(pr?.statusEvidence ?? null);
     try {
-      const items = t.checklist ? (JSON.parse(t.checklist) as { label: string; done?: boolean }[]) : [];
+      items = t.checklist ? (JSON.parse(t.checklist) as { label: string; done?: boolean }[]) : [];
       itemsLeft = items.filter((i) => !i.done).length;
       actionable = actionableQcCount(items, evidence.present);
-    } catch { itemsLeft = 0; actionable = 0; }
+    } catch { items = []; itemsLeft = 0; actionable = 0; }
     const monthly = isMonthlyContentJob(pr?.deliverables ?? [], pr?.packageName);
-    const next = pr
-      ? nextPendingDue({
+    const dueInput = pr
+      ? {
           shootDate: pr.shootDate,
           deliverables: pr.deliverables ?? [],
           orderItems: pr.orderItems ?? [],
           statusEvidence: pr.statusEvidence,
           monthlyContent: monthly,
           turnarounds,
-        })
+          // The office's tier dates the video line on this card (Sep 16) — the
+          // same ladder the status engine and the delivery board read, so the
+          // three cannot disagree about when a reel is late.
+          tier: slaTierOf(pr),
+          // …and the video line runs from the leg it was filmed on, not from
+          // the first visit (Sep 16 review — the legs are already loaded).
+          appointments: pr.appointments,
+        }
       : null;
+    const next = dueInput ? nextPendingDue(dueInput) : null;
+    // The card now says it per category — "Photos ✓ done", "Video — waiting on
+    // the editor, due Fri" — instead of one "8 optional checks" chip that made
+    // a half-delivered job look untouched (Kyle call, Sep 16). The office's
+    // due wins on the outstanding video, same ladder as the Pipeline row.
+    const duesByCategory = new Map(dueInput ? pendingDuesByCategory(dueInput).map((d) => [d.category, d.at]) : []);
+    const categories: OpsQcCategory[] = qcCategoryStates(items, evidence.present).map((c) => {
+      const due = evidence.missing.includes(c.label)
+        ? (c.label === "Video" && pr?.dueOverrideAt ? pr.dueOverrideAt : duesByCategory.get(c.label) ?? null)
+        : null;
+      return {
+        label: c.label,
+        live: c.live,
+        total: c.total,
+        ticked: c.ticked,
+        done: c.done,
+        dueISO: due?.toISOString() ?? null,
+        overdue: !!due && due < now,
+      };
+    });
     // "Overdue" is still the JOB's promise (t.dueAt = the LATEST pending item) —
     // a shoot whose photos are out and whose reel has another day to run is NOT
     // late (Jordan: 208 N Adams, 2009 Garrison, 263 Towamensing).
@@ -642,15 +705,24 @@ export async function buildOpsDay(): Promise<OpsDay> {
     // · 2 ready now" because its unticked "upload page" and "deliver the
     // gallery" rows count as actionable with nothing live, after the
     // same-address Dropbox folder flipped it to SHOT (audit5 F4, Sep 8).
+    // Sep 16 (Kyle call): once the live categories are checked off, the only
+    // rows left belong to media that has not landed — that is the editor's
+    // day, not Kyle's. Such a card drops out of "QC + Morning Deliveries" and
+    // waits (it comes straight back when the video goes live, with only the
+    // video's checks). An overdue job is still overdue: the guard sits AFTER
+    // the dueAt test, so a late video keeps its card in the Overdue block.
     const shootPending = !!pr?.shootDate && pr.shootDate > now;
+    const waitingOnMediaOnly = qcWaitingOnMediaOnly(items, evidence.present);
     const bucket: OpsQcRow["bucket"] =
       shootPending
         ? "waiting"
         : t.dueAt && t.dueAt < now
           ? "overdue"
-          : actionable > 0 || (next && etDayKey(next.at) <= todayKey) || (t.dueAt && etDayKey(t.dueAt) === todayKey)
-            ? "today"
-            : "waiting";
+          : waitingOnMediaOnly
+            ? "waiting"
+            : actionable > 0 || (next && etDayKey(next.at) <= todayKey) || (t.dueAt && etDayKey(t.dueAt) === todayKey)
+              ? "today"
+              : "waiting";
     return {
       taskId: t.id,
       projectId: t.projectId!,
@@ -661,6 +733,8 @@ export async function buildOpsDay(): Promise<OpsDay> {
       shootISO: pr?.shootDate?.toISOString() ?? null,
       services: [...new Set((pr?.deliverables ?? []).map((d) => d.label ?? d.type))],
       aryeoListingId: pr?.aryeoListingId ?? null,
+      aryeoOrderId: pr?.aryeoOrderId ?? null,
+      categories,
       itemsLeft,
       dueISO: t.dueAt?.toISOString() ?? null,
       bucket,
@@ -1038,6 +1112,7 @@ export async function openLoopsList(now = new Date(), viewer?: LoopViewer | null
       // a departed editor) comes back as the raw slug — capitalise it so the
       // chip never reads "with luma".
       withWhom: mine || lane === OPS_LANE || lane === OWNER_LANE ? null : capitalize(assigneeName(lane, assignees)),
+      source: t.source,
     } satisfies OpsLoop;
   });
 

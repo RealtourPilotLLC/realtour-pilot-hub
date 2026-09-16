@@ -350,6 +350,22 @@ export async function submitCutForReview(
   };
 }
 
+// Which cut a note thread hangs on (Sep 16, Kyle call). Cut notes are keyed by
+// the cut's asset URL — or the synthetic "cut:<id>" when Dropbox couldn't mint
+// a streamable one — so a reply can name the submission the thread belongs to.
+// The tag/reply pings pass it as `cutId`, and the owner's link then opens the
+// Review Room parked on that exact cut instead of the shoot-note page his
+// PHOTOGRAPHER roster role used to send him to (his Sep 14 tag landed on
+// /shoot/note/…). Best-effort: no match just means no ?cut= on the link.
+async function cutIdForAsset(projectId: string, assetUrl: string | null): Promise<string | null> {
+  if (!assetUrl) return null;
+  if (assetUrl.startsWith("cut:")) return assetUrl.slice(4);
+  const sub = await prisma.reviewSubmission
+    .findFirst({ where: { projectId, assetUrl }, orderBy: { round: "desc" }, select: { id: true } })
+    .catch(() => null);
+  return sub?.id ?? null;
+}
+
 // Drop one timestamped note on the active cut. Owner/admin from the review
 // desk — and the EDITOR on their OWN cut (Jordan: "I also want the video
 // editor to be able to leave feedback"): they flag things for the reviewer
@@ -430,7 +446,9 @@ export async function addCutNote(input: {
   });
   {
     const { notifyMentions } = await import("@/lib/mentions");
-    await notifyMentions({ text: body, projectId: input.projectId, authorKey, authorTmId, authorName, context: "a cut note", noteId: note.id });
+    // cutId + surface: the owner reads a cut note in the Review Room, not on
+    // /shoot (Sep 16) — and the surface says so even if the cut can't be named.
+    await notifyMentions({ text: body, projectId: input.projectId, authorKey, authorTmId, authorName, context: "a cut note", noteId: note.id, cutId: input.submissionId, surface: "cut" });
   }
   refresh(input.projectId);
   return { ok: true };
@@ -477,6 +495,8 @@ export async function replyCutNote(noteId: string, body: string): Promise<{ ok: 
   // (Jordan, Sep 15: "a message was sent on their project").
   {
     const { notifyMentions, notifyThreadReply, notifyProjectMessage } = await import("@/lib/mentions");
+    // The cut this thread hangs on — the owner's link opens the Room on it (Sep 16).
+    const cutId = await cutIdForAsset(root.projectId, root.assetUrl);
     const excludeTmIds = await notifyMentions({
       text,
       projectId: root.projectId,
@@ -485,6 +505,8 @@ export async function replyCutNote(noteId: string, body: string): Promise<{ ok: 
       authorName,
       context: "a cut-note comment",
       noteId: root.id,
+      surface: "cut",
+      ...(cutId ? { cutId } : {}),
     });
     const replied = await notifyThreadReply({
       rootId: root.id,
@@ -494,6 +516,7 @@ export async function replyCutNote(noteId: string, body: string): Promise<{ ok: 
       text,
       projectId: root.projectId,
       surface: "cut",
+      ...(cutId ? { cutId } : {}),
       excludeTmIds,
     });
     await notifyProjectMessage({

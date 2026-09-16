@@ -5,8 +5,11 @@ import { staffTextNumber } from "@/lib/hubSms";
 import {
   defaultPrefsFor,
   mergeNotifyPrefs,
+  notifyGroupLabel,
   parseNotifyPrefs,
+  type LastReached,
   type NotifyEvent,
+  type NotifyGroup,
   type NotifyPrefs,
   type TeamNotifyRow,
 } from "@/lib/notifyPrefDefaults";
@@ -39,10 +42,12 @@ export const notifyPrefsKey = (teamMemberId: string) => `notify-prefs:${teamMemb
 // Bell kind → the switch that governs it. Anything unlisted is bell-only: a
 // new emitter nobody classified must never text or DM someone by surprise.
 //   mention        — someone tagged you, or answered you on a thread
-//   project_message — a message on a job you are editing (editors only, see
-//                     mentions.ts notifyProjectMessage)
+//   project_message — a message on a job you are on: the editor, the assigned
+//                     photographer while it is undelivered, the office (Sep
+//                     16; see mentions.ts notifyProjectMessage)
 //   job_ping       — the edit lane: raws in, a revision, a verdict, a hand-off
-//   review_ready   — a cut waiting on a verdict (the owner's Sep 11 text)
+//   review_ready   — a cut waiting on a verdict (the owner's Sep 11 text; the
+//                     office's switch since Sep 16)
 //   shoot_change   — the field: reschedule, cancel, raws missing, cull, a task
 const KIND_TO_EVENT: Record<string, NotifyEvent> = {
   mention: "mention",
@@ -70,6 +75,9 @@ const KIND_TO_EVENT: Record<string, NotifyEvent> = {
   raws_missing: "shoot_change",
   cull: "shoot_change",
   task_assigned: "shoot_change",
+  // The day-before "Still needed? It closes tomorrow" nudge on a Slack ask
+  // (B5 handover, Sep 16) — without a mapping it would be bell-only.
+  task_expiring: "job_ping",
 };
 export function eventForKind(kind: string): NotifyEvent | null {
   return KIND_TO_EVENT[kind] ?? null;
@@ -144,6 +152,63 @@ export async function hasExplicitNotifyPrefs(teamMemberId: string): Promise<bool
   return !!stored && Object.keys(stored).length > 0;
 }
 
+/** The card group this person files under (Owner / Editor / Photographer /
+ *  Office) — what `appliesTo` greys switches by; null for an unknown id. */
+export async function notifyGroupFor(teamMemberId: string): Promise<NotifyGroup | null> {
+  const facts = await personFacts(teamMemberId).catch(() => null);
+  if (!facts) return null;
+  return notifyGroupLabel({ role: facts.role, isEditor: facts.isEditor, isOwner: facts.isOwner });
+}
+
+// What the delivery log last recorded per person (Sep 16, Kyle call: "is
+// delivery verifiable?"). Three exact questions per person — the newest
+// Slack DM that went, the newest text that went, the newest failure on
+// either — each its own indexed lookup on (teamMemberId, createdAt).
+//
+// It used to be one 400-row read across the whole team, and the Sep 16
+// review caught what that costs: one chatty recipient (or the per-line
+// "sent" row the flusher writes for every queued text) pushes a quieter
+// person's newest row past the cap and their block silently reverts to
+// "nothing logged yet" — a false negative on the one line this card exists
+// to prove. A findFirst per question can't be crowded out.
+//
+// A "queued" text is not "reached" (it is still in the digest window), a
+// "skipped" one is not a failure (the switch was on but there was nowhere
+// to send). Best-effort: a read failure leaves the card without the line.
+async function lastReachedByMember(teamMemberIds: string[]): Promise<Map<string, LastReached>> {
+  const out = new Map<string, LastReached>();
+  if (teamMemberIds.length === 0) return out;
+  const newest = (where: Record<string, unknown>) =>
+    prisma.notificationDelivery.findFirst({
+      where,
+      orderBy: { createdAt: "desc" },
+      select: { channel: true, kind: true, detail: true, createdAt: true },
+    });
+  await Promise.all(
+    teamMemberIds.map(async (teamMemberId) => {
+      try {
+        const [slack, sms, failed] = await Promise.all([
+          newest({ teamMemberId, channel: "slack", status: "sent" }),
+          newest({ teamMemberId, channel: "sms", status: "sent" }),
+          newest({ teamMemberId, channel: { in: ["slack", "sms"] }, status: "failed" }),
+        ]);
+        const cur: LastReached = {};
+        if (slack) cur.slack = { at: slack.createdAt.toISOString(), kind: slack.kind };
+        if (sms) cur.sms = { at: sms.createdAt.toISOString(), kind: sms.kind };
+        if (failed)
+          cur.failed = {
+            at: failed.createdAt.toISOString(),
+            detail: `${failed.channel === "slack" ? "Slack" : "text"}: ${(failed.detail ?? "send failed").slice(0, 200)}`,
+          };
+        if (cur.slack || cur.sms || cur.failed) out.set(teamMemberId, cur);
+      } catch (e) {
+        console.warn("lastReachedByMember failed", teamMemberId, e);
+      }
+    }),
+  );
+  return out;
+}
+
 /**
  * The Settings card's rows: every ACTIVE roster member with what the bridge
  * would do for them today. Ordered the way the office thinks about the team —
@@ -167,6 +232,7 @@ export async function teamNotifyRows(): Promise<TeamNotifyRow[]> {
     (await import("@/lib/smsPrefs")).ownerTeamMemberIds().catch(() => [] as string[]),
     (await import("@/lib/integrations/openphone")).ourOpenPhoneNumberKeys().catch(() => new Set<string>()),
   ]);
+  const reached = await lastReachedByMember(members.map((m) => m.id));
   const rows: TeamNotifyRow[] = [];
   for (const m of members) {
     const isEditor = editors.has(m.id);
@@ -187,6 +253,7 @@ export async function teamNotifyRows(): Promise<TeamNotifyRow[]> {
       ...(phoneNote ? { phoneNote } : {}),
       prefs,
       explicit,
+      ...(reached.has(m.id) ? { lastReached: reached.get(m.id) } : {}),
     });
   }
   const group = (r: TeamNotifyRow) => (r.isOwner ? 0 : r.isEditor ? 2 : r.role.toUpperCase() === "PHOTOGRAPHER" ? 3 : 1);

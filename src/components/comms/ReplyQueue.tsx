@@ -11,6 +11,8 @@ import { SegmentBadge } from "@/components/clients/SegmentBadge";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { cn } from "@/lib/utils";
 import { generateReply, generateAllReplies, sendReply } from "@/app/communications/replyActions";
+import { listMutedNumbers, unmuteCommsNumber } from "@/app/actions";
+import { CommsDismissButton } from "@/components/tasks/ChecklistButtons";
 import type { ReplyCard } from "@/lib/replyQueue";
 
 // THE REPLY QUEUE, as Kyle sees it. Every inbound text still owed an answer,
@@ -58,9 +60,11 @@ type CardProps = {
   patch: (p: Partial<CardState>) => void;
   onDraft: (instruction?: string) => void;
   onSend: () => void;
+  /** the card cleared itself — drop it from the list without a round trip */
+  onDismiss: () => void;
 };
 
-function ReplyCardView({ card, state: s, patch, onDraft, onSend }: CardProps) {
+function ReplyCardView({ card, state: s, patch, onDraft, onSend, onDismiss }: CardProps) {
   const wait = waitLabel(card.hoursWaiting);
   const vague = s.draft ? VAGUE.exec(s.draft) : null;
   const sent = s.status === "sent";
@@ -254,6 +258,19 @@ function ReplyCardView({ card, state: s, patch, onDraft, onSend }: CardProps) {
           {!card.phone && (
             <span className="text-xs text-warning">No number on file — reply from the Inbox tab.</span>
           )}
+          {/* THE WAY OUT (Kyle, Sep 16: "there’s no way to get rid of things
+              I’ve already dealt with"). Every row gets it — a client, an
+              unmatched number, one of our own photographers, a blast. It is a
+              cut point, not a delete: the conversation stays in the Inbox, and
+              a NEW message from them puts the row back. */}
+          {!sent && (
+            <CommsDismissButton
+              threadKey={card.key}
+              family={card.family}
+              clientId={card.clientId}
+              onCleared={onDismiss}
+            />
+          )}
         </div>
 
         {s.error && <p className="mt-2 text-xs text-danger">{s.error}</p>}
@@ -332,22 +349,35 @@ export function ReplyQueue({
     });
   };
 
+  const drop = (key: string) => {
+    setCards((cs) => cs.filter((c) => c.key !== key));
+    setHandled((cs) => cs.filter((c) => c.key !== key));
+  };
+
   const cardProps = (card: ReplyCard): CardProps => ({
     card,
     state: get(card.key),
     patch: (p) => patch(card.key, p),
     onDraft: (instruction) => draftOne(card, instruction),
     onSend: () => send(card),
+    // Dismissing leaves the confirmation on screen for a beat, same as a send,
+    // so nothing blinks out from under the click.
+    onDismiss: () => setTimeout(() => drop(card.key), 1400),
   });
 
   if (cards.length === 0 && handled.length === 0) {
     return (
-      <div className="rounded-2xl border border-border bg-surface p-10 text-center">
-        <Inbox className="mx-auto mb-3 size-8 text-success" />
-        <p className="text-base font-semibold">Everyone has been answered.</p>
-        <p className="mt-1 text-sm text-muted">
-          Nothing inbound is waiting on a reply. New messages land here automatically.
-        </p>
+      <div>
+        <div className="rounded-2xl border border-border bg-surface p-10 text-center">
+          <Inbox className="mx-auto mb-3 size-8 text-success" />
+          <p className="text-base font-semibold">Everyone has been answered.</p>
+          <p className="mt-1 text-sm text-muted">
+            Nothing inbound is waiting on a reply. New messages land here automatically.
+          </p>
+        </div>
+        {/* The un-mute list has to be reachable from the empty state too, or a
+            number muted by mistake is a client we never hear from again. */}
+        <MutedNumbers />
       </div>
     );
   }
@@ -395,8 +425,11 @@ export function ReplyQueue({
         visible.map((card) => <ReplyCardView key={card.key} {...cardProps(card)} />)
       )}
 
-      {/* Courtesy closers — technically unanswered, genuinely finished. Kept
-          visible but out of the way, so the queue above is only real work. */}
+      {/* Courtesy closers and OUR OWN TEAM — technically unanswered, not a
+          client sitting on a reply. Kept visible (Kyle may well want to answer
+          a photographer, and every card here can be dismissed) but out of the
+          count, which is what made the Replies badge disagree with the Comms
+          tab and the home pill until Sep 16. */}
       {handled.length > 0 && (
         <div className="pt-2">
           <button
@@ -405,12 +438,78 @@ export function ReplyQueue({
           >
             {showHandled ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
             {handled.length} more that probably need nothing
-            <span className="text-xs text-muted-2">(thank-yous and confirmations)</span>
+            <span className="text-xs text-muted-2">(thank-yous, confirmations, and our own team)</span>
           </button>
           {showHandled && (
             <div className="mt-3 space-y-3">
               {handled.map((card) => <ReplyCardView key={card.key} {...cardProps(card)} />)}
             </div>
+          )}
+        </div>
+      )}
+
+      <MutedNumbers />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Numbers marked spam. A mute nobody can see is a mute nobody can undo, and
+// a wrongly-muted number is a client we never hear from again — so the list
+// lives right here, one click away, and un-muting brings the conversation
+// straight back (nothing was ever deleted). Loaded on demand: the page costs
+// nothing when nobody has muted anything, which is the normal case.
+// ---------------------------------------------------------------------------
+function MutedNumbers() {
+  const [open, setOpen] = useState(false);
+  const [rows, setRows] = useState<{ phone: string; since: string; reason: string | null }[] | null>(null);
+  const [busy, start] = useTransition();
+
+  const fmtPhone = (k: string) => (k.length === 10 ? `(${k.slice(0, 3)}) ${k.slice(3, 6)}-${k.slice(6)}` : k);
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next && rows === null) start(async () => setRows(await listMutedNumbers().catch(() => [])));
+  };
+
+  return (
+    <div className="pt-2">
+      <button
+        onClick={toggle}
+        className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-2 hover:text-foreground"
+      >
+        {open ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+        Muted numbers
+        {busy && <Loader2 className="size-3 animate-spin" />}
+      </button>
+      {open && (
+        <div className="mt-2 rounded-xl border border-border p-3">
+          {rows === null ? (
+            <p className="text-xs text-muted">Checking…</p>
+          ) : rows.length === 0 ? (
+            <p className="text-xs text-muted">Nothing is muted. Marking a conversation as spam mutes that number until you un-mute it here.</p>
+          ) : (
+            <ul className="space-y-1.5">
+              {rows.map((m) => (
+                <li key={m.phone} className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="font-medium">{fmtPhone(m.phone)}</span>
+                  <span className="text-muted-2">muted {fmtTime(m.since)}</span>
+                  <button
+                    disabled={busy}
+                    onClick={() =>
+                      start(async () => {
+                        await unmuteCommsNumber(m.phone).catch(() => {});
+                        setRows((r) => (r ?? []).filter((x) => x.phone !== m.phone));
+                      })
+                    }
+                    className="rounded-lg border border-border px-2 py-1 font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50"
+                  >
+                    Un-mute
+                  </button>
+                </li>
+              ))}
+            </ul>
           )}
         </div>
       )}

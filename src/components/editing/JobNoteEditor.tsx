@@ -10,8 +10,18 @@ import { Markdown } from "@/components/ui/Markdown";
 // something. Read-only for anyone without permission (editors). Lived inside
 // the queue's expanded row until Aug 27 — Jordan: "the notes can be inside the
 // edit page" — so now it renders on /edit/<id> where the editor already works.
+// Who sees each field — said on the field itself (Kyle call, Sep 16: the
+// editor's "Additional notes" was mistaken for a note the photographer would
+// see, and the same client ask got typed twice). The "customer" field IS the
+// editor-only Additional notes, so it carries the caption everywhere it is
+// mounted (/edit and, since Sep 16, /projects); a caller can pass its own.
+const FIELD_HINT: Record<"customer" | "shoot", string | null> = {
+  customer: "Editor brief only — use a Request for something the photographer must also see.",
+  shoot: null,
+};
+
 export function JobNoteEditor({
-  projectId, field, value, canEdit, label, placeholder, empty,
+  projectId, field, value, canEdit, label, placeholder, empty, hint,
 }: {
   projectId: string;
   field: "customer" | "shoot";
@@ -20,12 +30,15 @@ export function JobNoteEditor({
   label: string;
   placeholder: string;
   empty: string;
+  /** Audience caption under the field; defaults per field (null hides it). */
+  hint?: string | null;
 }) {
   const [text, setText] = useState(value ?? "");
   const [saved, setSaved] = useState<string | null>(value);
   const [open, setOpen] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [saving, startSave] = useTransition();
+  const caption = hint === undefined ? FIELD_HINT[field] : hint;
 
   function save() {
     const next = text.trim();
@@ -57,6 +70,7 @@ export function JobNoteEditor({
             {saved ? "Edit" : "Add a note"}
           </button>
         )}
+        {caption && <p className="mt-1.5 text-[11px] leading-snug text-muted-2">{caption}</p>}
       </div>
     );
   }
@@ -88,6 +102,7 @@ export function JobNoteEditor({
         </button>
       </div>
       {err && <p className="mt-1 text-[10px] text-danger">{err}</p>}
+      {caption && <p className="mt-1.5 text-[11px] leading-snug text-muted-2">{caption}</p>}
     </div>
   );
 }

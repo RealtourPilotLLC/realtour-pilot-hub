@@ -1,5 +1,12 @@
 import { notFound, redirect } from "next/navigation";
 import { Suspense } from "react";
+import { MessageSquare } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
+import { prisma } from "@/lib/prisma";
+import { getTeam } from "@/lib/queries";
+import { redactMoney } from "@/lib/hubTools";
+import { Section } from "@/components/ui/Section";
+import { ProjectMessages } from "@/components/project/ProjectMessages";
 import { getShoot, photographerMemberId, photographerOwnsShoot } from "@/lib/shoot";
 import { getClientFeedback, getPhotographerFeedback } from "@/lib/review";
 import { getCurrentUser } from "@/lib/auth/user";
@@ -129,9 +136,55 @@ export default async function ShootDetailPage({
     </>
   );
 
+  // THE JOB'S TEAM CHAT, on the photographer's screen (Kyle call, Sep 16).
+  // Tagging a photographer already sent them here — postProjectMessage's
+  // href for a PHOTOGRAPHER is /shoot/<id> — but there was no thread on this
+  // page to land on: they could read the tag only inside the task summary and
+  // could not answer it at all. Now they can, on their OWN shoots, which is
+  // the same gate this page already enforced at the top (a photographer who
+  // doesn't own the shoot never reaches this line). Compact, under the editor
+  // notes: it is a wrap-up conversation, not the reason they are on site.
+  // MONEY: this is a field screen, so every body goes through the hub's
+  // redactor unless the reader is the owner — the sentence stays, the figure
+  // goes (the same rule the job page applies to its activity feed).
+  const chatMoney = user ? canSeeMoney(user.role) : !authEnforced();
+  const [chatTeam, chatMsgs] = await Promise.all([
+    getTeam().catch(() => []),
+    prisma.projectMessage
+      .findMany({
+        where: { projectId: id },
+        orderBy: { createdAt: "asc" },
+        include: { replyTo: { select: { authorName: true, body: true } } },
+      })
+      .catch(() => []),
+  ]);
+  const chatScrub = (t: string) => (chatMoney ? t : redactMoney(t));
+  // A preview ("view as") reads; so does an owner/admin who is only looking in
+  // on someone else's field screen — no, they post too: this is the one place
+  // the office and the shooter share on a shoot day. Only impersonation reads.
+  const chat = (
+    <Section icon={MessageSquare} title="Job chat">
+      <ProjectMessages
+        projectId={id}
+        compact
+        readOnly={!!user?.impersonating}
+        team={chatTeam.map((m) => ({ id: m.id, name: m.name, avatarColor: m.avatarColor }))}
+        messages={chatMsgs.map((m) => ({
+          id: m.id,
+          authorId: m.authorId,
+          authorName: m.authorName,
+          body: chatScrub(m.body),
+          createdAt: m.createdAt.toISOString(),
+          ago: formatDistanceToNow(m.createdAt, { addSuffix: true }),
+          replyTo: m.replyTo ? { authorName: m.replyTo.authorName, body: chatScrub(m.replyTo.body) } : null,
+        }))}
+      />
+    </Section>
+  );
+
   // Owner/admin viewing as a photographer: "back" returns to that photographer's
   // scoped list. Photographers never carry an ?as= back link (fail-closed).
   const backHref = user?.role !== "PHOTOGRAPHER" && as ? `/shoot?as=${as}` : "/shoot";
 
-  return <ShootScreen view={view} pay={pay} map={map} whenText={whenText} timing={timing} media={media} backHref={backHref} />;
+  return <ShootScreen view={view} pay={pay} map={map} whenText={whenText} timing={timing} media={media} chat={chat} backHref={backHref} />;
 }

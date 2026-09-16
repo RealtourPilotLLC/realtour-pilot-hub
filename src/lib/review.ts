@@ -151,7 +151,9 @@ export type ClientFeedbackRow = {
 export async function getClientFeedback(projectId: string, memberId: string): Promise<ClientFeedbackRow[]> {
   if (!memberId) return [];
   const rows = await prisma.feedback.findMany({
-    where: { projectId, photographerId: memberId, sentiment: { in: ["POSITIVE", "NEUTRAL"] } },
+    // `sentiment` is the effective value (an owner's re-read on /quality lands
+    // there); a row dismissed as "not feedback" never renders (Sep 16).
+    where: { projectId, photographerId: memberId, sentiment: { in: ["POSITIVE", "NEUTRAL"] }, dismissedAt: null },
     orderBy: { createdAt: "desc" },
     select: { id: true, rating: true, body: true, authorName: true, createdAt: true },
   });

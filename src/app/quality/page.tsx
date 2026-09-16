@@ -148,7 +148,7 @@ function ClientTab({ feed }: { feed: NonNullable<Awaited<ReturnType<typeof getCl
         <Tile
           label="Responses"
           value={feed.total}
-          sub={`${feed.last90} in the last 90 days`}
+          sub={`${feed.last90} in the last 90 days${feed.dismissed > 0 ? ` · ${feed.dismissed} dismissed as not feedback` : ""}`}
         />
         <Tile
           label="Average rating"
@@ -196,15 +196,19 @@ function ClientTab({ feed }: { feed: NonNullable<Awaited<ReturnType<typeof getCl
       {/* Where these rows come from, stated once. Most clients answer the
           delivery text in words rather than opening the form, and a warm reply
           ("these look amazing") never becomes a row here — only complaints do,
-          because the comms brain files on NEGATIVE sentiment only. Say that
+          because the comms brain files on NEGATIVE sentiment only (and, since
+          Sep 16, only on a delivered job, never on scheduling talk). Say that
           plainly so an empty list is never mistaken for a happy month. */}
       <p className="text-xs text-muted">
         Two things land here: responses to the star-rating form we link from the delivery text, and inbound texts or
-        emails the comms brain reads as unhappy. Praise sent as a plain reply does not — read those in{" "}
+        emails the comms brain reads as a complaint about a delivered job. Praise sent as a plain reply does not — read
+        those in{" "}
         <Link href="/communications" className="text-brand hover:underline">
           Communications
         </Link>
-        .
+        . If the hub read a message wrong, fix it on the row: <span className="font-medium text-foreground">Reads as</span>{" "}
+        re-reads it, <span className="font-medium text-foreground">Not feedback</span> takes it out of every count. The
+        original stays either way.
       </p>
 
       <Section
@@ -249,11 +253,19 @@ function ClientTab({ feed }: { feed: NonNullable<Awaited<ReturnType<typeof getCl
 }
 
 function ClientRow({ f }: { f: ClientFeedbackItem }) {
-  const negative = f.sentiment === "NEGATIVE";
+  // `sentiment` is the effective read — an owner's correction lands there and
+  // the hub's own read sits in sentimentAuto (Sep 16). A dismissed row is not
+  // feedback: greyed, never amber, never counted.
+  const dismissed = !!f.dismissedAtISO;
+  const negative = f.sentiment === "NEGATIVE" && !dismissed;
   return (
-    <li className={cn("px-5 py-4", negative && !f.resolved && "bg-warning-soft/25")}>
+    <li className={cn("px-5 py-4", negative && !f.resolved && "bg-warning-soft/25", dismissed && "opacity-60")}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        {f.rating != null ? (
+        {dismissed ? (
+          <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted line-through">
+            {f.sentiment === "NEGATIVE" ? "Unhappy" : f.sentiment === "POSITIVE" ? "Happy" : "Neutral"}
+          </span>
+        ) : f.rating != null ? (
           <Stars n={f.rating} />
         ) : (
           <span
@@ -264,6 +276,9 @@ function ClientRow({ f }: { f: ClientFeedbackItem }) {
           >
             {negative ? "Unhappy" : f.sentiment === "POSITIVE" ? "Happy" : "Neutral"}
           </span>
+        )}
+        {dismissed && (
+          <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted">Not feedback</span>
         )}
         <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted">
           {SOURCE_LABEL[f.source] ?? f.source}
@@ -319,12 +334,25 @@ function ClientRow({ f }: { f: ClientFeedbackItem }) {
         </span>
       </div>
 
-      {/* Whose problem it is, and the reply back to the agent (Jordan, Sep 7). */}
+      {/* Whose problem it is, the reply back to the agent (Jordan, Sep 7), and
+          the correction controls — re-read the sentiment or dismiss the row as
+          not feedback, original kept (Sep 16, Kyle call, item 10). */}
       <FeedbackReply
         id={f.id}
+        source={f.source}
         attribution={f.attribution}
         attributionWhy={f.attributionWhy}
         attributionBy={f.attributionBy}
+        sentiment={f.sentiment}
+        sentimentAuto={f.sentimentAuto}
+        sentimentBy={f.sentimentBy}
+        sentimentAtISO={f.sentimentAtISO}
+        sentimentNote={f.sentimentNote}
+        dismissedAtISO={f.dismissedAtISO}
+        dismissedBy={f.dismissedBy}
+        dismissReason={f.dismissReason}
+        conversationHref={f.conversationHref}
+        conversationLabel={f.conversationLabel}
         repliedAtISO={f.repliedAtISO}
         replyBy={f.replyBy}
         hasEmail={!!f.clientEmail}

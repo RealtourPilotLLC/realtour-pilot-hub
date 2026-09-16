@@ -8,7 +8,7 @@ import { videoTier } from "@/lib/projectStatus";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { actualFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { etAddDays } from "@/lib/datetime";
-import { EDIT_ROUND_SUMMARY } from "@/lib/tasks";
+import { EDIT_ROUND_SUMMARY, OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 import { WAITING_HOLD_PREFIX } from "@/lib/queueWaiting";
 import {
   computedVideosOwed,
@@ -79,7 +79,7 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
         aryeoMissingAt: null,
       },
       orderBy: [{ deliveryDue: { sort: "asc", nulls: "last" } }, { shootDate: { sort: "asc", nulls: "last" } }],
-      include: { client: true, editor: true, photographer: true, deliverables: { where: { removedFromOrderAt: null } } },
+      include: { client: true, editor: true, photographer: true, deliverables: { where: OWED_DELIVERABLE_WHERE } },
     }),
     // Upcoming edits — Jordan: "any shoot on the schedule upcoming should be in
     // an upcoming edits tab". Every future-dated booked/scheduled job with a
@@ -87,13 +87,13 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
     prisma.project.findMany({
       where: { status: { in: ["BOOKED", "SCHEDULED"] }, shootDate: { gte: now }, aryeoMissingAt: null },
       orderBy: { shootDate: "asc" },
-      include: { client: true, editor: true, photographer: true, deliverables: { where: { removedFromOrderAt: null } } },
+      include: { client: true, editor: true, photographer: true, deliverables: { where: OWED_DELIVERABLE_WHERE } },
     }),
     prisma.project.findMany({
       where: { status: "DELIVERED", deliveredAt: { gte: deliveredCutoff } },
       orderBy: { deliveredAt: "desc" },
       take: 60,
-      include: { client: true, editor: true, photographer: true, deliverables: { where: { removedFromOrderAt: null } } },
+      include: { client: true, editor: true, photographer: true, deliverables: { where: OWED_DELIVERABLE_WHERE } },
     }),
   ]);
 
@@ -373,7 +373,9 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
 
 // ---- Message-center helpers ------------------------------------------------
 
-export type LatestMsg = { body: string; authorName: string; createdAt: Date };
+// `id` (Sep 16): the list rows deep-link to the newest message itself
+// (?t=<projectId>#msg-<id>) now that the board anchors every message.
+export type LatestMsg = { id: string; body: string; authorName: string; createdAt: Date };
 
 // Newest message per project, one query (distinct keeps the first row per
 // projectId in createdAt-desc order).
@@ -383,24 +385,101 @@ export async function latestMessagePerProject(projectIds: string[]): Promise<Map
     where: { projectId: { in: projectIds } },
     orderBy: { createdAt: "desc" },
     distinct: ["projectId"],
-    select: { projectId: true, body: true, authorName: true, createdAt: true },
+    select: { id: true, projectId: true, body: true, authorName: true, createdAt: true },
   });
-  return new Map(rows.map((r) => [r.projectId, { body: r.body, authorName: r.authorName ?? "Someone", createdAt: r.createdAt }]));
+  return new Map(rows.map((r) => [r.projectId, { id: r.id, body: r.body, authorName: r.authorName ?? "Someone", createdAt: r.createdAt }]));
 }
 
+// A viewer's fold on a thread (ThreadRead.closedAt, Sep 16) holds only while
+// nothing newer than the fold has been posted: postProjectMessage clears the
+// column on every post, but a message written straight to the table (the
+// shoot-complete line, a task note) must reopen the row on sight too, or a
+// closed thread could swallow a new message. One rule for every reader.
+export const threadIsClosed = (closedAt: Date | null | undefined, latest: { createdAt: Date } | null | undefined): boolean =>
+  !!closedAt && !(latest && latest.createdAt > closedAt);
+
 // How many of these threads have a message newer than the viewer's read
-// watermark — the badge on the queue's Messages button.
+// watermark — the badge on the queue's Messages button. A thread the viewer
+// closed (and nobody has posted on since) does not count.
 export async function unreadThreadCount(userKey: string | null, projectIds: string[]): Promise<number> {
   if (!userKey || projectIds.length === 0) return 0;
   const [latest, reads] = await Promise.all([
     latestMessagePerProject(projectIds),
-    prisma.threadRead.findMany({ where: { userKey }, select: { projectId: true, seenAt: true } }),
+    prisma.threadRead.findMany({ where: { userKey }, select: { projectId: true, seenAt: true, closedAt: true } }),
   ]);
-  const seen = new Map(reads.map((r) => [r.projectId, r.seenAt]));
+  const seen = new Map(reads.map((r) => [r.projectId, r]));
   let n = 0;
   for (const [pid, m] of latest) {
     const s = seen.get(pid);
-    if (!s || m.createdAt > s) n++;
+    if (threadIsClosed(s?.closedAt, m)) continue;
+    if (!s || m.createdAt > s.seenAt) n++;
   }
   return n;
+}
+
+// ---- Team chat by property (Sep 16, Kyle call) ------------------------------
+// The one conversation list behind /editing/messages AND Communications →
+// Team. An editor's list is their lane of the video queue, exactly as before
+// (the same resolved-editor ladder buildEditorQueue runs). The office's list
+// is wider than the video queue was: every job that has a thread at all
+// (photo-only jobs included — 358 N Church's chat never appeared before) plus
+// every job in flight, so a job with no thread yet is still one click from
+// starting one.
+
+export type ChatConversation = {
+  id: string;
+  street: string;
+  client: string;
+  /** The rail's word for the job's state ("In editing", "Ready for review"…). */
+  status: string;
+  /** Sort weight for jobs without a thread: shoot/delivery date, nulls last. */
+  sortAt: Date | null;
+};
+
+export type ChatScope = { kind: "editor"; editorKey: string } | { kind: "office" };
+
+export async function teamChatConversations(scope: ChatScope): Promise<ChatConversation[]> {
+  if (scope.kind === "editor") {
+    const { notDone, upcoming, done } = await buildEditorQueue();
+    return [...notDone, ...upcoming, ...done]
+      .filter((r) => r.editorKey === scope.editorKey)
+      .map((r) => ({ id: r.id, street: r.street, client: r.client, status: r.status, sortAt: r.dueISO ? new Date(r.dueISO) : null }));
+  }
+  const now = new Date();
+  const [threaded, active] = await Promise.all([
+    prisma.projectMessage.groupBy({ by: ["projectId"] }),
+    prisma.project.findMany({
+      where: {
+        aryeoMissingAt: null,
+        OR: [
+          { status: { in: ["SHOT", "EDITING", "REVIEW", "REVISION"] } },
+          // Booked work close enough to talk about: last week's shoots whose
+          // raws may still be landing, and the next two weeks on the schedule.
+          { status: { in: ["BOOKED", "SCHEDULED"] }, shootDate: { gte: etAddDays(now, -7), lte: etAddDays(now, 14) } },
+        ],
+      },
+      select: { id: true },
+    }),
+  ]);
+  const ids = Array.from(new Set([...threaded.map((t) => t.projectId), ...active.map((p) => p.id)]));
+  if (ids.length === 0) return [];
+  const projects = await prisma.project.findMany({
+    where: { id: { in: ids } },
+    select: {
+      id: true,
+      title: true,
+      addressLine: true,
+      status: true,
+      shootDate: true,
+      deliveryDue: true,
+      client: { select: { name: true } },
+    },
+  });
+  return projects.map((p) => ({
+    id: p.id,
+    street: (p.addressLine || p.title.split(",")[0] || "Job").trim(),
+    client: p.client.name,
+    status: STATUS_LABEL[p.status] ?? p.status,
+    sortAt: p.deliveryDue ?? p.shootDate ?? null,
+  }));
 }

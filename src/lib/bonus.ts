@@ -188,6 +188,9 @@ export async function scorecardFor(
   const ratings = await prisma.feedback.findMany({
     where: {
       rating: { not: null },
+      // Never a row an owner dismissed as "not feedback" on /quality (Sep 16) —
+      // same guard as kpi.ts so the two pay surfaces cannot disagree.
+      dismissedAt: null,
       createdAt: { gte: q.start, lte: q.end },
       ...(memberId ? { photographerId: memberId } : {}),
     },

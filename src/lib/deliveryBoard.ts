@@ -4,6 +4,13 @@ import { etDayKey, etAddDays, etDayStartUtc } from "@/lib/datetime";
 import { tierFor, dueAtFor, type Tier } from "@/lib/turnaround";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { isMonthlyContentJob } from "@/lib/pipeline";
+// The product-name → category read and the category labels live in the light,
+// client-safe qcCategories.ts (review, Sep 16): the only thing this board wanted
+// from projectStatus.ts was one pure string function, and importing it pulled
+// the whole status engine — Aryeo, Dropbox, connections — into /pipeline's chain.
+import { categoryLabelsForLabel } from "@/lib/qcCategories";
+import { pendingDuesByCategory, slaTierOf, OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
+import { turnaroundRules } from "@/lib/settings";
 
 // ---------------------------------------------------------------------------
 // THE DELIVERY BOARD — Kyle's screen.
@@ -77,8 +84,18 @@ const PHOTOISH = new Set(["PHOTOS", "DRONE", "TWILIGHT"]);
 // tick, or the evidence-driven status (DONE = live on Aryeo, UPLOADED = the
 // photographer's tick). uploadedAt alone was a field the automated pipeline
 // never writes, so the board said "Waiting on photos" on delivered jobs (audit).
+// This is the RAW-FILES read — it answers "have the files arrived", and it is
+// what the Photos/Video media line shows.
 const isIn = (r: { uploadedAt: Date | null; status: string }) =>
   !!r.uploadedAt || r.status === "DONE" || r.status === "UPLOADED";
+
+// What the CLIENT has. UPLOADED is the photographer's raw drop into Dropbox —
+// on 358 N Church the video sat UPLOADED with nothing cut and the board read
+// "Needs QC" instead of "Waiting on video" (Kyle call, Sep 16). Only DONE (the
+// status sweep's word that the media is live) counts as delivered; the legacy
+// uploadedAt tick still counts on rows the sweep has never touched.
+const isDeliveredRow = (r: { uploadedAt: Date | null; status: string }) =>
+  r.status === "DONE" || (!!r.uploadedAt && r.status !== "UPLOADED");
 
 /** none = nothing in, some = partially in, in = all of that kind uploaded. */
 function uploadState(rows: { uploadedAt: Date | null; status: string }[]): "none" | "some" | "in" | "n/a" {
@@ -97,6 +114,9 @@ function uploadState(rows: { uploadedAt: Date | null; status: string }[]): "none
 function blockerFor(
   p: { status: string; shootDate: Date | null; deliveredAt: Date | null },
   deliverables: { type: string; status: string; uploadedAt: Date | null }[],
+  /** the status engine's own answer — categories ordered but not live on
+   *  Aryeo. Null when the job has no evidence yet (then the rows decide). */
+  missingCategories: string[] | null,
 ): { kind: BlockerKind; label: string } {
   if (p.deliveredAt) return { kind: "delivered", label: "Delivered" };
   if (p.status === "ON_HOLD") return { kind: "on_hold", label: "On hold" };
@@ -108,6 +128,8 @@ function blockerFor(
     return { kind: "not_shot", label: p.shootDate ? "Not shot yet" : "No shoot date" };
   }
 
+  // Nothing has turned up yet for some ordered item — unchanged: this is the
+  // "we don't have the files" case, and the rows are the right witness.
   const missing = deliverables.filter((d) => !isIn(d));
   if (missing.length > 0) {
     const kinds = new Set(missing.map((d) => d.type));
@@ -122,7 +144,38 @@ function blockerFor(
     return { kind: "awaiting_upload", label: `Waiting on ${name}` };
   }
 
-  if (p.status === "REVIEW") return { kind: "qc", label: "Needs QC" };
+  if (p.status === "REVIEW") {
+    // THE FILES ARE IN — but "in" counts the photographer's raw drop
+    // (Deliverable UPLOADED, or the /upload tick), and raw footage in Dropbox
+    // is not a video. 358 N Church read "Needs QC" with 57 photos live, no cut
+    // made and the client asking for it (Kyle call, Sep 16). What the CLIENT
+    // is still missing is the blocker: the status engine's per-category answer
+    // first, and where there is no evidence, the rows minus the raw-only ones.
+    if (missingCategories && missingCategories.length > 0) {
+      const has = (c: string) => missingCategories.includes(c);
+      const name =
+        has("Video") ? "video"
+        : has("Floor plan") ? "the floor plan"
+        : has("3D tour") ? "the 3D tour"
+        : has("Photos") ? "photos"
+        : missingCategories[0].toLowerCase();
+      return { kind: "awaiting_upload", label: `Waiting on ${name}` };
+    }
+    if (!missingCategories) {
+      const rawOnly = deliverables.filter((d) => !isDeliveredRow(d));
+      if (rawOnly.length > 0) {
+        const kinds = new Set(rawOnly.map((d) => d.type));
+        const name =
+          kinds.has("VIDEO") || kinds.has("SOCIAL_REEL") ? "video"
+          : kinds.has("FLOORPLAN") ? "the floor plan"
+          : kinds.has("ZILLOW_3D") || kinds.has("MATTERPORT_3D") ? "the 3D tour"
+          : kinds.has("PHOTOS") ? "photos"
+          : "files";
+        return { kind: "awaiting_upload", label: `Waiting on ${name}` };
+      }
+    }
+    return { kind: "qc", label: "Needs QC" };
+  }
   if (deliverables.length > 0 && deliverables.every((d) => d.status === "DONE")) {
     return { kind: "ready", label: "Ready to deliver" };
   }
@@ -138,6 +191,10 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
   const now = new Date();
   const todayKey = etDayKey(now);
   const tomorrowKey = etDayKey(etAddDays(now, 1));
+  // Settings → Turnaround promises, so a category with no line item of its own
+  // (328 Columbia's video lives inside "Standard Package") is dated by the same
+  // engine as the QC card and never by a stale constant.
+  const turnarounds = await turnaroundRules().catch(() => undefined);
 
   const rows = await prisma.project.findMany({
     where: {
@@ -153,11 +210,16 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
       shootDate: true, deliveredAt: true, notes: true,
       packageName: true, // monthly-content detection (the one job kind whose clock runs without a shoot)
       dueOverrideAt: true, // the office's due for the job (Sep 13, editOverrides.ts) — wins over every promise below
+      tierOverride: true, // the office's tier (Sep 16) — branding → the monthly window, premium → 72h
       client: { select: { name: true } },
       orderItems: { where: { isCanceled: false }, select: { title: true, quantity: true } },
-      deliverables: { where: { removedFromOrderAt: null }, select: { type: true, status: true, uploadedAt: true, label: true } },
+      deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, status: true, uploadedAt: true, label: true } },
       statusEvidence: true, // Dropbox raw counts + what Aryeo actually carries
-      appointments: { select: { assignedTo: { select: { name: true } } }, orderBy: { startAt: "asc" }, take: 1 },
+      // Legs (not just the first): the photographer name comes off the
+      // earliest one, and the video promise below dates from the LAST leg
+      // that actually happened — a reel filmed on the second visit is not
+      // late against the first (Sep 16 review, videoAnchorFor).
+      appointments: { select: { assignedTo: { select: { name: true } }, startAt: true, status: true }, orderBy: { startAt: "asc" } },
     },
     orderBy: { shootDate: "desc" },
     take: 400,
@@ -178,11 +240,55 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
       return { title: oi.title, quantity: oi.quantity, tierLabel: tier.label, dueAt: startedAt ? dueAtFor(tier, startedAt) : null };
     });
 
-    const { kind, label } = blockerFor(p, p.deliverables);
+    const ev = parseEvidence(p.statusEvidence);
+    const missingCategories = ev ? ev.missing : null;
+    const { kind, label } = blockerFor(p, p.deliverables, missingCategories);
+
+    // ---- THE EARLIEST OUTSTANDING PROMISE (Kyle call, Sep 16) -------------
+    // The header has always said "a job's due date is the EARLIEST outstanding
+    // item", but the code took the min over EVERY item — so a job whose photos
+    // went out on time read LATE for the photo promise while the thing actually
+    // owed (the video) sat two days out. An item is settled when every category
+    // it implies is live on Aryeo; an item the label parser can't classify
+    // ("Social Influencer") stays outstanding, because we can't prove it's done.
     const dated = items.filter((i): i is BoardItem & { dueAt: Date } => i.dueAt !== null);
-    const earliest = p.deliveredAt || dated.length === 0
+    const outstandingItems = missingCategories
+      ? dated.filter((i) => {
+          const cats = categoryLabelsForLabel(i.title);
+          return cats.length === 0 || cats.some((c) => missingCategories.includes(c));
+        })
+      : dated;
+    // A missing category the order items never name still has a promise — the
+    // deliverable rows carry it, and tasks.ts is the one SLA engine (premium
+    // 72h, same-day rushes, monthly batches) the QC card is dated by.
+    // startedAt guard: with no shoot date there is no clock at all, and
+    // pendingDuesByCategory anchors on `now` — which is how an unscheduled
+    // BOOKED job used to read "due tomorrow 5 PM" every single day.
+    const categoryDues =
+      startedAt && missingCategories && missingCategories.length > 0 && outstandingItems.length === 0
+        ? pendingDuesByCategory({
+            shootDate: startedAt,
+            deliverables: p.deliverables,
+            orderItems: p.orderItems,
+            statusEvidence: p.statusEvidence,
+            monthlyContent: monthly,
+            turnarounds,
+            // The office's tier, same ladder as the QC card and the status
+            // engine (Sep 16) — a job re-sold as a branding package must not
+            // keep reading LATE here on a 48h reel clock.
+            tier: slaTierOf(p),
+            appointments: p.appointments,
+          }).filter((d) => missingCategories.includes(d.category))
+        : [];
+    const earliestItem = p.deliveredAt || outstandingItems.length === 0
       ? null
-      : dated.reduce((a, b) => (a.dueAt <= b.dueAt ? a : b));
+      : outstandingItems.reduce((a, b) => (a.dueAt <= b.dueAt ? a : b));
+    const earliestCategory = p.deliveredAt || categoryDues.length === 0 ? null : categoryDues[0];
+    // Nothing outstanding at all (every category live, nothing to date): the
+    // job is between QC and delivery — keep the old whole-order date so the
+    // card still says when it was promised rather than falling into Upcoming.
+    const fallback = p.deliveredAt || dated.length === 0 ? null : dated.reduce((a, b) => (a.dueAt <= b.dueAt ? a : b));
+    const earliest = earliestItem ?? (earliestCategory ? { title: earliestCategory.category, tierLabel: null as string | null, dueAt: earliestCategory.at } : fallback);
     // THE OFFICE'S DUE (Sep 13, editOverrides.ts): when Jordan set a date on
     // the job, that is the promise Kyle is chasing — it replaces the earliest
     // product promise and is labelled as the office's, not a tier's. A
@@ -208,7 +314,6 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
       photos: uploadState(p.deliverables.filter((d) => PHOTOISH.has(d.type))),
       video: uploadState(p.deliverables.filter((d) => VIDEOISH.has(d.type))),
       media: (() => {
-        const ev = parseEvidence(p.statusEvidence);
         return {
           photos: {
             rawInDropbox: ev?.dropbox?.rawPhotos ?? 0,

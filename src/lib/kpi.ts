@@ -370,9 +370,14 @@ export async function scoreQuarter(opts: {
     // photographerId — see the gap note in src/app/quality/data.ts), AND is not
     // stamped to somebody else. Without that second clause a reassigned job
     // would put another photographer's rating in this person's bonus.
+    //
+    // A row an owner dismissed as "not feedback" on /quality (Sep 16) is out of
+    // the bonus maths entirely; the attribution below reads the human-corrected
+    // values, as it always has.
     prisma.feedback.findMany({
       where: {
         createdAt: { gte: q.start, lte: windowEnd },
+        dismissedAt: null,
         AND: [
           { OR: [{ photographerRating: { not: null } }, { rating: { not: null } }] },
           { OR: [{ photographerId: opts.memberId }, shootIds.length ? onIds : { projectId: "__none__" }] },

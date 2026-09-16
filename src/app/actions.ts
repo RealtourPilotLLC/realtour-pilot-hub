@@ -1,7 +1,7 @@
 "use server";
 
 import { requireAdmin, requireTaskAccess } from "@/lib/auth/guards";
-import { deliveryStamp } from "@/lib/delivery";
+import { deliveryStamp, outstandingForDelivery } from "@/lib/delivery";
 import { appBase } from "@/lib/appUrl";
 
 import { prisma } from "@/lib/prisma";
@@ -16,8 +16,9 @@ import { stageMeta } from "@/lib/pipeline";
 import { Aryeo } from "@/lib/integrations/aryeo";
 import { getSecret } from "@/lib/integrations/connections";
 import { resolveRevision } from "@/lib/comms";
-import { closeObsoleteTasks, CLOSED_BY_HAND, qcGateComplete } from "@/lib/tasks";
+import { closeObsoleteTasks, CLOSED_BY_HAND, qcGateComplete, reopenedForCategories, qcCategoryOfRow } from "@/lib/tasks";
 import { etEndOfDay } from "@/lib/datetime";
+import { DISMISS_REASONS, DISMISSED_PREFIX, type DismissReason } from "@/lib/triage";
 
 export type ApptResult = { ok: boolean; message: string };
 
@@ -127,9 +128,65 @@ const TASK_STATUSES = new Set([
 // Comms Checklist manual tick (Jordan, Sep 1): "handled it outside the hub"
 // — completes the silent client_reply task for that client (creating a
 // completed one when none exists), which the unanswered walks already honor.
-export async function markCommsHandled(clientId: string, family: "phone" | "email" = "phone", groupKey?: string): Promise<{ ok: boolean; message?: string }> {
+//
+// Sep 16 (Kyle: "there's no way to get rid of things I've already dealt
+// with"): the tick now also works on a thread with NO client record — an
+// unmatched number, a teammate's status text, a spam blast — by writing the
+// thread-scoped cut the walk reads (replyQueue.ts threadAckKey). One call,
+// three shapes:
+//   markCommsHandled(clientId)                              — the client tick
+//   markCommsHandled(clientId, "email", groupKey)           — one sender group
+//   markCommsHandled(null, "phone", undefined, {            — any thread
+//       threadKey: "p:6105550100", reason: "spam" })
+// "spam" additionally MUTES the number so the same blaster doesn't need a tick
+// a day. A teammate's number can never be muted — their texts are how the
+// field talks to the office.
+export async function markCommsHandled(
+  clientId: string | null,
+  family: "phone" | "email" = "phone",
+  groupKey?: string,
+  opts: { threadKey?: string | null; reason?: string | null } = {},
+): Promise<{ ok: boolean; message?: string }> {
   const { requireAdmin } = await import("@/lib/auth/guards");
   try { await requireAdmin(); } catch (e) { return { ok: false, message: e instanceof Error ? e.message : "Admins only." }; }
+  const reason = (opts.reason ?? "").trim() || null;
+  const threadKey = (opts.threadKey ?? "").trim() || null;
+
+  // --- the thread-scoped cut: the exit every row now has ---------------------
+  if (threadKey) {
+    const { threadAckKey, commsMuteKey, ackValue } = await import("@/lib/replyQueue");
+    const at = new Date();
+    const key = threadAckKey(family, threadKey);
+    const value = ackValue(at, reason);
+    await prisma.appSetting.upsert({ where: { key }, create: { key, value }, update: { value } });
+    if (reason === "spam") {
+      const phone = threadKey.startsWith("p:") ? threadKey.slice(2) : null;
+      if (phone && phone.length === 10) {
+        // NEVER mute our own people. Harrison's "Photos uploaded" is a status
+        // text, not spam, and a muted photographer is a silent field.
+        const { phoneKey } = await import("@/lib/integrations/openphone");
+        const team = await prisma.teamMember.findMany({ select: { phone: true } });
+        if (team.some((t) => phoneKey(t.phone) === phone)) {
+          revalidatePath("/communications");
+          return { ok: true, message: "Cleared — but that's one of our own numbers, so it wasn't muted." };
+        }
+        const mk = commsMuteKey(phone);
+        await prisma.appSetting.upsert({ where: { key: mk }, create: { key: mk, value }, update: { value } });
+      }
+    }
+    // A client's own thread carries BOTH: the ack above (so the row goes
+    // whether or not a reply task ever existed) and the task close below (so
+    // the home's Open Loops and the pager clear with it).
+    if (!clientId) {
+      revalidatePath("/communications");
+      revalidatePath("/tasks");
+      revalidatePath("/ops");
+      revalidatePath("/");
+      return { ok: true };
+    }
+  }
+  if (!clientId) return { ok: false, message: "Nothing to clear — no conversation was named." };
+
   if (family === "email") {
     // Email keeps its OWN ack marker — completing client_reply here would also
     // silence the phone board for a client who still owes a text reply. The
@@ -191,7 +248,128 @@ export async function markCommsHandled(clientId: string, family: "phone" | "emai
   }
   revalidatePath("/tasks");
   revalidatePath("/ops");
+  revalidatePath("/communications");
+  revalidatePath("/");
   return { ok: true };
+}
+
+/** Un-mute a number marked spam — the fold on the Replies tab. The mute was
+ *  only ever an AppSetting row, so lifting it brings the conversation straight
+ *  back (nothing was deleted to restore). */
+export async function unmuteCommsNumber(phone: string): Promise<{ ok: boolean; message?: string }> {
+  const { requireAdmin } = await import("@/lib/auth/guards");
+  try { await requireAdmin(); } catch (e) { return { ok: false, message: e instanceof Error ? e.message : "Admins only." }; }
+  const key = (phone ?? "").replace(/\D/g, "").slice(-10);
+  if (key.length !== 10) return { ok: false, message: "That doesn't look like a number." };
+  const { commsMuteKey } = await import("@/lib/replyQueue");
+  await prisma.appSetting.deleteMany({ where: { key: commsMuteKey(key) } });
+  revalidatePath("/communications");
+  revalidatePath("/");
+  return { ok: true };
+}
+
+/** The muted list, for the Replies tab's fold. Read on demand (a click), so
+ *  the page costs nothing when nobody has muted anything. */
+export async function listMutedNumbers(): Promise<{ phone: string; since: string; reason: string | null }[]> {
+  const { requireAdmin } = await import("@/lib/auth/guards");
+  try { await requireAdmin(); } catch { return []; }
+  const { mutedNumbers } = await import("@/lib/replyQueue");
+  return mutedNumbers();
+}
+
+// ---------------------------------------------------------------------------
+// "NOT NEEDED" — one dismissal, with a reason, on every task surface.
+//
+// Kyle's call (Sep 16): several rows describe work already done, and the only
+// control that made them go away was the status dropdown's raw "cancelled",
+// which recorded nothing. A cancelled row then vanished from every list (the
+// Done tab listed COMPLETED only), so "I dealt with it" and "the 7-day sweep
+// ate it" looked identical afterwards.
+//
+// A dismissal is now: CANCELLED + a summary that says who and why + the
+// by-hand stamp (so "things handled today" counts it) + a line on the job's
+// timeline. Nothing is deleted, and the Done tab shows it under "Dismissed".
+// ---------------------------------------------------------------------------
+
+// The reasons, the stamp prefix and its readers live in src/lib/triage.ts —
+// a "use server" module may only export async functions, and the Done tab and
+// the janitor need the same vocabulary.
+export async function dismissTask(
+  taskId: string,
+  reason: DismissReason | string,
+  duplicateOfId?: string,
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireTaskAccess(taskId);
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "No access." };
+  }
+  const base = (DISMISS_REASONS as readonly string[]).includes(reason) ? reason : "not needed";
+  // "Duplicate" without the row it duplicates is a dead end — a month later
+  // nobody can tell whether the work happened on the other row or nowhere. So
+  // the id is required AND checked: a typo must fail loudly here rather than
+  // be written onto the record as a reason that points at nothing (review).
+  let why = base;
+  if (base === "duplicate") {
+    const other = duplicateOfId?.trim()
+      ? await prisma.smartTask.findUnique({ where: { id: duplicateOfId.trim() }, select: { id: true } }).catch(() => null)
+      : null;
+    if (!other) return { ok: false, message: "I can’t find that row — paste the link from the task this duplicates." };
+    if (other.id === taskId) return { ok: false, message: "That’s this same row." };
+    why = `duplicate of ${other.id}`;
+  }
+  const t = await prisma.smartTask.findUnique({
+    where: { id: taskId },
+    select: { id: true, title: true, status: true, summary: true, projectId: true },
+  });
+  if (!t) return { ok: false, message: "That task no longer exists." };
+  if (t.status === "CANCELLED") return { ok: true, message: "Already dismissed." };
+  // A row that was genuinely COMPLETED keeps its completion. Re-labelling it
+  // as dismissed would null its completedAt and quietly remove it from every
+  // "what got done" count — the opposite of the point.
+  if (t.status === "COMPLETED") return { ok: true, message: "Already done — nothing to dismiss." };
+
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const who = (me?.name ?? me?.email ?? "").trim() || "the office";
+  const stamp = `${DISMISSED_PREFIX}${who} — ${why}.`;
+  // Keep whatever the row already said underneath the stamp: the Slack quote,
+  // the brain's detail, the client's own words. A dismissal adds a fact, it
+  // never erases the one that was there.
+  const prior = (t.summary ?? "").replace(/^Dismissed by [^\n]*\n?/, "").trim();
+  const summary = (prior ? `${stamp}\n${prior}` : stamp).slice(0, 500);
+
+  const done = await prisma.smartTask.updateMany({
+    where: { id: taskId, status: { not: "CANCELLED" } },
+    // CANCELLED, never COMPLETED, and no completedAt: nothing happened here —
+    // every "what got done" count pairs COMPLETED with completedAt, and a
+    // dismissal must not inflate them.
+    data: { status: "CANCELLED", completedAt: null, summary },
+  });
+  if (done.count === 0) return { ok: true, message: "Already dismissed." };
+
+  // A PERSON decided this. Same marker the Complete buttons write, so home's
+  // "N things handled by hand today" counts a judgement call as work (it is).
+  const { stampHandledByHand } = await import("@/lib/opsDay");
+  await stampHandledByHand(taskId, who, me?.email ?? null);
+
+  if (t.projectId) {
+    await prisma.activity
+      .create({
+        data: {
+          projectId: t.projectId,
+          type: ActivityType.SYSTEM,
+          body: `${who} dismissed a to-do (${why}): ${t.title.slice(0, 160)}`,
+        },
+      })
+      .catch(() => {});
+    revalidatePath(`/projects/${t.projectId}`);
+  }
+  revalidatePath("/tasks");
+  revalidatePath("/queue");
+  revalidatePath("/ops");
+  revalidatePath("/");
+  return { ok: true, message: `Dismissed — ${why}.` };
 }
 
 export async function setSmartTaskStatus(taskId: string, status: string) {
@@ -501,7 +679,7 @@ export async function toggleTaskChecklistItem(
     where: { id: taskId },
     // taskType/assignedKey + the client's segment let us log a QcRecord when a
     // media_qa card completes via ticking (the owner's quality dial).
-    select: { checklist: true, status: true, projectId: true, taskType: true, assignedKey: true, client: { select: { segment: true } } },
+    select: { checklist: true, status: true, projectId: true, taskType: true, assignedKey: true, sourceDetail: true, client: { select: { segment: true } } },
   });
   if (!t) return { ok: false, items: [], completed: false };
   const items = parseChecklist(t.checklist);
@@ -510,7 +688,19 @@ export async function toggleTaskChecklistItem(
   // A QC card completes on its EVIDENCE rows (media live, gallery out); the
   // failure-mode ticks are optional notes, never a gate (Jordan, Sep 8:
   // "Ticking QC should be optional"). Every other checklist keeps all-ticked.
-  const completed = t.taskType === "media_qa" ? qcGateComplete(items) : checklistComplete(items);
+  // A reopened card (a category landed after a by-hand close) holds open until
+  // THAT category's own rows are ticked — the same rule the reconciler applies
+  // (tasks.ts allDone), or the first tick here would close a card that came
+  // back precisely to be QC'd (B1 handover, Sep 16).
+  const reopenedFor = new Set(reopenedForCategories(t.sourceDetail));
+  const reopenedWorkLeft =
+    reopenedFor.size > 0 &&
+    items.some((i) => {
+      const c = qcCategoryOfRow(i.label);
+      return !i.done && !!c && reopenedFor.has(c);
+    });
+  const completed =
+    t.taskType === "media_qa" ? qcGateComplete(items) && !reopenedWorkLeft : checklistComplete(items);
   // Log a QC pass when this tick is the one that finishes a media_qa card (and it
   // wasn't already complete). recordQcCompletion snapshots the ticks, counts the
   // misses, and is deduped/best-effort so it can't double-write vs the reconciler
@@ -677,11 +867,22 @@ export async function moveProjectStatus(projectId: string, status: ProjectStatus
     await closeObsoleteTasks(projectId, status);
   }
 
+  // SAY WHAT IS STILL MISSING (Kyle's call, Sep 16: photos delivered, video
+  // never QC'd). This board move is the documented OVERRIDE — it deliberately
+  // does not refuse — but a job moved to Delivered while the evidence still
+  // names an ordered category that is live nowhere leaves no trace of that
+  // fact anywhere. Now the timeline carries it, so the next person reading the
+  // job can see the call that was made rather than guessing at it. Empty
+  // evidence (a manual or non-Aryeo job) says nothing, as it should.
+  const stillMissing = status === ProjectStatus.DELIVERED ? outstandingForDelivery(project.statusEvidence) : [];
+  const missingClause = stillMissing.length
+    ? ` with ${stillMissing.map((c) => c.toLowerCase()).join(", ")} still missing on Aryeo`
+    : "";
   await prisma.activity.create({
     data: {
       projectId,
       type: ActivityType.STATUS_CHANGE,
-      body: `Moved from ${stageMeta(project.status).label} to ${stageMeta(status).label}.`,
+      body: `Moved from ${stageMeta(project.status).label} to ${stageMeta(status).label}${missingClause}.`,
     },
   });
 

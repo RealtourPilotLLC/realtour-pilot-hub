@@ -1,14 +1,22 @@
 import Link from "next/link";
-import { ListTodo, History, MessageSquare, Repeat2, Hash } from "lucide-react";
+import { ListTodo, History, MessageSquare, Repeat2, Hash, RefreshCw } from "lucide-react";
+import { etTime } from "@/lib/datetime";
 
 export type TasksTab = "comms" | "revisions" | "slack" | "other" | "done";
 
 // CommsTabs-style switcher for the Tasks hub — same consolidation pattern as
 // /communications: every tab is shareable via ?tab= and the page renders ONLY
 // the active tab's data. Counts reuse each view's own (cheap) count query.
-export function TasksTabs({ tab, otherCount, doneCount, commsCount = 0, revisionsCount = 0, slackCount = 0 }: {
+// `updatedAt` is when THIS render read the database. Kyle's call (Sep 16):
+// "I thought the Tasks page wasn't being updated any more" — the page is
+// force-dynamic and rebuilds on every visit, but nothing on it ever said so,
+// and a page whose numbers you can't date is a page you stop trusting. The
+// badges beside each tab are that tab's own count query, so the strip reads
+// as one live line: what is open, and when we last looked.
+export function TasksTabs({ tab, otherCount, doneCount, commsCount = 0, revisionsCount = 0, slackCount = 0, updatedAt }: {
   tab: TasksTab; otherCount: number; doneCount: number;
   commsCount?: number; revisionsCount?: number; slackCount?: number;
+  updatedAt?: Date;
 }) {
   const active = "rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white";
   const idle = "rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-muted hover:bg-surface-2";
@@ -45,6 +53,14 @@ export function TasksTabs({ tab, otherCount, doneCount, commsCount = 0, revision
         Done
         {badge(doneCount, tab === "done")}
       </Link>
+      {updatedAt && (
+        <span
+          className="ml-auto inline-flex items-center gap-1 text-[11px] text-muted-2"
+          title="This page reads the database on every visit — this is when it last did."
+        >
+          <RefreshCw className="size-3" /> Updated {etTime(updatedAt)}
+        </span>
+      )}
     </div>
   );
 }

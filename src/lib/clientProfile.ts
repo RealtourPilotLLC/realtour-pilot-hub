@@ -86,8 +86,12 @@ export async function buildClientProfile(clientId: string): Promise<{ ok: boolea
         })
       : Promise.resolve([] as { body: string }[]),
     projectIds.length
+      // The profile prompt reads `sentiment` — the effective value, where an
+      // owner's re-read on /quality lands — and never a row dismissed as "not
+      // feedback" (Sep 16, Kyle call, item 10): Jamie's scheduling text must
+      // not teach the AI that she is an unhappy client.
       ? prisma.feedback.findMany({
-          where: { projectId: { in: projectIds } },
+          where: { projectId: { in: projectIds }, dismissedAt: null },
           orderBy: { createdAt: "desc" }, take: 12,
           select: { rating: true, sentiment: true, body: true },
         })
