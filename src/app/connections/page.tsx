@@ -11,6 +11,8 @@ import { slackBotScopes } from "@/lib/integrations/slack";
 import { webhookHealthByProvider, webhookLaneHealth, unresolvedWebhookFailures, webhookErrorCount } from "@/lib/webhookRetry";
 import { SyncHealth, type CronJobHealth } from "@/components/connections/SyncHealth";
 import { WebhookHealthStrip } from "@/components/connections/WebhookHealthStrip";
+import { AryeoCutover, type CutoverState } from "@/components/connections/AryeoCutover";
+import { aryeoEndpointUrl, aryeoSupportMessage, ARYEO_EVENTS, RECOMMENDED_TOKEN_HEADER } from "@/lib/webhookArming";
 import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
@@ -196,9 +198,16 @@ export default async function ConnectionsPage({
   // safety light that can be wrong in the unsafe direction is worse than none.
   // Stored-but-undecryptable therefore reads as UNSIGNED here, which is what the
   // receivers are actually doing.
+  //
+  // And for Aryeo, a readable secret is STILL not enough (Sep 16): between
+  // saving a secret and Aryeo actually holding it, the receiver is deliberately
+  // accepting unverified posts, and this banner would otherwise go green over a
+  // door that is still open. "Signed" here means what it says — posts are being
+  // checked — which is only true once enforcement is armed.
+  const aryeoLane = webhookLanes?.find((l) => l.provider === "aryeo") ?? null;
   const webhookSigned: Record<string, boolean> = {
     openphone: Boolean(openphoneWebhookSecret),
-    aryeo: Boolean(aryeoWebhookSecret || byProvider.get("aryeo")?.webhookSecret),
+    aryeo: Boolean(aryeoWebhookSecret || byProvider.get("aryeo")?.webhookSecret) && aryeoLane?.armMode === "armed",
   };
   const unsignedProviders = (["openphone", "aryeo"] as const).filter(
     (p) => byProvider.get(p)?.status === "CONNECTED" && !webhookSigned[p],
@@ -206,6 +215,38 @@ export default async function ConnectionsPage({
 
   // Deployed = we have a public base URL configured (set on Vercel).
   const deployed = Boolean(process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL);
+
+  // THE ARYEO CUTOVER CARD (Sep 16). Everything Jordan needs to get the live
+  // feed back on, assembled here rather than in the component: the endpoint URL
+  // comes from the one origin helper (the hub moved host on Sep 2 — a literal
+  // here is how you re-register the old address), and the support message is
+  // dated from the lane's real last delivery so it can't overstate or
+  // understate the outage. A failed health read lands on a safe-but-honest
+  // shape rather than hiding the card: the steps are still the steps.
+  const aryeoSecretRow = byProvider.get("aryeo_webhook");
+  const cutover: CutoverState = {
+    endpointUrl: aryeoEndpointUrl(),
+    supportMessage: aryeoSupportMessage({
+      url: aryeoEndpointUrl(),
+      silentSince: aryeoLane?.lastAcceptedAt ? new Date(aryeoLane.lastAcceptedAt) : null,
+    }),
+    events: ARYEO_EVENTS,
+    armMode: aryeoLane?.armMode ?? null,
+    // Falls back to the row check when lane health couldn't be read, so the
+    // card never claims "no secret saved" just because a query failed.
+    secretStored: aryeoLane?.secretStored ?? Boolean(aryeoSecretRow?.secretEncrypted),
+    secretReadable: aryeoLane?.secretReadable ?? Boolean(aryeoWebhookSecret),
+    secretSavedAt: aryeoSecretRow?.updatedAt ? aryeoSecretRow.updatedAt.toISOString() : null,
+    lastDeliveredAt: aryeoLane?.lastAcceptedAt ?? null,
+    quietHours: aryeoLane?.quietHours ?? null,
+    quietThresholdHours: aryeoLane?.quietThresholdHours ?? 32,
+    reconcileLastCompletedAt: reconcile?.lastCompletedAt ?? null,
+    tokenHeader: RECOMMENDED_TOKEN_HEADER,
+    // The no-secret rule, carried onto the card because the card has a button
+    // that removes the secret. With one saved this setting does nothing; the
+    // instant it is gone it decides everything. Lane health already reads it.
+    enforcedWhenNoSecret: aryeoLane?.enforced ?? false,
+  };
 
   // "N of M connected" is a ratio against the cards below, so it counts only
   // rows that ARE one of those cards. Webhook-signing secrets ride in their own
@@ -256,14 +297,17 @@ export default async function ConnectionsPage({
                       {n > 0 && ` · ${n.toLocaleString()} event${n === 1 ? "" : "s"} accepted unchecked in the last 7 days`}.{" "}
                       {p === "openphone"
                         ? "Fix: press “Enable real-time” on the OpenPhone card to register a signing token."
-                        : "Fix: save Aryeo's signing secret on the Aryeo card below."}
+                        : "Fix: work through “Aryeo real-time feed” below — make a secret, put it into Aryeo, then turn checking on."}
                     </li>
                   );
                 })}
               </ul>
               <p className="mt-1 text-muted">
-                Both receivers reject unsigned posts the moment a secret exists — they stay open only until you press the button, so
-                live texts and orders don&apos;t stop first.
+                OpenPhone starts rejecting unsigned posts the moment its token is registered — the same press does both ends, so
+                nothing can be refused before the other side has the token. Aryeo can&apos;t work that way: only Aryeo can put the
+                secret into Aryeo, so the hub keeps accepting its posts until one arrives proving Aryeo has it, and only then starts
+                refusing. Saving a secret and demanding one are separate steps there, on purpose — doing both at once on 8 September
+                is what took the Aryeo feed off the air for eight days.
               </p>
             </div>
           </div>
@@ -288,6 +332,12 @@ export default async function ConnectionsPage({
             <p className="font-medium">{gmailResult.text}</p>
           </div>
         )}
+
+        {/* The Aryeo cutover, above the health strip: the strip says WHAT is
+            wrong, this card is the three steps that fix it. Only shown when
+            Aryeo is actually connected — there is nothing to re-enable
+            otherwise. */}
+        {byProvider.get("aryeo")?.status === "CONNECTED" && <AryeoCutover state={cutover} />}
 
         {/* Webhook health (RTP-28, Sep 16): per provider, when something last
             ARRIVED, when something was last REFUSED and why, the plain sentence
@@ -387,6 +437,7 @@ export default async function ConnectionsPage({
                               // receiver's long-standing behaviour, so an
                               // untouched hub reads exactly as it did before.
                               enforced: webhookLanes?.find((l) => l.provider === provider.id)?.enforced ?? false,
+                              armMode: webhookLanes?.find((l) => l.provider === provider.id)?.armMode ?? null,
                             }
                           : undefined
                       }

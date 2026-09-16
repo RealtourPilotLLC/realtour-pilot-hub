@@ -50,6 +50,11 @@ export type WebhookLane = {
   unresolved: number;
   quietHours: number | null;
   silent: boolean;
+  quietThresholdHours: number;
+  longestHealthyGapHours: number | null;
+  armMode: "watching" | "armed" | "holding" | null;
+  watchingSince: string | null;
+  armedAt: string | null;
   neverDelivered: boolean;
   startedWithRejections: boolean;
   enforced: boolean;
@@ -152,6 +157,18 @@ function LaneRow({ lane }: { lane: WebhookLane }) {
         <span className="text-[11px] text-muted-2">
           {lane.accepted24h} in 24h · {lane.accepted7d} in 7 days
         </span>
+        {/* Why the "quiet" chip fires when it does. The threshold is measured
+            from this lane's own history — the longest gap it managed while it
+            was working, plus a margin — so it is worth showing the working
+            rather than leaving the office to wonder where a number came from. */}
+        {lane.longestHealthyGapHours !== null && (
+          <span
+            className="text-[11px] text-muted-2"
+            title={`Longest gap between deliveries while this lane was healthy: ${lane.longestHealthyGapHours}h. We call it quiet at ${lane.quietThresholdHours}h.`}
+          >
+            · called quiet after {lane.quietThresholdHours}h
+          </span>
+        )}
       </div>
 
       {lane.lastRejectedAt && (
@@ -163,7 +180,18 @@ function LaneRow({ lane }: { lane: WebhookLane }) {
       {lane.isReceiver && (
         <div className="mt-1.5 flex flex-wrap items-center gap-2">
           <VerificationChip lane={lane} />
-          {lane.enforceable && <EnforceToggle lane={lane} />}
+          {/* ONLY WHERE IT ACTUALLY DOES SOMETHING (review, Sep 16).
+              All three toggleable receivers consult this setting in one place:
+              the branch they reach when they have NO usable secret. With a
+              secret stored they verify regardless, so the button sat there
+              offering to close a door that was already shut — or, next to the
+              new Aryeo card, offering to close one the card had deliberately
+              left open, doing nothing, and reporting success.
+              It stays visible when it is switched ON despite a stored secret,
+              because that is a live trap rather than a no-op: remove the secret
+              with it on and the lane refuses everything. Better on screen where
+              it can be switched off than hidden where it waits. */}
+          {lane.enforceable && (!lane.secretStored || lane.enforced) && <EnforceToggle lane={lane} />}
           <button
             onClick={() => setTesting((t) => !t)}
             className="text-[11px] font-medium text-brand hover:underline"
@@ -225,6 +253,23 @@ function VerificationChip({ lane }: { lane: WebhookLane }) {
         <ShieldOff className="size-3" /> Secret stored but unreadable — accepting unsigned
       </span>
     );
+  // A SAVED SECRET IS NOT A CHECKED RECEIVER. This chip used to say "verifies
+  // every post" the moment a secret existed — which is the same conflation that
+  // took Aryeo off the air: saving the secret and requiring it are two separate
+  // events, and between them posts are still being waved through. Say which of
+  // the two states this actually is.
+  if (lane.secretStored && lane.armMode === "watching")
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-warning-soft px-2 py-0.5 text-[11px] font-medium text-warning">
+        <ShieldOff className="size-3" /> Secret saved, not checking yet — waiting for a signed post
+      </span>
+    );
+  if (lane.secretStored && lane.armMode === "holding")
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-warning-soft px-2 py-0.5 text-[11px] font-medium text-warning">
+        <ShieldOff className="size-3" /> Checking switched off — accepting unsigned
+      </span>
+    );
   if (lane.secretStored)
     return (
       <span className="inline-flex items-center gap-1 rounded-full bg-success-soft px-2 py-0.5 text-[11px] font-medium text-success">
@@ -243,25 +288,39 @@ function VerificationChip({ lane }: { lane: WebhookLane }) {
   );
 }
 
+/** The no-secret rule for one receiver — and it says so on its face. The old
+ *  label ("Refuse unverified posts") read like the master switch for the lane,
+ *  which it has never been: it is only consulted when there is no secret to
+ *  verify against. See setWebhookVerification for what that cost. */
 function EnforceToggle({ lane }: { lane: WebhookLane }) {
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<ActionResult | null>(null);
   const next = !lane.enforced;
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
+      <span className="text-[11px] text-muted-2">With no secret saved:</span>
       <button
         onClick={() => start(async () => setMsg(await setWebhookVerification(lane.provider, next)))}
         disabled={pending}
         className="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium hover:bg-surface disabled:opacity-60"
         title={
           next
-            ? "Refuse any post this receiver can't verify. Reversible here."
-            : "Go back to accepting posts that can't be verified (each one is stamped “unsigned”)."
+            ? "While no secret is saved, refuse every post instead of accepting it. Reversible here."
+            : "While no secret is saved, accept posts and stamp each one “unsigned”."
         }
       >
         {pending && <Loader2 className="size-3 animate-spin" />}
-        {next ? "Refuse unverified posts" : "Accept unsigned again"}
+        {next ? "refuse every post" : "accept and stamp them"}
       </button>
+      {/* The trap state, on screen rather than waiting. Set to refuse WITH a
+          secret stored, this does nothing today and everything the moment the
+          secret is removed — which is the state Sep 8 was. */}
+      {lane.enforced && lane.secretStored && (
+        <span className="text-[11px] font-medium text-warning">
+          Set to refuse. Nothing is refused while the secret is saved — but remove the secret and every post is, so switch this
+          back first.
+        </span>
+      )}
       {msg && <span className={`text-[11px] ${msg.ok ? "text-success" : "text-danger"}`}>{msg.message}</span>}
     </span>
   );

@@ -69,7 +69,15 @@ export type GmailSendHealth = { email: string; canSend: boolean | null };
 // `enforced` (RTP-28, Sep 16) is the office setting: with no secret AND
 // enforcement on, the receiver isn't open — it's refusing everything, which is
 // a different emergency and must not read as "anyone can post here".
-export type WebhookSecurity = { signed: boolean; unsignedAccepted: number; enforced: boolean };
+export type WebhookSecurity = {
+  signed: boolean;
+  unsignedAccepted: number;
+  enforced: boolean;
+  /** Aryeo only: where a signing cutover has got to. "watching" means a secret
+   *  is saved but Aryeo hasn't proved it has it, so posts are still accepted —
+   *  a deliberate, temporary state that must not be painted as a breach. */
+  armMode?: "watching" | "armed" | "holding" | null;
+};
 
 // The Slack bot token's granted scopes (auth.test, read-only). Null = the
 // probe failed; the card then says nothing rather than something wrong.
@@ -138,6 +146,14 @@ export function ProviderCard({
           {webhookSecurity.signed ? (
             <span className="inline-flex items-center gap-1 rounded-full bg-success-soft px-2 py-0.5 text-[11px] font-medium text-success">
               <ShieldCheck className="size-3" /> Webhook signed — verified
+            </span>
+          ) : webhookSecurity.armMode === "watching" ? (
+            /* Mid-cutover: a secret is saved, Aryeo hasn't used it yet, and the
+               receiver is accepting posts ON PURPOSE. Amber and specific — the
+               red "anyone can post here" below is true but reads as a fault,
+               and this state is a step in fixing one. */
+            <span className="inline-flex items-center gap-1 rounded-full bg-warning-soft px-2 py-0.5 text-[11px] font-medium text-warning">
+              <ShieldOff className="size-3" /> Secret saved — waiting for Aryeo to start signing
             </span>
           ) : (
             <span className="inline-flex items-center gap-1 rounded-full bg-danger-soft px-2 py-0.5 text-[11px] font-medium text-danger">
@@ -483,7 +499,7 @@ function AryeoWebhookSecret({ signed }: { signed: boolean }) {
               onClick={() => startClear(async () => setClearMsg(await clearAryeoWebhookSecret()))}
               disabled={clearing}
               className="text-[11px] font-medium text-muted hover:text-danger disabled:opacity-60"
-              title="Turn verification off — use this if real Aryeo events start bouncing"
+              title="Delete the saved secret. This is NOT the way to stop real events bouncing — use “Stop checking” on the Aryeo real-time feed card for that, which keeps the secret."
             >
               Remove
             </button>
@@ -494,13 +510,18 @@ function AryeoWebhookSecret({ signed }: { signed: boolean }) {
     );
   }
 
+  // NOT "secure this webhook — add signing secret", which is what this button
+  // said. Saving a secret does not secure anything on its own: the hub keeps
+  // accepting posts until Aryeo proves it has the secret, which is the whole
+  // design and the whole lesson of 8 September. A button promising the door is
+  // shut the moment a value is pasted is that same false equation in miniature.
   if (!open) {
     return (
       <button
         onClick={() => setOpen(true)}
         className="mt-3 w-full rounded-lg border border-danger/40 bg-danger-soft px-3 py-2 text-sm font-medium text-danger hover:opacity-90"
       >
-        Secure this webhook — add signing secret
+        Nothing is checked here — paste a secret Aryeo already has
       </button>
     );
   }
@@ -516,16 +537,15 @@ function AryeoWebhookSecret({ signed }: { signed: boolean }) {
         className="w-full rounded-lg border bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
       />
       <p className="text-[11px] text-muted">
-        In Aryeo: <strong>Group Settings → Developers → Webhooks</strong> — copy the signing secret for the webhook pointing at this
-        hub. Aryeo signs every post with it; we check the signature and reject anything that doesn&apos;t match. Encrypted before it&apos;s
-        stored and never shown again.
+        Only for a secret Aryeo has ALREADY got. To set one up from scratch, use <strong>Aryeo real-time feed</strong> at the top of
+        this page — it makes the secret for you and walks through putting it into Aryeo. Either way, saving is safe: nothing starts
+        being refused until a post arrives that&apos;s genuinely signed with it. Encrypted before it&apos;s stored and never shown again.
       </p>
       <p className="text-[11px] text-warning">
-        Prove it before you save it. A secret saved on 8 Sep didn&apos;t match what Aryeo signs with: 36 real events bounced that
-        morning and Aryeo stopped delivering for eight days — the hourly sync covered it, so nothing looked wrong. Use{" "}
-        <strong>Test a secret</strong> in Webhook health at the top of this page: it checks a candidate against a post Aryeo already
-        sent, without calling Aryeo. If events do start bouncing, they show up there as refusals and you can remove the secret here to
-        undo it.
+        A secret saved on 8 Sep didn&apos;t match what Aryeo signs with: 36 real events bounced that morning and Aryeo stopped
+        delivering for eight days — the hourly sync covered it, so nothing looked wrong. Saving no longer switches refusing on, which
+        is the half of that fault the hub could fix. You can still check a value first with <strong>Test a secret</strong> in Webhook
+        health above: it replays a candidate against a post Aryeo already sent, without calling Aryeo.
       </p>
       <div className="flex gap-2">
         <button
@@ -534,7 +554,7 @@ function AryeoWebhookSecret({ signed }: { signed: boolean }) {
           className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
         >
           {pending && <Loader2 className="size-4 animate-spin" />}
-          Save &amp; verify from now on
+          Save this secret
         </button>
         <button type="button" onClick={() => setOpen(false)} className="rounded-lg border px-3 py-2 text-sm font-medium hover:bg-surface">
           Cancel

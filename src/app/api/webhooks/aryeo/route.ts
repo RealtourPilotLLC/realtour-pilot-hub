@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 import { getConnection, getSecret } from "@/lib/integrations/connections";
+// Static, not a dynamic import like the heavier helpers below: this module is
+// already in this route's startup graph for constantTimeEqual, so deferring the
+// rest would only disguise where the arming decision comes from.
+import { constantTimeEqual, readArmState, noteRefusalWhileArmed, noteVerifiedDelivery, TOKEN_HEADERS } from "@/lib/webhookArming";
 import {
   syncAryeoOrders, syncAryeoAppointments, syncAryeoSocialPlans, syncAryeoCustomers,
   upsertAryeoCustomerClient, orderIdForListing, type AryeoCustomer,
@@ -21,6 +25,22 @@ export const dynamic = "force-dynamic";
 // and the OpenPhone receiver stamps the same marker — keep the three in step.
 const UNSIGNED_MARKER = "UNSIGNED: accepted without verification — no webhook secret configured";
 
+// The same idea for the middle of a cutover: a secret IS saved, but Aryeo has
+// not yet proved it has it, so the post is accepted and the row says exactly
+// why. Shares the "UNSIGNED" prefix deliberately — /connections counts unsigned
+// acceptances on that prefix and lib/webhookRetry carries it across retries, so
+// a third spelling would quietly drop these rows out of both.
+const WATCHING_MARKER =
+  "UNSIGNED: accepted while waiting for Aryeo to start signing — a secret is saved here but no post has proved Aryeo has it yet";
+
+// And the third: a secret is saved and PROVED, but checking was deliberately
+// switched off (by an owner, or by the probation guard after real events
+// started bouncing). A row from that period must not claim we were still
+// waiting on Aryeo — the reason it was unchecked is entirely different, and in
+// eight months' time the row is all anyone will have.
+const HOLDING_MARKER =
+  "UNSIGNED: accepted with checking switched off — a secret is saved here but the hub was told not to enforce it";
+
 // The signing secret for inbound Aryeo webhooks. Saved from /connections into
 // the same encrypted store as every other credential ("aryeo_webhook"); the
 // legacy PLAINTEXT Connection.webhookSecret column is still read as a fallback
@@ -33,44 +53,177 @@ async function aryeoWebhookSecret(): Promise<string | null> {
 // instead of looking like a wrong secret. Order matters only for the label.
 const SIG_HEADERS = ["signature", "x-aryeo-signature", "x-signature", "aryeo-signature"] as const;
 
-export async function POST(req: NextRequest) {
-  const raw = await req.text();
+// THE ALTERNATIVE CREDENTIAL (names live in lib/webhookArming, so the screen
+// that tells Aryeo which header to use reads from the same list this does).
+// Aryeo's docs offer custom headers for "additional validation", and custom
+// endpoint setup may have to go through their support team — who may enable a
+// static header rather than signing. So the same stored secret is also accepted
+// as a bare token on one of those headers.
+//
+// Worth being clear-eyed about what it is worth. A signature is a MAC over THIS
+// body — it proves the body was not touched and cannot be replayed onto a
+// different one. A header token only proves the sender knows a string, and that
+// string is sent in full on every request. It is the weaker mechanism, offered
+// because a working weaker check beats an endpoint that is wide open; the
+// precedence rule below makes sure it can never WEAKEN the stronger one.
 
-  // Signature verification (HMAC-SHA256 of the raw body). Aryeo signs with a
-  // header literally named `Signature` (see docs: "Setting Up Webhooks").
-  // FAIL CLOSED once a secret exists. When one does NOT, what happens is a
-  // per-provider SETTING (RTP-28, Sep 16) whose default is this receiver's
-  // long-standing behaviour — accept, and stamp the row unsigned. Nothing
-  // changes here until the office flips "verify every post" on /connections;
-  // flipping it in code is how Aryeo went off the air on Sep 8.
-  const secret = await aryeoWebhookSecret();
-  const unsigned = !secret;
-  if (secret) {
-    const headerName = SIG_HEADERS.find((h) => req.headers.get(h)) ?? null;
-    const sig = (headerName ? req.headers.get(headerName) : "") || "";
+/**
+ * PRECEDENCE, stated once so nobody has to infer it from the branches:
+ *
+ *   1. A signature header is present  → the HMAC decides, full stop.
+ *      A failed signature is a REFUSAL. We do NOT then look at the token
+ *      header. Falling through would mean anyone who learned the token could
+ *      bolt a junk signature onto a forged body and still get in — and, just as
+ *      bad, a genuinely broken signing setup would be silently "rescued" by the
+ *      token and nobody would ever find out.
+ *   2. No signature, but a token header → the token decides.
+ *   3. Neither                          → nothing was presented. The arming
+ *      state (lib/webhookArming) decides whether that is accepted or refused.
+ *
+ * In short: the strongest credential OFFERED is the one that must pass.
+ */
+type CredentialCheck =
+  | { kind: "signature" | "header"; ok: boolean; header: string; presented: string | null }
+  | { kind: "none" };
+
+function checkCredential(req: NextRequest, raw: string, secret: string): CredentialCheck {
+  const sigHeader = SIG_HEADERS.find((h) => req.headers.get(h)) ?? null;
+  if (sigHeader) {
+    const sig = req.headers.get(sigHeader) || "";
     // Compare BYTES, and gate on BYTE length. timingSafeEqual THROWS when the
     // two buffers differ in length, and a JS string's .length counts characters,
     // not bytes — so a `Signature` header of 64 multibyte characters cleared a
     // character gate and then blew up inside the compare, turning what should be
     // a clean 401 into a 500 (same defect as the OpenPhone `?t=` check).
+    // `raw` came from req.text(), so the bytes we MAC are that string re-encoded
+    // as UTF-8. Exact for every valid UTF-8 body, which is all JSON Aryeo can
+    // legally send — but a body containing invalid UTF-8 bytes would have been
+    // turned into U+FFFD on the way in, and would then fail this check for a
+    // reason no amount of staring at the signature would explain. Noted rather
+    // than fixed: reading the raw bytes instead would change nothing for real
+    // traffic and is not worth touching a check that is currently correct.
     const expected = Buffer.from(crypto.createHmac("sha256", secret).update(raw).digest("hex"), "utf8");
     const provided = Buffer.from(sig.replace(/^sha256=/, ""), "utf8");
     const ok = provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
-    if (!ok) {
+    return { kind: "signature", ok, header: sigHeader, presented: sig };
+  }
+  const tokenHeader = TOKEN_HEADERS.find((h) => req.headers.get(h)) ?? null;
+  if (tokenHeader) {
+    // constantTimeEqual gates on byte length for the same reason as above — a
+    // multibyte token must not be able to throw its way past the compare.
+    const token = req.headers.get(tokenHeader) || "";
+    return { kind: "header", ok: constantTimeEqual(token, secret), header: tokenHeader, presented: null };
+  }
+  return { kind: "none" };
+}
+
+// ---------------------------------------------------------------------------
+// HOW MUCH OF AN UNVERIFIED BODY WE KEEP
+//
+// The refusal path has had a cap and a burst guard since RTP-28, on the
+// reasoning that a refused body is attacker-controlled. Every word of that
+// applies harder to the ACCEPT path now, because WATCHING is the steady state
+// of an endpoint anyone who knows the URL can post to — and that path wrote the
+// body whole, with nothing bounding it (review, Sep 16).
+//
+// The sizes are measured, not picked. Real Aryeo payloads are big: median 26KB,
+// 95th percentile 116KB, largest ever stored 273KB. So the cap for a body that
+// looks like a real Aryeo resource has to sit above that or a cutover would
+// quietly stop being able to replay its own events; anything that does NOT look
+// like one gets far less, because there is nothing in it worth keeping beyond
+// "here is what somebody posted at us".
+const REAL_BODY_CAP = 320_000;
+const JUNK_BODY_CAP = 4_000;
+/** Unverified acceptances in an hour past which we keep the row and drop the
+ *  body. The busiest real hour Aryeo has ever given us is 34 events, so 100 is
+ *  three times anything genuine — high enough that a burst of real traffic
+ *  during a cutover stays replayable, low enough to bound what an open endpoint
+ *  can be made to store. */
+const UNVERIFIED_BURST = 100;
+
+async function storableUnverifiedBody(raw: string, looksReal: string): Promise<{ body: string; clipped: boolean }> {
+  if (!raw) return { body: "{}", clipped: false };
+  try {
+    const recent = await prisma.webhookEvent.count({
+      where: { provider: "aryeo", status: { not: "REJECTED" }, error: { startsWith: "UNSIGNED" }, createdAt: { gt: new Date(Date.now() - 3600_000) } },
+    });
+    if (recent >= UNVERIFIED_BURST) return { body: "{}", clipped: true };
+  } catch {
+    /* can't count — fall through to the caps, which bound it anyway */
+  }
+  const body = raw.slice(0, looksReal ? REAL_BODY_CAP : JUNK_BODY_CAP);
+  return { body, clipped: body.length < raw.length };
+}
+
+export async function POST(req: NextRequest) {
+  const raw = await req.text();
+
+  // WHO IS ALLOWED IN, AND WHEN WE START INSISTING.
+  //
+  // Aryeo signs with a header literally named `Signature` (docs: "Setting Up
+  // Webhooks") — HMAC-SHA256 of the raw body, hex. That check is unchanged and
+  // correct. What changed on Sep 16 is WHEN a failed check is fatal.
+  //
+  // Saving a secret no longer flips this receiver to refusing. At the instant a
+  // secret is saved, Aryeo does not have it yet — that is not an edge case, it
+  // is the normal state of every cutover, and treating it as an attack is what
+  // took Aryeo off the air for eight days on Sep 8. So a saved secret starts in
+  // WATCHING: posts are accepted, every credential is still evaluated, and the
+  // first post that genuinely verifies proves Aryeo has the secret and arms
+  // enforcement from then on. See lib/webhookArming for the state machine, the
+  // probation climb-down, and why the escape hatch does not return to watching.
+  //
+  // With NO secret at all, behaviour is unchanged: a per-provider SETTING whose
+  // default is this receiver's long-standing accept-and-stamp.
+  const secret = await aryeoWebhookSecret();
+  const cred: CredentialCheck = secret ? checkCredential(req, raw, secret) : { kind: "none" };
+  // The credential that PASSED, or null. Held as the object rather than a bare
+  // boolean so the arming call below gets a properly narrowed value instead of
+  // leaning on inference from a flag set forty lines earlier.
+  const proven = cred.kind !== "none" && cred.ok ? cred : null;
+  const verified = proven !== null;
+  // Null when the post verified; otherwise the marker that will describe this
+  // row forever. Set below on each accept-without-verifying path.
+  let acceptedMarker: string | null = null;
+
+  if (secret && !verified) {
+    const arm = await readArmState("aryeo", secret);
+    if (arm.mode === "armed") {
       // Record the refusal WITH the evidence needed to diagnose it offline: the
       // header that carried the digest, the digest itself, and the whole body
       // (the old 2,000-char slice is why not one of the 36 Sep 8 rejections can
       // be replayed against a candidate secret today). refuseWebhook also runs
       // the hourly spike alert. Best-effort; never block the response on it.
       const { refuseWebhook } = await import("@/lib/webhookRetry");
-      await refuseWebhook("aryeo", { code: "bad-signature", rawBody: raw, header: headerName, sig });
+      await refuseWebhook("aryeo", {
+        code: cred.kind === "header" ? "bad-token" : "bad-signature",
+        rawBody: raw,
+        header: cred.kind === "none" ? null : cred.header,
+        sig: cred.kind === "signature" ? cred.presented : null,
+      });
+      // If real Aryeo traffic starts bouncing in the hours right after a
+      // cutover, climb back down by ourselves rather than waiting for someone
+      // to notice. Aryeo gives up after two retries; nobody checked for eight
+      // days last time.
+      await noteRefusalWhileArmed("aryeo", secret).catch(() => false);
       // The CALLER is told nothing but "invalid": the plain-English refusal lives
       // on the stored row and the owner-only Connections strip. A refused post is
       // unauthenticated by definition, and "no secret is saved" / "the app secret
       // changed" is a map of how the door is hung (RTP-28 review, Sep 16).
       return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
     }
-  } else {
+    // WATCHING or HOLDING — accept, and make the row say so. This is the window
+    // in which Aryeo has the URL but not yet the secret, and refusing here is
+    // the whole of the Sep 8 fault.
+    acceptedMarker = arm.mode === "holding" ? HOLDING_MARKER : WATCHING_MARKER;
+    console.warn(
+      `[webhook] aryeo: accepted WITHOUT verification (${arm.mode}) — a secret is saved but this post did not carry a matching one. ${
+        arm.mode === "holding"
+          ? "Checking is switched off; turn it back on from /connections."
+          : "Checking starts by itself when Aryeo sends a post that verifies."
+      }`,
+    );
+  } else if (!secret) {
     // No usable secret. The office setting decides: refuse (and say why), or
     // accept and stamp the row so the acceptance is self-describing forever.
     const { gateMissingSecret, refuseWebhook } = await import("@/lib/webhookRetry");
@@ -79,6 +232,7 @@ export async function POST(req: NextRequest) {
       await refuseWebhook("aryeo", { code: gate.code, rawBody: raw, header: null, sig: null });
       return NextResponse.json({ error: "Unverified" }, { status: 401 });
     }
+    acceptedMarker = UNSIGNED_MARKER;
     // Nothing was verified. Say so on every request (Vercel logs) as well as on
     // the stored row — the receiver URL became guessable when the app moved to
     // hub.realtourpilot.com, and a forged POST here reconciles real projects.
@@ -93,6 +247,25 @@ export async function POST(req: NextRequest) {
   }
 
   const cls = classifyAryeoPayload(payload);
+
+  // PROOF. This post verified against the stored secret, so Aryeo demonstrably
+  // has it — which is the only evidence that makes it safe to start refusing.
+  // Deliberately after classification: noteVerifiedDelivery will only arm on a
+  // payload that is a real Aryeo resource, never on a signed probe or an empty
+  // body. Best-effort; a missed arm just means the next event arms instead.
+  if (secret && proven) {
+    try {
+      await noteVerifiedDelivery("aryeo", {
+        secret,
+        credential: proven.kind,
+        header: proven.header,
+        eventType: cls.eventName,
+        payload,
+      });
+    } catch {
+      /* never let the cutover bookkeeping cost us a real event */
+    }
+  }
   const eventType = cls.eventName;
   // Idempotency: ONLY when we have a true activity id (the documented ACTIVITY
   // wrapper). Flat resource payloads carry the RESOURCE's id — deduping on that
@@ -108,15 +281,22 @@ export async function POST(req: NextRequest) {
     if (seen) return NextResponse.json({ ok: true, deduped: true });
   }
 
+  // An unverified body is bounded before it is stored; a verified one is kept
+  // whole, because it came from Aryeo and replaying it is the point.
+  const kept = acceptedMarker ? await storableUnverifiedBody(raw, cls.object) : null;
   const log = await prisma.webhookEvent.create({
     data: {
       provider: "aryeo",
       eventType,
       externalId,
-      payload: raw || "{}",
+      payload: kept ? kept.body : raw || "{}",
       // Marker only — status stays on its normal RECEIVED→PROCESSED path so
-      // dedupe and the hourly retry sweep behave exactly as before.
-      error: unsigned ? UNSIGNED_MARKER : null,
+      // dedupe and the hourly retry sweep behave exactly as before. Null when
+      // the post verified; otherwise it says WHY it was let through unverified,
+      // and whether the copy on this row is the whole of what arrived. (Every
+      // reader matches on the "UNSIGNED" PREFIX, so a suffix is safe — check
+      // that is still true before changing the front of these strings.)
+      error: acceptedMarker && kept?.clipped ? `${acceptedMarker} — body not kept in full` : acceptedMarker,
     },
   });
 

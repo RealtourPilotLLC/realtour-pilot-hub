@@ -24,6 +24,20 @@ export async function GET(req: NextRequest) {
   }
   const { step, out, finish } = cronBudget(250_000, Date.now(), "sync"); // ~50s headroom under maxDuration
 
+  // IS ANYTHING STILL TALKING TO US? — deliberately the FIRST step of the hour.
+  //
+  // This used to ride along at the end of retryFailedWebhooks, which made the
+  // one alarm that watches for silence depend on an unrelated sweep finishing
+  // first: a thrown error or an exhausted budget in the retry pass and the
+  // alarm simply did not run, silently. The failure it exists to catch —
+  // Aryeo delivering nothing for eight days while every screen stayed green —
+  // is exactly the kind nobody is checking up on, so it now runs on its own,
+  // before anything can starve it, and cronBudget catches its errors alone.
+  await step("webhookSilence", async () => {
+    const { alertQuietWebhookLanes } = await import("@/lib/webhookRetry");
+    return alertQuietWebhookLanes();
+  }, { maxMs: 30_000 });
+
   await step("orders", () => syncAryeoOrders({ full: false }));
   // Recent + future only, so the hourly run stays well under the time limit.
   await step("appointments", () => syncAryeoAppointments({ recentOnlyDays: 21 }));

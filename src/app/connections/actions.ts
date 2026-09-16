@@ -282,11 +282,19 @@ export async function saveAryeoWebhookSecret(
   // look protected on this page while being trivially guessable.
   if (secret.length < 12) return { ok: false, message: "That looks too short to be a signing secret — copy the whole value." };
   await saveSecret("aryeo_webhook", secret);
+  // SAVING IS NOT ENFORCING (Sep 16). This action used to switch the receiver
+  // to rejecting the instant it returned — which is precisely what it did on
+  // 8 September, to a secret Aryeo had never been given: 36 real events bounced
+  // and the feed went dead for eight days. Now the same save opens a WATCHING
+  // period, and the receiver only starts refusing once a post actually verifies
+  // against this value. See lib/webhookArming.
+  const { beginWatching } = await import("@/lib/webhookArming");
+  await beginWatching("aryeo", secret);
   revalidatePath("/connections");
   return {
     ok: true,
     message:
-      "Saved. Aryeo webhooks are now verified — anything unsigned is rejected. If real events start bouncing (watch the Sync health panel), the secret is wrong: remove it here and re-copy it.",
+      "Saved. Nothing changes for Aryeo right now — its posts keep being accepted exactly as they were. The hub starts checking them, and refusing anything that doesn't match, the first time Aryeo sends a post actually signed with this. You'll get a notification when that happens.",
   };
 }
 
@@ -303,8 +311,48 @@ export async function clearAryeoWebhookSecret(): Promise<ActionResult> {
   // door — exactly the wedge this escape hatch exists to undo. updateMany, not
   // update, because the "aryeo" row may not exist.
   await prisma.connection.updateMany({ where: { provider: "aryeo" }, data: { webhookSecret: null } });
+  // And forget every decision recorded ABOUT that secret. The fingerprint check
+  // in readArmState already disregards a record belonging to a retired secret,
+  // so this is not load-bearing — but leaving a stale "armed, proved on the 8th"
+  // row behind to be read by some future query is how a safety light ends up
+  // describing a credential that no longer exists.
+  const { forgetArmState } = await import("@/lib/webhookArming");
+  await forgetArmState("aryeo");
+
+  // AND THE OTHER SWITCH, or this action is a trap (review, Sep 16).
+  //
+  // With a secret stored, `webhook-enforce:aryeo` is never consulted — the
+  // receiver verifies and that is that. With NO secret it becomes the whole
+  // rule: set to refuse, the receiver 401s every Aryeo post. So removing the
+  // secret while that setting is on does not do what this button says; it does
+  // the exact opposite, and it is the Sep 8 configuration exactly — Aryeo
+  // bounces twice, gives up, and the feed is dead again.
+  //
+  // It is turned off rather than refusing the removal, because the removal is
+  // the thing the owner asked for and the setting is a leftover from a control
+  // that used to be shown alongside it. Saying so out loud is the price.
+  let alsoAcceptedAgain = false;
+  try {
+    const { webhookEnforced, setWebhookEnforced } = await import("@/lib/webhookRetry");
+    if (await webhookEnforced("aryeo")) {
+      const { getCurrentUser } = await import("@/lib/auth/user");
+      const who = await getCurrentUser().catch(() => null);
+      await setWebhookEnforced("aryeo", false, who?.email ?? null);
+      alsoAcceptedAgain = true;
+    }
+  } catch {
+    /* if this can't be read, the message below simply doesn't mention it */
+  }
+
   revalidatePath("/connections");
-  return { ok: true, message: "Signing secret removed — the Aryeo receiver is accepting unsigned posts again." };
+  return {
+    ok: true,
+    message:
+      "Removed. Nothing is stored for Aryeo to sign with any more, so the hub is back to accepting any post sent to its webhook address — including from anyone who knows it. Generate a new secret when you're ready to close that." +
+      (alsoAcceptedAgain
+        ? " One other thing was switched off with it: this page also had “with no secret saved, refuse every post” turned on for Aryeo. Left on, removing the secret would have made the hub refuse everything Aryeo sends — which is what took the feed down on 8 September — so it is now set back to accepting."
+        : ""),
+  };
 }
 
 export async function syncOpenPhoneContactsNow(): Promise<ActionResult> {

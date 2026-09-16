@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getSetting, putSetting } from "@/lib/settings";
 import { getSecret } from "@/lib/integrations/connections";
 import { etMonthDay, etDayKey } from "@/lib/datetime";
+import { appBase } from "@/lib/appUrl";
 
 // ---------------------------------------------------------------------------
 // RTP-28 (Sep 16 2026). This module is now the ONE place that answers three
@@ -41,38 +42,56 @@ type LaneCopy = {
   fixAfterRejections: string;
   /** The fix when it just went quiet. */
   fix: string;
+  /** The same instruction cut to fit a notification. notifyInApp clips a body at
+   *  140 characters, and the two `fix` lines above are written for a page where
+   *  there is room to be specific — clipped into the bell they lose exactly the
+   *  half that says what to do. So each lane carries a short form, and the bell
+   *  uses it instead of a truncated sentence. */
+  bellFix: string;
 };
 
 const LANE: Record<string, LaneCopy> = {
   aryeo: {
     name: "Aryeo",
     cover: "the hourly sync is covering, media updates arrive up to an hour late",
-    fixAfterRejections: "Re-paste the signing secret from Aryeo.",
-    fix: "Check the webhook subscription in Aryeo (Group Settings → Developers → Webhooks) still points at this hub.",
+    // NOT "re-paste the signing secret from Aryeo" (which is what this said
+    // until the review): Aryeo does not issue one. Their docs say any arbitrary
+    // string can be used, so the hub makes the secret and we give it to THEM —
+    // that is the whole point of the card on /connections, and sending Kyle
+    // hunting in Aryeo for a credential that does not exist is worse than
+    // saying nothing at all. Every one of these sentences has to name a step a
+    // person can actually take.
+    fixAfterRejections: "Aryeo doesn’t issue a signing secret — the hub makes one and you give it to Aryeo. Open Connections and follow the three steps on the Aryeo card.",
+    fix: "Check the webhook subscription in Aryeo (Group Settings → Developers → Webhooks) still points at this hub — the steps are on the Aryeo card on Connections.",
+    bellFix: "Open Connections — the Aryeo card walks you through it.",
   },
   openphone: {
     name: "OpenPhone",
     cover: "nothing backfills texts and calls, so anything sent meanwhile is missing from the hub",
     fixAfterRejections: "Press “Enable real-time” on the OpenPhone card to re-register the hook with a fresh token.",
     fix: "Press “Enable real-time” on the OpenPhone card to re-register the hook.",
+    bellFix: "Press “Enable real-time” on the OpenPhone card on Connections.",
   },
   scripting: {
     name: "Script Studio",
     cover: "script and hook changes only appear when someone opens the job",
     fixAfterRejections: "Re-copy HUB_WEBHOOK_SECRET from Script Studio into SCRIPTING_WEBHOOK_SECRET.",
     fix: "Check the hub webhook is still enabled in Script Studio.",
+    bellFix: "Check the hub webhook is still enabled in Script Studio.",
   },
   slack: {
     name: "Slack",
     cover: "messages posted in Slack stop reaching the hub",
     fixAfterRejections: "Re-install the Ops Hub Slack app and re-copy its signing secret.",
     fix: "Re-install the Ops Hub Slack app.",
+    bellFix: "Re-install the Ops Hub Slack app.",
   },
   gmail: {
     name: "Gmail",
     cover: "new email stops feeding comms and the morning brief",
     fixAfterRejections: "Reconnect the mailbox on this page.",
     fix: "Reconnect the mailbox on this page.",
+    bellFix: "Reconnect the mailbox on Connections.",
   },
 };
 
@@ -112,6 +131,17 @@ export const ENFORCE_DEFAULT: Record<string, boolean> = {
 /** Providers whose enforcement the office may actually change. Slack is already
  *  fail-closed in code and there is nothing to loosen; gmail is not a receiver. */
 export const ENFORCE_TOGGLEABLE: readonly string[] = ["aryeo", "openphone", "scripting"];
+
+/** Providers whose stored secret goes through the watching→armed cutover in
+ *  lib/webhookArming, rather than biting the instant it is saved.
+ *
+ *  Aryeo alone, and for a reason rather than by omission: OpenPhone's token is
+ *  set at BOTH ends by one press of "Enable real-time" (we generate it and
+ *  register it with OpenPhone in the same call), so there is no window where we
+ *  hold a secret the other side lacks — which is the entire window this machine
+ *  exists to survive. Script Studio's secret is a Vercel env var with no
+ *  Connection row, so it has nowhere to keep an arm record. */
+export const ARMED_BY_PROOF: readonly string[] = ["aryeo"];
 
 const enforceKey = (provider: string) => `webhook-enforce:${provider}`;
 
@@ -159,11 +189,21 @@ export const REFUSAL_BAD_SIGNATURE =
 export const REFUSAL_UNREADABLE_SECRET =
   "Refused. A signing secret is stored for this receiver but the hub cannot read it — the app secret it was encrypted with has changed — so nothing was read and nothing was changed. Re-save the signing secret on Connections.";
 
-export type RefusalCode = "no-secret" | "bad-signature" | "unreadable-secret";
+/** The alternative credential (RTP-28, Sep 16): some providers send the shared
+ *  secret as a plain header instead of signing the body — Aryeo's docs offer
+ *  custom headers, and their support may enable that rather than signing. A
+ *  token mismatch is a different fault from a signature mismatch (nothing is
+ *  wrong with the body; the sender simply presented the wrong string), so it
+ *  gets its own sentence rather than being reported as a bad signature. */
+export const REFUSAL_BAD_TOKEN =
+  "Refused. This post carried a webhook token that doesn’t match the saved secret, so nothing was read and nothing was changed. Check the value the provider is sending against the secret saved on Connections.";
+
+export type RefusalCode = "no-secret" | "bad-signature" | "bad-token" | "unreadable-secret";
 
 const REFUSAL_TEXT: Record<RefusalCode, string> = {
   "no-secret": REFUSAL_NO_SECRET,
   "bad-signature": REFUSAL_BAD_SIGNATURE,
+  "bad-token": REFUSAL_BAD_TOKEN,
   "unreadable-secret": REFUSAL_UNREADABLE_SECRET,
 };
 
@@ -175,6 +215,7 @@ export const refusalText = (code: RefusalCode) => REFUSAL_TEXT[code];
 const REFUSAL_LABEL: Record<RefusalCode, string> = {
   "no-secret": "Refused — no signing secret is saved and this receiver is set to verify.",
   "bad-signature": "The signature didn’t match the saved secret.",
+  "bad-token": "The webhook token on this post didn’t match the saved secret.",
   "unreadable-secret": "Refused — a signing secret is stored but the hub can’t decrypt it.",
 };
 
@@ -559,10 +600,11 @@ export async function retryFailedWebhooks(
     }
   }
 
-  // Piggy-backs on the hourly sync that already calls this sweep, so a lane
-  // going quiet raises an alarm without another cron entry.
-  await alertQuietWebhookLanes().catch(() => {});
-
+  // The quiet alarm used to be called from here, as a tail on this sweep. It
+  // isn't any more: an alarm that only fires when an unrelated retry pass
+  // happens to reach its last line is not an alarm. It is now its own step at
+  // the TOP of the hourly cron (api/cron/sync), where nothing can starve it and
+  // its errors are caught on their own.
   return { retried, recovered, failed, deduped, superseded, waiting };
 }
 
@@ -724,10 +766,92 @@ export async function webhookHealthByProvider(days = 7): Promise<WebhookProvider
  *  processing still proves the provider reached us. */
 const ACCEPTED_STATUSES = ["RECEIVED", "PROCESSED", "ERROR", "FAILED"];
 
-/** When is quiet WRONG? Tuned against the real traffic (Sep 16): Aryeo ~28
- *  events/day before it died, OpenPhone ~50, Slack ~10, Gmail ~20 — one silent
- *  day for any of those is an outage. Script Studio runs ~1/day and is silent
- *  on ordinary days, so it gets three. */
+// ---------------------------------------------------------------------------
+// WHEN IS QUIET WRONG? — measured, not guessed
+//
+// The first cut of this panel picked two round numbers: a lane averaging 3+
+// events a day was "late" after 24 hours, anything sparser after 72. Checked
+// against the actual event log on Sep 16 those numbers were wrong in both
+// directions at once — Aryeo's longest HEALTHY gap was 25.5 hours, so a 24-hour
+// rule would have cried wolf during normal trading, and Script Studio's longest
+// healthy gap was 102.5 hours, so a 72-hour rule would have cried wolf three
+// times in a month. An alarm the office learns to scroll past is how eight days
+// of dead Aryeo went unread in the first place, so the threshold is now derived
+// from each lane's OWN rhythm.
+//
+// The rule: take the longest gap between deliveries this lane managed while it
+// was demonstrably healthy, and add a quarter. Measured over the 28 days ending
+// at its last delivery (the same anchored window as the baseline below, for the
+// same reason — a dead lane must not be allowed to dilute its own history).
+//
+// What that yields against the real log (each lane's own 28 days, re-measured
+// against production on Sep 16 — the counts in the first draft of this table
+// were from a different window and two of them were wrong):
+//
+//   lane        deliveries  longest ordinary gap   threshold   false alarms
+//   aryeo           872           25.5h               32h           0
+//   openphone      1448           20.6h               26h           0
+//   slack           315           24.5h               31h           0
+//   gmail           575           31.5h               40h           0
+//   scripting        41          102.5h              129h           0
+//
+// Zero false alarms across every lane and all 3,251 deliveries — and Aryeo's
+// outage, which began at 7:56pm ET on Sep 7, would have been on the bell by 4am
+// on Sep 9 instead of never.
+//
+// AND THE GAP THAT IS NOT A RHYTHM — the outage in the middle of the window.
+//
+// "The longest gap it managed while healthy" was measured as a plain max, with
+// nothing to tell an ordinary quiet Sunday from an outage. That is fine until
+// the day the lane recovers, and then it is precisely backwards: the FIRST
+// delivery after Aryeo comes back puts a 211-hour gap inside its own 28-day
+// window, the derived threshold jumps to the ceiling, and for the next four
+// weeks — exactly the four weeks when a freshly hand-configured webhook is
+// most likely to fall over again, and after the 24-hour settling-in guard has
+// lapsed — this alarm would wait FIVE DAYS instead of 32 hours. The alarm this
+// whole batch exists to build would have been at its weakest at the one moment
+// it was most needed.
+//
+// So an outlier is dropped rather than learned from. Working down from the
+// largest gap, any gap more than twice the next one down is discarded as an
+// outage, not a rhythm, and the cascade repeats (two outages in a window drop
+// both). What is left is the longest ORDINARY gap. Against the real log:
+//
+//   lane        largest   next     dropped?            threshold
+//   aryeo         25.5h   20.1h    no  (25.5 < 40.2)      32h
+//   openphone     20.6h   19.3h    no                     26h
+//   slack         24.5h   16.0h    no  (24.5 < 32.0)      31h
+//   gmail         31.5h   21.0h    no  (31.5 < 42.0)      40h
+//   scripting    102.5h   93.2h    no                    129h
+//
+// Nothing changes today — no healthy lane has an outlier — which is the point:
+// it is the recovery case it is there for. Replay the Aryeo recovery and the
+// 211h gap is dropped (211 > 2 × 25.5), the threshold stays 32h, and the alarm
+// keeps working through the month after the fix.
+const QUIET_OUTLIER_RATIO = 2;
+/** How many leading gaps may be discarded. A window with four separate outages
+ *  in it is not a lane with a rhythm to measure — fall back to the buckets
+ *  rather than keep peeling until something looks tidy. */
+const QUIET_OUTLIER_MAX_DROPS = 3;
+
+const QUIET_MARGIN = 1.25;
+/** Never alarm sooner than this however tight a lane's rhythm looks: a lane
+ *  that happens to have delivered every few minutes for a fortnight is still
+ *  allowed a quiet evening without waking anybody. */
+const QUIET_FLOOR_HOURS = 12;
+/** …and never wait longer than this however sparse it looks.
+ *
+ *  Six days, not five. At five, Script Studio — whose longest ordinary gap is
+ *  102.5 hours — derived 129h and was clamped down to 120h, leaving it a 17%
+ *  margin where every other lane has 25%. That is the lane most likely to
+ *  produce the first false alarm, and a false alarm is how the office learns to
+ *  scroll past this one. The rail that catches a truly dead lane is
+ *  QUIET_HARD_HOURS below, which is still a week. */
+const QUIET_CEILING_HOURS = 144;
+/** Below this many deliveries the derived number is noise, so fall back to the
+ *  original two-bucket rule rather than trusting a max-of-four. */
+const QUIET_MIN_SAMPLE = 30;
+/** The fallback buckets, unchanged, for a lane without enough history. */
 const QUIET_BUSY_PER_DAY = 3;
 const QUIET_BUSY_HOURS = 24;
 const QUIET_BURSTY_HOURS = 72;
@@ -761,9 +885,22 @@ export type WebhookLaneHealth = {
    *  it has never delivered. */
   quietHours: number | null;
   /** Normally delivers, and has now delivered nothing for longer than its own
-   *  normal gap. See QUIET_* below — a busy lane is late after a day, a bursty
-   *  one isn't late until three. */
+   *  normal gap. See the QUIET_* block — the gap is measured from this lane's
+   *  own history, not from a round number somebody picked. */
   silent: boolean;
+  /** Hours of silence this lane is allowed before `silent` goes true, and the
+   *  longest gap it actually managed while healthy. Both are shown, because a
+   *  threshold nobody can see the reasoning for is a threshold nobody trusts. */
+  quietThresholdHours: number;
+  longestHealthyGapHours: number | null;
+  /** Where this receiver is in a signing cutover: "watching" = a secret is
+   *  saved but unproved, so posts are still accepted; "armed" = proved, and
+   *  anything unverified is refused; "holding" = checking was switched off
+   *  after it started bouncing real events. Null when no secret is stored. */
+  armMode: "watching" | "armed" | "holding" | null;
+  /** When the current secret started being watched, and when it was proved. */
+  watchingSince: string | null;
+  armedAt: string | null;
   /** Nothing this lane ever delivered is still on record. Either it has never
    *  reached us, or the outage has outlived the 30-day event log — which is a
    *  worse state than `silent`, not a better one, so it gets its own flag and
@@ -781,6 +918,83 @@ export type WebhookLaneHealth = {
   /** The plain sentence for the office. Null when the lane is healthy. */
   sentence: string | null;
 };
+
+type LaneRhythm = {
+  deliveries: number;
+  /** The longest ORDINARY gap — after outages have been dropped. */
+  longestGapHours: number;
+  /** Gaps discarded as outages, largest first. Shown nowhere; kept because the
+   *  difference between "this lane's slowest week" and "this lane was down" is
+   *  the whole point of the rule above. */
+  droppedHours: number[];
+};
+
+/**
+ * The longest gap between consecutive deliveries in the 28 days ending at
+ * `anchor`, with outages discarded — one round trip, computed in the database
+ * rather than by pulling 872 timestamps into the lambda on every render of
+ * /connections.
+ *
+ * Only the few largest gaps come back, because only they can be outliers: the
+ * cascade in laneGapBaseline walks down from the top and stops at the first gap
+ * that is within QUIET_OUTLIER_RATIO of the next one, so nothing below the
+ * handful it examines can ever change the answer.
+ *
+ * The status list is spelled inline because it must match ACCEPTED_STATUSES
+ * above; if you add a status there, add it here. Everything else is
+ * parameterised. A failure returns null and the caller falls back to the
+ * bucket rule — a diagnostic panel must never be the thing that 500s the page.
+ */
+async function laneRhythm(provider: string, anchor: Date | null): Promise<LaneRhythm | null> {
+  if (!anchor) return null;
+  const from = new Date(anchor.getTime() - 28 * 86400_000);
+  try {
+    const rows = await prisma.$queryRaw<{ n: number; top: number[] | null }[]>`
+      WITH gaps AS (
+        SELECT EXTRACT(EPOCH FROM ("createdAt" - LAG("createdAt") OVER (ORDER BY "createdAt"))) / 3600.0 AS gap
+        FROM "WebhookEvent"
+        WHERE provider = ${provider}
+          AND status IN ('RECEIVED', 'PROCESSED', 'ERROR', 'FAILED')
+          AND "createdAt" > ${from}
+          AND "createdAt" <= ${anchor}
+      )
+      SELECT (SELECT count(*)::int FROM gaps) AS n,
+             (SELECT array_agg(gap ORDER BY gap DESC)
+                FROM (SELECT gap FROM gaps WHERE gap IS NOT NULL ORDER BY gap DESC LIMIT ${QUIET_OUTLIER_MAX_DROPS + 2}) t
+             )::float8[] AS top`;
+    const r = rows[0];
+    if (!r) return null;
+    const top = (r.top ?? []).map((g) => Number(g)).filter((g) => Number.isFinite(g) && g > 0);
+    const { longest, dropped } = laneGapBaseline(top);
+    return { deliveries: Number(r.n) || 0, longestGapHours: longest, droppedHours: dropped };
+  } catch {
+    return null;
+  }
+}
+
+/** The outage-dropping cascade, split out so it can be reasoned about (and read)
+ *  on its own: walk down the largest gaps, discarding any that is more than
+ *  QUIET_OUTLIER_RATIO times the next one down. `top` must be sorted desc. */
+export function laneGapBaseline(top: number[]): { longest: number; dropped: number[] } {
+  const dropped: number[] = [];
+  let i = 0;
+  while (i < top.length - 1 && dropped.length < QUIET_OUTLIER_MAX_DROPS && top[i] > top[i + 1] * QUIET_OUTLIER_RATIO) {
+    dropped.push(top[i]);
+    i++;
+  }
+  return { longest: top[i] ?? 0, dropped };
+}
+
+/** Turn a lane's measured rhythm into the number of hours of silence that means
+ *  something is wrong. See the QUIET_* block above for the derivation and the
+ *  numbers it produces against the real log. */
+function quietThreshold(rhythm: LaneRhythm | null, perDay: number): number {
+  if (!rhythm || rhythm.deliveries < QUIET_MIN_SAMPLE || rhythm.longestGapHours <= 0) {
+    return perDay >= QUIET_BUSY_PER_DAY ? QUIET_BUSY_HOURS : QUIET_BURSTY_HOURS;
+  }
+  const derived = Math.ceil(rhythm.longestGapHours * QUIET_MARGIN);
+  return Math.min(QUIET_CEILING_HOURS, Math.max(QUIET_FLOOR_HOURS, derived));
+}
 
 /** Which Connection row carries each receiver's signing secret. Scripting's is
  *  an env var (SCRIPTING_WEBHOOK_SECRET), so it has no row to read. */
@@ -861,11 +1075,12 @@ export async function webhookLaneHealth(): Promise<WebhookLaneHealth[]> {
     // bouncing a post an hour is failing loudly, and that gets its own sentence.
     const quietHours = lastAccepted ? Math.floor((now - lastAccepted.createdAt.getTime()) / 3600_000) : null;
     const perDay = baseline / 28; // the anchored baseline window is exactly 28 days
-    // A lane's own rhythm decides when quiet is wrong. Aryeo ran ~28 events a
-    // day, so one silent day is an outage; Script Studio runs ~1 and is silent
-    // on plenty of ordinary days, so crying wolf at 24h would train the office
-    // to ignore this strip — which is how eight days of dead Aryeo went unread.
-    const threshold = perDay >= QUIET_BUSY_PER_DAY ? QUIET_BUSY_HOURS : QUIET_BURSTY_HOURS;
+    // A lane's own measured rhythm decides when quiet is wrong — the longest gap
+    // it managed while healthy, plus a quarter. See the QUIET_* block above for
+    // the numbers this produces against the real log and why the round numbers
+    // it replaced were wrong in both directions.
+    const rhythm = await laneRhythm(provider, anchor);
+    const threshold = quietThreshold(rhythm, perDay);
     // Nothing it ever delivered is still on record — the state AFTER a long
     // outage, once the purge has eaten the history. Kept separate from `silent`
     // so it can never read as healthy.
@@ -883,6 +1098,36 @@ export async function webhookLaneHealth(): Promise<WebhookLaneHealth[]> {
 
     const replayable = await countReplayable(provider);
 
+    // Where this receiver stands in a signing cutover. Read WITHOUT the secret
+    // (peekArmState), because this panel has to be able to describe a lane whose
+    // secret it cannot decrypt — the state that used to render as a reassuring
+    // green tick. A record left over from a DIFFERENT secret is disregarded:
+    // the current one has never been proved, so it reads as watching.
+    //
+    // ONLY for the lanes that actually go through that state machine. This ran
+    // for every lane with a stored secret, and since only Aryeo has an arm
+    // record, OpenPhone came back "watching" — so the strip told the office
+    // "secret saved, not checking yet" about a receiver that has verified every
+    // post since the token was stored. A light that is wrong in the safe
+    // direction is still a light that is wrong, and this one would have had
+    // somebody re-registering a working hook.
+    let armMode: WebhookLaneHealth["armMode"] = null;
+    let watchingSince: string | null = null;
+    let armedAt: string | null = null;
+    if (secretStored && ARMED_BY_PROOF.includes(provider)) {
+      try {
+        const { peekArmState, armFingerprint } = await import("@/lib/webhookArming");
+        const stored = await peekArmState(provider);
+        const current = secretRow && secretReadable ? await getSecret(secretRow).catch(() => null) : null;
+        const sameSecret = Boolean(stored && current && stored.fingerprint === armFingerprint(current));
+        armMode = stored && sameSecret ? stored.mode : "watching";
+        watchingSince = stored && sameSecret ? stored.watchingSince : null;
+        armedAt = stored && sameSecret ? (stored.armedAt ?? null) : null;
+      } catch {
+        armMode = null; // unknown — say nothing rather than something wrong
+      }
+    }
+
     out.push({
       provider,
       name: laneName(provider),
@@ -898,6 +1143,11 @@ export async function webhookLaneHealth(): Promise<WebhookLaneHealth[]> {
       unresolved,
       quietHours,
       silent,
+      quietThresholdHours: threshold,
+      longestHealthyGapHours: rhythm && rhythm.deliveries >= QUIET_MIN_SAMPLE ? Math.round(rhythm.longestGapHours * 10) / 10 : null,
+      armMode,
+      watchingSince,
+      armedAt,
       neverDelivered,
       startedWithRejections,
       enforced: enforced[provider] ?? false,
@@ -910,7 +1160,8 @@ export async function webhookLaneHealth(): Promise<WebhookLaneHealth[]> {
         silent,
         neverDelivered,
         startedWithRejections,
-        lastSeenAt,
+        lastDeliveredAt: lastAccepted?.createdAt ?? null,
+        quietHours,
         secretStored,
         secretReadable,
         rejected7d,
@@ -938,7 +1189,10 @@ function officeSentence(
     silent: boolean;
     neverDelivered: boolean;
     startedWithRejections: boolean;
-    lastSeenAt: Date | null;
+    /** The last DELIVERY, not the last contact — see the note in the silent
+     *  branch below. */
+    lastDeliveredAt: Date | null;
+    quietHours: number | null;
     secretStored: boolean;
     secretReadable: boolean;
     rejected7d: number;
@@ -958,9 +1212,15 @@ function officeSentence(
     const fix = s.rejected7d > 0 ? copy.fixAfterRejections : copy.fix;
     return `Nothing has ever arrived from ${copy.name} — or its last delivery is now older than the 30-day event log. Assume it is not delivering: ${copy.cover}. ${fix}`;
   }
-  if (s.silent && s.lastSeenAt) {
+  if (s.silent && s.lastDeliveredAt) {
     const fix = s.startedWithRejections ? copy.fixAfterRejections : copy.fix;
-    return `${copy.name} has not delivered a live event since ${etMonthDay(s.lastSeenAt)} — ${copy.cover}. ${fix}`;
+    // Dated from the last DELIVERY, never from the last contact. Aryeo's last
+    // delivery was 7:56pm ET on Sep 7 and its last contact was a REFUSAL at
+    // 10:20am on Sep 8 — quoting the refusal made the outage read a day shorter
+    // than it is, in a sentence whose whole job is to say how long it has been.
+    const days = s.quietHours !== null ? Math.floor(s.quietHours / 24) : 0;
+    const howLong = s.quietHours === null ? "" : days >= 2 ? ` — ${days} days ago` : ` — ${s.quietHours} hours ago`;
+    return `${copy.name} has not delivered a live event since ${etMonthDay(s.lastDeliveredAt)}${howLong}, and ${copy.cover}. ${fix}`;
   }
   if (s.rejected7d > 0 && s.startedWithRejections) {
     return `${copy.name} posts are bouncing at the door — ${s.rejected7d} refused in the last 7 days. ${copy.fixAfterRejections}`;
@@ -972,11 +1232,16 @@ function officeSentence(
  *  characters, so the long office sentence would lose its "what to do" half —
  *  this one is written to fit whole. The page carries the full sentence. */
 export function quietAlertBody(lane: WebhookLaneHealth): string {
-  const copy = LANE[lane.provider];
-  const fix = lane.startedWithRejections ? copy?.fixAfterRejections : copy?.fix;
-  const fallback = fix ?? "Check the connection on Connections.";
+  // The SHORT instruction, never the page one. The page sentences are written
+  // to be specific ("Aryeo doesn't issue a signing secret — the hub makes one
+  // and you give it to Aryeo…"), and at 140 characters the bell would cut that
+  // off somewhere around "the hub makes one" — turning the one line that says
+  // what to do into a line that says half of it.
+  const fallback = LANE[lane.provider]?.bellFix ?? "Open Connections.";
   if (lane.neverDelivered) return `Nothing on record in the last 30 days. ${fallback}`.slice(0, 140);
-  const since = lane.lastSeenAt ? etMonthDay(new Date(lane.lastSeenAt)) : "we last looked";
+  // The last DELIVERY, not the last contact — a lane whose final act was a
+  // refusal must not get to date its outage from the refusal (see officeSentence).
+  const since = lane.lastAcceptedAt ? etMonthDay(new Date(lane.lastAcceptedAt)) : "we last looked";
   return `Nothing since ${since}. ${fallback}`.slice(0, 140);
 }
 
@@ -990,6 +1255,18 @@ export function quietAlertBody(lane: WebhookLaneHealth): string {
 // ADMIN, on the bell.
 // ---------------------------------------------------------------------------
 
+/** How long a lane may sit with a secret saved and unproved before that is
+ *  itself the news.
+ *
+ *  A cutover that never completes is a quiet failure of its own: the endpoint
+ *  stays open to anyone who knows the URL, every light on the page is amber,
+ *  and the card's own instruction is "wait — do nothing else". Aryeo may need
+ *  their support team to enable a custom endpoint at all, and a support ticket
+ *  can simply go unanswered. Three days is long enough that a normal
+ *  same-week changeover never trips it, and short enough that a forgotten one
+ *  does not run for a month (review, Sep 16). */
+const WATCHING_STALE_HOURS = 72;
+
 export async function alertQuietWebhookLanes(): Promise<{ alerted: string[] }> {
   const alerted: string[] = [];
   let lanes: WebhookLaneHealth[] = [];
@@ -998,6 +1275,7 @@ export async function alertQuietWebhookLanes(): Promise<{ alerted: string[] }> {
   } catch {
     return { alerted };
   }
+  await pruneAlertDedupeRows();
   const { notifyInApp } = await import("@/lib/notify");
   const day = etDayKey(new Date());
   for (const lane of lanes) {
@@ -1010,7 +1288,7 @@ export async function alertQuietWebhookLanes(): Promise<{ alerted: string[] }> {
         kind: "system",
         title: lane.neverDelivered
           ? `${lane.name} has delivered nothing on record`
-          : `${lane.name} has gone quiet (${lane.quietHours ?? 24}h)`,
+          : `${lane.name} has gone quiet (${lane.quietHours ?? lane.quietThresholdHours}h)`,
         body: quietAlertBody(lane),
         href: "/connections",
         targets: [{ roles: ["OWNER", "ADMIN"] }],
@@ -1018,10 +1296,81 @@ export async function alertQuietWebhookLanes(): Promise<{ alerted: string[] }> {
         // second call the same day inserts nothing.
         dedupeKey: `whquiet-${lane.provider}-${day}`,
       });
+      // AND into the room where the office actually is. The bell is a red dot
+      // on a page nobody had open for eight days; Slack is where Kyle and
+      // Jordan already are. Deduped by an AppSetting insert rather than by
+      // hoping — the key is the primary key, so exactly one instance wins the
+      // race and exactly one message goes out per provider per ET day.
+      try {
+        await prisma.appSetting.create({ data: { key: `whquiet-slack-${lane.provider}-${day}`, value: "sent" } });
+        const { opsAlert } = await import("@/lib/notify");
+        // With the link. Slack is where the office reads this, and a message
+        // that names a screen without being able to reach it is one more thing
+        // to do later — which is how the last one went unread for eight days.
+        await opsAlert(
+          `🔕 ${lane.name} has sent us nothing for ${lane.quietHours ?? lane.quietThresholdHours} hours (it normally never goes more than ${lane.quietThresholdHours}). ${lane.sentence} ${appBase()}/connections`,
+        );
+      } catch {
+        /* already sent today, or Slack is down — the bell row still stands */
+      }
       alerted.push(lane.provider);
     } catch {
       /* alerting must never break the sweep that calls this */
     }
   }
+
+  // AND THE CUTOVER THAT NEVER FINISHED. Only for lanes that ARE delivering:
+  // a silent one has already been shouted about above, and the same screen is
+  // the destination either way — two alarms about one lane is how an office
+  // learns to ignore both.
+  for (const lane of lanes) {
+    if (lane.armMode !== "watching" || !lane.watchingSince) continue;
+    if (lane.silent || lane.neverDelivered) continue;
+    const hours = Math.floor((Date.now() - new Date(lane.watchingSince).getTime()) / 3600_000);
+    if (!Number.isFinite(hours) || hours < WATCHING_STALE_HOURS) continue;
+    try {
+      await notifyInApp({
+        kind: "system",
+        title: `${lane.name} still isn’t signing its posts`,
+        body: `A secret has been saved and waiting ${Math.floor(hours / 24)} days. Until ${lane.name} uses it, anyone who knows the address can post here.`.slice(0, 140),
+        href: "/connections",
+        targets: [{ roles: ["OWNER", "ADMIN"] }],
+        dedupeKey: `whwatch-${lane.provider}-${day}`,
+      });
+      try {
+        await prisma.appSetting.create({ data: { key: `whwatch-slack-${lane.provider}-${day}`, value: "sent" } });
+        const { opsAlert } = await import("@/lib/notify");
+        await opsAlert(
+          `🔓 ${lane.name}: a webhook secret has been saved and unused for ${Math.floor(hours / 24)} days — the address is still accepting posts from anyone who knows it. Finish the changeover (or chase ${lane.name} support). ${appBase()}/connections`,
+        );
+      } catch {
+        /* said already today, or Slack is down */
+      }
+      alerted.push(`${lane.provider}:watching`);
+    } catch {
+      /* alerting must never break the sweep that calls this */
+    }
+  }
   return { alerted };
+}
+
+/** The dedupe rows these alarms write are one-per-provider-per-day and have no
+ *  meaning after that day. Nothing pruned them, so they accumulated forever the
+ *  way the kyle-morning-* rows do. Cheap, bounded, and it keeps the settings
+ *  table something a person can still read. */
+async function pruneAlertDedupeRows(): Promise<void> {
+  try {
+    await prisma.appSetting.deleteMany({
+      where: {
+        updatedAt: { lt: new Date(Date.now() - 30 * 86400_000) },
+        OR: [
+          { key: { startsWith: "whquiet-slack-" } },
+          { key: { startsWith: "whwatch-slack-" } },
+          { key: { startsWith: "whrefuse-slack-" } },
+        ],
+      },
+    });
+  } catch {
+    /* housekeeping, never load-bearing */
+  }
 }
