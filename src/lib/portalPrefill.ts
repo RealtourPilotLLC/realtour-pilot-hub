@@ -38,7 +38,7 @@ export async function getPortalPrefill(enrollmentId: string, clientId: string): 
   });
   const facts = notes
     .map((n) => stripMoneySentences(n.body).trim())
-    .filter((f) => f.length > 3 && !/^\[CONFIDENTIAL/i.test(f));
+    .filter((f) => f.length > 3 && !/\[CONFIDENTIAL/i.test(f)); // anywhere, not just the start (Sep 16)
   const write = async (v: Prefill, failed = false) =>
     prisma.appSetting
       .upsert({

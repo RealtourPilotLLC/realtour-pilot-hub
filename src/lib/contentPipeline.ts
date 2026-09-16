@@ -50,7 +50,7 @@ async function clientContext(enrollmentId: string): Promise<string> {
     prisma.contentNote.findMany({
       // [CONFIDENTIAL] intel stays internal — it must never reach a prompt
       // that writes topics or scripts (rule 3).
-      where: { clientId: e.clientId, intelligence: true, NOT: { body: { startsWith: "[CONFIDENTIAL" } } },
+      where: { clientId: e.clientId, intelligence: true, NOT: { body: { contains: "[CONFIDENTIAL" } } },
       orderBy: { createdAt: "desc" }, take: 12, select: { body: true },
     }),
   ]);
@@ -73,7 +73,7 @@ async function clientContext(enrollmentId: string): Promise<string> {
       // and a human can paste one into a profile box at any time. Drop them
       // here too, so no route into a generation prompt is left open.
       const lines = Object.entries(o)
-        .filter(([, v]) => !/^\s*\[CONFIDENTIAL/i.test(String(v ?? "")))
+        .filter(([, v]) => !/\[CONFIDENTIAL/i.test(String(v ?? "")))
         .map(([k, v]) => `- ${k}: ${v}`);
       if (lines.length) parts.push(`${label}:\n${lines.join("\n")}`);
     } catch { /* skip */ }
@@ -256,7 +256,19 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
   let intel = 0;
   for (const fact of arr<string>(out.profileIntel)) {
     if (!fact?.trim()) continue;
-    const body = `From the ${month.monthKey} strategy call: ${fact.trim().slice(0, 2000)}`;
+    // THE MARKER GOES FIRST. The "From the <month> strategy call:" prefix was
+    // added Sep 1; from that day every fact the model correctly tagged
+    // "[CONFIDENTIAL]" carried the tag at character 32, and all four guards
+    // (the two Prisma NOT-startsWith reads here, the regex at :76, and
+    // portalPrefill) checked the start of the string. Seven confidential facts
+    // — a friend's suicide, budget pressure, a pending team-lead meeting — sat
+    // inside the script-writer's prompt window for two weeks (found Sep 16,
+    // rows repaired the same night). The guards now match the marker anywhere,
+    // AND the writer keeps it in front, so neither side has to trust the other.
+    const raw = fact.trim().slice(0, 2000);
+    const confidential = /^\s*\[CONFIDENTIAL\]\s*/i.test(raw);
+    const plain = raw.replace(/^\s*\[CONFIDENTIAL\]\s*/i, "");
+    const body = `${confidential ? "[CONFIDENTIAL] " : ""}From the ${month.monthKey} strategy call: ${plain}`;
     if (noteBodies.has(body.toLowerCase())) continue;
     noteBodies.add(body.toLowerCase());
     await prisma.contentNote.create({
@@ -573,7 +585,7 @@ export async function buildAgentProfileFromHistory(clientId: string): Promise<{ 
     // into the script prompt verbatim — Ashley Brunner's unannounced brokerage
     // move reached the script writer that way, through storiesJson.
     prisma.contentNote.findMany({
-      where: { clientId, intelligence: true, NOT: { body: { startsWith: "[CONFIDENTIAL" } } },
+      where: { clientId, intelligence: true, NOT: { body: { contains: "[CONFIDENTIAL" } } },
       orderBy: { createdAt: "desc" }, take: 60, select: { body: true },
     }),
     prisma.contentScript.findMany({ where: { clientId, source: "import" }, orderBy: { createdAt: "desc" }, take: 8, select: { title: true, body: true } }),
