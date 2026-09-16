@@ -154,9 +154,15 @@ function UserCard({ u }: { u: UserView }) {
 
   return (
     <div className="panel-shadow rounded-2xl border bg-surface p-4">
+      {/* On a phone the identity block gets the whole first line (basis-full) and
+          the controls wrap as a group beneath it. Before this, identity and six
+          controls shared one wrapping row: the controls kept their intrinsic
+          width and flex-1/min-w-0 let the name shrink to "jo…" — Jordan's card
+          only looked fine because it has fewer buttons (Sep 16). From sm up
+          it is the original single row. */}
       <div className="flex flex-wrap items-center gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+        <div className="min-w-0 basis-full sm:basis-0 sm:flex-1">
+          <div className="flex min-w-0 items-center gap-2">
             <span className="truncate text-sm font-semibold">{u.name || u.email}</span>
             {u.isSelf && <span className="rounded bg-surface-2 px-1.5 text-[10px] text-muted-2">you</span>}
             <span className={`rounded-full px-1.5 text-[11px] font-medium ${STATUS_STYLE[u.status] ?? "bg-surface-2 text-muted"}`}>{u.status.toLowerCase()}</span>
@@ -164,6 +170,7 @@ function UserCard({ u }: { u: UserView }) {
           <div className="truncate text-xs text-muted-2">{u.email}{u.lastLoginAt ? ` · last in ${etMonthDay(u.lastLoginAt)}` : " · hasn't signed in yet"}</div>
         </div>
 
+        <div className="flex flex-wrap items-center gap-2">
         <select value={u.role} disabled={pending || (u.isSelf && isOwner)} onChange={(e) => changeRole(e.target.value)} title="Role" className="rounded-lg border bg-surface px-2 py-1.5 text-xs focus:outline-none disabled:opacity-60">
           {ROLES.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
         </select>
@@ -201,6 +208,7 @@ function UserCard({ u }: { u: UserView }) {
             <Trash2 className="size-4" />
           </button>
         )}
+        </div>
       </div>
 
       {isOwner && <p className="mt-2 text-[11px] text-muted-2">Full access — owners see everything.</p>}
