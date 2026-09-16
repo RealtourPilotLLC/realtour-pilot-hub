@@ -61,7 +61,8 @@ function StatusPill({ latest, reopened }: { latest: CutRow["latest"]; reopened?:
   if (latest.status === "CHANGES_REQUESTED") {
     return <span className="inline-flex items-center gap-1 rounded-full bg-danger-soft px-2 py-0.5 text-[11px] font-semibold text-danger"><Undo2 className="size-3" /> Changes requested on v{latest.round}</span>;
   }
-  // Taken back (Sep 16) — nothing is in front of the reviewer, and v{round} is
+  // Withdrawn (rows from the afternoon of Sep 16 only — a take-back deletes
+  // the version now). Nothing is in front of the reviewer, and v{round} is
   // free again for the right file.
   if (latest.status === "WITHDRAWN") {
     return <span className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-muted"><Undo2 className="size-3" /> v{latest.round} withdrawn</span>;
@@ -198,7 +199,7 @@ export function CutUploader({ projectId, cuts, canUpload, revisionOpen = false }
   // reads right without waiting on the refresh).
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [saved, setSaved] = useState<Record<string, string | null>>({});
-  // Withdraw / move state per version (Sep 16). The /edit page hands this panel
+  // Remove / move state per version (Sep 16). The /edit page hands this panel
   // the cut rows, not these columns, so the panel asks for them itself — one
   // read per job, re-read whenever a version changes here or a control fires.
   const [flags, setFlags] = useState<Record<string, CutTakeBackInfo>>({});
@@ -286,24 +287,28 @@ export function CutUploader({ projectId, cuts, canUpload, revisionOpen = false }
             ? null
             : c.latest ? (withdrawn ? c.latest.round : c.latest.round + 1) : 1;
           const isRedo = c.latest?.status === "CHANGES_REQUESTED" || reopened || withdrawn;
-          // The take-back state for this version. The flags read lands a moment
-          // after the page does, so until it arrives the control is drawn from
-          // what the row already knows: anyone who may upload here may take
-          // their own cut back, and the server (withdrawCut) refuses anyone it
-          // shouldn't — this only decides whether the link is drawn, never
-          // whether the action is allowed. The optimistic guess is the NARROW
-          // one (reviewer, Sep 16): only a version still in front of the
+          // The remove/move state for this version. The flags read lands a
+          // moment after the page does, so until it arrives the control is
+          // drawn from what the row already knows: anyone who may upload here
+          // may take their own cut back, and the server (removeCut) refuses
+          // anyone it shouldn't — this only decides whether the link is drawn,
+          // never whether the action is allowed. The optimistic guess is the
+          // NARROW one (reviewer, Sep 16): only a version still in front of the
           // reviewer. An APPROVED cut is the office's call and a co-editor's
           // cut is theirs, so offering "Wrong video?" on either before the read
-          // lands would only walk the editor into a refusal.
+          // lands would only walk the editor into a refusal. `office` stays
+          // false so the Dropbox checkbox is never drawn on a guess.
+          const live = c.latest?.status === "PENDING" || c.latest?.status === "CHANGES_REQUESTED";
           const flag: CutTakeBackInfo | null =
             (c.latest ? flags[c.latest.id] : undefined) ??
             (c.latest && canUpload
               ? {
                   submissionId: c.latest.id, round: c.latest.round, status: c.latest.status,
                   fileName: c.latest.fileName,
-                  canAct: c.latest.status === "PENDING" || c.latest.status === "CHANGES_REQUESTED",
+                  canRemove: live,
+                  canMove: live,
                   office: false,
+                  finalPath: null, folderSourcePath: null,
                   withdrawnAt: null, withdrawnBy: null, withdrawnReason: null,
                   strandedFinalPath: null, movedFromStreet: null, movedAt: null, movedBy: null,
                 }
@@ -335,7 +340,7 @@ export function CutUploader({ projectId, cuts, canUpload, revisionOpen = false }
                   onSaved={(n) => setSaved((s) => ({ ...s, [key]: n }))}
                 />
                 {flag && <div className="mt-2"><CutTakeBackFlags info={flag} onDone={() => setTick((t) => t + 1)} /></div>}
-                {flag?.canAct && (
+                {flag?.canRemove && (
                   <div className="mt-1.5">
                     <CutTakeBack info={flag} cutLabel={c.label} onDone={() => setTick((t) => t + 1)} />
                   </div>

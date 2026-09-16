@@ -1437,18 +1437,26 @@ model ReviewSubmission {
   // One row per (file, round): the sweep and the editor's button can race on
   // the same new file; Postgres treats the legacy NULL-path rows as distinct.
   @@unique([projectId, assetPath, round])
-  // ---- WITHDRAW / REASSIGN (Jordan, Sep 16: "the editor should be able to
+  // ---- REMOVE / REASSIGN (Jordan, Sep 16: "the editor should be able to
   // remove the video from upload / for review in case they mistakenly upload
   // the wrong video or to the wrong project… also reassign that video to a
-  // different project"). status gains "WITHDRAWN"; the ROW AND THE FILE ARE
-  // KEPT — a withdrawal is a correction, not a delete, and the history is what
-  // makes a re-upload legible.
+  // different project", then: "when removing the cut, I want it to remove
+  // completely"). Removal DELETES the row and the stored file
+  // (src/app/review/actions.ts removeCut); `status` never gains "WITHDRAWN"
+  // again, and one Activity line is the only trace kept.
+  //
+  // The four columns below are LEGACY — carried only by rows written on the
+  // afternoon of Sep 16, before removal replaced withdrawal (one such row
+  // exists in production, on 328 Columbia Ave). They are still READ, so they
+  // stay: CutTakeBackFlags renders the banner, whyNotTakeBack keeps an
+  // approved cut office-only, and removeStrandedFinal clears the Dropbox file.
   withdrawnAt     DateTime?
   withdrawnBy     String?
   withdrawnReason String?
-  // An APPROVED cut's file was already copied into the job's Final folder.
-  // Jordan's rule: leave it and FLAG it, with a control to remove it if he
-  // wants. This holds the path that is still sitting in Dropbox.
+  // LEGACY, same vintage: an APPROVED cut's file was already copied into the
+  // job's Final folder, and the old withdrawal left it there. A removal now
+  // records that leftover as a SmartTask ("stranded-final-<id>") instead,
+  // because the row that used to carry this path is gone.
   strandedFinalPath String?
   // Reassignment provenance — where the cut came from, so both jobs' timelines
   // and the editor's queue can say what moved.

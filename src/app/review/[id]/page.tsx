@@ -83,11 +83,14 @@ export default async function CutReviewPage({
   // the ask and re-delivers the job (or sends it back to Revisions). Say so
   // above the player, with the ask itself, so Jordan judges the cut against
   // what the client wanted. Video lane only — Kyle's photo card is not this.
-  // Withdraw / move state for this job's cuts (Sep 16). The action is the one
+  // Remove / move state for this job's cuts (Sep 16). The action is the one
   // place that decides who may act, so the page asks it rather than re-deriving
-  // the rule from the session here.
-  const takeBack = (await cutTakeBackFlags(w.projectId).catch(() => []))
-    .find((f) => f.submissionId === active?.id) ?? null;
+  // the rule from the session here — and the row for the cut ON SCREEN is then
+  // handed to CutReviewPanel. WITHOUT this prop the "Wrong video?" control
+  // renders nowhere in the Review Room and only the editor's own page has it,
+  // which would leave Jordan unable to pull a cut from the desk he reviews on.
+  const cutFlags = active ? await cutTakeBackFlags(w.projectId).catch(() => []) : [];
+  const takeBack = active ? (cutFlags.find((f) => f.submissionId === active.id) ?? null) : null;
   const { videoLaneRevisionWhere } = await import("@/lib/reviewCuts");
   const clientAsk = active
     ? await prisma.smartTask.findFirst({

@@ -22,9 +22,13 @@ import { fmtClock, parseClock } from "./types";
 // mirroring the gallery review's one-tap lane chips.
 //
 // Sep 16 (Jordan): the verdict bar also carries the quiet "Wrong video?" link —
-// withdraw the cut, or move it to the job it should have gone to — plus the
-// flags for a cut that was taken back and for an approved file left behind in
-// Dropbox. Approve stays the loud green button; the escape hatch is grey text.
+// REMOVE the version outright ("when removing the cut, I want it to remove
+// completely"), or move it to the job it should have gone to — plus the flags
+// for a cut that arrived from another job, for an approved file left behind in
+// Dropbox, and for the withdrawn rows written earlier that same afternoon.
+// Approve stays the loud green button; the escape hatch is grey text.
+// The page (src/app/review/[id]/page.tsx) is what feeds `takeBack` here: with
+// the prop missing the link renders nowhere on this desk at all.
 // ---------------------------------------------------------------------------
 
 type LaneChoice = { lane: "EDITOR" | "PHOTOGRAPHER"; kind: "fix" | "coaching"; label: string; icon: "pencil" | "camera" };
@@ -52,7 +56,7 @@ export function CutReviewPanel({
   submission: CutSubmission;
   notes: CutNote[];
   editorLabel: string;
-  /** withdraw / move state for THIS cut (null = the page couldn't read it) */
+  /** remove / move state for THIS cut (null = the page couldn't read it) */
   takeBack?: CutTakeBackInfo | null;
   cutLabel?: string;
 }) {
@@ -76,7 +80,9 @@ export function CutReviewPanel({
   // link too, for the day a link stalls.
   const legacy = !submission.blobUrl && !!submission.assetUrl;
   // A withdrawn cut has no verdict to give: the buttons come off and the row
-  // says what happened instead (Sep 16).
+  // says what happened instead. Only rows from the afternoon of Sep 16 can
+  // still be in this state — a take-back deletes the version now — but they
+  // exist, so this stays (Jordan, Sep 16).
   const withdrawn = submission.status === "WITHDRAWN";
   const decided = submission.status !== "PENDING";
   const openEditorNotes = notes.filter((n) => n.lane === "EDITOR" && n.status === "OPEN").length;
@@ -148,8 +154,8 @@ export function CutReviewPanel({
           <a href={submission.assetUrl!} className="text-brand hover:underline">download it</a> — uploads from the editor portal play from the hub directly.
         </p>
       )}
-      {/* Withdrawn / moved-here / leftover-file flags — shown whatever the
-          verdict state, because they change what the buttons below mean. */}
+      {/* Moved-here / leftover-file / (legacy) withdrawn flags — shown whatever
+          the verdict state, because they change what the buttons below mean. */}
       {takeBack && <CutTakeBackFlags info={takeBack} />}
       {/* Note + verdict bar */}
       <div className="flex flex-wrap items-center gap-2">

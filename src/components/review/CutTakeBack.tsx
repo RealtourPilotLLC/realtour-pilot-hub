@@ -4,7 +4,7 @@ import { useEffect, useState, useTransition } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, ArrowRightLeft, Loader2, Search, Trash2, Undo2, X } from "lucide-react";
-import { cutMoveTargets, reassignCut, removeStrandedFinal, withdrawCut } from "@/app/review/actions";
+import { cutMoveTargets, reassignCut, removeCut, removeStrandedFinal } from "@/app/review/actions";
 import type { CutMoveOption, CutTakeBackInfo } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -17,14 +17,18 @@ import type { CutMoveOption, CutTakeBackInfo } from "./types";
 // Deliberately small and grey: the main action on both surfaces — upload the
 // next version, or rule on the cut — stays the dominant thing on the row. This
 // is a text link that opens one dialog with two choices:
-//   · Withdraw — a one-line reason, required, because the reviewer reads it;
+//   · Remove this version — a one-line reason, required, and a two-step press,
+//     because Jordan settled it that evening: "When removing the cut, I want
+//     it to remove completely." The version, its file and its notes go; the
+//     warning says so in those words and the press cannot be undone.
 //   · Move to another job — the editor's own jobs, or a search for the office.
-// It also carries the flag Jordan asked for on a cut he had already approved
-// ("If I approved the cut - leave it and flag it with the option to remove it
-// if I want"): the file is still in Dropbox, said out loud, with an
-// office-only control to remove that one file.
+//     Unchanged, and still the right answer when the VIDEO is fine and the JOB
+//     is wrong.
+// On a cut Jordan has already approved the confirm names its finished file in
+// Dropbox and offers, unticked, to delete that too (his rule 2 — "leave it and
+// flag it with the option to remove it if I want" — is the default).
 //
-// The server (withdrawCut / reassignCut / removeStrandedFinal) is the real
+// The server (removeCut / reassignCut / removeStrandedFinal) is the real
 // guard — everything here is presentation.
 // ---------------------------------------------------------------------------
 
@@ -34,7 +38,8 @@ const fmtWhen = (iso: string | null) => {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" });
 };
 
-/** The state banners — withdrawn, moved here, leftover file — shown wherever a
+/** The state banners — moved here, leftover file, and the withdrawn line that
+ *  only rows from the afternoon of Sep 16 can still carry — shown wherever a
  *  cut is shown, whether or not the viewer may act on it. */
 export function CutTakeBackFlags({ info, onDone }: { info: CutTakeBackInfo; onDone?: () => void }) {
   const router = useRouter();
@@ -67,7 +72,8 @@ export function CutTakeBackFlags({ info, onDone }: { info: CutTakeBackInfo; onDo
           <span className="font-semibold text-foreground/80">Version {info.round} was withdrawn</span>
           {info.withdrawnBy ? ` by ${info.withdrawnBy}` : ""}
           {info.withdrawnAt ? ` on ${fmtWhen(info.withdrawnAt)}` : ""}
-          {info.withdrawnReason ? ` — “${info.withdrawnReason}”` : ""}. The file is kept; the next upload takes version {info.round} again.
+          {info.withdrawnReason ? ` — “${info.withdrawnReason}”` : ""}. It was kept rather than deleted; the next upload takes
+          version {info.round} again, and &ldquo;Wrong video?&rdquo; will now remove it for good.
         </p>
       )}
       {info.movedFromStreet && !withdrawn && (
@@ -138,7 +144,9 @@ export function CutTakeBack({
   onDone?: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  if (!info.canAct) return null;
+  // Removal is the wider permission (an old round can be removed but not
+  // moved), so it decides whether the link is drawn at all.
+  if (!info.canRemove) return null;
   return (
     <>
       <button
@@ -155,7 +163,7 @@ export function CutTakeBack({
 
 function TakeBackDialog({ info, cutLabel, onClose, onDone }: { info: CutTakeBackInfo; cutLabel: string; onClose: () => void; onDone?: () => void }) {
   const router = useRouter();
-  const [tab, setTab] = useState<"withdraw" | "move">("withdraw");
+  const [tab, setTab] = useState<"remove" | "move">("remove");
   const [reason, setReason] = useState("");
   const [q, setQ] = useState("");
   const [note, setNote] = useState("");
@@ -163,6 +171,23 @@ function TakeBackDialog({ info, cutLabel, onClose, onDone }: { info: CutTakeBack
   const [picked, setPicked] = useState<CutMoveOption | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, start] = useTransition();
+  // The Dropbox copy of an approved cut, and whether this press takes it too.
+  // OFF by default — Jordan's rule 2 stands, the box is the exception.
+  const dropboxPath = info.finalPath ?? info.strandedFinalPath;
+  const dropboxName = dropboxPath?.split("/").pop() ?? null;
+  const [alsoDropbox, setAlsoDropbox] = useState(false);
+  // The editor's own export behind a folder-discovered cut. A removal never
+  // deletes it (it isn't a copy the hub made), so the warning has to say so —
+  // "this deletes the version and its file" would otherwise promise something
+  // this press can't do (reviewer, Sep 16).
+  const folderName = info.folderSourcePath?.split("/").pop() ?? null;
+  // Two-step press: nothing about this is undoable, so the button has to be
+  // asked twice. Any edit to the reason or the Dropbox box takes the arming
+  // back off, AND so does switching tabs — arming on Remove, stepping over to
+  // Move and back used to leave the button already sitting on "Yes, remove it
+  // permanently", one click from gone (reviewer, Sep 16). The second press
+  // must mean what the first one said.
+  const [armed, setArmed] = useState(false);
 
   // Escape closes, like clicking the backdrop (same as the override dialog).
   useEffect(() => {
@@ -189,8 +214,11 @@ function TakeBackDialog({ info, cutLabel, onClose, onDone }: { info: CutTakeBack
     start(async () => {
       setErr(null);
       const r = await fn().catch(() => ({ ok: false, message: "That didn't work — try again." }));
-      if (!r.ok) setErr(r.message);
-      else {
+      if (!r.ok) {
+        setErr(r.message);
+        // A refusal disarms: whatever they try next has to be confirmed again.
+        setArmed(false);
+      } else {
         onClose();
         onDone?.();
         router.refresh();
@@ -203,7 +231,7 @@ function TakeBackDialog({ info, cutLabel, onClose, onDone }: { info: CutTakeBack
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={`Take back ${cutLabel}`}
+        aria-label={`Remove or move ${cutLabel}`}
         className="fixed left-1/2 top-1/2 z-[70] max-h-[90vh] w-[min(94vw,32rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border border-border bg-surface p-4 shadow-2xl sm:p-5"
       >
         <div className="flex items-start justify-between gap-3">
@@ -223,50 +251,112 @@ function TakeBackDialog({ info, cutLabel, onClose, onDone }: { info: CutTakeBack
 
         {info.status === "APPROVED" && (
           <p className="mt-3 rounded-lg border border-warning/40 bg-warning/10 px-2.5 py-2 text-[11px] leading-relaxed text-foreground/85">
-            This cut is approved and its file was already copied into the job&apos;s Final folder. Taking it back leaves that
-            file in Dropbox and flags it — you&apos;ll get a control to remove it afterwards if you want it gone.
+            This cut is approved, and its file was already copied into the job&apos;s Final folder. Removing it deletes the
+            version here; the finished file in Dropbox only goes if you tick the box below.
           </p>
         )}
 
         <div className="mt-3 flex gap-1.5">
           <button
             type="button"
-            onClick={() => { setTab("withdraw"); setErr(null); }}
-            className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium ${tab === "withdraw" ? "border-brand bg-brand text-white" : "border-border bg-surface hover:bg-surface-2"}`}
+            onClick={() => { setTab("remove"); setErr(null); setArmed(false); }}
+            className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium ${tab === "remove" ? "border-brand bg-brand text-white" : "border-border bg-surface hover:bg-surface-2"}`}
           >
-            <Undo2 className="size-3" /> Withdraw it
+            <Trash2 className="size-3" /> Remove this version
           </button>
-          <button
-            type="button"
-            onClick={() => { setTab("move"); setErr(null); }}
-            className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium ${tab === "move" ? "border-brand bg-brand text-white" : "border-border bg-surface hover:bg-surface-2"}`}
-          >
-            <ArrowRightLeft className="size-3" /> Move to another job
-          </button>
+          {/* An old round can be removed but not moved — the server refuses it,
+              so the tab that would only walk them into that refusal isn't drawn. */}
+          {info.canMove && (
+            <button
+              type="button"
+              onClick={() => { setTab("move"); setErr(null); setArmed(false); }}
+              className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium ${tab === "move" ? "border-brand bg-brand text-white" : "border-border bg-surface hover:bg-surface-2"}`}
+            >
+              <ArrowRightLeft className="size-3" /> Move to another job
+            </button>
+          )}
         </div>
 
-        {tab === "withdraw" ? (
+        {tab === "remove" ? (
           <div className="mt-3 space-y-2">
-            <p className="text-[12px] leading-relaxed text-muted">
-              The video leaves the Review Room and stops counting anywhere. Nothing is deleted — the file stays, and the
-              next upload takes version {info.round} again.
+            <p className="flex items-start gap-1.5 rounded-lg border border-danger/40 bg-danger-soft px-2.5 py-2 text-[12px] leading-relaxed text-foreground/85">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-danger" />
+              <span>
+                <span className="font-semibold">This deletes the version and its file. It cannot be undone.</span>{" "}
+                Version {info.round}
+                {info.fileName ? ` (${info.fileName})` : ""}
+                {/* A folder-discovered cut has no copy in the hub to delete —
+                    naming one would be wrong, and the note below says where
+                    the video actually lives. */}
+                {folderName ? " and its review notes go" : ", its review notes and its copy in the hub all go"}. Version{" "}
+                {info.round} is free again for the right file.
+              </span>
             </p>
             <input
               autoFocus
               value={reason}
-              onChange={(e) => setReason(e.target.value)}
+              onChange={(e) => { setReason(e.target.value); setArmed(false); }}
               maxLength={300}
               placeholder="What went wrong? e.g. wrong export — no captions"
               className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
             />
-            <button
-              type="button"
-              disabled={busy || !reason.trim()}
-              onClick={() => run(() => withdrawCut(info.submissionId, reason))}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-danger px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50"
-            >
-              {busy ? <Loader2 className="size-4 animate-spin" /> : <Undo2 className="size-4" />} Withdraw this version
-            </button>
+            <p className="text-[11px] leading-relaxed text-muted-2">
+              Required — one line on the job&apos;s timeline naming you, the version and this reason is all that is kept.
+            </p>
+            {/* The one file a removal never touches. Said here rather than
+                discovered afterwards, because this cut came FROM that file. */}
+            {folderName && (
+              <p className="rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-[11px] leading-relaxed text-muted">
+                <span className="font-semibold text-foreground/80">The video itself stays in Dropbox.</span>{" "}
+                This cut was picked up from a file you put in the job&apos;s Final folder (<span className="break-all font-medium">{folderName}</span>),
+                and that export is yours, not a copy the hub made — so it is left there and Kyle gets a task with the full
+                path. It won&apos;t come back into the Room on its own.
+              </p>
+            )}
+            {/* The office's one Dropbox choice, on an approved cut only. */}
+            {info.office && dropboxName && (
+              <label className="flex items-start gap-2 rounded-lg border border-border bg-surface-2 px-2.5 py-2 text-[12px] leading-relaxed">
+                <input
+                  type="checkbox"
+                  checked={alsoDropbox}
+                  onChange={(e) => { setAlsoDropbox(e.target.checked); setArmed(false); }}
+                  className="mt-0.5 size-3.5 shrink-0 accent-[var(--danger)]"
+                />
+                <span>
+                  also delete the finished file from Dropbox (<span className="break-all font-medium">{dropboxName}</span>)
+                  <span className="mt-0.5 block text-[11px] text-muted-2">
+                    {alsoDropbox
+                      ? "That file will be deleted from the job's Final folder."
+                      : "Left unticked it stays in the job's Final folder, and Kyle gets a task with the full path."}
+                  </span>
+                </span>
+              </label>
+            )}
+            {armed ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => run(() => removeCut(info.submissionId, reason, alsoDropbox))}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-danger px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50"
+                >
+                  {busy ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+                  Yes, remove it permanently
+                </button>
+                <button type="button" onClick={() => setArmed(false)} className="text-xs font-medium text-muted hover:text-foreground">
+                  Keep it
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                disabled={busy || !reason.trim()}
+                onClick={() => { setErr(null); setArmed(true); }}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-danger px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-50"
+              >
+                <Trash2 className="size-4" /> Remove this version
+              </button>
+            )}
           </div>
         ) : (
           <div className="mt-3 space-y-2">

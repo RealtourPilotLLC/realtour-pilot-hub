@@ -86,31 +86,49 @@ export function parseClock(v: string): number | null {
 }
 
 // ---------------------------------------------------------------------------
-// WRONG VIDEO — the withdraw / move controls (Jordan, Sep 16: "I want the
-// editor to be able to remove the video from upload / for review in case they
+// WRONG VIDEO — the remove / move controls (Jordan, Sep 16: "I want the editor
+// to be able to remove the video from upload / for review in case they
 // mistakenly upload the wrong video or to the wrong project. It would also be
-// cool if they could reassign that video to a different project.")
+// cool if they could reassign that video to a different project" — and, that
+// evening, "When removing the cut, I want it to remove completely.")
 //
 // Plain data on purpose: the server action (src/app/review/actions.ts) imports
 // these as TYPES ONLY, and the client components render them — neither side
 // pulls the other's runtime in.
 // ---------------------------------------------------------------------------
 
-/** One cut's take-back state, plus what THIS viewer may do about it. */
+/** One cut's remove/move state, plus what THIS viewer may do about it. */
 export type CutTakeBackInfo = {
   submissionId: string;
   round: number;
-  /** UPLOADING | PENDING | CHANGES_REQUESTED | APPROVED | SUPERSEDED | WITHDRAWN */
+  /** UPLOADING | PENDING | CHANGES_REQUESTED | APPROVED | SUPERSEDED | WITHDRAWN
+   *  (WITHDRAWN only ever on rows written the afternoon of Sep 16, before a
+   *  take-back started deleting — they must still render.) */
   status: string;
   fileName: string | null;
-  /** the viewer may withdraw or move this one (the editor who sent it, or the office) */
-  canAct: boolean;
-  /** the viewer is OWNER/ADMIN — the only people who may remove the leftover Dropbox file */
+  /** the viewer may REMOVE this version outright (the editor who sent it, or
+   *  the office; an approved cut is the office's alone) */
+  canRemove: boolean;
+  /** the viewer may MOVE it to another job — narrower: an old round is
+   *  removable but has no business becoming the cut waiting on another job */
+  canMove: boolean;
+  /** the viewer is OWNER/ADMIN — the only people who may touch the Dropbox file */
   office: boolean;
+  /** an approved cut's copy in the job's Final folder, so the confirm can name
+   *  exactly what the Dropbox checkbox would delete */
+  finalPath: string | null;
+  /** the OTHER kind of Dropbox file (Sep 16): a folder-discovered cut's own
+   *  source file — the editor's export, already in 05-Final-Video, which is
+   *  where the row came from. Never deleted by a removal (it isn't a copy the
+   *  hub made), so the confirm has to say it stays rather than let "this
+   *  deletes the version and its file" read as a promise it can't keep. */
+  folderSourcePath: string | null;
   withdrawnAt: string | null;
   withdrawnBy: string | null;
   withdrawnReason: string | null;
-  /** the approved cut's file, still sitting in the job's Final folder */
+  /** the approved cut's file, still sitting in the job's Final folder after an
+   *  afternoon-of-Sep-16 withdrawal (a removal records it as a SmartTask
+   *  instead — the row it used to hang off is deleted) */
   strandedFinalPath: string | null;
   movedFromStreet: string | null;
   movedAt: string | null;

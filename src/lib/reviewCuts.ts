@@ -13,18 +13,37 @@ import { effectiveSlotCounts } from "@/lib/editOverrides";
  *  delivered work in the Library instead of asking for a verdict on it. */
 export const DELIVERED_STAMP = "Delivered to the client";
 
-/** The cut was taken back — the editor uploaded the wrong file, or sent it to
- *  the wrong job (Jordan, Sep 16: "I want the editor to be able to remove the
- *  video from upload / for review in case they mistakenly upload the wrong
- *  video or to the wrong project"). It is a STATUS, not a delete: the row and
- *  the file both stay, because the history is what makes the re-upload
- *  legible. Everything that asks "is this a cut?" excludes it alongside the
- *  two upload states. */
+/** LEGACY (the afternoon of Sep 16 only). A take-back used to park the row
+ *  here — status WITHDRAWN, row and file kept — until Jordan settled it the
+ *  same evening: "When removing the cut, I want it to remove completely." A
+ *  removal now DELETES the row (review/actions.removeCut), so nothing new ever
+ *  carries this status. It stays because rows written that afternoon do: every
+ *  surface must keep reading them without crashing, and "is this a cut?" must
+ *  keep answering no. */
 export const WITHDRAWN = "WITHDRAWN";
 
 /** Rows that are not a cut anybody is waiting on: bytes still moving, bytes
- *  that never arrived, or a version somebody took back. */
+ *  that never arrived, or one of those legacy withdrawn rows. */
 export const NOT_A_CUT = ["UPLOADING", "UPLOAD_FAILED", WITHDRAWN] as const;
+
+/** The key a cut's review notes hang on. MediaNote has no submission column —
+ *  a cut note is keyed by the cut's own streaming URL, or the synthetic
+ *  "cut:<id>" when Dropbox couldn't mint one (see review/actions.addCutNote,
+ *  which writes exactly this, and replyCutNote, which copies it onto replies).
+ *  Both forms carry the submission's OWN id, which is what makes a removal
+ *  safe: one version's notes, never another round's. */
+export function cutNoteKey(sub: { id: string; assetUrl?: string | null }): string {
+  return sub.assetUrl ?? `cut:${sub.id}`;
+}
+
+/** Is this note key this submission's alone? Both shapes name the submission
+ *  (`/api/review/cut/<id>/stream`, `cut:<id>`), so a key that does NOT is a
+ *  row from some other era pointing at a shared file — and a delete keyed on
+ *  it could take another round's notes with it. Anything unrecognised is left
+ *  alone and reported (Jordan, Sep 16: remove the version, not the job). */
+export function isOwnCutNoteKey(key: string, submissionId: string): boolean {
+  return key === `cut:${submissionId}` || key === streamUrlFor(submissionId);
+}
 
 // ---------------------------------------------------------------------------
 // Finished cuts → Review Room rows. ONE place that turns the files in a job's
@@ -145,6 +164,37 @@ export async function listFinalCuts(project: FolderProject): Promise<FinalCut[] 
 
 export type CreatedCut = { id: string; assetPath: string; fileName: string; round: number; isRedo: boolean };
 
+/** THE LEFTOVER REGISTER (Sep 16). A removal deletes the ReviewSubmission, so
+ *  nothing in the Room remembers a cut that is gone — but its file can still
+ *  be sitting in the job's Final folder, either because Jordan left the
+ *  Dropbox box unticked or because it was a folder-discovered row whose source
+ *  export is not ours to delete. Without this the next discovery pass (and the
+ *  editor's "Send for review" button, which reads the folder whatever the
+ *  discovery setting says) mints a fresh PENDING row for the very video that
+ *  was just pulled, and rings the desk about it.
+ *
+ *  The record lives on the office's own task — the `stranded-final-<id>`
+ *  SmartTask review/actions.removeCut writes, whose sourceDetail IS the path
+ *  and whose createdAt is when the removal happened. Path → removed-at; a file
+ *  modified after that moment is a re-export, not the thing that was removed.
+ *  Status-agnostic on purpose: a task closed by hand doesn't make the pulled
+ *  video reviewable again. */
+async function removedCutLeftovers(projectId: string): Promise<Map<string, Date>> {
+  const rows = await prisma.smartTask
+    .findMany({
+      where: { projectId, dedupeKey: { startsWith: "stranded-final-" }, sourceDetail: { not: null } },
+      select: { sourceDetail: true, createdAt: true },
+    })
+    .catch(() => [] as { sourceDetail: string | null; createdAt: Date }[]);
+  const out = new Map<string, Date>();
+  for (const r of rows) {
+    if (!r.sourceDetail) continue;
+    const seen = out.get(r.sourceDetail);
+    if (!seen || r.createdAt > seen) out.set(r.sourceDetail, r.createdAt);
+  }
+  return out;
+}
+
 /**
  * Bring the Review Room up to date with the Final folder.
  *  - a file with no submission yet → a new PENDING round-1 row;
@@ -213,13 +263,27 @@ export async function syncFinalCutsToReview(
 
   const listed = await listFinalCuts(project);
   if (listed === null) return { ...none, nothingNew: false, unreadable: true };
-  const cuts = listed.filter((c) => !hubCopies.has(c.path));
+  const removed = await removedCutLeftovers(projectId);
+  const cuts = listed.filter((c) => {
+    if (hubCopies.has(c.path)) return false;
+    // A REMOVED cut's file can still be in the folder, and its row is gone, so
+    // nothing above remembers it (reviewer, Sep 16 — the BLOCKER-shaped one):
+    // the editor's next "Send for review" press reads this folder whatever the
+    // discovery setting says, and would hand Jordan back the very video he
+    // just pulled. The leftover register below is what remembers it.
+    const gone = removed.get(c.path);
+    // …but only the file that WAS removed. A re-export lands on the same path
+    // with a newer server_modified, and that one is a genuinely new cut — the
+    // usual way an editor fixes the mistake they were removing.
+    return !gone || c.serverModified.getTime() > gone.getTime();
+  });
 
-  // Latest round per path. A WITHDRAWN row counts here on purpose (Sep 16):
-  // the file it came from is still sitting in the Final folder, so if the
-  // withdrawn round didn't hold the path the next sweep would re-discover the
-  // very cut the editor just took back. Only "changes requested" reopens a
-  // path, and a withdrawal is not that.
+  // Latest round per path. A legacy WITHDRAWN row counts here on purpose
+  // (Sep 16): the file it came from is still sitting in the Final folder, so
+  // if the withdrawn round didn't hold the path the next sweep would
+  // re-discover the very cut the editor took back. Only "changes requested"
+  // reopens a path, and a withdrawal is not that. A REMOVED cut has no row to
+  // hold anything, which is what `removed` above is for.
   const latestByPath = new Map<string, (typeof project.reviewSubmissions)[number]>();
   for (const s of project.reviewSubmissions) {
     if (!s.assetPath) continue;

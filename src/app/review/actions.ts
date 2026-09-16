@@ -1008,30 +1008,42 @@ export async function abandonCutUpload(submissionId: string, blobUrl?: string | 
 
 
 // ===========================================================================
-// WRONG VIDEO — WITHDRAW / MOVE (Jordan, Sep 16 2026): "I want the editor to
-// be able to remove the video from upload / for review in case they mistakenly
-// upload the wrong video or to the wrong project. It would also be cool if
-// they could reassign that video to a different project." And on a cut he has
-// already signed off: "If I approved the cut - leave it and flag it with the
-// option to remove it if I want."
+// WRONG VIDEO — REMOVE / MOVE (Jordan, Sep 16 2026, in the order he said it):
+//   1. "I want the editor to be able to remove the video from upload / for
+//      review in case they mistakenly upload the wrong video or to the wrong
+//      project." (…"it would also be cool if they could reassign that video to
+//      a different project.")
+//   2. "If I approved the cut - leave it and flag it with the option to remove
+//      it if I want."
+//   3. And, decisively, that evening: "When removing the cut, I want it to
+//      remove completely."
 //
-// The shape of it:
-//   · WITHDRAW is the exact inverse of the submit. The row and the file both
-//     STAY (status WITHDRAWN + who/when/why) — a withdrawal is a correction,
-//     not a delete, and the history is what makes the re-upload legible. The
-//     cut leaves the Room, the editor queue's tally and the edit card's
-//     counting; a client's revision the cut had parked "waiting on review"
-//     goes back to OPEN in the client's own words; a job the cut had pushed
-//     to REVIEW steps back to where it stood (reviewCuts.correctedCutWithdrawn
-//     owns both of those). The round number is freed, so the corrected upload
-//     is version 2, not version 3.
-//   · MOVE is a withdrawal on the job the cut LEAVES plus a landing on the job
-//     it goes to: the same row, the same bytes, the same notes, re-resolved to
-//     the target's own (deliverable × slot) and its next round.
-//   · AN APPROVED CUT IS THE OFFICE'S CALL. Only OWNER/ADMIN may take one
-//     back; its Dropbox copy is left where it is, recorded as
-//     strandedFinalPath and flagged, with an office-only control to remove
-//     that one file — the single Dropbox write in this whole batch.
+// So this is no longer a withdrawal. REMOVE MEANS GONE:
+//   · the file in the hub's store is deleted, the version's review notes are
+//     deleted, and the ReviewSubmission row itself is deleted. The version
+//     number frees because the row that held it no longer exists.
+//   · THE ONE THING THAT SURVIVES is a single Activity line on the job —
+//     who removed which version, of what file, and why. That is deliberate,
+//     and it is the only trace kept: a client deliverable must never disappear
+//     with no record of who removed it. (The client's own portal comments stay
+//     too — they are the client's words on the job, not our record of the cut.)
+//   · the job is released exactly as the withdrawal released it: a client's
+//     revision the cut had parked "waiting on review" goes back to OPEN in the
+//     client's own words, a job the cut had pushed to REVIEW steps back to
+//     where it stood (reviewCuts.correctedCutWithdrawn), the round it had
+//     superseded comes back to the Room, and the editor's card reopens.
+//     A pinned or DELIVERED job is never moved.
+//   · MOVE is unchanged, and is still the right answer when the video is fine
+//     and the JOB is wrong: the same row, the same bytes, the same notes,
+//     re-resolved to the target's own (deliverable × slot) and its next round.
+//     The job it leaves is released the same way.
+//   · AN APPROVED CUT IS STILL THE OFFICE'S CALL (rule 2 stands). Only
+//     OWNER/ADMIN may remove one; the confirm names its file in the job's
+//     Final folder and offers, defaulting OFF, to delete that too — the ONLY
+//     Dropbox write in this batch. Left unticked (or if Dropbox refuses), the
+//     file stays and the row that used to carry the flag is gone, so the
+//     leftover is recorded as a SmartTask for the office instead, and said out
+//     loud on the timeline line.
 // ===========================================================================
 
 
@@ -1067,104 +1079,246 @@ async function takeBackActor(): Promise<{ ok: true; actor: TakeBackActor } | { o
   return { ok: true, actor: { office, owner: me.realRole === "OWNER", keys, name: me.name ?? me.email ?? "Someone" } };
 }
 
-/** The refusals, in plain words (Jordan's rule 4). Null = go ahead. */
+/** The refusals, in plain words (Jordan's rule 4). Null = go ahead.
+ *
+ *  Two modes, because the two actions don't refuse the same rows (Sep 16):
+ *   · "remove" deletes the version. A SUPERSEDED round, or one of the legacy
+ *     WITHDRAWN rows, is history nobody is waiting on — removing it is exactly
+ *     the tidy-up Jordan asked for, so it is allowed.
+ *   · "move" lands the version on another job as the cut waiting there. An old
+ *     round has no business becoming that, so both stay refused — reassignCut
+ *     behaves exactly as it did this afternoon. */
 function whyNotTakeBack(
-  sub: { status: string; submittedByKey: string | null },
+  sub: { status: string; submittedByKey: string | null; strandedFinalPath?: string | null },
   actor: TakeBackActor,
+  mode: "remove" | "move",
 ): string | null {
-  if (sub.status === "UPLOADING") return "That version is still uploading — wait for the upload to finish, then take it back.";
-  if (sub.status === "UPLOAD_FAILED") return "That upload never finished, so there's nothing in review to take back.";
-  if (sub.status === "WITHDRAWN") return "That version has already been withdrawn.";
-  if (sub.status === "SUPERSEDED") return "A newer version of this cut has replaced that one — take the newest version back instead.";
+  const verb = mode === "move" ? "move" : "remove";
+  if (sub.status === "UPLOADING") return `That version is still uploading — wait for the upload to finish, then ${verb} it.`;
+  if (sub.status === "UPLOAD_FAILED") return `That upload never finished, so there's nothing in review to ${verb}.`;
+  if (mode === "move" && sub.status === "WITHDRAWN") return "That version was withdrawn — upload the file on the right job instead.";
+  if (mode === "move" && sub.status === "SUPERSEDED") return "A newer version of this cut has replaced that one — move the newest version instead.";
   const mine = !!sub.submittedByKey && actor.keys.has(sub.submittedByKey);
-  if (!actor.office && !mine) return "That cut was sent in by someone else — ask Jordan or Kyle to take it back.";
+  if (!actor.office && !mine) return `That cut was sent in by someone else — ask Jordan or Kyle to ${verb} it.`;
   // Jordan's call, in his words: an approved cut is his to pull, not the
   // editor's. Name the reviewer so the refusal tells them what to do next.
   if (sub.status === "APPROVED" && !actor.office) {
-    return "Jordan has already approved this cut, so taking it back is his call — message him or Kyle and they'll pull it.";
+    return mode === "move"
+      ? "Jordan has already approved this cut, so moving it is his call — message him or Kyle and they'll do it."
+      : "Jordan has already approved this cut, so removing it is his call — message him or Kyle and they'll pull it.";
+  }
+  // A row that carries a stranded path WAS approved — one of the afternoon's
+  // withdrawals, or an approved cut that has since been moved. Jordan's rule
+  // follows the cut, not the status it ended in.
+  //
+  // REMOVE ONLY. Moving such a row is the same move it always was, and this
+  // clause was quietly taking that away from the editor who holds the job —
+  // and telling them "removing it for good is his call" while they were trying
+  // to move it (reviewer, Sep 16). Move behaves exactly as it did at HEAD.
+  if (mode === "remove" && !actor.office && sub.strandedFinalPath) {
+    return "Jordan approved this cut before it was pulled, so removing it for good is his call — message him or Kyle.";
   }
   return null;
 }
 
-/** The row itself leaving the Room: status, who/when/why, and the approved
- *  cut's Dropbox copy left behind under a flag. Nothing is deleted.
- *  null = somebody else got there first (see the guard below). */
-async function markWithdrawn(
-  sub: { id: string; status: string; finalPath: string | null },
-  actor: TakeBackActor,
-  reason: string,
-): Promise<{ stranded: string | null; at: Date } | null> {
-  const wasApproved = sub.status === "APPROVED";
-  const stranded = wasApproved ? sub.finalPath : null;
-  const at = new Date();
-  // GUARDED on the status we read (reviewer, Sep 16): two tabs — or one
-  // double-click — both clear whyNotTakeBack, and an unguarded update ran the
-  // whole release twice, writing two Activity lines and ringing two bells
-  // (ringWithdrawn's key carries its own timestamp, so the dedupe can't catch
-  // it). Exactly one caller wins; the loser is told it is already done.
-  const won = await prisma.reviewSubmission.updateMany({
-    where: { id: sub.id, status: sub.status },
-    data: {
-      status: "WITHDRAWN",
-      withdrawnAt: at,
-      withdrawnBy: actor.name,
-      withdrawnReason: reason,
-      // The file in the job's Final folder is LEFT WHERE IT IS and flagged
-      // (Jordan: "leave it and flag it with the option to remove it if I
-      // want"). It is no longer a complete cut, though — same rule the Room's
-      // send-back uses when it un-completes a copied cut. dropboxJobId goes
-      // too, or finalizeApprovedCuts would poll this row on the next hourly
-      // pass and re-stamp completedAt on a cut nobody stands behind.
-      ...(stranded ? { strandedFinalPath: stranded, completedAt: null } : {}),
-      dropboxJobId: null,
-    },
-  });
-  if (won.count === 0) return null;
-  // A cut the client already had in their portal library goes back out of it —
-  // the office pulled it, so it must not keep playing on /portal. The hourly
-  // library sweep only ever re-adds Aryeo-keyed rows, so this stays removed.
-  if (wasApproved) {
-    await prisma.portalVideo.deleteMany({ where: { externalKey: `sub:${sub.id}` } }).catch(() => { /* library is best-effort */ });
+/** A cut's status in the words the Room uses, for the one message that has to
+ *  say what changed under someone's hands. */
+function cutStatusWords(status: string): string {
+  switch (status) {
+    case "PENDING": return "waiting on review";
+    case "CHANGES_REQUESTED": return "in revisions";
+    case "APPROVED": return "approved";
+    case "SUPERSEDED": return "replaced by a newer version";
+    case "WITHDRAWN": return "withdrawn";
+    case "UPLOADING": return "still uploading";
+    case "UPLOAD_FAILED": return "a failed upload";
+    default: return status.toLowerCase().replace(/_/g, " ");
   }
-  return { stranded, at };
 }
 
-/** The job a cut has LEFT — identical for a withdrawal and for a move
- *  (Jordan: the source job is left exactly as a withdrawal leaves it). Four
- *  writes, in this order, because each one reads what the last left behind:
+/** Thrown inside the removal transaction when somebody else got there first,
+ *  so the whole thing rolls back instead of half-deleting a version that is
+ *  already gone. A plain sentinel — a "use server" file exports actions only. */
+const LOST_THE_RACE = "cut-removal:lost-the-race";
+
+/** THE REMOVAL ITSELF, and the record of it, in ONE transaction: the version's
+ *  review notes, the row, and the single Activity line that outlives them.
+ *  Either all three land or none do — a client deliverable must never
+ *  disappear with no record of who removed it (Jordan, Sep 16).
+ *
+ *  GUARDED on the status we read: two tabs — or one double-click — both clear
+ *  whyNotTakeBack, and an unguarded delete ran the whole release twice,
+ *  writing two Activity lines and ringing two bells (ringRemoved's key carries
+ *  its own timestamp, so the dedupe can't catch it). Exactly one caller wins;
+ *  the loser is told it is already done.
+ *
+ *  On success: the Activity row's id, so the file cleanup below can fold "what
+ *  is still there" into that same one line. Otherwise it says WHICH race was
+ *  lost — the row is gone, or it is still there wearing a different status —
+ *  because those two need different sentences and only one of them is "already
+ *  removed" (reviewer, Sep 16). */
+type CutRowRemoved = { activityId: string; notesRemoved: number; noteKeyKept: string | null };
+type CutRowLost = { lost: "gone" } | { lost: "changed"; status: string };
+
+async function deleteCutRow(
+  sub: { id: string; projectId: string; status: string; assetUrl: string | null },
+  line: string,
+): Promise<CutRowRemoved | CutRowLost> {
+  const { cutNoteKey, isOwnCutNoteKey } = await import("@/lib/reviewCuts");
+  const key = cutNoteKey(sub);
+  // A key that doesn't name THIS submission belongs to some other era and
+  // could be shared with another round — leave those notes and say so.
+  const own = isOwnCutNoteKey(key, sub.id);
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const gone = await tx.reviewSubmission.deleteMany({ where: { id: sub.id, status: sub.status } });
+      if (gone.count === 0) throw new Error(LOST_THE_RACE);
+      // This version's review notes — roots and their replies, which carry the
+      // same key (replyCutNote copies it). Nothing keyed to another round can
+      // match: the key contains this submission's own id.
+      const notes = own
+        ? await tx.mediaNote.deleteMany({ where: { projectId: sub.projectId, assetUrl: key } })
+        : { count: 0 };
+      const activity = await tx.activity.create({
+        data: { projectId: sub.projectId, type: "SYSTEM", body: line.slice(0, 500) },
+      });
+      return { activityId: activity.id, notesRemoved: notes.count, noteKeyKept: own ? null : key };
+    });
+  } catch (e) {
+    if ((e as Error)?.message === LOST_THE_RACE) {
+      // Two very different things produce that zero, and the guard is on
+      // (id, status) so BOTH land here: somebody else removed the row, or a
+      // verdict / a bounce / a newer round landed on it between the read and
+      // the delete. Telling the second one "already removed" would be a lie
+      // about a version that is still very much there — re-read and say which
+      // it was (reviewer, Sep 16).
+      const now = await prisma.reviewSubmission
+        .findUnique({ where: { id: sub.id }, select: { status: true } })
+        .catch(() => null);
+      return now ? { lost: "changed", status: now.status } : { lost: "gone" };
+    }
+    throw e;
+  }
+}
+
+/** The leftover Dropbox file, once the row that used to carry the flag is
+ *  gone (Jordan, Sep 16: leave the file if he doesn't tick the box — but the
+ *  hub still has to remember it is there). One task for the office, keyed on
+ *  the submission that used to hold the path, carrying the path itself in
+ *  sourceDetail — which is now doing two jobs: removeStrandedFinal acts on it
+ *  later, and reviewCuts.removedCutLeftovers reads it so the folder sweep and
+ *  the editor's "Send for review" button stop re-discovering the very video
+ *  that was pulled (reviewer, Sep 16). Written whenever a Dropbox file is left
+ *  behind — not only for an approved cut's copy. */
+async function strandedFinalTask(input: {
+  projectId: string;
+  submissionId: string;
+  path: string;
+  round: number;
+  fileName: string | null;
+  street: string;
+  actorName: string;
+  reason: string;
+  /** what the file IS, because the two are not the same thing to whoever picks
+   *  this up: "hub-copy" is the copy the hub itself placed when the cut was
+   *  approved; "folder-source" is the editor's own export, which is where a
+   *  folder-discovered row came from in the first place. */
+  kind: "hub-copy" | "folder-source";
+  dropboxRefused: boolean;
+}): Promise<void> {
+  // The house pattern for "whoever holds the office queue" — twenty-odd call
+  // sites resolve Kyle exactly this way. The ROUTING rides on assignedKey,
+  // which is a constant; this lookup only puts a face on the card, so it is
+  // matched the careful way notify.ts does it: case-insensitive, and never a
+  // roster row that has been deactivated.
+  const kyle = await prisma.teamMember
+    .findFirst({ where: { name: { contains: "Kyle", mode: "insensitive" }, active: true }, select: { id: true } })
+    .catch(() => null);
+  // The path whole is longer than a title should be; keep its tail (the folder
+  // and the file are what identify it) and put the whole thing in the body.
+  const parts = input.path.split("/").filter(Boolean);
+  const shortPath = input.path.length <= 78 ? input.path : `…/${parts.slice(-2).join("/")}`;
+  const whyItIsThere =
+    input.kind === "folder-source"
+      ? "That cut was discovered from a file the editor had already put in the job's Final folder, and that export is theirs, not a copy the hub made — so the hub left it exactly where it is: "
+      : input.dropboxRefused
+        ? "Dropbox wouldn't delete the finished file, so it is still in the job's Final folder: "
+        : "The finished file was left in the job's Final folder on purpose: ";
+  const data = {
+    taskType: "internal_instruction", // the type Open Loops + /tasks triage read
+    title: `A removed cut's file is still in Dropbox — ${shortPath}`.slice(0, 120),
+    summary:
+      `${input.actorName} removed version ${input.round}${input.fileName ? ` (${input.fileName})` : ""} on ${input.street} — “${input.reason}”. ` +
+      whyItIsThere +
+      input.path,
+    description:
+      `Delete it in Dropbox if it shouldn't be there:\n${input.path}\n\n` +
+      "The version itself is gone from the hub — this file is all that is left of it.\n" +
+      "While this task is here the hub will not pull that file back into the Review Room; a NEW export over the same path still comes in as a fresh cut.",
+    reasonCreated: "A cut was removed and its Dropbox file was kept",
+    source: "system",
+    // The exact path, machine-readable: removeStrandedFinal reads it from here
+    // once the ReviewSubmission that used to carry it no longer exists.
+    sourceDetail: input.path,
+    priority: "MEDIUM",
+    assignedKey: "kyle",
+    ownerId: kyle?.id ?? null,
+    projectId: input.projectId,
+    dedupeKey: `stranded-final-${input.submissionId}`,
+  } as const;
+  await prisma.smartTask
+    .upsert({
+      where: { dedupeKey: data.dedupeKey },
+      // Removing the same cut twice is impossible (the row is gone), so an
+      // existing row means a hand-closed task and a repeat of the same fact.
+      update: { ...data, status: "OPEN", completedAt: null },
+      create: data,
+    })
+    .catch(() => { /* the timeline line still names the file */ });
+}
+
+/** The job a cut has LEFT — identical for a removal and for a move (Jordan:
+ *  the source job is left exactly as a withdrawal left it). Four writes, in
+ *  this order, because each one reads what the last left behind:
  *   1. the round this one superseded comes back to the Room (so step 2 sees a
  *      cut still waiting and leaves the stage alone);
  *   2. the client's ask and the job's stage step back (correctedCutWithdrawn);
  *   3. the editor's work item reopens if the job now owes a video and nobody
  *      holds one — without it the editor has no door back in (BLOCKER, Sep 16);
- *   4. the Activity line. */
+ *   4. the Activity line.
+ *  `line` is null when the caller already wrote its own — a removal writes
+ *  the line in the same transaction as the delete, so the record can't be
+ *  lost with the row. */
 async function releaseSourceJob(
   projectId: string,
   cut: { id: string; deliverableId: string | null; slot: number | null; round: number; submittedByKey: string | null },
-  line: string,
+  line: string | null,
 ): Promise<{ status: string | null; restoredRound: number | null }> {
   const { correctedCutWithdrawn, restorePriorCutRound, reopenEditCardAfterTakeBack } = await import("@/lib/reviewCuts");
   const restoredRound = await restorePriorCutRound(projectId, cut).catch(() => null);
   const r = await correctedCutWithdrawn(projectId, { excludeSubmissionId: cut.id }).catch(() => ({ reopened: 0, status: null }));
   await reopenEditCardAfterTakeBack(projectId, cut.submittedByKey).catch(() => false);
-  await prisma.activity.create({ data: { projectId, type: "SYSTEM", body: line.slice(0, 500) } }).catch(() => {});
+  if (line) await prisma.activity.create({ data: { projectId, type: "SYSTEM", body: line.slice(0, 500) } }).catch(() => {});
   return { status: r.status, restoredRound };
 }
 
 /** One bell to the review desk. NOT a re-announcement: announceCutInReview's
  *  row for this cut is already out and stays deduped on the submission id, so
  *  nobody is told twice that the video is ready — this is the correction,
- *  addressed to the people who were going to watch it. `review_withdrawn` is
- *  deliberately unmapped in notifyPrefs, which makes it bell-only: a cut
- *  coming back out is worth a row on Jordan's bell, never a text. */
-async function ringWithdrawn(input: {
+ *  addressed to the people who were going to watch it. The kind stays
+ *  `review_withdrawn` (a wire value, and deliberately unmapped in notifyPrefs,
+ *  which makes it bell-only: a cut coming back out is worth a row on Jordan's
+ *  bell, never a text) even though the words now say "removed".
+ *
+ *  The link goes to the JOB, not to `?cut=<id>` as it did while the row
+ *  survived: the version is gone, so a deep link to it would land the reviewer
+ *  on nothing (Sep 16). */
+async function ringRemoved(input: {
   projectId: string;
   submissionId: string;
-  street: string;
   sentence: string;
   title: string;
-  /** the withdrawal's own stamp — the key, so a double-click rings once and a
-   *  cut that is moved and later withdrawn again still rings */
+  /** the removal's own stamp — the key, so a double-click rings once */
   at: Date;
 }): Promise<void> {
   try {
@@ -1172,52 +1326,250 @@ async function ringWithdrawn(input: {
       kind: "review_withdrawn",
       title: input.title,
       body: input.sentence,
-      href: `/review/${input.projectId}?cut=${input.submissionId}`,
+      href: `/review/${input.projectId}`,
       targets: [{ roles: ["OWNER", "ADMIN"] }],
       dedupeKey: `cut-withdrawn-${input.submissionId}-${input.at.getTime()}`,
     });
   } catch { /* bell is best-effort */ }
 }
 
+// A take-back that fails must SAY so. These actions are called from a client
+// dialog whose catch renders a bare "That didn't work — try again.", which is
+// what Jordan saw on Sep 16 when a running server still held a Prisma client
+// generated before the withdraw columns existed: the action threw, the dialog
+// shrugged, and nothing in the message said the deploy was the problem. Any
+// unexpected error now comes back as a sentence a person can act on, and the
+// stack goes to the server log.
+async function takeBackGuard<T extends { ok: boolean; message: string }>(
+  what: string,
+  run: () => Promise<T>,
+): Promise<T | { ok: false; message: string }> {
+  try {
+    return await run();
+  } catch (e) {
+    const detail = (e as Error)?.message ?? "";
+    console.error(`[review] ${what} failed`, e);
+    const stale = /Unknown (field|arg(ument)?)|does not exist in the current database|PrismaClientValidationError/i.test(detail);
+    return {
+      ok: false,
+      message: stale
+        ? `Couldn't ${what} — this copy of the hub is running older code than the database. Reload the page; if it keeps happening, the site needs a redeploy.`
+        : `Couldn't ${what} — nothing was changed. Tell Jordan or Kyle what you were doing so it can be looked at.`,
+    };
+  }
+}
+
 // ---------------------------------------------------------------------------
-// 1 · WITHDRAW
+// 1 · REMOVE — Jordan, Sep 16: "When removing the cut, I want it to remove
+//     completely." The file, the notes and the row all go; one Activity line
+//     stays behind and that is the whole record.
 // ---------------------------------------------------------------------------
-export async function withdrawCut(submissionId: string, reason: string): Promise<{ ok: boolean; message: string }> {
+export async function removeCut(
+  submissionId: string,
+  reason: string,
+  /** APPROVED cuts only, office only: take the finished file in the job's
+   *  Final folder with it. Defaults OFF — Jordan's rule 2 ("leave it and flag
+   *  it") is still the default answer; ticking the box is the exception. */
+  alsoDeleteDropboxFile = false,
+): Promise<{ ok: boolean; message: string }> {
+  return takeBackGuard("remove that version", () =>
+    removeCutInner(submissionId, reason, alsoDeleteDropboxFile),
+  ) as Promise<{ ok: boolean; message: string }>;
+}
+
+/** @deprecated Sep 16 — a take-back removes the version outright now. Kept
+ *  ONLY so a tab still running this afternoon's bundle doesn't blow up on a
+ *  missing export mid-deploy; delete it once nothing calls it.
+ *
+ *  It deliberately does NOT remove. That bundle's dialog is still on screen
+ *  saying "Nothing is deleted — the file stays, and the next upload takes
+ *  version N again", and its button calls this. Doing the new, permanent thing
+ *  under the old words would delete a client deliverable that the person
+ *  pressing the button was told would be kept (reviewer, Sep 16). A refusal
+ *  keeps the deploy safe and costs them one reload. */
+export async function withdrawCut(): Promise<{ ok: boolean; message: string }> {
+  return {
+    ok: false,
+    message:
+      "Reload the page — taking a cut back now REMOVES it for good, and this page is still showing the old words that promised the file would be kept.",
+  };
+}
+
+async function removeCutInner(
+  submissionId: string,
+  reason: string,
+  alsoDeleteDropboxFile: boolean,
+): Promise<{ ok: boolean; message: string }> {
   const who = await takeBackActor();
   if (!who.ok) return { ok: false, message: who.message };
   const why = (reason ?? "").trim().slice(0, 300);
-  if (!why) return { ok: false, message: "Say what went wrong in a few words — the reviewer sees the reason." };
+  // The reason carries more weight than it did: once the row is gone it is the
+  // only thing on the timeline that explains the gap.
+  if (!why) return { ok: false, message: "Say what went wrong in a few words — it's the only record left once the version is gone." };
 
   const sub = await prisma.reviewSubmission.findUnique({
     where: { id: submissionId },
     select: {
-      id: true, projectId: true, round: true, status: true, fileName: true, finalPath: true,
+      id: true, projectId: true, round: true, status: true, fileName: true,
+      assetUrl: true, blobUrl: true, blobPathname: true,
+      // assetPath is the OTHER Dropbox file a cut can have — see the two kinds
+      // below. Without it a folder-discovered cut was "removed" while its file
+      // sat untouched in the Final folder and nothing said so (reviewer).
+      assetPath: true, finalPath: true, strandedFinalPath: true,
       deliverableId: true, slot: true,
-      submittedByKey: true, submittedByName: true,
+      submittedByKey: true,
       project: { select: { title: true } },
     },
   });
   if (!sub) return { ok: false, message: "That version no longer exists." };
-  const refusal = whyNotTakeBack(sub, who.actor);
+  const refusal = whyNotTakeBack(sub, who.actor, "remove");
   if (refusal) return { ok: false, message: refusal };
-  const wasApproved = sub.status === "APPROVED";
 
   const street = streetOf(sub.project?.title);
-  const marked = await markWithdrawn(sub, who.actor, why);
-  // Somebody else took it back between the read and the write.
-  if (!marked) return { ok: false, message: "That version has already been withdrawn." };
-  const { stranded, at } = marked;
-  const { status, restoredRound } = await releaseSourceJob(
-    sub.projectId,
-    sub,
-    `Version ${sub.round} was withdrawn by ${who.actor.name} — “${why}”.${stranded ? ` The approved file is still in Dropbox: ${stranded}` : ""}`,
-  );
-  await ringWithdrawn({
+  const wasApproved = sub.status === "APPROVED";
+
+  // THE TWO DROPBOX FILES A CUT CAN HAVE, and they are not the same thing
+  // (reviewer, Sep 16 — eleven of the twenty-five live rows are the second
+  // kind, five of them PENDING, which is exactly what an editor pulls):
+  //
+  //  · hubCopyPath — finalPath, or strandedFinalPath on a row withdrawn or
+  //    moved earlier. This is the copy THE HUB made when the cut was approved.
+  //    Ours to delete, and the checkbox is Jordan's choice about it.
+  //  · folderSourcePath — assetPath, a folder-discovered row's own source
+  //    file: the editor's export, already sitting in 05-Final-Video, which is
+  //    where the row came from. NOT ours to delete — Jordan authorised exactly
+  //    one Dropbox write ("also delete the finished file"), and taking an
+  //    editor's only copy of their work on a "remove the wrong upload" press
+  //    is not that. It is always LEFT — but never silently: it is named in the
+  //    message, on the timeline line and on the office's queue, and the task
+  //    stops the folder sweep handing the same video straight back.
+  //
+  // (An upload row has assetPath nulled by finalizeCutUpload and a folder row
+  // never gets a finalPath, so in practice a cut has at most one of them —
+  // verified across every row in production. The code still reports both if a
+  // row ever carried both, rather than quietly dropping one.)
+  const hubCopyPath = sub.finalPath ?? sub.strandedFinalPath;
+  const folderSourcePath = sub.assetPath && sub.assetPath !== hubCopyPath ? sub.assetPath : null;
+  // Only the office may take the Dropbox file with it, and only the hub's own
+  // copy — an editor ticking a box they can't see must never reach dbx.
+  const takeDropboxToo = alsoDeleteDropboxFile && who.actor.office && !!hubCopyPath;
+  const fileLabel = sub.fileName ?? (hubCopyPath ?? folderSourcePath)?.split("/").pop() ?? "no file name";
+
+  // THE ONE THING THAT SURVIVES. Deliberate, and the only trace kept: a client
+  // deliverable must never disappear with no record of who removed it. It goes
+  // in the SAME transaction as the delete, so the row and its record can never
+  // come apart; what the file cleanup below couldn't take is folded into this
+  // same line rather than added as a second one.
+  const line = `${who.actor.name} removed version ${sub.round} (${fileLabel}) — “${why}”.`;
+  const done = await deleteCutRow(sub, line);
+  if ("lost" in done) {
+    return {
+      ok: false,
+      message: done.lost === "gone"
+        ? "That version has already been removed."
+        : `That version changed while you had this open — it's now ${cutStatusWords(done.status)}, so nothing was removed. Close this and open it again to see where it stands.`,
+    };
+  }
+  const at = new Date();
+
+  // THE JOB GOES FIRST, before any of the file cleanup below (reviewer,
+  // Sep 16). Everything from here to the end is best-effort network work, and
+  // a server-action timeout in the middle of it used to leave the row deleted
+  // but the job still sitting in REVIEW, the client's ask still parked
+  // "waiting on review" and the editor's card still closed — a half-state the
+  // old withdrawal could never reach, because it released the moment it
+  // flipped the status. Row gone, job released, then the files.
+  const { status, restoredRound } = await releaseSourceJob(sub.projectId, sub, null);
+
+  // A cut the client already had in their portal library goes out of it with
+  // the row — it must not keep playing on /portal for a version that no longer
+  // exists. Unconditional: only an approved cut is ever added (addApprovedCutToLibrary),
+  // so this is a no-op on everything else, and it still catches a cut that was
+  // approved, added, and later bounced. The hourly library sweep only ever
+  // re-adds Aryeo-keyed rows, so this stays removed.
+  await prisma.portalVideo.deleteMany({ where: { externalKey: `sub:${sub.id}` } }).catch(() => { /* library is best-effort */ });
+
+  // THE FILES. Best-effort by design — a store that is down must not strand
+  // the removal half-done — but nothing is silently left behind: every failure
+  // is logged, said in the message, and written onto the timeline line.
+  const leftBehind: string[] = [];
+  let hubCopyDeleted = false;
+  if (sub.blobUrl) {
+    // The same shape check abandonCutUpload makes before it deletes: this path
+    // may only ever delete cut bytes in THIS store, so a row carrying a URL
+    // from anywhere else is left alone and said out loud rather than handed to
+    // del() on trust (reviewer, Sep 16).
+    if (!/^https:\/\/[a-z0-9]+\.public\.blob\.vercel-storage\.com\/review-cuts\//.test(sub.blobUrl)) {
+      console.error("[review] refused to delete a foreign blob url on removed cut", sub.id, sub.blobUrl);
+      leftBehind.push(`Its video file isn't in the hub's cut store, so it was left where it is: ${sub.blobPathname ?? sub.blobUrl}.`);
+    } else {
+      try {
+        const { del } = await import("@vercel/blob");
+        await del(sub.blobUrl);
+        hubCopyDeleted = true;
+      } catch (e) {
+        console.error("[review] blob delete failed for removed cut", sub.id, e);
+        leftBehind.push(`The video file could not be deleted from the hub's store — it is still at ${sub.blobPathname ?? sub.blobUrl}.`);
+      }
+    }
+  }
+  // The hub's own copy in Dropbox — the only file the checkbox governs.
+  let dropboxFileDeleted = false;
+  if (hubCopyPath) {
+    if (takeDropboxToo) {
+      try {
+        // The ONE Dropbox write in this batch: exactly the file recorded on
+        // the row, nothing else.
+        const { dropboxDelete } = await import("@/lib/integrations/dropbox");
+        await dropboxDelete(hubCopyPath);
+        dropboxFileDeleted = true;
+      } catch (e) {
+        console.error("[review] dropbox delete failed for removed cut", sub.id, e);
+        leftBehind.push(`Dropbox wouldn't delete the finished file — it is still at ${hubCopyPath}.`);
+      }
+    } else {
+      leftBehind.push(`The finished file is still in Dropbox: ${hubCopyPath}`);
+    }
+  }
+  // The editor's own export, if that is what this row was discovered from.
+  // Always kept, and never quiet.
+  if (folderSourcePath) {
+    leftBehind.push(`The file it was discovered from is still in the job's Final folder: ${folderSourcePath}`);
+  }
+  // ONE record of the leftover, on the office's own queue — the row that used
+  // to carry the flag is gone, so this is where the hub remembers the file is
+  // there, and it is also what stops the folder sweep and the editor's "Send
+  // for review" button handing the same video straight back (reviewer).
+  // A cut has at most one of the two paths (verified across production), so
+  // one task is one file; if a row ever carried both, the hub's own copy is
+  // the actionable one and the other is still named on the line above.
+  const leftoverPath = dropboxFileDeleted ? null : (hubCopyPath ?? folderSourcePath);
+  if (leftoverPath) {
+    await strandedFinalTask({
+      projectId: sub.projectId, submissionId: sub.id, path: leftoverPath,
+      round: sub.round, fileName: sub.fileName, street,
+      actorName: who.actor.name, reason: why,
+      kind: leftoverPath === hubCopyPath ? "hub-copy" : "folder-source",
+      dropboxRefused: takeDropboxToo,
+    });
+  }
+  if (done.noteKeyKept) {
+    // Never seen in production (every cut note is keyed to its own submission)
+    // — but if a row ever threads notes under a key it doesn't own, they stay
+    // rather than risk taking another round's feedback with them.
+    leftBehind.push("Its review notes were left in place — they aren't keyed to this version alone.");
+  }
+  if (leftBehind.length > 0) {
+    await prisma.activity
+      .update({ where: { id: done.activityId }, data: { body: `${line} ${leftBehind.join(" ")}`.slice(0, 500) } })
+      .catch(() => { /* the base line is already on the timeline */ });
+  }
+
+  await ringRemoved({
     projectId: sub.projectId,
     submissionId: sub.id,
-    street,
-    title: `Cut withdrawn — ${street}`,
-    sentence: `${who.actor.name} took version ${sub.round} back: “${why}”`,
+    title: `Cut removed — ${street}`,
+    sentence: `${who.actor.name} removed version ${sub.round}: “${why}”`,
     at,
   });
 
@@ -1229,11 +1581,26 @@ export async function withdrawCut(submissionId: string, reason: string): Promise
   // The round this one had replaced is the newest version anybody stands
   // behind again, so say so — it is back in front of the reviewer.
   const restored = restoredRound ? ` Version ${restoredRound} is back in the Room in its place.` : "";
+  const notes = done.notesRemoved > 0 ? ` ${done.notesRemoved} review note${done.notesRemoved === 1 ? "" : "s"} went with it.` : "";
+  // Say only what actually went. The old wording promised "the version and its
+  // file" every time, which was a lie on a folder-discovered cut — the row
+  // went and the video stayed exactly where it was (reviewer, Sep 16).
+  const alsoTheFile = hubCopyDeleted ? ", and its copy in the hub with it" : "";
   return {
     ok: true,
     message:
-      `Withdrawn — version ${sub.round} has left the Review Room, and that version number is free again for the right file.${stage}${restored}` +
-      (stranded ? ` Heads up: the approved copy is still in Dropbox (${stranded.split("/").pop()}) — the flag on the cut has a control to remove it.` : "") +
+      `Removed — version ${sub.round} is gone${alsoTheFile}.${notes} Version ${sub.round} is free again for the right file.${stage}${restored}` +
+      (dropboxFileDeleted
+        ? ` The finished file was deleted from Dropbox too (${hubCopyPath!.split("/").pop()}).`
+        : hubCopyPath
+          ? ` The finished file is still in Dropbox (${hubCopyPath.split("/").pop()}) — it's on Kyle's queue with the full path.`
+          : "") +
+      (folderSourcePath
+        ? ` The video itself is still in the job's Final folder (${folderSourcePath.split("/").pop()}) — that's the editor's own export, not a copy the hub made, so it was left there. It's on Kyle's queue with the full path, and it won't come back into the Room on its own.`
+        : "") +
+      (leftBehind.some((s) => s.startsWith("The video file") || s.startsWith("Its video file"))
+        ? " The hub's copy couldn't be deleted — the timeline line says where it still is."
+        : "") +
       // Pulling a cut Jordan signed off doesn't un-close what the approval
       // closed (correctedCutWithdrawn's note) — tell the office plainly rather
       // than let them assume the client's ask came back with it.
@@ -1245,6 +1612,14 @@ export async function withdrawCut(submissionId: string, reason: string): Promise
 // 2 · MOVE TO ANOTHER JOB
 // ---------------------------------------------------------------------------
 export async function reassignCut(
+  submissionId: string,
+  targetProjectId: string,
+  note?: string,
+): Promise<{ ok: boolean; message: string }> {
+  return takeBackGuard("move that cut", () => reassignCutInner(submissionId, targetProjectId, note)) as Promise<{ ok: boolean; message: string }>;
+}
+
+async function reassignCutInner(
   submissionId: string,
   targetProjectId: string,
   note?: string,
@@ -1261,7 +1636,7 @@ export async function reassignCut(
     },
   });
   if (!sub) return { ok: false, message: "That version no longer exists." };
-  const refusal = whyNotTakeBack(sub, who.actor);
+  const refusal = whyNotTakeBack(sub, who.actor, "move");
   if (refusal) return { ok: false, message: refusal };
   if (!targetProjectId || targetProjectId === sub.projectId) {
     return { ok: false, message: "That's the job this cut is already on — pick a different one." };
@@ -1413,10 +1788,21 @@ export async function reassignCut(
 }
 
 // ---------------------------------------------------------------------------
-// 3 · THE LEFTOVER DROPBOX FILE — office only. The ONE Dropbox write in this
-//     batch: it deletes exactly the file recorded on the row, nothing else.
+// 3 · THE LEFTOVER DROPBOX FILE — office only. The ONE Dropbox write on this
+//     path: it deletes exactly the file that was recorded, nothing else.
+//
+//     Two places the path can live, and it keeps working from either (Sep 16):
+//      · strandedFinalPath on the ReviewSubmission — what a cut WITHDRAWN this
+//        afternoon carries, and the flag in the Review Room still acts on it;
+//      · sourceDetail on the `stranded-final-<submissionId>` SmartTask — where
+//        a REMOVED cut records it, because the row that used to hold the flag
+//        no longer exists.
 // ---------------------------------------------------------------------------
 export async function removeStrandedFinal(submissionId: string): Promise<{ ok: boolean; message: string }> {
+  return takeBackGuard("remove that file", () => removeStrandedFinalInner(submissionId)) as Promise<{ ok: boolean; message: string }>;
+}
+
+async function removeStrandedFinalInner(submissionId: string): Promise<{ ok: boolean; message: string }> {
   try {
     await requireAdmin();
   } catch (e) {
@@ -1426,24 +1812,35 @@ export async function removeStrandedFinal(submissionId: string): Promise<{ ok: b
     where: { id: submissionId },
     select: { id: true, projectId: true, round: true, strandedFinalPath: true, movedFromProjectId: true },
   });
-  if (!sub) return { ok: false, message: "That version no longer exists." };
-  if (!sub.strandedFinalPath) return { ok: true, message: "There's no leftover file to remove." };
-  const path = sub.strandedFinalPath;
+  const task = await prisma.smartTask
+    .findUnique({ where: { dedupeKey: `stranded-final-${submissionId}` }, select: { id: true, projectId: true, sourceDetail: true, status: true } })
+    .catch(() => null);
+  const path = sub?.strandedFinalPath ?? task?.sourceDetail ?? null;
+  if (!sub && !task) return { ok: false, message: "That version no longer exists." };
+  if (!path) return { ok: true, message: "There's no leftover file to remove." };
   try {
     const { dropboxDelete } = await import("@/lib/integrations/dropbox");
     await dropboxDelete(path); // a path that is already gone counts as done
   } catch (e) {
     return { ok: false, message: `Dropbox wouldn't remove it (${(e as Error).message.slice(0, 80)}) — try again, or delete it in Dropbox yourself.` };
   }
-  await prisma.reviewSubmission.update({ where: { id: sub.id }, data: { strandedFinalPath: null } });
+  if (sub) await prisma.reviewSubmission.update({ where: { id: sub.id }, data: { strandedFinalPath: null } }).catch(() => {});
+  // The reminder has done its job — close it rather than leave the office
+  // chasing a file that is gone.
+  if (task && task.status !== "COMPLETED") {
+    await prisma.smartTask.update({ where: { id: task.id }, data: { status: "COMPLETED", completedAt: new Date() } }).catch(() => {});
+  }
   // The line goes on the job whose folder it was in — the source job when the
-  // cut has since been moved somewhere else.
-  const jobId = sub.movedFromProjectId ?? sub.projectId;
-  await prisma.activity.create({
-    data: { projectId: jobId, type: "SYSTEM", body: `Removed the withdrawn cut's file from Dropbox — ${path.split("/").pop() ?? path}.` },
-  }).catch(() => {});
-  refresh(sub.projectId);
-  if (jobId !== sub.projectId) refresh(jobId);
+  // cut had since been moved somewhere else.
+  const jobId = sub?.movedFromProjectId ?? sub?.projectId ?? task?.projectId ?? null;
+  if (jobId) {
+    await prisma.activity.create({
+      data: { projectId: jobId, type: "SYSTEM", body: `Removed the pulled cut's file from Dropbox — ${path.split("/").pop() ?? path}.` },
+    }).catch(() => {});
+    refresh(jobId);
+  }
+  if (sub && sub.projectId !== jobId) refresh(sub.projectId);
+  revalidatePath("/tasks");
   return { ok: true, message: `Removed ${path.split("/").pop() ?? "the file"} from Dropbox.` };
 }
 
@@ -1451,9 +1848,10 @@ export async function removeStrandedFinal(submissionId: string): Promise<{ ok: b
 // 4 · READS FOR THE CONTROLS
 // ---------------------------------------------------------------------------
 /** Everything the "Wrong video?" control needs for one job's cuts, including
- *  whether THIS viewer may act on each. The editor portal's uploader asks for
- *  it (the /edit page it lives on doesn't carry these columns); the Review
- *  Room page builds the same shape server-side. */
+ *  whether THIS viewer may remove or move each. The editor portal's uploader
+ *  asks for it (the /edit page it lives on doesn't carry these columns); the
+ *  Review Room page builds the same shape server-side and hands it to
+ *  CutReviewPanel, so the control is on both desks. */
 export async function cutTakeBackFlags(projectId: string): Promise<CutTakeBackInfo[]> {
   const who = await takeBackActor();
   if (!who.ok) return [];
@@ -1461,7 +1859,7 @@ export async function cutTakeBackFlags(projectId: string): Promise<CutTakeBackIn
     where: { projectId, status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } },
     orderBy: { round: "asc" },
     select: {
-      id: true, round: true, status: true, fileName: true, submittedByKey: true,
+      id: true, round: true, status: true, fileName: true, submittedByKey: true, finalPath: true, assetPath: true,
       withdrawnAt: true, withdrawnBy: true, withdrawnReason: true,
       strandedFinalPath: true, movedFromProjectId: true, movedAt: true, movedBy: true,
     },
@@ -1476,8 +1874,16 @@ export async function cutTakeBackFlags(projectId: string): Promise<CutTakeBackIn
     round: r.round,
     status: r.status,
     fileName: r.fileName,
-    canAct: whyNotTakeBack(r, who.actor) === null,
+    // Two verdicts, not one (Sep 16): an old round can be removed but not
+    // moved, so the dialog must know which tabs it may show.
+    canRemove: whyNotTakeBack(r, who.actor, "remove") === null,
+    canMove: whyNotTakeBack(r, who.actor, "move") === null,
     office: who.actor.office,
+    // Named so the confirm can say exactly what goes from Dropbox — and,
+    // separately, exactly what stays: assetPath is the editor's own export
+    // behind a folder-discovered row, which a removal never deletes.
+    finalPath: r.finalPath ?? null,
+    folderSourcePath: r.assetPath && r.assetPath !== r.finalPath ? r.assetPath : null,
     withdrawnAt: r.withdrawnAt ? r.withdrawnAt.toISOString() : null,
     withdrawnBy: r.withdrawnBy,
     withdrawnReason: r.withdrawnReason,
