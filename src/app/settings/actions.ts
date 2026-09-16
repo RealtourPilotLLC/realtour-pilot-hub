@@ -9,6 +9,7 @@ import {
   type EditorRoutingRules, type AutoTextRules, type TurnaroundRules,
   type InternalAlertRules, type TextTemplates,
   reviewRoomRules, type ReviewRoomRules,
+  topazSettings, saveTopazSettings, type TopazSettings,
 } from "@/lib/settings";
 import type { EditorKey } from "@/lib/editors";
 import { NOTIFY_EVENTS, clearInapplicable, parseNotifyPrefs, type NotifyPrefs } from "@/lib/notifyPrefDefaults";
@@ -222,4 +223,37 @@ export async function saveTextTemplates(input: TextTemplates): Promise<{ ok: boo
 export async function loadTextTemplates(): Promise<TextTemplates> {
   await requireSettingsActor();
   return textTemplates();
+}
+
+// ---- The 1080p video pass (Topaz) -----------------------------------------
+// Owner or admin, like every other rule on this page. The real guard is not the
+// door, though — it is saveTopazSettings(), which range-checks every field on
+// the way in AND on the way out, so nothing typed into a box (or posted by a
+// stale tab) can put an out-of-range number in front of an API that charges
+// per render. The clamped result is returned so the form can re-seed from what
+// was actually stored rather than from what was typed.
+export async function saveTopazRules(
+  input: TopazSettings,
+): Promise<{ ok: boolean; message: string; settings?: TopazSettings }> {
+  try {
+    const me = await requireSettingsActor();
+    const saved = await saveTopazSettings(input, me?.email ?? null);
+    revalidatePath("/settings");
+    revalidatePath("/connections");
+    // Say what the setting now MEANS, not "saved" — the switch being off is the
+    // one thing somebody could change here and then wait forever on.
+    const message = !saved.enabled
+      ? "Saved. The 1080p pass is switched off, so approving a cut queues nothing — everything else about approving and delivering carries on as normal."
+      : saved.deliverableTypes.length === 0
+        ? "Saved, but no kind of video is ticked, so nothing will be sent. Tick videos, reels or both."
+        : `Saved — the next cut you approve goes through at ${saved.outputShortSide}p, up to ${saved.maxCreditsPerVideo} credits a video and ${saved.maxCreditsPerMonth} a month.`;
+    return { ok: true, message, settings: saved };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Failed." };
+  }
+}
+
+export async function loadTopazRules(): Promise<TopazSettings> {
+  await requireSettingsActor();
+  return topazSettings();
 }

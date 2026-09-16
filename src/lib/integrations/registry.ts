@@ -171,6 +171,31 @@ export const PROVIDERS: ProviderDef[] = [
     ready: true,
   },
   {
+    // The 1080p pass on every approved cut (Jordan, Sep 16: "Once the video cut
+    // is approved, it runs through the Topaz Video AI API, applies a preset,
+    // and exports it at 1080p to the Dropbox folder"). The key is pasted here
+    // by the owner and stored encrypted; nobody else ever sees it, and "Test &
+    // connect" only reads the credit balance — it never starts a render.
+    id: "topaz",
+    name: "Topaz Video AI",
+    blurb: "Cleans up every approved cut and exports it at 1080p",
+    segment: "Files",
+    authType: "apikey",
+    icon: "Film",
+    color: "#1b1b1f",
+    keyLabel: "Topaz API key",
+    keyHelp:
+      "developer.topazlabs.com → API keys → create a key, and paste it here. It is stored encrypted and is never shown again. Test & connect only reads your credit balance; it does not spend anything.",
+    docsUrl: "https://developer.topazlabs.com/",
+    capabilities: [
+      "Every approved cut runs through your Proteus preset automatically",
+      "The 1080p file lands in the job's Final Video folder (the editor's original is kept)",
+      "Kyle gets a card with the file, the folder and the Aryeo link",
+      "Spend limits per video, per day and per month — you set them",
+    ],
+    ready: true,
+  },
+  {
     id: "hubspot",
     name: "HubSpot",
     blurb: "CRM sync (migrate off, or run alongside)",

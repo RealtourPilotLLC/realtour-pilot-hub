@@ -445,6 +445,22 @@ export async function setSmartTaskStatus(taskId: string, status: string) {
     revalidatePath("/pipeline");
     revalidatePath("/");
   }
+  // Ticking the "upload the 1080p video to Aryeo" card IS the delivery mark
+  // (Sep 16 review). The card tells Kyle to press Done when it is delivered,
+  // and pressing Done has to be the whole answer: the only other button wired
+  // to markTopazDelivered lives on /connections, which is owner-only, so the
+  // job stayed "waiting for Kyle" for every video he had already delivered and
+  // the count on the dashboard only ever climbed. Aryeo gives us no way to
+  // observe the upload, so his tick is the only evidence that exists — which
+  // makes it worth carrying properly.
+  if (status === "COMPLETED" && t?.dedupeKey?.startsWith("topaz-deliver-")) {
+    try {
+      const { markTopazDelivered } = await import("@/lib/topazJobs");
+      const { getCurrentUser } = await import("@/lib/auth/user");
+      const me = await getCurrentUser().catch(() => null);
+      await markTopazDelivered(t.dedupeKey.slice("topaz-deliver-".length), me?.name ?? me?.email ?? null);
+    } catch { /* the tick itself already stands — this only closes the loop */ }
+  }
   // Closing an @mention companion task rings the TAGGER's bell — shared with
   // the Ops Day / Dashboard "Handled" button (src/lib/mentionDone.ts).
   if (status === "COMPLETED" && t?.dedupeKey?.startsWith("mention-")) {

@@ -13,6 +13,7 @@ import { testSlackKey, testSlackUserKey } from "@/lib/integrations/slack";
 import { testAiKey } from "@/lib/integrations/ai";
 import { testCalendlyKey } from "@/lib/integrations/calendly";
 import { epidemicSoundReach, testEpidemicSoundKey } from "@/lib/integrations/epidemicSound";
+import { testTopazKey, topazBalance } from "@/lib/integrations/topaz";
 import { syncGmail } from "@/lib/integrations/google";
 import { generateTasksForActiveProjects } from "@/lib/tasks";
 import { syncProjectStatuses } from "@/lib/projectStatus";
@@ -83,6 +84,9 @@ const TESTERS: Record<string, (key: string) => Promise<{ ok: true; label: string
   stripe: testStripeKey,
   calendly: testCalendlyKey,
   epidemic_sound: testEpidemicSoundKey,
+  // Topaz's tester calls the FREE credit-balance endpoint and nothing else —
+  // no estimate, no render, nothing that could reserve or spend a credit.
+  topaz: testTopazKey,
 };
 
 // Epidemic Sound "Test connection" (Sep 15): re-runs the same probe the
@@ -107,6 +111,28 @@ export async function testEpidemicSoundNow(): Promise<ActionResult> {
             ? "Epidemic Sound is rate limiting us — try again in a minute."
             : f.message,
     };
+  }
+}
+
+// Topaz "Test connection" (Sep 16): re-reads the credit balance with the stored
+// key. THAT IS THE ONLY CALL IT MAKES. Balance is free — it starts nothing,
+// reserves nothing and costs nothing — which matters because auto top-up is on:
+// a "test" button that kicked off a render would spend real money every time
+// somebody pressed it to see if the key still worked.
+export async function testTopazNow(): Promise<ActionResult> {
+  await requireOwner();
+  try {
+    const b = await topazBalance();
+    revalidatePath("/connections");
+    const held = b.reserved_credits > 0 ? `, ${Math.round(b.reserved_credits)} held for videos running now` : "";
+    return {
+      ok: true,
+      message: `Topaz answered — ${Math.round(b.available_credits)} credits available${held}. Checking costs nothing.`,
+    };
+  } catch (e) {
+    // The key itself never travels in an error message: everything thrown by
+    // the Topaz client has already been scrubbed of anything key-shaped.
+    return { ok: false, message: e instanceof Error ? e.message : "Couldn't reach Topaz." };
   }
 }
 

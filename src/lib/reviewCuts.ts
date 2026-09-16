@@ -681,6 +681,21 @@ export async function startDropboxCopy(submissionId: string, opts: { inline?: bo
     await dbx("files/move_v2", { from_path: p.finalPath, to_path: `${folder}/superseded/${name}`, autorename: true }).catch(() => {});
     await prisma.reviewSubmission.update({ where: { id: p.id }, data: { finalPath: `${folder}/superseded/${name}`, completedAt: null } }).catch(() => {});
   }
+  // …and so does any 1080p file the Topaz pass made from an earlier round of
+  // this cut (Sep 16). Without this, a v3 approval left last round's
+  // "… - v2 - 1080p.mp4" sitting in Final beside the new v3 export and Kyle had
+  // two files to choose from — exactly the ambiguity the naming exists to
+  // avoid. Best-effort and independent of Topaz being connected at all: this
+  // is a Dropbox move, not a render.
+  // This cut's OWN 1080p file is excluded by supersedePriorEnhanced (it keys on
+  // the cut and skips the cut's own job), which matters on the stranded-copy
+  // retry below: a cut whose original failed to copy while its Topaz pass
+  // succeeded would otherwise have had its finished 1080p file buried in
+  // superseded/ every hour, after Kyle's card had already named the path.
+  try {
+    const { supersedePriorEnhanced } = await import("@/lib/topazJobs");
+    await supersedePriorEnhanced({ id: sub.id, projectId: sub.projectId, deliverableId: sub.deliverableId, slot: sub.slot, assetPath: sub.assetPath });
+  } catch { /* the folder tidy must never block the copy */ }
   const ext = (sub.fileName ?? "").match(/\.(mp4|mov|m4v|webm|mkv)$/i)?.[0] ?? ".mp4";
   // The slot label (style name + "Video N of M") names the file; the bare
   // style name is the fallback if the row is no longer on the order.
@@ -796,6 +811,16 @@ export async function approvedCutCount(projectId: string): Promise<number> {
 export async function pruneReviewUploads(keepDays: number): Promise<{ pruned: number; failed: number }> {
   const cutoff = new Date(Date.now() - keepDays * 24 * 3600_000);
   const weekAgo = new Date(Date.now() - 7 * 24 * 3600_000);
+  // NEVER release the bytes a 1080p pass still needs (Sep 16). A Topaz job can
+  // legitimately wait days — the monthly credit cap parks one until the 1st of
+  // next month — and releasing its source would turn a waiting render into a
+  // dead one. A finished, failed or skipped job holds nothing.
+  const notAwaitingTopaz = {
+    OR: [
+      { topazJob: { is: null } },
+      { topazJob: { state: { notIn: ["queued", "estimated", "uploading", "processing", "saving"] } } },
+    ],
+  } satisfies Prisma.ReviewSubmissionWhereInput;
   const { del } = await import("@vercel/blob");
   let pruned = 0, failed = 0;
   // Release the row FIRST, then the bytes: a deleted blob behind a live
@@ -821,7 +846,7 @@ export async function pruneReviewUploads(keepDays: number): Promise<{ pruned: nu
   // 1. Approved and copied — after the retention window, the Dropbox copy is
   //    the file of record and the room streams it from there.
   const approved = await prisma.reviewSubmission.findMany({
-    where: { blobUrl: { not: null }, completedAt: { lt: cutoff }, finalPath: { not: null } },
+    where: { blobUrl: { not: null }, completedAt: { lt: cutoff }, finalPath: { not: null }, ...notAwaitingTopaz },
     select: { id: true, blobUrl: true, finalPath: true },
     take: 50,
   });

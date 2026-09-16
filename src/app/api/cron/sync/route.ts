@@ -56,6 +56,17 @@ export async function GET(req: NextRequest) {
     return finalizeApprovedCuts();
   }, { maxMs: 45_000 });
 
+  // The 1080p pass has its own */5 driver (/api/cron/topaz) — this is its
+  // SAFETY NET, not its engine. If that cron entry is ever lost in a deploy,
+  // or a tick dies and leaves a lease behind, the lane still crawls forward
+  // once an hour instead of stopping silently. Same lease, so the two can never
+  // work on the same job; small budget, because this is not where the work
+  // belongs.
+  await step("topazLane", async () => {
+    const { driveTopazJobs } = await import("@/lib/topazJobs");
+    return driveTopazJobs({ max: 2, budgetMs: 40_000, leaseBy: "sync-cron" });
+  }, { maxMs: 45_000 });
+
   // Dropbox folder creation — took over from the broken Zapier Zap (Aug 2026).
   // Runs after appointments so a fresh booking's shootDate is already on the
   // project, and before statuses so the evidence sweep finds the folders.

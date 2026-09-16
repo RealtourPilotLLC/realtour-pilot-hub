@@ -12,10 +12,24 @@ import { webhookHealthByProvider, webhookLaneHealth, unresolvedWebhookFailures, 
 import { SyncHealth, type CronJobHealth } from "@/components/connections/SyncHealth";
 import { WebhookHealthStrip } from "@/components/connections/WebhookHealthStrip";
 import { AryeoCutover, type CutoverState } from "@/components/connections/AryeoCutover";
+import { TopazLane, type TopazLaneJob, type TopazLaneStats } from "@/components/connections/TopazLane";
+import { topazDashboard, topazJobRows } from "@/lib/topazJobs";
 import { aryeoEndpointUrl, aryeoSupportMessage, ARYEO_EVENTS, RECOMMENDED_TOKEN_HEADER } from "@/lib/webhookArming";
 import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
+
+// A read that leaves this machine gets a hard ceiling: null rather than a page
+// that hangs on somebody else's API. Declared out here, not inline, because the
+// timer handle is assigned inside a callback and a `let` written during render
+// is exactly what the immutability lint (rightly) refuses.
+function capped<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([p, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); })]).finally(
+    () => clearTimeout(timer), // no stray timer once the real answer is in
+  );
+}
+
 
 // Last 5 cron runs per job, for the Sync health panel. Best-effort: the CronRun
 // table is additive and may not be pushed to this database yet — the page must
@@ -143,6 +157,9 @@ export default async function ConnectionsPage({
     openphoneWebhookSecret,
     aryeoWebhookSecret,
     slackScopes,
+    topaz,
+    topazOpen,
+    topazHistory,
   ] = await Promise.all([
     webhookLaneHealth().catch(() => null),
     unresolvedWebhookFailures().catch(() => null),
@@ -181,7 +198,62 @@ export default async function ConnectionsPage({
           ]).finally(() => clearTimeout(timer)); // no stray 4s timer once Slack has answered
         })()
       : Promise.resolve(null),
+    // The 1080p pass. Reading it asks Topaz for the credit balance (free — it
+    // starts nothing), so it gets the same treatment as the Gmail and Slack
+    // probes: a hard cap, and null rather than a page that hangs on somebody
+    // else's API. The panel says "couldn't read it" instead of showing zeroes.
+    capped(topazDashboard().catch(() => null), 6000),
+    // The jobs themselves are a plain database read — fast, and worth showing
+    // even on the tick where the balance couldn't be reached. Two reads, not
+    // one: a video parked by a spending limit can legitimately wait days, and a
+    // straight "last 12" would push it off the list behind newer finished ones
+    // — leaving the panel saying 3 are waiting with none of them on screen.
+    // Anything live or failed is always listed; the rest is the recent history.
+    topazJobRows({ states: ["queued", "estimated", "uploading", "processing", "saving", "failed"], limit: 20 }).catch(() => []),
+    topazJobRows({ limit: 12 }).catch(() => []),
   ]);
+
+  // Dates out, ISO strings in: the card is a client component, and the house
+  // rule is that every date crosses that line already formatted for ET.
+  const topazStats: TopazLaneStats | null = topaz
+    ? {
+        connected: topaz.connected,
+        enabled: topaz.enabled,
+        balance: topaz.balance,
+        balanceError: topaz.balanceError,
+        today: topaz.today,
+        month: topaz.month,
+        inFlight: topaz.inFlight,
+        concurrencyCap: topaz.concurrencyCap,
+        waitingOnKyle: topaz.waitingOnKyle,
+        recentFailures: topaz.recentFailures,
+        minBalanceCredits: topaz.settings.minBalanceCredits,
+        aryeoNote: topaz.aryeoNote,
+      }
+    : null;
+  // Live and failed first — "what is happening right now" is the question this
+  // panel exists to answer — then the recent history, each job only once.
+  const topazSeen = new Set(topazOpen.map((j) => j.id));
+  const topazJobs = [...topazOpen, ...topazHistory.filter((j) => !topazSeen.has(j.id))].slice(0, 16);
+  const topazRows: TopazLaneJob[] = topazJobs.map((j) => ({
+    id: j.id,
+    projectId: j.projectId,
+    street: j.street,
+    fileName: j.fileName,
+    state: j.state,
+    // Already a finished sentence for a non-technical reader, failure reason
+    // and all — rendered as written, never re-composed.
+    says: j.says,
+    estimateCredits: j.estimateCredits,
+    creditsCharged: j.creditsCharged,
+    sourceLabel: j.sourceLabel,
+    outputLabel: j.outputLabel,
+    durationSec: j.durationSec,
+    finalPath: j.finalPath,
+    deliveredAt: j.deliveredAt ? j.deliveredAt.toISOString() : null,
+    createdAt: j.createdAt.toISOString(),
+    finishedAt: j.finishedAt ? j.finishedAt.toISOString() : null,
+  }));
 
   // Per-receiver webhook security. A receiver is "signed" once a secret exists
   // for it: the OpenPhone shared token (stored by "Enable real-time" under the
@@ -355,6 +427,14 @@ export default async function ConnectionsPage({
 
         {/* Sync health: cron run history + webhook rejections + unsigned receivers. */}
         <SyncHealth crons={crons} webhooks={webhookHealth} unsignedProviders={unsignedProviders} cronLogReady={cronLogReady} reconcile={reconcile} />
+
+        {/* The 1080p pass (Sep 16). It sits with the other lane-health panels
+            rather than on the Topaz card below, because it answers an
+            operational question — what is running, what did it cost, what
+            failed — and not a wiring one. Aryeo's half of Jordan's ask has no
+            API to build against at all, so the card says that in plain words
+            where it is explained. */}
+        <TopazLane stats={topazStats} jobs={topazRows} />
         <div className="flex items-start gap-3 rounded-2xl border bg-brand-soft/40 p-4">
           <ShieldCheck className="mt-0.5 size-5 shrink-0 text-brand" />
           <div className="text-sm">

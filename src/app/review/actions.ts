@@ -613,6 +613,33 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
     }
   }
 
+  // ---- THE 1080p PASS ----------------------------------------------------
+  // Jordan (Sep 16): "I want all videos to be ran through topaz when uploaded
+  // and approved in ops hub." Approval QUEUES that render and nothing more —
+  // one INSERT, guarded by a unique constraint on this submission id, which is
+  // what makes re-approving, a double-click and two lambdas racing all land on
+  // the same row instead of spending twice.
+  //
+  // It is deliberately AFTER the Dropbox copy above and deliberately wrapped:
+  // a Topaz failure, a missing API key, an empty credit balance or Topaz being
+  // down must never break or delay the approval, the copy of the editor's
+  // original, or delivery. Approval stays instant and stays correct with the
+  // 1080p pass switched off entirely — the render is an extra, not a step on
+  // the critical path.
+  let topazNote = "";
+  try {
+    const { queueTopazRender } = await import("@/lib/topazJobs");
+    const q = await queueTopazRender(submissionId);
+    // "Queued", not "being made now" (Sep 16 review). A freshly queued job can
+    // legitimately wait — the lane is full, the month's credits are spent, the
+    // balance is low, Topaz is unreachable — or be refused outright for being
+    // over the per-video limit or over 500 MB, in which case no card ever
+    // arrives and the sentence would have been a promise the hub did not keep.
+    // "Queued" is true in every one of those cases, and the lane on Connections
+    // says what happened next.
+    if (q.queued) topazNote = " Queued for the 1080p pass — Kyle gets a card once it's done.";
+  } catch { /* the 1080p pass never blocks an approval */ }
+
   // Multi-video sets: "Ready to deliver" is a SET verdict, not a per-cut one
   // (audit: Kyle was told to deliver on video 1 of 4). Count the cuts still
   // in flight — owed slots with no approved round yet, plus any legacy
@@ -692,7 +719,7 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
         ? `Approved — ${inFlight} more video${inFlight === 1 ? "" : "s"} still in review on ${street}.`
         : revisionResolved
           ? `Approved — the client's revision on ${street} is closed and the job is back where it stands.`
-          : `Approved — every cut on ${street} is done; Kyle's been pinged to deliver.`) + copyNote,
+          : `Approved — every cut on ${street} is done; Kyle's been pinged to deliver.`) + copyNote + topazNote,
   };
 }
 
@@ -1935,4 +1962,83 @@ export async function cutMoveTargets(submissionId: string, query: string): Promi
     status: p.status,
     shootDateISO: p.shootDate ? p.shootDate.toISOString() : null,
   }));
+}
+
+// ---------------------------------------------------------------------------
+// THE 1080p PASS — the owner's controls, and Kyle's one tap.
+//
+// Server actions only. The card that calls these is a client component and must
+// never import @/lib/topazJobs (or settings, or prisma) directly — that is the
+// single most common way this repo breaks the production build while tsc stays
+// quiet. Everything below is the door.
+//
+// Everything here is OWNER/ADMIN: Kyle is ADMIN and closes his own card; the
+// spend controls are the owner's. No editor lane touches Topaz at all.
+// ---------------------------------------------------------------------------
+
+/** Kyle's one tap once the 1080p file is uploaded to Aryeo and the listing is
+ *  delivered: closes his card and closes the loop in the hub. (Aryeo offers no
+ *  way to do this step automatically — see ARYEO_MANUAL_NOTE.) */
+export async function markTopazDeliveredAction(jobId: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  const { markTopazDelivered } = await import("@/lib/topazJobs");
+  const me = await getCurrentUser().catch(() => null);
+  const r = await markTopazDelivered(jobId, me?.name ?? me?.email ?? null);
+  revalidatePath("/tasks");
+  revalidatePath("/review");
+  return r;
+}
+
+/** Stop a 1080p job that is stuck, or that Jordan has changed his mind about.
+ *  Cancels at Topaz too — the point is to stop paying for it. */
+export async function cancelTopazJobAction(jobId: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  const { cancelTopazJob } = await import("@/lib/topazJobs");
+  const me = await getCurrentUser().catch(() => null);
+  const r = await cancelTopazJob(jobId, me?.name ?? me?.email ?? null);
+  revalidatePath("/connections");
+  revalidatePath("/review");
+  return r;
+}
+
+/** Put a failed or skipped 1080p job back in the queue. Reuses the same row, so
+ *  one-render-per-cut still holds, and never re-runs a render whose credits
+ *  were already committed — it asks Topaz what happened instead. */
+export async function retryTopazJobAction(jobId: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  const { retryTopazJob } = await import("@/lib/topazJobs");
+  const r = await retryTopazJob(jobId);
+  revalidatePath("/connections");
+  revalidatePath("/review");
+  return r;
+}
+
+/** Send an already-approved cut through the 1080p pass by hand — for the cuts
+ *  approved before the pass was switched on, or after a skip that Jordan has
+ *  decided he wants anyway. Same unique constraint: a cut that already has a
+ *  job says so instead of making a second one. */
+export async function queueTopazRenderAction(submissionId: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  const { queueTopazRender } = await import("@/lib/topazJobs");
+  const r = await queueTopazRender(submissionId);
+  revalidatePath("/review");
+  return r.queued
+    ? { ok: true, message: "Queued — the 1080p version will be in Dropbox shortly." }
+    : { ok: false, message: r.reason };
 }

@@ -452,3 +452,285 @@ export async function textTemplates(): Promise<TextTemplates> {
   const clean = (v: unknown) => (typeof v === "string" ? v.slice(0, 1000) : "");
   return { confirmation: clean(t.confirmation), deliveryAll: clean(t.deliveryAll), deliveryPartial: clean(t.deliveryPartial) };
 }
+
+// ---------------------------------------------------------------------------
+// TOPAZ VIDEO AI — the 1080p pass on every approved cut.
+//
+// Jordan (Sep 16): "Once the video cut is approved, it runs through the Topaz
+// Video AI API, applies a preset, and exports it at 1080p to the Dropbox
+// folder… I want all videos to be ran through topaz when uploaded and approved
+// in ops hub."
+//
+// EVERY number below is editable on /settings, and that is not a nicety. The
+// desktop-slider → API-parameter mapping is NOT DOCUMENTED ANYWHERE — Topaz's
+// own docs agent was asked directly and said so. The defaults here are our best
+// reading of Jordan's desktop preset; the first real render gets compared
+// against his desktop export and tuned, and tuning must never need a deploy.
+//
+// The spend guards are the safety-critical part: auto top-up is ON with a $100/
+// month cap, so a bug here BILLS HIM rather than erroring. See the worst-case
+// arithmetic on DEFAULT_TOPAZ below.
+// ---------------------------------------------------------------------------
+
+/** Proteus ("prob-4") parameters, with Topaz's documented ranges. */
+export type TopazProteusParams = {
+  video_type: "Progressive" | "Interlaced" | "ProgressiveInterlaced";
+  /** Desktop offers Dynamic/Manual; the API offers Auto/Manual/Relative — see
+   *  the note on DEFAULT_TOPAZ_PARAMS for why we send "Auto". */
+  auto: "Auto" | "Manual" | "Relative";
+  field_order: "TopFirst" | "BottomFirst" | "Auto";
+  focus_fix_level: "None" | "Normal" | "Strong";
+  /** −1..1 each */
+  compression: number;
+  details: number;
+  noise: number;
+  halo: number;
+  preblur: number;
+  blur: number;
+  /** 0..0.1 */
+  prenoise: number;
+  /** 0..0.1 */
+  grain: number;
+  /** 0..1 */
+  grain_sigma: number;
+  /** 0..5 */
+  grain_size: number;
+  grain_type: "silver_rich" | "gaussian" | "grey";
+  /** 0..1 */
+  recover_original_detail_value: number;
+};
+
+export type TopazSettings = {
+  /** Master switch. OFF until Jordan has compared a first render against his
+   *  own desktop export — nothing is ever queued while this is false. */
+  enabled: boolean;
+  /** Which approved cuts get a pass. Jordan said "all videos"; both video
+   *  deliverable types are on by default. */
+  deliverableTypes: string[];
+
+  // ---- output ------------------------------------------------------------
+  /** "1080p" = the SHORT side is 1080, orientation and aspect preserved. A
+   *  vertical 1080×1920 reel stays 1080×1920; the 3840×2160 cuts in the store
+   *  come out 1920×1080. Jordan: "I want it to be 1080p though which works
+   *  best on Social Media." */
+  outputShortSide: number;
+  /** Leave a source whose short side is already under 1080 at its own size
+   *  instead of upscaling it. Default false: upscaling to 1080 is exactly what
+   *  Proteus is for, and 1080p is what he asked for. */
+  neverUpscale: boolean;
+  /** Passed through to Topaz's output block. Unconfirmed enum values — the
+   *  docs do not list them — so they are strings Jordan can correct without a
+   *  deploy if Topaz rejects them. */
+  audioCodec: string;
+  audioTransfer: string;
+  container: string;
+  /** Topaz's output `dynamicCompressionLevel`. "Low" keeps the most detail. */
+  dynamicCompressionLevel: string;
+
+  // ---- SPEND GUARDS (every one enforced server-side, in topazJobs.ts) -----
+  /** Refuse any single video whose free pre-flight estimate exceeds this. */
+  maxCreditsPerVideo: number;
+  /** Refuse to ACCEPT another job once this many were accepted today (ET). */
+  maxRendersPerDay: number;
+  /** …or this many this calendar month (ET). */
+  maxRendersPerMonth: number;
+  /** …or once this many ESTIMATED credits were committed this month. This is
+   *  the cap that actually bounds the bill; the render counts above are a
+   *  second, coarser fence. */
+  maxCreditsPerMonth: number;
+  /** Stop the lane and tell somebody when the balance falls under this. */
+  minBalanceCredits: number;
+  /** Never more than this many renders in Topaz's hands at once (his plan
+   *  allows 8; we leave headroom for a desktop render he starts himself). */
+  maxConcurrent: number;
+  /** Topaz refuses a request over 500 MB with a 413. Measured sources run
+   *  76–465 MB, so some real cuts sit close to the ceiling. */
+  maxSourceMB: number;
+  /** Consecutive failures of one step before the job stops and tells someone.
+   *  A permanently failing job must never spin — spinning costs money. */
+  maxAttempts: number;
+
+  params: TopazProteusParams;
+};
+
+// ---------------------------------------------------------------------------
+// JORDAN'S DESKTOP PRESET, AS FAR AS ANYONE CAN KNOW IT.
+//
+// From his screenshots: output 1080×1920 (Original), Progressive, model
+// Proteus, mode "Dynamic", "Enable parameters" ticked, focus fix Off, grain
+// unticked, frame interpolation OFF (30 FPS original), SDR-to-HDR off,
+// stabilization off, motion deblur off. Sliders:
+//   Add noise 0 · Recover detail 20 · Fix compression 50 · Improve detail 45
+//   Sharpen 37 · Reduce noise 70 · Dehalo 16 · Anti-alias/deblur 0
+//
+// ⚠️ THE MAPPING IS UNCONFIRMED. Topaz documents neither which API parameter
+// each desktop slider drives, nor how its 0–100 scale becomes the API's −1..1,
+// nor what desktop "Dynamic" means against the API's Auto/Manual/Relative.
+// Their own docs agent was asked and confirmed all three are absent from the
+// documentation. What is below is the straight reading — slider/100 onto the
+// positive half of each −1..1 range — and it is a STARTING POINT to be tuned
+// against a desktop export, not a fact.
+//
+// `auto` is the genuinely ambiguous one. Desktop "Dynamic" with "Enable
+// parameters" ticked means: use my slider values, and let the model vary its
+// strength across the clip rather than applying one fixed amount. Of the three
+// API words, "Auto" is the only one that can mean "let the model decide the
+// per-frame amount"; "Manual" reads as the fixed-amount opposite and
+// "Relative" has no desktop counterpart at all. So we send "Auto" WITH the
+// explicit parameters — which is what "Dynamic + Enable parameters" looks
+// like. If the first render comes back stronger or weaker than his desktop
+// export, this is the first field to try changing, and it is a dropdown on
+// /settings precisely for that.
+export const DEFAULT_TOPAZ_PARAMS: TopazProteusParams = {
+  video_type: "Progressive", // desktop: Video type = Progressive
+  auto: "Auto", // desktop "Dynamic" — see the paragraph above
+  field_order: "Auto", // irrelevant for progressive footage
+  focus_fix_level: "None", // desktop: Focus fix Off
+  compression: 0.5, // Fix compression 50
+  details: 0.45, // Improve detail 45
+  blur: 0.37, // Sharpen 37
+  noise: 0.7, // Reduce noise 70
+  halo: 0.16, // Dehalo 16
+  preblur: 0.0, // Anti-alias / deblur 0
+  prenoise: 0.0, // Add noise 0
+  recover_original_detail_value: 0.2, // Recover detail 20
+  grain: 0, // desktop: grain unticked
+  grain_sigma: 0,
+  grain_size: 0,
+  grain_type: "gaussian", // inert while grain is 0
+};
+
+// ---------------------------------------------------------------------------
+// WORST-CASE MONTHLY SPEND, checked against Jordan's $100/month top-up cap.
+//
+// Measured inputs: Topaz "Pro" is $35/mo for 400 video credits → $0.0875 per
+// included credit, and top-ups are described as discounted, so $0.0875 is a
+// conservative (high) per-credit price for anything over the allowance. Proteus
+// at 1080p costs ~8 credits per minute; his cuts measure 49–60 seconds, so a
+// real render is ~8 credits. He finishes ~49 videos a month (recent months 68,
+// 47, 39), so the honest expectation is ~400–550 credits a month: the allowance
+// plus a small top-up, by design, not by error.
+//
+// The binding guard is maxCreditsPerMonth, because it is the only one denominated
+// in the thing that costs money. At 900:
+//   900 credits − 400 included = 500 topped up × $0.0875 ≈ $44/month.
+//   Plus the $35 plan = ~$79. Under the $100 cap, with room to spare.
+// And 900 credits ÷ 8 ≈ 112 renders, comfortably above his 68-video peak month,
+// so the cap bounds the bill without ever standing in the way of real work.
+//
+// If EVERY guard fired wrongly at once — every estimate came back at the 20-credit
+// ceiling and both render counts let them through — the month still stops at 900
+// credits (~$79), because the credit cap is checked against the recorded ledger
+// before each accept and is independent of the render counters. The one thing
+// that could beat it is Topaz charging far more than it estimated; that is why
+// creditsCharged is recorded per job and the balance is re-read before every
+// accept, so an estimate that lies shows up as a falling balance within one job
+// rather than at the end of the month.
+//
+// The counts: 15/day × 20 credits = 300 credits in a single bad day, which the
+// month cap absorbs three times over before it stops the lane.
+//
+// WHAT THE SEP 16 REVIEW CHANGED ABOUT THIS ARITHMETIC. Two ways existed to get
+// out from under the credit cap entirely, and both are now closed, because a
+// cap the code can walk around is not a cap:
+//   · a job whose price Topaz never gave us counted as ZERO credits forever
+//     (the cap sums estimateCredits), so only the render COUNTS still applied —
+//     90 unmetered long-form renders would have been ~6,800 credits, ~$600.
+//     A job with no readable price is now refused at the accept and sent back
+//     to the free price check; it can never be accepted without a number.
+//   · "Try again" resumed straight to the accept, skipping both the free
+//     estimate and the per-video ceiling. It now restarts anything that has not
+//     been paid for from the very beginning, so every guard runs again.
+// The residual, written down rather than papered over: the one call that starts
+// a render may be made up to maxAttempts (3) times for a single job if Topaz
+// keeps answering that it is still waiting for the file. If it were charging
+// for each of those while saying that, one job could cost 3 × its estimate
+// while the ledger counts it once — 3 × 20 = 60 credits (~$5) in the worst
+// single case, and the falling balance would show it inside one job.
+
+export const DEFAULT_TOPAZ: TopazSettings = {
+  enabled: false, // Jordan turns it on after he has compared one render
+  deliverableTypes: ["VIDEO", "SOCIAL_REEL"],
+  outputShortSide: 1080,
+  neverUpscale: false,
+  audioCodec: "aac",
+  audioTransfer: "Copy",
+  container: "mp4",
+  dynamicCompressionLevel: "Low",
+  maxCreditsPerVideo: 20, // ≈2.5 min at 1080p; a 10-minute walkthrough should be a decision, not an accident
+  maxRendersPerDay: 15,
+  maxRendersPerMonth: 90,
+  maxCreditsPerMonth: 900, // the cap that bounds the bill — see the arithmetic above
+  minBalanceCredits: 40, // ~5 videos of headroom before the lane stops and says so
+  maxConcurrent: 6, // his plan allows 8; leave two for a desktop render of his own
+  maxSourceMB: 500, // Topaz answers 413 over this
+  maxAttempts: 3,
+  params: DEFAULT_TOPAZ_PARAMS,
+};
+
+/** Read the Topaz rules, clamped. getSetting merges only the TOP level, so a
+ *  stored partial `params` would otherwise replace the whole preset — every
+ *  parameter is merged and range-checked individually here. A bad save can
+ *  never put an out-of-range number in front of a paid API. */
+export async function topazSettings(): Promise<TopazSettings> {
+  const r = await getSetting<TopazSettings>("topaz", DEFAULT_TOPAZ);
+  const d = DEFAULT_TOPAZ;
+  const num = (v: unknown, fallback: number, min: number, max: number) =>
+    typeof v === "number" && Number.isFinite(v) && v >= min && v <= max ? v : fallback;
+  const int = (v: unknown, fallback: number, min: number, max: number) =>
+    typeof v === "number" && Number.isInteger(v) && v >= min && v <= max ? v : fallback;
+  const str = <T extends string>(v: unknown, fallback: T, allowed: readonly T[]) =>
+    typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : fallback;
+  const free = (v: unknown, fallback: string) =>
+    typeof v === "string" && v.trim() && v.length <= 40 ? v.trim() : fallback;
+  const p = (r.params ?? {}) as Partial<TopazProteusParams>;
+  const dp = d.params;
+  return {
+    enabled: r.enabled === true,
+    deliverableTypes: Array.isArray(r.deliverableTypes)
+      ? r.deliverableTypes.filter((t): t is string => typeof t === "string" && ["VIDEO", "SOCIAL_REEL"].includes(t))
+      : d.deliverableTypes,
+    outputShortSide: int(r.outputShortSide, d.outputShortSide, 240, 2160),
+    neverUpscale: r.neverUpscale === true,
+    audioCodec: free(r.audioCodec, d.audioCodec),
+    audioTransfer: free(r.audioTransfer, d.audioTransfer),
+    container: free(r.container, d.container),
+    dynamicCompressionLevel: free(r.dynamicCompressionLevel, d.dynamicCompressionLevel),
+    maxCreditsPerVideo: num(r.maxCreditsPerVideo, d.maxCreditsPerVideo, 1, 400),
+    maxRendersPerDay: int(r.maxRendersPerDay, d.maxRendersPerDay, 0, 200),
+    maxRendersPerMonth: int(r.maxRendersPerMonth, d.maxRendersPerMonth, 0, 1000),
+    maxCreditsPerMonth: num(r.maxCreditsPerMonth, d.maxCreditsPerMonth, 0, 4000),
+    minBalanceCredits: num(r.minBalanceCredits, d.minBalanceCredits, 0, 2000),
+    // Hard-clamped at Topaz's own plan limit: a settings save can lower this,
+    // never raise it past what the plan allows.
+    maxConcurrent: int(r.maxConcurrent, d.maxConcurrent, 1, 8),
+    maxSourceMB: int(r.maxSourceMB, d.maxSourceMB, 1, 500),
+    maxAttempts: int(r.maxAttempts, d.maxAttempts, 1, 10),
+    params: {
+      video_type: str(p.video_type, dp.video_type, ["Progressive", "Interlaced", "ProgressiveInterlaced"] as const),
+      auto: str(p.auto, dp.auto, ["Auto", "Manual", "Relative"] as const),
+      field_order: str(p.field_order, dp.field_order, ["TopFirst", "BottomFirst", "Auto"] as const),
+      focus_fix_level: str(p.focus_fix_level, dp.focus_fix_level, ["None", "Normal", "Strong"] as const),
+      compression: num(p.compression, dp.compression, -1, 1),
+      details: num(p.details, dp.details, -1, 1),
+      noise: num(p.noise, dp.noise, -1, 1),
+      halo: num(p.halo, dp.halo, -1, 1),
+      preblur: num(p.preblur, dp.preblur, -1, 1),
+      blur: num(p.blur, dp.blur, -1, 1),
+      prenoise: num(p.prenoise, dp.prenoise, 0, 0.1),
+      grain: num(p.grain, dp.grain, 0, 0.1),
+      grain_sigma: num(p.grain_sigma, dp.grain_sigma, 0, 1),
+      grain_size: num(p.grain_size, dp.grain_size, 0, 5),
+      grain_type: str(p.grain_type, dp.grain_type, ["silver_rich", "gaussian", "grey"] as const),
+      recover_original_detail_value: num(p.recover_original_detail_value, dp.recover_original_detail_value, 0, 1),
+    },
+  };
+}
+
+/** Save the Topaz rules (the /settings page's writer). Re-read through
+ *  topazSettings() so a caller can never observe an unclamped value. */
+export async function saveTopazSettings(next: Partial<TopazSettings>, updatedBy?: string | null): Promise<TopazSettings> {
+  const current = await topazSettings();
+  await putSetting("topaz", { ...current, ...next, params: { ...current.params, ...(next.params ?? {}) } }, updatedBy);
+  return topazSettings();
+}

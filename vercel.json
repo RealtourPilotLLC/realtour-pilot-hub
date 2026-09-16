@@ -5,6 +5,10 @@
       "schedule": "*/5 * * * *"
     },
     {
+      "path": "/api/cron/topaz",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/cron/sync",
       "schedule": "0 * * * *"
     },
@@ -40,5 +44,11 @@
       "path": "/api/cron/evening",
       "schedule": "0 3 * * *"
     }
-  ]
+  ],
+  "functions": {
+    "src/app/api/cron/topaz/route.ts": {
+      "memory": 3009,
+      "maxDuration": 300
+    }
+  }
 }

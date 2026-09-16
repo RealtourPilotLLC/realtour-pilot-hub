@@ -633,6 +633,7 @@ model Project {
   mediaVerdicts     MediaVerdict[]
   qcRecords         QcRecord[]
   reviewSubmissions ReviewSubmission[]
+  topazJobs         TopazJob[]
   revisionBriefs    RevisionBrief[]
 
   createdAt  DateTime    @default(now())
@@ -1415,6 +1416,8 @@ model ReviewSubmission {
   // is approved and copied to the job's Final folder.
   deliverable     Deliverable? @relation(fields: [deliverableId], references: [id], onDelete: SetNull)
   deliverableId   String?
+  /** The 1080p Topaz pass for THIS approved round, if one was queued. */
+  topazJob        TopazJob?
   slot            Int       @default(1) // 1..quantity for multi-video deliverables
   source          String    @default("folder") // upload | folder | button
   blobUrl         String? // the uploaded version's URL in the hub store
@@ -2315,4 +2318,119 @@ model OutboxMessage {
   @@index([state, createdAt])
   @@index([projectId])
   @@index([clientId])
+}
+
+// ===========================================================================
+// TOPAZ VIDEO AI — one durable render job per approved cut.
+//
+// Jordan (Sep 16): "Once the video cut is approved, it runs through the Topaz
+// Video AI API, applies a preset, and exports it at 1080p to the Dropbox
+// folder… I want all videos to be ran through topaz when uploaded and approved
+// in ops hub."
+//
+// This is a JOB, not a request. A render is minutes long, the source is 76–465
+// MB (measured over the 14 cuts in the store), and a Vercel function dies at
+// 300s — so every step is a state, every state is resumable, and the driver
+// (/api/cron/topaz, src/lib/topazJobs.ts) picks up exactly where a dead
+// invocation left off.
+//
+// THE MONEY RULE. Topaz auto top-up is ON with a $100/month cap Jordan set, so
+// a retry loop here does not error — it BILLS HIM. Hence:
+//   · submissionId is UNIQUE. One render per approved cut, enforced by
+//     Postgres, not by an if-statement. Re-approving, a replayed cron and two
+//     lambdas racing all collide on the same row.
+//   · requestId is UNIQUE too, so a Topaz request can never be attached to two
+//     jobs (the second insert loses).
+//   · acceptedAt is the moment we COMMITTED to spend. Every cap (per day, per
+//     month, per month in credits) counts that column, never createdAt.
+//   · completeUploadAt is claimed by compare-and-swap BEFORE the call that
+//     actually starts processing, so only one invocation can ever fire it.
+// ===========================================================================
+model TopazJob {
+  id           String           @id @default(cuid())
+  // ONE RENDER PER CUT, EVER. The whole spend story rests on this line.
+  submission   ReviewSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  submissionId String           @unique
+  project      Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId    String
+
+  // queued → estimated → uploading → processing → saving → done
+  //                    ↘ skipped (a guard refused it, nothing was spent)
+  //                    ↘ failed | cancelled
+  state      String    @default("queued")
+  attempt    Int       @default(0) // consecutive failures of the CURRENT step
+  leaseUntil DateTime? // a driver tick's claim; an expired lease is recoverable
+  leaseBy    String? // which invocation holds it (diagnostics only)
+  nextAttemptAt DateTime? // backoff gate — the driver ignores the row until then
+
+  // ---- what we are rendering (read off the file itself; the hub stores no
+  // video metadata anywhere, so topaz.probeVideoMetadata reads the MP4/MOV
+  // header over HTTP range requests — see the comment there)
+  fileName          String?
+  sourceSizeBytes   Int?
+  sourceWidth       Int?
+  sourceHeight      Int?
+  sourceFrameRate   Float?
+  sourceFrameCount  Int?
+  sourceDurationSec Float?
+  sourceContainer   String?
+  outputWidth       Int?
+  outputHeight      Int?
+  /** JSON: the exact filter block sent to Topaz. Kept so that when Jordan
+   *  compares the first render against his desktop export, the numbers that
+   *  produced it are on the record rather than inferred from today's settings. */
+  presetJson        String?
+
+  // ---- the Topaz side
+  requestId        String?   @unique
+  estimateCredits  Float?
+  estimateSeconds  Int?
+  balanceBefore    Int?
+  creditsCharged   Float?
+  acceptedAt       DateTime? // we committed to spend — every cap counts this
+  completeUploadAt DateTime? // CAS'd before the call that starts processing
+  /** How many times we have asked Topaz to START this render. complete-upload
+   *  is the ONE call that spends, and Topaz's own status is the only thing that
+   *  ever hands the claim back — so the number of times we have made it is a
+   *  fact worth keeping on the row rather than inferring from a shared retry
+   *  counter. It is a hard ceiling: at maxAttempts the job fails instead of
+   *  asking again (Sep 16 review — an awaiting-upload bounce that also reset
+   *  `attempt` could have called it every ~75 seconds, forever, with auto
+   *  top-up on). */
+  completeUploadTries Int @default(0)
+  uploadUrlsJson   String? // presigned PUT targets — server-side only, never rendered
+  uploadPartsJson  String? // JSON [{partNum, eTag}] — what has already landed
+  uploadedBytes    Int?
+  downloadUrl      String? // Topaz's finished file; Dropbox fetches it directly
+
+  // ---- where it landed
+  finalPath    String? // the enhanced file's Dropbox path (05-Final-Video)
+  dropboxJobId String? // files/save_url async job while the copy is in flight
+  savedAt      DateTime?
+  /** When this job entered `saving`. The stall clock for the Dropbox copy has
+   *  to run from HERE, not from acceptedAt: a render that legitimately took
+   *  three hours would otherwise arrive at the filing step with half an hour of
+   *  patience left, and a retry would re-fail it instantly — a paid, finished
+   *  file that can never be filed (Sep 16 review). */
+  savingStartedAt DateTime?
+
+  // ---- the ping to Kyle, and his one tap back
+  taskId      String? // the SmartTask telling Kyle to upload it to Aryeo
+  deliveredAt DateTime?
+  deliveredBy String?
+
+  // ---- what went wrong, in words a non-technical owner can act on
+  error      String?
+  errorAt    DateTime?
+  skipReason String?
+
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([state, nextAttemptAt])
+  @@index([acceptedAt])
+  @@index([projectId])
+  @@index([createdAt])
 }

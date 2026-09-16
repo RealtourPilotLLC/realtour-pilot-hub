@@ -1,19 +1,34 @@
 import { requirePageAccess } from "@/lib/auth/guards";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { SlidersHorizontal, Route, Package, ArrowRight, MessageSquareText, Clock, BellRing, Clapperboard, Users } from "lucide-react";
+import { SlidersHorizontal, Route, Package, ArrowRight, MessageSquareText, Clock, BellRing, Clapperboard, Users, Film } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { RoutingRulesForm } from "@/components/settings/RoutingRulesForm";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
-import { editorRouting, autoTextRules, turnaroundRules, internalAlertRules, textTemplates, reviewRoomRules } from "@/lib/settings";
+import { editorRouting, autoTextRules, turnaroundRules, internalAlertRules, textTemplates, reviewRoomRules, topazSettings, DEFAULT_TOPAZ_PARAMS } from "@/lib/settings";
+import { ARYEO_MANUAL_NOTE } from "@/lib/integrations/topaz";
+import { topazDashboard } from "@/lib/topazJobs";
+import { TopazSettingsPanel, type TopazUsage } from "@/components/settings/TopazSettingsPanel";
 import { AutoTextSettings } from "@/components/settings/AutoTextSettings";
 import { TurnaroundSettings, InternalAlertSettings, TextTemplateSettings, ReviewRoomSettings } from "@/components/settings/OperatingRules";
 import { TeamNotifications } from "@/components/settings/TeamNotifications";
 import { teamNotifyRows } from "@/lib/notifyPrefs";
 
 export const dynamic = "force-dynamic";
+
+// A read that leaves this machine gets a hard ceiling: null rather than a page
+// that hangs on somebody else's API. Declared out here, not inline, because the
+// timer handle is assigned inside a callback and a `let` written during render
+// is exactly what the immutability lint (rightly) refuses.
+function capped<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([p, new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); })]).finally(
+    () => clearTimeout(timer), // no stray timer once the real answer is in
+  );
+}
+
 
 // SETTINGS — the rules the business runs on, editable by Jordan and Kyle
 // without a deploy. First resident: editor auto-routing (who gets standard /
@@ -29,10 +44,28 @@ export default async function SettingsPage() {
   // included; the Sep 11 owner-only "Text me" card folded into this matrix. A
   // roster read that fails renders the card empty rather than taking the
   // page down with it.
-  const [rules, textRules, turns, alerts, templates, reviewRoom, notifyRows] = await Promise.all([
+  const [rules, textRules, turns, alerts, templates, reviewRoom, notifyRows, topaz, topazLane] = await Promise.all([
     editorRouting(), autoTextRules(), turnaroundRules(), internalAlertRules(), textTemplates(), reviewRoomRules(),
     teamNotifyRows().catch(() => []),
+    topazSettings(),
+    // Only for the "what this month has cost so far" line beside the spending
+    // limits — a limit you can't see your position against is a number, not a
+    // control. Reading it asks Topaz for the balance (free, starts nothing), so
+    // it is capped and falls back to no strip rather than holding the page.
+    capped(topazDashboard().catch(() => null), 6000),
   ]);
+
+  const topazUsage: TopazUsage | null = topazLane
+    ? {
+        connected: topazLane.connected,
+        // null, never 0: "we couldn't ask" and "you have none left" are
+        // different problems with different answers.
+        balance: topazLane.balance ? topazLane.balance.available : null,
+        todayRenders: topazLane.today.renders,
+        monthRenders: topazLane.month.renders,
+        monthCredits: topazLane.month.credits,
+      }
+    : null;
 
   return (
     <div>
@@ -78,6 +111,20 @@ export default async function SettingsPage() {
         <Section icon={Clapperboard} title="Review Room">
           <ReviewRoomSettings initial={reviewRoom} />
         </Section>
+
+        {/* The 1080p pass, straight after the Review Room because that is where
+            it starts: approving a cut in there is what sets it off. The anchor
+            is what the Connections page links to. */}
+        <div id="topaz" className="scroll-mt-6">
+          <Section icon={Film} title="1080p video pass">
+            <TopazSettingsPanel
+              initial={topaz}
+              defaults={DEFAULT_TOPAZ_PARAMS}
+              aryeoNote={ARYEO_MANUAL_NOTE}
+              usage={topazUsage}
+            />
+          </Section>
+        </div>
 
         <Section icon={Package} title="Product categories">
           <p className="mb-3 text-sm leading-relaxed text-muted">

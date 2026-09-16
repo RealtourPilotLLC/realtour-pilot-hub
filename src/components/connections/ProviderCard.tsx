@@ -4,6 +4,7 @@ import { useActionState, useState, useTransition } from "react";
 import {
   Camera,
   CreditCard,
+  Film,
   Calculator,
   Folder,
   Mail,
@@ -45,11 +46,12 @@ import {
   saveAryeoWebhookSecret,
   clearAryeoWebhookSecret,
   testEpidemicSoundNow,
+  testTopazNow,
   type ActionResult,
 } from "@/app/connections/actions";
 
 const ICONS: Record<string, LucideIcon> = {
-  Camera, CreditCard, Calculator, Folder, Mail, Phone, MessageSquare, Users, MessageCircle, Send, Sparkles, Music,
+  Camera, CreditCard, Calculator, Folder, Mail, Phone, MessageSquare, Users, MessageCircle, Send, Sparkles, Music, Film,
 };
 
 export type ConnState = {
@@ -755,6 +757,20 @@ function GenericApiKeyActions({
             className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
           >
             {pending ? <Loader2 className="size-4 animate-spin" /> : "Test connection"}
+          </button>
+        )}
+        {/* Topaz (Sep 16): reads the credit balance and NOTHING else. No
+            estimate, no render — pressing this can never cost a credit, which
+            is the whole point of having a button rather than "try it and see"
+            on an account that tops itself up automatically. */}
+        {provider.id === "topaz" && (
+          <button
+            onClick={() => startTransition(async () => setMsg(await testTopazNow()))}
+            disabled={pending}
+            title="Reads your Topaz credit balance. It starts nothing and spends nothing."
+            className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-medium text-brand-fg hover:opacity-90 disabled:opacity-60"
+          >
+            {pending ? <Loader2 className="size-4 animate-spin" /> : "Check credits"}
           </button>
         )}
         <button
