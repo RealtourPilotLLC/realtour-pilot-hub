@@ -1,6 +1,9 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+// after(): run work once the response has gone out. Used for the one
+// measurement in here that nobody is waiting on (finishCutUpload, below).
+import { after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { authEnforced, requireAdmin, requireTaskAccess } from "@/lib/auth/guards";
 import { getCurrentUser } from "@/lib/auth/user";
@@ -8,6 +11,8 @@ import { editorForDeliverable, editorMeta, TEAM_MEMBER_EDITOR_KEYS, type EditorK
 import { slugForName } from "@/lib/assignees";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { notifyInApp, type NotifyTarget } from "@/lib/notify";
+// The 1080p export spec, from the one file that owns it (lib/videoStyles).
+import { exportRefusalMessage, isOverExportSpec, resolutionLabel } from "@/lib/videoStyles";
 // Type-only (erased at build): the shape the withdraw/move controls render.
 import type { CutMoveOption, CutTakeBackInfo } from "@/components/review/types";
 
@@ -39,6 +44,20 @@ function refresh(projectId: string) {
   revalidatePath(`/review/${projectId}`);
   revalidatePath("/editing");
   revalidatePath(`/edit/${projectId}`);
+}
+
+/** after(), except a missing request scope is never a reason an editor's
+ *  action fails. Both callers below hand it the same kind of work — measuring
+ *  what a cut actually was, for a report — and both are reachable from another
+ *  server action (editing/actions presses Completed → submitCutForReview). If
+ *  a script or a test ever calls one outside a request, the cut still goes to
+ *  review and the row simply stays unmeasured. */
+function afterSafe(fn: () => Promise<void>): void {
+  try {
+    after(fn);
+  } catch {
+    /* no request scope — skip the measurement, never the action */
+  }
 }
 
 // Who's writing (same convention as reviewActions.sessionAuthor): resolve a
@@ -205,6 +224,18 @@ export async function submitCutForReview(
         ? "No video file found in 05-Final-Video yet. Export the cut there, then send again."
         : "Every video in the Final folder is already in review (or approved). Drop the next finished file in 05-Final-Video, then send again.",
     };
+  }
+  // What the file actually was, measured off its header once this answer is
+  // back with the editor (the 1080p export spec, Sep 16). Nothing here blocks
+  // or bounces a cut that is already sitting in the Final folder — this door
+  // has no browser in it to check anything BEFORE the work is done, so all it
+  // can honestly do is record what came, which is what makes the spec
+  // measurable on all of the cuts instead of the half that came up the panel.
+  if (sync.created.length > 0) {
+    afterSafe(async () => {
+      const { measureFolderCuts } = await import("@/lib/reviewCuts");
+      await measureFolderCuts(sync.created);
+    });
   }
   const cut = {
     assetUrl: `/api/review/cut/${made.id}/stream`,
@@ -904,9 +935,11 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
 // EDITOR: only a job with an open edit_video/revision task assigned to them —
 // the same scope submitCutForReview enforces, because an earlier audit found
 // one editor's action closing ANOTHER editor's work item (review).
-async function uploadAuthor(projectId: string): Promise<{ ok: true; key: string | null; name: string | null } | { ok: false; message: string }> {
+// `role` rides along because the export spec below has an override only
+// OWNER/ADMIN may use, and the browser's word for who it is is worth nothing.
+async function uploadAuthor(projectId: string): Promise<{ ok: true; key: string | null; name: string | null; role: string } | { ok: false; message: string }> {
   const me = await getCurrentUser().catch(() => null);
-  if (!me && !authEnforced()) return { ok: true, key: null, name: "Local dev" }; // same rule as requireRole
+  if (!me && !authEnforced()) return { ok: true, key: null, name: "Local dev", role: "OWNER" }; // same rule as requireRole
   if (!me) return { ok: false, message: "Sign in to upload a cut." };
   if (me.impersonating) return { ok: false, message: "You're previewing another user — exit the preview to upload." };
   if (!["OWNER", "ADMIN", "EDITOR"].includes(me.role)) return { ok: false, message: "Only editors, admins and the owner can upload cuts." };
@@ -923,7 +956,7 @@ async function uploadAuthor(projectId: string): Promise<{ ok: true; key: string 
     });
     if (!mine) return { ok: false, message: "This job isn't on your queue — ask Kyle or Jordan to assign it to you first." };
   }
-  return { ok: true, key, name: me.name ?? me.email ?? null };
+  return { ok: true, key, name: me.name ?? me.email ?? null, role: me.role };
 }
 
 export async function startCutUpload(input: {
@@ -932,6 +965,12 @@ export async function startCutUpload(input: {
   slot: number;
   fileName: string;
   sizeBytes: number;
+  /** What the editor's browser measured off the file before sending a byte
+   *  (CutUploader). Null/absent = it couldn't tell, which is NOT a refusal. */
+  width?: number | null;
+  height?: number | null;
+  /** OWNER/ADMIN pressed "upload it anyway" on the over-spec dialog. */
+  overrideExportSpec?: boolean;
 }): Promise<{ ok: true; submissionId: string; pathname: string; round: number } | { ok: false; message: string }> {
   const who = await uploadAuthor(input.projectId);
   if (!who.ok) return who;
@@ -940,6 +979,21 @@ export async function startCutUpload(input: {
   const slot = slots.find((s) => s.deliverableId === input.deliverableId && s.slot === Math.floor(input.slot));
   if (!slot) return { ok: false, message: "That video isn't on this job's order any more — refresh the page." };
   if (!/\.(mp4|mov|m4v|webm|mkv)$/i.test(input.fileName)) return { ok: false, message: "Upload a video file (.mp4, .mov, .m4v, .webm)." };
+  // ---- THE 1080p EXPORT SPEC (Jordan, Sep 16: "do not let them upload in 4K")
+  // The browser measures the file before it sends a byte and draws the dialog
+  // an editor actually reads (CutUploader); this is the same rule where it
+  // can't be talked around, and the only place the ROLE that may override it is
+  // knowable. Three things it deliberately does NOT do:
+  //   · it never fires on a file we couldn't measure (isOverExportSpec fails
+  //     open) — an exotic codec must not cost an editor their delivery;
+  //   · it never guesses at the file on the server (that would mean downloading
+  //     the thing we are trying not to upload);
+  //   · it never lets an EDITOR past. Jordan and Kyle can wave one through,
+  //     with their name on it, below.
+  const overSpec = isOverExportSpec(input.width, input.height);
+  const mayOverride = who.role === "OWNER" || who.role === "ADMIN";
+  const waved = overSpec && mayOverride && input.overrideExportSpec === true;
+  if (overSpec && !waved) return { ok: false, message: exportRefusalMessage(input.width, input.height) };
   // A WITHDRAWN round is not a version of this cut any more (Sep 16) — it is
   // skipped here, so the last word on the slot is the last version somebody
   // actually stands behind.
@@ -979,16 +1033,33 @@ export async function startCutUpload(input: {
       source: "upload",
       fileName: input.fileName.slice(0, 200),
       sizeBytes: Number.isFinite(input.sizeBytes) ? Math.floor(input.sizeBytes) : null,
+      // What arrived, as the browser measured it. finishCutUpload fills these
+      // in from the file's own header when the browser couldn't.
+      sourceWidth: Number.isFinite(Number(input.width)) && Number(input.width) > 0 ? Math.round(Number(input.width)) : null,
+      sourceHeight: Number.isFinite(Number(input.height)) && Number(input.height) > 0 ? Math.round(Number(input.height)) : null,
+      ...(waved ? { exportOverrideBy: who.name ?? "The office", exportOverrideAt: new Date() } : {}),
       submittedByKey: who.key,
       submittedByName: who.name,
     },
     select: { id: true },
   });
+  // An override is a decision, so it goes in the job's history in words — the
+  // same place a removed cut leaves its one line. Best-effort: the upload is
+  // already reserved, and a missing note must not cost the editor the upload.
+  if (waved) {
+    await prisma.activity.create({
+      data: {
+        projectId: input.projectId,
+        type: "SYSTEM",
+        body: `${who.name ?? "The office"} allowed an over-spec upload — ${resolutionLabel(input.width, input.height) ?? "larger than 1080p"}, ${input.fileName} (version ${round}). Cuts are meant to leave Final Cut at 1080p.`.slice(0, 500),
+      },
+    }).catch(() => {});
+  }
   return { ok: true, submissionId: row.id, pathname: uploadPathnameFor(input.projectId, row.id, input.fileName), round };
 }
 
 export async function finishCutUpload(input: { submissionId: string; url: string; pathname: string }): Promise<{ ok: boolean; message: string }> {
-  const row = await prisma.reviewSubmission.findUnique({ where: { id: input.submissionId }, select: { projectId: true, status: true } });
+  const row = await prisma.reviewSubmission.findUnique({ where: { id: input.submissionId }, select: { projectId: true, status: true, sourceWidth: true } });
   if (!row) return { ok: false, message: "That upload no longer exists." };
   const who = await uploadAuthor(row.projectId);
   if (!who.ok) return who;
@@ -1010,6 +1081,22 @@ export async function finishCutUpload(input: { submissionId: string; url: string
   }
   const { finalizeCutUpload } = await import("@/lib/reviewCuts");
   const r = await finalizeCutUpload(input.submissionId, { url: input.url, pathname: input.pathname, size });
+  // Only when the browser came up empty — its measurement is the one the gate
+  // acted on, and re-reading a file we already measured buys nothing.
+  //
+  // AFTER the response, not before it (Sep 16 review). The cut is already in
+  // front of the reviewer by this line; awaiting the probe here only made the
+  // editor watch "Checking the file…" for up to another six seconds for a
+  // number that is nobody's blocker. Next's `after` runs the callback once the
+  // response is finished and keeps the function alive to do it, which is
+  // exactly the shape of this work (next/server — Next 16 docs, 04-functions/
+  // after.md). Same reader the folder door uses (lib/reviewCuts) — one copy.
+  if (r.ok && row.sourceWidth == null) {
+    afterSafe(async () => {
+      const { recordArrivedDimensions } = await import("@/lib/reviewCuts");
+      await recordArrivedDimensions(input.submissionId, input.url, size);
+    });
+  }
   const sub = await prisma.reviewSubmission.findUnique({ where: { id: input.submissionId }, select: { projectId: true } });
   if (sub) refresh(sub.projectId);
   return r;

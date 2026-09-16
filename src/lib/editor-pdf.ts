@@ -6,6 +6,7 @@ import { ActivityType } from "@prisma/client";
 import { isFieldFlag } from "@/lib/debrief";
 import { creativeCustomerNote } from "@/lib/clientNotes";
 import { musicPickLine, readMusicPick } from "@/lib/musicPick";
+import { EXPORT_SPEC, EXPORT_SPEC_LINES } from "@/lib/videoStyles";
 
 // Standard PDF fonts use WinAnsi encoding and throw on characters they can't
 // represent (emoji, smart quotes from some keyboards, etc). Map the common ones
@@ -145,6 +146,24 @@ export async function buildEditorBriefPdf(project: FullProject): Promise<Uint8Ar
       gap: 2,
     });
     if (d.notes) text(d.notes, { size: 10, color: MUTED, x: MARGIN + 14 });
+  }
+
+  // ---- How to export it -------------------------------------------------
+  // The SAME EXPORT_SPEC the brief page, the upload panel and the Style Guide
+  // print (lib/videoStyles). A printed brief is the copy most likely to be the
+  // one still saying something older, so it reads from the same constant and
+  // never gets its own wording.
+  // Only on a job that owes video, the same gate the brief page uses (Sep 16
+  // review): a photo-only brief telling a retoucher how to export from Final
+  // Cut is a page of the wrong instructions in the one copy that gets printed
+  // and kept.
+  const owesVideo = project.deliverables.some(
+    (d) => !d.removedFromOrderAt && (d.type === "VIDEO" || d.type === "SOCIAL_REEL"),
+  );
+  if (owesVideo) {
+    heading("How to export");
+    text(EXPORT_SPEC.headline, { size: 11, f: bold, gap: 3 });
+    for (const line of EXPORT_SPEC_LINES) text(`-  ${line}`, { size: 10, gap: 3 });
   }
 
   // ---- Customer notes ----------------------------------------------------

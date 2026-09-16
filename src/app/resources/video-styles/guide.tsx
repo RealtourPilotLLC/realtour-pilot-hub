@@ -1,8 +1,8 @@
 import Link from "next/link";
 import {
-  AlertTriangle, ArrowLeft, Clapperboard, Clock, ExternalLink, Film, FolderDown,
-  GraduationCap, ListMusic, Mic, MonitorPlay, Music, Palette, PlayCircle,
-  Sparkles, Timer, Wand2, Wrench,
+  AlertTriangle, ArrowLeft, Clapperboard, Clock, ExternalLink, FileVideo, Film,
+  FolderDown, GraduationCap, ListMusic, Mic, MonitorPlay, Music, Palette,
+  PlayCircle, Sparkles, Timer, Wand2, Wrench,
 } from "lucide-react";
 import { prisma } from "@/lib/prisma";
 import { Badge } from "@/components/ui/Badge";
@@ -68,7 +68,7 @@ async function resolveExample(e: Example): Promise<Resolved> {
 // The tiers + type definitions moved to src/lib/videoStyles.ts — the editor
 // brief's "What to make" section reads the SAME data, so the guide and the
 // per-job brief can't drift.
-import { VIDEO_TIER as TIER, VIDEO_TYPES as TYPES } from "@/lib/videoStyles";
+import { EXPORT_SPEC, VIDEO_TIER as TIER, VIDEO_TYPES as TYPES } from "@/lib/videoStyles";
 
 // Music: the premium/personal-branding sound. Jordan, verbatim intent: real
 // copyrighted music, used for personal-use-only social content; start from the
@@ -226,6 +226,22 @@ export async function StyleGuideBody({ embed = false }: { embed?: boolean }) {
           <p className="mt-2 text-xs text-muted-2">
             The premium turnaround here (3 days) is our internal bar — the client is promised 3–4, and
             finishing on day 3 is what keeps that promise safe.
+          </p>
+        </Section>
+
+        {/* HOW TO EXPORT — the one spec every type shares. Same EXPORT_SPEC
+            constant the editor brief and the upload panel read
+            (lib/videoStyles), for the same reason the tiers and the type cards
+            are shared: the Guide and the per-job brief must never disagree. */}
+        <Section icon={FileVideo} title={EXPORT_SPEC.headline}>
+          <p className="text-sm font-medium leading-relaxed">{EXPORT_SPEC.finalCut}</p>
+          <p className="mt-2 text-sm leading-relaxed text-foreground/85">{EXPORT_SPEC.edit}</p>
+          <p className="mt-2 text-sm leading-relaxed text-muted">{EXPORT_SPEC.orientation}</p>
+          <p className="mt-2 text-sm leading-relaxed text-muted">{EXPORT_SPEC.why}</p>
+          <p className="mt-3 text-xs text-muted-2">
+            The upload panel on a job checks this before it sends anything, so an over-spec file is
+            caught in a few seconds rather than after a long upload. Nothing about how you edit
+            changes — only the file you hand over.
           </p>
         </Section>
 

@@ -162,7 +162,92 @@ export async function listFinalCuts(project: FolderProject): Promise<FinalCut[] 
   }
 }
 
-export type CreatedCut = { id: string; assetPath: string; fileName: string; round: number; isRedo: boolean };
+/** `sizeBytes`: what Dropbox says the file weighs, carried so the export
+ *  measurement below can skip a HEAD request it would otherwise have to make.
+ *  Null on a CLAIMED row — a claim creates nothing, and the sweep that minted
+ *  that row is the pass that measures it. */
+export type CreatedCut = { id: string; assetPath: string; fileName: string; round: number; isRedo: boolean; sizeBytes: number | null };
+
+// ---------------------------------------------------------------------------
+// WHAT ACTUALLY ARRIVED — the resolution of a cut, recorded on its own row.
+//
+// The 1080p export spec (lib/videoStyles EXPORT_SPEC) is only a rule if
+// somebody can see whether it is being followed, and the upload panel can only
+// measure the files it sends: on the live data, 14 of the 26 rows came in
+// through the panel and 12 through this folder — nearly half the cuts enter
+// review by a door with no browser in it. Measuring here is what makes "are
+// they exporting 1080p now?" a question about ALL the cuts rather than the
+// convenient ones, and it is not a formality: reading the existing files on
+// Sep 16 found SEVEN of the eleven folder cuts at 2160 × 3840, against two of
+// eleven on the panel. The 4K is mostly on this side of the house.
+//
+// It measures and never blocks. A file that is already in the Final folder has
+// been delivered as far as the editor is concerned; refusing it here would only
+// mean a finished cut silently not reaching the Review Room, which is the one
+// outcome worse than a 4K file getting through.
+//
+// The reader is the finishing pass's own probeVideoMetadata — a few HTTP range
+// requests against the file's header, no download, no second copy of the
+// parser. Nothing is written when it can't be read: null means "we don't know",
+// never "it was fine".
+// ---------------------------------------------------------------------------
+export async function recordArrivedDimensions(submissionId: string, url: string, sizeBytes: number | null): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const { probeVideoMetadata } = await import("@/lib/integrations/topaz");
+    const meta = await Promise.race([
+      probeVideoMetadata(url, sizeBytes),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 6_000); }),
+    ]);
+    if (!meta || !(meta.width > 0 && meta.height > 0)) return;
+    await prisma.reviewSubmission.update({
+      where: { id: submissionId },
+      data: { sourceWidth: meta.width, sourceHeight: meta.height },
+    });
+  } catch {
+    /* an unreadable header stays unmeasured — a truthful answer for the one
+       report this feeds. */
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Measure the cuts a folder pass just entered. Strictly best-effort and
+ *  capped: this runs inside the hourly sweep, so it may not become a way for
+ *  one job with a folder full of video to eat the whole cron. A pass normally
+ *  finds nothing new at all — MEASURE_CAP is for the day somebody drops a
+ *  month's batch in at once.
+ *  Cost, timed against the real folder (Sep 16): ~0.5-2s of Dropbox plus
+ *  ~1.7s of header reads per file, and the file's SIZE makes no difference —
+ *  a 2.2 GB cut measures as fast as a 200 MB one, because only the header is
+ *  ever read. Four files is about ten seconds in the worst case. */
+const MEASURE_CAP = 4;
+export async function measureFolderCuts(created: CreatedCut[]): Promise<void> {
+  for (const c of created.slice(0, MEASURE_CAP)) {
+    try {
+      // A temporary link, because probeVideoMetadata needs something it can
+      // send Range requests at — the hub's own /stream route would want a
+      // session, and Dropbox's API is not a byte server. Four hours' life,
+      // which is 3h59m longer than this needs.
+      //
+      // The SIZE has to be handed in (verified against the live folder,
+      // Sep 16): a Dropbox temporary link answers HEAD without a
+      // content-length, so probeVideoMetadata's own fallback gives up with
+      // "Couldn't tell how big the video file is" every single time. The
+      // listing already knew — that is what CreatedCut.sizeBytes carries — and
+      // get_metadata is the cheap read for the case where it didn't.
+      let size = c.sizeBytes;
+      if (!size) size = (await dbx<{ size?: number }>("files/get_metadata", { path: c.assetPath })).size ?? null;
+      if (!size) continue;
+      const r = await dbx<{ link?: string }>("files/get_temporary_link", { path: c.assetPath });
+      if (!r.link) continue;
+      await recordArrivedDimensions(c.id, r.link, size);
+    } catch {
+      /* Dropbox having a bad minute is not this pass's problem — the row
+         simply stays unmeasured. */
+    }
+  }
+}
 
 /** THE LEFTOVER REGISTER (Sep 16). A removal deletes the ReviewSubmission, so
  *  nothing in the Room remembers a cut that is gone — but its file can still
@@ -256,7 +341,9 @@ export async function syncFinalCutsToReview(
         where: { id: pick.id },
         data: { submittedByKey: opts.submittedByKey ?? null, submittedByName: opts.submittedByName, ...(note ? { note } : {}) },
       });
-      const claimed: CreatedCut = { id: pick.id, assetPath: pick.assetPath!, fileName: pick.fileName ?? "", round: pick.round, isRedo: pick.round > 1 };
+      // sizeBytes null: a claim creates nothing — the sweep that minted this
+      // row already measured it.
+      const claimed: CreatedCut = { id: pick.id, assetPath: pick.assetPath!, fileName: pick.fileName ?? "", round: pick.round, isRedo: pick.round > 1, sizeBytes: null };
       return { created: [], claimed, folderVideoCount: project.reviewSubmissions.filter((s) => s.assetPath).length, nothingNew: false, unreadable: false };
     }
   }
@@ -376,7 +463,7 @@ export async function syncFinalCutsToReview(
       await prisma.reviewSubmission.update({ where: { id: row.id }, data: { assetUrl: streamUrlFor(row.id) } });
       id = row.id;
     }
-    created.push({ id, assetPath: c.path, fileName: c.name, round, isRedo: !!latest });
+    created.push({ id, assetPath: c.path, fileName: c.name, round, isRedo: !!latest, sizeBytes: c.size || null });
   }
   return { created, claimed: null, folderVideoCount: cuts.length, nothingNew: created.length === 0, unreadable: false };
 }
@@ -421,6 +508,10 @@ export async function discoverCutsForReview(projectId: string, title: string | n
       editorName: "Final folder",
     });
   }
+  // What the files actually were. AFTER the bell, always: a desk that knows a
+  // cut is waiting matters and a number on a report does not, so nothing above
+  // this line waits on a probe. measureFolderCuts swallows everything.
+  await measureFolderCuts(r.created);
   return r.created.length;
 }
 

@@ -1,9 +1,9 @@
 import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import {
-  AlertTriangle, Film, FolderOpen, Palette, MessageSquare, ExternalLink, PlayCircle, Quote,
+  AlertTriangle, Film, FileVideo, FolderOpen, Palette, MessageSquare, ExternalLink, PlayCircle, Quote,
 } from "lucide-react";
-import { VIDEO_TIER, VIDEO_TYPES, videoTypeForDeliverable } from "@/lib/videoStyles";
+import { EXPORT_SPEC, VIDEO_TIER, VIDEO_TYPES, videoTypeForDeliverable } from "@/lib/videoStyles";
 import { listClientAssets } from "@/lib/clientAssets";
 import { ClientAssetsCard } from "@/components/clients/ClientAssetsCard";
 import { PageHeader } from "@/components/PageHeader";
@@ -146,7 +146,9 @@ export default async function EditBriefPage({
       where: { projectId: id, status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } },
       orderBy: { round: "asc" },
       // decidedBy: who sent the cut back, named on the revision block (Sep 16).
-      select: { id: true, round: true, status: true, assetUrl: true, assetPath: true, fileName: true, submittedByName: true, note: true, createdAt: true, decidedAt: true, decidedBy: true, deliverableId: true, slot: true, source: true, blobUrl: true, completedAt: true },
+      // sourceWidth/Height: what the version actually was (Sep 16, the 1080p
+      // export spec) — printed on its Send-to-Review row.
+      select: { id: true, round: true, status: true, assetUrl: true, assetPath: true, fileName: true, submittedByName: true, note: true, createdAt: true, decidedAt: true, decidedBy: true, deliverableId: true, slot: true, source: true, blobUrl: true, completedAt: true, sourceWidth: true, sourceHeight: true },
     }),
   ]);
   if (!project) notFound();
@@ -541,7 +543,7 @@ export default async function EditBriefPage({
       slot: sl.slot,
       label: sl.label,
       latest: latest
-        ? { id: latest.id, round: latest.round, status: latest.status, fileName: latest.fileName, completedAt: latest.completedAt ? latest.completedAt.toISOString() : null, note: latest.note }
+        ? { id: latest.id, round: latest.round, status: latest.status, fileName: latest.fileName, completedAt: latest.completedAt ? latest.completedAt.toISOString() : null, note: latest.note, sourceWidth: latest.sourceWidth, sourceHeight: latest.sourceHeight }
         : null,
       openNotes,
     };
@@ -806,6 +808,34 @@ export default async function EditBriefPage({
                 );
               })}
             </div>
+            {/* HOW IT LEAVES FINAL CUT — one line for the whole job, not one
+                per video: the export is the same whatever the style. It sits
+                at the BOTTOM of "What to make" on purpose (Jordan, Sep 16:
+                "that should be in the editor brief that the final files should
+                be exported in 1080") — the editor has just read what they are
+                cutting, and the last thing this section says is what the
+                finished file has to be. The Send-to-Review panel says it again
+                at the moment of export, and the Style Guide and the printable
+                brief print the same EXPORT_SPEC (lib/videoStyles), so no two
+                surfaces can disagree.
+                ONLY when the job actually owes video (Sep 16 review):
+                editDeliverables falls back to the whole owed list when there is
+                no video on the order, so without this gate a photo-only job's
+                brief would list the retouching and then tell a retoucher how to
+                export from Final Cut. It also keeps the card off an empty
+                section — no deliverables listed, and then an export spec for
+                nothing. */}
+            {videoDeliverables.length > 0 && (
+              <div className="mt-4 rounded-xl border border-brand/25 bg-brand-soft/40 p-3">
+                <p className="flex items-center gap-1.5 text-sm font-semibold">
+                  <FileVideo className="size-4 text-brand" /> {EXPORT_SPEC.headline}
+                </p>
+                <p className="mt-1.5 text-xs font-medium leading-relaxed text-foreground">{EXPORT_SPEC.finalCut}</p>
+                <p className="mt-1 text-xs leading-relaxed text-foreground/85">{EXPORT_SPEC.edit}</p>
+                <p className="mt-1 text-xs leading-relaxed text-muted">{EXPORT_SPEC.orientation}</p>
+                <p className="mt-1 text-xs leading-relaxed text-muted">{EXPORT_SPEC.why}</p>
+              </div>
+            )}
           </Section>
 
           {/* 3b · MUSIC — right under What to make (Jordan, Sep 15: "they
@@ -909,6 +939,10 @@ export default async function EditBriefPage({
             <CutUploader
               projectId={project.id}
               canUpload={!viewer?.impersonating && (isOwnerAdmin || viewer?.role === "EDITOR")}
+              // Only Jordan and Kyle may send an over-spec file anyway, and
+              // only for real: the server checks the role again and puts their
+              // name on it (startCutUpload).
+              canOverrideExport={!viewer?.impersonating && isOwnerAdmin}
               cuts={shownCutRows}
             />
             {hiddenSlots >= 3 && (
@@ -926,6 +960,16 @@ export default async function EditBriefPage({
                 but kept for everyone who had it before, owner included. */}
             <details className="rounded-xl border border-border bg-surface px-4 py-2.5 text-xs text-muted">
               <summary className="cursor-pointer">Already dropped a file in the Final footage folder instead?</summary>
+              {/* The other door into review, and it is a busy one — 12 of the
+                  26 cut rows on file came in this way. There is no browser in
+                  it, so nothing can be checked BEFORE the work is exported:
+                  the spec is stated here instead, and lib/reviewCuts measures
+                  each file it enters (recordArrivedDimensions) so this door
+                  counts in the answer to "are they exporting 1080p now?"
+                  rather than quietly not applying (Sep 16). Measured, never
+                  blocked — a finished cut that silently fails to reach the
+                  Review Room is worse than a 4K one that does. */}
+              <p className="mt-2 text-[11px] leading-relaxed text-muted-2">{EXPORT_SPEC.headline}: {EXPORT_SPEC.finalCut}</p>
               <div className="mt-2"><SubmitCutCard projectId={project.id} /></div>
             </details>
             {/* ONE PANEL PER CUT that needs looking at — the one they opened,

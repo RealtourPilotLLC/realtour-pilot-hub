@@ -1439,6 +1439,31 @@ model ReviewSubmission {
   blobUrl         String? // the uploaded version's URL in the hub store
   blobPathname    String?
   sizeBytes       Int?
+  // ---- WHAT ACTUALLY ARRIVED (Sep 16 2026, the 1080p export spec) ----------
+  // The rule — lib/videoStyles EXPORT_SPEC, "export at 1080p, edit in 4K if you
+  // like" — is only a rule if somebody can see whether it is being followed.
+  // TopazJob already stores sourceWidth/sourceHeight, but only for an APPROVED
+  // cut that was queued for the finishing pass (one such row exists today), so
+  // it cannot answer "are they exporting 1080p now?" for the bounced v1 and v2
+  // that are exactly where a 4K habit would show first.
+  // Filled three ways, so BOTH doors into review are counted (14 rows came up
+  // the upload panel, 12 through the Dropbox folder — measuring only the panel
+  // would answer the question for half the cuts):
+  //   · at reserve time from the editor's own browser, the same numbers the
+  //     upload gate acted on;
+  //   · at finish from probeVideoMetadata, when the browser could not read the
+  //     file's header (an odd codec, a slow machine);
+  //   · at folder discovery from the same probe over a Dropbox temporary link
+  //     (lib/reviewCuts recordArrivedDimensions).
+  // Null means nothing could be measured — never "it was fine".
+  sourceWidth     Int?
+  sourceHeight    Int?
+  // Set when an OWNER/ADMIN knowingly let an over-spec file through (6pm with a
+  // client waiting is its own kind of failure). An EDITOR cannot reach this: an
+  // override is a decision with a name on it, not a silent bypass. The job's
+  // Activity history carries the same line in words.
+  exportOverrideBy String?
+  exportOverrideAt DateTime?
   finalPath       String? // where the approved cut was placed in Dropbox
   dropboxJobId    String? // files/save_url async job while the copy is in flight
   completedAt     DateTime? // approved AND copied to Dropbox — "complete for that cut"

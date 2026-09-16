@@ -13,7 +13,11 @@
 //     order line, so "Standard Reel with Agent Intro" (626 Greycliffe) read
 //     "Social Reel" on every surface. videoStyleFor() below is the ONE
 //     resolver; nothing else may invent a video name.
+//   · the EXPORT SPEC (Sep 16 2026) — what the finished file has to be when it
+//     leaves Final Cut. Same rule: one wording, read by every surface.
 // NO pricing here, ever — creatives read both surfaces.
+// This file is imported by CLIENT components (the upload panel). Keep it free
+// of prisma / settings / integrations imports — plain data and pure functions.
 // ---------------------------------------------------------------------------
 
 export type StyleExample = { label: string; url: string };
@@ -30,6 +34,140 @@ export const STUDIO_910 = [
   "Effects & creative transitions", "SFX & VFX", "Graphics", "Color grading",
   "Masking", "Kinetic text & titles",
 ];
+
+// ---------------------------------------------------------------------------
+// HOW THE FILE LEAVES FINAL CUT — the export spec, written once here.
+//
+// Jordan, Sep 16 2026, verbatim: "do not let them upload in 4K it should be
+// uploaded in 1080P and that should be in the editor brief that the final files
+// should be exported in 1080. So its ok to edit it in 4k but when they export
+// it from final cut - it should be exported for social media, 1080P,
+// multi-pass."
+//
+// WHY, because the rule is new and nobody has been doing anything wrong: every
+// approved cut now runs through a 1080p finishing pass on its way to the
+// client, and that pass is billed on the resolution of the file we HAND IT, not
+// the one it gives back. Quoted against the live API on our own two files
+// (Sep 16): a 60-second 1080 × 1920 cut came back at 9 credits; a 50-second
+// 3840 × 2160 cut quoted 27 and charged 24. That is more than three times the
+// cost for a SHORTER video — call it four times per second of footage, which is
+// exactly the pixel ratio — and the cut we get back is 1080p either way, since
+// 1080p is what we deliver. At ~49 videos a month it is the difference between
+// sitting inside the monthly plan and going over it every single month.
+//
+// Size matters too: 4K is four times the pixels, so it is several times the
+// upload, and the pass refuses any file over 500 MB outright — a ceiling our
+// longer 1080p cuts already brush (three of them run 478-487 MB).
+//
+// HOW COMMON, measured off the files themselves on Sep 16 (every cut in the
+// system read through its own header — reviewCuts.recordArrivedDimensions is
+// the same reader): 22 cuts, NINE of them over spec. Split by how they
+// arrived, which is the part that matters —
+//   · up the upload panel: 2 of 11 (both 3840 × 2160, Kim's personal-branding
+//     pieces on 893 S Matlack);
+//   · through the Dropbox Final folder: 7 of 11, every one of them
+//     2160 × 3840 — portrait 4K, i.e. vertical reels exported at 4K, which is
+//     exactly why the test below is on the SHORT side and not on width.
+// The folder cuts are also the enormous ones: 1.5 GB, 2.2 GB, 2.2 GB against
+// 80-490 MB for everything that came up the panel. The finishing pass will not
+// take a file over 500 MB at all, so those are not merely expensive — they
+// don't go through.
+//
+// Read by: the editor brief's "What to make" and its Send-to-Review panel
+// (/edit/[id]), the printable brief (lib/editor-pdf.ts) and the Style Guide
+// (/resources/video-styles). ONE copy, exactly like the video names above it —
+// a second wording is a second rule, and the two would drift.
+//
+// No credit counts or dollars here, same as the rest of this file: "about four
+// times" is the number an editor needs; the rest is the office's business.
+// ---------------------------------------------------------------------------
+export const EXPORT_SPEC = {
+  /** Short side, in pixels. The short side is the honest test — it passes a
+   *  1080 × 1920 vertical reel AND a 1920 × 1080 horizontal video, and catches
+   *  4K held either way up (3840 × 2160 and 2160 × 3840 are both over). */
+  shortSide: 1080,
+  headline: "Export at 1080p",
+  edit: "Edit in 4K if you want to — nothing about the edit changes. It's the export that has to be 1080p: the social-media file, not a 4K master.",
+  // Jordan's words were "exported for social media, 1080P, multi-pass". Two of
+  // those three are things an editor can point at in the Export File dialog and
+  // one is not, so the fields are named here (Sep 16 review): Resolution is a
+  // popup in the Settings tab, and "multi-pass" is the H.264 encoding option
+  // Final Cut labels Better Quality — the slower one. "Social media" is the
+  // intent, not a control, so it sits in `edit` above where it reads as intent.
+  // Spelled with plain words and commas, never "▸": the printable brief draws
+  // in WinAnsi and silently strips anything outside it (lib/editor-pdf clean()),
+  // so an arrow would print as a hole in the one copy nobody can re-check.
+  finalCut: "From Final Cut: Share, then Export File. In Settings, set Resolution to 1080p and pick the multi-pass H.264 — the option labelled Better Quality, not Faster Encode.",
+  orientation: "Keep the shape the style calls for: a vertical reel exports 1080 × 1920, a horizontal video 1920 × 1080.",
+  why: "Everything we deliver goes out at 1080p, and a 4K master costs about four times as much to finish — for a file that ends up 1080p anyway.",
+} as const;
+
+/** The spec as plain lines, in the order an editor needs them — for the
+ *  printable brief and anywhere else a list beats a card. */
+export const EXPORT_SPEC_LINES: readonly string[] = [
+  EXPORT_SPEC.finalCut,
+  EXPORT_SPEC.edit,
+  EXPORT_SPEC.orientation,
+  EXPORT_SPEC.why,
+];
+
+/** Is this file over spec? FAIL OPEN on anything we can't measure: a width of
+ *  0, a NaN, a browser that couldn't read the header — an unknown file is not
+ *  an over-spec file, and a diagnostic must never be the thing that stops an
+ *  editor delivering. */
+export function isOverExportSpec(width: number | null | undefined, height: number | null | undefined): boolean {
+  const w = Number(width);
+  const h = Number(height);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return false;
+  return Math.min(w, h) > EXPORT_SPEC.shortSide;
+}
+
+/** "3840 × 2160" — one spelling of a resolution, everywhere one is printed. */
+export function resolutionLabel(width: number | null | undefined, height: number | null | undefined): string | null {
+  const w = Number(width);
+  const h = Number(height);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+  return `${w} × ${h}`;
+}
+
+/**
+ * What an editor reads when a file is stopped — the words of the refusal, in
+ * one place, so the browser dialog and the server's own answer say the same
+ * thing. The FIRST line is the one that matters: somebody has just finished a
+ * seven-hour personal-branding edit and been told "no" by a dialog, and the
+ * thing they need to know before anything else is that the work is fine.
+ *
+ * And it ALWAYS ends with a way out (`stuck`, Sep 16 review). Re-exporting is
+ * a two-minute job on a good evening; on a bad one Final Cut has crashed, the
+ * media is offline, or it is 7pm and the client is waiting. A refusal with no
+ * named next step leaves an editor holding a finished edit and no route — and
+ * an editor who cannot deliver is a worse outcome than a 4K file getting
+ * through. Kyle is that route: an ADMIN, so the override button is really his
+ * to press (startCutUpload), and the person they already message about a job.
+ */
+export function exportRefusal(width: number | null | undefined, height: number | null | undefined) {
+  const res = resolutionLabel(width, height);
+  return {
+    lead: "Nothing's wrong with your edit — this is a two-minute re-export from the same timeline, not a re-edit.",
+    what: res
+      ? `That file is ${res}. We deliver at 1080p, so 1080p is what comes in.`
+      : "That file is bigger than 1080p. We deliver at 1080p, so 1080p is what comes in.",
+    fix: EXPORT_SPEC.finalCut,
+    orientation: EXPORT_SPEC.orientation,
+    why: EXPORT_SPEC.why,
+    stuck: "Can't re-export right now — Final Cut playing up, media offline, no time before the deadline? Message Kyle. He can send this exact file through for you, so a delivery never waits on this.",
+  };
+}
+
+/** The same refusal as one string, for a server action's `message` and any
+ *  other surface with a single line to spend. `stuck` rides along: this is the
+ *  wording an editor gets when the CARD never drew (the server refused a
+ *  request the browser's own check didn't stop), which is precisely the moment
+ *  they have nothing else on screen telling them what to do next. */
+export function exportRefusalMessage(width: number | null | undefined, height: number | null | undefined): string {
+  const r = exportRefusal(width, height);
+  return `${r.lead} ${r.what} ${r.fix} ${r.stuck}`;
+}
 
 // ---------------------------------------------------------------------------
 // STABLE KEYS — the shared contract with the product catalog and the Aryeo
