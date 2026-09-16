@@ -1,12 +1,14 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { upload } from "@vercel/blob/client";
 import { CheckCircle2, CloudUpload, Loader2, MessageSquarePlus, RotateCcw, Undo2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { startCutUpload, finishCutUpload, abandonCutUpload } from "@/app/review/actions";
+import { startCutUpload, finishCutUpload, abandonCutUpload, cutTakeBackFlags } from "@/app/review/actions";
 import { saveCutMessage } from "@/components/editing/cutMessage.actions";
+import { CutTakeBack, CutTakeBackFlags } from "@/components/review/CutTakeBack";
+import type { CutTakeBackInfo } from "@/components/review/types";
 
 // ---------------------------------------------------------------------------
 // "Upload version N" — the editor's way into the Review Room (Jordan, Sep 1:
@@ -58,6 +60,11 @@ function StatusPill({ latest, reopened }: { latest: CutRow["latest"]; reopened?:
   }
   if (latest.status === "CHANGES_REQUESTED") {
     return <span className="inline-flex items-center gap-1 rounded-full bg-danger-soft px-2 py-0.5 text-[11px] font-semibold text-danger"><Undo2 className="size-3" /> Changes requested on v{latest.round}</span>;
+  }
+  // Taken back (Sep 16) — nothing is in front of the reviewer, and v{round} is
+  // free again for the right file.
+  if (latest.status === "WITHDRAWN") {
+    return <span className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-muted"><Undo2 className="size-3" /> v{latest.round} withdrawn</span>;
   }
   return <span className="rounded-full bg-warning-soft px-2 py-0.5 text-[11px] font-semibold text-warning">v{latest.round} in review</span>;
 }
@@ -191,6 +198,22 @@ export function CutUploader({ projectId, cuts, canUpload, revisionOpen = false }
   // reads right without waiting on the refresh).
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [saved, setSaved] = useState<Record<string, string | null>>({});
+  // Withdraw / move state per version (Sep 16). The /edit page hands this panel
+  // the cut rows, not these columns, so the panel asks for them itself — one
+  // read per job, re-read whenever a version changes here or a control fires.
+  const [flags, setFlags] = useState<Record<string, CutTakeBackInfo>>({});
+  const [tick, setTick] = useState(0);
+  const sig = useMemo(
+    () => cuts.map((c) => `${c.deliverableId}:${c.slot}:${c.latest?.id ?? ""}:${c.latest?.status ?? ""}`).join("|"),
+    [cuts],
+  );
+  useEffect(() => {
+    let live = true;
+    void cutTakeBackFlags(projectId)
+      .then((rows) => { if (live) setFlags(Object.fromEntries(rows.map((r) => [r.submissionId, r]))); })
+      .catch(() => { /* the panel works without the flags */ });
+    return () => { live = false; };
+  }, [projectId, sig, tick]);
 
   async function send(cut: CutRow, file: File) {
     const key = `${cut.deliverableId}:${cut.slot}`;
@@ -256,8 +279,35 @@ export function CutUploader({ projectId, cuts, canUpload, revisionOpen = false }
           const key = `${c.deliverableId}:${c.slot}`;
           const b = busy[key];
           const reopened = revisionOpen && c.latest?.status === "APPROVED";
-          const next = (c.latest?.status === "APPROVED" && !reopened) ? null : (c.latest ? c.latest.round + 1 : 1);
-          const isRedo = c.latest?.status === "CHANGES_REQUESTED" || reopened;
+          // A withdrawn version FREES its number (Sep 16): the next upload is
+          // that same version, not the one after it.
+          const withdrawn = c.latest?.status === "WITHDRAWN";
+          const next = (c.latest?.status === "APPROVED" && !reopened)
+            ? null
+            : c.latest ? (withdrawn ? c.latest.round : c.latest.round + 1) : 1;
+          const isRedo = c.latest?.status === "CHANGES_REQUESTED" || reopened || withdrawn;
+          // The take-back state for this version. The flags read lands a moment
+          // after the page does, so until it arrives the control is drawn from
+          // what the row already knows: anyone who may upload here may take
+          // their own cut back, and the server (withdrawCut) refuses anyone it
+          // shouldn't — this only decides whether the link is drawn, never
+          // whether the action is allowed. The optimistic guess is the NARROW
+          // one (reviewer, Sep 16): only a version still in front of the
+          // reviewer. An APPROVED cut is the office's call and a co-editor's
+          // cut is theirs, so offering "Wrong video?" on either before the read
+          // lands would only walk the editor into a refusal.
+          const flag: CutTakeBackInfo | null =
+            (c.latest ? flags[c.latest.id] : undefined) ??
+            (c.latest && canUpload
+              ? {
+                  submissionId: c.latest.id, round: c.latest.round, status: c.latest.status,
+                  fileName: c.latest.fileName,
+                  canAct: c.latest.status === "PENDING" || c.latest.status === "CHANGES_REQUESTED",
+                  office: false,
+                  withdrawnAt: null, withdrawnBy: null, withdrawnReason: null,
+                  strandedFinalPath: null, movedFromStreet: null, movedAt: null, movedBy: null,
+                }
+              : null);
           // A message edits in place only while its version is with the
           // reviewer; otherwise the next upload is the one it describes.
           const liveTargetId = c.latest && c.latest.status === "PENDING" ? c.latest.id : null;
@@ -284,6 +334,12 @@ export function CutUploader({ projectId, cuts, canUpload, revisionOpen = false }
                   canWrite={canUpload && (c.latest?.status !== "APPROVED" || reopened)}
                   onSaved={(n) => setSaved((s) => ({ ...s, [key]: n }))}
                 />
+                {flag && <div className="mt-2"><CutTakeBackFlags info={flag} onDone={() => setTick((t) => t + 1)} /></div>}
+                {flag?.canAct && (
+                  <div className="mt-1.5">
+                    <CutTakeBack info={flag} cutLabel={c.label} onDone={() => setTick((t) => t + 1)} />
+                  </div>
+                )}
                 {b && (
                   <div className="mt-2">
                     <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-2">

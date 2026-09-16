@@ -122,11 +122,15 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
     // every other "where is this job's video?" surface reads (Ops Day, the
     // Dashboard, the QC card; see reviewCuts.videoStatesFor). UPLOADING and
     // UPLOAD_FAILED rows are not cuts (bytes still moving, or never arrived);
-    // SUPERSEDED ones were replaced by a newer version of the same cut.
+    // SUPERSEDED ones were replaced by a newer version of the same cut; a
+    // WITHDRAWN one was taken back by the editor or the office (Sep 16) and
+    // must drop out of this row's cut tally the same moment it leaves the
+    // Review Room — otherwise the queue keeps counting a video nobody is
+    // waiting on and the row stays stuck on "Ready for review".
     prisma.reviewSubmission.findMany({
       where: {
         projectId: { in: inflight.map((p) => p.id) },
-        status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "SUPERSEDED"] },
+        status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "SUPERSEDED", "WITHDRAWN"] },
       },
       orderBy: { round: "asc" },
       select: { id: true, projectId: true, deliverableId: true, slot: true, assetPath: true, round: true, status: true },

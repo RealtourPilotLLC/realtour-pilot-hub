@@ -235,7 +235,9 @@ export async function searchQueueCandidates(q: string): Promise<QueueCandidate[]
       statusEvidence: true,
       client: { select: { name: true } },
       deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } },
-      _count: { select: { reviewSubmissions: { where: { status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } } } } },
+      // A WITHDRAWN round is not a prior cut (Sep 16): the editor took it back,
+      // so a manual add-to-queue after one starts on the fresh EDITING rail.
+      _count: { select: { reviewSubmissions: { where: { status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"] } } } } },
     },
   });
 
@@ -301,7 +303,9 @@ export async function addToEditorQueue(
       revisionRequestedAt: true,
       client: { select: { segment: true } },
       deliverables: { where: { removedFromOrderAt: null }, select: { id: true, type: true } },
-      _count: { select: { reviewSubmissions: { where: { status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } } } } },
+      // A WITHDRAWN round is not a prior cut (Sep 16): the editor took it back,
+      // so a manual add-to-queue after one starts on the fresh EDITING rail.
+      _count: { select: { reviewSubmissions: { where: { status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"] } } } } },
     },
   });
   if (!project) return { ok: false, message: "That project no longer exists." };
@@ -682,7 +686,7 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
   if (target === "WAITING") {
     const street = (proj.title || "this job").split(",")[0].trim();
     const cuts = await prisma.reviewSubmission.count({
-      where: { projectId, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "SUPERSEDED"] } },
+      where: { projectId, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "SUPERSEDED", "WITHDRAWN"] } },
     });
     const refusal = whyNotWaiting({ status: proj.status, street, cuts });
     if (refusal) return { ok: false, message: refusal };
@@ -847,7 +851,10 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
       };
       const raisedAt = proj.revisionRequestedAt ?? new Date(Math.min(...lane.map((t) => t.createdAt.getTime())));
       const newest = await prisma.reviewSubmission.findFirst({
-        where: { projectId, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "SUPERSEDED"] }, createdAt: { gte: raisedAt } },
+        // A withdrawn round is not the corrected cut (Sep 16) — reading one here
+        // would tell the editor their revision is waiting on Jordan when the
+        // video has already been taken back.
+        where: { projectId, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "SUPERSEDED", "WITHDRAWN"] }, createdAt: { gte: raisedAt } },
         orderBy: { createdAt: "desc" },
         select: { status: true, round: true, createdAt: true },
       });
@@ -1094,7 +1101,9 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
     try {
       const street = (proj.title || "this job").split(",")[0].trim();
       const latest = await prisma.reviewSubmission.findFirst({
-        where: { projectId, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "SUPERSEDED"] } },
+        // Withdrawn rounds are free again (Sep 16), so the card asks for the
+        // round the next upload will really be.
+        where: { projectId, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "SUPERSEDED", "WITHDRAWN"] } },
         orderBy: { round: "desc" },
         select: { round: true },
       });

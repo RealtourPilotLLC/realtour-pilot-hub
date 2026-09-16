@@ -1430,6 +1430,24 @@ model ReviewSubmission {
   // One row per (file, round): the sweep and the editor's button can race on
   // the same new file; Postgres treats the legacy NULL-path rows as distinct.
   @@unique([projectId, assetPath, round])
+  // ---- WITHDRAW / REASSIGN (Jordan, Sep 16: "the editor should be able to
+  // remove the video from upload / for review in case they mistakenly upload
+  // the wrong video or to the wrong project… also reassign that video to a
+  // different project"). status gains "WITHDRAWN"; the ROW AND THE FILE ARE
+  // KEPT — a withdrawal is a correction, not a delete, and the history is what
+  // makes a re-upload legible.
+  withdrawnAt     DateTime?
+  withdrawnBy     String?
+  withdrawnReason String?
+  // An APPROVED cut's file was already copied into the job's Final folder.
+  // Jordan's rule: leave it and FLAG it, with a control to remove it if he
+  // wants. This holds the path that is still sitting in Dropbox.
+  strandedFinalPath String?
+  // Reassignment provenance — where the cut came from, so both jobs' timelines
+  // and the editor's queue can say what moved.
+  movedFromProjectId String?
+  movedAt            DateTime?
+  movedBy            String?
 }
 
 // Per-photo quick verdict while arrowing through a gallery in review mode.

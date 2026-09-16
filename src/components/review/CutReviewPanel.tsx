@@ -9,6 +9,8 @@ import { cn } from "@/lib/utils";
 import { MentionTextarea } from "@/components/mentions/MentionTextarea";
 import { addCutNote, approveCut, replyCutNote, requestCutChanges, setCutNoteStatus } from "@/app/review/actions";
 import type { CutNote, CutSubmission } from "@/lib/reviewRoom";
+import { CutTakeBack, CutTakeBackFlags } from "./CutTakeBack";
+import type { CutTakeBackInfo } from "./types";
 import { fmtClock, parseClock } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -18,6 +20,11 @@ import { fmtClock, parseClock } from "./types";
 // Request changes. Owner/admin only; the page gates before rendering this.
 // Notes route to the EDITOR (fix/coaching) or the PHOTOGRAPHER (capture note),
 // mirroring the gallery review's one-tap lane chips.
+//
+// Sep 16 (Jordan): the verdict bar also carries the quiet "Wrong video?" link —
+// withdraw the cut, or move it to the job it should have gone to — plus the
+// flags for a cut that was taken back and for an approved file left behind in
+// Dropbox. Approve stays the loud green button; the escape hatch is grey text.
 // ---------------------------------------------------------------------------
 
 type LaneChoice = { lane: "EDITOR" | "PHOTOGRAPHER"; kind: "fix" | "coaching"; label: string; icon: "pencil" | "camera" };
@@ -38,11 +45,16 @@ export function CutReviewPanel({
   submission,
   notes,
   editorLabel,
+  takeBack,
+  cutLabel,
 }: {
   projectId: string;
   submission: CutSubmission;
   notes: CutNote[];
   editorLabel: string;
+  /** withdraw / move state for THIS cut (null = the page couldn't read it) */
+  takeBack?: CutTakeBackInfo | null;
+  cutLabel?: string;
 }) {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -63,6 +75,9 @@ export function CutReviewPanel({
   // the route from Dropbox (verified in a visible tab) but get a download
   // link too, for the day a link stalls.
   const legacy = !submission.blobUrl && !!submission.assetUrl;
+  // A withdrawn cut has no verdict to give: the buttons come off and the row
+  // says what happened instead (Sep 16).
+  const withdrawn = submission.status === "WITHDRAWN";
   const decided = submission.status !== "PENDING";
   const openEditorNotes = notes.filter((n) => n.lane === "EDITOR" && n.status === "OPEN").length;
   const sorted = [...notes].sort(
@@ -133,6 +148,9 @@ export function CutReviewPanel({
           <a href={submission.assetUrl!} className="text-brand hover:underline">download it</a> — uploads from the editor portal play from the hub directly.
         </p>
       )}
+      {/* Withdrawn / moved-here / leftover-file flags — shown whatever the
+          verdict state, because they change what the buttons below mean. */}
+      {takeBack && <CutTakeBackFlags info={takeBack} />}
       {/* Note + verdict bar */}
       <div className="flex flex-wrap items-center gap-2">
         <button
@@ -142,8 +160,14 @@ export function CutReviewPanel({
         >
           <MessageSquarePlus className="size-4" /> {src ? `Add note at ${fmtClock(now)}` : "Add note"}
         </button>
+        {/* The escape hatch, deliberately quiet beside the verdict buttons. */}
+        {takeBack && <CutTakeBack info={takeBack} cutLabel={cutLabel ?? "this cut"} />}
         <span className="flex-1" />
-        {decided ? (
+        {withdrawn ? (
+          <span className="inline-flex items-center gap-1.5 rounded-lg bg-surface-2 px-3 py-1.5 text-sm font-medium text-muted">
+            <Undo2 className="size-4" /> Withdrawn — waiting on the next version
+          </span>
+        ) : decided ? (
           <span
             className={cn(
               "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium",

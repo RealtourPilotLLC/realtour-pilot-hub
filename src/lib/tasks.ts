@@ -2934,7 +2934,10 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
   // sweep — discoverCutsForReview — because it must also run for REVISION
   // jobs, which this handoff deliberately skips.)
   const videoPresent = (ev.present ?? []).includes("Video") || (dropbox?.finalVideo ?? 0) > 0;
-  const submitted = await prisma.reviewSubmission.count({ where: { projectId, status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } } });
+  // A WITHDRAWN round is not a cut (Jordan, Sep 16: the editor took the wrong
+  // file back) — counting it here made the handoff return early and leave the
+  // editor with no work item to upload the right file against.
+  const submitted = await prisma.reviewSubmission.count({ where: { projectId, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"] } } });
   // A cut exists (submission) or the video is verifiably live → nothing to
   // chase. But a MONTHLY job is a BATCH: the first cut landing must not close
   // the editor's work item while videos 2..N are still owed — without it the
@@ -3313,9 +3316,12 @@ async function syncOneProjectTasks(
     // (any round, any verdict state) and their work item was already completed
     // by submitCutForReview; treat as landed so nothing here fights that flow.
     if (!finalVideoLanded) {
-      // Rows still uploading (or whose upload died) are not cuts.
+      // Rows still uploading (or whose upload died) are not cuts — nor is a
+      // round that was WITHDRAWN (Sep 16). Without that exclusion this
+      // evidence-close read a taken-back cut as "the cut is with the owner"
+      // and re-completed the editor's card an hour after they reopened it.
       finalVideoLanded =
-        (await prisma.reviewSubmission.count({ where: { projectId: p.id, status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } } })) > 0;
+        (await prisma.reviewSubmission.count({ where: { projectId: p.id, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"] } } })) > 0;
     }
     // MULTI-VIDEO packages (monthly personal branding: 2–5 videos) submit one
     // video at a time, and submitCutForReview deliberately keeps the edit task

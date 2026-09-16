@@ -34,7 +34,7 @@ import { EditOverridesButton } from "@/components/editing/EditOverridesDialog";
 import { computedView, computedVideosOwed, effectiveDue, effectiveTypeDetail, overrideView } from "@/lib/editOverrides";
 import { STATUS_LABEL } from "@/lib/editorQueue";
 import { editorKeyForTeamName, editorMeta } from "@/lib/editors";
-import { RevisionBriefCard } from "@/components/editing/RevisionBriefCard";
+import { RevisionBriefCard, type BouncedCutView } from "@/components/editing/RevisionBriefCard";
 import { getRevisionBriefs } from "@/lib/revisionBrief";
 import { aryeoCustomerNote } from "@/lib/shoot";
 // Per-CLIENT note (the merged, Aryeo-mirrored one) — distinct from
@@ -113,10 +113,13 @@ export default async function EditBriefPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ cut?: string }>;
+  searchParams: Promise<{ cut?: string; slots?: string }>;
 }) {
   const { id } = await params;
-  const { cut } = await searchParams;
+  // `slots=all` opens the empty cut slots a big job collapses by default
+  // (Jordan, Sep 16 — see the Send to Review block below).
+  const { cut, slots: slotsParam } = await searchParams;
+  const showAllSlots = slotsParam === "all";
 
   const viewer = await getCurrentUser();
   // Fail CLOSED on a null viewer once enforcement is on (the same line /shoot/<id>
@@ -142,7 +145,8 @@ export default async function EditBriefPage({
     prisma.reviewSubmission.findMany({
       where: { projectId: id, status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } },
       orderBy: { round: "asc" },
-      select: { id: true, round: true, status: true, assetUrl: true, assetPath: true, fileName: true, submittedByName: true, note: true, createdAt: true, decidedAt: true, deliverableId: true, slot: true, source: true, blobUrl: true, completedAt: true },
+      // decidedBy: who sent the cut back, named on the revision block (Sep 16).
+      select: { id: true, round: true, status: true, assetUrl: true, assetPath: true, fileName: true, submittedByName: true, note: true, createdAt: true, decidedAt: true, decidedBy: true, deliverableId: true, slot: true, source: true, blobUrl: true, completedAt: true },
     }),
   ]);
   if (!project) notFound();
@@ -295,6 +299,15 @@ export default async function EditBriefPage({
     // green when the hourly sweep found files in the folder, hollow when not.
     folderCounts = { raw: ev?.dropbox?.rawVideo ?? 0, final: ev?.dropbox?.finalVideo ?? 0, stale: !!ev?.dropbox?.stale };
   } catch { /* evidence is best-effort */ }
+  // A WITHDRAWN row (Sep 16) is history, not a version in play: the editor
+  // pulled it back. It still lists in the round history, struck through, and
+  // the Send-to-Review row still carries its "v1 withdrawn" state — but the
+  // page never OPENS on one, and the cut still owing work is the newest round
+  // that wasn't taken back (a bounced v1 under a withdrawn v2 is the job
+  // again). Guarded on the string so this reads correctly whether or not a
+  // withdrawal has been recorded yet.
+  const isLive = (s: { status: string }) => s.status !== "WITHDRAWN";
+  const liveSubs = submissions.filter(isLive);
   const latestRound = submissions.length ? submissions[submissions.length - 1] : null;
   // The cut panel (editor's side of the review): pick the active cut like the
   // owner's workspace does — ?cut=<id> wins, else the newest PENDING/bounced
@@ -304,15 +317,55 @@ export default async function EditBriefPage({
   const latestPerCut = new Map<string, (typeof submissions)[number]>();
   for (const s of submissions) latestPerCut.set(cutKeyOf(s), s); // round-asc → latest wins
   const currentCuts = [...latestPerCut.values()];
-  const slotLabelOf = (s: (typeof submissions)[number]) =>
-    slots.find((sl) => sl.deliverableId === s.deliverableId && sl.slot === s.slot)?.label ?? null;
+  // The same map with the taken-back rounds skipped — what the cut still owes.
+  const latestLivePerCut = new Map<string, (typeof submissions)[number]>();
+  for (const s of liveSubs) latestLivePerCut.set(cutKeyOf(s), s);
+  const slotOf = (s: (typeof submissions)[number]) =>
+    slots.find((sl) => sl.deliverableId === s.deliverableId && sl.slot === s.slot) ?? null;
+  const slotLabelOf = (s: (typeof submissions)[number]) => slotOf(s)?.label ?? null;
+  // WHICH of the job's cuts this is — "cut 1 of 16". The position in the owed
+  // list, not the slot number, so a job with several deliverables still counts
+  // straight through (Jordan, Sep 16: one bounced cut inside sixteen identical
+  // slots named nothing at all).
+  const cutIndexOf = (s: (typeof submissions)[number]) => {
+    const i = slots.findIndex((sl) => sl.deliverableId === s.deliverableId && sl.slot === s.slot);
+    return i === -1 ? null : i + 1;
+  };
   const activeSub =
     (cut ? submissions.find((s) => s.id === cut) : null) ??
     [...currentCuts].reverse().find((s) => s.status === "CHANGES_REQUESTED" || s.status === "PENDING") ??
+    // Never auto-open on a cut that was taken back — it is still reachable by
+    // ?cut=<id> from the round history (Sep 16).
+    liveSubs[liveSubs.length - 1] ??
     latestRound;
-  const activeAssetKey = activeSub ? (activeSub.assetUrl ?? `cut:${activeSub.id}`) : null;
-  const activeNotes = activeAssetKey ? feedback.filter((n) => n.assetUrl === activeAssetKey) : [];
-  const otherNotes = activeAssetKey ? feedback.filter((n) => n.assetUrl !== activeAssetKey) : feedback;
+  const assetKeyOf = (s: (typeof submissions)[number]) => s.assetUrl ?? `cut:${s.id}`;
+  const notesFor = (s: (typeof submissions)[number]) => feedback.filter((n) => n.assetUrl === assetKeyOf(s));
+  const activeNotes = activeSub ? notesFor(activeSub) : [];
+  // EVERY bounced cut gets its own panel, not just the active one — a link
+  // that says "cut 3 of 16" has to land on cut 3 even when cut 1 is the one
+  // the page opened on. Ordered the way the job owes them.
+  const bouncedCuts = [...latestLivePerCut.values()].filter((s) => s.status === "CHANGES_REQUESTED");
+  const panelSubs = [
+    ...new Map([...(activeSub ? [activeSub] : []), ...bouncedCuts].map((s) => [s.id, s])).values(),
+  ].sort((a, b) => (cutIndexOf(a) ?? 9999) - (cutIndexOf(b) ?? 9999) || a.round - b.round);
+  // ONE player on the page: the cut in front of them. Every other panel is
+  // notes-only (Sep 16 review — four bounced cuts would otherwise mount four
+  // <video> elements and fetch four sets of metadata); they still carry their
+  // anchor, and one click makes them the cut in front.
+  const playerSubId = activeSub?.id ?? panelSubs[0]?.id ?? null;
+  const panelIds = new Set(panelSubs.map((s) => s.id));
+  const panelKeys = new Set(panelSubs.map(assetKeyOf));
+  const otherNotes = feedback.filter((n) => !panelKeys.has(n.assetUrl));
+  // The cut a revision link must land on: the one in front of them if it is
+  // the bounced one, else the first cut waiting on changes.
+  const revisionCut = (activeSub?.status === "CHANGES_REQUESTED" ? activeSub : null) ?? bouncedCuts[0] ?? null;
+  const revisionHref = revisionCut ? `#cut-${revisionCut.id}` : null;
+  // Which submissions have an anchor on this page — a panel, or (on a
+  // multi-cut job) their chip in the switcher. Only those become links.
+  const anchored = new Set<string>([
+    ...panelIds,
+    ...(currentCuts.length > 1 ? currentCuts.map((s) => s.id) : []),
+  ]);
   // A stale flag must not resurrect "changes requested" on an approved cut:
   // only a video revision RAISED AFTER the approval outranks it.
   const approvedAt = latestRound?.status === "APPROVED" ? latestRound.decidedAt : null;
@@ -376,6 +429,33 @@ export default async function EditBriefPage({
     note: editorMessage(s.note),
     createdAtISO: s.createdAt.toISOString(),
     decidedAtISO: s.decidedAt ? s.decidedAt.toISOString() : null,
+    // Name the cut and link to it — sixteen "Round 1" lines are unreadable,
+    // and a round the editor can click is one they can act on (Sep 16).
+    cutLabel: slotLabelOf(s),
+    href: anchored.has(s.id) ? `#cut-${s.id}` : null,
+  }));
+  // THE REVIEW ROOM'S ASKS, as a work order. A bounce writes no RevisionBrief
+  // — it is Jordan's own timestamped notes on a cut — so the revision card
+  // rendered NOTHING for it and the notes lived only inside the cut panel,
+  // wherever that happened to be on the page (Jordan, Sep 16: "the revision
+  // requests are not showing up well in the editor brief").
+  const bouncedCards: BouncedCutView[] = bouncedCuts.map((s) => ({
+    submissionId: s.id,
+    index: cutIndexOf(s),
+    total: slots.length || null,
+    cutLabel: slotOf(s)?.deliverableLabel ?? null,
+    round: s.round,
+    fileName: s.fileName,
+    sentBackAtISO: s.decidedAt ? s.decidedAt.toISOString() : null,
+    sentBackBy: s.decidedBy,
+    notes: notesFor(s).map((n) => ({
+      id: n.id,
+      timeSec: n.timeSec,
+      body: n.body,
+      authorName: n.authorName,
+      status: n.status,
+      kind: n.kind,
+    })),
   }));
   // The tracker narrates a VIDEO edit — a photos-only or cancelled job has no
   // edit lifecycle to track (the brief below still renders for reference).
@@ -445,6 +525,48 @@ export default async function EditBriefPage({
   // is four cards down.
   const openOnActive = activeNotes.filter((n) => n.status === "OPEN").length;
   const needsWork = activeSub?.status === "CHANGES_REQUESTED" || openOnActive > 0;
+
+  // ---- SEND TO REVIEW: the slots, with the dead ones out of the way -------
+  // 893 S Matlack owes SIXTEEN videos (the office's videosOwedOverride), so
+  // its one bounced cut sat in row 1 of sixteen identical "Not uploaded yet"
+  // rows (Jordan, Sep 16). The job still owes sixteen — nothing here changes
+  // that count, and the line above the panel says it — but the rows the
+  // editor cannot act on fold behind one toggle: every slot holding a cut
+  // stays, plus the next empty one (the slot they would fill next).
+  const cutRows = slots.map((sl) => {
+    const latest = latestPerCut.get(`${sl.deliverableId}:${sl.slot}`) ?? null;
+    const openNotes = latest ? feedback.filter((n) => n.assetUrl === assetKeyOf(latest) && n.status === "OPEN").length : 0;
+    return {
+      deliverableId: sl.deliverableId,
+      slot: sl.slot,
+      label: sl.label,
+      latest: latest
+        ? { id: latest.id, round: latest.round, status: latest.status, fileName: latest.fileName, completedAt: latest.completedAt ? latest.completedAt.toISOString() : null, note: latest.note }
+        : null,
+      openNotes,
+    };
+  });
+  const nextEmptyIdx = cutRows.findIndex((r) => !r.latest);
+  const keepSlot = (r: (typeof cutRows)[number], i: number) => !!r.latest || i === nextEmptyIdx;
+  const hiddenSlots = cutRows.filter((r, i) => !keepSlot(r, i)).length;
+  // Worth a fold only when it hides a wall of rows; a normal job is untouched.
+  const collapseSlots = hiddenSlots >= 3 && !showAllSlots;
+  const shownCutRows = collapseSlots ? cutRows.filter(keepSlot) : cutRows;
+  const uploadedSlots = cutRows.filter((r) => r.latest && isLive(r.latest)).length;
+  // The panel below counts approved against the rows IT was handed, which is
+  // the short list while the empty slots are folded. The real totals are said
+  // out loud above it, so "0 of 2 approved" can't be read as the job's tally
+  // (Sep 16 review).
+  const approvedSlots = cutRows.filter((r) => r.latest?.status === "APPROVED").length;
+  // The toggle keeps whichever cut they were looking at and lands back on the
+  // panel rather than the top of the page.
+  const slotsHref = (all: boolean) => {
+    const q = new URLSearchParams();
+    if (cut) q.set("cut", cut);
+    if (all) q.set("slots", "all");
+    const qs = q.toString();
+    return `/edit/${project.id}${qs ? `?${qs}` : ""}#submit-cut`;
+  };
 
   return (
     <div>
@@ -524,16 +646,22 @@ export default async function EditBriefPage({
             // repeating the raw paragraph here would be the wall of text twice.
             revisionAsks={briefs.length > 0 ? [] : revisionAsks}
             revisionAtISO={revisionAtISO}
+            // "It should go directly to the cut that needs a revision"
+            // (Jordan, Sep 16) — the status line and the ask both land on it.
+            revisionHref={revisionHref}
             showSubmitAnchor={!isOwnerAdmin}
           />
         </div>
       )}
 
-      {/* One line, only when something is owed on the current cut. */}
+      {/* One line, only when something is owed on the current cut. It used to
+          jump to #submit-cut — the whole Send-to-Review block — which on a
+          16-slot job is "down to the cuts", not to the cut (Jordan, Sep 16).
+          Now it lands on that cut's own panel. */}
       {needsWork && (
         <div className="px-4 pt-4 sm:px-6">
           <a
-            href="#submit-cut"
+            href={revisionHref ?? (activeSub ? `#cut-${activeSub.id}` : "#submit-cut")}
             className="flex flex-wrap items-center gap-2 rounded-xl border border-danger/30 bg-danger-soft/50 px-3.5 py-2.5 text-sm font-medium text-danger hover:bg-danger-soft"
           >
             <AlertTriangle className="size-4 shrink-0" />
@@ -554,12 +682,16 @@ export default async function EditBriefPage({
             phone the column measured 1144px and every card in it, Media
             included, ran off the right edge. */}
         <div className="min-w-0 space-y-6 lg:col-span-2">
-          {/* 1 · THE WORK ORDER — what the client asked for, split into items
-              the editor ticks off, their own words kept whole underneath. It
-              renders nothing unless the job has been bounced; when it does
-              render, it is the job, so it goes first. */}
+          {/* 1 · THE WORK ORDER — every change asked for on this job. Two
+              kinds reach it: the CLIENT's own request, split into items the
+              editor ticks off with their words kept whole underneath, and (as
+              of Sep 16) each cut the Review Room sent back, with Jordan's
+              timestamped notes on it and a link straight to that cut below.
+              It renders nothing when neither exists; when it does render, it
+              is the job, so it goes first. */}
           <RevisionBriefCard
             briefs={briefs}
+            bounced={bouncedCards}
             canTick={canTickBrief}
             canReanalyze={isOwnerAdmin && !viewer?.impersonating}
           />
@@ -743,8 +875,11 @@ export default async function EditBriefPage({
                 {currentCuts.map((c, i) => (
                   <Link
                     key={c.id}
+                    // A cut with no panel of its own still answers #cut-<id>
+                    // here, so no revision link can point at nothing.
+                    id={panelIds.has(c.id) ? undefined : `cut-${c.id}`}
                     href={`/edit/${project.id}?cut=${c.id}`}
-                    className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${
+                    className={`inline-flex scroll-mt-24 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${
                       activeSub?.id === c.id ? "border-brand bg-brand-soft text-brand" : "border-border bg-surface text-muted hover:text-foreground"
                     }`}
                   >
@@ -758,26 +893,34 @@ export default async function EditBriefPage({
                 ))}
               </div>
             )}
+            {/* What the job owes, in one line — said out loud because the
+                panel below may be showing only the slots that need someone
+                (Sep 16). The count itself is untouched. */}
+            {collapseSlots && (
+              <p className="text-xs text-muted">
+                {slots.length} videos owed on this job · {approvedSlots} of {slots.length} approved ·{" "}
+                {uploadedSlots} sent to review. Showing the {shownCutRows.length} slot
+                {shownCutRows.length === 1 ? "" : "s"} that need you — the rest are empty.
+              </p>
+            )}
             {/* The way in: upload a version per cut (Jordan, Sep 1), each with
                 the editor's own message to whoever reviews it (Sep 2).
                 Owner/admin can upload on an editor's behalf (vendor cuts). */}
             <CutUploader
               projectId={project.id}
               canUpload={!viewer?.impersonating && (isOwnerAdmin || viewer?.role === "EDITOR")}
-              cuts={slots.map((sl) => {
-                const latest = latestPerCut.get(`${sl.deliverableId}:${sl.slot}`) ?? null;
-                const openNotes = latest?.assetUrl ? feedback.filter((n) => n.assetUrl === latest.assetUrl && n.status === "OPEN").length : 0;
-                return {
-                  deliverableId: sl.deliverableId,
-                  slot: sl.slot,
-                  label: sl.label,
-                  latest: latest
-                    ? { id: latest.id, round: latest.round, status: latest.status, fileName: latest.fileName, completedAt: latest.completedAt ? latest.completedAt.toISOString() : null, note: latest.note }
-                    : null,
-                  openNotes,
-                };
-              })}
+              cuts={shownCutRows}
             />
+            {hiddenSlots >= 3 && (
+              <Link
+                href={slotsHref(!showAllSlots)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+              >
+                {collapseSlots
+                  ? `${hiddenSlots} more slots with nothing uploaded yet — show`
+                  : `Hide the ${hiddenSlots} slots with nothing uploaded yet`}
+              </Link>
+            )}
             {/* The rescue hatch for the old habit — exporting straight into the
                 Dropbox Final folder. Folded away (uploading here is the path)
                 but kept for everyone who had it before, owner included. */}
@@ -785,21 +928,30 @@ export default async function EditBriefPage({
               <summary className="cursor-pointer">Already dropped a file in the Final footage folder instead?</summary>
               <div className="mt-2"><SubmitCutCard projectId={project.id} /></div>
             </details>
-            {activeSub && (
+            {/* ONE PANEL PER CUT that needs looking at — the one they opened,
+                and every cut sitting at "changes requested". Each carries its
+                own anchor (id="cut-<id>"), which is where every revision link
+                on this page, and every cut-note bell, now lands (Sep 16). */}
+            {panelSubs.map((s) => (
               <EditorCutPanel
+                key={s.id}
                 projectId={project.id}
-                submissionId={activeSub.id}
-                round={activeSub.round}
-                status={activeSub.status}
-                assetUrl={activeSub.assetUrl}
-                streamable={!!activeSub.blobUrl}
-                fileName={activeSub.fileName}
+                submissionId={s.id}
+                round={s.round}
+                status={s.status}
+                cutIndex={cutIndexOf(s)}
+                cutTotal={slots.length || null}
+                cutLabel={slotOf(s)?.deliverableLabel ?? null}
+                assetUrl={s.assetUrl}
+                streamable={!!s.blobUrl}
+                fileName={s.fileName}
                 finalFolderUrl={finalUrl}
-                notes={activeNotes}
+                notes={notesFor(s)}
                 canFix={!isOwnerAdmin}
                 viewerName={viewer?.name}
+                player={s.id === playerSubId}
               />
-            )}
+            ))}
             {/* Review-Room notes that aren't on the active cut (renders nothing
                 when the list is empty). */}
             <EditFeedback notes={otherNotes} canFix={!isOwnerAdmin} viewerName={viewer?.name} />

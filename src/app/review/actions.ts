@@ -8,6 +8,8 @@ import { editorForDeliverable, editorMeta, TEAM_MEMBER_EDITOR_KEYS, type EditorK
 import { slugForName } from "@/lib/assignees";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { notifyInApp, type NotifyTarget } from "@/lib/notify";
+// Type-only (erased at build): the shape the withdraw/move controls render.
+import type { CutMoveOption, CutTakeBackInfo } from "@/components/review/types";
 
 // ---------------------------------------------------------------------------
 // Mutations for the STANDALONE Review Room (/review). The loop:
@@ -575,6 +577,10 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
   });
   if (!submission) return { ok: false, message: "That submission no longer exists." };
   if (submission.status === "APPROVED") return { ok: true, message: "Already approved." };
+  // A withdrawn cut has left the room (Sep 16) — there is nothing to rule on.
+  if (submission.status === "WITHDRAWN") {
+    return { ok: false, message: "That version was withdrawn — there's nothing to approve. The next version comes in on the same cut." };
+  }
 
   const { authorName } = await sessionAuthor();
   await prisma.reviewSubmission.update({
@@ -708,6 +714,9 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
     include: { project: { select: { title: true, status: true, clientId: true } } },
   });
   if (!submission) return { ok: false, message: "That submission no longer exists." };
+  if (submission.status === "WITHDRAWN") {
+    return { ok: false, message: "That version was withdrawn — there's nothing to send back. The next version comes in on the same cut." };
+  }
 
   const assetKey = submission.assetUrl ?? `cut:${submission.id}`;
   const open = await prisma.mediaNote.findMany({
@@ -904,8 +913,11 @@ export async function startCutUpload(input: {
   const slot = slots.find((s) => s.deliverableId === input.deliverableId && s.slot === Math.floor(input.slot));
   if (!slot) return { ok: false, message: "That video isn't on this job's order any more — refresh the page." };
   if (!/\.(mp4|mov|m4v|webm|mkv)$/i.test(input.fileName)) return { ok: false, message: "Upload a video file (.mp4, .mov, .m4v, .webm)." };
+  // A WITHDRAWN round is not a version of this cut any more (Sep 16) — it is
+  // skipped here, so the last word on the slot is the last version somebody
+  // actually stands behind.
   const last = await prisma.reviewSubmission.findFirst({
-    where: { projectId: input.projectId, deliverableId: input.deliverableId, slot: slot.slot, status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } },
+    where: { projectId: input.projectId, deliverableId: input.deliverableId, slot: slot.slot, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"] } },
     orderBy: { round: "desc" },
     select: { round: true, status: true },
   });
@@ -920,9 +932,12 @@ export async function startCutUpload(input: {
     if (!revisionOpen) return { ok: false, message: `${slot.label} is already approved — nothing more to upload.` };
   }
   // Rounds count in-flight uploads too, so two tabs starting at once don't
-  // both become "Version 1" (a failed one leaves a harmless gap).
+  // both become "Version 1" (a failed one leaves a harmless gap). A WITHDRAWN
+  // round FREES its number (Jordan, Sep 16: an editor who uploaded the wrong
+  // file takes it back and sends the right one) — the corrected upload is
+  // version 2, not version 3, and the editor's card and the Room agree.
   const highest = await prisma.reviewSubmission.aggregate({
-    where: { projectId: input.projectId, deliverableId: input.deliverableId, slot: slot.slot, status: { not: "UPLOAD_FAILED" } },
+    where: { projectId: input.projectId, deliverableId: input.deliverableId, slot: slot.slot, status: { notIn: ["UPLOAD_FAILED", "WITHDRAWN"] } },
     _max: { round: true },
   });
   const round = (highest._max.round ?? 0) + 1;
@@ -989,4 +1004,529 @@ export async function abandonCutUpload(submissionId: string, blobUrl?: string | 
       await del(blobUrl);
     } catch { /* the retention sweep catches strays */ }
   }
+}
+
+
+// ===========================================================================
+// WRONG VIDEO — WITHDRAW / MOVE (Jordan, Sep 16 2026): "I want the editor to
+// be able to remove the video from upload / for review in case they mistakenly
+// upload the wrong video or to the wrong project. It would also be cool if
+// they could reassign that video to a different project." And on a cut he has
+// already signed off: "If I approved the cut - leave it and flag it with the
+// option to remove it if I want."
+//
+// The shape of it:
+//   · WITHDRAW is the exact inverse of the submit. The row and the file both
+//     STAY (status WITHDRAWN + who/when/why) — a withdrawal is a correction,
+//     not a delete, and the history is what makes the re-upload legible. The
+//     cut leaves the Room, the editor queue's tally and the edit card's
+//     counting; a client's revision the cut had parked "waiting on review"
+//     goes back to OPEN in the client's own words; a job the cut had pushed
+//     to REVIEW steps back to where it stood (reviewCuts.correctedCutWithdrawn
+//     owns both of those). The round number is freed, so the corrected upload
+//     is version 2, not version 3.
+//   · MOVE is a withdrawal on the job the cut LEAVES plus a landing on the job
+//     it goes to: the same row, the same bytes, the same notes, re-resolved to
+//     the target's own (deliverable × slot) and its next round.
+//   · AN APPROVED CUT IS THE OFFICE'S CALL. Only OWNER/ADMIN may take one
+//     back; its Dropbox copy is left where it is, recorded as
+//     strandedFinalPath and flagged, with an office-only control to remove
+//     that one file — the single Dropbox write in this whole batch.
+// ===========================================================================
+
+
+/** Who is asking, and every key they are addressable by. `office` = the
+ *  review desk (Jordan or Kyle); an EDITOR passes only for a cut THEY sent in.
+ *  Same key resolution as requireTaskAccess — editor key, login-name slug,
+ *  roster-name slug — so an editor renamed away from the roster spelling
+ *  doesn't lose the ability to take their own cut back. */
+type TakeBackActor = { office: boolean; owner: boolean; keys: Set<string>; name: string };
+
+async function takeBackActor(): Promise<{ ok: true; actor: TakeBackActor } | { ok: false; message: string }> {
+  const me = await getCurrentUser().catch(() => null);
+  if (!me) {
+    // Same rule as every other guard: local dev with auth off acts as the desk.
+    if (!authEnforced()) return { ok: true, actor: { office: true, owner: true, keys: new Set(), name: "Local dev" } };
+    return { ok: false, message: "Sign in to take a cut back." };
+  }
+  // "View as" is read-only platform-wide — a previewing owner must not withdraw
+  // a cut under an editor's name.
+  if (me.impersonating) return { ok: false, message: "You're previewing another user — exit the preview to make changes." };
+  const office = me.realRole === "OWNER" || me.realRole === "ADMIN";
+  if (!office && me.realRole !== "EDITOR") {
+    return { ok: false, message: "Only the editor who sent this cut in, Jordan or Kyle can take it back." };
+  }
+  const keys = new Set<string>();
+  if (me.editorKey) keys.add(me.editorKey);
+  if (me.name) keys.add(slugForName(me.name));
+  if (me.teamMemberId) {
+    const tm = await prisma.teamMember.findUnique({ where: { id: me.teamMemberId }, select: { name: true } }).catch(() => null);
+    if (tm?.name) keys.add(slugForName(tm.name));
+  }
+  keys.delete("");
+  return { ok: true, actor: { office, owner: me.realRole === "OWNER", keys, name: me.name ?? me.email ?? "Someone" } };
+}
+
+/** The refusals, in plain words (Jordan's rule 4). Null = go ahead. */
+function whyNotTakeBack(
+  sub: { status: string; submittedByKey: string | null },
+  actor: TakeBackActor,
+): string | null {
+  if (sub.status === "UPLOADING") return "That version is still uploading — wait for the upload to finish, then take it back.";
+  if (sub.status === "UPLOAD_FAILED") return "That upload never finished, so there's nothing in review to take back.";
+  if (sub.status === "WITHDRAWN") return "That version has already been withdrawn.";
+  if (sub.status === "SUPERSEDED") return "A newer version of this cut has replaced that one — take the newest version back instead.";
+  const mine = !!sub.submittedByKey && actor.keys.has(sub.submittedByKey);
+  if (!actor.office && !mine) return "That cut was sent in by someone else — ask Jordan or Kyle to take it back.";
+  // Jordan's call, in his words: an approved cut is his to pull, not the
+  // editor's. Name the reviewer so the refusal tells them what to do next.
+  if (sub.status === "APPROVED" && !actor.office) {
+    return "Jordan has already approved this cut, so taking it back is his call — message him or Kyle and they'll pull it.";
+  }
+  return null;
+}
+
+/** The row itself leaving the Room: status, who/when/why, and the approved
+ *  cut's Dropbox copy left behind under a flag. Nothing is deleted.
+ *  null = somebody else got there first (see the guard below). */
+async function markWithdrawn(
+  sub: { id: string; status: string; finalPath: string | null },
+  actor: TakeBackActor,
+  reason: string,
+): Promise<{ stranded: string | null; at: Date } | null> {
+  const wasApproved = sub.status === "APPROVED";
+  const stranded = wasApproved ? sub.finalPath : null;
+  const at = new Date();
+  // GUARDED on the status we read (reviewer, Sep 16): two tabs — or one
+  // double-click — both clear whyNotTakeBack, and an unguarded update ran the
+  // whole release twice, writing two Activity lines and ringing two bells
+  // (ringWithdrawn's key carries its own timestamp, so the dedupe can't catch
+  // it). Exactly one caller wins; the loser is told it is already done.
+  const won = await prisma.reviewSubmission.updateMany({
+    where: { id: sub.id, status: sub.status },
+    data: {
+      status: "WITHDRAWN",
+      withdrawnAt: at,
+      withdrawnBy: actor.name,
+      withdrawnReason: reason,
+      // The file in the job's Final folder is LEFT WHERE IT IS and flagged
+      // (Jordan: "leave it and flag it with the option to remove it if I
+      // want"). It is no longer a complete cut, though — same rule the Room's
+      // send-back uses when it un-completes a copied cut. dropboxJobId goes
+      // too, or finalizeApprovedCuts would poll this row on the next hourly
+      // pass and re-stamp completedAt on a cut nobody stands behind.
+      ...(stranded ? { strandedFinalPath: stranded, completedAt: null } : {}),
+      dropboxJobId: null,
+    },
+  });
+  if (won.count === 0) return null;
+  // A cut the client already had in their portal library goes back out of it —
+  // the office pulled it, so it must not keep playing on /portal. The hourly
+  // library sweep only ever re-adds Aryeo-keyed rows, so this stays removed.
+  if (wasApproved) {
+    await prisma.portalVideo.deleteMany({ where: { externalKey: `sub:${sub.id}` } }).catch(() => { /* library is best-effort */ });
+  }
+  return { stranded, at };
+}
+
+/** The job a cut has LEFT — identical for a withdrawal and for a move
+ *  (Jordan: the source job is left exactly as a withdrawal leaves it). Four
+ *  writes, in this order, because each one reads what the last left behind:
+ *   1. the round this one superseded comes back to the Room (so step 2 sees a
+ *      cut still waiting and leaves the stage alone);
+ *   2. the client's ask and the job's stage step back (correctedCutWithdrawn);
+ *   3. the editor's work item reopens if the job now owes a video and nobody
+ *      holds one — without it the editor has no door back in (BLOCKER, Sep 16);
+ *   4. the Activity line. */
+async function releaseSourceJob(
+  projectId: string,
+  cut: { id: string; deliverableId: string | null; slot: number | null; round: number; submittedByKey: string | null },
+  line: string,
+): Promise<{ status: string | null; restoredRound: number | null }> {
+  const { correctedCutWithdrawn, restorePriorCutRound, reopenEditCardAfterTakeBack } = await import("@/lib/reviewCuts");
+  const restoredRound = await restorePriorCutRound(projectId, cut).catch(() => null);
+  const r = await correctedCutWithdrawn(projectId, { excludeSubmissionId: cut.id }).catch(() => ({ reopened: 0, status: null }));
+  await reopenEditCardAfterTakeBack(projectId, cut.submittedByKey).catch(() => false);
+  await prisma.activity.create({ data: { projectId, type: "SYSTEM", body: line.slice(0, 500) } }).catch(() => {});
+  return { status: r.status, restoredRound };
+}
+
+/** One bell to the review desk. NOT a re-announcement: announceCutInReview's
+ *  row for this cut is already out and stays deduped on the submission id, so
+ *  nobody is told twice that the video is ready — this is the correction,
+ *  addressed to the people who were going to watch it. `review_withdrawn` is
+ *  deliberately unmapped in notifyPrefs, which makes it bell-only: a cut
+ *  coming back out is worth a row on Jordan's bell, never a text. */
+async function ringWithdrawn(input: {
+  projectId: string;
+  submissionId: string;
+  street: string;
+  sentence: string;
+  title: string;
+  /** the withdrawal's own stamp — the key, so a double-click rings once and a
+   *  cut that is moved and later withdrawn again still rings */
+  at: Date;
+}): Promise<void> {
+  try {
+    await notifyInApp({
+      kind: "review_withdrawn",
+      title: input.title,
+      body: input.sentence,
+      href: `/review/${input.projectId}?cut=${input.submissionId}`,
+      targets: [{ roles: ["OWNER", "ADMIN"] }],
+      dedupeKey: `cut-withdrawn-${input.submissionId}-${input.at.getTime()}`,
+    });
+  } catch { /* bell is best-effort */ }
+}
+
+// ---------------------------------------------------------------------------
+// 1 · WITHDRAW
+// ---------------------------------------------------------------------------
+export async function withdrawCut(submissionId: string, reason: string): Promise<{ ok: boolean; message: string }> {
+  const who = await takeBackActor();
+  if (!who.ok) return { ok: false, message: who.message };
+  const why = (reason ?? "").trim().slice(0, 300);
+  if (!why) return { ok: false, message: "Say what went wrong in a few words — the reviewer sees the reason." };
+
+  const sub = await prisma.reviewSubmission.findUnique({
+    where: { id: submissionId },
+    select: {
+      id: true, projectId: true, round: true, status: true, fileName: true, finalPath: true,
+      deliverableId: true, slot: true,
+      submittedByKey: true, submittedByName: true,
+      project: { select: { title: true } },
+    },
+  });
+  if (!sub) return { ok: false, message: "That version no longer exists." };
+  const refusal = whyNotTakeBack(sub, who.actor);
+  if (refusal) return { ok: false, message: refusal };
+  const wasApproved = sub.status === "APPROVED";
+
+  const street = streetOf(sub.project?.title);
+  const marked = await markWithdrawn(sub, who.actor, why);
+  // Somebody else took it back between the read and the write.
+  if (!marked) return { ok: false, message: "That version has already been withdrawn." };
+  const { stranded, at } = marked;
+  const { status, restoredRound } = await releaseSourceJob(
+    sub.projectId,
+    sub,
+    `Version ${sub.round} was withdrawn by ${who.actor.name} — “${why}”.${stranded ? ` The approved file is still in Dropbox: ${stranded}` : ""}`,
+  );
+  await ringWithdrawn({
+    projectId: sub.projectId,
+    submissionId: sub.id,
+    street,
+    title: `Cut withdrawn — ${street}`,
+    sentence: `${who.actor.name} took version ${sub.round} back: “${why}”`,
+    at,
+  });
+
+  refresh(sub.projectId);
+  revalidatePath(`/projects/${sub.projectId}`);
+  const stage =
+    status === "REVISION" ? ` ${street} is back in Revisions with the client's ask open.` :
+    status === "EDITING" ? ` ${street} is back in Editing.` : "";
+  // The round this one had replaced is the newest version anybody stands
+  // behind again, so say so — it is back in front of the reviewer.
+  const restored = restoredRound ? ` Version ${restoredRound} is back in the Room in its place.` : "";
+  return {
+    ok: true,
+    message:
+      `Withdrawn — version ${sub.round} has left the Review Room, and that version number is free again for the right file.${stage}${restored}` +
+      (stranded ? ` Heads up: the approved copy is still in Dropbox (${stranded.split("/").pop()}) — the flag on the cut has a control to remove it.` : "") +
+      // Pulling a cut Jordan signed off doesn't un-close what the approval
+      // closed (correctedCutWithdrawn's note) — tell the office plainly rather
+      // than let them assume the client's ask came back with it.
+      (wasApproved ? " The client's revision that approval closed stays closed — raise it again if they still need the fix." : ""),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 2 · MOVE TO ANOTHER JOB
+// ---------------------------------------------------------------------------
+export async function reassignCut(
+  submissionId: string,
+  targetProjectId: string,
+  note?: string,
+): Promise<{ ok: boolean; message: string }> {
+  const who = await takeBackActor();
+  if (!who.ok) return { ok: false, message: who.message };
+
+  const sub = await prisma.reviewSubmission.findUnique({
+    where: { id: submissionId },
+    select: {
+      id: true, projectId: true, round: true, status: true, fileName: true, assetUrl: true, assetPath: true,
+      finalPath: true, note: true, deliverableId: true, slot: true, submittedByKey: true, submittedByName: true,
+      project: { select: { title: true } },
+    },
+  });
+  if (!sub) return { ok: false, message: "That version no longer exists." };
+  const refusal = whyNotTakeBack(sub, who.actor);
+  if (refusal) return { ok: false, message: refusal };
+  if (!targetProjectId || targetProjectId === sub.projectId) {
+    return { ok: false, message: "That's the job this cut is already on — pick a different one." };
+  }
+
+  const target = await prisma.project.findUnique({
+    where: { id: targetProjectId },
+    select: { id: true, title: true, status: true, statusPinnedAt: true },
+  });
+  if (!target) return { ok: false, message: "Pick a job to move it to." };
+  const targetStreet = streetOf(target.title);
+  if (target.status === "CANCELLED") return { ok: false, message: `${targetStreet} is cancelled — pick another job.` };
+  // An editor may only move a cut onto a job they actually hold — the same
+  // scope startCutUpload enforces, because an editor must never be able to
+  // drop a video onto a co-editor's job.
+  if (!who.actor.office) {
+    const mine = await prisma.smartTask.findFirst({
+      where: {
+        projectId: target.id,
+        taskType: { in: ["edit_video", "revision"] },
+        status: { notIn: ["COMPLETED", "CANCELLED"] },
+        assignedKey: { in: [...who.actor.keys] },
+      },
+      select: { id: true },
+    });
+    if (!mine) return { ok: false, message: `${targetStreet} isn't on your queue — ask Kyle or Jordan to move it there for you.` };
+  }
+
+  // Where it lands: the target's own (deliverable × slot) and its next round —
+  // re-resolved through cutSlots/effectiveSlotCounts, so a 4-video month has
+  // four places for it and the office's "videos owed" override still rules.
+  const { pickCutSlotForMove, announceCutInReview } = await import("@/lib/reviewCuts");
+  const pick = await pickCutSlotForMove(target.id);
+  if (!pick.ok) {
+    return {
+      ok: false,
+      message: pick.reason === "no-video"
+        ? `${targetStreet} has no video on its order, so there's no cut for this video to become — add the video to the order first.`
+        // Landing a new PENDING round on a signed-off slot would drop that
+        // job's approved count and re-open its deliver gate (reviewer, Sep 16).
+        : `Every cut on ${targetStreet} is already approved, so this video has nowhere to land there — pick another job, or add the video to that order first.`,
+    };
+  }
+  const landing = pick.target;
+
+  const movedAt = new Date();
+  const sourceStreet = streetOf(sub.project?.title);
+  const noteText = (note ?? "").trim().slice(0, 1000) || null;
+  // An APPROVED cut's Dropbox copy belongs to the job it was approved on: it
+  // stays in that folder, flagged, and this row stops calling itself complete.
+  // (If Dropbox folder discovery is ever switched back on — Settings → Review
+  // Room, off by default — that leftover file is discoverable on the SOURCE
+  // job as a fresh cut until the office removes it with the flag's control.)
+  const stranded = sub.status === "APPROVED" ? sub.finalPath : null;
+  let moved = 0;
+  try {
+    // Guarded on the status we read, exactly like markWithdrawn: two presses
+    // must not both run the source-job release.
+    moved = (await prisma.reviewSubmission.updateMany({
+      where: { id: sub.id, status: sub.status },
+      data: {
+        projectId: target.id,
+        deliverableId: landing.deliverableId,
+        slot: landing.slot,
+        round: landing.round,
+        status: "PENDING",
+        decidedAt: null,
+        decidedBy: null,
+        ...(stranded ? { strandedFinalPath: stranded, finalPath: null, completedAt: null, dropboxJobId: null } : {}),
+        movedFromProjectId: sub.projectId,
+        movedAt,
+        movedBy: who.actor.name,
+        ...(noteText ? { note: noteText } : {}),
+      },
+    })).count;
+  } catch (e) {
+    // (projectId, assetPath, round) is unique — a folder-discovered cut from
+    // the same file is already sitting on that job.
+    if ((e as { code?: string })?.code === "P2002") {
+      return { ok: false, message: `A cut from that same file is already on ${targetStreet} — nothing was moved.` };
+    }
+    throw e;
+  }
+  if (moved === 0) return { ok: false, message: "That version has already been moved or withdrawn." };
+  // The cut keeps its notes: they are keyed by the cut's own asset URL, which
+  // is unique per submission, so the whole thread (roots and replies) follows
+  // the video to the job it now belongs to. The CLIENT's portal comments do
+  // NOT follow — they are the source client's words on the source job.
+  const assetKey = sub.assetUrl ?? `cut:${sub.id}`;
+  await prisma.mediaNote.updateMany({ where: { projectId: sub.projectId, assetUrl: assetKey }, data: { projectId: target.id } }).catch(() => {});
+  // An approved cut that moves also leaves the SOURCE client's portal library:
+  // the row is keyed to this submission, so without this client B keeps
+  // playing client A's video on /portal — which is exactly the "wrong project"
+  // case Jordan is fixing (reviewer, Sep 16). The target re-adds it on its own
+  // approval (addApprovedCutToLibrary), against the right enrollment.
+  if (sub.status === "APPROVED") {
+    await prisma.portalVideo.deleteMany({ where: { externalKey: `sub:${sub.id}` } }).catch(() => { /* library is best-effort */ });
+  }
+
+  // The job it left is left exactly as a withdrawal leaves it.
+  await releaseSourceJob(
+    sub.projectId,
+    sub,
+    `Cut moved to ${targetStreet} by ${who.actor.name} (was version ${sub.round}${sub.fileName ? ` — ${sub.fileName}` : ""}).${stranded ? ` The approved file is still in Dropbox: ${stranded}` : ""}`,
+  );
+  await prisma.activity.create({
+    data: {
+      projectId: target.id,
+      type: "SYSTEM",
+      body: `Cut moved here from ${sourceStreet} by ${who.actor.name} — ${landing.label}, version ${landing.round}${sub.fileName ? ` (${sub.fileName})` : ""}.`,
+    },
+  }).catch(() => {});
+
+  // The target's stage, the same move an upload makes — and NOT a word about
+  // the target's own revision lane: a cut that arrived from another job is not
+  // automatically the correction to THIS client's ask, so correctedCutSubmitted
+  // is deliberately not called. Whoever rules on it decides that.
+  if (target.status === "EDITING" || target.status === "SHOT") {
+    await prisma.project.update({ where: { id: target.id }, data: { status: "REVIEW", statusPinnedAt: null } }).catch(() => {});
+  }
+
+  // One announcement for the job it landed on. The key carries the move, or
+  // the per-submission dedupe from the cut's FIRST trip into the Room would
+  // swallow it and the reviewer would never hear the video arrived.
+  await announceCutInReview({
+    kind: "review_submitted",
+    projectId: target.id,
+    submissionId: sub.id,
+    round: landing.round,
+    street: targetStreet,
+    fileName: sub.fileName,
+    editorKey: sub.submittedByKey,
+    editorName: sub.submittedByName,
+    ownerActed: who.actor.owner,
+    dedupeSuffix: `moved-${movedAt.getTime()}`,
+  });
+
+  refresh(sub.projectId);
+  refresh(target.id);
+  revalidatePath(`/projects/${sub.projectId}`);
+  revalidatePath(`/projects/${target.id}`);
+  return {
+    ok: true,
+    message:
+      `Moved to ${targetStreet} — it's in the Review Room there as ${landing.label}, version ${landing.round}.` +
+      (landing.freeSlot ? "" : " That job's cuts were all taken, so it landed on the first one still open — move it again if that's wrong.") +
+      (stranded ? ` The approved copy is still in ${sourceStreet}'s Dropbox folder — the flag on the cut has a control to remove it.` : ""),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 3 · THE LEFTOVER DROPBOX FILE — office only. The ONE Dropbox write in this
+//     batch: it deletes exactly the file recorded on the row, nothing else.
+// ---------------------------------------------------------------------------
+export async function removeStrandedFinal(submissionId: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  const sub = await prisma.reviewSubmission.findUnique({
+    where: { id: submissionId },
+    select: { id: true, projectId: true, round: true, strandedFinalPath: true, movedFromProjectId: true },
+  });
+  if (!sub) return { ok: false, message: "That version no longer exists." };
+  if (!sub.strandedFinalPath) return { ok: true, message: "There's no leftover file to remove." };
+  const path = sub.strandedFinalPath;
+  try {
+    const { dropboxDelete } = await import("@/lib/integrations/dropbox");
+    await dropboxDelete(path); // a path that is already gone counts as done
+  } catch (e) {
+    return { ok: false, message: `Dropbox wouldn't remove it (${(e as Error).message.slice(0, 80)}) — try again, or delete it in Dropbox yourself.` };
+  }
+  await prisma.reviewSubmission.update({ where: { id: sub.id }, data: { strandedFinalPath: null } });
+  // The line goes on the job whose folder it was in — the source job when the
+  // cut has since been moved somewhere else.
+  const jobId = sub.movedFromProjectId ?? sub.projectId;
+  await prisma.activity.create({
+    data: { projectId: jobId, type: "SYSTEM", body: `Removed the withdrawn cut's file from Dropbox — ${path.split("/").pop() ?? path}.` },
+  }).catch(() => {});
+  refresh(sub.projectId);
+  if (jobId !== sub.projectId) refresh(jobId);
+  return { ok: true, message: `Removed ${path.split("/").pop() ?? "the file"} from Dropbox.` };
+}
+
+// ---------------------------------------------------------------------------
+// 4 · READS FOR THE CONTROLS
+// ---------------------------------------------------------------------------
+/** Everything the "Wrong video?" control needs for one job's cuts, including
+ *  whether THIS viewer may act on each. The editor portal's uploader asks for
+ *  it (the /edit page it lives on doesn't carry these columns); the Review
+ *  Room page builds the same shape server-side. */
+export async function cutTakeBackFlags(projectId: string): Promise<CutTakeBackInfo[]> {
+  const who = await takeBackActor();
+  if (!who.ok) return [];
+  const rows = await prisma.reviewSubmission.findMany({
+    where: { projectId, status: { notIn: ["UPLOADING", "UPLOAD_FAILED"] } },
+    orderBy: { round: "asc" },
+    select: {
+      id: true, round: true, status: true, fileName: true, submittedByKey: true,
+      withdrawnAt: true, withdrawnBy: true, withdrawnReason: true,
+      strandedFinalPath: true, movedFromProjectId: true, movedAt: true, movedBy: true,
+    },
+  });
+  const fromIds = [...new Set(rows.map((r) => r.movedFromProjectId).filter((x): x is string => !!x))];
+  const froms = fromIds.length
+    ? await prisma.project.findMany({ where: { id: { in: fromIds } }, select: { id: true, title: true } })
+    : [];
+  const streetById = new Map(froms.map((p) => [p.id, streetOf(p.title)]));
+  return rows.map((r) => ({
+    submissionId: r.id,
+    round: r.round,
+    status: r.status,
+    fileName: r.fileName,
+    canAct: whyNotTakeBack(r, who.actor) === null,
+    office: who.actor.office,
+    withdrawnAt: r.withdrawnAt ? r.withdrawnAt.toISOString() : null,
+    withdrawnBy: r.withdrawnBy,
+    withdrawnReason: r.withdrawnReason,
+    strandedFinalPath: r.strandedFinalPath,
+    movedFromStreet: r.movedFromProjectId ? (streetById.get(r.movedFromProjectId) ?? null) : null,
+    movedAt: r.movedAt ? r.movedAt.toISOString() : null,
+    movedBy: r.movedBy,
+  }));
+}
+
+/** The job picker behind "Move to another job": an editor sees only the jobs
+ *  they hold, the office searches everything that isn't cancelled. Video jobs
+ *  only — a cut has nowhere to land on a photos-only order. */
+export async function cutMoveTargets(submissionId: string, query: string): Promise<CutMoveOption[]> {
+  const who = await takeBackActor();
+  if (!who.ok) return [];
+  const sub = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true } });
+  if (!sub) return [];
+  const q = (query ?? "").trim().slice(0, 80);
+  const held = who.actor.office
+    ? null
+    : (await prisma.smartTask.findMany({
+        where: {
+          taskType: { in: ["edit_video", "revision"] },
+          status: { notIn: ["COMPLETED", "CANCELLED"] },
+          assignedKey: { in: [...who.actor.keys] },
+          projectId: { not: null },
+        },
+        select: { projectId: true },
+      })).map((t) => t.projectId!).filter(Boolean);
+  if (held && held.length === 0) return [];
+  const rows = await prisma.project.findMany({
+    where: {
+      id: { not: sub.projectId, ...(held ? { in: held } : {}) },
+      status: { notIn: ["CANCELLED"] },
+      deliverables: { some: { removedFromOrderAt: null, type: { in: ["VIDEO", "SOCIAL_REEL"] } } },
+      ...(q
+        ? { OR: [{ title: { contains: q, mode: "insensitive" as const } }, { client: { name: { contains: q, mode: "insensitive" as const } } }] }
+        : {}),
+    },
+    orderBy: [{ shootDate: "desc" }, { createdAt: "desc" }],
+    take: 20,
+    select: { id: true, title: true, status: true, shootDate: true, client: { select: { name: true } } },
+  });
+  return rows.map((p) => ({
+    projectId: p.id,
+    street: streetOf(p.title),
+    clientName: p.client?.name ?? null,
+    status: p.status,
+    shootDateISO: p.shootDate ? p.shootDate.toISOString() : null,
+  }));
 }

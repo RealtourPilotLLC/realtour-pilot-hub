@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react";
 import {
+  ArrowRight,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -18,6 +19,19 @@ import { cn } from "@/lib/utils";
 import { setBriefItemDone, reanalyzeBrief } from "@/app/edit/revisionActions";
 import type { BriefView } from "@/lib/revisionBrief";
 
+// Every change asked for on this job, in one card — and both kinds of ask
+// reach it now (Jordan, Sep 16, on Sharra Mercer's 16-video job: "the revision
+// requests are not showing up well in the editor brief. When I click the
+// revisions, it goes down to the cuts. It should go directly to the cut that
+// needs a revision."). Two things are asks:
+//   · a CLIENT work order — a phone call / email / text, AI-split into items
+//     the editor ticks off (everything below this block);
+//   · a REVIEW ROOM bounce — Jordan sent a cut back with timestamped notes on
+//     it. That produced NO entry here at all until today, so 893 S Matlack's
+//     one bounced cut and its notes sat silently inside slot 1 of 16.
+// The bounce block goes FIRST, and every line of it links straight to that
+// cut's own anchor (#cut-<submissionId>) further down the page.
+//
 // The client's change request as a WORK ORDER, not a paragraph.
 //
 // Jordan, Aug 27, on Marcee's call for 1244 West Chester Pike: "This should be
@@ -65,22 +79,170 @@ const fmtWhen = (iso: string) =>
     minute: "2-digit",
   });
 
+/** One cut the Review Room sent back — the ask that never had a card. */
+export type BouncedCutView = {
+  submissionId: string;
+  /** Where the cut sits in what the job owes ("cut 1 of 16"). Null on a legacy
+   *  folder row that belongs to no deliverable/slot. */
+  index: number | null;
+  total: number | null;
+  /** The slot's own name — "Personal Branding Reel". */
+  cutLabel: string | null;
+  round: number;
+  fileName: string | null;
+  /** When it was sent back, and by whom (ReviewSubmission.decidedAt/decidedBy). */
+  sentBackAtISO: string | null;
+  sentBackBy: string | null;
+  notes: {
+    id: string;
+    timeSec: number | null;
+    body: string;
+    authorName: string | null;
+    status: string; // OPEN | FIXED | RESOLVED
+    kind: string; // fix | note
+  }[];
+};
+
 export function RevisionBriefCard({
   briefs,
+  bounced = [],
   canTick,
   canReanalyze,
 }: {
   briefs: BriefView[];
+  /** Cuts sitting at CHANGES_REQUESTED — the Review Room's asks (Sep 16). */
+  bounced?: BouncedCutView[];
   canTick: boolean;
   canReanalyze: boolean;
 }) {
-  if (briefs.length === 0) return null;
+  // The card used to render nothing whenever getRevisionBriefs came back empty
+  // — which is EVERY review-room bounce, because a bounce writes no brief.
+  if (briefs.length === 0 && bounced.length === 0) return null;
   return (
     <div className="space-y-2">
+      {bounced.map((c) => (
+        <BouncedCut key={c.submissionId} cut={c} />
+      ))}
       {briefs.map((b, i) => (
         <OneBrief key={b.id} brief={b} round={i + 1} rounds={briefs.length} canTick={canTick} canReanalyze={canReanalyze} />
       ))}
     </div>
+  );
+}
+
+const fmtClock = (sec: number) => {
+  const s = Math.max(0, Math.floor(sec));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
+
+// A cut Jordan sent back, with his notes on it — and a way IN. Open on arrival
+// (unlike the client work order below, which Jordan asked to start shut on Sep
+// 7): this is a short list of one-line notes, and it is the one thing he said
+// was missing. Every row is a link to #cut-<id> — "it should go directly to
+// the cut that needs a revision".
+function BouncedCut({ cut }: { cut: BouncedCutView }) {
+  const [open, setOpen] = useState(true);
+  const href = `#cut-${cut.submissionId}`;
+  const openCount = cut.notes.filter((n) => n.status === "OPEN").length;
+  // "cut 1 of 16" when the slot is known; a legacy folder row only knows which
+  // round it was.
+  const which = cut.index && cut.total ? `cut ${cut.index} of ${cut.total}` : `round ${cut.round}`;
+  const noteLine = `${cut.notes.length} note${cut.notes.length === 1 ? "" : "s"}`;
+  // Both numbers on the header row the moment they differ — "6 notes · 2 still
+  // to fix". The header used to count every note while the footer counted only
+  // the open ones, so one ticked note left two different counts of the same
+  // thing on one card (Sep 16 review).
+  const fixLine =
+    cut.notes.length === 0 || openCount === cut.notes.length
+      ? null
+      : openCount === 0
+        ? "all ticked fixed"
+        : `${openCount} still to fix`;
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-danger/25 bg-surface">
+      <div className="flex items-center gap-2 bg-danger-soft/40 px-3 py-2">
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-label={open ? "Hide the notes" : "Show the notes"}
+          aria-expanded={open}
+          className="shrink-0 rounded p-0.5 text-muted hover:bg-danger-soft"
+        >
+          <ChevronDown className={cn("size-3.5 transition-transform", !open && "-rotate-90")} />
+        </button>
+        <a href={href} className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-danger/10 px-1.5 py-0.5 text-[10px] font-semibold text-danger">
+            <Undo2 className="size-3" /> Changes requested
+          </span>
+          <span className="text-[13px] font-medium text-foreground">
+            {which} · {noteLine}
+            {fixLine ? ` · ${fixLine}` : ""}
+          </span>
+          <span className="truncate text-[11px] text-muted">
+            {cut.round > 1 ? `round ${cut.round} · ` : ""}
+            {cut.sentBackAtISO ? `sent back ${fmtWhen(cut.sentBackAtISO)}` : "sent back"}
+            {cut.sentBackBy ? ` by ${cut.sentBackBy}` : ""}
+          </span>
+        </a>
+        <a
+          href={href}
+          className="inline-flex shrink-0 items-center gap-1 rounded-md bg-danger px-2 py-1 text-[11px] font-semibold text-white hover:opacity-90"
+        >
+          Go to this cut <ArrowRight className="size-3" />
+        </a>
+      </div>
+      {open && (
+        <div className="border-t border-border">
+          {(cut.cutLabel || cut.fileName) && (
+            <p className="truncate px-3 pt-2 text-[11px] text-muted-2">
+              {cut.cutLabel}
+              {cut.cutLabel && cut.fileName ? " · " : ""}
+              {cut.fileName}
+            </p>
+          )}
+          {cut.notes.length > 0 ? (
+            <ul className="divide-y divide-border/60 px-1.5 py-1">
+              {cut.notes.map((n) => (
+                <li key={n.id}>
+                  {/* The note itself — the timestamp, the words, who wrote them,
+                      and whether the editor has already ticked it fixed. The row
+                      links to the cut, where the timestamp is playable. */}
+                  <a href={href} className="flex items-start gap-2 rounded-lg px-1.5 py-1.5 hover:bg-surface-2/60">
+                    {n.timeSec != null ? (
+                      <span className="mt-px shrink-0 rounded bg-brand-soft px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-brand">
+                        {fmtClock(n.timeSec)}
+                      </span>
+                    ) : (
+                      <span className="mt-px shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted-2">note</span>
+                    )}
+                    <span className="min-w-0 flex-1">
+                      <span className={cn("block text-[13px] leading-snug", n.status === "OPEN" ? "text-foreground" : "text-muted")}>
+                        {n.body}
+                      </span>
+                      <span className="mt-0.5 block text-[10px] text-muted-2">
+                        {n.authorName ?? "The reviewer"}
+                        {n.status === "FIXED" && <span className="ml-1.5 font-semibold text-success">Fixed — awaiting re-review</span>}
+                        {n.status === "RESOLVED" && <span className="ml-1.5 font-semibold text-muted">Approved</span>}
+                      </span>
+                    </span>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="px-3 py-2 text-[12px] text-muted">
+              No timestamped notes on this one — the reason it came back is in the round history and the project chat.
+            </p>
+          )}
+          {openCount > 0 && (
+            <p className="border-t border-border px-3 py-1.5 text-[11px] font-semibold text-danger">
+              {openCount} still to fix on this cut.
+            </p>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 

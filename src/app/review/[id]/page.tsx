@@ -12,6 +12,7 @@ import { homeFor } from "@/lib/auth/access";
 import { getCutWorkspace } from "@/lib/reviewRoom";
 import { editorMeta } from "@/lib/editors";
 import { CutReviewPanel } from "@/components/review/CutReviewPanel";
+import { cutTakeBackFlags } from "@/app/review/actions";
 import { BackLink } from "@/components/ui/BackLink";
 
 export const dynamic = "force-dynamic";
@@ -49,6 +50,10 @@ export default async function CutReviewPage({
   }).catch(() => [])).reverse();
   if (!w) notFound();
 
+  // Sep 16: a withdrawn cut is history, not the thing to rule on — getCutWorkspace
+  // skips past it when nothing asked for it by id. That choice lives THERE, with
+  // the note read: swapping the cut here left `w.notes` (built for the workspace's
+  // own pick) hanging off the wrong version (reviewer, Sep 16).
   const active = w.active;
   // The job's CURRENT cuts — latest round per video file. One video job = one
   // chip (hidden); a monthly package = a switcher so each video is reviewed
@@ -57,7 +62,9 @@ export default async function CutReviewPage({
   // folder rows; the newest round of each is the current cut.
   const cutKeyOf = (s: (typeof w.submissions)[number]) => (s.deliverableId ? `${s.deliverableId}:${s.slot}` : (s.assetPath ?? s.id));
   const latestPerCut = new Map<string, (typeof w.submissions)[number]>();
-  for (const s of [...w.submissions].sort((a, b) => a.round - b.round)) latestPerCut.set(cutKeyOf(s), s);
+  // WITHDRAWN rounds don't speak for a cut (Sep 16) — a slot whose only round
+  // was taken back reads as "nothing in yet", exactly like the editor's page.
+  for (const s of [...w.submissions].filter((s) => s.status !== "WITHDRAWN").sort((a, b) => a.round - b.round)) latestPerCut.set(cutKeyOf(s), s);
   const { cutSlots } = await import("@/lib/reviewCuts");
   const slots = await cutSlots(w.projectId).catch(() => []);
   const slotLabel = (s: (typeof w.submissions)[number]) =>
@@ -76,6 +83,11 @@ export default async function CutReviewPage({
   // the ask and re-delivers the job (or sends it back to Revisions). Say so
   // above the player, with the ask itself, so Jordan judges the cut against
   // what the client wanted. Video lane only — Kyle's photo card is not this.
+  // Withdraw / move state for this job's cuts (Sep 16). The action is the one
+  // place that decides who may act, so the page asks it rather than re-deriving
+  // the rule from the session here.
+  const takeBack = (await cutTakeBackFlags(w.projectId).catch(() => []))
+    .find((f) => f.submissionId === active?.id) ?? null;
   const { videoLaneRevisionWhere } = await import("@/lib/reviewCuts");
   const clientAsk = active
     ? await prisma.smartTask.findFirst({
@@ -127,8 +139,12 @@ export default async function CutReviewPage({
               {currentCuts.map((c, i) => (
                 <Link
                   key={c.id}
+                  // Every cut answers #cut-<id> on this page too (Sep 16), so
+                  // the same anchor works whichever desk the link came from —
+                  // the active cut carries it below, the rest carry it here.
+                  id={active?.id === c.id ? undefined : `cut-${c.id}`}
                   href={`/review/${w.projectId}?cut=${c.id}`}
-                  className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${
+                  className={`inline-flex scroll-mt-24 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${
                     active?.id === c.id ? "border-brand bg-brand-soft text-brand" : "border-border bg-surface text-muted hover:text-foreground"
                   }`}
                 >
@@ -144,7 +160,7 @@ export default async function CutReviewPage({
           )}
           {active ? (
             <>
-              <div className="flex flex-wrap items-center gap-2 text-sm text-muted">
+              <div id={`cut-${active.id}`} className="flex scroll-mt-24 flex-wrap items-center gap-2 text-sm text-muted">
                 {slotLabel(active) && <span className="font-semibold text-foreground">{slotLabel(active)}</span>}
                 {slotLabel(active) && <span className="text-muted-2">·</span>}
                 <span className="font-medium text-foreground/85">Version {active.round}</span>
@@ -176,7 +192,14 @@ export default async function CutReviewPage({
                   </p>
                 </div>
               )}
-              <CutReviewPanel projectId={w.projectId} submission={active} notes={w.notes} editorLabel={editorLabel} />
+              <CutReviewPanel
+                projectId={w.projectId}
+                submission={active}
+                notes={w.notes}
+                editorLabel={editorLabel}
+                takeBack={takeBack}
+                cutLabel={slotLabel(active) ?? active.fileName ?? "this cut"}
+              />
             </>
           ) : (
             <Section icon={Film} title="No cut uploaded yet">
@@ -194,7 +217,13 @@ export default async function CutReviewPage({
                   <li key={s.id} className="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
                     <span className="font-medium">Version {s.round}</span>
                     <span className="text-xs text-muted">
-                      {s.status === "APPROVED" ? "approved" : s.status === "CHANGES_REQUESTED" ? "changes requested" : "superseded"}
+                      {s.status === "APPROVED"
+                        ? "approved"
+                        : s.status === "CHANGES_REQUESTED"
+                          ? "changes requested"
+                          : s.status === "WITHDRAWN"
+                            ? "withdrawn"
+                            : "superseded"}
                       {s.decidedAt ? ` ${formatDistanceToNow(new Date(s.decidedAt), { addSuffix: true })}` : ""}
                     </span>
                     {s.assetUrl && (

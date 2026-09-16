@@ -2,7 +2,8 @@
 
 import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Clapperboard, FolderOpen, ExternalLink, Loader2, MessageSquarePlus } from "lucide-react";
+import Link from "next/link";
+import { Clapperboard, FolderOpen, ExternalLink, Loader2, MessageSquarePlus, PlayCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { EditFeedback } from "@/components/editing/EditFeedback";
 import { addCutNote } from "@/app/review/actions";
@@ -30,6 +31,9 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
   CHANGES_REQUESTED: { label: "Changes requested", cls: "bg-danger-soft text-danger" },
   APPROVED: { label: "Approved", cls: "bg-success/10 text-success" },
   SUPERSEDED: { label: "Replaced by a newer version", cls: "bg-surface-2 text-muted" },
+  // Pulled back by the editor (Sep 16) — the row and the file are kept, but it
+  // is not a live round any more, so it reads as struck-through history.
+  WITHDRAWN: { label: "Withdrawn", cls: "bg-surface-2 text-muted" },
 };
 
 export function EditorCutPanel({
@@ -37,6 +41,9 @@ export function EditorCutPanel({
   submissionId,
   round,
   status,
+  cutIndex,
+  cutTotal,
+  cutLabel,
   assetUrl,
   streamable = true,
   fileName,
@@ -44,11 +51,19 @@ export function EditorCutPanel({
   notes,
   canFix,
   viewerName,
+  player = true,
 }: {
   projectId: string;
   submissionId: string;
   round: number;
   status: string;
+  /** Which of the job's cuts this is — "Cut 1 of 16" (Jordan, Sep 16: a single
+   *  bounced cut buried in sixteen slots names nothing). Null on a legacy
+   *  folder row that belongs to no deliverable/slot. */
+  cutIndex?: number | null;
+  cutTotal?: number | null;
+  /** The slot's own name — "Personal Branding Reel". */
+  cutLabel?: string | null;
   assetUrl: string | null;
   /** false for legacy Dropbox-folder rows (they download, they don't stream) */
   streamable?: boolean;
@@ -57,6 +72,11 @@ export function EditorCutPanel({
   notes: CutNote[];
   canFix: boolean;
   viewerName?: string | null;
+  /** Mount the video for this cut. Only the cut the page opened on plays here
+   *  — a job with four bounced cuts would otherwise mount four players and
+   *  fetch four sets of metadata (Sep 16 review). The others still carry their
+   *  anchor and their notes, with one click to open and play. */
+  player?: boolean;
 }) {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -99,16 +119,34 @@ export function EditorCutPanel({
     });
   };
 
+  const withdrawn = status === "WITHDRAWN";
+  // The heading NAMES the cut — "Cut 1 of 16 · round 2 · Personal Branding
+  // Reel". Sixteen identical slots and one bounced cut is exactly the screen
+  // Jordan was looking at on Sep 16; "Your cut — round 1" told him nothing
+  // about WHICH of the sixteen he was looking at.
+  const named = !!(cutIndex && cutTotal);
+
   return (
-    <section className="panel-shadow overflow-hidden rounded-2xl border border-brand/25 bg-surface">
+    // The anchor every revision link on this page (and every cut-note bell)
+    // lands on — one per cut, scroll-mt so the heading clears the sticky header.
+    <section
+      id={`cut-${submissionId}`}
+      className={cn(
+        "panel-shadow scroll-mt-24 overflow-hidden rounded-2xl border bg-surface",
+        withdrawn ? "border-border opacity-75" : "border-brand/25",
+      )}
+    >
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3 sm:px-5">
-        <Clapperboard className="size-4 text-brand" />
-        <h2 className="text-sm font-semibold">Your cut — round {round}</h2>
+        <Clapperboard className={cn("size-4", withdrawn ? "text-muted-2" : "text-brand")} />
+        <h2 className={cn("text-sm font-semibold", withdrawn && "text-muted line-through")}>
+          {named ? `Cut ${cutIndex} of ${cutTotal}` : "Your cut"} · round {round}
+        </h2>
+        {cutLabel && <span className="truncate text-xs text-muted">{cutLabel}</span>}
         <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", meta.cls)}>{meta.label}</span>
-        {fileName && <span className="truncate text-xs text-muted-2">{fileName}</span>}
+        {fileName && <span className={cn("truncate text-xs text-muted-2", withdrawn && "line-through")}>{fileName}</span>}
       </div>
 
-      {assetUrl ? (
+      {assetUrl && player ? (
         <div className="bg-black">
           { }
           <video
@@ -120,6 +158,19 @@ export function EditorCutPanel({
             className="mx-auto max-h-[70vh] w-full object-contain"
           />
         </div>
+      ) : assetUrl ? (
+        // Notes-only: this cut is on the page so its anchor and its notes are
+        // here, but the player belongs to the cut in front of them. One click
+        // opens this one and the timestamps become playable.
+        <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3 sm:px-5">
+          <Link
+            href={`/edit/${projectId}?cut=${submissionId}`}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-brand hover:bg-surface-2"
+          >
+            <PlayCircle className="size-3.5" /> Open this cut to play it
+          </Link>
+          <span className="text-xs text-muted">The notes below are on this version.</span>
+        </div>
       ) : (
         <p className="px-4 py-3 text-sm text-muted sm:px-5">
           No file is attached to this version — it lives in the{" "}
@@ -129,13 +180,14 @@ export function EditorCutPanel({
           . Upload the next version above and it will play right here.
         </p>
       )}
-      {assetUrl && !streamable && (
+      {assetUrl && player && !streamable && (
         <p className="px-4 py-2 text-[11px] text-muted-2 sm:px-5">
           This version came from the Dropbox Final folder. If the player doesn&apos;t start, <a href={assetUrl} className="text-brand hover:underline">download it</a>.
         </p>
       )}
 
-      {canFix && (
+      {/* Nothing to say to a reviewer about a version that was pulled back. */}
+      {canFix && !withdrawn && (
         <div className="border-b border-border px-4 py-2.5 sm:px-5">
           {composing ? (
             <div className="space-y-2">
@@ -168,19 +220,21 @@ export function EditorCutPanel({
               className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
             >
               <MessageSquarePlus className="size-3.5" />
-              {assetUrl ? "Add a note at the current moment" : "Add a note for the reviewer"}
+              {assetUrl && player ? "Add a note at the current moment" : "Add a note for the reviewer"}
             </button>
           )}
         </div>
       )}
 
       {notes.length > 0 ? (
-        <EditFeedback notes={notes} canFix={canFix} viewerName={viewerName} embedded onSeek={assetUrl ? seek : undefined} />
+        <EditFeedback notes={notes} canFix={canFix} viewerName={viewerName} embedded onSeek={assetUrl && player ? seek : undefined} />
       ) : (
         <p className="px-4 py-3 text-sm text-muted sm:px-5">
-          {status === "PENDING"
-            ? "No notes yet — you'll see them here the moment the review starts."
-            : "No notes on this round."}
+          {withdrawn
+            ? "This version was withdrawn — it is kept here as history. Upload a replacement above."
+            : status === "PENDING"
+              ? "No notes yet — you'll see them here the moment the review starts."
+              : "No notes on this round."}
         </p>
       )}
     </section>

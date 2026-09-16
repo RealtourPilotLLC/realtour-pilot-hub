@@ -140,6 +140,15 @@ async function projectWhere(projectId: string): Promise<{ street: string; client
 // and the DM land the reader on the line, not the top of a long thread.
 const msgAnchor = (messageId: string | null | undefined) => (messageId ? `#msg-${messageId}` : "");
 
+// The EDITOR's equivalent of the owner's Review-Room deep link (Sep 16). A
+// tag or a reply on a CUT note must open the editor brief on that cut, not at
+// the top of a page that can carry sixteen slots: ?cut=<id> makes it the cut
+// the page opens on, #cut-<id> scrolls to its panel. Jordan's rule from the
+// same day — "it should go directly to the cut that needs a revision". With
+// no cut in hand the link is exactly what it always was.
+const editCutHref = (projectId: string, cutId: string | null | undefined, messageId?: string | null) =>
+  cutId ? `/edit/${projectId}?cut=${cutId}#cut-${cutId}` : `/edit/${projectId}${msgAnchor(messageId)}`;
+
 // The writer's OWN roster row — what the self-tag rule compares against
 // (reviewer, Sep 15). Until now the owner's session key was "owner" (not a
 // tm:) so "did he tag himself?" was inferred from the owners list — which
@@ -282,7 +291,7 @@ export async function notifyMentions(opts: {
           const { photographerOwnsShoot } = await import("@/lib/shoot");
           href = (await photographerOwnsShoot(opts.projectId, t.id)) ? `/shoot/${opts.projectId}${msgAnchor(opts.messageId)}` : "/shoot";
         }
-      } else if (editorKey) href = `/edit/${opts.projectId}${msgAnchor(opts.messageId)}`;
+      } else if (editorKey) href = editCutHref(opts.projectId, opts.cutId, opts.messageId);
       else href = `/projects/${opts.projectId}${msgAnchor(opts.messageId)}`;
 
       const slackDm = selfTag
@@ -337,7 +346,7 @@ export async function notifyMentions(opts: {
       if (editorKey) {
         // The row the EDITOR login sees. It carries the same sentence —
         // notify.ts delivers ONCE per person, whichever row is new first.
-        targets.push({ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${opts.projectId}${msgAnchor(opts.messageId)}`, ...(slackDm ? { slackDm } : {}) });
+        targets.push({ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: editCutHref(opts.projectId, opts.cutId, opts.messageId), ...(slackDm ? { slackDm } : {}) });
       }
       await notifyInApp({
         kind: "mention",
@@ -465,7 +474,7 @@ export async function notifyThreadReply(opts: {
         if (seenHumans.has(`e:${ek}`)) continue;
         seenHumans.add(`e:${ek}`);
         const tmId = await editorTeamMemberId(ek);
-        const editHref = `/edit/${opts.projectId}`;
+        const editHref = editCutHref(opts.projectId, opts.surface === "cut" ? opts.cutId : null);
         if (tmId) {
           if (excluded.has(tmId)) continue;
           seenHumans.add(`t:${tmId}`);
@@ -487,7 +496,7 @@ export async function notifyThreadReply(opts: {
           seenHumans.add(`e:${ek}`);
           seenHumans.add(`t:${tmId}`);
           reached.push(tmId);
-          const editHref = `/edit/${opts.projectId}`;
+          const editHref = editCutHref(opts.projectId, opts.surface === "cut" ? opts.cutId : null);
           targets.push({ roles: ["OWNER", "ADMIN", "EDITOR"], userKey: `tm:${tmId}`, href: editHref, slackDm: replyDm(editHref, tmId) });
           targets.push({ roles: ["EDITOR"], userKey: `editor:${ek}`, href: editHref, slackDm: replyDm(editHref, tmId) });
           continue;

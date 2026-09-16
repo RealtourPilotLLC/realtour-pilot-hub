@@ -1,4 +1,4 @@
-import { CheckCircle2, ChevronDown, Clapperboard, History, RefreshCw } from "lucide-react";
+import { ArrowRight, CheckCircle2, ChevronDown, Clapperboard, History, RefreshCw } from "lucide-react";
 import { SlaCountdown } from "@/components/editing/SlaCountdown";
 import { etDate, etDateTime } from "@/lib/datetime";
 
@@ -28,6 +28,10 @@ export type RoundRow = {
       job are unreadable without it; optional so a legacy folder row (no
       deliverable/slot) still lists. */
   cutLabel?: string | null;
+  /** Where this round lives on the page — "#cut-<id>" when its panel is
+      rendered below (Sep 16). Every route to a revision must end ON the cut,
+      not near it; a round with no panel stays plain text. */
+  href?: string | null;
 };
 
 // Where this VIDEO edit stands, from hard evidence. Priority order matters:
@@ -124,6 +128,9 @@ const ROUND_CHIP: Record<string, { text: string; cls: string }> = {
   PENDING: { text: "With Jordan", cls: "bg-warning/10 text-warning" },
   CHANGES_REQUESTED: { text: "Changes requested", cls: "bg-danger/10 text-danger" },
   APPROVED: { text: "Approved", cls: "bg-success/10 text-success" },
+  // Pulled back by the editor (Sep 16) — history, not a live round, so the
+  // line is struck through rather than counted as a version in play.
+  WITHDRAWN: { text: "Withdrawn", cls: "bg-surface-2 text-muted" },
 };
 
 export function EditTracker({
@@ -139,6 +146,7 @@ export function EditTracker({
   editProduct,
   revisionAsks,
   revisionAtISO,
+  revisionHref,
   showSubmitAnchor,
   overridden,
 }: {
@@ -170,6 +178,12 @@ export function EditTracker({
   /** The client's revision asks, newest LAST (already money-scrubbed for creative viewers). */
   revisionAsks: string[];
   revisionAtISO: string | null;
+  /** The cut that needs the changes — "#cut-<id>" (Jordan, Sep 16: "When I
+      click the revisions, it goes down to the cuts. It should go directly to
+      the cut that needs a revision"). Every revision-shaped thing on this
+      card points at it; with no specific cut, nothing here becomes a link and
+      the tracker reads exactly as it did. */
+  revisionHref?: string | null;
   /** Editors get a jump link to the "Done — send to review" card further down. */
   showSubmitAnchor: boolean;
 }) {
@@ -185,11 +199,23 @@ export function EditTracker({
 
   return (
     <div className="rounded-2xl border bg-surface p-4 sm:p-5">
-      {/* Status line — the one-glance answer to "where is this edit?" */}
+      {/* Status line — the one-glance answer to "where is this edit?". While
+          changes are outstanding it is also the way IN: the line itself opens
+          the cut those changes are on (Sep 16). */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-sm font-semibold">
-          <span className={`text-lg leading-none ${dotColor}`}>●</span> {statusLine}
-        </div>
+        {stage === "revision" && revisionHref ? (
+          <a href={revisionHref} className="group flex flex-wrap items-center gap-2 text-sm font-semibold">
+            <span className={`text-lg leading-none ${dotColor}`}>●</span>
+            <span className="group-hover:underline">{statusLine}</span>
+            <span className="inline-flex items-center gap-1 rounded-lg bg-danger-soft px-2 py-1 text-xs font-semibold text-danger group-hover:bg-danger-soft/80">
+              Go to the cut <ArrowRight className="size-3" />
+            </span>
+          </a>
+        ) : (
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <span className={`text-lg leading-none ${dotColor}`}>●</span> {statusLine}
+          </div>
+        )}
         {showSubmitAnchor && (stage === "editing" || stage === "revision") && (
           <a
             href="#submit-cut"
@@ -248,9 +274,15 @@ export function EditTracker({
           kept (a second ask APPENDS — audit rule). */}
       {revisionAsks.length > 0 && (
         <div className="mt-4 rounded-xl border border-warning/40 bg-warning/5 p-3.5">
-          <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-warning">
+          <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-warning">
             <RefreshCw className="size-3.5" /> Revision request{revisionAsks.length > 1 ? "s" : ""}
             {revisionAtISO && <span className="font-normal normal-case text-muted-2">· {etDateTime(revisionAtISO)}</span>}
+            {/* Same rule as the status line: a revision names its cut. */}
+            {revisionHref && (
+              <a href={revisionHref} className="ml-auto inline-flex items-center gap-1 normal-case text-danger hover:underline">
+                Go to the cut <ArrowRight className="size-3" />
+              </a>
+            )}
           </div>
           {/* Callers keep list positions stable when scrubbing (an emptied ask
               becomes a placeholder, never dropped) so these round labels can't
@@ -279,16 +311,27 @@ export function EditTracker({
           <ul className="mt-1.5 space-y-1">
             {rounds.map((r) => {
               const chip = ROUND_CHIP[r.status] ?? { text: r.status, cls: "bg-surface-2 text-muted" };
+              // A withdrawn version is struck through — it was pulled back, so
+              // it must not read as a round still in play (Sep 16).
+              const gone = r.status === "WITHDRAWN";
               return (
                 <li key={r.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
                   {/* Multi-cut jobs: name the cut first, so four "Round 1"s read
-                      as four different videos rather than a repeated line. */}
-                  {r.cutLabel && <span className="max-w-64 truncate text-muted">{r.cutLabel} ·</span>}
-                  <span className="font-medium">Round {r.round}</span>
-                  <span className="text-xs text-muted-2">
-                    {r.submittedByName ? `${r.submittedByName} · ` : ""}
-                    {etDateTime(r.createdAtISO)}
-                  </span>
+                      as four different videos rather than a repeated line. The
+                      line opens that cut when its panel is on the page. */}
+                  {/* A bare <a> without href when the cut has no panel: same
+                      line, no dead link. */}
+                  <a
+                    {...(r.href ? { href: r.href } : {})}
+                    className={`flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 ${r.href ? "hover:underline" : ""} ${gone ? "text-muted line-through" : ""}`}
+                  >
+                    {r.cutLabel && <span className="max-w-64 truncate text-muted">{r.cutLabel} ·</span>}
+                    <span className="font-medium">Round {r.round}</span>
+                    <span className="text-xs text-muted-2">
+                      {r.submittedByName ? `${r.submittedByName} · ` : ""}
+                      {etDateTime(r.createdAtISO)}
+                    </span>
+                  </a>
                   <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${chip.cls}`}>{chip.text}</span>
                   {r.note && <span className="w-full pl-0.5 text-xs italic text-muted">“{r.note}”</span>}
                 </li>

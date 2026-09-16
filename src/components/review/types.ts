@@ -84,3 +84,44 @@ export function parseClock(v: string): number | null {
   if (m) return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
   return /^\d+$/.test(t) ? parseInt(t, 10) : null;
 }
+
+// ---------------------------------------------------------------------------
+// WRONG VIDEO — the withdraw / move controls (Jordan, Sep 16: "I want the
+// editor to be able to remove the video from upload / for review in case they
+// mistakenly upload the wrong video or to the wrong project. It would also be
+// cool if they could reassign that video to a different project.")
+//
+// Plain data on purpose: the server action (src/app/review/actions.ts) imports
+// these as TYPES ONLY, and the client components render them — neither side
+// pulls the other's runtime in.
+// ---------------------------------------------------------------------------
+
+/** One cut's take-back state, plus what THIS viewer may do about it. */
+export type CutTakeBackInfo = {
+  submissionId: string;
+  round: number;
+  /** UPLOADING | PENDING | CHANGES_REQUESTED | APPROVED | SUPERSEDED | WITHDRAWN */
+  status: string;
+  fileName: string | null;
+  /** the viewer may withdraw or move this one (the editor who sent it, or the office) */
+  canAct: boolean;
+  /** the viewer is OWNER/ADMIN — the only people who may remove the leftover Dropbox file */
+  office: boolean;
+  withdrawnAt: string | null;
+  withdrawnBy: string | null;
+  withdrawnReason: string | null;
+  /** the approved cut's file, still sitting in the job's Final folder */
+  strandedFinalPath: string | null;
+  movedFromStreet: string | null;
+  movedAt: string | null;
+  movedBy: string | null;
+};
+
+/** One row in the "Move to another job" picker. */
+export type CutMoveOption = {
+  projectId: string;
+  street: string;
+  clientName: string | null;
+  status: string;
+  shootDateISO: string | null;
+};

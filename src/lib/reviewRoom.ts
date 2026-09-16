@@ -356,9 +356,16 @@ export async function getCutWorkspace(projectId: string, cutId?: string | null):
     blobUrl: s.blobUrl,
     completedAt: s.completedAt ? s.completedAt.toISOString() : null,
   }));
+  // A WITHDRAWN round is history, not the thing to rule on (Sep 16) — it is
+  // still reachable by ?cut=<id> (the Earlier-rounds list links to it) but it
+  // never becomes the default cut just because it has the highest round. The
+  // choice HAS to be made here rather than in the page: the notes below are
+  // read for whichever cut this picks, and a page-level swap left the reviewer
+  // looking at one cut under another cut's notes (reviewer, Sep 16).
   const active =
     (cutId ? submissions.find((s) => s.id === cutId) : null) ??
     submissions.find((s) => s.status === "PENDING") ??
+    submissions.find((s) => s.status !== "WITHDRAWN") ??
     submissions[0] ??
     null;
 
