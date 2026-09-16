@@ -248,7 +248,14 @@ export type CutSubmission = {
   deliverableId: string | null;
   slot: number;
   source: string;
-  blobUrl: string | null;
+  // Whether the cut has a copy in the hub's own store, i.e. whether it streams
+  // from us rather than from Dropbox. It is deliberately a BOOLEAN and not the
+  // blob's URL: this type is serialised into the Review Room's client payload,
+  // and the store's URLs are public and permanent, so shipping one would put a
+  // credential-free link to an unreleased client video in the page's HTML —
+  // defeating the gate on /api/review/cut/<id>/stream, which is the only way
+  // a cut is meant to be reached (RTP-01 handover, Sep 16).
+  hasHubCopy: boolean;
   completedAt: string | null;
 };
 
@@ -353,7 +360,7 @@ export async function getCutWorkspace(projectId: string, cutId?: string | null):
     deliverableId: s.deliverableId,
     slot: s.slot,
     source: s.source,
-    blobUrl: s.blobUrl,
+    hasHubCopy: !!s.blobUrl,
     completedAt: s.completedAt ? s.completedAt.toISOString() : null,
   }));
   // A WITHDRAWN round is history, not the thing to rule on (Sep 16) — it is

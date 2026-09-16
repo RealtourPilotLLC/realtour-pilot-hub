@@ -40,9 +40,9 @@ const MAX_BYTES = 8 * 1024 * 1024 * 1024; // 8 GB — 4K vertical exports run 1�
 // What IS in this route's hands, and is done below:
 //   · the cut's bytes no longer leave through a store URL at all — the stream
 //     route proxies them behind its own gate, so PLAYBACK no longer hands a
-//     browser the object's address (one other surface still does: /review/<id>
-//     serialises blobUrl into its client payload for a boolean — the handover
-//     filed with this ticket removes it);
+//     browser the object's address — and since Sep 16 no other surface does
+//     either: CutSubmission carries `hasHubCopy` (a boolean) where it used to
+//     carry blobUrl, so the URL is no longer in any page's HTML;
 //   · cacheControlMaxAge drops from the store default of 30 DAYS to the SDK
 //     minimum of 1 minute, so when the objects are re-homed to a private
 //     store the CDN stops answering for the old URL within a minute instead

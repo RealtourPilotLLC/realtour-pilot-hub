@@ -78,7 +78,7 @@ export function CutReviewPanel({
   // Uploaded cuts stream from the hub's own store; legacy rows stream through
   // the route from Dropbox (verified in a visible tab) but get a download
   // link too, for the day a link stalls.
-  const legacy = !submission.blobUrl && !!submission.assetUrl;
+  const legacy = !submission.hasHubCopy && !!submission.assetUrl;
   // A withdrawn cut has no verdict to give: the buttons come off and the row
   // says what happened instead. Only rows from the afternoon of Sep 16 can
   // still be in this state — a take-back deletes the version now — but they

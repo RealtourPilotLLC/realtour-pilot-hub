@@ -74,14 +74,15 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   // (and 206 returned verbatim) so scrubbing a 2 GB cut still works exactly
   // as it did.
   //
-  // NOT YET THE WHOLE STORY (review, Sep 16): /review/<id> still serialises
-  // ReviewSubmission.blobUrl into its client payload — reviewRoom.ts puts it
-  // on the CutSubmission type and CutReviewPanel ("use client") receives the
-  // row whole to compute one boolean — so the public URL is still readable in
-  // that page's HTML by whoever may open it (owner/admin only today). The
-  // handover filed with this ticket drops the field and passes the boolean
-  // instead. Until that lands, and until the store itself goes private, this
-  // route's gate is a real gate but not the only door.
+  // WHAT REMAINS (Sep 16). The client payload no longer carries the URL —
+  // CutSubmission passes `hasHubCopy`, a boolean — so this route is now the
+  // only door the hub opens. The objects themselves, however, are still in a
+  // PUBLIC store, so every URL ever emitted (the 11 files live today) stays
+  // reachable by anyone who kept one. That cannot be fixed in code: the SDK
+  // refuses a private upload to a public store ("Cannot use private access on
+  // a public store"), so the store has to be REPLACED by one created with
+  // private access and the existing objects moved across. Jordan's call; until
+  // then, treat any cut URL that has already left the building as still live.
   if (sub.blobUrl) return proxyBlob(req, sub.blobUrl, sub.fileName);
 
   if (!sub.assetPath) return NextResponse.json({ error: "No file is attached to this cut" }, { status: 404 });
