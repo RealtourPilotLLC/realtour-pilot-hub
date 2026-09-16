@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import {
   Check, CloudDownload, ExternalLink, Loader2, Music, Pause, Play, RefreshCw, Search, SlidersHorizontal, Sparkles, WandSparkles, X,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Section } from "@/components/ui/Section";
@@ -142,7 +144,11 @@ export function MusicCard({
   // Starts "reading" whenever the catalogue is wired, so the server render
   // shows the spinner the mount effect is about to earn — not a flash of
   // "press Refresh" before hydration.
-  const [recoBusy, setRecoBusy] = useState(connected);
+  // Collapsed until someone opens it (Jordan, Sep 16: "keep the music tab on
+  // the editor brief minimized until it's clicked") — so an unopened card never
+  // spends an AI or Epidemic Sound call, and the brief reads shorter.
+  const [open, setOpen] = useState(false);
+  const [recoBusy, setRecoBusy] = useState(false);
   const [recoNote, setRecoNote] = useState<string | null>(null);
   const recoAsked = useRef(false);
   // Refresh is a real AI call every time (it bypasses the per-job cache), so
@@ -190,10 +196,10 @@ export function MusicCard({
   // mounts twice; the ref keeps it to one ask (and one AI call at most —
   // the answer is cached per job on the server anyway).
   useEffect(() => {
-    if (!connected || recoAsked.current) return;
+    if (!open || !connected || recoAsked.current) return;
     recoAsked.current = true;
     void loadReco(false);
-  }, [connected, loadReco]);
+  }, [open, connected, loadReco]);
 
   // ---- Preview playback: one <audio>, one hls.js instance ---------------
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -386,8 +392,32 @@ export function MusicCard({
   const toggle = (list: string[], set: (v: string[]) => void, id: string) =>
     set(list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
 
+  const toggleOpen = () => {
+    setOpen((o) => {
+      if (o) stop(); // collapsing ends any preview
+      return !o;
+    });
+  };
   const header = (
-    <span className="hidden text-[11px] text-muted-2 sm:inline">Epidemic Sound · licensed for client deliverables only</span>
+    <span className="inline-flex items-center gap-3">
+      {!open && pick && (
+        <span className="hidden max-w-64 truncate text-[11px] text-muted-2 sm:inline" title={`${pick.title} — ${pick.artist}`}>
+          Picked: {pick.title} — {pick.artist}
+        </span>
+      )}
+      <span className="hidden text-[11px] text-muted-2 lg:inline">Epidemic Sound · licensed for client deliverables only</span>
+      {connected && (
+        <button
+          type="button"
+          onClick={toggleOpen}
+          aria-expanded={open}
+          className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-[11px] font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+        >
+          {open ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
+          {open ? "Collapse" : "Open"}
+        </button>
+      )}
+    </span>
   );
 
   // Not connected: the office is told where to go; editors never see this
@@ -405,6 +435,21 @@ export function MusicCard({
   }
 
   const rowProps = { pick, busyId, playingId, loadingId, canAct, onPlay: play, onSimilar: openSimilar, onUse: use, onDownload: download };
+
+  if (!open) {
+    return (
+      <Section icon={Music} title="Music" action={header}>
+        <button
+          type="button"
+          onClick={toggleOpen}
+          className="w-full rounded-xl border border-dashed border-border bg-surface-2/40 px-4 py-3 text-left text-sm text-muted hover:border-brand hover:text-foreground"
+        >
+          <span className="font-medium text-foreground">Open the music library</span>{" "}
+          — recommendations for this edit, search, preview and download to the job folder.
+        </button>
+      </Section>
+    );
+  }
 
   return (
     <Section icon={Music} title="Music" action={header}>
