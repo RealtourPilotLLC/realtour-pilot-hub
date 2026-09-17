@@ -538,9 +538,35 @@ export type VideoMeta = {
   container: string;
   codec: string;
   sizeBytes: number;
+  /** The file's first audio track, if it has one. `codec` is the MP4 sample
+   *  entry's four-character format — "mp4a" for AAC, "in24"/"lpcm"/"sowt" for
+   *  uncompressed PCM, and so on. Read because Topaz's "Copy" audio setting
+   *  silently DROPS a track it cannot copy into the output container: on Sep 17
+   *  a client was delivered a silent video because the editor's export carried
+   *  24-bit PCM. A caller that knows the source codec can ask for a conversion
+   *  instead, and can check afterwards that the audio actually survived. */
+  audio: { present: boolean; codec: string | null };
 };
 
 type Box = { type: string; start: number; headerSize: number; size: number };
+
+/** The first audio track's sample format, read from moov. Returns
+ *  {present:false} when the file has no `soun` handler at all (a genuinely
+ *  silent export), so callers can tell "no audio to lose" from "audio lost". */
+function audioTrackOf(m: Buffer, moov: Box): { present: boolean; codec: string | null } {
+  for (const trak of children(m, moov.headerSize, moov.size)) {
+    if (trak.type !== "trak") continue;
+    const tf = trak.start + trak.headerSize;
+    const tt = trak.start + trak.size;
+    const hdlr = findPath(m, tf, tt, ["mdia", "hdlr"]);
+    if (!hdlr) continue;
+    if (m.toString("latin1", hdlr.start + hdlr.headerSize + 8, hdlr.start + hdlr.headerSize + 12) !== "soun") continue;
+    const stsd = findPath(m, tf, tt, ["mdia", "minf", "stbl", "stsd"]);
+    const entry = stsd ? readBox(m, stsd.start + stsd.headerSize + 8) : null;
+    return { present: true, codec: entry ? entry.type : null };
+  }
+  return { present: false, codec: null };
+}
 
 function readBox(buf: Buffer, off: number): Box | null {
   if (off + 8 > buf.length) return null;
@@ -592,9 +618,20 @@ async function rangeBytes(url: string, start: number, end: number): Promise<Buff
 export async function probeVideoMetadata(url: string, knownSize?: number | null): Promise<VideoMeta> {
   let total = knownSize ?? 0;
   if (!total) {
-    const head = await fetch(url, { method: "HEAD", cache: "no-store", signal: AbortSignal.timeout(20_000) });
-    if (!head.ok) throw new TopazError(`Couldn't open the video file (${head.status}).`, head.status, head.status >= 500);
-    total = Number(head.headers.get("content-length") ?? 0);
+    const head = await fetch(url, { method: "HEAD", cache: "no-store", signal: AbortSignal.timeout(20_000) }).catch(() => null);
+    if (head?.ok) total = Number(head.headers.get("content-length") ?? 0);
+  }
+  if (!total) {
+    // Some links refuse HEAD or answer without a length — Topaz's own output
+    // links among them, and a Dropbox temporary link too. A one-byte ranged GET
+    // carries the full size in its Content-Range. Without this fallback the
+    // finished-file audio check could not read the very render it exists to
+    // check, and on Sep 17 it waved a silent video through to a client.
+    const probe = await fetch(url, { headers: { Range: "bytes=0-0" }, cache: "no-store", signal: AbortSignal.timeout(20_000) }).catch(() => null);
+    const range = probe?.headers.get("content-range");
+    const m = range ? /\/\s*(\d+)\s*$/.exec(range) : null;
+    if (m) total = Number(m[1]);
+    await probe?.body?.cancel().catch(() => {});
   }
   if (!total) throw new TopazError("Couldn't tell how big the video file is.", 0, true);
 
@@ -621,6 +658,8 @@ export async function probeVideoMetadata(url: string, knownSize?: number | null)
     throw new TopazError("This video file's header isn't where a video file's header should be, so its length and frame rate can't be read.", 0, false);
   }
   const m = await rangeBytes(url, moov.start, moov.start + moov.size - 1);
+
+  const audio = audioTrackOf(m, moov);
 
   for (const trak of children(m, moov.headerSize, moov.size)) {
     if (trak.type !== "trak") continue;
@@ -687,6 +726,7 @@ export async function probeVideoMetadata(url: string, knownSize?: number | null)
       container,
       codec: entry.type,
       sizeBytes: total,
+      audio,
     };
   }
   throw new TopazError("Couldn't find a video track in that file — it may not be a video, or it may have been cut short on upload.", 0, false);

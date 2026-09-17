@@ -99,6 +99,13 @@ export const EXPORT_SPEC = {
   // so an arrow would print as a hole in the one copy nobody can re-check.
   finalCut: "From Final Cut: Share, then Export File. In Settings, set Resolution to 1080p and pick the multi-pass H.264 — the option labelled Better Quality, not Faster Encode.",
   orientation: "Keep the shape the style calls for: a vertical reel exports 1080 × 1920, a horizontal video 1920 × 1080.",
+  // Sep 17: a client was delivered a silent video. Final Cut's Export File
+  // dialog can write uncompressed (Linear PCM) audio, which the 1080p pass
+  // cannot carry into an mp4 — it drops the track and reports success. AAC is
+  // what every social platform wants anyway, so it is now part of the brief,
+  // and a file that arrives with uncompressed audio skips the pass rather than
+  // going out silent.
+  audio: "Set Audio Format to AAC, not Linear PCM. Uncompressed audio can't go through our 1080p pass, and a video that loses its sound can't go out.",
   why: "Everything we deliver goes out at 1080p, and a 4K master costs about four times as much to finish — for a file that ends up 1080p anyway.",
 } as const;
 
@@ -108,6 +115,7 @@ export const EXPORT_SPEC_LINES: readonly string[] = [
   EXPORT_SPEC.finalCut,
   EXPORT_SPEC.edit,
   EXPORT_SPEC.orientation,
+  EXPORT_SPEC.audio,
   EXPORT_SPEC.why,
 ];
 

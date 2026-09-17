@@ -95,6 +95,15 @@ const STALL_MS = 4 * 3600_000;
 const MIN_SAVED_BYTES = 1_048_576;
 
 const streetOf = (title?: string | null) => (title || "this job").split(",")[0].trim();
+
+/** An mp4 audio format in words an editor can act on. The four-character codes
+ *  are what the file's own header calls them. */
+function audioFormatName(codec: string | null): string {
+  if (!codec) return "in a format we couldn't read";
+  if (["ipcm", "lpcm", "sowt", "twos", "in24", "in32", "fl32", "raw "].includes(codec)) return "uncompressed (PCM)";
+  if (codec === "mp4a") return "AAC";
+  return `"${codec}"`;
+}
 const SAFE_NAME = (name: string) => name.replace(/[^\w.\- ()]+/g, "_").replace(/\s+/g, " ").trim().slice(0, 120) || "video.mp4";
 
 // ---------------------------------------------------------------------------
@@ -554,9 +563,13 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
     container: job.sourceContainer ?? "",
     sizeBytes: job.sourceSizeBytes ?? 0,
   };
+  // The source's own audio track decides how we ask Topaz to carry it (see the
+  // request below). It is not stored on the row, so it comes off the header.
+  let sourceAudio: { present: boolean; codec: string | null } | null = null;
   if (!(meta.frameCount > 0 && meta.durationSec > 0 && meta.width > 0)) {
     const probed = await probeVideoMetadata(sub.blobUrl, sub.sizeBytes ?? null);
     meta = probed;
+    sourceAudio = probed.audio;
     await prisma.topazJob.update({
       where: { id: job.id },
       data: {
@@ -569,6 +582,31 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
         sourceSizeBytes: probed.sizeBytes,
       },
     });
+  }
+
+  // When the measurements came off the row rather than the file, the header
+  // still has to be read once for the audio track. A file we cannot read is
+  // assumed to need conversion: converting audio that did not need it costs
+  // nothing anyone can hear, while copying audio that cannot be copied loses it
+  // altogether — which is exactly how a client came to be sent a silent video.
+  if (!sourceAudio) {
+    sourceAudio = await probeVideoMetadata(sub.blobUrl, meta.sizeBytes || sub.sizeBytes || null)
+      .then((p) => p.audio)
+      .catch(() => ({ present: true, codec: null }));
+  }
+
+  // AUDIO THE PASS WOULD LOSE IS A REASON NOT TO RUN IT. Topaz will neither
+  // copy nor convert uncompressed audio into an mp4 — both settings were tried
+  // on Stephen Kennedy's 322 N 62nd St cut on Sep 17 and both came back silent,
+  // and their API validates neither field, so there is no value left to try. A
+  // video with no sound is worse than one that was never sharpened, so we keep
+  // the editor's own file and say what would make this one eligible.
+  if (sourceAudio.present && sourceAudio.codec !== "mp4a") {
+    await skip(
+      job,
+      `This video's audio is ${audioFormatName(sourceAudio.codec)}, and the 1080p pass loses it — the finished file comes back silent. The editor's own upload is the one to deliver. To put a video through the pass, export it with AAC audio.`,
+    );
+    return "skipped";
   }
 
   // Topaz answers 413 over 500 MB. Real cuts measure 76–465 MB, so this is a
@@ -606,6 +644,16 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
     },
     output: {
       resolution: output,
+      // AUDIO. "Copy" does not fail when Topaz cannot copy the track — it
+      // DROPS it. On Sep 17 a client was delivered a silent video: the editor's
+      // export carried uncompressed 24-bit PCM ("ipcm"), which an mp4 cannot
+      // hold as-is, while every other render (AAC in, AAC out) kept its sound.
+      // So copy only what an mp4 can carry unchanged, and convert anything
+      // else. Their API validates NEITHER field — it accepted "Transcode" and
+      // "Re-encode" without complaint — so the choice is ours to get right, and
+      // stepProcessing checks the finished file before anything is filed.
+      // Only AAC ("mp4a") audio reaches this point — anything else was skipped
+      // above — so copying the track through is both safe and lossless.
       audioCodec: s.audioCodec,
       audioTransfer: s.audioTransfer,
       // Frame interpolation is OFF in Jordan's preset ("30 FPS original, no
@@ -933,6 +981,26 @@ async function stepUploading(job: NonNullable<JobRow>, s: TopazSettings, budget:
   return "processing";
 }
 
+/** Did the sound survive the pass? Reads both files' headers over a few HTTP
+ *  range requests (about a second each) and compares audio tracks.
+ *  "ok" also covers a source that never had audio — there was nothing to lose.
+ *  "unreadable" is deliberately NOT "ok": a file we cannot read is a file we
+ *  cannot vouch for, and the caller retries before it decides. */
+async function audioSurvived(job: NonNullable<JobRow>, downloadUrl: string): Promise<"ok" | "lost" | "unreadable"> {
+  const sub = job.submission;
+  if (!sub?.blobUrl) return "unreadable";
+  try {
+    const [src, out] = await Promise.all([
+      probeVideoMetadata(sub.blobUrl, job.sourceSizeBytes ?? sub.sizeBytes ?? null),
+      probeVideoMetadata(downloadUrl),
+    ]);
+    if (!src.audio.present) return "ok";
+    return out.audio.present ? "ok" : "lost";
+  } catch {
+    return "unreadable";
+  }
+}
+
 // ---- processing → saving ---------------------------------------------------
 
 async function stepProcessing(job: NonNullable<JobRow>, s: TopazSettings): Promise<string> {
@@ -943,6 +1011,31 @@ async function stepProcessing(job: NonNullable<JobRow>, s: TopazSettings): Promi
   const st = await videoStatus(job.requestId);
 
   if (TOPAZ_DONE.has(st.status) && st.downloadUrl) {
+    // THE SOUND HAS TO SURVIVE. What reaches Dropbox is what Kyle delivers, so
+    // a render that came back silent must never be filed — we found the Sep 17
+    // one because the client noticed, which is the wrong way round.
+    const verdict = await audioSurvived(job, st.downloadUrl);
+    if (verdict === "lost") {
+      await fail(
+        job,
+        "The 1080p pass came back with no sound — the original's audio track didn't survive it. Nothing was filed and the editor's file is untouched, so the original is still good to send. Worth a look before this one goes out.",
+      );
+      return "failed";
+    }
+    if (verdict === "unreadable" && job.attempt < 3) {
+      // Could not read one of the two files this minute. The render is finished
+      // and paid for; try again shortly rather than file it unchecked.
+      await release(job.id, { attempt: job.attempt + 1, nextAttemptAt: new Date(Date.now() + 60_000) });
+      return "processing";
+    }
+    if (verdict === "unreadable") {
+      await tellSomebody(
+        job,
+        `Couldn't check the sound on the 1080p file — ${streetOf(job.project.title)}`,
+        "The render finished and is being filed, but the file couldn't be read to confirm its audio survived. Worth playing it once before it goes out.",
+        `topaz-audio-unverified-${job.id}`,
+      );
+    }
     await release(job.id, {
       state: "saving",
       // The filing clock starts HERE. Measuring it from acceptedAt gave a
