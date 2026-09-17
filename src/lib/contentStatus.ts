@@ -145,5 +145,5 @@ export const TOPIC_STATUS_WORDS: Record<string, string> = {
   DELIVERED: "delivered ✓",
   SAVED: "saved for later",
   RECOMMENDED: "suggested",
-  IDEA: "idea",
+  IDEA: "video topic",
 };

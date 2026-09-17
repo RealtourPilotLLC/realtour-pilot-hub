@@ -391,3 +391,78 @@ export async function getProgramRoster(): Promise<ProgramRow[]> {
   rows.sort((a, b) => b.attention.length - a.attention.length || a.clientName.localeCompare(b.clientName));
   return rows;
 }
+
+// ---------------------------------------------------------------------------
+// Who owns which duty (spec §16/§17, Jordan D11): Jordan owns STRATEGY and
+// SCRIPTS approval, Kyle owns SCHEDULING and DELIVERY — as ProgramOwnerAssignment
+// DEFAULT rows, overridable per enrollment or per month. The defaults are
+// minted on first read (a settings row, not client data) so the workspace can
+// always show an owner; an override is a scope=ENROLLMENT/MONTH row.
+// ---------------------------------------------------------------------------
+export type OwnerDuty = "STRATEGY" | "SCRIPTS" | "SCHEDULING" | "DELIVERY" | "ESCALATION" | "REMINDERS";
+export const OWNER_DUTIES: OwnerDuty[] = ["STRATEGY", "SCRIPTS", "SCHEDULING", "DELIVERY", "ESCALATION", "REMINDERS"];
+export type DutyOwner = { duty: OwnerDuty; appUserId: string | null; email: string | null; label: string; scope: "DEFAULT" | "ENROLLMENT" | "MONTH" };
+
+async function ensureDefaultOwnerAssignments(): Promise<void> {
+  const existing = await prisma.programOwnerAssignment.count({ where: { scope: "DEFAULT" } });
+  if (existing > 0) return;
+  const users = await prisma.appUser.findMany({ where: { status: "ACTIVE" }, select: { id: true, email: true, name: true, role: true } });
+  // Jordan = the OWNER on the company address; Kyle = the ADMIN named Kyle.
+  const jordan = users.find((u) => u.email === "info@realtourpilot.com") ?? users.find((u) => u.role === "OWNER") ?? null;
+  const kyle = users.find((u) => u.role === "ADMIN" && /kyle/i.test(u.name ?? "")) ?? null;
+  const rows: { duty: OwnerDuty; user: typeof jordan }[] = [
+    { duty: "STRATEGY", user: jordan }, { duty: "SCRIPTS", user: jordan }, { duty: "ESCALATION", user: jordan },
+    { duty: "SCHEDULING", user: kyle }, { duty: "DELIVERY", user: kyle }, { duty: "REMINDERS", user: kyle },
+  ];
+  for (const r of rows) {
+    await prisma.programOwnerAssignment.upsert({
+      where: { scope_scopeRef_duty: { scope: "DEFAULT", scopeRef: "", duty: r.duty } },
+      create: { scope: "DEFAULT", scopeRef: "", duty: r.duty, appUserId: r.user?.id ?? null, label: r.user?.name ?? (r.user?.email ?? "unassigned"), setBy: "defaults" },
+      update: {},
+    }).catch(() => {});
+  }
+}
+
+/** The owner of a duty for a month → enrollment → program default. */
+export async function ownersFor(enrollmentId: string, monthId?: string | null): Promise<Record<OwnerDuty, DutyOwner>> {
+  await ensureDefaultOwnerAssignments();
+  const rows = await prisma.programOwnerAssignment.findMany({
+    where: { endedAt: null, OR: [{ scope: "DEFAULT" }, { scope: "ENROLLMENT", scopeRef: enrollmentId }, ...(monthId ? [{ scope: "MONTH", scopeRef: monthId }] : [])] },
+  });
+  const userIds = [...new Set(rows.map((r) => r.appUserId).filter((x): x is string => !!x))];
+  const users = userIds.length ? await prisma.appUser.findMany({ where: { id: { in: userIds } }, select: { id: true, email: true, name: true } }) : [];
+  const out = {} as Record<OwnerDuty, DutyOwner>;
+  for (const duty of OWNER_DUTIES) {
+    const pick = rows.find((r) => r.duty === duty && r.scope === "MONTH") ?? rows.find((r) => r.duty === duty && r.scope === "ENROLLMENT") ?? rows.find((r) => r.duty === duty && r.scope === "DEFAULT");
+    const u = pick?.appUserId ? users.find((x) => x.id === pick.appUserId) : null;
+    out[duty] = { duty, appUserId: pick?.appUserId ?? null, email: u?.email ?? null, label: u?.name ?? pick?.label ?? "unassigned", scope: (pick?.scope as DutyOwner["scope"]) ?? "DEFAULT" };
+  }
+  return out;
+}
+
+/** Override who owns a duty for one enrollment (or one month). appUserId null = remove the override. */
+export async function setOwnerOverride(scope: "ENROLLMENT" | "MONTH", scopeRef: string, duty: OwnerDuty, appUserId: string | null, by: string): Promise<void> {
+  if (!appUserId) {
+    await prisma.programOwnerAssignment.updateMany({ where: { scope, scopeRef, duty, endedAt: null }, data: { endedAt: new Date() } });
+    return;
+  }
+  const u = await prisma.appUser.findUnique({ where: { id: appUserId }, select: { name: true, email: true } });
+  await prisma.programOwnerAssignment.upsert({
+    where: { scope_scopeRef_duty: { scope, scopeRef, duty } },
+    create: { scope, scopeRef, duty, appUserId, label: u?.name ?? u?.email ?? null, setBy: by },
+    update: { appUserId, label: u?.name ?? u?.email ?? null, setBy: by, endedAt: null, effectiveAt: new Date() },
+  });
+}
+
+/**
+ * May this person perform a duty on this enrollment? The assigned owner may;
+ * so may any OWNER-role login (Jordan can always act, and can hand a duty to
+ * Kyle by setting an override). Everyone else gets the owner's name back.
+ */
+export async function assertDutyOwner(duty: OwnerDuty, enrollmentId: string, monthId: string | null | undefined, me: { id?: string | null; email: string; realRole?: string | null; role?: string | null }): Promise<void> {
+  if ((me.realRole ?? me.role) === "OWNER") return;
+  const owner = (await ownersFor(enrollmentId, monthId))[duty];
+  if (owner.appUserId && me.id && owner.appUserId === me.id) return;
+  if (owner.email && owner.email.toLowerCase() === me.email.toLowerCase()) return;
+  throw new Error(`${duty.toLowerCase()} approval is assigned to ${owner.label} — ask them, or change the owner on the Client file.`);
+}

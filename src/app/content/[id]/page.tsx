@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
-  Camera, CalendarDays, CheckCircle2, ExternalLink, Eye, FileText, FolderOpen, Lightbulb, User,
+  Camera, CalendarDays, CheckCircle2, Compass, ExternalLink, Eye, FileText, FileUp, FolderOpen, Lightbulb, NotebookPen, User,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
@@ -12,6 +12,7 @@ import { authEnforced } from "@/lib/auth/guards";
 import { canAccess } from "@/lib/auth/access";
 import { prisma } from "@/lib/prisma";
 import { etMonthKey, monthLabel } from "@/lib/contentProgram";
+import { parseStoredSections } from "@/lib/contentStrategy";
 import { customerNote } from "@/lib/clientNotes";
 import { fmtDay } from "@/lib/contentStatus";
 import { stageMeta } from "@/lib/pipeline";
@@ -20,27 +21,44 @@ import { MonthJourney } from "@/components/content/MonthJourney";
 import { MonthPicker, SessionMonthMover, SkipMonthButton } from "@/components/content/MonthControls";
 import { PortalLinkButton } from "@/components/content/PortalLinkButton";
 import {
-  EnrollmentSettingsCard, StrategyCallCard, StrategyCard, TopicBank, ScriptBackfillCard, ProfileSections, NotesCard, ScriptReview, TopicSeedButton,
+  EnrollmentSettingsCard, StrategyCallCard, StrategyCard, TopicBank, ProfileSections, NotesCard, ScriptReview,
 } from "@/components/content/Workspace";
 import { STRATEGY_CALL_BOOKING_URL } from "@/lib/integrations/calendly";
+import { StrategyPanel } from "@/components/content/StrategyPanel";
+import { TopicsPanel } from "@/components/content/TopicsPanel";
+import { ScriptsPanel } from "@/components/content/ScriptsPanel";
+import { FactsPanel } from "@/components/content/FactsPanel";
+import { ImportPanel } from "@/components/content/ImportPanel";
+import { loadStrategyTab, loadTopicsTab, loadScriptsTab, loadFactsTab, loadImportTab } from "./programData";
 
 export const dynamic = "force-dynamic";
+// The server actions this page calls run the model (a 16k-token topic refresh,
+// a transcript analysis) — Next applies the page's maxDuration to them.
+export const maxDuration = 300;
 
 // One client's workspace — reorganized Aug 31 per Jordan: the pipeline
 // tracker leads (the same visual language as his dashboard cards, hero size),
 // with the ONE next step spelled out right under it, then clean sections:
 // Strategy call · Filming sessions · Scripts · the month's video plan.
-// Three tabs: THIS MONTH (the work), IDEAS (the topic bank in plain words),
-// CLIENT FILE (strategy, profile, notes, settings, imports).
-type Tab = "month" | "ideas" | "file" | "portal";
+// Tabs (Sep 17, spec §17): THIS MONTH (the work) · VIDEO TOPICS (the bank by
+// pillar, selections, refresh, recommendations — the tab formerly called
+// "Ideas"; its key stays `ideas` so every old link resolves) · STRATEGY
+// (versions, approve/release, proposals, pillars) · SCRIPTS (one review queue,
+// versions, approve/release) · FACTS (the review strip) · IMPORT (preview →
+// apply, review items) · CLIENT FILE (profile, notes, settings) · THEIR PORTAL.
+type Tab = "month" | "ideas" | "strategy" | "scripts" | "facts" | "import" | "file" | "portal";
 const TABS: { key: Tab; label: string; icon: typeof FileText }[] = [
   { key: "month", label: "This month", icon: CalendarDays },
-  { key: "ideas", label: "Ideas", icon: Lightbulb },
+  { key: "ideas", label: "Video Topics", icon: Lightbulb },
+  { key: "strategy", label: "Strategy", icon: Compass },
+  { key: "scripts", label: "Scripts", icon: FileText },
+  { key: "facts", label: "Facts", icon: NotebookPen },
+  { key: "import", label: "Import", icon: FileUp },
   { key: "file", label: "Client file", icon: FolderOpen },
   { key: "portal", label: "Their portal", icon: Eye },
 ];
-// Old bookmarked URLs keep working.
-const LEGACY_TABS: Record<string, Tab> = { scripts: "month", topics: "ideas", profile: "file", notes: "file" };
+// Old bookmarked URLs keep working: ?tab=topics and ?tab=ideas both open Video Topics.
+const LEGACY_TABS: Record<string, Tab> = { topics: "ideas", "video-topics": "ideas", profile: "file", notes: "file" };
 
 export default async function ContentClientPage({
   params, searchParams,
@@ -77,7 +95,7 @@ export default async function ContentClientPage({
   const activeKey = monthParam && months.some((m) => m.monthKey === monthParam) ? monthParam : etMonthKey();
   const month = months.find((m) => m.monthKey === activeKey) ?? months[0] ?? null;
 
-  const [projects, topics, bankTopics, scripts, profile, notes, strategy] = await Promise.all([
+  const [projects, topics, scripts, profile, notes, strategy] = await Promise.all([
     month
       ? prisma.project.findMany({
           where: { contentMonthId: month.id },
@@ -91,14 +109,39 @@ export default async function ContentClientPage({
         })
       : Promise.resolve([]),
     month ? prisma.contentTopic.findMany({ where: { monthId: month.id }, orderBy: { createdAt: "asc" } }) : Promise.resolve([]),
-    prisma.contentTopic.findMany({ where: { enrollmentId: id, monthId: null, status: { notIn: ["REJECTED", "ARCHIVED"] } }, orderBy: { createdAt: "desc" }, take: 40 }),
     month ? prisma.contentScript.findMany({ where: { monthId: month.id }, orderBy: { createdAt: "asc" } }) : Promise.resolve([]),
     prisma.agentProfile.findUnique({ where: { clientId: client.id } }),
     prisma.contentNote.findMany({ where: { clientId: client.id }, orderBy: { createdAt: "desc" }, take: 30 }),
     prisma.contentStrategy.findFirst({ where: { enrollmentId: id, status: "ACTIVE" }, orderBy: { createdAt: "desc" } }),
   ]);
-  let strategySections: Record<string, string> = {};
-  try { strategySections = strategy ? JSON.parse(strategy.sectionsJson) : {}; } catch { strategySections = {}; }
+  // The legacy card renders {heading: text}; a row in the versioned shape (or
+  // any non-string value) is flattened through the same reader — never handed
+  // to React as an object child.
+  const strategySections: Record<string, string> = {};
+  if (strategy) {
+    const stored = parseStoredSections(strategy.sectionsJson);
+    for (const s of stored?.sections ?? []) strategySections[s.heading || `Section ${s.order}`] = typeof s.text === "string" ? s.text : String(s.text ?? "");
+  }
+  // Scripts on the month, version-aware: the text shown (and approved) is the
+  // CURRENT version's, not the legacy mirror of the approved one — otherwise a
+  // fresh edit looked lost and "Approve" signed text the tab never displayed.
+  const currentVersions = scripts.length ? await prisma.contentScriptVersion.findMany({ where: { id: { in: scripts.map((s) => s.currentVersionId).filter((x): x is string => !!x) } }, select: { id: true, body: true, status: true, versionNo: true } }) : [];
+  const versionOf = (s: (typeof scripts)[number]) => currentVersions.find((v) => v.id === s.currentVersionId) ?? null;
+  const scriptAwaiting = (s: (typeof scripts)[number]) => {
+    if (s.historical) return false;
+    const v = versionOf(s);
+    return v ? v.status === "DRAFT" || v.status === "INTERNAL_REVIEW" : s.status === "INTERNAL_REVIEW" || s.status === "DRAFT";
+  };
+  const scriptReady = (s: (typeof scripts)[number]) => !s.historical && (s.approvedVersionId ? !scriptAwaiting(s) : ["APPROVED", "CLIENT_VISIBLE", "READY_TO_FILM"].includes(s.status));
+
+  // Tab data — loaded only for the tab being shown.
+  const [topicsData, strategyData, scriptsData, factsData, importData] = await Promise.all([
+    tab === "ideas" ? loadTopicsTab(id, month ? { id: month.id, monthKey: month.monthKey } : null) : Promise.resolve(null),
+    tab === "strategy" ? loadStrategyTab(id, month ? { id: month.id, monthKey: month.monthKey, prioritiesJson: month.prioritiesJson, prioritiesSourceRef: month.prioritiesSourceRef } : null) : Promise.resolve(null),
+    tab === "scripts" ? loadScriptsTab(id, month ? { id: month.id } : null) : Promise.resolve(null),
+    tab === "facts" ? loadFactsTab(client.id, id) : Promise.resolve(null),
+    tab === "import" ? loadImportTab(id) : Promise.resolve(null),
+  ]);
 
   // The month's counts — same status filters as the dashboard roster, so the
   // tracker here always matches the client's card out front.
@@ -110,8 +153,8 @@ export default async function ContentClientPage({
   const owed = Math.max(owedRaw, 1);
   const counts = {
     topicsSelected: topics.filter((t) => ["SELECTED", "SCRIPTED", "FILMED", "EDITING", "DELIVERED"].includes(t.status)).length,
-    scriptsReady: scripts.filter((s) => ["APPROVED", "CLIENT_VISIBLE", "READY_TO_FILM"].includes(s.status)).length,
-    scriptsAwaiting: scripts.filter((s) => s.status === "INTERNAL_REVIEW" || s.status === "DRAFT").length,
+    scriptsReady: scripts.filter(scriptReady).length,
+    scriptsAwaiting: scripts.filter(scriptAwaiting).length,
     sessionsScheduled: liveProjects.length,
     shotCount: liveProjects.filter((p) => p.shootDate && p.shootDate < now).length,
     delivered: liveProjects.filter((p) => p.status === "DELIVERED").reduce((s, p) => s + Math.max(1, videoUnits(p)), 0),
@@ -346,7 +389,10 @@ export default async function ContentClientPage({
                 <ScriptReview scripts={scripts.map((s) => {
                   let prod: string[] = [];
                   try { prod = s.productionJson ? (JSON.parse(s.productionJson) as string[]) : []; } catch { prod = []; }
-                  return { id: s.id, title: s.title, body: s.body, status: s.status, source: s.source, sourceFile: s.sourceFile, productionIdeas: prod, suggestions: suggByScript.get(s.id) ?? [] };
+                  const v = versionOf(s);
+                  const awaiting = scriptAwaiting(s);
+                  const status = s.historical ? "HISTORICAL" : awaiting ? (s.approvedVersionId ? "NEW_DRAFT" : "INTERNAL_REVIEW") : s.status;
+                  return { id: s.id, title: s.title, body: v?.body ?? s.body, versionNo: v?.versionNo ?? null, status, historical: s.historical, needsApproval: awaiting, source: s.source, sourceFile: s.sourceFile, productionIdeas: prod, suggestions: suggByScript.get(s.id) ?? [] };
                 })} />
               </Section>
             </div>
@@ -356,7 +402,7 @@ export default async function ContentClientPage({
               <Section icon={Lightbulb} title={`${monthShort}'s video plan`} count={topics.length} flush
                 action={
                   <Link href={hrefFor("ideas")} className="text-[13px] font-medium text-brand hover:underline">
-                    Pick from Ideas →
+                    Pick from Video Topics →
                   </Link>
                 }>
                 <TopicBank enrollmentId={id} monthId={month.id} monthName={monthShort} topics={topics.map(t => ({ id: t.id, title: t.title, concept: t.concept, pillar: t.pillar, status: t.status, source: t.source }))} mode="month" />
@@ -368,15 +414,39 @@ export default async function ContentClientPage({
           <p className="text-sm text-muted">No month workspace yet — the hourly sweep creates the current month automatically.</p>
         )}
 
-        {/* ---------- IDEAS ---------- */}
-        {tab === "ideas" && (
-          <Section icon={Lightbulb} title="Ideas" count={bankTopics.length} flush
-            action={<TopicSeedButton enrollmentId={id} />}>
-            <p className="border-b border-border px-5 py-3 text-[13px] text-muted">
-              Topics saved for future months. Pull one into a month when it&rsquo;s time to script it.
-            </p>
-            <TopicBank enrollmentId={id} monthId={month?.id ?? null} monthName={monthShort} topics={bankTopics.map(t => ({ id: t.id, title: t.title, concept: t.concept, pillar: t.pillar, status: t.status, source: t.source }))} mode="bank" />
-          </Section>
+        {/* ---------- VIDEO TOPICS ---------- */}
+        {tab === "ideas" && (() => {
+          const d = topicsData!;
+          return (
+            <TopicsPanel enrollmentId={id} month={month ? { id: month.id, label: monthName, short: monthShort } : null} capacity={d.capacity} groups={d.groups} proposed={d.proposed} monthTopics={d.monthTopics}
+              suggestions={d.suggestions} recommended={d.recommended} runs={d.runs} interviews={d.interviews} histories={d.histories} pillars={d.pillars} topicsPerPillar={d.topicsPerPillar} isOwner={ownerEyes} archivedCount={d.archivedCount} />
+          );
+        })()}
+
+        {/* ---------- STRATEGY ---------- */}
+        {tab === "strategy" && strategyData && (
+          <StrategyPanel enrollmentId={id} versions={strategyData.versions} proposals={strategyData.proposals} pillars={strategyData.pillars} mapping={strategyData.mapping} owners={strategyData.owners} staff={strategyData.staff} isOwner={ownerEyes} month={strategyData.month} />
+        )}
+
+        {/* ---------- SCRIPTS ---------- */}
+        {tab === "scripts" && scriptsData && (
+          <>
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <h2 className="text-xl font-semibold tracking-tight">Scripts — {monthName}</h2>
+              <MonthPicker months={months.map((m) => ({ key: m.monthKey, label: monthLabel(m.monthKey), historical: m.historical }))} currentKey={month?.monthKey ?? activeKey} makeHref={`/content/${id}?tab=scripts&month=MONTH`} />
+            </div>
+            <ScriptsPanel scripts={scriptsData.scripts} queueCount={scriptsData.queueCount} scriptOwner={scriptsData.scriptOwner} />
+          </>
+        )}
+
+        {/* ---------- FACTS ---------- */}
+        {tab === "facts" && factsData && (
+          <FactsPanel clientId={client.id} facts={factsData.facts} counts={factsData.counts} months={factsData.months} projects={factsData.projects} />
+        )}
+
+        {/* ---------- IMPORT ---------- */}
+        {tab === "import" && importData && (
+          <ImportPanel enrollmentId={id} batches={importData.batches} reviewItems={importData.reviewItems} pillars={importData.pillars} isOwner={ownerEyes} migrationDone={importData.migrationDone} />
         )}
 
         {/* ---------- THEIR PORTAL — the live client portal, embedded. ---------- */}
@@ -449,7 +519,9 @@ export default async function ContentClientPage({
                       : undefined
                   }
                 />
-                <ScriptBackfillCard enrollmentId={id} defaultMonth={month?.monthKey ?? etMonthKey()} />
+                <p className="rounded-2xl border border-border bg-surface px-5 py-3 text-[13px] text-muted">
+                  Past scripts, topic banks and strategy documents are imported on the <Link href={hrefFor("import")} className="font-medium text-brand hover:underline">Import</Link> tab — preview first, per-client month confirmation, nothing approved by an import.
+                </p>
               </div>
             </div>
           </>

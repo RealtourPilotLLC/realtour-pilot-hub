@@ -1,16 +1,40 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { customerNote } from "@/lib/clientNotes";
+import { isAutomationEnabled } from "@/lib/programAutomation";
+import { AutomationDisabledError } from "@/lib/aiRuns";
+import type { TranscriptJobHandler, TranscriptJobHandlers, TranscriptJobOutcome } from "@/lib/transcriptJobs";
 
 // ---------------------------------------------------------------------------
-// The Content Program AI pipeline:
-//   transcript → extraction (topics / ideas / profile intel / notes)
-//   selected topics → scripts (HOOK → TALKING POINT 1-3 → CALL TO ACTION)
-//   script → AI revision on request
+// The Content Program AI pipeline — the entry points the workspace, the
+// cron and the portal have always called. Since Sep 17 2026 every one of
+// them runs THROUGH the versioned policy (src/lib/contentPolicy) and the run
+// ledger (src/lib/aiRuns.ts) via src/lib/contentGeneration.ts:
+//   transcript → PROPOSED selections + bank ideas + PROPOSED facts + proposals
+//   selected topics → ContentScriptVersion drafts (three points, 20–30 s)
+//   script → a NEW version on revision (an edit is never erased)
+//   bank seeding → a ContentTopicRefreshRun with reviewable suggestions
 //
-// Human-review rule holds throughout: everything lands as INTERNAL_REVIEW for
-// Jordan to approve; nothing generated is client-visible on its own.
+// Human-review rule holds throughout: nothing generated is selected,
+// approved, accepted or client-visible on its own.
+//
+// The `opts` argument on each entry point carries who asked. NO opts, or a
+// requester of "system"/"cron", means UNATTENDED — the ai_runs switch gates it
+// by omission, not by the caller's cooperation (the hourly cron passes nothing
+// and must not run the model while every switch is off). A person's click
+// passes { requestedBy: <email>, unattended: false } and is allowed.
 // ---------------------------------------------------------------------------
+
+export type PipelineOpts = { requestedBy?: string; unattended?: boolean };
+const who = (o?: PipelineOpts) => {
+  const requestedBy = o?.requestedBy ?? "system";
+  const unattended = o?.unattended ?? (requestedBy === "system" || requestedBy === "cron");
+  return { requestedBy, unattended };
+};
+/** Fail BEFORE taking any claim: an unattended run with the switch off must leave no stamp, no counter, no flipped topic behind. */
+async function assertAllowed(w: { unattended: boolean }): Promise<void> {
+  if (w.unattended && !(await isAutomationEnabled("ai_runs"))) throw new AutomationDisabledError();
+}
 
 
 // ---------------------------------------------------------------------------
@@ -35,86 +59,25 @@ export const CONTENT_RULES =
   "hook, or anything a client or the public could see. Such facts may only be recorded as internal profile intel " +
   "prefixed '[CONFIDENTIAL]'.";
 
-// The client context the generators read: strategy + profile + curated info.
-// Retrieval, not the whole history (spec §9).
-async function clientContext(enrollmentId: string): Promise<string> {
-  const e = await prisma.contentEnrollment.findUnique({
-    where: { id: enrollmentId },
-    select: { clientId: true, package: true },
-  });
-  if (!e) return "";
-  const [client, strategy, profile, intelNotes] = await Promise.all([
-    prisma.client.findUnique({ where: { id: e.clientId }, select: { name: true, company: true } }),
-    prisma.contentStrategy.findFirst({ where: { enrollmentId, status: "ACTIVE" }, select: { sectionsJson: true } }),
-    prisma.agentProfile.findUnique({ where: { clientId: e.clientId } }),
-    prisma.contentNote.findMany({
-      // [CONFIDENTIAL] intel stays internal — it must never reach a prompt
-      // that writes topics or scripts (rule 3).
-      where: { clientId: e.clientId, intelligence: true, NOT: { body: { contains: "[CONFIDENTIAL" } } },
-      orderBy: { createdAt: "desc" }, take: 12, select: { body: true },
-    }),
-  ]);
-  const parts: string[] = [];
-  parts.push(`AGENT: ${client?.name ?? "?"}${client?.company ? ` (${client.company})` : ""} — ${e.package} plan.`);
-  if (strategy?.sectionsJson) {
-    try {
-      const sec = JSON.parse(strategy.sectionsJson) as Record<string, string>;
-      for (const [k, v] of Object.entries(sec)) parts.push(`STRATEGY — ${k}:\n${v}`);
-    } catch { /* unreadable strategy JSON → skip */ }
-  }
-  for (const [label, raw] of [
-    ["VOICE & STYLE", profile?.voiceJson], ["CONTENT PREFERENCES", profile?.contentPrefsJson],
-    ["STORIES / POVs / KNOWLEDGE", profile?.storiesJson], ["BRAND", profile?.brandJson],
-  ] as const) {
-    if (!raw) continue;
-    try {
-      const o = JSON.parse(raw) as Record<string, string>;
-      // Profiles built before the filter above still carry confidential lines,
-      // and a human can paste one into a profile box at any time. Drop them
-      // here too, so no route into a generation prompt is left open.
-      const lines = Object.entries(o)
-        .filter(([, v]) => !/\[CONFIDENTIAL/i.test(String(v ?? "")))
-        .map(([k, v]) => `- ${k}: ${v}`);
-      if (lines.length) parts.push(`${label}:\n${lines.join("\n")}`);
-    } catch { /* skip */ }
-  }
-  if (intelNotes.length) parts.push(`TEAM INTELLIGENCE NOTES:\n${intelNotes.map((n) => `- ${n.body}`).join("\n")}`);
-  return parts.join("\n\n").slice(0, 24_000);
-}
-
-// Topics already used/known — duplicate prevention context (spec §12).
-async function topicHistory(enrollmentId: string): Promise<string> {
-  const topics = await prisma.contentTopic.findMany({
-    where: { enrollmentId },
-    orderBy: { createdAt: "desc" },
-    take: 80,
-    select: { title: true, status: true },
-  });
-  if (!topics.length) return "none yet";
-  return topics.map((t) => `- [${t.status}] ${t.title}`).join("\n");
-}
-
-
-// Quote-heavy transcripts can make the model return list fields as JSON-encoded
-// strings — coerce before iterating (Aug 24 backfill failure mode).
-function arr<T>(v: unknown): T[] {
-  if (Array.isArray(v)) return v as T[];
-  if (typeof v === "string") { try { const p = JSON.parse(v); return Array.isArray(p) ? (p as T[]) : []; } catch { return []; } }
-  return [];
-}
 // ---------------------------------------------------------------------------
-// 1. Transcript extraction
+// 1. Transcript extraction → PROPOSALS (spec §5/§23). The old numbers are kept
+// on the result so every caller's message still reads; `confirmedTopics` now
+// counts PROPOSED selections a person reconciles on the Video Topics tab.
 // ---------------------------------------------------------------------------
 export type ExtractionResult = {
   confirmedTopics: number; futureIdeas: number; rejected: number; intelNotes: number; todos: number;
+  proposals: number; confidentialFacts: number; callKind: string; targetMonthId: string;
+  /** Topics the call raised again that a person had already selected (kept) or removed/rejected (withheld) — untouched. */
+  keptSelections: number; withheldSelections: number;
 };
 
-export async function processMonthTranscript(monthId: string): Promise<ExtractionResult> {
+export async function processMonthTranscript(monthId: string, opts?: PipelineOpts): Promise<ExtractionResult> {
   const month = await prisma.contentMonth.findUnique({
     where: { id: monthId },
-    select: { id: true, enrollmentId: true, clientId: true, monthKey: true, transcriptText: true, videosOwed: true, transcriptProcessedAt: true, strategyCallAt: true },
+    select: { id: true, enrollmentId: true, clientId: true, monthKey: true, transcriptText: true, videosOwed: true, transcriptProcessedAt: true, strategyCallAt: true, callRecordId: true, transcriptSource: true },
   });
   if (!month?.transcriptText) throw new Error("No transcript on this month yet.");
+  await assertAllowed(who(opts));
   // ATOMIC CLAIM — the cron and a human's Analyze click can race (Aug 24: two
   // concurrent extractions gave John Collins 6 topics and duplicate scripts).
   // Whoever flips transcriptProcessedAt from null wins; everyone else bows out.
@@ -129,162 +92,12 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
   // is permanently marked "analyzed" over zero topics with no way to retry
   // (audit Aug 25: the card said "topics and scripts are below" over nothing).
   try {
-  const [context, history] = await Promise.all([clientContext(month.enrollmentId), topicHistory(month.enrollmentId)]);
-  const { aiJson } = await import("@/lib/integrations/ai");
-
-  const out = await aiJson<{
-    plannedMonthKey: string | null;
-    confirmedTopics: { title: string; concept: string; pillar: string | null }[];
-    futureIdeas: { title: string; concept: string; pillar: string | null }[];
-    rejectedIdeas: string[];
-    profileIntel: string[];
-    locationNotes: string | null;
-    todos: string[];
-  }>({
-    system:
-      "You are processing a call transcript for a real-estate agent's monthly video program. " +
-      "FIRST judge what kind of call this is. If it is NOT a monthly content-planning session (e.g. a business proposal, " +
-      "a check-in, a review of finished videos), set plannedMonthKey to null and confirmedTopics to [] — file any content " +
-      "ideas that came up under futureIdeas instead. " +
-      "If it IS a planning session, set plannedMonthKey to the month the topics are FOR: a call in the last third of a month " +
-      "usually plans the NEXT month (Jordan's rhythm — e.g. a July 27 call plans August). Use the call date given in the prompt.\n" +
-      "Identify what was actually AGREED, not everything mentioned:\n" +
-      "- confirmedTopics: topics the agent and strategist agreed to film THIS month (title = specific, filmable, hook-ready; concept = the angle in 1-2 sentences, grounded in what the agent SAID).\n" +
-      "- futureIdeas: ideas raised but saved for later.\n" +
-      "- rejectedIdeas: ideas explicitly declined (titles only).\n" +
-      "- profileIntel: NEW durable facts about the agent worth remembering (stories, opinions, preferences, positioning changes) — quote or closely paraphrase the agent; never invent. Anything told in confidence or commercially sensitive (rule 3) MUST be prefixed '[CONFIDENTIAL] '.\n" +
-      "- locationNotes: filming location/production decisions if discussed.\n" +
-      "- todos: action items either side committed to.\n" +
-      `The plan owes ${month.videosOwed} videos this month — do not force the count; report what was agreed.\n` +
-      CONTENT_RULES + "\n" +
-      "Topics already in this agent's history (avoid lazy duplicates; a fresh angle on an old theme is fine):\n" + history,
-    prompt: `CALL DATE: ${month.strategyCallAt ? month.strategyCallAt.toLocaleDateString("en-US", { timeZone: "America/New_York", year: "numeric", month: "long", day: "numeric" }) : `sometime in ${month.monthKey}`}\n\nAGENT CONTEXT:\n${context}\n\nTRANSCRIPT:\n${month.transcriptText.slice(0, 150_000)}`,
-    maxTokens: 8000,
-    schema: {
-      type: "object",
-      properties: {
-        plannedMonthKey: { type: ["string", "null"], description: "YYYY-MM the confirmed topics are FOR, or null if this isn't a planning call" },
-        confirmedTopics: { type: "array", items: { type: "object", properties: { title: { type: "string" }, concept: { type: "string" }, pillar: { type: ["string", "null"] } }, required: ["title", "concept"] } },
-        futureIdeas: { type: "array", items: { type: "object", properties: { title: { type: "string" }, concept: { type: "string" }, pillar: { type: ["string", "null"] } }, required: ["title", "concept"] } },
-        rejectedIdeas: { type: "array", items: { type: "string" } },
-        profileIntel: { type: "array", items: { type: "string" } },
-        locationNotes: { type: ["string", "null"] },
-        todos: { type: "array", items: { type: "string" } },
-      },
-      required: ["confirmedTopics", "futureIdeas", "rejectedIdeas", "profileIntel", "todos"],
-    },
-  });
-
-  // Confirmed topics land on the month the call PLANNED — an end-of-month call
-  // plans the NEXT month (Aug 24: Bernadette's Jul 27 call planned August, and
-  // her Aug 20 tourism-proposal call confirmed nothing). Fall back to the
-  // call's own month when the model can't tell.
-  let targetMonthId = monthId;
-  const planned = typeof out.plannedMonthKey === "string" && /^\d{4}-\d{2}$/.test(out.plannedMonthKey) ? out.plannedMonthKey : null;
-  if (planned && planned !== month.monthKey) {
-    const { etMonthKey } = await import("@/lib/contentProgram");
-    const enr = await prisma.contentEnrollment.findUnique({
-      where: { id: month.enrollmentId },
-      select: { videosPerMonth: true, strategyCallRequired: true },
+    const { analyzeTranscriptText } = await import("@/lib/contentGeneration");
+    const r = await analyzeTranscriptText({
+      enrollmentId: month.enrollmentId, clientId: month.clientId, monthId, monthKey: month.monthKey, transcript: month.transcriptText,
+      callDate: month.strategyCallAt, videosOwed: month.videosOwed, callRecordId: month.callRecordId, ...who(opts),
     });
-    const target = await prisma.contentMonth.upsert({
-      where: { enrollmentId_monthKey: { enrollmentId: month.enrollmentId, monthKey: planned } },
-      create: {
-        enrollmentId: month.enrollmentId, clientId: month.clientId, monthKey: planned,
-        videosOwed: enr?.videosPerMonth ?? 4,
-        strategyCallStatus: "COMPLETED", // this call WAS its planning call
-        ...(planned < etMonthKey() ? { historical: true, status: "IMPORTED" } : {}),
-      },
-      update: {},
-      select: { id: true },
-    });
-    targetMonthId = target.id;
-  }
-  const existing = new Set(
-    (await prisma.contentTopic.findMany({ where: { monthId: targetMonthId }, select: { title: true } })).map((t) => t.title.toLowerCase()),
-  );
-  // Re-runs (the Re-analyze button / a replaced transcript) must not multiply
-  // bank ideas, rejected records, or intel notes — dedupe against EVERYTHING
-  // this enrollment already holds (review finding).
-  const allTitles = new Set(
-    (await prisma.contentTopic.findMany({ where: { enrollmentId: month.enrollmentId }, select: { title: true } })).map((t) => t.title.toLowerCase()),
-  );
-  const noteBodies = new Set(
-    (await prisma.contentNote.findMany({ where: { clientId: month.clientId, intelligence: true }, select: { body: true } })).map((n) => n.body.toLowerCase()),
-  );
-  let confirmed = 0;
-  for (const t of arr<{ title: string; concept: string; pillar: string | null }>(out.confirmedTopics)) {
-    if (!t.title?.trim() || existing.has(t.title.toLowerCase())) continue;
-    await prisma.contentTopic.create({
-      data: {
-        enrollmentId: month.enrollmentId, clientId: month.clientId, monthId: targetMonthId,
-        title: t.title.trim().slice(0, 200), concept: t.concept?.trim().slice(0, 2000) || null,
-        pillar: t.pillar?.trim().slice(0, 120) || null,
-        status: "SELECTED", source: "strategy_call",
-      },
-    });
-    confirmed++;
-  }
-  // Future ideas → the bank.
-  let future = 0;
-  for (const t of arr<{ title: string; concept: string; pillar: string | null }>(out.futureIdeas)) {
-    if (!t.title?.trim() || allTitles.has(t.title.trim().toLowerCase())) continue;
-    allTitles.add(t.title.trim().toLowerCase());
-    await prisma.contentTopic.create({
-      data: {
-        enrollmentId: month.enrollmentId, clientId: month.clientId,
-        title: t.title.trim().slice(0, 200), concept: t.concept?.trim().slice(0, 2000) || null,
-        pillar: t.pillar?.trim().slice(0, 120) || null,
-        status: "SAVED", source: "strategy_call",
-      },
-    });
-    future++;
-  }
-  // Rejected ideas → recorded so they aren't re-pitched.
-  for (const title of arr<string>(out.rejectedIdeas)) {
-    if (!title?.trim() || allTitles.has(title.trim().toLowerCase())) continue;
-    allTitles.add(title.trim().toLowerCase());
-    await prisma.contentTopic.create({
-      data: {
-        enrollmentId: month.enrollmentId, clientId: month.clientId,
-        title: title.trim().slice(0, 200), status: "REJECTED", source: "strategy_call",
-      },
-    });
-  }
-  // Profile intel → PROPOSED as intelligence notes (review happens by reading
-  // them — they feed AI context but never silently rewrite the profile, §17).
-  let intel = 0;
-  for (const fact of arr<string>(out.profileIntel)) {
-    if (!fact?.trim()) continue;
-    // THE MARKER GOES FIRST. The "From the <month> strategy call:" prefix was
-    // added Sep 1; from that day every fact the model correctly tagged
-    // "[CONFIDENTIAL]" carried the tag at character 32, and all four guards
-    // (the two Prisma NOT-startsWith reads here, the regex at :76, and
-    // portalPrefill) checked the start of the string. Seven confidential facts
-    // — a friend's suicide, budget pressure, a pending team-lead meeting — sat
-    // inside the script-writer's prompt window for two weeks (found Sep 16,
-    // rows repaired the same night). The guards now match the marker anywhere,
-    // AND the writer keeps it in front, so neither side has to trust the other.
-    const raw = fact.trim().slice(0, 2000);
-    const confidential = /^\s*\[CONFIDENTIAL\]\s*/i.test(raw);
-    const plain = raw.replace(/^\s*\[CONFIDENTIAL\]\s*/i, "");
-    const body = `${confidential ? "[CONFIDENTIAL] " : ""}From the ${month.monthKey} strategy call: ${plain}`;
-    if (noteBodies.has(body.toLowerCase())) continue;
-    noteBodies.add(body.toLowerCase());
-    await prisma.contentNote.create({
-      data: { clientId: month.clientId, body, intelligence: true, authorName: "AI (call extraction)" },
-    });
-    intel++;
-  }
-  // Location + todos → a plain month note the workspace shows.
-  const extras: string[] = [];
-  if (out.locationNotes?.trim()) extras.push(`Location/production: ${out.locationNotes.trim()}`);
-  const todoList = arr<string>(out.todos);
-  if (todoList.length) extras.push(`To-dos:\n${todoList.map((t) => `• ${t}`).join("\n")}`);
-  if (extras.length) {
-    await prisma.contentMonth.update({ where: { id: monthId }, data: { notes: extras.join("\n\n").slice(0, 8000) } });
-  }
-  return { confirmedTopics: confirmed, futureIdeas: future, rejected: arr<string>(out.rejectedIdeas).length, intelNotes: intel, todos: todoList.length };
+    return { confirmedTopics: r.proposedSelections, keptSelections: r.keptSelections, withheldSelections: r.withheldSelections, futureIdeas: r.discussed, rejected: r.rejected, intelNotes: r.facts, todos: r.todos, proposals: r.proposals, confidentialFacts: r.confidentialFacts, callKind: r.callKind, targetMonthId: r.targetMonthId };
   } catch (e) {
     // Release the claim so the month can be analyzed again — a stamped-but-
     // empty month was unrecoverable from the UI (audit Aug 25). CAPPED at
@@ -305,117 +118,28 @@ export async function processMonthTranscript(monthId: string): Promise<Extractio
 }
 
 // ---------------------------------------------------------------------------
-// 2. Script generation — HOOK → TALKING POINT 1-3 → CALL TO ACTION.
-// One script per SELECTED topic that doesn't have one yet. INTERNAL_REVIEW.
+// 2. Script generation — one ContentScriptVersion per SELECTED topic that has
+// none yet, through the policy prompt (hook, exactly three roled points,
+// close, 20–30 s) and the validator. INTERNAL_REVIEW. Call-PROPOSED
+// selections are skipped until a person reconciles them.
 // ---------------------------------------------------------------------------
-// The house format is Jordan's own current deliverable ("Ashley Brunner
-// Scripts - Session 1", Aug 2026 — his stated gold standard): a Category
-// line, then HOOK / TALKING POINT 1 / TALKING POINT 2 / TALKING POINT 3 /
-// CALL TO ACTION with those PLAIN labels, each section 1-3 short
-// spoken-breath lines, concrete specifics and quoted client objections, and
-// a CTA that is one direct instruction. The re-hook → setup → payoff
-// dramaturgy still steers WHAT each talking point does — it just never
-// appears in the labels the agent and editor read.
-const SCRIPT_SYSTEM = (context: string) =>
-  "You write short-form video scripts (20-35 seconds spoken) for a real-estate agent's personal-branding program, in Realtour Pilot's exact house format. " +
-  "Sections, in order, using these EXACT plain labels: HOOK, TALKING POINT 1, TALKING POINT 2, TALKING POINT 3, CALL TO ACTION. " +
-  "What each section must do: " +
-  "HOOK — scroll-stopping opener: curiosity, tension, contrast, or a strong POV (never 'Hey guys', 'Did you know', 'Here are three tips'). " +
-  "TALKING POINT 1 — deepen the hook: name the assumption, or quote what people actually say ('Most sellers tell me: ...'); do NOT give the answer yet. " +
-  "TALKING POINT 2 — develop it: the reasoning, story, or specifics that earn the payoff. " +
-  "TALKING POINT 3 — pay off what the hook promised: the insight, the reframe, the lesson. " +
-  "CALL TO ACTION — ONE direct next step in the agent's own voice ('call me before you start packing', 'let's talk'); no hard sell unless the context demands it. " +
-  "Also return category: a 2-4 word content category for THIS script, e.g. 'Seller Strategy', 'Pre-Listing Strategy', 'Negotiation & Multiple Offers', 'Personal Brand'. " +
-  "LENGTH IS A HARD RULE: the whole script must speak in 20-35 seconds — 70 to 110 words TOTAL across all sections. " +
-  "HOOK is 1-2 lines. Each TALKING POINT is 1-3 lines. CALL TO ACTION is 1-2 lines. " +
-  "If the material doesn't fit, CUT IDEAS, not words-per-line — one sharp point per talking point, never a list of them. Jordan rejects long scripts on sight. " +
-  "WRITING STYLE: short spoken-breath lines with a line break after each phrase — the way a person actually talks to camera, never paragraphs. " +
-  "Be concrete: real numbers, real objects, quoted objections — take the RHYTHM of examples like '17 offers on one house' or 'paint. trim. curtains.', never the facts. " +
-  "Use bracketed placeholders like $[PRICE], $[PAYMENT], [NEIGHBORHOOD] for any figure or detail that must be confirmed before filming, and mention it in productionIdeas. " +
-  "Voice: conversational, confident, direct, specific, easy to say ALOUD — the agent's strongest self, never a copywriter. " +
-  "Ground every claim in the agent's real context below; NEVER invent stories, opinions, or numbers. Clarity beats cleverness. " +
-  "\n" + CONTENT_RULES +
-  "\n\nAGENT CONTEXT:\n" + context;
-
-const SCRIPT_SCHEMA = {
-  type: "object",
-  properties: {
-    category: { type: "string", description: "2-4 word content category for this script, e.g. 'Seller Strategy'" },
-    hook: { type: "string" }, point1: { type: "string" }, point2: { type: "string" },
-    point3: { type: "string" }, cta: { type: "string" },
-    productionIdeas: { type: "array", items: { type: "string" }, description: "optional B-roll/location/overlay ideas, not spoken" },
-  },
-  required: ["category", "hook", "point1", "point2", "point3", "cta"],
-} as const;
-
-type ScriptSections = { category?: string; hook: string; point1: string; point2: string; point3: string; cta: string; productionIdeas?: string[] };
-
-// Keep an existing "Category:" line through AI revisions.
-function categoryOf(body: string): string | null {
-  const m = body.match(/^Category:\s*(.+)$/m);
-  return m ? m[1].trim() : null;
-}
-
-// Render with the house labels so a draft reads exactly like Jordan's own
-// script documents. The AI's script-specific category leads; fallbackCategory
-// (the topic's pillar, or a preserved Category line on revision) fills in.
-function sectionsToBody(s: ScriptSections, fallbackCategory?: string | null): string {
-  const parts: string[] = [];
-  const cat = (s.category ?? "").trim() || (fallbackCategory ?? "").trim();
-  if (cat) parts.push(`Category: ${cat}`);
-  const pairs: [string, string][] = [
-    ["HOOK", s.hook], ["TALKING POINT 1", s.point1], ["TALKING POINT 2", s.point2],
-    ["TALKING POINT 3", s.point3], ["CALL TO ACTION", s.cta],
-  ];
-  for (const [label, text] of pairs) if (text?.trim()) parts.push(`${label}\n${text.trim()}`);
-  return parts.join("\n\n");
-}
-
-export async function generateScriptsForMonth(monthId: string): Promise<{ generated: number; skipped: number }> {
-  const month = await prisma.contentMonth.findUnique({
-    where: { id: monthId },
-    select: { id: true, enrollmentId: true, clientId: true },
-  });
+export async function generateScriptsForMonth(monthId: string, opts?: PipelineOpts): Promise<{ generated: number; skipped: number }> {
+  const month = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { id: true, enrollmentId: true, clientId: true, callRecordId: true } });
   if (!month) throw new Error("Month not found.");
-  const topics = await prisma.contentTopic.findMany({
-    where: { monthId, status: "SELECTED" },
-    select: { id: true, title: true, concept: true, pillar: true },
-  });
+  const topics = await prisma.contentTopic.findMany({ where: { monthId, status: "SELECTED" }, select: { id: true } });
   if (!topics.length) return { generated: 0, skipped: 0 };
-  const scripted = new Set(
-    (await prisma.contentScript.findMany({ where: { monthId, topicId: { not: null } }, select: { topicId: true } })).map((s) => s.topicId),
-  );
-  const context = await clientContext(month.enrollmentId);
-  const { aiJson } = await import("@/lib/integrations/ai");
-
+  await assertAllowed(who(opts));
+  const scripted = new Set((await prisma.contentScript.findMany({ where: { monthId, topicId: { not: null }, historical: false }, select: { topicId: true } })).map((s) => s.topicId));
+  const { generateScriptForTopic } = await import("@/lib/contentGeneration");
   let generated = 0, skipped = 0;
   for (const t of topics) {
     if (scripted.has(t.id)) { skipped++; continue; }
     // Claim the topic atomically — a concurrent generator sees count 0 and
     // skips, so a topic can never get two scripts.
-    const claim = await prisma.contentTopic.updateMany({
-      where: { id: t.id, status: "SELECTED" },
-      data: { status: "SCRIPTED" },
-    });
+    const claim = await prisma.contentTopic.updateMany({ where: { id: t.id, status: "SELECTED" }, data: { status: "SCRIPTED" } });
     if (claim.count === 0) { skipped++; continue; }
     try {
-      const s = await aiJson<ScriptSections>({
-        system: SCRIPT_SYSTEM(context),
-        prompt: `TOPIC: ${t.title}\n${t.concept ? `ANGLE: ${t.concept}\n` : ""}${t.pillar ? `PILLAR: ${t.pillar}\n` : ""}\nWrite the script.`,
-        maxTokens: 2500,
-        schema: SCRIPT_SCHEMA as unknown as Record<string, unknown>,
-      });
-      await prisma.contentScript.create({
-        data: {
-          enrollmentId: month.enrollmentId, clientId: month.clientId, monthId, topicId: t.id,
-          title: t.title,
-          body: sectionsToBody(s, t.pillar),
-          sectionsJson: JSON.stringify({ category: s.category, hook: s.hook, point1: s.point1, point2: s.point2, point3: s.point3, cta: s.cta }),
-          productionJson: s.productionIdeas?.length ? JSON.stringify(s.productionIdeas.slice(0, 10)) : null,
-          status: "INTERNAL_REVIEW",
-          source: "ai",
-        },
-      });
+      await generateScriptForTopic({ topicId: t.id, monthId, callRecordId: month.callRecordId, ...who(opts) });
       generated++;
     } catch {
       // Give the topic back so a retry can script it.
@@ -427,130 +151,60 @@ export async function generateScriptsForMonth(monthId: string): Promise<{ genera
 }
 
 // ---------------------------------------------------------------------------
-// 3. AI revision — regenerate a script following the reviewer's instruction,
-// keeping everything else about the voice/context. Old body preserved in the
-// note trail by the caller if needed; sections replaced in place (status stays
-// INTERNAL_REVIEW until approved).
+// 3. AI revision — a NEW version following the reviewer's instruction. The
+// version being revised (and any hand edit in it) stays exactly as it was.
 // ---------------------------------------------------------------------------
-export async function reviseScriptWithInstructions(scriptId: string, instructions: string): Promise<void> {
-  const script = await prisma.contentScript.findUnique({
-    where: { id: scriptId },
-    select: { id: true, enrollmentId: true, title: true, body: true, sectionsJson: true },
-  });
-  if (!script) throw new Error("Script not found.");
-  const context = await clientContext(script.enrollmentId);
-  const { aiJson } = await import("@/lib/integrations/ai");
-  const s = await aiJson<ScriptSections>({
-    system: SCRIPT_SYSTEM(context),
-    prompt:
-      `Here is the current script for "${script.title}":\n\n${script.body}\n\n` +
-      `REVISION REQUEST from the reviewer: ${instructions.trim().slice(0, 2000)}\n\n` +
-      "Rewrite the script applying the request. Keep what already works; change only what the request implies.",
-    maxTokens: 2500,
-    schema: SCRIPT_SCHEMA as unknown as Record<string, unknown>,
-  });
-  await prisma.contentScript.update({
-    where: { id: scriptId },
-    data: {
-      // A reviewer's revision shouldn't silently recategorise the script — the
-      // existing Category line wins; the AI's only fills a blank.
-      body: sectionsToBody({ ...s, category: categoryOf(script.body) ?? s.category }),
-      sectionsJson: JSON.stringify({ category: s.category, hook: s.hook, point1: s.point1, point2: s.point2, point3: s.point3, cta: s.cta }),
-      status: "INTERNAL_REVIEW",
-    },
-  });
+export async function reviseScriptWithInstructions(scriptId: string, instructions: string, opts?: PipelineOpts & { source?: "REVISION" | "CLIENT_REQUEST" }): Promise<void> {
+  const { reviseScript } = await import("@/lib/contentGeneration");
+  await reviseScript(scriptId, instructions, who(opts).requestedBy, opts?.source ?? "REVISION");
 }
 
 // ---------------------------------------------------------------------------
-// 4. Topic bank seeding (spec §10) — built from the client's CONTENT STRATEGY
-// and the ideas raised on calls, against their full topic history so nothing
-// lazy-duplicates what's already been filmed. Ideas land as RECOMMENDED in the
-// bank; humans (or the client, in the portal phase) promote them to months.
+// 4. Topic bank seeding (spec §18/§27) — a ContentTopicRefreshRun whose
+// suggestions Jordan accepts one by one; N per pillar from the policy
+// (10, configurable to 15), archived concepts never resurface, and duplicate
+// clicks join the running job. `created` = suggestions awaiting his review.
 // ---------------------------------------------------------------------------
-export async function seedTopicBank(enrollmentId: string, perPillar = 10): Promise<{ created: number; pillars: string[] }> {
-  const e = await prisma.contentEnrollment.findUnique({
-    where: { id: enrollmentId },
-    select: { clientId: true },
-  });
-  if (!e) throw new Error("Enrollment not found.");
-  const [context, history, bankIdeas] = await Promise.all([
-    clientContext(enrollmentId),
-    topicHistory(enrollmentId),
-    prisma.contentTopic.findMany({
-      where: { enrollmentId, monthId: null, status: { in: ["SAVED", "IDEA"] } },
-      select: { title: true, concept: true },
-      take: 40,
-    }),
-  ]);
-  const { aiJson } = await import("@/lib/integrations/ai");
-  const out = await aiJson<{ pillars: { pillar: string; topics: { title: string; concept: string; scores: string }[] }[] }>({
-    system:
-      "You build a video TOPIC BANK for a real-estate agent's monthly personal-branding program, working strictly from their " +
-      "content strategy, profile, and the ideas they've raised on calls (all below). " +
-      `Generate up to ${perPillar} topics per content pillar (use the strategy's own pillars; if none are defined, derive 3-4 from the material). ` +
-      "Every topic must be SPECIFIC and FILMABLE with the hook direction already apparent — grounded in THIS agent's real market, " +
-      "opinions, stories, and positioning. Strong angles: opinions, misconceptions, client mistakes, surprising truths, real stories, " +
-      "local insight, behind-the-scenes. NEVER generic ('tips for sellers', 'market update', 'why you need a Realtor'). " +
-      "Do not repeat anything in the topic history below — a fresh angle on an old theme is allowed, lazy duplication is not. " +
-      "scores = a short 'Trust/Credibility/Value/Entertainment' judgement like 'Trust: High · Value: Medium'.\n" +
-      CONTENT_RULES,
-    prompt:
-      `AGENT CONTEXT:\n${context}\n\nIDEAS ALREADY IN THE BANK (do not duplicate):\n` +
-      bankIdeas.map((b) => `- ${b.title}`).join("\n") +
-      `\n\nFULL TOPIC HISTORY (do not duplicate):\n${history}`,
-    maxTokens: 16_000,
-    schema: {
-      type: "object",
-      properties: {
-        pillars: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              pillar: { type: "string" },
-              topics: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: { title: { type: "string" }, concept: { type: "string" }, scores: { type: "string" } },
-                  required: ["title", "concept"],
-                },
-              },
-            },
-            required: ["pillar", "topics"],
-          },
-        },
-      },
-      required: ["pillars"],
-    },
-  });
-
-  const existing = new Set(
-    (await prisma.contentTopic.findMany({ where: { enrollmentId }, select: { title: true } })).map((t) => t.title.toLowerCase()),
-  );
-  let created = 0;
-  const pillars: string[] = [];
-  for (const p of arr<{ pillar: string; topics: { title: string; concept: string; scores?: string }[] }>(out.pillars)) {
-    if (!p.pillar?.trim()) continue;
-    pillars.push(p.pillar.trim());
-    for (const t of arr<{ title: string; concept: string; scores?: string }>(p.topics)) {
-      if (!t.title?.trim() || existing.has(t.title.toLowerCase())) continue;
-      existing.add(t.title.toLowerCase());
-      await prisma.contentTopic.create({
-        data: {
-          enrollmentId, clientId: e.clientId,
-          title: t.title.trim().slice(0, 200),
-          concept: t.concept?.trim().slice(0, 2000) || null,
-          pillar: p.pillar.trim().slice(0, 120),
-          status: "RECOMMENDED", source: "ai",
-          scoresJson: t.scores ? JSON.stringify({ summary: t.scores.slice(0, 200) }) : null,
-        },
-      });
-      created++;
-    }
-  }
-  return { created, pillars };
+export async function seedTopicBank(enrollmentId: string, perPillar?: number | null, opts?: PipelineOpts): Promise<{ created: number; pillars: string[]; runId: string; needsInput: string[] }> {
+  const { startTopicRefresh } = await import("@/lib/contentTopics");
+  const { listPillars } = await import("@/lib/contentPillars");
+  const existing = await prisma.contentTopic.count({ where: { enrollmentId, status: { notIn: ["REJECTED", "ARCHIVED"] } } });
+  const { runId } = await startTopicRefresh({ enrollmentId, kind: existing > 0 ? "REFRESH" : "BANK", topicsPerPillar: perPillar ?? null, ...who(opts) });
+  const run = await prisma.contentTopicRefreshRun.findUnique({ where: { id: runId }, select: { generatedCount: true, missingContextJson: true, status: true } });
+  let needsInput: string[] = [];
+  try { const mc = run?.missingContextJson ? (JSON.parse(run.missingContextJson) as { missing?: string[]; gaps?: string[] }) : null; needsInput = [...(mc?.missing ?? []), ...(mc?.gaps ?? [])]; } catch { /* none */ }
+  return { created: run?.generatedCount ?? 0, pillars: (await listPillars(enrollmentId)).map((p) => p.name), runId, needsInput };
 }
+
+// ---------------------------------------------------------------------------
+// 4b. Transcript-job handlers for W1-B's driver (src/lib/transcriptJobs.ts).
+// The driver leases the job, checks the transcript_jobs switch and records the
+// outcome; each handler here delegates to contentGeneration.runTranscriptJob,
+// which reads CONFIRMED ProgramTranscriptSource rows by callRecordId (never
+// ContentMonth.transcriptText), never touches the job row, and runs its AI
+// unattended behind ai_runs. Outcome mapping: resultJson → produced;
+// reviewReason → needsReview; error → error, retryable only for transport /
+// rate-limit failures (everything else goes to a person, not a retry loop).
+// ---------------------------------------------------------------------------
+const RETRYABLE_RE = /\b(429|503|529|rate.?limit|overloaded|timed? ?out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|fetch failed|socket hang up|network)\b/i;
+
+function transcriptHandler(kind: "ANALYZE" | "STRATEGY_DRAFT" | "SCRIPT_DRAFT" | "FACT_EXTRACT"): TranscriptJobHandler {
+  return async (job, ctx): Promise<TranscriptJobOutcome> => {
+    const { runTranscriptJob } = await import("@/lib/contentGeneration");
+    const r = await runTranscriptJob({ id: job.id, kind, callRecordId: job.callRecordId, transcriptSourceId: job.transcriptSourceId, enrollmentId: job.enrollmentId, requestedBy: job.requestedBy, heartbeat: ctx.heartbeat });
+    if (r.ok) return { ok: true, produced: r.resultJson, aiRunId: r.aiRunId ?? null };
+    if (r.reviewReason) return { ok: false, needsReview: r.reviewReason };
+    const error = r.error ?? "unknown failure";
+    return { ok: false, error, retryable: RETRYABLE_RE.test(error) };
+  };
+}
+
+export const transcriptJobHandlers: TranscriptJobHandlers = {
+  ANALYZE: transcriptHandler("ANALYZE"),
+  STRATEGY_DRAFT: transcriptHandler("STRATEGY_DRAFT"),
+  SCRIPT_DRAFT: transcriptHandler("SCRIPT_DRAFT"),
+  FACT_EXTRACT: transcriptHandler("FACT_EXTRACT"),
+};
 
 // ---------------------------------------------------------------------------
 // 5. Agent profile builder (spec §6) — synthesized from strategy calls,
@@ -568,10 +222,11 @@ const PROFILE_BUILD_SECTIONS: { key: "brandJson" | "voiceJson" | "contentPrefsJs
   { key: "storiesJson", label: "Stories, POVs & knowledge", guide: "Real stories, strong opinions, expertise areas, local knowledge — each entry concrete and attributable" },
 ];
 
-export async function buildAgentProfileFromHistory(clientId: string): Promise<{ sectionsFilled: number; keysAdded: number }> {
+export async function buildAgentProfileFromHistory(clientId: string, opts?: PipelineOpts): Promise<{ sectionsFilled: number; keysAdded: number }> {
   const e = await prisma.contentEnrollment.findUnique({ where: { clientId }, select: { id: true } });
   if (!e) throw new Error("No enrollment for this client.");
-  const [client, strategy, intelNotes, scripts] = await Promise.all([
+  const { factsForPrompt, factLines } = await import("@/lib/clientFacts");
+  const [client, strategy, facts, scripts] = await Promise.all([
     // generalNotes is THE customer note; editingPreferences is the retired
     // column, still read as a fallback (src/lib/clientNotes.ts).
     prisma.client.findUnique({
@@ -579,18 +234,14 @@ export async function buildAgentProfileFromHistory(clientId: string): Promise<{ 
       select: { name: true, company: true, generalNotes: true, editingPreferences: true },
     }),
     prisma.contentStrategy.findFirst({ where: { enrollmentId: e.id, status: "ACTIVE" }, select: { sectionsJson: true } }),
-    // Same guard as clientContext() above. Without it the confidentiality rule
-    // was only skin-deep: the profile builder read [CONFIDENTIAL] intel, wrote
-    // it into a profile section, and clientContext() then pasted that section
-    // into the script prompt verbatim — Ashley Brunner's unannounced brokerage
-    // move reached the script writer that way, through storiesJson.
-    prisma.contentNote.findMany({
-      where: { clientId, intelligence: true, NOT: { body: { contains: "[CONFIDENTIAL" } } },
-      orderBy: { createdAt: "desc" }, take: 60, select: { body: true },
-    }),
+    // ACCEPTED, AI-allowed, non-confidential facts only (spec §23). The old
+    // read of the raw intel pile is how Ashley Brunner's unannounced
+    // brokerage move reached the script writer, through storiesJson.
+    factsForPrompt(clientId, { take: 60 }),
     prisma.contentScript.findMany({ where: { clientId, source: "import" }, orderBy: { createdAt: "desc" }, take: 8, select: { title: true, body: true } }),
   ]);
 
+  const intelNotes = factLines(facts).map((body) => ({ body }));
   const material: string[] = [];
   material.push(`AGENT: ${client?.name}${client?.company ? ` (${client.company})` : ""}`);
   if (strategy?.sectionsJson) {
@@ -608,8 +259,10 @@ export async function buildAgentProfileFromHistory(clientId: string): Promise<{ 
   if (noteOnFile) material.push("CUSTOMER NOTES ON FILE:\n" + noteOnFile);
   if (material.length < 2) return { sectionsFilled: 0, keysAdded: 0 };
 
-  const { aiJson } = await import("@/lib/integrations/ai");
-  const out = await aiJson<{ sections: Record<string, Record<string, string>> }>({
+  const { runAiJson, activePolicyVersion } = await import("@/lib/aiRuns");
+  const policy = await activePolicyVersion();
+  const { output: out } = await runAiJson<{ sections: Record<string, Record<string, string>> }>({
+    kind: "profile_draft", enrollmentId: e.id, clientId, promptKey: "profile-draft", policyVersionId: policy.id, inputRefs: { factIds: facts.map((f) => f.id), scripts: scripts.length }, ...who(opts),
     system:
       "You are building a real-estate agent's internal working profile for a content-production team, ONLY from the evidence below. " +
       "Fill these sections (JSON object per section, short labeled entries — a few sentences each):\n" +

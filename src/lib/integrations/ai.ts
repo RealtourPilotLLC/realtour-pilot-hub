@@ -29,8 +29,29 @@ Sign-off only if it reads like a full email, as: "In the Spirit of Success, Jord
 type AnthropicResponse = {
   content?: { type?: string; text?: string; id?: string; name?: string; input?: unknown }[];
   stop_reason?: string;
+  // The usage block every Messages response carries. It was discarded for a
+  // year; the Content Program's ProgramAiRun ledger (spec §13) is what finally
+  // reads it, so unattended spend stops being invisible.
+  usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
+  model?: string;
   error?: { message?: string };
 };
+
+/** Token usage of one call, as the API reported it. */
+export type AiUsage = { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number };
+
+function usageOf(json: AnthropicResponse): AiUsage {
+  const u = json.usage ?? {};
+  return {
+    inputTokens: u.input_tokens ?? 0,
+    outputTokens: u.output_tokens ?? 0,
+    cacheReadTokens: u.cache_read_input_tokens ?? 0,
+    cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
+  };
+}
+
+/** The two model ids this module uses — exported so a run ledger can record which one answered. */
+export const AI_MODELS = { FAST: "claude-haiku-4-5-20251001", SMART: "claude-sonnet-4-6" } as const;
 async function callMessages(body: Record<string, unknown>, key: string): Promise<AnthropicResponse> {
   const payload = JSON.stringify(body);
   let lastErr: Error | null = null;
@@ -97,11 +118,29 @@ export async function aiJson<T>(opts: {
   model?: string;
   key?: string;
 }): Promise<T> {
+  return (await aiJsonWithUsage<T>(opts)).result;
+}
+
+/**
+ * aiJson plus the usage the API reported and the model that answered. The
+ * Content Program's run ledger (src/lib/aiRuns.ts) calls THIS so every
+ * generation records tokens and cost; every other caller keeps aiJson's
+ * contract untouched.
+ */
+export async function aiJsonWithUsage<T>(opts: {
+  system: string;
+  prompt: string;
+  schema: Record<string, unknown>;
+  maxTokens?: number;
+  model?: string;
+  key?: string;
+}): Promise<{ result: T; usage: AiUsage; model: string }> {
   const key = opts.key ?? (await getSecret("ai"));
   if (!key) throw new Error("AI is not connected.");
+  const model = opts.model ?? SMART;
   const json = await callMessages(
     {
-      model: opts.model ?? SMART,
+      model,
       max_tokens: opts.maxTokens ?? 4000,
       system: opts.system,
       messages: [{ role: "user", content: opts.prompt }],
@@ -112,7 +151,7 @@ export async function aiJson<T>(opts: {
   );
   const call = json.content?.find((b) => b.type === "tool_use" && b.name === "emit");
   if (!call?.input) throw new Error("The AI did not return a usable answer.");
-  return call.input as T;
+  return { result: call.input as T, usage: usageOf(json), model: json.model ?? model };
 }
 
 // ---------------------------------------------------------------------------

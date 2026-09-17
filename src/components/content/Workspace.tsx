@@ -2,18 +2,18 @@
 
 import { useRef, useState, useTransition } from "react";
 import {
-  CalendarClock, Check, Compass, FileText, FileUp, Loader2, NotebookPen, Plus, Settings2, Sparkles, Trash2, Upload, X,
+  CalendarClock, Check, Compass, FileText, Loader2, NotebookPen, Plus, Settings2, Sparkles, Trash2, Upload, X,
 } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import { TOPIC_STATUS_WORDS } from "@/lib/contentStatus";
 import { ScriptBody } from "@/components/portal/ScriptBody";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import {
-  addContentNote, addTopic, analyzeTranscript, approveScript, buildProfile, generateTopicIdeas, previewScriptBackfill, previewStrategyBackfill,
-  reviseScriptAI, saveEnrollmentSettings, saveMonthTranscript, saveProfileSection, saveScriptBackfill,
+  addContentNote, addTopic, analyzeTranscript, approveScript, buildProfile, generateTopicIdeas, previewStrategyBackfill,
+  reviseScriptAI, saveEnrollmentSettings, saveMonthTranscript, saveProfileSection,
   applyScriptSuggestion, dismissScriptSuggestion,
   saveScriptText, saveStrategyBackfill, setStrategyCallStatus, setTopicStatus,
-  type BackfillPreview, type StrategyPreview,
+  type StrategyPreview,
 } from "@/app/content/actions";
 
 // ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ export function StrategyCallCard({
   const title =
     !required || cur === "NOT_REQUIRED" ? "Strategy call — not needed for this client"
     : cur === "SKIPPED" ? "Strategy call — skipped this month"
-    : cur === "COMPLETED" ? (analyzed ? "Strategy call held — turned into this month's topics and scripts" : "Strategy call held")
+    : cur === "COMPLETED" ? (analyzed ? "Strategy call held — its topics are proposed on Video Topics" : "Strategy call held")
     : cur === "SCHEDULED" ? `Strategy call booked${at ? ` for ${fmtCallTime(at)}` : ""}`
     : "The strategy call isn't booked yet";
 
@@ -120,7 +120,7 @@ export function StrategyCallCard({
                 setNote("Re-reading the call…");
                 const r = await analyzeTranscript(monthId, true);
                 setNote(r.message);
-              })} className={quietLink} title="Run the extraction again — existing topics are kept, duplicates avoided">
+              })} className={quietLink} title="Run the extraction again — topics a person already confirmed, removed or rejected stay exactly as they are">
                 Re-analyze the call
               </button>
               <span className="text-muted-2">·</span>
@@ -134,10 +134,10 @@ export function StrategyCallCard({
               if (r.ok) setAnalyzed(true);
             })} className={primaryBtn}>
               {busy ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
-              Turn the call into topics + scripts
+              Turn the call into proposed topics
             </button>
           ) : (
-            <button onClick={() => setShowPaste(true)} className={quietLink}>Paste the transcript to unlock topics + scripts</button>
+            <button onClick={() => setShowPaste(true)} className={quietLink}>Paste the transcript to propose topics from the call</button>
           )}
         </div>
       ) : (
@@ -216,7 +216,7 @@ export function TopicBank({
             </button>
           </div>
         ))}
-        {topics.length === 0 && <p className="px-5 py-4 text-sm text-muted">{mode === "month" ? "No topics planned yet." : "The bank is empty — add ideas as they come up."}</p>}
+        {topics.length === 0 && <p className="px-5 py-4 text-sm text-muted">{mode === "month" ? "No topics planned yet." : "No video topics here yet — add one, or refresh from the strategy on the Video Topics tab."}</p>}
       </div>
 
       <div className="border-t border-border px-5 py-3">
@@ -245,74 +245,6 @@ export function TopicBank({
         {note && <p className="mt-1.5 text-[11px] text-danger">{note}</p>}
       </div>
     </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Script backfill — upload a PDF/Word doc of past scripts; AI splits it and
-// guesses the month from the title; staff confirm the month and save.
-// ---------------------------------------------------------------------------
-export function ScriptBackfillCard({ enrollmentId, defaultMonth }: { enrollmentId: string; defaultMonth: string }) {
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [preview, setPreview] = useState<BackfillPreview | null>(null);
-  const [monthKey, setMonthKey] = useState(defaultMonth);
-  const [note, setNote] = useState<string | null>(null);
-  const [busy, start] = useTransition();
-
-  return (
-    <Section icon={FileUp} title="Backfill past scripts"
-      action={<span className="text-[11px] text-muted-2">PDF, Word or text — history for the portal + the AI&rsquo;s memory</span>}>
-      <input ref={fileRef} type="file" accept=".pdf,.docx,.txt,.md" className="hidden" onChange={(e) => {
-        const f = e.target.files?.[0]; if (!f) return;
-        const fd = new FormData(); fd.append("file", f);
-        setNote(null);
-        start(async () => {
-          const p = await previewScriptBackfill(fd);
-          if (!p.ok) { setNote(p.message); setPreview(null); return; }
-          setPreview(p);
-          if (p.monthGuess) setMonthKey(p.monthGuess);
-        });
-        e.target.value = "";
-      }} />
-
-      {!preview ? (
-        <button onClick={() => fileRef.current?.click()} disabled={busy}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-border px-4 py-2.5 text-sm text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50">
-          {busy ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
-          {busy ? "Reading the document…" : "Upload a script document"}
-        </button>
-      ) : (
-        <div className="space-y-3">
-          <p className="text-sm">
-            <Sparkles className="mr-1 inline size-3.5 text-brand" />
-            {preview.message}
-            {preview.monthGuess ? <> The document looks like <strong>{preview.monthGuess}</strong> — confirm below.</> : <> No month named in the document — pick it below.</>}
-          </p>
-          <div className="max-h-56 space-y-2 overflow-y-auto rounded-lg border border-border bg-surface-2/40 p-3">
-            {preview.scripts!.map((s, i) => (
-              <details key={i}>
-                <summary className="cursor-pointer text-xs font-medium">{s.title}</summary>
-                <div className="mt-1"><ScriptBody body={s.body.slice(0, 1200) + (s.body.length > 1200 ? "…" : "")} size="xs" /></div>
-              </details>
-            ))}
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <label className="text-xs text-muted">Month:</label>
-            <input type="month" value={monthKey} onChange={(e) => setMonthKey(e.target.value)}
-              className="rounded-lg border border-border bg-surface-2 px-2 py-1 text-xs outline-none focus:border-brand" />
-            <button disabled={busy} onClick={() => start(async () => {
-              const r = await saveScriptBackfill(enrollmentId, monthKey, preview.scripts!, preview.sourceFile ?? "upload");
-              setNote(r.message);
-              if (r.ok) setPreview(null);
-            })} className="rounded-md bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
-              {busy ? <Loader2 className="inline size-3 animate-spin" /> : `Save ${preview.scripts!.length} script${preview.scripts!.length === 1 ? "" : "s"}`}
-            </button>
-            <button onClick={() => setPreview(null)} className="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted hover:bg-surface-2">Discard</button>
-          </div>
-        </div>
-      )}
-      {note && <p className="mt-2 text-[11px] text-muted">{note}</p>}
-    </Section>
   );
 }
 
@@ -584,8 +516,11 @@ export function StrategyCard({
   const [note, setNote] = useState<string | null>(null);
   const [busy, start] = useTransition();
 
+  // Sep 17: the strategy is VERSIONED (Strategy tab). This card keeps the
+  // legacy read of the active row for the Client file; uploads become the next
+  // version for approval — never a replacement.
   return (
-    <Section icon={Compass} title="Content strategy"
+    <Section icon={Compass} title="Content strategy (legacy view — see the Strategy tab)"
       action={strategy ? <span className="text-[11px] text-muted-2">{strategy.sourceFile ? `from ${strategy.sourceFile}` : "active"}</span> : undefined}>
       <input ref={fileRef} type="file" accept=".pdf,.docx,.txt,.md" className="hidden" onChange={(e) => {
         const f = e.target.files?.[0]; if (!f) return;
@@ -601,7 +536,7 @@ export function StrategyCard({
 
       {preview ? (
         <div className="space-y-3">
-          <p className="text-sm"><Sparkles className="mr-1 inline size-3.5 text-brand" />{preview.message} Review, then save — it becomes the client&rsquo;s active strategy{strategy ? " and the current one is archived" : ""}.</p>
+          <p className="text-sm"><Sparkles className="mr-1 inline size-3.5 text-brand" />{preview.message} Review, then save — it becomes the NEXT VERSION for approval on the Strategy tab; nothing is replaced.</p>
           <div className="max-h-64 space-y-2 overflow-y-auto rounded-lg border border-border bg-surface-2/40 p-3">
             {Object.entries(preview.sections!).map(([k, v]) => (
               <details key={k} open>
@@ -616,7 +551,7 @@ export function StrategyCard({
               setNote(r.message);
               if (r.ok) setPreview(null);
             })} className="rounded-md bg-brand px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
-              {busy ? <Loader2 className="inline size-3 animate-spin" /> : "Save as active strategy"}
+              {busy ? <Loader2 className="inline size-3 animate-spin" /> : "Save as the next version"}
             </button>
             <button onClick={() => setPreview(null)} className="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted hover:bg-surface-2">Discard</button>
           </div>
@@ -632,7 +567,7 @@ export function StrategyCard({
           <button onClick={() => fileRef.current?.click()} disabled={busy}
             className="mt-1 inline-flex items-center gap-1.5 text-xs font-medium text-brand hover:underline disabled:opacity-50">
             {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
-            {busy ? "Reading the document…" : "Replace with an uploaded strategy"}
+            {busy ? "Reading the document…" : "Upload a newer strategy document (new version)"}
           </button>
         </div>
       ) : (
@@ -655,6 +590,10 @@ export function StrategyCard({
 export type ScriptRow = {
   id: string; title: string; body: string; status: string; source: string;
   sourceFile: string | null; productionIdeas: string[];
+  // Sep 17: the body is the CURRENT version's text; needsApproval = that
+  // version is a draft (Approve signs exactly what is shown); historical
+  // imports are read-only records.
+  versionNo?: number | null; historical?: boolean; needsApproval?: boolean;
   // OPEN portal suggestions from the client (interactive layer, Aug 28).
   suggestions?: { id: string; body: string; createdAtISO: string }[];
 };
@@ -662,9 +601,11 @@ export type ScriptRow = {
 const SCRIPT_STATUS: Record<string, { label: string; tone: "warn" | "ok" | "muted" }> = {
   DRAFT: { label: "needs your OK", tone: "warn" },
   INTERNAL_REVIEW: { label: "needs your OK", tone: "warn" },
+  NEW_DRAFT: { label: "new draft since approval — needs your OK", tone: "warn" },
   APPROVED: { label: "approved", tone: "ok" },
   CLIENT_VISIBLE: { label: "live in their portal", tone: "ok" },
   READY_TO_FILM: { label: "ready to film", tone: "ok" },
+  HISTORICAL: { label: "imported history", tone: "muted" },
 };
 
 export function ScriptReview({ scripts }: { scripts: ScriptRow[] }) {
@@ -712,13 +653,15 @@ function ScriptItem({ script }: { script: ScriptRow }) {
   const [note, setNote] = useState<string | null>(null);
   const [busy, start] = useTransition();
   const st = SCRIPT_STATUS[script.status] ?? { label: script.status.toLowerCase(), tone: "muted" as const };
-  const needsReview = script.status === "INTERNAL_REVIEW" || script.status === "DRAFT";
+  const needsReview = script.needsApproval ?? (script.status === "INTERNAL_REVIEW" || script.status === "DRAFT");
+  const historical = script.historical === true;
 
   return (
     <details className="group px-5 py-3" open={needsReview}>
       <summary className="flex cursor-pointer items-center gap-2 marker:content-none">
         <FileText className="size-3.5 shrink-0 text-muted-2" />
         <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">{script.title}</span>
+        {script.versionNo != null && <span className="text-[11px] text-muted-2">v{script.versionNo}</span>}
         <span className={
           st.tone === "warn" ? "shrink-0 rounded-full bg-brand-soft px-2 py-0.5 text-xs font-medium text-brand"
           : st.tone === "ok" ? "shrink-0 rounded-full bg-success-soft px-2 py-0.5 text-xs font-medium text-success"
@@ -778,12 +721,24 @@ function ScriptItem({ script }: { script: ScriptRow }) {
           </div>
         )}
 
-        {mode === "read" && (
+        {mode === "read" && historical && (
+          <p className="mt-2 text-[11px] text-muted-2">Imported history — not edited, revised or approved here.{script.sourceFile ? ` From ${script.sourceFile}.` : ""}</p>
+        )}
+        {mode === "read" && !historical && (
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            {script.status !== "READY_TO_FILM" && (
-              <button disabled={busy} onClick={() => start(async () => { const r = await approveScript(script.id); setNote(r.ok ? null : r.message); })}
+            {/* Approve signs the version shown above (v{n}); it disappears once that version is approved. */}
+            {needsReview && (
+              <button disabled={busy} onClick={() => start(async () => {
+                const r = await approveScript(script.id);
+                if (!r.ok && /^Format check:/.test(r.message)) {
+                  // Blocking format findings: the approver may override with a written reason.
+                  const why = window.prompt(`${r.message}\n\nApprove anyway? Say why (this is recorded):`) ?? "";
+                  if (why.trim()) { const r2 = await approveScript(script.id, why.trim()); setNote(r2.ok ? null : r2.message); return; }
+                }
+                setNote(r.ok ? null : r.message);
+              })}
                 className="inline-flex items-center gap-1 rounded-md bg-success/15 px-2.5 py-1 text-xs font-semibold text-success hover:bg-success/25 disabled:opacity-50">
-                <Check className="size-3" /> Approve
+                <Check className="size-3" /> Approve{script.versionNo != null ? ` v${script.versionNo}` : ""}
               </button>
             )}
             <button onClick={() => setMode("revise")} className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
@@ -819,7 +774,7 @@ export function GenerateButton({ label, busyLabel, run }: { label: string; busyL
 }
 
 export function TopicSeedButton({ enrollmentId }: { enrollmentId: string }) {
-  return <GenerateButton label="Generate ideas from strategy" busyLabel="Reading their strategy, calls & history…" run={() => generateTopicIdeas(enrollmentId)} />;
+  return <GenerateButton label="Suggest video topics from the strategy" busyLabel="Reading their approved strategy, accepted facts & history…" run={() => generateTopicIdeas(enrollmentId)} />;
 }
 export function ProfileBuildButton({ clientId }: { clientId: string }) {
   return <GenerateButton label="Build from calls & content" busyLabel="Reading calls, strategy & filmed scripts…" run={() => buildProfile(clientId)} />;

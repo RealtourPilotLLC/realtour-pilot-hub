@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { stripMoneySentences } from "@/lib/text";
+import { factsForPrompt } from "@/lib/clientFacts";
 
 // ---------------------------------------------------------------------------
 // Profile-tab prefill (Jordan, Aug 28, third pass): "Video Style" and
@@ -9,10 +10,12 @@ import { stripMoneySentences } from "@/lib/text";
 // videos (the keyword filter surfaced "Bernadette's kicking ass and my
 // competitive nature's coming out", which is motivation, not a style pref).
 //
-// So: a strict AI extraction over the call facts, cached per enrollment for a
-// week (AppSetting) so a page load never pays for a model call. The prompt's
-// contract: explicit preferences only, latest direction wins, empty is a
-// correct answer.
+// Sep 17: the input is the client's ACCEPTED ClientFacts (aiContext ALLOWED,
+// never confidential) — not the unreviewed ContentNote pile that fed the
+// portal for two weeks with seven confidential facts inside it. Until Jordan
+// accepts facts on the client file the prefill is EMPTY, which is the honest
+// state. The extraction is cached per enrollment for a week (AppSetting) so a
+// page load never pays for a model call; the run is logged.
 // ---------------------------------------------------------------------------
 
 type Prefill = { videoStyle: string; preferences: string };
@@ -30,15 +33,11 @@ export async function getPortalPrefill(enrollmentId: string, clientId: string): 
     } catch { /* stale/corrupt cache → recompute */ }
   }
 
-  const notes = await prisma.contentNote.findMany({
-    where: { clientId, intelligence: true, authorName: "AI (call extraction)" },
-    orderBy: { createdAt: "desc" },
-    take: 80,
-    select: { body: true },
-  });
-  const facts = notes
-    .map((n) => stripMoneySentences(n.body).trim())
-    .filter((f) => f.length > 3 && !/\[CONFIDENTIAL/i.test(f)); // anywhere, not just the start (Sep 16)
+  const accepted = await factsForPrompt(clientId, { take: 80 });
+  const facts = accepted
+    .filter((f) => f.category === "BRAND_PREFERENCE" || f.category === "PRODUCTION_PREFERENCE" || f.category === "DECISION")
+    .map((f) => stripMoneySentences(f.body).trim())
+    .filter((f) => f.length > 3 && !/\[CONFIDENTIAL/i.test(f)); // belt and braces: the column already excludes these
   const write = async (v: Prefill, failed = false) =>
     prisma.appSetting
       .upsert({
@@ -53,8 +52,11 @@ export async function getPortalPrefill(enrollmentId: string, clientId: string): 
   }
 
   try {
-    const { aiJson } = await import("@/lib/integrations/ai");
-    const out = await aiJson<{ videoStyle: string[]; preferences: string[] }>({
+    const { runAiJson } = await import("@/lib/aiRuns");
+    const { output: out } = await runAiJson<{ videoStyle: string[]; preferences: string[] }>({
+      // A page render is nobody's click: unattended, so the ai_runs switch gates it
+      // (off → the catch below caches an empty prefill for an hour; staff pay nothing).
+      kind: "profile_draft", enrollmentId, clientId, promptKey: "portal-prefill", requestedBy: "portal-render", unattended: true, dedupeKey: `prefill:${enrollmentId}`,
       system: `You extract a real-estate agent's OWN STATED PREFERENCES from facts recorded off their strategy and brand-discovery calls, for display back to them on their client portal.
 
 STRICT RULES:
@@ -66,7 +68,7 @@ STRICT RULES:
 4. Phrase each as a short standalone preference in neutral third person ("Prefers a more polished edit with motion"), faithful to their words — never invent.
 5. EMPTY LISTS ARE A CORRECT ANSWER. When nothing qualifies, return [].
 6. Never include money, pricing or billing.`,
-      prompt: `Call facts, newest first:\n${facts.map((f) => `- ${f}`).join("\n").slice(0, 16000)}`,
+      prompt: `Accepted facts, newest first:\n${facts.map((f) => `- ${f}`).join("\n").slice(0, 16000)}`,
       schema: {
         type: "object",
         properties: {
@@ -133,7 +135,7 @@ STRICT RULES:
   }
 }
 
-/** Drop the cache (used after new calls are analyzed, so prefs refresh). */
+/** Drop the cache (used after facts are accepted / new calls are analyzed, so prefs refresh). */
 export async function invalidatePortalPrefill(enrollmentId: string): Promise<void> {
   await prisma.appSetting.delete({ where: { key: `portal-prefill-${enrollmentId}` } }).catch(() => {});
 }
