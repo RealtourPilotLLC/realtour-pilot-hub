@@ -12,7 +12,7 @@ import { constantTimeEqual, readArmState, noteRefusalWhileArmed, noteVerifiedDel
 // owns has to live in ONE place or the receiver and the handler will drift
 // apart. Everything heavy it needs (the status engine, the task reconciler,
 // the Topaz jobs) it imports dynamically inside itself.
-import { isAryeoDeliveryActivity, handleAryeoActivity } from "@/lib/aryeoDelivery";
+import { isAryeoDeliveryActivity, handleAryeoActivity, refreshSurfaces } from "@/lib/aryeoDelivery";
 import {
   syncAryeoOrders, syncAryeoAppointments, syncAryeoSocialPlans, syncAryeoCustomers,
   upsertAryeoCustomerClient, orderIdForListing, type AryeoCustomer,
@@ -47,6 +47,116 @@ const WATCHING_MARKER =
 // eight months' time the row is all anyone will have.
 const HOLDING_MARKER =
   "UNSIGNED: accepted with checking switched off — a secret is saved here but the hub was told not to enforce it";
+
+// ---------------------------------------------------------------------------
+// SAYING "THIS ONE IS MINE" (Sep 17 2026).
+//
+// The health panel decides whether Aryeo is still alive by looking for the most
+// recent event this lane accepted — so every post WE make while testing the
+// endpoint tells it the feed is fine. That is not a theoretical problem: a
+// hand-rolled probe at 17:39 today took Aryeo's measured silence from 234 hours
+// to zero, and a nine-day-dead lane would have rendered as "Aryeo is
+// delivering" with a green tick. Checking the door is the thing you do most
+// while a feed is down, and it was hiding the outage.
+//
+// Bodies cannot be told apart — replaying a stored Aryeo payload IS an Aryeo
+// payload, byte for byte, which is exactly why replaying one is the honest way
+// to test this route. So the CALLER says so, on a header, and the row is
+// labelled at the door. Everything else about the request is unchanged: it is
+// still verified (or not) the same way, still routed the same way, still
+// processed the same way, and still stored. Only the label differs, and the
+// label is what the "has this lane delivered?" measurement reads.
+//
+// It is not a security control and it does not need to be. Setting it can only
+// make the lane look QUIETER — an attacker's post that claims to be a self-test
+// is a post that does not silence the alarm — so the worst it can do is make
+// the hub shout. The one thing it must never be is the reverse.
+//
+// The label lives in lib/webhookRetry (SELF_TEST_TYPES); keep the two in step.
+const SELFTEST_HEADER = "x-realtour-selftest";
+const SELFTEST_EVENT_TYPE = "selftest";
+
+// ---------------------------------------------------------------------------
+// AND WHEN SOMEBODY FORGETS THE HEADER (Sep 17, review).
+//
+// A declaration you have to remember is a declaration that gets forgotten, and
+// the one test method this comment recommends — replay a stored Aryeo payload,
+// because it IS an Aryeo payload — is exactly the one that defeats the label
+// when it is: the replay classifies as ORDER_CHANGED like any real event, and
+// the alarm goes quiet for another day and a half. So two things are worked out
+// from the REQUEST rather than taken on trust, and either one is enough:
+//
+//   1. WHERE IT ARRIVED. Aryeo cannot post to a laptop. A request whose Host is
+//      localhost (or 127.0.0.1, or a .local name) came from a dev server — and
+//      a dev server here runs against the LIVE database, which is precisely how
+//      fifteen test posts came to be sitting in the production event log this
+//      afternoon.
+//
+//   2. HOW OLD THE BODY IS. Aryeo posts about something that has just changed:
+//      across the 371 ORDER_CHANGED and 319 APPOINTMENT_CHANGED bodies on file,
+//      the payload's own `updated_at` is within an hour of the moment it landed
+//      for all but thirty of them (and all thirty are retries of six events). A
+//      body whose own newest timestamp is more than two days old is a copy of
+//      something that already happened, whoever posted it.
+//
+// Both only ever make the lane look QUIETER, which is the safe direction for
+// the one measurement meant to notice a dead feed: the cost of being wrong is a
+// louder alarm. Bodies that carry no timestamp at all (every flat LISTING and
+// CUSTOMER payload Aryeo sends) are left alone rather than guessed about —
+// "we cannot tell" is not evidence of a test.
+const REPLAY_EVENT_TYPE = "replay";
+/** Two days. A real event's body is minutes old; a replay of a stored one is
+ *  days. Wide enough that the six genuine appointment events whose `updated_at`
+ *  lagged by a day are still counted as deliveries. */
+const STALE_BODY_MS = 48 * 3600_000;
+const LOCAL_HOSTS = ["localhost", "127.0.0.1", "0.0.0.0", "[::1]", "::1"];
+/** The timestamp fields a real Aryeo body moves when the thing it describes
+ *  changes. Read at the top level and one level into the documented ACTIVITY
+ *  wrapper — deliberately NOT recursively, because a customer's own `created_at`
+ *  or a listing's nested records say nothing about when this event happened. */
+const BODY_MOMENT_KEYS = ["occurred_at", "occurredAt", "updated_at", "updatedAt", "modified_at"];
+
+function newestMomentIn(payload: Record<string, unknown>): number | null {
+  const objects = [payload];
+  const resource = (payload.resource ?? payload.data) as Record<string, unknown> | undefined;
+  if (resource && typeof resource === "object" && !Array.isArray(resource)) objects.push(resource);
+  let newest: number | null = null;
+  for (const o of objects) {
+    for (const k of BODY_MOMENT_KEYS) {
+      const v = o[k];
+      if (typeof v !== "string") continue;
+      const t = Date.parse(v);
+      if (Number.isFinite(t) && (newest === null || t > newest)) newest = t;
+    }
+  }
+  return newest;
+}
+
+/** Why this post does not count as a delivery on the health panel, or null when
+ *  it does. The label it returns is what the row is stored under.
+ *
+ *  Exported so it can be exercised directly — the local dev server answers on
+ *  localhost, which trips the first rule before the other two are ever reached,
+ *  so the only honest way to test the rest is to call this with the request you
+ *  mean. (classifyAryeoPayload and processAryeoEvent are exported from here for
+ *  the same reason.) */
+export function notADelivery(req: NextRequest, payload: Record<string, unknown>): { label: string; why: string } | null {
+  if (req.headers.get(SELFTEST_HEADER) !== null) {
+    return { label: SELFTEST_EVENT_TYPE, why: "posted by us, not by Aryeo" };
+  }
+  // The Host header on a real request; the URL's own hostname when there is
+  // none (a request object built in a probe rather than received off a socket).
+  const host = ((req.headers.get("host") || req.nextUrl.hostname) ?? "").split(":")[0].toLowerCase();
+  if (LOCAL_HOSTS.includes(host) || host.endsWith(".local")) {
+    return { label: SELFTEST_EVENT_TYPE, why: `posted to ${host || "a local address"}, which Aryeo cannot reach — so this came from a dev server, not from Aryeo` };
+  }
+  const moment = newestMomentIn(payload);
+  if (moment !== null && Date.now() - moment > STALE_BODY_MS) {
+    const days = Math.floor((Date.now() - moment) / 86_400_000);
+    return { label: REPLAY_EVENT_TYPE, why: `a replay: the body's own newest timestamp is ${days} day${days === 1 ? "" : "s"} old, so it describes something that already happened` };
+  }
+  return null;
+}
 
 // The signing secret for inbound Aryeo webhooks. Saved from /connections into
 // the same encrypted store as every other credential ("aryeo_webhook"); the
@@ -160,6 +270,17 @@ async function storableUnverifiedBody(raw: string, looksReal: string): Promise<{
   }
   const body = raw.slice(0, looksReal ? REAL_BODY_CAP : JUNK_BODY_CAP);
   return { body, clipped: body.length < raw.length };
+}
+
+/** Keep the row readable once its eventType has been relabelled. The real verb
+ *  goes into the note, so "what was this a test OF?" is answerable from the row
+ *  alone. Deliberately APPENDED: every reader matches the "UNSIGNED" prefix at
+ *  the FRONT of this field (see the markers above), and a prefix of our own
+ *  would drop these rows out of all of them. */
+function selfTestNote(marker: string | null, realEventType: string | null, why: string | null): string | null {
+  if (!realEventType || !why) return marker;
+  const note = `SELF-TEST: ${why} — it does not count as a delivery on the webhook health panel (body: ${realEventType}).`;
+  return marker ? `${marker} — ${note}` : note;
 }
 
 export async function POST(req: NextRequest) {
@@ -291,10 +412,15 @@ export async function POST(req: NextRequest) {
   // An unverified body is bounded before it is stored; a verified one is kept
   // whole, because it came from Aryeo and replaying it is the point.
   const kept = acceptedMarker ? await storableUnverifiedBody(raw, cls.object) : null;
+  // A post that declared itself a test is STORED under the self-test label so
+  // it cannot pass for a delivery from Aryeo. `eventType` itself is untouched —
+  // routing below still sees the real verb, so a test exercises the same code
+  // a real event would. See SELFTEST_HEADER.
+  const selfTest = notADelivery(req, payload);
   const log = await prisma.webhookEvent.create({
     data: {
       provider: "aryeo",
-      eventType,
+      eventType: selfTest ? selfTest.label : eventType,
       externalId,
       payload: kept ? kept.body : raw || "{}",
       // Marker only — status stays on its normal RECEIVED→PROCESSED path so
@@ -303,7 +429,11 @@ export async function POST(req: NextRequest) {
       // and whether the copy on this row is the whole of what arrived. (Every
       // reader matches on the "UNSIGNED" PREFIX, so a suffix is safe — check
       // that is still true before changing the front of these strings.)
-      error: acceptedMarker && kept?.clipped ? `${acceptedMarker} — body not kept in full` : acceptedMarker,
+      error: selfTestNote(
+        acceptedMarker && kept?.clipped ? `${acceptedMarker} — body not kept in full` : acceptedMarker,
+        selfTest ? eventType : null,
+        selfTest?.why ?? null,
+      ),
     },
   });
 
@@ -506,6 +636,10 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
         // (Re)generate this job's tasks now: a new order gets its confirmation
         // task, a delivered one flips QC — without waiting for the cron.
         await retaskProject(project.id);
+        // Mark the screens that show this job stale, so the first person to
+        // look gets what the event just changed rather than a copy their
+        // browser kept. See refreshSurfaces for what this is and is not worth.
+        await refreshSurfaces(project.id);
       }
     }
     try { await syncClientSegments(); } catch { /* non-fatal */ }
@@ -521,6 +655,7 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
       if (project) {
         try { await restatusProject(project.id); } catch { /* non-fatal */ }
         await retaskProject(project.id);
+        await refreshSurfaces(project.id);
         return;
       }
       // NO PROJECT CARRIES THIS LISTING (Sep 16, Kyle call — 39 Saratoga Ln).
@@ -540,6 +675,7 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
           if (linked) {
             try { await restatusProject(linked.id); } catch { /* non-fatal */ }
             await retaskProject(linked.id);
+            await refreshSurfaces(linked.id);
             return;
           }
         }

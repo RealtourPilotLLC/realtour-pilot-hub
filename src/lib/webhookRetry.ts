@@ -61,9 +61,22 @@ const LANE: Record<string, LaneCopy> = {
     // hunting in Aryeo for a credential that does not exist is worse than
     // saying nothing at all. Every one of these sentences has to name a step a
     // person can actually take.
-    fixAfterRejections: "Aryeo doesn’t issue a signing secret — the hub makes one and you give it to Aryeo. Open Connections and follow the three steps on the Aryeo card.",
-    fix: "Check the webhook subscription in Aryeo (Group Settings → Developers → Webhooks) still points at this hub — the steps are on the Aryeo card on Connections.",
-    bellFix: "Open Connections — the Aryeo card walks you through it.",
+    //
+    // AND IT HAS TO BE A STEP THAT EXISTS FOR US (Sep 17). Both of these used
+    // to end at "the Aryeo card on Connections", and the quiet one sent the
+    // reader to "Group Settings → Developers → Webhooks" in Aryeo. Jordan, in
+    // as many words: "on aryeo I dont have group settings, developers, or
+    // webhooks. I just have API keys." There is no self-serve webhooks screen
+    // on this account and our API key is refused on the webhook-subscription
+    // endpoints (401), so nobody here can re-register the endpoint at all —
+    // only Aryeo's support team can. An alarm that names a screen the reader
+    // does not have reads as "someone else's problem", which is one way nine
+    // days of silence gets scrolled past. So both fixes now name the ONE action
+    // that moves this: send Aryeo support the message the card has ready.
+    fixAfterRejections:
+      "Nobody here can re-register it: our Aryeo account has no webhooks screen and our API key is refused on their webhook endpoints, so only Aryeo support can switch the subscription back on. Open Connections — the Aryeo card has the message to send them, ready to copy.",
+    fix: "Only Aryeo support can re-enable this subscription — our account has no webhooks screen and our API key is refused on their webhook endpoints. Open Connections — the Aryeo card has the message to send them, ready to copy.",
+    bellFix: "Only Aryeo support can switch it back on. Open Connections — the message to send them is ready to copy.",
   },
   openphone: {
     name: "OpenPhone",
@@ -767,6 +780,70 @@ export async function webhookHealthByProvider(days = 7): Promise<WebhookProvider
 const ACCEPTED_STATUSES = ["RECEIVED", "PROCESSED", "ERROR", "FAILED"];
 
 // ---------------------------------------------------------------------------
+// OUR OWN TEST POSTS ARE NOT DELIVERIES (Sep 17 2026).
+//
+// This panel answers one question — "is the provider still sending?" — and it
+// answers it by looking for the most recent row this lane accepted. Which means
+// ANY accepted row resets it, including the ones we post ourselves while
+// checking the endpoint is reachable.
+//
+// That is not hypothetical, it is what was on the table this afternoon. Aryeo
+// has sent nothing since 7:56pm ET on 7 September. A single hand-rolled `curl`
+// at 17:39 on the 17th — body `{"type":"probe"}`, stored as eventType "probe" —
+// became the lane's newest "delivery", and with it quietHours fell from 234 to
+// 0. The nine-day outage read as healthy: the quiet alarm would not have fired
+// that night, and the Connections card would have rendered a green tick and the
+// sentence "Aryeo is delivering." Testing the door is exactly what you do while
+// getting a dead feed back on the air, so the one action most likely to be
+// taken during an outage was the one that hid it.
+//
+// So a delivery has to be something the PROVIDER sent. These are the event
+// types a body that is not a provider resource ends up stored as: "probe" and
+// friends come from a hand-written test body, and "unknown" is what
+// classifyAryeoPayload returns for anything it cannot recognise as an order,
+// listing, appointment or customer. Across all 890 Aryeo rows on file this
+// excludes three: two probes and one "unknown". Every genuine delivery in the
+// log is ORDER_CHANGED, APPOINTMENT_CHANGED, CUSTOMER_CHANGED or
+// LISTING_CHANGED, so the real signal loses nothing.
+//
+// It only ever makes a lane look QUIETER, never busier, so the failure mode of
+// getting this list wrong is a louder alarm rather than a hidden outage. That
+// is the right way round for the one measurement that is supposed to notice
+// when a feed dies.
+// "selftest" is the label the Aryeo receiver writes when a post declares itself
+// one on the x-realtour-selftest header (see SELFTEST_HEADER in
+// src/app/api/webhooks/aryeo/route.ts) — that is the DELIBERATE way to exercise
+// the endpoint without lying to this panel. The rest are what an undeclared
+// hand-written body ends up stored as anyway.
+//
+// "replay" is the same idea for the case where nobody declared anything. A
+// declaration you have to remember gets forgotten, and the recommended way to
+// test this route — replay a stored Aryeo body, because it IS an Aryeo body —
+// is the one method that defeats the header when it is. So the receiver also
+// works two things out for itself: a post that arrived at a LOCAL host cannot
+// have come from Aryeo (labelled "selftest"), and a body whose own newest
+// timestamp is more than two days old is a copy of something that already
+// happened (labelled "replay"). Both only ever make a lane look quieter. See
+// notADelivery in the receiver for the measurements behind the two-day line.
+const SELF_TEST_TYPES = ["selftest", "replay", "probe", "test", "ping", "unknown"];
+
+/** The WHERE shared by every "did this lane actually deliver?" measurement.
+ *
+ *  A NULL eventType is KEPT. Nothing writes one today, but "we did not record
+ *  what this was" is not evidence that it was a test, and dropping it would
+ *  make an unknown row silently suppress nothing — better to count it and be
+ *  quiet-but-honest than to invent a reason to discard it. */
+const DELIVERED_WHERE = {
+  status: { in: ACCEPTED_STATUSES },
+  OR: [{ eventType: null }, { eventType: { notIn: SELF_TEST_TYPES } }],
+};
+
+/** The same rule as SQL, for the one measurement that is a raw query. Kept
+ *  beside DELIVERED_WHERE so the two cannot drift: if you add a type above,
+ *  it lands here too. */
+const DELIVERED_SQL_TYPES = SELF_TEST_TYPES;
+
+// ---------------------------------------------------------------------------
 // WHEN IS QUIET WRONG? — measured, not guessed
 //
 // The first cut of this panel picked two round numbers: a lane averaging 3+
@@ -908,6 +985,13 @@ export type WebhookLaneHealth = {
   neverDelivered: boolean;
   /** The silence started with bounced signatures — a configuration fault, not an outage. */
   startedWithRejections: boolean;
+  /** How many posts this lane refused AFTER its last real delivery, and when
+   *  that bouncing began. Together they are the CAUSE of the silence rather
+   *  than its size — "36 posts refused on Sep 8" is the difference between an
+   *  outage somebody else has to fix and a door we shut ourselves. Both null/0
+   *  on a lane whose quiet did not start at the door. */
+  rejectedSinceLastDelivery: number;
+  rejectionsStartedAt: string | null;
   enforced: boolean;
   enforceable: boolean;
   isReceiver: boolean;
@@ -955,6 +1039,11 @@ async function laneRhythm(provider: string, anchor: Date | null): Promise<LaneRh
         FROM "WebhookEvent"
         WHERE provider = ${provider}
           AND status IN ('RECEIVED', 'PROCESSED', 'ERROR', 'FAILED')
+          -- Our own test posts are not deliveries, so they must not appear as a
+          -- gap boundary either: a probe dropped into the middle of an outage
+          -- would split one long gap into two short ones and quietly RAISE the
+          -- threshold this lane is judged against. Same list as DELIVERED_WHERE.
+          AND ("eventType" IS NULL OR "eventType" <> ALL(${DELIVERED_SQL_TYPES}::text[]))
           AND "createdAt" > ${from}
           AND "createdAt" <= ${anchor}
       )
@@ -1014,7 +1103,10 @@ export async function webhookLaneHealth(): Promise<WebhookLaneHealth[]> {
   for (const provider of WEBHOOK_LANES) {
     // Fetched FIRST because the rhythm baseline below is anchored to it.
     const lastAccepted = await prisma.webhookEvent.findFirst({
-      where: { provider, status: { in: ACCEPTED_STATUSES } },
+      // DELIVERED_WHERE, not merely "accepted": a post we made ourselves to
+      // check the endpoint answers must never be able to reset this lane's
+      // clock. See the note on SELF_TEST_TYPES.
+      where: { provider, ...DELIVERED_WHERE },
       orderBy: { createdAt: "desc" },
       select: { createdAt: true, eventType: true },
     });
@@ -1027,8 +1119,8 @@ export async function webhookLaneHealth(): Promise<WebhookLaneHealth[]> {
         select: { createdAt: true, error: true },
       }),
       prisma.webhookEvent.findFirst({ where: { provider }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
-      prisma.webhookEvent.count({ where: { provider, status: { in: ACCEPTED_STATUSES }, createdAt: { gt: new Date(now - 86400_000) } } }),
-      prisma.webhookEvent.count({ where: { provider, status: { in: ACCEPTED_STATUSES }, createdAt: { gt: new Date(now - 7 * 86400_000) } } }),
+      prisma.webhookEvent.count({ where: { provider, ...DELIVERED_WHERE, createdAt: { gt: new Date(now - 86400_000) } } }),
+      prisma.webhookEvent.count({ where: { provider, ...DELIVERED_WHERE, createdAt: { gt: new Date(now - 7 * 86400_000) } } }),
       // THE RHYTHM BASELINE — the 28 days ending at this lane's LAST DELIVERY,
       // not the 28 days ending now (RTP-28 review, Sep 16). Anchored to now, a
       // lane that stays dead slowly empties its own baseline and stops being
@@ -1040,7 +1132,7 @@ export async function webhookLaneHealth(): Promise<WebhookLaneHealth[]> {
         ? prisma.webhookEvent.count({
             where: {
               provider,
-              status: { in: ACCEPTED_STATUSES },
+              ...DELIVERED_WHERE,
               createdAt: { gt: new Date(anchor.getTime() - 28 * 86400_000), lte: anchor },
             },
           })
@@ -1096,6 +1188,25 @@ export async function webhookLaneHealth(): Promise<WebhookLaneHealth[]> {
       Boolean(lastRejected) &&
       (!lastAccepted || lastRejected!.createdAt.getTime() >= lastAccepted.createdAt.getTime());
 
+    // THE CAUSE, MEASURED. Only worth two queries when the quiet actually began
+    // at the door — everywhere else these stay 0/null and the sentence below
+    // does not mention them.
+    let rejectedSinceLastDelivery = 0;
+    let rejectionsStartedAt: string | null = null;
+    if (startedWithRejections) {
+      const since = lastAccepted ? { gt: lastAccepted.createdAt } : undefined;
+      const [n, first] = await Promise.all([
+        prisma.webhookEvent.count({ where: { provider, status: "REJECTED", ...(since ? { createdAt: since } : {}) } }),
+        prisma.webhookEvent.findFirst({
+          where: { provider, status: "REJECTED", ...(since ? { createdAt: since } : {}) },
+          orderBy: { createdAt: "asc" },
+          select: { createdAt: true },
+        }),
+      ]);
+      rejectedSinceLastDelivery = n;
+      rejectionsStartedAt = first?.createdAt.toISOString() ?? null;
+    }
+
     const replayable = await countReplayable(provider);
 
     // Where this receiver stands in a signing cutover. Read WITHOUT the secret
@@ -1150,6 +1261,8 @@ export async function webhookLaneHealth(): Promise<WebhookLaneHealth[]> {
       armedAt,
       neverDelivered,
       startedWithRejections,
+      rejectedSinceLastDelivery,
+      rejectionsStartedAt,
       enforced: enforced[provider] ?? false,
       enforceable: ENFORCE_TOGGLEABLE.includes(provider),
       isReceiver: (WEBHOOK_RECEIVERS as readonly string[]).includes(provider),
@@ -1165,6 +1278,8 @@ export async function webhookLaneHealth(): Promise<WebhookLaneHealth[]> {
         secretStored,
         secretReadable,
         rejected7d,
+        rejectedSinceLastDelivery,
+        rejectionsStartedAt: rejectionsStartedAt ? new Date(rejectionsStartedAt) : null,
       }),
     });
   }
@@ -1196,6 +1311,9 @@ function officeSentence(
     secretStored: boolean;
     secretReadable: boolean;
     rejected7d: number;
+    /** The refusal burst that STARTED the silence — see WebhookLaneHealth. */
+    rejectedSinceLastDelivery: number;
+    rejectionsStartedAt: Date | null;
   },
 ): string | null {
   const copy = LANE[provider] ?? { name: provider, cover: "events are not arriving", fix: "Check the connection.", fixAfterRejections: "Check the signing secret." };
@@ -1220,7 +1338,19 @@ function officeSentence(
     // than it is, in a sentence whose whole job is to say how long it has been.
     const days = s.quietHours !== null ? Math.floor(s.quietHours / 24) : 0;
     const howLong = s.quietHours === null ? "" : days >= 2 ? ` — ${days} days ago` : ` — ${s.quietHours} hours ago`;
-    return `${copy.name} has not delivered a live event since ${etMonthDay(s.lastDeliveredAt)}${howLong}, and ${copy.cover}. ${fix}`;
+    // WHY IT WENT QUIET, when we can actually show it (Sep 17). The old
+    // sentence said how LONG and what to do, and left the reader to guess the
+    // cause — so nine days of Aryeo silence read like an outage at Aryeo's end,
+    // which is a thing you wait out rather than a thing you act on. It was the
+    // opposite: we shut the door ourselves, 36 posts bounced off a signature
+    // check against a secret Aryeo had never been given, and Aryeo gave up
+    // after its two retries and stopped delivering. That sentence gets someone
+    // to send the support message; "hasn't delivered since Sep 7" does not.
+    const cause =
+      s.startedWithRejections && s.rejectedSinceLastDelivery > 0 && s.rejectionsStartedAt
+        ? ` It stopped after ${s.rejectedSinceLastDelivery} post${s.rejectedSinceLastDelivery === 1 ? "" : "s"} were refused at the door on ${etMonthDay(s.rejectionsStartedAt)} — the hub was checking a signing secret the sender had never been given, so it gave up and stopped delivering.`
+        : "";
+    return `${copy.name} has not delivered a live event since ${etMonthDay(s.lastDeliveredAt)}${howLong}, and ${copy.cover}.${cause} ${fix}`;
   }
   if (s.rejected7d > 0 && s.startedWithRejections) {
     return `${copy.name} posts are bouncing at the door — ${s.rejected7d} refused in the last 7 days. ${copy.fixAfterRejections}`;

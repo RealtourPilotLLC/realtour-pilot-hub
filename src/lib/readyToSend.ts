@@ -194,6 +194,16 @@ const HOUR = 3_600_000;
 const TERMINAL_TOPAZ: TopazState[] = ["done", "failed", "cancelled", "skipped"];
 const stillRendering = (state: string): boolean => !TERMINAL_TOPAZ.includes(state as TopazState);
 
+/** The same question, for the one other place that has to answer it — the Aryeo
+ *  delivery webhook, which decides whether a cut has been handed to anybody yet
+ *  (lib/aryeoDelivery). Exported rather than copied: a second list of terminal
+ *  states in another file is two definitions of "the lane has finished with
+ *  this", held together by nothing but a comment, and the copy would not fail
+ *  the build when a state is renamed. */
+export function laneStillOwesWork(state: string): boolean {
+  return stillRendering(state);
+}
+
 /** One definition of the columns this module reads, so the query and the
  *  helpers below can never drift apart. */
 const CANDIDATE_SELECT = {
@@ -226,10 +236,17 @@ type CandidateSub = Prisma.ReviewSubmissionGetPayload<{ select: typeof CANDIDATE
  * of each cut. If the editor is already on a newer version (PENDING, or bounced
  * CHANGES_REQUESTED), the approved round is not in its answer and so is not in
  * ours: nobody should send a file that is being redone.
+ *
+ * `projectId` narrows the whole board to one job without changing a single rule
+ * about what belongs on it. It is there for the Aryeo delivery webhook, which
+ * has to ask "which of THIS job's cuts is the card still asking for?" and must
+ * get that answer from this module rather than re-deriving the eligibility
+ * rules beside it — see cutsOnTheCardFor.
  */
-export async function readyToSend(): Promise<ReadyBoard> {
+export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyBoard> {
   const subs = await prisma.reviewSubmission.findMany({
     where: {
+      ...(opts?.projectId ? { projectId: opts.projectId } : {}),
       status: "APPROVED",
       // A person already said this exact cut went out.
       sentToClientAt: null,
@@ -253,8 +270,15 @@ export async function readyToSend(): Promise<ReadyBoard> {
   });
   if (subs.length === 0) return { ready: [], rendering: [] };
 
-  // Still the live version of its cut, and not already with the client.
-  const open = subs.filter((s) => !wentOut(s));
+  // Still the live version of its cut, and not already with the client. Two
+  // steps, because the last of the three answers below is not about this cut on
+  // its own — see resolveListingInference.
+  const verdicts = new Map(subs.map((s) => [s.id, wentOut(s)] as const));
+  const inferred = await resolveListingInference(subs.filter((s) => verdicts.get(s.id) === "listing-suggests-sent"));
+  const open = subs.filter((s) => {
+    const v = verdicts.get(s.id);
+    return v === "open" || (v === "listing-suggests-sent" && !inferred.has(s.id));
+  });
   if (open.length === 0) return { ready: [], rendering: [] };
 
   const states = await videoStatesFor([...new Set(open.map((s) => s.projectId))]);
@@ -335,6 +359,26 @@ export async function readyToSend(): Promise<ReadyBoard> {
   return { ready, rendering };
 }
 
+/**
+ * WHICH OF THIS JOB'S CUTS THE CARD IS CURRENTLY ASKING FOR — by submission id.
+ *
+ * The Aryeo delivery webhook may only ever stamp a row the card is actually
+ * showing, and this is how it knows which those are. It is the board's own
+ * answer, not a second opinion: the bytes requirement, cancelled and parked
+ * jobs, a deliverable taken off the order, a content-program cut that is
+ * already in the client's portal, a round the editor is redoing, a still-running
+ * 1080p pass and the two-exports-of-one-video collapse are all decided by the
+ * code above, once.
+ *
+ * (An earlier cut of the webhook re-implemented four of those rules beside it
+ * and got all four slightly different, which is how it could have written
+ * "Video sent to the client" on a row that was never on the card at all.)
+ */
+export async function cutsOnTheCardFor(projectId: string): Promise<Set<string>> {
+  const board = await readyToSend({ projectId });
+  return new Set(board.ready.map((r) => r.submissionId));
+}
+
 /** Where the 1080p pass has got to, in Kyle's words rather than the lane's. */
 function renderingSays(state: string): string {
   if (state === "queued" || state === "estimated") return "The 1080p pass is queued — nothing to send yet.";
@@ -345,16 +389,26 @@ function renderingSays(state: string): string {
 }
 
 /**
- * Has this cut's file already reached the client? The precedence here is the
- * point of the whole module — see the header.
+ * Has this cut's file already reached the client?
+ *
+ *   "sent"                   — settled, on evidence about THIS cut.
+ *   "open"                   — nothing says it went; it belongs on the card.
+ *   "listing-suggests-sent"  — the only evidence is that the job's LISTING is
+ *                              carrying video. That is a fact about the job,
+ *                              not about this cut, so it cannot be decided
+ *                              here. resolveListingInference decides it.
+ *
+ * The precedence is the point of the whole module — see the header.
  */
-function wentOut(sub: CandidateSub): boolean {
+type SentVerdict = "sent" | "open" | "listing-suggests-sent";
+
+function wentOut(sub: CandidateSub): SentVerdict {
   // The hub handed a specific file to a specific person: only their press
   // closes it. Aryeo showing "a video" is not evidence about THIS file — on 322
   // the video Aryeo shows is the broken one. (A job the lane is still working
   // on has not been handed to anybody either; it is filtered out later, as a
   // rendering row rather than a sent one.)
-  if (sub.topazJob) return !!sub.topazJob.deliveredAt;
+  if (sub.topazJob) return sub.topazJob.deliveredAt ? "sent" : "open";
 
   const approvedAt = (sub.decidedAt ?? sub.completedAt ?? sub.createdAt).getTime();
 
@@ -363,19 +417,145 @@ function wentOut(sub: CandidateSub): boolean {
   // APPROVED cut. Kyle has nothing to upload and nothing to send. The question
   // "can the client see this cut" is answered by the portal's own helper, so
   // the two surfaces cannot drift.
-  if (sub.project.contentMonthId && cutReleasedAt({ ...sub, status: "APPROVED" })) return true;
+  if (sub.project.contentMonthId && cutReleasedAt({ ...sub, status: "APPROVED" })) return "sent";
 
   // Case (c). The listing must be carrying a video that CANNOT be a leftover:
   // observed by Aryeo itself (not a carried-forward stale count), after this cut
   // was approved, on a job that had not already been delivered beforehand.
   const ev = parseEvidence(sub.project.statusEvidence);
-  if (!ev?.aryeo || ev.aryeo.stale || (ev.aryeo.videos ?? 0) <= 0) return false;
+  if (!ev?.aryeo || ev.aryeo.stale || (ev.aryeo.videos ?? 0) <= 0) return "open";
   const seenAt = Date.parse(ev.aryeo.at ?? ev.checkedAt ?? "");
-  if (Number.isNaN(seenAt) || seenAt < approvedAt) return false;
+  if (Number.isNaN(seenAt) || seenAt < approvedAt) return "open";
   // Delivered BEFORE this cut existed → the video on the listing is the old
   // one until a person says otherwise. This is the 322 shape exactly.
-  if (sub.project.deliveredAt && sub.project.deliveredAt.getTime() < approvedAt) return false;
-  return true;
+  if (sub.project.deliveredAt && sub.project.deliveredAt.getTime() < approvedAt) return "open";
+  // Everything about the LISTING checks out. Whether it says anything about
+  // THIS cut is a different question, and one cut cannot answer it alone.
+  return "listing-suggests-sent";
+}
+
+/**
+ * THE JOB THAT OWES TWO VIDEOS AND HAS UPLOADED ONE (Sep 17 2026).
+ *
+ * "There is a video live on the listing" is the weakest evidence this module
+ * accepts, and it is the only thing standing behind case (c) — a cut with no
+ * 1080p job, where the hub never handed a specific file to a specific person
+ * and so has no record of its own. It was applied per cut, which quietly
+ * assumed one video per job. Most jobs are one video, so it looked right.
+ *
+ * It is not right, and a probe of the delivery path caught it: a job with TWO
+ * approved, unsent cuts, one video on its Aryeo listing. Both rows vanished off
+ * the card. The listing was carrying evidence for ONE upload and it was used
+ * twice — so a video that had never been sent was written off as sent, by
+ * inference, with no stamp, no name and no timeline line to find it by. That is
+ * the failure this whole module was written to prevent, arriving through the
+ * one door that was still guessing.
+ *
+ * The rule now: this inference may only account for as many cuts as the listing
+ * has videos to account for them with — and cuts already settled (a person
+ * pressed the button, or their 1080p job is stamped delivered) have each taken
+ * a video already. If the videos do not go round, NONE of the job's cuts are
+ * cleared this way and they all stay on the card.
+ *
+ * Deliberately all-or-nothing rather than clearing the oldest N. The count is
+ * all this evidence has — `statusEvidence` records how MANY videos Aryeo showed,
+ * never which — so picking which cuts the videos were would be a guess, and the
+ * whole point is to stop guessing. Being over-cautious here costs a stale row
+ * and one tap; being wrong costs a client their video.
+ *
+ * (The webhook path does better, and can: lib/aryeoDelivery holds the listing
+ * itself, so it matches individual video ids to individual cuts by time and
+ * length and stamps the ones it can prove. This is the floor under it, for the
+ * jobs no webhook has arrived for.)
+ */
+async function resolveListingInference(maybe: CandidateSub[]): Promise<Set<string>> {
+  const cleared = new Set<string>();
+  if (maybe.length === 0) return cleared;
+
+  const byProject = new Map<string, CandidateSub[]>();
+  for (const s of maybe) byProject.set(s.projectId, [...(byProject.get(s.projectId) ?? []), s]);
+
+  // EVERY approved cut on these jobs, not just the ones asking to be cleared.
+  //
+  // The first version of this counted `maybe` plus the settled rows, which
+  // quietly assumed the job's only other cuts were finished ones. They are not:
+  // a cut whose 1080p pass is undelivered gets verdict "open" and never reaches
+  // this function at all, so a job with one inferred cut and one Topaz-backed
+  // open cut had `needed` of 1 — and a single video on the listing cleared the
+  // inferred row even though that video may well have been the OTHER cut's
+  // upload. Same counting mistake as the one this function was written to fix,
+  // one row further out.
+  //
+  // Same filters as the board itself: a cut with no bytes is an approval with
+  // nothing behind it and is owed to nobody, and neither is one whose
+  // deliverable came off the order.
+  let all: SettleableRow[];
+  try {
+    all = await prisma.reviewSubmission.findMany({
+      where: {
+        projectId: { in: [...byProject.keys()] },
+        status: "APPROVED",
+        OR: [
+          { blobUrl: { not: null } },
+          { assetPath: { not: null } },
+          { finalPath: { not: null } },
+          { topazJob: { is: { finalPath: { not: null } } } },
+        ],
+        AND: [{ OR: [{ deliverableId: null }, { deliverable: { is: { removedFromOrderAt: null } } }] }],
+      },
+      select: {
+        id: true, projectId: true, deliverableId: true, slot: true, assetPath: true, fileName: true,
+        sentToClientAt: true,
+        topazJob: { select: { deliveredAt: true } },
+      },
+    });
+  } catch {
+    // FAILS CLOSED, and it has to: with no counts, every job would look like it
+    // had videos to spare and the whole board would clear itself on a database
+    // hiccup. Nothing cleared means rows stay on the card, which costs a tap.
+    return cleared;
+  }
+
+  // Two tallies per job, both keyed the way the CARD groups rows:
+  //   owed    — groups that still want a video uploaded
+  //   settled — groups whose upload is already accounted for (a person pressed
+  //             the button, or their 1080p job is stamped delivered), each of
+  //             which has already taken one of the listing's videos
+  const owedGroups = new Map<string, Set<string>>();
+  const settledGroups = new Map<string, Set<string>>();
+  for (const r of all) {
+    const done = Boolean(r.sentToClientAt) || Boolean(r.topazJob?.deliveredAt);
+    const into = done ? settledGroups : owedGroups;
+    const set = into.get(r.projectId) ?? new Set<string>();
+    set.add(groupKeyOf(r));
+    into.set(r.projectId, set);
+  }
+
+  for (const [projectId, cuts] of byProject) {
+    const videos = parseEvidence(cuts[0].project.statusEvidence)?.aryeo?.videos ?? 0;
+    // COUNT VIDEOS OWED, NOT ROWS. Two approved exports of one reel are one
+    // video to send — 1956 Wetherhill Dr carries "Finish_…" and "Revised_…" of
+    // a single cut, and the card itself already collapses them into one row
+    // (collapseReExports). Counting rows would have that job needing two videos
+    // off a listing that only ever owed one, and would park a row on the card
+    // for ever. So both sides are counted with the SAME key the card groups by.
+    //
+    // A settled round and an unsent LATER round of the same cut are counted as
+    // two, deliberately, even though they share a group key: that is the 322
+    // shape — the original went out, the correction has not — and the listing
+    // still carrying the original is exactly the evidence that must not clear
+    // the correction. Counting them as one would mean the OLD video clears the
+    // new row, which is the failure this whole module exists to prevent. The
+    // cost is a row that waits for a tap on a job where Kyle REPLACED the video
+    // instead of adding one; the webhook path clears that case properly,
+    // because it can see the individual videos rather than a count.
+    const owed = owedGroups.get(projectId)?.size ?? 0;
+    const needed = owed + (settledGroups.get(projectId)?.size ?? 0);
+    // Not enough videos to go round: the job keeps every one of its rows.
+    if (videos < needed) continue;
+    for (const c of cuts) cleared.add(c.id);
+  }
+  return cleared;
 }
 
 /**
@@ -393,13 +573,38 @@ function wentOut(sub: CandidateSub): boolean {
  * them. Nothing is dropped in silence — that is the failure mode this whole
  * module exists to prevent.
  */
+/** The minimum a row needs to be grouped — so resolveListingInference can use
+ *  the same key without carrying a whole CandidateSub. */
+export type Groupable = {
+  id: string;
+  projectId: string;
+  deliverableId: string | null;
+  slot: number | null;
+  assetPath: string | null;
+  fileName: string | null;
+};
+
+/** A row that can be asked "has this cut's file been accounted for?" */
+type SettleableRow = Groupable & {
+  sentToClientAt: Date | null;
+  topazJob: { deliveredAt: Date | null } | null;
+};
+
+/** ONE definition of "these rows are the same video", used to collapse the
+ *  card's rows, to count how many videos a job is actually owed, and by the
+ *  Aryeo webhook to work out which cuts are rivals for one upload. Splitting
+ *  these apart is how a job ends up needing more videos than it ever ordered —
+ *  or how two exports of one reel end up blocking each other's proof. */
+export function groupKeyOf(r: Groupable): string {
+  return r.deliverableId
+    ? `${r.projectId}|${cutKeyOf(r)}`
+    : `${r.projectId}|${fileIdentity(r.fileName ?? r.assetPath, r.id)}`;
+}
+
 function collapseReExports(rows: CandidateSub[]): { winners: CandidateSub[]; others: Map<string, CandidateSub[]> } {
   const groups = new Map<string, CandidateSub[]>();
   for (const r of rows) {
-    const key = r.deliverableId
-      ? `${r.projectId}|${cutKeyOf(r)}`
-      : `${r.projectId}|${fileIdentity(r.fileName ?? r.assetPath, r.id)}`;
-    groups.set(key, [...(groups.get(key) ?? []), r]);
+    groups.set(groupKeyOf(r), [...(groups.get(groupKeyOf(r)) ?? []), r]);
   }
   const winners: CandidateSub[] = [];
   const others = new Map<string, CandidateSub[]>();
