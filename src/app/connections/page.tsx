@@ -14,6 +14,10 @@ import { WebhookHealthStrip } from "@/components/connections/WebhookHealthStrip"
 import { AryeoCutover, type CutoverState } from "@/components/connections/AryeoCutover";
 import { TopazLane, type TopazLaneJob, type TopazLaneStats } from "@/components/connections/TopazLane";
 import { topazDashboard, topazJobRows } from "@/lib/topazJobs";
+import { TranscriptionCard } from "@/components/connections/TranscriptionCard";
+import { InstagramCard } from "@/components/connections/InstagramCard";
+import { transcriptionCardData } from "@/lib/cutTranscripts";
+import { instagramCardData } from "@/lib/publishing";
 import { aryeoEndpointUrl, aryeoSupportMessage, ARYEO_EVENTS, RECOMMENDED_TOKEN_HEADER } from "@/lib/webhookArming";
 import { prisma } from "@/lib/prisma";
 
@@ -127,6 +131,16 @@ const GMAIL_RESULT: Record<string, { ok: boolean; text: string }> = {
   },
 };
 
+// A card whose data read failed. Says so, rather than an all-clear it never checked.
+function CardUnavailable({ name }: { name: string }) {
+  return (
+    <div className="rounded-2xl border bg-surface p-4 text-sm">
+      <p className="font-semibold">{name}</p>
+      <p className="mt-1 text-xs text-warning">Couldn&apos;t read this card&apos;s state just now — reload to try again.</p>
+    </div>
+  );
+}
+
 export default async function ConnectionsPage({
   searchParams,
 }: {
@@ -160,6 +174,8 @@ export default async function ConnectionsPage({
     topaz,
     topazOpen,
     topazHistory,
+    transcription,
+    instagram,
   ] = await Promise.all([
     webhookLaneHealth().catch(() => null),
     unresolvedWebhookFailures().catch(() => null),
@@ -211,6 +227,12 @@ export default async function ConnectionsPage({
     // Anything live or failed is always listed; the rest is the recent history.
     topazJobRows({ states: ["queued", "estimated", "uploading", "processing", "saving", "failed"], limit: 20 }).catch(() => []),
     topazJobRows({ limit: 12 }).catch(() => []),
+    // The two content-program cards (Sep 16): speech-to-text keys (§9) and
+    // Instagram publishing (§12). Both are plain database reads plus a
+    // no-network configured() check — nothing here can reach a provider.
+    // null = the read failed; the card slot then says so instead of 500ing.
+    transcriptionCardData().catch(() => null),
+    instagramCardData().catch(() => null),
   ]);
 
   // Dates out, ISO strings in: the card is a client component, and the house
@@ -325,7 +347,13 @@ export default async function ConnectionsPage({
   // Connection rows ("openphone_webhook", "aryeo_webhook") and would otherwise
   // inflate the numerator past M.
   const providerIds = new Set(PROVIDERS.map((p) => p.id));
-  const connectedCount = connections.filter((c) => providerIds.has(c.provider) && c.status === "CONNECTED").length;
+  const connectedCount =
+    connections.filter((c) => providerIds.has(c.provider) && c.status === "CONNECTED").length +
+    // The two Sep 16 cards have no Connection row under their own id:
+    // speech-to-text keys live under transcription_openai/_deepgram, and an
+    // Instagram connection is a ProgramPublishingAccount row.
+    (transcription?.providers.some((p) => p.configured) ? 1 : 0) +
+    (instagram?.accounts.some((a) => a.status === "CONNECTED") ? 1 : 0);
 
   // "Needs attention" is NOT a ratio — it's the alarm, so it covers every row
   // this screen is responsible for, minus only what's deliberately not a card:
@@ -482,6 +510,21 @@ export default async function ConnectionsPage({
               </div>
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {items.map((provider) => {
+                  // The two Sep 16 cards carry their own state and actions.
+                  if (provider.id === "transcription") {
+                    return transcription ? (
+                      <TranscriptionCard key={provider.id} {...transcription} />
+                    ) : (
+                      <CardUnavailable key={provider.id} name={provider.name} />
+                    );
+                  }
+                  if (provider.id === "instagram") {
+                    return instagram ? (
+                      <InstagramCard key={provider.id} {...instagram} deployed={deployed} />
+                    ) : (
+                      <CardUnavailable key={provider.id} name={provider.name} />
+                    );
+                  }
                   const c = byProvider.get(provider.id);
                   const conn: ConnState | null = c
                     ? {

@@ -268,6 +268,48 @@ export const PROVIDERS: ProviderDef[] = [
     ],
     ready: true,
   },
+  {
+    // Speech-to-text for cut transcripts (spec §9, Sep 16 2026). Two providers
+    // behind one card (OpenAI Whisper, Deepgram), each with its own encrypted
+    // Connection row ("transcription_openai" / "transcription_deepgram"); the
+    // card in components/connections/TranscriptionCard.tsx handles both. A
+    // saved key only makes the provider configured — the cut_transcripts
+    // switch stays OFF until Jordan turns it on. No key exists tonight.
+    id: "transcription",
+    name: "Speech-to-text",
+    blurb: "Transcribes each approved cut so captions describe what was actually said",
+    segment: "Files",
+    authType: "apikey",
+    icon: "AudioLines",
+    color: "#0369a1",
+    capabilities: [
+      "A transcript of the exact cut, stored per version, with human corrections kept beside it",
+      "Captions and CTAs built on what the video actually says, not the planned script",
+      "A changed cut invalidates its transcript and every draft built on it",
+    ],
+    ready: true,
+  },
+  {
+    // Instagram publishing (spec §12, Sep 16 2026). The Meta Graph adapter is
+    // built (lib/integrations/instagram.ts) but NO Meta app, account or app
+    // review exists tonight: the card (components/connections/InstagramCard.tsx)
+    // shows the requirements list and offers no connect control until the App
+    // ID + Secret are saved under Connection "meta". The `publishing` switch is
+    // a separate gate that stays OFF.
+    id: "instagram",
+    name: "Instagram publishing",
+    blurb: "Posts an approved cut with its caption to a client's Instagram",
+    segment: "Marketing",
+    authType: "oauth",
+    icon: "Share2",
+    color: "#c2185b",
+    capabilities: [
+      "Connect a client's Instagram Business/Creator account (Facebook Login)",
+      "Publish an approved cut as a Reel only after an explicit, named approval",
+      "Retries that can never post twice; success only on Instagram's confirmation",
+    ],
+    ready: true,
+  },
 ];
 
 export function getProvider(id: string): ProviderDef | undefined {
