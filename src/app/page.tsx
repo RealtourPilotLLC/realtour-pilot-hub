@@ -657,10 +657,40 @@ export default async function HomePage() {
   // not where he will notice a client waiting on a video we have already made.
   // Only when there is something: an empty card here would be furniture on
   // every other day, and his page already tells him when a list is clear.
-  const readySection = isOwner && d.readySend.ready.length > 0 ? (
-    <section id="ready-to-send" className="scroll-mt-32 md:scroll-mt-28">
-      <ReadyToSendHeading n={d.readySend.ready.length} />
-      <div className="mt-2">
+  // FIRST THING ON THE PAGE, AND LOUD (Jordan, Sep 17: "at the top of the
+  // screen in a big bright card"). A finished video nobody has sent is a client
+  // already waiting on work we have already done and already been paid for —
+  // the most expensive kind of thing to leave sitting. It outranks everything
+  // except a flag a person raised by hand, and it is not here at all on a day
+  // when there is nothing to send.
+  const readyCount = d.readySend.ready.length;
+  const oldestReady = d.readySend.ready[0];
+  // The border colour is an INLINE STYLE, not a class, and that is deliberate:
+  // globals.css sets `* { border-color: var(--border) }` outside any layer, and
+  // unlayered CSS beats Tailwind's layered utilities whatever their specificity,
+  // so every border-<colour> class in this app quietly renders as the default
+  // hairline. Measured here: border-brand, border-brand/50 and even
+  // border-[var(--brand)] all computed to rgba(214,222,240,0.09). Fixing that
+  // globally would restyle every coloured border in the hub at once, which is
+  // not a change to make in passing — so this card states its own colour.
+  const readySection = isOwner && readyCount > 0 ? (
+    <section
+      id="ready-to-send"
+      className="panel-shadow scroll-mt-32 overflow-hidden rounded-2xl border-2 bg-brand-soft/40 md:scroll-mt-28"
+      style={{ borderColor: "var(--brand)" }}
+    >
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border px-5 py-2.5">
+        <Send className="size-4 shrink-0 text-brand" />
+        <h2 className="text-[15px] font-semibold text-brand">
+          {readyCount} video{readyCount === 1 ? "" : "s"} ready to send to the client
+        </h2>
+        {oldestReady && (
+          <span className="text-xs text-muted">
+            oldest: {oldestReady.street} · waiting {ageText(oldestReady.approvedAtISO, now)}
+          </span>
+        )}
+      </div>
+      <div className="px-5 py-3.5">
         <ReadyToSendCard board={d.readySend} />
       </div>
     </section>
@@ -839,8 +869,8 @@ export default async function HomePage() {
         {flaggedSection}
         {isOwner ? (
           <>
-            {needsSection}
             {readySection}
+            {needsSection}
             {buttonSection}
             {stuckSection}
             {daySection}
