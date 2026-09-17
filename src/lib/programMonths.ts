@@ -196,7 +196,12 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
   let preparationStatus: PreparationStatus | null = null;
   const afterPrep = (): PreparationStatus =>
     scripts.length === 0 ? "PREPARING_SCRIPTS" : scriptsDone ? "READY_FOR_FILMING" : "AWAITING_SCRIPT_APPROVAL";
-  if (planningMode === "CALL") preparationStatus = callHeld ? afterPrep() : "CALL_PLANNED";
+  // Scripts on the month are proof that planning happened — by a call the old
+  // Calendly sweep never stamped (0 of 734 runs matched the generic slug), by a
+  // written path, or by an archive import. They outrank a missing call stamp so a
+  // finished month (Marcee's August: 9 scripts, one shoot) never reads "book your
+  // strategy call". The call STATUS itself is left alone: we do not invent a call.
+  if (planningMode === "CALL") preparationStatus = callHeld || scripts.length > 0 ? afterPrep() : "CALL_PLANNED";
   else if (planningMode === "WRITTEN") {
     if (preparationCompletedAt) preparationStatus = afterPrep();
     else preparationStatus = input.interviews.length > 0 ? "AWAITING_ANSWERS" : "WRITTEN_SELECTED";
