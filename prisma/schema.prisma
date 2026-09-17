@@ -481,18 +481,18 @@ model Project {
   contentDownloadedLastAt DateTime?
 
   // Billing (from Aryeo order)
-  paymentStatus String? // PAID | UNPAID | PARTIALLY_PAID | ...
-  balanceAmount Int? // cents still owed
-  invoiceUrl    String?
-  paymentUrl    String?
+  paymentStatus  String? // PAID | UNPAID | PARTIALLY_PAID | ...
+  balanceAmount  Int? // cents still owed
+  invoiceUrl     String?
+  paymentUrl     String?
   // AR follow-up: when we last nudged the client about this unpaid job
   // (set by the /billing "Followed up" marker or sending a payment reminder).
-  lastNudgedAt  DateTime?
+  lastNudgedAt   DateTime?
   // Owner removed this from the AR (unpaid) list — a cancelled appointment we
   // never completed, or a test order. A FLAG, not a delete, so the Aryeo sync
   // can't resurrect it and the history stays auditable (Jordan, Sep 1).
-  arRemovedAt   DateTime?
-  arRemovedNote String?
+  arRemovedAt    DateTime?
+  arRemovedNote  String?
   // Owner/admin confirmed this was actually PAID (Aryeo's paid flag lags badly
   // for the QuickBooks rail, so the hub can't wait for it). Distinct from
   // arRemovedAt: removed = never really owed; paid = the money came in.
@@ -528,9 +528,9 @@ model Project {
   vaId               String?
 
   // External system linkage
-  source         String  @default("MANUAL") // MANUAL | ARYEO | ...
+  source         String    @default("MANUAL") // MANUAL | ARYEO | ...
   aryeoId        String? // legacy/general Aryeo ref
-  aryeoOrderId   String? @unique
+  aryeoOrderId   String?   @unique
   aryeoListingId String?
   // The order 404s in Aryeo (deleted / merged there) while the hub still holds
   // a live job. Set by the daily orphan sweep; every automation (status sweep,
@@ -561,13 +561,13 @@ model Project {
   revisionNote        String?
 
   // Photographer's brief to the editor, captured at upload time.
-  editorBrief     String?
+  editorBrief  String?
   // Shoot debrief (upload portal rebuild, Aug 31 2026) — structured fields the
   // photographer fills before the job counts as done. All feed the editor brief.
   // Monthly-content plans (Starter/Accelerator/Pro) owe a BATCH of videos, so
   // the photographer reports how many they actually filmed on the wrap-up —
   // the editor needs the count to know how many cuts to produce (Jordan, Sep 1).
-  videosFilmed       Int?
+  videosFilmed Int?
 
   // ---- OFFICE OVERRIDES (Jordan, Sep 13: "I want to be able to change the
   // status, amount of deliverables, the due date and all other information
@@ -577,40 +577,40 @@ model Project {
   // statusPinnedAt: while set, no ENGINE may write Project.status (the hourly
   // status/folder sweeps, the task reconciler, the Aryeo sync); a human status
   // write (queue pill, pipeline board, the override dialog) clears or renews it.
-  statusPinnedAt      DateTime?
+  statusPinnedAt     DateTime?
   // The delivery due the office set — wins over the turnaround engine on the
   // queue row, the edit card, the tracker, the delivery board and the QC card.
-  dueOverrideAt       DateTime?
+  dueOverrideAt      DateTime?
   // How many videos this job owes — wins over videosFilmed and the order's
   // deliverable quantity everywhere (queue, cut slots, monthly quota).
-  videosOwedOverride  Int?
-  tierOverride        String?   // standard | premium | branding
-  typeDetailOverride  String?   // the row's "video type" text
-  priorityOverride    String?   // LOW | NORMAL | HIGH | URGENT — pins the edit card's priority
-  overrideBy          String?   // who last saved an override
-  overrideAt          DateTime?
-  overrideNote        String?   // their reason, shown on the row and the timeline
+  videosOwedOverride Int?
+  tierOverride       String? // standard | premium | branding
+  typeDetailOverride String? // the row's "video type" text
+  priorityOverride   String? // LOW | NORMAL | HIGH | URGENT — pins the edit card's priority
+  overrideBy         String? // who last saved an override
+  overrideAt         DateTime?
+  overrideNote       String? // their reason, shown on the row and the timeline
   cullingConfirmedAt DateTime? // ticked "culled to the standard, extras in Backup"
   debriefSubmittedAt DateTime? // the photographer SUBMITTED the upload page (finalizeUpload) — distinct from uploadedAt, which the Dropbox sweep can auto-stamp; gates My Pay visibility for shoots from Sep 2 2026
-  shotOrderNotes     String?   // "Shot front to back." or the actual order + why (organizing unseen photos burns office time)
-  removalNotes       String?   // pets/cans/vehicles/clutter the editor must remove
-  videoInstructions  String?   // REQUIRED on video jobs: flow + vision for the editor
+  shotOrderNotes     String? // "Shot front to back." or the actual order + why (organizing unseen photos burns office time)
+  removalNotes       String? // pets/cans/vehicles/clutter the editor must remove
+  videoInstructions  String? // REQUIRED on video jobs: flow + vision for the editor
   scriptConfirmedAt  DateTime? // photographer confirmed the shoot script (as-is or edited)
-  scriptConfirmNote  String?   // "as written" | "edited on site" + what changed
+  scriptConfirmNote  String? // "as written" | "edited on site" + what changed
   // Edit instructions for THIS job, set by owner/admin on /edit/<id> and shown
   // read-only to the editor (mirrors the Luma order form Jordan likes):
   // JSON { musicType, colorProfile, desiredLength, instructions }
-  editSpec        String?
+  editSpec           String?
   // Per-job photo-editing inputs (AutoHDR $0.50/finished photo). Counted from
   // the Dropbox 01-RAW-Photos folder: drone shots are single JPGs (DJI_*),
   // everything else is 5-bracket sets. finished = (raw−drone)/5 + drone.
-  rawPhotoCount   Int?
-  dronePhotoCount Int?
-  photoCountedAt  DateTime?
+  rawPhotoCount      Int?
+  dronePhotoCount    Int?
+  photoCountedAt     DateTime?
   // When the photographer finished the guided upload.
-  uploadedAt      DateTime?
+  uploadedAt         DateTime?
   // Relative path to the generated editor-brief PDF, if any.
-  editorPdfPath   String?
+  editorPdfPath      String?
 
   // Frame.io V4 review project (editors upload finals + we review there).
   frameioProjectId String?
@@ -652,16 +652,9 @@ model Project {
   topazJobs         TopazJob[]
   revisionBriefs    RevisionBrief[]
 
-  createdAt  DateTime    @default(now())
-  updatedAt  DateTime    @updatedAt
-  ownerTodos OwnerTodo[]
-
-  @@index([status])
-  @@index([clientId])
-  @@index([photographerId])
-  @@index([editorId])
-  @@index([shootDate])
-  @@index([deliveredAt])
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+  ownerTodos          OwnerTodo[]
   // ---- RTP-06 (Sep 16 audit): "we could not look" must be distinguishable
   // from "we looked and saw nothing". statusCheckedAt is stamped even when the
   // evidence read fails wholesale, so two readers already treat a failure as
@@ -669,14 +662,21 @@ model Project {
   evidenceAttemptedAt DateTime?
   evidenceSucceededAt DateTime?
   evidenceError       String?
+
+  @@index([status])
+  @@index([clientId])
+  @@index([photographerId])
+  @@index([editorId])
+  @@index([shootDate])
+  @@index([deliveredAt])
 }
 
 model Deliverable {
-  id         String            @id @default(cuid())
-  project    Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  projectId  String
-  type       DeliverableType
-  label      String? // optional override label
+  id                   String            @id @default(cuid())
+  project              Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId            String
+  type                 DeliverableType
+  label                String? // optional override label
   // PRODUCT IDENTITY (Sep 2 2026). `type` is a CATEGORY — mapping an Aryeo
   // line through Settings → Products used to keep only that and a generic
   // label ("Social Reel"), so "Standard Reel with Agent Intro" and "Photography
@@ -692,24 +692,24 @@ model Deliverable {
   //     integrations/aryeo.ts: standard_reel · standard_reel_agent_intro ·
   //     standard_cinematic · personal_branding · premium_social_reel ·
   //     premium_cinematic. Null on every non-video row.
-  productTitle String?
-  videoStyle   String?
-  quantity   Int               @default(1)
-  status     DeliverableStatus @default(PENDING)
-  notes      String?
+  productTitle         String?
+  videoStyle           String?
+  quantity             Int               @default(1)
+  status               DeliverableStatus @default(PENDING)
+  notes                String?
   // Photographer ticked this off on-site (guided /shoot capture checklist).
   // Lets the team see what was confirmed captured before files are uploaded.
-  capturedAt DateTime?
+  capturedAt           DateTime?
   // Photographer ticked this off as uploaded to Dropbox (/upload checklist).
   // They upload to Dropbox directly — this is the accountability signal that the
   // raw files for this item are in, so editors aren't chasing ETAs.
-  uploadedAt DateTime?
+  uploadedAt           DateTime?
   // Photographer marked this item NOT completed on the wrap-up step (couldn't
   // shoot / couldn't upload) with the reason the Admin reads — surfaces on the
   // /ops QC card + project timeline. Cleared if the item is later marked
   // uploaded (Jordan, Sep 1 2026).
-  notCompletedReason String?
-  notCompletedAt     DateTime?
+  notCompletedReason   String?
+  notCompletedAt       DateTime?
   // The Aryeo order no longer carries an item for this deliverable (removed —
   // not canceled — on their side). RETIRED, never deleted: status/uploads/
   // capturedAt stay as evidence of work that happened. Every "what is owed"
@@ -720,19 +720,19 @@ model Deliverable {
   removedFromOrderNote String?
   // Hub-created row (editor's manual queue-add, owner tooling) — never touched
   // by the order reconcile, which only knows about Aryeo line items.
-  manual     Boolean           @default(false)
-  createdAt  DateTime          @default(now())
+  manual               Boolean           @default(false)
+  createdAt            DateTime          @default(now())
 
-  uploads UploadedFile[]
+  uploads           UploadedFile[]
   reviewSubmissions ReviewSubmission[]
-
-  @@index([projectId])
   // ---- Sep 16 (Kyle call, item 9): "not required on this job". Hub-owned —
   // the Aryeo reconcile never clears it (unlike removedFromOrderAt, which a
   // package-implied type un-retires). Every "owed" reader honours it.
-  waivedAt   DateTime?
-  waivedBy   String?
-  waivedNote String?
+  waivedAt          DateTime?
+  waivedBy          String?
+  waivedNote        String?
+
+  @@index([projectId])
 }
 
 // A file uploaded through the photographer portal. The actual bytes live in
@@ -917,22 +917,22 @@ model SmartTask {
 // link, or logged from a text/email). Pipes onto the project, alerts Kyle +
 // the photographer, and feeds creative KPIs / problem-pattern analytics.
 model Feedback {
-  id             String   @id @default(cuid())
-  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  projectId      String
+  id                 String    @id @default(cuid())
+  project            Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId          String
   // The one overall score everything already reads (avg-rating tile, sentiment,
   // the photographer scorecards). From the public form it is what the client
   // tapped on "Overall", and when they skipped that row it is the rounded mean
   // of the two per-question ratings below — a client who rates their
   // photographer 1/5 and skips "Overall" must still trip the NEGATIVE path.
-  rating         Int? // 1-5 overall
-  sentiment      String? // POSITIVE | NEUTRAL | NEGATIVE
-  category       String? // quality | communication | turnaround | other
+  rating             Int? // 1-5 overall
+  sentiment          String? // POSITIVE | NEUTRAL | NEGATIVE
+  category           String? // quality | communication | turnaround | other
   // The human-readable transcript of the whole response — every surface in the
   // hub renders this (the /quality row, the URGENT task, the bell), so the
   // three answers below are also composed into it. The columns are the
   // queryable copy; this is the copy a person reads.
-  body           String
+  body               String
   // --- The three questions the public form asks (Jordan, Sep 2 2026) --------
   // "I want to know how their experience was with the assigned photographer.
   // What they would like to see done differently, and ask about the quality of
@@ -948,9 +948,9 @@ model Feedback {
   improveNote        String? // "what would you like to see done differently?"
   contentRating      Int? // 1-5 — quality of the content we delivered
   contentNote        String? // their words about the content
-  authorName     String?
-  source         String   @default("form") // form | text | email
-  photographerId String? // who shot it, for creative scorecards
+  authorName         String?
+  source             String    @default("form") // form | text | email
+  photographerId     String? // who shot it, for creative scorecards
   // WHOSE PROBLEM IS IT (Jordan, Sep 7 2026: "reels turned around quicker and
   // less spelling errors ... should not affect the photographer. This is an
   // editing and operations issue not a photographer issue. I want to make sure
@@ -965,35 +965,39 @@ model Feedback {
   //   null       — not classified yet (pre-Sep-7 rows and anything the
   //                classifier could not read).
   // The photographer's KPI counts ONSITE and MIXED only — see src/lib/kpi.ts.
-  attribution      String?
-  /** Why it was classified that way, in one line — shown beside the chip so an
-   *  owner can see the reasoning before overriding it. */
-  attributionWhy   String?
-  /** Set when a human confirmed or changed the classification: an owner's call
-   *  is never re-decided by the classifier on a later pass. */
-  attributionBy    String?
+  attribution        String?
+  /**
+   * Why it was classified that way, in one line — shown beside the chip so an
+   * owner can see the reasoning before overriding it.
+   */
+  attributionWhy     String?
+  /**
+   * Set when a human confirmed or changed the classification: an owner's call
+   * is never re-decided by the classifier on a later pass.
+   */
+  attributionBy      String?
   // --- The reply we sent the agent (Jordan, Sep 7) -------------------------
-  repliedAt      DateTime?
-  replyBody      String?
-  replyBy        String?
-  resolved       Boolean  @default(false)
-  createdAt      DateTime @default(now())
-
-  @@index([projectId])
-  @@index([photographerId])
-  @@index([sentiment])
+  repliedAt          DateTime?
+  replyBody          String?
+  replyBy            String?
+  resolved           Boolean   @default(false)
+  createdAt          DateTime  @default(now())
   // ---- Sep 16 (Kyle call, item 10): correct an automated read without losing
   // the original. sentimentAuto = what the classifier decided (never rewritten);
   // a human override records who/when/why; dismissed = "not feedback" (hidden
   // from every count, row kept); sourceRef = CommLog id for comms-filed rows.
-  sentimentAuto String?
-  sentimentBy   String?
-  sentimentAt   DateTime?
-  sentimentNote String?
-  dismissedAt   DateTime?
-  dismissedBy   String?
-  dismissReason String?
-  sourceRef     String?
+  sentimentAuto      String?
+  sentimentBy        String?
+  sentimentAt        DateTime?
+  sentimentNote      String?
+  dismissedAt        DateTime?
+  dismissedBy        String?
+  dismissReason      String?
+  sourceRef          String?
+
+  @@index([projectId])
+  @@index([photographerId])
+  @@index([sentiment])
 }
 
 // A lightweight team chat thread on a project — Kyle ↔ editors ↔ photographers
@@ -1048,17 +1052,17 @@ model RevisionBrief {
 // unread dots + badge in the message center (/editing/messages). userKey is
 // the viewer's AppUser id; upserted when they open the thread.
 model ThreadRead {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   userKey   String
   projectId String
-  seenAt    DateTime @default(now())
-
-  @@unique([userKey, projectId])
-  @@index([userKey])
+  seenAt    DateTime  @default(now())
   // Sep 16 (Kyle call): "Close conversation" hides a job thread from this
   // viewer's active list until a new message reopens it (postProjectMessage
   // clears it for every viewer of the project).
-  closedAt DateTime?
+  closedAt  DateTime?
+
+  @@unique([userKey, projectId])
+  @@index([userKey])
 }
 
 // Service catalogue synced from Aryeo /products.
@@ -1090,22 +1094,22 @@ model OrderItem {
 }
 
 model Product {
-  id          String   @id @default(cuid())
-  aryeoId     String   @unique
-  title       String
-  type        String? // MAIN | ADDON
-  category    String?
-  active      Boolean  @default(true)
-  isTwilight  Boolean  @default(false)
+  id               String    @id @default(cuid())
+  aryeoId          String    @unique
+  title            String
+  type             String? // MAIN | ADDON
+  category         String?
+  active           Boolean   @default(true)
+  isTwilight       Boolean   @default(false)
   // Aryeo's native is_serviceable flag — the DEFAULT for the per-part
   // shoot/add-on toggles until a human maps the product.
   aryeoServiceable Boolean?
-  description String?
+  description      String?
   // ---- Manual mapping (settings → Products) — the AUTHORITATIVE category
   // assignment, set by a human. When present it overrides every regex/AI
   // parser at sync time (Aug 24: phantom floor plans / Faye's ghost video).
-  mediaTypes  String? // JSON DeliverableType[] this product actually produces ([] = none, e.g. a fee)
-  videoTier   String? // standard | premium | personal_branding (when a video/reel type is included)
+  mediaTypes       String? // JSON DeliverableType[] this product actually produces ([] = none, e.g. a fee)
+  videoTier        String? // standard | premium | personal_branding (when a video/reel type is included)
   // The Style Guide type this product's video is cut as (Sep 2 2026) — one of
   // the VIDEO_STYLE keys in integrations/aryeo.ts (standard_reel ·
   // standard_reel_agent_intro · standard_cinematic · personal_branding ·
@@ -1113,22 +1117,22 @@ model Product {
   // Settings → Products; when null the sync derives it from videoTier + the
   // product name (an "Agent on Camera" add-on on the same order upgrades a
   // standard reel to the agent-intro type).
-  videoStyle  String?
-  serviceKind String? // service (done at the shoot) | addon (post-shoot work, e.g. photo editing)
+  videoStyle       String?
+  serviceKind      String? // service (done at the shoot) | addon (post-shoot work, e.g. photo editing)
   // Per-PART kinds: the subset of mediaTypes that are post-shoot add-on work
   // (a bundle's photos are shoot work while its virtual staging is editing).
-  addonTypes  String? // JSON DeliverableType[]
+  addonTypes       String? // JSON DeliverableType[]
   // How many VIDEOS one order of this product produces (Accelerator = 4, a
   // two-reel bundle = 2). Applies to VIDEO / SOCIAL_REEL / DRONE_VIDEO rows.
-  videoQuantity Int?
-  mappedAt    DateTime?
-  mappedBy    String? // email of who set it
-  minPrice    Int? // cents (lowest variant)
-  maxPrice    Int? // cents (highest variant)
-  variants    String? // JSON: [{title, price_amount, duration}]
-  tags        String? // JSON: string[] of tag names
-  updatedAt   DateTime @updatedAt
-  createdAt   DateTime @default(now())
+  videoQuantity    Int?
+  mappedAt         DateTime?
+  mappedBy         String? // email of who set it
+  minPrice         Int? // cents (lowest variant)
+  maxPrice         Int? // cents (highest variant)
+  variants         String? // JSON: [{title, price_amount, duration}]
+  tags             String? // JSON: string[] of tag names
+  updatedAt        DateTime  @updatedAt
+  createdAt        DateTime  @default(now())
 
   @@index([type])
 }
@@ -1414,15 +1418,15 @@ model MediaNote {
 // plate). A re-submission after changes is a NEW row with round+1 — rows are
 // an audit trail of every cut, never overwritten.
 model ReviewSubmission {
-  id              String    @id @default(cuid())
-  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  projectId       String
-  kind            String    @default("video") // video | photos (photos reserved for later)
-  assetUrl        String? // stable playback URL (/api/review/cut/<id>/stream); MediaNotes key on it
-  assetPath       String? // Dropbox path of the cut file (folder-discovered rows) or the staging path
-  fileName        String?
-  round           Int       @default(1) // 1 = first cut, +1 per re-submission
-  status          String    @default("PENDING") // UPLOADING | PENDING | CHANGES_REQUESTED | APPROVED
+  id                       String       @id @default(cuid())
+  project                  Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId                String
+  kind                     String       @default("video") // video | photos (photos reserved for later)
+  assetUrl                 String? // stable playback URL (/api/review/cut/<id>/stream); MediaNotes key on it
+  assetPath                String? // Dropbox path of the cut file (folder-discovered rows) or the staging path
+  fileName                 String?
+  round                    Int          @default(1) // 1 = first cut, +1 per re-submission
+  status                   String       @default("PENDING") // UPLOADING | PENDING | CHANGES_REQUESTED | APPROVED
   // ---- Internal upload flow (Sep 1 2026, Jordan: "upload through the editor
   // portal as Version 1 → review room → revisions → approved → auto to
   // Dropbox, marked complete per cut"). A cut is identified by WHICH
@@ -1430,15 +1434,17 @@ model ReviewSubmission {
   // are versions of that cut. The bytes live in the hub's own store (Vercel
   // Blob — Dropbox temporary links refuse to play in a browser) until the cut
   // is approved and copied to the job's Final folder.
-  deliverable     Deliverable? @relation(fields: [deliverableId], references: [id], onDelete: SetNull)
-  deliverableId   String?
-  /** The 1080p Topaz pass for THIS approved round, if one was queued. */
-  topazJob        TopazJob?
-  slot            Int       @default(1) // 1..quantity for multi-video deliverables
-  source          String    @default("folder") // upload | folder | button
-  blobUrl         String? // the uploaded version's URL in the hub store
-  blobPathname    String?
-  sizeBytes       Int?
+  deliverable              Deliverable? @relation(fields: [deliverableId], references: [id], onDelete: SetNull)
+  deliverableId            String?
+  /**
+   * The 1080p Topaz pass for THIS approved round, if one was queued.
+   */
+  topazJob                 TopazJob?
+  slot                     Int          @default(1) // 1..quantity for multi-video deliverables
+  source                   String       @default("folder") // upload | folder | button
+  blobUrl                  String? // the uploaded version's URL in the hub store
+  blobPathname             String?
+  sizeBytes                Int?
   // ---- WHAT ACTUALLY ARRIVED (Sep 16 2026, the 1080p export spec) ----------
   // The rule — lib/videoStyles EXPORT_SPEC, "export at 1080p, edit in 4K if you
   // like" — is only a rule if somebody can see whether it is being followed.
@@ -1456,31 +1462,24 @@ model ReviewSubmission {
   //   · at folder discovery from the same probe over a Dropbox temporary link
   //     (lib/reviewCuts recordArrivedDimensions).
   // Null means nothing could be measured — never "it was fine".
-  sourceWidth     Int?
-  sourceHeight    Int?
+  sourceWidth              Int?
+  sourceHeight             Int?
   // Set when an OWNER/ADMIN knowingly let an over-spec file through (6pm with a
   // client waiting is its own kind of failure). An EDITOR cannot reach this: an
   // override is a decision with a name on it, not a silent bypass. The job's
   // Activity history carries the same line in words.
-  exportOverrideBy String?
-  exportOverrideAt DateTime?
-  finalPath       String? // where the approved cut was placed in Dropbox
-  dropboxJobId    String? // files/save_url async job while the copy is in flight
-  completedAt     DateTime? // approved AND copied to Dropbox — "complete for that cut"
-  submittedByKey  String? // editor key (kim/remar/…)
-  submittedByName String?
-  note            String? // editor's note to the reviewer ("music was client's pick", …)
-  decidedAt       DateTime?
-  decidedBy       String?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-
-  @@index([status])
-  @@index([projectId, round])
-  @@index([deliverableId, slot])
-  // One row per (file, round): the sweep and the editor's button can race on
-  // the same new file; Postgres treats the legacy NULL-path rows as distinct.
-  @@unique([projectId, assetPath, round])
+  exportOverrideBy         String?
+  exportOverrideAt         DateTime?
+  finalPath                String? // where the approved cut was placed in Dropbox
+  dropboxJobId             String? // files/save_url async job while the copy is in flight
+  completedAt              DateTime? // approved AND copied to Dropbox — "complete for that cut"
+  submittedByKey           String? // editor key (kim/remar/…)
+  submittedByName          String?
+  note                     String? // editor's note to the reviewer ("music was client's pick", …)
+  decidedAt                DateTime?
+  decidedBy                String?
+  createdAt                DateTime     @default(now())
+  updatedAt                DateTime     @updatedAt
   // ---- REMOVE / REASSIGN (Jordan, Sep 16: "the editor should be able to
   // remove the video from upload / for review in case they mistakenly upload
   // the wrong video or to the wrong project… also reassign that video to a
@@ -1494,19 +1493,42 @@ model ReviewSubmission {
   // exists in production, on 328 Columbia Ave). They are still READ, so they
   // stay: CutTakeBackFlags renders the banner, whyNotTakeBack keeps an
   // approved cut office-only, and removeStrandedFinal clears the Dropbox file.
-  withdrawnAt     DateTime?
-  withdrawnBy     String?
-  withdrawnReason String?
+  withdrawnAt              DateTime?
+  withdrawnBy              String?
+  withdrawnReason          String?
   // LEGACY, same vintage: an APPROVED cut's file was already copied into the
   // job's Final folder, and the old withdrawal left it there. A removal now
   // records that leftover as a SmartTask ("stranded-final-<id>") instead,
   // because the row that used to carry this path is gone.
-  strandedFinalPath String?
+  strandedFinalPath        String?
   // Reassignment provenance — where the cut came from, so both jobs' timelines
   // and the editor's queue can say what moved.
-  movedFromProjectId String?
-  movedAt            DateTime?
-  movedBy            String?
+  movedFromProjectId       String?
+  movedAt                  DateTime?
+  movedBy                  String?
+  // ---- CPOS (Sep 16 2026), spec §8: five separate concepts. Internal QC is
+  // status/decidedAt/decidedBy above and stays exactly as it is. These add
+  // client VISIBILITY (released), the client's own change request (so the
+  // portal stops overwriting Jordan's QC stamp), the client APPROVAL pointer
+  // (the ClientDecision row is the record; this is the cache), and the byte
+  // hash that makes a cut version immutable ("never silently serve a
+  // different file under an old approval").
+  clientRequestedAt        DateTime?
+  clientRequestedBy        String?
+  clientReleasedAt         DateTime?
+  clientReleasedBy         String?
+  clientApprovedDecisionId String? // -> ClientDecision
+  contentHash              String? // sha256 of the stored bytes at release time
+  videoId                  String? // -> ContentVideo this cut is a version of
+
+  // One row per (file, round): the sweep and the editor's button can race on
+  // the same new file; Postgres treats the legacy NULL-path rows as distinct.
+  @@unique([projectId, assetPath, round])
+  @@index([status])
+  @@index([projectId, round])
+  @@index([deliverableId, slot])
+  @@index([videoId])
+  @@index([clientReleasedAt])
 }
 
 // Per-photo quick verdict while arrowing through a gallery in review mode.
@@ -1627,32 +1649,32 @@ model KnowledgeItem {
 // we tell this client / when did we last talk / what was promised". Client comms
 // are sensitive: surfaced to ADMIN+OWNER only, never to creatives.
 model CommLog {
-  id          String   @id @default(cuid())
-  channel     String // text | call | email | slack | note
-  direction   String   @default("in") // in | out
-  minRole     String   @default("ADMIN") // CREATIVE | ADMIN | OWNER — lowest role allowed to see it (Slack DMs = OWNER)
-  clientId    String? // plain ref (no FK) so log rows survive client edits
-  clientName  String?
-  projectId   String?
-  contactName String? // who sent/received (sender label)
+  id           String   @id @default(cuid())
+  channel      String // text | call | email | slack | note
+  direction    String   @default("in") // in | out
+  minRole      String   @default("ADMIN") // CREATIVE | ADMIN | OWNER — lowest role allowed to see it (Slack DMs = OWNER)
+  clientId     String? // plain ref (no FK) so log rows survive client edits
+  clientName   String?
+  projectId    String?
+  contactName  String? // who sent/received (sender label)
   // The OTHER party's phone, 10-digit key (inbound: who wrote in; outbound: who
   // we texted). Without it a logged text can be read but not replied to — the
   // reply queue needs a number to send back on, and CommLog is the only complete
   // record of every text. Null on email/slack rows and on texts logged before
   // this column existed (those fall back to the client's number on file).
-  fromPhone   String?
-  subject     String? // email subject, if any
-  body        String // full message text / transcript
-  occurredAt  DateTime
-  source      String // openphone | openphone-call | gmail | slack | manual | backfill
-  externalId  String?  @unique // dedup: provider message/call id
+  fromPhone    String?
+  subject      String? // email subject, if any
+  body         String // full message text / transcript
+  occurredAt   DateTime
+  source       String // openphone | openphone-call | gmail | slack | manual | backfill
+  externalId   String?  @unique // dedup: provider message/call id
   // TRUE when projectId is a router HEURISTIC (mostRelevantProject /
   // mostRecentDeliveredIsh fallback for a message naming no street) rather
   // than a named street/thread match or an explicit send. Surfaces that scope
   // by project (e.g. the /ops shoot-card comms chip) must not treat a guessed
   // filing as proof the message is about that job.
-  projectGuess Boolean @default(false)
-  createdAt   DateTime @default(now())
+  projectGuess Boolean  @default(false)
+  createdAt    DateTime @default(now())
 
   @@index([clientId])
   @@index([projectId])
@@ -2026,7 +2048,6 @@ model HubDocument {
   @@index([kind])
 }
 
-
 // ---------------------------------------------------------------------------
 // CONTENT CREATOR PROGRAM (monthly personal branding). The enrollment signal
 // is Client.socialClient/socialPlan (synced from Aryeo custom fields); these
@@ -2055,7 +2076,15 @@ model PortalVideo {
   deliveredAt  DateTime
   createdAt    DateTime @default(now())
 
+  // ---- CPOS (Sep 16 2026), spec §7: a library row is one SOURCE of one
+  // logical video, never the video itself — so an Aryeo row and a review-cut
+  // row for the same deliverable count once.
+  videoId      String? // -> ContentVideo
+  submissionId String? // -> ReviewSubmission, for source = review
+  label        String? // PROGRAM | LISTING | EXTRA — null = legacy, treated as PROGRAM by readers until staff map it
+
   @@index([enrollmentId, deliveredAt])
+  @@index([videoId])
 }
 
 // A client's suggested change to one of their scripts, straight from the
@@ -2071,6 +2100,12 @@ model ScriptSuggestion {
   originalBody String? // the script body BEFORE an applied rewrite
   resolvedAt   DateTime?
   createdAt    DateTime  @default(now())
+
+  // ---- CPOS (Sep 16 2026), spec §2/§22: who asked, and against which
+  // script version, so a suggestion on v2 is never applied to v4 blind.
+  clientUserId    String?
+  staffUserId     String?
+  scriptVersionId String? // -> ContentScriptVersion
 
   @@index([scriptId])
   @@index([enrollmentId, status])
@@ -2091,9 +2126,23 @@ model PortalComment {
   status       String   @default("OPEN") // OPEN | SENT | RESOLVED
   createdAt    DateTime @default(now())
 
+  // ---- CPOS (Sep 16 2026), spec §8: who wrote it (a person, or staff on
+  // their behalf; both null = legacy token visit), replies, and resolution.
+  clientUserId   String? // -> ClientUser
+  staffUserId    String? // -> AppUser, when written through the owner iframe
+  parentId       String? // -> PortalComment (a reply thread)
+  resolvedAt     DateTime?
+  resolvedBy     String?
+  resolvedByKind String? // CLIENT | STAFF | EDITOR
+  decisionId     String? // -> ClientDecision that bundled this note
+  videoId        String? // -> ContentVideo
+  updatedAt      DateTime? @updatedAt // nullable (additive on a live table) but Prisma-maintained on every write
+
   @@index([submissionId])
   @@index([projectId, status])
   @@index([enrollmentId])
+  @@index([parentId])
+  @@index([decisionId])
 }
 
 // A PAID website signup, one row per Stripe Checkout session — the activation
@@ -2127,47 +2176,67 @@ model ProgramSignup {
 }
 
 model ContentEnrollment {
-  id               String    @id @default(cuid())
-  clientId         String    @unique // -> Client (plain ref)
-  package          String // Starter | Accelerator | Pro (display name, configurable)
-  videosPerMonth   Int
-  sessionsPerMonth Int
-  sessionHours     Float // per-session cap (2 or 4)
+  id                   String    @id @default(cuid())
+  clientId             String    @unique // -> Client (plain ref)
+  package              String // Starter | Accelerator | Pro (display name, configurable)
+  videosPerMonth       Int
+  sessionsPerMonth     Int
+  sessionHours         Float // per-session cap (2 or 4)
   // Per-client workflow overrides (spec §3): the flags every engine must honor.
-  strategyCallRequired Boolean @default(true)
-  clientSuppliesTopics Boolean @default(false)
+  strategyCallRequired Boolean   @default(true)
+  clientSuppliesTopics Boolean   @default(false)
   overridesJson        String? // anything rarer, JSON
-  status        String    @default("ACTIVE") // ACTIVE | PAUSED | ENDED
+  status               String    @default("ACTIVE") // ACTIVE | PAUSED | ENDED
   // --- Billing terms (owner-entered, Aug 25) — how this client pays. ---
   // PAID_IN_FULL (rate = the full amount) | MONTHLY_CONTRACT (rate = per month,
   // months = commitment) | MONTH_TO_MONTH (rate = per month) | TRIAL (rate = the
   // one-month price). Never shown to creatives.
-  billingType   String?
-  billingRate   Float?
-  billingMonths Int?
+  billingType          String?
+  billingRate          Float?
+  billingMonths        Int?
   // Phase-5 portal: unguessable share token — the client's read-only page of
   // their approved scripts + booking link. Null = no portal issued yet.
-  portalToken   String?   @unique
+  portalToken          String?   @unique
   // A human set the status (trials that aren't Aryeo-flagged, hand-pauses):
   // the Aryeo sync must never auto-pause or auto-reactivate these.
-  statusManual  Boolean   @default(false)
-  startedAt     DateTime?
-  packageSource String    @default("aryeo") // aryeo | manual (who set the package)
-  notes         String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  statusManual         Boolean   @default(false)
+  startedAt            DateTime?
+  packageSource        String    @default("aryeo") // aryeo | manual (who set the package)
+  notes                String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  // ---- CPOS (Sep 16 2026) — see the CONTENT PROGRAM OPERATING SYSTEM block.
+  // Token lifecycle (spec §2): the value above already exists; these say when
+  // it was minted, when it stops working, and when it was last rotated. Null
+  // expiry = the link keeps working exactly as today (transition Stage A).
+  portalTokenIssuedAt  DateTime?
+  portalTokenExpiresAt DateTime?
+  portalTokenRotatedAt DateTime?
+  // Paused/ended clients keep READ-ONLY access to released content unless a
+  // human explicitly revokes it (Jordan's ruling). Null = not revoked.
+  accessRevokedAt      DateTime?
+  accessRevokedBy      String?
+  // Call mode (spec §17): REQUIRED | OPTIONAL_WRITTEN | NOT_INCLUDED. Null =
+  // derive from strategyCallRequired (true→REQUIRED, false→NOT_INCLUDED) so
+  // nothing changes for the 28 live rows until a human sets it.
+  callMode             String?
+  // Whether this client may choose "Plan without a call" (spec §19). Null =
+  // the program default (offered when callMode is OPTIONAL_WRITTEN).
+  noCallEligible       Boolean?
+  timezone             String? // IANA, for appointment display + reminder hours; null = America/New_York
 
   @@index([status])
 }
 
 model ContentMonth {
-  id           String @id @default(cuid())
-  enrollmentId String
-  clientId     String // denormalized for cheap client-scoped reads
-  monthKey     String // "2026-08" (ET month)
-  videosOwed   Int
-  status       String  @default("OPEN") // OPEN | COMPLETED | SKIPPED | IMPORTED
-  historical   Boolean @default(false) // backfilled month — never went through the live workflow
+  id                    String    @id @default(cuid())
+  enrollmentId          String
+  clientId              String // denormalized for cheap client-scoped reads
+  monthKey              String // "2026-08" (ET month)
+  videosOwed            Int
+  status                String    @default("OPEN") // OPEN | COMPLETED | SKIPPED | IMPORTED
+  historical            Boolean   @default(false) // backfilled month — never went through the live workflow
   // Strategy call (spec §16) — richer StrategyCall model arrives in Phase 3;
   // these fields carry the state the dashboard needs now.
   strategyCallStatus    String    @default("NOT_SCHEDULED") // NOT_REQUIRED | NOT_SCHEDULED | SCHEDULED | COMPLETED | SKIPPED
@@ -2182,67 +2251,155 @@ model ContentMonth {
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
+  // ---- CPOS (Sep 16 2026), spec §19: a month has a planning mode and a
+  // preparation status SEPARATE from appointment status. All nullable — the
+  // derivation rules live in code, and null means "not yet decided", never
+  // "call completed".
+  planningMode               String? // CALL | WRITTEN | UNDECIDED
+  preparationStatus          String? // CALL_PLANNED | WRITTEN_SELECTED | AWAITING_ANSWERS | PREPARING_SCRIPTS | AWAITING_SCRIPT_APPROVAL | READY_FOR_FILMING
+  preparationCompletedAt     DateTime? // no-call path: when sufficient answers were submitted (starts the window)
+  preparationWindowDays      Int? // null = the configured default (3 business days)
+  preparationExceptionReason String? // staff applied an established exception
+  preparationExceptionBy     String?
+  preparationExceptionAt     DateTime?
+  filmingReadyAt             DateTime? // stamped when scripts are approved AND preparation is complete
+  // This month's campaign/priorities (spec §3), kept apart from the permanent
+  // brand foundation that lives on ContentStrategyVersion.
+  prioritiesJson             String?
+  prioritiesSourceRef        String? // ProgramCallRecord id | ClientFact id | "manual"
+  // The monthly-strategy call that PLANNED this month (spec §26: a call held
+  // in late September may plan October). Replaces keying by the call's month.
+  callRecordId               String?
+  // Staff snooze for the reminder evaluator (spec §24).
+  remindersSnoozedUntil      DateTime?
+  remindersSnoozedBy         String?
+  remindersSnoozeReason      String?
+
   @@unique([enrollmentId, monthKey])
   @@index([clientId])
   @@index([monthKey])
+  @@index([callRecordId])
+  @@index([preparationStatus])
 }
 
 model ContentTopic {
-  id           String  @id @default(cuid())
-  enrollmentId String
-  clientId     String
-  monthId      String? // null = in the bank; set = planned for that month
-  title        String
-  concept      String? // short angle / why it works
-  pillar       String?
-  source       String  @default("staff") // ai | client | strategy_call | staff | import
-  status       String  @default("IDEA") // IDEA | RECOMMENDED | SAVED | SELECTED | SCRIPTED | FILMED | EDITING | DELIVERED | REJECTED | ARCHIVED
-  clientVisible Boolean @default(false) // shown in the portal (server-enforced)
-  scoresJson   String? // {trust, credibility, value, entertainment} High/Med/Low + rationale
+  id            String   @id @default(cuid())
+  enrollmentId  String
+  clientId      String
+  monthId       String? // null = in the bank; set = planned for that month
+  title         String
+  concept       String? // short angle / why it works
+  pillar        String?
+  source        String   @default("staff") // ai | client | strategy_call | staff | import
+  status        String   @default("IDEA") // IDEA | RECOMMENDED | SAVED | SELECTED | SCRIPTED | FILMED | EDITING | DELIVERED | REJECTED | ARCHIVED
+  clientVisible Boolean  @default(false) // shown in the portal (server-enforced)
+  scoresJson    String? // {trust, credibility, value, entertainment} High/Med/Low + rationale
   clientWording String? // the client's original phrasing, preserved (spec §19)
-  notes        String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // ---- CPOS (Sep 16 2026), spec §5: "a topic title alone is insufficient".
+  // `pillar` above stays as the free-text label (≈200 distinct strings in
+  // production); `pillarId` is the stable identity. `concept` above IS the
+  // Arielle-style one-sentence description — not duplicated here.
+  pillarId          String? // -> ContentPillar
+  audienceNeed      String? // the problem, misconception or opportunity
+  businessGoal      String? // which approved goal this serves
+  intendedMessage   String? // what the viewer should take away
+  // Approval state is separate from the production `status` above: a topic
+  // can be SELECTED by a client and still not approved by staff. Null = legacy
+  // row, treated as PROPOSED by readers.
+  approvalState     String? // PROPOSED | APPROVED | REJECTED | ARCHIVED
+  approvedBy        String?
+  approvedAt        DateTime?
+  rejectionReason   String? // kept internally so the same idea is not re-suggested
+  archiveReason     String?
+  // Provenance — which record produced this topic, so an import is traceable
+  // to source text and a refresh cannot re-create it.
+  sourceRef         String? // free-form pointer for legacy sources
+  importItemId      String? // -> ContentImportItem
+  suggestionId      String? // -> ContentTopicSuggestion (accepted from a refresh)
+  strategyVersionId String? // -> ContentStrategyVersion in force when created
+  policyVersionId   String? // -> ProgramGenerationPolicyVersion
+  clientUserId      String? // -> ClientUser, when the client suggested it
+  // Import of Jordan's colour-marked banks (manifest §5.3): the mark is a
+  // PROPOSAL for staff to confirm, never a filmed/delivered fact.
+  importedMark      String? // bold-red | red | green | bold | turquoise | none
+  proposedState     String? // what the mark suggests: SCRIPTED | SELECTED | PARKED
+  dedupeHash        String? // normalized title hash inside one enrollment
+  lastEventAt       DateTime?
 
   @@index([clientId])
   @@index([monthId])
   @@index([status])
+  @@index([pillarId])
+  @@index([enrollmentId, dedupeHash])
+  @@index([importItemId])
 }
 
 model ContentScript {
-  id           String  @id @default(cuid())
-  enrollmentId String
-  clientId     String
-  monthId      String?
-  topicId      String?
-  title        String
-  body         String // the full spoken script, clean
-  sectionsJson String? // {hook, rehook, buildup, payoff, cta} when structured
+  id             String   @id @default(cuid())
+  enrollmentId   String
+  clientId       String
+  monthId        String?
+  topicId        String?
+  title          String
+  body           String // the full spoken script, clean
+  sectionsJson   String? // {hook, rehook, buildup, payoff, cta} when structured
   productionJson String? // optional B-roll/props/overlay ideas (spec §26) — not spoken copy
-  status       String  @default("DRAFT") // DRAFT | INTERNAL_REVIEW | APPROVED | CLIENT_VISIBLE | READY_TO_FILM
-  clientVisible Boolean @default(false)
-  source       String  @default("ai") // ai | manual | import
-  sourceFile   String? // original uploaded filename for backfilled scripts
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  status         String   @default("DRAFT") // DRAFT | INTERNAL_REVIEW | APPROVED | CLIENT_VISIBLE | READY_TO_FILM
+  clientVisible  Boolean  @default(false)
+  source         String   @default("ai") // ai | manual | import
+  sourceFile     String? // original uploaded filename for backfilled scripts
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // ---- CPOS (Sep 16 2026). The script row is the stable identity; the words
+  // live in ContentScriptVersion (spec §6/§22: edits after sharing create a
+  // new draft, never alter an approved one). `body`/`sectionsJson` above stay
+  // as the legacy copy of whatever version is current.
+  currentVersionId  String? // -> ContentScriptVersion (latest draft or approved)
+  approvedVersionId String? // -> the version Jordan approved
+  sharedVersionId   String? // -> the version released to the portal
+  approvedAt        DateTime? // approveScript has stamped nothing until now
+  approvedBy        String?
+  sharedAt          DateTime?
+  // Imported scripts are HISTORICAL records (Jordan's ruling): import ≠
+  // approved/filmed/released. The 131 APPROVED imports stay visible as
+  // history via releaseState = "historical"; null = legacy status-driven.
+  historical        Boolean   @default(false)
+  releaseState      String? // historical | released | withheld
+  // Explicit links (spec §9: never AI-match what production can record).
+  pillarId          String? // -> ContentPillar
+  strategyVersionId String? // -> ContentStrategyVersion
+  policyVersionId   String? // -> ProgramGenerationPolicyVersion
+  interviewId       String? // -> ContentInterview (written-answer path)
+  callRecordId      String? // -> ProgramCallRecord (call path)
+  importItemId      String? // -> ContentImportItem
+  videoId           String? // -> ContentVideo, once filmed (scripts live with their video)
 
   @@index([clientId])
   @@index([monthId])
+  @@index([topicId])
+  @@index([videoId])
+  @@index([importItemId])
+  @@index([status, historical])
 }
 
 // The living Agent Profile (spec §6): six editable sections stored as JSON so
 // the shape can evolve without migrations. Forms read/write named keys.
 model AgentProfile {
-  id               String    @id @default(cuid())
-  clientId         String    @unique
+  id               String   @id @default(cuid())
+  clientId         String   @unique
   brandJson        String? // positioning, audience, message, pillars, goals
   voiceJson        String? // tone dials, phrases, script-format preferences
   contentPrefsJson String? // topics loved/banned, formats, comfort levels
   productionJson   String? // locations, days, teleprompter, wardrobe
   editingJson      String? // persistent edit style (distinct from job notes)
   storiesJson      String? // stories, POVs, expertise, local knowledge
-  updatedAt        DateTime  @updatedAt
-  createdAt        DateTime  @default(now())
+  updatedAt        DateTime @updatedAt
+  createdAt        DateTime @default(now())
 }
 
 // Chronological program notes. intelligence=true rows feed AI context;
@@ -2255,7 +2412,15 @@ model ContentNote {
   intelligence Boolean  @default(false)
   createdAt    DateTime @default(now())
 
+  // ---- CPOS (Sep 16 2026), spec §23: ContentNote STAYS for migration. Each
+  // note that has been turned into a structured ClientFact points at it, so
+  // the 804 rows can be walked once and prompts can switch to facts without
+  // a data drop.
+  migratedFactId String? // -> ClientFact
+  migratedAt     DateTime?
+
   @@index([clientId])
+  @@index([migratedFactId])
 }
 
 // The client's Content Strategy (spec §8) — structured sections, not a PDF.
@@ -2263,18 +2428,30 @@ model ContentNote {
 // parsed); Phase 2 adds AI generation from Brand Discovery + the alignment
 // state ladder. One ACTIVE strategy per client at a time; history preserved.
 model ContentStrategy {
-  id           String  @id @default(cuid())
+  id           String   @id @default(cuid())
   enrollmentId String
   clientId     String
   // Structured sections (JSON, keys are section names): positioning, audience,
   // message, goals, pillars, tone, preferences, businessContext.
   sectionsJson String
   rawText      String? // full original text, for provenance + AI context
-  status       String  @default("ACTIVE") // DRAFT | INTERNAL_REVIEW | ALIGNED | ACTIVE | ARCHIVED
-  source       String  @default("import") // import | ai | manual
+  status       String   @default("ACTIVE") // DRAFT | INTERNAL_REVIEW | ALIGNED | ACTIVE | ARCHIVED
+  source       String   @default("import") // import | ai | manual
   sourceFile   String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+
+  // ---- CPOS (Sep 16 2026), spec §3: the strategy row is the stable identity;
+  // every edit/import/generation is a ContentStrategyVersion. These pointers
+  // say which version is being worked on, which one Jordan approved (with
+  // who/when), and which one the client can see. Null = pre-versioning row.
+  currentVersionId  String?
+  approvedVersionId String?
+  approvedAt        DateTime?
+  approvedBy        String?
+  releasedAt        DateTime? // client-visible under the release policy
+  releasedBy        String?
+  structureTemplate String? // S1 | S2 | S3 | POLICY — which section hierarchy the source follows (manifest §3.3)
 
   @@index([clientId])
   @@index([enrollmentId, status])
@@ -2289,13 +2466,13 @@ model PendingSms {
   line         String // one digest line: "title → link"
   createdAt    DateTime  @default(now())
   sentAt       DateTime?
+  // Sep 16: a line that can never send (non-US number) is parked once instead
+  // of being retried every five minutes.
+  skippedAt    DateTime?
+  skipReason   String?
 
   @@index([teamMemberId, sentAt])
   @@index([sentAt])
-  // Sep 16: a line that can never send (non-US number) is parked once instead
-  // of being retried every five minutes.
-  skippedAt  DateTime?
-  skipReason String?
 }
 
 // Who changed what on the login roster — the Kyle role-flip (Aug 18) was
@@ -2320,9 +2497,9 @@ model NotificationDelivery {
   notificationId String?
   teamMemberId   String
   kind           String
-  channel        String   // slack | sms | bell
-  status         String   // sent | queued | failed | skipped
-  detail         String?  // Slack error text, PendingSms id, or the skip reason
+  channel        String // slack | sms | bell
+  status         String // sent | queued | failed | skipped
+  detail         String? // Slack error text, PendingSms id, or the skip reason
   createdAt      DateTime @default(now())
 
   @@index([teamMemberId, createdAt])
@@ -2337,20 +2514,20 @@ model NotificationDelivery {
 // after the provider may already have sent — it is never retried blindly.
 model OutboxMessage {
   id            String    @id @default(cuid())
-  channel       String    // sms | email
-  toRef         String    // phone key or email address (never rendered raw to non-owners)
+  channel       String // sms | email
+  toRef         String // phone key or email address (never rendered raw to non-owners)
   clientId      String?
   projectId     String?
-  taskId        String?   // the SmartTask this send answers, when there is one
+  taskId        String? // the SmartTask this send answers, when there is one
   body          String
   state         String    @default("pending")
   attempts      Int       @default(0)
   leaseUntil    DateTime? // a worker's claim; an expired lease is recoverable
   leaseBy       String?
-  providerId    String?   // the provider's own message id once accepted
+  providerId    String? // the provider's own message id once accepted
   providerError String?
   dedupeKey     String?   @unique // one send per (what, whom, when) — a unique violation is a duplicate claim, nothing else
-  requestedBy   String?   // the person, or the sweep that queued it
+  requestedBy   String? // the person, or the sweep that queued it
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   acceptedAt    DateTime?
@@ -2398,10 +2575,10 @@ model TopazJob {
   // queued → estimated → uploading → processing → saving → done
   //                    ↘ skipped (a guard refused it, nothing was spent)
   //                    ↘ failed | cancelled
-  state      String    @default("queued")
-  attempt    Int       @default(0) // consecutive failures of the CURRENT step
-  leaseUntil DateTime? // a driver tick's claim; an expired lease is recoverable
-  leaseBy    String? // which invocation holds it (diagnostics only)
+  state         String    @default("queued")
+  attempt       Int       @default(0) // consecutive failures of the CURRENT step
+  leaseUntil    DateTime? // a driver tick's claim; an expired lease is recoverable
+  leaseBy       String? // which invocation holds it (diagnostics only)
   nextAttemptAt DateTime? // backoff gate — the driver ignores the row until then
 
   // ---- what we are rendering (read off the file itself; the hub stores no
@@ -2417,42 +2594,48 @@ model TopazJob {
   sourceContainer   String?
   outputWidth       Int?
   outputHeight      Int?
-  /** JSON: the exact filter block sent to Topaz. Kept so that when Jordan
-   *  compares the first render against his desktop export, the numbers that
-   *  produced it are on the record rather than inferred from today's settings. */
+  /**
+   * JSON: the exact filter block sent to Topaz. Kept so that when Jordan
+   * compares the first render against his desktop export, the numbers that
+   * produced it are on the record rather than inferred from today's settings.
+   */
   presetJson        String?
 
   // ---- the Topaz side
-  requestId        String?   @unique
-  estimateCredits  Float?
-  estimateSeconds  Int?
-  balanceBefore    Int?
-  creditsCharged   Float?
-  acceptedAt       DateTime? // we committed to spend — every cap counts this
-  completeUploadAt DateTime? // CAS'd before the call that starts processing
-  /** How many times we have asked Topaz to START this render. complete-upload
-   *  is the ONE call that spends, and Topaz's own status is the only thing that
-   *  ever hands the claim back — so the number of times we have made it is a
-   *  fact worth keeping on the row rather than inferring from a shared retry
-   *  counter. It is a hard ceiling: at maxAttempts the job fails instead of
-   *  asking again (Sep 16 review — an awaiting-upload bounce that also reset
-   *  `attempt` could have called it every ~75 seconds, forever, with auto
-   *  top-up on). */
-  completeUploadTries Int @default(0)
-  uploadUrlsJson   String? // presigned PUT targets — server-side only, never rendered
-  uploadPartsJson  String? // JSON [{partNum, eTag}] — what has already landed
-  uploadedBytes    Int?
-  downloadUrl      String? // Topaz's finished file; Dropbox fetches it directly
+  requestId           String?   @unique
+  estimateCredits     Float?
+  estimateSeconds     Int?
+  balanceBefore       Int?
+  creditsCharged      Float?
+  acceptedAt          DateTime? // we committed to spend — every cap counts this
+  completeUploadAt    DateTime? // CAS'd before the call that starts processing
+  /**
+   * How many times we have asked Topaz to START this render. complete-upload
+   * is the ONE call that spends, and Topaz's own status is the only thing that
+   * ever hands the claim back — so the number of times we have made it is a
+   * fact worth keeping on the row rather than inferring from a shared retry
+   * counter. It is a hard ceiling: at maxAttempts the job fails instead of
+   * asking again (Sep 16 review — an awaiting-upload bounce that also reset
+   * `attempt` could have called it every ~75 seconds, forever, with auto
+   * top-up on).
+   */
+  completeUploadTries Int       @default(0)
+  uploadUrlsJson      String? // presigned PUT targets — server-side only, never rendered
+  uploadPartsJson     String? // JSON [{partNum, eTag}] — what has already landed
+  uploadedBytes       Int?
+  downloadUrl         String? // Topaz's finished file; Dropbox fetches it directly
 
   // ---- where it landed
-  finalPath    String? // the enhanced file's Dropbox path (05-Final-Video)
-  dropboxJobId String? // files/save_url async job while the copy is in flight
-  savedAt      DateTime?
-  /** When this job entered `saving`. The stall clock for the Dropbox copy has
-   *  to run from HERE, not from acceptedAt: a render that legitimately took
-   *  three hours would otherwise arrive at the filing step with half an hour of
-   *  patience left, and a retry would re-fail it instantly — a paid, finished
-   *  file that can never be filed (Sep 16 review). */
+  finalPath       String? // the enhanced file's Dropbox path (05-Final-Video)
+  dropboxJobId    String? // files/save_url async job while the copy is in flight
+  savedAt         DateTime?
+  /**
+   * When this job entered `saving`. The stall clock for the Dropbox copy has
+   * to run from HERE, not from acceptedAt: a render that legitimately took
+   * three hours would otherwise arrive at the filing step with half an hour of
+   * patience left, and a retry would re-fail it instantly — a paid, finished
+   * file that can never be filed (Sep 16 review).
+   */
   savingStartedAt DateTime?
 
   // ---- the ping to Kyle, and his one tap back
@@ -2474,4 +2657,1550 @@ model TopazJob {
   @@index([acceptedAt])
   @@index([projectId])
   @@index([createdAt])
+}
+
+// ===== CONTENT PROGRAM OPERATING SYSTEM (Sep 16 2026) =====
+//
+// The ONE additive schema for the Client Content Portal spec (27 sections), so
+// that every builder after this works against a fixed model and nobody touches
+// migrations. Rules this block obeys, in order of what would break production:
+//   · Additive only. Nothing above this line was renamed, dropped or retyped;
+//     existing models gained NULLABLE/DEFAULTED columns marked "CPOS".
+//   · NO @relation anywhere. Every reference is a plain String id, indexed —
+//     the house style of every Content*/Portal* model, and the only style that
+//     survives a db push against live data with known orphans (mis-filed calls,
+//     the duplicate Rick). The diff below therefore contains no FK constraint.
+//   · Every automation is a durable ROW (state + attempts + lease + lastError)
+//     behind a ProgramAutomation switch whose `enabled` column DEFAULTS FALSE
+//     at the database. Nothing sends, publishes or invites until Jordan flips
+//     the switch — launch has not been authorised.
+//   · Versioning is a table, never an overwrite: ContentStrategyVersion,
+//     ContentScriptVersion, ContentTopicRefreshRun, ProgramGenerationPolicyVersion,
+//     ClientAssetVersion. The current row keeps a pointer; approval records
+//     who/when/which version.
+//   · Clients never enter AppUser/Role. ClientUser + ClientMembership are their
+//     own thing with their own cookie.
+//
+// NAMING CONVENTION — prefix = the layer that owns the record:
+//   Client*  a client person, or something the client authored or owns
+//            (ClientUser, ClientMembership, ClientEmailAlias, ClientDecision,
+//            ClientFact, ClientAsset, ClientAssetVersion)
+//   Content* the creative chain: strategy → pillar → topic → interview →
+//            script → video → cut transcript → caption, plus imports
+//   Program* the operating layer: sessions, calls, transcripts, jobs, reminders,
+//            policy, owners, automation switches, publishing
+//   Portal*  client-facing surfaces (PortalVisit, PortalResource)
+// "Enum" columns are Strings with the allowed values in the comment — the same
+// choice every Content* model already made, so values can grow without a
+// migration. Money never appears on any of these tables.
+// =========================================================================
+
+// ---------------------------------------------------------------------------
+// §2 IDENTITY & ACCESS (SYNTHESIS §5 Phase 1 design, reused as reviewed)
+// ---------------------------------------------------------------------------
+
+// A client PERSON who signs in by email link. Deliberately not an AppUser:
+// middleware, requireRole and the PAGES map never learn about clients.
+model ClientUser {
+  id                  String    @id @default(cuid())
+  email               String    @unique // lowercased
+  name                String?
+  status              String    @default("INVITED") // INVITED | ACTIVE | DISABLED
+  loginTokenHash      String?   @unique // sha256 of the one-time magic-link token
+  loginTokenExpiresAt DateTime?
+  lastLoginAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+}
+
+// One person's seat on one enrollment. Re-read on EVERY request (revokedAt IS
+// NULL) so revocation is immediate despite a stateless cookie. Roles decide
+// who may approve edits, request changes, edit the brand profile and connect
+// publishing accounts — all enforced server-side, never by hidden UI.
+model ClientMembership {
+  id                 String    @id @default(cuid())
+  clientUserId       String // -> ClientUser
+  enrollmentId       String // -> ContentEnrollment (plain ref, like every Content* model)
+  clientId           String // denormalized for the ownership check
+  role               String    @default("OWNER") // OWNER | COLLABORATOR | VIEWER
+  invitedByAppUserId String?
+  invitedAt          DateTime  @default(now())
+  acceptedAt         DateTime?
+  revokedAt          DateTime?
+  revokedBy          String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@unique([clientUserId, enrollmentId])
+  @@index([enrollmentId])
+  @@index([clientId])
+}
+
+// The page-view log that does not exist today — answers "has anyone opened
+// it" (0 of 11 links have any evidence of use). One row per render; the hub's
+// own UsageEvent keeps excluding /portal.
+model PortalVisit {
+  id           String   @id @default(cuid())
+  enrollmentId String
+  clientUserId String? // null = token visit
+  staffUserId  String? // Jordan/Kyle through the iframe
+  via          String // TOKEN | LOGIN | STAFF
+  path         String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([enrollmentId, createdAt])
+  @@index([clientUserId])
+}
+
+// Verified extra addresses a client books or writes from (spec §26: Arielle
+// books from @foxroach.com, Rick from @schultzreg.com — neither is on the
+// Client row). The Calendly matcher reads Client.email/backupEmail PLUS these;
+// two clients on one address = ambiguous → exception queue, never a guess.
+model ClientEmailAlias {
+  id           String    @id @default(cuid())
+  clientId     String // -> Client
+  enrollmentId String? // -> ContentEnrollment
+  email        String // lowercased
+  source       String    @default("manual") // manual | calendly | aryeo | signup | gmail
+  verifiedAt   DateTime?
+  verifiedBy   String?
+  active       Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([clientId, email])
+  @@index([email])
+  @@index([enrollmentId])
+}
+
+// ---------------------------------------------------------------------------
+// §3 / §21 STRATEGY — versions, source evidence, proposals
+// ---------------------------------------------------------------------------
+
+// One immutable version of a client's strategy (spec §3). The permanent brand
+// FOUNDATION lives here in the source document's own hierarchy (Arielle S3,
+// Bernadette S1, Rick S2 — manifest §3.3); this month's priorities live on
+// ContentMonth.prioritiesJson. Approving a newer version never rewrites the
+// scripts that recorded an older strategyVersionId.
+model ContentStrategyVersion {
+  id           String @id @default(cuid())
+  strategyId   String // -> ContentStrategy (the stable identity)
+  enrollmentId String
+  clientId     String
+  versionNo    Int
+
+  // The document, structure preserved: sectionsJson keeps the source's own
+  // numbering/hierarchy; summaryJson is the accessible summary the portal
+  // shows (audience, goals, brandMessage, positioning, pillars, tone, prefs).
+  structureTemplate String  @default("S3") // S1 | S2 | S3 | POLICY
+  sectionsJson      String
+  summaryJson       String?
+  rawText           String?
+  contentHash       String? // sha256 of sectionsJson — import idempotency
+
+  // Source evidence (spec §3: brand discovery and monthly calls are separate
+  // source types; store references, dates, transcripts where available).
+  sourceKind       String // import | discovery_call | monthly_call | manual | ai
+  sourceRef        String? // filename, Drive id, or free text
+  callRecordId     String? // -> ProgramCallRecord
+  importItemId     String? // -> ContentImportItem
+  aiRunId          String? // -> ProgramAiRun that generated it
+  policyVersionId  String? // -> ProgramGenerationPolicyVersion (the template used)
+  basedOnVersionId String? // -> the version this one edits
+  changeSummary    String? // what changed, in words
+
+  status     String    @default("DRAFT") // DRAFT | INTERNAL_REVIEW | APPROVED | SUPERSEDED | REJECTED
+  createdBy  String? // staff email, "ai", or "import"
+  approvedBy String?
+  approvedAt DateTime?
+  releasedAt DateTime? // client-visible from here
+  releasedBy String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@unique([strategyId, versionNo])
+  @@index([enrollmentId, status])
+  @@index([clientId])
+  @@index([callRecordId])
+}
+
+// A proposed change to the approved strategy or brand profile, from a call,
+// a client correction, or a review (spec §3/§23: a new call must not silently
+// overwrite an approved strategy; staff see the proposal, its source and its
+// impact before accepting). AgentProfile is deliberately untouched: it stays
+// the "My Brand Profile" READ surface; a client's correction arrives here as
+// kind=PROFILE and files/values live in ClientAsset.
+model ContentStrategyProposal {
+  id              String    @id @default(cuid())
+  enrollmentId    String
+  clientId        String
+  strategyId      String? // -> ContentStrategy
+  baseVersionId   String? // -> ContentStrategyVersion it was proposed against
+  kind            String // STRATEGY | PROFILE | PILLAR | AUDIENCE | POSITIONING | PREFERENCE
+  summary         String // one line, what would change
+  diffJson        String? // {path, from, to}[] against the base version
+  impact          String? // what it would touch (scripts in flight, pillars, banks)
+  sourceKind      String // call | client | staff | ai | import
+  sourceRef       String?
+  callRecordId    String? // -> ProgramCallRecord
+  factId          String? // -> ClientFact that raised it
+  clientUserId    String? // the client who suggested a correction
+  status          String    @default("PROPOSED") // PROPOSED | ACCEPTED | REJECTED | SUPERSEDED
+  resolvedBy      String?
+  resolvedAt      DateTime?
+  resolutionNote  String?
+  resultVersionId String? // -> ContentStrategyVersion created on acceptance
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([enrollmentId, status])
+  @@index([callRecordId])
+  @@index([strategyId])
+}
+
+// ---------------------------------------------------------------------------
+// §5 / §18 / §27 PILLARS & TOPICS
+// ---------------------------------------------------------------------------
+
+// A client's content pillar as a STABLE identity (spec §18: client-specific
+// pillar names must not be replaced by a generic set; manifest C-C4: Jordan
+// renames pillars at every refresh — Bernadette 4 of 5, Collins 5 of 5). The
+// name here is the current one; ContentPillarAlias holds every name it has
+// ever had plus the labels imports used for it.
+model ContentPillar {
+  id                String    @id @default(cuid())
+  enrollmentId      String
+  clientId          String
+  strategyVersionId String? // -> ContentStrategyVersion that introduced/defined it
+  name              String
+  purpose           String?
+  focusAreas        String?
+  contentApproach   String? // optional third field (Mike's strategy)
+  sortOrder         Int       @default(0)
+  status            String    @default("ACTIVE") // ACTIVE | RETIRED
+  retiredAt         DateTime?
+  mergedIntoId      String? // -> ContentPillar, when two were folded together
+  createdBy         String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([enrollmentId, status])
+  @@index([clientId])
+  @@index([strategyVersionId])
+}
+
+// Name history + import alias table for a pillar (manifest C-A6/C-C4): a
+// refresh may RENAME with Jordan's approval but never re-id; an importer
+// never fails on a non-matching label — it queues a mapping here.
+model ContentPillarAlias {
+  id         String    @id @default(cuid())
+  pillarId   String // -> ContentPillar
+  name       String
+  kind       String // CANONICAL | PREVIOUS | IMPORTED_LABEL | TAG
+  validFrom  DateTime?
+  validTo    DateTime?
+  source     String? // strategy version id, import batch id, "refresh", "manual"
+  approvedBy String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@unique([pillarId, name])
+  @@index([name])
+}
+
+// Append-only history of one topic (spec §5: "each topic needs … history";
+// "discussed on a call" is an event, not a status). Every state change,
+// selection, rejection and import writes one row with who and from what
+// evidence.
+model ContentTopicEvent {
+  id           String   @id @default(cuid())
+  topicId      String // -> ContentTopic
+  enrollmentId String
+  kind         String // CREATED | IMPORTED | SUGGESTED | DISCUSSED | SELECTED | DESELECTED | APPROVED | REJECTED | ARCHIVED | SCRIPTED | FILMED | DELIVERED | EDITED | RECONCILED | CARRIED | REINTRODUCED
+  monthId      String? // -> ContentMonth, when the event is month-specific
+  fromStatus   String?
+  toStatus     String?
+  actorKind    String // CLIENT | STAFF | AI | SYSTEM | IMPORT
+  clientUserId String?
+  staffUserId  String?
+  sourceRef    String? // call record id, import item id, refresh run id, …
+  evidenceJson String? // supporting excerpts {speaker, time, text}[]
+  note         String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([topicId, createdAt])
+  @@index([enrollmentId, createdAt])
+  @@index([monthId])
+}
+
+// A topic selected FOR a named month (spec §14 "topic selections by month").
+// ContentTopic.monthId stays as the legacy single pointer; this row is the
+// attributable, removable, reconcilable selection — one per topic per month,
+// so switching planning paths cannot duplicate it.
+model ContentTopicSelection {
+  id           String    @id @default(cuid())
+  topicId      String // -> ContentTopic
+  monthId      String // -> ContentMonth
+  enrollmentId String
+  clientId     String
+  status       String    @default("SELECTED") // PROPOSED | SELECTED | REMOVED | RECONCILED | CARRIED
+  rank         Int? // order within the month
+  source       String // client | call | staff | ai | import
+  clientUserId String?
+  staffUserId  String?
+  callRecordId String? // -> ProgramCallRecord that chose it
+  evidenceJson String? // excerpts supporting "explicitly chosen"
+  overflow     Boolean   @default(false) // beyond package capacity — kept, not deleted (spec §5)
+  committedAt  DateTime? // staff reconciled it after the call / preparation
+  removedAt    DateTime?
+  removedBy    String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([topicId, monthId])
+  @@index([monthId, status])
+  @@index([enrollmentId])
+}
+
+// One click of "Refresh topics" / one bank generation / one "Recommended for
+// your next session" run (spec §18/§27). A JOB row: duplicate clicks collide
+// on dedupeKey, a crash is recoverable through the lease, and the inputs
+// used are on the record so "stale strategy inputs" can be shown.
+model ContentTopicRefreshRun {
+  id                 String    @id @default(cuid())
+  enrollmentId       String
+  clientId           String
+  kind               String // BANK | REFRESH | RECOMMENDATION
+  strategyVersionId  String? // -> ContentStrategyVersion used
+  policyVersionId    String? // -> ProgramGenerationPolicyVersion used
+  aiRunId            String? // -> ProgramAiRun
+  requestedBy        String? // staff email or "system"
+  monthId            String? // -> ContentMonth for a RECOMMENDATION run
+  status             String    @default("QUEUED") // QUEUED | RUNNING | SUCCEEDED | FAILED | CANCELLED | NEEDS_INPUT
+  attempts           Int       @default(0)
+  leaseUntil         DateTime?
+  leaseBy            String?
+  nextAttemptAt      DateTime?
+  lastError          String?
+  lastErrorAt        DateTime?
+  inputsJson         String? // accepted facts, goals, verified filmed history, prior suggestions considered
+  missingContextJson String? // what was insufficient (never padded with generic topics)
+  topicsPerPillar    Int?
+  pillarCount        Int?
+  generatedCount     Int       @default(0)
+  changeSummary      String? // "what changed" for the UI
+  dedupeKey          String?   @unique // enrollment:kind:inputsHash while active
+  startedAt          DateTime?
+  finishedAt         DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([enrollmentId, createdAt])
+  @@index([status, nextAttemptAt])
+}
+
+// One suggestion produced by a refresh run, reviewable BEFORE it becomes a
+// ContentTopic (spec §18: accept / edit / archive / regenerate each; previous
+// suggestions stay accessible; archived concepts do not resurface unless
+// explicitly reconsidered). Also the "Recommended for your next session"
+// shortlist rows, with their actionable rationale (spec §27).
+model ContentTopicSuggestion {
+  id                   String    @id @default(cuid())
+  refreshRunId         String // -> ContentTopicRefreshRun
+  enrollmentId         String
+  clientId             String
+  pillarId             String? // -> ContentPillar
+  kind                 String // BANK | RECOMMENDED | ALTERNATIVE
+  rank                 Int?
+  title                String
+  description          String? // one sentence, Arielle-style
+  audienceNeed         String?
+  businessGoal         String?
+  intendedMessage      String?
+  rationale            String? // why this, in words
+  whyNow               String? // recommendation only
+  linkedGoal           String?
+  priorContentRelation String? // NEW_ANGLE | SEQUEL | REVISIT | NONE | NO_VERIFIED_HISTORY
+  relatedTopicId       String? // -> ContentTopic it follows up
+  dedupeHash           String? // normalized title — blocks re-suggesting archived/rejected concepts
+  reintroducedOfId     String? // -> ContentTopic explicitly reconsidered
+  disposition          String    @default("PENDING") // PENDING | ACCEPTED | EDITED | ARCHIVED | REGENERATED | SUPERSEDED
+  dispositionBy        String?
+  dispositionAt        DateTime?
+  acceptedTopicId      String? // -> ContentTopic created/linked on accept
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@index([refreshRunId])
+  @@index([enrollmentId, disposition])
+  @@index([enrollmentId, dedupeHash])
+  @@index([pillarId])
+  @@index([acceptedTopicId])
+}
+
+// ---------------------------------------------------------------------------
+// §6 GUIDED TOPIC INTERVIEW
+// ---------------------------------------------------------------------------
+
+// The guided discussion on one topic (spec §6): resumable, one question at a
+// time, four to six substantive questions. Path A (call) fills it from the
+// transcript; Path B (written) from the portal — both feed the same script
+// queue. One per topic per month so switching paths cannot duplicate it —
+// monthId is REQUIRED because Postgres treats NULLs as distinct in a unique
+// index; an interview always belongs to the month whose scripts it feeds.
+model ContentInterview {
+  id                      String    @id @default(cuid())
+  topicId                 String // -> ContentTopic
+  enrollmentId            String
+  clientId                String
+  monthId                 String // -> ContentMonth (required: the unique guard below depends on it)
+  strategyVersionId       String? // -> ContentStrategyVersion in force
+  policyVersionId         String? // -> ProgramGenerationPolicyVersion
+  sourceKind              String    @default("WRITTEN") // WRITTEN | CALL | MIXED
+  callRecordId            String? // -> ProgramCallRecord (Path A)
+  status                  String    @default("NOT_STARTED") // NOT_STARTED | IN_PROGRESS | NEEDS_FOLLOWUP | SUFFICIENT | SUBMITTED | ABANDONED
+  questionPlanJson        String? // the adaptive plan {key, role, text, askedAt}[]
+  currentQuestionKey      String?
+  answeredCount           Int       @default(0)
+  sufficiencyJson         String? // {sufficient, missing: [...]} — the specific gaps
+  sufficientAt            DateTime?
+  submittedAt             DateTime?
+  submittedByClientUserId String?
+  startedByClientUserId   String?
+  staffUserId             String?
+  aiRunId                 String? // -> ProgramAiRun (last question-planning run)
+  lastActivityAt          DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  @@unique([topicId, monthId])
+  @@index([enrollmentId, status])
+  @@index([monthId])
+  @@index([callRecordId])
+}
+
+// One answer (spec §6): edits create a NEW row that supersedes the old one,
+// so regenerating can never erase what the client wrote, and every script
+// version can name the exact answer rows it was built from.
+model ContentInterviewAnswer {
+  id                 String   @id @default(cuid())
+  interviewId        String // -> ContentInterview
+  questionKey        String
+  questionRole       String // AUDIENCE_PROBLEM | POINT_OF_VIEW | TALKING_POINT | EVIDENCE | STORY | NEXT_STEP | FOLLOWUP
+  questionText       String
+  answerText         String?
+  answerKind         String   @default("TYPED") // TYPED | SKIPPED | DONT_KNOW | REUSED | EXTRACTED | VOICE
+  reusedFromAnswerId String? // -> ContentInterviewAnswer from an earlier interview
+  sourceKind         String   @default("CLIENT") // CLIENT | CALL | STAFF
+  speaker            String? // transcript speaker — a hypothetical Jordan suggested is not the client's experience
+  callRecordId       String?
+  transcriptSourceId String? // -> ProgramTranscriptSource
+  excerptJson        String? // {time, speaker, text}[] supporting an EXTRACTED answer
+  clientUserId       String?
+  staffUserId        String?
+  version            Int      @default(1)
+  supersedesId       String? // -> ContentInterviewAnswer this edit replaced
+  flagsJson          String? // {unsupported: bool, uncertain: bool, note}
+  answeredAt         DateTime @default(now())
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([interviewId, questionKey])
+  @@index([callRecordId])
+}
+
+// ---------------------------------------------------------------------------
+// §6 / §22 / §27 SCRIPT VERSIONS, APPROVAL, SHARING
+// ---------------------------------------------------------------------------
+
+// One immutable version of a script in the canonical format (Jordan's ruling:
+// hook, EXACTLY three points as structured roles, close/CTA, 20–30 s target,
+// no duration overrides). Records its source answers, strategy version and
+// policy version; carries the delivered-work extras the canonical format has
+// no slot for (manifest C-A9) so nothing Jordan uses is lost.
+model ContentScriptVersion {
+  id           String @id @default(cuid())
+  scriptId     String // -> ContentScript (stable identity)
+  enrollmentId String
+  clientId     String
+  versionNo    Int
+
+  // The canonical presentation (spec §27).
+  title               String
+  categoryLabel       String? // "Category:" as delivered / rendered
+  pillarId            String? // -> ContentPillar (the linked approved pillar)
+  secondaryPillarId   String? // manifest Q12: some delivered scripts carry two
+  hook                String
+  pointsJson          String // [{role:"RE_HOOK"|"BUILD_UP"|"PAYOFF", text}] — exactly three, validated
+  close               String
+  captionCta          String? // optional caption CTA (contact ask lives here, not in the spoken close)
+  body                String // full spoken script, derived from the parts above
+  // Not spoken — internal/production (manifest C-A9).
+  filmingNotes        String?
+  creativeDirection   String?
+  productionNotes     String?
+  goal                String?
+  alternateHooksJson  String? // string[]
+  placeholdersJson    String? // ["$[PRICE]", …] that must be filled before filming
+  speakerLabelsJson   String? // two-voice scripts
+  sourceExcerptsJson  String? // transcript excerpts that support each line
+  dimensionsCheckJson String? // Trust/Value/Credibility/Entertainment — internal reviewer text, never a score, never client-visible
+  // Timing (manifest §9: 20–30 s is the target; enforcement mode open). The
+  // target itself is NOT stored here — it is read through policyVersionId, so
+  // no per-script column can quietly become a duration override (Jordan: none).
+  spokenWordCount     Int?
+  estimatedSeconds    Float?
+  timingNote          String? // why this one runs long, if it does — informational, not an override
+  // Deterministic validation + honest gaps (spec §27 quality gates).
+  validationJson      String? // {threePoints, pillarLinked, requiredFields, duplicateOf, wordCount}
+  gapsJson            String? // [{claim, why, question}] — unsupported or uncertain claims, shown not filled
+
+  // Provenance — every generated script links to a pillar, an approved
+  // strategy, a selected topic and its supporting source answers.
+  source              String // AI | MANUAL | IMPORT | CLIENT_REQUEST | REGENERATE_SECTION | REVISION
+  basedOnVersionId    String? // -> ContentScriptVersion
+  regeneratedSections String? // JSON string[] of section keys regenerated (manual edits elsewhere preserved)
+  changeSummary       String?
+  interviewId         String? // -> ContentInterview
+  answerIdsJson       String? // ContentInterviewAnswer ids this version was built from
+  callRecordId        String? // -> ProgramCallRecord
+  strategyVersionId   String? // -> ContentStrategyVersion
+  policyVersionId     String? // -> ProgramGenerationPolicyVersion
+  aiRunId             String? // -> ProgramAiRun
+  importItemId        String? // -> ContentImportItem
+  contentHash         String? // sha256 of the canonical parts — import idempotency, duplicate detection
+
+  status     String    @default("DRAFT") // DRAFT | INTERNAL_REVIEW | APPROVED | SHARED | SUPERSEDED | REJECTED
+  createdBy  String? // staff email | "ai" | "import" | client user id
+  approvedBy String?
+  approvedAt DateTime?
+  sharedAt   DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@unique([scriptId, versionNo])
+  @@index([enrollmentId, status])
+  @@index([clientId])
+  @@index([interviewId])
+  @@index([callRecordId])
+  @@index([contentHash])
+}
+
+// The approval + share ledger (spec §22): which exact script version was
+// approved, when it was released to which portal, and the delivery job that
+// carried the email — so "approval succeeded, email failed" is two facts,
+// and a batch approval produces ONE notification.
+model ContentScriptRelease {
+  id                String    @id @default(cuid())
+  scriptId          String // -> ContentScript
+  scriptVersionId   String // -> ContentScriptVersion (the exact saved version)
+  enrollmentId      String
+  clientId          String
+  monthId           String? // -> ContentMonth
+  action            String // APPROVE | APPROVE_AND_SHARE | SHARE | UNSHARE | UPDATE_SHARED | RETURN_TO_QUEUE
+  actorAppUserId    String? // -> AppUser (Jordan)
+  actorEmail        String?
+  batchKey          String? // one batch approval → one email; rows share it
+  releasedAt        DateTime? // portal visibility began
+  notificationState String    @default("NONE") // NONE | QUEUED | SENT | FAILED | SUPPRESSED
+  outboxMessageId   String? // -> OutboxMessage
+  reminderId        String? // -> ProgramReminder (the SCRIPTS_READY row)
+  note              String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([scriptId, createdAt])
+  @@index([scriptVersionId])
+  @@index([enrollmentId, createdAt])
+  @@index([monthId])
+  @@index([batchKey])
+}
+
+// ---------------------------------------------------------------------------
+// §7 / §8 / §9 / §10 VIDEOS, CUTS, DECISIONS, TRANSCRIPTS, CAPTIONS
+// ---------------------------------------------------------------------------
+
+// ONE logical video (spec §7): the promised deliverable, grouped by the
+// program month it FULFILS, with filmed/delivered dates kept separately and
+// its cuts and library rows hanging off it — so a September obligation
+// filmed in October neither disappears nor counts twice, and a listing video
+// never consumes program allowance unless staff map it.
+model ContentVideo {
+  id                    String    @id @default(cuid())
+  enrollmentId          String
+  clientId              String
+  monthId               String? // -> ContentMonth (obligation month)
+  monthKey              String? // "2026-09" denormalized for grouping
+  kind                  String    @default("PROGRAM") // PROGRAM | LISTING | EXTRA | CARRYOVER | OTHER
+  countsTowardAllowance Boolean   @default(true)
+  title                 String?
+  pillarId              String? // -> ContentPillar
+  format                String? // reel | talking-head | street-interview | …
+  // Explicit production links (spec §9).
+  topicId               String? // -> ContentTopic
+  selectionId           String? // -> ContentTopicSelection
+  scriptId              String? // -> ContentScript
+  scriptVersionId       String? // -> ContentScriptVersion filmed
+  projectId             String? // -> Project (the filming session = Aryeo appointment)
+  deliverableId         String? // -> Deliverable
+  slot                  Int? // slot within a multi-video deliverable
+  // Cut pointers (the rows are ReviewSubmission; these are the caches).
+  currentSubmissionId   String? // latest cut
+  approvedSubmissionId  String? // the cut the client approved (ClientDecision is the record)
+  finalSubmissionId     String? // the cut delivered as final
+  finalFileRef          String? // Dropbox path / blob of the final file
+  finalVersionLabel     String? // "v3 (final)"
+  status                String    @default("PLANNED") // PLANNED | FILMED | EDITING | CLIENT_REVIEW | APPROVED | DELIVERED | ARCHIVED
+  filmedAt              DateTime?
+  deliveredAt           DateTime?
+  releasedToClientAt    DateTime?
+  postedByClientAt      DateTime? // "marked as posted" — NOT a verified publication
+  source                String    @default("manual") // aryeo | review | import | manual | backfill
+  mappedBy              String? // staff who mapped a LISTING/EXTRA into the program
+  notes                 String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([enrollmentId, monthKey])
+  @@index([monthId])
+  @@index([projectId])
+  @@index([topicId])
+  @@index([scriptId])
+  @@index([scriptVersionId])
+  @@index([deliverableId])
+  @@index([currentSubmissionId])
+  @@index([status])
+}
+
+// One SOURCE of one logical video (a review cut round, an Aryeo listing file,
+// a Dropbox final, an imported record). Unique on (kind, ref) so source
+// synchronization can never create a second video for the same file.
+model ContentVideoSource {
+  id            String   @id @default(cuid())
+  videoId       String // -> ContentVideo
+  kind          String // REVIEW_CUT | ARYEO | PORTAL_VIDEO | DROPBOX | IMPORT | TOPAZ
+  ref           String // submission id | aryeo:<listing>:<n> | PortalVideo.externalKey | path
+  submissionId  String? // -> ReviewSubmission
+  portalVideoId String? // -> PortalVideo
+  round         Int?
+  isFinal       Boolean  @default(false)
+  label         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([kind, ref])
+  @@index([videoId])
+  @@index([submissionId])
+}
+
+// The client's attributable decision on ONE immutable cut (spec §8): approve
+// or request changes, keyed to the submissionId they watched. A new cut needs
+// its own row; an approval on an old cut can never approve its replacement.
+// Duplicate submits collide on dedupeKey and create one revision job.
+model ClientDecision {
+  id              String   @id @default(cuid())
+  submissionId    String // -> ReviewSubmission (immutable cut version)
+  projectId       String // -> Project
+  videoId         String? // -> ContentVideo
+  enrollmentId    String
+  clientId        String
+  round           Int?
+  contentHash     String? // ReviewSubmission.contentHash at decision time — proves what they watched
+  decision        String // APPROVE | REQUEST_CHANGES
+  openNotesChoice String? // INCLUDE | DISCARD | NONE — what they chose about open notes when approving
+  commentIdsJson  String? // PortalComment ids bundled into this decision
+  clientUserId    String? // the actual person
+  staffUserId     String? // staff on their behalf (iframe)
+  actorLabel      String // "Bernadette Rabel" | "Jordan (on behalf of …)" | "portal link"
+  membershipRole  String? // OWNER | COLLABORATOR at the time
+  revisionTaskId  String? // -> SmartTask raised for REQUEST_CHANGES
+  revisionBriefId String? // -> RevisionBrief
+  receiptState    String   @default("RECEIVED") // RECEIVED | ROUTED | IN_PROGRESS | DONE | SUPERSEDED
+  supersededById  String? // -> ClientDecision on the replacement cut
+  dedupeKey       String?  @unique // submission:decision:actor:window
+  note            String?
+  decidedAt       DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([submissionId])
+  @@index([enrollmentId, decidedAt])
+  @@index([videoId])
+  @@index([projectId])
+  @@index([clientUserId])
+}
+
+// A transcript generated from the ACTUAL cut, stored against that cut version
+// (spec §9), with human correction kept beside the machine text. Changing
+// the cut sets invalidatedAt so transcript-derived drafts lose readiness
+// until checked or regenerated. A job row: state + attempts + lease.
+model ContentCutTranscript {
+  id             String    @id @default(cuid())
+  submissionId   String // -> ReviewSubmission (the cut version)
+  videoId        String? // -> ContentVideo
+  projectId      String? // -> Project
+  version        Int       @default(1) // a regenerate is a new row
+  sourceRound    Int?
+  contentHash    String? // the cut's byte hash at transcription — different cuts cannot be confused
+  provider       String? // which ASR
+  providerJobId  String?
+  language       String?
+  status         String    @default("QUEUED") // QUEUED | RUNNING | SUCCEEDED | FAILED | NEEDS_REVIEW | CANCELLED
+  attempts       Int       @default(0)
+  leaseUntil     DateTime?
+  leaseBy        String?
+  nextAttemptAt  DateTime?
+  lastError      String?
+  lastErrorAt    DateTime?
+  text           String? // machine transcript
+  segmentsJson   String? // [{start, end, text}]
+  wordCount      Int?
+  durationSec    Float?
+  correctedText  String? // the human-corrected version, when one exists
+  correctedBy    String?
+  correctedAt    DateTime?
+  correctionNote String?
+  invalidatedAt  DateTime? // the cut changed under it
+  aiRunId        String? // -> ProgramAiRun
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([submissionId, version])
+  @@index([videoId])
+  @@index([status, nextAttemptAt])
+}
+
+// A PROPOSED link between a historical video and a script (spec §9): AI
+// matching may propose, with evidence, confidence and alternatives; staff
+// confirm. Never forced, never auto-approved when uncertain; correcting a
+// match keeps this row as history.
+model ContentScriptMatch {
+  id               String    @id @default(cuid())
+  videoId          String // -> ContentVideo
+  transcriptId     String? // -> ContentCutTranscript used as evidence
+  scriptId         String // -> ContentScript proposed
+  scriptVersionId  String? // -> ContentScriptVersion
+  enrollmentId     String
+  confidence       Float? // 0..1
+  evidenceJson     String? // matched phrases, overlap stats
+  alternativesJson String? // [{scriptId, confidence}]
+  status           String    @default("PROPOSED") // PROPOSED | CONFIRMED | REJECTED | SUPERSEDED
+  decidedBy        String?
+  decidedAt        DateTime?
+  aiRunId          String? // -> ProgramAiRun
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([videoId, status])
+  @@index([scriptId])
+  @@index([enrollmentId])
+}
+
+// A caption / CTA / cover-title draft for one cut (spec §10): tied to the
+// cut version, the transcript, the strategy version and its author; every
+// regeneration is a new row so a user's edit is never overwritten, and a
+// changed cut marks the draft STALE rather than silently serving it.
+model ContentCaptionDraft {
+  id                String    @id @default(cuid())
+  videoId           String // -> ContentVideo
+  submissionId      String // -> ReviewSubmission (the chosen approved cut)
+  enrollmentId      String
+  clientId          String
+  transcriptId      String? // -> ContentCutTranscript (primary factual source)
+  scriptVersionId   String? // -> ContentScriptVersion (supporting context)
+  strategyVersionId String? // -> ContentStrategyVersion
+  policyVersionId   String?
+  aiRunId           String?
+  kind              String // CAPTION | SHORT_CAPTION | CTA | COVER_TITLE | POSTING_KIT
+  body              String
+  alternativesJson  String? // other options offered
+  versionNo         Int       @default(1)
+  basedOnId         String? // -> ContentCaptionDraft edited/regenerated from
+  authorKind        String // AI | CLIENT | STAFF
+  clientUserId      String?
+  staffUserId       String?
+  status            String    @default("DRAFT") // DRAFT | CHOSEN | ARCHIVED | STALE
+  staleReason       String? // cut changed | caption regenerated after approval
+  chosenAt          DateTime?
+  chosenBy          String?
+  contentHash       String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([videoId, kind])
+  @@index([submissionId])
+  @@index([transcriptId])
+  @@index([enrollmentId])
+}
+
+// ---------------------------------------------------------------------------
+// §4 SCHEDULING — session requests as durable state
+// ---------------------------------------------------------------------------
+
+// A client's request for a content session (spec §4): "Requested, awaiting
+// confirmation" until an actual Aryeo appointment exists, tied to an EXPLICIT
+// program month. True self-booking is a job (state/attempts/lease) so a stale
+// slot cannot produce two confirmed appointments and a provider failure
+// leaves an honest, recoverable state.
+model ProgramSessionRequest {
+  id                      String    @id @default(cuid())
+  enrollmentId            String
+  clientId                String
+  monthId                 String // -> ContentMonth (explicitly selected)
+  kind                    String    @default("CONTENT_SESSION") // CONTENT_SESSION | EXTRA_SESSION
+  slotStart               DateTime?
+  slotEnd                 DateTime?
+  timezone                String?
+  locationText            String?
+  notes                   String?
+  requestedByClientUserId String?
+  requestedByStaffUserId  String?
+  status                  String    @default("REQUESTED") // REQUESTED | CONFIRMED | RESCHEDULE_REQUESTED | CANCEL_REQUESTED | CANCELLED | DECLINED | EXPIRED
+  projectId               String? // -> Project once the Aryeo appointment exists
+  aryeoAppointmentId      String?
+  confirmedAt             DateTime?
+  confirmedBy             String?
+  cancelledAt             DateTime?
+  cancelledBy             String?
+  cancelReason            String?
+  supersedesId            String? // -> ProgramSessionRequest this reschedule replaces
+  taskId                  String? // -> SmartTask for Kyle
+  capacityCheckJson       String? // sessions used/allowed, extras approved, travel capacity
+  extraApprovedBy         String? // staff-approved extra beyond the package
+  // Provider booking job (only when true self-booking is enabled).
+  bookingState            String    @default("NONE") // NONE | QUEUED | RUNNING | SUCCEEDED | FAILED | RECONCILE
+  attempts                Int       @default(0)
+  leaseUntil              DateTime?
+  leaseBy                 String?
+  nextAttemptAt           DateTime?
+  lastError               String?
+  lastErrorAt             DateTime?
+  dedupeKey               String?   @unique // enrollment:month:slotStart — duplicate clicks collide here
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  @@index([enrollmentId, status])
+  @@index([monthId])
+  @@index([projectId])
+  @@index([bookingState, nextAttemptAt])
+}
+
+// ---------------------------------------------------------------------------
+// §16 / §17 PROGRAM SETTINGS — owners, enrollment history, assets
+// ---------------------------------------------------------------------------
+
+// Who owns which duty (spec §16/§17, Jordan D11: Jordan owns strategy +
+// script approval, Kyle owns scheduling + delivery, overridable per client
+// or per month). scope DEFAULT rows are the program defaults; ENROLLMENT and
+// MONTH rows override them.
+model ProgramOwnerAssignment {
+  id           String    @id @default(cuid())
+  scope        String // DEFAULT | ENROLLMENT | MONTH
+  scopeRef     String    @default("") // "" for DEFAULT, enrollment id, or month id
+  duty         String // STRATEGY | SCRIPTS | SCHEDULING | DELIVERY | ESCALATION | REMINDERS
+  appUserId    String? // -> AppUser
+  teamMemberId String? // -> TeamMember
+  label        String? // display name snapshot
+  setBy        String?
+  effectiveAt  DateTime  @default(now())
+  endedAt      DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([scope, scopeRef, duty])
+  @@index([scopeRef])
+}
+
+// Every change to an enrollment's package/settings with an EFFECTIVE date and
+// an explicit choice about the current month (spec §17): past-month
+// quantities survive, and a hub setting never touches the payment processor —
+// billingTruth says whether a value is synchronized billing or an internal
+// program setting.
+model ProgramEnrollmentChange {
+  id                 String    @id @default(cuid())
+  enrollmentId       String
+  clientId           String
+  field              String // package | videosPerMonth | sessionsPerMonth | sessionHours | status | callMode | noCallEligible | billingType | billingRate | billingMonths | overrides
+  fromValue          String? // JSON-encoded
+  toValue            String? // JSON-encoded
+  effectiveAt        DateTime
+  effectiveMonthKey  String? // first month the new value applies to
+  currentMonthChoice String? // KEEP | APPLY — what happens to the month in flight
+  reason             String?
+  source             String    @default("manual") // manual | aryeo | stripe | system
+  billingTruth       Boolean   @default(false) // true = mirrors the processor; false = internal setting
+  changedBy          String?
+  appliedAt          DateTime? // when the enrollment row actually took the value
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([enrollmentId, effectiveAt])
+  @@index([clientId])
+}
+
+// A client-owned brand asset as a STABLE identity (spec §17: logo, colors,
+// fonts, headshots, approved photos, example videos, pronunciation, editing
+// instructions). Replacing a logo creates a new ClientAssetVersion and moves
+// activeVersionId — what a delivered video used is never rewritten.
+model ClientAsset {
+  id              String    @id @default(cuid())
+  clientId        String // -> Client
+  enrollmentId    String? // -> ContentEnrollment
+  type            String // LOGO | COLOR_PALETTE | BRANDING_CARD | FONT | HEADSHOT | APPROVED_PHOTO | EXAMPLE_VIDEO | PRONUNCIATION | CONTACT_CARD | EDITING_INSTRUCTIONS | PRODUCTION_PREFERENCE | OTHER
+  name            String
+  ownership       String    @default("CLIENT") // CLIENT | AGENCY | LICENSED
+  activeVersionId String? // -> ClientAssetVersion
+  status          String    @default("ACTIVE") // ACTIVE | RETIRED
+  sortOrder       Int       @default(0)
+  notes           String?
+  retiredAt       DateTime?
+  createdBy       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([clientId, type])
+  @@index([enrollmentId])
+}
+
+// One version of an asset's file or value, with where it came from.
+model ClientAssetVersion {
+  id                     String   @id @default(cuid())
+  assetId                String // -> ClientAsset
+  versionNo              Int
+  source                 String // dropbox | upload | aryeo | client_portal | manual | import
+  fileRef                String? // Dropbox path or blob URL (reuses existing client storage)
+  fileName               String?
+  mimeType               String?
+  sizeBytes              Int?
+  valueText              String? // for text assets (colors, pronunciation, instructions)
+  valueJson              String?
+  contentHash            String?
+  uploadedByClientUserId String?
+  uploadedByStaffUserId  String?
+  note                   String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@unique([assetId, versionNo])
+}
+
+// ---------------------------------------------------------------------------
+// §20 / §21 / §26 CALLS, TRANSCRIPTS, ONBOARDING
+// ---------------------------------------------------------------------------
+
+// A Calendly event type → hub purpose mapping (spec §26): the event-type URI
+// is the machine classification key; a booking is classified ONLY when its
+// URI matches an ENABLED mapping. No mapping = a configuration exception,
+// never permission to ingest every similarly named call. Disabled by default.
+model ProgramCalendlyEventMapping {
+  id               String    @id @default(cuid())
+  eventTypeUri     String    @unique
+  eventName        String
+  publicUrl        String?
+  purpose          String // BRAND_DISCOVERY | MONTHLY_STRATEGY | IGNORED
+  organizationUri  String?
+  hostUri          String?
+  enabled          Boolean   @default(false)
+  validationStatus String    @default("UNVERIFIED") // UNVERIFIED | VALID | MISSING | RENAMED
+  validatedAt      DateTime?
+  lastSyncedAt     DateTime?
+  lastError        String?
+  createdBy        String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([purpose, enabled])
+}
+
+// The internal call record (spec §20/§26): scheduled-event URI, invitee URI,
+// event type, call purpose, calendar/Meet identifiers, the CONFIRMED client
+// and the target onboarding record or program month. Ambiguous identity,
+// type or month lands in matchState for staff, never a guess. Transcript
+// sources hang off it (ProgramTranscriptSource).
+model ProgramCallRecord {
+  id                   String    @id @default(cuid())
+  enrollmentId         String? // -> ContentEnrollment, once matched
+  clientId             String? // -> Client, once matched
+  clientUserId         String? // -> ClientUser (the invitee's membership) when known
+  callType             String    @default("UNCLASSIFIED") // BRAND_DISCOVERY | MONTHLY_STRATEGY | UNRELATED | UNCLASSIFIED
+  mappingId            String? // -> ProgramCalendlyEventMapping that classified it
+  // Calendly identifiers.
+  calendlyEventUri     String?   @unique
+  calendlyInviteeUri   String?
+  calendlyEventTypeUri String?
+  inviteeEmail         String?
+  inviteeName          String?
+  scheduledStart       DateTime?
+  scheduledEnd         DateTime?
+  timezone             String?
+  // Calendar / Meet linkage (calendar_event.external_id is present on all 29
+  // live bookings; a Calendly id and a Meet conference id are NOT the same).
+  calendarExternalId   String?
+  meetLink             String?
+  meetConferenceId     String?
+  // Target: an onboarding record (discovery) or an explicit program month
+  // (monthly) — a call held in late September may plan October.
+  onboardingId         String? // -> ProgramOnboarding
+  monthId              String? // -> ContentMonth
+  targetMonthKey       String?
+  status               String    @default("SCHEDULED") // SCHEDULED | COMPLETED | CANCELLED | RESCHEDULED | NO_SHOW
+  rescheduledFromId    String? // -> ProgramCallRecord (history preserved; transcripts do not transfer unverified)
+  cancelledAt          DateTime?
+  matchState           String    @default("PENDING") // PENDING | MATCHED | UNMATCHED_INVITEE | AMBIGUOUS_CLIENT | AMBIGUOUS_MONTH | UNMAPPED_TYPE | CONFIRMED_BY_STAFF | IGNORED
+  matchNote            String?
+  confirmedBy          String?
+  confirmedAt          DateTime?
+  transcriptState      String    @default("NONE") // NONE | AWAITING | CANDIDATES | CONFIRMED | ANALYZED | FAILED | NEEDS_REVIEW
+  analysisRunId        String? // -> ProgramAiRun (latest analysis)
+  analysisJson         String? // the six §20 outputs, each with excerpt refs
+  lastError            String?
+  lastErrorAt          DateTime?
+  rawJson              String? // provider payload snapshot
+  legacyMonthId        String? // -> ContentMonth whose calendlyEventUri/transcript fields this row was lifted from
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@index([enrollmentId, scheduledStart])
+  @@index([clientId])
+  @@index([monthId])
+  @@index([matchState])
+  @@index([transcriptState])
+  @@index([inviteeEmail])
+  @@index([calendarExternalId])
+  @@index([mappingId])
+  @@index([onboardingId])
+}
+
+// One transcript SOURCE (a Drive/Gemini doc, a Meet transcript, a paste, an
+// upload). Deduplicated across providers by content hash; a corrected
+// transcript is a new version that supersedes the old; an unlinked one sits
+// as a CANDIDATE for staff confirmation with title, time and participants —
+// similar names and times rank candidates but never establish ownership.
+model ProgramTranscriptSource {
+  id                   String    @id @default(cuid())
+  callRecordId         String? // -> ProgramCallRecord once confirmed
+  provider             String // drive | meet | notetaker | paste | upload | pdf
+  externalId           String? // Drive file id, Meet transcript name, …
+  sourceUrl            String?
+  title                String?
+  recordedAt           DateTime?
+  participantsJson     String?
+  text                 String?
+  contentHash          String    @unique
+  version              Int       @default(1)
+  supersedesId         String? // -> ProgramTranscriptSource (corrected transcript)
+  matchState           String    @default("UNMATCHED") // UNMATCHED | CANDIDATE | CONFIRMED | REJECTED | IGNORED
+  candidateCallIdsJson String? // ranked ProgramCallRecord ids with scores
+  confirmedBy          String?
+  confirmedAt          DateTime?
+  readinessState       String? // Meet: FILE_GENERATED etc. — ingest after readiness, not at meeting end
+  legacyMonthId        String? // -> ContentMonth.transcriptSource this was lifted from
+  createdBy            String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@index([callRecordId])
+  @@index([provider, externalId])
+  @@index([matchState])
+}
+
+// One unit of transcript work (spec §20): ingest, analyze, draft a strategy,
+// draft scripts — with separate queued/running/succeeded/failed/needs-review
+// states and a lease, so marking a transcript processed before work succeeds
+// can never suppress future retries, and a rerun cannot duplicate output
+// (dedupeKey).
+model ProgramTranscriptJob {
+  id                 String    @id @default(cuid())
+  callRecordId       String // -> ProgramCallRecord
+  transcriptSourceId String? // -> ProgramTranscriptSource
+  enrollmentId       String?
+  kind               String // INGEST | ANALYZE | STRATEGY_DRAFT | SCRIPT_DRAFT | FACT_EXTRACT
+  state              String    @default("QUEUED") // QUEUED | RUNNING | SUCCEEDED | FAILED | NEEDS_REVIEW | CANCELLED
+  attempts           Int       @default(0)
+  maxAttempts        Int       @default(3)
+  leaseUntil         DateTime?
+  leaseBy            String?
+  nextAttemptAt      DateTime?
+  startedAt          DateTime?
+  finishedAt         DateTime?
+  lastError          String?
+  lastErrorAt        DateTime?
+  reviewReason       String? // why a human must look
+  resultJson         String? // ids of what was produced (topics, answers, scripts, facts, proposals)
+  aiRunId            String? // -> ProgramAiRun
+  // Key format per kind: INGEST is per SOURCE ("<callRecordId>:<transcriptSourceId>:INGEST")
+  // because each Drive/Meet copy must be pulled once; every other kind is per
+  // CALL ("<callRecordId>:<kind>") so a Drive copy and a Meet copy of the same
+  // meeting — different contentHash, same call — yield ONE analysis, ONE
+  // strategy draft, ONE script draft, ONE fact extraction (spec §20).
+  dedupeKey          String?   @unique
+  requestedBy        String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([state, nextAttemptAt])
+  @@index([callRecordId])
+  @@index([transcriptSourceId])
+}
+
+// The onboarding record (spec §21): program, brand-discovery requirement,
+// booking, source call, intake answers, asset completeness, generated
+// strategy draft and its approval — one per enrollment. Discovery stays a
+// separate requirement unless staff explicitly waive it.
+model ProgramOnboarding {
+  id                        String    @id @default(cuid())
+  enrollmentId              String    @unique
+  clientId                  String
+  status                    String    @default("NOT_STARTED") // NOT_STARTED | DISCOVERY_BOOKED | DISCOVERY_HELD | TRANSCRIPT_PENDING | STRATEGY_DRAFTED | STRATEGY_IN_REVIEW | STRATEGY_APPROVED | BANK_GENERATED | COMPLETE | WAIVED
+  discoveryRequired         Boolean   @default(true)
+  discoveryWaivedAt         DateTime?
+  discoveryWaivedBy         String?
+  discoveryWaivedReason     String?
+  discoveryCallRecordId     String? // -> ProgramCallRecord
+  intakeJson                String? // the 41-question instrument (manifest §3.6), answers + pre-filled marks
+  intakeSubmittedAt         DateTime?
+  intakeSource              String? // portal | staff | import
+  brandInputsJson           String? // source-backed draft profile facts
+  assetChecklistJson        String? // which asset types exist / are missing
+  missingItemsJson          String? // unanswered questions + missing assets, explicit
+  strategyDraftVersionId    String? // -> ContentStrategyVersion (DRAFT)
+  strategyGenerationRunId   String? // -> ProgramAiRun
+  strategyApprovedVersionId String? // -> ContentStrategyVersion (APPROVED)
+  initialBankRunId          String? // -> ContentTopicRefreshRun
+  lastError                 String?
+  lastErrorAt               DateTime?
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+
+  @@index([clientId])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// §23 STRUCTURED CLIENT KNOWLEDGE (replaces ContentNote.intelligence)
+// ---------------------------------------------------------------------------
+
+// One fact about a client with source, date, scope, status, visibility, AI
+// permission and supersession (spec §23). Generators read ACCEPTED facts
+// whose aiContext is ALLOWED — never an unreviewed pile. "Let's try faster
+// cuts on this one" is scope PROJECT and cannot change every future video.
+// Confidentiality is a structured column here, not a text marker.
+model ClientFact {
+  id                 String    @id @default(cuid())
+  clientId           String
+  enrollmentId       String?
+  category           String // BRAND_PREFERENCE | PRODUCTION_PREFERENCE | PERFORMANCE_REPORTED | PERFORMANCE_MEASURED | DECISION | COMMITMENT | INTERNAL | PROPOSED_CHANGE | FEEDBACK
+  fieldKey           String? // approved field policy key, e.g. "editing.pace", "brand.voice" — routine updates auto-accept per field rules
+  body               String
+  source             String // call | import | client | staff | ai | note_migration | review | comms
+  sourceRef          String? // free pointer (CommLog id, note id, file)
+  callRecordId       String? // -> ProgramCallRecord
+  transcriptSourceId String? // -> ProgramTranscriptSource
+  excerptJson        String? // {time, speaker, text}[] — speaker attribution matters
+  speaker            String?
+  factDate           DateTime? // when it was said / became true
+  scope              String    @default("PERMANENT") // PERMANENT | MONTH | PROJECT
+  monthId            String? // -> ContentMonth for MONTH scope
+  projectId          String? // -> Project for PROJECT scope
+  status             String    @default("PROPOSED") // PROPOSED | ACCEPTED | REJECTED | SUPERSEDED | UNDONE
+  supersedesId       String? // -> ClientFact this replaces
+  supersededById     String? // -> ClientFact that replaced it
+  visibility         String    @default("INTERNAL") // INTERNAL | CLIENT
+  aiContext          String    @default("DENIED") // ALLOWED | DENIED — denied until reviewed
+  confidential       Boolean   @default(false)
+  confidence         Float? // 0..1, advisory only — never overrides a conflicting explicit instruction
+  conflictsWithId    String? // -> ClientFact — an exception to resolve, not an overwrite
+  autoAccepted       Boolean   @default(false)
+  reviewedBy         String?
+  reviewedAt         DateTime?
+  undoneBy           String?
+  undoneAt           DateTime?
+  legacyNoteId       String?   @unique // -> ContentNote it was migrated from
+  aiRunId            String? // -> ProgramAiRun that extracted it
+  dedupeHash         String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([clientId, status])
+  @@index([clientId, category])
+  @@index([enrollmentId])
+  @@index([monthId])
+  @@index([projectId])
+  @@index([callRecordId])
+  @@index([clientId, dedupeHash])
+}
+
+// ---------------------------------------------------------------------------
+// §13 AI RUNS & QUOTAS
+// ---------------------------------------------------------------------------
+
+// Every AI invocation, on the record (spec §13): client scope, input refs,
+// prompt/model version, output ref, status, cost and the human disposition.
+// aiJson() discards usage today and unattended cron spend is unbounded —
+// this row is what quotas count and what "observable failure" means.
+model ProgramAiRun {
+  id                String    @id @default(cuid())
+  kind              String // call_analysis | fact_extract | strategy_draft | topic_bank | topic_refresh | recommendation | interview_plan | script_draft | script_revise | creative_review | caption | transcript | script_match | profile_draft
+  enrollmentId      String?
+  clientId          String?
+  scopeJson         String? // {monthId, topicId, scriptId, submissionId, callRecordId, …}
+  inputRefsJson     String? // record ids and hashes the prompt was built from
+  promptKey         String
+  promptVersion     String?
+  model             String?
+  policyVersionId   String? // -> ProgramGenerationPolicyVersion
+  strategyVersionId String? // -> ContentStrategyVersion
+  status            String    @default("QUEUED") // QUEUED | RUNNING | SUCCEEDED | FAILED | CANCELLED | QUOTA_BLOCKED
+  attempts          Int       @default(0)
+  leaseUntil        DateTime?
+  leaseBy           String?
+  nextAttemptAt     DateTime?
+  inputTokens       Int?
+  outputTokens      Int?
+  costCents         Int?
+  outputRef         String? // "ContentScriptVersion:<id>" etc.
+  outputJson        String? // raw structured output, for audit
+  disposition       String    @default("PENDING") // PENDING | ACCEPTED | EDITED | REJECTED | SUPERSEDED | NOT_APPLICABLE
+  dispositionBy     String?
+  dispositionAt     DateTime?
+  requestedBy       String? // staff email | "cron" | client user id
+  dedupeKey         String?   @unique
+  error             String?
+  errorAt           DateTime?
+  startedAt         DateTime?
+  finishedAt        DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([enrollmentId, createdAt])
+  @@index([kind, createdAt])
+  @@index([status, nextAttemptAt])
+}
+
+// A spend/run ceiling (spec §13): global, per enrollment or per run kind, per
+// day or month. Counted against ProgramAiRun.startedAt. A missing row means
+// the code default applies, which is conservative.
+model ProgramAiQuota {
+  id           String   @id @default(cuid())
+  scope        String // GLOBAL | ENROLLMENT | KIND
+  scopeRef     String   @default("") // "" | enrollment id | run kind
+  period       String // DAY | MONTH
+  maxRuns      Int?
+  maxCostCents Int?
+  enabled      Boolean  @default(true)
+  setBy        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([scope, scopeRef, period])
+}
+
+// ---------------------------------------------------------------------------
+// §14 IMPORTS — preserve the source, preview, idempotent
+// ---------------------------------------------------------------------------
+
+// One import of one source file (spec §14): its hash is the idempotency key,
+// so re-uploading Marcee's July scripts re-opens this batch instead of
+// inserting every script again. Applied only after a preview; nothing it
+// creates is approved, filmed or released by virtue of a past document date.
+model ContentImportBatch {
+  id               String    @id @default(cuid())
+  kind             String // SCRIPTS | TOPICS | STRATEGY | TRANSCRIPT | VIDEOS | INTAKE
+  enrollmentId     String?
+  clientId         String?
+  fileName         String?
+  contentHash      String // sha256 of the source bytes
+  sourceRef        String? // Drive id / blob path / Downloads path
+  sourceMtime      DateTime?
+  proposedMonthKey String? // the document's month; Jordan confirms per client (D10)
+  mode             String    @default("PREVIEW") // PREVIEW | APPLIED | ABANDONED
+  previewJson      String? // counts + per-item modes for the confirmation screen
+  uploadedBy       String?
+  appliedAt        DateTime?
+  appliedBy        String?
+  itemsCreated     Int       @default(0)
+  itemsLinked      Int       @default(0)
+  itemsUpdated     Int       @default(0)
+  itemsConflict    Int       @default(0)
+  itemsSkipped     Int       @default(0)
+  lastError        String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([kind, contentHash])
+  @@index([enrollmentId])
+  @@index([clientId])
+}
+
+// One parsed item inside a batch with its proposed and decided mode
+// (create / link / update-proposal / conflict / skip), the original source
+// text kept whole, and the record it produced or linked to.
+model ContentImportItem {
+  id               String    @id @default(cuid())
+  batchId          String // -> ContentImportBatch
+  ordinal          Int
+  kind             String // SCRIPT | TOPIC | PILLAR | STRATEGY_SECTION | VIDEO | INTAKE_ANSWER | TRANSCRIPT
+  sourceHash       String // sha256 of the normalized source text
+  sourceText       String // verbatim
+  parsedJson       String? // the structured parse (title, category label, hook, points, close, caption, marks)
+  proposedMode     String // CREATE | LINK | UPDATE_PROPOSAL | CONFLICT | SKIP
+  decidedMode      String?
+  decidedBy        String?
+  decidedAt        DateTime?
+  targetKind       String? // ContentScript | ContentTopic | ContentPillar | ContentStrategy | ContentVideo
+  targetId         String? // existing record it links to / conflicts with
+  resultId         String? // record created on apply
+  proposedMonthKey String?
+  importedMark     String? // colour/bold mark from the source (manifest §5.3)
+  proposedState    String? // what the mark suggests, awaiting confirmation
+  pillarLabel      String? // the label as written; mapped through ContentPillarAlias
+  conflictNote     String?
+  error            String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([batchId, sourceHash])
+  @@index([batchId, ordinal])
+  @@index([sourceHash])
+  @@index([targetId])
+  @@index([resultId])
+}
+
+// ---------------------------------------------------------------------------
+// §24 REMINDERS
+// ---------------------------------------------------------------------------
+
+// The reminder ledger (spec §24): client / month / action / template, the
+// attempt, the outbox row and provider id, the outcome, when it is next
+// eligible and why it was suppressed. The evaluator rechecks authoritative
+// state right before sending and records what it saw. Duplicate runs collide
+// on dedupeKey; two evaluators cannot work the same row (lease). Nothing here
+// sends unless ProgramAutomation "reminders" is on.
+model ProgramReminder {
+  id                   String    @id @default(cuid())
+  enrollmentId         String
+  clientId             String
+  monthId              String? // -> ContentMonth
+  monthKey             String?
+  action               String // CHOOSE_PATH | BOOK_CALL | COMPLETE_ANSWERS | BOOK_SESSION | REVIEW_WORK | DIGEST | SCRIPTS_READY | SESSION_REQUEST_FOLLOWUP | ESCALATION
+  templateKey          String
+  templateVersion      String?
+  channel              String    @default("email") // email | sms
+  toRef                String? // address or phone key — never rendered raw to non-owners
+  attempt              Int       @default(1)
+  state                String    @default("PENDING") // PENDING | SUPPRESSED | QUEUED | SENT | FAILED | BOUNCED | UNKNOWN | CANCELLED
+  outboxMessageId      String? // -> OutboxMessage
+  providerMessageId    String?
+  outcome              String? // accepted | bounced | failed | unknown
+  evaluatedStateJson   String? // what the recheck saw (booked? path chosen? paused? snoozed?)
+  suppressionReason    String? // booked | no_call_chosen | preparation_submitted | paused | snoozed | quiet_hours | duplicate | pending_session_request | stale_sync
+  nextEligibleAt       DateTime? // business-time eligibility (quiet hours, deadline arithmetic)
+  // Job lease (R6): the evaluator claims a row before the recheck + enqueue.
+  leaseUntil           DateTime?
+  leaseBy              String?
+  nextAttemptAt        DateTime? // retry clock after a FAILED enqueue/send
+  sentAt               DateTime?
+  failedAt             DateTime?
+  lastError            String?
+  lastErrorAt          DateTime?
+  manual               Boolean   @default(false) // send-now / copy-link by staff — same safeguards, same history
+  requestedBy          String?
+  escalatedToAppUserId String?
+  escalationTaskId     String? // -> SmartTask
+  dedupeKey            String?   @unique // enrollment:monthKey:action:attempt
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@index([enrollmentId, createdAt])
+  @@index([monthId, action])
+  @@index([state, nextEligibleAt])
+  @@index([state, nextAttemptAt])
+}
+
+// ---------------------------------------------------------------------------
+// §27 GENERATION POLICY (versioned)
+// ---------------------------------------------------------------------------
+
+// ONE versioned generation policy (spec §27): the strategy template, the
+// reference manifest, topics per pillar, timing target, script format,
+// creative rules and quality rubric. Its id is stamped on every generated
+// bank, strategy draft and script version. Jordan's rulings are the
+// defaults: exactly three points, 20–30 s, 10 per pillar (configurable to 15).
+model ProgramGenerationPolicyVersion {
+  id                    String    @id @default(cuid())
+  versionNo             Int       @unique
+  name                  String
+  status                String    @default("DRAFT") // DRAFT | ACTIVE | RETIRED — one ACTIVE, enforced in code
+  strategyTemplateJson  String // Arielle S3 hierarchy: sections, subsections, optional fields
+  referenceManifestRef  String? // path/hash of the manifest this version was built from
+  referenceManifestJson String? // the rules table, tagged by source
+  topicsPerPillar       Int       @default(10)
+  topicsPerPillarMax    Int       @default(15)
+  recommendedPerSession Int? // shortlist size = session/month capacity; null = derive from the enrollment
+  talkingPoints         Int       @default(3)
+  pointRolesJson        String    @default("[\"RE_HOOK\",\"BUILD_UP\",\"PAYOFF\"]")
+  timingTargetMinSec    Int       @default(20)
+  timingTargetMaxSec    Int       @default(30)
+  wordRangeJson         String? // {min:45, max:65} — a drafting heuristic, not proof of duration
+  scriptFormatJson      String? // label strings, ordering, caption CTA rule
+  creativeRulesJson     String? // hook standards, bans, devices, voice rules (tagged by source)
+  rubricJson            String? // Trust/Value/Credibility/Entertainment definitions + editorial checks
+  validatorsJson        String? // deterministic checks: required fields, three points, pillar linkage, counts, duplication
+  promptsJson           String? // {promptKey: promptVersion} — one policy, no drifting prompts per entry point
+  notes                 String?
+  createdBy             String?
+  activatedAt           DateTime?
+  activatedBy           String?
+  retiredAt             DateTime?
+  contentHash           String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// R6 AUTOMATION SWITCHES — every automation is OFF at the database
+// ---------------------------------------------------------------------------
+
+// One row per automation the spec names. `enabled` defaults FALSE in
+// Postgres, not in code: reminders, transcript jobs, AI runs, publishing,
+// script-ready emails, portal invites, topic refresh, strategy generation,
+// session self-booking. Nothing runs, sends or invites until Jordan flips a
+// row — launch has not been authorised. The push creates NO rows (no seed is
+// allowed), so every job driver MUST treat a MISSING row as DISABLED — the
+// only reading under which "OFF at the database" is true on day one. The
+// reminder POLICY (deadlines, lead times, cadence, timezone, business hours,
+// sender, escalation owner) lives in configJson of the "reminders" row; see
+// DESIGN.md for the shape.
+model ProgramAutomation {
+  id          String    @id @default(cuid())
+  key         String    @unique // reminders | transcript_jobs | ai_runs | publishing | script_share_email | portal_invites | portal_login_email | topic_refresh | strategy_generation | session_booking | cut_transcripts | caption_assistant | fact_extraction
+  enabled     Boolean   @default(false)
+  enabledBy   String?
+  enabledAt   DateTime?
+  disabledBy  String?
+  disabledAt  DateTime?
+  configJson  String? // the automation's settings shape (documented in DESIGN.md)
+  lastRunAt   DateTime?
+  lastError   String?
+  lastErrorAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// §12 PUBLISHING (separate phase; disabled)
+// ---------------------------------------------------------------------------
+
+// A connected publishing account (spec §12): clear identity, encrypted
+// credentials, connect/disconnect/revoke history. Disconnecting or revoking
+// consent must stop every queued job on it.
+model ProgramPublishingAccount {
+  id                      String    @id @default(cuid())
+  enrollmentId            String
+  clientId                String
+  provider                String // INSTAGRAM | FACEBOOK | TIKTOK | YOUTUBE
+  providerAccountId       String
+  handle                  String?
+  displayName             String?
+  accountType             String? // business | creator | personal
+  credentialEncrypted     String? // encrypted-at-rest token blob (lib/integrations/crypto.ts)
+  scopesJson              String?
+  tokenExpiresAt          DateTime?
+  timezone                String?
+  status                  String    @default("CONNECTED") // CONNECTED | DISCONNECTED | REVOKED | EXPIRED | ERROR
+  connectedAt             DateTime  @default(now())
+  connectedByClientUserId String?
+  connectedByStaffUserId  String?
+  disconnectedAt          DateTime?
+  disconnectedBy          String?
+  revokedAt               DateTime?
+  lastValidatedAt         DateTime?
+  lastError               String?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  @@unique([provider, providerAccountId])
+  @@index([enrollmentId, status])
+}
+
+// One publication attempt of one approved cut with one caption (spec §12):
+// explicit publication approval, chosen timezone, job state with retries
+// that cannot double-post (dedupeKey + provider ids), and success ONLY on
+// confirmed provider receipt. A new cut or caption after approval
+// invalidates the job and requires a renewed decision.
+model ProgramPublishingJob {
+  id                     String    @id @default(cuid())
+  accountId              String // -> ProgramPublishingAccount
+  enrollmentId           String
+  clientId               String
+  videoId                String // -> ContentVideo
+  submissionId           String // -> ReviewSubmission (the exact approved cut)
+  captionDraftId         String? // -> ContentCaptionDraft
+  captionText            String // snapshot at approval
+  coverRef               String?
+  mediaValidationJson    String? // supported-media checks
+  scheduledFor           DateTime?
+  timezone               String?
+  approvedByClientUserId String?
+  approvedByStaffUserId  String?
+  approvedAt             DateTime?
+  state                  String    @default("DRAFT") // DRAFT | APPROVED | QUEUED | RUNNING | AWAITING_PROVIDER | SUCCEEDED | FAILED | CANCELLED | RECONCILE | INVALIDATED
+  attempts               Int       @default(0)
+  leaseUntil             DateTime?
+  leaseBy                String?
+  nextAttemptAt          DateTime?
+  providerContainerId    String? // e.g. Instagram media container id
+  providerMediaId        String? // confirmed platform receipt
+  providerPermalink      String?
+  providerResponseJson   String?
+  lastError              String?
+  lastErrorAt            DateTime?
+  invalidatedAt          DateTime?
+  invalidatedReason      String? // new cut | caption changed | account disconnected | consent revoked
+  dedupeKey              String?   @unique // account:submission:captionHash
+  startedAt              DateTime?
+  finishedAt             DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  @@index([accountId, state])
+  @@index([videoId])
+  @@index([submissionId])
+  @@index([state, nextAttemptAt])
+}
+
+// ---------------------------------------------------------------------------
+// §11 CLIENT-FACING RESOURCES
+// ---------------------------------------------------------------------------
+
+// A client-facing guide (spec §11): grouped, owned, last-reviewed, with
+// platform/device context, editable by staff without a deploy. Separate from
+// `Resource` (Kyle's staff link list, whose `url` is required — a guide is a
+// body, not a link) and from `Sop`. Unpublished by default.
+model PortalResource {
+  id             String    @id @default(cuid())
+  slug           String    @unique
+  groupKey       String // PREPARING_SESSION | REVIEWING_VIDEOS | POSTING_CONTENT | IMPROVING_RESULTS
+  title          String
+  summary        String?
+  body           String // markdown
+  platform       String? // instagram | facebook | tiktok | youtube | general
+  deviceContext  String? // ios | android | desktop | any
+  ownerAppUserId String? // -> AppUser responsible for keeping it current
+  reviewedAt     DateTime?
+  reviewedBy     String?
+  linkedActions  String? // JSON string[] of task/action keys this guide is linked from
+  published      Boolean   @default(false)
+  sortOrder      Int       @default(0)
+  createdBy      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([groupKey, published, sortOrder])
 }

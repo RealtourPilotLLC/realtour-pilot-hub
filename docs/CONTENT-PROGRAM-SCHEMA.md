@@ -1,0 +1,260 @@
+# CONTENT PROGRAM OPERATING SYSTEM — schema design (Sep 16 2026)
+
+The one additive schema for `/Users/jordanspackman/Downloads/Realtour-Pilot-Client-Content-Portal-Spec.md` (27 sections),
+so that every builder after this works against a fixed model and nobody touches migrations.
+
+- Edited file: `/Users/jordanspackman/Realtour Pilot POT Dashboard/prisma/schema.prisma` — new models in ONE contiguous
+  block at the end under `// ===== CONTENT PROGRAM OPERATING SYSTEM (Sep 16 2026) =====`; additive columns inside ten
+  existing models, each group marked `// ---- CPOS (Sep 16 2026)`.
+- `npx prisma format` applied, `npx prisma validate` passes. 116 models (73 existing + 43 new). Nothing pushed.
+- Pre-edit copy of the schema: `schema.before.prisma` beside this file. Diff scripts: `push-preview.sql` (live DB →
+  new schema, regenerated after the reviewer round; `migrate-diff.sql` is the pre-review copy) and `datamodel-diff.sql`
+  (pre-edit schema → new schema).
+- Reviewer round (Sep 16, verdict APPROVE with should-fix items): every should-fix applied, every coverage gap answered
+  in §7, the changes listed in §8. Verification below is the POST-fix state.
+
+## 0. Verification (read-only)
+
+| Check | Result |
+|---|---|
+| `npx prisma validate` | valid |
+| `prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --script` → `push-preview.sql` (1789 lines) | **CREATE TABLE 43 · ALTER TABLE … ADD COLUMN 10 (one per extended table, 87 column clauses: 86 nullable, 1 `NOT NULL DEFAULT false` = ContentScript.historical) · CREATE INDEX 137 (15 on existing tables, 122 on new) · CREATE UNIQUE INDEX 32 (ALL on new tables) · anything else: 0** (no DROP, no ALTER COLUMN, no RENAME, no ADD CONSTRAINT / FOREIGN KEY, no CREATE TYPE / ALTER TYPE) |
+| same diff from `schema.before.prisma` → new schema (`datamodel-diff.sql`) | identical statement SET (only the order of the ten ALTER TABLE statements differs between the two generators) — proves every statement is mine |
+| `npx prisma format` run twice | second run is a byte-for-byte no-op |
+| `npx prisma generate` against a throwaway copy (in-project path, output into the scratchpad, copy removed) | succeeds — db:push's post-generate step cannot fail |
+| identifiers > 63 chars (Postgres limit) in the preview | none |
+| R3 programmatic check on all 43 new models | cuid id, `createdAt @default(now())`, `updatedAt @updatedAt` on every one |
+| `migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel schema.before.prisma` | `-- This is an empty migration.` (live DB == committed schema; zero pre-existing drift) |
+| ADD COLUMN with NOT NULL and no DEFAULT | none |
+| `@relation` in the new block | none (the one grep hit is the header comment) |
+| duplicate model names | none |
+| git stat noise | `prisma format` realigned column whitespace across existing models and reflowed six `/** … */` doc comments (TopazJob, ReviewSubmission, CommLog) into its canonical layout; text unchanged, semantics unchanged (proved by the datamodel diff above). |
+
+Human's steps, once, after review: `npx tsx scripts/backup-content-program.ts` then `npm run db:push`.
+
+## 1. Rules obeyed
+
+- **R1 additive only** — no renames, drops, type changes, NOT NULL without default, no enum edits (no Prisma enums used at all).
+- **R2 no @relation** — every reference in the new block is a plain `String` id, indexed. The house style of every Content*/Portal* model and the only style that pushes cleanly against live data with known orphans (mis-filed calls on Gary Mercer Sr, the duplicate "Rick Schultz(don't use)"). The diff therefore contains no FK constraint.
+- **R3** — every new model: `id String @id @default(cuid())`, `createdAt @default(now())`, `updatedAt @updatedAt`; indexes on every foreign-id column readers will query; `@@unique` where idempotency is demanded (see §4).
+- **R4 naming** — prefix = the layer that owns the record (stated in the block header):
+  `Client*` a client person or something the client authored/owns · `Content*` the creative chain · `Program*` the operating layer (sessions, calls, jobs, reminders, policy, owners, automation switches, publishing) · `Portal*` client-facing surfaces. All four prefixes already exist in the schema (Client, Content*, ProgramSignup, Portal*). No name collides with Resource, Sop, Activity, Feedback, Notification, Connection, etc.
+- **R5 versioning tables** — ContentStrategyVersion, ContentScriptVersion, ContentTopicRefreshRun (+ContentTopicSuggestion), ProgramGenerationPolicyVersion, ClientAssetVersion. Current rows hold pointers (`currentVersionId`, `approvedVersionId`, `sharedVersionId`, `activeVersionId`); approval is who/when/which-version on the version row and in the ContentScriptRelease ledger.
+- **R6 automations** — every automation is a durable row with `state/status + attempts + leaseUntil/leaseBy + nextAttemptAt + lastError(+At)`: ProgramTranscriptJob, ProgramAiRun, ContentTopicRefreshRun, ContentCutTranscript, ProgramReminder (lease added in the reviewer round), ProgramPublishingJob, ProgramSessionRequest (booking job). The switch is `ProgramAutomation.enabled Boolean @default(false)` — OFF at the database, not in code — and because the push creates no rows, **a missing row means DISABLED for every key** (see §5).
+- **R7** — ClientUser + ClientMembership are their own thing; AppUser/Role untouched.
+
+### Orchestrator name → model name
+
+| Named in the brief | Model here | Why |
+|---|---|---|
+| SessionRequest | ProgramSessionRequest | Program* = operating layer |
+| TopicEvent / TopicInterview / InterviewAnswer / TopicRefreshRun | ContentTopicEvent / ContentInterview / ContentInterviewAnswer / ContentTopicRefreshRun | Content* = creative chain |
+| LogicalVideo | ContentVideo (+ ContentVideoSource) | |
+| CutTranscript | ContentCutTranscript | |
+| CaptionDraft | ContentCaptionDraft | |
+| ImportBatch / ImportItem | ContentImportBatch / ContentImportItem | |
+| CalendlyEventMapping / CallRecord / TranscriptJob | ProgramCalendlyEventMapping / ProgramCallRecord / ProgramTranscriptJob (+ ProgramTranscriptSource) | |
+| ProgramMonthOwner | ProgramOwnerAssignment (scope DEFAULT / ENROLLMENT / MONTH) | one table for defaults and overrides |
+| EnrollmentChange | ProgramEnrollmentChange | |
+| ReminderLedger | ProgramReminder | one row = one attempt; it is the ledger |
+| GenerationPolicyVersion | ProgramGenerationPolicyVersion | |
+| PublishingAccount / PublishingJob | ProgramPublishingAccount / ProgramPublishingJob | |
+| AiRun | ProgramAiRun (+ ProgramAiQuota) | |
+| onboarding record | ProgramOnboarding | |
+| ClientDecision / ClientFact / ClientAsset / ClientEmailAlias | same (+ ClientAssetVersion) | client-owned |
+| "extend Resource … else a ProgramResource view" | PortalResource | `Resource.url` is required and it is Kyle's staff link list; a client guide is a body, not a link. Separate model, unpublished by default. |
+| ReminderPolicy settings shape | `ProgramAutomation("reminders").configJson` — shape in §5 | a switch row with config beats a code-default AppSetting for "OFF at the database" |
+
+### Deviations from the SYNTHESIS §5 Phase 1 design (reused otherwise verbatim)
+
+- `PortalVisit.at` → `createdAt` (+ `updatedAt`) so the model obeys R3; the index is `[enrollmentId, createdAt]`. No code references `at` yet.
+- `ClientMembership` gained `updatedAt` (R3), `revokedBy`, and `@@index([clientId])`.
+- Enrollment/PortalComment/ScriptSuggestion/ReviewSubmission columns are exactly the Phase 1 list, plus the §8 columns the spec needs on the same tables (threading, resolution, release, decision pointer, byte hash).
+
+## 2. Model → spec → acceptance criteria → owner
+
+"Owner" = the code area that writes the row (readers may be anywhere). Paths are suggested homes under `src/lib/` / `src/app/`.
+
+| Model | Spec | Acceptance criteria it satisfies | What code owns it |
+|---|---|---|---|
+| **ClientUser** | §2 | individual sign-in by email link; approval "records the actual person"; removed collaborators lose access (status DISABLED) | `src/lib/auth/clientSession.ts`, `/portal/login` + `/portal/auth/[token]` |
+| **ClientMembership** | §2 | explicit membership per account+program; owner/collaborator/viewer; revocation immediate (re-read per request, `revokedAt`); cross-client id substitution refused via `clientId` | `src/lib/portal.ts resolvePortalViewer`, `content/actions.ts invitePortalUser/revokePortalUser` |
+| **PortalVisit** | §2, §15 metrics | "does anyone use it" measurable; no token in analytics (hub UsageEvent still excludes /portal) | `src/app/portal/[token]/page.tsx` render (one row per render) |
+| **ClientEmailAlias** | §26, D6/D16 | invitee → unambiguous client; two clients on one address = exception, never a guess | `src/lib/contentCalls.ts` matcher; client file Settings |
+| **ContentStrategyVersion** | §3, §21, §27 | version + approval date shown; "each selected topic and generated script records the strategy version used"; approving a newer version never rewrites historical scripts; source's own structure preserved (`structureTemplate`, `sectionsJson`); discovery vs monthly sources separate (`sourceKind`, `callRecordId`); draft never client-visible (`releasedAt` gate, not a text filter) | `src/lib/contentStrategy.ts` (new): import path, AI draft path, approve, release |
+| **ContentStrategyProposal** | §3, §23, §21 | a call proposes, never overwrites; staff see proposal + source + impact before accepting; monthly call cannot replace the brand foundation | `contentPipeline.ts` (writes from call analysis), client file Strategy tab (resolve) |
+| **ContentPillar** | §5, §18, §27 | stable pillar identity; client-specific names never replaced by a generic set; `topicsPerPillar × pillarCount` | strategy import/approval creates them; client file Strategy tab |
+| **ContentPillarAlias** | §18, §27, manifest C-A6/C-C4 | pillar renames keep identity; importer never fails on a label — queues a mapping; "valid pillar linkage" validator | importer, topic refresh (rename with approval) |
+| **ContentTopicEvent** | §5 | "history" per topic; "discussed on a call" ≠ selected/approved/filmed; rejection reasons kept internally | every topic writer (`contentPipeline.ts`, portal topic actions, importer, refresh) |
+| **ContentTopicSelection** | §5, §14, §19 | select for a named month / remove uncommitted / staff reconcile after the call; overflow kept not deleted; unique per topic+month so changing paths cannot duplicate | portal Topics page actions; call analysis (proposed); staff reconcile |
+| **ContentTopicRefreshRun** | §18, §21, §27 | one click → reviewable suggestions; duplicate clicks do not create duplicate jobs (`dedupeKey`); stale inputs shown (`inputsJson`); insufficient context = NEEDS_INPUT with `missingContextJson`, never padded | `src/lib/topicRefresh.ts` (new) driven from cron/`ProgramAutomation("topic_refresh")` |
+| **ContentTopicSuggestion** | §18, §27 | accept/edit/archive/regenerate each; previous suggestions accessible; archived concepts not reintroduced (`dedupeHash`, `reintroducedOfId`); "Recommended for your next session" with linked goal / pillar / prior-content relation / why-now; "No verified filming history" | same |
+| **ContentInterview** | §6, §19 | interrupted interviews resume (`currentQuestionKey`, `questionPlanJson`); sufficiency evaluated, targeted follow-ups (`sufficiencyJson`, NEEDS_FOLLOWUP); both paths (WRITTEN/CALL) feed one queue; no duplicate per topic+month — `monthId` is REQUIRED so the `@@unique([topicId, monthId])` guard really holds (Postgres treats NULLs as distinct); an interview always belongs to the month whose scripts it feeds, there is no bank-level interview | portal Topics → interview flow; `contentPipeline.ts` for CALL-sourced |
+| **ContentInterviewAnswer** | §6, §20 | regenerating cannot erase edits (new row supersedes); scripts identify their source answers; speaker attribution; skip / don't know; reuse known answers | same |
+| **ContentScriptVersion** | §6, §22, §27, Jordan's rulings | exactly three points as structured roles (`pointsJson`, `validationJson`); strategy + policy version recorded; source answers (`answerIdsJson`) / call; uncertain claims flagged (`gapsJson`); edits after sharing = new version; regeneration preserves manual edits (`regeneratedSections`); C-A9 extras kept; the 20–30 s target is NOT stored per version — readers get it through `policyVersionId` → ProgramGenerationPolicyVersion, so no per-script column can become a duration override (`timingNote` is prose, `estimatedSeconds` is a measurement) | `src/lib/contentScripts.ts` (new): generate, revise, regenerate-section, approve; Review Room Scripts queue |
+| **ContentScriptRelease** | §22 | approval causes sharing exactly once; email + portal refer to the approved version; batch → one notification (`batchKey`); "approval succeeded, email failed" are two facts (`notificationState`, `outboxMessageId`) | Scripts queue "Approve & share" action |
+| **ContentVideo** | §7, §9, §16 | grouped by obligation month with filmed/delivered dates separate; multiple sources do not inflate counts; listing videos labelled and excluded from allowance unless mapped (`kind`, `countsTowardAllowance`, `mappedBy`); explicit topic→script version→session→deliverable→cut links; "marked as posted" ≠ published | library sync (`portalLibrary.ts` rewrite), Review Room approve hook, staff mapping UI |
+| **ContentVideoSource** | §7 | unique (kind, ref) — source synchronization can never create duplicates; distinct outputs stay visible | same |
+| **ClientDecision** | §8 | approve / request-changes keyed to the immutable `submissionId` + `contentHash`; attributable (`clientUserId`/`staffUserId`/`actorLabel`); a new cut needs its own decision (`supersededById`); duplicate submissions → one revision job (`dedupeKey`, `revisionTaskId`); open-notes choice recorded | `src/app/portal/actions.ts` (approve / request changes) |
+| **ContentCutTranscript** | §9, §10 | transcript stored per cut version (`@@unique([submissionId, version])`, `contentHash`); human corrections kept beside machine text; cut change invalidates readiness (`invalidatedAt`); job states + lease | `src/lib/cutTranscripts.ts` (new), gated by `ProgramAutomation("cut_transcripts")` |
+| **ContentScriptMatch** | §9 | evidence, confidence, alternatives shown to staff; never forced / auto-approved; correcting a match keeps history | historical linking tool in the client file |
+| **ContentCaptionDraft** | §10 | drafts tied to cut version + strategy version + author + history (`basedOnId`, `versionNo`); regeneration never overwrites edits; final drafts tied to the chosen approved cut; STALE on cut change; nothing published because a caption exists | video detail "Caption & CTA" section, gated by `ProgramAutomation("caption_assistant")` |
+| **ProgramSessionRequest** | §4, §16 | "Requested, awaiting confirmation" until an Aryeo appointment exists (`projectId`); explicit program month; reschedule/cancel history (`supersedesId`); duplicate clicks collide (`dedupeKey`); stale slot cannot double-confirm (booking job + `aryeoAppointmentId`); package/extra capacity recorded | `src/app/portal/actions.ts` (request), Kyle's ops screen (confirm), Aryeo reconcile |
+| **ProgramOwnerAssignment** | §16, §17, D11 | "assigned owner" column; escalation owner for reminders; defaults Jordan (strategy/scripts) + Kyle (scheduling/delivery), overridable per client or month | Settings screen; readers: roster, reminders |
+| **ProgramEnrollmentChange** | §17 | package changes carry an effective date + current-month choice; past-month quantities preserved; internal setting vs billing truth distinguished; no implicit billing action | `content/actions.ts` enrollment settings writer, Aryeo/Stripe sync |
+| **ClientAsset / ClientAssetVersion** | §17 | ownership, type, active version, source; replacing a logo changes future defaults without rewriting delivered work | Brand & Assets tab; existing Dropbox client folder stays the file store |
+| **ProgramCalendlyEventMapping** | §26, §21, D6 | classification by event-type URI only; missing mapping = configuration exception; renaming a mapped event does not break it; delete/recreate needs a verified update (`validationStatus`) | `/connections` settings screen; `src/lib/integrations/calendly.ts` |
+| **ProgramCallRecord** | §20, §26, §16 | event uri / invitee uri / event type / purpose / calendar external id / Meet link / target month or onboarding; unknown invitee = unmatched, not guessed; ambiguous month/type → exception queue (`matchState`); a late-September call plans October (`monthId`); cancel/reschedule history; internal record shows booking link, call type, client, source event, transcript link, analysis state, last error | `src/lib/contentCalls.ts` rewrite (Calendly sync writes these instead of stamping ContentMonth) |
+| **ProgramTranscriptSource** | §20, §26 | dedupe across sources (`contentHash` unique); corrected transcript = new version (`supersedesId`); candidates presented with title/time/participants for staff confirmation; Meet readiness (`readinessState`); historical transcripts enter an import review queue (UNMATCHED) | Drive sweep, Meet API path, manual paste/upload |
+| **ProgramTranscriptJob** | §20 | queued/running/succeeded/failed/needs-review with lease; marking processed before success cannot suppress retries; reruns cannot duplicate (`dedupeKey`, format per kind in §4); duplicate ingestion (Drive copy + Meet copy of one meeting) yields ONE analysis because every kind except INGEST is keyed per call, not per source; failed step visible + retryable | `contentPipeline.ts` rewrite, gated by `ProgramAutomation("transcript_jobs")` |
+| **ProgramOnboarding** | §21, §26 | program + discovery requirement + booking + source call + intake + asset completeness + generated draft + approval; discovery waivable only explicitly; a discovery event creates onboarding work and does not stamp a monthly call | onboarding flow (signup sweep creates the row), discovery analysis |
+| **ClientFact** | §23, §3, §6, §20 | every fact carries source, date, client, scope, status, supersession; permanent vs month vs project scope; conflicting instructions become exceptions (`conflictsWithId`), confidence never overrides; inspect + undo; reported performance ≠ verified analytics (category); generators read ACCEPTED + `aiContext=ALLOWED` only; confidentiality structured (`confidential`), not a marker | `contentPipeline.ts` (extract), client file "Updated from your latest call" strip, generators' context builder |
+| **ProgramAiRun** | §13 | every run records client scope, input refs, prompt/model version, output ref, status, cost, human disposition; cancellation + retry + observable failure | `src/lib/integrations/ai.ts` wrapper (all AI calls go through it), gated by `ProgramAutomation("ai_runs")` |
+| **ProgramAiQuota** | §13 | quotas per global / enrollment / kind per day / month | same wrapper; settings screen |
+| **ContentImportBatch** | §14, §5 | original source preserved; preview before apply; repeated imports idempotent (`@@unique([kind, contentHash])`); month rule confirmed per client (`proposedMonthKey`, D10) | `content/actions.ts` import actions (rewrite of the APPROVED-on-import path) |
+| **ContentImportItem** | §14, §5, §27 | create / link / update-proposal / conflict / skip per item; imported ideas traceable to source text; colour marks = proposals (`importedMark`, `proposedState`); pillar labels mapped via alias; no duplicate topics on re-import (`@@unique([batchId, sourceHash])` + `sourceHash` index across batches) | same |
+| **ProgramReminder** | §24, §19, §22 | client/month/action/template/attempt/provider id/outcome/next-eligible/suppression stored; recheck before send (`evaluatedStateJson`); booking stops queued reminders, no-call choice changes the type, paused → none (suppressionReason); duplicate runs collide (`dedupeKey`); manual send-now shares safeguards + history; escalation task ref; the evaluator claims a row (`leaseUntil/leaseBy`) before the recheck + enqueue and retries a failed enqueue on `nextAttemptAt` (`nextEligibleAt` stays the business-time clock) | `src/lib/programReminders.ts` (new) hourly evaluator, gated by `ProgramAutomation("reminders")`; sends through OutboxMessage (which has its own lease + dedupeKey for the actual send) |
+| **ProgramGenerationPolicyVersion** | §27, manifest §2.4/§9 | one versioned policy: template, manifest, `topicsPerPillar` (10, max 15), timing 20–30 s, exactly 3 points with roles, format, rules, rubric, validators; version stamped on banks, strategies, scripts | settings screen (owner); readers: every generator |
+| **ProgramAutomation** | R6, §13, §24, §12, spec preamble | every automation OFF until launch is authorised; who enabled it and when; last run / last error visible; **no row = disabled** (the push seeds nothing) | `/connections` or Settings → "AI Assistants"; every job driver calls one shared `isAutomationEnabled(key)` that returns `false` when the row is missing |
+| **ProgramPublishingAccount** | §12 | account identity, secure credentials, connect / disconnect / consent revoked; disconnect stops queued jobs | Instagram phase (later) |
+| **ProgramPublishingJob** | §12, §10 | explicit publication approval; timezone; job status; retries without duplicate posts (`dedupeKey`, provider ids); success only on confirmed receipt (`providerMediaId`); new cut/caption after approval invalidates | same, gated by `ProgramAutomation("publishing")` |
+| **PortalResource** | §11 | owner, last-reviewed, platform/device context; grouped; staff-editable without redeploy; unpublished placeholders never shown | staff editor under Resources; portal Resources page |
+
+### Existing models extended (87 nullable/defaulted columns)
+
+| Model | Columns | Spec |
+|---|---|---|
+| ContentEnrollment | portalTokenIssuedAt, portalTokenExpiresAt, portalTokenRotatedAt, accessRevokedAt, accessRevokedBy, callMode, noCallEligible, timezone | §2 token lifecycle; paused/ended read-only unless revoked; §17 call mode (REQUIRED / OPTIONAL_WRITTEN / NOT_INCLUDED; null derives from `strategyCallRequired`) |
+| ContentMonth | planningMode, preparationStatus, preparationCompletedAt, preparationWindowDays, preparationExceptionReason/By/At, filmingReadyAt, prioritiesJson, prioritiesSourceRef, callRecordId, remindersSnoozedUntil/By, remindersSnoozeReason | §19 two paths, one workflow (derivation in code; null ≠ "call completed"); §3 monthly priorities vs foundation; §26 month planned by a call; §24 snooze |
+| ContentTopic | pillarId, audienceNeed, businessGoal, intendedMessage, approvalState, approvedBy, approvedAt, rejectionReason, archiveReason, sourceRef, importItemId, suggestionId, strategyVersionId, policyVersionId, clientUserId, importedMark, proposedState, dedupeHash, lastEventAt | §5 required topic fields; §18; §14 provenance; manifest §5.3 colour marks as proposals |
+| ContentScript | currentVersionId, approvedVersionId, sharedVersionId, approvedAt, approvedBy, sharedAt, historical, releaseState, pillarId, strategyVersionId, policyVersionId, interviewId, callRecordId, importItemId, videoId | §22 versions + attributable approval; D5 historical imports stay visible as history; §9 explicit links; §7 scripts live with their video after filming |
+| ContentStrategy | currentVersionId, approvedVersionId, approvedAt, approvedBy, releasedAt, releasedBy, structureTemplate | §3 version + approval date; release gate |
+| ContentNote | migratedFactId, migratedAt | §23 migration (see §3 below) |
+| PortalComment | clientUserId, staffUserId, parentId, resolvedAt, resolvedBy, resolvedByKind, decisionId, videoId, updatedAt | §2 attribution; §8 replies, resolved state, bundled into which decision. `updatedAt` is `DateTime? @updatedAt`: nullable in Postgres (additive on a live table, 0 rows today) but Prisma-maintained on every create/update, so no action has to set it by hand |
+| ScriptSuggestion | clientUserId, staffUserId, scriptVersionId | §2, §22 |
+| PortalVideo | videoId, submissionId, label | §7 a library row is one source of one logical video; program vs listing label |
+| ReviewSubmission | clientRequestedAt, clientRequestedBy, clientReleasedAt, clientReleasedBy, clientApprovedDecisionId, contentHash, videoId | §8 five separate concepts: internal QC (unchanged: status/decidedAt/decidedBy) · client visibility · client change request (stops the portal overwriting Jordan's QC stamp) · client approval pointer · immutable cut hash |
+
+## 3. Migration note — ContentNote → ClientFact
+
+Facts today: 804 `ContentNote` rows, 804 `intelligence=true`, 0 human-written, no source/scope/status; every prompt reads the 12 newest per client (`contentPipeline.ts:50-55,575-578`) and the portal prefill reads them too. Seven rows carried a mid-string `[CONFIDENTIAL]` marker until the Sep 16 hotfix (now hoisted, guards match anywhere).
+
+The move is a **read-through then cut-over**, never a bulk edit of ContentNote:
+
+1. **Schema push** adds `ClientFact` and `ContentNote.migratedFactId/migratedAt`. Nothing changes for readers.
+2. **One-time script** (`scripts/migrate-content-notes-to-facts.ts`, read ContentNote, insert ClientFact, then stamp the note) — per note:
+   - `clientId` = note.clientId; `enrollmentId` = the client's enrollment if one exists (else null — 4 non-client Drive names must not mint enrollments).
+   - `body` = note.body with the month prefix (`2026-09: …`) and the `[CONFIDENTIAL]` marker stripped; `confidential = true` when the marker was present (structured, spec §23); `aiContext = DENIED` for confidential rows regardless of status.
+   - `category`: `INTERNAL` when the note was not `intelligence`; otherwise classified by a cheap keyword pass into BRAND_PREFERENCE / PRODUCTION_PREFERENCE / PERFORMANCE_REPORTED / DECISION / COMMITMENT / FEEDBACK, defaulting to `PROPOSED_CHANGE` when unsure (a human resolves it in the review strip).
+   - `source = note_migration`, `sourceRef = "ContentNote:<id>"`, `factDate = note.createdAt`, `speaker = null` (the old writer kept no attribution — this is a known loss, not inferred).
+   - `scope`: `MONTH` with `monthId` resolved from the `YYYY-MM:` prefix when present and a ContentMonth exists for it; else `PERMANENT`.
+   - `status = PROPOSED`, `aiContext = DENIED`, `autoAccepted = false`, `legacyNoteId = note.id` (unique: rerunning the script is a no-op).
+   - Stamp `ContentNote.migratedFactId/migratedAt`. Rows are never deleted.
+3. **Cut-over in code**, behind a code flag until the review strip exists: the three prompt context builders and `portalPrefill.ts` switch from `ContentNote where intelligence` to `ClientFact where status=ACCEPTED and aiContext=ALLOWED and confidential=false` (scope-filtered by month/project). Because every migrated fact starts PROPOSED/DENIED, **the first effect of the cut-over is an emptier prompt**, which is the correct honest state — Jordan accepts facts through the "Updated from your latest call" strip (bulk accept per category is fine for the harmless ones; §23 says do not force him to approve every note). `contentPipeline.ts` writes NEW facts straight into ClientFact (`source = call`, `callRecordId`, `excerptJson`, `speaker`), and stops writing ContentNote.intelligence rows.
+4. **Field policy** (`ClientFact.fieldKey` + rules in code): routine high-confidence updates to whitelisted keys (e.g. `production.location_preference`, `editing.pace`) may auto-accept (`autoAccepted=true`, still undoable); brand positioning, audience, strategy, pricing, package, billing NEVER auto-accept — they become a `ContentStrategyProposal` or stay PROPOSED.
+5. **Rollback**: flip the code flag back; ContentNote is untouched; ClientFact rows can sit unused.
+
+## 4. Idempotency / dedupe keys (where Postgres, not an if-statement, stops the duplicate)
+
+| Model | Unique | Guards |
+|---|---|---|
+| ClientUser | email; loginTokenHash | one identity per address; single-use login token |
+| ClientMembership | [clientUserId, enrollmentId] | one seat per person per program |
+| ClientEmailAlias | [clientId, email] | |
+| ContentStrategyVersion | [strategyId, versionNo] | |
+| ContentPillarAlias | [pillarId, name] | |
+| ContentTopicSelection | [topicId, monthId] | changing paths cannot duplicate a selection |
+| ContentTopicRefreshRun | dedupeKey | duplicate clicks → one job |
+| ContentInterview | [topicId, monthId] (both required) | changing paths cannot duplicate an interview; `monthId` is NOT NULL so the guard is real |
+| ContentScriptVersion | [scriptId, versionNo] | |
+| ContentVideoSource | [kind, ref] | source sync never creates a second video for the same file |
+| ClientDecision | dedupeKey | duplicate submits → one revision job |
+| ContentCutTranscript | [submissionId, version] | transcripts of different cuts cannot be confused |
+| ClientAssetVersion | [assetId, versionNo] | |
+| ProgramSessionRequest | dedupeKey | duplicate clicks → one request |
+| ProgramOwnerAssignment | [scope, scopeRef, duty] | |
+| ProgramCalendlyEventMapping | eventTypeUri | |
+| ProgramCallRecord | calendlyEventUri | one record per booking |
+| ProgramTranscriptSource | contentHash | same transcript via Drive and Meet = one source |
+| ProgramTranscriptJob | dedupeKey | rerun = same job row. **Key format per kind**: `INGEST` = `<callRecordId>:<transcriptSourceId>:INGEST` (each Drive/Meet copy is pulled once); `ANALYZE`, `STRATEGY_DRAFT`, `SCRIPT_DRAFT`, `FACT_EXTRACT` = `<callRecordId>:<kind>` (one logical result per call, however many sources it has — spec §20) |
+| ProgramOnboarding | enrollmentId | |
+| ClientFact | legacyNoteId | migration rerun is a no-op |
+| ProgramAiRun | dedupeKey | |
+| ProgramAiQuota | [scope, scopeRef, period] | |
+| ContentImportBatch | [kind, contentHash] | re-uploading a file re-opens the batch |
+| ContentImportItem | [batchId, sourceHash] | |
+| ProgramReminder | dedupeKey (enrollment:monthKey:action:attempt) | duplicate evaluator runs do not double-send |
+| ProgramGenerationPolicyVersion | versionNo | |
+| ProgramAutomation | key | |
+| ProgramPublishingAccount | [provider, providerAccountId] | |
+| ProgramPublishingJob | dedupeKey | no duplicate posts after retries |
+| PortalResource | slug | |
+
+**Where Postgres does NOT stop the duplicate (code must):** `ContentTopic.dedupeHash` is an INDEX, not a unique — the live table has 944 rows, all null, and a unique would be a NOT-NULL-shaped promise on a table we cannot backfill in the push. So spec §5 "repeating an import creates no duplicate topics" is enforced at three levels: (1) the SAME file → `ContentImportBatch @@unique([kind, contentHash])` re-opens the batch; (2) the same item inside a batch → `ContentImportItem @@unique([batchId, sourceHash])`; (3) the same topics arriving in a DIFFERENT file → the importer looks up `ContentTopic` by `[enrollmentId, dedupeHash]` (indexed) and proposes `LINK` / `UPDATE_PROPOSAL` instead of `CREATE`. A builder must not assume Postgres blocks case (3). The same applies to `ContentTopicSuggestion.dedupeHash` (index; the refresh run checks it against archived/rejected topics before it suggests).
+
+## 5. Settings shapes (JSON in `ProgramAutomation.configJson`)
+
+**A MISSING row means DISABLED, for every key.** The push creates no `ProgramAutomation` rows (no seed is allowed against production), so "OFF at the database" is only true if every job driver reads the switch the same way: `enabled = row?.enabled === true` — a missing row, a null config, a row with `enabled=false` all mean "do nothing, record nothing sent". Code defaults apply only to `configJson` VALUES (timezone, cadence, templates) once a row exists and is enabled; there is no code default that turns an automation on. Put this in one shared helper (`src/lib/programAutomation.ts isAutomationEnabled(key)`) and have every cron/driver call it first; never inline the lookup.
+
+`ProgramAutomation.key` values and what each gates: `reminders` (§24) · `transcript_jobs` (§20) · `ai_runs` (§13, master switch for ProgramAiRun execution) · `publishing` (§12) · `script_share_email` (§22 Approve & share email) · `portal_invites` (§2 Stage B) · `portal_login_email` (§2 magic links — transactional, D14) · `topic_refresh` (§18) · `strategy_generation` (§21) · `session_booking` (§4 true self-booking) · `cut_transcripts` (§9) · `caption_assistant` (§10) · `fact_extraction` (§23 auto-accept rules).
+
+**Reminder policy** (`key = "reminders"`, `configJson`):
+```json
+{
+  "timezone": "America/New_York",
+  "businessHours": { "days": [1,2,3,4,5], "start": "09:00", "end": "16:30" },
+  "sender": "info@realtourpilot.com",
+  "escalationOwnerDuty": "ESCALATION",
+  "planningOpensDaysBeforeMonth": 14,
+  "planningDeadlineDayOfPrevMonth": 25,
+  "firstReminderDelayBusinessDays": 0,
+  "followUpAfterBusinessDays": 3,
+  "maxAttemptsPerAction": 2,
+  "escalateWhenDeadlineWithinBusinessDays": 3,
+  "digestBothAppointments": true,
+  "includeNoCallOptionOnlyIfEligible": true,
+  "suppressWhen": ["booked","no_call_chosen","preparation_submitted","paused","ended","snoozed","pending_session_request","stale_scheduler_sync"],
+  "templates": { "CHOOSE_PATH": "reminder.choose_path.v1", "BOOK_CALL": "reminder.book_call.v1", "COMPLETE_ANSWERS": "reminder.complete_answers.v1", "BOOK_SESSION": "reminder.book_session.v1", "REVIEW_WORK": "reminder.review_work.v1", "SCRIPTS_READY": "scripts_ready.v1" }
+}
+```
+These are adjustable defaults (spec §24: "not an existing business policy"). The existing automatic client texts (confirmation 48h, delivery + feedback ask, welcome) are untouched; program reminders are new OutboxMessage kinds, never a change to `AUTO_SOURCES`.
+
+**Preparation windows** live on the month (`ContentMonth.preparationWindowDays`, null = 3 business days) with staff exceptions carrying a reason.
+
+## 6. What the block deliberately does NOT do
+
+- No Prisma enums (house style for Content* is String + comment; values can grow without a migration).
+- No `@relation`, so no cascades: deleting a ContentVideo does not delete its sources — readers filter, the same as today.
+- No `deliveredCount` cache on ContentMonth: §7/§16 say count from the library (ContentVideo with `countsTowardAllowance`), never from orders.
+- No per-script duration override field and no per-script snapshot of the timing target (Jordan: no duration overrides; manifest Q1 enforcement mode still open). ContentScriptVersion carries `estimatedSeconds` (a measurement) and `timingNote` (prose); the target is read through `policyVersionId`.
+- No change to `ContentScript.status`, `ContentTopic.status`, `CLIENT_VISIBLE_SCRIPT` gate or the `clientVisible` columns — visibility stays status-based until a builder switches readers to `releaseState`/`sharedVersionId` deliberately (SYNTHESIS §7 "fragile").
+- `ContentMonth.strategyCallStatus/calendlyEventUri/transcriptSource/transcriptText/transcriptProcessedAt` stay; `ProgramCallRecord.legacyMonthId` / `ProgramTranscriptSource.legacyMonthId` let a one-time lift copy them without a drop.
+
+## 7. Coverage by spec section (what has a model, what is code by design)
+
+Every section §2–§14, §16–§24, §26, §27 has models whose fields satisfy its acceptance criteria (table in §2, verified field-by-field in the reviewer round). The sections without a model of their own, and why:
+
+| Spec section | Coverage | Why no model |
+|---|---|---|
+| §1 Navigation and visual direction | none | UI only; no acceptance criterion needs a field. |
+| §15 Implementation order | none | a sequencing plan. Its metrics line ("appointment completion, download/posting use, …") is served by PortalVisit, ContentVideo.postedByClientAt, ProgramSessionRequest, ClientDecision. |
+| §25 End-to-end scenarios | composed | scenarios 1–10 compose models already covered: ProgramOnboarding + ContentStrategyVersion (1), ContentTopicSelection + ContentTopicEvent (2), ContentMonth.planningMode + ProgramReminder suppression (3), ContentInterview.sufficiencyJson (4), ClientFact.scope + ContentStrategyProposal (5), ContentTopicRefreshRun (6), ContentScriptRelease.batchKey (7), ProgramTranscriptSource.contentHash + ProgramCallRecord.rescheduledFromId + leases (8), ProgramEnrollmentChange.effectiveAt/billingTruth (9), ClientAsset (10). |
+| §14 "AgentProfile" among models to extend | deliberately untouched | AgentProfile stays the "My Brand Profile" READ surface. A client correction to the profile is a `ContentStrategyProposal kind=PROFILE` (attributable, reviewable, never a silent overwrite); files and values (logo, colours, pronunciation…) are `ClientAsset` / `ClientAssetVersion`. Builders extend the profile page to READ those two, not to write AgentProfile from the portal. |
+| §12 "secure credential handling" | column + code | `ProgramPublishingAccount.credentialEncrypted` holds the blob; encryption at rest is `src/lib/integrations/crypto.ts` (the Plaid pattern), never plaintext in the column. |
+| §2 media protection; §8 server-side approval/download permissions | code | media tokens and the viewer resolver are code. The schema supplies the actors (ClientUser, ClientMembership.role/revokedAt) and the release gates (ReviewSubmission.clientReleasedAt, ContentScript.sharedVersionId, ContentStrategyVersion.releasedAt). |
+
+## 8. Reviewer round — what changed (all additive, all on NEW tables except one attribute)
+
+| Item | Change |
+|---|---|
+| Missing indexes on foreign-id columns | 20 `@@index` added: ClientDecision.clientUserId · ProgramCallRecord.mappingId, .onboardingId · ContentScriptRelease.scriptVersionId, .monthId · ContentVideo.scriptVersionId, .deliverableId, .currentSubmissionId · ContentTopicSuggestion.pillarId, .acceptedTopicId · ProgramTranscriptJob.transcriptSourceId · ClientFact.enrollmentId · ContentImportItem.resultId · ProgramPublishingJob.submissionId · ContentTopicEvent.monthId · ContentCaptionDraft.transcriptId · ClientEmailAlias.enrollmentId · ContentPillar.strategyVersionId · ContentInterview.callRecordId · ProgramReminder [state, nextAttemptAt]. CREATE INDEX count 117 → 137. |
+| ContentInterview unique with nullable monthId | `monthId` made REQUIRED (new table, zero rows — safe). No bank-level interview exists in the spec; an interview belongs to the month whose scripts it feeds. |
+| ProgramTranscriptJob.dedupeKey format | documented per kind in the schema comment and §4: INGEST per source, every other kind per call. |
+| ProgramAutomation missing row | schema comment + §5 now state that a MISSING row means DISABLED for every key; one shared helper. |
+| ProgramReminder lease | `leaseUntil`, `leaseBy`, `nextAttemptAt`, `lastErrorAt` added (+ index). `nextEligibleAt` remains the business-time clock. |
+| ContentScriptVersion timing snapshot | `timingTargetMinSec/MaxSec` DROPPED from the (new) table; the target is read through `policyVersionId`. Nothing per-script can become an override. |
+| PortalComment.updatedAt | `DateTime? @updatedAt` — Prisma maintains it; SQL unchanged (still a nullable column, no DB default). |
+| ContentTopic.dedupeHash is an index | §4 now says where Postgres stops the duplicate and where the importer must. |
+| Coverage gaps | §7 above; AgentProfile note also placed in the schema beside ContentStrategyProposal. |
+
+Post-fix verification is the table in §0. Human's steps are unchanged: `npx tsx scripts/backup-content-program.ts` then `npm run db:push`.
