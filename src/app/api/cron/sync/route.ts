@@ -148,6 +148,23 @@ export async function GET(req: NextRequest) {
     const { syncProjectStatuses } = await import("@/lib/projectStatus");
     return syncProjectStatuses();
   });
+  // FINISHED VIDEOS THAT MAY ALREADY BE UP THERE (Sep 17 2026). One Aryeo read
+  // per job with a row on the Ready-to-send card: it refreshes what the card
+  // says Aryeo is showing (the status sweep above stops carrying a job seven
+  // days after delivery, which froze 2051 Old Sumneytown Pike's counts at
+  // `videos: 0` while its video went up the next day), and it runs the delivery
+  // webhook's own proof — individual videos matched to individual cuts by time
+  // and length — on the jobs it applies to. That proof normally arrives with
+  // Aryeo's LISTING_DELIVERED event; the lane has been silent since Sep 7 and
+  // only Aryeo's team can switch it back on, so until they do, this is how it
+  // gets run at all. Never clears a row it cannot prove: those keep their place
+  // on the card and now carry the listing's own answer for Kyle to act on.
+  // Runs straight after `statuses` so it only pays for the jobs that pass did
+  // not already refresh.
+  await step("readyToSendAryeo", async () => {
+    const { sweepReadyToSendAgainstAryeo } = await import("@/lib/aryeoDelivery");
+    return sweepReadyToSendAgainstAryeo({ max: 12, budgetMs: 25_000 });
+  }, { maxMs: 30_000 });
   // Photos shot yesterday that still haven't been released to the client on
   // Aryeo → bell + a text to Kyle and Jordan. Hosted here, not in `daily`,
   // because daily fires 3-4am ET: inside SMS quiet hours (the text would be

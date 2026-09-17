@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import type { ProjectStatus } from "@prisma/client";
-import { Aryeo } from "@/lib/integrations/aryeo";
+import { Aryeo, type AryeoListing } from "@/lib/integrations/aryeo";
 import { dropboxConfigured } from "@/lib/integrations/dropbox";
 import { getSecret } from "@/lib/integrations/connections";
 import { actualFolderPaths, folderFileCount } from "@/lib/dropboxFolders";
@@ -175,6 +175,32 @@ export type AryeoMediaSignal = {
   interactive: number;
   delivery: string | null; // listing delivery_status: DELIVERED | UNDELIVERED
   cover: string | null; // first live listing image (thumb) — the My Shoots card swap
+  /** ISO time of the listing read these counts came from.
+   *
+   *  The blob's own `checkedAt` is the time of the WHOLE pass, and until Sep 17
+   *  that was the only clock on the Aryeo half. It stopped being good enough
+   *  the moment the Aryeo block could be refreshed on its own
+   *  (refreshListingEvidence, below): a reader has to be able to tell how old
+   *  THESE counts are, not how old the pass that last touched the row was. */
+  at?: string;
+  /** EVERY video on the listing, not just how many.
+   *
+   *  A COUNT CANNOT ANSWER THE ONLY QUESTION THAT MATTERS about a finished
+   *  video: "is the video up there the one we owe, or the one we are
+   *  replacing?" Both read as `videos: 1`. Ready-to-send (lib/readyToSend) and
+   *  the Aryeo delivery webhook (lib/aryeoDelivery) both have to tell those
+   *  apart, and Aryeo's ids are UUIDv7 — the first 48 bits are the moment the
+   *  video was created — so keeping the ids turns a number into a timeline.
+   *  The title and duration come along because they are what a person
+   *  recognises a file by ("Cinematic video Revision", 60s).
+   *
+   *  It costs NOTHING to collect: the listing read already asks for
+   *  `include=…,videos,…` and the array is sitting in the response.
+   *
+   *  Optional, and every reader must treat its absence as "we do not know"
+   *  rather than "there are none": blobs written before Sep 17 2026 have no
+   *  such field and are still on 1,500 jobs. */
+  videoList?: { id: string; title: string | null; duration: number | null }[];
 };
 
 export type DropboxSignal = {
@@ -505,22 +531,137 @@ export { videoAnchorFor };
 async function aryeoMedia(listingId: string, onError?: (e: unknown) => void): Promise<AryeoMediaSignal | null> {
   try {
     const l = await Aryeo.listing(listingId);
-    // First gallery image (same preference order getListingMedia uses) — the
-    // My Shoots card swaps its Street View for this once photos land.
-    const gallery = (l.images ?? []).filter((i) => i.display_in_gallery !== false);
-    const first = gallery[0] as { thumbnail_url?: string; large_url?: string; original_url?: string } | undefined;
-    return {
-      photos: l.images?.length ?? 0,
-      videos: l.videos?.length ?? 0,
-      floorPlans: l.floor_plans?.length ?? 0,
-      interactive: l.interactive_content?.length ?? 0,
-      delivery: l.delivery_status ?? null,
-      cover: l.thumbnail_url ?? first?.thumbnail_url ?? first?.large_url ?? null,
-    };
+    return mediaSignalOf(l);
   } catch (e) {
     onError?.(e);
     return null;
   }
+}
+
+/** One listing read → the signal, so the hourly pass and the targeted refresh
+ *  below can never describe the same listing two different ways. */
+function mediaSignalOf(l: AryeoListing): AryeoMediaSignal {
+  // First gallery image (same preference order getListingMedia uses) — the
+  // My Shoots card swaps its Street View for this once photos land.
+  const gallery = (l.images ?? []).filter((i) => i.display_in_gallery !== false);
+  const first = gallery[0] as { thumbnail_url?: string; large_url?: string; original_url?: string } | undefined;
+  return {
+    photos: l.images?.length ?? 0,
+    videos: l.videos?.length ?? 0,
+    floorPlans: l.floor_plans?.length ?? 0,
+    interactive: l.interactive_content?.length ?? 0,
+    delivery: l.delivery_status ?? null,
+    cover: l.thumbnail_url ?? first?.thumbnail_url ?? first?.large_url ?? null,
+    at: new Date().toISOString(),
+    videoList: videoFactsOf(l.videos),
+  };
+}
+
+/** The listing's videos, reduced to the three facts a reader can act on. Kept
+ *  deliberately small: this is written into a JSON column on 1,500 jobs, and a
+ *  whole Aryeo video object is mostly urls that go stale. */
+function videoFactsOf(videos: unknown[] | undefined): { id: string; title: string | null; duration: number | null }[] {
+  if (!Array.isArray(videos)) return [];
+  const out: { id: string; title: string | null; duration: number | null }[] = [];
+  for (const v of videos as Record<string, unknown>[]) {
+    const id = typeof v?.id === "string" ? v.id : null;
+    if (!id) continue; // a video with no id proves nothing about anything
+    out.push({
+      id,
+      title: typeof v.title === "string" ? v.title.slice(0, 120) : null,
+      duration: typeof v.duration === "number" && Number.isFinite(v.duration) ? v.duration : null,
+    });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// A TARGETED RE-READ OF ONE LISTING — for the jobs the sweep has stopped
+// looking at (Sep 17 2026).
+//
+// The hourly pass only carries a DELIVERED job for seven days after delivery
+// (see the `where` below), which is right for a status engine: after a week the
+// job is history and the API calls are wasted. It is wrong for "Ready to send",
+// which asks a question that stays open for as long as a finished video has not
+// gone out — and 2051 Old Sumneytown Pike proved it in the live data: delivered
+// Sep 8, its evidence frozen at `videos: 0` from 22:01 that night, while the
+// video itself went up on Aryeo at 15:48 the NEXT day. Nine days later the card
+// was still asking Kyle to send a video that had been live all along, because
+// the only number it had was a stale zero.
+//
+// This is the cheapest possible fix for that: ONE listing read, and a write
+// that adds one key to the evidence blob and changes nothing that was already
+// in it (see the write below — the key is `listing`, not `aryeo`, and the
+// reason is that only the card may act on what this reads).
+//
+// WHAT IT DELIBERATELY DOES NOT DO is run the status engine. syncProjectStatuses
+// on an old delivered job re-runs the whole decision — deliverable statuses,
+// task generation, the delivery-text mint — for a job that settled a week ago,
+// and the one thing this needed was a fresher count. Reading is free of
+// consequences; deciding is not.
+//
+// It is safe to race the engine: the engine rewrites the blob whole from its
+// own read moments later, and both writes are snapshots of the same listing.
+// The worst case is one pass's counts overwritten by another's, seconds apart —
+// and since Sep 17 they are not even the same key, so the engine's own block is
+// never touched from here at all.
+// ---------------------------------------------------------------------------
+export async function refreshListingEvidence(
+  projectId: string,
+  listing?: AryeoListing | null,
+): Promise<{ ok: boolean; videos: number; reason?: string }> {
+  const p = await prisma.project
+    .findUnique({ where: { id: projectId }, select: { aryeoListingId: true, statusEvidence: true } })
+    .catch(() => null);
+  if (!p) return { ok: false, videos: 0, reason: "no such job" };
+  if (!p.aryeoListingId) return { ok: false, videos: 0, reason: "no listing id" };
+
+  let l = listing ?? null;
+  if (!l) {
+    try {
+      l = await Aryeo.listing(p.aryeoListingId);
+    } catch (e) {
+      // Aryeo would not answer. The OLD counts stay exactly as they were —
+      // never blanked, never re-stamped with a fresh `at`, because a read that
+      // did not happen must not be able to make anything look freshly
+      // confirmed. Every reader treats old counts as "we have not looked".
+      return { ok: false, videos: 0, reason: (e instanceof Error ? e.message : String(e)).slice(0, 80) };
+    }
+  }
+  const aryeo = mediaSignalOf(l);
+
+  // Merge, never replace: `expected`, `missing`, the Dropbox half and the
+  // status engine's own reason all belong to the engine and are none of this
+  // function's business. A blob that will not parse is left alone entirely —
+  // writing a new one from here would erase the engine's reasoning.
+  let blob: Record<string, unknown>;
+  try {
+    blob = JSON.parse(p.statusEvidence ?? "") as Record<string, unknown>;
+    if (!blob || typeof blob !== "object") return { ok: false, videos: aryeo.videos, reason: "evidence unreadable" };
+  } catch {
+    return { ok: false, videos: aryeo.videos, reason: "evidence unreadable" };
+  }
+  // UNDER ITS OWN KEY, NOT `aryeo` (Sep 17, second review).
+  //
+  // `blob.aryeo` is read all over the hub, and two of its readers gate a
+  // message to a CLIENT on the video COUNT: the monthly-content batch hold in
+  // lib/tasks (hold the delivery text until the month's videos are live) and
+  // the "positive proof a video shipped" test in lib/clientTextSweeps. Until
+  // now only the hourly status engine could move those numbers, and it stops
+  // carrying a job seven days after delivery — so a count that had gone stale
+  // stayed stale, and stale meant HELD.
+  //
+  // This refresh exists to put a sentence on the Ready-to-send card, and it
+  // deliberately reaches jobs the status engine has dropped (including content
+  // months — the first row on the card today is one). A card's re-read must not
+  // be able to release a text to a client as a side effect, however true its
+  // numbers are. So it writes here; lib/readyToSend reads here and prefers
+  // whichever block was read most recently; nothing else in the hub can see it.
+  blob.listing = aryeo;
+  await prisma.project
+    .update({ where: { id: projectId }, data: { statusEvidence: JSON.stringify(blob) } })
+    .catch(() => {});
+  return { ok: true, videos: aryeo.videos };
 }
 
 // A missing folder is a trustworthy ZERO (nothing was uploaded there). Any OTHER

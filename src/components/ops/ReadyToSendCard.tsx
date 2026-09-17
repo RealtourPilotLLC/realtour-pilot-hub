@@ -66,7 +66,9 @@ export function ReadyToSendCard({ board }: { board: ReadyBoard }) {
     <div className="space-y-2">
       <p className="text-[11px] text-muted">
         Download the file, upload it to Aryeo and deliver the listing — then mark it sent. Aryeo has no way for
-        another program to do that step, so this card is the record that it happened.
+        another program to do that step, so this card is the record that it happened. Each row also says what Aryeo
+        is showing on that listing: the hub re-checks every hour, so a row that says it can&rsquo;t tell yet will
+        name the video shortly.
       </p>
       {ready.map((v) => <ReadyRow key={v.submissionId} v={v} />)}
       <Rendering rows={rendering} />
@@ -152,6 +154,34 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
           <span className="mt-0.5 block">The hub is holding this file — it isn&rsquo;t in the job&rsquo;s Final Video folder.</span>
         )}
         {v.file.why && <span className="mt-1 block italic">Why the 1080p pass didn&rsquo;t produce it: {v.file.why}</span>}
+        {/* WHAT ARYEO IS ALREADY SHOWING ON THIS LISTING.
+            The card cannot prove that the video up there is this file — a
+            re-cut looks exactly like a first cut from the outside — so it
+            stops pretending the question isn't there and answers the half it
+            can. A row that is really done becomes one look and one tap with the
+            evidence beside it instead of a trip to Aryeo to find out; a row
+            that is really owed gets the listing saying so out loud.
+
+            THREE COLOURS, BECAUSE THEY ARE THREE DIFFERENT SITUATIONS and
+            colour is what gets scanned first. Muted: the listing supports the
+            row, or nobody has looked — nothing to decide. Warning: something up
+            there could be this file, so somebody has to play it before the
+            button. Danger: the client has complained about this job SINCE this
+            file was ready, so what is up there may be the very thing they are
+            complaining about — 322 N 62nd St, where clearing the row costs a
+            client their video. Until Sep 17 these last two rendered
+            identically, in the same colour, with the same closing words. */}
+        {v.listing && (
+          <span
+            className={cn(
+              "mt-1 flex items-start gap-1",
+              v.listing.contested ? "font-medium text-danger" : v.listing.couldBeThisCut ? "text-warning" : "text-muted-2",
+            )}
+          >
+            {v.listing.contested ? <AlertTriangle className="mt-0.5 size-3 shrink-0" /> : <ExternalLink className="mt-0.5 size-3 shrink-0" />}
+            {v.listing.says}
+          </span>
+        )}
         {/* Two approved exports of one video. The newest is above; the others
             are NAMED rather than dropped, so "which file did I send?" has an
             answer on screen. */}

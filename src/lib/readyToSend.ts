@@ -5,7 +5,8 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { videoStatesFor, cutKeyOf } from "@/lib/reviewCuts";
 import { aryeoJobUrl, aryeoJobTitle } from "@/lib/aryeoUrl";
-import { parseEvidence } from "@/lib/statusEvidence";
+import { parseEvidence, EVIDENCE_STALE_HOURS, type ParsedEvidence } from "@/lib/statusEvidence";
+import { etDateTime } from "@/lib/datetime";
 import { topazSettings } from "@/lib/settings";
 import { cutReleasedAt } from "@/lib/contentVideos";
 import type { TopazState } from "@/lib/topazJobs";
@@ -67,27 +68,54 @@ import type { TopazState } from "@/lib/topazJobs";
 //     has handed a specific file to a person, only that person saying "sent"
 //     closes it.
 //   · Otherwise — case (c), where the hub never handed anything over and has no
-//     record of its own — the outside world is all there is, and it gets ONE
-//     narrow question: is there a video live on the listing that CANNOT be a
-//     leftover from an earlier delivery? That means a non-stale Aryeo read
-//     taken after this cut was approved, showing video, on a job that had not
-//     already been delivered before the approval.
+//     record of its own — NOTHING here clears the row. Not the project's
+//     DELIVERED stamp, not Aryeo's count of videos, not the fact that the
+//     listing looks finished. The row waits for a person, or for the one
+//     machine that is allowed to settle it: the proof pass in lib/aryeoDelivery,
+//     which reads the listing, dates each individual video off its UUIDv7 id,
+//     measures the cut's own file when a timestamp is not enough, and stamps
+//     `sentToClientAt` only where exactly one video can be exactly one file.
+//     That pass runs on Aryeo's delivery webhook and, since the webhook lane
+//     went silent on Sep 7 and only Aryeo can switch it back on, hourly from
+//     cron/sync as well.
 //
-//     The project's own DELIVERED stamp is deliberately NOT evidence here, and
-//     this is the second thing that would have hidden this morning's miss: the
-//     status engine marks a job delivered when VIDEO is "present", and VIDEO
-//     counts as present when the job's Dropbox Final folder holds a file —
-//     the very folder the approval itself copies into. 2051 Old Sumneytown Pike
-//     proves it in the live data: cut approved 02:00:26, project stamped
-//     DELIVERED 02:01:27, and the evidence written at that same moment reads
-//     aryeo.videos: 0. The stamp fired 61 seconds after the approval, off our
-//     own copy, at a minute when Aryeo carried no video at all. A test that a
-//     file went to the client cannot be satisfied by the hub filing that file.
+//     WHY THIS MODULE STOPPED DECIDING IT (Sep 17, evening). It used to, from
+//     `aryeo.videos` — a COUNT out of the cached evidence, cleared when the
+//     listing had enough videos to go round. The card's first day out ran at
+//     50% false positives and the count was behind both of them:
+//       · It goes stale in silence. The hourly status sweep stops carrying a
+//         job seven days after delivery, so 2051 Old Sumneytown Pike's evidence
+//         froze at `videos: 0` on Sep 8 while the video went up on Sep 9 — and
+//         a stale zero reads exactly like a confident one. Nine days on the
+//         card, asking for a video that was already live.
+//       · It cannot say WHICH video, so it also cleared rows it had no business
+//         clearing: on 1956 Wetherhill Dr, 332 Ruth Ridge Dr and 439 Lake
+//         George Cir the video it was counting had gone up BEFORE the file on
+//         the card existed. A video that predates the file is not evidence
+//         about the file. Those three were being hidden, not settled.
+//     Proving it properly needs a live listing read and an HTTP range read of
+//     the cut's own header — half a second each, per row. This function renders
+//     on two home screens on every request, so it cannot buy that, and a
+//     cheaper guess is what got us here. The hourly pass can, and it writes
+//     down what it concluded. One decision, one place, and a record of it.
 //
-//     And "a video is live on the listing" is only evidence on a job that was
-//     NOT already delivered before this cut existed. On a re-cut — the 322
-//     shape — the listing already carries the previous video, so its presence
-//     says nothing about the correction. Those rows wait for the human press.
+//     The project's own DELIVERED stamp is deliberately not evidence anywhere in
+//     this, and it is worth keeping the reason: the status engine marks a job
+//     delivered when VIDEO is "present", and VIDEO counts as present when the
+//     job's Dropbox Final folder holds a file — the very folder the approval
+//     itself copies into. 2051 proves it in the live data: cut approved
+//     02:00:26, project stamped DELIVERED 02:01:27, and the evidence written at
+//     that same moment reads aryeo.videos: 0. A test that a file went to the
+//     client cannot be satisfied by the hub filing that file.
+//
+//     AND WHERE IT CANNOT PROVE ANYTHING, IT SAYS WHAT IT SAW. Every row carries
+//     the listing's own answer in one line — "Aryeo already shows 1 video on
+//     this listing — "Cinematic Video", 60s, uploaded Sep 17, 10:21 AM ET, after
+//     this file was ready. If that's this one, mark it sent." That is the whole
+//     design after this morning: the card does not guess, and it does not make
+//     Kyle go and look somewhere else either. A row that is already done costs
+//     one tap with the evidence beside it. A row cleared wrongly costs a client
+//     their video.
 //
 //   · One exception on the way in, not the way out: a content-program cut is
 //     published to the client's own portal library the moment it is approved
@@ -165,6 +193,28 @@ export type ReadyVideo = {
   aryeoTitle: string;
   /** the Review Room page for this cut, for a last look before it goes */
   reviewHref: string;
+  /** WHAT ARYEO IS SHOWING ON THIS LISTING, ON THE ROW.
+   *
+   *  The card cannot prove that the video already up there is this file — see
+   *  the header — so it stops pretending the question does not exist and puts
+   *  the answer it does have in front of Kyle instead. A row that is already
+   *  done becomes one tap with the evidence beside it, rather than a trip to
+   *  Aryeo in another tab to find out.
+   *
+   *  Null only when the job has no Aryeo listing at all. */
+  listing: {
+    says: string;
+    checkedAtISO: string | null;
+    videos: number;
+    /** a video up there could be this file — and nothing on this screen can
+     *  tell whether it is, which is why the line ends in "play it" */
+    couldBeThisCut: boolean;
+    /** the client has reported a problem with this job since this file was
+     *  ready. The row is not just unproven, it is actively disputed: this is
+     *  322 N 62nd St, and it wants its own colour rather than the same warning
+     *  as a row that is probably just already done. */
+    contested: boolean;
+  } | null;
 };
 
 /** An approved cut whose 1080p pass has not finished — shown, never offered. */
@@ -204,6 +254,380 @@ export function laneStillOwesWork(state: string): boolean {
   return stillRendering(state);
 }
 
+// ===========================================================================
+// WHAT IS ACTUALLY ON THE LISTING — one matcher, two callers (Sep 17 2026).
+//
+// Everything in this section used to live in lib/aryeoDelivery, where it was
+// written for the delivery webhook. It is here now because THIS card needs the
+// same reasoning and must not grow a second version of it.
+//
+// The reason it moved rather than being copied is the morning of Sep 17. The
+// card had a count — `aryeo.videos` out of the status engine's evidence — and a
+// count cannot answer the question the card asks. "1 video on the listing"
+// is the same number whether that video is the one we owe or the one we are
+// replacing, and on 322 N 62nd St it was the one we were replacing. The webhook
+// had already been taught the harder version of this: Aryeo's ids are UUIDv7,
+// so every video carries the moment it was created, and a video that appeared
+// before our file existed cannot be our file. Two definitions of that, in two
+// files, held together by a comment, is how the strict one gets fixed and the
+// loose one does not.
+//
+// The webhook still owns the WRITES (lib/aryeoDelivery stamps cuts and closes
+// upload cards); this owns the shapes and the arithmetic they both reason with.
+// ===========================================================================
+
+/** One video on the listing, with the moment its id says it was created. */
+export type ListingVideo = {
+  id: string;
+  at: Date;
+  durationSec: number | null;
+  /** what Aryeo calls it — "Cinematic video Revision". Only ever shown to a
+   *  person; nothing decides anything on a title. */
+  title: string | null;
+};
+
+/** No Aryeo id can pre-date Aryeo. A decode outside this is a coincidence, not
+ *  a timestamp, and is thrown away. */
+const ARYEO_EPOCH_MS = Date.parse("2015-01-01T00:00:00Z");
+const DAY_MS = 86_400_000;
+
+/** The creation time carried inside a UUIDv7 id, or null when the id is not one
+ *  or the time it yields is not believable.
+ *
+ *  Verified against live data on Sep 16 2026: every listing id decodes to a few
+ *  minutes before the hub imported that listing, and each listing's video ids
+ *  decode to days after their own listing id. The decode is checked, not
+ *  assumed — wrong length, a version nibble that is not 7, or a nonsense moment
+ *  all mean "no evidence", and no evidence means nothing moves. */
+export function aryeoIdTime(id: string | null | undefined): Date | null {
+  if (!id) return null;
+  const hex = id.replace(/-/g, "").toLowerCase();
+  if (hex.length !== 32 || /[^0-9a-f]/.test(hex)) return null;
+  if (hex[12] !== "7") return null; // version nibble — anything else carries no time
+  const ms = Number.parseInt(hex.slice(0, 12), 16);
+  if (!Number.isFinite(ms) || ms < ARYEO_EPOCH_MS || ms > Date.now() + DAY_MS) return null;
+  return new Date(ms);
+}
+
+/** Aryeo's `videos[]` — from a live listing read, or from the copy of it the
+ *  status engine files in the evidence blob — reduced to what can be reasoned
+ *  with. A video we cannot date is dropped: it proves nothing either way. */
+export function videosOnListing(listing: { videos?: unknown[] } | null): ListingVideo[] {
+  const raw = Array.isArray(listing?.videos) ? (listing.videos as Record<string, unknown>[]) : [];
+  const out: ListingVideo[] = [];
+  for (const v of raw) {
+    const id = typeof v?.id === "string" ? v.id : null;
+    const at = aryeoIdTime(id);
+    if (!id || !at) continue;
+    const d = typeof v.duration === "number" && Number.isFinite(v.duration) ? v.duration : null;
+    out.push({ id, at, durationSec: d, title: typeof v.title === "string" ? v.title : null });
+  }
+  return out.sort((a, b) => a.at.getTime() - b.at.getTime());
+}
+
+/** A file that could have been uploaded: when it was ready, and how long it
+ *  runs. The finished 1080p file is the same length as the source — the render
+ *  is an upscale and frame interpolation is OFF in Jordan's preset — so the
+ *  duration the hub probed off the source MP4 is the uploaded file's duration
+ *  too. If that ever stops being true, lengths stop matching and rows simply
+ *  wait for Kyle, which is the safe way round. */
+export type UploadJob = {
+  id: string;
+  readyAt: Date;
+  durationSec: number | null;
+  /** A CLAIMANT THAT MAY NEVER BE PROVEN.
+   *
+   *  Some rows can be the video on the listing without being allowed to win it:
+   *  a cut the card is not showing, an upload card the card-level pass has just
+   *  declined to close. Leaving them OUT of the matcher would be the dangerous
+   *  way round — their video would then look free and prove somebody else's
+   *  cut. So they stay in, take part in the rivalry test, and never win it.
+   *
+   *  Default (undefined) is stampable; only code that knows a reason sets it
+   *  false. */
+  stampable?: boolean;
+  /** THE CLIENT HAS TOLD US SOMETHING IS WRONG WITH THIS LISTING'S VIDEO SINCE
+   *  THIS FILE WAS READY — so a video up there may be the thing they are
+   *  complaining about, and cannot prove anything about the fix.
+   *
+   *  This is the fact that separates 322 N 62nd St from every other row on the
+   *  card, and it took the review to find it. Everything else about the two is
+   *  the same shape: on 2051 Old Sumneytown Pike a single video appeared 13
+   *  hours after a file was ready, matching its length, on a job with a
+   *  DELIVERED stamp — and it really is that file. On 322 a single video
+   *  appeared 14 hours after a file was ready, matching its length, on a job
+   *  with a DELIVERED stamp — and it is the silent one the client rejected at
+   *  9:41 that morning. No timestamp, no length and no count can tell those two
+   *  apart. The complaint can: it is the hub's own record that a video on this
+   *  listing is wrong, dated, in the client's words (RevisionBrief).
+   *
+   *  A contested claimant still COMPETES — its video is not free for somebody
+   *  else to win — it simply can never be proven. */
+  contested?: boolean;
+};
+
+/** Aryeo reports whole seconds and our probe reports fractions, so a 49.683s
+ *  file is a 50s video there. Two seconds covers the rounding without being
+ *  wide enough to match a different edit. */
+const DURATION_SLACK_SEC = 2;
+
+export function couldBe(job: UploadJob, v: ListingVideo): boolean {
+  // No skew allowance, deliberately. Kyle uploads minutes or hours after a file
+  // is ready, never seconds before it exists — and any tolerance here only lets
+  // an OLDER video count as proof.
+  if (v.at.getTime() < job.readyAt.getTime()) return false;
+  if (job.durationSec == null || v.durationSec == null) return true;
+  return Math.abs(job.durationSec - v.durationSec) <= DURATION_SLACK_SEC;
+}
+
+/**
+ * COULD BE, AND PROVES, ARE NOT THE SAME TEST (Sep 17, second review).
+ *
+ * `couldBe` is deliberately generous, because it is what decides whether a
+ * claimant COMPETES for a video — and a claimant wrongly left out of the
+ * competition makes a video look free, which is how somebody else's row gets
+ * cleared. Generous there is safe.
+ *
+ * Generous is not safe on the way out, and the first cut of this used the same
+ * function for both. Three ways that let a row clear itself on nothing:
+ *
+ *   · AN UNKNOWN LENGTH READ AS A MATCH. `couldBe` returns true when either
+ *     side's duration is null, so "the lengths match" was vacuously true for
+ *     exactly the cuts that have no length anywhere in the schema — every cut
+ *     with no 1080p job. The whole test collapsed to "a video appeared after
+ *     this file was ready".
+ *   · THE LISTING WAS ALREADY CARRYING VIDEO. When something was up there
+ *     before this file existed, this is a REPLACEMENT — and the next video to
+ *     appear is as likely to be a re-upload of the wrong export as it is to be
+ *     the fix. 308 W Upsal St is that shape today: a 66s original from Sep 14
+ *     sits beside a 60s "Cinematic video Revision" from Sep 16.
+ *   · THE CLIENT HAS SAID IT IS WRONG. See UploadJob.contested — the only fact
+ *     the hub holds that separates 322 N 62nd St from a job where the video up
+ *     there really is the one we owe.
+ *
+ * What is left is narrow on purpose. A row that waits costs a tap; a row
+ * cleared wrongly costs a client their video, and nobody is told.
+ */
+function provenBy(job: UploadJob, v: ListingVideo, videos: ListingVideo[]): boolean {
+  if (job.contested) return false;
+  // Both lengths KNOWN and agreeing. Null is "we did not measure", never "fine".
+  if (job.durationSec == null || v.durationSec == null) return false;
+  if (!couldBe(job, v)) return false;
+  // Anything at all up there before this file existed → not provable from the
+  // listing by anybody. Asked of the LISTING, not of Project.deliveredAt, which
+  // this module has always refused to treat as evidence (the status engine
+  // stamps it when the hub files the approved file into Dropbox — 2051 Old
+  // Sumneytown Pike went DELIVERED 61 seconds after its own approval).
+  return !videos.some((o) => o.at.getTime() < job.readyAt.getTime());
+}
+
+/**
+ * Which claimants this listing can actually account for.
+ *
+ * `delivered` are the ones already spoken for — a person pressed the button, or
+ * their 1080p job is stamped delivered. They go FIRST and take a video each,
+ * because each one already claims an upload; otherwise last week's upload gets
+ * re-used as proof for this week's file.
+ *
+ * Returns id → the video that proves it. The caller wants the video as well as
+ * the verdict: it is what lets a stamp, or a line on a card, say which file it
+ * is talking about.
+ */
+export function cardsAryeoCanAccountFor(
+  videos: ListingVideo[],
+  open: UploadJob[],
+  delivered: UploadJob[],
+): Map<string, string> {
+  const taken = new Set<string>();
+  // THE NEWEST MATCHING VIDEO, NOT THE OLDEST (Sep 17, second review). `videos`
+  // is sorted oldest-first, and taking the first match meant an already-sent cut
+  // consumed the OLDEST video it could be and left the NEWEST free — which is
+  // precisely the one most likely to match a still-open cut, because open cuts
+  // have later readyAt times. The greedy choice was therefore the one that
+  // proved the MOST open rows. Backwards for a matcher whose whole rule is that
+  // a lingering row is cheap and a cleared row is not.
+  const free = (j: UploadJob) => [...videos].reverse().find((v) => !taken.has(v.id) && couldBe(j, v)) ?? null;
+
+  for (const j of [...delivered].sort((a, b) => a.readyAt.getTime() - b.readyAt.getTime())) {
+    const hit = free(j);
+    if (hit) taken.add(hit.id);
+  }
+
+  const proven = new Map<string, string>();
+  for (const j of [...open].sort((a, b) => a.readyAt.getTime() - b.readyAt.getTime())) {
+    const hit = free(j);
+    if (!hit) continue;
+    // A claimant that is not ours to prove still holds its video: it does NOT
+    // consume it (something else may legitimately be it), and it does not win
+    // it either. What it does is stay in the rivalry test below.
+    if (j.stampable === false) continue;
+    // Proof, not resemblance — see provenBy. Everything below this line is
+    // about WHICH of several things it is; this is about whether it is anything.
+    if (!provenBy(j, hit, videos)) continue;
+    // Could another claimant still waiting also be this upload? Then we do not
+    // know which one it was, and choosing either is a guess. Leave both.
+    const rival = open.some((o) => o.id !== j.id && !proven.has(o.id) && couldBe(o, hit));
+    if (rival) continue;
+    // And the mirror of that, which was missing: could ANOTHER free video
+    // equally be this cut? Then "the video on the listing is this file" names
+    // two different files, and stamping picks one by sort order. Two videos of
+    // the same length on one listing is exactly what a re-upload looks like.
+    const twoWays = videos.some((v) => v.id !== hit.id && !taken.has(v.id) && couldBe(j, v));
+    if (twoWays) continue;
+    taken.add(hit.id);
+    proven.set(j.id, hit.id);
+  }
+  return proven;
+}
+
+// ---------------------------------------------------------------------------
+// "THE CLIENT SAYS THE VIDEO UP THERE IS WRONG" — one query, both callers.
+//
+// RevisionBrief is the hub's durable record of a client asking for a change: it
+// keeps the client's own words, its source (openphone / gmail / review room)
+// and the moment it arrived, and — unlike Project.revisionRequestedAt — it is
+// NOT cleared when the revision is resolved. That matters here, because 322 N
+// 62nd St's revision was marked resolved at 10:23 on the morning its fix was
+// still sitting unsent: the live flag was gone within the hour, the record was
+// not.
+// ---------------------------------------------------------------------------
+
+/** What the client has asked to be changed on these jobs, newest last. Returned
+ *  whole rather than as a boolean so the caller can compare each ask against
+ *  the moment its own file was ready, and so the card can put the date on
+ *  screen. Never throws: no answer means no complaint, which only ever makes
+ *  the matcher stricter. */
+export async function clientChangeRequestsFor(
+  projectIds: string[],
+): Promise<Map<string, { at: Date; words: string }[]>> {
+  const out = new Map<string, { at: Date; words: string }[]>();
+  if (projectIds.length === 0) return out;
+  const rows = await prisma.revisionBrief
+    .findMany({
+      where: { projectId: { in: [...new Set(projectIds)] } },
+      select: { projectId: true, createdAt: true, headline: true, originalText: true },
+      orderBy: { createdAt: "asc" },
+    })
+    .catch(() => []);
+  for (const r of rows) {
+    out.set(r.projectId, [
+      ...(out.get(r.projectId) ?? []),
+      { at: r.createdAt, words: (r.headline ?? r.originalText ?? "").slice(0, 160) },
+    ]);
+  }
+  return out;
+}
+
+/** The latest ask that landed at or after this file was ready — the one that
+ *  makes a video on the listing unattributable. Deliberately NOT filtered to
+ *  asks that mention video: the hub's own classification of what a client meant
+ *  is a guess, and guessing wide here only ever holds a row for a tap. */
+export function contestedSince(
+  asks: { at: Date; words: string }[] | undefined,
+  readyAt: Date,
+): { at: Date; words: string } | null {
+  const after = (asks ?? []).filter((a) => a.at.getTime() >= readyAt.getTime());
+  return after.length > 0 ? after[after.length - 1] : null;
+}
+
+// ---------------------------------------------------------------------------
+// THE LISTING, AS THE HUB LAST SAW IT.
+//
+// The card may not read Aryeo. It renders on Jordan's home screen and on
+// Kyle's, both of which are `force-dynamic`, so a live listing read per row
+// would be paid on every single page view by everyone all day. The status
+// engine already reads these listings and files what it saw; this is that
+// filing, read back.
+//
+// Which makes HOW OLD IT IS part of the fact. "We looked and there was no
+// video" and "nobody has looked since last Tuesday" are different statements,
+// and it was the second one wearing the first one's clothes — a `videos: 0`
+// frozen on Sep 8 — that kept 2051 Old Sumneytown Pike on the card for nine
+// days. Past EVIDENCE_STALE_HOURS the counts are history, not a current fact,
+// and nothing is allowed to turn on them.
+// ---------------------------------------------------------------------------
+
+type ListingFacts = {
+  /** when the read that produced these happened */
+  at: Date | null;
+  /** how many videos Aryeo showed */
+  count: number;
+  /** the videos themselves, when the blob is new enough to carry them */
+  videos: ListingVideo[];
+  /** the blob carried a video LIST, not just a count — the difference between
+   *  "one video" and "this video, uploaded at 10:21" */
+  detailed: boolean;
+  /** the read is recent enough to mean anything */
+  fresh: boolean;
+};
+
+/** The Aryeo block written by THIS CARD's own hourly re-read
+ *  (projectStatus.refreshListingEvidence), which is filed under its own key.
+ *
+ *  WHY IT IS NOT MERGED INTO `aryeo`, which is where it obviously belongs. That
+ *  block is read by decisions this card has no business moving. Two of them
+ *  gate a text to a CLIENT: the monthly-content batch hold (lib/tasks — hold
+ *  the delivery text until the month's videos are live) and "positive proof a
+ *  video shipped" (lib/clientTextSweeps). Both are satisfied by a video COUNT,
+ *  and both were previously only ever moved by the status engine's own hourly
+ *  pass. A re-read that exists to put a sentence on a card must not be able to
+ *  release a message to a client as a side effect — the card's refresh reaches
+ *  jobs the status sweep has deliberately stopped carrying, including content
+ *  months. So it writes here, this function reads it, and nothing else in the
+ *  hub can see it.
+ *
+ *  Absent on every job the refresh has not reached, which is all of them until
+ *  the first hourly pass after deploy. */
+function cardRefreshBlockOf(raw: string | null): ParsedEvidence["aryeo"] {
+  if (!raw) return null;
+  try {
+    const blob = JSON.parse(raw) as { listing?: ParsedEvidence["aryeo"] };
+    return blob?.listing ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whichever of the two blocks was read most recently. A block with no time on
+ *  it at all falls back to the pass's own `checkedAt`, and loses to one that
+ *  can say when it looked. */
+function newerOf(
+  engine: ParsedEvidence["aryeo"],
+  card: ParsedEvidence["aryeo"],
+  checkedAt: string | undefined,
+): ParsedEvidence["aryeo"] {
+  if (!card) return engine;
+  if (!engine) return card;
+  const t = (b: NonNullable<ParsedEvidence["aryeo"]>) => Date.parse(b.at ?? checkedAt ?? "") || 0;
+  return t(card) >= t(engine) ? card : engine;
+}
+
+/** The Aryeo half of a job's evidence, read defensively.
+ *
+ *  `videoList` is written by lib/projectStatus and is deliberately NOT in
+ *  statusEvidence's ParsedEvidence type — that parser is the client-safe
+ *  whitelist for the fields the cards render, and it passes anything else
+ *  through untouched. So it is read here, validated here, and a blob that
+ *  predates the field simply reports `detailed: false`. */
+function listingFactsOf(ev: ParsedEvidence | null, raw: string | null): ListingFacts | null {
+  const a = newerOf(ev?.aryeo ?? null, cardRefreshBlockOf(raw), ev?.checkedAt);
+  if (!a) return null;
+  const extra = a as { at?: unknown; videoList?: unknown };
+  const atRaw = typeof extra.at === "string" ? extra.at : ev?.checkedAt;
+  const ms = Date.parse(atRaw ?? "");
+  const at = Number.isFinite(ms) ? new Date(ms) : null;
+  // A carried-forward count is last week's news wearing today's date.
+  const fresh = !a.stale && at != null && Date.now() - at.getTime() < EVIDENCE_STALE_HOURS * HOUR;
+  const list = Array.isArray(extra.videoList) ? (extra.videoList as unknown[]) : null;
+  return {
+    at,
+    count: a.videos ?? 0,
+    videos: list ? videosOnListing({ videos: list }) : [],
+    detailed: list != null,
+    fresh,
+  };
+}
+
 /** One definition of the columns this module reads, so the query and the
  *  helpers below can never drift apart. */
 const CANDIDATE_SELECT = {
@@ -213,7 +637,11 @@ const CANDIDATE_SELECT = {
   clientReleasedAt: true, clientRequestedAt: true,
   deliverable: { select: { type: true } },
   topazJob: {
-    select: { id: true, state: true, finalPath: true, savedAt: true, deliveredAt: true, skipReason: true, error: true },
+    // sourceDurationSec: how long the file runs, probed off its own header when
+    // the 1080p pass was set up. It is the only length the hub holds for a cut,
+    // and it is what tells a 60s correction from the 66s video beside it on the
+    // listing (308 W Upsal St).
+    select: { id: true, state: true, finalPath: true, savedAt: true, deliveredAt: true, skipReason: true, error: true, sourceDurationSec: true },
   },
   project: {
     select: {
@@ -270,15 +698,8 @@ export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyB
   });
   if (subs.length === 0) return { ready: [], rendering: [] };
 
-  // Still the live version of its cut, and not already with the client. Two
-  // steps, because the last of the three answers below is not about this cut on
-  // its own — see resolveListingInference.
-  const verdicts = new Map(subs.map((s) => [s.id, wentOut(s)] as const));
-  const inferred = await resolveListingInference(subs.filter((s) => verdicts.get(s.id) === "listing-suggests-sent"));
-  const open = subs.filter((s) => {
-    const v = verdicts.get(s.id);
-    return v === "open" || (v === "listing-suggests-sent" && !inferred.has(s.id));
-  });
+  // Still the live version of its cut, and not already with the client.
+  const open = subs.filter((s) => !wentOut(s));
   if (open.length === 0) return { ready: [], rendering: [] };
 
   const states = await videoStatesFor([...new Set(open.map((s) => s.projectId))]);
@@ -302,6 +723,12 @@ export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyB
   // case (c) is the only branch that asks WHY no pass ever ran.
   const needSettings = winners.some((s) => !s.topazJob);
   const s = needSettings ? await topazSettings().catch(() => null) : null;
+
+  // One query for the whole board: what each of these clients has asked to be
+  // changed, and when. A row whose client complained AFTER its file was ready
+  // is a row where a video on the listing may be the complaint rather than the
+  // fix, and the line says so instead of inviting a press (see listingLine).
+  const asks = await clientChangeRequestsFor(winners.map((w) => w.projectId));
 
   const now = Date.now();
   const ready: ReadyVideo[] = [];
@@ -350,6 +777,13 @@ export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyB
       aryeoUrl: aryeoJobUrl(sub.project),
       aryeoTitle: aryeoJobTitle(sub.project),
       reviewHref: `/review/${sub.projectId}?cut=${sub.id}`,
+      listing: sub.project.aryeoListingId
+        ? listingLine(
+            sub,
+            listingFactsOf(ev, sub.project.statusEvidence),
+            contestedSince(asks.get(sub.projectId), claimantOf(sub).readyAt),
+          )
+        : null,
     });
   }
 
@@ -379,6 +813,137 @@ export async function cutsOnTheCardFor(projectId: string): Promise<Set<string>> 
   return new Set(board.ready.map((r) => r.submissionId));
 }
 
+/** The claimant this cut is, in the matcher's terms: the earliest moment its
+ *  file could have been uploaded, and how long it runs when anything knows.
+ *
+ *  `readyAt` is the moment the 1080p file was FILED when there is one — the
+ *  same floor lib/aryeoDelivery uses, so the two reach the same answer about
+ *  the same upload — and otherwise the approval, because the card that tells
+ *  Kyle to send it does not exist before then. */
+function claimantOf(sub: CandidateSub): UploadJob {
+  const approvedAt = sub.decidedAt ?? sub.completedAt ?? sub.createdAt;
+  const j = sub.topazJob;
+  return {
+    id: sub.id,
+    readyAt: j?.savedAt ?? approvedAt,
+    durationSec: j?.sourceDurationSec ?? null,
+  };
+}
+
+/**
+ * THE ONE LINE THAT PUTS ARYEO'S OWN ANSWER ON THE ROW.
+ *
+ * Every row here is a row the hub could NOT clear by itself, and after this
+ * morning that is the right default — but "I can't prove it" is not the same
+ * as "I know nothing", and the difference was being thrown away. Aryeo's own
+ * answer about the listing was sitting in the evidence blob the whole time.
+ *
+ * So the row now says what is up there and when it went up, and Kyle decides in
+ * a second instead of opening Aryeo in another tab. Five shapes, and they are
+ * genuinely different facts:
+ *
+ *   · nobody has checked lately          → say so, and say since when. Never
+ *                                          "no video": a stale zero reading as
+ *                                          a confident zero is the bug that
+ *                                          started all this.
+ *   · nothing is up there                → the row is unambiguously owed. This
+ *                                          is 893 S Matlack St today.
+ *   · something is up there, but it went  → real support FOR the row: the video
+ *     up before this file existed          on the listing is the old one.
+ *   · something is up there that COULD    → name it, date it, and say what
+ *     be this file                         actually settles it.
+ *   · …and the client has complained      → the strongest reason not to guess:
+ *     about this listing's video since     what is up there may be the very
+ *     this file was ready                  thing they are complaining about.
+ *
+ * WHAT IT DOES NOT DO ANY MORE, and this is the Sep 17 second review. It used
+ * to finish the fourth shape with "If that's this one, mark it sent." — on
+ * every row where a video merely COULD be the file, decided on time and length
+ * alone. That is a looser rule than the one the proof pass uses on the same
+ * data, and on the one row in the hub that must never be cleared it rendered
+ * word for word the same invitation as on a row that really was already sent:
+ * 322 N 62nd St's listing carries a 60-second video, uploaded after the file
+ * was ready, which is the SILENT one the client rejected that morning. The card
+ * was asking Kyle to confirm the thing the machine beside it was refusing to
+ * conclude, and "Mark as sent" then asks him to confirm that the file is on
+ * Aryeo and the listing is delivered — both of which are true on 322.
+ *
+ * So the line states what is there and names the only thing that settles it:
+ * somebody has to play the video. It never says "this has been sent", and it
+ * never asks for a press on evidence that would not satisfy the machine.
+ */
+function listingLine(
+  sub: CandidateSub,
+  facts: ListingFacts | null,
+  /** the client's latest complaint about this job since this file was ready */
+  contested: { at: Date; words: string } | null,
+): ReadyVideo["listing"] {
+  const when = facts?.at ? ` (checked ${etDateTime(facts.at)} ET)` : "";
+  // THE COLOUR FOLLOWS THE SENTENCE. `contested` is what turns this line red on
+  // the card, so it is only ever true on the two branches that actually SAY the
+  // client has complained. A red line on a row whose words are "the hub hasn't
+  // checked this listing" is a row nobody can act on — and it happens: 1956
+  // Wetherhill Dr's ask is about two closet PHOTOS, which is a good reason for
+  // the matcher to keep its hands off the row (holding wide costs a tap) and no
+  // reason at all to shout at Kyle about a video.
+  const base = { checkedAtISO: facts?.at?.toISOString() ?? null, videos: facts?.count ?? 0, contested: false };
+  const disputed = { ...base, contested: Boolean(contested) };
+  // What to do about a video that might be this file. Never "mark it sent": the
+  // hub cannot tell a re-cut from the thing it replaces, and neither can a
+  // sentence. Playing it is what settles it, and the row's own Aryeo button is
+  // one click away.
+  const settleIt = contested
+    ? ` The client reported a problem with this job on ${etDateTime(contested.at)} ET — after this file was ready — so what’s up there may be the one they’re complaining about. Play it before marking this sent.`
+    : ` Nothing here can tell that apart from the file it replaces — play it before marking this sent.`;
+
+  if (!facts || !facts.at || !facts.fresh) {
+    const since = facts?.at ? `since ${etDateTime(facts.at)} ET` : "yet";
+    // "Hasn't checked", not "hasn't been able to read": nothing failed. The
+    // status sweep stops carrying a job seven days after delivery, which is a
+    // choice, and the hourly listing pass picks it up again. Saying it the
+    // other way sent the reader looking for a broken integration — on five of
+    // the ten rows live the day this shipped.
+    return { ...base, couldBeThisCut: false, says: `The hub hasn’t checked this listing ${since}, so it can’t say what Aryeo is showing. It re-checks every hour.` };
+  }
+  if (facts.count === 0) {
+    return { ...base, couldBeThisCut: false, says: `Aryeo shows no video on this listing${when} — nothing has gone up yet.` };
+  }
+
+  const n = `${facts.count} video${facts.count > 1 ? "s" : ""}`;
+  // A count with no ids behind it (a blob written before Sep 17, which is every
+  // job until the hourly pass has been round once) can say how many, and must
+  // not pretend to say which.
+  if (!facts.detailed) {
+    return { ...disputed, couldBeThisCut: true, says: `Aryeo already shows ${n} on this listing${when}. The hub can’t say from here which video that is — the hourly listing check names it.${settleIt}` };
+  }
+
+  const me = claimantOf(sub);
+  const candidates = facts.videos.filter((v) => couldBe(me, v));
+  if (candidates.length === 0) {
+    const newest = facts.videos[facts.videos.length - 1];
+    // WHY none of them can be it, because the two reasons are different news.
+    // Everything up there is older than the file → the listing is carrying an
+    // earlier version and this one has not gone up (or went up before the hub
+    // had it, which a person can settle with one tap). A length that does not
+    // match → something else is up there entirely. Said plainly either way, and
+    // never as an instruction: the card does not know what Kyle did outside it.
+    const tooOld = newest != null && newest.at.getTime() < me.readyAt.getTime();
+    const many = facts.count > 1;
+    const says = tooOld
+      ? `Aryeo already shows ${n} on this listing, but the ${many ? "newest" : "one"} up there went up ${etDateTime(newest!.at)} ET — before the hub had this file — so ${many ? "none of them can" : "it can’t"} be this one.`
+      : `Aryeo already shows ${n} on this listing, but ${many ? "none of them is" : "it isn’t"} the right length for this file — ${many ? "none of them can" : "it can’t"} be this one.`;
+    return { ...base, couldBeThisCut: false, says };
+  }
+  const hit = candidates[candidates.length - 1];
+  const named = hit.title ? `“${hit.title}”` : "a video";
+  const len = hit.durationSec != null ? `, ${Math.round(hit.durationSec)}s` : "";
+  return {
+    ...disputed,
+    couldBeThisCut: true,
+    says: `Aryeo already shows ${n} on this listing — ${named}${len}, uploaded ${etDateTime(hit.at)} ET, after this file was ready.${settleIt}`,
+  };
+}
+
 /** Where the 1080p pass has got to, in Kyle's words rather than the lane's. */
 function renderingSays(state: string): string {
   if (state === "queued" || state === "estimated") return "The 1080p pass is queued — nothing to send yet.";
@@ -391,171 +956,53 @@ function renderingSays(state: string): string {
 /**
  * Has this cut's file already reached the client?
  *
- *   "sent"                   — settled, on evidence about THIS cut.
- *   "open"                   — nothing says it went; it belongs on the card.
- *   "listing-suggests-sent"  — the only evidence is that the job's LISTING is
- *                              carrying video. That is a fact about the job,
- *                              not about this cut, so it cannot be decided
- *                              here. resolveListingInference decides it.
+ * True only on evidence about THIS CUT. Nothing about the listing appears here
+ * any more, and that is the Sep 17 change: a row leaves this card when a person
+ * presses the button, when the 1080p job the hub handed that person is stamped
+ * delivered, or when the proof pass in lib/aryeoDelivery has matched an
+ * individual video on Aryeo to this individual file and written
+ * `sentToClientAt` for it — a fact, recorded, with a line on the job's
+ * timeline saying so.
  *
- * The precedence is the point of the whole module — see the header.
+ * WHAT USED TO BE HERE, AND WHY IT IS GONE. The board carried its own, weaker
+ * version of that proof: `aryeo.videos`, a count out of the cached evidence,
+ * cleared a row when the listing had enough videos to go round. It was wrong
+ * twice over on its first day out, and the second way is the one that matters.
+ *   · A count goes stale in silence — 2051 Old Sumneytown Pike's was nine days
+ *     old and said zero while the video had been live since the day after.
+ *   · A count cannot say WHICH video, so it cleared rows on evidence that does
+ *     not support them: 1956 Wetherhill Dr, 332 Ruth Ridge Dr and 439 Lake
+ *     George Cir were all being cleared by a video that went up BEFORE the file
+ *     on the card existed, which is no evidence about that file at all.
+ * A render cannot do better than that on its own: proving a cut means measuring
+ * the file (an HTTP range read per cut) and reading the listing live, and this
+ * function runs on two home screens on every request. So it stopped guessing.
+ * The hourly pass does the proving, where a read and a measurement are
+ * affordable and the answer can be written down; the rows it cannot prove stay
+ * here, each one now carrying Aryeo's own answer for Kyle to act on (see
+ * listingLine). One decision, in one place, that leaves a record.
  */
-type SentVerdict = "sent" | "open" | "listing-suggests-sent";
+function wentOut(sub: CandidateSub): boolean {
+  // A person pressed the button for this cut: the caller has already filtered
+  // on `sentToClientAt: null`, so reaching here means nobody has.
 
-function wentOut(sub: CandidateSub): SentVerdict {
   // The hub handed a specific file to a specific person: only their press
-  // closes it. Aryeo showing "a video" is not evidence about THIS file — on 322
-  // the video Aryeo shows is the broken one. (A job the lane is still working
-  // on has not been handed to anybody either; it is filtered out later, as a
-  // rendering row rather than a sent one.)
-  if (sub.topazJob) return sub.topazJob.deliveredAt ? "sent" : "open";
-
-  const approvedAt = (sub.decidedAt ?? sub.completedAt ?? sub.createdAt).getTime();
+  // closes it — or lib/aryeoDelivery proving the upload that card named, which
+  // stamps the job itself. Aryeo showing "a video" is not evidence about THIS
+  // file: on 322 N 62nd St the video Aryeo shows is 60 seconds long, went up
+  // after the file was ready, and is the silent one the client rejected.
+  // (A job the lane is still working on has not been handed to anybody either;
+  // it is filtered out later, as a rendering row rather than a sent one.)
+  if (sub.topazJob) return Boolean(sub.topazJob.deliveredAt);
 
   // A content-program cut IS the client's the moment it is approved: the portal
   // library row is written on approval and the media gate opens for any
   // APPROVED cut. Kyle has nothing to upload and nothing to send. The question
   // "can the client see this cut" is answered by the portal's own helper, so
   // the two surfaces cannot drift.
-  if (sub.project.contentMonthId && cutReleasedAt({ ...sub, status: "APPROVED" })) return "sent";
+  if (sub.project.contentMonthId && cutReleasedAt({ ...sub, status: "APPROVED" })) return true;
 
-  // Case (c). The listing must be carrying a video that CANNOT be a leftover:
-  // observed by Aryeo itself (not a carried-forward stale count), after this cut
-  // was approved, on a job that had not already been delivered beforehand.
-  const ev = parseEvidence(sub.project.statusEvidence);
-  if (!ev?.aryeo || ev.aryeo.stale || (ev.aryeo.videos ?? 0) <= 0) return "open";
-  const seenAt = Date.parse(ev.aryeo.at ?? ev.checkedAt ?? "");
-  if (Number.isNaN(seenAt) || seenAt < approvedAt) return "open";
-  // Delivered BEFORE this cut existed → the video on the listing is the old
-  // one until a person says otherwise. This is the 322 shape exactly.
-  if (sub.project.deliveredAt && sub.project.deliveredAt.getTime() < approvedAt) return "open";
-  // Everything about the LISTING checks out. Whether it says anything about
-  // THIS cut is a different question, and one cut cannot answer it alone.
-  return "listing-suggests-sent";
-}
-
-/**
- * THE JOB THAT OWES TWO VIDEOS AND HAS UPLOADED ONE (Sep 17 2026).
- *
- * "There is a video live on the listing" is the weakest evidence this module
- * accepts, and it is the only thing standing behind case (c) — a cut with no
- * 1080p job, where the hub never handed a specific file to a specific person
- * and so has no record of its own. It was applied per cut, which quietly
- * assumed one video per job. Most jobs are one video, so it looked right.
- *
- * It is not right, and a probe of the delivery path caught it: a job with TWO
- * approved, unsent cuts, one video on its Aryeo listing. Both rows vanished off
- * the card. The listing was carrying evidence for ONE upload and it was used
- * twice — so a video that had never been sent was written off as sent, by
- * inference, with no stamp, no name and no timeline line to find it by. That is
- * the failure this whole module was written to prevent, arriving through the
- * one door that was still guessing.
- *
- * The rule now: this inference may only account for as many cuts as the listing
- * has videos to account for them with — and cuts already settled (a person
- * pressed the button, or their 1080p job is stamped delivered) have each taken
- * a video already. If the videos do not go round, NONE of the job's cuts are
- * cleared this way and they all stay on the card.
- *
- * Deliberately all-or-nothing rather than clearing the oldest N. The count is
- * all this evidence has — `statusEvidence` records how MANY videos Aryeo showed,
- * never which — so picking which cuts the videos were would be a guess, and the
- * whole point is to stop guessing. Being over-cautious here costs a stale row
- * and one tap; being wrong costs a client their video.
- *
- * (The webhook path does better, and can: lib/aryeoDelivery holds the listing
- * itself, so it matches individual video ids to individual cuts by time and
- * length and stamps the ones it can prove. This is the floor under it, for the
- * jobs no webhook has arrived for.)
- */
-async function resolveListingInference(maybe: CandidateSub[]): Promise<Set<string>> {
-  const cleared = new Set<string>();
-  if (maybe.length === 0) return cleared;
-
-  const byProject = new Map<string, CandidateSub[]>();
-  for (const s of maybe) byProject.set(s.projectId, [...(byProject.get(s.projectId) ?? []), s]);
-
-  // EVERY approved cut on these jobs, not just the ones asking to be cleared.
-  //
-  // The first version of this counted `maybe` plus the settled rows, which
-  // quietly assumed the job's only other cuts were finished ones. They are not:
-  // a cut whose 1080p pass is undelivered gets verdict "open" and never reaches
-  // this function at all, so a job with one inferred cut and one Topaz-backed
-  // open cut had `needed` of 1 — and a single video on the listing cleared the
-  // inferred row even though that video may well have been the OTHER cut's
-  // upload. Same counting mistake as the one this function was written to fix,
-  // one row further out.
-  //
-  // Same filters as the board itself: a cut with no bytes is an approval with
-  // nothing behind it and is owed to nobody, and neither is one whose
-  // deliverable came off the order.
-  let all: SettleableRow[];
-  try {
-    all = await prisma.reviewSubmission.findMany({
-      where: {
-        projectId: { in: [...byProject.keys()] },
-        status: "APPROVED",
-        OR: [
-          { blobUrl: { not: null } },
-          { assetPath: { not: null } },
-          { finalPath: { not: null } },
-          { topazJob: { is: { finalPath: { not: null } } } },
-        ],
-        AND: [{ OR: [{ deliverableId: null }, { deliverable: { is: { removedFromOrderAt: null } } }] }],
-      },
-      select: {
-        id: true, projectId: true, deliverableId: true, slot: true, assetPath: true, fileName: true,
-        sentToClientAt: true,
-        topazJob: { select: { deliveredAt: true } },
-      },
-    });
-  } catch {
-    // FAILS CLOSED, and it has to: with no counts, every job would look like it
-    // had videos to spare and the whole board would clear itself on a database
-    // hiccup. Nothing cleared means rows stay on the card, which costs a tap.
-    return cleared;
-  }
-
-  // Two tallies per job, both keyed the way the CARD groups rows:
-  //   owed    — groups that still want a video uploaded
-  //   settled — groups whose upload is already accounted for (a person pressed
-  //             the button, or their 1080p job is stamped delivered), each of
-  //             which has already taken one of the listing's videos
-  const owedGroups = new Map<string, Set<string>>();
-  const settledGroups = new Map<string, Set<string>>();
-  for (const r of all) {
-    const done = Boolean(r.sentToClientAt) || Boolean(r.topazJob?.deliveredAt);
-    const into = done ? settledGroups : owedGroups;
-    const set = into.get(r.projectId) ?? new Set<string>();
-    set.add(groupKeyOf(r));
-    into.set(r.projectId, set);
-  }
-
-  for (const [projectId, cuts] of byProject) {
-    const videos = parseEvidence(cuts[0].project.statusEvidence)?.aryeo?.videos ?? 0;
-    // COUNT VIDEOS OWED, NOT ROWS. Two approved exports of one reel are one
-    // video to send — 1956 Wetherhill Dr carries "Finish_…" and "Revised_…" of
-    // a single cut, and the card itself already collapses them into one row
-    // (collapseReExports). Counting rows would have that job needing two videos
-    // off a listing that only ever owed one, and would park a row on the card
-    // for ever. So both sides are counted with the SAME key the card groups by.
-    //
-    // A settled round and an unsent LATER round of the same cut are counted as
-    // two, deliberately, even though they share a group key: that is the 322
-    // shape — the original went out, the correction has not — and the listing
-    // still carrying the original is exactly the evidence that must not clear
-    // the correction. Counting them as one would mean the OLD video clears the
-    // new row, which is the failure this whole module exists to prevent. The
-    // cost is a row that waits for a tap on a job where Kyle REPLACED the video
-    // instead of adding one; the webhook path clears that case properly,
-    // because it can see the individual videos rather than a count.
-    const owed = owedGroups.get(projectId)?.size ?? 0;
-    const needed = owed + (settledGroups.get(projectId)?.size ?? 0);
-    // Not enough videos to go round: the job keeps every one of its rows.
-    if (videos < needed) continue;
-    for (const c of cuts) cleared.add(c.id);
-  }
-  return cleared;
+  return false;
 }
 
 /**
@@ -582,12 +1029,6 @@ export type Groupable = {
   slot: number | null;
   assetPath: string | null;
   fileName: string | null;
-};
-
-/** A row that can be asked "has this cut's file been accounted for?" */
-type SettleableRow = Groupable & {
-  sentToClientAt: Date | null;
-  topazJob: { deliveredAt: Date | null } | null;
 };
 
 /** ONE definition of "these rows are the same video", used to collapse the
