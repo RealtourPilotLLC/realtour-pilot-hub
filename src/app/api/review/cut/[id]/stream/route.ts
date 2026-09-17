@@ -34,9 +34,19 @@ const linkCache = new Map<string, { link: string; at: number }>();
 // cut by id — 24 cuts across 13 jobs with differing editors. It is now the
 // job's own people: owner/admin, the editor who holds the job, the
 // photographer who shot it (canViewProject in auth/guards — the same
-// resolution the task and shoot guards use), or the client portal via
-// `?t=<portal token>`, gated exactly as before: the enrollment owning the
-// submission's project, and only cuts that were shown to the client.
+// resolution the task and shoot guards use), or the client portal, three ways
+// (identity layer, Sep 16 evening):
+//   ?m=<media token>  what the portal page now puts in every <video src>: an
+//                     HMAC bound to THIS submission id, six hours, minted only
+//                     for cuts the resolver already proved the viewer may see
+//                     (src/lib/portalMedia.ts). Leaking one leaks one video.
+//   rtp_client cookie a signed-in person — their live seats are re-read and
+//                     the cut must belong to one of those enrollments AND
+//                     that enrollment's client (submissionForEnrollment).
+//   ?t=<portal token> the pre-Sep-16 form. TRANSITION ONLY: no page emits it
+//                     any more, but a client with a stale tab still may. Each
+//                     use is logged so the day it goes quiet is visible, then
+//                     this branch is deleted (Stage D of the plan).
 export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
   if (!/^[a-z0-9]{10,40}$/i.test(id)) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -48,15 +58,44 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     select: { projectId: true, assetPath: true, blobUrl: true, fileName: true },
   });
 
+  const media = req.nextUrl.searchParams.get("m");
   const token = req.nextUrl.searchParams.get("t");
   let allowed = false;
-  if (token) {
-    const { portalEnrollment, submissionForEnrollment } = await import("@/lib/portal");
-    const enrollment = await portalEnrollment(token);
-    allowed = !!enrollment && !!(await submissionForEnrollment(enrollment.id, id));
-  } else if (sub) {
-    const { canViewProject } = await import("@/lib/auth/guards");
-    allowed = await canViewProject(sub.projectId); // no-op in local dev, same as every guard
+  if (media) {
+    const { verifyMediaToken, mediaScopeLive } = await import("@/lib/portalMedia");
+    // The signature proves the portal page minted this for THIS cut; the
+    // scope check proves the seat / link / staff login it was minted for is
+    // still allowed in — so a revoked seat or a rotated link stops on the
+    // next Range request, not when the token expires (review, Sep 17).
+    const v = verifyMediaToken(id, media);
+    allowed = v.ok && (await mediaScopeLive(v.scope, v.mintedAt));
+  } else if (token) {
+    console.info(`[portal] legacy ?t= media access on cut ${id} (transition path)`);
+    const { resolvePortalViewer, submissionForEnrollment } = await import("@/lib/portal");
+    const r = await resolvePortalViewer({ token, cookies: req.cookies });
+    // Released content stays playable for a paused/ended client (READ_ONLY);
+    // a revoked or expired link plays nothing.
+    allowed = r.ok && r.viewer.access !== "NONE" && !!(await submissionForEnrollment(r.viewer.enrollment, id));
+  } else {
+    if (req.cookies.get("rtp_client")?.value) {
+      const { currentClientUser, liveMemberships, submissionForEnrollment } = await import("@/lib/portal");
+      const person = await currentClientUser(req.cookies);
+      if (person) {
+        // liveMemberships already drops a seat whose clientId disagrees with
+        // its enrollment's, so the pair passed here is the enrollment's own.
+        for (const seat of await liveMemberships(person.id)) {
+          if (await submissionForEnrollment({ id: seat.enrollmentId, clientId: seat.clientId }, id)) { allowed = true; break; }
+        }
+      }
+    }
+    // The hub's own guard reads rtp_session, which a client never holds — so
+    // falling through here cannot open a cut for a client, but it does keep
+    // the Review Room playing for a staff member who also signed into a TEST
+    // client's portal in the same browser.
+    if (!allowed && sub) {
+      const { canViewProject } = await import("@/lib/auth/guards");
+      allowed = await canViewProject(sub.projectId); // no-op in local dev, same as every guard
+    }
   }
   // A missing row and a forbidden row answer the SAME way to a signed-in
   // stranger — "no" must not double as "that id exists".

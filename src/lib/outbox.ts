@@ -62,9 +62,18 @@ export type OutboxState = "pending" | "attempting" | "accepted" | "failed" | "un
 /** The kinds of message the hub sends. The kind is the first segment of the
  *  dedupeKey, so a row always says what it is without another column. The four
  *  client kinds are subject to Jordan's quiet hours; `staff` never is (a
- *  Saturday shoot reminder has to go out on a Saturday). */
-export type OutboxKind = "confirmation" | "delivery" | "welcome" | "afterhours" | "staff";
+ *  Saturday shoot reminder has to go out on a Saturday).
+ *
+ *  `portal_login` and `portal_invite` (Sep 16, D14) are TRANSACTIONAL: a
+ *  person asked for a sign-in link at 7:30 pm and expects it in the next
+ *  minute, so they are deliberately NOT in CLIENT_KINDS and the drain never
+ *  holds them for the Mon–Fri-before-4:30 window. They are gated instead by the
+ *  ProgramAutomation switches `portal_login_email` / `portal_invites`, which
+ *  stay OFF until launch is authorised — nothing of these kinds is even
+ *  enqueued while a switch is off (src/lib/portalAccess.ts). */
+export type OutboxKind = "confirmation" | "delivery" | "welcome" | "afterhours" | "staff" | "portal_login" | "portal_invite";
 const CLIENT_KINDS: readonly OutboxKind[] = ["confirmation", "delivery", "welcome", "afterhours"];
+const ALL_KINDS: readonly OutboxKind[] = [...CLIENT_KINDS, "staff", "portal_login", "portal_invite"];
 export const isClientKind = (k: OutboxKind | null): boolean => !!k && CLIENT_KINDS.includes(k);
 
 export type OutboxRow = {
@@ -327,7 +336,12 @@ export function realOutboxProvider(): OutboxProvider {
  *  subject column — email is the fallback rail for the welcome (a client with
  *  no phone), so the kind names it. */
 function subjectFor(kind: OutboxKind | null): string {
-  return kind === "welcome" ? "Welcome to RealTour Pilot" : "RealTour Pilot";
+  switch (kind) {
+    case "welcome": return "Welcome to RealTour Pilot";
+    case "portal_login": return "Your RealTour Pilot sign-in link";
+    case "portal_invite": return "You've been added to your RealTour Pilot content portal";
+    default: return "RealTour Pilot";
+  }
 }
 
 // ---- the machine ------------------------------------------------------------
@@ -682,10 +696,16 @@ export const confirmationKey = (projectId: string, shootDate: Date | null) => {
 export const welcomeKey = (clientId: string) => `welcome:${clientId}`;
 export const afterHoursKey = (clientId: string, periodKey: string) => `afterhours:${clientId}:${periodKey}`;
 export const staffKey = (teamMemberId: string, claimStamp: Date) => `staff:${teamMemberId}:${claimStamp.toISOString()}`;
+/** One sign-in link per person per MINT — the stamp is the moment the token
+ *  was minted, so a second request a minute later is its own message (the
+ *  first one's token is void by then) while a double-submit collides. */
+export const portalLoginKey = (clientUserId: string, mintStamp: Date) => `portal_login:${clientUserId}:${mintStamp.toISOString()}`;
+/** One invitation per seat per send. */
+export const portalInviteKey = (membershipId: string, sendStamp: Date) => `portal_invite:${membershipId}:${sendStamp.toISOString()}`;
 
 export function outboxKind(dedupeKey: string | null | undefined): OutboxKind | null {
   const head = (dedupeKey ?? "").split(":")[0];
-  return (["confirmation", "delivery", "welcome", "afterhours", "staff"] as const).find((k) => k === head) ?? null;
+  return ALL_KINDS.find((k) => k === head) ?? null;
 }
 
 /** Never render a recipient in full outside the owner's own screens (the

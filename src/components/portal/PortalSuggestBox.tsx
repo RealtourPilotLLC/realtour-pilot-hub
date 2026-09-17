@@ -3,11 +3,12 @@
 import { useState, useTransition } from "react";
 import { Loader2, MessageSquarePlus } from "lucide-react";
 import { portalSuggestScript } from "@/app/portal/actions";
+import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 
 // "Suggest a change" under each script on the client portal. Creates a
 // suggestion record for Jordan's review — the script itself never changes
 // until a human applies it.
-export function PortalSuggestBox({ token, scriptId }: { token: string; scriptId: string }) {
+export function PortalSuggestBox({ scriptId }: { scriptId: string }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const [done, setDone] = useState<string | null>(null);
@@ -39,7 +40,7 @@ export function PortalSuggestBox({ token, scriptId }: { token: string; scriptId:
         <button
           onClick={() =>
             start(async () => {
-              const r = await portalSuggestScript(token, scriptId, text).catch(() => ({ ok: false, message: "That didn't send — try again." }));
+              const r = await portalSuggestScript(portalAuthFromLocation(), scriptId, text).catch(() => ({ ok: false, message: "That didn't send — try again." }));
               if (r.ok) setDone(r.message);
               else setErr(r.message);
             })

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { portalEnrollment } from "@/lib/portal";
+import { resolvePortalViewer } from "@/lib/portal";
+import { can, refusalMessage } from "@/lib/portalAccess";
 import { dropboxUpload } from "@/lib/integrations/dropbox";
 import { ensureClientBrandFolder } from "@/lib/clientFolders";
 
@@ -9,9 +10,12 @@ export const maxDuration = 60;
 
 // Client uploads a brand asset (logo, headshot, font, brand kit) from their
 // PORTAL into their own Dropbox asset folder — the same folder the editors
-// and the hub already read. PUBLIC route: the enrollment token is the auth,
-// so the guards are tight — type allowlist, 25MB cap, sanitized names, and a
-// per-client daily counter so a leaked link can't fill the Dropbox.
+// and the hub already read. PUBLIC route: the visit is identified the same
+// three ways as every portal action (the link's token in the form body, the
+// signed-in person's cookie, or staff through the owner iframe) and gated by
+// the brand-profile permission — so the guards are tight — type allowlist,
+// 25MB cap, sanitized names, and a per-client daily counter so a leaked link
+// can't fill the Dropbox.
 const MAX_BYTES = 25 * 1024 * 1024;
 const DAILY_CAP = 25;
 const NAME_OK = /^[^\\/:?*"<>|]{1,180}$/;
@@ -25,8 +29,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, message: "Bad upload." }, { status: 400 });
   }
   const token = String(form.get("token") ?? "");
-  const enrollment = await portalEnrollment(token);
-  if (!enrollment) return NextResponse.json({ ok: false, message: "This link is no longer active." }, { status: 401 });
+  const enrollmentId = String(form.get("enrollmentId") ?? "") || null;
+  const r = await resolvePortalViewer({ token: token || null, enrollmentId, cookies: req.cookies });
+  if (!r.ok) return NextResponse.json({ ok: false, message: "This link is no longer active — sign in with your email to continue." }, { status: 401 });
+  if (!can(r.viewer, "editBrandProfile")) return NextResponse.json({ ok: false, message: refusalMessage(r.viewer, "editBrandProfile") }, { status: 403 });
+  const { enrollment } = r.viewer;
 
   const file = form.get("file");
   if (!(file instanceof File)) return NextResponse.json({ ok: false, message: "Pick a file first." }, { status: 400 });

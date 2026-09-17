@@ -4,6 +4,7 @@ import { useRef, useState, useTransition } from "react";
 import { CheckCircle2, Clock, Loader2, Send, Trash2, Undo2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { portalAddComment, portalDeleteComment, portalRequestRevision } from "@/app/portal/actions";
+import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import type { PortalCut } from "@/lib/portal";
 
 // The client's video review — a timestamped review loop on their own portal page
@@ -13,7 +14,10 @@ import type { PortalCut } from "@/lib/portal";
 
 const fmtT = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
 
-export function PortalVideoReview({ token, cut, monthLabel }: { token: string; cut: PortalCut; monthLabel: string }) {
+// `readOnly` = a paused/ended program, or a viewer-only seat: the video plays,
+// the notes it already carries show, nothing new can be started. The server
+// refuses regardless; this just stops the page offering what it would refuse.
+export function PortalVideoReview({ cut, monthLabel, readOnly = false }: { cut: PortalCut; monthLabel: string; readOnly?: boolean }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [comments, setComments] = useState(cut.comments);
   const [note, setNote] = useState("");
@@ -33,7 +37,7 @@ export function PortalVideoReview({ token, cut, monthLabel }: { token: string; c
     const body = note.trim();
     if (!body) return;
     start(async () => {
-      const r = (await portalAddComment(token, cut.submissionId, t, body).catch(() => ({ ok: false, message: "That didn't save — try again." }))) as { ok: boolean; message: string; id?: string };
+      const r = (await portalAddComment(portalAuthFromLocation(), cut.submissionId, t, body).catch(() => ({ ok: false, message: "That didn't save — try again." }))) as { ok: boolean; message: string; id?: string };
       if (r.ok) {
         // The real id comes back from the server, so Remove works immediately.
         setComments((c) => [...c, { id: r.id ?? `tmp-${Date.now()}`, timeSec: t == null ? null : Math.round(t * 10) / 10, body, status: "OPEN", createdAtISO: new Date().toISOString() }]);
@@ -45,14 +49,14 @@ export function PortalVideoReview({ token, cut, monthLabel }: { token: string; c
 
   const remove = (id: string) => {
     start(async () => {
-      const r = await portalDeleteComment(token, id).catch(() => ({ ok: false, message: "" }));
+      const r = await portalDeleteComment(portalAuthFromLocation(), id).catch(() => ({ ok: false, message: "" }));
       if (r.ok) setComments((c) => c.filter((x) => x.id !== id));
     });
   };
 
   const send = () => {
     start(async () => {
-      const r = await portalRequestRevision(token, cut.submissionId, overall).catch(() => ({ ok: false, message: "That didn't send — text us and we'll get on it." }));
+      const r = await portalRequestRevision(portalAuthFromLocation(), cut.submissionId, overall).catch(() => ({ ok: false, message: "That didn't send — text us and we'll get on it." }));
       if (r.ok) {
         setSent(true);
         setAsking(false);
@@ -97,7 +101,7 @@ export function PortalVideoReview({ token, cut, monthLabel }: { token: string; c
               )}
               <span className={cn("min-w-0 flex-1 leading-snug", c.status === "SENT" ? "text-muted-2" : "text-foreground/90")}>{c.body}</span>
               {c.status === "OPEN" && !c.id.startsWith("tmp-") ? (
-                <button onClick={() => remove(c.id)} aria-label="Remove note" className="mt-0.5 shrink-0 text-muted-2 hover:text-danger">
+                <button onClick={() => remove(c.id)} aria-label="Remove note" disabled={readOnly} className="mt-0.5 shrink-0 text-muted-2 hover:text-danger disabled:hidden">
                   <Trash2 className="size-3.5" />
                 </button>
               ) : c.status === "SENT" ? (
@@ -109,7 +113,7 @@ export function PortalVideoReview({ token, cut, monthLabel }: { token: string; c
       )}
 
       {/* Note composer */}
-      <div className="mt-3 flex items-start gap-2">
+      {!readOnly && <div className="mt-3 flex items-start gap-2">
         <textarea
           value={note}
           onChange={(e) => setNote(e.target.value)}
@@ -124,14 +128,14 @@ export function PortalVideoReview({ token, cut, monthLabel }: { token: string; c
         >
           {busy ? <Loader2 className="size-4 animate-spin" /> : "Add"}
         </button>
-      </div>
-      <label className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-2">
+      </div>}
+      {!readOnly && <label className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-2">
         <input type="checkbox" checked={atTime} onChange={(e) => setAtTime(e.target.checked)} className="accent-[var(--brand)]" />
         pin this note to the paused moment
-      </label>
+      </label>}
 
       {/* Send it */}
-      {!sent && (
+      {!readOnly && !sent && (
         <div className="mt-3 border-t border-border pt-3">
           {!asking ? (
             <button

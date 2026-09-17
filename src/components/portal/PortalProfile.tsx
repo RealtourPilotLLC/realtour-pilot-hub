@@ -3,6 +3,7 @@
 import { useRef, useState, useTransition } from "react";
 import { CheckCircle2, FileImage, Loader2, Palette, Plus, Upload, UserRound, X } from "lucide-react";
 import { portalSaveProfile } from "@/app/portal/actions";
+import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 
 const HEX_RE = /#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b/g;
 const parseColors = (s: string): string[] => [...new Set((s.match(HEX_RE) ?? []).map((c) => c.toLowerCase()))];
@@ -11,11 +12,13 @@ const parseColors = (s: string): string[] => [...new Set((s.match(HEX_RE) ?? [])
 // style, working preferences, and uploads (logo, headshots, fonts) that land
 // straight in their Dropbox asset folder, where the editors already look.
 export function PortalProfile({
-  token, initial, assets,
+  initial, assets, readOnly = false,
 }: {
-  token: string;
   initial: { brandColors: string; videoStyle: string; preferences: string };
   assets: { name: string; url: string | null }[];
+  /** Not the program owner (or the program is paused/ended): read what is on
+   *  file, change nothing. The server refuses regardless. */
+  readOnly?: boolean;
 }) {
   // Brand colors are SWATCHES (Jordan: a color picker, saved codes shown as
   // little circles) — non-hex words from older data survive untouched in the
@@ -44,7 +47,7 @@ export function PortalProfile({
       if (videoStyle !== initial.videoStyle) patch.videoStyle = videoStyle;
       if (preferences !== initial.preferences) patch.preferences = preferences;
       if (Object.keys(patch).length === 0) { setSaved("Nothing changed."); return; }
-      const r = await portalSaveProfile(token, patch).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+      const r = await portalSaveProfile(portalAuthFromLocation(), patch).catch(() => ({ ok: false, message: "That didn't save — try again." }));
       if (r.ok) { setSaved(r.message); setErr(null); } else { setErr(r.message); setSaved(null); }
     });
 
@@ -54,7 +57,9 @@ export function PortalProfile({
     setUpMsg(null);
     for (const f of Array.from(list).slice(0, 5)) {
       const form = new FormData();
-      form.set("token", token);
+      const auth = portalAuthFromLocation();
+      if (auth.token) form.set("token", auth.token);
+      if (auth.enrollmentId) form.set("enrollmentId", auth.enrollmentId);
       form.set("file", f);
       try {
         const res = await fetch("/api/portal/upload", { method: "POST", body: form });
@@ -83,15 +88,15 @@ export function PortalProfile({
                 <span key={c} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface-2/60 py-1 pl-1.5 pr-2 text-xs font-medium">
                   <span className="size-4 rounded-full border border-border-strong" style={{ backgroundColor: c }} />
                   {c.toUpperCase()}
-                  <button onClick={() => setColors((cur) => cur.filter((x) => x !== c))} aria-label={`Remove ${c}`} className="text-muted-2 hover:text-danger">
+                  <button disabled={readOnly} onClick={() => setColors((cur) => cur.filter((x) => x !== c))} aria-label={`Remove ${c}`} className="text-muted-2 hover:text-danger disabled:hidden">
                     <X className="size-3" />
                   </button>
                 </span>
               ))}
               <span className="inline-flex items-center gap-1.5">
-                <input type="color" value={pick} onChange={(e) => setPick(e.target.value)} aria-label="Pick a brand color"
+                <input type="color" value={pick} disabled={readOnly} onChange={(e) => setPick(e.target.value)} aria-label="Pick a brand color"
                   className="size-8 cursor-pointer rounded-lg border border-border bg-surface-2/60 p-0.5" />
-                <button onClick={() => setColors((cur) => (cur.includes(pick.toLowerCase()) ? cur : [...cur, pick.toLowerCase()]))}
+                <button disabled={readOnly} onClick={() => setColors((cur) => (cur.includes(pick.toLowerCase()) ? cur : [...cur, pick.toLowerCase()]))}
                   className="inline-flex items-center gap-1 rounded-lg border border-border px-2 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
                   <Plus className="size-3" /> Add
                 </button>
@@ -101,21 +106,22 @@ export function PortalProfile({
           </div>
           <label className="block">
             <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Video style</span>
-            <textarea value={videoStyle} onChange={(e) => setVideoStyle(e.target.value)} rows={3}
+            <textarea value={videoStyle} readOnly={readOnly} onChange={(e) => setVideoStyle(e.target.value)} rows={3}
               placeholder="How you like your videos to feel — pacing, text style, music vibe…"
               className="mt-1 w-full rounded-lg border border-border bg-surface-2/60 px-3 py-2 text-sm outline-none focus:border-brand" />
           </label>
           <label className="block">
             <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Working preferences</span>
-            <textarea value={preferences} onChange={(e) => setPreferences(e.target.value)} rows={3}
+            <textarea value={preferences} readOnly={readOnly} onChange={(e) => setPreferences(e.target.value)} rows={3}
               placeholder="Scheduling, communication, anything we should always know…"
               className="mt-1 w-full rounded-lg border border-border bg-surface-2/60 px-3 py-2 text-sm outline-none focus:border-brand" />
           </label>
           <div className="flex items-center gap-2">
-            <button onClick={save} disabled={busy}
+            {!readOnly && <button onClick={save} disabled={busy}
               className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
               {busy && <Loader2 className="size-3.5 animate-spin" />} Save
-            </button>
+            </button>}
+            {readOnly && <span className="text-xs text-muted-2">View-only — the program owner can change these.</span>}
             {saved && <span className="flex items-center gap-1 text-xs font-medium text-success"><CheckCircle2 className="size-3.5" /> {saved}</span>}
             {err && <span className="text-xs text-danger">{err}</span>}
           </div>
@@ -126,10 +132,10 @@ export function PortalProfile({
       <div className="rounded-2xl border border-border bg-surface/70 p-4 backdrop-blur">
         <div className="flex items-center gap-2 text-sm font-semibold"><FileImage className="size-4 text-brand" /> Your brand kit</div>
         <p className="mt-1 text-xs text-muted-2">Logos, headshots, fonts, brand guides — they go straight to your team&rsquo;s working folder.</p>
-        <button onClick={() => fileRef.current?.click()} disabled={uploading}
+        {!readOnly && <button onClick={() => fileRef.current?.click()} disabled={uploading}
           className="mt-3 inline-flex items-center gap-1.5 rounded-xl border border-dashed border-border px-4 py-2 text-sm font-medium text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-50">
           {uploading ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />} {uploading ? "Uploading…" : "Upload files"}
-        </button>
+        </button>}
         <input ref={fileRef} type="file" multiple hidden accept="image/*,.pdf,.zip,.otf,.ttf,.woff,.woff2,.mp4,.mov" onChange={(e) => upload(e.target.files)} />
         {upMsg && <p className="mt-2 text-xs text-muted">{upMsg}</p>}
         {files.length > 0 && (
