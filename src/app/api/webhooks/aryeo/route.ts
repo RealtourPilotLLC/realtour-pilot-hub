@@ -625,10 +625,23 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
     // stops at a 45-day created_at floor, so an event about an older order
     // (632 Greenridge: created Jun 30, items changed Aug 26) never reached the
     // update pass — its price, fulfilment and line items stayed frozen.
+    let syncedThisOrder = false;
     if (id) {
-      try { await syncAryeoOrders({ orderId: id }); } catch { /* fall through to the sweep */ }
+      try {
+        await syncAryeoOrders({ orderId: id });
+        syncedThisOrder = true;
+      } catch { /* fall through to the sweep */ }
     }
-    await syncAryeoOrders();
+    // THE SWEEP IS THE FALLBACK, NOT THE ROUTINE PATH. It ran on every order
+    // event, after the scoped read had already done the job, and it is what
+    // made a real ORDER_CHANGED take 23 seconds end to end — while Aryeo gives
+    // up on a post after 10 seconds and retries, and a flat ORDER payload
+    // carries no activity id to dedupe the retry against. Turned back on in
+    // that state, one order change would have been processed two or three
+    // times at once. The scoped read covers the order the event names; the
+    // sweep is for when we could not do that, and the hourly reconcile still
+    // catches anything either of them missed.
+    if (!syncedThisOrder) await syncAryeoOrders();
     if (id) {
       const project = await prisma.project.findUnique({ where: { aryeoOrderId: id }, select: { id: true } });
       if (project) {

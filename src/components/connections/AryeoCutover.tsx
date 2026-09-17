@@ -189,10 +189,11 @@ export function AryeoCutover({ state }: { state: CutoverState }) {
             so instead of guessing. */}
         <Step n={2} title="Put it into Aryeo" done={null}>
           <p className="text-[11px] text-muted">
-            In Aryeo: <strong>Group Settings → Developers → Webhooks</strong>. Add (or edit) the endpoint below, paste the secret into
-            its signing-secret box, and tick the events listed. If you can&apos;t find those settings, Aryeo turns them on per account —
-            use the message below. The hub can&apos;t see inside Aryeo, so it can&apos;t tick this step off for you; you&apos;ll know
-            it worked when step 3 turns green by itself.
+            <strong>Aryeo has to do this one for you.</strong> Their own documentation says managing webhooks in the Aryeo web
+            interface is still feature-flagged, and this account has no webhooks screen — only API keys. Send them the message below
+            with the address and events, and say whether you want it signed. If a <strong>Group Settings → Developers → Webhooks</strong>
+            section ever appears for you, the same details go in there. The hub can&apos;t see inside Aryeo, so it can&apos;t tick this
+            step off for you; you&apos;ll know it worked when step 3 turns green by itself.
           </p>
           <Field label="The address Aryeo should post to" value={state.endpointUrl} mono />
           {/* A URL that isn't https is a localhost or preview address, and
