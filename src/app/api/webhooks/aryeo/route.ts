@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
+import { getSetting, putSetting } from "@/lib/settings";
 import { getConnection, getSecret } from "@/lib/integrations/connections";
 // Static, not a dynamic import like the heavier helpers below: this module is
 // already in this route's startup graph for constantTimeEqual, so deferring the
@@ -571,6 +572,80 @@ async function handleAryeoCustomer(payload: Record<string, unknown>) {
   } catch { /* the create stands on its own */ }
 }
 
+/**
+ * WHAT A NAME ASKS THE HUB TO DO.
+ *
+ * Sep 17 2026: Aryeo enabled webhook management on the account and Jordan
+ * subscribed to all 54 activities. Until then the receiver routed on the
+ * resource PREFIX — anything starting ORDER/LISTING/APPOINTMENT/CUSTOMER got
+ * the full treatment for that resource — which was right for ten subscriptions
+ * and wrong for fifty-four. One order being placed now fires ORDER_CREATED,
+ * ORDER_PLACED, ORDER_RECEIVED, ORDER_PAYMENT_ENTERED, ORDER_PAYMENT_COMPLETED
+ * and ORDER_SYNCED_TO_QUICKBOOKS within seconds of each other, and the prefix
+ * rule would have run the same three-second resync six times — while Aryeo
+ * gives up on a post after 10 seconds and retries it.
+ *
+ * So each name says what it actually needs:
+ *   "money"    the order's money changed (paid, refunded, disputed, fee, a
+ *              QuickBooks sync) — re-read the order, nothing else. This is what
+ *              finally kills the paid-status lag.
+ *   "order"    the order itself changed — the full pass (re-read, re-status,
+ *              re-task), as before.
+ *   "listing" / "appointment" / "customer" — that resource's own pass.
+ *   "delivery" the named delivery activities, handled above by aryeoDelivery.
+ *   null       recorded and nothing else. Every event is stored either way, so
+ *              a name we do not act on is still there to look back at.
+ */
+const ARYEO_ACTION: Record<string, "money" | "order" | "listing" | "appointment" | "customer" | null> = {
+  // — the money, which is why the hub's paid status has always lagged —
+  ORDER_PAYMENT_COMPLETED: "money", ORDER_PAYMENT_ENTERED: "money", ORDER_PAYMENT_DELETED: "money",
+  ORDER_PAYMENT_DISPUTED: "money", ORDER_REFUNDED: "money", ORDER_FEE_CREATED: "money", ORDER_FEE_DELETED: "money",
+  ORDER_PAYMENT_SYNCED_TO_QUICKBOOKS: "money", ORDER_SYNCED_TO_QUICKBOOKS: "money",
+  // A failed QuickBooks sync is the silent kind of failure this hub exists to
+  // catch: the money moved in Aryeo and the books never heard. Re-read the
+  // order so what we show is at least true, and the event is on the record.
+  ORDER_SYNC_TO_QUICKBOOKS_FAILED: "money",
+  // — the order as a piece of work —
+  ORDER_CREATED: "order", ORDER_PLACED: "order", ORDER_RECEIVED: "order", ORDER_ATTACHED_TO_LISTING: "order",
+  // — appointments: the whole life of one —
+  APPOINTMENT_SCHEDULED: "appointment", APPOINTMENT_REQUESTED: "appointment", APPOINTMENT_ACCEPTED: "appointment",
+  APPOINTMENT_ASSIGNED: "appointment", APPOINTMENT_UNASSIGNED: "appointment", APPOINTMENT_DECLINED: "appointment",
+  APPOINTMENT_CANCELED: "appointment", APPOINTMENT_POSTPONED: "appointment", APPOINTMENT_RESCHEDULED: "appointment",
+  APPOINTMENT_CUSTOMER_COMPANY_TEAM_MEMBER_PREFERRED: "appointment",
+  // — listings —
+  LISTING_CREATED: "listing", LISTING_UPDATED: "listing", LISTING_MERGED: "listing",
+  MARKETING_MATERIAL_CREATED: "listing",
+  // — the client's own record: who is on the team, what they are charged —
+  CUSTOMER_TEAM_CREATED: "customer", CUSTOMER_TEAM_ARCHIVED: "customer",
+  CUSTOMER_TEAM_MEMBERSHIP_CREATED: "customer", CUSTOMER_TEAM_MEMBERSHIP_ARCHIVED: "customer",
+  CUSTOMER_TEAM_MEMBERSHIP_DELETED: "customer", CUSTOMER_TEAM_MEMBERSHIP_REACTIVATED: "customer",
+  CUSTOMER_TEAM_MEMBERSHIP_REVOKED: "customer", CUSTOMER_TEAM_MEMBERSHIP_INVITATION_ACCEPTED: "customer",
+  DEFAULT_CUSTOMER_TEAM_MEMBERSHIP_ADDED: "customer", DEFAULT_CUSTOMER_TEAM_MEMBERSHIP_REMOVED: "customer",
+  CUSTOMER_TEAM_PRICE_OVERRIDES_UPDATED: "customer", CUSTOMER_TEAM_PRICING_PLAN_APPLIED: "customer",
+  CUSTOMER_TEAM_PRICING_PLAN_REMOVED: "customer", CUSTOMER_TEAM_PRESELECTED_PRODUCTS_UPDATED: "customer",
+  CUSTOMER_TEAM_BILLING_TEAM_MEMBERSHIP_UPDATED: "customer", CUSTOMER_TEAM_BILLING_TEAM_MEMBERSHIP_REMOVED: "customer",
+  // — recorded, acted on by nobody: an internal note or a download setting is
+  //   history worth keeping and not a reason to re-read anything —
+  CUSTOMER_TEAM_INTERNAL_NOTE_UPDATED: null, CUSTOMER_TEAM_DOWNLOAD_SETTINGS_UPDATED: null,
+  MEDIA_REQUEST_CREATED: null, MEDIA_REQUEST_ACCEPTED: null, MEDIA_REQUEST_ASSIGNED: null,
+  MEDIA_REQUEST_DECLINED: null, MEDIA_REQUEST_CANCELED: null, MEDIA_REQUEST_TRANSFERRED: null,
+};
+
+/**
+ * Did we just do this exact work? A burst about one resource is the normal
+ * shape of an Aryeo event now, and the work each branch does is a reconcile
+ * against Aryeo's own state — so doing it once for the burst is not a
+ * shortcut, it is the same answer for less. 90 seconds, keyed by what we would
+ * do and to what; a marker write is far cheaper than the pass it prevents.
+ */
+async function recentlyReconciled(action: string, key: string): Promise<boolean> {
+  const settingKey = `aryeo-reconciled:${action}:${key}`;
+  const seen = await getSetting<{ at: number }>(settingKey, { at: 0 });
+  if (Date.now() - (seen.at ?? 0) < 90_000) return true;
+  await putSetting(settingKey, { at: Date.now() }, "webhook:aryeo").catch(() => {});
+  return false;
+}
+
 // Routes a real Aryeo event. The 10 registered subscriptions are:
 // ORDER_CREATED/FULFILLED/PAID, LISTING_UPDATED, APPOINTMENT_SCHEDULED/
 // ASSIGNED/RESCHEDULED/CANCELED, CUSTOMER_CREATED/UPDATED — but flat payloads
@@ -616,11 +691,43 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
     }
   }
 
+  // What does this NAME ask for? An unknown name keeps the old prefix
+  // behaviour, so an activity Aryeo adds next year still reconciles instead of
+  // being silently ignored — the map narrows what we know, it does not become
+  // the only thing we answer to.
+  const known = name in ARYEO_ACTION;
+  const action = known ? ARYEO_ACTION[name] : undefined;
+
+  // Known, and deliberately nothing to do. It is already recorded, which is the
+  // whole point of subscribing to it.
+  if (known && action === null) {
+    console.info(`[webhook] aryeo ${name}: recorded, nothing to reconcile`);
+    return;
+  }
+
+  // MONEY ONLY. A payment landing, a refund, a fee, a QuickBooks sync — re-read
+  // the order and stop. Re-statusing and re-tasking a job because its invoice
+  // was paid is work that changes nothing, and these are the events that arrive
+  // in bursts. This is also what finally kills the paid-status lag: until now a
+  // payment only reached the hub when the hourly reconcile next looked.
+  if (action === "money") {
+    if (id && !(await recentlyReconciled("money", id))) {
+      try { await syncAryeoOrders({ orderId: id }); } catch { /* the hourly reconcile still covers it */ }
+      console.info(`[webhook] aryeo ${name}: re-read order ${id}`);
+    }
+    return;
+  }
+
   // ORDER — created, fulfilled (delivery), paid, or unknown-verb flat change.
   // Refresh the order table, then re-run the smart status engine + task
   // reconciler for that project (cheap, idempotent — and since flat payloads
   // hide the verb, a fulfil/paid must not wait for the cron to be noticed).
-  if (object === "ORDER" || name.startsWith("ORDER")) {
+  if (action === "order" || (!known && (object === "ORDER" || name.startsWith("ORDER")))) {
+    // One burst, one pass. Six names arrive for a single order placement.
+    if (id && (await recentlyReconciled("order", id))) {
+      console.info(`[webhook] aryeo ${name}: order ${id} was just reconciled`);
+      return;
+    }
     // Scoped to THIS order when the id is known. The bare incremental sweep
     // stops at a 45-day created_at floor, so an event about an older order
     // (632 Greenridge: created Jun 30, items changed Aug 26) never reached the
@@ -662,7 +769,7 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
   // LISTING_* — media/listing changed. Re-check that project's status live so a
   // delivered gallery or added media flows through immediately, then reconcile
   // its tasks (QC closes as each category goes live).
-  if (object === "LISTING" || name.startsWith("LISTING")) {
+  if (action === "listing" || (!known && (object === "LISTING" || name.startsWith("LISTING")))) {
     if (id) {
       const project = await prisma.project.findFirst({ where: { aryeoListingId: id }, select: { id: true } });
       if (project) {
@@ -703,7 +810,7 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
   // appointment_change notifications on real diffs), then orders so the shoot
   // date follows — and reconcile the affected project's status + task due
   // dates right now instead of on the next cron.
-  if (object === "APPOINTMENT" || name.startsWith("APPOINTMENT")) {
+  if (action === "appointment" || (!known && (object === "APPOINTMENT" || name.startsWith("APPOINTMENT")))) {
     // Bounded window: a webhook is about a change happening NOW — no need to
     // re-walk appointment history (the sort=-start_at early-break makes this
     // ~1 page instead of ~15). The nightly full sync remains the backstop.
@@ -744,7 +851,7 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
   // into CUSTOMER). CREATE first, then re-enrich, re-score segments, and
   // refresh social-content plans. Each only writes the rows that actually
   // changed.
-  if (object === "CUSTOMER" || name.startsWith("CUSTOMER")) {
+  if (action === "customer" || (!known && (object === "CUSTOMER" || name.startsWith("CUSTOMER")))) {
     // A GENUINELY NEW CONTACT BECOMES A CLIENT NOW, NOT TOMORROW (Jordan,
     // Sep 7). syncAryeoCustomers() below only ENRICHES rows it can match by
     // email — the only door that created was syncAllAryeoClients on the daily
