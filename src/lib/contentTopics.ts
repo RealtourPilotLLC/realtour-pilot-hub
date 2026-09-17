@@ -91,10 +91,23 @@ export async function updateTopicFields(topicId: string, patch: { title?: string
 
 // ---- selection ---------------------------------------------------------------
 
+/**
+ * How full a month's plan is. `overflow` is DERIVED from the two numbers, not
+ * read off the rows: ContentTopicSelection.overflow is a flag frozen when the
+ * row was inserted, and enrollmentChanges rewrites ContentMonth.videosOwed
+ * when a package changes — so a Pro→Starter downgrade left eight rows flagged
+ * "not overflow" against a two-video month and the panel printed a green
+ * "4/2 at capacity" (review, Sep 17). The stored flag is still what the
+ * per-row "beyond capacity" marker reads, because that one is about the row's
+ * own history; the MONTH's arithmetic is arithmetic.
+ */
 export async function monthCapacity(monthId: string): Promise<{ owed: number; selected: number; overflow: number }> {
   const m = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { videosOwed: true } });
   const sel = await prisma.contentTopicSelection.findMany({ where: { monthId, status: { in: ["SELECTED", "RECONCILED", "PROPOSED"] } }, select: { overflow: true } });
-  return { owed: m?.videosOwed ?? 0, selected: sel.filter((s) => !s.overflow).length, overflow: sel.filter((s) => s.overflow).length };
+  const owed = m?.videosOwed ?? 0;
+  const total = sel.length;
+  const overflow = Math.max(0, total - owed);
+  return { owed, selected: total - overflow, overflow };
 }
 
 export type SelectOutcome = "SELECTED" | "PROPOSED" | "KEPT" | "WITHHELD";

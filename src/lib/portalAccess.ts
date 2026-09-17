@@ -297,6 +297,13 @@ export async function mintLoginLink(membershipId: string, byAppUserId: string | 
  * the switch turns on (review, Sep 17). The page says the same sentence
  * either way; the first link still works.
  */
+/** Is the magic-link email actually able to go out? The sign-in screen asks so
+ *  it can say "not switched on yet" instead of promising an email that
+ *  `requestLoginLink` will not send (review blocker, Sep 17). */
+export async function portalLoginEmailEnabled(): Promise<boolean> {
+  return isAutomationEnabled("portal_login_email");
+}
+
 export async function requestLoginLink(emailRaw: string): Promise<void> {
   const email = emailRaw.trim().toLowerCase();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return;

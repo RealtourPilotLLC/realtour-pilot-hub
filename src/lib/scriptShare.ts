@@ -58,7 +58,9 @@ export type ShareResult = {
   approved: "already" | "now";
   released: "already" | "now";
   update: boolean;
-  email: "queued" | "suppressed";
+  /** What this CALL did about the email. "already-sent" queues nothing — a
+   *  caller reading only this field concluded a second message was pending. */
+  email: "queued" | "suppressed" | "already-sent";
   noticeId: string | null;
   emailNote: string;
   message: string;
@@ -98,7 +100,7 @@ export async function shareApprovedScript(scriptVersionId: string, by: ShareActo
     const existing = await latestShareRelease(scriptVersionId);
     notificationState = existing?.notificationState ?? "NONE";
     if (existing && (existing.notificationState === "SENT" || existing.notificationState === "QUEUED")) {
-      return { scriptId: v.scriptId, versionId: scriptVersionId, approved, released, update: false, email: "queued", noticeId: existing.reminderId, emailNote: `already ${existing.notificationState.toLowerCase()}`, message: `"${v.title}" was already shared — nothing changed.` };
+      return { scriptId: v.scriptId, versionId: scriptVersionId, approved, released, update: false, email: "already-sent", noticeId: existing.reminderId, emailNote: `already ${existing.notificationState.toLowerCase()} — nothing new was queued`, message: `"${v.title}" was already shared — nothing changed.` };
     }
   }
   const release = await latestShareRelease(scriptVersionId);

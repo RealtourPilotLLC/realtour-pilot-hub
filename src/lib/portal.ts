@@ -642,7 +642,12 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
   const open = monthsRaw.filter((m) => !m.historical && m.monthKey >= currentKey).slice(0, 3);
   const months: PortalTopicMonth[] = open.map((m) => {
     const sels = selections.filter((s) => s.monthId === m.id);
-    return { id: m.id, monthKey: m.monthKey, owed: m.videosOwed, selected: sels.filter((s) => !s.overflow).length, overflow: sels.filter((s) => s.overflow).length, historical: m.historical };
+    // Derived from the two numbers, not from the row flag — the flag is frozen
+    // at insert and a package change rewrites videosOwed underneath it, which
+    // is how "4 of 2 videos chosen" reached a client's own page (review,
+    // Sep 17). Same arithmetic as contentTopics.monthCapacity.
+    const over = Math.max(0, sels.length - m.videosOwed);
+    return { id: m.id, monthKey: m.monthKey, owed: m.videosOwed, selected: sels.length - over, overflow: over, historical: m.historical };
   });
   const approvedStrategy = versionsOfStrategies.length ? await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: enrollment.id, status: "APPROVED" }, orderBy: { versionNo: "desc" }, select: { versionNo: true } }) : null;
   return { groups, months, archivedCount: bank.archived, total: bank.total, strategyLabel: approvedStrategy ? `v${approvedStrategy.versionNo}` : null };

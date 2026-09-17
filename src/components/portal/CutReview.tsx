@@ -23,26 +23,35 @@ import type { CutVersion, CommentView } from "@/lib/clientDecisions";
 const fmtT = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
 const fmtWhen = (iso: string) => new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
 
-const STATE_LABEL: Record<CutVersion["clientState"], string> = {
-  AWAITING_YOUR_DECISION: "Awaiting your review",
-  YOU_REQUESTED_CHANGES: "You requested changes",
-  YOU_APPROVED: "Approved by you",
-  SUPERSEDED: "Replaced by a newer version",
-  NOT_RELEASED: "Not shared with you",
+// "you" only when it WAS you. A collaborator or a viewer seat reading
+// "Approved by you" about the owner's approval is told they did something they
+// did not do (review, Sep 17) — the receipt underneath always names the person.
+const STATE_LABEL: Record<CutVersion["clientState"], [mine: string, theirs: string]> = {
+  AWAITING_YOUR_DECISION: ["Awaiting your review", "Awaiting review"],
+  YOU_REQUESTED_CHANGES: ["You requested changes", "Changes requested"],
+  YOU_APPROVED: ["Approved by you", "Approved"],
+  SUPERSEDED: ["Replaced by a newer version", "Replaced by a newer version"],
+  NOT_RELEASED: ["Not shared with you", "Not shared with you"],
 };
 
-export function CutReview({ versions, perms, readOnly = false, poster = null }: {
+export function CutReview({ versions, perms, readOnly = false, poster = null, signInHref = null }: {
   /** Oldest → newest; assetUrl already carries the media token. */
   versions: CutVersion[];
   perms: { comment: boolean; request: boolean; approve: boolean };
   readOnly?: boolean;
   poster?: string | null;
+  /** On the emailed link seat nobody may approve. Where the client goes to get
+   *  a seat that can — the only route out of "waiting for approval". */
+  signInHref?: string | null;
 }) {
   const router = useRouter();
   const current = versions.find((v) => v.isCurrent) ?? null;
   const player = useRef<PortalPlayerHandle>(null);
   const [note, setNote] = useState("");
   const [atTime, setAtTime] = useState(true);
+  // The player told us it could not play this file: there is no moment to pin
+  // a note to, and the checkbox must not pretend otherwise.
+  const [playerFailed, setPlayerFailed] = useState(false);
   const [overall, setOverall] = useState("");
   const [asking, setAsking] = useState(false);
   const [approving, setApproving] = useState(false);
@@ -63,8 +72,16 @@ export function CutReview({ versions, perms, readOnly = false, poster = null }: 
   const requested = current.clientState === "YOU_REQUESTED_CHANGES";
   const canWrite = !readOnly && perms.comment && !approved;
   const done = (r: { ok: boolean; message: string }) => { setMsg({ ok: r.ok, text: r.message }); if (r.ok) router.refresh(); };
+  // "your" is right when the reader is the one it is waiting ON, or the one who
+  // acted. Nobody has decided an AWAITING version, so there is no actor to
+  // compare — the reader's own seat decides the wording there.
+  const yours = (v: CutVersion) => (v.clientState === "AWAITING_YOUR_DECISION" ? perms.request || perms.approve || perms.comment : v.decidedByMe);
 
   const add = () => {
+    // currentTime() is null until the playhead has really moved. A note typed
+    // against a video that never played (or failed to load) is a GENERAL note,
+    // not a note pinned to 0:00 — that pin travelled into the editor's work
+    // order as "fix the first frame" (review blocker, Sep 17).
     const t = atTime ? player.current?.currentTime() ?? null : null;
     player.current?.pause();
     const body = note.trim();
@@ -101,12 +118,12 @@ export function CutReview({ versions, perms, readOnly = false, poster = null }: 
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <span className="rounded-md bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-muted">Version {current.round}</span>
-        <StateChip state={current.clientState} />
+        <StateChip state={current.clientState} mine={yours(current)} />
         {current.revisionOpen && !approved && <span className="inline-flex items-center gap-1 rounded-md bg-brand-soft px-1.5 py-0.5 text-[10px] font-semibold text-brand"><Undo2 className="size-3" /> Editor working on changes</span>}
         {current.releasedAtISO && <span className="text-[11px] text-muted-2">shared {fmtWhen(current.releasedAtISO)}</span>}
       </div>
 
-      {current.assetUrl ? <PortalPlayer ref={player} src={current.assetUrl} poster={poster} /> : <p className="text-sm text-muted">This version has no playable file — text us and we&rsquo;ll sort it.</p>}
+      {current.assetUrl ? <PortalPlayer ref={player} src={current.assetUrl} poster={poster} onError={() => setPlayerFailed(true)} /> : <p className="text-sm text-muted">This version has no playable file — text us and we&rsquo;ll sort it.</p>}
 
       {/* Receipt — persisted decisions on THIS version. */}
       {current.decisions.length > 0 && (
@@ -162,14 +179,15 @@ export function CutReview({ versions, perms, readOnly = false, poster = null }: 
       {canWrite && (
         <div>
           <div className="flex items-start gap-2">
-            <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Pause the video and write what you'd change — or a general note" rows={2} aria-label="New note" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand" />
+            <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Pause the video and write what you'd change — or a general note" rows={3} aria-label="New note" className="min-w-0 flex-1 rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand" />
             <button type="button" onClick={add} disabled={busy || !note.trim()} className="shrink-0 rounded-lg border border-border bg-surface px-3 py-2 text-sm font-semibold text-foreground hover:bg-surface-2 disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
               {busy ? <Loader2 className="size-4 animate-spin" /> : "Save note"}
             </button>
           </div>
           <label className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-2">
-            <input type="checkbox" checked={atTime} onChange={(e) => setAtTime(e.target.checked)} className="accent-[var(--brand)]" /> pin this note to the paused moment
+            <input type="checkbox" checked={atTime && !playerFailed} disabled={playerFailed} onChange={(e) => setAtTime(e.target.checked)} className="accent-[var(--brand)] disabled:opacity-40" /> pin this note to the paused moment
           </label>
+          <p className="mt-0.5 text-[11px] text-muted-2">{playerFailed ? "This version isn't playing, so notes are saved as general notes." : "Play the video first — until you do, a note is saved as a general note."}</p>
         </div>
       )}
 
@@ -190,10 +208,15 @@ export function CutReview({ versions, perms, readOnly = false, poster = null }: 
               )}
             </div>
           )}
-          {!perms.approve && perms.request && !asking && <p className="mt-1.5 text-[11px] text-muted-2">Only the program owner can approve a version.</p>}
+          {!perms.approve && perms.request && !asking && (
+            <p className="mt-1.5 text-[11px] text-muted-2">
+              Only the program owner can approve a version.
+              {signInHref && <> <a href={signInHref} className="font-semibold text-brand hover:underline">Sign in with your email</a> to approve it yourself.</>}
+            </p>
+          )}
           {asking && (
             <div className="space-y-2">
-              <p className="text-xs text-muted">Your {open.length} open note{open.length === 1 ? "" : "s"} go with this request as one change list for your editor.{requested ? " A request is already open on this version — new notes join it." : ""}</p>
+              <p className="text-xs text-muted">Your {open.length} open note{open.length === 1 ? " goes" : "s go"} with this request as one change list for your editor.{requested ? " A request is already open on this version — new notes join it." : ""}</p>
               <textarea value={overall} onChange={(e) => setOverall(e.target.value)} placeholder="Anything overall? (optional)" rows={2} aria-label="Overall note" className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-brand" />
               <div className="flex items-center gap-2">
                 <button type="button" onClick={submitChanges} disabled={busy} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy && <Loader2 className="size-3.5 animate-spin" />} Send to the editor</button>
@@ -235,7 +258,7 @@ export function CutReview({ versions, perms, readOnly = false, poster = null }: 
                 <li key={v.submissionId} className="rounded-lg border border-border bg-surface px-2.5 py-2 text-xs">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-semibold">Version {v.round}</span>
-                    <StateChip state={v.clientState} />
+                    <StateChip state={v.clientState} mine={yours(v)} />
                     {v.releasedAtISO && <span className="text-muted-2">shared {fmtWhen(v.releasedAtISO)}</span>}
                     <span className="text-muted-2">{v.comments.length} note{v.comments.length === 1 ? "" : "s"}</span>
                   </div>
@@ -268,7 +291,7 @@ function Note({ c, onSeek }: { c: CommentView; onSeek: (t: number) => void }) {
   );
 }
 
-function StateChip({ state }: { state: CutVersion["clientState"] }) {
+function StateChip({ state, mine }: { state: CutVersion["clientState"]; mine: boolean }) {
   const tone = state === "YOU_APPROVED" ? "bg-success-soft text-success" : state === "AWAITING_YOUR_DECISION" ? "bg-brand-soft text-brand" : state === "YOU_REQUESTED_CHANGES" ? "bg-warning-soft text-warning" : "bg-surface-2 text-muted";
-  return <span className={cn("rounded-md px-1.5 py-0.5 text-[10px] font-semibold", tone)}>{STATE_LABEL[state]}</span>;
+  return <span className={cn("rounded-md px-1.5 py-0.5 text-[10px] font-semibold", tone)}>{STATE_LABEL[state][mine ? 0 : 1]}</span>;
 }

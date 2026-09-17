@@ -13,6 +13,9 @@ import { requestPortalLoginLink, signOutPortal } from "@/app/portal/login/action
 const REASONS: Record<string, string> = {
   expired: "That link has expired. Sign in with your email to continue.",
   rotated: "That link has been replaced with a newer one. Sign in with your email to continue.",
+  // A token no enrollment carries: it may have been replaced, or it may never
+  // have existed. We cannot tell, so we claim neither.
+  unknown: "That link isn't working any more. Sign in with your email to continue.",
   invalid: "That sign-in link is no longer valid — they work once and expire after 15 minutes. Request a fresh one below.",
   signedout: "You're signed out.",
   noaccess: "This email doesn't have access to a program right now. Reply to any text or email from us and we'll sort it.",
@@ -23,11 +26,16 @@ const REASONS: Record<string, string> = {
  *  they hold a live seat (offer the door); otherwise only Sign out — a
  *  revoked person must be able to clear the cookie from THIS page, because
  *  no other page will render for them. */
-export function PortalSignIn({ reason, signedIn }: { reason?: string; signedIn?: { who: string; canEnter: boolean } | null }) {
+export function PortalSignIn({ reason, signedIn, emailSignIn = true }: { reason?: string; signedIn?: { who: string; canEnter: boolean } | null;
+  /** False while `portal_login_email` is off: the form would take an address and send nothing. */
+  emailSignIn?: boolean }) {
   const [email, setEmail] = useState("");
   const [done, setDone] = useState<string | null>(null);
   const [busy, start] = useTransition();
-  const note = reason ? REASONS[reason] : null;
+  // With the email form off, every "Sign in with your email to continue" is an
+  // instruction the page cannot honour — drop the clause, keep the news.
+  const raw = reason ? REASONS[reason] : null;
+  const note = raw && !emailSignIn ? raw.replace(" Sign in with your email to continue.", "").replace(" Request a fresh one below.", "") : raw;
 
   return (
     <div className="portal-light fixed inset-0 flex items-center justify-center overflow-y-auto bg-background p-6 text-foreground">
@@ -56,9 +64,14 @@ export function PortalSignIn({ reason, signedIn }: { reason?: string; signedIn?:
               </form>
             </div>
           )}
+          {!emailSignIn && !done && (
+            <p className="mt-4 rounded-xl border border-border bg-surface px-3 py-2.5 text-center text-xs text-muted">
+              Email sign-in isn&rsquo;t switched on yet. Reply to any text or email from us and we&rsquo;ll get you in.
+            </p>
+          )}
           {done ? (
             <p className="mt-3 text-center text-sm text-muted">{done}</p>
-          ) : (
+          ) : !emailSignIn ? null : (
             <form
               className="mt-4 space-y-3"
               onSubmit={(e) => {

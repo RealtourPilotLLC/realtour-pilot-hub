@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { resolvePortalViewer } from "@/lib/portal";
+import { portalLoginEmailEnabled } from "@/lib/portalAccess";
 import { PortalPage, portalTabOf, type PortalQuery } from "@/components/portal/PortalPage";
 import { PortalSignIn } from "@/components/portal/PortalSignIn";
 
@@ -18,11 +19,11 @@ export const metadata = {
 // /portal/<token> — the link. The resolver decides who is looking (the link
 // itself, or staff through the owner iframe) and what they may see; the page
 // component does the rest. Every refusal that a REAL client could hit —
-// expired, rotated, revoked — renders the sign-in screen with HTTP 200 and no
-// data: never a 404 (a dead link is not "no such page"), and never the wrong
-// client. Only a malformed token is a 404. A paused or ended program is not a
-// refusal: the resolver hands back a READ_ONLY viewer and the page renders
-// the released library.
+// expired, replaced, revoked, never-existed — renders the sign-in screen with
+// HTTP 200 and no data: never a 404 (a dead link is not "no such page"), and
+// never the wrong client. Only a malformed token is a 404. A paused or ended
+// program is not a refusal: the resolver hands back a READ_ONLY viewer and the
+// page renders the released library.
 export default async function ClientPortalPage({ params, searchParams }: {
   params: Promise<{ token: string }>;
   searchParams: Promise<PortalQuery>;
@@ -33,8 +34,14 @@ export default async function ClientPortalPage({ params, searchParams }: {
   if (!/^[a-zA-Z0-9_-]{20,}$/.test(token)) notFound();
   const r = await resolvePortalViewer({ token });
   if (!r.ok) {
-    const reason = r.reason === "expired_token" ? "expired" : r.reason === "revoked" ? "revoked" : "rotated";
-    return <PortalSignIn reason={reason} />;
+    // `invalid_token` is "no enrollment carries this token" — a link that was
+    // ROTATED away looks exactly like one that never existed, and we cannot
+    // tell them apart (nor should we say which, to a stranger holding a typo).
+    // So it gets its own neutral copy: claiming a stranger's link "has been
+    // replaced with a newer one" invents a history for an account that may not
+    // exist (review blocker, Sep 17).
+    const reason = r.reason === "expired_token" ? "expired" : r.reason === "revoked" ? "revoked" : "unknown";
+    return <PortalSignIn reason={reason} emailSignIn={await portalLoginEmailEnabled().catch(() => false)} />;
   }
   return <PortalPage viewer={r.viewer} tab={portalTabOf(tab)} path="/portal/[token]" query={query} />;
 }

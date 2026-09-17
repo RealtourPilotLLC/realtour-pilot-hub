@@ -456,7 +456,17 @@ async function evaluateMonth(e: EnrollmentRow, month: { id: string; monthKey: st
   if (month.remindersSnoozedUntil && month.remindersSnoozedUntil > now) return sup("snoozed", `snoozed until ${month.remindersSnoozedUntil.toISOString()}`);
   if (planningSuppression === "booked") return sup("booked", "a strategy call is booked — nothing to remind", null);
   if (sessionSuppression) return sup(sessionSuppression, "a session request is waiting on the office, not the client", null);
-  if (!action) return out({ action: null, decision: "none", reason: facts.sessionFilmed ? "this month's session has already been filmed — nothing left to plan or book" : prepComplete || callHeld ? (facts.sessionBooked ? "planned and booked — nothing needed" : "nothing needed") : "nothing needed", noCallEligible });
+  if (!action) {
+    // "already been filmed — nothing left to book" was read off sessionFilmed
+    // alone, which is only "a shoot on this month is in the past". A month can
+    // hold BOTH (Sarina Spinelli's 2026-09: filmed on the 11th, another booked
+    // for the 19th) and the sentence then said the opposite of the calendar
+    // (review, Sep 17). Say what is true of each.
+    const filmedReason = facts.sessionBooked
+      ? "a session has already been filmed this month, and another is on the calendar — nothing to remind"
+      : "a session has already been filmed this month — nothing left to plan or book";
+    return out({ action: null, decision: "none", reason: facts.sessionFilmed ? filmedReason : prepComplete || callHeld ? (facts.sessionBooked ? "planned and booked — nothing needed" : "nothing needed") : "nothing needed", noCallEligible });
+  }
   if ((action === "BOOK_CALL" || action === "CHOOSE_PATH") && !sync.fresh) return sup("stale_scheduler_sync", `booking state is not trustworthy: ${sync.detail}`);
   if (action === "REVIEW_WORK" && facts.oldestReleaseAt && businessDaysBetween(facts.oldestReleaseAt, now) < p.reviewWorkAfterBusinessDays) {
     return out({ action, decision: "wait", reason: `cuts shared ${businessDaysBetween(facts.oldestReleaseAt, now)} business day(s) ago — reminder after ${p.reviewWorkAfterBusinessDays}`, nextEligibleAt: addBusinessDaysET(facts.oldestReleaseAt, p.reviewWorkAfterBusinessDays), noCallEligible });

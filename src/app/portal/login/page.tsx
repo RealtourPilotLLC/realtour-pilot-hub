@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { PortalSignIn } from "@/components/portal/PortalSignIn";
 import { currentClientUser, liveMemberships } from "@/lib/portal";
+import { portalLoginEmailEnabled } from "@/lib/portalAccess";
 
 export const dynamic = "force-dynamic";
 export const metadata = {
@@ -22,5 +23,7 @@ export default async function PortalLoginPage({ searchParams }: { searchParams: 
   const person = await currentClientUser();
   const seats = person ? await liveMemberships(person.id) : [];
   if (!reason && seats.length > 0) redirect("/portal/me");
-  return <PortalSignIn reason={reason} signedIn={person ? { who: person.name || person.email, canEnter: seats.length > 0 } : null} />;
+  // The form only appears if it can actually send (see portalLoginEmailEnabled).
+  const emailSignIn = await portalLoginEmailEnabled().catch(() => false);
+  return <PortalSignIn reason={reason} emailSignIn={emailSignIn} signedIn={person ? { who: person.name || person.email, canEnter: seats.length > 0 } : null} />;
 }

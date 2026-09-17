@@ -246,8 +246,13 @@ export async function approveScriptVersion(versionId: string, actor: { email: st
   const s = await prisma.contentScript.findUnique({ where: { id: v.scriptId }, select: { historical: true, monthId: true, topicId: true, approvedVersionId: true, clientId: true } });
   if (!s) throw new Error("Script not found.");
   if (s.historical) throw new Error("Imported scripts are history — they are not approved, filmed or released by an import.");
-  // A repeated click is not a second approval — no second ledger row.
-  if (s.approvedVersionId === versionId && v.status === "APPROVED") return { alreadyApproved: true };
+  // A repeated click is not a second approval — no second ledger row. SHARED
+  // counts as approved here: after a release the version's status moves
+  // APPROVED → SHARED, so a guard that only looked for APPROVED missed it and
+  // ran the whole approval again — which rewrote releaseState to "withheld"
+  // and pulled a released script back off the client's portal with nothing
+  // said to anyone (review, Sep 17).
+  if (s.approvedVersionId === versionId && (v.status === "APPROVED" || v.status === "SHARED")) return { alreadyApproved: true };
   // The format check runs again at the gate: a hand-edited version stores its
   // findings, a lifted legacy one may have none — either way a "block" finding
   // (four points, no hook…) needs the approver's explicit note to pass.

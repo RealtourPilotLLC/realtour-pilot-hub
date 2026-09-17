@@ -102,7 +102,13 @@ async function main() {
     ev.push(`named gaps: ${missing.length ? missing.join(" · ") : "none recorded"}`);
     ev.push(`overview answersOutstanding=${row?.work.answersOutstanding ?? "?"} · next action: "${row?.nextAction.text ?? "?"}" [${row?.nextAction.blocked}]`);
     const honest = (row?.work.answersOutstanding ?? 0) > 0 && row?.nextAction.blocked === "client" && /answer/i.test(row?.nextAction.text ?? "");
-    record(4, "Insufficient answers show as the real blocker, not a finished script", honest && missing.length > 0 ? "PASS" : "FAIL", ev);
+    // No half-answered interview on this client = no fixture, NOT a regression.
+    // A FAIL that means "nobody ran create-test-client.ts --scenarios" is
+    // indistinguishable from a real break the next time someone runs this
+    // (review, Sep 17).
+    record(4, "Insufficient answers show as the real blocker, not a finished script",
+      thin.length === 0 ? "NOT YET" : honest && missing.length > 0 ? "PASS" : "FAIL",
+      thin.length === 0 ? [...ev, "no partially-answered interview on this client — run create-test-client.ts --scenarios to stand the fixture up."] : ev);
   }
 
   // ---- 5. one call, three kinds of statement, three destinations -----------
@@ -117,8 +123,19 @@ async function main() {
     ev.push(`project-scoped: ${scoped.length}`);
     ev.push(`open strategy-change proposals: ${proposals}`);
     ev.push(`possible-change facts wrongly reaching generators: ${leaking.length} (must be 0)`);
+    // Same rule as 4, one leg at a time: a MISSING kind is a missing fixture,
+    // not broken routing. Only a fact of the wrong kind actually reaching the
+    // generators is a defect, and that stays a FAIL whatever else is on file.
+    const missingLegs = [
+      permanent.length === 0 ? "a permanent accepted preference" : null,
+      scoped.length === 0 ? "a project-scoped fact" : null,
+      proposals === 0 ? "an open strategy-change proposal" : null,
+    ].filter((x): x is string => !!x);
     record(5, "Persistent preference · temporary experiment · change of audience each land in the right place",
-      permanent.length > 0 && scoped.length > 0 && proposals > 0 && leaking.length === 0 ? "PASS" : "FAIL", ev);
+      leaking.length > 0 ? "FAIL" : missingLegs.length > 0 ? "NOT YET" : "PASS",
+      missingLegs.length > 0 && leaking.length === 0
+        ? [...ev, `not on this client: ${missingLegs.join(", ")} — run create-test-client.ts --scenarios to stand the fixture up.`]
+        : ev);
   }
 
   // ---- 6. a refresh after approval leaves approved work intact ------------
@@ -229,7 +246,7 @@ async function main() {
   for (const r of results) console.log(`  ${r.verdict.padEnd(8)} ${r.n}. ${r.title}`);
   console.log(`  ------------------------------------------`);
   console.log(`  PASS ${tally.PASS} · FAIL ${tally.FAIL} · NOT YET ${tally["NOT YET"]} (of ${results.length})`);
-  console.log(`  "NOT YET" means the feature belongs to a wave-2 sibling that has not landed — not that it was skipped.`);
+  console.log(`  "NOT YET" means the feature belongs to a sibling that has not landed, or the fixture was never stood up — not that it was skipped.`);
 }
 
 main()

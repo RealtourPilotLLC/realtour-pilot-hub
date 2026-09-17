@@ -1,9 +1,10 @@
+import Link from "next/link";
 import { CalendarClock, Camera, CheckCircle2, ChevronRight, Clock, MapPin, PenLine, Video } from "lucide-react";
 import { monthLabel } from "@/lib/contentProgram";
 import type { PortalPlanning, PortalScheduleMonth, PortalSlotDay } from "@/lib/portal";
 import { Card, CardTitle, LoadFailed, fmtDate, fmtTime, tzShort } from "@/components/portal/ui";
 import { PortalScheduler } from "@/components/portal/PortalScheduler";
-import { PlanWithoutCall } from "@/components/portal/PlanningChoice";
+import { PlanWithCall, PlanWithoutCall } from "@/components/portal/PlanningChoice";
 import { cn } from "@/lib/utils";
 
 // SCHEDULE (spec §4): two separate appointments. "Schedule strategy call" —
@@ -12,7 +13,7 @@ import { cn } from "@/lib/utils";
 // by the derived preparation window, requests durable). "Plan without a
 // call" appears ONLY when the enrollment is eligible, and it never cancels a
 // booked call; the real cancellation lives on Calendly / the request row.
-export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, slotDays, bookingUrl, sessions, perms, readOnly }: {
+export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, slotDays, bookingUrl, sessions, perms, readOnly, topicsHref }: {
   planning: PortalPlanning | null;
   planningFailed: boolean;
   months: PortalScheduleMonth[];
@@ -22,6 +23,8 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
   sessions: { id: string; shootDate: Date | null; title: string | null; addressLine: string | null; status: string }[];
   perms: { session: boolean };
   readOnly: boolean;
+  /** Where "Video Topics" points — the tab link the rest of the portal uses. */
+  topicsHref: string;
 }) {
   const p = planning;
   const tz = p?.timezone ?? "America/New_York";
@@ -45,8 +48,11 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
             {p.planningMode === "WRITTEN" ? (
               <>
                 <div className="flex items-center gap-1.5 font-medium"><PenLine className="size-4 text-brand" /> Planning in writing — no call this month</div>
-                <p className="text-xs text-muted">{p.answersSubmitted ? "Your answers are in; session booking opened from there." : p.interviewsOpen ? `${p.interviewsOpen} topic${p.interviewsOpen === 1 ? "" : "s"} still need${p.interviewsOpen === 1 ? "s" : ""} answers under Video Topics.` : "Pick your topics under Video Topics and answer the questions — session booking opens a few business days after."}</p>
+                <p className="text-xs text-muted">{p.answersSubmitted ? "Your answers are in; session booking opened from there." : p.interviewsOpen ? <>{p.interviewsOpen} topic{p.interviewsOpen === 1 ? "" : "s"} still need{p.interviewsOpen === 1 ? "s" : ""} answers under <Link href={topicsHref} className="font-medium text-brand hover:underline">Video Topics</Link>.</> : <>Pick your topics under <Link href={topicsHref} className="font-medium text-brand hover:underline">Video Topics</Link> and answer the questions — session booking opens a few business days after.</>}</p>
                 {p.callStatus === "SCHEDULED" && p.callAtISO && <p className="text-xs text-muted">A call is still booked for {fmtDate(p.callAtISO, tz)} at {fmtTime(p.callAtISO, tz)} {tzName} — cancel it on Calendly if you no longer need it.</p>}
+                {/* Not a one-way door: the same eligibility that offered the
+                    written path offers the call back (review, Sep 17). */}
+                {p.noCallEligible && !readOnly && perms.session && <PlanWithCall monthId={p.monthId} />}
               </>
             ) : p.callStatus === "COMPLETED" ? (
               <div className="flex items-center gap-1.5 text-success"><CheckCircle2 className="size-4" /> Held{p.callAtISO ? ` on ${fmtDate(p.callAtISO, tz)}` : ""} — the month is planned.</div>
@@ -59,8 +65,20 @@ export function ScheduleTab({ planning, planningFailed, months, scheduleFailed, 
                 <p className="text-xs text-muted">To reschedule or cancel, use the links in your Calendly confirmation email — the change shows here within the hour.</p>
                 {p.noCallEligible && !readOnly && perms.session && <PlanWithoutCall monthId={p.monthId} callBooked />}
               </>
-            ) : p.callStatus === "NOT_REQUIRED" || p.callStatus === "SKIPPED" ? (
-              <p className="text-muted">No strategy call this month.</p>
+            ) : p.callStatus === "NOT_REQUIRED" ? (
+              // NOT_REQUIRED = the program has no strategy call at all.
+              <p className="text-muted">Your program doesn&rsquo;t include a strategy call — we plan the month from your topics and answers.</p>
+            ) : p.callStatus === "SKIPPED" ? (
+              // SKIPPED = no call exists for THIS month. A card headed
+              // "Schedule strategy call" that offers no way to schedule one is
+              // a dead end — the scheduler 40px below already keeps the link
+              // reachable in this exact state, and so does this card now.
+              <>
+                <p className="text-muted">No strategy call this month.</p>
+                {!readOnly && (
+                  <a href={bookingUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold text-brand hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">Book one anyway <ChevronRight className="size-3.5" /></a>
+                )}
+              </>
             ) : (
               <>
                 <div className="text-muted">Not booked yet — we plan {monthLabel(p.monthKey)} on this call, then film it.</div>

@@ -67,7 +67,7 @@ export function TopicsPanel({ enrollmentId, month, capacity, groups, proposed, m
 
       {/* The month's plan with capacity */}
       {month && capacity && (
-        <Section icon={Lightbulb} title={`${month.short}'s video plan`} count={`${capacity.selected}/${capacity.owed}`} flush
+        <Section icon={Lightbulb} title={`${month.short}'s video plan`} count={`${capacity.selected + capacity.overflow}/${capacity.owed}`} flush
           action={capacity.overflow > 0 ? <span className="text-[12px] text-warning">{capacity.overflow} over capacity — kept, not deleted</span> : capacity.selected >= capacity.owed && capacity.owed > 0 ? <span className="text-[12px] text-success">at capacity</span> : undefined}>
           <div className="divide-y divide-border">
             {monthTopics.map((t) => (

@@ -2,9 +2,9 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, PenLine, XCircle } from "lucide-react";
+import { Loader2, PenLine, Phone, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { portalCancelSessionRequest, portalPlanWithoutCall } from "@/app/portal/actions";
+import { portalCancelSessionRequest, portalPlanWithCall, portalPlanWithoutCall } from "@/app/portal/actions";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 
 /** "Plan without a call" — rendered ONLY when the server says the enrollment is eligible. Sets the written path; never cancels a booked call. */
@@ -32,6 +32,26 @@ export function PlanWithoutCall({ monthId, callBooked }: { monthId: string; call
           </div>
         </div>
       )}
+      {msg && <p role="status" className={cn("mt-1.5 text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
+    </div>
+  );
+}
+
+/** The way back: "actually, I'd rather have the call". Rendered only when the
+ *  enrollment is eligible for either path, so it can never appear on a program
+ *  whose months are always planned in writing. */
+export function PlanWithCall({ monthId }: { monthId: string }) {
+  const router = useRouter();
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [busy, start] = useTransition();
+  const go = () => start(async () => {
+    const r = await portalPlanWithCall(portalAuthFromLocation(), monthId).catch(() => ({ ok: false, message: "That didn't save — try again." }));
+    setMsg({ ok: r.ok, text: r.message });
+    if (r.ok) router.refresh();
+  });
+  return (
+    <div className="mt-2">
+      <button type="button" onClick={go} disabled={busy} className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted hover:bg-surface hover:text-foreground disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">{busy ? <Loader2 className="size-3 animate-spin" /> : <Phone className="size-3.5" />} Actually, plan this month on a call</button>
       {msg && <p role="status" className={cn("mt-1.5 text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}
     </div>
   );

@@ -111,11 +111,20 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
   };
   const monthKey = etMonthKey();
   const scope = mediaScopeOf(viewer);
-  const first = (client?.name ?? "there").split(/\s+/)[0];
+  // Greet the PERSON when we know one. A collaborator or viewer signed into
+  // Cara's program was opened with "Hi Cara" — the account's name, not theirs
+  // (review, Sep 17). The link seat has no person, so it keeps the account's.
+  const first = ((actor.kind === "CLIENT" ? actor.name : null) || client?.name || "there").split(/\s+/)[0];
   const href = (t: string, extra?: string) => `?${baseQuery ? `${baseQuery}&` : ""}tab=${t}${extra ? `&${extra}` : ""}`;
   const who = actor.kind === "CLIENT" ? (actor.name || actor.email) : actor.kind === "STAFF" ? (actor.staffName || "Staff") : null;
-  // "Set up your sign-in" — a link visit on a program that already has a person with a seat (transition Stage B).
-  const offerSignIn = actor.kind === "TOKEN" && (await enrollmentHasMembership(enrollment.id));
+  // "Set up your sign-in" — a link visit on a program that already has a person
+  // with a seat (transition Stage B). Offered ONLY while the magic-link email
+  // can actually go out: with `portal_login_email` off, this banner sends the
+  // client to a form that takes their address and sends nothing, on every tab
+  // of every portal including paused and ended ones (review blocker, Sep 17).
+  const { portalLoginEmailEnabled } = await import("@/lib/portalAccess");
+  const emailSignInLive = await portalLoginEmailEnabled().catch(() => false);
+  const offerSignIn = emailSignInLive && actor.kind === "TOKEN" && (await enrollmentHasMembership(enrollment.id));
 
   // ---- per-tab data --------------------------------------------------------
   let home: HomeData | null = null;
@@ -159,6 +168,7 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
       topics: topics.ok ? topics.data : null, topicsFailed: !topics.ok,
       strategyReleased: released.ok ? released.data > 0 : null,
       perms: { session: perms.session, suggest: perms.suggest, request: perms.request, approve: perms.approve }, readOnly,
+      readOnlyState: readOnly ? (enrollment.status === "PAUSED" ? "PAUSED" : "ENDED") : null,
     };
   }
   if (tab === "videos") {
@@ -190,6 +200,9 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
           // The download door: a media token over the VIDEO id, scoped to this viewer.
           downloadHref: kitData?.final ? `/api/portal/download/${video.id}?m=${encodeURIComponent(mediaToken(video.id, scope))}` : null,
           perms: { comment: perms.comment, request: perms.request, approve: perms.approve, suggest: perms.suggest }, readOnly,
+          // Only the emailed-link seat can never approve; point it at the door
+          // that leads to one that can — when that door actually opens.
+          signInHref: actor.kind === "TOKEN" && emailSignInLive ? "/portal/login" : null,
         };
       }
     }
@@ -329,6 +342,7 @@ export async function PortalPage({ viewer, tab, path, baseQuery = "", query = {}
             planning={planningRes?.ok ? planningRes.data : null} planningFailed={!!planningRes && !planningRes.ok}
             months={scheduleRes?.ok ? scheduleRes.data : []} scheduleFailed={!!scheduleRes && !scheduleRes.ok}
             slotDays={slotDays} bookingUrl={STRATEGY_CALL_BOOKING_URL} sessions={sessions} perms={{ session: perms.session }} readOnly={readOnly}
+            topicsHref={href("topics")}
           />
         )}
         {tab === "resources" && <ResourcesTab groups={resourcesRes?.ok ? resourcesRes.data : null} failed={!!resourcesRes && !resourcesRes.ok} open={query.r} />}

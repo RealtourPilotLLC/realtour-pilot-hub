@@ -52,6 +52,52 @@ export function titleFromFileName(fileName: string | null | undefined, fallback:
   return base ? base.charAt(0).toUpperCase() + base.slice(1) : fallback;
 }
 
+/**
+ * The identity of a video, reduced to letters and digits, with a trailing
+ * version marker removed: "Mike's Video 2 v2.mov" and "Mike's Video 2 v1.mov"
+ * are one video, and so are the Review Room's "Joe's Ideal Date Night in West
+ * Chester ( no border ).mov" and Aryeo's "Ideal Date Night In West Chester
+ * ( No Border )".
+ */
+function normTitle(s: string | null | undefined): string {
+  return (s ?? "")
+    .replace(/\.[a-z0-9]{2,4}$/i, "")
+    .replace(/[-_ ]*\(?\s*v\s*\d+\s*\)?(?:[-_ ]*final)?\s*$/i, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+/**
+ * Do two names describe the same video? Equal after normalisation, or one
+ * wholly contains the other and the shorter is long enough to be an identity
+ * rather than a coincidence ("video1" must never match "video12"). Used ONLY
+ * to link a delivered Aryeo file to a cut of the same video — it never merges
+ * two existing rows and never deletes one.
+ */
+function sameVideo(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  return short.length >= 12 && long.includes(short);
+}
+
+/**
+ * The identity of a cut FOR THE LIBRARY. Uploaded cuts are (deliverable, slot)
+ * — reviewCuts.cutKeyOf, unchanged, and the Review Room's own answer. Legacy
+ * cuts carry no deliverable, and cutKeyOf falls back to the FILE PATH, so every
+ * re-uploaded revision became its own logical video: Mike Ciunci's 2026-08
+ * month held five one-cut "videos" (v1/v2/v3 of two videos) against an
+ * allowance of two, and both the staff overview and the client's own page said
+ * 7 delivered (review blocker, Sep 17). For those rows the file NAME is the
+ * identity — that is what the "v2"/"v3" convention means — and the path is
+ * still the fallback when a name is missing or too short to identify anything.
+ */
+function libraryCutKey(s: { deliverableId?: string | null; slot?: number | null; assetPath?: string | null; fileName?: string | null; id: string }): string {
+  if (s.deliverableId) return cutKeyOf(s);
+  const name = normTitle(s.fileName);
+  return name.length >= 6 ? `file:${name}` : cutKeyOf(s);
+}
+
 type SubRow = {
   id: string; projectId: string; round: number; status: string; assetUrl: string | null; assetPath: string | null; fileName: string | null;
   deliverableId: string | null; slot: number; decidedAt: Date | null; decidedBy: string | null; clientReleasedAt: Date | null; clientRequestedAt: Date | null;
@@ -80,9 +126,9 @@ function deriveStatus(cuts: SubRow[], delivered: boolean, filmed: boolean): stri
  * and library rows. Idempotent and additive: creates what is missing, updates
  * pointers that moved, never deletes, never flips a staff mapping.
  */
-export async function syncEnrollmentVideos(enrollment: { id: string; clientId: string }): Promise<{ videos: number; created: number }> {
+export async function syncEnrollmentVideos(enrollment: { id: string; clientId: string }): Promise<{ videos: number; created: number; archived: number }> {
   const months = await prisma.contentMonth.findMany({ where: { enrollmentId: enrollment.id }, select: { id: true, monthKey: true } });
-  if (months.length === 0) return { videos: 0, created: 0 };
+  if (months.length === 0) return { videos: 0, created: 0, archived: 0 };
   const monthKeyOf = new Map(months.map((m) => [m.id, m.monthKey]));
   // THIS CLIENT'S projects only — a job filed on the wrong client's month is
   // hidden by every portal read (portal.ts ownProjects) and must not become
@@ -91,12 +137,12 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
     where: { contentMonthId: { in: months.map((m) => m.id) }, clientId: enrollment.clientId, status: { not: "CANCELLED" } },
     select: { id: true, contentMonthId: true, shootDate: true, deliveredAt: true, status: true, packageName: true, deliverables: { where: { removedFromOrderAt: null }, select: { id: true, type: true, label: true, productTitle: true, videoStyle: true, quantity: true } } },
   });
-  if (projects.length === 0) return { videos: 0, created: 0 };
+  if (projects.length === 0) return { videos: 0, created: 0, archived: 0 };
   const projectIds = projects.map((p) => p.id);
   const [subs, libraryRows, existingVideos] = await Promise.all([
     prisma.reviewSubmission.findMany({ where: { projectId: { in: projectIds }, status: { notIn: [...NOT_A_CUT] } }, orderBy: [{ round: "asc" }, { createdAt: "asc" }], select: SUB_SELECT }),
     prisma.portalVideo.findMany({ where: { enrollmentId: enrollment.id }, orderBy: { deliveredAt: "asc" } }),
-    prisma.contentVideo.findMany({ where: { enrollmentId: enrollment.id }, select: { id: true, projectId: true, deliverableId: true, slot: true, currentSubmissionId: true, approvedSubmissionId: true, finalSubmissionId: true } }),
+    prisma.contentVideo.findMany({ where: { enrollmentId: enrollment.id }, select: { id: true, projectId: true, status: true, deliverableId: true, slot: true, currentSubmissionId: true, approvedSubmissionId: true, finalSubmissionId: true } }),
   ]);
   // Source rows are read ONLY to find this enrollment's own videos (every hit
   // goes through liveOr below, which discards anything outside it), so the
@@ -123,7 +169,7 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
   const live = new Set(existingVideos.map((v) => v.id));
   const liveOr = (id: string | null | undefined): string | null => (id && live.has(id) ? id : null);
   let created = 0;
-  const videosByProject = new Map<string, { videoId: string; slotOrder: number }[]>();
+  const videosByProject = new Map<string, { videoId: string; slotOrder: number; titleKey: string }[]>();
   // Which logical video each cut really belongs to, decided by the cut key.
   const cutOwner = new Map<string, string>();
 
@@ -150,14 +196,17 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
     const projectSubs = subs.filter((s) => s.projectId === p.id);
     const projectLibrary = libraryRows.filter((r) => r.projectId === p.id);
     const filmedAt = p.shootDate && p.shootDate < new Date() ? p.shootDate : null;
-    const projectVideos: { videoId: string; slotOrder: number }[] = [];
+    const projectVideos: { videoId: string; slotOrder: number; titleKey: string }[] = [];
 
     // 1. Review cuts → one video per cut key (deliverable × slot, or the file for legacy rows), every round a source.
     const byKey = new Map<string, SubRow[]>();
     for (const s of projectSubs) {
-      const key = cutKeyOf(s);
+      const key = libraryCutKey(s);
       byKey.set(key, [...(byKey.get(key) ?? []), s]);
     }
+    // Read before the cut loop: whether Aryeo delivered this project decides
+    // what "delivered" means for a cut chain (below).
+    const aryeoRows = projectLibrary.filter((r) => r.source === "aryeo");
     let slotOrder = 0;
     for (const [, cuts] of byKey) {
       const first = cuts[0];
@@ -174,7 +223,7 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
         projectId: p.id, monthId: p.contentMonthId!, kind, title: titleFromFileName(latest.fileName ?? first.fileName, deliverable?.productTitle ?? "Video"),
         deliverableId: first.deliverableId, slot: first.deliverableId ? first.slot : null, format, filmedAt, deliveredAt: null, source: "review", existingId: known,
       });
-      projectVideos.push({ videoId, slotOrder: slotOrder++ });
+      projectVideos.push({ videoId, slotOrder: slotOrder++, titleKey: normTitle(latest.fileName ?? first.fileName) });
       for (const c of cuts) cutOwner.set(c.id, videoId);
       for (const c of cuts) {
         const ref = `REVIEW_CUT:${c.id}`;
@@ -201,7 +250,13 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
       const releasedCuts = cuts.filter((c) => cutReleasedAt(c));
       const approvedCut = [...releasedCuts].reverse().find((c) => c.clientApprovedDecisionId) ?? null;
       const finalCut = [...cuts].reverse().find((c) => c.completedAt) ?? null;
-      const delivered = !!finalCut || p.status === "DELIVERED";
+      // A cut chain is delivered when IT reached delivery. Falling back to the
+      // project's status alone counted the month's delivery once per cut AND
+      // once per Aryeo file — Mike Ciunci's five never-approved working cuts on
+      // a DELIVERED project all read "delivered" beside the two files that
+      // actually went out. When Aryeo holds this project's delivered files,
+      // those rows are the delivery; an unpaired cut is a working file.
+      const delivered = !!finalCut || (p.status === "DELIVERED" && aryeoRows.length === 0);
       await prisma.contentVideo.update({
         where: { id: videoId },
         data: {
@@ -218,22 +273,29 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
       }).catch(() => {});
     }
 
-    // 2. Aryeo listing files → paired index-wise with the cut videos (the n-th
-    //    delivered file is the n-th cut) when the counts line up; otherwise
-    //    each is its own video. Pairing is the one heuristic here and it only
-    //    LINKS a source — it never merges two videos or deletes a row.
-    const aryeoRows = projectLibrary.filter((r) => r.source === "aryeo");
+    // 2. Aryeo listing files → paired with the cut they are the delivery OF, by
+    //    NAME first (the editor's file and Aryeo's title are the same video
+    //    written twice), then index-wise when the counts line up; otherwise
+    //    each is its own video. Requiring the counts to line up meant that the
+    //    moment they differed by one, EVERY delivered file was minted a second
+    //    time beside its own cut (review blocker, Sep 17). Pairing only LINKS a
+    //    source — it never merges two videos or deletes a row.
     const cutVideos = [...projectVideos].sort((a, b) => a.slotOrder - b.slotOrder);
+    const claimed = new Set<string>();
     for (let i = 0; i < aryeoRows.length; i++) {
       const r = aryeoRows[i];
       const known = liveOr(r.videoId) ?? liveOr(sourceVideo.get(`PORTAL_VIDEO:${r.externalKey}`));
-      const pairable = !known && aryeoRows.length === cutVideos.length ? cutVideos[i]?.videoId ?? null : null;
+      const byName = known ? null : cutVideos.find((c) => !claimed.has(c.videoId) && sameVideo(normTitle(r.title), c.titleKey))?.videoId ?? null;
+      const byIndex = known || byName || aryeoRows.length !== cutVideos.length ? null
+        : cutVideos[i] && !claimed.has(cutVideos[i].videoId) ? cutVideos[i].videoId : null;
+      const pairable = byName ?? byIndex;
+      if (pairable) claimed.add(pairable);
       const kind = (r.label === "LISTING" || r.label === "EXTRA" ? r.label : defaultKind) as VideoKind;
       const videoId = pairable ?? (await ensureVideo({
         projectId: p.id, monthId: p.contentMonthId!, kind, title: r.title ?? `Video ${i + 1}`, deliverableId: null, slot: null, format: null,
         filmedAt, deliveredAt: r.deliveredAt, source: "aryeo", existingId: known,
       }));
-      if (!pairable && !known) projectVideos.push({ videoId, slotOrder: 100 + i });
+      if (!pairable && !known) projectVideos.push({ videoId, slotOrder: 100 + i, titleKey: normTitle(r.title) });
       await linkPortalVideo(r, videoId, sourceVideo, true, live);
       await prisma.contentVideo.update({
         where: { id: videoId },
@@ -254,8 +316,34 @@ export async function syncEnrollmentVideos(enrollment: { id: string; clientId: s
     if (v.finalSubmissionId && (cutOwner.get(v.finalSubmissionId) ?? v.id) !== v.id) data.finalSubmissionId = null;
     if (Object.keys(data).length) await prisma.contentVideo.update({ where: { id: v.id }, data }).catch(() => {});
   }
-  const videos = await prisma.contentVideo.count({ where: { enrollmentId: enrollment.id } });
-  return { videos, created };
+  // Regrouping legacy cuts by file name (libraryCutKey) means a row that used
+  // to hold one revision of a video now holds none — its cuts belong to the
+  // chain the name identifies. Such a row is a duplicate of a video the client
+  // already has, and leaving it made the month count it again. It is ARCHIVED,
+  // never deleted: every count and list already excludes ARCHIVED, the row and
+  // its history stay on file, and flipping the status back restores it.
+  // Deliberately narrow: only rows on a project THIS RUN rebuilt, that hold no
+  // source row and no cut of their own.
+  const rebuilt = new Set(projectIds);
+  const survivors = new Set<string>(cutOwner.values());
+  for (const list of videosByProject.values()) for (const x of list) survivors.add(x.videoId);
+  const emptied = existingVideos.filter((v) => v.status !== "ARCHIVED" && v.projectId && rebuilt.has(v.projectId) && !survivors.has(v.id));
+  let archived = 0;
+  if (emptied.length) {
+    const ids = emptied.map((v) => v.id);
+    const [srcRows, cutRows] = await Promise.all([
+      prisma.contentVideoSource.findMany({ where: { videoId: { in: ids } }, select: { videoId: true } }),
+      prisma.reviewSubmission.findMany({ where: { videoId: { in: ids } }, select: { videoId: true } }),
+    ]);
+    const held = new Set([...srcRows.map((r) => r.videoId), ...cutRows.map((r) => r.videoId)]);
+    for (const v of emptied) {
+      if (held.has(v.id)) continue;
+      await prisma.contentVideo.update({ where: { id: v.id }, data: { status: "ARCHIVED" } }).catch(() => {});
+      archived++;
+    }
+  }
+  const videos = await prisma.contentVideo.count({ where: { enrollmentId: enrollment.id, status: { not: "ARCHIVED" } } });
+  return { videos, created, archived };
 }
 
 async function linkPortalVideo(r: { id: string; externalKey: string; videoId: string | null; submissionId: string | null; title: string | null }, videoId: string, sourceVideo: Map<string, string>, isFinal: boolean, live: Set<string>): Promise<void> {
@@ -442,17 +530,24 @@ const LIBRARY_CURSOR = "content-video-sweep-cursor";
  * deletes, a second pass over the same client creates nothing, and it contacts
  * nobody — which is why it is not behind a switch.
  */
-export async function sweepContentVideoLibraries(limit = 8): Promise<{ enrollments: number; created: number; failed: number }> {
+export async function sweepContentVideoLibraries(limit = 8): Promise<{ enrollments: number; created: number; archived: number; failed: number }> {
+  // ENDED enrollments are in the rotation too. Leaving them out meant Jamie
+  // Achberger (5 delivered projects) and Sam Walls (1) had — and would always
+  // have — zero rows in their library, while the overview flagged Sam's row as
+  // behind and could never catch up (review, Sep 17). An ended program's
+  // delivered work is still the client's, and this derives it from their own
+  // rows; it contacts nobody either way.
   const enrollments = await prisma.contentEnrollment.findMany({
-    where: { status: { in: ["ACTIVE", "PAUSED"] } },
+    where: { status: { in: ["ACTIVE", "PAUSED", "ENDED"] } },
     select: { id: true, clientId: true },
     orderBy: { id: "asc" },
   });
-  if (enrollments.length === 0) return { enrollments: 0, created: 0, failed: 0 };
+  if (enrollments.length === 0) return { enrollments: 0, created: 0, archived: 0, failed: 0 };
   const stored = await getSetting<{ cursor: string | null }>(LIBRARY_CURSOR, { cursor: null });
   const at = stored.cursor ? enrollments.findIndex((e) => e.id === stored.cursor) : -1;
   const start = at >= 0 ? at + 1 : 0;
   let created = 0;
+  let archived = 0;
   let failed = 0;
   let done = 0;
   let last = stored.cursor;
@@ -461,6 +556,7 @@ export async function sweepContentVideoLibraries(limit = 8): Promise<{ enrollmen
     try {
       const r = await syncEnrollmentVideos(e);
       created += r.created;
+      archived += r.archived;
     } catch {
       failed++; // one client's bad row must not stop the rotation
     }
@@ -468,7 +564,7 @@ export async function sweepContentVideoLibraries(limit = 8): Promise<{ enrollmen
     done++;
   }
   await putSetting(LIBRARY_CURSOR, { cursor: last }, "cron:contentLibrary").catch(() => {});
-  return { enrollments: done, created, failed };
+  return { enrollments: done, created, archived, failed };
 }
 
 export const isDeliveredProgramVideo = (v: { status: string; deliveredAt: Date | null; finalSubmissionId: string | null }): boolean =>

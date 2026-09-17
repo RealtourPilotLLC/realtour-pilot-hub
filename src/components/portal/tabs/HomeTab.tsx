@@ -34,6 +34,9 @@ export type HomeData = {
   strategyReleased: boolean | null;
   perms: { session: boolean; suggest: boolean; request: boolean; approve: boolean };
   readOnly: boolean;
+  /** WHICH read-only state, so this tab and the banner above it never say
+   *  different things about the same account (review blocker, Sep 17). */
+  readOnlyState: "PAUSED" | "ENDED" | null;
 };
 
 export function HomeTab({ d, href }: { d: HomeData; href: (tab: string, extra?: string) => string }) {
@@ -73,7 +76,7 @@ export function HomeTab({ d, href }: { d: HomeData; href: (tab: string, extra?: 
       <Card>
         <CardTitle icon={ListChecks}>Next up</CardTitle>
         {actions.length === 0 ? (
-          <p className="mt-2 flex items-center gap-2 text-sm text-muted"><CheckCircle2 className="size-4 text-success" /> Nothing waiting on you right now{d.readOnly ? " — your program is paused." : "."}</p>
+          <p className="mt-2 flex items-center gap-2 text-sm text-muted"><CheckCircle2 className="size-4 text-success" /> Nothing waiting on you right now{d.readOnly ? (d.readOnlyState === "PAUSED" ? " — your program is paused." : " — your program has ended.") : "."}</p>
         ) : (
           <ol className="mt-2 space-y-1.5">
             {actions.slice(0, 5).map((a, i) => (
@@ -112,10 +115,18 @@ export function HomeTab({ d, href }: { d: HomeData; href: (tab: string, extra?: 
               <div className="mt-1 font-medium">{fmtDate(p.callAtISO, tz)}</div>
               <div className="flex items-center gap-1.5 text-muted"><Clock className="size-3.5" /> {fmtTime(p.callAtISO, tz)}{p.callEndISO ? `–${fmtTime(p.callEndISO, tz)}` : ""} {tzName}</div>
               {p.meetLink ? <a href={p.meetLink} target="_blank" rel="noopener noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline"><Video className="size-3.5" /> Join on Google Meet</a> : <span className="mt-1 block text-xs text-muted-2">Video call — the link is in your calendar invite.</span>}
-              <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">Need to move it? →</Link>
+              {!d.readOnly && <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">Need to move it? →</Link>}
             </div>
-          ) : p.callStatus === "NOT_REQUIRED" || p.callStatus === "SKIPPED" ? (
-            <p className="mt-2 text-sm text-muted">No call this month.</p>
+          ) : p.callStatus === "NOT_REQUIRED" ? (
+            <p className="mt-2 text-sm text-muted">Your program doesn&rsquo;t include a strategy call.</p>
+          ) : p.callStatus === "SKIPPED" ? (
+            // SKIPPED = no call on THIS month, not "no calls on this program".
+            // A card headed "Strategy call" that offers no way to get one is a
+            // dead end; the same state on the Schedule tab keeps the link.
+            <div className="mt-2 text-sm">
+              <p className="text-muted">No call this month.</p>
+              {!d.readOnly && <a href={d.bookingUrl} target="_blank" rel="noopener noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-brand hover:underline">Book one anyway <ChevronRight className="size-3" /></a>}
+            </div>
           ) : (
             <div className="mt-2 text-sm">
               <div className="text-muted">Not booked yet</div>
@@ -136,14 +147,14 @@ export function HomeTab({ d, href }: { d: HomeData; href: (tab: string, extra?: 
               <div className="mt-1 font-medium">{fmtDate(d.schedule.bookedShootISO, tz)}</div>
               <div className="flex items-center gap-1.5 text-muted"><Clock className="size-3.5" /> {fmtTime(d.schedule.bookedShootISO, tz)} {tzName}</div>
               {sessionRequests.find((r) => r.locationText)?.locationText && <div className="flex items-center gap-1.5 text-muted"><MapPin className="size-3.5" /> {sessionRequests.find((r) => r.locationText)!.locationText}</div>}
-              <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">Reschedule or cancel →</Link>
+              {!d.readOnly && d.perms.session && <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">Reschedule or cancel →</Link>}
             </div>
           ) : sessionRequests.length ? (
             <div className="mt-2 text-sm">
               <div className="inline-block rounded-md bg-brand-soft px-1.5 py-0.5 text-[10px] font-semibold text-brand">{sessionRequests[0].label}</div>
               {sessionRequests[0].slotStartISO && <div className="mt-1 font-medium">{fmtDate(sessionRequests[0].slotStartISO, tz)} · {fmtTime(sessionRequests[0].slotStartISO, tz)} {tzName}</div>}
               {sessionRequests[0].locationText && <div className="flex items-center gap-1.5 text-muted"><MapPin className="size-3.5" /> {sessionRequests[0].locationText}</div>}
-              <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">Change or cancel →</Link>
+              {!d.readOnly && d.perms.session && <Link href={href("schedule")} className="mt-1 block text-xs text-muted hover:underline">Change or cancel →</Link>}
             </div>
           ) : (
             <div className="mt-2 text-sm">

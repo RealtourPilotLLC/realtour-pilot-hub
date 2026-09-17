@@ -223,6 +223,13 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
   // to run (that would date six August months to the day the derivation
   // shipped, and §24 reminders key off this column). A stored stamp wins; a
   // derived READY_FOR_FILMING with no approval time on any script stays null.
+  // A call whose transcript is stuck (NEEDS_REVIEW / FAILED) does not change
+  // the preparation status — that is driven by approved SCRIPTS, and a person
+  // approved those — but the derivation must say so rather than stay silent,
+  // because §4 gating and §24 reminders read this record and the transcript is
+  // the one input nobody has checked (review, Sep 17).
+  const stuckTranscript = live.find((r) => r.transcriptState === "NEEDS_REVIEW" || r.transcriptState === "FAILED");
+  if (stuckTranscript) reasons.push(`a monthly call's transcript is ${stuckTranscript.transcriptState.toLowerCase()} — its topics, answers and facts have not been read`);
   const lastApproval = approved.reduce<Date | null>((m, s) => (s.approvedAt && (!m || s.approvedAt > m) ? s.approvedAt : m), null);
   const filmingReadyAt = month.filmingReadyAt ?? (preparationStatus === "READY_FOR_FILMING" ? lastApproval : null);
   return { callMode, strategyCallStatus, strategyCallAt, planningMode, preparationStatus, preparationCompletedAt, filmingReadyAt, earliestSessionAt, windowDays, windowWaived, reasons };

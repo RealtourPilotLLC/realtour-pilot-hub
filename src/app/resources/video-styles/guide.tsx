@@ -237,6 +237,7 @@ export async function StyleGuideBody({ embed = false }: { embed?: boolean }) {
           <p className="text-sm font-medium leading-relaxed">{EXPORT_SPEC.finalCut}</p>
           <p className="mt-2 text-sm leading-relaxed text-foreground/85">{EXPORT_SPEC.edit}</p>
           <p className="mt-2 text-sm leading-relaxed text-muted">{EXPORT_SPEC.orientation}</p>
+          <p className="mt-2 text-sm font-medium leading-relaxed">{EXPORT_SPEC.audio}</p>
           <p className="mt-2 text-sm leading-relaxed text-muted">{EXPORT_SPEC.why}</p>
           <p className="mt-3 text-xs text-muted-2">
             The upload panel on a job checks this before it sends anything, so an over-spec file is

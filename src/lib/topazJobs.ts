@@ -585,14 +585,15 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
   }
 
   // When the measurements came off the row rather than the file, the header
-  // still has to be read once for the audio track. A file we cannot read is
-  // assumed to need conversion: converting audio that did not need it costs
-  // nothing anyone can hear, while copying audio that cannot be copied loses it
-  // altogether — which is exactly how a client came to be sent a silent video.
+  // still has to be read once for the audio track.
+  let audioUnreadable = false;
   if (!sourceAudio) {
     sourceAudio = await probeVideoMetadata(sub.blobUrl, meta.sizeBytes || sub.sizeBytes || null)
       .then((p) => p.audio)
-      .catch(() => ({ present: true, codec: null }));
+      .catch(() => {
+        audioUnreadable = true;
+        return { present: true, codec: null };
+      });
   }
 
   // AUDIO THE PASS WOULD LOSE IS A REASON NOT TO RUN IT. Topaz will neither
@@ -602,6 +603,22 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
   // video with no sound is worse than one that was never sharpened, so we keep
   // the editor's own file and say what would make this one eligible.
   if (sourceAudio.present && sourceAudio.codec !== "mp4a") {
+    // A probe that FAILED is not a measurement. skip() is terminal (finishAs),
+    // so refusing a perfectly good AAC cut forever because one HEAD/GET met a
+    // 5xx is a real outcome of a momentary fault — and the reason printed
+    // ("this video's audio is in a format we couldn't read") states as fact
+    // something nobody measured (review, Sep 17). Try again instead.
+    if (audioUnreadable) {
+      if (job.attempt < 3) {
+        await release(job.id, { state: "queued", attempt: job.attempt + 1, nextAttemptAt: new Date(Date.now() + 120_000) });
+        return "queued";
+      }
+      await skip(
+        job,
+        "We couldn't read this video's header to check its audio after three tries, and the 1080p pass silently drops audio it cannot carry. The editor's own upload is the one to deliver; press Try again once the file is reachable.",
+      );
+      return "skipped";
+    }
     await skip(
       job,
       `This video's audio is ${audioFormatName(sourceAudio.codec)}, and the 1080p pass loses it — the finished file comes back silent. The editor's own upload is the one to deliver. To put a video through the pass, export it with AAC audio.`,
@@ -989,16 +1006,30 @@ async function stepUploading(job: NonNullable<JobRow>, s: TopazSettings, budget:
 async function audioSurvived(job: NonNullable<JobRow>, downloadUrl: string): Promise<"ok" | "lost" | "unreadable"> {
   const sub = job.submission;
   if (!sub?.blobUrl) return "unreadable";
-  try {
-    const [src, out] = await Promise.all([
-      probeVideoMetadata(sub.blobUrl, job.sourceSizeBytes ?? sub.sizeBytes ?? null),
-      probeVideoMetadata(downloadUrl),
-    ]);
-    if (!src.audio.present) return "ok";
-    return out.audio.present ? "ok" : "lost";
-  } catch {
-    return "unreadable";
-  }
+  // Probed SEPARATELY, and the result recorded, because which of the two files
+  // could not be read decides everything and a combined try/catch threw that
+  // away. A source we cannot re-read while the OUTPUT reads fine and carries
+  // audio is not a doubt about the render — it is a doubt about a file we
+  // already used. The output is the one that must be readable, and until a real
+  // Topaz object has been read end to end this check has never been proven
+  // against one (review, Sep 17): the verdict now goes on the project's
+  // activity so the first real render answers it for free.
+  const src = await probeVideoMetadata(sub.blobUrl, job.sourceSizeBytes ?? sub.sizeBytes ?? null).then((p) => p.audio).catch(() => null);
+  const out = await probeVideoMetadata(downloadUrl).then((p) => p.audio).catch(() => null);
+  const verdict: "ok" | "lost" | "unreadable" =
+    out === null ? "unreadable"
+    : src === null ? (out.present ? "ok" : "unreadable")
+    : !src.present ? "ok"
+    : out.present ? "ok" : "lost";
+  await prisma.activity
+    .create({
+      data: {
+        projectId: job.projectId, type: "SYSTEM",
+        body: `1080p pass audio check: ${verdict} (source ${src === null ? "unreadable" : src.present ? `${src.codec ?? "unknown codec"}` : "no audio"}, output ${out === null ? "unreadable" : out.present ? `${out.codec ?? "unknown codec"}` : "no audio"})`.slice(0, 500),
+      },
+    })
+    .catch(() => {});
+  return verdict;
 }
 
 // ---- processing → saving ---------------------------------------------------
@@ -1110,7 +1141,13 @@ async function stepProcessing(job: NonNullable<JobRow>, s: TopazSettings): Promi
 export function enhancedNameFor(originalName: string, container: string): string {
   const dot = originalName.lastIndexOf(".");
   const stem = dot > 0 ? originalName.slice(0, dot) : originalName;
-  return SAFE_NAME(`${stem} - 1080p.${container}`);
+  // A RE-RUN derives this name from sub.finalPath, which the first successful
+  // run already rewrote to the superseded copy's "(before 1080p pass)" name —
+  // so the enhanced file came out called "… (before 1080p pass) - 1080p.mp4",
+  // which is in production on one job today (review, Sep 17). The marker names
+  // the file the pass REPLACED; it can never belong to the pass's own output.
+  const clean = stem.replace(/\s*\(before 1080p pass\)\s*$/i, "").trimEnd();
+  return SAFE_NAME(`${clean || stem} - 1080p.${container}`);
 }
 
 /**

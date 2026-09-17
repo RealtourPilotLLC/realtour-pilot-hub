@@ -230,12 +230,16 @@ export async function measureFolderCuts(created: CreatedCut[]): Promise<void> {
       // session, and Dropbox's API is not a byte server. Four hours' life,
       // which is 3h59m longer than this needs.
       //
-      // The SIZE has to be handed in (verified against the live folder,
-      // Sep 16): a Dropbox temporary link answers HEAD without a
-      // content-length, so probeVideoMetadata's own fallback gives up with
-      // "Couldn't tell how big the video file is" every single time. The
-      // listing already knew — that is what CreatedCut.sizeBytes carries — and
-      // get_metadata is the cheap read for the case where it didn't.
+      // The SIZE is handed in because it is already known and it saves a round
+      // trip. It is NOT a workaround for a broken fallback: measured again on
+      // Sep 17 against three live Dropbox temporary links, probeVideoMetadata
+      // reads the size out of a ranged GET's Content-Range and succeeds with no
+      // size passed. (The note that used to stand here said the fallback "gives
+      // up every single time", which was true of the HEAD-only version and is
+      // the sentence a future reader would use to conclude the fallback does
+      // not work — it does.) The listing already knew the size — that is what
+      // CreatedCut.sizeBytes carries — and get_metadata is the cheap read for
+      // the case where it didn't.
       let size = c.sizeBytes;
       if (!size) size = (await dbx<{ size?: number }>("files/get_metadata", { path: c.assetPath })).size ?? null;
       if (!size) continue;

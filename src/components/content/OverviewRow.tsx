@@ -74,6 +74,7 @@ export function OverviewRow({ r, showMonth }: { r: Row; showMonth: boolean }) {
         <span className={cn("shrink-0 text-[12px] font-semibold tabular-nums", r.production.delivered >= r.production.owed ? "text-success" : "text-muted")}>
           {r.production.delivered}/{r.production.owed}
           {r.production.libraryBehind && <span className="ml-0.5 text-warning" title="the video library is behind the pipeline">*</span>}
+          {r.production.libraryAhead && <span className="ml-0.5 text-warning" title="the library counts more delivered than this month owes or the orders carry">!</span>}
         </span>
         <div className="flex min-w-0 basis-full items-center gap-2 sm:basis-auto sm:flex-1">
           <BlockedChip blocked={r.nextAction.blocked} />
@@ -134,6 +135,11 @@ export function OverviewRow({ r, showMonth }: { r: Row; showMonth: boolean }) {
           {r.production.libraryBehind && (
             <div className="text-warning">
               the pipeline says {r.production.pipelineDelivered} delivered — the video library has {r.production.libraryRows} row{r.production.libraryRows === 1 ? "" : "s"} for this month, so the count above is understated
+            </div>
+          )}
+          {r.production.libraryAhead && (
+            <div className="text-warning">
+              the library counts {r.production.delivered} delivered but the attached orders carry {r.production.pipelineDelivered} — check this month for a video counted twice
             </div>
           )}
         </Cell>

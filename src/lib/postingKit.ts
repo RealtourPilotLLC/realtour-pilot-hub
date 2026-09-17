@@ -88,8 +88,14 @@ async function approvalFor(submissionId: string | null): Promise<{ label: string
 export async function resolveFinalFile(video: { id: string; finalSubmissionId: string | null; approvedSubmissionId: string | null; currentSubmissionId: string | null }): Promise<{ final: FinalFile | null; note: string | null }> {
   const cutId = video.finalSubmissionId ?? video.approvedSubmissionId;
   if (cutId) {
-    const sub = await prisma.reviewSubmission.findUnique({ where: { id: cutId }, select: { id: true, round: true, fileName: true, assetUrl: true, contentHash: true, blobUrl: true, blobPathname: true, sizeBytes: true, completedAt: true } });
-    if (sub?.assetUrl) {
+    const sub = await prisma.reviewSubmission.findUnique({ where: { id: cutId }, select: { id: true, round: true, fileName: true, assetUrl: true, assetPath: true, contentHash: true, blobUrl: true, blobPathname: true, sizeBytes: true, completedAt: true } });
+    // assetUrl is the STABLE playback address, not proof there are bytes behind
+    // it. A cut whose file was moved or withdrawn (the Sep 17 Topaz
+    // remediation moved a silent render out of the Final folder) keeps its
+    // assetUrl and its approval, so the button rendered and the stream answered
+    // raw JSON with a 404 in the client's tab (review, Sep 17). A final needs a
+    // file: Dropbox path or hub copy.
+    if (sub?.assetUrl && (sub.assetPath || sub.blobUrl)) {
       const approval = await approvalFor(video.approvedSubmissionId === sub.id ? sub.id : null);
       const hashOk = !approval?.contentHash || approval.contentHash === cutIdentityHash(sub);
       const label = `v${sub.round}${sub.completedAt ? " (final)" : approval ? " (approved)" : ""}`;
@@ -104,6 +110,9 @@ export async function resolveFinalFile(video: { id: string; finalSubmissionId: s
   if (row?.download || row?.playback) {
     return { final: { kind: "delivered", url: (row.download ?? row.playback)!, submissionId: null, fileName: row.title, label: "Delivered file", approvedByLabel: null, approvedAtISO: null, hashOk: true }, note: null };
   }
+  // Told apart on purpose: "the file we had is not there" is not the same news
+  // as "there is no file yet", and only one of them needs someone to act.
+  if (cutId) return { final: null, note: "We're re-issuing this video's file — it'll be back here shortly. Text us if you need it now." };
   return { final: null, note: video.currentSubmissionId ? "The final file lands here once this version is approved and finished." : "No file yet — it appears here once the video is edited and delivered." };
 }
 

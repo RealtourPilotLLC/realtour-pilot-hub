@@ -68,12 +68,17 @@ export default async function ContentProgramPage({
   // The overview read + the automation switches (a banner when ANY is on, so
   // nobody is surprised that something is acting on its own).
   const [overview, switches] = await Promise.all([
-    view === "rows" ? programOverview({ monthKey: monthParam, includeEnded }) : Promise.resolve(null),
+    // Read in BOTH views. The four numbers at the top of this page used to come
+    // from whichever engine the view happened to use — the overview's library
+    // count for rows, the older roster's pipeline count for cards — so the same
+    // screen read "1/51 · 11" and "0/51 · 12" depending on a toggle that is
+    // supposed to change the layout, not the facts (review, Sep 17).
+    programOverview({ monthKey: monthParam, includeEnded }),
     allAutomations().catch(() => []),
   ]);
   const switchedOn = switches.filter((s) => s.enabled);
   const shown = overview ? (filter ? overview.rows.filter((r) => r.flags.includes(filter)) : overview.rows) : [];
-  // The header numbers come from whichever read is on screen, never a mix.
+  // ONE engine for the header, whichever view is on screen.
   const statDelivered = overview ? overview.rows.reduce((n, r) => n + r.production.delivered, 0) : delivered;
   const statOwed = overview ? overview.rows.reduce((n, r) => n + r.production.owed, 0) : owed;
   const statAttention = overview ? overview.rows.filter((r) => r.flags.length > 0).length : attention.length;

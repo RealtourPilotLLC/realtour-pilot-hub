@@ -833,6 +833,10 @@ export default async function EditBriefPage({
                 <p className="mt-1.5 text-xs font-medium leading-relaxed text-foreground">{EXPORT_SPEC.finalCut}</p>
                 <p className="mt-1 text-xs leading-relaxed text-foreground/85">{EXPORT_SPEC.edit}</p>
                 <p className="mt-1 text-xs leading-relaxed text-muted">{EXPORT_SPEC.orientation}</p>
+                {/* The audio line reached the printed PDF and nowhere else,
+                    while this is the screen editors actually open (review,
+                    Sep 17 — a PCM export is what sent a client a silent video). */}
+                <p className="mt-1 text-xs font-medium leading-relaxed text-foreground">{EXPORT_SPEC.audio}</p>
                 <p className="mt-1 text-xs leading-relaxed text-muted">{EXPORT_SPEC.why}</p>
               </div>
             )}

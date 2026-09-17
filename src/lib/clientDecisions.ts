@@ -64,6 +64,10 @@ export type CutVersion = {
   /** What this version is to the client. */
   clientState: "AWAITING_YOUR_DECISION" | "YOU_REQUESTED_CHANGES" | "YOU_APPROVED" | "SUPERSEDED" | "NOT_RELEASED";
   isCurrent: boolean;
+  /** Was the decision behind `clientState` made by THIS viewer? A collaborator
+   *  or viewer seat was being told "Approved by you" about the owner's
+   *  approval (review, Sep 17). */
+  decidedByMe: boolean;
   /** A re-cut is in motion on the project (open editor revision task). */
   revisionOpen: boolean;
   decisions: DecisionView[];
@@ -192,9 +196,14 @@ export async function cutHistory(viewer: PortalViewer, submissionId: string): Pr
     const requested = mine.some((d) => d.decision === "REQUEST_CHANGES" && d.receiptState !== "SUPERSEDED");
     const isCurrent = current?.id === r.id;
     const clientState: CutVersion["clientState"] = !releasedAt ? "NOT_RELEASED" : !isCurrent ? "SUPERSEDED" : approved ? "YOU_APPROVED" : requested ? "YOU_REQUESTED_CHANGES" : "AWAITING_YOUR_DECISION";
+    const decisive = approved
+      ? mine.find((d) => d.decision === "APPROVE" && d.receiptState !== "SUPERSEDED")
+      : requested
+        ? mine.find((d) => d.decision === "REQUEST_CHANGES" && d.receiptState !== "SUPERSEDED")
+        : null;
     return {
       submissionId: r.id, round: r.round, fileName: r.fileName, releasedAtISO: releasedAt?.toISOString() ?? null,
-      assetUrl: releasedAt ? r.assetUrl : null, clientState, isCurrent, revisionOpen: revisionTasks.length > 0,
+      assetUrl: releasedAt ? r.assetUrl : null, clientState, isCurrent, decidedByMe: !!decisive && isMine(viewer, decisive), revisionOpen: revisionTasks.length > 0,
       decisions: mine.map((d) => ({ id: d.id, decision: d.decision as DecisionView["decision"], actorLabel: d.actorLabel, decidedAtISO: d.decidedAt.toISOString(), receiptState: d.receiptState, openNotesChoice: d.openNotesChoice, note: d.note, contentHash: d.contentHash })),
       comments: comments.get(r.id) ?? [],
     };

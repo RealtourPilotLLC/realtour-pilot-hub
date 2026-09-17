@@ -81,7 +81,7 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
       {months.length > 0 && (
         <div className="panel-shadow rounded-2xl border border-border bg-surface/70 p-4 backdrop-blur">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">Selecting for</div>
+            <div className="text-[11px] font-semibold uppercase tracking-widest text-muted-2">{canAct && !readOnly ? "Selecting for" : "Planned for"}</div>
             {months.length > 1 && (
               <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Which month">
                 {months.map((m) => (
@@ -90,13 +90,21 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
               </div>
             )}
           </div>
-          {month && (
-            <p className="mt-1.5 text-sm">
-              <span className="font-semibold">{monthLabel(month.monthKey)}</span> — {month.selected} of {month.owed} video{month.owed === 1 ? "" : "s"} chosen
-              {month.overflow > 0 && <span className="text-muted"> · {month.overflow} extra waiting (your package covers {month.owed} a month; extras stay in line, nothing is thrown away)</span>}
-              {month.selected < month.owed && <span className="text-muted"> · pick {month.owed - month.selected} more</span>}
-            </p>
-          )}
+          {month && (() => {
+            // "4 of 2 chosen" is not a sentence anyone should read about their
+            // own account. When more topics are selected than the month owes,
+            // the surplus IS the overflow — derived here from the two numbers on
+            // screen rather than from a per-row flag frozen at insert time,
+            // which a package change leaves stale (review, Sep 17).
+            const waiting = month.overflow;
+            return (
+              <p className="mt-1.5 text-sm">
+                <span className="font-semibold">{monthLabel(month.monthKey)}</span> — {month.selected} of {month.owed} video{month.owed === 1 ? "" : "s"} chosen
+                {waiting > 0 && <span className="text-muted"> · {waiting} more waiting (your package covers {month.owed} a month; extras stay in line, nothing is thrown away)</span>}
+                {month.selected < month.owed && <span className="text-muted"> · pick {month.owed - month.selected} more</span>}
+              </p>
+            );
+          })()}
         </div>
       )}
       {months.length === 0 && <p className="rounded-2xl border border-border bg-surface/70 p-4 text-sm text-muted">Your next program month isn&rsquo;t open yet — you can still read and discuss your topics; selecting opens when the month does.</p>}
@@ -105,7 +113,9 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
       <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Filter topics">
         {FILTERS.map((f) => (
           <button key={f.key} type="button" role="tab" aria-selected={filter === f.key} onClick={() => setFilter(f.key)} className={cn("rounded-full border px-3 py-1 text-xs font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand", filter === f.key ? "border-brand bg-brand text-white" : "border-border bg-surface text-muted hover:text-foreground")}>
-            {f.label}{counts[f.key] ? ` · ${counts[f.key]}` : ""}
+            {/* Every chip carries its count, zero included — one chip without
+                a number beside five with one reads as "unknown", not "none". */}
+            {f.label} · {counts[f.key] ?? 0}
           </button>
         ))}
         {archivedCount > 0 && <span className="self-center text-[11px] text-muted-2">{archivedCount} set aside — we keep those so we never re-suggest them</span>}

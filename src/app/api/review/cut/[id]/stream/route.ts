@@ -63,12 +63,29 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   let allowed = false;
   if (media) {
     const { verifyMediaToken, mediaScopeLive } = await import("@/lib/portalMedia");
-    // The signature proves the portal page minted this for THIS cut; the
-    // scope check proves the seat / link / staff login it was minted for is
-    // still allowed in — so a revoked seat or a rotated link stops on the
-    // next Range request, not when the token expires (review, Sep 17).
+    // Three proofs, not two. The signature proves the portal page minted this
+    // for THIS cut; the scope check proves the seat / link / staff login it was
+    // minted for is still allowed in — so a revoked seat or a rotated link
+    // stops on the next Range request, not when the token expires; and the
+    // OWNERSHIP check proves the cut belongs to that scope's own enrollment.
+    // Without the third, a token minted over one client's cut passed the gate
+    // on another client's cut, which is exactly the check the sibling download
+    // route already makes (review, Sep 17).
     const v = verifyMediaToken(id, media);
-    allowed = v.ok && (await mediaScopeLive(v.scope, v.mintedAt));
+    if (v.ok && (await mediaScopeLive(v.scope, v.mintedAt))) {
+      if (v.scope.kind === "staff") {
+        allowed = true; // OWNER/ADMIN, verified live — the hub's own authority
+      } else {
+        const { submissionForEnrollment } = await import("@/lib/portal");
+        const pair =
+          v.scope.kind === "enrollment"
+            ? await prisma.contentEnrollment.findUnique({ where: { id: v.scope.id }, select: { id: true, clientId: true } })
+            : await prisma.clientMembership
+                .findUnique({ where: { id: v.scope.id }, select: { enrollmentId: true, clientId: true } })
+                .then((seat) => (seat ? { id: seat.enrollmentId, clientId: seat.clientId } : null));
+        allowed = !!pair && !!(await submissionForEnrollment(pair, id));
+      }
+    }
   } else if (token) {
     console.info(`[portal] legacy ?t= media access on cut ${id} (transition path)`);
     const { resolvePortalViewer, submissionForEnrollment } = await import("@/lib/portal");

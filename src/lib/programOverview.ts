@@ -111,6 +111,8 @@ export type OverviewRow = {
     pipelineDelivered: number;
     /** true when the pipeline delivered more than the library knows about: the number on screen is understated, and says so */
     libraryBehind: boolean;
+    /** the other direction: the library counts MORE delivered than the month owes and more than the attached orders carry — a confident "7 of 2" is a number to check, not to trust */
+    libraryAhead: boolean;
   };
 
   nextAction: {
@@ -443,6 +445,12 @@ export async function programOverview(opts: OverviewOptions = {}): Promise<Overv
       libraryRows: myVideos.length,
       pipelineDelivered,
       libraryBehind: pipelineDelivered > delivered,
+      // Only the UNDERSTATED direction was ever detected, so a month that
+      // counted the same delivery twice printed a confident "7 of 2" with no
+      // warning at all (review blocker, Sep 17). Over the allowance can be
+      // genuine (we sometimes deliver extra); over the allowance AND over what
+      // the attached orders carry is a number to check.
+      libraryAhead: pipelineDelivered > 0 && delivered > pipelineDelivered && delivered > (m?.videosOwed ?? (e.status === "ACTIVE" ? e.videosPerMonth : 0)),
     };
     const topicsNeeded = Math.max(0, production.owed - topicsSelected);
 

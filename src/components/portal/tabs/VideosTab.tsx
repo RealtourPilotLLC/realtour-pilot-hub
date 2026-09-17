@@ -23,7 +23,9 @@ import { cn } from "@/lib/utils";
 const STATE: Record<ClientVideoState, { label: string; cls: string; action: string }> = {
   FOR_REVIEW: { label: "For your review", cls: "bg-brand-soft text-brand", action: "Review" },
   CHANGES_IN_PROGRESS: { label: "Changes in progress", cls: "bg-warning-soft text-warning", action: "Open" },
-  APPROVED: { label: "Approved by you", cls: "bg-success-soft text-success", action: "Open" },
+  // The library cannot know WHO approved without reading every decision, and a
+  // viewer seat must not be told "by you" about somebody else's approval.
+  APPROVED: { label: "Approved", cls: "bg-success-soft text-success", action: "Open" },
   DELIVERED: { label: "Delivered", cls: "bg-success-soft text-success", action: "Open" },
   IN_PRODUCTION: { label: "In production", cls: "bg-surface-2 text-muted", action: "Details" },
 };
@@ -114,6 +116,8 @@ export type VideoDetailData = {
   downloadHref: string | null;
   perms: { comment: boolean; request: boolean; approve: boolean; suggest: boolean };
   readOnly: boolean;
+  /** Set only on the emailed-link seat, which can never approve: where to go to get a seat that can. */
+  signInHref: string | null;
 };
 
 export function VideoDetail({ d, href }: { d: VideoDetailData; href: (tab: string, extra?: string) => string }) {
@@ -144,7 +148,7 @@ export function VideoDetail({ d, href }: { d: VideoDetailData; href: (tab: strin
         ) : hasCut ? (
           <div className="mt-2">
             {d.perms.request && !d.readOnly && d.video.state === "FOR_REVIEW" && <p className="mb-2 text-xs text-muted-2">Pause where you&rsquo;d change something and save a note; send them all as one change request — or approve this version.</p>}
-            <CutReview versions={d.versions} perms={{ comment: d.perms.comment, request: d.perms.request, approve: d.perms.approve }} readOnly={d.readOnly} poster={d.delivered?.thumb ?? null} />
+            <CutReview versions={d.versions} perms={{ comment: d.perms.comment, request: d.perms.request, approve: d.perms.approve }} readOnly={d.readOnly} poster={d.delivered?.thumb ?? null} signInHref={d.signInHref} />
           </div>
         ) : d.delivered ? (
           <div className="mt-2"><PortalPlayer src={d.delivered.playback} poster={d.delivered.thumb} /></div>

@@ -383,7 +383,8 @@ export function CutUploader({
       <div className="border-b border-border bg-surface-2/40 px-4 py-2 sm:px-5">
         <p className="text-xs leading-relaxed text-foreground/85">
           <span className="font-semibold">{EXPORT_SPEC.headline}.</span> {EXPORT_SPEC.finalCut}{" "}
-          <span className="text-muted">{EXPORT_SPEC.edit}</span>
+          <span className="text-muted">{EXPORT_SPEC.edit}</span>{" "}
+          <span className="font-medium">{EXPORT_SPEC.audio}</span>
         </p>
       </div>
       <ul className="divide-y divide-border">

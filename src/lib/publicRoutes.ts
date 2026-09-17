@@ -18,6 +18,11 @@ export const PUBLIC_PREFIXES = [
   "/privacy",
   "/terms", // public legal pages OAuth reviewers open signed out
   "/api/portal/upload",
+  // The client's ONLY download door. It authenticates itself by scoped media
+  // token (src/app/api/portal/download/[videoId]/route.ts) exactly like the cut
+  // stream below; left off this list the middleware sent every real client's
+  // "Download" button to the STAFF sign-in page (review blocker, Sep 17).
+  "/api/portal/download",
   "/api/review/cut",
   "/api/review/upload",
   "/api/auth",

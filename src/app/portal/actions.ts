@@ -497,6 +497,30 @@ export async function portalPlanWithoutCall(auth: PortalAuth, monthId: string): 
   return { ok: true, message: p.callStatus === "SCHEDULED" ? "Done — this month is planned in writing. Your booked call is still on the calendar; cancel it on Calendly if you no longer need it." : "Done — this month is planned in writing. Pick your topics and answer the questions; session booking opens once your answers are in." };
 }
 
+/**
+ * The way BACK from "plan in writing". Choosing the written path used to be a
+ * one-way door on the portal — the card showed the status and nothing else, so
+ * a client who tapped it by mistake could not get their call back without
+ * texting us (review, Sep 17). Same permission and same eligibility check as
+ * the outward choice; it only flips the month's planning mode, never a booking.
+ */
+export async function portalPlanWithCall(auth: PortalAuth, monthId: string): Promise<R> {
+  const v = await viewerFor(auth, "requestSession");
+  if (typeof v === "string") return fail(v);
+  const month = await openMonthForEnrollment(v.enrollment.id, monthId);
+  if (!month) return fail("Pick one of your open program months.");
+  const { portalPlanning } = await import("@/lib/portal");
+  const p = await portalPlanning(v.enrollment, month.id);
+  if (!p) return fail("Pick one of your open program months.");
+  if (!p.noCallEligible) return fail("Your program already plans each month on a strategy call.");
+  if (p.planningMode !== "WRITTEN") return { ok: true, message: "This month is already on the strategy-call path." };
+  const { setPlanningMode } = await import("@/lib/programMonths");
+  await setPlanningMode(month.id, "CALL");
+  await ownerBell("portal_planning", `Back to a strategy call — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} moved ${month.monthKey} back to the strategy-call path.`, `/content/${v.enrollment.id}`, `portal-planning-back-${month.id}`);
+  try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+  return { ok: true, message: p.callStatus === "SCHEDULED" ? "Done — this month is back on the call path, and your call is already booked." : "Done — book your strategy call and we'll plan the month on it." };
+}
+
 /** Cancel one of the client's own session requests (a confirmed one becomes a cancellation request the desk actions). */
 export async function portalCancelSessionRequest(auth: PortalAuth, requestId: string, reason?: string): Promise<R> {
   const v = await viewerFor(auth, "requestSession");

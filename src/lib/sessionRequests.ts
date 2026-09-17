@@ -154,7 +154,12 @@ async function ensureDeskTask(requestId: string): Promise<void> {
     prisma.client.findUnique({ where: { id: r.clientId }, select: { id: true, name: true } }),
     prisma.contentMonth.findUnique({ where: { id: r.monthId }, select: { monthKey: true } }),
   ]);
-  if (isTestClientName(client?.name)) return;
+  // TEST clients get no row on Kyle's real desk — except when a probe asks for
+  // one. Without the escape hatch this create/close path could only ever be
+  // read, never run: `ensureDeskTask` returned early for the only clients we
+  // are allowed to write to (review, Sep 17). The flag is set by a probe
+  // process, never in production.
+  if (isTestClientName(client?.name) && process.env.PROGRAM_DESK_TASKS_FOR_TEST !== "1") return;
   const dedupeKey = `${TASK_PREFIX}${r.id}`;
   const when = r.slotStart
     ? `${r.slotStart.toLocaleString("en-US", { timeZone: r.timezone ?? "America/New_York", weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" })} (${r.timezone ?? "ET"})`
