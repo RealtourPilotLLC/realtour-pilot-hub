@@ -487,3 +487,78 @@ export async function teamChatConversations(scope: ChatScope): Promise<ChatConve
     sortAt: p.deliveryDue ?? p.shootDate ?? null,
   }));
 }
+
+// ---------------------------------------------------------------------------
+// WHO IS CARRYING WHAT (Jordan, Sep 17: "In the editing room, I want to be able
+// to see assigned workloads.")
+//
+// ONE DEFINITION OF "WORK", shared with the editor's own header. A row sitting
+// in the Review Room, or approved and waiting on delivery, is on the office —
+// not on Kim. A Waiting row has no footage in yet, so it is nobody's edit. Both
+// are counted, separately, because "Kim has 14" and "Kim has 6 to edit, 5 in
+// review and 3 with no footage" are different sentences and only one of them is
+// actionable. These lists were written inline in the editor view; they live
+// here now so the strip above the queue and the header below it can never
+// disagree about the same person.
+// ---------------------------------------------------------------------------
+
+/** Statuses where the ball is with the office, not the editor. */
+export const WAITING_ON_OFFICE = new Set(["Ready for review", "Approved"]);
+/** No footage in — the office is holding it, or the photographer hasn't uploaded. */
+export const WAITING_ON_FOOTAGE = "Waiting";
+
+export type EditorWorkload = {
+  key: string | null; // null = nobody is assigned
+  name: string;
+  toEdit: number; // what this person actually owes
+  overdue: number; // of toEdit, past its due date
+  dueToday: number; // of toEdit, due before tomorrow
+  inReview: number; // handed back to the office
+  waiting: number; // no footage yet
+  videos: number; // deliverables across toEdit — the honest size of the pile
+  upcoming: number; // shoots not yet in
+  oldestISO: string | null; // the longest-waiting item they owe
+};
+
+/**
+ * Aggregate the queue by the editor each row actually resolves to.
+ *
+ * Unassigned rows are kept as their own line rather than dropped: a job nobody
+ * owns is the one most likely to be missed, and it is invisible in a per-editor
+ * view that only lists people.
+ */
+export function editorWorkloads(
+  notDone: QueueRow[],
+  upcoming: QueueRow[],
+  opts: { endOfDayISO?: string } = {},
+): EditorWorkload[] {
+  const endOfDay = opts.endOfDayISO ? Date.parse(opts.endOfDayISO) : null;
+  const byKey = new Map<string | null, EditorWorkload>();
+  const blank = (key: string | null, name: string): EditorWorkload => ({
+    key, name, toEdit: 0, overdue: 0, dueToday: 0, inReview: 0, waiting: 0, videos: 0, upcoming: 0, oldestISO: null,
+  });
+  const at = (key: string | null, name: string) => {
+    const found = byKey.get(key) ?? blank(key, name);
+    byKey.set(key, found);
+    return found;
+  };
+
+  for (const r of notDone) {
+    const w = at(r.editorKey ?? null, r.editor ?? "Nobody assigned");
+    if (r.status === WAITING_ON_FOOTAGE) { w.waiting++; continue; }
+    if (WAITING_ON_OFFICE.has(r.status)) { w.inReview++; continue; }
+    w.toEdit++;
+    w.videos += r.videos || 1;
+    if (r.late) w.overdue++;
+    else if (endOfDay && r.dueISO && Date.parse(r.dueISO) <= endOfDay) w.dueToday++;
+    if (r.dueISO && (!w.oldestISO || r.dueISO < w.oldestISO)) w.oldestISO = r.dueISO;
+  }
+  for (const r of upcoming) at(r.editorKey ?? null, r.editor ?? "Nobody assigned").upcoming++;
+
+  // Busiest first, but an unassigned pile always leads: it is the only line on
+  // this strip that nobody is going to notice on their own.
+  return [...byKey.values()].sort((a, b) => {
+    if ((a.key === null) !== (b.key === null)) return a.key === null ? -1 : 1;
+    return b.overdue - a.overdue || b.toEdit - a.toEdit || b.videos - a.videos;
+  });
+}
