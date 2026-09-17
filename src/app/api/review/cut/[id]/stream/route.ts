@@ -122,7 +122,9 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   // a public store"), so the store has to be REPLACED by one created with
   // private access and the existing objects moved across. Jordan's call; until
   // then, treat any cut URL that has already left the building as still live.
-  if (sub.blobUrl) return proxyBlob(req, sub.blobUrl, sub.fileName);
+  // `dl=1` (the portal's download door, /api/portal/download) asks for an
+  // attachment so the browser saves the file instead of playing it.
+  if (sub.blobUrl) return proxyBlob(req, sub.blobUrl, sub.fileName, req.nextUrl.searchParams.get("dl") === "1");
 
   if (!sub.assetPath) return NextResponse.json({ error: "No file is attached to this cut" }, { status: 404 });
 
@@ -158,7 +160,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
 // gate just admitted.
 const PASS_THROUGH = ["content-type", "content-length", "content-range", "accept-ranges", "etag", "last-modified"];
 
-async function proxyBlob(req: NextRequest, blobUrl: string, fileName: string | null): Promise<Response> {
+async function proxyBlob(req: NextRequest, blobUrl: string, fileName: string | null, asAttachment = false): Promise<Response> {
   const range = req.headers.get("range");
   const headers: Record<string, string> = {};
   if (range) headers.Range = range;
@@ -202,7 +204,7 @@ async function proxyBlob(req: NextRequest, blobUrl: string, fileName: string | n
   // Inline so it plays in the tab; the name is the editor's file name, which
   // is already the one the review surfaces show.
   const safe = (fileName ?? "cut").replace(/["\\\r\n]/g, "");
-  out.set("Content-Disposition", `inline; filename="${safe}"`);
+  out.set("Content-Disposition", `${asAttachment ? "attachment" : "inline"}; filename="${safe}"`);
   if (!out.has("accept-ranges")) out.set("Accept-Ranges", "bytes");
   return new Response(upstream.body, { status: upstream.status, headers: out });
 }

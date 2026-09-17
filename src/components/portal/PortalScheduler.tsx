@@ -2,11 +2,12 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { CalendarClock, Camera, CheckCircle2, ChevronRight, Clock, Loader2, Lock, MapPin, XCircle } from "lucide-react";
+import { CalendarClock, Camera, CheckCircle2, ChevronRight, Clock, Info, Loader2, Lock, MapPin, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { portalRequestSession } from "@/app/portal/actions";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
 import type { PortalSlotDay, PortalScheduleMonth } from "@/lib/portal";
+import { CancelRequestButton } from "@/components/portal/PlanningChoice";
 
 // The scheduling card, clean (Jordan, Aug 28): finished states collapse to
 // slim ✓ rows; the live picker gets room — big day pills, a real time grid,
@@ -23,10 +24,13 @@ import type { PortalSlotDay, PortalScheduleMonth } from "@/lib/portal";
 
 const dayLabel = (date: string) =>
   new Date(`${date}T12:00:00Z`).toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" });
-const timeLabel = (iso: string) =>
-  new Date(iso).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
-const whenLabel = (iso: string) =>
-  new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" });
+// The client's own timezone (enrollment.timezone, ET by default) — every
+// time on this card is printed in it and labelled with it.
+const tzName = (tz: string) => new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "short" }).formatToParts(new Date()).find((p) => p.type === "timeZoneName")?.value ?? "ET";
+const timeLabel = (iso: string, tz: string) =>
+  new Date(iso).toLocaleTimeString("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" });
+const whenLabel = (iso: string, tz: string) =>
+  new Date(iso).toLocaleString("en-US", { timeZone: tz, weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" });
 const monthLabel = (monthKey: string) => {
   const [y, m] = monthKey.split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, 1, 12)).toLocaleDateString("en-US", { timeZone: "UTC", month: "long", year: "numeric" });
@@ -44,7 +48,7 @@ function StatusRow({ icon: Icon, tone, children }: { icon: typeof CheckCircle2; 
 }
 
 /** One request, in the client's words: what they asked for and where it stands. */
-function RequestRow({ r }: { r: PortalScheduleMonth["requests"][number] }) {
+function RequestRow({ r, canCancel, tz }: { r: PortalScheduleMonth["requests"][number]; canCancel: boolean; tz: string }) {
   const tone = r.status === "CONFIRMED" ? "ok" : r.status === "REQUESTED" || r.status === "RESCHEDULE_REQUESTED" || r.status === "CANCEL_REQUESTED" ? "pending" : r.status === "DECLINED" ? "bad" : "muted";
   const Icon = tone === "ok" ? CheckCircle2 : tone === "pending" ? Clock : tone === "bad" ? XCircle : Clock;
   const preferred = /^Preferred:\s*(.+)$/m.exec(r.notes ?? "")?.[1];
@@ -53,16 +57,19 @@ function RequestRow({ r }: { r: PortalScheduleMonth["requests"][number] }) {
       <StatusRow icon={Icon} tone={tone}>
         <span className="font-semibold">{r.label}</span>
         <span className="block text-xs text-muted">
-          {r.slotStartISO ? `${whenLabel(r.slotStartISO)} ET` : preferred ? `Preferred: ${preferred}` : "Time to be confirmed"}
+          {r.slotStartISO ? `${whenLabel(r.slotStartISO, tz)} ${tzName(tz)}` : preferred ? `Preferred: ${preferred}` : "Time to be confirmed"}
           {r.locationText ? ` · ${r.locationText}` : ""}
         </span>
       </StatusRow>
+      {canCancel && (r.status === "REQUESTED" || r.status === "CONFIRMED" || r.status === "RESCHEDULE_REQUESTED") && (
+        <div className="mt-1 flex"><CancelRequestButton requestId={r.id} confirmed={r.status === "CONFIRMED"} /></div>
+      )}
     </li>
   );
 }
 
 export function PortalScheduler({
-  months, bookingUrl, days = [], readOnly = false,
+  months, bookingUrl, days = [], readOnly = false, timezone = "America/New_York",
 }: {
   /** This month and the open ones after it — each with its gate, capacity and requests. Empty = no open month yet. */
   months: PortalScheduleMonth[];
@@ -71,7 +78,10 @@ export function PortalScheduler({
   days?: PortalSlotDay[];
   /** A paused/ended program or a viewer-only seat: no booking, no requests. */
   readOnly?: boolean;
+  /** IANA zone every time on the card is printed in. */
+  timezone?: string;
 }) {
+  const tz = timezone;
   const router = useRouter();
   // Land on the first month that still has something to do — an open request
   // to watch, or room to book. A month whose session is filmed (or fully
@@ -117,7 +127,6 @@ export function PortalScheduler({
   const openRequests = month ? month.requests.filter((r) => OPEN.has(r.status)) : [];
   const booked = !!month && (!!month.bookedShootISO || month.requests.some((r) => r.status === "CONFIRMED"));
   const filmed = !!month?.bookedShootISO && new Date(month.bookedShootISO) < new Date();
-  const callBooked = !!month && month.callStatus !== "NOT_SCHEDULED";
   const writtenPath = !!month && month.planningMode === "WRITTEN";
   const monthFull = !!month && month.capacity.remaining <= 0;
   const showPicker = !!month && !readOnly && !month.locked && !monthFull && !done;
@@ -151,11 +160,25 @@ export function PortalScheduler({
                 {month.locked ? "Planning in writing — send us your answers and session booking opens" : "Planning in writing — answers received"}
               </StatusRow>
             ) : month.callStatus === "COMPLETED" ? (
-              <StatusRow icon={CheckCircle2} tone="ok">Strategy call — held{month.callAtISO ? ` ${new Date(month.callAtISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}` : ""}</StatusRow>
+              <StatusRow icon={CheckCircle2} tone="ok">Strategy call — held{month.callAtISO ? ` ${new Date(month.callAtISO).toLocaleDateString("en-US", { timeZone: tz, month: "short", day: "numeric" })}` : ""}</StatusRow>
             ) : month.callStatus === "SCHEDULED" ? (
-              <StatusRow icon={CheckCircle2} tone="ok">Strategy call — booked{month.callAtISO ? ` for ${whenLabel(month.callAtISO)} ET` : " for this month"}</StatusRow>
-            ) : callBooked ? (
-              <StatusRow icon={CheckCircle2} tone="ok">Strategy call — on the books for this month</StatusRow>
+              <StatusRow icon={CheckCircle2} tone="ok">Strategy call — booked{month.callAtISO ? ` for ${whenLabel(month.callAtISO, tz)} ${tzName(tz)}` : " for this month"}</StatusRow>
+            ) : month.callStatus === "NOT_REQUIRED" ? (
+              // NOT_REQUIRED means the program has no strategy call at all —
+              // say that, never a tick implying one is booked.
+              <StatusRow icon={Info} tone="muted">Your program doesn&rsquo;t include a strategy call — we plan the month from your topics and answers.</StatusRow>
+            ) : month.callStatus === "SKIPPED" ? (
+              // SKIPPED means no call exists for this month. The client still
+              // needs a way to get one, so the booking link stays reachable.
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <StatusRow icon={Info} tone="muted">No strategy call this month.</StatusRow>
+                {!readOnly && (
+                  <a href={bookingUrl} target="_blank" rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-brand hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
+                    Book one anyway <ChevronRight className="size-3.5" />
+                  </a>
+                )}
+              </div>
             ) : readOnly ? (
               <StatusRow icon={Lock} tone="muted">Strategy calls resume when your program does</StatusRow>
             ) : (
@@ -175,7 +198,7 @@ export function PortalScheduler({
           <div className="mt-3 border-t border-border pt-3">
             {booked ? (
               <StatusRow icon={CheckCircle2} tone="ok">
-                {filmed ? `Filming session — filmed ${whenLabel(month.bookedShootISO!)} ET` : `Filming session — booked${month.bookedShootISO ? ` for ${whenLabel(month.bookedShootISO)} ET` : ""}`}
+                {filmed ? `Filming session — filmed ${whenLabel(month.bookedShootISO!, tz)} ${tzName(tz)}` : `Filming session — booked${month.bookedShootISO ? ` for ${whenLabel(month.bookedShootISO, tz)} ${tzName(tz)}` : ""}`}
               </StatusRow>
             ) : month.locked ? (
               <StatusRow icon={Lock} tone="muted">{month.reason}</StatusRow>
@@ -185,7 +208,7 @@ export function PortalScheduler({
 
             {month.requests.length > 0 && (
               <ul className="mt-2 space-y-2">
-                {month.requests.map((r) => <RequestRow key={r.id} r={r} />)}
+                {month.requests.map((r) => <RequestRow key={r.id} r={r} canCancel={!readOnly} tz={tz} />)}
               </ul>
             )}
             {done && <div className="mt-2"><StatusRow icon={CheckCircle2} tone="ok">{done}</StatusRow></div>}
@@ -218,7 +241,7 @@ export function PortalScheduler({
                                 "rounded-xl border px-2 py-2 text-sm font-medium tabular-nums transition-colors",
                                 slot === s ? "border-brand bg-brand-soft font-semibold text-brand" : "border-border bg-surface text-muted hover:border-border-strong hover:text-foreground",
                               )}>
-                              {timeLabel(s)}
+                              {timeLabel(s, tz)}
                             </button>
                           ))}
                         </div>
@@ -231,7 +254,7 @@ export function PortalScheduler({
                     <input value={when} onChange={(e) => setWhen(e.target.value)} placeholder="e.g. Tuesday or Thursday afternoon"
                       className="mt-1.5 w-full rounded-xl border border-border bg-surface px-3.5 py-2.5 text-sm outline-none focus:border-brand" />
                     {month.earliestISO && (
-                      <span className="mt-1 block text-xs text-muted">Sessions start on or after {new Date(month.earliestISO).toLocaleDateString("en-US", { timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric" })}.</span>
+                      <span className="mt-1 block text-xs text-muted">Sessions start on or after {new Date(month.earliestISO).toLocaleDateString("en-US", { timeZone: tz, weekday: "long", month: "long", day: "numeric" })}.</span>
                     )}
                   </label>
                 )}
@@ -250,7 +273,7 @@ export function PortalScheduler({
                   className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-brand px-4 py-2.5 text-sm font-semibold text-white shadow hover:opacity-90 disabled:opacity-40"
                 >
                   {busy && <Loader2 className="size-4 animate-spin" />}
-                  {slot && activeDay ? `Request ${dayLabel(activeDay.date)} at ${timeLabel(slot)}` : "Send my request"}
+                  {slot && activeDay ? `Request ${dayLabel(activeDay.date)} at ${timeLabel(slot, tz)}` : "Send my request"}
                 </button>
                 <p className="mt-1.5 text-xs text-muted">We confirm every session by hand — it shows as &ldquo;awaiting confirmation&rdquo; until it&rsquo;s on the calendar.</p>
                 {err && <p className="mt-2 text-xs text-danger">{err}</p>}

@@ -2,8 +2,10 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { resolvePortalViewer, submissionForEnrollment, scriptForEnrollment, type PortalViewer } from "@/lib/portal";
+import { resolvePortalViewer, submissionForEnrollment, scriptForEnrollment, topicForEnrollment, openMonthForEnrollment, type PortalViewer } from "@/lib/portal";
 import { can, actorLabel, refusalMessage, type PortalPermission } from "@/lib/portalAccess";
+import { approveCut, requestChangesOnCut, replyToComment, setCommentResolved, isMine, type OpenNotesChoice } from "@/lib/clientDecisions";
+import { setPostedByClient, saveCaptionEdit, draftCaptionForVideo } from "@/lib/postingKit";
 import { clip } from "@/lib/text";
 
 // ---------------------------------------------------------------------------
@@ -87,11 +89,12 @@ export async function portalSuggestScript(auth: PortalAuth, scriptId: string, bo
   return { ok: true, message: "Got it — we'll take a look and update the script." };
 }
 
-/** Client drops a (timestamped) note on one of their cuts. */
-export async function portalAddComment(auth: PortalAuth, submissionId: string, timeSec: number | null, body: string): Promise<RId> {
+/** Client drops a (timestamped) note on one of their cuts — or, with `parentId`, a reply under an existing note. */
+export async function portalAddComment(auth: PortalAuth, submissionId: string, timeSec: number | null, body: string, parentId?: string | null): Promise<RId> {
   const v = await viewerFor(auth, "comment");
   if (typeof v === "string") return fail(v);
   const { enrollment } = v;
+  if (parentId) return replyToComment(v, parentId, body);
   const text = (body ?? "").trim();
   if (text.length < 2) return fail("Write a quick note first.");
   const sub = await submissionForEnrollment(enrollment, submissionId);
@@ -120,92 +123,56 @@ export async function portalAddComment(auth: PortalAuth, submissionId: string, t
 export async function portalDeleteComment(auth: PortalAuth, commentId: string): Promise<R> {
   const v = await viewerFor(auth, "comment");
   if (typeof v === "string") return fail(v);
-  const c = await prisma.portalComment.findUnique({ where: { id: commentId }, select: { enrollmentId: true, status: true } });
+  const c = await prisma.portalComment.findUnique({ where: { id: commentId }, select: { enrollmentId: true, status: true, clientUserId: true, staffUserId: true } });
   if (!c || c.enrollmentId !== v.enrollment.id) return fail("That note isn't yours to remove.");
+  // Same enrollment is not the same person: only the author removes a note.
+  if (!isMine(v, c)) return fail("That note was written by someone else on your program — only they can remove it.");
   if (c.status !== "OPEN") return fail("That note was already sent to the editor.");
   await prisma.portalComment.delete({ where: { id: commentId } });
   return { ok: true, message: "Removed." };
 }
 
 /**
- * Client sends their notes as ONE revision request. Bundles every OPEN note on
- * the cut (plus an optional overall note), raises the revision through the
- * same machinery a text or call uses — work-order brief, editor task, bells —
- * and marks the notes SENT.
+ * "Submit change request": every OPEN note on the cut (plus an optional
+ * overall note) becomes ONE revision through the same machinery a text or
+ * call uses, and a ClientDecision(REQUEST_CHANGES) keyed to the exact cut
+ * records it. A second submit while that request is open joins it — one job.
  */
-export async function portalRequestRevision(auth: PortalAuth, submissionId: string, generalNote: string): Promise<R> {
+export async function portalRequestRevision(auth: PortalAuth, submissionId: string, generalNote: string): Promise<R & { duplicate?: boolean }> {
   const v = await viewerFor(auth, "requestChanges");
   if (typeof v === "string") return fail(v);
-  const { enrollment } = v;
-  const sub = await submissionForEnrollment(enrollment, submissionId);
-  if (!sub) return fail("That video isn't on your page.");
+  const r = await requestChangesOnCut(v, submissionId, generalNote);
+  if (!r.ok) return fail(r.message);
+  return { ok: true, message: r.message, duplicate: r.duplicate };
+}
 
-  // THROTTLE (review finding: this action fed a billable AI analysis + several
-  // DB rows per call with no guard). One send per project per 15 minutes —
-  // notes keep accumulating meanwhile and ride the next send.
-  const recent = await prisma.revisionBrief.count({
-    where: { projectId: sub.projectId, source: "portal", createdAt: { gte: new Date(Date.now() - 15 * 60_000) } },
-  });
-  if (recent > 0) {
-    return fail("We already got your last request — add any extra notes above and send again in a few minutes.");
-  }
+/**
+ * "Approve this version": an attributable ClientDecision(APPROVE) on the
+ * immutable cut the client watched. OWNER only (can → approveEdits). Open
+ * notes need an explicit choice: INCLUDE (send along as notes) or DISCARD
+ * (resolve them).
+ */
+export async function portalApproveCut(auth: PortalAuth, submissionId: string, choice: OpenNotesChoice): Promise<R & { duplicate?: boolean }> {
+  const v = await viewerFor(auth, "approveEdits");
+  if (typeof v === "string") return fail(v);
+  const c: OpenNotesChoice = choice === "INCLUDE" || choice === "DISCARD" ? choice : "NONE";
+  const r = await approveCut(v, submissionId, c);
+  if (!r.ok) return fail(r.message);
+  await ownerBell(
+    "portal_approval",
+    `Video approved — ${v.enrollment.clientName || "a client"}`,
+    `${actorLabel(v)} approved a cut${c === "INCLUDE" ? " (with notes attached)" : ""}.`,
+    `/content/${v.enrollment.id}?tab=videos`,
+    `portal-approve-${submissionId}`,
+  );
+  return { ok: true, message: r.message, duplicate: r.duplicate };
+}
 
-  const notes = await prisma.portalComment.findMany({
-    where: { submissionId, enrollmentId: enrollment.id, status: "OPEN" },
-    orderBy: [{ timeSec: { sort: "asc", nulls: "last" } }, { createdAt: "asc" }],
-    select: { id: true, timeSec: true, body: true },
-  });
-  const overall = clip((generalNote ?? "").trim(), 1000);
-  if (notes.length === 0 && overall.length < 3) {
-    return fail("Add a note on the video (or an overall note) first, so the editor knows what to change.");
-  }
-
-  const fmtT = (t: number | null) =>
-    t == null ? "" : `[${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}] `;
-  const lines = [
-    ...notes.map((n) => `${fmtT(n.timeSec)}${n.body}`),
-    ...(overall ? [overall] : []),
-  ];
-  // Names the video explicitly: the revision router reads deliverable words to
-  // pick the video lane, and the editor needs to know WHICH cut on a
-  // multi-video month. Names the PERSON too — "Jordan (on behalf of Cara
-  // TEST)" when it came through the owner iframe.
-  const cutName = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { fileName: true } });
-  const by = actorLabel(v);
-  const compiled = `Video revision requested from the client portal by ${by}${sub.project?.title ? ` on ${sub.project.title.split(",")[0]}` : ""}${cutName?.fileName ? ` (cut: ${cutName.fileName})` : ""}:\n${lines.map((l) => `• ${l}`).join("\n")}`;
-
-  try {
-    const { raiseRevision } = await import("@/lib/comms");
-    const ok = await raiseRevision({
-      projectId: sub.projectId,
-      clientId: enrollment.clientId,
-      clientName: enrollment.clientName || null,
-      propertyAddress: sub.project?.title ?? null,
-      note: compiled,
-      source: "portal",
-    });
-    if (!ok) return fail("Something hiccuped on our side — text us and we'll get right on it.");
-  } catch {
-    return fail("Something hiccuped on our side — text us and we'll get right on it.");
-  }
-  await prisma.portalComment.updateMany({
-    where: { id: { in: notes.map((n) => n.id) } },
-    data: { status: "SENT" },
-  });
-  // The client sent this cut back. The STATUS flip stays (the editor lane and
-  // findNextCut read it: the same filename re-exported counts as a redo, and
-  // the Review Room shows it as waiting on editor changes) — but the client's
-  // request is now its own stamp, clientRequestedAt/By. Jordan's internal QC
-  // verdict (decidedAt/decidedBy) is his and is no longer overwritten (spec
-  // §8: five separate concepts). portalCuts keeps showing the cut to the
-  // client because their own stamp marks it as seen.
-  await prisma.reviewSubmission
-    .updateMany({
-      where: { id: submissionId, status: "APPROVED" },
-      data: { status: "CHANGES_REQUESTED", clientRequestedAt: new Date(), clientRequestedBy: by },
-    })
-    .catch(() => {});
-  return { ok: true, message: "Sent to the editor — we'll text you when the new cut is ready." };
+/** Resolve or reopen one of the notes on the viewer's cut. */
+export async function portalResolveComment(auth: PortalAuth, commentId: string, resolved: boolean): Promise<R> {
+  const v = await viewerFor(auth, "comment");
+  if (typeof v === "string") return fail(v);
+  return setCommentResolved(v, commentId, !!resolved);
 }
 
 /** Client updates their own brand + preference fields (Agent Profile). */
@@ -311,4 +278,256 @@ export async function portalRequestSession(
     label: sessionRequestLabel(r.status),
     duplicate: r.duplicate,
   };
+}
+
+// ===========================================================================
+// WAVE 2 — Video Topics, the guided interview, My Strategy corrections, the
+// planning path, session-request cancellation and the posting kit. Same
+// shape as everything above: resolve, permit, prove ownership, then write.
+// ===========================================================================
+
+/** The W1-C topic layer's actor: the person, or staff on their behalf; the link is a client with no person. */
+const topicActor = (v: PortalViewer) => ({
+  kind: v.actor.kind === "STAFF" ? ("STAFF" as const) : ("CLIENT" as const),
+  clientUserId: v.actor.kind === "CLIENT" ? v.actor.clientUserId : null,
+  staffUserId: v.actor.kind === "STAFF" ? v.actor.staffUserId : null,
+});
+
+export type SelectTopicResult = R & { overflow?: boolean; capacity?: { owed: number; selected: number } };
+
+/** Select one of the client's topics FOR a named month. Overflow is kept and explained, never deleted. */
+export async function portalSelectTopic(auth: PortalAuth, topicId: string, monthId: string): Promise<SelectTopicResult> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  const [topic, month] = await Promise.all([topicForEnrollment(v.enrollment.id, topicId), openMonthForEnrollment(v.enrollment.id, monthId)]);
+  if (!topic) return fail("That topic isn't in your bank.");
+  if (!month) return fail("Pick one of your open program months.");
+  const { selectTopicForMonth } = await import("@/lib/contentTopics");
+  try {
+    const r = await selectTopicForMonth(topic.id, month.id, { source: "client", actor: topicActor(v), status: "SELECTED" });
+    try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+    const { monthLabel } = await import("@/lib/contentProgram");
+    if (r.outcome === "WITHHELD") return fail("That topic was set aside earlier — text us if you'd like it back on the table.");
+    return {
+      ok: true, overflow: r.overflow, capacity: r.capacity,
+      message: r.overflow
+        ? `Added to ${monthLabel(month.monthKey)} as an extra — your package covers ${month.videosOwed} video${month.videosOwed === 1 ? "" : "s"} that month, so this one waits its turn (nothing is thrown away).`
+        : `Selected for ${monthLabel(month.monthKey)}.`,
+    };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "That didn't save — try again.");
+  }
+}
+
+/** Remove an uncommitted selection (a topic with a script or footage stays on its month). */
+export async function portalRemoveSelection(auth: PortalAuth, topicId: string, monthId: string): Promise<R> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  const topic = await topicForEnrollment(v.enrollment.id, topicId);
+  if (!topic) return fail("That topic isn't in your bank.");
+  const month = await prisma.contentMonth.findFirst({ where: { id: monthId, enrollmentId: v.enrollment.id }, select: { id: true } });
+  if (!month) return fail("Pick one of your program months.");
+  const { deselectTopic } = await import("@/lib/contentTopics");
+  try {
+    await deselectTopic(topic.id, month.id, topicActor(v));
+    try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+    return { ok: true, message: "Removed from that month — it's back in your bank." };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "That didn't save — try again.");
+  }
+}
+
+/** The client suggests a topic of their own. It joins their bank as theirs, proposed for staff to shape. */
+export async function portalSuggestTopic(auth: PortalAuth, input: { title: string; concept?: string; pillarId?: string | null; monthId?: string | null }): Promise<RId> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  const title = clip((input.title ?? "").trim(), 200);
+  if (title.length < 3) return fail("Give your idea a title first.");
+  const concept = clip((input.concept ?? "").trim(), 1000) || null;
+  let pillarId: string | null = null;
+  if (input.pillarId && /^[a-z0-9]{10,40}$/i.test(input.pillarId)) {
+    const p = await prisma.contentPillar.findFirst({ where: { id: input.pillarId, enrollmentId: v.enrollment.id }, select: { id: true } });
+    pillarId = p?.id ?? null;
+  }
+  const recent = await prisma.contentTopic.count({ where: { enrollmentId: v.enrollment.id, source: "client", createdAt: { gte: new Date(Date.now() - 86_400_000) } } });
+  if (recent >= 20) return fail("That's a lot of ideas for one day — we love it, but let's talk them through. Text us!");
+  const { createTopic } = await import("@/lib/contentTopics");
+  try {
+    const actor = topicActor(v);
+    const r = await createTopic({
+      enrollmentId: v.enrollment.id, title, concept, pillarId, source: "client", clientUserId: actor.clientUserId, clientWording: title,
+      approvalState: "PROPOSED", actor, eventKind: "CREATED", note: `Suggested on the portal by ${actorLabel(v)}`,
+    });
+    if (r.existed) return { ok: true, message: "That idea is already in your bank.", id: r.id };
+    if (input.monthId) {
+      const month = await openMonthForEnrollment(v.enrollment.id, input.monthId);
+      if (month) {
+        const { selectTopicForMonth } = await import("@/lib/contentTopics");
+        await selectTopicForMonth(r.id, month.id, { source: "client", actor, status: "SELECTED" }).catch(() => {});
+      }
+    }
+    await ownerBell("portal_topic", `Topic idea — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)}: ${clip(title, 120)}`, `/content/${v.enrollment.id}?tab=topics`, `portal-topic-${v.enrollment.id}-${new Date().toISOString().slice(0, 13)}`);
+    try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+    return { ok: true, message: "Added to your bank — we'll shape it with you.", id: r.id };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "That didn't save — try again.");
+  }
+}
+
+/** A note on a topic — lands on its history as a discussion, changes nothing else. */
+export async function portalDiscussTopic(auth: PortalAuth, topicId: string, note: string): Promise<R> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  const topic = await topicForEnrollment(v.enrollment.id, topicId);
+  if (!topic) return fail("That topic isn't in your bank.");
+  const text = clip((note ?? "").trim(), 1000);
+  if (text.length < 2) return fail("Write a quick note first.");
+  const { discussTopic } = await import("@/lib/contentTopics");
+  await discussTopic(topic.id, text, topicActor(v), "portal");
+  await ownerBell("portal_topic_note", `Topic note — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} on "${topic.title}": ${clip(text, 120)}`, `/content/${v.enrollment.id}?tab=topics`, `portal-topic-note-${topic.id}-${new Date().toISOString().slice(0, 13)}`);
+  return { ok: true, message: "Noted — it's on the topic's history for us to read." };
+}
+
+/** Opening a topic for a month starts (or resumes) its guided interview. */
+export async function portalOpenInterview(auth: PortalAuth, topicId: string, monthId: string): Promise<RId> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  const [topic, month] = await Promise.all([topicForEnrollment(v.enrollment.id, topicId), openMonthForEnrollment(v.enrollment.id, monthId)]);
+  if (!topic) return fail("That topic isn't in your bank.");
+  if (!month) return fail("Pick one of your open program months.");
+  const { getOrCreateInterview } = await import("@/lib/contentInterview");
+  try {
+    const a = topicActor(v);
+    const id = await getOrCreateInterview(topic.id, month.id, { clientUserId: a.clientUserId, staffUserId: a.staffUserId });
+    return { ok: true, message: "Let's go.", id };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "Couldn't open the questions — try again.");
+  }
+}
+
+async function interviewOwned(enrollmentId: string, interviewId: string) {
+  if (!/^[a-z0-9]{10,40}$/i.test(interviewId)) return null;
+  const iv = await prisma.contentInterview.findUnique({ where: { id: interviewId }, select: { id: true, enrollmentId: true, monthId: true, topicId: true } });
+  return iv && iv.enrollmentId === enrollmentId ? iv : null;
+}
+
+/** Answer, skip or "I don't know" one question. Every answer is a new row; the earlier one stays. */
+export async function portalAnswerInterview(auth: PortalAuth, interviewId: string, questionKey: string, text: string, kind: "TYPED" | "SKIPPED" | "DONT_KNOW", questionText?: string | null): Promise<R> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  const iv = await interviewOwned(v.enrollment.id, interviewId);
+  if (!iv) return fail("Those questions aren't on your page.");
+  if (!/^[a-zA-Z]+(?::fu:[a-z-]+)?$/.test(questionKey)) return fail("Unknown question.");
+  const k = kind === "SKIPPED" || kind === "DONT_KNOW" ? kind : "TYPED";
+  const { answerQuestion } = await import("@/lib/contentInterview");
+  try {
+    const a = topicActor(v);
+    await answerQuestion(iv.id, questionKey, { text: k === "TYPED" ? clip((text ?? "").trim(), 8000) : null, kind: k, actor: { clientUserId: a.clientUserId, staffUserId: a.staffUserId }, questionText: questionText ?? null });
+    return { ok: true, message: k === "TYPED" ? "Saved." : k === "SKIPPED" ? "Skipped." : "Noted — no worries." };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "That didn't save — try again.");
+  }
+}
+
+/** Send the answers: the month's written planning moves on and we draft the script from them (staff-side). */
+export async function portalSubmitInterview(auth: PortalAuth, interviewId: string): Promise<R> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  const iv = await interviewOwned(v.enrollment.id, interviewId);
+  if (!iv) return fail("Those questions aren't on your page.");
+  const { submitInterview } = await import("@/lib/contentInterview");
+  try {
+    const a = topicActor(v);
+    await submitInterview(iv.id, { clientUserId: a.clientUserId, staffUserId: a.staffUserId });
+    // The month's derived state (written path: preparation completes on submission) is recomputed by the program layer.
+    const { recalcProgramMonth } = await import("@/lib/programMonths");
+    await recalcProgramMonth(iv.monthId).catch(() => {});
+    const topic = await prisma.contentTopic.findUnique({ where: { id: iv.topicId }, select: { title: true } });
+    await ownerBell("portal_interview", `Planning answers in — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} answered the questions for "${topic?.title ?? "a topic"}" — ready to draft.`, `/content/${v.enrollment.id}?tab=topics`, `portal-interview-${iv.id}`);
+    try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+    return { ok: true, message: "Sent — we'll draft the script from your answers and share it here for your read-through." };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "That didn't send — try again.");
+  }
+}
+
+/** A correction to the released strategy → a proposal for staff, never an edit. */
+export async function portalProposeStrategyCorrection(auth: PortalAuth, input: { summary: string; section?: string | null }): Promise<R> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  const summary = clip((input.summary ?? "").trim(), 500);
+  if (summary.length < 3) return fail("Tell us what to correct.");
+  const open = await prisma.contentStrategyProposal.count({ where: { enrollmentId: v.enrollment.id, status: "PROPOSED", sourceKind: "client" } });
+  if (open >= 10) return fail("You have a few corrections in already — we'll go through them with you. Text us if it's urgent.");
+  const { createStrategyProposal } = await import("@/lib/contentStrategy");
+  try {
+    const section = clip((input.section ?? "").trim(), 120);
+    await createStrategyProposal({
+      enrollmentId: v.enrollment.id, kind: "STRATEGY", summary: section ? `[${section}] ${summary}` : summary, sourceKind: "client", sourceRef: `portal:${actorLabel(v)}`,
+      clientUserId: v.actor.kind === "CLIENT" ? v.actor.clientUserId : null, impact: "Client correction from the portal — review against the released version before accepting.",
+    });
+    await ownerBell("portal_strategy_proposal", `Strategy correction — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)}: ${clip(summary, 120)}`, `/content/${v.enrollment.id}?tab=strategy`, `portal-strategy-${v.enrollment.id}-${new Date().toISOString().slice(0, 13)}`);
+    try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+    return { ok: true, message: "Got it — we'll review the correction and update your strategy if it changes anything. Your current version stays as is until then." };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "That didn't send — try again.");
+  }
+}
+
+/**
+ * "Plan without a call" for a month — only when the enrollment is eligible
+ * (portalPlanning.noCallEligible: call mode OPTIONAL_WRITTEN and not switched
+ * off for this client). Sets the written path and nothing else: a booked call
+ * is NOT cancelled here (that is a separate, explicit act on Calendly).
+ */
+export async function portalPlanWithoutCall(auth: PortalAuth, monthId: string): Promise<R> {
+  const v = await viewerFor(auth, "requestSession");
+  if (typeof v === "string") return fail(v);
+  const month = await openMonthForEnrollment(v.enrollment.id, monthId);
+  if (!month) return fail("Pick one of your open program months.");
+  const { portalPlanning } = await import("@/lib/portal");
+  const p = await portalPlanning(v.enrollment, month.id);
+  if (!p) return fail("Pick one of your open program months.");
+  if (!p.noCallEligible) return fail("Your program plans each month on a strategy call — book it and we'll take it from there.");
+  if (p.planningMode === "WRITTEN") return { ok: true, message: "You're already planning this month in writing." };
+  const { setPlanningMode } = await import("@/lib/programMonths");
+  await setPlanningMode(month.id, "WRITTEN");
+  await ownerBell("portal_planning", `Planning in writing — ${v.enrollment.clientName || "a client"}`, `${actorLabel(v)} chose to plan ${month.monthKey} without a call.${p.callStatus === "SCHEDULED" ? " A call is still booked — cancel it on Calendly if it is no longer needed." : ""}`, `/content/${v.enrollment.id}`, `portal-planning-${month.id}`);
+  try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+  return { ok: true, message: p.callStatus === "SCHEDULED" ? "Done — this month is planned in writing. Your booked call is still on the calendar; cancel it on Calendly if you no longer need it." : "Done — this month is planned in writing. Pick your topics and answer the questions; session booking opens once your answers are in." };
+}
+
+/** Cancel one of the client's own session requests (a confirmed one becomes a cancellation request the desk actions). */
+export async function portalCancelSessionRequest(auth: PortalAuth, requestId: string, reason?: string): Promise<R> {
+  const v = await viewerFor(auth, "requestSession");
+  if (typeof v === "string") return fail(v);
+  if (!/^[a-z0-9]{10,40}$/i.test(requestId)) return fail("That request isn't on your page.");
+  const r = await prisma.programSessionRequest.findUnique({ where: { id: requestId }, select: { id: true, enrollmentId: true, status: true } });
+  if (!r || r.enrollmentId !== v.enrollment.id) return fail("That request isn't on your page.");
+  if (!["REQUESTED", "CONFIRMED", "RESCHEDULE_REQUESTED"].includes(r.status)) return fail("That request is already closed.");
+  const { cancelSessionRequest } = await import("@/lib/sessionRequests");
+  await cancelSessionRequest(r.id, v.actor.kind === "STAFF" ? v.actor.staffUserId : v.actor.kind === "CLIENT" ? v.actor.clientUserId : null, clip((reason ?? "").trim(), 300) || `Cancelled on the portal by ${actorLabel(v)}`);
+  try { revalidatePath(`/content/${v.enrollment.id}`); } catch { /* outside a request */ }
+  return { ok: true, message: r.status === "CONFIRMED" ? "Cancellation requested — the session is on the calendar, so we'll confirm once it's taken off." : "Cancelled." };
+}
+
+/** "Marked as posted by me" — the client's own note, never a verified publication. */
+export async function portalMarkPosted(auth: PortalAuth, videoId: string, posted: boolean): Promise<R> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  return setPostedByClient(v, videoId, !!posted);
+}
+
+/** Save an edited caption as a new version (never overwrites the draft it came from). */
+export async function portalSaveCaption(auth: PortalAuth, videoId: string, input: { kind: string; body: string; basedOnId?: string | null }): Promise<RId> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  return saveCaptionEdit(v, videoId, input);
+}
+
+/** "Draft a caption" — runs only when caption_assistant is ON; otherwise says why not. */
+export async function portalDraftCaption(auth: PortalAuth, videoId: string): Promise<R & { drafted?: number }> {
+  const v = await viewerFor(auth, "suggest");
+  if (typeof v === "string") return fail(v);
+  return draftCaptionForVideo(v, videoId);
 }

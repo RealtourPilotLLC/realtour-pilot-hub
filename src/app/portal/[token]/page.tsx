@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import { resolvePortalViewer } from "@/lib/portal";
-import { PortalPage, portalTabOf } from "@/components/portal/PortalPage";
+import { PortalPage, portalTabOf, type PortalQuery } from "@/components/portal/PortalPage";
 import { PortalSignIn } from "@/components/portal/PortalSignIn";
 
 export const dynamic = "force-dynamic";
@@ -25,15 +25,16 @@ export const metadata = {
 // the released library.
 export default async function ClientPortalPage({ params, searchParams }: {
   params: Promise<{ token: string }>;
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<PortalQuery>;
 }) {
   const { token } = await params;
-  const { tab } = await searchParams;
+  const query = await searchParams;
+  const { tab } = query;
   if (!/^[a-zA-Z0-9_-]{20,}$/.test(token)) notFound();
   const r = await resolvePortalViewer({ token });
   if (!r.ok) {
     const reason = r.reason === "expired_token" ? "expired" : r.reason === "revoked" ? "revoked" : "rotated";
     return <PortalSignIn reason={reason} />;
   }
-  return <PortalPage viewer={r.viewer} tab={portalTabOf(tab)} path="/portal/[token]" />;
+  return <PortalPage viewer={r.viewer} tab={portalTabOf(tab)} path="/portal/[token]" query={query} />;
 }

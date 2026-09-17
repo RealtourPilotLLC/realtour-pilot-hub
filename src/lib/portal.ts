@@ -1,7 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etMonthKey } from "@/lib/contentProgram";
-import { DELIVERED_STAMP } from "@/lib/reviewCuts";
 import { verifySession, SESSION_COOKIE } from "@/lib/auth/jwt";
 import { verifyClientSession, CLIENT_COOKIE } from "@/lib/auth/clientSession";
 
@@ -292,131 +291,6 @@ async function reportMisattached(enrollment: { id: string; clientId: string }, p
   }
 }
 
-/** The projects on this enrollment's months that really are this client's. */
-async function ownProjects<T extends { id: string; clientId: string; title?: string | null }>(enrollment: { id: string; clientId: string }, projects: T[]): Promise<T[]> {
-  const wrong = projects.filter((p) => p.clientId !== enrollment.clientId);
-  if (wrong.length) await reportMisattached(enrollment, wrong);
-  return projects.filter((p) => p.clientId === enrollment.clientId);
-}
-
-// The month keys a portal shows: the current ET month plus the one before, so
-// a cut approved on the 1st for last month's session doesn't vanish overnight.
-export function portalMonthKeys(): string[] {
-  const cur = etMonthKey();
-  const [y, m] = cur.split("-").map(Number);
-  const prev = m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
-  return [cur, prev];
-}
-
-export type PortalCut = {
-  submissionId: string;
-  projectId: string;
-  fileName: string | null;
-  assetUrl: string; // streamable — cuts without a link are not shown
-  approvedAtISO: string | null;
-  monthKey: string;
-  revisionOpen: boolean; // a re-cut is already in motion
-  comments: { id: string; timeSec: number | null; body: string; status: string; createdAtISO: string }[];
-};
-
-/**
- * The cuts a client may watch: the latest INTERNALLY-APPROVED round per video
- * file, on THIS CLIENT'S projects attached to this enrollment's current/
- * previous month. A cut Jordan hasn't approved yet never reaches the client
- * (the human-approval gate the whole program runs on).
- */
-export async function portalCuts(enrollment: { id: string; clientId: string }): Promise<PortalCut[]> {
-  const months = await prisma.contentMonth.findMany({
-    where: { enrollmentId: enrollment.id, monthKey: { in: portalMonthKeys() } },
-    select: { id: true, monthKey: true },
-  });
-  if (months.length === 0) return [];
-  const monthByProject = new Map<string, string>();
-  const projects = await ownProjects(
-    enrollment,
-    await prisma.project.findMany({
-      where: { contentMonthId: { in: months.map((m) => m.id) }, status: { not: "CANCELLED" } },
-      select: { id: true, contentMonthId: true, clientId: true, title: true },
-    }),
-  );
-  if (projects.length === 0) return [];
-  const monthKeyById = new Map(months.map((m) => [m.id, m.monthKey]));
-  for (const p of projects) monthByProject.set(p.id, monthKeyById.get(p.contentMonthId!) ?? "");
-
-  const subs = await prisma.reviewSubmission.findMany({
-    where: { projectId: { in: projects.map((p) => p.id) } },
-    orderBy: { round: "asc" },
-    select: { id: true, projectId: true, status: true, assetUrl: true, assetPath: true, fileName: true, decidedAt: true, decidedBy: true, deliverableId: true, slot: true, clientRequestedAt: true },
-  });
-  // Which submissions carry THIS client's notes — a cut they bounced (their
-  // revision flips it to CHANGES_REQUESTED) stays on their page; an
-  // internally-bounced cut they never saw does not.
-  const allComments = await prisma.portalComment.findMany({
-    where: { submissionId: { in: subs.map((s) => s.id) }, enrollmentId: enrollment.id },
-    orderBy: { createdAt: "asc" },
-    select: { id: true, submissionId: true, timeSec: true, body: true, status: true, createdAt: true },
-  });
-  const commented = new Set(allComments.map((c) => c.submissionId));
-
-  // Latest client-visible round per cut — deliberately NOT latest-round-then-
-  // filter: while a redo is pending review, the client keeps watching the last
-  // cut they were shown instead of the video vanishing mid-revision (the
-  // "Updates in progress" chip tells them the new one is coming).
-  const latestPerCut = new Map<string, (typeof subs)[number]>();
-  for (const s of subs) {
-    // A cut auto-stamped at DELIVERY is not an invitation to review — it is the
-    // record that the job already went out. reviewCuts.ts marks those APPROVED
-    // with decidedBy "Delivered to the client", and reading that as "show it for
-    // review" put an August video Erica Walker already had back on her portal
-    // under "For your review · Request changes", with her Home tab announcing
-    // "1 video ready for your review". Delivered work belongs in the Library.
-    if (s.decidedBy === DELIVERED_STAMP) continue;
-    // Since Sep 16 the client's own request is stamped on clientRequestedAt
-    // rather than on Jordan's QC fields — so a bounced cut is theirs to keep
-    // seeing by EITHER mark.
-    const theirs = commented.has(s.id) || !!s.clientRequestedAt;
-    const visible = s.status === "APPROVED" || (s.status === "CHANGES_REQUESTED" && theirs);
-    // A cut = (deliverable × slot) for uploaded rows, the file for legacy rows.
-    if (visible && s.assetUrl) latestPerCut.set(`${s.projectId}:${s.deliverableId ? `${s.deliverableId}:${s.slot}` : (s.assetPath ?? s.id)}`, s);
-  }
-  const shown = [...latestPerCut.values()];
-  if (shown.length === 0) return [];
-
-  const comments = allComments.filter((c) => shown.some((s) => s.id === c.submissionId));
-  const bySub = new Map<string, typeof comments>();
-  for (const c of comments) {
-    const arr = bySub.get(c.submissionId) ?? [];
-    arr.push(c);
-    bySub.set(c.submissionId, arr);
-  }
-  // An open video-lane revision on the project = the re-cut is in motion; the
-  // portal says so instead of inviting a second identical request.
-  const revisionTasks = await prisma.smartTask.findMany({
-    where: { projectId: { in: shown.map((s) => s.projectId) }, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
-    select: { projectId: true },
-  });
-  const revisionByProject = new Set(revisionTasks.map((t) => t.projectId).filter(Boolean) as string[]);
-
-  return shown
-    .map((s) => ({
-      submissionId: s.id,
-      projectId: s.projectId,
-      fileName: s.fileName,
-      assetUrl: s.assetUrl!,
-      approvedAtISO: s.decidedAt ? s.decidedAt.toISOString() : null,
-      monthKey: monthByProject.get(s.projectId) ?? "",
-      revisionOpen: revisionByProject.has(s.projectId),
-      comments: (bySub.get(s.id) ?? []).map((c) => ({
-        id: c.id,
-        timeSec: c.timeSec,
-        body: c.body,
-        status: c.status,
-        createdAtISO: c.createdAt.toISOString(),
-      })),
-    }))
-    .sort((a, b) => (b.approvedAtISO ?? "").localeCompare(a.approvedAtISO ?? ""));
-}
-
 /**
  * Prove a submission belongs to the viewer's enrollment AND client, AND was
  * shown to the client (internally approved — or already bounced BY this
@@ -426,7 +300,7 @@ export async function submissionForEnrollment(enrollment: { id: string; clientId
   if (!/^[a-z0-9]{10,40}$/i.test(submissionId)) return null;
   const sub = await prisma.reviewSubmission.findUnique({
     where: { id: submissionId },
-    select: { id: true, projectId: true, status: true, clientRequestedAt: true, project: { select: { contentMonthId: true, title: true, clientId: true } } },
+    select: { id: true, projectId: true, status: true, clientRequestedAt: true, clientReleasedAt: true, project: { select: { contentMonthId: true, title: true, clientId: true } } },
   });
   if (!sub?.project?.contentMonthId) return null;
   const month = await prisma.contentMonth.findUnique({
@@ -438,9 +312,9 @@ export async function submissionForEnrollment(enrollment: { id: string; clientId
     await reportMisattached(enrollment, [{ id: sub.projectId, clientId: sub.project.clientId, title: sub.project.title }]);
     return null;
   }
-  if (sub.status !== "APPROVED") {
-    // Never approved = internal — unless this enrollment already acted on it
-    // (their own revision flipped it to CHANGES_REQUESTED).
+  if (sub.status !== "APPROVED" && !sub.clientReleasedAt) {
+    // Never approved and never released = internal — unless this enrollment
+    // already acted on it (their own revision flipped it to CHANGES_REQUESTED).
     if (sub.clientRequestedAt) return sub;
     const theirs = await prisma.portalComment.count({ where: { submissionId, enrollmentId: enrollment.id } });
     if (theirs === 0) return null;
@@ -459,131 +333,13 @@ export async function scriptForEnrollment(enrollmentId: string, scriptId: string
   return script;
 }
 
-export type PortalLibraryRow = {
-  id: string;
-  monthId: string | null;
-  projectId: string | null;
-  source: string;
-  title: string | null;
-  thumb: string | null;
-  playback: string | null;
-  download: string | null;
-  deliveredAt: Date;
-};
-
-/**
- * The delivered library (PortalVideo rows) for this enrollment — minus any row
- * whose project belongs to another client, and minus the review-sourced
- * duplicates of a video that is already on Aryeo (delivered truth). URLs come
- * back RAW: the page swaps hub cut URLs for media-tokened ones.
- */
-export async function portalLibrary(enrollment: { id: string; clientId: string }): Promise<PortalLibraryRow[]> {
-  const rows = await prisma.portalVideo.findMany({
-    where: { enrollmentId: enrollment.id },
-    orderBy: { deliveredAt: "desc" },
-    take: 200,
-    select: { id: true, monthId: true, projectId: true, source: true, title: true, thumb: true, playback: true, download: true, deliveredAt: true },
-  });
-  const projectIds = [...new Set(rows.map((r) => r.projectId).filter((x): x is string => !!x))];
-  const own = new Set(
-    (
-      await ownProjects(
-        enrollment,
-        projectIds.length ? await prisma.project.findMany({ where: { id: { in: projectIds } }, select: { id: true, clientId: true, title: true } }) : [],
-      )
-    ).map((p) => p.id),
-  );
-  const kept = rows.filter((r) => !r.projectId || own.has(r.projectId));
-  // One video, one card: once a project's videos are on Aryeo (delivered
-  // truth), the review-sourced rows are the same cuts pre-delivery — drop
-  // them (review finding: both writers materialized the same video twice).
-  const aryeoProjects = new Set(kept.filter((v) => v.source === "aryeo" && v.projectId).map((v) => v.projectId));
-  return kept.filter((v) => !(v.source === "review" && v.projectId && aryeoProjects.has(v.projectId)));
-}
-
-// ---------------------------------------------------------------------------
-// THE CLIENT'S FULL HISTORY (Jordan, Aug 28: "are we able to see backfilled
-// content too from Aryeo and their other content sessions and scripts?").
-// Month-by-month: sessions, client-visible scripts, and the DELIVERED videos
-// straight from Aryeo's CDN — watchable and downloadable, no proxy needed.
-// ---------------------------------------------------------------------------
-
-export type PortalMonthVideo = {
-  title: string | null;
-  thumb: string | null;
-  playback: string | null;
-  download: string | null;
-};
-export type PortalMonth = {
-  monthKey: string;
-  videosOwed: number;
-  strategyCallStatus: string;
-  strategyCallAtISO: string | null;
-  sessions: { dateISO: string | null; delivered: boolean }[];
-  scripts: { id: string; title: string; body: string }[];
-  videos: PortalMonthVideo[]; // delivered, from Aryeo
-};
-
-// Aryeo lookups are the slow part — cap how many delivered listings one page
-// load will fetch, newest shoots first.
-const ARYEO_LOOKUP_CAP = 8;
-
-export async function portalMonths(enrollmentId: string): Promise<PortalMonth[]> {
-  const months = await prisma.contentMonth.findMany({
-    where: { enrollmentId },
-    orderBy: { monthKey: "desc" },
-    take: 12,
-    select: { id: true, monthKey: true, videosOwed: true, strategyCallStatus: true, strategyCallAt: true },
-  });
-  if (months.length === 0) return [];
-  const monthIds = months.map((m) => m.id);
-
-  const [scripts, projects] = await Promise.all([
-    prisma.contentScript.findMany({
-      where: { monthId: { in: monthIds }, status: { in: CLIENT_VISIBLE_SCRIPT } },
-      orderBy: { createdAt: "asc" },
-      select: { id: true, monthId: true, title: true, body: true },
-    }),
-    prisma.project.findMany({
-      where: { contentMonthId: { in: monthIds }, status: { not: "CANCELLED" } },
-      orderBy: { shootDate: "desc" },
-      select: { id: true, contentMonthId: true, shootDate: true, status: true, aryeoListingId: true },
-    }),
-  ]);
-
-  // Delivered videos from Aryeo — newest delivered sessions first, capped,
-  // fetched 4 at a time. Best-effort: an Aryeo hiccup just means fewer videos
-  // this load, never a broken page.
-  const delivered = projects.filter((p) => p.status === "DELIVERED" && p.aryeoListingId).slice(0, ARYEO_LOOKUP_CAP);
-  const videosByProject = new Map<string, PortalMonthVideo[]>();
-  const { getListingMedia } = await import("@/lib/integrations/aryeo");
-  for (let i = 0; i < delivered.length; i += 4) {
-    await Promise.all(
-      delivered.slice(i, i + 4).map(async (p) => {
-        const media = await getListingMedia(p.aryeoListingId!).catch(() => null);
-        if (!media?.videos?.length) return;
-        videosByProject.set(
-          p.id,
-          media.videos
-            .filter((v) => v.playback || v.download)
-            .map((v) => ({ title: v.title, thumb: v.thumb, playback: v.playback, download: v.download })),
-        );
-      }),
-    );
-  }
-
-  return months.map((m) => ({
-    monthKey: m.monthKey,
-    videosOwed: m.videosOwed,
-    strategyCallStatus: m.strategyCallStatus,
-    strategyCallAtISO: m.strategyCallAt ? m.strategyCallAt.toISOString() : null,
-    sessions: projects
-      .filter((p) => p.contentMonthId === m.id)
-      .map((p) => ({ dateISO: p.shootDate ? p.shootDate.toISOString() : null, delivered: p.status === "DELIVERED" })),
-    scripts: scripts.filter((s) => s.monthId === m.id).map((s) => ({ id: s.id, title: s.title, body: s.body })),
-    videos: projects.filter((p) => p.contentMonthId === m.id).flatMap((p) => videosByProject.get(p.id) ?? []),
-  }));
-}
+// The pre-§7 library path (portalCuts / portalLibrary / portalMonths, their
+// row types, ownProjects and portalMonthKeys) was REMOVED on Sep 17 2026.
+// Every one of them carried a ceiling the §7 work exists to remove — 200 rows,
+// 12 months, 8 Aryeo lookups — and nothing called them any more, so a reader
+// could easily have believed those caps were still the portal's behaviour.
+// The library now lives in contentVideos.ts (logical videos, year navigation,
+// pagination, no ceiling).
 
 // ---------------------------------------------------------------------------
 // LIVE SESSION SCHEDULING (Jordan, Aug 28 — rule confirmed: sessions start no
@@ -791,4 +547,293 @@ export async function portalScheduleMonths(enrollment: { id: string; clientId: s
     });
   }
   return out;
+}
+
+// ===========================================================================
+// WAVE 2 (Sep 17 2026) — the program pages: Video Topics, My Strategy, the
+// planning state Home and Schedule share. Every read below takes the viewer's
+// enrollment and scopes by it; the W1-C data functions (contentTopics,
+// contentStrategy, contentInterview) are called, never re-implemented.
+// ===========================================================================
+
+export type PortalTopicState = "SUGGESTED" | "SELECTED" | "PREPARING" | "FILMED";
+
+export type PortalTopic = {
+  id: string;
+  title: string;
+  concept: string | null;
+  pillarId: string | null;
+  pillarName: string;
+  audienceNeed: string | null;
+  businessGoal: string | null;
+  intendedMessage: string | null;
+  source: string;
+  /** The client suggested it. */
+  mine: boolean;
+  state: PortalTopicState;
+  selection: { monthId: string; monthKey: string; status: string; overflow: boolean; removable: boolean } | null;
+  interview: { id: string; status: string; answered: number } | null;
+  script: { versionLabel: string | null; strategyLabel: string | null; shared: boolean } | null;
+  strategyLabel: string | null;
+  lastEventAtISO: string | null;
+  history: { kind: string; atISO: string; note: string | null; monthKey: string | null }[];
+};
+
+export type PortalTopicMonth = { id: string; monthKey: string; owed: number; selected: number; overflow: number; historical: boolean };
+
+export type PortalTopicsData = {
+  groups: { pillarId: string | null; pillarName: string; purpose: string | null; topics: PortalTopic[] }[];
+  /** Months a topic may be selected FOR: this ET month and the open ones after it. */
+  months: PortalTopicMonth[];
+  archivedCount: number;
+  total: number;
+  strategyLabel: string | null;
+};
+
+const LIVE_SELECTION = ["SELECTED", "RECONCILED", "PROPOSED", "CARRIED"];
+const PRODUCTION_STATES = ["SCRIPTED", "FILMED", "EDITING", "DELIVERED"];
+
+/** The client's bank by their pillars (Arielle's presentation) with the month selections, interviews and scripts each topic carries. */
+export async function portalTopics(enrollment: { id: string; clientId: string }): Promise<PortalTopicsData> {
+  const { topicBankByPillar } = await import("@/lib/contentTopics");
+  const { listPillars } = await import("@/lib/contentPillars");
+  const [bank, pillars, monthsRaw] = await Promise.all([
+    topicBankByPillar(enrollment.id),
+    listPillars(enrollment.id),
+    prisma.contentMonth.findMany({ where: { enrollmentId: enrollment.id }, orderBy: { monthKey: "asc" }, select: { id: true, monthKey: true, videosOwed: true, historical: true } }),
+  ]);
+  const topicIds = bank.groups.flatMap((g) => g.topics.map((t) => t.id));
+  const [selections, interviews, scripts, events, versionsOfStrategies] = await Promise.all([
+    prisma.contentTopicSelection.findMany({ where: { enrollmentId: enrollment.id, topicId: { in: topicIds }, status: { in: LIVE_SELECTION } }, orderBy: { createdAt: "desc" } }),
+    prisma.contentInterview.findMany({ where: { enrollmentId: enrollment.id, topicId: { in: topicIds } }, select: { id: true, topicId: true, monthId: true, status: true, answeredCount: true } }),
+    prisma.contentScript.findMany({ where: { enrollmentId: enrollment.id, topicId: { in: topicIds }, historical: false }, select: { id: true, topicId: true, sharedVersionId: true, approvedVersionId: true, currentVersionId: true, strategyVersionId: true } }),
+    topicIds.length ? prisma.contentTopicEvent.findMany({ where: { enrollmentId: enrollment.id, topicId: { in: topicIds }, kind: { in: ["SELECTED", "DESELECTED", "DISCUSSED", "SCRIPTED", "FILMED", "DELIVERED", "CARRIED", "CREATED", "SUGGESTED"] } }, orderBy: { createdAt: "desc" }, select: { topicId: true, kind: true, createdAt: true, note: true, monthId: true, actorKind: true } }) : Promise.resolve([]),
+    prisma.contentStrategyVersion.findMany({ where: { enrollmentId: enrollment.id }, select: { id: true, versionNo: true } }),
+  ]);
+  const monthKeyOf = new Map(monthsRaw.map((m) => [m.id, m.monthKey]));
+  const strategyLabelOf = new Map(versionsOfStrategies.map((v) => [v.id, `v${v.versionNo}`]));
+  const versionIds = scripts.map((s) => s.sharedVersionId ?? s.approvedVersionId ?? s.currentVersionId).filter((x): x is string => !!x);
+  const versions = versionIds.length ? await prisma.contentScriptVersion.findMany({ where: { id: { in: versionIds } }, select: { id: true, versionNo: true, strategyVersionId: true } }) : [];
+  const topicRows = topicIds.length ? await prisma.contentTopic.findMany({ where: { id: { in: topicIds } }, select: { id: true, strategyVersionId: true, clientUserId: true } }) : [];
+  const stratOfTopic = new Map(topicRows.map((t) => [t.id, t.strategyVersionId]));
+  const mineOfTopic = new Map(topicRows.map((t) => [t.id, !!t.clientUserId]));
+  const currentKey = etMonthKey();
+  const purposeOf = new Map(pillars.map((p) => [p.id, p.purpose]));
+
+  const toTopic = (t: (typeof bank.groups)[number]["topics"][number], pillarName: string): PortalTopic => {
+    const sel = selections.find((s) => s.topicId === t.id) ?? null;
+    const iv = interviews.find((i) => i.topicId === t.id && (!sel || i.monthId === sel.monthId)) ?? interviews.find((i) => i.topicId === t.id) ?? null;
+    const sc = scripts.find((s) => s.topicId === t.id) ?? null;
+    const scv = sc ? versions.find((v) => v.id === (sc.sharedVersionId ?? sc.approvedVersionId ?? sc.currentVersionId)) ?? null : null;
+    const inProduction = PRODUCTION_STATES.includes(t.status);
+    const state: PortalTopicState = ["FILMED", "EDITING", "DELIVERED"].includes(t.status) ? "FILMED" : t.status === "SCRIPTED" || !!sc || (iv && iv.status !== "NOT_STARTED") ? "PREPARING" : sel ? "SELECTED" : "SUGGESTED";
+    return {
+      id: t.id, title: t.title, concept: t.concept, pillarId: t.pillarId, pillarName, audienceNeed: t.audienceNeed, businessGoal: t.businessGoal, intendedMessage: t.intendedMessage, source: t.source,
+      mine: t.source === "client" || !!mineOfTopic.get(t.id), state,
+      selection: sel ? { monthId: sel.monthId, monthKey: monthKeyOf.get(sel.monthId) ?? "", status: sel.status, overflow: sel.overflow, removable: !inProduction && sel.status !== "RECONCILED" } : null,
+      interview: iv ? { id: iv.id, status: iv.status, answered: iv.answeredCount } : null,
+      script: sc ? { versionLabel: scv ? `v${scv.versionNo}` : null, strategyLabel: scv?.strategyVersionId ? strategyLabelOf.get(scv.strategyVersionId) ?? null : sc.strategyVersionId ? strategyLabelOf.get(sc.strategyVersionId) ?? null : null, shared: !!sc.sharedVersionId } : null,
+      strategyLabel: stratOfTopic.get(t.id) ? strategyLabelOf.get(stratOfTopic.get(t.id)!) ?? null : null,
+      lastEventAtISO: t.lastEventAt,
+      history: events.filter((e) => e.topicId === t.id).slice(0, 8).map((e) => ({ kind: e.kind, atISO: e.createdAt.toISOString(), note: e.actorKind === "CLIENT" || e.actorKind === "STAFF" ? e.note : null, monthKey: e.monthId ? monthKeyOf.get(e.monthId) ?? null : null })),
+    };
+  };
+  const groups = bank.groups.map((g) => ({ pillarId: g.pillarId, pillarName: g.pillarName, purpose: g.pillarId ? purposeOf.get(g.pillarId) ?? null : null, topics: g.topics.map((t) => toTopic(t, g.pillarName)) }));
+  const open = monthsRaw.filter((m) => !m.historical && m.monthKey >= currentKey).slice(0, 3);
+  const months: PortalTopicMonth[] = open.map((m) => {
+    const sels = selections.filter((s) => s.monthId === m.id);
+    return { id: m.id, monthKey: m.monthKey, owed: m.videosOwed, selected: sels.filter((s) => !s.overflow).length, overflow: sels.filter((s) => s.overflow).length, historical: m.historical };
+  });
+  const approvedStrategy = versionsOfStrategies.length ? await prisma.contentStrategyVersion.findFirst({ where: { enrollmentId: enrollment.id, status: "APPROVED" }, orderBy: { versionNo: "desc" }, select: { versionNo: true } }) : null;
+  return { groups, months, archivedCount: bank.archived, total: bank.total, strategyLabel: approvedStrategy ? `v${approvedStrategy.versionNo}` : null };
+}
+
+/** Prove a topic is this enrollment's and in the bank (not rejected/archived). */
+export async function topicForEnrollment(enrollmentId: string, topicId: string) {
+  if (!/^[a-z0-9]{10,40}$/i.test(topicId)) return null;
+  const t = await prisma.contentTopic.findUnique({ where: { id: topicId } });
+  if (!t || t.enrollmentId !== enrollmentId) return null;
+  if (t.status === "REJECTED" || t.status === "ARCHIVED" || t.approvalState === "REJECTED" || t.approvalState === "ARCHIVED") return null;
+  return t;
+}
+
+/** Prove a month is this enrollment's and open for selection. */
+export async function openMonthForEnrollment(enrollmentId: string, monthId: string) {
+  if (!/^[a-z0-9]{10,40}$/i.test(monthId)) return null;
+  const m = await prisma.contentMonth.findUnique({ where: { id: monthId }, select: { id: true, enrollmentId: true, monthKey: true, historical: true, videosOwed: true } });
+  if (!m || m.enrollmentId !== enrollmentId || m.historical || m.monthKey < etMonthKey()) return null;
+  return m;
+}
+
+export type PortalInterviewView = {
+  interviewId: string;
+  topicId: string;
+  topicTitle: string;
+  monthKey: string;
+  status: string;
+  next: { kind: "question" | "follow-up" | "done"; prompt: string | null; isFollowUp: boolean };
+  nextKey: string | null;
+  progress: { answered: number; substantiveAnswered: number; substantiveTotal: number };
+  answers: { questionKey: string; questionText: string; answerText: string | null; answerKind: string; version: number }[];
+  gaps: string[];
+  ready: boolean;
+  submittedAtISO: string | null;
+  /** The latest draft built from THESE answers — client-facing lines only, never filming notes. */
+  draft: { versionLabel: string; strategyLabel: string | null; body: string; gaps: string[]; changedSince: boolean; createdAtISO: string } | null;
+  strategyLabel: string | null;
+};
+
+/** Where the guided interview stands for one of the viewer's topics (ownership proven by the caller). */
+export async function portalInterview(enrollment: { id: string; clientId: string }, interviewId: string): Promise<PortalInterviewView | null> {
+  if (!/^[a-z0-9]{10,40}$/i.test(interviewId)) return null;
+  const row = await prisma.contentInterview.findUnique({ where: { id: interviewId }, select: { id: true, enrollmentId: true, topicId: true, monthId: true, submittedAt: true, strategyVersionId: true } });
+  if (!row || row.enrollmentId !== enrollment.id) return null;
+  const { interviewState, answersChangedSinceLastDraft } = await import("@/lib/contentInterview");
+  const [st, topic, month, draftVersion, changed, strategy] = await Promise.all([
+    interviewState(interviewId),
+    prisma.contentTopic.findUnique({ where: { id: row.topicId }, select: { title: true } }),
+    prisma.contentMonth.findUnique({ where: { id: row.monthId }, select: { monthKey: true } }),
+    prisma.contentScriptVersion.findFirst({ where: { interviewId, enrollmentId: enrollment.id }, orderBy: { createdAt: "desc" }, select: { id: true, versionNo: true, title: true, hook: true, pointsJson: true, close: true, gapsJson: true, strategyVersionId: true, createdAt: true, clientId: true } }),
+    answersChangedSinceLastDraft(interviewId),
+    row.strategyVersionId ? prisma.contentStrategyVersion.findUnique({ where: { id: row.strategyVersionId }, select: { versionNo: true } }) : Promise.resolve(null),
+  ]);
+  let draft: PortalInterviewView["draft"] = null;
+  if (draftVersion) {
+    const { canonicalFromParts, pointsFromJson } = await import("@/lib/contentScripts");
+    const { renderScript } = await import("@/lib/contentPolicy");
+    const { stripMoneySentences } = await import("@/lib/text");
+    const dv = draftVersion.strategyVersionId ? await prisma.contentStrategyVersion.findUnique({ where: { id: draftVersion.strategyVersionId }, select: { versionNo: true } }) : null;
+    let gaps: string[] = [];
+    try { gaps = draftVersion.gapsJson ? (JSON.parse(draftVersion.gapsJson) as { text?: string }[]).map((g) => g.text ?? "").filter(Boolean) : []; } catch { gaps = []; }
+    draft = {
+      versionLabel: `v${draftVersion.versionNo}`, strategyLabel: dv ? `v${dv.versionNo}` : null,
+      body: stripMoneySentences(renderScript(canonicalFromParts({ title: draftVersion.title, hook: draftVersion.hook, points: pointsFromJson(draftVersion.pointsJson), close: draftVersion.close }, draftVersion.clientId))),
+      gaps, changedSince: changed, createdAtISO: draftVersion.createdAt.toISOString(),
+    };
+  }
+  return {
+    interviewId, topicId: row.topicId, topicTitle: topic?.title ?? "Topic", monthKey: month?.monthKey ?? "", status: st.status,
+    next: { kind: st.next.kind, prompt: st.next.kind === "done" ? null : st.next.prompt, isFollowUp: st.next.kind === "follow-up" }, nextKey: st.nextKey,
+    progress: { answered: st.answeredCount, substantiveAnswered: st.sufficiency.substantiveAnswered, substantiveTotal: st.sufficiency.substantiveTotal },
+    answers: st.answers.filter((a) => !a.questionKey.includes(":fu:") || a.answerText).map((a) => ({ questionKey: a.questionKey, questionText: a.questionText, answerText: a.answerText, answerKind: a.answerKind, version: a.version })),
+    gaps: st.sufficiency.gaps.map((g) => g.text), ready: st.sufficiency.ready, submittedAtISO: row.submittedAt?.toISOString() ?? null, draft,
+    strategyLabel: strategy ? `v${strategy.versionNo}` : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// MY STRATEGY — the RELEASED version only. The gate is a column, never a text
+// filter: a row without releasedAt does not exist to this page, whatever it
+// says. Source structure (the document's own headings, in its order) is what
+// renders; the policy's structured read supplies the summary.
+// ---------------------------------------------------------------------------
+
+export type PortalStrategyView = {
+  versionNo: number;
+  approvedAtISO: string | null;
+  releasedAtISO: string;
+  sourceKind: string;
+  /** The source's own sections, verbatim order, money-scrubbed, internal mechanics left out. */
+  sections: { id: string; heading: string; body: string }[];
+  summary: { brandMessage: string | null; brandVoice: string | null; coreValues: string | null; audience: string[]; goals: string[]; pillars: { name: string; purpose: string | null; focusAreas: string | null }[] } | null;
+  /** Newer versions exist internally but are not released — the client sees this one. */
+  newerPending: boolean;
+  proposalsOpen: number;
+};
+
+// Internal production mechanics never render on the client's page (Jordan,
+// Aug 28) — the video-structure framework and caption-CTA lists are ours.
+// This is PRESENTATION on a released row, not the visibility gate.
+const INTERNAL_HEADING = /framework|caption|production|internal/i;
+
+export async function portalStrategy(enrollment: { id: string; clientId: string }): Promise<PortalStrategyView | null> {
+  const released = await prisma.contentStrategyVersion.findFirst({
+    where: { enrollmentId: enrollment.id, clientId: enrollment.clientId, releasedAt: { not: null }, status: { in: ["APPROVED", "SUPERSEDED", "SHARED"] } },
+    orderBy: { versionNo: "desc" },
+  });
+  if (!released?.releasedAt) return null;
+  const { parseStoredSections } = await import("@/lib/contentStrategy");
+  const { stripMoneySentences } = await import("@/lib/text");
+  const stored = parseStoredSections(released.sectionsJson);
+  const sections = (stored?.sections ?? [])
+    .filter((s) => !INTERNAL_HEADING.test(s.heading))
+    .map((s) => ({ id: s.id, heading: s.heading, body: stripMoneySentences(s.text) }))
+    .filter((s) => s.body.trim().length > 0);
+  let summary: PortalStrategyView["summary"] = null;
+  try {
+    const sj = released.summaryJson ? (JSON.parse(released.summaryJson) as Record<string, unknown>) : null;
+    if (sj) {
+      const aud = (sj.audience ?? {}) as Record<string, unknown>;
+      summary = {
+        brandMessage: typeof sj.brandMessage === "string" ? stripMoneySentences(sj.brandMessage) : null,
+        brandVoice: typeof sj.brandVoice === "string" ? sj.brandVoice : null,
+        coreValues: typeof sj.coreValues === "string" ? sj.coreValues : null,
+        audience: [aud.clientTypes, aud.serviceAreas, aud.positioningGoal].filter((x): x is string => typeof x === "string" && !!x.trim()).map(stripMoneySentences),
+        goals: Array.isArray(sj.goals) ? sj.goals.filter((x): x is string => typeof x === "string").map(stripMoneySentences) : [],
+        pillars: Array.isArray(sj.pillars) ? (sj.pillars as { name?: string; purpose?: string | null; focusAreas?: string | null }[]).filter((p) => p?.name).map((p) => ({ name: p.name!, purpose: p.purpose ?? null, focusAreas: p.focusAreas ?? null })) : [],
+      };
+    }
+  } catch { summary = null; }
+  const [newer, proposalsOpen] = await Promise.all([
+    prisma.contentStrategyVersion.count({ where: { enrollmentId: enrollment.id, versionNo: { gt: released.versionNo }, status: { in: ["APPROVED", "INTERNAL_REVIEW", "DRAFT"] } } }),
+    prisma.contentStrategyProposal.count({ where: { enrollmentId: enrollment.id, status: "PROPOSED", sourceKind: "client" } }),
+  ]);
+  return {
+    versionNo: released.versionNo, approvedAtISO: released.approvedAt?.toISOString() ?? null, releasedAtISO: released.releasedAt.toISOString(), sourceKind: released.sourceKind,
+    sections, summary, newerPending: newer > 0, proposalsOpen,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// PLANNING — the strategy-call appointment and the two-path choice (spec §4/
+// §19) for one program month, derived (never stored by this read).
+// ---------------------------------------------------------------------------
+
+export type PortalPlanning = {
+  monthId: string;
+  monthKey: string;
+  callMode: string; // REQUIRED | OPTIONAL_WRITTEN | NOT_INCLUDED
+  callStatus: string; // NOT_REQUIRED | NOT_SCHEDULED | SCHEDULED | COMPLETED | SKIPPED
+  callAtISO: string | null;
+  callEndISO: string | null;
+  timezone: string;
+  meetLink: string | null;
+  planningMode: string; // CALL | WRITTEN | UNDECIDED
+  preparationStatus: string | null;
+  earliestSessionISO: string | null;
+  /** "Plan without a call" may be offered — the enrollment's call mode allows it and it is not switched off for this client. */
+  noCallEligible: boolean;
+  /** Written path: answers submitted for every selected topic. */
+  answersSubmitted: boolean;
+  interviewsOpen: number;
+};
+
+export async function portalPlanning(enrollment: { id: string; clientId: string }, monthId?: string | null): Promise<PortalPlanning | null> {
+  const month = monthId
+    ? await prisma.contentMonth.findFirst({ where: { id: monthId, enrollmentId: enrollment.id }, select: { id: true, monthKey: true, historical: true } })
+    : await prisma.contentMonth.findFirst({ where: { enrollmentId: enrollment.id, historical: false, monthKey: { gte: etMonthKey() } }, orderBy: { monthKey: "asc" }, select: { id: true, monthKey: true, historical: true } });
+  if (!month) return null;
+  const { recalcProgramMonth, callModeOf } = await import("@/lib/programMonths");
+  const [r, e, record, interviews] = await Promise.all([
+    recalcProgramMonth(month.id, { dryRun: true }),
+    prisma.contentEnrollment.findUnique({ where: { id: enrollment.id }, select: { callMode: true, strategyCallRequired: true, noCallEligible: true, timezone: true } }),
+    prisma.programCallRecord.findFirst({
+      where: { monthId: month.id, enrollmentId: enrollment.id, callType: "MONTHLY_STRATEGY", status: { in: ["SCHEDULED", "COMPLETED"] }, matchState: { in: ["MATCHED", "CONFIRMED_BY_STAFF", "AMBIGUOUS_CLIENT"] } },
+      orderBy: { scheduledStart: "desc" }, select: { scheduledStart: true, scheduledEnd: true, meetLink: true, timezone: true },
+    }),
+    prisma.contentInterview.findMany({ where: { enrollmentId: enrollment.id, monthId: month.id }, select: { status: true, submittedAt: true } }),
+  ]);
+  if (!r || !e) return null;
+  const d = r.after;
+  const mode = callModeOf(e);
+  return {
+    monthId: month.id, monthKey: month.monthKey, callMode: mode, callStatus: d.strategyCallStatus,
+    callAtISO: (record?.scheduledStart ?? d.strategyCallAt)?.toISOString() ?? null, callEndISO: record?.scheduledEnd?.toISOString() ?? null,
+    timezone: e.timezone ?? record?.timezone ?? "America/New_York", meetLink: record?.meetLink ?? null,
+    planningMode: d.planningMode, preparationStatus: d.preparationStatus, earliestSessionISO: d.earliestSessionAt?.toISOString() ?? null,
+    // REQUIRED wins over any per-client flag; NOT_INCLUDED already IS the written path, so the offer is moot there.
+    noCallEligible: mode === "OPTIONAL_WRITTEN" && e.noCallEligible !== false,
+    answersSubmitted: interviews.length > 0 && interviews.every((i) => i.status === "SUBMITTED" || !!i.submittedAt),
+    interviewsOpen: interviews.filter((i) => i.status !== "SUBMITTED" && !i.submittedAt).length,
+  };
 }
