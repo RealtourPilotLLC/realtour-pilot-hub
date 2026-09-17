@@ -254,6 +254,68 @@ export async function GET(req: NextRequest) {
     const r = await recalcOpenProgramMonths({ dryRun: !armed });
     return { mode: armed ? "persisted" : "dry-run (no enabled Calendly mapping)", checked: r.checked, changed: r.changed, changes: r.changes.slice(0, 10) };
   }, { maxMs: 20_000 });
+  // CONTENT PROGRAM REMINDERS + SHARE NOTICES (W2-F, Sep 17 2026, spec §24/§22).
+  // Both are OFF at the database (missing ProgramAutomation row = off) and
+  // report `skipped` until Jordan authorises launch. When on: reconcile what
+  // the outbox said about earlier sends (uncertain delivery, cancelled-by-
+  // booking, persistent failures → a task), then evaluate every active month
+  // for the ONE action it needs and send inside the client-text window, then
+  // drain the batched "your scripts are ready" notices. Each step writes its
+  // ledger row BEFORE it touches the outbox, so a crash here leaves a visible
+  // state, never a silent gap (the Sep 8 lesson). Caps: 25 sends, 10 notices.
+  // RECONCILE RUNS WHETHER OR NOT THE SWITCHES ARE ON, and only when open rows
+  // exist. It sends nothing — it is the step that SETTLES what earlier sends
+  // did, CANCELS anything still queued whose switch has since gone off (the
+  // recovery drain in cron/gmail re-checks only the send window, not these
+  // switches), and hands persistent failures to a person. Gating it behind the
+  // same switch it is meant to police would mean turning reminders off left
+  // half-sent rows frozen and unwatched — the Sep 8 shape. The count guard
+  // keeps the pre-launch promise exact: with no open rows it writes nothing.
+  await step("programReminderReconcile", async () => {
+    const { prisma } = await import("@/lib/prisma");
+    const openRows = await prisma.programReminder.count({ where: { state: { in: ["PENDING", "QUEUED", "UNKNOWN", "FAILED"] }, action: { not: "ESCALATION" } } });
+    if (openRows === 0) return { skipped: "no open reminder rows" };
+    const { reconcileReminderOutcomes } = await import("@/lib/programReminders");
+    return reconcileReminderOutcomes();
+  }, { maxMs: 20_000 });
+  await step("programReminders", async () => {
+    const { isAutomationEnabled, recordAutomationRun } = await import("@/lib/programAutomation");
+    if (!(await isAutomationEnabled("reminders"))) return { skipped: "reminders is off" };
+    const { evaluateReminders } = await import("@/lib/programReminders");
+    try {
+      const r = await evaluateReminders({ dryRun: false, requestedBy: "reminders-cron" });
+      // A run that suppressed everything for an infrastructure reason is NOT a
+      // clean run: healthError puts it on the automation row so the settings
+      // screen and the monitoring page can see the silence.
+      await recordAutomationRun("reminders", r.healthError);
+      return { evaluated: r.evaluated, sent: r.sent.filter((s) => s.outcome === "sent").length, outcomes: r.sent.slice(0, 10), escalations: r.escalations.length, health: r.healthError, note: r.note };
+    } catch (e) {
+      await recordAutomationRun("reminders", e instanceof Error ? e.message : String(e));
+      throw e;
+    }
+  }, { maxMs: 30_000 });
+  await step("shareNotices", async () => {
+    const { isAutomationEnabled, recordAutomationRun } = await import("@/lib/programAutomation");
+    if (!(await isAutomationEnabled("script_share_email"))) return { skipped: "script_share_email is off" };
+    const { drainShareNotices } = await import("@/lib/scriptShare");
+    try {
+      const r = await drainShareNotices({ max: 10, requestedBy: "share-drain" });
+      await recordAutomationRun("script_share_email", null);
+      return r;
+    } catch (e) {
+      await recordAutomationRun("script_share_email", e instanceof Error ? e.message : String(e));
+      throw e;
+    }
+  }, { maxMs: 15_000 });
+  // ONBOARDING (spec §21): advance each discovery → strategy record and queue
+  // the STRATEGY_DRAFT job for a confirmed discovery transcript. Behind
+  // `strategy_generation`; the generation itself runs in the transcriptJobs
+  // step above (W1-C's handler) and lands as a DRAFT for Jordan — nothing
+  // here approves, activates or releases a strategy.
+  await step("programOnboarding", async () => {
+    const { sweepOnboarding } = await import("@/lib/programOnboarding");
+    return sweepOnboarding({ max: 25 });
+  }, { maxMs: 15_000 });
   // (Frame.io integration removed Sep 1 2026 per the owner — review runs through the in-hub Review Room.)
 
   // Persist this run (CronRun) + Slack-ping on a NEW failure/skip. Best-effort.

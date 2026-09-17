@@ -71,10 +71,26 @@ export type OutboxState = "pending" | "attempting" | "accepted" | "failed" | "un
  *  ProgramAutomation switches `portal_login_email` / `portal_invites`, which
  *  stay OFF until launch is authorised — nothing of these kinds is even
  *  enqueued while a switch is off (src/lib/portalAccess.ts). */
-export type OutboxKind = "confirmation" | "delivery" | "welcome" | "afterhours" | "staff" | "portal_login" | "portal_invite";
+export type OutboxKind =
+  | "confirmation" | "delivery" | "welcome" | "afterhours" | "staff" | "portal_login" | "portal_invite"
+  | "program_reminder" | "script_share" | "strategy_ready";
 const CLIENT_KINDS: readonly OutboxKind[] = ["confirmation", "delivery", "welcome", "afterhours"];
-const ALL_KINDS: readonly OutboxKind[] = [...CLIENT_KINDS, "staff", "portal_login", "portal_invite"];
-export const isClientKind = (k: OutboxKind | null): boolean => !!k && CLIENT_KINDS.includes(k);
+/** CONTENT-PROGRAM kinds (W2-F, Sep 17 2026). Client-facing EMAILS from the
+ *  program: a §24 reminder, a §22 "your scripts are ready" notice, a §21
+ *  "your strategy is ready" notice. They are NOT in CLIENT_KINDS (those four
+ *  are the existing automatic texts with their AppSetting markers and their
+ *  `auto-*` CommLog sources, which this build never touches) — but they ARE
+ *  subject to the same Mon–Fri-before-4:30 window: `isClientKind` answers true
+ *  for them so the recovery drain holds them exactly like a delivery text,
+ *  and recordDrainedSend, which recognises only the four marker kinds, simply
+ *  writes nothing for them (their ledger is ProgramReminder, reconciled from
+ *  the outbox row by src/lib/programReminders.ts). Nothing of these kinds is
+ *  enqueued unless its ProgramAutomation switch (`reminders`,
+ *  `script_share_email`) is on — a missing row is off. */
+const PROGRAM_KINDS: readonly OutboxKind[] = ["program_reminder", "script_share", "strategy_ready"];
+const ALL_KINDS: readonly OutboxKind[] = [...CLIENT_KINDS, "staff", "portal_login", "portal_invite", ...PROGRAM_KINDS];
+export const isClientKind = (k: OutboxKind | null): boolean => !!k && (CLIENT_KINDS.includes(k) || PROGRAM_KINDS.includes(k));
+export const isProgramKind = (k: OutboxKind | null): boolean => !!k && PROGRAM_KINDS.includes(k);
 
 export type OutboxRow = {
   id: string;
@@ -300,7 +316,7 @@ export function realOutboxProvider(): OutboxProvider {
         const res = await sendGmailNew({
           mailbox: "info@realtourpilot.com",
           to: row.toRef,
-          subject: subjectFor(outboxKind(row.dedupeKey)),
+          subject: subjectFor(outboxKind(row.dedupeKey), row.dedupeKey),
           body: row.body,
         });
         if (res.ok) return { providerId: res.id ?? null };
@@ -335,12 +351,32 @@ export function realOutboxProvider(): OutboxProvider {
 /** The subject an emailed message goes out under. The outbox carries no
  *  subject column — email is the fallback rail for the welcome (a client with
  *  no phone), so the kind names it. */
-function subjectFor(kind: OutboxKind | null): string {
+export function subjectFor(kind: OutboxKind | null, dedupeKey?: string | null): string {
   switch (kind) {
     case "welcome": return "Welcome to RealTour Pilot";
     case "portal_login": return "Your RealTour Pilot sign-in link";
     case "portal_invite": return "You've been added to your RealTour Pilot content portal";
+    case "program_reminder": return programReminderSubject(dedupeKey ?? null);
+    case "script_share": return "Your scripts are ready in your RealTour Pilot portal";
+    case "strategy_ready": return "Your content strategy is ready in your RealTour Pilot portal";
     default: return "RealTour Pilot";
+  }
+}
+
+/** The subject of a §24 reminder lives in its identity — `program_reminder:
+ *  <ACTION>:<reminderId>:<monthKey>` — because the outbox carries no subject
+ *  column and a reminder about October must not go out under a generic line. */
+function programReminderSubject(dedupeKey: string | null): string {
+  const [, action, , monthKey] = (dedupeKey ?? "").split(":");
+  const month = monthKey && /^\d{4}-\d{2}$/.test(monthKey)
+    ? new Date(Date.UTC(Number(monthKey.slice(0, 4)), Number(monthKey.slice(5, 7)) - 1, 15)).toLocaleString("en-US", { month: "long", timeZone: "UTC" })
+    : null;
+  const forMonth = month ? ` your ${month} content` : " your content";
+  switch (action) {
+    case "BOOK_SESSION": return `Let's book${forMonth} session`;
+    case "REVIEW_WORK": return "Your videos are ready to review";
+    case "SESSION_REQUEST_FOLLOWUP": return `About${forMonth} session request`;
+    default: return `Let's plan${forMonth}`;
   }
 }
 
@@ -702,6 +738,17 @@ export const staffKey = (teamMemberId: string, claimStamp: Date) => `staff:${tea
 export const portalLoginKey = (clientUserId: string, mintStamp: Date) => `portal_login:${clientUserId}:${mintStamp.toISOString()}`;
 /** One invitation per seat per send. */
 export const portalInviteKey = (membershipId: string, sendStamp: Date) => `portal_invite:${membershipId}:${sendStamp.toISOString()}`;
+/** CONTENT PROGRAM (W2-F). One email per ProgramReminder ATTEMPT row: the
+ *  reminder row is written first (its own dedupeKey `enrollment:month:action:
+ *  attempt` is where duplicate evaluator runs collide), then this key names the
+ *  message. A failed send releases it and the same reminder row retries under
+ *  the same key; an unknown holds it for ever. The action and month ride along
+ *  so the email rail can pick the subject (programReminderSubject). */
+export const programReminderKey = (action: string, reminderId: string, monthKey: string | null) => `program_reminder:${action}:${reminderId}:${monthKey ?? "none"}`;
+/** One "your scripts are ready" email per SCRIPTS_READY notice row — the notice
+ *  batches every script released to that client inside the batch window. */
+export const scriptShareKey = (reminderId: string) => `script_share:${reminderId}`;
+export const strategyReadyKey = (reminderId: string) => `strategy_ready:${reminderId}`;
 
 export function outboxKind(dedupeKey: string | null | undefined): OutboxKind | null {
   const head = (dedupeKey ?? "").split(":")[0];
