@@ -237,3 +237,59 @@ export async function calendarConnected(): Promise<boolean> {
     return false;
   }
 }
+
+// ---------------------------------------------------------------------------
+// CONTENT PROGRAM (Sep 16 2026): read ONE event by id. Calendly hands the hub
+// `calendar_event.external_id` on every booking — the id of the Google
+// Calendar event it wrote. That event carries the Meet conference id, the
+// summary Gemini names its notes doc after, and the exact start — the three
+// things that let a Drive transcript be tied to a booking through verified
+// references instead of a client's name. Read-only; never touches the event.
+// ---------------------------------------------------------------------------
+export type CalendarEventDetail = {
+  id: string;
+  status: string | null; // confirmed | tentative | cancelled
+  summary: string | null;
+  start: Date | null;
+  end: Date | null;
+  hangoutLink: string | null;
+  /** conferenceData.conferenceId — the Meet code ("abc-defg-hij"). */
+  conferenceId: string | null;
+  attendees: { email: string; name: string | null; responseStatus: string | null; organizer: boolean }[];
+};
+
+type RawEventDetail = Omit<RawEvent, "attendees"> & {
+  conferenceData?: { conferenceId?: string; entryPoints?: { entryPointType?: string; uri?: string }[] };
+  attendees?: { email?: string; displayName?: string; responseStatus?: string; organizer?: boolean; self?: boolean }[];
+};
+
+/**
+ * The event, or null when Google says it is gone (404/410). Any other failure
+ * throws so the caller can record it as the linkage error on the call record.
+ */
+export async function getCalendarEvent(eventId: string): Promise<CalendarEventDetail | null> {
+  let ev: RawEventDetail;
+  try {
+    ev = await call<RawEventDetail>(`/calendars/${CAL}/events/${encodeURIComponent(eventId)}`);
+  } catch (e) {
+    if (e instanceof CalendarNotConnected) throw e;
+    if (e instanceof Error && /not found|410|404|deleted/i.test(e.message)) return null;
+    throw e;
+  }
+  if (!ev.id) return null;
+  const startRaw = ev.start?.dateTime ?? ev.start?.date;
+  const endRaw = ev.end?.dateTime ?? ev.end?.date;
+  const meetEntry = ev.conferenceData?.entryPoints?.find((p) => p.entryPointType === "video")?.uri ?? null;
+  return {
+    id: ev.id,
+    status: ev.status ?? null,
+    summary: ev.summary?.trim() || null,
+    start: startRaw ? new Date(startRaw) : null,
+    end: endRaw ? new Date(endRaw) : null,
+    hangoutLink: ev.hangoutLink ?? meetEntry,
+    conferenceId: ev.conferenceData?.conferenceId ?? null,
+    attendees: (ev.attendees ?? [])
+      .filter((a): a is { email: string; displayName?: string; responseStatus?: string; organizer?: boolean } => !!a.email)
+      .map((a) => ({ email: a.email.toLowerCase(), name: a.displayName ?? null, responseStatus: a.responseStatus ?? null, organizer: !!a.organizer })),
+  };
+}

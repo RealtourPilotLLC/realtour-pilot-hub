@@ -3,15 +3,31 @@ import { prisma } from "@/lib/prisma";
 import { etMonthKey } from "@/lib/contentProgram";
 import { etAt, etDayKey } from "@/lib/datetime";
 import { STRATEGY_CALL_BOOKING_URL } from "@/lib/integrations/calendly";
+import { isTestClientName } from "@/lib/testClients";
 
 // ---------------------------------------------------------------------------
 // Strategy calls: Calendly bookings → ContentMonth, and Google Drive Meet
 // transcripts → ContentMonth.transcriptText. Both are best-effort sweeps —
 // a missing key or scope degrades to the manual paths (status buttons +
 // transcript paste), never breaks the page or cron.
+//
+// HAND-OVER (Sep 16 2026): these are the LEGACY sweeps. They keep today's
+// behaviour — slug-resolved event type, invitee email on the Client row,
+// month = the call's own month, name-matched Drive docs — until an ENABLED
+// ProgramCalendlyEventMapping exists. From that moment the verified chain in
+// contentCallRecords.ts owns bookings and transcripts and these three return
+// `{ skipped }` (the cron output says so), because the whole point of the
+// mapping is to stop filing work on a name match. Nothing here is deleted:
+// switching the mapping off brings the old behaviour straight back.
 // ---------------------------------------------------------------------------
 
 export { STRATEGY_CALL_BOOKING_URL };
+
+const SUPERSEDED = "superseded — an enabled Calendly mapping exists, call records own this now";
+async function legacyYields(): Promise<boolean> {
+  const { hasEnabledCallMapping } = await import("@/lib/integrations/calendly");
+  return hasEnabledCallMapping();
+}
 
 // Match a Calendly invitee to an enrolled client by email (email or backupEmail).
 async function enrolledClientByEmail(): Promise<Map<string, { clientId: string; enrollmentId: string }>> {
@@ -39,14 +55,23 @@ async function enrolledClientByEmail(): Promise<Map<string, { clientId: string; 
 export async function syncStrategyCallsFromCalendly(): Promise<{ stamped: number; completed: number; canceled: number } | { skipped: string }> {
   const { getSecret } = await import("@/lib/integrations/connections");
   if (!(await getSecret("calendly"))) return { skipped: "Calendly not connected" };
-  const { listStrategyCalls } = await import("@/lib/integrations/calendly");
+  if (await legacyYields()) return { skipped: SUPERSEDED };
+  const { listStrategyCalls, CalendlyConfigError } = await import("@/lib/integrations/calendly");
 
   // Window: 30 days back (completions) → 60 days forward (next month's bookings).
   const now = new Date();
-  const calls = await listStrategyCalls(
-    new Date(now.getTime() - 30 * 864e5).toISOString(),
-    new Date(now.getTime() + 60 * 864e5).toISOString(),
-  );
+  let calls: Awaited<ReturnType<typeof listStrategyCalls>>;
+  try {
+    calls = await listStrategyCalls(
+      new Date(now.getTime() - 30 * 864e5).toISOString(),
+      new Date(now.getTime() + 60 * 864e5).toISOString(),
+    );
+  } catch (e) {
+    // The dedicated type is gone from Calendly: a configuration exception,
+    // reported — never a fallback to matching bookings by name.
+    if (e instanceof CalendlyConfigError) return { skipped: e.message };
+    throw e;
+  }
   const byEmail = await enrolledClientByEmail();
   let stamped = 0, completed = 0, canceled = 0;
 
@@ -123,6 +148,7 @@ export async function sweepDriveTranscripts(): Promise<{ ingested: number } | { 
   const { ownerGoogleToken } = await import("@/lib/integrations/google");
   const token = await ownerGoogleToken();
   if (!token) return { skipped: "Google not connected" };
+  if (await legacyYields()) return { skipped: SUPERSEDED };
 
   // Jordan's real artifacts (verified Aug 24): Gemini meeting-notes docs named
   // "<Client> and Jordan Spackman - 2026/08/07 12:46 EDT - Notes by Gemini",
@@ -294,9 +320,9 @@ export const STRATEGY_CALL_INVITE_ASSIGNEE = "jordan";
 
 // Test records reach the program through the real Aryeo webhook path ("Bobby
 // TEST Michael TEST" enrolled itself on Sep 3) and must not generate owner
-// work. Word-bounded so a real surname like Testa is not swept up.
-export const isTestClientName = (name: string | null | undefined): boolean =>
-  /\btest\b|\bjohn doe\b/i.test(name ?? "");
+// work. The ONE definition now lives in testClients.ts (shared with the
+// portal and the seeding scripts); re-exported here so older imports hold.
+export { isTestClientName };
 
 // 5pm ET on the Nth weekday counted from (and including) an ET calendar day.
 // Weekends only — the program keeps no holiday calendar, and a link that goes
@@ -420,12 +446,19 @@ export async function mintStrategyCallInvites(): Promise<{ minted: number; close
   const { closed, dated } = await reconcileStrategyCallInvites(now);
   const key = etMonthKey(now);
   const months = await prisma.contentMonth.findMany({
-    where: { monthKey: key, strategyCallStatus: "NOT_SCHEDULED", historical: false },
+    // planningMode WRITTEN = the client chose to plan without a call this month
+    // (spec §19): they must never get the book-call draft as well.
+    where: { monthKey: key, strategyCallStatus: "NOT_SCHEDULED", historical: false, OR: [{ planningMode: null }, { planningMode: { not: "WRITTEN" } }] },
     select: { id: true, clientId: true, enrollmentId: true },
   });
   if (months.length === 0) return { minted: 0, closed, dated };
+  // ACTIVE enrollments whose call mode includes a call. Mike Ciunci
+  // (strategyCallRequired=false) got a September draft on Sep 1 because only
+  // the month's frozen status was consulted; the enrollment is the rule.
   const active = new Set(
-    (await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true } })).map((e) => e.id),
+    (await prisma.contentEnrollment.findMany({ where: { status: "ACTIVE" }, select: { id: true, callMode: true, strategyCallRequired: true } }))
+      .filter((e) => (e.callMode ? e.callMode !== "NOT_INCLUDED" : e.strategyCallRequired))
+      .map((e) => e.id),
   );
   const clients = await prisma.client.findMany({
     where: { id: { in: months.map((m) => m.clientId) } },
@@ -474,6 +507,7 @@ export async function mintStrategyCallInvites(): Promise<{ minted: number; close
 export async function sweepNotetakerTranscripts(): Promise<{ ingested: number } | { skipped: string }> {
   const { getSecret } = await import("@/lib/integrations/connections");
   if (!(await getSecret("calendly"))) return { skipped: "Calendly not connected" };
+  if (await legacyYields()) return { skipped: SUPERSEDED };
 
   const months = await prisma.contentMonth.findMany({
     where: { transcriptText: null, calendlyEventUri: { not: null } },

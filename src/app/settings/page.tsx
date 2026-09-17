@@ -15,6 +15,9 @@ import { AutoTextSettings } from "@/components/settings/AutoTextSettings";
 import { TurnaroundSettings, InternalAlertSettings, TextTemplateSettings, ReviewRoomSettings } from "@/components/settings/OperatingRules";
 import { TeamNotifications } from "@/components/settings/TeamNotifications";
 import { teamNotifyRows } from "@/lib/notifyPrefs";
+import { CalendlyMappingsPanel } from "@/components/settings/CalendlyMappingsPanel";
+import { loadCalendlyPanelState } from "@/app/settings/calendlyActions";
+import { CalendarCheck } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -44,7 +47,7 @@ export default async function SettingsPage() {
   // included; the Sep 11 owner-only "Text me" card folded into this matrix. A
   // roster read that fails renders the card empty rather than taking the
   // page down with it.
-  const [rules, textRules, turns, alerts, templates, reviewRoom, notifyRows, topaz, topazLane] = await Promise.all([
+  const [rules, textRules, turns, alerts, templates, reviewRoom, notifyRows, topaz, topazLane, calendly] = await Promise.all([
     editorRouting(), autoTextRules(), turnaroundRules(), internalAlertRules(), textTemplates(), reviewRoomRules(),
     teamNotifyRows().catch(() => []),
     topazSettings(),
@@ -53,6 +56,10 @@ export default async function SettingsPage() {
     // control. Reading it asks Topaz for the balance (free, starts nothing), so
     // it is capped and falls back to no strip rather than holding the page.
     capped(topazDashboard().catch(() => null), 6000),
+    // Calendly & calls (content program, spec §26): lists the account's event
+    // types live, so it is capped like Topaz and renders as "unreachable"
+    // rather than holding the page.
+    capped(loadCalendlyPanelState().catch(() => null), 8000),
   ]);
 
   const topazUsage: TopazUsage | null = topazLane
@@ -123,6 +130,12 @@ export default async function SettingsPage() {
               aryeoNote={ARYEO_MANUAL_NOTE}
               usage={topazUsage}
             />
+          </Section>
+        </div>
+
+        <div id="calendly" className="scroll-mt-6">
+          <Section icon={CalendarCheck} title="Calendly & content-program calls">
+            {calendly ? <CalendlyMappingsPanel state={calendly} /> : <p className="text-sm text-muted">Calendly could not be reached just now — reload to try again.</p>}
           </Section>
         </div>
 

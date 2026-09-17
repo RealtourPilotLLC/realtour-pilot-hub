@@ -198,6 +198,62 @@ export async function GET(req: NextRequest) {
     const { retryFailedWebhooks } = await import("@/lib/webhookRetry");
     return retryFailedWebhooks(25);
   });
+
+  // CONTENT PROGRAM OPERATING SYSTEM (Sep 16 2026) — the verified call chain.
+  // Bookings on the MAPPED Calendly event types become ProgramCallRecords
+  // (identity by verified email only; unmatched → review task), each record is
+  // linked to its Google Calendar event, and its Gemini notes doc is attached
+  // only when the calendar's summary + start both match, uniquely. Every step
+  // self-skips until an enabled mapping exists, so the legacy `contentCalls`
+  // step keeps today's behaviour until then. Nothing here messages a client.
+  //
+  // LAST in the hour, on purpose: the client-text sweeps above are
+  // time-critical and the sync has been running 78–89 s of its 250 s budget;
+  // a slow Calendly/Drive pass here must never push a confirmation text into
+  // `skipped`. Everything below resumes where it left off next tick.
+  await step("contentCallRecords", async () => {
+    const { syncCallRecordsFromCalendly, linkCalendarEvents, discoverTranscriptSources, sweepUnlinkedDriveTranscripts, reconcileCallReviewTasks } = await import("@/lib/contentCallRecords");
+    const { hasEnabledCallMapping } = await import("@/lib/integrations/calendly");
+    if (!(await hasEnabledCallMapping())) return { skipped: "no enabled Calendly mapping" };
+    const bookings = await syncCallRecordsFromCalendly().catch((e) => ({ skipped: e instanceof Error ? e.message : "error" }));
+    const calendar = await linkCalendarEvents({ max: 20 }).catch((e) => ({ skipped: e instanceof Error ? e.message : "error" }));
+    const transcripts = await discoverTranscriptSources({ max: 40 }).catch((e) => ({ skipped: e instanceof Error ? e.message : "error" }));
+    // Program Gemini docs no record has claimed → the import review queue (rows only, no text, no tasks, no analysis).
+    const unlinked = await sweepUnlinkedDriveTranscripts({ sinceDays: 45, max: 10 }).catch((e) => ({ skipped: e instanceof Error ? e.message : "error" }));
+    const review = await reconcileCallReviewTasks().catch(() => ({ closed: 0 }));
+    return { bookings, calendar, transcripts, unlinked, review };
+  }, { maxMs: 45_000 });
+  // Transcript jobs: INGEST (ours) + the AI kinds W1-C provides. Runs ONLY when
+  // the `transcript_jobs` automation is on (a missing row is off); with the
+  // switch off the step reports `skipped` and queued rows simply wait.
+  await step("transcriptJobs", async () => {
+    const { driveTranscriptJobs } = await import("@/lib/transcriptJobs");
+    return driveTranscriptJobs({ max: 5, budgetMs: 30_000, leaseBy: "sync-cron" });
+  }, { maxMs: 40_000 });
+  // Session requests: REQUESTED → CONFIRMED when the Aryeo appointment (synced
+  // above) appears at the slot; CONFIRMED → CANCELLED when Aryeo cancels it;
+  // stale ones expire. The provider-booking driver only runs behind
+  // `session_booking` (off) and never writes to Aryeo in this build.
+  await step("sessionRequests", async () => {
+    const { reconcileSessionRequests, driveSessionBookings } = await import("@/lib/sessionRequests");
+    const reconciled = await reconcileSessionRequests();
+    const booking = await driveSessionBookings({ max: 10 }).catch((e) => ({ skipped: e instanceof Error ? e.message : "error" }));
+    return { ...reconciled, booking };
+  }, { maxMs: 20_000 });
+  // Program months: strategyCallStatus / preparationStatus are DERIVED from
+  // call records + the enrollment's call mode, hourly, for every live month —
+  // the rule that turns Mike Ciunci's NOT_SCHEDULED into NOT_REQUIRED without
+  // anyone editing his row. Persisting is behind the SAME owner switch as the
+  // rest of the chain (an enabled Calendly mapping): until then this is a DRY
+  // RUN that only reports what it would change, so the first hourly tick after
+  // a deploy rewrites nothing on the 30 live months.
+  await step("programMonths", async () => {
+    const { recalcOpenProgramMonths } = await import("@/lib/programMonths");
+    const { hasEnabledCallMapping } = await import("@/lib/integrations/calendly");
+    const armed = await hasEnabledCallMapping();
+    const r = await recalcOpenProgramMonths({ dryRun: !armed });
+    return { mode: armed ? "persisted" : "dry-run (no enabled Calendly mapping)", checked: r.checked, changed: r.changed, changes: r.changes.slice(0, 10) };
+  }, { maxMs: 20_000 });
   // (Frame.io integration removed Sep 1 2026 per the owner — review runs through the in-hub Review Room.)
 
   // Persist this run (CronRun) + Slack-ping on a NEW failure/skip. Best-effort.
