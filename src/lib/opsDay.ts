@@ -14,6 +14,7 @@ import { scrubMoney } from "@/lib/text";
 import { turnaroundRules } from "@/lib/settings";
 import type { StatusEvidence } from "@/lib/projectStatus";
 import { videoStatesFor, videoReviewBoard, type ProjectVideoState, type VideoCutState } from "@/lib/reviewCuts";
+import { readyToSend, type ReadyBoard } from "@/lib/readyToSend";
 
 // ---------------------------------------------------------------------------
 // Kyle's Ops Day (Jordan's "Daily Operations & Client Experience Structure",
@@ -335,6 +336,12 @@ export type OpsDay = {
   /** every uploaded cut awaiting a verdict / back with its editor — the Ops Day
    *  "Video Review" block and the owner Dashboard card read the same list. */
   videoReview: { waiting: VideoCutState[]; revising: VideoCutState[] };
+  /** approved videos whose FILE has not gone to the client — the "Ready to
+   *  send" card. Not a slice of videoReview: a cut lands here AFTER its
+   *  verdict, and stays until a person says it went out (src/lib/readyToSend).
+   *  `rendering` is the same block's read-only footnote: approved cuts the
+   *  1080p lane is still working on, which are NOT ready and carry no file. */
+  readySend: ReadyBoard;
   closeout: {
     todayShootsDone: boolean;
     todayDebriefsIn: number;
@@ -638,10 +645,15 @@ export async function buildOpsDay(): Promise<OpsDay> {
   ]);
 
   const todayKey = today.key;
-  const [turnarounds, videoStates, videoReview] = await Promise.all([
+  const [turnarounds, videoStates, videoReview, readySend] = await Promise.all([
     turnaroundRules(),
     videoStatesFor(qcTasks.map((t) => t.projectId).filter((x): x is string => !!x)).catch(() => new Map<string, ProjectVideoState>()),
     videoReviewBoard().catch(() => ({ waiting: [] as VideoCutState[], revising: [] as VideoCutState[] })),
+    // Finished and not yet sent (Sep 17). It rides here with the rest of the
+    // day so Home still makes ONE pass at the database, and so the badge on the
+    // block, the row in "What needs you today" and the card itself are all the
+    // length of the same array.
+    readyToSend().catch(() => ({ ready: [], rendering: [] }) as ReadyBoard),
   ]);
   const qc: OpsQcRow[] = qcTasks.filter((t) => t.projectId != null).map((t) => {
     let itemsLeft = 0;
@@ -845,6 +857,7 @@ export async function buildOpsDay(): Promise<OpsDay> {
     openLoops,
     openLoopsTally: tallyLoops(openLoops),
     videoReview,
+    readySend,
     closeout: {
       todayShootsDone: shotAlready.length === todayShoots.length,
       todayDebriefsIn: debriefsIn,
@@ -1179,6 +1192,15 @@ export function scrubOpsDayMoney(d: OpsDay): OpsDay {
         ...r,
         revision: r.revision ? { headline: sm(r.revision.headline), items: r.revision.items.map(scrubMoney) } : null,
       })),
+    },
+    // The recorded reason a 1080p pass didn't produce the file is free text
+    // (a skip note a person wrote, or an error message carrying whatever the
+    // service said), so it goes through the same scrub as every other typed
+    // line on an ADMIN's screen. Nothing else on a ready row is money-shaped —
+    // it is addresses, product names and file names.
+    readySend: {
+      ...d.readySend,
+      ready: d.readySend.ready.map((v) => ({ ...v, file: { ...v.file, why: v.file.why ? scrubMoney(v.file.why) : null } })),
     },
     // A plain map would drop the non-enumerable `capped` flag that
     // loopsZeroState reads for its "+" — carry it across.

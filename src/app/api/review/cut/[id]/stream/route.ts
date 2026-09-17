@@ -55,7 +55,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   // branch already resolved the submission anyway.
   const sub = await prisma.reviewSubmission.findUnique({
     where: { id },
-    select: { projectId: true, assetPath: true, blobUrl: true, fileName: true },
+    select: { projectId: true, assetPath: true, finalPath: true, blobUrl: true, fileName: true },
   });
 
   const media = req.nextUrl.searchParams.get("m");
@@ -143,7 +143,13 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   // attachment so the browser saves the file instead of playing it.
   if (sub.blobUrl) return proxyBlob(req, sub.blobUrl, sub.fileName, req.nextUrl.searchParams.get("dl") === "1");
 
-  if (!sub.assetPath) return NextResponse.json({ error: "No file is attached to this cut" }, { status: 404 });
+  // assetPath is where the editor's file lives; finalPath is the copy the
+  // approval filed (and, after a 1080p pass, the superseded original). Pruning
+  // an upload deliberately leaves rows holding ONLY the filed copy — those used
+  // to 404 here while every surface still offered a play/download button for
+  // them. The filed copy is the same cut's bytes, so serve it.
+  const path = sub.assetPath ?? sub.finalPath;
+  if (!path) return NextResponse.json({ error: "No file is attached to this cut" }, { status: 404 });
 
   try {
     // Browsers issue every Range/seek request against the ORIGINAL src, i.e.
@@ -155,7 +161,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     let link = cached && Date.now() - cached.at < LINK_TTL_MS ? cached.link : null;
     if (!link) {
       const { dbx } = await import("@/lib/integrations/dropbox");
-      const r = await dbx<{ link?: string }>("files/get_temporary_link", { path: sub.assetPath });
+      const r = await dbx<{ link?: string }>("files/get_temporary_link", { path });
       if (!r.link) throw new Error("Dropbox returned no link");
       link = r.link;
       linkCache.set(id, { link, at: Date.now() });

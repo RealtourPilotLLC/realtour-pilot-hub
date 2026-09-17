@@ -1521,6 +1521,31 @@ model ReviewSubmission {
   contentHash              String? // sha256 of the stored bytes at release time
   videoId                  String? // -> ContentVideo this cut is a version of
 
+  // ---- "I SENT THIS ONE" (Sep 17 2026) -------------------------------------
+  // The durable record that an APPROVED cut's file actually went to the client
+  // — the fact src/lib/readyToSend.ts asks for, and the only thing that clears
+  // a row off Kyle's "Ready to send" card.
+  //
+  // WHY IT LIVES HERE AND NOT ON TopazJob. TopazJob.deliveredAt already carries
+  // this for a cut that went through the 1080p pass, but two of the three ways
+  // a video becomes sendable never produce a TopazJob row at all (the pass was
+  // skipped for a reason the editor's own export solves, or the lane is off for
+  // that deliverable type), and TopazJob.submissionId is @unique precisely
+  // because that table is the RENDER SPEND ledger — a row invented just to hold
+  // a delivery stamp would corrupt every cap and count computed off it. The cut
+  // is the thing that gets sent, so the cut carries the stamp.
+  //
+  // WHY THE PROJECT'S OWN deliveredAt WILL NOT DO. Sep 17, 322 N 62nd St: the
+  // video went out at 9:17am with no sound, the project was stamped DELIVERED,
+  // the file was corrected — and nothing anywhere said whether the correction
+  // had been re-sent. A per-job stamp answers "did this job get delivered
+  // once"; only a per-cut stamp answers "did THIS FILE go out".
+  //
+  // Both nullable, no default, nothing reads them until a person presses the
+  // button: an additive pair that cannot change the meaning of any existing row.
+  sentToClientAt           DateTime?
+  sentToClientBy           String?
+
   // One row per (file, round): the sweep and the editor's button can race on
   // the same new file; Postgres treats the legacy NULL-path rows as distinct.
   @@unique([projectId, assetPath, round])

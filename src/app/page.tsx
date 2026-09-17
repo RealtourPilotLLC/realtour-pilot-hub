@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import {
   AlarmClock, AlertTriangle, ArrowRight, Camera, CheckCircle2, ChevronDown, Clapperboard,
   ClipboardCheck, Clock, CloudSun, Coffee, ExternalLink, Hourglass, Inbox,
-  ListChecks, MessageSquare, Moon, Plane, PlayCircle, RefreshCw, Route, Sun, Sunrise, Wrench, Zap,
+  ListChecks, MessageSquare, Moon, Plane, PlayCircle, RefreshCw, Route, Send, Sun, Sunrise, Wrench, Zap,
   Flag,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -20,6 +20,7 @@ import { AutoRefresh } from "@/components/ops/AutoRefresh";
 import { DayBlock, DayBlockJumps } from "@/components/ops/DayBlock";
 import { QcComplete, QcCategoryDone } from "@/components/ops/QcComplete";
 import { LoopActions } from "@/components/ops/LoopActions";
+import { ReadyToSendCard, ReadyToSendHeading } from "@/components/ops/ReadyToSendCard";
 import { ProactiveFlags } from "@/components/dashboard/ProactiveFlags";
 import { StuckJobs } from "@/components/dashboard/StuckJobs";
 import { WeekStrip } from "@/components/dashboard/WeekStrip";
@@ -332,6 +333,31 @@ function RushChip({ n, small, onBrand }: { n: number; small?: boolean; onBrand?:
   );
 }
 
+// ---- Finished videos still to go out (Jordan, Sep 17) ----------------------
+// Same shape as the rush chip above and for the same reason: this is a SECOND
+// kind of work inside the Video Review block, so it gets its own number beside
+// the badge rather than being folded into it. The badge stays what it has
+// always been — the verdicts Kyle owes — and "2 to send" cannot hide inside it.
+function readyFor(key: string, d: OpsDay): number {
+  return key === "video-review" ? d.readySend.ready.length : 0;
+}
+/** The green "📤 N to send" chip — the length of the list the card renders. */
+function ReadyChip({ n, small, onBrand }: { n: number; small?: boolean; onBrand?: boolean }) {
+  if (n <= 0) return null;
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-0.5 rounded-full font-bold tabular-nums",
+        small ? "px-1.5 text-[10px]" : "px-2.5 py-0.5 text-xs",
+        onBrand ? "bg-white text-success" : "bg-success text-white",
+      )}
+      title={`${n} approved video${n === 1 ? " has" : "s have"} not gone to the client yet`}
+    >
+      <Send className={small ? "size-2.5" : "size-3"} /> {n} to send
+    </span>
+  );
+}
+
 // What each block has waiting — the number on its header and jump-bar chip.
 // null = the block is guidance, not a list (lunch, admin).
 function countFor(key: string, d: OpsDay, board: { today: unknown[] }): number | null {
@@ -528,6 +554,21 @@ export default async function HomePage() {
     detail: d.videoReview.waiting[0] ? `oldest: ${d.videoReview.waiting[0].street} · ${ageText(d.videoReview.waiting[0].sinceISO, now)}` : undefined,
     href: "#video-review", tone: "brand",
   });
+  // Approved, finished, and still sitting here. It is in "People waiting on
+  // us" because that is literally what it is: the client's video exists and
+  // they haven't got it. (Sep 17, 322 N 62nd St — the silent cut went out at
+  // 9:17am, the fix was ready by lunch, and no screen in the hub said so.)
+  add({
+    key: "tosend", group: "waiting", count: d.readySend.ready.length,
+    label: `video${d.readySend.ready.length === 1 ? "" : "s"} ready to send to the client`,
+    detail: d.readySend.ready[0]
+      ? `oldest: ${d.readySend.ready[0].street} · ready ${ageText(d.readySend.ready[0].approvedAtISO, now)}`
+      : undefined,
+    // The BLOCK id, not the card's: only a block id makes DayBlockJumps open
+    // the <details> this card lives in, and an anchor inside a shut one
+    // scrolls nowhere. The card is the first thing in that block.
+    href: "#video-review", tone: "warning",
+  });
   if (isOwner && todos) {
     add({
       key: "mytodos", group: "decide", count: todos.overdue.length,
@@ -715,6 +756,7 @@ export default async function HomePage() {
                       <span className={cn("rounded-full px-1.5 text-[10px] font-semibold tabular-nums", cur ? "bg-white/20" : "bg-surface-2 text-foreground")}>{n}{plusFor(b.key, d)}</span>
                     )}
                     <RushChip n={rushFor(b.key, d)} small onBrand={cur} />
+                    <ReadyChip n={readyFor(b.key, d)} small onBrand={cur} />
                   </a>
                 );
               })}
@@ -974,8 +1016,12 @@ function Block({ def, current, d, board, counts, needsBelow, dayKey }: {
   // instead — the rows are one tap away inside the card and must not look like
   // zero. (loopsZeroState also covers "14 open, none of them yours".)
   const loopZero = def.key === "loops" ? loopsZeroState(d.openLoops) : null;
-  const zeroLabel = loopZero?.label ?? "clear";
-  const zeroTitle = loopZero?.title ?? "Nothing waiting in this block";
+  // Video Review can owe no verdicts and still hold finished videos nobody has
+  // sent — the exact state 322 N 62nd St was in all morning. Its badge must not
+  // go green and say "clear" over the top of them (same rule as Open Loops).
+  const readyN = readyFor(def.key, d);
+  const zeroLabel = loopZero?.label ?? (readyN > 0 ? "to send" : "clear");
+  const zeroTitle = loopZero?.title ?? (readyN > 0 ? `No verdicts owed — but ${readyN} finished video${readyN === 1 ? "" : "s"} still to go out` : "Nothing waiting in this block");
   // scroll-mt clears the sticky PageHeader (~104px with a one-line subtitle,
   // ~124px when it wraps on a phone) so a jump never tucks the block's title
   // under the header.
@@ -1019,6 +1065,7 @@ function Block({ def, current, d, board, counts, needsBelow, dayKey }: {
               shoot count (the list it links to), and the rush is its own red
               number so it cannot hide inside a "3". */}
           <RushChip n={rushFor(def.key, d)} />
+          <ReadyChip n={readyN} />
           <ChevronDown className="size-4 shrink-0 -rotate-90 text-muted-2 transition-transform group-open:rotate-0" />
         </>
       }
@@ -1883,7 +1930,7 @@ function QcRow({ q, now }: { q: OpsQcRow; now?: Date }) {
             {q.nextDueISO ? ` — ${q.nextDueCategories.join(" + ").toLowerCase()} due ${fmtDayTime(q.nextDueISO)}` : ""}
           </StatusLine>
         )) : q.itemsLeft > 0 ? (
-          <StatusLine label="Still owed" tone="muted">nothing — everything ordered is live; the card closes itself once the gallery is out and the photographer's upload page is in (a re-QC after a revision still wants your tick; the other checks are optional)</StatusLine>
+          <StatusLine label="Still owed" tone="muted">nothing — everything ordered is live; the card closes itself once the gallery is out and the photographer&rsquo;s upload page is in (a re-QC after a revision still wants your tick; the other checks are optional)</StatusLine>
         ) : (
           <StatusLine label="Status" tone="success">Everything is live and checked — safe to close.</StatusLine>
         )}
@@ -2012,6 +2059,17 @@ function VideoReviewCard({ d }: { d: OpsDay }) {
   const { waiting, revising } = d.videoReview;
   return (
     <div className="space-y-4">
+      {/* Ready to send FIRST. A verdict Kyle owes is work that hasn't started;
+          a finished video nobody has sent is a client already waiting — and on
+          Sep 17 it was a client waiting on a re-send that everyone assumed had
+          happened. Delivery before review, in the block where he is already
+          looking at videos. */}
+      <div>
+        <ReadyToSendHeading n={d.readySend.ready.length} />
+        <div className="mt-2">
+          <ReadyToSendCard board={d.readySend} />
+        </div>
+      </div>
       <VideoGroup
         icon={PlayCircle}
         title="Waiting on your review"

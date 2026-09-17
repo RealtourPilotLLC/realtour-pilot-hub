@@ -276,3 +276,33 @@ export async function markLoopHandled(taskId: string): Promise<{ ok: boolean; me
   if (task.projectId) revalidatePath(`/projects/${task.projectId}`);
   return { ok: true, message: "Handled." };
 }
+
+/**
+ * "Mark as sent" on the Ready-to-send card: Kyle has uploaded the file to Aryeo
+ * and delivered the listing, and this is him telling the hub so.
+ *
+ * It records; it never sends. Aryeo has no upload and no delivery endpoint, so
+ * the client-facing act happens in Aryeo, by hand, before this button is
+ * pressed. Nothing here messages a client.
+ *
+ * OWNER/ADMIN only, checked HERE — a server action is a public endpoint, and
+ * the card being hidden from an editor proves nothing. requireAdmin is the same
+ * gate the QC closes above use (Kyle is ADMIN); no editor or photographer lane
+ * reaches a client delivery surface.
+ */
+export async function markVideoSentAction(submissionId: string): Promise<{ ok: boolean; message: string; already?: boolean }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  const me = await getCurrentUser().catch(() => null);
+  const { markVideoSent } = await import("@/lib/readyToSend");
+  const r = await markVideoSent(submissionId, me?.name ?? me?.email ?? null);
+  if (r.ok) {
+    revalidatePath("/");
+    revalidatePath("/ops");
+    revalidatePath("/tasks");
+  }
+  return r;
+}
