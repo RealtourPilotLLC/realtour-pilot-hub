@@ -99,6 +99,13 @@ export async function GET(req: NextRequest) {
     const { sweepPortalLibraries } = await import("@/lib/portalLibrary");
     return sweepPortalLibraries();
   });
+  await step("contentLibrary", async () => {
+    // The NEW video library (ContentVideo), which the staff overview counts
+    // production from. Without this it only ever filled when a client opened
+    // their portal. Derives from each client's own work; contacts nobody.
+    const { sweepContentVideoLibraries } = await import("@/lib/contentVideos");
+    return sweepContentVideoLibraries();
+  });
   await step("contentProgram", async () => {
     const { contentProgramSweep } = await import("@/lib/contentProgram");
     return contentProgramSweep();

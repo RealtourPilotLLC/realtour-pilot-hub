@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { getSetting, putSetting } from "@/lib/settings";
 import { DELIVERED_STAMP, NOT_A_CUT, cutKeyOf } from "@/lib/reviewCuts";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 
@@ -425,6 +426,51 @@ export async function libraryAttention(enrollment: { id: string; clientId: strin
  * An APPROVED video is NOT delivered — it is approved, and belongs in the
  * in-production reading; only a real delivery row counts.
  */
+const LIBRARY_CURSOR = "content-video-sweep-cursor";
+
+/**
+ * Keep the staff overview's production counts current.
+ *
+ * syncEnrollmentVideos is otherwise called from exactly one place — a CLIENT
+ * opening their portal — and no client has ever opened one. So on Sep 17 the
+ * library held 14 rows while 55 delivered videos sat in the pipeline, and the
+ * monthly overview read zero delivered for every client. Counting production
+ * from the library is right; a library nobody fills is not.
+ *
+ * A few enrollments an hour on a rotating cursor, each one deriving that
+ * client's videos from that client's own work. It creates rows and never
+ * deletes, a second pass over the same client creates nothing, and it contacts
+ * nobody — which is why it is not behind a switch.
+ */
+export async function sweepContentVideoLibraries(limit = 8): Promise<{ enrollments: number; created: number; failed: number }> {
+  const enrollments = await prisma.contentEnrollment.findMany({
+    where: { status: { in: ["ACTIVE", "PAUSED"] } },
+    select: { id: true, clientId: true },
+    orderBy: { id: "asc" },
+  });
+  if (enrollments.length === 0) return { enrollments: 0, created: 0, failed: 0 };
+  const stored = await getSetting<{ cursor: string | null }>(LIBRARY_CURSOR, { cursor: null });
+  const at = stored.cursor ? enrollments.findIndex((e) => e.id === stored.cursor) : -1;
+  const start = at >= 0 ? at + 1 : 0;
+  let created = 0;
+  let failed = 0;
+  let done = 0;
+  let last = stored.cursor;
+  for (let i = 0; i < enrollments.length && done < limit; i++) {
+    const e = enrollments[(start + i) % enrollments.length];
+    try {
+      const r = await syncEnrollmentVideos(e);
+      created += r.created;
+    } catch {
+      failed++; // one client's bad row must not stop the rotation
+    }
+    last = e.id;
+    done++;
+  }
+  await putSetting(LIBRARY_CURSOR, { cursor: last }, "cron:contentLibrary").catch(() => {});
+  return { enrollments: done, created, failed };
+}
+
 export const isDeliveredProgramVideo = (v: { status: string; deliveredAt: Date | null; finalSubmissionId: string | null }): boolean =>
   v.status === "DELIVERED" || !!v.deliveredAt || !!v.finalSubmissionId;
 
