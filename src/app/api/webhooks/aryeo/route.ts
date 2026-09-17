@@ -718,6 +718,18 @@ export async function processAryeoEvent(eventType: string, payload: Record<strin
     return;
   }
 
+  // A MERGE IS NOT A LISTING UPDATE. Two listings become one, and every job
+  // pointing at the absorbed side keeps an id that now answers for a different
+  // property — media counts, delivery checks and the Aryeo link all read off
+  // it. Handled on its own, above the generic listing pass, because that pass
+  // would cheerfully restatus the job against whatever the id resolves to now.
+  if (name === "LISTING_MERGED") {
+    const { handleListingMerged } = await import("@/lib/listingMerge");
+    const m = await handleListingMerged(payload);
+    console.info(`[webhook] aryeo LISTING_MERGED: ${m.note}`);
+    return;
+  }
+
   // ORDER — created, fulfilled (delivery), paid, or unknown-verb flat change.
   // Refresh the order table, then re-run the smart status engine + task
   // reconciler for that project (cheap, idempotent — and since flat payloads
