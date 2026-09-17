@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import { scrubMoney } from "@/lib/text";
 import { slackNotify, slackChannels } from "@/lib/integrations/slack";
 import { appBase } from "@/lib/appUrl";
 import { HUB_SMS_PREFIX, staffTextNumber } from "@/lib/hubSms";
@@ -826,8 +827,18 @@ export async function notifyInApp(n: {
       // Money clamp — the SINGLE enforcement point (not 16 call sites): creatives
       // never see money. Any row that can reach an editor/photographer loses its
       // body; a money destination collapses the row to owner-only.
+      //
+      // ONE EXCEPTION, and it is the point of the row: a TAG. Jordan, Sep 17:
+      // "I want to be able to tag james on the video - he gets a text with my
+      // message." A tag whose body is dropped arrives as "Jordan tagged you"
+      // and nothing else, which is a notification about a notification — the
+      // person still has to open a screen to learn what was wanted. So a
+      // mention keeps its text, run through the same money scrubber the task
+      // and comms surfaces use, rather than being thrown away wholesale. The
+      // destination rule below is untouched: a tag pointing at a money screen
+      // still collapses to the owner.
       if (roles.includes("EDITOR") || roles.includes("PHOTOGRAPHER")) {
-        body = null;
+        body = n.kind === "mention" && body ? scrubMoney(body) : null;
         if (href.startsWith("/billing") || href.startsWith("/payouts") || n.kind === "order_paid") {
           roles = ["OWNER"];
           console.warn("notifyInApp money clamp", n.kind);

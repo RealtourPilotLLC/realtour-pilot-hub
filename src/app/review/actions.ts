@@ -422,19 +422,36 @@ export async function addCutNote(input: {
     if (!me || me.impersonating) {
       return { ok: false, message: me?.impersonating ? "You're previewing another user — exit the preview to make changes." : "Only the crew can note a cut." };
     }
-    const myKey = me.realRole === "EDITOR" && me.role === "EDITOR" ? (me.editorKey ?? (me.name ? slugForName(me.name) : null)) : null;
-    if (!myKey || input.lane !== "EDITOR") {
-      return { ok: false, message: "Only the crew can note a cut." };
+    // THE PHOTOGRAPHER WHO SHOT IT (Jordan, Sep 17: tag James on the video and
+    // he can "see the review room video and comment"). Their voice belongs in
+    // the capture lane — that is what the lane is for, and it keeps a shooter
+    // out of the editor lane, where a note is an instruction to someone else.
+    // Same ownership test the page and the tag link use, so a person who can
+    // open the cut can answer on it, and nobody else can.
+    if (me.realRole === "PHOTOGRAPHER" && me.role === "PHOTOGRAPHER" && me.teamMemberId) {
+      if (input.lane !== "PHOTOGRAPHER") {
+        return { ok: false, message: "You can add a capture note on this video." };
+      }
+      const { photographerOwnsShoot } = await import("@/lib/shoot");
+      const theirs = await photographerOwnsShoot(input.projectId, me.teamMemberId).catch(() => false);
+      if (!theirs) return { ok: false, message: "You can only note a video from a shoot you worked." };
+      const onJob = await prisma.reviewSubmission.findUnique({ where: { id: input.submissionId }, select: { projectId: true } });
+      if (!onJob || onJob.projectId !== input.projectId) return { ok: false, message: "That video isn't on this job." };
+    } else {
+      const myKey = me.realRole === "EDITOR" && me.role === "EDITOR" ? (me.editorKey ?? (me.name ? slugForName(me.name) : null)) : null;
+      if (!myKey || input.lane !== "EDITOR") {
+        return { ok: false, message: "Only the crew can note a cut." };
+      }
+      const sub = await prisma.reviewSubmission.findUnique({
+        where: { id: input.submissionId },
+        select: { projectId: true, submittedByKey: true },
+      });
+      const ownsCut =
+        !!sub &&
+        sub.projectId === input.projectId &&
+        (sub.submittedByKey ?? (await projectEditorKey(input.projectId))) === myKey;
+      if (!ownsCut) return { ok: false, message: "You can only note your own cut." };
     }
-    const sub = await prisma.reviewSubmission.findUnique({
-      where: { id: input.submissionId },
-      select: { projectId: true, submittedByKey: true },
-    });
-    const ownsCut =
-      !!sub &&
-      sub.projectId === input.projectId &&
-      (sub.submittedByKey ?? (await projectEditorKey(input.projectId))) === myKey;
-    if (!ownsCut) return { ok: false, message: "You can only note your own cut." };
   }
   const body = (input.body ?? "").trim();
   if (!body) return { ok: false, message: "Write the note first." };

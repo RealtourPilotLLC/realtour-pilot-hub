@@ -289,7 +289,17 @@ export async function notifyMentions(opts: {
         if (opts.noteId) href = `/shoot/note/${opts.noteId}`;
         else {
           const { photographerOwnsShoot } = await import("@/lib/shoot");
-          href = (await photographerOwnsShoot(opts.projectId, t.id)) ? `/shoot/${opts.projectId}${msgAnchor(opts.messageId)}` : "/shoot";
+          const theirs = await photographerOwnsShoot(opts.projectId, t.id);
+          // Tagged ON A CUT: send them to the cut, where the video plays and
+          // the note box is. Sending a photographer to the shoot page for a
+          // note about a video was the old behaviour and it lost the thing the
+          // tag was about. Only when they shot the job — otherwise the page
+          // refuses them and a link that bounces is worse than no link.
+          href = opts.cutId && theirs
+            ? `/review/${opts.projectId}?cut=${opts.cutId}`
+            : theirs
+              ? `/shoot/${opts.projectId}${msgAnchor(opts.messageId)}`
+              : "/shoot";
         }
       } else if (editorKey) href = editCutHref(opts.projectId, opts.cutId, opts.messageId);
       else href = `/projects/${opts.projectId}${msgAnchor(opts.messageId)}`;

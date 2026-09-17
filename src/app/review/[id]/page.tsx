@@ -36,7 +36,19 @@ export default async function CutReviewPage({
   const { cut } = await searchParams;
   const me = await getCurrentUser().catch(() => null);
   const ownerDesk = me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
-  if (!ownerDesk) redirect(homeFor(me?.role));
+  // A PHOTOGRAPHER reaches this page from a tag on the cut — Jordan, Sep 17:
+  // "I want to be able to tag james on the video - he gets a text with my
+  // message and a link to see the review room video and comment." Scoped to
+  // the shoots they actually worked, not the Room's whole queue: the index at
+  // /review is every client's cut and stays owner and admin only, exactly like
+  // the Upload Portal was narrowed for the same reason. Ownership is asked of
+  // the same helper the tag used to build the link, so the page and the text
+  // can never disagree about who may open it.
+  const shotThis =
+    !ownerDesk && me?.role === "PHOTOGRAPHER" && me.teamMemberId
+      ? await (await import("@/lib/shoot")).photographerOwnsShoot(id, me.teamMemberId).catch(() => false)
+      : false;
+  if (!ownerDesk && !shotThis) redirect(homeFor(me?.role));
 
   const w = await getCutWorkspace(id, cut ?? null);
   // Portal notes across this job's cuts, newest last.

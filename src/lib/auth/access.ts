@@ -119,7 +119,11 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
   // They get NO ops/dashboard, schedule, map, clients, comms, billing, pipeline.
   // "mypay" = their OWN pay for the current/next period (shoot pay + mileage,
   // no invoices) with a flag-a-question loop to Jordan.
-  PHOTOGRAPHER: ["shoot", "mypay", "upload", "resources", "training", "assistant"],
+  // "review" is here for ONE page: /review/<job> when they shot that job, which
+  // is where a tag on a cut sends them (Jordan, Sep 17). The Room's index is
+  // every client's cut and refuses them on its own — this key only stops the
+  // middleware bouncing the link before that page can decide.
+  PHOTOGRAPHER: ["shoot", "mypay", "upload", "resources", "training", "assistant", "review"],
 };
 
 // Where to send a user who lands somewhere they can't access — and their
