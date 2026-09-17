@@ -650,6 +650,22 @@ export default async function HomePage() {
 
   const nextShoot = shoots.week[0] ?? null;
 
+  // READY TO SEND, ON JORDAN'S SCREEN (his ask, Sep 17). Kyle meets this card
+  // inside Video Review, because his day is laid out as time blocks and that is
+  // the block he is already in. The owner's page is laid out by what needs
+  // attention, and a block that opens by itself only between 1:00 and 1:30 is
+  // not where he will notice a client waiting on a video we have already made.
+  // Only when there is something: an empty card here would be furniture on
+  // every other day, and his page already tells him when a list is clear.
+  const readySection = isOwner && d.readySend.ready.length > 0 ? (
+    <section id="ready-to-send" className="scroll-mt-32 md:scroll-mt-28">
+      <ReadyToSendHeading n={d.readySend.ready.length} />
+      <div className="mt-2">
+        <ReadyToSendCard board={d.readySend} />
+      </div>
+    </section>
+  ) : null;
+
   // Flags a PERSON raised for this viewer — above everything, in both orders.
   const flaggedSection = flagged.length > 0 ? (
     <section className="panel-shadow overflow-hidden rounded-2xl border-2 border-danger/45 bg-danger-soft/40">
@@ -763,7 +779,7 @@ export default async function HomePage() {
             </nav>
             <div className="mt-2 space-y-2.5">
               {BLOCKS.map((b) => (
-                <Block key={b.key} def={b} current={b.key === currentKey} d={d} board={board} counts={counts} needsBelow={!isOwner} dayKey={todayKey} />
+                <Block key={b.key} def={b} current={b.key === currentKey} d={d} board={board} counts={counts} needsBelow={!isOwner} isOwner={isOwner} dayKey={todayKey} />
               ))}
             </div>
           </div>
@@ -824,6 +840,7 @@ export default async function HomePage() {
         {isOwner ? (
           <>
             {needsSection}
+            {readySection}
             {buttonSection}
             {stuckSection}
             {daySection}
@@ -1001,8 +1018,12 @@ function MoneyStat({ label, value, sub, tone }: { label: string; value: string; 
 
 type OffPageCounts = Awaited<ReturnType<typeof offPageNumbers>>;
 
-function Block({ def, current, d, board, counts, needsBelow, dayKey }: {
+function Block({ def, current, d, board, counts, needsBelow, isOwner, dayKey }: {
   def: BlockDef; current: boolean; d: OpsDay; board: DeliveryBoard; counts: OffPageCounts;
+  /** The owner meets "Ready to send" as its own card near the top of his page,
+   *  so the copy inside Video Review is his alone to skip — one card per person,
+   *  never the same list twice on one screen. */
+  isOwner: boolean;
   /** "What needs you" renders UNDER the blocks in Kyle's order (page order
    *  is by whose day it is) — the tower's jump link has to point that way. */
   needsBelow: boolean;
@@ -1073,15 +1094,15 @@ function Block({ def, current, d, board, counts, needsBelow, dayKey }: {
       <div className="border-t border-border px-5 py-3.5">
         <p className="text-[13px] italic leading-relaxed text-muted">{def.goal}</p>
         <div className="mt-3">
-          <BlockBody blockKey={def.key} d={d} board={board} counts={counts} needsBelow={needsBelow} />
+          <BlockBody blockKey={def.key} d={d} board={board} counts={counts} needsBelow={needsBelow} isOwner={isOwner} />
         </div>
       </div>
     </DayBlock>
   );
 }
 
-function BlockBody({ blockKey, d, board, counts, needsBelow }: {
-  blockKey: string; d: OpsDay; board: DeliveryBoard; counts: OffPageCounts; needsBelow: boolean;
+function BlockBody({ blockKey, d, board, counts, needsBelow, isOwner }: {
+  blockKey: string; d: OpsDay; board: DeliveryBoard; counts: OffPageCounts; needsBelow: boolean; isOwner: boolean;
 }) {
   switch (blockKey) {
     case "tower":
@@ -1224,7 +1245,7 @@ function BlockBody({ blockKey, d, board, counts, needsBelow }: {
       return <LoopsCard d={d} />;
 
     case "video-review":
-      return <VideoReviewCard d={d} />;
+      return <VideoReviewCard d={d} showReady={!isOwner} />;
 
     case "lunch":
       return <p className="text-sm text-muted">Eat. The hub holds the fort.</p>;
@@ -2054,7 +2075,7 @@ function Pill({ warn, label, href }: { warn: boolean; label: string; href: strin
 // monthly package with four videos shows four rows, each with its own button.
 // ---------------------------------------------------------------------------
 
-function VideoReviewCard({ d }: { d: OpsDay }) {
+function VideoReviewCard({ d, showReady = true }: { d: OpsDay; showReady?: boolean }) {
   const now = new Date(d.nowISO);
   const { waiting, revising } = d.videoReview;
   return (
@@ -2064,12 +2085,14 @@ function VideoReviewCard({ d }: { d: OpsDay }) {
           Sep 17 it was a client waiting on a re-send that everyone assumed had
           happened. Delivery before review, in the block where he is already
           looking at videos. */}
-      <div>
-        <ReadyToSendHeading n={d.readySend.ready.length} />
-        <div className="mt-2">
-          <ReadyToSendCard board={d.readySend} />
+      {showReady && (
+        <div>
+          <ReadyToSendHeading n={d.readySend.ready.length} />
+          <div className="mt-2">
+            <ReadyToSendCard board={d.readySend} />
+          </div>
         </div>
-      </div>
+      )}
       <VideoGroup
         icon={PlayCircle}
         title="Waiting on your review"
