@@ -64,9 +64,15 @@ const TASK_PREFIX = "content-session-request-";
 
 /** Sessions used vs allowed for a month. Confirmed requests + attached projects, deduplicated by project. */
 export async function sessionCapacity(enrollmentId: string, monthId: string): Promise<CapacityCheck> {
-  const [enrollment, projects, requests] = await Promise.all([
-    prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { sessionsPerMonth: true, sessionHours: true } }),
-    prisma.project.findMany({ where: { contentMonthId: monthId, status: { not: "CANCELLED" } }, select: { id: true } }),
+  const enrollment = await prisma.contentEnrollment.findUnique({ where: { id: enrollmentId }, select: { clientId: true, sessionsPerMonth: true, sessionHours: true } });
+  const [projects, requests] = await Promise.all([
+    // Only THIS client's filmed sessions use up the allowance. A job mis-attached to another client's month is hidden
+    // by the portal and must not block a booking here, and a job with no shoot date (an editing-only or review job)
+    // was never a filming session. Found by W1-A's fixer: synthetic review cuts were filling September's capacity.
+    prisma.project.findMany({
+      where: { contentMonthId: monthId, status: { not: "CANCELLED" }, shootDate: { not: null }, ...(enrollment ? { clientId: enrollment.clientId } : {}) },
+      select: { id: true },
+    }),
     prisma.programSessionRequest.findMany({ where: { enrollmentId, monthId, status: { in: ["CONFIRMED", "REQUESTED"] } }, select: { id: true, projectId: true, kind: true, extraApprovedBy: true, status: true } }),
   ]);
   const projectIds = new Set(projects.map((p) => p.id));
