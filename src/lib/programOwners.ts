@@ -64,6 +64,16 @@ export async function ownersForMany(pairs: { enrollmentId: string; monthId: stri
 
 export const pairKey = (enrollmentId: string, monthId: string | null) => `${enrollmentId}:${monthId ?? ""}`;
 
+/**
+ * The map a lookup miss gets. Explicitly NOT "whatever other row happened to be
+ * first": a batch read that misses must print "unassigned", never a different
+ * client's owner, because a wrong name beside a client is read as a fact about
+ * who is on the hook.
+ */
+export const UNASSIGNED_OWNERS: OwnerMap = Object.freeze(
+  Object.fromEntries(OWNER_DUTIES.map((duty) => [duty, { duty, appUserId: null, email: null, label: "unassigned", scope: "DEFAULT" as const }])),
+) as OwnerMap;
+
 /** The person a reminder escalates to (W2-F reads this): the month/enrollment ESCALATION owner, Jordan by default. */
 export async function escalationOwnerFor(enrollmentId: string, monthId?: string | null): Promise<DutyOwner> {
   return (await ownersFor(enrollmentId, monthId))["ESCALATION"];

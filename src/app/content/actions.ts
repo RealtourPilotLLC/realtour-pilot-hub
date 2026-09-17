@@ -471,7 +471,12 @@ export async function issuePortalLink(enrollmentId: string): Promise<Result & { 
   if (!token) {
     const { randomBytes } = await import("crypto");
     token = randomBytes(24).toString("base64url");
-    await prisma.contentEnrollment.update({ where: { id: enrollmentId }, data: { portalToken: token } });
+    // portalTokenIssuedAt is stamped HERE as well as in the newer access card
+    // (W1-A handover c): without it a token minted from this older button
+    // looks, to the access card, like a link that was never issued — so a
+    // later rotation would be invisible and "when did this client get their
+    // link" would have no answer.
+    await prisma.contentEnrollment.update({ where: { id: enrollmentId }, data: { portalToken: token, portalTokenIssuedAt: new Date() } });
   }
   const base = appBase();
   return { ok: true, message: "Portal link ready — send it to the client whenever you choose.", url: `${base}/portal/${token}` };

@@ -17,7 +17,11 @@ import { TeamNotifications } from "@/components/settings/TeamNotifications";
 import { teamNotifyRows } from "@/lib/notifyPrefs";
 import { CalendlyMappingsPanel } from "@/components/settings/CalendlyMappingsPanel";
 import { loadCalendlyPanelState } from "@/app/settings/calendlyActions";
-import { CalendarCheck } from "lucide-react";
+import { CalendarCheck, Zap } from "lucide-react";
+import { ProgramAutomationPanel } from "@/components/settings/ProgramAutomationPanel";
+import { loadAutomations } from "@/app/settings/programActions";
+import { RemindersPanel } from "@/components/settings/RemindersPanel";
+import { loadRemindersPanelState } from "@/app/settings/reminderActions";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +51,12 @@ export default async function SettingsPage() {
   // included; the Sep 11 owner-only "Text me" card folded into this matrix. A
   // roster read that fails renders the card empty rather than taking the
   // page down with it.
+  const automations = await loadAutomations().catch(() => []);
+  // Program reminders (spec §24) — the policy, the dry run and the send
+  // ledger. The switch itself is on the automations panel above; this is the
+  // ONE place the policy is written, because this is the shape the reminder
+  // evaluator reads. A read that fails renders a note, not a blank page.
+  const reminders = await loadRemindersPanelState().catch(() => null);
   const [rules, textRules, turns, alerts, templates, reviewRoom, notifyRows, topaz, topazLane, calendly] = await Promise.all([
     editorRouting(), autoTextRules(), turnaroundRules(), internalAlertRules(), textTemplates(), reviewRoomRules(),
     teamNotifyRows().catch(() => []),
@@ -130,6 +140,33 @@ export default async function SettingsPage() {
               aryeoNote={ARYEO_MANUAL_NOTE}
               usage={topazUsage}
             />
+          </Section>
+        </div>
+
+        {/* CONTENT-PROGRAM AUTOMATIONS (spec §13) — every switch, including the
+            ones that have never been configured. */}
+        <div id="program-automations" className="scroll-mt-6">
+          <Section icon={Zap} title="Content program automations" count={`${automations.filter((a) => a.enabled).length}/${automations.length} on`}>
+            <ProgramAutomationPanel
+              isOwner={me ? me.role === "OWNER" : !authEnforced()}
+              rows={automations.map((a) => ({
+                key: a.key, enabled: a.enabled, missing: a.missing, enabledBy: a.enabledBy,
+                enabledAtISO: a.enabledAt?.toISOString() ?? null, lastRunAtISO: a.lastRunAt?.toISOString() ?? null,
+                lastError: a.lastError, lastErrorAtISO: a.lastErrorAt?.toISOString() ?? null,
+              }))}
+            />
+          </Section>
+        </div>
+
+        <div id="program-reminders" className="scroll-mt-6">
+          <Section
+            icon={BellRing}
+            title="Program reminders"
+            count={reminders ? (reminders.switch.enabled ? "on" : reminders.switch.missing ? "never configured" : "off") : undefined}
+          >
+            {reminders
+              ? <RemindersPanel state={reminders} />
+              : <p className="text-sm text-muted">The reminder ledger could not be read just now — reload to try again.</p>}
           </Section>
         </div>
 

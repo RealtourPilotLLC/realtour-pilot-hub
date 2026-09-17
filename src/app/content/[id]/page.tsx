@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
-  Camera, CalendarDays, CheckCircle2, Compass, ExternalLink, Eye, FileText, FileUp, FolderOpen, Lightbulb, NotebookPen, User,
+  Camera, CalendarDays, CheckCircle2, Compass, ExternalLink, Eye, FileText, FileUp, Film, FolderOpen, Lightbulb, NotebookPen, Palette, Settings2, User,
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
@@ -30,6 +30,11 @@ import { ScriptsPanel } from "@/components/content/ScriptsPanel";
 import { FactsPanel } from "@/components/content/FactsPanel";
 import { ImportPanel } from "@/components/content/ImportPanel";
 import { loadStrategyTab, loadTopicsTab, loadScriptsTab, loadFactsTab, loadImportTab } from "./programData";
+import { loadSettingsTab, loadBrandTab, loadContentTab } from "./workspaceData";
+import { SettingsPanel } from "@/components/content/SettingsPanel";
+import { BrandAssetsPanel } from "@/components/content/BrandAssetsPanel";
+import { ContentLibraryPanel } from "@/components/content/ContentLibraryPanel";
+import { PortalAccessCard } from "@/components/content/PortalAccessCard";
 
 export const dynamic = "force-dynamic";
 // The server actions this page calls run the model (a 16k-token topic refresh,
@@ -46,19 +51,25 @@ export const maxDuration = 300;
 // (versions, approve/release, proposals, pillars) · SCRIPTS (one review queue,
 // versions, approve/release) · FACTS (the review strip) · IMPORT (preview →
 // apply, review items) · CLIENT FILE (profile, notes, settings) · THEIR PORTAL.
-type Tab = "month" | "ideas" | "strategy" | "scripts" | "facts" | "import" | "file" | "portal";
+type Tab = "month" | "strategy" | "ideas" | "scripts" | "content" | "brand" | "settings" | "facts" | "import" | "file" | "portal";
 const TABS: { key: Tab; label: string; icon: typeof FileText }[] = [
-  { key: "month", label: "This month", icon: CalendarDays },
-  { key: "ideas", label: "Video Topics", icon: Lightbulb },
+  { key: "month", label: "Overview", icon: CalendarDays },
   { key: "strategy", label: "Strategy", icon: Compass },
+  { key: "ideas", label: "Video Topics", icon: Lightbulb },
   { key: "scripts", label: "Scripts", icon: FileText },
+  { key: "content", label: "Content", icon: Film },
+  { key: "brand", label: "Brand & Assets", icon: Palette },
+  { key: "settings", label: "Settings", icon: Settings2 },
   { key: "facts", label: "Facts", icon: NotebookPen },
   { key: "import", label: "Import", icon: FileUp },
   { key: "file", label: "Client file", icon: FolderOpen },
   { key: "portal", label: "Their portal", icon: Eye },
 ];
-// Old bookmarked URLs keep working: ?tab=topics and ?tab=ideas both open Video Topics.
-const LEGACY_TABS: Record<string, Tab> = { topics: "ideas", "video-topics": "ideas", profile: "file", notes: "file" };
+// Old bookmarked URLs keep working: ?tab=topics and ?tab=ideas both open Video
+// Topics; the pre-§17 "profile"/"notes" links land on Brand & Assets, where
+// that material now lives. ?tab=file still opens the old combined client file
+// card set — nothing Jordan and Kyle use today was taken away.
+const LEGACY_TABS: Record<string, Tab> = { topics: "ideas", "video-topics": "ideas", profile: "brand", notes: "brand", assets: "brand", videos: "content", overview: "month" };
 
 export default async function ContentClientPage({
   params, searchParams,
@@ -135,12 +146,15 @@ export default async function ContentClientPage({
   const scriptReady = (s: (typeof scripts)[number]) => !s.historical && (s.approvedVersionId ? !scriptAwaiting(s) : ["APPROVED", "CLIENT_VISIBLE", "READY_TO_FILM"].includes(s.status));
 
   // Tab data — loaded only for the tab being shown.
-  const [topicsData, strategyData, scriptsData, factsData, importData] = await Promise.all([
+  const [topicsData, strategyData, scriptsData, factsData, importData, settingsData, brandData, contentData] = await Promise.all([
     tab === "ideas" ? loadTopicsTab(id, month ? { id: month.id, monthKey: month.monthKey } : null) : Promise.resolve(null),
     tab === "strategy" ? loadStrategyTab(id, month ? { id: month.id, monthKey: month.monthKey, prioritiesJson: month.prioritiesJson, prioritiesSourceRef: month.prioritiesSourceRef } : null) : Promise.resolve(null),
     tab === "scripts" ? loadScriptsTab(id, month ? { id: month.id } : null) : Promise.resolve(null),
     tab === "facts" ? loadFactsTab(client.id, id) : Promise.resolve(null),
     tab === "import" ? loadImportTab(id) : Promise.resolve(null),
+    tab === "settings" ? loadSettingsTab(id, ownerEyes) : Promise.resolve(null),
+    tab === "brand" ? loadBrandTab(client.id) : Promise.resolve(null),
+    tab === "content" ? loadContentTab(id, client.id, null) : Promise.resolve(null),
   ]);
 
   // The month's counts — same status filters as the dashboard roster, so the
@@ -449,14 +463,47 @@ export default async function ContentClientPage({
           <ImportPanel enrollmentId={id} batches={importData.batches} reviewItems={importData.reviewItems} pillars={importData.pillars} isOwner={ownerEyes} migrationDone={importData.migrationDone} />
         )}
 
+        {/* ---------- CONTENT — the shared video library, staff permissions ---------- */}
+        {tab === "content" && contentData && (
+          <ContentLibraryPanel rows={contentData.rows} pipelineOnly={contentData.pipelineOnly} monthLabelText={null} />
+        )}
+
+        {/* ---------- BRAND & ASSETS ---------- */}
+        {tab === "brand" && brandData && (
+          <BrandAssetsPanel
+            enrollmentId={id}
+            clientId={client.id}
+            assets={brandData.assets}
+            types={brandData.types}
+            sources={brandData.sources}
+            provenance={brandData.provenance}
+            canEdit
+          />
+        )}
+
+        {/* ---------- SETTINGS ---------- */}
+        {tab === "settings" && settingsData && (
+          <SettingsPanel
+            s={settingsData.settings}
+            billing={settingsData.billing}
+            owners={settingsData.owners}
+            history={settingsData.history}
+            staff={settingsData.staff}
+            isOwner={ownerEyes}
+          />
+        )}
+
         {/* ---------- THEIR PORTAL — the live client portal, embedded. ---------- */}
         {tab === "portal" && ownerEyes && (
           enrollment.portalToken ? (
             <div className="space-y-3">
+              {/* W1-A handover (b): the access card owns link status, seats and
+                  visits; it is self-guarded to OWNER and needs no plumbing. */}
+              <PortalAccessCard enrollmentId={id} />
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm text-muted">
                   This is {client.name.split(" ")[0]}&rsquo;s live portal — exactly what they see, videos and profile included.{" "}
-                  <span className="text-warning">Careful: anything you submit in here (a revision request, a comment, a profile change) is recorded as them.</span>
+                  <span className="text-warning">Careful: anything you submit in here (a revision request, a comment, a profile change) is recorded as you, on their behalf — it is stamped with your staff account and labelled &ldquo;{me?.name ?? "Jordan Spackman"} (on behalf of {client.name})&rdquo;.</span>
                 </p>
                 <a
                   href={`/portal/${enrollment.portalToken}`}

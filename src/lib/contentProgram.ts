@@ -177,10 +177,15 @@ export async function attachMonthlyProjects(): Promise<{ attached: number }> {
 
 // One sweep the cron (and the page's refresh action) calls.
 export async function contentProgramSweep() {
+  // Scheduled settings changes (a package effective next month) land BEFORE
+  // the month is minted, so the 1st-of-month workspace carries the new
+  // quantity. Dynamic import: enrollmentChanges imports this module.
+  const { applyDueEnrollmentChanges } = await import("@/lib/enrollmentChanges");
+  const changes = await applyDueEnrollmentChanges().catch(() => ({ applied: 0 }));
   const enr = await syncEnrollments();
   const months = await ensureCurrentMonths();
   const attach = await attachMonthlyProjects();
-  return { ...enr, monthsCreated: months.created, projectsAttached: attach.attached };
+  return { ...enr, monthsCreated: months.created, projectsAttached: attach.attached, changesApplied: changes.applied };
 }
 
 // ---------------------------------------------------------------------------

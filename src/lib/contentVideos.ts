@@ -415,6 +415,19 @@ export async function libraryAttention(enrollment: { id: string; clientId: strin
   return out;
 }
 
+/**
+ * "This video is DELIVERED." The single definition — exported because the
+ * portfolio overview reads every client's library in one query and cannot call
+ * the per-enrollment counter below, and a second hand-written copy of this rule
+ * drifted within a day (APPROVED stopped counting, finalSubmissionId started).
+ * Two copies mean Jordan and the client can be shown different numbers.
+ *
+ * An APPROVED video is NOT delivered — it is approved, and belongs in the
+ * in-production reading; only a real delivery row counts.
+ */
+export const isDeliveredProgramVideo = (v: { status: string; deliveredAt: Date | null; finalSubmissionId: string | null }): boolean =>
+  v.status === "DELIVERED" || !!v.deliveredAt || !!v.finalSubmissionId;
+
 /** Program videos delivered per month, counted from the library (countsTowardAllowance), never from orders. */
 export async function programCountsByMonth(enrollmentId: string, monthKeys: string[]): Promise<Map<string, { delivered: number; total: number }>> {
   if (monthKeys.length === 0) return new Map();
@@ -427,10 +440,7 @@ export async function programCountsByMonth(enrollmentId: string, monthKeys: stri
   for (const r of rows) {
     const c = out.get(r.monthKey!)!;
     c.total++;
-    // DELIVERED is only ever derived from a real delivery row, so it counts —
-    // but an APPROVED video is not yet delivered and must not be reported as
-    // one; it shows up in "in production or review" instead.
-    if (r.status === "DELIVERED" || !!r.deliveredAt || !!r.finalSubmissionId) c.delivered++;
+    if (isDeliveredProgramVideo(r)) c.delivered++;
   }
   return out;
 }

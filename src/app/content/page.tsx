@@ -14,7 +14,10 @@ import { signupsNeedingReview } from "@/lib/stripeSignups";
 import { dismissSignupReview } from "@/app/content/actions";
 import { MonthJourney, VideoMeter } from "@/components/content/MonthJourney";
 import { SweepButton } from "@/components/content/SweepButton";
-import { BadgeDollarSign, ChevronDown } from "lucide-react";
+import { BadgeDollarSign, BookOpen, ChevronDown, Activity, LayoutGrid, ListChecks, Rows3, Settings2 } from "lucide-react";
+import { programOverview, ALL_OPEN, OVERVIEW_FILTERS, type OverviewFilterKey } from "@/lib/programOverview";
+import { OverviewRow } from "@/components/content/OverviewRow";
+import { allAutomations } from "@/lib/programAutomation";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +27,12 @@ export const dynamic = "force-dynamic";
 // Topics → Scripts → Shoot → Delivered), the delivered-videos meter, and any
 // exceptions. Everything reads from the SAME pipeline data as the Editor Queue
 // and Review Room, so this page can't disagree with them.
-export default async function ContentProgramPage() {
+export default async function ContentProgramPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ month?: string; view?: string; filter?: string; ended?: string }>;
+}) {
+  const sp = await searchParams;
   // House auth pattern: strict in prod (enforced), open in local dev.
   const me = await getCurrentUser().catch(() => null);
   if (!me && authEnforced()) redirect("/login?next=/content");
@@ -32,6 +40,14 @@ export default async function ContentProgramPage() {
   // (The page-open full sweep was removed Aug 25 — the hourly cron owns it and
   // the header's "Sync now" button covers on-demand; running it per view was
   // why the tab felt slow — audit.)
+  // The MONTHLY PORTFOLIO OVERVIEW (spec §16) is the default view; the Aug-25
+  // card roster Jordan asked for is kept as `?view=cards` — a view, never
+  // deleted (his rule: preserve every workflow).
+  const view = sp.view === "cards" ? "cards" : "rows";
+  const includeEnded = sp.ended === "1";
+  const monthParam = sp.month === ALL_OPEN ? ALL_OPEN : sp.month;
+  const filter = OVERVIEW_FILTERS.some((f) => f.key === sp.filter) ? (sp.filter as OverviewFilterKey) : null;
+
   const rows = await getProgramRoster();
   const active = rows.filter((r) => r.status === "ACTIVE" && !r.trial);
   const trials = rows.filter((r) => r.status === "ACTIVE" && r.trial);
@@ -49,13 +65,54 @@ export default async function ContentProgramPage() {
   // billing terms.
   const reviewSignups = ownerEyes ? await signupsNeedingReview().catch(() => []) : [];
 
+  // The overview read + the automation switches (a banner when ANY is on, so
+  // nobody is surprised that something is acting on its own).
+  const [overview, switches] = await Promise.all([
+    view === "rows" ? programOverview({ monthKey: monthParam, includeEnded }) : Promise.resolve(null),
+    allAutomations().catch(() => []),
+  ]);
+  const switchedOn = switches.filter((s) => s.enabled);
+  const shown = overview ? (filter ? overview.rows.filter((r) => r.flags.includes(filter)) : overview.rows) : [];
+  // The header numbers come from whichever read is on screen, never a mix.
+  const statDelivered = overview ? overview.rows.reduce((n, r) => n + r.production.delivered, 0) : delivered;
+  const statOwed = overview ? overview.rows.reduce((n, r) => n + r.production.owed, 0) : owed;
+  const statAttention = overview ? overview.rows.filter((r) => r.flags.length > 0).length : attention.length;
+  const selectedMonth = overview?.monthKey ?? etMonthKey();
+  const allOpenView = selectedMonth === ALL_OPEN;
+  const hrefFor = (patch: Record<string, string | null>) => {
+    const q = new URLSearchParams();
+    const base: Record<string, string | null> = {
+      month: monthParam ?? null, view: view === "cards" ? "cards" : null, filter, ended: includeEnded ? "1" : null, ...patch,
+    };
+    for (const [k, v] of Object.entries(base)) if (v) q.set(k, v);
+    const qs = q.toString();
+    return `/content${qs ? `?${qs}` : ""}`;
+  };
+
   return (
     <div>
       <PageHeader
         eyebrow="Monthly content clients"
         title="Content Program"
-        subtitle={monthLabel(etMonthKey())}
-        actions={<SweepButton />}
+        subtitle={view === "rows" ? (allOpenView ? "every open month" : monthLabel(selectedMonth)) : monthLabel(etMonthKey())}
+        actions={
+          <div className="flex items-center gap-1.5">
+            <Link
+              href={hrefFor({ view: view === "cards" ? null : "cards" })}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground"
+              title={view === "cards" ? "Switch to the portfolio overview" : "Switch to the client cards"}
+            >
+              {view === "cards" ? <><Rows3 className="size-3.5" /> <span className="hidden sm:inline">Overview</span></> : <><LayoutGrid className="size-3.5" /> <span className="hidden sm:inline">Cards</span></>}
+            </Link>
+            <Link href="/content/resources" className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
+              <BookOpen className="size-3.5" /> <span className="hidden sm:inline">Resources</span>
+            </Link>
+            <Link href="/content/monitoring" className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-foreground">
+              <Activity className="size-3.5" /> <span className="hidden sm:inline">Monitoring</span>
+            </Link>
+            <SweepButton />
+          </div>
+        }
       />
       <div className="mx-auto max-w-6xl space-y-6 p-4 pb-16 sm:p-6">
         {/* WEBSITE SIGNUPS NEEDING A LOOK — payments Stripe confirmed that the
@@ -90,14 +147,136 @@ export default async function ContentProgramPage() {
           </div>
         )}
 
-        {/* THE MONTH IN FOUR NUMBERS */}
+        {/* AUTOMATION BANNER — nothing on this program runs by itself unless a
+            person switched it on; when one IS on, everybody looking at this
+            page can see it and where to turn it off. */}
+        {switchedOn.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-brand/40 bg-brand-soft/40 px-4 py-2.5 text-[13px]">
+            <Settings2 className="size-4 shrink-0 text-brand" />
+            <span>
+              <span className="font-semibold">{switchedOn.length} automation{switchedOn.length === 1 ? " is" : "s are"} switched on:</span>{" "}
+              {switchedOn.map((s) => s.key.replace(/_/g, " ")).join(", ")}
+            </span>
+            <Link href="/settings#program-automations" className="ml-auto shrink-0 font-medium text-brand hover:underline">Settings →</Link>
+          </div>
+        )}
+
+        {/* THE MONTH IN FOUR NUMBERS — from the SAME read as the list below.
+            Two counting engines on one screen is the disagreement the overview
+            exists to prevent: the roster counts production from attached
+            pipeline projects, the overview from the video library, and a
+            header that said "1/51" above rows summing to something else made
+            both numbers untrustworthy. Active/trial are roster-wide facts
+            about enrollments and do not depend on the month. */}
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Stat icon={Users} label="Active clients" value={String(active.length)} />
           <Stat icon={FlaskConical} label="On trial" value={String(trials.length)} tone={trials.length > 0 ? "brand" : undefined} />
-          <Stat icon={Film} label="Videos this month" value={`${delivered}/${owed}`} tone={owed > 0 && delivered >= owed ? "success" : undefined} />
-          <Stat icon={AlertTriangle} label="Need attention" value={String(attention.length)} tone={attention.length > 0 ? "warning" : "success"} />
+          <Stat
+            icon={Film}
+            // Named only when it is NOT the current month — a two-up tile on a
+            // phone should not wrap for the common case.
+            label={overview && allOpenView ? "Videos, open months" : overview && selectedMonth !== etMonthKey() ? `Videos · ${monthLabel(selectedMonth)}` : "Videos this month"}
+            value={`${statDelivered}/${statOwed}`}
+            tone={statOwed > 0 && statDelivered >= statOwed ? "success" : undefined}
+          />
+          <Stat icon={AlertTriangle} label="Need attention" value={String(statAttention)} tone={statAttention > 0 ? "warning" : "success"} />
         </div>
 
+        {/* ---------- THE PORTFOLIO OVERVIEW (spec §16) ---------- */}
+        {view === "rows" && overview && (
+          <>
+            {/* MONTH SELECTOR — the row you open keeps the month you chose. */}
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="mr-1 text-[11px] font-semibold uppercase tracking-wide text-muted-2">Month</span>
+              {overview.monthKeys.slice(0, 6).map((k) => (
+                <Link
+                  key={k}
+                  href={hrefFor({ month: k === etMonthKey() ? null : k })}
+                  className={cn(
+                    "rounded-lg px-2.5 py-1 text-xs font-medium",
+                    selectedMonth === k ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground",
+                  )}
+                >
+                  {monthLabel(k)}
+                </Link>
+              ))}
+              <Link
+                href={hrefFor({ month: ALL_OPEN })}
+                title="every month that still carries an obligation — an August shortfall does not vanish because September started"
+                className={cn(
+                  "rounded-lg px-2.5 py-1 text-xs font-medium",
+                  allOpenView ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground",
+                )}
+              >
+                All open months
+              </Link>
+              <Link
+                href={hrefFor({ ended: includeEnded ? null : "1" })}
+                className={cn(
+                  "ml-auto rounded-lg px-2.5 py-1 text-xs font-medium",
+                  includeEnded ? "bg-surface-2 text-foreground" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground",
+                )}
+              >
+                {includeEnded ? "Hide ended clients" : "Show ended clients"}
+              </Link>
+            </div>
+
+            {/* FILTERS — every one is a real count, so a zero is an answer. */}
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Link
+                href={hrefFor({ filter: null })}
+                className={cn("rounded-full px-2.5 py-1 text-xs font-medium", !filter ? "bg-foreground text-background" : "border border-border text-muted hover:bg-surface-2 hover:text-foreground")}
+              >
+                Everything <span className="ml-1 opacity-70">{overview.rows.length}</span>
+              </Link>
+              {OVERVIEW_FILTERS.map((f) => (
+                <Link
+                  key={f.key}
+                  href={hrefFor({ filter: filter === f.key ? null : f.key })}
+                  title={f.hint}
+                  className={cn(
+                    "rounded-full px-2.5 py-1 text-xs font-medium",
+                    filter === f.key ? "bg-foreground text-background" : overview.counts[f.key] > 0 ? "border border-border text-foreground/80 hover:bg-surface-2" : "border border-border text-muted-2 hover:bg-surface-2",
+                  )}
+                >
+                  {f.label} <span className="ml-1 opacity-70">{overview.counts[f.key]}</span>
+                </Link>
+              ))}
+            </div>
+
+            <Section
+              icon={ListChecks}
+              title={filter ? OVERVIEW_FILTERS.find((f) => f.key === filter)!.label : allOpenView ? "Every open month" : monthLabel(selectedMonth)}
+              count={shown.length}
+              flush
+              action={<span className="hidden text-[11px] text-muted-2 sm:inline">highest-priority first · open a row for the whole month</span>}
+            >
+              <div>
+                {/* the month is named on the row whenever it is not the one selected — an ended client is shown against their LAST month, not an empty September. */}
+                {shown.map((r) => <OverviewRow key={`${r.enrollmentId}:${r.monthKey}`} r={r} showMonth={allOpenView || r.monthKey !== selectedMonth} />)}
+                {shown.length === 0 && (
+                  <p className="px-5 py-6 text-sm text-muted">
+                    {filter ? "Nothing matches that filter — which is the good answer." : "No client-months in view."}
+                  </p>
+                )}
+              </div>
+            </Section>
+
+            {overview.globalFailures.length > 0 && (
+              <div className="rounded-2xl border border-warning/40 bg-warning/5 p-4 text-[13px]">
+                <div className="mb-1 flex items-center gap-2 font-semibold text-warning"><AlertTriangle className="size-4" /> Failures not tied to one client</div>
+                <ul className="space-y-0.5">
+                  {overview.globalFailures.slice(0, 5).map((f) => (
+                    <li key={f.ref}><Link href={f.href} className="hover:underline">{f.title}</Link> <span className="text-muted-2">— {f.error.slice(0, 100)}</span></li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ---------- THE CARD ROSTER (Aug 25, kept as a view) ---------- */}
+        {view === "cards" && (<>
         {/* ACTIVE CLIENTS — one card per client, problems sorted first */}
         <div>
           <SectionLabel icon={Users} text={`Active clients — ${monthLabel(etMonthKey())}`} count={active.length} />
@@ -121,13 +300,15 @@ export default async function ContentProgramPage() {
           <p className="flex items-center gap-2 text-sm text-success"><CheckCircle2 className="size-4" /> Every enrolled client is on track this month.</p>
         )}
 
+        </>)}
+
         {/* REVENUE & BILLING — owner-only, collapsed until asked for (Jordan
             Aug 25: "how much we are making off each person and if they paid in
             full, paid monthly, or monthly with a 1yr contract"). */}
         {revenue && revenue.length > 0 && <RevenuePanel rows={revenue} />}
 
         {/* PAUSED & PAST — history stays one click away without cluttering the month */}
-        {inactive.length > 0 && (
+        {view === "cards" && inactive.length > 0 && (
           <Section icon={PauseCircle} title="Paused & past clients" count={inactive.length} flush
             action={<span className="text-[11px] text-muted-2">full history inside each</span>}>
             <div className="divide-y divide-border">
