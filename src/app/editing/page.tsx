@@ -7,8 +7,7 @@ import { slugForName } from "@/lib/assignees";
 import { AddToQueue } from "@/components/editing/AddToQueue";
 import { FloatingStyleGuide } from "@/components/editing/FloatingStyleGuide";
 import { SimpleQueue, type QueueRow } from "@/components/editing/SimpleQueue";
-import { buildEditorQueue, editorWorkloads, unreadThreadCount, WAITING_ON_OFFICE } from "@/lib/editorQueue";
-import { WorkloadStrip } from "@/components/editing/WorkloadStrip";
+import { buildEditorQueue, unreadThreadCount, WAITING_ON_OFFICE } from "@/lib/editorQueue";
 
 export const dynamic = "force-dynamic";
 
@@ -120,11 +119,6 @@ export default async function EditorQueuePage() {
     );
   }
 
-  // "Due today" in ET, like every other date on this screen.
-  const endOfToday = (() => {
-    const et = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
-    return new Date(`${et}T23:59:59-04:00`).toISOString();
-  })();
   const unread = await unreadThreadCount(me?.id ?? null, [...notDone, ...upcomingRows, ...done].map((r) => r.id));
 
   return (
@@ -148,11 +142,6 @@ export default async function EditorQueuePage() {
         {/* Manual add — the human override for jobs the automatic handoff never
             picks up (video added after booking, old footage, non-Aryeo work). */}
         <AddToQueue />
-        {/* Who is carrying what, before the queue itself: the table says what is
-            in the shop, this says whether one person is buried while another is
-            idle — and surfaces a pile nobody owns. Owner/admin only; an editor
-            sees their own queue above, never a board of who is behind. */}
-        <WorkloadStrip rows={editorWorkloads(notDone, upcomingRows, { endOfDayISO: endOfToday })} />
         {/* Rows click straight through to /edit/<id> — the notes (customer +
             shoot) live there now, not in the table. */}
         <SimpleQueue notDone={notDone} upcoming={upcomingRows} done={done} />

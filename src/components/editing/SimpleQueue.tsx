@@ -406,9 +406,31 @@ export function SimpleQueue({
 }) {
   const router = useRouter();
   const [view, setView] = useState<"notdone" | "upcoming" | "done">("notdone");
+  // WHOSE WORK AM I LOOKING AT (Jordan, Sep 17). The queue is every job in the
+  // shop; most questions about it are about one person's share of it. Null is
+  // everyone. It filters the view you are on rather than switching you to a
+  // different screen, so the tabs, the counts and the row controls all keep
+  // working exactly as they did.
+  const [who, setWho] = useState<string | null>(null);
   // The last thing a status click did beyond writing the label (see StatusPill).
   const [receipt, setReceipt] = useState<string | null>(null);
-  const rows = view === "notdone" ? notDone : view === "upcoming" ? upcoming : done;
+  const all = view === "notdone" ? notDone : view === "upcoming" ? upcoming : done;
+  // Built from the rows ON THIS TAB, so a name never offers itself and then
+  // shows nothing. "Nobody assigned" earns a place the moment a row has no
+  // editor — that is the pile worth finding.
+  const people = (() => {
+    const seen = new Map<string, { key: string; label: string; n: number }>();
+    for (const r of all) {
+      const key = r.editorKey ?? "__none__";
+      const label = r.editorKey ? (r.editor ?? r.editorKey) : "Nobody assigned";
+      const found = seen.get(key) ?? { key, label, n: 0 };
+      found.n++;
+      seen.set(key, found);
+    }
+    return [...seen.values()].sort((a, b) =>
+      (a.key === "__none__" ? -1 : b.key === "__none__" ? 1 : 0) || b.n - a.n || a.label.localeCompare(b.label));
+  })();
+  const rows = who === null ? all : all.filter((r) => (r.editorKey ?? "__none__") === who);
   const VIEWS = [
     { key: "notdone" as const, label: "Not Done", n: notDone.length },
     { key: "upcoming" as const, label: "Upcoming", n: upcoming.length },
@@ -436,6 +458,24 @@ export function SimpleQueue({
             {v.n > 0 && <span className={cn("ml-1.5 rounded-full px-1.5 text-xs font-semibold", view === v.key ? "bg-white/20" : "bg-surface-2")}>{v.n}</span>}
           </button>
         ))}
+        {/* Not a pill: the editor list grows, and a row of names would compete
+            with the views for the eye. Hidden on an editor's own queue, where
+            every row is already theirs. */}
+        {!hideEditor && people.length > 1 && (
+          <label className="ml-auto flex items-center gap-1.5 text-xs text-muted">
+            Editor
+            <select
+              value={who ?? ""}
+              onChange={(e) => setWho(e.target.value || null)}
+              className="rounded-lg border border-border bg-surface px-2 py-1.5 text-sm text-foreground"
+            >
+              <option value="">Everyone ({all.length})</option>
+              {people.map((p) => (
+                <option key={p.key} value={p.key}>{p.label} ({p.n})</option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
 
       {rows.length === 0 ? (
