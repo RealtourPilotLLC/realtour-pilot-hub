@@ -92,8 +92,15 @@ export type DeriveInput = {
   };
   enrollment: { callMode: string | null; strategyCallRequired: boolean; noCallEligible: boolean | null };
   records: MonthCallRecordInput[];
-  /** Scripts on the month (historical imports excluded by the caller). `approvedAt` dates the filming-ready stamp. */
-  scripts: { status: string; approvedVersionId: string | null; approvedAt?: Date | null }[];
+  /**
+   * Scripts on the month, INCLUDING historical imports. An import from Jordan's archive is
+   * work that was written and sent outside the hub, so for the MONTH it means preparation is
+   * done — even though the script itself is never re-labelled approved/released (Jordan's rule).
+   * Without this, every archive-backed month read "preparing scripts" forever and the overview
+   * would list it as work we owe (found on Joe Sutow's August: 4 imported scripts, 1 shoot).
+   * `approvedAt` dates the filming-ready stamp.
+   */
+  scripts: { status: string; approvedVersionId: string | null; approvedAt?: Date | null; historical?: boolean }[];
   /** Interviews on the month (the written path). */
   interviews: { status: string; submittedAt: Date | null }[];
 };
@@ -177,7 +184,7 @@ export function deriveMonthState(input: DeriveInput): DerivedMonthState {
 
   // Preparation — the client-visible truth about where the month is.
   const scripts = input.scripts;
-  const approved = scripts.filter((s) => s.status === "APPROVED" || s.status === "CLIENT_VISIBLE" || s.status === "READY_TO_FILM" || !!s.approvedVersionId);
+  const approved = scripts.filter((s) => s.historical === true || s.status === "APPROVED" || s.status === "CLIENT_VISIBLE" || s.status === "READY_TO_FILM" || !!s.approvedVersionId);
   const scriptsDone = scripts.length > 0 && approved.length === scripts.length;
   const callHeld = strategyCallStatus === "COMPLETED";
   const submitted = input.interviews.some((i) => i.status === "SUBMITTED" || !!i.submittedAt);
@@ -243,7 +250,7 @@ export async function recalcProgramMonth(monthId: string, opts: { now?: Date; dr
       where: { monthId: month.id },
       select: { callType: true, status: true, matchState: true, scheduledStart: true, scheduledEnd: true, transcriptState: true },
     }),
-    prisma.contentScript.findMany({ where: { monthId: month.id, historical: false }, select: { status: true, approvedVersionId: true, approvedAt: true } }),
+    prisma.contentScript.findMany({ where: { monthId: month.id }, select: { status: true, approvedVersionId: true, approvedAt: true, historical: true } }),
     prisma.contentInterview.findMany({ where: { monthId: month.id }, select: { status: true, submittedAt: true } }),
   ]);
   if (!enrollment) return null;
