@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { requirePageAccess } from "@/lib/auth/guards";
 import { PageHeader } from "@/components/PageHeader";
@@ -34,6 +35,15 @@ export default async function MessageCenterPage({
   await requirePageAccess("editing");
   const { t: selectedId, q } = await searchParams;
   const me = await getCurrentUser().catch(() => null);
+  // A PHOTOGRAPHER holds the `editing` key from Sep 18 (their read-only board
+  // of jobs they shot) and this page rides the SAME key. Without this line that
+  // grant silently opened the office↔editor message centre — with `editorScope`
+  // null they would fall into the branch that "reads as the office below and
+  // hands them every lane's threads", which is the exact failure the editor
+  // fail-closed two lines down was written to prevent. They have no entry point
+  // here (their board renders no Messages button), so this is the door, not the
+  // sign. Their conversation about a cut is the Review Room.
+  if (me?.role === "PHOTOGRAPHER") redirect("/editing");
   const editorScope = me?.role === "EDITOR" ? (me.editorKey || (me.name ? slugForName(me.name) : null)) : null;
   // Fail CLOSED for an editor whose scope can't resolve — a null scope would
   // read as "the office" below and hand them every lane's threads.

@@ -79,6 +79,9 @@ export async function opsAlert(text: string): Promise<boolean> {
 // ---------------------------------------------------------------------------
 
 export type { Role };
+// Saying "the photographer on this job" without hard-coding an id:
+// photographerNotifyTarget() in src/lib/projectPhotographer.ts builds one of
+// these from a projectId (Sep 18, the Review Room's photographer bell).
 export type NotifyTarget = {
   roles: Role[];
   userKey?: string;
@@ -191,6 +194,10 @@ const BELL_RULES: Record<string, BellRule> = {
   review_submitted: "all",
   review_changes: "all", // changes asked for on a cut (the editor must act)
   review_approved: "all", // the editor's loop closes here
+  // The photographer who shot the job asking for a change on the cut (Sep 18).
+  // It is a REQUEST, not a verdict — nothing about the submission moves — so
+  // the only thing that carries it to the people who can act is this row.
+  cut_change_ask: "all",
   review_feedback: "all", // capture feedback the photographer has to fix
   feedback_shared: "all",
   new_lead: "all", // someone is trying to give us money

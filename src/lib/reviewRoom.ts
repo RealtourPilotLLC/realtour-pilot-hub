@@ -229,6 +229,126 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
   };
 }
 
+// ------------------- The photographer's Review Room ------------------------
+//
+// Jordan, Sep 18: "I want to be able to share the review room with the
+// photographer who shot the video … they should be notified just like I am,
+// with access to the review room."
+//
+// It is deliberately NOT getReviewQueue() with a filter bolted on. That queue
+// is the office's desk — every client's cut, Kyle's photo-QC cards, the
+// feedback-follow-through rollup, the recurring-miss scoreboards — and the
+// point of this one is the opposite: the handful of cuts that came out of THIS
+// person's shoots. Reusing the office's row type would also carry
+// `openEditorNotes`, a count of the office's private notes on the cut, onto a
+// creative's screen for no purpose (and the Sep 17 audit is about precisely
+// that class of leak). So: a narrower row, built from a narrower query.
+//
+// The scope test is shoot OWNERSHIP, the same predicate photographerOwnsShoot
+// enforces on the workspace page and requireShootAccess enforces on every
+// write — one definition of "their job", three surfaces.
+export type PhotographerCut = {
+  id: string;
+  projectId: string;
+  street: string;
+  clientName: string;
+  clientAvatarUrl: string | null;
+  round: number;
+  status: string;
+  fileName: string | null;
+  hasAsset: boolean;
+  createdAt: string;
+  decidedAt: string | null;
+  /** Capture notes on this cut addressed to THEM, still open — the thing they
+   *  actually owe an answer on. */
+  myOpenNotes: number;
+  /** Change requests they asked for on this cut, still open (askCutChange). */
+  myOpenAsks: number;
+};
+
+export type PhotographerReviewQueue = {
+  inReview: PhotographerCut[];
+  inRevisions: PhotographerCut[];
+  decided: PhotographerCut[];
+};
+
+export async function getPhotographerReviewQueue(memberId: string): Promise<PhotographerReviewQueue> {
+  const since = new Date(Date.now() - 14 * 24 * 3600_000);
+  const subs = await prisma.reviewSubmission.findMany({
+    where: {
+      OR: [
+        { status: { in: ["PENDING", "CHANGES_REQUESTED"] } },
+        { status: { in: ["APPROVED", "CHANGES_REQUESTED"] }, decidedAt: { gte: since } },
+      ],
+      project: {
+        status: { notIn: ["CANCELLED", "ON_HOLD"] },
+        OR: [{ photographerId: memberId }, { appointments: { some: { assignedToId: memberId } } }],
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 200,
+    include: {
+      project: {
+        select: { id: true, title: true, status: true, client: { select: { name: true, avatarUrl: true } } },
+      },
+    },
+  });
+
+  // Latest round per cut, exactly as the office's queue collapses them: an
+  // older round is history and lives in the workspace timeline.
+  const latestByCut = new Map<string, (typeof subs)[number]>();
+  for (const s of subs) {
+    const key = `${s.projectId}:${s.deliverableId ? `${s.deliverableId}:${s.slot}` : (s.assetPath ?? s.id)}`;
+    const cur = latestByCut.get(key);
+    if (!cur || s.round > cur.round) latestByCut.set(key, s);
+  }
+  const latest = [...latestByCut.values()].filter((s) => s.status !== "WITHDRAWN");
+
+  // Their open rows on those cuts, tallied by the asset key a note threads
+  // under (the same key addCutNote writes: the minted link, else cut:<id>).
+  // Both lanes in one read — capture notes addressed to them, and the change
+  // requests they wrote, which are EDITOR-lane rows carrying their id.
+  const projectIds = [...new Set(latest.map((s) => s.projectId))];
+  const openNotes = projectIds.length
+    ? await prisma.mediaNote.findMany({
+        where: { projectId: { in: projectIds }, parentId: null, status: "OPEN", photographerId: memberId },
+        select: { assetUrl: true, lane: true },
+      })
+    : [];
+  const notesByAsset = new Map<string, { notes: number; asks: number }>();
+  for (const n of openNotes) {
+    const cur = notesByAsset.get(n.assetUrl) ?? { notes: 0, asks: 0 };
+    if (n.lane === "EDITOR") cur.asks += 1;
+    else cur.notes += 1;
+    notesByAsset.set(n.assetUrl, cur);
+  }
+
+  const toView = (s: (typeof subs)[number]): PhotographerCut => {
+    const tally = notesByAsset.get(s.assetUrl ?? `cut:${s.id}`) ?? { notes: 0, asks: 0 };
+    return {
+      id: s.id,
+      projectId: s.projectId,
+      street: streetOf(s.project?.title),
+      clientName: s.project?.client?.name ?? "",
+      clientAvatarUrl: s.project?.client?.avatarUrl ?? null,
+      round: s.round,
+      status: s.status,
+      fileName: s.fileName,
+      hasAsset: !!s.assetUrl,
+      createdAt: s.createdAt.toISOString(),
+      decidedAt: s.decidedAt ? s.decidedAt.toISOString() : null,
+      myOpenNotes: tally.notes,
+      myOpenAsks: tally.asks,
+    };
+  };
+
+  return {
+    inReview: latest.filter((s) => s.status === "PENDING").map(toView),
+    inRevisions: latest.filter((s) => s.status === "CHANGES_REQUESTED").map(toView),
+    decided: latest.filter((s) => s.status === "APPROVED").map(toView),
+  };
+}
+
 // --------------------------- Cut workspace ---------------------------------
 
 export type CutSubmission = {
@@ -269,6 +389,12 @@ export type CutNote = {
   status: string;
   authorName: string | null;
   createdAt: string;
+  /** An EDITOR-lane note the PHOTOGRAPHER asked for (askCutChange, Sep 18) —
+   *  an EDITOR row stamped with a photographerId, a pairing nothing else in
+   *  the schema writes. Every surface that shows cut notes needs to say so:
+   *  "fix the 0:14 driveway" reads very differently depending on whether the
+   *  office decided it or the person who was standing there asked for it. */
+  ask: boolean;
   replies: { id: string; body: string; authorName: string | null; createdAt: string }[];
 };
 
@@ -314,6 +440,7 @@ export async function getEditorFeedback(projectId: string, editorKey: string | n
     status: n.status,
     authorName: n.authorName,
     createdAt: n.createdAt.toISOString(),
+    ask: n.lane === "EDITOR" && !!n.photographerId,
     replies: n.replies.map((r) => ({
       id: r.id,
       body: r.body,
@@ -402,9 +529,19 @@ export async function getCutWorkspace(projectId: string, cutId?: string | null, 
   // A photographer reads ONE lane, and only the rows scoped to them: the note
   // they were tagged in and their own capture feedback. The EDIT lane (Kyle to
   // the editor) and the EDITOR lane (edit feedback) are not theirs.
+  // …plus, since Sep 18, the change requests they wrote THEMSELVES: an
+  // EDITOR-lane row carrying their photographerId is askCutChange's marker and
+  // nothing else in the schema writes that pairing. Without this they could
+  // post an ask and never see it again — a composer that swallows what you
+  // type is worse than no composer.
   const laneWhere =
     lens.kind === "photographer"
-      ? { lane: "PHOTOGRAPHER" as const, photographerId: lens.memberId }
+      ? {
+          OR: [
+            { lane: "PHOTOGRAPHER" as const, photographerId: lens.memberId },
+            { lane: "EDITOR" as const, photographerId: lens.memberId },
+          ],
+        }
       : {};
   const noteRows = activeAssetKey
     ? await prisma.mediaNote.findMany({
@@ -444,6 +581,7 @@ export async function getCutWorkspace(projectId: string, cutId?: string | null, 
       status: n.status,
       authorName: n.authorName,
       createdAt: n.createdAt.toISOString(),
+      ask: n.lane === "EDITOR" && !!n.photographerId,
       replies: n.replies.map((r) => ({
         id: r.id,
         body: r.body,

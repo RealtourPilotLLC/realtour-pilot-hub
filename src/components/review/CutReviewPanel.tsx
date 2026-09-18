@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MentionTextarea } from "@/components/mentions/MentionTextarea";
-import { addCutNote, approveCut, replyCutNote, requestCutChanges, setCutNoteStatus } from "@/app/review/actions";
+import { addCutNote, approveCut, askCutChange, replyCutNote, requestCutChanges, setCutNoteStatus } from "@/app/review/actions";
 import type { CutNote, CutSubmission } from "@/lib/reviewRoom";
 import { CutTakeBack, CutTakeBackFlags } from "./CutTakeBack";
 import type { CutTakeBackInfo } from "./types";
@@ -31,7 +31,15 @@ import { fmtClock, parseClock } from "./types";
 // the prop missing the link renders nowhere on this desk at all.
 // ---------------------------------------------------------------------------
 
-type LaneChoice = { lane: "EDITOR" | "PHOTOGRAPHER"; kind: "fix" | "coaching"; label: string; icon: "pencil" | "camera" };
+type LaneChoice = {
+  lane: "EDITOR" | "PHOTOGRAPHER";
+  kind: "fix" | "coaching";
+  label: string;
+  icon: "pencil" | "camera";
+  /** Goes through askCutChange, not addCutNote — the photographer's REQUEST to
+   *  the editor. Only they get this chip, and it decides nothing. */
+  ask?: true;
+};
 const CHOICES: LaneChoice[] = [
   { lane: "EDITOR", kind: "fix", label: "Editor — fix", icon: "pencil" },
   { lane: "EDITOR", kind: "coaching", label: "Editor — coaching", icon: "pencil" },
@@ -44,7 +52,17 @@ const CHOICES: LaneChoice[] = [
 // always refused both from a photographer, so a photographer followed a tag,
 // pressed a green button, and learned the rules from an error message. The
 // server stays the authority — this only stops offering what it will refuse.
-const PHOTOGRAPHER_CHOICES: LaneChoice[] = CHOICES.filter((c) => c.lane === "PHOTOGRAPHER");
+//
+// Sep 18 (Jordan: "I want them to be able to leave revision comments as well")
+// adds the second chip. Two different things, said in the two different places
+// they belong: a CAPTURE note is about the shoot and comes back to them, an ASK
+// is a change they want made and goes to the editor. Neither one is a verdict
+// — the buttons that rule on a cut are still absent from this branch entirely,
+// and askCutChange refuses anyone who is not the photographer of that shoot.
+const PHOTOGRAPHER_CHOICES: LaneChoice[] = [
+  ...CHOICES.filter((c) => c.lane === "PHOTOGRAPHER"),
+  { lane: "EDITOR", kind: "fix", label: "Ask the editor for a change", icon: "pencil", ask: true },
+];
 
 const STATUS_DOT: Record<string, string> = {
   OPEN: "bg-brand",
@@ -204,7 +222,8 @@ export function CutReviewPanel({
           </span>
         ) : !canDecide ? (
           <span className="text-xs text-muted">
-            {editorLabel} is cutting this. Leave a note on the video and it goes to whoever is working on it.
+            {editorLabel} is cutting this and the office rules on it — you can leave a capture note, or ask{" "}
+            {editorLabel} for a change and it travels with the cut when it goes back.
           </span>
         ) : (
           <>
@@ -233,7 +252,7 @@ export function CutReviewPanel({
       {composing && (
         <div className="rounded-2xl border border-brand/40 bg-surface p-3">
           <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-brand">
-            <MessageSquarePlus className="size-3.5" /> Cut note
+            <MessageSquarePlus className="size-3.5" /> {lanes[choice].ask ? "Change request" : "Cut note"}
             {capturedAt != null && <span className="rounded bg-brand-soft px-1.5 py-0.5 tabular-nums">at {fmtClock(capturedAt)}</span>}
           </div>
           <MentionTextarea
@@ -276,15 +295,23 @@ export function CutReviewPanel({
             <button
               onClick={() =>
                 run(
-                  () =>
-                    addCutNote({
-                      projectId,
-                      submissionId: submission.id,
-                      body,
-                      lane: lanes[choice].lane,
-                      kind: lanes[choice].kind,
-                      timeSec: capturedAt ?? parseClock(clock),
-                    }),
+                  () => {
+                    const at = capturedAt ?? parseClock(clock);
+                    // The ask chip is a different action, not a different lane
+                    // argument: addCutNote refuses an EDITOR-lane write from a
+                    // photographer (it always has) and askCutChange is the one
+                    // that stamps the row so they can read it back.
+                    return lanes[choice].ask
+                      ? askCutChange({ projectId, submissionId: submission.id, body, timeSec: at })
+                      : addCutNote({
+                          projectId,
+                          submissionId: submission.id,
+                          body,
+                          lane: lanes[choice].lane,
+                          kind: lanes[choice].kind,
+                          timeSec: at,
+                        });
+                  },
                   () => {
                     setBody("");
                     setClock("");
@@ -295,7 +322,8 @@ export function CutReviewPanel({
               disabled={pending || !body.trim()}
               className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
             >
-              {pending ? <Loader2 className="size-3.5 animate-spin" /> : <MessageSquarePlus className="size-3.5" />} Save note
+              {pending ? <Loader2 className="size-3.5 animate-spin" /> : <MessageSquarePlus className="size-3.5" />}{" "}
+              {lanes[choice].ask ? "Send the ask" : "Save note"}
             </button>
             <button onClick={() => setComposing(false)} className="px-1 text-xs font-medium text-muted hover:text-foreground">
               Cancel
@@ -336,8 +364,23 @@ export function CutReviewPanel({
                     {n.kind === "coaching" ? "coaching · " : ""}
                     {n.replies.length > 0 ? `${n.replies.length} repl${n.replies.length === 1 ? "y" : "ies"}` : ""}
                   </span>
+                  {/* WHO WANTS THIS. An editor-lane row the photographer asked
+                      for reads identically to one the office decided on unless
+                      the row says so — and the two are answered differently.
+                      The name is on the chip because "the office" and "the guy
+                      who was standing in the driveway" is the whole point. */}
+                  {n.ask && (
+                    <span className="ml-2 inline-flex items-center gap-1 rounded-md bg-sky-500/10 px-1.5 py-0.5 text-[11px] font-medium text-sky-500">
+                      <Camera className="size-3" /> asked by {n.authorName ?? "the photographer"}
+                    </span>
+                  )}
                 </button>
-                {n.status !== "RESOLVED" ? (
+                {/* Resolve / reopen are the office's (setCutNoteStatus keeps
+                    OPEN and RESOLVED behind requireAdmin). Rendering them to a
+                    photographer would be a button whose only outcome is an
+                    error message — the exact thing the Sep 17 audit found on
+                    this panel's verdict bar. */}
+                {!canDecide ? null : n.status !== "RESOLVED" ? (
                   <button
                     onClick={() => run(() => setCutNoteStatus(n.id, "RESOLVED"))}
                     disabled={pending}

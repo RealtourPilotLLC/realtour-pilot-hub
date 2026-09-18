@@ -31,17 +31,23 @@ export type NotifyGroup = "Owner" | "Editor" | "Photographer" | "Office";
 //   project_message — the job's editor, the assigned photographer while the
 //                     job is undelivered, and the office (mentions.ts
 //                     notifyProjectMessage);
-//   job_ping        — the edit lane ONLY: every raws_landed / revision_* /
-//                     edit_* / review_* person-leg is an editor:<key> or the
-//                     job editor's tm: row (tasks.ts, comms.ts,
-//                     editing/actions.ts, review/actions.ts). A photographer
-//                     is never addressed with one — their task_assigned
-//                     rides shoot_change — so "Photographer" came off this
-//                     row in the Sep 16 review: Harrison's and James's Job
-//                     pings switch rendered live and inert, the exact
-//                     dishonesty this table exists to remove;
+//   job_ping        — the edit lane: every raws_landed / revision_* / edit_* /
+//                     review_* person-leg is an editor:<key> or the job
+//                     editor's tm: row (tasks.ts, comms.ts, editing/actions.ts,
+//                     review/actions.ts). "Photographer" came OFF this row in
+//                     the Sep 16 review because nothing addressed them —
+//                     Harrison's and James's switch rendered live and inert,
+//                     the exact dishonesty this table exists to remove. It is
+//                     back on Sep 18 for exactly TWO kinds and no others:
+//                     review_approved and review_changes now address the
+//                     photographer who SHOT the job (Jordan: "they should be
+//                     notified just like I am"). Their raws_landed and
+//                     edit_assigned rows still do not exist, so the label's
+//                     other words stay the editor's;
 //   review_ready    — the Review Room's OWNER+ADMIN broadcast, bridged to
-//                     the owner and the office (notify.ts bridgeBroadcast);
+//                     the owner and the office (notify.ts bridgeBroadcast) —
+//                     and, since Sep 18, the person-addressed cut_ready row
+//                     for the photographer whose shoot the cut came from;
 //   shoot_change    — the assigned photographer, the owner because he
 //                     shoots, and the OFFICE: tasks.ts creativeAlertTargets
 //                     addresses whoever carries TeamMember.creativeManager
@@ -51,8 +57,8 @@ export type NotifyGroup = "Owner" | "Editor" | "Photographer" | "Office";
 export const NOTIFY_EVENTS = [
   { key: "mention", label: "Tagged in a message, or replied to", short: "Tags", appliesTo: ["Owner", "Editor", "Photographer", "Office"] },
   { key: "project_message", label: "A message posted on one of their jobs", short: "Job messages", appliesTo: ["Editor", "Photographer", "Office"] },
-  { key: "job_ping", label: "Job pings — footage landed, a revision, a review verdict, reassigned", short: "Job pings", appliesTo: ["Editor"] },
-  { key: "review_ready", label: "A video waiting on review", short: "Video in review", appliesTo: ["Owner", "Office"] },
+  { key: "job_ping", label: "Job pings — footage landed, a revision, a review verdict, reassigned", short: "Job pings", appliesTo: ["Editor", "Photographer"] },
+  { key: "review_ready", label: "A video waiting on review", short: "Video in review", appliesTo: ["Owner", "Office", "Photographer"] },
   { key: "shoot_change", label: "Shoot changes & feedback — reschedule, cancel, footage missing, cull, review feedback", short: "Shoot changes", appliesTo: ["Photographer", "Owner", "Office"] },
 ] as const satisfies readonly { key: string; label: string; short: string; appliesTo: readonly NotifyGroup[] }[];
 
@@ -93,6 +99,7 @@ export const NOTIFY_KIND_LABELS: Record<string, string> = {
   edit_started: "edit started",
   review_changes: "changes requested",
   review_approved: "cut approved",
+  cut_change_ask: "change asked on a cut",
   cut_ready: "video in review",
   review_submitted: "video in review",
   review_feedback: "shoot feedback",
@@ -176,6 +183,17 @@ export function defaultPrefsFor(role: string, isOwner: boolean): NotifyPrefs {
   if (r === "PHOTOGRAPHER") {
     p.mention = { ...sms };
     p.shoot_change = { ...sms };
+    // Sep 18, Jordan on sharing the Review Room with the shooter: "they should
+    // be notified just like I am". The owner's own row for a video waiting on
+    // review is a text, so theirs is too. Volume was checked before the switch
+    // was defaulted ON rather than after: the Room holds 35 cuts in its whole
+    // life to date, 29 of them on jobs with a photographer — about a dozen a
+    // month across the roster, and the staff queue batches a person's lines
+    // into one message every 30 minutes anyway.
+    p.review_ready = { ...sms };
+    // The VERDICT is information, not a summons — the cut is already gone from
+    // their hands and the next move is the editor's. Bell only by default; the
+    // switch is on their Settings row the moment they want more.
     return p;
   }
   // MANAGER / ADMIN / VA / SALES without an editor key: the office.

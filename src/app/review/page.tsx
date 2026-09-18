@@ -85,6 +85,21 @@ export default async function ReviewRoomPage() {
   await requirePageAccess("review");
   const me = await getCurrentUser().catch(() => null);
   const ownerDesk = me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
+  // A PHOTOGRAPHER gets the Room narrowed to their own shoots rather than the
+  // door (Jordan, Sep 18). Sending them to /shoot — the Sep 17 answer — meant
+  // the only way into a cut was a tag, so a video from their own shoot that
+  // nobody thought to tag them on was unreachable. Everything below this line
+  // is the office's desk: every client's cut, Kyle's photo QC, the follow-up
+  // rollup and the scoreboards. None of it is theirs, and none of it loads.
+  if (!ownerDesk && me?.role === "PHOTOGRAPHER") {
+    const { photographerMemberId } = await import("@/lib/shoot");
+    const mid = await photographerMemberId(me).catch(() => null);
+    // No roster row = no way to say which shoots are theirs. Fail closed to
+    // their own home rather than to somebody else's cuts.
+    if (!mid) redirect(homeFor(me.role));
+    const { PhotographerRoom } = await import("@/components/review/PhotographerRoom");
+    return <PhotographerRoom memberId={mid} firstName={(me.name ?? "there").split(" ")[0]} />;
+  }
   if (!ownerDesk) redirect(homeFor(me?.role));
 
   const [q, patterns, qcStats] = await Promise.all([getReviewQueue(), getFixPatterns(60), getQcStats(30)]);

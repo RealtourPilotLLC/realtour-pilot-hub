@@ -36,14 +36,14 @@ export default async function CutReviewPage({
   const { cut } = await searchParams;
   const me = await getCurrentUser().catch(() => null);
   const ownerDesk = me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
-  // A PHOTOGRAPHER reaches this page from a tag on the cut — Jordan, Sep 17:
+  // A PHOTOGRAPHER reaches this page from a tag on the cut (Jordan, Sep 17:
   // "I want to be able to tag james on the video - he gets a text with my
-  // message and a link to see the review room video and comment." Scoped to
-  // the shoots they actually worked, not the Room's whole queue: the index at
-  // /review is every client's cut and stays owner and admin only, exactly like
-  // the Upload Portal was narrowed for the same reason. Ownership is asked of
-  // the same helper the tag used to build the link, so the page and the text
-  // can never disagree about who may open it.
+  // message and a link to see the review room video and comment") and, since
+  // Sep 18, from their own index at /review and from the ping the cut itself
+  // sends them. Scoped to the shoots they actually worked — ownership, never a
+  // tag — and asked of the same helper the link and the bell are built from,
+  // so the page, the text and the index can never disagree about who may open
+  // it. The office's cross-client queue is still not theirs; see /review.
   const shotThis =
     !ownerDesk && me?.role === "PHOTOGRAPHER" && me.teamMemberId
       ? await (await import("@/lib/shoot")).photographerOwnsShoot(id, me.teamMemberId).catch(() => false)
@@ -124,9 +124,11 @@ export default async function CutReviewPage({
           menu on a phone — Kyle reviewed a cut and had no obvious control to
           get back to the list (audit, Sep 8 2026). Same placement as /edit. */}
       <div className="border-b border-border px-4 py-3 sm:px-6">
-        {/* /review is the office's whole queue and a photographer is redirected
-            off it — sending them back there was a dead end (audit finding 5). */}
-        <BackLink href={shotThis ? "/shoot" : "/review"} label={shotThis ? "My Shoots" : "Review Room"} />
+        {/* Both go to /review now (Sep 18). It used to point a photographer at
+            /shoot because the Room's index redirected them away; the index
+            answers them with their own cuts today, so "back" means back to the
+            list they came from, for everybody. */}
+        <BackLink href="/review" label="Review Room" />
       </div>
       <PageHeader
         eyebrow="Review Room"

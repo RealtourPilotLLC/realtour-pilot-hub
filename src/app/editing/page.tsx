@@ -60,6 +60,42 @@ export default async function EditorQueuePage() {
   // tells "no scope" from "not an editor".
   const editorScope = editorScopeOf(me);
 
+  // THE PHOTOGRAPHER'S VIEW (Jordan, Sep 18: "They should also see the editing
+  // room and be able to make changes to their notes or instructions, but not
+  // full control like I do or Kyle does"). It returns BEFORE buildEditorQueue's
+  // office rails and the workload panel are built for them at all — a
+  // photographer must not receive the whole company's board and have the
+  // markup decide what to draw. Their own board, and the only writable thing
+  // on it, live in PhotographerJobs.
+  if (me?.role === "PHOTOGRAPHER") {
+    const { photographerMemberId } = await import("@/lib/shoot");
+    const mid = await photographerMemberId(me).catch(() => null);
+    const { PhotographerJobs } = await import("@/components/editing/PhotographerJobs");
+    // No roster row = nothing can say which jobs are theirs. Fail closed with
+    // a nudge, exactly as an unmapped editor does below, rather than falling
+    // through to the office view.
+    const jobs = mid ? await (await import("@/lib/photographerEditing")).photographerEditingBoard(mid) : [];
+    const inEdit = jobs.filter((j) => j.rail === "open").length;
+    return (
+      <div>
+        <PageHeader
+          eyebrow="Your shoots, after the shoot"
+          title="Editing Room"
+          subtitle={
+            !mid
+              ? "Your login isn't linked to a roster profile yet — ask Jordan or Kyle to finish it."
+              : inEdit
+                ? `${inEdit} of your job${inEdit === 1 ? "" : "s"} in the edit — open one to fix what you told the editor`
+                : "Nothing of yours in the edit right now"
+          }
+        />
+        <div className="mx-auto max-w-4xl space-y-4 p-4 pb-16 sm:p-6">
+          {mid && <PhotographerJobs jobs={jobs} />}
+        </div>
+      </div>
+    );
+  }
+
   // An EDITOR whose login has no editorKey AND no name can't be scoped — fail
   // closed with a nudge, never fall through to the all-jobs view below.
   if (me?.role === "EDITOR" && !editorScope) {

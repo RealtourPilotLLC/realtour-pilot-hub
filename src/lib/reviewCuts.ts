@@ -114,18 +114,34 @@ export async function announceCutInReview(input: {
     // The editor by roster name when the key resolves ("Kim"), else whoever
     // handed it in — the owner or Kyle uploading on an editor's behalf.
     const editor = editorMeta(input.editorKey)?.name ?? input.editorName ?? "editor";
+    // The person who SHOT it hears about it too (Jordan, Sep 18: "I want to be
+    // able to share the review room with the photographer who shot the video …
+    // they should be notified just like I am, with access to the review room").
+    // Same href the office gets — the Room parked on this cut — because that
+    // page has admitted the job's photographer since Sep 17 and now gives them
+    // an index of their own. Their own line, not the ownerSms one: that field
+    // is read only for an OWNER+ADMIN broadcast, and a person-addressed row's
+    // sentence is `slackDm` (notify.ts bridgePerson). Money never enters it.
+    const { photographerNotifyTarget } = await import("@/lib/projectPhotographer");
+    const shooter = await photographerNotifyTarget(input.projectId, {
+      href,
+      slackDm: `🎬 A cut from your shoot is in review — ${input.street} (v${input.round}). Watch it and leave notes: ${appBase()}${href}`,
+    }).catch(() => null);
     await notifyInApp({
       kind: input.kind,
       title: `${input.round > 1 ? `Version ${input.round}` : "Cut"} ready to review — ${input.street}${input.fileName ? ` · ${input.fileName}` : ""}`,
       body: input.fileName ?? undefined,
       href,
-      targets: [{
-        roles: ["OWNER", "ADMIN"],
-        // No sentence = no text (notify.ts): the owner's own upload is bell-only.
-        ...(input.ownerActed
-          ? {}
-          : { ownerSms: `Video in review — ${input.street} (${editor}, v${input.round}). ${appBase()}${href}` }),
-      }],
+      targets: [
+        {
+          roles: ["OWNER", "ADMIN"],
+          // No sentence = no text (notify.ts): the owner's own upload is bell-only.
+          ...(input.ownerActed
+            ? {}
+            : { ownerSms: `Video in review — ${input.street} (${editor}, v${input.round}). ${appBase()}${href}` }),
+        },
+        ...(shooter ? [shooter] : []),
+      ],
       dedupeKey: `cut-in-review-${input.submissionId}${input.dedupeSuffix ? `-${input.dedupeSuffix}` : ""}`,
     });
   } catch { /* bell is best-effort */ }

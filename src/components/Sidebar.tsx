@@ -189,7 +189,14 @@ export function Sidebar({ user, scriptingUrl, onNavigate }: { user?: ShellUser |
     // `resources` key (it rides that permission) and must keep its own label.
     if (creative) items = items.map((i) => (i.href === "/resources" ? { ...i, label: "SOP Center" } : i));
     // Style Guide is the video-editing reference — photographers don't need it.
-    if (user && user.role === "PHOTOGRAPHER") items = items.filter((i) => i.href !== "/resources/video-styles");
+    // "Client & Team Feedback" (/quality) rides the same `review` key the Review
+    // Room does, and that page redirects anyone who isn't owner/admin — so a
+    // photographer has been carrying a nav item that bounced them home since it
+    // shipped. /review itself answers them properly now (Sep 18); this one still
+    // doesn't, so it comes off their menu rather than staying a dead door.
+    if (user && user.role === "PHOTOGRAPHER") {
+      items = items.filter((i) => i.href !== "/resources/video-styles" && i.href !== "/quality");
+    }
     // "My Pay" is a person's own payout view. Photographers always have it;
     // owner/admin see it ONLY with an explicit mypay:true override (James:
     // admin powers for the creative-manager role, his own pay visible, the

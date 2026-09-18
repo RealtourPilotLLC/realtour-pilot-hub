@@ -61,6 +61,11 @@ const KIND_TO_EVENT: Record<string, NotifyEvent> = {
   edit_started: "job_ping",
   review_changes: "job_ping",
   review_approved: "job_ping",
+  // The photographer who shot the job asking the editor for a change from the
+  // Review Room (Sep 18). An edit-lane ping by every measure: it lands on the
+  // editor's own page as an open note and travels onto the edit card with the
+  // next round, so it rides the switch their other edit-lane pings ride.
+  cut_change_ask: "job_ping",
   cut_ready: "review_ready",
   review_submitted: "review_ready",
   // Shoot feedback sent to the photographer's lane texted them before Sep 15

@@ -33,8 +33,9 @@ export const PAGES: { key: PageKey; label: string; href: string; ownerOnly?: boo
   // Structure, Sep 1 2026): time-blocked control tower with live data per block.
   { key: "ops", label: "Ops Day", href: "/ops" },
   // The Review Room — the owner's quality desk: cuts editors submitted, photo
-  // sets in QC, and open feedback follow-through. Owner/admin by default;
-  // creatives receive their feedback on their own surfaces (/shoot, /edit).
+  // sets in QC, and open feedback follow-through. Owner/admin see all of that;
+  // a PHOTOGRAPHER opening /review gets the same room narrowed to the jobs they
+  // shot (Sep 18), and editors still receive their feedback on /edit.
   { key: "review", label: "Review Room", href: "/review" },
   { key: "pipeline", label: "Project Tracker", href: "/pipeline" },
   // Schedule now owns both the day-list and the Map (the ?view=map tab). /map is
@@ -119,11 +120,23 @@ const ROLE_PAGES: Record<Role, PageKey[]> = {
   // They get NO ops/dashboard, schedule, map, clients, comms, billing, pipeline.
   // "mypay" = their OWN pay for the current/next period (shoot pay + mileage,
   // no invoices) with a flag-a-question loop to Jordan.
-  // "review" is here for ONE page: /review/<job> when they shot that job, which
-  // is where a tag on a cut sends them (Jordan, Sep 17). The Room's index is
-  // every client's cut and refuses them on its own — this key only stops the
-  // middleware bouncing the link before that page can decide.
-  PHOTOGRAPHER: ["shoot", "mypay", "upload", "resources", "training", "assistant", "review"],
+  // "review" was here for ONE page (Sep 17): /review/<job> when a tag on a cut
+  // sent them there. Since Sep 18 it is the Room proper — Jordan: "I want to be
+  // able to share the review room with the photographer who shot the video …
+  // they should be notified just like I am, with access to the review room."
+  // The index at /review now answers a photographer with THEIR OWN cuts (the
+  // jobs they shot) instead of redirecting them; the office's cross-client
+  // queue, the photo-QC rail and the scoreboards stay owner/admin. Ownership,
+  // not a tag, is the test — see photographerOwnsShoot.
+  //
+  // "editing" is the same sentence for the edit lane: "They should also see the
+  // editing room and be able to make changes to their notes or instructions,
+  // but not full control like I do or Kyle does." /editing renders them a
+  // READ-ONLY board of jobs they shot, whose only writable thing is the brief
+  // they themselves wrote for the editor — no status pill, no reassign, no
+  // override dialog, no other photographer's jobs, and no money on any row.
+  // The page gates it, and every write behind it goes through requireShootAccess.
+  PHOTOGRAPHER: ["shoot", "mypay", "upload", "resources", "training", "assistant", "review", "editing"],
 };
 
 // Where to send a user who lands somewhere they can't access — and their

@@ -539,6 +539,76 @@ export async function saveJobNotes(
   return { ok: true, message: "Saved." };
 }
 
+// ---------------------------------------------------------------------------
+// THE SHOOTER ANSWERING THE EDITOR (Jordan, Sep 18: "They should also see the
+// editing room and be able to make changes to their notes or instructions, but
+// not full control like I do or Kyle does").
+//
+// The two fields THEY wrote, and nothing else on the job:
+//   · Project.editorBrief      — "anything else for the editor" (upload page);
+//   · Project.videoInstructions — the flow + vision, required on a video job.
+// Deliberately NOT saveJobNotes above, which also writes Project.notes — the
+// customer note is the office's record of what the client said, not the
+// photographer's to rewrite, and a shared action is how a field quietly ends up
+// writable by somebody it was never meant for.
+//
+// requireShootAccess is the whole authorization: owner/admin always, and a
+// PHOTOGRAPHER only on a job they shot. RTP-02 (Sep 16) is the reason it is
+// asked here rather than trusted from the page — a "use server" action is
+// reachable by POST whatever the UI renders, and the role gate alone once let
+// one photographer login overwrite the brief on all 1,427 jobs that were not
+// theirs.
+// ---------------------------------------------------------------------------
+export async function saveShootBriefFields(
+  projectId: string,
+  fields: { shootBrief?: string; videoInstructions?: string },
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireShootAccess(projectId);
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  const data: { editorBrief?: string | null; videoInstructions?: string | null } = {};
+  if (fields.shootBrief !== undefined) data.editorBrief = fields.shootBrief.trim().slice(0, 4000) || null;
+  // 6000 is the upload portal's own cap on this column (upload/actions.ts) —
+  // the same field must not have two different ceilings depending on which
+  // screen it was typed into.
+  if (fields.videoInstructions !== undefined) data.videoInstructions = fields.videoInstructions.trim().slice(0, 6000) || null;
+  if (Object.keys(data).length === 0) return { ok: true, message: "Nothing to save." };
+
+  const prior = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { id: true, editorBrief: true, videoInstructions: true },
+  });
+  if (!prior) return { ok: false, message: "That job no longer exists." };
+  await prisma.project.update({ where: { id: projectId }, data });
+
+  // A trace on the job, for the same reason saveJobNotes grew one on Sep 16:
+  // an edit to the brief the editor is working from left no record of who
+  // changed it or when. Courtesy only — never fails the save.
+  try {
+    const { getCurrentUser } = await import("@/lib/auth/user");
+    const me = await getCurrentUser().catch(() => null);
+    const who = me?.name?.trim() || me?.email || "the photographer";
+    const lines: string[] = [];
+    if (data.editorBrief !== undefined && (data.editorBrief ?? null) !== (prior.editorBrief ?? null)) {
+      lines.push(`Shoot brief for the editor updated by ${who}.`);
+    }
+    if (data.videoInstructions !== undefined && (data.videoInstructions ?? null) !== (prior.videoInstructions ?? null)) {
+      lines.push(`Video instructions from the shoot updated by ${who}.`);
+    }
+    for (const body of lines) {
+      await prisma.activity.create({ data: { projectId, type: "SYSTEM", body, authorId: me?.teamMemberId ?? null } });
+    }
+  } catch { /* the timeline line is a courtesy */ }
+
+  revalidatePath("/editing");
+  revalidatePath(`/edit/${projectId}`);
+  revalidatePath(`/shoot/${projectId}`);
+  revalidatePath(`/projects/${projectId}`);
+  return { ok: true, message: "Saved — the editor sees it on the job." };
+}
+
 // Per-job edit instructions (the Luma-form fields) — owner/admin write, the
 // editor reads. Stored as JSON on Project.editSpec.
 export async function saveEditSpec(

@@ -152,6 +152,14 @@ async function requireCutNoteAccess(
     const mid = await photographerMemberId(u);
     if (mid && root.lane === "PHOTOGRAPHER" && root.photographerId && mid === root.photographerId) return;
     if (mid && opts?.allowMentioned) {
+      // Their own change request (askCutChange, Sep 18): an EDITOR-lane root
+      // stamped with their photographerId. The editor answers it — "which
+      // driveway?" — and the one person who can answer that must be able to
+      // reply. REPLY ONLY, which is why it lives inside allowMentioned: the
+      // status of an editor-lane note is still the editor's and the office's
+      // to flip, so setCutNoteStatus (which passes no opts) refuses them here
+      // exactly as it always has.
+      if (root.lane === "EDITOR" && root.photographerId === mid) return;
       // isMentionedIn runs the SAME roster-aware matcher that minted the ping,
       // so the guard admits exactly the people who were told to come here.
       const thread = await prisma.mediaNote.findMany({
@@ -523,6 +531,145 @@ export async function addCutNote(input: {
   return { ok: true };
 }
 
+// ---------------------------------------------------------------------------
+// THE SHOOTER'S CHANGE REQUEST (Jordan, Sep 18: "I want them to be able to
+// leave revision comments as well").
+//
+// A photographer already had a voice on a cut — addCutNote's capture lane —
+// but that lane is feedback ABOUT the shoot, addressed back to themselves. The
+// person who stood in the room is often the only one who knows the cut is
+// wrong ("that's the neighbour's driveway at 0:14"), and until now the only
+// way to say so was to tell Jordan and hope.
+//
+// It is a REQUEST AND NEVER A VERDICT, and the difference is enforced here,
+// not in the markup:
+//   · nothing about the submission moves — no status, no decidedAt, no round
+//     on the edit card, no REVISION on the project. Only the office's Approve
+//     / Request changes does any of that, and both still require an admin.
+//   · the ask is an OPEN note in the EDITOR lane, so it is on the editor's own
+//     page (getEditorFeedback) the moment it is written, and requestCutChanges
+//     sweeps it into the bundle with everyone else's the next time the office
+//     sends the cut back. That is what "reaches the editor the way a
+//     Review-Room change request does" means.
+//   · `photographerId` on an EDITOR-lane row is what marks it as theirs. That
+//     pairing exists nowhere else — every capture-feedback query in the
+//     codebase asks for photographerId AND lane "PHOTOGRAPHER" (checked across
+//     photographerFeedback.ts, review.ts, qc.ts, kpi.ts, bonus.ts) — so the
+//     marker cannot be mistaken for a shoot note, and it is what lets the
+//     author read their own ask back on a page that otherwise shows them one
+//     lane (getCutWorkspace's photographer lens).
+// ---------------------------------------------------------------------------
+export async function askCutChange(input: {
+  projectId: string;
+  submissionId: string;
+  body: string;
+  timeSec: number | null;
+}): Promise<{ ok: boolean; message?: string }> {
+  const me = await getCurrentUser().catch(() => null);
+  // Photographers only. The office has the verdict buttons; a second way for
+  // them to write an editor note would be two doors onto one room, and one of
+  // them would drift. Dev without a session falls through to the same refusal
+  // rather than writing a note nobody can be identified as the author of.
+  if (!me || me.impersonating || me.realRole !== "PHOTOGRAPHER" || me.role !== "PHOTOGRAPHER" || !me.teamMemberId) {
+    return {
+      ok: false,
+      message: me?.impersonating
+        ? "You're previewing another user — exit the preview to make changes."
+        : "Only the photographer who shot this job asks for a change here.",
+    };
+  }
+  const { photographerOwnsShoot } = await import("@/lib/shoot");
+  if (!(await photographerOwnsShoot(input.projectId, me.teamMemberId).catch(() => false))) {
+    return { ok: false, message: "You can only ask for a change on a video from a shoot you worked." };
+  }
+  const body = (input.body ?? "").trim();
+  if (!body) return { ok: false, message: "Write the change first." };
+
+  const submission = await prisma.reviewSubmission.findUnique({
+    where: { id: input.submissionId },
+    include: { project: { select: { title: true } } },
+  });
+  if (!submission || submission.projectId !== input.projectId) return { ok: false, message: "That video isn't on this job." };
+  if (submission.status === "WITHDRAWN") {
+    return { ok: false, message: "That version was taken down — the next one comes in on the same cut." };
+  }
+
+  const editorKey = submission.submittedByKey ?? (await projectEditorKey(input.projectId));
+  // The job's photographer of record, exactly as the capture lane resolves it.
+  // By the ownership test above this IS the author on every job that has one;
+  // it is read rather than assumed so a job where they are the appointment
+  // assignee and someone else is the column still files the ask consistently.
+  const { projectPhotographerId } = await import("@/lib/projectPhotographer");
+  const photographerId = (await projectPhotographerId(input.projectId).catch(() => null)) ?? me.teamMemberId;
+  const { authorKey, authorTmId, authorName } = await sessionAuthor();
+
+  const note = await prisma.mediaNote.create({
+    data: {
+      projectId: input.projectId,
+      assetUrl: submission.assetUrl ?? `cut:${submission.id}`,
+      assetType: "video",
+      timeSec: input.timeSec,
+      lane: "EDITOR",
+      kind: "fix",
+      body: body.slice(0, 2000),
+      status: "OPEN",
+      authorKey,
+      authorName,
+      editorKey,
+      photographerId,
+    },
+  });
+
+  const street = streetOf(submission.project?.title);
+  await prisma.activity.create({
+    data: {
+      projectId: input.projectId,
+      type: "SYSTEM",
+      body: `${authorName ?? "The photographer"} asked for a change on the round-${submission.round} cut.`,
+    },
+  }).catch(() => {});
+
+  try {
+    const { notifyMentions } = await import("@/lib/mentions");
+    await notifyMentions({ text: body, projectId: input.projectId, authorKey, authorTmId, authorName, context: "a change asked on a cut", noteId: note.id, cutId: input.submissionId, surface: "cut" });
+  } catch { /* the ask is saved; the tag ping is extra */ }
+
+  try {
+    // Money never reaches a creative's phone — the sentence goes through the
+    // same scrubber the task and comms surfaces use before it leaves here.
+    const { scrubMoney } = await import("@/lib/text");
+    const who = authorName ?? "The photographer";
+    const line = scrubMoney(`📝 ${who} asked for a change on the cut at ${street}: “${body.slice(0, 160)}”`);
+    const isTeamEditor = !!editorKey && (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(editorKey);
+    const targets: NotifyTarget[] = [
+      // The office always hears it: this is a request with nobody's verdict on
+      // it yet, and a vendor editor key reaches no login at all (Kim's did
+      // exactly that until Sep 16), so the ask must never depend on the editor
+      // leg existing.
+      { roles: ["OWNER", "ADMIN"], href: `/review/${input.projectId}?cut=${input.submissionId}` },
+    ];
+    if (isTeamEditor) {
+      targets.push({ roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${input.projectId}`, slackDm: line });
+    }
+    await notifyInApp({
+      kind: "cut_change_ask",
+      title: `Change asked by ${who} — ${street}`,
+      body: body.slice(0, 140),
+      href: `/review/${input.projectId}?cut=${input.submissionId}`,
+      targets,
+      dedupeKey: `cut-change-ask-${note.id}`,
+    });
+  } catch { /* bell is best-effort */ }
+
+  refresh(input.projectId);
+  return {
+    ok: true,
+    message: editorKey
+      ? `Sent to ${editorMeta(editorKey)?.name ?? editorKey} and the office — it rides along the next time this cut goes back.`
+      : "Sent to the office — it rides along the next time this cut goes back.",
+  };
+}
+
 // Threaded reply on a cut note — owner/admin, or the editor/photographer the
 // root note is addressed to.
 export async function replyCutNote(noteId: string, body: string): Promise<{ ok: boolean; message?: string }> {
@@ -775,6 +922,16 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
     ) {
       targets.push({ roles: ["EDITOR"], userKey: `editor:${submission.submittedByKey}`, href: `/edit/${submission.projectId}` });
     }
+    // The photographer who shot it hears the verdict (Jordan, Sep 18). Their
+    // row carries its OWN href: the default above is /projects/<id>, a page a
+    // photographer is redirected off, so the office's link would have been a
+    // bounce to /shoot. Theirs opens the Room on the cut that was just ruled on.
+    const { photographerNotifyTarget } = await import("@/lib/projectPhotographer");
+    const shooter = await photographerNotifyTarget(submission.projectId, {
+      href: `/review/${submission.projectId}?cut=${submissionId}`,
+      slackDm: `✅ Approved — the cut from your shoot at ${street} passed review.`,
+    }).catch(() => null);
+    if (shooter) targets.push(shooter);
     await notifyInApp({
       kind: "review_approved",
       title: `Cut approved — ${street}${submission.fileName ? ` (${submission.fileName})` : ""}`,
@@ -939,6 +1096,22 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
     // or channel, so the news goes to ADMIN instead — Kyle dispatches vendor
     // changes (same split as the manual-queue bell in editing/actions.ts).
     const isTeamEditor = !!editorKey && (TEAM_MEMBER_EDITOR_KEYS as readonly string[]).includes(editorKey);
+    // The shooter hears this verdict too (Sep 18) — the cut they watched is
+    // going back round, and a capture note in the bundle may be theirs to
+    // answer. Their href is the Room, never /edit/<id>: that page redirects a
+    // photographer straight back to /shoot/<id>.
+    const { photographerNotifyTarget } = await import("@/lib/projectPhotographer");
+    const shooter = await photographerNotifyTarget(submission.projectId, {
+      href: `/review/${submission.projectId}?cut=${submissionId}`,
+      slackDm: `↩︎ Changes requested on the cut from your shoot at ${street} — ${open.length} note${s}.`,
+    }).catch(() => null);
+    const changeTargets: NotifyTarget[] = isTeamEditor
+      ? [
+          { roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${submission.projectId}` },
+          { roles: ["ADMIN"], href: `/edit/${submission.projectId}` },
+        ]
+      : [{ roles: ["ADMIN"] }];
+    if (shooter) changeTargets.push(shooter);
     await notifyInApp({
       kind: "review_changes",
       title: isTeamEditor
@@ -951,12 +1124,7 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
       // ADMIN always rides along: an editor:<key> row reaches NOBODY when that
       // editor has no login (Kim today), so a bounce could vanish silently —
       // the owner at least sees the cut came back (audit HIGH).
-      targets: isTeamEditor
-        ? [
-            { roles: ["EDITOR"], userKey: `editor:${editorKey}`, href: `/edit/${submission.projectId}` },
-            { roles: ["ADMIN"], href: `/edit/${submission.projectId}` },
-          ]
-        : [{ roles: ["ADMIN"] }],
+      targets: changeTargets,
       dedupeKey: `review-changes-${submissionId}-${open[open.length - 1].id}`,
     });
   } catch { /* bell is best-effort */ }
