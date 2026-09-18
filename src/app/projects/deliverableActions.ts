@@ -121,6 +121,24 @@ export async function unwaiveDeliverable(deliverableId: string): Promise<WaiveRe
 // engine's own guards decide the status: a hand-delivered job stays delivered,
 // a job still owing its reel stays in Review.
 async function recomputeAfterWaiver(projectId: string) {
+  // THE PER-VIDEO ROWS MOVE WITH THE WAIVER (audit R06, Sep 18).
+  //
+  // This function already re-ran the status engine and the task engine so the
+  // card could not contradict itself within the press — and left out the third
+  // engine. deliverableOutputs.ensureOutputsForProject is what stamps (and
+  // un-stamps) DeliverableOutput.waivedAt, and it was reached only from the
+  // four cut events in review/actions.ts. So waiving a floor plan the office
+  // never intends to deliver left its video rows claiming it was owed until
+  // somebody happened to upload a cut, and UN-waiving left them marked "Not
+  // required on this job" — the mirror the Sep 18 review put into that function
+  // was correct and had no caller here.
+  //
+  // FIRST, before the status and task engines below: both read what is owed,
+  // and the video rows are part of that answer.
+  try {
+    const { ensureOutputsSafely } = await import("@/lib/deliverableOutputs");
+    await ensureOutputsSafely(projectId, "waiver");
+  } catch { /* the hourly outputUnits sweep is the backstop */ }
   try {
     const { syncProjectStatuses } = await import("@/lib/projectStatus");
     await syncProjectStatuses({ projectId });

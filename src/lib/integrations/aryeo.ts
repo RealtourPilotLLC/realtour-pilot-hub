@@ -1269,6 +1269,10 @@ export async function syncAryeoOrders(
   budgetHit?: boolean;
   /** single-order mode: Aryeo returned 404/410 for that order */
   missing?: boolean;
+  /** Jobs whose per-video rows could not be materialised on this pass (R06).
+   *  Reported, never swallowed — the hourly `outputUnits` sweep retries them
+   *  and escalates a job that keeps failing. */
+  outputErrors?: string[];
 }> {
   await loadManualProductMap(); // hand-set product categories override the parsers below
   let imported = 0;
@@ -1283,6 +1287,7 @@ export async function syncAryeoOrders(
   let reachedEnd = false;
   let budgetHit = false;
   let orderMissing = false;
+  const outputErrors: string[] = [];
 
   try {
     // Preload what we already have to avoid a per-order round-trip. The extra
@@ -1730,6 +1735,9 @@ export async function syncAryeoOrders(
             try {
               const r = await reconcileDeliverablesToOrder(proj.id, order);
               if (r.changed) updated++;
+              // A per-video materialisation that failed rides home in this
+              // sync's result instead of vanishing into the catch below (R06).
+              if (r.outputsError) outputErrors.push(`${proj.title}: ${r.outputsError}`.slice(0, 200));
             } catch { /* reconcile is best-effort — the money mirror above already landed */ }
           }
           continue;
@@ -1791,6 +1799,25 @@ export async function syncAryeoOrders(
         });
         seenOrders.add(order.id);
         imported++;
+        // EVERY OWED VIDEO GETS ITS ROW AT BOOKING (audit R06, Sep 18).
+        //
+        // The claim the WF-02 build made — "booking creates every video's row"
+        // — was ahead of the code: ensureOutputsForProject was called by the
+        // one-off materialisation script and by the four CUT events, all of
+        // which happen after a file exists. So a four-video order imported this
+        // morning owed four videos and had zero rows until somebody uploaded
+        // the first cut, and the project view, the per-video promise and the
+        // delivery board had nothing to count.
+        //
+        // Here is the earliest honest moment: the deliverables were created in
+        // the same statement above, so cutSlots can already say what the job
+        // owes. Never fatal — an order that imports is worth keeping even if
+        // this fails, and the hourly `outputUnits` sweep retries it.
+        {
+          const { ensureOutputsSafely } = await import("@/lib/deliverableOutputs");
+          const ensured = await ensureOutputsSafely(createdProject.id, `aryeo-import#${order.number ?? order.id}`);
+          if (!ensured.ok) outputErrors.push(`${createdProject.title}: ${ensured.error}`.slice(0, 200));
+        }
         // The booking conversation predates this row — texts/emails naming this
         // street were filed to the client's previous job (or unfiled) because
         // this project didn't exist yet. Re-point them now so the shoot card,
@@ -1842,6 +1869,7 @@ export async function syncAryeoOrders(
       imported, updated, clients: clientsCreated, scanned,
       ...(resumable ? { complete: reachedEnd, resumeFromPage: reachedEnd ? 1 : page, budgetHit } : {}),
       ...(opts.orderId ? { missing: orderMissing } : {}),
+      ...(outputErrors.length > 0 ? { outputErrors } : {}),
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -1883,8 +1911,14 @@ export async function orderIdForListing(listingId: string): Promise<string | nul
 export async function reconcileDeliverablesToOrder(
   projectId: string,
   order: AryeoOrder,
-): Promise<{ changed: boolean; retired: string[]; restored: string[]; added: string[]; relabeled: string[] }> {
-  const out = { changed: false, retired: [] as string[], restored: [] as string[], added: [] as string[], relabeled: [] as string[] };
+): Promise<{ changed: boolean; retired: string[]; restored: string[]; added: string[]; relabeled: string[]; outputsError?: string | null }> {
+  const out = {
+    changed: false, retired: [] as string[], restored: [] as string[], added: [] as string[], relabeled: [] as string[],
+    // Set when the per-video rows could NOT be brought in line with the order
+    // this pass. It rides home in the sync's own result rather than being
+    // swallowed, and the hourly `outputUnits` sweep retries it (R06).
+    outputsError: null as string | null,
+  };
   const parsed = orderDeliverables(order.items);
   if (parsed.length === 0) return out;
 
@@ -2058,6 +2092,22 @@ export async function reconcileDeliverablesToOrder(
         }).catch(() => {});
       }
     }
+    // THE ORDER MOVED, SO THE PER-VIDEO ROWS MOVE (audit R06, Sep 18).
+    //
+    // A quantity change is the case that matters: "Video x2" becoming "Video
+    // x4" is TWO more owed videos, and until now the two new rows appeared only
+    // when somebody uploaded a cut — so the project view, the promise clock and
+    // the delivery board counted two while the client had bought four. A line
+    // leaving the order is the mirror: ensureOutputsForProject RETIRES the
+    // slots that are no longer in the arithmetic (never deletes them), which is
+    // what stops a video nobody owes sitting on the board.
+    //
+    // Only inside `touched` on purpose: the reconcile runs against every order
+    // the hourly page scan returns, and three round trips per untouched job,
+    // every hour, buys nothing the sweep does not already cover.
+    const { ensureOutputsSafely } = await import("@/lib/deliverableOutputs");
+    const ensured = await ensureOutputsSafely(projectId, `aryeo-reconcile#${orderNo}`);
+    if (!ensured.ok) out.outputsError = ensured.error;
   }
   return out;
 }

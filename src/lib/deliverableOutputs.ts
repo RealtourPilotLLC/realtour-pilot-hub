@@ -2,6 +2,7 @@ import "server-only";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { cutSlots, slotKeyOf, type CutSlot } from "@/lib/reviewCuts";
+import type { EditorKey } from "@/lib/editors";
 import { unitCategoryFor } from "@/lib/evidenceUnits";
 
 /** Rounds that are not a version of anything — the same list reviewCuts keeps. */
@@ -357,6 +358,15 @@ export async function refreshOutputsForProject(projectId: string): Promise<numbe
 // which video, who has it, when it is due, which version is live, whether we
 // have accepted it, and whether the client can actually see it.
 // ---------------------------------------------------------------------------
+
+/** Where the name on the row came from. The three are NOT the same claim, and
+ *  a screen that prints them identically is guessing on the office's behalf:
+ *    row      — somebody set an owner on THIS video (DeliverableOutput.ownerKey)
+ *    job      — the job's editor answers for it (the schema's own rule for a
+ *               null ownerKey: "null means the job-level editor still answers")
+ *    routing  — nobody has taken it; this is where today's rules WOULD send it. */
+export type OutputOwnerFrom = "row" | "job" | "routing";
+
 export type OutputRowView = {
   id: string;
   key: string;
@@ -365,15 +375,29 @@ export type OutputRowView = {
   index: number;
   total: number;
   ownerName: string | null;
+  ownerFrom: OutputOwnerFrom | null;
   promisedAt: Date | null;
   targetAt: Date | null;
+  /** true when the dates above are the JOB's promise rather than a date set on
+   *  this video — every video on a job shares one client deadline today. */
+  promiseFromJob: boolean;
   state: "waived" | "removed" | "not_started" | "in_review" | "in_revisions" | "approved" | "sent";
   /** the sentence the row prints */
   detail: string;
   round: number | null;
   submissionId: string | null;
+  /** When the client last received A VERSION of this video. History: it is
+   *  never cleared, and it is not a claim about the CURRENT version. */
   deliveredAt: Date | null;
+  /** Set only when the client has an OLDER version than the one this job is
+   *  working on — the fact `state` alone used to swallow (R03). */
+  priorDelivery: { at: Date; round: number | null } | null;
+  /** The current version is finished and has NOT gone out. */
+  awaitingSend: boolean;
 };
+
+/** "v3 " when there is more than one version, "" otherwise. */
+const verPrefix = (round: number | null | undefined) => (round && round > 1 ? `v${round} ` : "");
 
 /**
  * Every owed video on a job, in order, with the state its own evidence
@@ -384,6 +408,30 @@ export type OutputRowView = {
  * Jordan signed off and nobody has handed to the client still reads as owed
  * work here, for exactly as long as that is true (audit WF-01/WF-03, and the
  * 322 N 62nd St silent-audio morning that produced the Ready-to-send card).
+ *
+ * AND AN OLD SEND DOES NOT HIDE AN UNSENT REPLACEMENT (audit R03, Sep 18).
+ * This read used to open with `o.deliveredAt ?? latest?.sentToClientAt`, so ONE
+ * historical stamp outranked every later fact: with version 1 sent and version
+ * 2 approved-but-unsent the row printed "Sent to the client" while Kyle's
+ * Ready-to-send card printed the opposite about the same video. Two screens
+ * disagreeing about one video is the whole class of contradiction this audit
+ * exists to remove.
+ *
+ * The two facts are now kept apart and BOTH printed:
+ *   · `deliveredAt` / `priorDelivery` — what the client actually has. History,
+ *     never cleared, never rewritten (house rule: retire, never delete).
+ *   · `state` / `detail` — what the CURRENT version still owes. A replacement
+ *     that is in review, back with the editor, or approved-and-unsent is owed
+ *     work, and says so beside the delivery that already happened:
+ *     "v1 sent; v2 approved, awaiting send".
+ *
+ * WHY THE ROUNDS AND NOT THE STAMP decide "has the current version gone out":
+ * `DeliverableOutput.deliveredAt` is written once and deliberately not moved
+ * (readyToSend.ts guards its update with `deliveredAt: null`, and
+ * refreshOutputsForProject with `sent && !o.deliveredAt`) — it is the FIRST
+ * proven send, and overwriting it would rewrite a historical timestamp. Every
+ * later send is on its own round (`ReviewSubmission.sentToClientAt`), so the
+ * rounds are the only complete record of what went out and when.
  */
 export async function outputsForProject(projectId: string): Promise<OutputRowView[]> {
   const [outputs, rounds] = await Promise.all([
@@ -391,7 +439,7 @@ export async function outputsForProject(projectId: string): Promise<OutputRowVie
       where: { projectId },
       orderBy: [{ slot: "asc" }],
       select: {
-        id: true, deliverableId: true, slot: true, title: true, ownerName: true, promisedAt: true, targetAt: true,
+        id: true, deliverableId: true, slot: true, title: true, ownerName: true, ownerKey: true, promisedAt: true, targetAt: true,
         waivedAt: true, removedFromOrderAt: true, deliveredAt: true, deliveredVia: true,
       },
     }),
@@ -407,14 +455,16 @@ export async function outputsForProject(projectId: string): Promise<OutputRowVie
   // (cutSlots' whole reason for existing). A row whose slot is no longer in
   // that list — a retired one — sorts after the live ones rather than
   // disappearing.
-  const slots = await cutSlots(projectId, { includeWaived: true }).catch(() => []);
+  const [slots, planning] = await Promise.all([
+    cutSlots(projectId, { includeWaived: true }).catch(() => []),
+    jobPlanningFor(projectId),
+  ]);
   const labelByKey = new Map(slots.map((s) => [slotKeyOf(s.deliverableId, s.slot), s.label]));
   const orderByKey = new Map(slots.map((s, i) => [slotKeyOf(s.deliverableId, s.slot), i]));
-  const latestByKey = new Map<string, (typeof rounds)[number]>();
+  const roundsByKey = new Map<string, typeof rounds>();
   for (const r of rounds) {
     const k = slotKeyOf(r.deliverableId!, r.slot);
-    const cur = latestByKey.get(k);
-    if (!cur || r.round > cur.round) latestByKey.set(k, r);
+    roundsByKey.set(k, [...(roundsByKey.get(k) ?? []), r]);
   }
   const ordered = [...outputs].sort(
     (a, b) =>
@@ -424,13 +474,25 @@ export async function outputsForProject(projectId: string): Promise<OutputRowVie
   const live = ordered.filter((o) => !o.removedFromOrderAt && !o.waivedAt);
   return ordered.map((o, i) => {
     const key = slotKeyOf(o.deliverableId, o.slot);
-    const latest = latestByKey.get(key) ?? null;
-    const sentAt = o.deliveredAt ?? latest?.sentToClientAt ?? null;
+    const rs = roundsByKey.get(key) ?? [];
+    const latest = rs[rs.length - 1] ?? null;
+    // The last round anybody proved a send for — not necessarily the newest
+    // round, which is exactly the case R03 is about.
+    const lastSent = [...rs].reverse().find((r) => r.sentToClientAt) ?? null;
+    // What the client HAS. Both witnesses count: a round's own send stamp, and
+    // the office's hand-delivery stamp on the row (a video the hub holds no
+    // file for — COMPLETION-CONTRACT §4, *overridden*).
+    const everSentAt = lastSent?.sentToClientAt ?? o.deliveredAt ?? null;
+    // What the job is working on NOW. With no round at all the row's own stamp
+    // is the current state (hand-delivered, nothing pending); with rounds, only
+    // the newest round can say the current version has gone out.
+    const currentSent = latest ? !!latest.sentToClientAt : !!o.deliveredAt;
+    const prior = !currentSent && everSentAt ? { at: everSentAt, round: lastSent?.round ?? null } : null;
     const state: OutputRowView["state"] = o.waivedAt
       ? "waived"
       : o.removedFromOrderAt
         ? "removed"
-        : sentAt
+        : currentSent
           ? "sent"
           : latest?.status === "APPROVED"
             ? "approved"
@@ -439,34 +501,374 @@ export async function outputsForProject(projectId: string): Promise<OutputRowVie
               : latest
                 ? "in_review"
                 : "not_started";
-    const ver = latest && latest.round > 1 ? `v${latest.round} ` : "";
+    const ver = verPrefix(latest?.round);
+    // "v1 sent; " — the delivery that already happened, in front of the
+    // sentence about what is still owed. Without a round number behind it
+    // (a hand-delivery) it can only say that one happened.
+    const priorBit = prior ? (prior.round ? `v${prior.round} sent; ` : "Sent once already; ") : "";
+    const detail =
+      state === "sent"
+        ? `${ver ? `${ver}sent` : "Sent"} to the client${o.deliveredVia === "aryeo-listing" ? " — on the Aryeo listing" : ""}`
+        : state === "approved"
+          ? prior
+            ? `${priorBit}${ver}approved, awaiting send`
+            : `${ver}approved — still has to go to the client`
+          : state === "in_revisions"
+            ? `${priorBit}${ver}back with the editor`
+            : state === "in_review"
+              ? `${priorBit}${ver}waiting on a verdict`
+              : state === "waived"
+                ? "Not required on this job"
+                : state === "removed"
+                  ? "No longer on the order"
+                  : prior
+                    ? `${priorBit}no replacement uploaded yet`
+                    : "No cut uploaded yet";
+    const owner = ownerForOutput(o, planning, o.deliverableId);
+    const isLive = !o.waivedAt && !o.removedFromOrderAt;
     return {
       id: o.id,
       key,
       label: o.title?.trim() || labelByKey.get(key) || `Video ${o.slot}`,
       index: live.findIndex((l) => l.id === o.id) + 1 || i + 1,
       total: live.length,
-      ownerName: o.ownerName,
-      promisedAt: o.promisedAt,
-      targetAt: o.targetAt,
+      ownerName: owner.name,
+      ownerFrom: owner.from,
+      // A waived or retired video is not owed, so it is not due: printing the
+      // job's deadline beside "Not required on this job" would read as a
+      // missed one.
+      promisedAt: isLive ? o.promisedAt ?? planning.promisedAt : o.promisedAt,
+      targetAt: isLive ? o.targetAt ?? planning.targetAt : o.targetAt,
+      promiseFromJob: isLive && !o.promisedAt && planning.promisedAt !== null,
       state,
       round: latest?.round ?? null,
       submissionId: latest?.id ?? null,
-      deliveredAt: sentAt,
-      detail:
-        state === "sent"
-          ? `Sent to the client${o.deliveredVia === "aryeo-listing" ? " — on the Aryeo listing" : ""}`
-          : state === "approved"
-            ? `${ver}approved — still has to go to the client`
-            : state === "in_revisions"
-              ? `${ver}back with the editor`
-              : state === "in_review"
-                ? `${ver}waiting on a verdict`
-                : state === "waived"
-                  ? "Not required on this job"
-                  : state === "removed"
-                    ? "No longer on the order"
-                    : "No cut uploaded yet",
+      deliveredAt: everSentAt,
+      priorDelivery: prior,
+      awaitingSend: state === "approved",
+      detail,
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// WHO HAS IT AND WHEN IT IS DUE — DERIVED, not a second place to type it
+// (audit R06, Sep 18).
+//
+// The reviewer's measurement: all 922 DeliverableOutput rows in production
+// carry ownerKey = null, promisedAt = null and targetAt = null, and nothing in
+// the application writes any of the three — so the project view printed a video
+// with no owner and no deadline on a job that has both.
+//
+// It is answered by READING what the job already knows, not by stamping the
+// columns:
+//   · the schema's own rule for ownerKey is "an assignees.ts slug, SET BY A
+//     PERSON; null means the job-level editor still answers for it". Writing
+//     the job's editor into it would turn a derived fallback into a frozen
+//     assignment, and a later reassignment of the job would leave sixteen rows
+//     pointing at the editor who used to have it.
+//   · the promise is already frozen ONCE, on the project (Project.promisedDueAt,
+//     projectStatus.ts: "NEVER an update — nothing anywhere writes these
+//     columns a second time"). Copying it per video adds a second copy that can
+//     only drift; reading it cannot.
+// A value somebody DID set on the row still wins — that is the office's word,
+// and it is preserved exactly (`o.ownerName ?? …`, `o.promisedAt ?? …`).
+// ---------------------------------------------------------------------------
+type JobPlanning = {
+  promisedAt: Date | null;
+  targetAt: Date | null;
+  /** the editor the office actually put on the job, if any */
+  editorName: string | null;
+  /** where today's rules would send each video row, by deliverable id */
+  routedNameByDeliverable: Map<string, string>;
+};
+
+const NO_PLANNING: JobPlanning = { promisedAt: null, targetAt: null, editorName: null, routedNameByDeliverable: new Map() };
+
+async function jobPlanningFor(projectId: string): Promise<JobPlanning> {
+  try {
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: {
+        packageName: true, deliveryDue: true, dueOverrideAt: true, promisedDueAt: true, promisedTargetAt: true, shootDate: true,
+        editorManual: true, editorId: true, editorVendorKey: true,
+        editor: { select: { name: true } },
+        deliverables: {
+          where: { removedFromOrderAt: null, type: { in: ["VIDEO", "SOCIAL_REEL"] } },
+          select: { id: true, type: true, label: true },
+        },
+      },
+    });
+    if (!project) return NO_PLANNING;
+    const { effectiveDue } = await import("@/lib/editOverrides");
+    const { editorKeyForTeamName, editorForDeliverable, editorMeta } = await import("@/lib/editors");
+    const { isMonthlyContentJob } = await import("@/lib/pipeline");
+    const { editorRouting } = await import("@/lib/settings");
+
+    // THE SAME LADDER EVERY OTHER PROMISE READER USES (editOverrides.effectiveDue):
+    // the office's typed date, else the promise the job was SOLD under, else
+    // today's computed date. Nothing new is invented here.
+    const promisedAt = effectiveDue(project, project.deliveryDue);
+    // …and the internal aim only while the pin is still the promise in force.
+    // Once the office types its own date, the aim frozen under the old promise
+    // is not the aim any more, and showing it would contradict the deadline
+    // printed beside it.
+    const targetAt = project.dueOverrideAt ? null : project.promisedTargetAt ?? null;
+
+    // WHO. The job's own editor first (a TeamMember, or the outside shop's
+    // vendor key), read exactly the way the editor queue reads it.
+    const pinnedKey =
+      (editorKeyForTeamName(project.editor?.name) as EditorKey | null) ??
+      ((project.editorVendorKey ?? null) as EditorKey | null);
+    const editorName = pinnedKey ? editorMeta(pinnedKey)?.name ?? null : null;
+
+    // …and, when nobody has it, where the rules WOULD send it. That is a
+    // destination, never an assignment — `ownerFrom` carries the difference so
+    // a screen cannot print a routing guess as a person's name. "Pinned to
+    // nobody" (editorManual with no editor and no vendor) is a real answer and
+    // the rules do not get to fill it back in (editors.pinnedEditorFor).
+    const takenOff = !!project.editorManual && !project.editorId && !project.editorVendorKey;
+    const routedNameByDeliverable = new Map<string, string>();
+    if (!editorName && !takenOff) {
+      const rules = await editorRouting().catch(() => undefined);
+      const monthly = isMonthlyContentJob(project.deliverables, project.packageName);
+      for (const d of project.deliverables) {
+        const k = editorForDeliverable(d.type, d.label, monthly, rules);
+        const name = k ? editorMeta(k)?.name ?? null : null;
+        if (name) routedNameByDeliverable.set(d.id, name);
+      }
+    }
+    return { promisedAt, targetAt, editorName, routedNameByDeliverable };
+  } catch {
+    // A lost lookup leaves the row rendering exactly as it did before this
+    // existed — a missing owner, never a wrong one.
+    return NO_PLANNING;
+  }
+}
+
+function ownerForOutput(
+  o: { ownerName: string | null; ownerKey: string | null },
+  planning: JobPlanning,
+  deliverableId: string,
+): { name: string | null; from: OutputOwnerFrom | null } {
+  // The office's own pick on THIS video, preserved untouched.
+  if (o.ownerName?.trim() || o.ownerKey) return { name: o.ownerName?.trim() || o.ownerKey, from: "row" };
+  if (planning.editorName) return { name: planning.editorName, from: "job" };
+  const routed = planning.routedNameByDeliverable.get(deliverableId) ?? null;
+  return routed ? { name: routed, from: "routing" } : { name: null, from: null };
+}
+
+// ===========================================================================
+// THE LIFECYCLE, AFTER THE BACKFILL (audit R06, Sep 18).
+//
+// `ensureOutputsForProject` was called by the one-off materialisation script
+// and by the four cut events in review/actions.ts — an UPLOAD, a verdict, a
+// removal, a send. Every one of those happens after the video exists, so the
+// claim that "booking gives every owed video a row" was ahead of the code: an
+// order imported at 9am owed four videos and had four rows only once somebody
+// uploaded the first cut. The reviewer found the same hole on the office's own
+// edits (deliverableActions.recomputeAfterWaiver re-ran the status engine and
+// the task engine, but not this one).
+//
+// The two helpers below are what the write paths call:
+//   · ensureOutputsSafely — the per-event catch. It NEVER throws into an
+//     editor's click or an order sync, and it never swallows the failure
+//     silently either: it returns the error to its caller (which puts it in the
+//     sync's own result) and logs it under one greppable tag.
+//   · sweepOutputUnits    — the hourly repair, so a failed event is temporary
+//     divergence rather than permanent. A job that fails the sweep TWICE IN A
+//     ROW is not a blip: the sweep then throws, which is what puts the job on
+//     the CronRun row and into the Slack ping (lib/cron failureSignature). That
+//     is the difference between "recoverable" and "quietly wrong until somebody
+//     runs scripts/materialise-outputs.ts by hand".
+// ===========================================================================
+
+export type EnsureAttempt = { ok: boolean; error: string | null; result: EnsureResult | null };
+
+/** ensureOutputsForProject + refreshOutputsForProject, for a caller that must
+ *  not fail because of them. Returns what went wrong instead of hiding it. */
+export async function ensureOutputsSafely(projectId: string, source: string): Promise<EnsureAttempt> {
+  try {
+    const result = await ensureOutputsForProject(projectId);
+    await refreshOutputsForProject(projectId);
+    return { ok: true, error: null, result };
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    // One tag, so a person can find every one of these in the platform logs.
+    console.warn(`[deliverable-outputs] ${source} could not materialise ${projectId}: ${error}`);
+    return { ok: false, error, result: null };
+  }
+}
+
+const SWEEP_HEALTH_KEY = "deliverable_outputs_sweep";
+type SweepHealth = {
+  failing: Record<string, { title: string; error: string; since: string; runs: number }>;
+  lastRunAt: string | null;
+  /** the last project id the rotation reached — see rotateFrom */
+  cursor: string | null;
+};
+const EMPTY_HEALTH: SweepHealth = { failing: {}, lastRunAt: null, cursor: null };
+
+export type OutputSweepResult = {
+  /** jobs that owe video at all */
+  owing: number;
+  /** …of those, the ones that had NO row when the sweep started. This is the
+   *  number that says whether the lifecycle wiring is holding. */
+  bare: number;
+  checked: number;
+  created: number;
+  retired: number;
+  unretired: number;
+  waived: number;
+  unwaived: number;
+  linkedRounds: number;
+  stamped: number;
+  failed: { projectId: string; title: string; error: string; runs: number }[];
+  budgetHit: boolean;
+};
+
+/**
+ * THE HOURLY REPAIR. Brings the per-video rows back in line with what each job
+ * owes, without the manual backfill script.
+ *
+ * What it checks, and why it is not "every job, every hour": 645 jobs owe video
+ * and each check is three round trips, which is not an hour's work to repeat
+ * forever. It spends its budget where divergence actually shows up:
+ *   1. every job that owes video and has NO row at all — the exact shape a
+ *      missed booking leaves, and cheap to find (one groupBy);
+ *   2. then a rotating window over the rest, oldest-checked first, so a
+ *      quantity change, an office override or a failed event that nothing else
+ *      caught is repaired within a full cycle rather than never.
+ * Both are idempotent (ensureOutputsForProject's unique key is the arbiter), so
+ * a run killed mid-way simply resumes.
+ */
+export async function sweepOutputUnits(opts: { max?: number; budgetMs?: number } = {}): Promise<OutputSweepResult> {
+  const max = Math.max(1, opts.max ?? 40);
+  const budgetMs = opts.budgetMs ?? 20_000;
+  const t0 = Date.now();
+  const out: OutputSweepResult = {
+    owing: 0, bare: 0, checked: 0, created: 0, retired: 0, unretired: 0, waived: 0, unwaived: 0,
+    linkedRounds: 0, stamped: 0, failed: [], budgetHit: false,
+  };
+
+  // Every job that owes a video today. CANCELLED is excluded and DELIVERED is
+  // NOT: a delivered job whose client came back for a revision still owes the
+  // replacement, and its rows are what the Review Room hangs the new round off.
+  const owing = await prisma.project.findMany({
+    where: {
+      status: { not: "CANCELLED" },
+      deliverables: { some: { removedFromOrderAt: null, type: { in: ["VIDEO", "SOCIAL_REEL"] } } },
+    },
+    select: { id: true, title: true },
+    orderBy: { id: "asc" },
+  });
+  out.owing = owing.length;
+  if (owing.length === 0) return out;
+
+  const withRows = new Set((await prisma.deliverableOutput.groupBy({ by: ["projectId"] })).map((g) => g.projectId));
+  const bare = owing.filter((p) => !withRows.has(p.id));
+  out.bare = bare.length;
+
+  const health = await readSweepHealth();
+  // A job that failed last time is looked at again FIRST — that is what makes
+  // the second failure (and the alarm) happen on the next tick rather than
+  // whenever the rotation happens to come round.
+  const retry = owing.filter((p) => health.failing[p.id] && !bare.some((b) => b.id === p.id));
+  const rotation = rotateFrom(owing, health.cursor, max);
+  const inRotation = new Set(rotation.map((p) => p.id));
+  const queue: { id: string; title: string }[] = [];
+  const seen = new Set<string>();
+  for (const p of [...retry, ...bare, ...rotation]) {
+    if (seen.has(p.id) || queue.length >= max) continue;
+    seen.add(p.id);
+    queue.push(p);
+  }
+
+  const stillFailing: SweepHealth["failing"] = {};
+  // The cursor only ever moves for a job the ROTATION reached. A tick spent
+  // entirely on bare or retried jobs must not teleport the window somewhere
+  // else and leave a stretch of the list unvisited for another full cycle.
+  let lastRotated: string | null = null;
+  const visited = new Set<string>();
+  for (const p of queue) {
+    if (Date.now() - t0 > budgetMs) {
+      out.budgetHit = true;
+      break;
+    }
+    out.checked++;
+    visited.add(p.id);
+    if (inRotation.has(p.id)) lastRotated = p.id;
+    try {
+      const r = await ensureOutputsForProject(p.id);
+      out.created += r.created;
+      out.retired += r.retired;
+      out.unretired += r.unretired;
+      out.waived += r.waived;
+      out.unwaived += r.unwaived;
+      out.linkedRounds += r.linkedRounds;
+      out.stamped += await refreshOutputsForProject(p.id);
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      const before = health.failing[p.id];
+      const runs = (before?.runs ?? 0) + 1;
+      stillFailing[p.id] = { title: p.title, error, since: before?.since ?? new Date().toISOString(), runs };
+      out.failed.push({ projectId: p.id, title: p.title, error, runs });
+    }
+  }
+  // Only the jobs this run actually LOOKED AT have an answer. A job the budget
+  // cut off before it was reached keeps whatever the ledger already said about
+  // it — clearing it would reset a failing job's run count to zero and the
+  // escalation below could never fire on a busy tick.
+  const nextFailing = { ...health.failing };
+  for (const id of visited) delete nextFailing[id];
+  await writeSweepHealth(
+    { failing: { ...nextFailing, ...stillFailing }, lastRunAt: new Date().toISOString() },
+    lastRotated ?? health.cursor,
+  );
+
+  // PERMANENT DIVERGENCE IS AN ALARM, NOT A FIELD IN A JSON BLOB. One bad tick
+  // is a blip and stays in the result above; the same job failing on two
+  // consecutive sweeps means nothing is going to fix it on its own, so it is
+  // thrown — cronBudget records it as `outputUnitsError` on the CronRun row and
+  // Slack-pings it once (lib/cron). Everything this run repaired is already
+  // committed; throwing only changes how loudly the rest is reported.
+  const permanent = out.failed.filter((f) => f.runs >= 2);
+  if (permanent.length > 0) {
+    throw new Error(
+      `${permanent.length} job(s) cannot be brought in line with what they owe: ` +
+        permanent.map((f) => `${f.title} (${f.error})`).join("; ").slice(0, 400),
+    );
+  }
+  return out;
+}
+
+/** The rotation window: `max` jobs starting after the last id this sweep
+ *  reached, wrapping round. Ids are stable and ordered, so the window walks the
+ *  whole list and comes back — no timestamp column to add, nothing to migrate. */
+function rotateFrom<T extends { id: string }>(all: T[], afterId: string | null, max: number): T[] {
+  if (all.length === 0) return [];
+  const start = afterId ? all.findIndex((p) => p.id === afterId) + 1 : 0;
+  const from = start <= 0 || start >= all.length ? 0 : start;
+  const window = all.slice(from, from + max);
+  return window.length >= max ? window : [...window, ...all.slice(0, max - window.length)];
+}
+
+async function readSweepHealth(): Promise<SweepHealth> {
+  try {
+    const row = await prisma.appSetting.findUnique({ where: { key: SWEEP_HEALTH_KEY }, select: { value: true } });
+    if (!row) return EMPTY_HEALTH;
+    const parsed = JSON.parse(row.value) as Partial<SweepHealth>;
+    return { failing: parsed.failing ?? {}, lastRunAt: parsed.lastRunAt ?? null, cursor: parsed.cursor ?? null };
+  } catch {
+    return EMPTY_HEALTH;
+  }
+}
+
+async function writeSweepHealth(health: Omit<SweepHealth, "cursor">, cursor: string | null): Promise<void> {
+  const value = JSON.stringify({ ...health, cursor });
+  await prisma.appSetting
+    .upsert({ where: { key: SWEEP_HEALTH_KEY }, create: { key: SWEEP_HEALTH_KEY, value }, update: { value } })
+    .catch(() => {
+      /* the ledger is diagnostics — losing it must never fail the sweep */
+    });
 }

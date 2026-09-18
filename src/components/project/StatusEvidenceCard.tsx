@@ -520,7 +520,13 @@ async function OwedVideos({ projectId }: { projectId: string }) {
   }
   if (rows.length === 0) return null;
   const owed = rows.filter((r) => r.state !== "waived" && r.state !== "removed");
-  const unsent = owed.filter((r) => r.state === "approved");
+  const unsent = owed.filter((r) => r.awaitingSend);
+  // A REPLACEMENT THE CLIENT HAS NOT GOT YET (audit R03, Sep 18). The client
+  // holds v1, the job is working on v2, and the row used to read "Sent to the
+  // client" because ONE historical stamp outranked every later fact. These are
+  // the videos where this screen and Kyle's Ready-to-send card used to
+  // disagree about the same file.
+  const replacing = owed.filter((r) => r.priorDelivery && !r.awaitingSend);
   const TONE_FOR: Record<string, string> = {
     sent: "bg-success/10 text-success",
     approved: "bg-brand-soft/70 text-brand",
@@ -536,11 +542,15 @@ async function OwedVideos({ projectId }: { projectId: string }) {
         <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">
           Videos on this job ({owed.length})
         </span>
-        {unsent.length > 0 && (
+        {unsent.length > 0 ? (
           <span className="text-[11px] font-medium text-brand">
             {unsent.length === 1 ? "1 approved, not sent" : `${unsent.length} approved, not sent`}
           </span>
-        )}
+        ) : replacing.length > 0 ? (
+          <span className="text-[11px] font-medium text-warning">
+            {replacing.length === 1 ? "1 replacement in progress" : `${replacing.length} replacements in progress`}
+          </span>
+        ) : null}
       </div>
       <ul className="divide-y rounded-lg border">
         {rows.map((r) => (
@@ -549,8 +559,19 @@ async function OwedVideos({ projectId }: { projectId: string }) {
               {owed.length > 1 && r.state !== "waived" && r.state !== "removed" ? `${r.index}. ` : ""}
               {r.label}
             </span>
-            {r.ownerName && <span className="text-[11px] text-muted-2">{r.ownerName}</span>}
-            {r.promisedAt && <span className="text-[11px] text-muted-2">due {etStamp(r.promisedAt)}</span>}
+            {/* WHO AND WHEN, and what KIND of answer each is (R06). An owner
+                nobody has picked yet is where today's rules WOULD send it —
+                printed as a destination, never as somebody's assignment. */}
+            {r.ownerName && (
+              <span className="text-[11px] text-muted-2" title={r.ownerFrom === "row" ? "Set on this video" : r.ownerFrom === "job" ? "The job's editor" : "Where the routing rules send this"}>
+                {r.ownerFrom === "routing" ? `routes to ${r.ownerName}` : r.ownerName}
+              </span>
+            )}
+            {r.promisedAt && (
+              <span className="text-[11px] text-muted-2" title={r.promiseFromJob ? "The job's delivery promise" : "Set on this video"}>
+                due {etStamp(r.promisedAt)}
+              </span>
+            )}
             <span className={"shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium " + (TONE_FOR[r.state] ?? "bg-surface-2 text-muted-2")}>
               {r.detail}
             </span>
@@ -561,6 +582,12 @@ async function OwedVideos({ projectId }: { projectId: string }) {
         <p className="mt-1 text-[11px] text-muted">
           Approved is not delivered: {unsent.length === 1 ? "that video is" : "those videos are"} finished and waiting on
           somebody to send {unsent.length === 1 ? "it" : "them"} — the Ready to send card has the file.
+        </p>
+      )}
+      {replacing.length > 0 && (
+        <p className="mt-1 text-[11px] text-muted">
+          A replacement is in hand for {replacing.length === 1 ? "one video" : `${replacing.length} videos`} — the client
+          still has the earlier version until the new one is sent.
         </p>
       )}
     </div>

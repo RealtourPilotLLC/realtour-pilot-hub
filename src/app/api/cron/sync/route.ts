@@ -148,6 +148,24 @@ export async function GET(req: NextRequest) {
     const { syncProjectStatuses } = await import("@/lib/projectStatus");
     return syncProjectStatuses();
   });
+  // EVERY OWED VIDEO STILL HAS ITS OWN ROW (audit R06, Sep 18). The repair that
+  // replaces scripts/materialise-outputs.ts being run by hand.
+  //
+  // The per-video rows (DeliverableOutput) are created at booking and updated
+  // by the order reconcile, the office's waiver and the four cut events. That
+  // is a lot of write paths, every one of them best-effort, and the ONE thing
+  // the WF-02 build could not promise was that they all fire: 922 rows exist
+  // today because a script made them, and nothing was watching for drift
+  // afterwards. This is the watcher — it repairs what it can and, when the same
+  // job fails twice running, THROWS, so the failure lands on the CronRun row
+  // and in the Slack ping instead of sitting in a JSON blob nobody reads.
+  //
+  // Runs after `statuses` because that pass is what freezes a job's promise,
+  // and the rows' deadline is read from it.
+  await step("outputUnits", async () => {
+    const { sweepOutputUnits } = await import("@/lib/deliverableOutputs");
+    return sweepOutputUnits({ max: 40, budgetMs: 20_000 });
+  }, { maxMs: 25_000 });
   // FINISHED VIDEOS THAT MAY ALREADY BE UP THERE (Sep 17 2026). One Aryeo read
   // per job with a row on the Ready-to-send card: it refreshes what the card
   // says Aryeo is showing (the status sweep above stops carrying a job seven
