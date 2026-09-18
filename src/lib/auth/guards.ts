@@ -119,7 +119,15 @@ export async function addressableKeys(u: Viewer): Promise<Set<string>> {
   }
   keys.delete("");
   keys.delete(EDITOR_SCOPE_NONE);
-  if (keys.size === 0 && u.name) {
+  // AN EDITOR GETS NO LOGIN-NAME FALLBACK (review, Sep 18). For every other role
+  // these keys only decide who may tick their own task; for an EDITOR they are
+  // the authorization — canViewProject reads them, and the cut-stream route
+  // reads canViewProject, so a first-name collision hands one person another
+  // editor's jobs AND their client's video bytes. editorScopeOf was already
+  // closed against exactly this; addressableKeys was not, so the two disagreed:
+  // an unlinked "John Example" got task scope __none__ and project keys [john].
+  // An assigned identity or nothing.
+  if (keys.size === 0 && u.name && u.role !== "EDITOR") {
     const slug = slugForName(u.name);
     if (slug && slug !== EDITOR_SCOPE_NONE) keys.add(slug);
   }

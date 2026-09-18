@@ -3,7 +3,7 @@ import { MessageSquare } from "lucide-react";
 import { requirePageAccess } from "@/lib/auth/guards";
 import { PageHeader } from "@/components/PageHeader";
 import { getCurrentUser } from "@/lib/auth/user";
-import { slugForName } from "@/lib/assignees";
+import { editorScopeOf } from "@/lib/auth/guards";
 import { AddToQueue } from "@/components/editing/AddToQueue";
 import { FloatingStyleGuide } from "@/components/editing/FloatingStyleGuide";
 import { SimpleQueue, type QueueRow } from "@/components/editing/SimpleQueue";
@@ -51,7 +51,12 @@ function MessagesButton({ unread }: { unread: number }) {
 export default async function EditorQueuePage() {
   await requirePageAccess("editing");
   const me = await getCurrentUser().catch(() => null);
-  const editorScope = me?.role === "EDITOR" ? (me.editorKey || (me.name ? slugForName(me.name) : null)) : null;
+  // ONE ANSWER, NOT A THIRD COPY (review, Sep 18). This page had its own
+  // name-slug fallback, so it disagreed with editorScopeOf — which fails closed
+  // for an unlinked editor — and handed the Editing Room rows the guard would
+  // have refused. editorScopeOf is the answer; isUnmappedEditor is how a page
+  // tells "no scope" from "not an editor".
+  const editorScope = editorScopeOf(me);
 
   // An EDITOR whose login has no editorKey AND no name can't be scoped — fail
   // closed with a nudge, never fall through to the all-jobs view below.
