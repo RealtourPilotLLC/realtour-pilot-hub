@@ -6,7 +6,7 @@ import crypto from "crypto";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { type ChecklistItem, parseChecklist, serializeChecklist, checklistComplete } from "@/lib/checklist";
 import { etAt, etDayKey, etDayStartUtc, etDateTime, endOfBusinessDaysET } from "@/lib/datetime";
-import { premiumDueFrom, businessDayEndHour, cappedByPromise, livePromise, type PromiseRules } from "@/lib/turnaround";
+import { premiumDueFrom, businessDayEndHour, cappedByPromise, livePromise, targetAtFor, TIERS, type PromiseRules, type TierKey } from "@/lib/turnaround";
 import { slugForName } from "@/lib/assignees";
 import { BRACKET_RATIO, photoTargetFor } from "@/lib/culling";
 import { isMonthlyContentJob } from "@/lib/pipeline";
@@ -278,19 +278,63 @@ export function standardDeliveryDue(
   opts: { tier?: SlaTier | null; videoAnchor?: Date | null; promisedDueAt?: Date | null } = {},
 ): Date {
   if (opts.promisedDueAt) return opts.promisedDueAt;
-  if (deliverables.length === 0) return new Date(shootDate.getTime() + 48 * HOUR);
+  return deliveryPromiseFor(shootDate, deliverables, monthlyContent, orderItems, opts).at;
+}
+
+/**
+ * The same answer as standardDeliveryDue, plus WHICH promise produced it and
+ * what we were aiming at — the three things a pin records.
+ *
+ * It exists so the sweep can freeze a job's promise the moment it first
+ * computes one (projectStatus.ts) without a second, differently-worded copy of
+ * this ladder. scripts/pin-promises.ts had to hand-reconstruct the tier for the
+ * 538 rows that pre-dated the freeze; nothing booked from here on has to be
+ * reconstructed, because the engine that sets the date also says what it was.
+ *
+ * The tier is the tier of the deliverable that WON the max, not "there is a
+ * premium row on this order": 893 S Matlack carries a premium reel AND a
+ * 16-video branding batch, and the batch is what dates it — labelling that pin
+ * premium_reel would record an aim three days after the shoot for a job
+ * promised two weeks out (pin-promises.ts, same rule).
+ */
+export type DeliveryPromise = { at: Date; tierKey: TierKey; targetAt: Date };
+export function deliveryPromiseFor(
+  shootDate: Date,
+  deliverables: { type: string; label?: string | null; productTitle?: string | null }[],
+  monthlyContent = false,
+  orderItems?: { title: string; isCanceled?: boolean }[] | null,
+  opts: { tier?: SlaTier | null; videoAnchor?: Date | null } = {},
+): DeliveryPromise {
+  // An order with no owed rows left (everything waived or removed) — 48h is
+  // what this engine has always answered for that, and next_day is how
+  // pin-promises labelled it.
+  if (deliverables.length === 0) {
+    return { at: new Date(shootDate.getTime() + 48 * HOUR), tierKey: "next_day", targetAt: new Date(shootDate.getTime() + 48 * HOUR) };
+  }
   const rush = sameDayTypes(deliverables, orderItems);
   const tierOpts = slaOptsForTier(opts.tier);
-  return deliverables
-    .map((d) => {
-      const video = REEL_VIDEO_TYPES.has(d.type);
-      return deliveryDueFrom(video && opts.videoAnchor ? opts.videoAnchor : shootDate, d.type, {
-        monthlyContent: video && tierOpts ? tierOpts.monthlyContent : monthlyContent,
-        premium: video && tierOpts ? tierOpts.premium : isPremiumLabel(d.label),
-        sameDay: rush.has(d.type),
-      });
-    })
-    .reduce((a, b) => (a > b ? a : b));
+  let best: { at: Date; tierKey: TierKey; anchor: Date } | null = null;
+  for (const d of deliverables) {
+    const video = REEL_VIDEO_TYPES.has(d.type);
+    const anchor = video && opts.videoAnchor ? opts.videoAnchor : shootDate;
+    const premium = video && tierOpts ? tierOpts.premium : isPremiumLabel(d.label);
+    const monthly = video && tierOpts ? tierOpts.monthlyContent : monthlyContent;
+    const sameDay = rush.has(d.type);
+    const at = deliveryDueFrom(anchor, d.type, { monthlyContent: monthly, premium, sameDay });
+    const tierKey: TierKey =
+      sameDay ? "same_day"
+      : video && premium ? "premium_reel"
+      : video && monthly ? "monthly_social"
+      : video ? "video_48h"
+      : "next_day";
+    if (!best || at > best.at) best = { at, tierKey, anchor };
+  }
+  const b = best!;
+  // A target that falls after the deadline is not a target (pin-promises.ts):
+  // the non-video rows are quoted in HOURS here (photos 20h) while the aim is
+  // quoted in days, so on a rush or a short table the aim can overshoot.
+  const aim = targetAtFor(TIERS[b.tierKey], b.anchor);
+  return { at: b.at, tierKey: b.tierKey, targetAt: aim > b.at ? b.at : aim };
 }
 
 export type Priority = "URGENT" | "HIGH" | "MEDIUM" | "LOW";
@@ -575,6 +619,13 @@ type PendingDueInput = {
    *  Sep 18 pushes reels out); the pin caps it, so nobody is quietly granted
    *  days that were never sold. Categories promised earlier are untouched. */
   promisedDueAt?: Date | null;
+  /** The row's REAL Project.shootDate, for callers whose `shootDate` above is a
+   *  substitute anchor. Only a rebooked VISIT may void a pin (livePromise), and
+   *  the delivery board anchors a monthly job with no shoot on `now` — against
+   *  which every pin looks stale, so the pin was thrown away on every render
+   *  (review, Sep 18: 80 W Lancaster). Omit it and `shootDate` answers, which
+   *  is correct for every caller that passes the visit itself. */
+  pinShootDate?: Date | null;
   /** The job's appointment legs. The VIDEO rows date from the LAST leg that
    *  actually happened (videoAnchorFor), not from Project.shootDate — a reel
    *  filmed on the second visit is not late against the first (99 W Bridge,
@@ -607,6 +658,12 @@ export function pendingDuesByCategory(p: PendingDueInput): { category: string; a
   // label-derived reading (Sep 16 — the tier picker in the override dialog is
   // now the one switch that moves a video's deadline).
   const tierOpts = slaOptsForTier(p.tier);
+  // livePromise: a pin quoted from a visit that was later rescheduled is not
+  // this job's promise — it is a deadline that falls before its own shoot. The
+  // anchor for THAT question is the real visit (pinShootDate), never the
+  // substitute clock a caller may have passed as `shootDate`. Loop-invariant,
+  // so it is answered once.
+  const pin = livePromise(p.promisedDueAt, p.pinShootDate !== undefined ? p.pinShootDate : p.shootDate);
   const soonestByCategory = new Map<string, number>();
   for (const t of pending) {
     const category = TYPE_CATEGORY_LABEL[t] ?? labelFor(t);
@@ -617,9 +674,7 @@ export function pendingDuesByCategory(p: PendingDueInput): { category: string; a
       sameDay: rushTypes.has(t),
       rules: p.turnarounds,
     });
-    // livePromise: a pin quoted from a visit that was later rescheduled is not
-    // this job's promise — it is a deadline that falls before its own shoot.
-    const at = (cappedByPromise(computed, livePromise(p.promisedDueAt, p.shootDate)) ?? computed).getTime();
+    const at = (cappedByPromise(computed, pin) ?? computed).getTime();
     const prev = soonestByCategory.get(category);
     if (prev === undefined || at < prev) soonestByCategory.set(category, at);
   }

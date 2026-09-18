@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etDayKey, etAddDays, etDayStartUtc } from "@/lib/datetime";
-import { tierFor, dueAtFor, cappedByPromise, livePromise, TIERS, type Tier } from "@/lib/turnaround";
+import { tierFor, dueAtFor, cappedByPromise, pinnedPromise, TIERS, type Tier } from "@/lib/turnaround";
 import { parseEvidence, evidenceFreshness, type EvidenceFreshness, type ParsedEvidence } from "@/lib/statusEvidence";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 // The product-name → category read and the category labels live in the light,
@@ -309,6 +309,10 @@ export function outstandingPromise(
           tier: slaTierOf(p),
           appointments: p.appointments,
           promisedDueAt: p.promisedDueAt ?? null,
+          // `shootDate` above is startedAt — a SUBSTITUTE anchor (`now`) on a
+          // monthly job with no visit. The pin must be judged against the real
+          // visit or it is discarded on every render (review, Sep 18).
+          pinShootDate: p.shootDate,
         }).filter((d) => missingCategories.includes(d.category))
       : [];
   const earliestItem = settled || outstandingItems.length === 0
@@ -344,7 +348,14 @@ export function outstandingPromise(
   // time they never agreed to. So a pinned job is never dated past its pin;
   // items promised EARLIER (the photos, due tomorrow) are untouched, because
   // that is still the thing Kyle is chasing.
-  const pin = livePromise(p.promisedDueAt, startedAt);
+  // …and the pin is read off the ROW, never against `startedAt` (review, Sep
+  // 18). clockStart falls back to `now` for a monthly job with no shoot date,
+  // and every pin is older than now — so this line used to discard the pin on
+  // every render of every such job. 80 W Lancaster Ave Floor 2 is pinned Mon
+  // Sep 7 2:30pm and printed Thu Oct 1 5pm today, Fri Oct 2 5pm tomorrow: the
+  // promise walking forward one day per day, which is the exact drift the
+  // freeze exists to stop. Only a rebooked VISIT may void a pin.
+  const pin = pinnedPromise(p);
   const at = cappedByPromise(earliest?.dueAt ?? null, pin);
   const capped = !!at && !!earliest && at.getTime() !== earliest.dueAt.getTime();
   return {

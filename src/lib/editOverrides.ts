@@ -9,6 +9,7 @@ import {
   type EditTier,
 } from "@/lib/editOverrideDefaults";
 import { etDateTime } from "@/lib/datetime";
+import { pinnedPromise } from "@/lib/turnaround";
 
 // ---------------------------------------------------------------------------
 // THE OFFICE'S OVERRIDES on a video job (Jordan, Sep 13: "I want to be able to
@@ -159,12 +160,21 @@ export function effectiveSlotCounts(p: { videosOwedOverride: number | null }, ba
  * defaults" true (Jordan, Sep 18). It is OPTIONAL on the row on purpose: a
  * caller whose select does not load the column behaves exactly as it did
  * before, rather than losing its date.
+ *
+ * …AND IT GOES THROUGH livePromise LIKE EVERY OTHER READER (review, Sep 18).
+ * The Sep 18 change claimed "every reader goes through livePromise"; this one
+ * returned the raw column, so a pin left behind by a rescheduled visit — a
+ * deadline that falls before the new shoot — would have dated the editor queue
+ * row and the edit card while the delivery board, the QC card, the owner's dial
+ * and the bonus all refused it. `shootDate` is optional for the same reason
+ * `promisedDueAt` is: a select that does not load it gets the old answer rather
+ * than a wrong one.
  */
 export function effectiveDue(
-  p: { dueOverrideAt: Date | null; promisedDueAt?: Date | null },
+  p: { dueOverrideAt: Date | null; promisedDueAt?: Date | null; shootDate?: Date | null },
   computed: Date | null,
 ): Date | null {
-  return p.dueOverrideAt ?? p.promisedDueAt ?? computed;
+  return p.dueOverrideAt ?? pinnedPromise(p) ?? computed;
 }
 
 /**

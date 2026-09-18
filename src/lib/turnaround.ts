@@ -35,6 +35,10 @@ import type { TurnaroundRules } from "@/lib/settings";
 export const PREMIUM_BUSINESS_DAYS = 4;
 /** The internal target. Always on or before the client deadline. */
 export const PREMIUM_TARGET_BUSINESS_DAYS = 3;
+/** The office's premium hour box when Settings has not been touched (it is
+ *  `premiumVideoHours`, default 72). It is a FLOOR under the business-day
+ *  promise — see premiumDueFrom. */
+export const PREMIUM_FLOOR_HOURS = 72;
 /** 5pm ET — the close of a promise day, the same hour etEndOfDay uses. */
 export const BUSINESS_DAY_END_HOUR = 17;
 
@@ -78,13 +82,40 @@ export const businessDayEndHour = (rules?: PromiseRules | null): number =>
  * keeping its own premium hours, because Kyle's board and the QC card dating
  * the same reel differently is the bug this file's Sep 17 header describes.
  *
- * `premiumVideoHours` (72) stays in Settings but no longer dates a premium
- * reel: the promise is a DAY now, not an hour count. Measured Sep 18 against
- * every anchor in the database, four business days at 5pm ET is never earlier
- * than the 72 hours it replaces, so no client's existing deadline moves in.
+ * `premiumVideoHours` IS STILL A LIVE CONTROL — it is a FLOOR (review, Sep 18).
+ * When the premium promise became four business days this function stopped
+ * reading the settings object at all, and "Premium reel / video — 720 hours
+ * max" stayed on the Settings screen Kyle uses: typing 240 into it moved
+ * nothing, on any surface, with no hint that it had been retired. A dead box on
+ * a live screen is worse than a missing one, so the box means what it says —
+ * the premium promise is never EARLIER than the office's hour quote:
+ *
+ *   premium due = the later of (four business days, end of day)
+ *                          and (anchor + premiumVideoHours, end of THAT
+ *                               business day — a promise never closes on a
+ *                               Saturday, which is the whole reason the reel
+ *                               stopped being elapsed hours on Sep 18)
+ *
+ * Only later, never earlier: Jordan dictated four business days as "the normal
+ * client deadline", and an hour box is not the place to quietly quote shorter
+ * than that. At the shipped 72 the floor never wins — proved across 730
+ * consecutive hourly anchors in scripts/_fix/B/p5-premium-floor.ts, 0 of 17,520
+ * differ — so nothing moves until somebody deliberately raises it.
  */
 export function premiumDueFrom(anchor: Date, rules?: PromiseRules | null): Date {
-  return endOfBusinessDaysET(anchor, premiumBusinessDays(rules), businessDayEndHour(rules));
+  const hour = businessDayEndHour(rules);
+  const byDays = endOfBusinessDaysET(anchor, premiumBusinessDays(rules), hour);
+  const floorHours = ruleNum(rules, "premiumVideoHours", PREMIUM_FLOOR_HOURS, 720);
+  const byHours = endOfThatBusinessDayET(new Date(anchor.getTime() + floorHours * 3_600_000), hour);
+  return byHours > byDays ? byHours : byDays;
+}
+
+/** The end of the business day `at` falls on — or of the NEXT one when it lands
+ *  on a weekend. Used to give the hour floor above the same shape as every
+ *  other day-quoted promise instead of a deadline inside the weekend. */
+function endOfThatBusinessDayET(at: Date, hour: number): Date {
+  const dow = new Date(`${etDayKey(at)}T12:00:00Z`).getUTCDay();
+  return endOfBusinessDaysET(at, dow === 0 || dow === 6 ? 1 : 0, hour);
 }
 
 /** The internal aim on a premium reel — three business days, end of day. */
@@ -115,11 +146,34 @@ export function promisedOr(promised: Date | null | undefined, computed: Date | n
  * honouring that pin would have parked it on Kyle's late list for a job nobody
  * has shot yet. A deadline that precedes its own shoot is not a promise
  * anybody made; the current rules answer for it instead.
+ *
+ * THE SECOND ARGUMENT IS THE JOB'S OWN SHOOT DATE AND NOTHING ELSE (review,
+ * Sep 18). It first took a "clock start", and deliveryBoard handed it the
+ * board's clockStart — which falls back to `now` for a monthly job with no
+ * shoot. Every pin is older than now, so EVERY such pin was thrown away on
+ * every render: 80 W Lancaster, pinned Mon Sep 7 2:30pm, printed Thu Oct 1 5pm
+ * today and Fri Oct 2 5pm tomorrow, the promise walking forward a day per day —
+ * exactly the drift the freeze exists to stop. Only a REBOOK may void a pin, so
+ * only a real rescheduled visit is allowed to answer this question. A job with
+ * no shoot date has moved nothing and keeps its promise.
  */
-export function livePromise(promised: Date | null | undefined, clockStart: Date | null | undefined): Date | null {
+export function livePromise(promised: Date | null | undefined, shootDate: Date | null | undefined): Date | null {
   if (!promised) return null;
-  if (clockStart && promised <= clockStart) return null;
+  if (shootDate && promised <= shootDate) return null;
   return promised;
+}
+
+/**
+ * livePromise read straight off the project row — the form every reader should
+ * use. It takes the two columns itself, so no caller can substitute a synthetic
+ * clock for the shoot date the way the board did (see above). A row whose
+ * select does not load `shootDate` gets the raw pin, exactly as before.
+ */
+export function pinnedPromise(p: {
+  promisedDueAt?: Date | null;
+  shootDate?: Date | null;
+}): Date | null {
+  return livePromise(p.promisedDueAt, p.shootDate);
 }
 
 /**
@@ -250,6 +304,21 @@ export function tierFor(productTitle: string): Tier {
  * hours; Jordan quotes it as four business days, and the two are not the same
  * date — 96 hours from a Friday 9am shoot is Tuesday 9am, while four business
  * days is the end of the following Thursday. Weekends are not delivery days.
+ *
+ * THE MONTHLY WINDOW DID NOT MOVE ON JORDAN'S DIRECTIVE — it moved on this
+ * file's own rule, and the reviewer was right to ask (Sep 18). What changed on
+ * Sep 18 was tasks.ts: its monthly walk carried the anchor's clock time onto
+ * the landing day, so a shoot that started at 8:50pm was promised at 8:50pm.
+ * THIS file has closed the monthly window at 5pm ET since it was written — so
+ * the two engines disagreed about the same batch by hours, which is precisely
+ * the WF-04 bug above, and tasks.ts was the surface that moved to meet the
+ * board rather than a new promise being invented. "7–10 business days" is
+ * quoted in DAYS; the minute of day is arithmetic residue, not something a
+ * client was ever told. Measured across all 72 monthly-content jobs in
+ * production (scripts/_fix/B/p3-monthly-5pm.ts): NOT ONE due DAY changes. 66
+ * move later within the same ET day (worst 9h), 6 earlier (worst 3h50m), and
+ * of the 11 live monthly jobs exactly 2 tighten — 80 W Lancaster by 36 minutes
+ * and a TEST row by 3h50m, both still Thursday and Wednesday respectively.
  *
  * `rules` is the office's settings; leaving it out keeps the dictated defaults.
  */

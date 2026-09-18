@@ -5,7 +5,7 @@ import { Aryeo, type AryeoListing } from "@/lib/integrations/aryeo";
 import { dropboxConfigured } from "@/lib/integrations/dropbox";
 import { getSecret } from "@/lib/integrations/connections";
 import { actualFolderPaths, folderFileCount } from "@/lib/dropboxFolders";
-import { standardDeliveryDue, deliveryDueFrom, slaTierOf, videoAnchorFor, OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
+import { deliveryPromiseFor, deliveryDueFrom, slaTierOf, videoAnchorFor, OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 import type { NotifyTarget } from "@/lib/notify";
 import { photoTargetFor, RAW_OVERAGE_FACTOR, BRACKET_RATIO } from "@/lib/culling";
 import { isMonthlyContentJob } from "@/lib/pipeline";
@@ -769,6 +769,9 @@ type StatusProject = {
   dueOverrideAt?: Date | null;
   /** the office's tier (Sep 16) — the video's window, via tasks.slaTierOf */
   tierOverride?: string | null;
+  /** the promise this job was SOLD under. Read here only to know whether the
+   *  job has been pinned yet; the sweep writes it exactly once (Sep 18). */
+  promisedDueAt?: Date | null;
 };
 
 async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<StatusSignals> {
@@ -1026,6 +1029,9 @@ export async function syncProjectStatuses(
       statusPinnedAt: true,
       dueOverrideAt: true,
       tierOverride: true,
+      // Has this job's promise been frozen yet? (Sep 18 — see the pin write
+      // after the update below.) One column, no extra query.
+      promisedDueAt: true,
     },
   })) as StatusProject[];
 
@@ -1317,14 +1323,15 @@ export async function syncProjectStatuses(
     // due cell and the delivery board both read Project.deliveryDue, so a
     // branding job re-sold after booking has to stop reading "due in 48h"
     // there as well as on the card.
-    const deliveryDue = p.shootDate
-      ? standardDeliveryDue(p.shootDate, p.deliverables, isMonthlyContentJob(p.deliverables), null, {
+    const promise = p.shootDate
+      ? deliveryPromiseFor(p.shootDate, p.deliverables, isMonthlyContentJob(p.deliverables), null, {
           tier: slaTierOf(p),
           // …and the reel's half of that promise runs from the leg it was
           // filmed on, not from whichever leg shootDate points at (Sep 16).
           videoAnchor: sig.videoAnchor,
         })
       : null;
+    const deliveryDue = promise?.at ?? null;
     // Raws detected in Dropbox → stamp uploadedAt (first time only). This sweep
     // is the path that ACTUALLY detects uploads in prod, but it never wrote the
     // timestamp — so /upload kept showing "Upload" CTAs on jobs whose raws were
@@ -1363,6 +1370,60 @@ export async function syncProjectStatuses(
         ...(sig.aryeo?.cover && sig.aryeo.cover !== p.coverImageUrl ? { coverImageUrl: sig.aryeo.cover } : {}),
       },
     });
+
+    // ---- FREEZE THE PROMISE, ONCE, THE FIRST TIME THIS JOB HAS ONE ----------
+    //
+    // Until now NOTHING in the application wrote Project.promisedDueAt (review,
+    // Sep 18: a grep of src/ found reads only). The whole freeze was one
+    // historical pass — scripts/pin-promises.ts — so it covered exactly the 538
+    // rows that existed the day it ran, and every job booked after it was
+    // unpinned: deliveryDue is recomputed from today's table on EVERY pass of
+    // this sweep, so the next turnaround change would re-date all of them and
+    // re-score the owner's on-time dial and the photographer's quarterly bonus
+    // against deadlines nobody ever quoted. That is the exact failure the pin
+    // was invented to stop, and it was live again for every new job.
+    //
+    // Four rules, all enforced on this one line:
+    //   · ONLY when there is a date  — `promise` is null without a shoot date,
+    //     and a pin of null is not a promise.
+    //   · ONLY WHEN THE CLOCK HAS ACTUALLY STARTED — the shoot has happened.
+    //     Not at booking: an Aryeo order keeps growing after it lands, and a
+    //     promise frozen off half an order is worse than no promise at all,
+    //     because the pin CAPS every later item (cappedByPromise). 893 S
+    //     Matlack was booked Aug 21 and its VIDEO row arrived Aug 25 — pinned
+    //     at booking, its 16-video branding batch would have been capped at
+    //     the photo date and read late from the day it was ordered. Before the
+    //     shoot nothing is judged anyway: no deliverable is late, no dial
+    //     counts the job, and deliveryDue is recomputed every pass regardless.
+    //     Measured on production (scripts/_fix/B/p12-growth-after-shoot.ts,
+    //     excluding the Jun 23 backfill that created rows for 1,356 projects
+    //     at once): orders grow after the project row on 12 of 1,479 jobs and
+    //     after the shoot on 7 — so waiting for the shoot removes most of the
+    //     exposure, and the rest is a known 0.5%.
+    //   · ONLY when something is OWED — with no owed row left, the ladder's
+    //     answer is a bare 48h fallback, which is not a promise about anything.
+    //   · ONLY when there is no pin  — the `promisedDueAt: null` in the WHERE
+    //     makes that atomic, so two sweeps racing (or a re-run after a crash)
+    //     can never move a promise that is already made. updateMany, not
+    //     update, because update cannot carry that guard.
+    //   · NEVER an update           — nothing anywhere writes these columns a
+    //     second time. An office change of date goes to dueOverrideAt, which
+    //     outranks the pin in effectiveDue.
+    // The tier and the aim come from the same ladder that produced the date
+    // (tasks.deliveryPromiseFor), so a pin made here records what pin-promises
+    // had to reconstruct by hand for the rows that pre-date it.
+    const clockHasStarted = !!p.shootDate && p.shootDate <= new Date();
+    if (promise && clockHasStarted && p.deliverables.length > 0 && !p.promisedDueAt) {
+      await prisma.project.updateMany({
+        where: { id: p.id, promisedDueAt: null },
+        data: {
+          promisedDueAt: promise.at,
+          promisedTargetAt: promise.targetAt,
+          promisedTierKey: promise.tierKey,
+          promisedPinnedAt: new Date(),
+        },
+      });
+    }
 
     // Reflect category presence onto the deliverable rows for the portal/detail.
     await syncDeliverableStatuses(p, evidence);
