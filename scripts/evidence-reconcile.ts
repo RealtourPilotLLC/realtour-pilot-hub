@@ -20,6 +20,34 @@
  * ~55 photo add-on units moving from DONE to UNKNOWN, and Erica Walker's August
  * moving from 4/5 to 1/5 — and prints the affected job ids and streets, so the
  * sign-off is on figures Jordan can check rather than on a promise.
+ *
+ * ---------------------------------------------------------------------------
+ * SECOND MODE: --delivery, THE DELIVERY RECONCILIATION (Sep 18 2026).
+ *
+ * The report above reads the CACHED evidence blob, which is the right source
+ * for "what would the slot model say" and the wrong one for "did this client
+ * get their video". The hourly sweep stops carrying a job seven days after
+ * delivery, so on a delivered job the Aryeo half of that blob is frozen — and a
+ * frozen `videos: 0` reads exactly like a confident one. Run off the cache on
+ * Sep 17, the fourteen-job reconciliation reported sixteen jobs owed; thirteen
+ * of them already had the video on the listing.
+ *
+ *   npx tsx --env-file=.env scripts/evidence-reconcile.ts --delivery
+ *   npx tsx --env-file=.env scripts/evidence-reconcile.ts --delivery --write-exceptions
+ *
+ *   --delivery            classify every job with an internal reason to doubt
+ *                         its delivery, using a LIVE Aryeo listing read each
+ *                         (read-only; prints what it WOULD flag)
+ *   --write-exceptions    also raise Project.deliveryExceptionAt/Note on the
+ *                         jobs that earn one. That is the only write either
+ *                         mode of this script can make. It is a flag, never an
+ *                         action: no status moves, no deliveredAt is rewritten,
+ *                         no task is created or closed, no client is contacted.
+ *                         The before/after block at the end proves it.
+ *   --include-test        include synthetic TEST jobs (default: skipped)
+ *   --limit=N             cap the live listing reads
+ *   --selftest            run the classifier's branches against fixtures — no
+ *                         database, no Aryeo, no network at all
  */
 import { prisma } from "@/lib/prisma";
 import {
@@ -33,6 +61,15 @@ import {
   type Unit,
   type UnitState,
 } from "@/lib/evidenceUnits";
+import {
+  reconcileDeliveries,
+  raiseDeliveryException,
+  classifyDelivery,
+  laneLabel,
+  type DeliveryClassification,
+  type DeliveryInput,
+  type ListingRead,
+} from "@/lib/deliveryExceptions";
 import { writeFileSync } from "fs";
 
 const argv = process.argv.slice(2);
@@ -43,6 +80,11 @@ const argOf = (name: string): string | null => {
 const LIST = argv.includes("--all") ? Number.MAX_SAFE_INTEGER : Number(argOf("list") ?? 12);
 const SINCE = argOf("since") ? new Date(`${argOf("since")}T00:00:00Z`) : null;
 const JSON_OUT = argOf("json");
+const DELIVERY = argv.includes("--delivery");
+const WRITE_EXCEPTIONS = argv.includes("--write-exceptions");
+const INCLUDE_TEST = argv.includes("--include-test");
+const READ_LIMIT = argOf("limit") ? Number(argOf("limit")) : undefined;
+const SELFTEST = argv.includes("--selftest");
 
 type Row = {
   projectId: string;
@@ -496,9 +538,302 @@ async function contentLens(perProjectUnits: Map<string, ProjectUnits>) {
   }
 }
 
-main()
-  .catch((e) => {
-    console.error(e);
-    process.exitCode = 1;
-  })
-  .finally(() => prisma.$disconnect());
+// ===========================================================================
+// --delivery — THE DELIVERY RECONCILIATION
+// ===========================================================================
+
+/**
+ * The before/after proof. Acceptance for this pass is not "it looked right":
+ * it is that nothing except the two exception columns moved. So the pass takes
+ * a fingerprint of everything it could conceivably have damaged — every
+ * candidate's status, deliveredAt, updatedAt and evidence blob, plus the global
+ * Activity and SmartTask counts — before it runs and again afterwards, and
+ * prints the diff. updatedAt is in there deliberately: Prisma's @updatedAt is
+ * the timestamp a careless writer moves without noticing, and syncProjectStatuses
+ * picks its hourly 80 jobs `orderBy: { updatedAt: "desc" }`.
+ */
+type Fingerprint = {
+  projects: Map<string, string>;
+  activities: number;
+  tasks: number;
+  openDeliveryTexts: number;
+  deliveredStamps: number;
+};
+
+async function fingerprint(ids: string[]): Promise<Fingerprint> {
+  const rows = await prisma.project.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, status: true, deliveredAt: true, updatedAt: true, statusEvidence: true, statusCheckedAt: true },
+  });
+  return {
+    projects: new Map(
+      rows.map((r) => [
+        r.id,
+        [
+          r.status,
+          r.deliveredAt?.toISOString() ?? "-",
+          r.updatedAt.toISOString(),
+          r.statusCheckedAt?.toISOString() ?? "-",
+          String(r.statusEvidence ?? "").length,
+        ].join("|"),
+      ]),
+    ),
+    activities: await prisma.activity.count(),
+    tasks: await prisma.smartTask.count(),
+    openDeliveryTexts: await prisma.smartTask.count({ where: { taskType: "delivery_text", status: { notIn: ["COMPLETED", "CANCELLED"] } } }),
+    deliveredStamps: await prisma.project.count({ where: { deliveredAt: { not: null } } }),
+  };
+}
+
+const VERDICT_WORD: Record<DeliveryClassification["verdict"], string> = {
+  DELIVERED: "DELIVERED       ",
+  DELIVERED_ANOTHER_WAY: "SENT ANOTHER WAY",
+  IN_PRODUCTION: "IN PRODUCTION   ",
+  OWED: "STILL OWED      ",
+  CANNOT_TELL: "CANNOT TELL     ",
+};
+
+async function deliveryPass() {
+  const started = Date.now();
+  console.log("=".repeat(100));
+  console.log("DELIVERY RECONCILIATION — what the client can actually open, read LIVE from Aryeo");
+  console.log(`${WRITE_EXCEPTIONS ? "WRITE MODE: exceptions will be raised" : "READ-ONLY: nothing will be written"}   ·   ${new Date().toISOString()}`);
+  console.log("=".repeat(100));
+
+  // Pass one, always read-only: work out who the candidates are so the
+  // fingerprint covers exactly them.
+  const dry = await reconcileDeliveries({ write: false, includeTest: INCLUDE_TEST, limit: READ_LIMIT });
+  const ids = dry.classifications.map((c) => c.projectId);
+  const before = await fingerprint(ids);
+
+  for (const c of dry.classifications) {
+    console.log(`\n${VERDICT_WORD[c.verdict]}  ${c.street}`);
+    console.log(`   ${c.projectId}`);
+    for (const f of c.facts) console.log(`   ${f}`);
+    for (const l of c.lanes) console.log(`   · ${pad(laneLabel(l.lane), 11)} ${pad(l.verdict, 17)} ${l.why}`);
+    if (c.alreadyFlagged) console.log(`   ALREADY FLAGGED — the note on this job belongs to whoever is working it; the pass will not overwrite it.`);
+    else if (c.flagWorthy) console.log(`   ${WRITE_EXCEPTIONS ? "RAISING" : "WOULD RAISE"}: ${c.note}`);
+  }
+
+  const counts = new Map<string, number>();
+  for (const c of dry.classifications) counts.set(c.verdict, (counts.get(c.verdict) ?? 0) + 1);
+  console.log(`\n${"-".repeat(100)}`);
+  console.log(`SCOPE: ${dry.scanned} non-cancelled jobs scanned · ${dry.candidates} carried an internal reason to doubt the delivery · ${dry.skippedTest} synthetic TEST jobs skipped`);
+  console.log("VERDICTS:");
+  for (const v of ["DELIVERED", "DELIVERED_ANOTHER_WAY", "IN_PRODUCTION", "OWED", "CANNOT_TELL"] as const) {
+    console.log(`   ${pad(VERDICT_WORD[v].trim(), 20)} ${num(counts.get(v) ?? 0)}`);
+  }
+  // HOW MUCH OF THE OLD ANSWER WAS STALE CACHE. The report above (HEADLINE 1,
+  // run off the evidence blob) calls eleven delivered jobs short on video. This
+  // is the same question asked of Aryeo directly, and the gap between the two
+  // numbers is the entire reason this mode exists.
+  const cacheDrifted = dry.classifications.filter((c) => c.cacheDrift.length > 0);
+  const cacheSaidNoneLiveHasSome = dry.classifications.filter((c) =>
+    c.cacheDrift.some((d) => d.cached === 0 && d.live > 0),
+  );
+  console.log(`\nSTALE CACHE, MEASURED: ${cacheDrifted.length} of ${dry.candidates} candidates carry an evidence blob that disagrees with the live listing.`);
+  console.log(`   ${cacheSaidNoneLiveHasSome.length} of them have a cached count of ZERO where the listing actually carries the media.`);
+  console.log("   That is the shape that produced the wrong answer on Sep 17: a frozen zero read as a confident one.");
+  for (const c of cacheSaidNoneLiveHasSome) {
+    console.log(`      ${pad(c.street, 30)} ${c.cacheDrift.map((d) => `${laneLabel(d.lane)} cached ${d.cached} → live ${d.live}`).join(" · ")}`);
+  }
+
+  if (dry.unreadable.length) {
+    console.log(`\nLISTINGS THIS PASS COULD NOT READ (${dry.unreadable.length}) — reported, NEVER flagged.`);
+    console.log("  'We could not look' is not 'nothing is there'. An Aryeo outage must not raise an exception on the back catalogue.");
+    for (const u of dry.unreadable) console.log(`   ${pad(u.street, 36)} ${u.why}`);
+  }
+
+  // The write, if it was asked for — off the classifications just printed, not
+  // off a second live read. One pass, one set of facts, and what gets written
+  // is exactly what was shown above.
+  if (WRITE_EXCEPTIONS) {
+    const raised: string[] = [];
+    const skipped: string[] = [];
+    for (const c of dry.classifications) {
+      if (!c.flagWorthy) continue;
+      if (c.alreadyFlagged) {
+        skipped.push(`${pad(c.street, 30)} already flagged — left exactly as it was`);
+        continue;
+      }
+      const r = await raiseDeliveryException(c.projectId, c.note);
+      (r === "raised" ? raised : skipped).push(`${pad(c.street, 30)} ${r === "raised" ? c.note : "another writer got there first"}`);
+    }
+    console.log(`\n${"-".repeat(100)}`);
+    console.log(`EXCEPTIONS RAISED: ${raised.length}`);
+    for (const r of raised) console.log(`   ${r}`);
+    if (skipped.length) {
+      console.log(`LEFT ALONE: ${skipped.length}`);
+      for (const s of skipped) console.log(`   ${s}`);
+    }
+  }
+
+  // The proof.
+  const after = await fingerprint(ids);
+  console.log(`\n${"-".repeat(100)}`);
+  console.log("WHAT MOVED (everything below must read 0 except the exception columns)");
+  console.log("-".repeat(100));
+  let drifted = 0;
+  for (const [id, sig] of before.projects) {
+    const now = after.projects.get(id);
+    if (now !== sig) {
+      drifted++;
+      console.log(`   DRIFT ${id}\n      before ${sig}\n      after  ${now}`);
+    }
+  }
+  console.log(`   status / deliveredAt / updatedAt / statusCheckedAt / evidence changed on: ${drifted} of ${before.projects.size} candidates`);
+  // WHO ELSE IS WRITING. Measured Sep 18 00:57, mid-run: something was walking
+  // the whole Project table at ~13 rows a second (538 rows in five minutes,
+  // 1,579 in an hour) — a dev server against this same production database, not
+  // this pass. A zero above is only meaningful next to this number, and a
+  // non-zero above is not automatically ours. The flag write itself cannot be
+  // the cause either way: raiseDeliveryException is raw SQL naming its two
+  // columns, so a row it touches keeps the updatedAt it already had, and the
+  // exception stamps land within milliseconds of each other while those
+  // updatedAt values do not.
+  const churn = await prisma.project.count({ where: { updatedAt: { gte: new Date(Date.now() - 5 * 60_000) } } });
+  console.log(`   other writers: ${churn} projects across the whole table have moved in the last 5 minutes`);
+  console.log(`   Activity rows        ${before.activities} → ${after.activities}   (${after.activities - before.activities})`);
+  console.log(`   SmartTask rows       ${before.tasks} → ${after.tasks}   (${after.tasks - before.tasks})`);
+  console.log(`   open delivery_text   ${before.openDeliveryTexts} → ${after.openDeliveryTexts}   (${after.openDeliveryTexts - before.openDeliveryTexts})`);
+  console.log(`   deliveredAt stamps   ${before.deliveredStamps} → ${after.deliveredStamps}   (${after.deliveredStamps - before.deliveredStamps})`);
+  const flagged = await prisma.project.count({ where: { deliveryExceptionAt: { not: null } } });
+  console.log(`   projects flagged     ${flagged}`);
+  console.log(
+    "\n   A delivery text can only be sent by sweepDeliveryTexts, which sends from an OPEN delivery_text SmartTask,\n" +
+      "   which is only ever minted by syncProjectStatuses when it computes a job to DELIVERED. This pass computes\n" +
+      "   no status and creates no task, so the count above is the whole proof: the send lane was never touched.",
+  );
+  console.log(`\ndone in ${((Date.now() - started) / 1000).toFixed(1)}s.\n`);
+}
+
+// ===========================================================================
+// --selftest — the classifier's branches, including the ones production has no
+// example of today.
+//
+// Live evidence proves what the pass says about the seventeen jobs in front of
+// it. It cannot prove what the pass would say about a job whose cut was sent by
+// hand, or about an Aryeo outage — and the outage branch is the one that would
+// do the damage, because getting it wrong flags the whole back catalogue in a
+// single run. classifyDelivery is pure for exactly this reason: these cases
+// cost nothing and need no database.
+// ===========================================================================
+
+function selftest(): void {
+  const listing = (over: Partial<Extract<ListingRead, { readable: true }>> = {}): ListingRead => ({
+    readable: true,
+    deliveryStatus: "DELIVERED",
+    photos: 40,
+    videos: 1,
+    floorPlans: 3,
+    videoTitles: ["Standard Reel"],
+    atISO: new Date().toISOString(),
+    ...over,
+  });
+  const job = (over: Partial<DeliveryInput> = {}): DeliveryInput => ({
+    projectId: "p1",
+    street: "1 Test St",
+    status: "DELIVERED",
+    deliveredAt: new Date("2026-08-01T12:00:00Z"),
+    deliveredBy: null,
+    deliveredVia: null,
+    expected: ["PHOTOS", "VIDEO"],
+    orderedVideoSlots: 1,
+    photoLaneProducts: ["Photos"],
+    dropboxFinalVideo: 1,
+    dropboxFinalPhotos: 40,
+    cutsSentToClient: 0,
+    finishedCutsUnsent: 0,
+    renderingCutsUnsent: 0,
+    listing: listing(),
+    exceptionAt: null,
+    exceptionNote: null,
+    cachedAryeoVideos: null,
+    cachedAryeoPhotos: null,
+    ...over,
+  });
+
+  const cases: { name: string; input: DeliveryInput; verdict: DeliveryClassification["verdict"]; flagged: boolean }[] = [
+    { name: "everything live on a delivered listing", input: job(), verdict: "DELIVERED", flagged: false },
+    {
+      name: "video absent, two finished files in the Final folder",
+      input: job({ listing: listing({ videos: 0, videoTitles: [] }), dropboxFinalVideo: 2 }),
+      verdict: "OWED",
+      flagged: true,
+    },
+    {
+      name: "video absent, but a person marked the cut sent",
+      input: job({ listing: listing({ videos: 0, videoTitles: [] }), cutsSentToClient: 1 }),
+      verdict: "DELIVERED_ANOTHER_WAY",
+      flagged: false,
+    },
+    {
+      name: "video absent, the approved cut is still in the 1080p lane",
+      input: job({ listing: listing({ videos: 0, videoTitles: [] }), dropboxFinalVideo: 0, renderingCutsUnsent: 1, status: "REVIEW", deliveredAt: null }),
+      verdict: "IN_PRODUCTION",
+      flagged: false,
+    },
+    {
+      name: "video absent, the render FAILED so the editor's export is the deliverable",
+      input: job({ listing: listing({ videos: 0, videoTitles: [] }), dropboxFinalVideo: 0, finishedCutsUnsent: 1, status: "REVIEW", deliveredAt: null }),
+      verdict: "OWED",
+      flagged: true,
+    },
+    // THE ONE THAT MUST NEVER FLAG: an Aryeo outage is not an absence.
+    { name: "the listing read failed", input: job({ listing: { readable: false, why: "read-failed" } }), verdict: "CANNOT_TELL", flagged: false },
+    { name: "no listing id at all", input: job({ listing: { readable: false, why: "no-listing-id" } }), verdict: "CANNOT_TELL", flagged: false },
+    {
+      name: "media is on the listing but Aryeo never released it",
+      input: job({ listing: listing({ deliveryStatus: "UNDELIVERED" }) }),
+      verdict: "CANNOT_TELL",
+      flagged: true,
+    },
+    {
+      name: "Photos expected only because the product is called Drone Videography",
+      input: job({ listing: listing({ photos: 0 }), photoLaneProducts: ["Drone Videography"], dropboxFinalPhotos: 60 }),
+      verdict: "CANNOT_TELL",
+      flagged: true,
+    },
+    {
+      name: "photos really were ordered and really are absent",
+      input: job({ listing: listing({ photos: 0 }), photoLaneProducts: ["Photos", "Drone Photos"], dropboxFinalPhotos: 60 }),
+      verdict: "OWED",
+      flagged: true,
+    },
+    {
+      name: "one video live against two ordered",
+      input: job({ orderedVideoSlots: 2 }),
+      verdict: "CANNOT_TELL",
+      flagged: true,
+    },
+    {
+      name: "only a 3D tour ordered — the hub has no channel, so nobody is flagged",
+      input: job({ expected: ["THREED"] }),
+      verdict: "CANNOT_TELL",
+      flagged: false,
+    },
+  ];
+
+  let failed = 0;
+  console.log("CLASSIFIER SELF-TEST — pure, no database, no Aryeo\n");
+  for (const c of cases) {
+    const got = classifyDelivery(c.input);
+    const ok = got.verdict === c.verdict && got.flagWorthy === c.flagged;
+    if (!ok) failed++;
+    console.log(`  ${ok ? "pass" : "FAIL"}  ${pad(c.name, 62)} ${pad(got.verdict, 22)} ${got.flagWorthy ? "would flag" : "no flag"}`);
+    if (!ok) console.log(`        expected ${c.verdict} / ${c.flagged ? "flag" : "no flag"}`);
+  }
+  console.log(`\n${cases.length - failed} of ${cases.length} passed.`);
+  if (failed) process.exitCode = 1;
+}
+
+if (SELFTEST) {
+  selftest();
+} else {
+  void (DELIVERY ? deliveryPass() : main())
+    .catch((e) => {
+      console.error(e);
+      process.exitCode = 1;
+    })
+    .finally(() => prisma.$disconnect());
+}
