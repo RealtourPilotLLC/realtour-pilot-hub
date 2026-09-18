@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { isPublicRoute } from "@/lib/publicRoutes";
 import { BrandWordmark } from "@/components/Brand";
 import { usePathname } from "next/navigation";
@@ -35,6 +35,32 @@ export function isBare(pathname: string): boolean {
 export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null; scriptingUrl?: string | null; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
+  // THE CLOSED DRAWER WAS STILL IN THE PAGE (audit, Sep 18 2026). It is kept
+  // mounted and slid off-screen with a transform, which moves it visually and
+  // nothing else: every link in it stayed in the tab order and stayed readable
+  // by a screen reader, so tabbing from the hamburger on a phone walked through
+  // an invisible menu. `inert` takes the whole subtree out of the tab order,
+  // out of the accessibility tree and out of hit-testing, while leaving the
+  // transform free to animate.
+  const drawerRef = useRef<HTMLDivElement>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+
+  // Escape closes it, as every dialog on the web does.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  // Focus follows the drawer: into it when it opens, back to the button that
+  // opened it when it closes. Without the second half, closing the menu drops
+  // focus onto <body> and the next Tab starts from the top of the document.
+  useEffect(() => {
+    if (open) drawerRef.current?.querySelector<HTMLElement>("a, button")?.focus();
+    else if (document.activeElement && drawerRef.current?.contains(document.activeElement)) menuButtonRef.current?.focus();
+  }, [open]);
+
 
   // Count in-app navigations this session so back controls (BackLink) can tell a
   // real "previous page" from a cold deep link and route accordingly.
@@ -98,6 +124,12 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
         aria-hidden
       />
       <div
+        ref={drawerRef}
+        id="mobile-nav-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Menu"
+        inert={!open}
         className={cn(
           "fixed inset-y-0 left-0 z-[1300] transition-transform duration-200 ease-out lg:hidden",
           open ? "translate-x-0" : "-translate-x-full",
@@ -111,8 +143,11 @@ export function Shell({ user, scriptingUrl, children }: { user: ShellUser | null
         {/* Mobile top bar */}
         <header className="flex items-center gap-3 border-b border-border bg-surface/80 px-4 py-2.5 backdrop-blur-xl lg:hidden">
           <button
+            ref={menuButtonRef}
             onClick={() => setOpen((v) => !v)}
             aria-label={open ? "Close menu" : "Open menu"}
+            aria-expanded={open}
+            aria-controls="mobile-nav-drawer"
             className="flex size-9 items-center justify-center rounded-lg text-foreground/80 hover:bg-surface-2"
           >
             {open ? <X className="size-5" /> : <Menu className="size-5" />}
