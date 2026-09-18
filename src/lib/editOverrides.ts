@@ -147,10 +147,49 @@ export function effectiveSlotCounts(p: { videosOwedOverride: number | null }, ba
   return baseCounts.map((_, i) => (i === 0 ? override - others : 1));
 }
 
-/** The delivery due: the office's date when set, else what the turnaround
- *  engine computed (Project.deliveryDue on the row, the SLA elsewhere). */
-export function effectiveDue(p: { dueOverrideAt: Date | null }, computed: Date | null): Date | null {
-  return p.dueOverrideAt ?? computed;
+/**
+ * The delivery due, in the order the hub trusts dates:
+ *   1. dueOverrideAt   — a human in the office typed this date for this job.
+ *   2. promisedDueAt   — the promise the job was SOLD under, frozen once at
+ *                        the rules in force then (scripts/pin-promises.ts).
+ *   3. computed        — today's turnaround table (Project.deliveryDue on the
+ *                        row, the SLA elsewhere).
+ *
+ * Step 2 is what makes "preserve existing agreed promises when changing
+ * defaults" true (Jordan, Sep 18). It is OPTIONAL on the row on purpose: a
+ * caller whose select does not load the column behaves exactly as it did
+ * before, rather than losing its date.
+ */
+export function effectiveDue(
+  p: { dueOverrideAt: Date | null; promisedDueAt?: Date | null },
+  computed: Date | null,
+): Date | null {
+  return p.dueOverrideAt ?? p.promisedDueAt ?? computed;
+}
+
+/**
+ * THE DOCUMENTED EXCEPTION (Jordan, Sep 18: "Keep documented project
+ * exceptions"). When the office moves a job's date by hand, the note it typed
+ * is the reason that job's promise differs from the product table — so it
+ * belongs on Project.promisedReason, where every promise reader can show it,
+ * not only in the timeline sentence.
+ *
+ * Returns the fields to write alongside a dueOverrideAt save; `{}` when there
+ * is nothing to record, so a save that changes something else never blanks an
+ * existing reason. It deliberately does NOT touch promisedDueAt: the pin is
+ * history, and dueOverrideAt already outranks it in effectiveDue above.
+ *
+ * NOT YET CALLED: the override dialog's save lives in src/app/editing/actions.ts,
+ * which is another group's file this pass. Wiring is one line there —
+ * `...promiseExceptionFields(after.dueAt, note)` in the project update.
+ */
+export function promiseExceptionFields(
+  dueOverrideAt: Date | null,
+  note: string | null | undefined,
+): { promisedReason?: string } {
+  const text = note?.trim();
+  if (!dueOverrideAt || !text) return {};
+  return { promisedReason: text.slice(0, 500) };
 }
 
 export function effectiveTier(p: { tierOverride: string | null }, computed: EditTier): EditTier {

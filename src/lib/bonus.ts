@@ -132,7 +132,11 @@ export async function scorecardFor(
       status: { not: "CANCELLED" },
       shootDate: { gte: q.start, lte: q.end },
     },
-    select: { id: true, deliveredAt: true, deliveryDue: true },
+    // promisedDueAt — the deadline the job was sold under (Sep 18). This
+    // metric is 40% of a $1,000-a-quarter bonus, and Project.deliveryDue is
+    // recomputed by the status sweep: without the pin, moving a turnaround
+    // default in Settings silently re-scores quarters that are already paid.
+    select: { id: true, deliveredAt: true, deliveryDue: true, promisedDueAt: true },
   });
   const shootIds = shoots.map((s) => s.id);
   const n = shoots.length;
@@ -140,8 +144,9 @@ export async function scorecardFor(
   const metrics: MetricRow[] = [];
 
   // 1) ON-TIME DELIVERY — the densest, most trustworthy signal we have.
-  const judged = shoots.filter((s) => s.deliveredAt && s.deliveryDue);
-  const onTimeN = judged.filter((s) => s.deliveredAt! <= s.deliveryDue!).length;
+  const promiseOf = (s: { deliveryDue: Date | null; promisedDueAt: Date | null }) => s.promisedDueAt ?? s.deliveryDue;
+  const judged = shoots.filter((s) => s.deliveredAt && promiseOf(s));
+  const onTimeN = judged.filter((s) => s.deliveredAt! <= promiseOf(s)!).length;
   const onTimeRate = judged.length ? onTimeN / judged.length : null;
   metrics.push({
     key: "onTime",

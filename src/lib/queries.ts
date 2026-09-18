@@ -527,7 +527,12 @@ export async function getStuckJobs(): Promise<StuckJob[]> {
         // and then reopened for a revision is "revision stuck Nd" (next
         // branch), not "N days late": 750 E Marshall St read "4 days late"
         // a day after the client had the gallery (audit5 skeptic).
+        // …against the promise the job was SOLD under where one is pinned
+        // (Sep 18). Both columns are matched here because the pin and the
+        // recomputed column can now differ: the row is filtered again in JS
+        // below on whichever of the two actually governs.
         { deliveryDue: { lt: now }, shootDate: { lte: now }, deliveredAt: null },
+        { promisedDueAt: { lt: now }, shootDate: { lte: now }, deliveredAt: null },
         // Stale revision — 2+ days without closure (a fresh revision is step 1
         // on /today, not a fire; flagging at minute zero triple-listed them).
         { status: "REVISION", revisionRequestedAt: { lte: new Date(now.getTime() - 2 * DAY) } },
@@ -537,7 +542,7 @@ export async function getStuckJobs(): Promise<StuckJob[]> {
     },
     select: {
       id: true, title: true, status: true,
-      deliveryDue: true, revisionRequestedAt: true, shootDate: true, deliveredAt: true,
+      deliveryDue: true, promisedDueAt: true, revisionRequestedAt: true, shootDate: true, deliveredAt: true,
     },
   });
 
@@ -548,8 +553,12 @@ export async function getStuckJobs(): Promise<StuckJob[]> {
       const candidates: { reason: string; days: number }[] = [];
       // Mirrors the deliveryDue branch of the WHERE above — a row that matched
       // on the revision branch must not pick up a "days late" reason here.
-      if (p.deliveryDue && p.deliveryDue < now && !p.deliveredAt && p.shootDate && p.shootDate <= now) {
-        const d = (now.getTime() - p.deliveryDue.getTime()) / DAY;
+      // The pinned promise governs when it exists: "3 days late" has to be
+      // counted from the date the client was actually given, not from one a
+      // settings change produced this morning.
+      const promisedDue = p.promisedDueAt ?? p.deliveryDue;
+      if (promisedDue && promisedDue < now && !p.deliveredAt && p.shootDate && p.shootDate <= now) {
+        const d = (now.getTime() - promisedDue.getTime()) / DAY;
         const whole = Math.floor(d);
         candidates.push({
           // Under a day late still deserves the panel — say it in hours.
@@ -676,7 +685,15 @@ export async function getOwnerPulse(): Promise<OwnerPulse> {
     // Both 30d windows in one fetch, bucketed in JS below.
     prisma.project.findMany({
       where: { deliveredAt: { gte: d60 }, status: { not: "CANCELLED" } },
-      select: { id: true, deliveredAt: true, deliveryDue: true, shootDate: true },
+      // promisedDueAt is the deadline the job was SOLD under (Sep 18). It has
+      // to be read here, not Project.deliveryDue alone: deliveryDue is
+      // RECOMPUTED by the status sweep on every pass, so the day a turnaround
+      // default moves, every delivered job is silently re-judged against a
+      // promise nobody made. Measured before the premium reel moved to four
+      // business days: 39 of the delivered premium jobs would have flipped
+      // from late to on-time, re-scoring this dial and the photographer
+      // quarterly bonus that reads the same pair of columns.
+      select: { id: true, deliveredAt: true, deliveryDue: true, promisedDueAt: true, shootDate: true },
     }),
     // Texts only (calls/emails have different response norms), clientId set so
     // inbound/outbound can be paired per conversation. Ordered ASC so "the next
@@ -709,14 +726,17 @@ export async function getOwnerPulse(): Promise<OwnerPulse> {
   // old delivery (1224 Gail Rd: stamped 8 Aug, re-shoot 24 Aug) — judging that
   // pair scored a free on-time win for a delivery that hasn't happened yet.
   // The turnaround dial already refused those rows; now both dials agree.
+  // The promise it was sold under, falling back to the live column for a row
+  // the pin has never covered (scripts/pin-promises.ts).
+  const promiseOf = (p: { deliveryDue: Date | null; promisedDueAt: Date | null }) => p.promisedDueAt ?? p.deliveryDue;
   const judged = delivered.filter(
-    (p) => p.deliveredAt && p.deliveryDue && (!p.shootDate || p.deliveredAt > p.shootDate),
+    (p) => p.deliveredAt && promiseOf(p) && (!p.shootDate || p.deliveredAt > p.shootDate),
   );
   const curJ = judged.filter((p) => p.deliveredAt! >= d30);
   const prevJ = judged.filter((p) => p.deliveredAt! < d30);
-  const curOnTime = curJ.filter((p) => p.deliveredAt! <= p.deliveryDue!).length;
+  const curOnTime = curJ.filter((p) => p.deliveredAt! <= promiseOf(p)!).length;
   const onTimePct = pct(curOnTime, curJ.length);
-  const onTimePrev = pct(prevJ.filter((p) => p.deliveredAt! <= p.deliveryDue!).length, prevJ.length);
+  const onTimePrev = pct(prevJ.filter((p) => p.deliveredAt! <= promiseOf(p)!).length, prevJ.length);
 
   // (b) median shoot→delivered hours (skip rows where delivery precedes the
   // shoot — rebooked jobs and backfilled data have a few).
