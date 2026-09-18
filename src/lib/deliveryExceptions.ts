@@ -898,12 +898,21 @@ export async function reconcileDeliveries(opts: ReconcileOptions = {}): Promise<
 export type DeliveryExceptionFlag = Omit<ProactiveFlag, "kind"> & { kind: "delivery-exception" };
 
 export async function deliveryExceptionFlags(limit = 3): Promise<DeliveryExceptionFlag[]> {
-  const rows = await prisma.project.findMany({
+  // Read them ALL, then rank, then cut. Ordering by deliveryExceptionAt alone
+  // put the newest flag first, and the radar shows two — so 893 S Matlack St,
+  // where SIXTEEN videos were ordered and the listing is empty, fell off the
+  // panel behind a job whose only question is whether some drone stills ever
+  // went up (Sep 18). "Owed" means a client is waiting on a file they paid for;
+  // "Unconfirmed" is a question for a person. The first outranks the second
+  // however recently either was written.
+  const all = await prisma.project.findMany({
     where: { deliveryExceptionAt: { not: null } },
     select: { id: true, title: true, deliveryExceptionAt: true, deliveryExceptionNote: true },
     orderBy: { deliveryExceptionAt: "desc" },
-    take: limit,
+    take: 40,
   });
+  const owed = (n: string | null) => ((n ?? "").startsWith("Owed") ? 0 : 1);
+  const rows = all.sort((a, b) => owed(a.deliveryExceptionNote) - owed(b.deliveryExceptionNote)).slice(0, limit);
   return rows.map((p) => ({
     id: `delivery-exception-${p.id}`,
     // "Owed" is a client waiting on a file; "Unconfirmed" is a question. The

@@ -1438,7 +1438,7 @@ export async function getDeliveryHistory(days = 45): Promise<HistoryDelivery[]> 
 export type ProactiveFlag = {
   id: string;
   severity: "high" | "medium" | "low";
-  kind: "ar" | "vip-quiet" | "revision";
+  kind: "ar" | "vip-quiet" | "revision" | "delivery-exception";
   title: string;
   detail: string;
   href: string;
@@ -1457,6 +1457,20 @@ export async function getProactiveFlags(): Promise<{
   const daysSince = (d: Date | string | null | undefined): number | null =>
     d ? Math.floor((now - new Date(d).getTime()) / 86400000) : null;
   const money = (n: number) => `$${Math.round(n).toLocaleString()}`;
+
+  // 0) A DELIVERY NOBODY CAN CONFIRM. First, and ahead of money, because it is
+  // the only flag here about a client who may be waiting on something they paid
+  // for and never got. The reconciliation writes these against live Aryeo reads
+  // — never the cached evidence blob, which is stale on delivered jobs and was
+  // the whole Sep 17 wrong answer — and it only ever raises a flag: it never
+  // changes a status, never re-sends a file and never contacts anybody. Clearing
+  // one is a person's job.
+  try {
+    const { deliveryExceptionFlags } = await import("@/lib/deliveryExceptions");
+    for (const f of await deliveryExceptionFlags(2)) flags.push(f);
+  } catch {
+    /* a flag source that cannot be read must not take the panel down */
+  }
 
   // 1) Aging accounts receivable — group delivered+unpaid jobs by client.
   try {

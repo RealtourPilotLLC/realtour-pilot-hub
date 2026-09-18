@@ -1,17 +1,23 @@
 import Link from "next/link";
-import { Radar, DollarSign, UserMinus, RefreshCw, ChevronRight } from "lucide-react";
+import { Radar, DollarSign, UserMinus, RefreshCw, ChevronRight, PackageX } from "lucide-react";
 import type { ProactiveFlag } from "@/lib/queries";
 import { ink } from "@/components/ui/Badge";
 
-const KIND_ICON = { ar: DollarSign, "vip-quiet": UserMinus, revision: RefreshCw } as const;
+// A Record keyed on ProactiveFlag["kind"], so adding a flag kind fails the
+// build here until it has an icon — which is how the delivery exception got
+// one rather than falling through to undefined (Sep 18).
+const KIND_ICON = { ar: DollarSign, "vip-quiet": UserMinus, revision: RefreshCw, "delivery-exception": PackageX } as const;
 const SEV = {
   high: { dot: "#f87171", chip: "bg-danger/10 text-danger", label: "High" },
   medium: { dot: "#fbbf24", chip: "bg-warning/10 text-warning", label: "Watch" },
   low: { dot: "#34d399", chip: "bg-success/10 text-success", label: "Low" },
 } as const;
 
-// "On your radar" — strategic risks (aging AR, quiet VIPs, stale revisions) that
-// the tactical task list doesn't surface. Shown near the top of the dashboard.
+// "On your radar" — strategic risks the tactical task list doesn't surface: a
+// delivery nobody can confirm, aging AR, quiet VIPs, stale revisions. Shown near
+// the top of the dashboard. The delivery exceptions come first in getProactiveFlags
+// because they are the only ones about a client possibly waiting on something
+// they paid for and never received.
 export function ProactiveFlags({ flags }: { flags: ProactiveFlag[] }) {
   const highCount = flags.filter((f) => f.severity === "high").length;
   return (
@@ -26,12 +32,12 @@ export function ProactiveFlags({ flags }: { flags: ProactiveFlag[] }) {
             </span>
           )}
         </div>
-        <span className="text-xs text-muted">Aging AR · quiet VIPs · revisions</span>
+        <span className="text-xs text-muted">Deliveries · aging AR · quiet VIPs · revisions</span>
       </div>
 
       {flags.length === 0 ? (
         <div className="px-5 py-8 text-center text-sm text-muted">
-          Nothing on the radar — receivables, VIPs, and revisions all look healthy.
+          Nothing on the radar — deliveries, receivables, VIPs and revisions all look healthy.
         </div>
       ) : (
         <div className="grid gap-px bg-border sm:grid-cols-2">
