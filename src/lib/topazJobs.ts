@@ -309,6 +309,9 @@ async function loadJob(jobId: string) {
           assetPath: true, // part of cutKeyOf — the only thing that identifies a legacy cut
           finalPath: true,
           completedAt: true,
+          // markEditorFileFinal will not rename a file somebody has already
+          // delivered from — links people saved must keep working.
+          sentToClientAt: true,
           deliverable: { select: { label: true, type: true, quantity: true, videoStyle: true, productTitle: true } },
         },
       },
@@ -444,11 +447,48 @@ async function finishAs(job: NonNullable<JobRow>, state: "failed" | "skipped", p
   return r.count === 1;
 }
 
+/**
+ * THE PASS IS NOT COMING, SO THE EDITOR'S FILE IS THE DELIVERABLE — say so on
+ * the file itself (Jordan, Sep 18 2026).
+ *
+ * On a skip or a failure the folder is left holding the editor's export under
+ * its plain name, which is indistinguishable from a job still waiting for its
+ * render. Stephen Kennedy's and Sarina Spinelli's folders both look like that
+ * right now. Renaming it to FINAL (editor export) means the one rule — send the
+ * file whose name ends in FINAL — holds on every job, however it ended.
+ *
+ * BEST-EFFORT, AND DELIBERATELY SO. A rename that fails must never turn a
+ * skipped pass into a failed one: the video is fine and deliverable either way,
+ * and the worst case is a file with its old name, which is exactly where we are
+ * today. The database is updated only once Dropbox confirms the move, so
+ * finalPath can never point at a name that does not exist.
+ *
+ * It does nothing once the cut has been sent: renaming a file somebody already
+ * delivered from breaks links people saved.
+ */
+async function markEditorFileFinal(job: NonNullable<JobRow>): Promise<void> {
+  const sub = job.submission;
+  if (!sub?.finalPath || !sub.completedAt) return;
+  if (sub.finalPath.includes("/superseded/")) return;
+  if (sub.sentToClientAt) return;
+  const name = sub.finalPath.split("/").pop() ?? "";
+  const renamed = editorFinalNameFor(name);
+  if (!name || renamed === name) return;
+  const to = `${sub.finalPath.slice(0, sub.finalPath.lastIndexOf("/"))}/${renamed}`;
+  try {
+    await dbx("files/move_v2", { from_path: sub.finalPath, to_path: to, autorename: false });
+    await prisma.reviewSubmission.update({ where: { id: sub.id }, data: { finalPath: to } });
+  } catch {
+    /* the file keeps its old name; the video is still deliverable */
+  }
+}
+
 /** Stop for good, and TELL SOMEBODY. A silently failed render is worse than no
  *  render: Kyle waits for a file that is never coming. */
 async function fail(job: NonNullable<JobRow>, reason: string) {
   const won = await finishAs(job, "failed", { error: reason.slice(0, 400), errorAt: new Date() });
   if (!won) return; // another tick moved this row on; its outcome is the true one
+  await markEditorFileFinal(job);
   await tellSomebody(job, `The 1080p pass couldn't finish — ${streetOf(job.project.title)}`, reason, `topaz-failed-${job.id}`);
 }
 
@@ -457,6 +497,7 @@ async function fail(job: NonNullable<JobRow>, reason: string) {
 async function skip(job: NonNullable<JobRow>, reason: string) {
   const won = await finishAs(job, "skipped", { skipReason: reason.slice(0, 400) });
   if (!won) return;
+  await markEditorFileFinal(job);
   await tellSomebody(job, `Skipped the 1080p pass — ${streetOf(job.project.title)}`, reason, `topaz-skipped-${job.id}`);
 }
 
@@ -1185,19 +1226,65 @@ async function stepProcessing(job: NonNullable<JobRow>, s: TopazSettings): Promi
 
 // ---- saving → done ---------------------------------------------------------
 
-/** The enhanced file's name. It ends in " - 1080p" and it is the ONLY file left
- *  with the cut's name in 05-Final-Video once the original has been set aside —
- *  see stepSaving for why that is the shape we chose. */
+// WHAT STAGE IS THIS FILE IN? (Jordan, Sep 18 2026.)
+//
+// The pass used to mark its output " - 1080p", which answers a question nobody
+// was asking: the editor's own export is ALSO 1080p — the Style Guide demands
+// it — so both files in 05-Final-Video carried the same claim and neither said
+// which one to send or which one had been enhanced. Jordan: "just having 1080p
+// is confusing and not being able to know which one was ran through topaz is
+// also confusing. I need to know which one(s) is/are before topaz and which one
+// is final."
+//
+// So the names say the STAGE, and there is one rule for Kyle: send the file
+// whose name ends in FINAL. Exactly one file in 05-Final-Video ever carries it.
+//   · "<product> - v1 - FINAL (Topaz).mp4"          — the pass ran
+//   · "<product> - v1 - FINAL (editor export).mp4"  — the pass was skipped or
+//     failed, so the editor's own file IS the deliverable and says so rather
+//     than sitting there unlabelled, as Stephen Kennedy's and Sarina
+//     Spinelli's do today
+//   · "superseded/<product> - v1 (before Topaz).mov" — what the pass replaced
+const FINAL_TOPAZ = "FINAL (Topaz)";
+const FINAL_EDITOR = "FINAL (editor export)";
+const BEFORE_TOPAZ = "(before Topaz)";
+// Every marker this code has ever written, so a name can be stripped back to
+// its stem no matter which generation produced it. " - 1080p" is the old one
+// and it is in production on real jobs.
+const STAGE_MARKERS = /\s*(?:-\s*(?:FINAL \(Topaz\)|FINAL \(editor export\)|1080p)|\((?:before Topaz|before 1080p pass)\))\s*$/i;
+
+/** A file name with any stage marker removed, applied repeatedly so a name that
+ *  collected two of them over a re-run comes back clean. */
+export function stageStem(name: string): string {
+  const dot = name.lastIndexOf(".");
+  let stem = dot > 0 ? name.slice(0, dot) : name;
+  for (let i = 0; i < 4; i++) {
+    const next = stem.replace(STAGE_MARKERS, "").trimEnd();
+    if (next === stem) break;
+    stem = next;
+  }
+  return stem;
+}
+
+/** The enhanced file's name: the cut's name with the FINAL marker. It is the
+ *  ONLY file left at the top of 05-Final-Video once the original has been set
+ *  aside — see stepSaving for why that is the shape we chose. */
 export function enhancedNameFor(originalName: string, container: string): string {
+  // A RE-RUN derives this name from sub.finalPath, which a previous successful
+  // run already rewrote to the superseded copy's marker — so the enhanced file
+  // came out called "… (before 1080p pass) - 1080p.mp4", which is in production
+  // on one job today (review, Sep 17). A marker names the stage a file is IN;
+  // it can never be inherited by the next stage's output, so every one of them
+  // is stripped before the new marker goes on.
+  const stem = stageStem(originalName);
+  return SAFE_NAME(`${stem || originalName} - ${FINAL_TOPAZ}.${container}`);
+}
+
+/** What the editor's own export is called when it IS the deliverable — the pass
+ *  was skipped or failed, and the file sitting in Final is the one to send. */
+export function editorFinalNameFor(originalName: string): string {
   const dot = originalName.lastIndexOf(".");
-  const stem = dot > 0 ? originalName.slice(0, dot) : originalName;
-  // A RE-RUN derives this name from sub.finalPath, which the first successful
-  // run already rewrote to the superseded copy's "(before 1080p pass)" name —
-  // so the enhanced file came out called "… (before 1080p pass) - 1080p.mp4",
-  // which is in production on one job today (review, Sep 17). The marker names
-  // the file the pass REPLACED; it can never belong to the pass's own output.
-  const clean = stem.replace(/\s*\(before 1080p pass\)\s*$/i, "").trimEnd();
-  return SAFE_NAME(`${clean || stem} - 1080p.${container}`);
+  const ext = dot > 0 ? originalName.slice(dot) : "";
+  return SAFE_NAME(`${stageStem(originalName)} - ${FINAL_EDITOR}${ext}`);
 }
 
 /**
@@ -1214,13 +1301,13 @@ export function enhancedNameFor(originalName: string, container: string): string
  *   1. the enhanced file is saved as "<cut name> - v<N> - 1080p.mp4";
  *   2. only once Dropbox confirms it, the original moves down into the
  *      superseded/ subfolder the repo already uses for exactly this (see
- *      reviewCuts.startDropboxCopy), renamed "(before 1080p pass)";
+ *      reviewCuts.startDropboxCopy), renamed "(before Topaz)";
  *   3. any PREVIOUS round's enhanced file goes down there too.
  * Die between 1 and 2 and the folder holds both files under clearly different
  * names, and the next tick finishes the move.
  *
  * So: the file Kyle delivers is the one in 05-Final-Video whose name ends in
- * "- 1080p". After the move it is the only video left at that level, which is
+ * FINAL. After the move it is the only video left at that level, which is
  * the same rule he already follows ("deliver what's in Final"), and the ping
  * names the file and the folder outright.
  *
@@ -1392,7 +1479,7 @@ async function finishSaving(job: NonNullable<JobRow>, s: TopazSettings, path: st
   if (sub.finalPath && sub.completedAt && !sub.finalPath.includes("/superseded/")) {
     const name = sub.finalPath.split("/").pop()!;
     const dot = name.lastIndexOf(".");
-    const asideName = SAFE_NAME(`${dot > 0 ? name.slice(0, dot) : name} (before 1080p pass)${dot > 0 ? name.slice(dot) : ""}`);
+    const asideName = SAFE_NAME(`${stageStem(name)} ${BEFORE_TOPAZ}${dot > 0 ? name.slice(dot) : ""}`);
     const to = `${folder}/superseded/${asideName}`;
     await dbx("files/create_folder_v2", { path: `${folder}/superseded`, autorename: false }).catch(() => {});
     const moved = await dbx<{ metadata?: { path_display?: string } }>("files/move_v2", { from_path: sub.finalPath, to_path: to, autorename: true })
