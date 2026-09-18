@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { Check, Loader2 } from "lucide-react";
-import { saveTurnarounds, saveInternalAlerts, saveTextTemplates, saveReviewRoomRules } from "@/app/settings/actions";
+import { saveTurnarounds, saveInternalAlerts, saveTextTemplates, saveReviewRoomRules, loadOnCallCandidates } from "@/app/settings/actions";
 import type { TurnaroundRules, InternalAlertRules, TextTemplates, ReviewRoomRules } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { BUILTIN_TEMPLATE_TEXT } from "@/lib/textTemplateDefaults";
@@ -110,14 +110,82 @@ export function TurnaroundSettings({ initial }: { initial: TurnaroundRules }) {
   );
 }
 
+type OnCallCandidate = Awaited<ReturnType<typeof loadOnCallCandidates>>[number];
+
+// Coverage in one sentence, live as the boxes change. The server says the same
+// thing back on save (describeCoverage, in lib/coverage.ts — server-only, so it
+// cannot be imported here); this is the version you read BEFORE committing to
+// it, which is the one that stops a mistake.
+function coverageSentence(c: InternalAlertRules["coverage"], onCall: OnCallCandidate | null): string {
+  const days = c.weekdaysOnly ? "Monday to Friday" : "every day";
+  const window = `${days}, ${hour12(c.fromHour)} to ${hour12(c.toHour)} Eastern`;
+  const rota = onCall
+    ? `Outside it, routine alerts wait for the next covered period and urgent ones go to ${onCall.name.split(/\s+/)[0]}.`
+    : "Outside it, routine alerts wait for the next covered period. Nobody is named for urgent ones, so they still page whoever holds the owner or admin role — the same people as today.";
+  return `Somebody is on ${window}. ${rota}`;
+}
+
 export function InternalAlertSettings({ initial }: { initial: InternalAlertRules }) {
   const [r, setR] = useState(initial);
   const [busy, start] = useTransition();
   const [msg, setMsg] = useState<string | null>(null);
   const set = (patch: Partial<InternalAlertRules>) => { setR((p) => ({ ...p, ...patch })); setMsg(null); };
+  const setCover = (patch: Partial<InternalAlertRules["coverage"]>) => set({ coverage: { ...r.coverage, ...patch } });
+  // The roster is fetched rather than passed in: this card is rendered from
+  // /settings/page.tsx and the picker should not make every visit to that page
+  // wait on a roster query it may not need.
+  const [roster, setRoster] = useState<OnCallCandidate[] | null>(null);
+  useEffect(() => { loadOnCallCandidates().then(setRoster).catch(() => setRoster([])); }, []);
+  const onCall = roster?.find((m) => m.id === r.coverage.onCallTeamMemberId) ?? null;
+
   return (
     <div className="space-y-3">
       <p className="text-[13px] text-muted">These go to the team, never to clients.</p>
+
+      {/* COVERAGE — first, because it governs every card below it. */}
+      <div className="rounded-lg border border-border p-3">
+        <p className="text-sm font-semibold">Coverage — when somebody is actually here</p>
+        <p className="text-[13px] text-muted">
+          Messages are captured around the clock and always show up on the boards. This only decides who gets
+          <i> interrupted</i>, and when.
+        </p>
+
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
+          <span className="text-[13px] text-muted">Covered</span>
+          <Num value={r.coverage.fromHour} onChange={(n) => setCover({ fromHour: n })} min={0} max={22} suffix={hour12(r.coverage.fromHour)} />
+          <span className="text-xs text-muted-2">to</span>
+          <Num value={r.coverage.toHour} onChange={(n) => setCover({ toHour: n })} min={1} max={23} suffix={`ET (${hour12(r.coverage.toHour)})`} />
+        </div>
+
+        <div className="mt-2 flex items-center justify-between gap-3 border-t border-border pt-2">
+          <span className="text-[13px]">Weekdays only<span className="text-muted"> — off means the weekend counts as a normal day</span></span>
+          <Toggle on={r.coverage.weekdaysOnly} onChange={(v) => setCover({ weekdaysOnly: v })} label="Weekdays only" />
+        </div>
+
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
+          <span className="text-[13px] text-muted">On call for urgent, out of hours</span>
+          <select
+            value={r.coverage.onCallTeamMemberId ?? ""}
+            onChange={(e) => setCover({ onCallTeamMemberId: e.target.value || null })}
+            disabled={roster === null}
+            className="rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm outline-none focus:border-brand disabled:opacity-50"
+          >
+            <option value="">Nobody</option>
+            {(roster ?? []).map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}{m.reachable === "none" ? " — no Slack or textable number" : ""}
+              </option>
+            ))}
+          </select>
+          {onCall?.reachable === "none" && (
+            <span className="text-[13px] text-warning">
+              {onCall.name.split(/\s+/)[0]} has no Slack ID and no textable number, so an urgent page would only reach the ops channel.
+            </span>
+          )}
+        </div>
+
+        <p className="mt-2 border-t border-border pt-2 text-[13px] text-muted">{coverageSentence(r.coverage, onCall)}</p>
+      </div>
 
       <div className="rounded-lg border border-border p-3">
         <div className="flex items-start justify-between gap-3">

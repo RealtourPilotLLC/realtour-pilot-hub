@@ -123,12 +123,46 @@ export async function loadTurnarounds(): Promise<TurnaroundRules> {
 }
 
 // ---- Internal alerts -------------------------------------------------------
+// COVERAGE IS PART OF THIS ROW (Sep 18, audit WF-06), which changes how the
+// save has to behave. Every other block on this card is a switch or an hour; a
+// missing one falls back to a sensible default and nothing is lost. The on-call
+// person does not work that way — internalAlertRules() reads a missing coverage
+// block as "nobody named", so a form that posts without it would quietly
+// un-assign whoever Jordan put on the rota. A stale browser tab is enough to do
+// that. So the stored row is the base and `input` is the OVERLAY, the same
+// carry-through lesson saveAutoTextRules learned the hard way.
 export async function saveInternalAlerts(input: InternalAlertRules): Promise<{ ok: boolean; message: string }> {
   try {
     const me = await requireSettingsActor();
-    await putSetting("internal_alerts", input, me?.email ?? null);
+    const current = await internalAlertRules();
+    const merged: InternalAlertRules = { ...current, ...input, coverage: { ...current.coverage, ...(input.coverage ?? {}) } };
+
+    // The window is clamped again on read; what only THIS layer can check is
+    // that the on-call id still points at somebody on the roster. A dangling id
+    // is worse than none — routeAlert would hand an urgent weekend page to a
+    // person who no longer exists, and nothing would ever say so.
+    const onCallId = merged.coverage.onCallTeamMemberId;
+    let onCallName: string | null = null;
+    if (onCallId) {
+      const { prisma } = await import("@/lib/prisma");
+      const member = await prisma.teamMember.findFirst({
+        where: { id: onCallId, active: true },
+        select: { name: true },
+      });
+      if (!member) return { ok: false, message: "That on-call person isn't on the roster any more — reload and pick again." };
+      onCallName = member.name;
+    }
+
+    await putSetting("internal_alerts", merged, me?.email ?? null);
     revalidatePath("/settings");
-    return { ok: true, message: "Saved — the next run follows these rules." };
+    // Say what it MEANS. The one thing somebody could set here and then wait
+    // forever on is an empty rota, so that case gets its own sentence.
+    const { describeCoverage } = await import("@/lib/coverage");
+    const window = describeCoverage(merged.coverage);
+    const rota = onCallName
+      ? `Outside that, routine alerts wait for the next covered period and urgent ones go to ${onCallName.split(/\s+/)[0]}.`
+      : "Outside that, routine alerts wait for the next covered period. Nobody is named for urgent ones, so they page whoever holds the owner/admin role, exactly as before.";
+    return { ok: true, message: `Saved — the next run follows these rules. Covered ${window}. ${rota}` };
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : "Failed." };
   }
@@ -136,6 +170,33 @@ export async function saveInternalAlerts(input: InternalAlertRules): Promise<{ o
 export async function loadInternalAlerts(): Promise<InternalAlertRules> {
   await requireSettingsActor();
   return internalAlertRules();
+}
+
+/** Who can be put on call. TeamMember.opsAlerts and creativeManager have sat in
+ *  the schema with no edit surface anywhere since they were added; the on-call
+ *  picker is not going to repeat that, so the roster it offers comes from the
+ *  same place the alerts do. `reachable` is why the card can warn that a pick
+ *  has no way to be reached out of hours — an on-call nobody can ping is the
+ *  failure this whole rota is supposed to remove. */
+export async function loadOnCallCandidates(): Promise<
+  { id: string; name: string; role: string; reachable: "slack" | "text" | "none" }[]
+> {
+  await requireSettingsActor();
+  const { prisma } = await import("@/lib/prisma");
+  const rows = await prisma.teamMember.findMany({
+    where: { active: true },
+    select: { id: true, name: true, role: true, slackId: true, phone: true },
+    orderBy: { name: "asc" },
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    role: r.role,
+    // Slack first, because that is the order notifyStaffSms actually tries —
+    // and Kyle's roster phone is the office OpenPhone line, which the sender
+    // refuses, so "has a phone" is not the same question as "can be reached".
+    reachable: r.slackId ? "slack" : staffTextNumber(r.phone) ? "text" : "none",
+  }));
 }
 
 // ---- Team notifications (Jordan, Sep 15: "I should be able to manage team

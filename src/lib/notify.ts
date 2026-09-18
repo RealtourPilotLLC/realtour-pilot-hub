@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@prisma/client";
 import { scrubMoney } from "@/lib/text";
 import { slackNotify, slackChannels } from "@/lib/integrations/slack";
 import { appBase } from "@/lib/appUrl";
@@ -323,6 +324,15 @@ function withinTextingHours(tz = "America/New_York"): boolean {
 // next morning's digest instead of silently vanishing.
 const SMS_BATCH_WINDOW_MS = 30 * 60_000;
 
+/** A queued line is DUE when nothing is holding it back (deferUntil null — every
+ *  row written before Sep 18 2026, and every line queued while somebody is on
+ *  shift) or the hold has passed. ONE definition, shared by the grouping, the
+ *  flush select and the acceptance drill: two copies of this predicate is
+ *  exactly how a held line gets swept into somebody else's batch. */
+export function dueSmsWhere(now: Date = new Date()): Prisma.PendingSmsWhereInput {
+  return { sentAt: null, skippedAt: null, OR: [{ deferUntil: null }, { deferUntil: { lte: now } }] };
+}
+
 // One digest line into a team member's queue — the ONLY way onto the text
 // bridge. The line is the emitter's sentence in plain-text form (or "title →
 // link" for a row that brought none). Everything downstream is shared: the
@@ -336,11 +346,17 @@ const SMS_BATCH_WINDOW_MS = 30 * 60_000;
 // Returns whether the line was queued. `meta` (Sep 16) names the bell row and
 // kind the line came from, for the delivery log: queued with the PendingSms
 // id, or skipped with the reason when there is nowhere to send.
+// `deferUntil` (Sep 18, audit WF-06): a ROUTINE alert raised when nobody is on
+// shift is queued with the next covered moment on it instead of buzzing a phone
+// at the weekend. The line is captured exactly as any other — it simply becomes
+// invisible to the flusher until that instant. Null (every existing caller) is
+// unchanged behaviour: send at the next permitted flush.
 async function queueStaffSms(
   teamMemberId: string,
   line: string,
   tz?: string,
   meta: { kind: string; notificationId?: string | null } = { kind: "staff_sms" },
+  deferUntil?: Date | null,
 ): Promise<boolean> {
   const skip = (detail: string) => logDelivery({ ...meta, teamMemberId, channel: "sms", status: "skipped", detail });
   try {
@@ -356,7 +372,11 @@ async function queueStaffSms(
       await skip("roster phone is our own OpenPhone line");
       return false;
     }
-    const queued = await prisma.pendingSms.create({ data: { teamMemberId, line }, select: { id: true } });
+    const queued = await prisma.pendingSms.create({ data: { teamMemberId, line, deferUntil: deferUntil ?? null }, select: { id: true } });
+    // `detail` stays the bare PendingSms id and nothing else — queuedMeta()
+    // joins the "sent"/"failed" rows back to this one on exactly that string,
+    // so a held-until suffix here would cost every deferred line its kind in
+    // the delivery log. The deferral's record is the row's own deferUntil.
     await logDelivery({ ...meta, teamMemberId, channel: "sms", status: "queued", detail: queued.id });
     const recentSend = await prisma.pendingSms.findFirst({
       where: { teamMemberId, sentAt: { gte: new Date(Date.now() - SMS_BATCH_WINDOW_MS) } },
@@ -364,8 +384,9 @@ async function queueStaffSms(
     });
     // First ping in the window and daytime → deliver immediately (flushing
     // everything queued for them along the way). Otherwise the flusher cron
-    // combines it into one message shortly.
-    if (!recentSend && withinTextingHours(tz)) {
+    // combines it into one message shortly. A DEFERRED line never takes this
+    // branch — an immediate flush is exactly what it was queued to avoid.
+    if (!deferUntil && !recentSend && withinTextingHours(tz)) {
       // A refused send un-claims the rows for the 5-minute cron — the line is
       // still queued, so this is still "delivered to the queue".
       await flushMemberSms(teamMemberId).catch((e) => console.warn("queueStaffSms immediate flush failed (queued for the cron)", e));
@@ -427,8 +448,13 @@ async function flushMemberSms(teamMemberId: string): Promise<"sent" | "none" | "
     if (n > 0) console.warn(`flushMemberSms: ${member?.name ?? teamMemberId} — ${reason}; parked ${n} queued line${n === 1 ? "" : "s"}`);
     return n > 0 ? "parked" : "none";
   }
+  // DUE, not merely unsent (Sep 18): a routine alert raised out of cover
+  // carries the next covered moment, and a flush triggered by somebody else's
+  // line must not sweep it up early — the body is built from exactly the rows
+  // this claim wins, so a held line joining the batch IS the weekend text we
+  // are removing.
   const rows = await prisma.pendingSms.findMany({
-    where: { teamMemberId, sentAt: null, skippedAt: null },
+    where: { teamMemberId, ...dueSmsWhere() },
     orderBy: { createdAt: "asc" },
   });
   if (rows.length === 0) return "none";
@@ -641,9 +667,13 @@ export async function recordDrainedStaffSms(
 // because those lines are claimed and so never appear in the pending groups.
 export async function flushPendingSms(): Promise<{ flushed: number; failed: string[]; skipped: number; held: number; recovered: number }> {
   const recovered = await recoverUnclaimedStaffSms().catch(() => 0);
+  // DUE lines only. Held lines are excluded from the grouping itself, not just
+  // from the send: `_min.createdAt` drives the 30-minute batch window below, so
+  // a Saturday line held until Monday would otherwise make every one of that
+  // person's later lines look "old enough to go now".
   const pending = await prisma.pendingSms.groupBy({
     by: ["teamMemberId"],
-    where: { sentAt: null, skippedAt: null },
+    where: dueSmsWhere(),
     _min: { createdAt: true },
   });
   if (pending.length === 0) return { flushed: 0, failed: [], skipped: 0, held: 0, recovered };
@@ -708,18 +738,74 @@ export async function flushPendingSms(): Promise<{ flushed: number; failed: stri
 // relayed to Slack instead of being silently dropped, because a missed alert is
 // the failure this whole feature exists to prevent.
 // ---------------------------------------------------------------------------
-export type StaffSmsResult = { teamMemberId: string; name: string; outcome: "sent" | "slack" | "no-phone" | "own-line" | "quiet-hours" | "failed" };
+export type StaffSmsResult = { teamMemberId: string; name: string; outcome: "sent" | "slack" | "no-phone" | "own-line" | "quiet-hours" | "deferred" | "failed" };
 
-// `kind` (Sep 16) names the alert in the delivery log. No caller names one
-// yet — deliveryWatch's "photos still not delivered" (deliveryWatch.ts) is
-// the only one, and it logs under the "staff_sms" default, which is how the
-// Settings card labels it ("staff alert"). Pass a kind when an alert wants
-// its own name on that line.
-export async function notifyStaffSms(teamMemberIds: string[], text: string, kind = "staff_sms"): Promise<StaffSmsResult[]> {
-  const ids = [...new Set(teamMemberIds.filter(Boolean))];
+/** Anyone we could not reach still gets the alert — via Slack ops. Lifted out
+ *  of notifyStaffSms (Sep 18) so the deferred path shares it: a routine alert
+ *  the text queue could not hold must still land somewhere. "deferred" is a
+ *  success — the line is queued and dated, not missed. */
+async function relayUnreached(out: StaffSmsResult[], text: string): Promise<void> {
+  const unreached = out.filter(
+    (r) => r.outcome !== "sent" && r.outcome !== "slack" && r.outcome !== "quiet-hours" && r.outcome !== "deferred",
+  );
+  if (unreached.length) {
+    await opsAlert(`⚠️ Couldn't text ${unreached.map((r) => `${r.name} (${r.outcome})`).join(", ")} — relaying: ${text}`);
+  }
+}
+
+// `kind` (Sep 16) names the alert in the delivery log. deliveryWatch's "photos
+// still not delivered" passes "photos_undelivered" (Sep 18) — the label map
+// already had a name for it, so the log reads "photos not delivered" instead of
+// the "staff alert" default. Pass a kind when an alert wants its own name on
+// that line.
+//
+// WHO IS ON, AND WHETHER THIS CAN WAIT (Sep 18, audit WF-06).
+//
+// `urgency` is OPT-IN and that is deliberate: leaving it off is byte-for-byte
+// today's behaviour, so no existing caller changes because this landed. Pass
+// it and the alert is routed:
+//   · routine, out of cover → every recipient's line is QUEUED with the next
+//     covered moment on it (PendingSms.deferUntil). Captured, logged, on the
+//     boards — just not buzzing a phone on a Saturday;
+//   · urgent, out of cover  → the named on-call takes it INSTEAD of the roster
+//     the caller passed, because "urgent" out of hours should mean a person who
+//     agreed to be reachable, not five people who happen to hold a role;
+//   · urgent, NOBODY named  → the caller's own list, exactly as today. An unset
+//     rota must degrade to the old behaviour, never to silence.
+export async function notifyStaffSms(
+  teamMemberIds: string[],
+  text: string,
+  kind = "staff_sms",
+  opts: { urgency?: "routine" | "urgent" } = {},
+): Promise<StaffSmsResult[]> {
+  let ids = [...new Set(teamMemberIds.filter(Boolean))];
   if (ids.length === 0) return [];
   const out: StaffSmsResult[] = [];
   try {
+    if (opts.urgency) {
+      const { routeAlert } = await import("@/lib/coverage");
+      const route = await routeAlert(opts.urgency);
+      if (route.send === "defer") {
+        const members = await prisma.teamMember.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } });
+        for (const m of members) {
+          // Slack is deliberately NOT tried here. A DM buzzes a phone like a
+          // text does, so holding the text and DMing anyway would deliver the
+          // weekend page this exists to remove.
+          const queued = await queueStaffSms(m.id, text, undefined, { kind }, route.until);
+          // Refused (no US number, or our own OpenPhone line — Kyle's roster
+          // phone IS the office line) means the queue has nowhere to hold it.
+          // That falls through to the ops-channel relay below rather than
+          // vanishing: a deferred alert is quieter than today, never gone.
+          out.push({ teamMemberId: m.id, name: m.name, outcome: queued ? "deferred" : "no-phone" });
+        }
+        await relayUnreached(out, text);
+        return out;
+      }
+      // The rota answers for everyone on an urgent out-of-hours page — and
+      // only when somebody is actually named (routeAlert returns null when
+      // nobody is, which leaves `ids` as the caller sent them).
+      if (route.toOnCall) ids = [route.toOnCall];
+    }
     const members = await prisma.teamMember.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, phone: true, slackId: true } });
     const quiet = !withinTextingHours();
     const { OpenPhone, defaultOpenPhoneNumber, ourOpenPhoneNumberKeys } = await import("@/lib/integrations/openphone");
@@ -775,11 +861,7 @@ export async function notifyStaffSms(teamMemberIds: string[], text: string, kind
         out.push({ teamMemberId: m.id, name: m.name, outcome: "failed" });
       }
     }
-    // Anyone we could not reach by text still gets the alert — via Slack ops.
-    const unreached = out.filter((r) => r.outcome !== "sent" && r.outcome !== "slack" && r.outcome !== "quiet-hours");
-    if (unreached.length) {
-      await opsAlert(`⚠️ Couldn't text ${unreached.map((r) => `${r.name} (${r.outcome})`).join(", ")} — relaying: ${text}`);
-    }
+    await relayUnreached(out, text);
   } catch (e) {
     console.warn("notifyStaffSms failed", e);
   }

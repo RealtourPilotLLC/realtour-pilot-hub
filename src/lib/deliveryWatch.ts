@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { parseEvidence } from "@/lib/statusEvidence";
-import { etDayKey } from "@/lib/datetime";
+import { etDayKey, isWeekdayET } from "@/lib/datetime";
 
 // ---------------------------------------------------------------------------
 // "PHOTOS STILL NOT OUT" WATCHDOG.
@@ -67,7 +67,25 @@ export async function sweepUndeliveredPhotos(opts?: { dryRun?: boolean }): Promi
   const hour = etHour();
   // Outside the window we do nothing at all — not even a bell — so the alert
   // lands at a predictable time rather than whenever a cron happened to run.
-  if (!dryRun && (hour < ALERT_HOUR_FROM || hour >= ALERT_HOUR_TO)) {
+  //
+  // ON A DAY NOBODY IS WORKING, LIKEWISE (audit WF-06, Sep 18). This check read
+  // the ET hour and nothing else, so 8 of the last 20 photos-undelivered alerts
+  // went out on a Saturday or Sunday — and this one TEXTS Kyle and Jordan.
+  // Nothing is lost by waiting: the bell's dedupe key is per JOB and the sweep
+  // looks back six days, so a Saturday miss is alerted on Monday afternoon by
+  // the same pass, still with a business day left to fix it.
+  //
+  // COVERAGE DECIDES THE DAY HERE, NOT THE HOUR. This alert already carries its
+  // own window, set by hand in Settings (16:00–19:00: "enough of the day gone
+  // to call it a miss, early enough that someone can still act on it").
+  // Intersecting the two would silently shrink it — 16–19 against 9–18 cover
+  // leaves one hour — so the hour stays Jordan's and the day is coverage's. The
+  // last hour of that window sits outside cover on purpose: notifyStaffSms is
+  // told this alert is ROUTINE, so a 18:30 raise is held for the morning rather
+  // than texted at 18:30.
+  const cover = await (await import("@/lib/coverage")).coverageRules();
+  const coveredToday = !cover.weekdaysOnly || isWeekdayET(new Date());
+  if (!dryRun && (!coveredToday || hour < ALERT_HOUR_FROM || hour >= ALERT_HOUR_TO)) {
     return { checked: 0, late: 0, alerted: 0, skippedOutsideWindow: true, texted: [] };
   }
 
@@ -156,9 +174,14 @@ export async function sweepUndeliveredPhotos(opts?: { dryRun?: boolean }): Promi
   });
   const lines = fresh.slice(0, 4).map((l) => `${l.street} (${l.who}) — shot ${Math.round(l.hoursLate / 24)}d ago`);
   const more = fresh.length > 4 ? ` +${fresh.length - 4} more` : "";
+  // ROUTINE (Sep 18): late photos are a next-working-hour problem, not a 2am
+  // one. Inside cover this sends exactly as it always has; raised in the last
+  // hour of the alert window, after cover closes, it is held for the morning.
   const results = await notifyStaffSms(
     staff.map((s) => s.id),
     `${fresh.length} job${fresh.length === 1 ? "" : "s"} shot and photos still not delivered on Aryeo:\n${lines.join("\n")}${more}`,
+    "photos_undelivered",
+    { urgency: "routine" },
   );
 
   return {
