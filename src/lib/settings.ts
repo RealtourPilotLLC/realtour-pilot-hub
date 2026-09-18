@@ -404,6 +404,33 @@ export type InternalAlertRules = {
   };
   rawVideoMissing: { enabled: boolean };
   kyleDigests: { enabled: boolean };
+  /**
+   * WHEN SOMEBODY IS ACTUALLY THERE (audit WF-06, Sep 18 2026).
+   *
+   * Jordan: "Normal coverage is Monday-Friday, 9 AM-6 PM Eastern. Continue
+   * capturing messages outside those hours, but queue routine alerts for the
+   * next covered period. Urgent coverage should use an explicitly assigned
+   * person, not assumed weekend availability."
+   *
+   * Measured before this shipped: 47 of the 196 reply-SLA pages in the last 90
+   * days landed on a Saturday or Sunday, and 8 of 20 photos-undelivered alerts
+   * did too — those text Jordan and Kyle. Nothing decided WHO was on; the code
+   * paged whoever held the ADMIN or OWNER role and assumed they were available.
+   *
+   * onCallTeamMemberId is deliberately NULLABLE and deliberately fail-SAFE:
+   * with nobody named, an urgent alert behaves exactly as it does today rather
+   * than being held. Silence is the one outcome an urgent alert must never
+   * have, so an unset rota degrades to the old behaviour and the settings page
+   * says so.
+   */
+  coverage: {
+    /** Mon-Fri only. Turning this off returns to the old every-day behaviour. */
+    weekdaysOnly: boolean;
+    fromHour: number; // 9  — inclusive
+    toHour: number;   // 18 — exclusive
+    /** Who answers an URGENT alert outside covered hours. Null = nobody named. */
+    onCallTeamMemberId: string | null;
+  };
 };
 
 export const DEFAULT_INTERNAL_ALERTS: InternalAlertRules = {
@@ -412,6 +439,7 @@ export const DEFAULT_INTERNAL_ALERTS: InternalAlertRules = {
   photosUndelivered: { enabled: true, fromHour: 16, toHour: 19, lateAfterHours: 26 },
   rawVideoMissing: { enabled: true },
   kyleDigests: { enabled: true },
+  coverage: { weekdaysOnly: true, fromHour: 9, toHour: 18, onCallTeamMemberId: null },
 };
 
 export async function internalAlertRules(): Promise<InternalAlertRules> {
@@ -422,6 +450,17 @@ export async function internalAlertRules(): Promise<InternalAlertRules> {
   const from = hr(r.photosUndelivered?.fromHour, d.photosUndelivered.fromHour);
   const to = hr(r.photosUndelivered?.toHour, d.photosUndelivered.toHour);
   const windowOk = to > from;
+  // The stored row predates `coverage`, so getSetting's spread leaves it as the
+  // default object; these guards stop a hand-edited row producing an empty or
+  // inverted window, which would page nobody at all.
+  const covFrom = hr(r.coverage?.fromHour, d.coverage.fromHour);
+  const covTo = hr(r.coverage?.toHour, d.coverage.toHour);
+  const coverage = {
+    weekdaysOnly: typeof r.coverage?.weekdaysOnly === "boolean" ? r.coverage.weekdaysOnly : d.coverage.weekdaysOnly,
+    fromHour: covTo > covFrom ? covFrom : d.coverage.fromHour,
+    toHour: covTo > covFrom ? covTo : d.coverage.toHour,
+    onCallTeamMemberId: typeof r.coverage?.onCallTeamMemberId === "string" && r.coverage.onCallTeamMemberId ? r.coverage.onCallTeamMemberId : null,
+  };
   return {
     uploadReminder: { enabled: r.uploadReminder?.enabled !== false, hour: hr(r.uploadReminder?.hour, d.uploadReminder.hour) },
     uploadChaser: { enabled: r.uploadChaser?.enabled !== false, hour: hr(r.uploadChaser?.hour, d.uploadChaser.hour) },
@@ -436,6 +475,7 @@ export async function internalAlertRules(): Promise<InternalAlertRules> {
     },
     rawVideoMissing: { enabled: r.rawVideoMissing?.enabled !== false },
     kyleDigests: { enabled: r.kyleDigests?.enabled !== false },
+    coverage,
   };
 }
 

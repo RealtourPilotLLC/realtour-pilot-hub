@@ -125,3 +125,81 @@ export const etEndOfDay = (dayKey: string) => etAt(dayKey, 17);
  *  "2026-01-01" and would have silently frozen at New Year (audit Aug 25). */
 export const etYear = () => Number(etDayKey(new Date()).slice(0, 4));
 export const etYearStartKey = () => `${etYear()}-01-01`;
+
+// ---------------------------------------------------------------------------
+// BUSINESS DAYS — ONE IMPLEMENTATION (audit S0, Sep 18 2026).
+//
+// There were four. programMonths.addBusinessDaysET walked ET DAY KEYS and was
+// right; turnaround.ts, tasks.ts and portal.ts each added 86_400_000 ms in a
+// loop, which is a day only when the clocks do not change — so across the March
+// and November transitions they drifted an hour and could land a "4 business
+// day" deadline on the wrong side of midnight. These are the canonical ones;
+// the old copies re-export from here rather than keeping their own arithmetic.
+//
+// Weekends are not business days. Holidays are deliberately NOT modelled: the
+// business does not keep a holiday calendar yet, and inventing one here would
+// quietly move real client deadlines. That is a settings question, not a
+// datetime one.
+// ---------------------------------------------------------------------------
+
+/** Is this instant a Monday-to-Friday in Eastern Time? */
+export function isWeekdayET(d: Date = new Date()): boolean {
+  const dow = new Date(`${etDayKey(d)}T12:00:00Z`).getUTCDay();
+  return dow !== 0 && dow !== 6;
+}
+
+/** The ET day key `days` business days after `from`. Day-key arithmetic, so a
+ *  clock change cannot shift the answer. `days` of 0 returns the same day. */
+export function addBusinessDayKeysET(from: Date, days: number): string {
+  let key = etDayKey(from);
+  let left = Math.max(0, Math.floor(days));
+  while (left > 0) {
+    const [y, m, d] = key.split("-").map(Number);
+    key = new Date(Date.UTC(y, m - 1, d + 1, 12)).toISOString().slice(0, 10);
+    const dow = new Date(`${key}T12:00:00Z`).getUTCDay();
+    if (dow !== 0 && dow !== 6) left--;
+  }
+  return key;
+}
+
+/** `days` business days after `from`, at midnight ET. */
+export function addBusinessDaysET(from: Date, days: number): Date {
+  return etAt(addBusinessDayKeysET(from, days), 0);
+}
+
+/**
+ * `days` business days after `from`, landing at the END of that business day.
+ *
+ * This is what a promise quoted in DAYS means. "Four business days" is a day,
+ * not an hour count: a Friday 9am premium shoot is due end of the following
+ * Thursday, and no arithmetic in elapsed hours produces that — 96 hours from
+ * Friday 9am is Tuesday 9am, three business days early and at the wrong time of
+ * day (Jordan, Sep 18: "Four business days is not simply 96 elapsed hours").
+ */
+export function endOfBusinessDaysET(from: Date, days: number, hour = 17): Date {
+  return etAt(addBusinessDayKeysET(from, days), hour);
+}
+
+/** Whole business days between two instants, counting forward from `from`. */
+export function businessDaysBetweenET(from: Date, to: Date): number {
+  if (to <= from) return 0;
+  let n = 0;
+  let key = etDayKey(from);
+  const end = etDayKey(to);
+  while (key < end) {
+    const [y, m, d] = key.split("-").map(Number);
+    key = new Date(Date.UTC(y, m - 1, d + 1, 12)).toISOString().slice(0, 10);
+    const dow = new Date(`${key}T12:00:00Z`).getUTCDay();
+    if (dow !== 0 && dow !== 6) n++;
+  }
+  return n;
+}
+
+/** Minutes past midnight ET. */
+export function etMinutesOfDay(d: Date = new Date()): number {
+  const [h, m] = new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false })
+    .format(d)
+    .split(":")
+    .map(Number);
+  return h * 60 + m;
+}

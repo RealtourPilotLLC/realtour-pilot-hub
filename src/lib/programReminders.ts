@@ -232,19 +232,10 @@ export function nextPolicyWindowOpen(at: Date, p: ReminderPolicy): Date {
 }
 
 /** Business days between two instants on the ET calendar (weekends only; no holiday calendar in the program). */
-export function businessDaysBetween(from: Date, to: Date): number {
-  if (to <= from) return 0;
-  let n = 0;
-  let key = etDayKey(from);
-  const end = etDayKey(to);
-  while (key < end) {
-    const [y, m, d] = key.split("-").map(Number);
-    key = new Date(Date.UTC(y, m - 1, d + 1, 12)).toISOString().slice(0, 10);
-    const dow = new Date(`${key}T12:00:00Z`).getUTCDay();
-    if (dow !== 0 && dow !== 6) n++;
-  }
-  return n;
-}
+// Kept as a named export for its callers; the arithmetic lives in datetime.ts
+// with the rest of the business-day walk (audit S0, Sep 18).
+import { businessDaysBetweenET as businessDaysBetween } from "@/lib/datetime";
+export { businessDaysBetween };
 
 const monthStart = (monthKey: string) => etAt(`${monthKey}-01`, 0);
 const prevMonthKey = (monthKey: string) => { const [y, m] = monthKey.split("-").map(Number); const d = new Date(Date.UTC(y, m - 2, 15)); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`; };

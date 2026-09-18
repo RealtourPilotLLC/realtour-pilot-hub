@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { etAt, etDayKey } from "@/lib/datetime";
+
 import { etMonthKey } from "@/lib/contentProgram";
 
 // ---------------------------------------------------------------------------
@@ -51,20 +51,11 @@ export function callModeOf(e: { callMode: string | null; strategyCallRequired: b
  * because the server's UTC clock already said Saturday). Weekends only — the
  * program keeps no holiday calendar.
  */
-export function addBusinessDaysET(from: Date, days: number): Date {
-  let key = etDayKey(from);
-  let left = Math.max(0, days);
-  const step = (k: string): string => {
-    const [y, m, d] = k.split("-").map(Number);
-    return new Date(Date.UTC(y, m - 1, d + 1, 12)).toISOString().slice(0, 10);
-  };
-  while (left > 0) {
-    key = step(key);
-    const dow = new Date(`${key}T12:00:00Z`).getUTCDay();
-    if (dow !== 0 && dow !== 6) left--;
-  }
-  return etAt(key, 0);
-}
+// This WAS the only DST-correct business-day walk in the codebase, so it is now
+// the one in datetime.ts and this is a re-export — every caller keeps working
+// and there is one implementation to be right (audit S0, Sep 18).
+import { addBusinessDaysET as addBusinessDaysET } from "@/lib/datetime";
+export { addBusinessDaysET };
 
 export type MonthCallRecordInput = {
   callType: string;
