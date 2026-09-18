@@ -325,7 +325,27 @@ export async function getEditorFeedback(projectId: string, editorKey: string | n
 
 // `cutId` opens a SPECIFIC submission (the queue's per-video rows link with
 // ?cut=<id>); omitted → the newest pending cut, else the newest round.
-export async function getCutWorkspace(projectId: string, cutId?: string | null): Promise<CutWorkspace | null> {
+/**
+ * WHOSE ROOM IS THIS? (audit finding 4, Sep 17.)
+ *
+ * The office lens is the whole workspace, as it always was. The photographer
+ * lens exists because Sep 17 gave a photographer a way into this page — "tag
+ * james on the video, he gets a text and a link to see the review room video
+ * and comment" — and the page then handed them the OFFICE's workspace: the
+ * editor brief, the reel script, and every note lane with raw bodies and
+ * replies, including Kyle's instructions to the editor and the client's own
+ * words. Shoot ownership is a reason to see the CUT, not a reason to read the
+ * office's discussion about it.
+ *
+ * So the lens is applied HERE, server-side, before anything reaches a client
+ * component — the same fail-closed spirit as getEditorFeedback and
+ * getPhotographerFeedback, which have always scoped a creative to their own
+ * lane. A photographer sees the video, the notes addressed to them, and their
+ * own replies. Nothing else on this page was ever theirs.
+ */
+export type WorkspaceLens = { kind: "office" } | { kind: "photographer"; memberId: string };
+
+export async function getCutWorkspace(projectId: string, cutId?: string | null, lens: WorkspaceLens = { kind: "office" }): Promise<CutWorkspace | null> {
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: {
@@ -379,13 +399,23 @@ export async function getCutWorkspace(projectId: string, cutId?: string | null):
   // Notes for the active cut. Cuts with no minted link store notes under the
   // synthetic cut:<submissionId> asset key so feedback still threads correctly.
   const activeAssetKey = active ? (active.assetUrl ?? `cut:${active.id}`) : null;
+  // A photographer reads ONE lane, and only the rows scoped to them: the note
+  // they were tagged in and their own capture feedback. The EDIT lane (Kyle to
+  // the editor) and the EDITOR lane (edit feedback) are not theirs.
+  const laneWhere =
+    lens.kind === "photographer"
+      ? { lane: "PHOTOGRAPHER" as const, photographerId: lens.memberId }
+      : {};
   const noteRows = activeAssetKey
     ? await prisma.mediaNote.findMany({
-        where: { projectId, parentId: null, assetUrl: activeAssetKey },
+        where: { projectId, parentId: null, assetUrl: activeAssetKey, ...laneWhere },
         orderBy: { createdAt: "asc" },
         include: { replies: { orderBy: { createdAt: "asc" } } },
       })
     : [];
+  // The brief and the recipe are the office's working notes on the job. They
+  // are withheld rather than blanked at the component, so they never travel.
+  const officeOnly = lens.kind === "office";
 
   return {
     projectId: project.id,
@@ -395,10 +425,10 @@ export async function getCutWorkspace(projectId: string, cutId?: string | null):
     clientName: project.client?.name ?? "",
     clientAvatarUrl: project.client?.avatarUrl ?? null,
     premium: videoTier(project.deliverables) === "premium",
-    editorBrief: project.editorBrief,
-    reelHook: project.reelHook,
-    reelScript: project.reelScript,
-    reelSong: project.reelSong,
+    editorBrief: officeOnly ? project.editorBrief : null,
+    reelHook: officeOnly ? project.reelHook : null,
+    reelScript: officeOnly ? project.reelScript : null,
+    reelSong: officeOnly ? project.reelSong : null,
     deliverables: project.deliverables
       .filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL")
       .map((d) => d.label || d.type),

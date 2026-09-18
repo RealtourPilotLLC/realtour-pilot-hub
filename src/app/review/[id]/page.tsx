@@ -50,16 +50,20 @@ export default async function CutReviewPage({
       : false;
   if (!ownerDesk && !shotThis) redirect(homeFor(me?.role));
 
-  const w = await getCutWorkspace(id, cut ?? null);
+  // The photographer's lens is applied in the query, not in the markup: the
+  // editor brief, the reel recipe and every lane that is not their own never
+  // leave the server (audit finding 4, Sep 17).
+  const w = await getCutWorkspace(id, cut ?? null, shotThis && me?.teamMemberId ? { kind: "photographer", memberId: me.teamMemberId } : { kind: "office" });
   // Portal notes across this job's cuts, newest last.
   // Newest 30, shown oldest-first (desc+take keeps the LATEST notes when a
   // chatty client passes thirty — asc+take silently dropped the new ones).
-  const clientNotes = (await prisma.portalComment.findMany({
+  const clientNotes = shotThis ? [] : (await prisma.portalComment.findMany({
     where: { projectId: id },
     orderBy: { createdAt: "desc" },
     take: 30,
     select: { id: true, timeSec: true, body: true, status: true },
   }).catch(() => [])).reverse();
+  // The client's own words to the office are not the photographer's to read.
   if (!w) notFound();
 
   // Sep 16: a withdrawn cut is history, not the thing to rule on — getCutWorkspace
@@ -120,7 +124,9 @@ export default async function CutReviewPage({
           menu on a phone — Kyle reviewed a cut and had no obvious control to
           get back to the list (audit, Sep 8 2026). Same placement as /edit. */}
       <div className="border-b border-border px-4 py-3 sm:px-6">
-        <BackLink href="/review" label="Review Room" />
+        {/* /review is the office's whole queue and a photographer is redirected
+            off it — sending them back there was a dead end (audit finding 5). */}
+        <BackLink href={shotThis ? "/shoot" : "/review"} label={shotThis ? "My Shoots" : "Review Room"} />
       </div>
       <PageHeader
         eyebrow="Review Room"
@@ -214,6 +220,7 @@ export default async function CutReviewPage({
                 editorLabel={editorLabel}
                 takeBack={takeBack}
                 cutLabel={slotLabel(active) ?? active.fileName ?? "this cut"}
+                canDecide={!shotThis}
               />
             </>
           ) : (

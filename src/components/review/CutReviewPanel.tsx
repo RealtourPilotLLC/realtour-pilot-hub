@@ -38,6 +38,14 @@ const CHOICES: LaneChoice[] = [
   { lane: "PHOTOGRAPHER", kind: "fix", label: "Photographer — capture", icon: "camera" },
 ];
 
+// WHAT THIS VIEWER MAY ACTUALLY DO (audit finding 5, Sep 17). The panel had no
+// role prop: it defaulted every composer to "Editor — fix" and rendered Approve
+// and Request changes for anyone looking at an undecided cut. The server has
+// always refused both from a photographer, so a photographer followed a tag,
+// pressed a green button, and learned the rules from an error message. The
+// server stays the authority — this only stops offering what it will refuse.
+const PHOTOGRAPHER_CHOICES: LaneChoice[] = CHOICES.filter((c) => c.lane === "PHOTOGRAPHER");
+
 const STATUS_DOT: Record<string, string> = {
   OPEN: "bg-brand",
   FIXED: "bg-success",
@@ -51,6 +59,7 @@ export function CutReviewPanel({
   editorLabel,
   takeBack,
   cutLabel,
+  canDecide = true,
 }: {
   projectId: string;
   submission: CutSubmission;
@@ -59,6 +68,12 @@ export function CutReviewPanel({
   /** remove / move state for THIS cut (null = the page couldn't read it) */
   takeBack?: CutTakeBackInfo | null;
   cutLabel?: string;
+  /**
+   * May this viewer rule on the cut — approve it, send it back, take it down?
+   * False for the photographer who shot the job: they are here to answer a tag,
+   * and the server refuses every one of these from them.
+   */
+  canDecide?: boolean;
 }) {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -66,6 +81,10 @@ export function CutReviewPanel({
   const [composing, setComposing] = useState(false);
   const [capturedAt, setCapturedAt] = useState<number | null>(null);
   const [body, setBody] = useState("");
+  // The lanes this viewer may write into. A photographer gets the capture lane
+  // only — the lane the tag put them in, and the one the server accepts from
+  // them — so `choice` cannot index a lane that would be refused.
+  const lanes = canDecide ? CHOICES : PHOTOGRAPHER_CHOICES;
   const [choice, setChoice] = useState(0);
   const [clock, setClock] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
@@ -156,7 +175,7 @@ export function CutReviewPanel({
       )}
       {/* Moved-here / leftover-file / (legacy) withdrawn flags — shown whatever
           the verdict state, because they change what the buttons below mean. */}
-      {takeBack && <CutTakeBackFlags info={takeBack} />}
+      {canDecide && takeBack && <CutTakeBackFlags info={takeBack} />}
       {/* Note + verdict bar */}
       <div className="flex flex-wrap items-center gap-2">
         <button
@@ -167,7 +186,7 @@ export function CutReviewPanel({
           <MessageSquarePlus className="size-4" /> {src ? `Add note at ${fmtClock(now)}` : "Add note"}
         </button>
         {/* The escape hatch, deliberately quiet beside the verdict buttons. */}
-        {takeBack && <CutTakeBack info={takeBack} cutLabel={cutLabel ?? "this cut"} />}
+        {canDecide && takeBack && <CutTakeBack info={takeBack} cutLabel={cutLabel ?? "this cut"} />}
         <span className="flex-1" />
         {withdrawn ? (
           <span className="inline-flex items-center gap-1.5 rounded-lg bg-surface-2 px-3 py-1.5 text-sm font-medium text-muted">
@@ -182,6 +201,10 @@ export function CutReviewPanel({
           >
             {submission.status === "APPROVED" ? <ThumbsUp className="size-4" /> : <Undo2 className="size-4" />}
             {submission.status === "APPROVED" ? "Approved" : `Changes requested — waiting on ${editorLabel}`}
+          </span>
+        ) : !canDecide ? (
+          <span className="text-xs text-muted">
+            {editorLabel} is cutting this. Leave a note on the video and it goes to whoever is working on it.
           </span>
         ) : (
           <>
@@ -222,7 +245,7 @@ export function CutReviewPanel({
             className="w-full resize-none rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
           />
           <div className="mt-2 flex flex-wrap gap-1.5">
-            {CHOICES.map((c, i) => {
+            {lanes.map((c, i) => {
               const Icon = c.icon === "camera" ? Camera : Pencil;
               return (
                 <button
@@ -258,8 +281,8 @@ export function CutReviewPanel({
                       projectId,
                       submissionId: submission.id,
                       body,
-                      lane: CHOICES[choice].lane,
-                      kind: CHOICES[choice].kind,
+                      lane: lanes[choice].lane,
+                      kind: lanes[choice].kind,
                       timeSec: capturedAt ?? parseClock(clock),
                     }),
                   () => {
