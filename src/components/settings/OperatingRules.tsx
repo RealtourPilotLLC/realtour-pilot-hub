@@ -116,7 +116,21 @@ type OnCallCandidate = Awaited<ReturnType<typeof loadOnCallCandidates>>[number];
 // thing back on save (describeCoverage, in lib/coverage.ts — server-only, so it
 // cannot be imported here); this is the version you read BEFORE committing to
 // it, which is the one that stops a mistake.
+// A window runs forwards inside one day or it is not a window: the pager reads
+// it as one `mins >= from && mins < to` comparison, so 6pm → 9am covers nothing
+// at all and the server refuses to store it (review, Sep 18 2026 — it used to
+// be saved, confirmed back in words, and then silently read as the 9am–6pm
+// default). Said here as well as there, because the message you read BEFORE
+// committing to a mistake is the one that stops it.
+const windowOk = (w: { fromHour: number; toHour: number }) => w.fromHour < w.toHour;
+
 function coverageSentence(c: InternalAlertRules["coverage"], onCall: OnCallCandidate | null): string {
+  if (c.fromHour === c.toHour) {
+    return `${hour12(c.fromHour)} to ${hour12(c.toHour)} is no time at all, so this can't be saved. Give the window an end hour later in the same day.`;
+  }
+  if (!windowOk(c)) {
+    return `${hour12(c.fromHour)} to ${hour12(c.toHour)} runs backwards, so this can't be saved. Put the earlier hour first — and for evening, weekend or overnight cover, name somebody on call below instead.`;
+  }
   const days = c.weekdaysOnly ? "Monday to Friday" : "every day";
   const window = `${days}, ${hour12(c.fromHour)} to ${hour12(c.toHour)} Eastern`;
   const rota = onCall
@@ -184,7 +198,7 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
           )}
         </div>
 
-        <p className="mt-2 border-t border-border pt-2 text-[13px] text-muted">{coverageSentence(r.coverage, onCall)}</p>
+        <p className={cn("mt-2 border-t border-border pt-2 text-[13px]", windowOk(r.coverage) ? "text-muted" : "text-warning")}>{coverageSentence(r.coverage, onCall)}</p>
       </div>
 
       <div className="rounded-lg border border-border p-3">
@@ -231,6 +245,11 @@ export function InternalAlertSettings({ initial }: { initial: InternalAlertRules
           <span className="text-xs text-muted-2">and</span>
           <Num value={r.photosUndelivered.toHour} onChange={(n) => set({ photosUndelivered: { ...r.photosUndelivered, toHour: n } })} min={1} max={23} suffix={hour12(r.photosUndelivered.toHour)} />
         </div>
+        {!windowOk(r.photosUndelivered) && (
+          <p className="mt-2 text-[13px] text-warning">
+            {hour12(r.photosUndelivered.fromHour)} to {hour12(r.photosUndelivered.toHour)} {r.photosUndelivered.fromHour === r.photosUndelivered.toHour ? "is no time at all" : "runs backwards"}, so this can&rsquo;t be saved — the alert would never fire. Give the window an end hour later in the same day.
+          </p>
+        )}
       </div>
 
       <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">

@@ -415,9 +415,15 @@ export async function reviseScriptAI(scriptId: string, instructions: string): Pr
  * row actually has. The wording itself lives in contentPolicy/scriptFormat.ts
  * beside the target it quotes.
  *
- * This is an ACTION, not an exemption. It produces another DRAFT that goes
- * through the same validator and the same approval gate; nothing here relaxes
- * the 20–30 s target, which has no override field anywhere in the policy layer.
+ * This is an ACTION, not an exemption. It produces another VERSION — status
+ * INTERNAL_REVIEW, which is what contentGeneration.reviseScript writes for
+ * every AI revision, not DRAFT as this comment and the success message used to
+ * say (review, Sep 18 2026) — and that version goes through the same validator
+ * and the same approval gate; nothing here relaxes the 20–30 s target, which
+ * has no override field anywhere in the policy layer. Both statuses sit in the
+ * Scripts tab's review queue, so where it lands is unchanged; what was wrong
+ * was the word, and a wrong word here is what somebody would go looking for in
+ * the version trail.
  */
 export async function tightenScriptAI(scriptId: string): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
@@ -435,13 +441,26 @@ export async function tightenScriptAI(scriptId: string): Promise<Result> {
     const [lo, hi] = GENERATION_POLICY.timing.targetSec;
     const seconds = v.estimatedSeconds, words = v.spokenWordCount;
     if (seconds == null || words == null) return { ok: false, message: "This version has no spoken-length estimate yet — save or regenerate it once and the estimate is recorded." };
+    // UNDER-TARGET IS NOT "INSIDE THE TARGET" (review, Sep 18 2026). One
+    // `seconds <= hi` test used to answer both of the cases it is not an
+    // overrun, and told a 19-second draft it was "inside the 20–30 s target".
+    // Four live current versions estimate at 19 s (measured against production,
+    // scripts/_fix/CE/probe-under.ts), so four rows were being told something
+    // false about themselves — and the fix for a short script is the opposite
+    // of a tighten, so the wrong words point at the wrong action.
+    if (seconds < lo) {
+      return {
+        ok: false,
+        message: `Version ${v.versionNo} estimates at ≈${seconds} s (${words} words) — that is UNDER the ${lo}–${hi} s target, not over it, and tightening would only make it shorter. Add substance with "Ask AI to revise" or "Edit myself" instead.`,
+      };
+    }
     if (seconds <= hi) return { ok: false, message: `Version ${v.versionNo} already estimates at ≈${seconds} s, inside the ${lo}–${hi} s target — nothing to tighten.` };
     const instruction = tightenInstruction({ seconds, words, wordsPerSec: GENERATION_POLICY.timing.wordsPerSec, target: GENERATION_POLICY.timing.targetSec });
     const { reviseScriptWithInstructions } = await import("@/lib/contentPipeline");
     const me = await actor();
     await reviseScriptWithInstructions(scriptId, instruction, { requestedBy: me.email });
     revalidatePath("/content");
-    return { ok: true, message: `Sent back to be tightened from ≈${seconds} s (${words} words) toward ${lo}–${hi} s — v${v.versionNo} is kept. Review the new draft.` };
+    return { ok: true, message: `Sent back to be tightened from ≈${seconds} s (${words} words) toward ${lo}–${hi} s — v${v.versionNo} is kept. The new version is waiting in the review queue.` };
   } catch (e) { return fail(e); }
 }
 

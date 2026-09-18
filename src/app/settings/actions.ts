@@ -137,6 +137,47 @@ export async function saveInternalAlerts(input: InternalAlertRules): Promise<{ o
     const current = await internalAlertRules();
     const merged: InternalAlertRules = { ...current, ...input, coverage: { ...current.coverage, ...(input.coverage ?? {}) } };
 
+    // A WINDOW THE READER WOULD THROW AWAY IS REFUSED AT THE DOOR (review,
+    // Sep 18 2026). internalAlertRules() drops an inverted or empty window and
+    // silently substitutes the default — settings.ts:460-461,
+    // `fromHour: covTo > covFrom ? covFrom : d.coverage.fromHour`. So typing
+    // 6pm → 9am for evening cover used to be stored, echoed back by the
+    // sentence below as "Covered Mon–Fri, 6pm–9am ET", and then read by every
+    // pager as 9am–6pm: the screen said one thing and routeAlert did another.
+    // This is a REFUSAL, not a repair. An overnight window is not something
+    // withinCoverageAt() can express — it is one `mins >= from && mins < to`
+    // comparison, which covers 0 of 24 hours when from > to (measured:
+    // scripts/_fix/CE/probe-coverage.ts) — so guessing at what was meant would
+    // be inventing a rota nobody typed. Nothing is written and the message says
+    // what happened. The same check covers the photos-not-delivered window,
+    // which the reader discards the same way (settings.ts:451-452).
+    const hourOk = (n: unknown): n is number => typeof n === "number" && Number.isInteger(n) && n >= 0 && n <= 23;
+    const h12 = (n: number) => (n === 0 ? "12am" : n === 12 ? "12pm" : n > 12 ? `${n - 12}pm` : `${n}am`);
+    const windowProblem = (w: { fromHour: number; toHour: number }, what: string): string | null => {
+      if (!hourOk(w.fromHour) || !hourOk(w.toHour)) return `${what} must be two whole hours between 0 and 23.`;
+      if (w.toHour === w.fromHour) return `${what}: ${h12(w.fromHour)} to ${h12(w.toHour)} is no time at all.`;
+      if (w.toHour < w.fromHour) return `${what}: ${h12(w.fromHour)} to ${h12(w.toHour)} runs backwards, which is an overnight window the hub cannot hold.`;
+      return null;
+    };
+    const covProblem = windowProblem(merged.coverage, "Covered hours");
+    if (covProblem) {
+      return {
+        ok: false,
+        message: `Not saved. ${covProblem} Give it two hours in the same day, the earlier one first — 9am to 6pm. For evening, weekend or overnight cover, name somebody on call instead: that is the setting that carries urgent alerts outside the covered window. Nothing on this card was changed.`,
+      };
+    }
+    const photosProblem = windowProblem(merged.photosUndelivered, "The photos-not-delivered alert window");
+    if (photosProblem) {
+      return { ok: false, message: `Not saved. ${photosProblem} Give it two hours in the same day, the earlier one first — 4pm to 7pm. Nothing on this card was changed.` };
+    }
+    // The two single send-hours are read through the same hr() fallback, so an
+    // out-of-range one would be stored and then quietly ignored in favour of
+    // 7pm / 10pm. Same rule, same refusal — "the next run follows these rules"
+    // has to be true of every field on the card, not just most of them.
+    for (const [label, hour] of [["The upload reminder", merged.uploadReminder.hour], ["The late-night chaser", merged.uploadChaser.hour]] as const) {
+      if (!hourOk(hour)) return { ok: false, message: `Not saved. ${label}'s send time has to be a whole hour between 0 and 23. Nothing on this card was changed.` };
+    }
+
     // The window is clamped again on read; what only THIS layer can check is
     // that the on-call id still points at somebody on the roster. A dangling id
     // is worse than none — routeAlert would hand an urgent weekend page to a

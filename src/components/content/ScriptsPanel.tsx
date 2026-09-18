@@ -7,7 +7,16 @@ import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { ScriptBody } from "@/components/portal/ScriptBody";
 // policy.ts is pure data with no imports of its own ("no node:crypto so this
 // file can be imported from client components") — the 20–30 s target is read
-// from it rather than copied, so the chip and the validator can never drift.
+// from it rather than copied, so the chip, the findings row and the validator
+// can never drift from each other.
+//
+// NOT "every reader of the target" (review, Sep 18 2026 — the claim was made
+// and it is false): contentPolicy/prompts.ts:108 still writes "exactly three
+// points, 20–30 s" into the script prompt's prose as a literal. Changing
+// GENERATION_POLICY.timing.targetSec today would move this chip, the row below,
+// validateNewScript, tightenInstruction and policyRulesText, and leave that one
+// sentence behind. It is named here rather than claimed away; prompts.ts was
+// outside this change's files.
 import { GENERATION_POLICY } from "@/lib/contentPolicy/policy";
 import { approveScriptVersionAction, releaseScriptAction, returnScriptAction, reviseScriptAI, saveScriptText, tightenScriptAI } from "@/app/content/actions";
 
@@ -122,11 +131,18 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
             {s.approvedAt ? ` · approved ${fmt(s.approvedAt)} by ${s.approvedBy}` : ""}{s.sharedAt ? ` · released ${fmt(s.sharedAt)}` : ""}{s.sourceFile ? ` · from ${s.sourceFile}` : ""}
           </p>
         )}
-        {cur && !s.historical && (cur.findings.length > 0 || cur.gaps.length > 0 || pace === "over") && (
+        {cur && !s.historical && (cur.findings.length > 0 || cur.gaps.length > 0 || pace === "over" || pace === "under") && (
           <div className="mt-1.5 rounded-lg border border-border bg-surface-2/50 px-2.5 py-1.5 text-[11px]">
             {/* The stored timing finding, when there is one, says the same thing
                 as the row below and with a possibly older estimate — the row is
-                built from the version's current seconds, so the stored one goes. */}
+                built from the version's current seconds, so the stored one goes.
+                BOTH BANDS OR NEITHER (review, Sep 18 2026): this filter drops a
+                timing finding by code AND by message prefix, so when the row
+                below only rendered for "over", an under-target draft lost its
+                finding and showed nothing at all. Measured on production the
+                same day: 4 of the 20 live current versions estimate under 20 s,
+                all four store no findings, and all four displayed nothing about
+                their length. */}
             {cur.findings.filter((f) => f.severity !== "info" && f.code !== "timing.out-of-range" && !/^Spoken estimate /.test(f.message)).map((f, i) => <p key={`f${i}`} className={f.severity === "block" ? "text-danger" : "text-warning"}>{f.severity === "block" ? "Format: " : "Note: "}{f.message}</p>)}
             {pace === "over" && (
               <p className="flex flex-wrap items-center gap-1.5 text-warning">
@@ -134,6 +150,17 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
                 <button disabled={busy} onClick={() => run(() => tightenScriptAI(s.id))} className="inline-flex items-center gap-1 rounded-md border border-warning/40 px-2 py-0.5 font-semibold text-warning hover:bg-warning/10 disabled:opacity-50">
                   <Scissors className="size-3" />Tighten to {TARGET_LO}–{TARGET_HI}s
                 </button>
+              </p>
+            )}
+            {/* No Tighten button on a short script: tightenScriptAI refuses a
+                version that is already at or under the target, and offering a
+                button the server declines is the trap the approve flow already
+                learned to avoid. Shortening is the wrong verb anyway — the
+                validator's own words for this case are "it may read as thin on
+                camera; add substance rather than padding". */}
+            {pace === "under" && (
+              <p className="text-warning">
+                Length: ≈{cur.estimatedSeconds}s ({cur.spokenWordCount} words) is under the {TARGET_LO}–{TARGET_HI}s target. It can still be approved — this is an estimate from a word count, not a rejection — but it may read as thin on camera. Add substance with &ldquo;Ask AI to revise&rdquo; or &ldquo;Edit myself&rdquo; rather than padding; both keep this version.
               </p>
             )}
             {cur.gaps.map((g, i) => <p key={`g${i}`} className="text-muted">Gap ({g.kind}): {g.text}{g.question ? ` → ${g.question}` : ""}</p>)}

@@ -982,13 +982,23 @@ export function validateNewScript(script: CanonicalScript, opts: ValidateScriptO
   // Close
   if (!script.close?.text.trim()) push("close.missing", "block", "Every script must end with a strong close — none present.", "close");
 
-  // Timing — a finding with the measured seconds. Deliberately "warn", and
-  // deliberately NOT in contentScripts.STRUCTURAL_CODES: the seconds are an
-  // ESTIMATE from a word count, so word count alone must not reject a script
-  // (Jordan, Sep 17 2026 — "flag estimated overruns and offer a tighter
-  // revision, but do not make word count alone a hard rejection"). The offer is
-  // the one-click tighten built by tightenInstruction(); it is an action, not a
-  // duration override, of which there are none anywhere in this layer.
+  // Timing — a finding with the measured seconds. It is "warn" today, and
+  // deliberately NOT in contentScripts.STRUCTURAL_CODES, because the seconds
+  // are an ESTIMATE from a word count and a word count alone should not reject
+  // a script. The TARGET is settled at 20–30 s; the ENFORCEMENT MODE — should
+  // pacing ever hard-block? — is still Jordan's open question and he has not
+  // answered it. A Sep 17 2026 edit put an answer in his mouth here; it was not
+  // one he gave, and the note in contentScripts.approveScriptVersion has said
+  // "it is Jordan's open question whether it should ever hard-block" the whole
+  // time (restored in the Sep 18 review, which found the two comments in the
+  // same repo contradicting each other). Warn is the SAFE default, not a
+  // ruling: it is the one setting that cannot silently refuse work. Changing it
+  // needs his answer, not another comment.
+  //
+  // The one-click tighten built by tightenInstruction() does not depend on the
+  // answer either way: it is an action a person chooses, not a duration
+  // override — there are none anywhere in this layer — and it changes nothing
+  // about what passes the gate.
   const estimate = estimateSpokenSeconds(script);
   if (!estimate.inTarget) {
     const [lo, hi] = estimate.target;

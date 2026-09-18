@@ -258,7 +258,11 @@ export async function editScriptFromBody(scriptId: string, body: string, by: str
  * renames pillars at every strategy refresh. Shape is different — no reason
  * turns four talking points into three. timing.out-of-range is absent for the
  * opposite reason: it is only a warning, because the seconds are estimated from
- * a word count and word count alone must not reject a script.
+ * a word count and a word count alone does not reject a script here. Whether it
+ * ever should is Jordan's open question — see the note in approveScriptVersion
+ * below and the one over the timing finding in contentPolicy/scriptFormat.ts;
+ * neither is a ruling, and a Sep 17 comment that read like one was corrected on
+ * Sep 18.
  */
 export const STRUCTURAL_CODES = new Set([
   "title.missing",
