@@ -1820,3 +1820,141 @@ export async function recentlyRemovedFromQueue(): Promise<
     expiresISO: new Date(r.at.getTime() + RESTORE_WINDOW_DAYS * 86_400_000).toISOString(),
   }));
 }
+
+// ---------------------------------------------------------------------------
+// MERGE TWO JOBS' WORK. See lib/projectMerge for why the two ROWS stay.
+// ---------------------------------------------------------------------------
+
+/** Move one job's owed work onto another. Money, orders and appointments stay
+ *  exactly where they are. Reversible. */
+export async function mergeProjectWork(
+  fromId: string,
+  intoId: string,
+  note?: string,
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  if (!fromId || !intoId || fromId === intoId) return { ok: false, message: "Pick two different jobs." };
+
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const actor = me?.name ?? me?.email ?? "The office";
+  const { mergeKey, mergeFrom, previewMerge, serializeMerge } = await import("@/lib/projectMerge");
+
+  const [from, into] = await Promise.all([
+    prisma.project.findUnique({ where: { id: fromId }, select: { id: true, title: true, clientId: true, status: true, client: { select: { name: true } } } }),
+    prisma.project.findUnique({ where: { id: intoId }, select: { id: true, title: true, clientId: true, status: true, client: { select: { name: true } } } }),
+  ]);
+  if (!from || !into) return { ok: false, message: "One of those jobs no longer exists." };
+  if (from.status === "CANCELLED" || into.status === "CANCELLED") {
+    return { ok: false, message: "A cancelled job can't be merged — un-cancel it first." };
+  }
+  // DIFFERENT CLIENTS IS ALMOST ALWAYS A MISTAKE, and the one thing this action
+  // could do that nobody could unpick by eye: a cut delivered to the wrong
+  // agent. Refused rather than warned.
+  if (from.clientId !== into.clientId) {
+    return { ok: false, message: `Those belong to different clients (${from.client.name} and ${into.client.name}). Merging across clients isn't allowed.` };
+  }
+  if (await mergeFrom(fromId)) return { ok: false, message: "That job's work has already been merged somewhere." };
+  if (await mergeFrom(intoId)) return { ok: false, message: "You can't merge INTO a job whose own work has been merged away." };
+
+  const moved = await previewMerge(fromId);
+  if (moved.deliverableIds.length === 0 && moved.submissionIds.length === 0) {
+    return { ok: false, message: "That job has nothing owed to move." };
+  }
+
+  // ONE TRANSACTION. A half-merge — deliverables moved, cuts left behind — is
+  // an orphaned cut pointing at a deliverable on another job, which no screen
+  // in this codebase is built to render.
+  await prisma.$transaction(async (tx) => {
+    // Order matters only for readability; every row carries its own project id.
+    await tx.deliverable.updateMany({ where: { id: { in: moved.deliverableIds } }, data: { projectId: intoId } });
+    await tx.deliverableOutput.updateMany({ where: { id: { in: moved.outputIds } }, data: { projectId: intoId } });
+    await tx.reviewSubmission.updateMany({ where: { id: { in: moved.submissionIds } }, data: { projectId: intoId } });
+    await tx.smartTask.updateMany({ where: { id: { in: moved.taskIds } }, data: { projectId: intoId } });
+    await tx.revisionBrief.updateMany({ where: { id: { in: moved.briefIds } }, data: { projectId: intoId } });
+    await tx.topazJob.updateMany({ where: { id: { in: moved.topazIds } }, data: { projectId: intoId } });
+    await tx.appSetting.upsert({
+      where: { key: mergeKey(fromId) },
+      create: { key: mergeKey(fromId), value: serializeMerge({ intoId, at: new Date(), by: actor, note: (note ?? "").trim().slice(0, 300) || null, moved, undoneAt: null, undoneBy: null }) },
+      update: { value: serializeMerge({ intoId, at: new Date(), by: actor, note: (note ?? "").trim().slice(0, 300) || null, moved, undoneAt: null, undoneBy: null }) },
+    });
+  });
+
+  // The per-video rows are minted from the SURVIVOR's cut slots, so they have
+  // to be recomputed on both sides — the one that lost the work owes nothing
+  // now, and the one that gained it owes more.
+  try {
+    const { ensureOutputsSafely } = await import("@/lib/deliverableOutputs");
+    await ensureOutputsSafely(intoId, `merge-from#${fromId}`);
+    await ensureOutputsSafely(fromId, `merge-away#${intoId}`);
+  } catch { /* the hourly sweep repairs it */ }
+
+  const street = (t: string | null) => (t || "a job").split(",")[0].trim();
+  const what = `${moved.deliverableIds.length} deliverable${moved.deliverableIds.length === 1 ? "" : "s"}${moved.submissionIds.length ? `, ${moved.submissionIds.length} cut${moved.submissionIds.length === 1 ? "" : "s"}` : ""}`;
+  await Promise.all([
+    prisma.activity.create({
+      data: { projectId: fromId, type: "SYSTEM", body: `${actor} merged this job's work into ${street(into.title)} — ${what}. The order, the invoice, the shoot and the appointment stay here.${note ? ` "${note.trim().slice(0, 200)}"` : ""}`.slice(0, 500) },
+    }).catch(() => {}),
+    prisma.activity.create({
+      data: { projectId: intoId, type: "SYSTEM", body: `${actor} merged ${street(from.title)}'s work into this job — ${what}. That job keeps its own order and invoice.${note ? ` "${note.trim().slice(0, 200)}"` : ""}`.slice(0, 500) },
+    }).catch(() => {}),
+  ]);
+
+  revalidatePath("/editing");
+  revalidatePath(`/projects/${fromId}`);
+  revalidatePath(`/projects/${intoId}`);
+  return { ok: true, message: `${what} moved to ${street(into.title)}. ${street(from.title)} keeps its order and invoice, and says where its work went.` };
+}
+
+/** Put a merged job's work back. */
+export async function unmergeProjectWork(fromId: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const actor = me?.name ?? me?.email ?? "The office";
+  const { mergeKey, mergeFrom, serializeMerge } = await import("@/lib/projectMerge");
+
+  const m = await mergeFrom(fromId);
+  if (!m) return { ok: false, message: "That job's work isn't merged anywhere." };
+  const moved = m.moved;
+
+  // BY ID, not by shape. Anything created on the survivor SINCE the merge stays
+  // on the survivor — only the rows this merge actually moved come back.
+  await prisma.$transaction(async (tx) => {
+    await tx.deliverable.updateMany({ where: { id: { in: moved.deliverableIds } }, data: { projectId: fromId } });
+    await tx.deliverableOutput.updateMany({ where: { id: { in: moved.outputIds } }, data: { projectId: fromId } });
+    await tx.reviewSubmission.updateMany({ where: { id: { in: moved.submissionIds } }, data: { projectId: fromId } });
+    await tx.smartTask.updateMany({ where: { id: { in: moved.taskIds } }, data: { projectId: fromId } });
+    await tx.revisionBrief.updateMany({ where: { id: { in: moved.briefIds } }, data: { projectId: fromId } });
+    await tx.topazJob.updateMany({ where: { id: { in: moved.topazIds } }, data: { projectId: fromId } });
+    await tx.appSetting.update({
+      where: { key: mergeKey(fromId) },
+      data: { value: serializeMerge({ ...m, undoneAt: new Date(), undoneBy: actor }) },
+    });
+  });
+
+  try {
+    const { ensureOutputsSafely } = await import("@/lib/deliverableOutputs");
+    await ensureOutputsSafely(fromId, `unmerge#${m.intoId}`);
+    await ensureOutputsSafely(m.intoId, `unmerge-away#${fromId}`);
+  } catch { /* the hourly sweep repairs it */ }
+
+  const p = await prisma.project.findUnique({ where: { id: fromId }, select: { title: true } });
+  const street = (p?.title || "that job").split(",")[0].trim();
+  await prisma.activity.create({
+    data: { projectId: fromId, type: "SYSTEM", body: `${actor} put this job's work back — it is no longer merged.`.slice(0, 500) },
+  }).catch(() => {});
+
+  revalidatePath("/editing");
+  revalidatePath(`/projects/${fromId}`);
+  revalidatePath(`/projects/${m.intoId}`);
+  return { ok: true, message: `${street} has its work back.` };
+}
