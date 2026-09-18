@@ -462,9 +462,40 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
   // board is off ALL of it, or "removed" would mean "removed from the tab you
   // were looking at".
   const shown = (p: { id: string }) => !removed.has(p.id);
+
+  // ---- SORTED BY THE DATE THE ROW ACTUALLY PRINTS (Jordan, Sep 18) ---------
+  //
+  // The queries above order by Project.deliveryDue, and the Due column shows
+  // effectiveDue — the OFFICE's date where one was set, which outranks it. So
+  // the two disagreed on every job carrying an override, and the board was not
+  // in date order at all: measured before this landed, ELEVEN of eighteen Not
+  // Done rows were out of order, with Sep 25 sitting on top and a Sep 17 third.
+  //
+  // Sorting the built rows rather than tightening the SQL is deliberate — the
+  // effective date is composed in toRow from three sources (the office's
+  // override, the promise, the SLA) and no ORDER BY can see it. Doing it here
+  // also means every reader of this function gets the same order: the Editing
+  // Room, the photographer's board and the message centre.
+  //
+  // Undated last. A job with no date is not more urgent than one due today,
+  // and floating it to the top is how a board stops being trusted.
+  const byDue = (a: QueueRow, b: QueueRow) => {
+    const at = a.dueISO ? new Date(a.dueISO).getTime() : Infinity;
+    const bt = b.dueISO ? new Date(b.dueISO).getTime() : Infinity;
+    // Same date: the older job first — it has been waiting longer.
+    return at - bt || (a.shootISO ?? "").localeCompare(b.shootISO ?? "") || a.street.localeCompare(b.street);
+  };
+
   return {
-    notDone: inflight.filter(shown).filter(hasVideo).map((p) => toRow(p)),
-    upcoming: scheduled.filter(shown).filter(hasVideo).map((p) => toRow(p, true)),
+    notDone: inflight.filter(shown).filter(hasVideo).map((p) => toRow(p)).sort(byDue),
+    // Upcoming's date IS the shoot date, which is what its query already sorts
+    // on, so this changes nothing there today — it holds the order if that
+    // column's source ever changes the way Not Done's did.
+    upcoming: scheduled.filter(shown).filter(hasVideo).map((p) => toRow(p, true)).sort(byDue),
+    // Done stays newest-delivered-first. A finished list answers "what went out
+    // lately", not "what is due next", and a delivered job's due date is
+    // history (Sep 18: the sort request was about the work, not the archive).
+    //
     // A reopened job is delivered AND in flight, so it matches both queries —
     // and listed twice it would read "Completed" on one tab while owing a video
     // on the other. Not Done wins: that is where the work is (Sep 18 review).
