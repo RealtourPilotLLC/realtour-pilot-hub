@@ -63,17 +63,79 @@ export type ReviewQueue = {
   followUps: QueueFollowUp[];
 };
 
+// The rounds that are a version somebody can actually rule on. UPLOADING and
+// UPLOAD_FAILED are not a cut yet; SUPERSEDED and WITHDRAWN are history. Same
+// set the editing surfaces read (src/app/editing/actions.ts) — one definition
+// of "a round that is not a version any more", so the queue and the edit page
+// never disagree about which round a cut is on.
+const DEAD_ROUNDS = ["UPLOADING", "UPLOAD_FAILED", "SUPERSEDED", "WITHDRAWN"];
+
+// A cut is one owed video: the (deliverable, slot) pair on the rows that have
+// one, the file path on the legacy folder rows.
+const cutKeyOf = (s: { projectId: string; deliverableId: string | null; slot: number; assetPath: string | null; id: string }) =>
+  `${s.projectId}:${s.deliverableId ? `${s.deliverableId}:${s.slot}` : (s.assetPath ?? s.id)}`;
+
+/**
+ * THE 14-DAY WINDOW GOES HERE, AFTER THE COLLAPSE — NOT IN THE QUERY.
+ *
+ * (Latent bug found Sep 18; it would have started printing wrong rows on
+ * 2026-09-23.) Both queues used to READ
+ *   PENDING/CHANGES_REQUESTED, any age  OR  APPROVED decided in the last 14 days
+ * and then crown the highest round of whatever came back. But a
+ * CHANGES_REQUESTED round is not terminal — a later round is the answer to it —
+ * so it was retained for ever, while the APPROVED round that closed it fell out
+ * of the window after a fortnight. The collapse then crowned the stale bounced
+ * round, and the cut reappeared under "Back with the editor" and never left.
+ *
+ * Replayed against the live rows with the clock advanced: the office's
+ * waitingOnEditor went 2 (true) today → 4 on 2026-09-23 → 6 on 2026-10-01, of
+ * which four were phantoms — 2051 Old Sumneytown Pike r1, 439 Lake George Cir
+ * r1, 893 S Matlack St r1 and 632 Greenridge Rd r2, every one of them approved
+ * on a later round and three of the four already delivered. By 2026-10-04
+ * recentlyApproved was 0 and the phantoms were permanent. Harrison's
+ * photographer queue picked up the first on 2026-09-23 and the second on
+ * 2026-09-29.
+ *
+ * So the read is no longer windowed by date, and the window is applied to the
+ * COLLAPSED row instead: a cut is judged on its REAL latest round. The read is
+ * still bounded — by the project, not the date (every live round of a project
+ * that has something in the window), which is the same 28 rows the old read
+ * returned today.
+ */
+const inWindow = (
+  s: { status: string; decidedAt: Date | null; project?: { status: string } | null },
+  since: Date,
+) => {
+  // An approved cut leaves the desk a fortnight after the verdict.
+  if (s.status === "APPROVED") return !!s.decidedAt && s.decidedAt >= since;
+  // A DELIVERED job's still-PENDING cut is not a work list — the client already
+  // has it (131 Woodcutter sat in the queue for days after delivery).
+  return !(s.status === "PENDING" && s.project?.status === "DELIVERED");
+};
+
+// The projects worth reading at all: those with a cut in flight or a verdict
+// inside the window. Keeps the unwindowed read bounded.
+const projectsWithLiveReview = (since: Date) => ({
+  reviewSubmissions: {
+    some: {
+      OR: [
+        { status: { in: ["PENDING", "CHANGES_REQUESTED"] } },
+        { status: "APPROVED", decidedAt: { gte: since } },
+      ],
+    },
+  },
+});
+
 export async function getReviewQueue(): Promise<ReviewQueue> {
   const since = new Date(Date.now() - 14 * 24 * 3600_000);
   const [subs, qcTasks, noteRollup, threadReplies] = await Promise.all([
     prisma.reviewSubmission.findMany({
       where: {
-        OR: [
-          { status: { in: ["PENDING", "CHANGES_REQUESTED"] } },
-          { status: "APPROVED", decidedAt: { gte: since } },
-        ],
+        // Every live round of the cut, at any age — see inWindow above for why
+        // the date bound cannot live here.
+        status: { notIn: DEAD_ROUNDS },
         // A cancelled or on-hold job's cuts are not the owner's work list (audit).
-        project: { status: { notIn: ["CANCELLED", "ON_HOLD"] } },
+        project: { status: { notIn: ["CANCELLED", "ON_HOLD"] }, ...projectsWithLiveReview(since) },
       },
       orderBy: { createdAt: "desc" },
       include: {
@@ -161,14 +223,15 @@ export async function getReviewQueue(): Promise<ReviewQueue> {
   // pending video gets its own row so it can be reviewed individually.
   const latestByCut = new Map<string, (typeof subs)[number]>();
   for (const s of subs) {
-    const key = `${s.projectId}:${s.deliverableId ? `${s.deliverableId}:${s.slot}` : (s.assetPath ?? s.id)}`;
+    const key = cutKeyOf(s);
     const cur = latestByCut.get(key);
     if (!cur || s.round > cur.round) latestByCut.set(key, s);
   }
-  // A DELIVERED job's still-PENDING cut is not the owner's work list — the
-  // client already has it (131 Woodcutter sat in the queue for days after
-  // delivery). Approved rows stay in recentlyApproved.
-  const latest = [...latestByCut.values()].filter((s) => !(s.status === "PENDING" && s.project?.status === "DELIVERED"));
+  // The collapse ran over EVERY live round, so this row is the cut's real
+  // latest. Only now is it aged out (inWindow): the fortnight cut-off and the
+  // DELIVERED guard both belong to the row the owner would see, not to the
+  // rows the collapse gets to choose between.
+  const latest = [...latestByCut.values()].filter((s) => inWindow(s, since));
 
   // Unanswered creative replies: per thread, whoever spoke LAST holds the
   // floor — if that's not the owner, the owner owes an answer. Only live
@@ -276,12 +339,13 @@ export async function getPhotographerReviewQueue(memberId: string): Promise<Phot
   const since = new Date(Date.now() - 14 * 24 * 3600_000);
   const subs = await prisma.reviewSubmission.findMany({
     where: {
-      OR: [
-        { status: { in: ["PENDING", "CHANGES_REQUESTED"] } },
-        { status: { in: ["APPROVED", "CHANGES_REQUESTED"] }, decidedAt: { gte: since } },
-      ],
+      // Unwindowed, like the office's — see inWindow. This queue had the same
+      // bug and would have shown Harrison one phantom "in revisions" row on
+      // 2026-09-23 and two from 2026-09-29, permanently.
+      status: { notIn: DEAD_ROUNDS },
       project: {
         status: { notIn: ["CANCELLED", "ON_HOLD"] },
+        ...projectsWithLiveReview(since),
         OR: [{ photographerId: memberId }, { appointments: { some: { assignedToId: memberId } } }],
       },
     },
@@ -298,11 +362,18 @@ export async function getPhotographerReviewQueue(memberId: string): Promise<Phot
   // older round is history and lives in the workspace timeline.
   const latestByCut = new Map<string, (typeof subs)[number]>();
   for (const s of subs) {
-    const key = `${s.projectId}:${s.deliverableId ? `${s.deliverableId}:${s.slot}` : (s.assetPath ?? s.id)}`;
+    const key = cutKeyOf(s);
     const cur = latestByCut.get(key);
     if (!cur || s.round > cur.round) latestByCut.set(key, s);
   }
-  const latest = [...latestByCut.values()].filter((s) => s.status !== "WITHDRAWN");
+  // The comment above said "exactly as the office's queue collapses them" and
+  // it was not true: the office drops a PENDING cut on a DELIVERED job and this
+  // one did not. On live data that is SEVEN rows sitting in James's "In review"
+  // today — four slots of one August social package, 208 N Adams and 38 E Gay —
+  // each of them telling him the office is still ruling on a video the client
+  // already has, and none of them anything he can act on. inWindow is now the
+  // one rule both queues apply, so the claim of parity is finally true.
+  const latest = [...latestByCut.values()].filter((s) => inWindow(s, since));
 
   // Their open rows on those cuts, tallied by the asset key a note threads
   // under (the same key addCutNote writes: the minted link, else cut:<id>).

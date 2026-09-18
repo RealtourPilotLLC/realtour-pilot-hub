@@ -113,6 +113,21 @@ export function EditFeedback({
                     {n.kind === "coaching" ? "Coaching" : STATUS_LABEL[n.status] ?? n.status}
                   </span>
                 </span>
+                {/* WHO WANTS THIS. getEditorFeedback has stamped `ask` on a
+                    photographer's change request since Sep 18 and the Review
+                    Room's own panel shows it — but this component is the ONLY
+                    place an editor reads their notes (EditorCutPanel delegates
+                    here, and so does the leftover-notes list on /edit), and it
+                    never read the field. So the one person who has to act on
+                    "fix the 0:14 driveway" was the one person who could not
+                    tell it came from the man who was standing in the driveway
+                    rather than from the office. Same chip, same wording as the
+                    Review Room, so the two surfaces read alike. */}
+                {n.ask && (
+                  <span className="ml-2 align-middle text-[11px] font-medium text-sky-500">
+                    asked by {n.authorName ?? "the photographer"}
+                  </span>
+                )}
                 {n.replies.length > 0 && (
                   <span className="ml-2 text-xs text-muted-2">
                     {n.replies.length} repl{n.replies.length === 1 ? "y" : "ies"}
