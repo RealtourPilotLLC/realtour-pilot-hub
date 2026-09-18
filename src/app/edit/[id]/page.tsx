@@ -24,6 +24,9 @@ import { parseEditSpec, musicPickOf } from "@/lib/musicPick";
 import { AocPlaybookCard } from "@/components/project/AocPlaybookCard";
 import { EditorCutPanel } from "@/components/editing/EditorCutPanel";
 import { CutUploader } from "@/components/editing/CutUploader";
+// The server's own answer to "may this viewer replace the approved cut on this
+// slot" — the panel draws the door from it rather than guessing (Sep 18).
+import { canReplaceApprovedCut } from "@/app/review/actions";
 import { autoSyncScript } from "@/lib/scriptSync";
 import { actualFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { getVideoSlaStatus, videoTier } from "@/lib/projectStatus";
@@ -170,7 +173,7 @@ export default async function EditBriefPage({
 
   // The cuts this job owes (deliverable × slot) with the newest version of
   // each — the editor's upload panel and the cut switcher both hang off it.
-  const { cutSlots } = await import("@/lib/reviewCuts");
+  const { cutSlots, videoLaneRevisionWhere } = await import("@/lib/reviewCuts");
   const slots = await cutSlots(id).catch(() => []);
   const cutKeyOf = (s: { deliverableId?: string | null; slot?: number | null; assetPath?: string | null; id: string }) =>
     s.deliverableId ? `${s.deliverableId}:${s.slot ?? 1}` : (s.assetPath ?? s.id);
@@ -283,14 +286,25 @@ export default async function EditBriefPage({
   // VIDEO-lane revision tasks only: a photo retouch routed to Kyle also flips
   // the project to REVISION, but it is NOT this editor's work order — it must
   // never flip the video tracker or render as their ask (review finding).
-  // Remar departed Aug 2026 (John took the lane) but stays here: his last
-  // in-production job still needs its revision lane to render.
-  const VIDEO_REVISION_KEYS = new Set(["kim", "john", "remar", "luma"]);
-  // Null-key = an unassigned video revision (personal-branding routing is
-  // manual by design) — still this tracker's lane. Kyle's photo asks stay out.
-  const videoRevisionTasks = project.smartTasks.filter(
-    (t) => t.taskType === "revision" && (t.assignedKey == null || VIDEO_REVISION_KEYS.has(t.assignedKey)),
-  );
+  //
+  // ONE PREDICATE, THE SERVER'S (drill, Sep 18). This page used to keep its own
+  // — assignedKey null or one of kim/john/remar/luma — against the
+  // videoLaneRevisionWhere that startCutUpload, correctedCutSubmitted and the
+  // rest of the cut machinery ask. The server's also counts external_agency,
+  // also counts a task TITLED "Video revision…" or "New cut…" whatever key it
+  // carries, and subtracts the photo-lane dedupe key. comms.raiseRevision pins
+  // an ask for the outside shop or Luma onto assignedKey "kyle" while still
+  // titling it "Video revision — <address>", so that ask read OPEN on the
+  // server and CLOSED here — and the panel then drew the replace-the-approved-
+  // video door, took the editor's reason and dropped it on the floor. Seven
+  // jobs carry editorVendorKey = external_agency, so the shape is live; no row
+  // is sitting in it as this ships. Asking the same question in the same words
+  // is the only way the two cannot drift apart again.
+  const videoRevisionTasks = await prisma.smartTask.findMany({
+    where: videoLaneRevisionWhere(id),
+    select: { id: true, createdAt: true, summary: true, description: true },
+    orderBy: { createdAt: "asc" },
+  });
   const revisionOpen = videoRevisionTasks.length > 0;
   let rawsLanded = false;
   let folderCounts = { raw: 0, final: 0, stale: false };
@@ -548,12 +562,40 @@ export default async function EditBriefPage({
       openNotes,
     };
   });
+  const canUploadCuts = !viewer?.impersonating && (isOwnerAdmin || viewer?.role === "EDITOR");
+  // WHOSE DOOR IT IS, asked of the server that answers it (drill, Sep 18). The
+  // replace-the-approved-video control used to be drawn from the viewer's role
+  // and the cut's status alone, while uploadAuthor scoped an EDITOR to a job
+  // carrying an OPEN edit_video/revision task of theirs — which is exactly the
+  // task an approved, submitted and delivered cut has already closed. Ten doors
+  // rendered on the real board and the server would take two; the other eight
+  // refused the editor AFTER they had picked the file and typed their reason,
+  // John Mark's six own submissions among them. The server now also admits the
+  // editor whose key is on the approved version, and this asks it per row so
+  // the two sets are the same set. One cheap call per approved row: owner/admin
+  // answers without touching the database at all.
+  const replaceableCuts = new Set(
+    (
+      await Promise.all(
+        cutRows
+          .filter((r) => canUploadCuts && !revisionOpen && r.latest?.status === "APPROVED")
+          .map(async (r) =>
+            (await canReplaceApprovedCut({ projectId: id, deliverableId: r.deliverableId, slot: r.slot }).catch(() => false))
+              ? `${r.deliverableId}:${r.slot}`
+              : null,
+          ),
+      )
+    ).filter((k): k is string => k !== null),
+  );
   const nextEmptyIdx = cutRows.findIndex((r) => !r.latest);
   const keepSlot = (r: (typeof cutRows)[number], i: number) => !!r.latest || i === nextEmptyIdx;
   const hiddenSlots = cutRows.filter((r, i) => !keepSlot(r, i)).length;
   // Worth a fold only when it hides a wall of rows; a normal job is untouched.
   const collapseSlots = hiddenSlots >= 3 && !showAllSlots;
-  const shownCutRows = collapseSlots ? cutRows.filter(keepSlot) : cutRows;
+  const shownCutRows = (collapseSlots ? cutRows.filter(keepSlot) : cutRows).map((r) => ({
+    ...r,
+    canReplace: replaceableCuts.has(`${r.deliverableId}:${r.slot}`),
+  }));
   const uploadedSlots = cutRows.filter((r) => r.latest && isLive(r.latest)).length;
   // The panel below counts approved against the rows IT was handed, which is
   // the short list while the empty slots are folded. The real totals are said
@@ -942,7 +984,7 @@ export default async function EditBriefPage({
                 Owner/admin can upload on an editor's behalf (vendor cuts). */}
             <CutUploader
               projectId={project.id}
-              canUpload={!viewer?.impersonating && (isOwnerAdmin || viewer?.role === "EDITOR")}
+              canUpload={canUploadCuts}
               // Only Jordan and Kyle may send an over-spec file anyway, and
               // only for real: the server checks the role again and puts their
               // name on it (startCutUpload).
@@ -950,12 +992,17 @@ export default async function EditBriefPage({
               // The client has asked for changes on the VIDEO lane, so an
               // approved cut takes the correction as an ordinary next round —
               // startCutUpload has allowed exactly that since Sep 8, and this
-              // page has computed the flag since then, without ever handing it
-              // over. Left at its default (false) the panel called an approved
-              // cut finished and asked the editor to justify replacing it, on
-              // the one job where the client had already done the asking. The
-              // panel only DRAWS from this; the server re-reads the lane
-              // itself, so a stale page costs a refusal, never a wrong round.
+              // page computed the flag from Sep 8 to Sep 18 without ever
+              // handing it over: left at its default the panel called an
+              // approved cut finished and asked the editor to justify replacing
+              // it. THE SEP 18 COMMIT SAID that happened "on the one job where
+              // the client had already done the asking" — it does not: the
+              // drill finds four open revision tasks on the board and not one
+              // of them sits on a job with an approved cut, so no row was in
+              // this state at the time and none is now. It is a shape that can
+              // occur, not a job that did. The flag itself now comes from
+              // videoLaneRevisionWhere, the same question the server asks, so
+              // the panel and startCutUpload can no longer disagree about it.
               revisionOpen={revisionOpen}
               cuts={shownCutRows}
             />

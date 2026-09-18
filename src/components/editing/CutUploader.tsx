@@ -63,6 +63,15 @@ export type CutRow = {
     sourceWidth: number | null; sourceHeight: number | null;
   } | null;
   openNotes: number;
+  /**
+   * May THIS viewer replace the approved video on THIS slot? The /edit page
+   * gets it from the server's own uploadAuthor, per row (canReplaceApprovedCut)
+   * — never from the role, which is how ten doors came to be drawn over a
+   * refusal the editor only met after choosing the file and typing their reason
+   * (drill, Sep 18). Absent = no door, which is the safe way round for a caller
+   * that hasn't asked.
+   */
+  canReplace?: boolean;
 };
 
 const fmtBytes = (n: number) => (n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : n >= 1e6 ? `${Math.round(n / 1e6)} MB` : `${Math.round(n / 1e3)} KB`);
@@ -300,8 +309,15 @@ export function CutUploader({
   // without a reason and answers needsReason, so this box is drawn from the
   // server's answer rather than from the browser's guess about the cut's state —
   // the browser's copy of "is it approved" can be a minute old.
-  const [reopen, setReopen] = useState<Record<string, { file: File; dim: { width: number; height: number } | null; override: boolean; why: string }>>({});
+  const [reopen, setReopen] = useState<Record<string, { file: File; dim: { width: number; height: number } | null; override: boolean }>>({});
   const clearReopen = (key: string) => setReopen((s) => { const n = { ...s }; delete n[key]; return n; });
+  // THE WORDS, HELD APART FROM THE FILE (Sep 18 review). They used to live on
+  // the reopen entry, so every path that rebuilt that entry — re-picking the
+  // file, or the server answering needsReason a second time — retyped the box
+  // as "". A sentence somebody wrote about why a delivered video is wrong is
+  // not something to throw away because they changed which export they are
+  // sending. It survives here until the upload the reason belongs to lands.
+  const [reopenWhy, setReopenWhy] = useState<Record<string, string>>({});
   // Remove / move state per version (Sep 16). The /edit page hands this panel
   // the cut rows, not these columns, so the panel asks for them itself — one
   // read per job, re-read whenever a version changes here or a control fires.
@@ -332,6 +348,13 @@ export function CutUploader({
     const key = `${cut.deliverableId}:${cut.slot}`;
     setErr((e) => ({ ...e, [key]: "" }));
     clearBlocked(key);
+    // A NEW FILE RETIRES THE HELD ONE. Both cards below hold a File, and
+    // whichever one is drawn is the file the next press sends — so a row that
+    // shows the refusal card and the reason card at the same time is a row
+    // where "Replace it" quietly sends the export they just replaced (Sep 18
+    // review). Only the words survive a re-pick; the override does not, because
+    // the check below is about to decide it again for the file actually chosen.
+    clearReopen(key);
     setBusy((b) => ({ ...b, [key]: { pct: 0, label: "Checking the export…" } }));
     const dim = await readDimensions(file);
     if (dim && isOverExportSpec(dim.width, dim.height)) {
@@ -344,7 +367,7 @@ export function CutUploader({
       // file that is about to be refused anyway is a sentence written for
       // nothing. Any words already in the box survive re-picking the file.
       setBusy((b) => { const n = { ...b }; delete n[key]; return n; });
-      setReopen((r) => ({ ...r, [key]: { file, dim, override: false, why: r[key]?.why ?? "" } }));
+      setReopen((r) => ({ ...r, [key]: { file, dim, override: false } }));
       return;
     }
     await send(cut, file, dim, false);
@@ -366,9 +389,17 @@ export function CutUploader({
     if (!started.ok) {
       setBusy((b) => { const n = { ...b }; delete n[key]; return n; });
       // The video is approved and nobody has asked for changes: hold the file
-      // and ask why, rather than sending the editor away with a refusal.
+      // and ask why, rather than sending the editor away with a refusal. The
+      // override the server was already sent rides along, so an owner who
+      // waved a large export through does not have to wave it through twice.
       if ("needsReason" in started && started.needsReason) {
-        setReopen((r) => ({ ...r, [key]: { file, dim, override, why: "" } }));
+        setReopen((r) => ({ ...r, [key]: { file, dim, override } }));
+        // The refusal card was holding this same file for exactly this reason,
+        // and it has now moved into the card below. Leaving it drawn put two
+        // cards on the row, each with its own way to send (Sep 18 review) —
+        // and clearing it here is safe where clearing it before the call was
+        // not, because the File reference is in the reopen entry above.
+        clearBlocked(key);
         setErr((e) => ({ ...e, [key]: started.message }));
         return;
       }
@@ -376,6 +407,9 @@ export function CutUploader({
       return;
     }
     clearReopen(key);
+    // The reason has been accepted and filed on the job's timeline by the line
+    // above, so the words have somewhere permanent to be and the box can empty.
+    setReopenWhy((w) => { const n = { ...w }; delete n[key]; return n; });
     // The reservation exists, so the refusal card (and the file it was holding)
     // has done its job and can go. NOT a moment earlier (Sep 16 review): if the
     // server turns an override down — a session that timed out, a role that
@@ -466,10 +500,17 @@ export function CutUploader({
           // at all. startCutUpload has taken a reopenReason since Sep 18 and
           // the reason box below has been built since then — it simply sat
           // behind a send() that could never start. Not a rare corner either:
-          // 16 of the 20 cut slots in production sit at APPROVED, 15 of them
-          // with no open revision, 9 already gone to the client, and the door
-          // had been walked through exactly 0 times.
-          const approvedRound = canUpload && !next && c.latest?.status === "APPROVED" ? c.latest.round : null;
+          // 10 of the 12 cut slots holding a standing version sit at APPROVED,
+          // every one of them with no open revision, 6 already gone to the
+          // client, and the door has been walked through exactly 0 times. (The
+          // Sep 18 commit said 16 of 20, 15 and 9: that count included the
+          // legacy rows the Dropbox sweep filed with no deliverable, which
+          // never become a row in this panel at all. Re-measured Sep 18.)
+          //
+          // `canReplace` is the server's answer for THIS viewer on THIS slot,
+          // not a role test — see CutRow. Eight of the ten doors used to be
+          // drawn for an editor the server would then refuse.
+          const approvedRound = canUpload && !next && c.canReplace && c.latest?.status === "APPROVED" ? c.latest.round : null;
           // The remove/move state for this version. The flags read lands a
           // moment after the page does, so until it arrives the control is
           // drawn from what the row already knows: anyone who may upload here
@@ -566,7 +607,9 @@ export function CutUploader({
                     is not paperwork — it is what goes on the job's timeline and
                     what tells the office a video they may already have sent is
                     being replaced. */}
-                {reopen[key] && (
+                {/* Never beside the export refusal: one card, one held file,
+                    one way to send it (Sep 18 review). */}
+                {reopen[key] && !blk && (
                   <div className="mt-2 rounded-xl border border-brand/40 bg-brand-soft/30 p-3">
                     <p className="text-sm font-semibold">{c.label} is already approved</p>
                     <p className="mt-1 text-xs leading-relaxed text-foreground/85">
@@ -582,16 +625,16 @@ export function CutUploader({
                       {approvedRound !== null && ` · goes in as v${approvedRound + 1}; v${approvedRound} keeps its file and its approval`}
                     </p>
                     <input
-                      value={reopen[key].why}
-                      onChange={(e) => setReopen((r) => ({ ...r, [key]: { ...r[key], why: e.target.value } }))}
+                      value={reopenWhy[key] ?? ""}
+                      onChange={(e) => setReopenWhy((w) => ({ ...w, [key]: e.target.value }))}
                       placeholder="e.g. the agent's name was spelled wrong in the end card"
                       className="mt-2 w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs outline-none focus:border-brand"
                     />
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <button
                         type="button"
-                        disabled={!!b || reopen[key].why.trim().length < 4}
-                        onClick={() => { const r = reopen[key]; void send(c, r.file, r.dim, r.override, r.why.trim()); }}
+                        disabled={!!b || (reopenWhy[key] ?? "").trim().length < 4}
+                        onClick={() => { const r = reopen[key]; void send(c, r.file, r.dim, r.override, (reopenWhy[key] ?? "").trim()); }}
                         className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
                       >
                         <CloudUpload className="size-3.5" /> Replace it
@@ -668,7 +711,7 @@ export function CutUploader({
                 {/* THE DOOR, drawn as what it is. Deliberately NOT the primary
                     button in the primary place: handing in the next version is
                     routine work, and replacing a video the reviewer has already
-                    signed off — and in 9 of the 16 approved cuts on file,
+                    signed off — and in 6 of the 10 approved cut slots on file,
                     already sent to the client — is a decision. So it sits under
                     the row, quiet, with the consequence said before it is
                     pressed rather than after. It stands down while either card
@@ -689,6 +732,16 @@ export function CutUploader({
                       review as v{approvedRound + 1} — v{approvedRound} keeps its approval either way.
                     </p>
                   </div>
+                )}
+                {/* NO DOOR, AND SAID SO. The alternative to drawing a control
+                    the server will refuse is not silence: an editor looking at
+                    an approved cut of somebody else's still needs to know where
+                    a corrected file goes. One line, and it names the route. */}
+                {canUpload && !next && !c.canReplace && c.latest?.status === "APPROVED" && (
+                  <p className="mt-2 text-[11px] leading-relaxed text-muted-2">
+                    Approved — replacing it is the office&rsquo;s call. If this cut is wrong, tell Kyle or Jordan and
+                    they can put the corrected file through review.
+                  </p>
                 )}
               </div>
               {/* ONE PICKER PER ROW, shared by every control that chooses a

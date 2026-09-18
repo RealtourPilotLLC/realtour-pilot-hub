@@ -1146,13 +1146,66 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
 // direct browser → store transfer: start() reserves the row and the path,
 // finish() verifies the bytes landed and puts the cut in the Review Room.
 // ===========================================================================
+/**
+ * THE ONE TEST for "this editor made the video that is standing on this slot".
+ *
+ * The standing version — WITHDRAWN, UPLOADING and UPLOAD_FAILED are not
+ * versions in play — has to be APPROVED and has to carry their key. Both halves
+ * matter: APPROVED is the only state the replace-the-approved-video door exists
+ * for, and the key is what makes it THEIR video rather than any video on a job
+ * they once touched.
+ */
+async function standingApprovedCutIsTheirs(
+  projectId: string,
+  slot: { deliverableId: string; slot: number },
+  editorKey: string | null,
+): Promise<boolean> {
+  if (!editorKey) return false;
+  const standing = await prisma.reviewSubmission.findFirst({
+    where: {
+      projectId,
+      deliverableId: slot.deliverableId,
+      slot: slot.slot,
+      status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"] },
+    },
+    orderBy: { round: "desc" },
+    select: { status: true, submittedByKey: true },
+  });
+  return standing?.status === "APPROVED" && standing.submittedByKey === editorKey;
+}
+
 // Who may upload on THIS project. Owner/admin: any job (vendor cuts). An
 // EDITOR: only a job with an open edit_video/revision task assigned to them —
 // the same scope submitCutForReview enforces, because an earlier audit found
 // one editor's action closing ANOTHER editor's work item (review).
+//
+// `replacing` IS THE APPROVED-CUT DOOR, and it exists because the door was
+// drawn on top of a refusal (drill, Sep 18). An approved, submitted and
+// delivered cut is precisely the row whose edit_video/revision task has been
+// CLOSED, so the open-task test above can never pass on one. On the real board:
+// ten approved slots drew the door, for either editor account, and of those
+// twenty (slot × editor) pairs the server would take two — both Kim's, and only
+// because her two jobs happen to still carry an open task of hers, which is not
+// the delivered-and-done case the door was built for. John Mark had personally
+// submitted the approved version on six of the slots it refused him, 322 N 62nd
+// St — the silent-audio job the feature is named after — among them. The editor
+// found out after picking the file and typing their justification.
+//
+// So a replacement — and ONLY a replacement, i.e. an upload carrying a reason —
+// also admits the editor whose key is on the standing APPROVED version of that
+// exact slot. What that admits, deliberately and no more: the person who made
+// the video may hand in a corrected one, on that slot, on that job. It does not
+// admit another editor's slot, another slot on the same job, a slot whose
+// approved version came in through the Dropbox folder sweep or from the office
+// (no key on the row — those stay the office's to replace), or any ordinary
+// upload, which still needs the open task.
+//
 // `role` rides along because the export spec below has an override only
 // OWNER/ADMIN may use, and the browser's word for who it is is worth nothing.
-async function uploadAuthor(projectId: string): Promise<{ ok: true; key: string | null; name: string | null; role: string } | { ok: false; message: string }> {
+async function uploadAuthor(
+  projectId: string,
+  replacing?: { deliverableId: string; slot: number } | null,
+): Promise<{ ok: true; key: string | null; name: string | null; role: string } | { ok: false; message: string }> {
   const me = await getCurrentUser().catch(() => null);
   if (!me && !authEnforced()) return { ok: true, key: null, name: "Local dev", role: "OWNER" }; // same rule as requireRole
   if (!me) return { ok: false, message: "Sign in to upload a cut." };
@@ -1169,9 +1222,31 @@ async function uploadAuthor(projectId: string): Promise<{ ok: true; key: string 
       },
       select: { id: true },
     });
-    if (!mine) return { ok: false, message: "This job isn't on your queue — ask Kyle or Jordan to assign it to you first." };
+    if (!mine && !(replacing && (await standingApprovedCutIsTheirs(projectId, replacing, key)))) {
+      return { ok: false, message: "This job isn't on your queue — ask Kyle or Jordan to assign it to you first." };
+    }
   }
   return { ok: true, key, name: me.name ?? me.email ?? null, role: me.role };
+}
+
+/**
+ * Would the server take a replacement of the approved cut on this slot, from
+ * whoever is asking? The /edit page calls this per approved row so the door is
+ * DRAWN exactly where it OPENS — the same function, not a second copy of the
+ * rule that drifts away from it (the mismatch above is what this whole pass was
+ * about). Read-only, and it decides nothing: startCutUpload re-runs the real
+ * test on the upload itself.
+ */
+export async function canReplaceApprovedCut(input: {
+  projectId: string;
+  deliverableId: string;
+  slot: number;
+}): Promise<boolean> {
+  const who = await uploadAuthor(input.projectId, {
+    deliverableId: input.deliverableId,
+    slot: Math.floor(input.slot),
+  }).catch(() => ({ ok: false as const, message: "" }));
+  return who.ok;
 }
 
 /**
@@ -1215,7 +1290,14 @@ export async function startCutUpload(input: {
    */
   reopenReason?: string | null;
 }): Promise<{ ok: true; submissionId: string; pathname: string; round: number } | { ok: false; message: string; needsReason?: boolean }> {
-  const who = await uploadAuthor(input.projectId);
+  const reason = (input.reopenReason ?? "").trim();
+  // A reason is what turns this into a REPLACEMENT, which is the one upload an
+  // editor may make on a job whose task is closed — see uploadAuthor. Without
+  // one nothing widens: the ordinary upload still needs the open task.
+  const who = await uploadAuthor(
+    input.projectId,
+    reason ? { deliverableId: input.deliverableId, slot: Math.floor(input.slot) } : null,
+  );
   if (!who.ok) return who;
   const { cutSlots, uploadPathnameFor } = await import("@/lib/reviewCuts");
   const slots = await cutSlots(input.projectId);
@@ -1272,7 +1354,6 @@ export async function startCutUpload(input: {
     // deliver, does not re-deliver, and does not message anybody outside the
     // hub. If the client already has the old file, somebody still has to send
     // the new one, and the Ready-to-send card is where that happens.
-    const reason = (input.reopenReason ?? "").trim();
     if (!revisionOpen && !reason) {
       return {
         ok: false,
@@ -1280,32 +1361,52 @@ export async function startCutUpload(input: {
         needsReason: true,
       };
     }
-    if (!revisionOpen) {
-      const sent = await prisma.reviewSubmission.findFirst({
-        where: { projectId: input.projectId, deliverableId: input.deliverableId, slot: slot.slot, sentToClientAt: { not: null } },
-        select: { sentToClientAt: true },
-      });
-      await prisma.activity.create({
-        data: {
-          projectId: input.projectId,
-          type: "SYSTEM",
-          body: `${who.name ?? "Somebody"} is replacing an approved ${slot.label}${sent ? " that had already gone to the client" : ""} — "${reason.slice(0, 200)}". The approved version is kept; the new one still has to be reviewed${sent ? " and re-sent" : ""}.`.slice(0, 500),
-        },
-      }).catch(() => {});
-      // The office decides what a client is told, so it is told first.
-      await import("@/lib/notify")
-        .then(({ notifyInApp }) =>
-          notifyInApp({
-            kind: "cut_uploaded",
-            title: `An approved video is being replaced — ${slot.label}`,
-            body: `${who.name ?? "Somebody"}: "${reason.slice(0, 160)}"${sent ? " · this one had already gone to the client." : ""}`,
-            href: `/review/${input.projectId}`,
-            targets: [{ roles: ["OWNER", "ADMIN"] }],
-            dedupeKey: `cut-reopen-${input.projectId}-${slot.slot}-${Date.now().toString(36)}`,
-          }),
-        )
-        .catch(() => {});
-    }
+  }
+  // THE REASON IS FILED WHENEVER ONE WAS GIVEN — never again only when some
+  // branch above decided it was compulsory (drill, Sep 18).
+  //
+  // It used to sit under `!revisionOpen`, inside the approved-cut branch, and
+  // the page and this function each kept their own test for "is a video-lane
+  // revision open". They do not agree: the server counts external_agency, and
+  // counts a task TITLED "Video revision…" or "New cut…" whatever key it
+  // carries; the page counted four editor keys. comms.raiseRevision pins an ask
+  // for the outside shop onto assignedKey "kyle" under exactly that title, so
+  // such a job read OPEN here and CLOSED there — the panel drew the door, told
+  // the editor their words go on the job's timeline and tell the office, and
+  // this gate then dropped both: no Activity row, no bell, reopenReason
+  // persisted nowhere. An already-sent video replaced, and nobody told. The
+  // page asks the server's predicate now, and this no longer depends on either.
+  if (reason) {
+    const stillApproved = last?.status === "APPROVED";
+    const sent = await prisma.reviewSubmission.findFirst({
+      where: { projectId: input.projectId, deliverableId: input.deliverableId, slot: slot.slot, sentToClientAt: { not: null } },
+      select: { sentToClientAt: true },
+    });
+    // Said as it is, both ways round: between the editor typing the reason and
+    // pressing send, the reviewer can have bounced the very cut they are
+    // replacing, and a timeline that calls that "approved" is a timeline that
+    // lies about which decision was undone.
+    const what = stillApproved ? `an approved ${slot.label}` : `the ${slot.label} on this job`;
+    await prisma.activity.create({
+      data: {
+        projectId: input.projectId,
+        type: "SYSTEM",
+        body: `${who.name ?? "Somebody"} is replacing ${what}${sent ? " that had already gone to the client" : ""} — "${reason.slice(0, 200)}". The version it supersedes keeps its file, its number and its verdict; the new one still has to be reviewed${sent ? " and re-sent" : ""}.`.slice(0, 500),
+      },
+    }).catch(() => {});
+    // The office decides what a client is told, so it is told first.
+    await import("@/lib/notify")
+      .then(({ notifyInApp }) =>
+        notifyInApp({
+          kind: "cut_uploaded",
+          title: `${stillApproved ? "An approved video" : "A video"} is being replaced — ${slot.label}`,
+          body: `${who.name ?? "Somebody"}: "${reason.slice(0, 160)}"${sent ? " · this one had already gone to the client." : ""}`,
+          href: `/review/${input.projectId}`,
+          targets: [{ roles: ["OWNER", "ADMIN"] }],
+          dedupeKey: `cut-reopen-${input.projectId}-${slot.slot}-${Date.now().toString(36)}`,
+        }),
+      )
+      .catch(() => {});
   }
   // Rounds count in-flight uploads too, so two tabs starting at once don't
   // both become "Version 1" (a failed one leaves a harmless gap). A WITHDRAWN
@@ -1375,9 +1476,16 @@ export async function startCutUpload(input: {
 }
 
 export async function finishCutUpload(input: { submissionId: string; url: string; pathname: string }): Promise<{ ok: boolean; message: string }> {
-  const row = await prisma.reviewSubmission.findUnique({ where: { id: input.submissionId }, select: { projectId: true, status: true, sourceWidth: true } });
+  const row = await prisma.reviewSubmission.findUnique({ where: { id: input.submissionId }, select: { projectId: true, status: true, sourceWidth: true, deliverableId: true, slot: true } });
   if (!row) return { ok: false, message: "That upload no longer exists." };
-  const who = await uploadAuthor(row.projectId);
+  // THE SAME SLOT THE RESERVATION IS ON, so an author who was allowed to start
+  // a replacement is allowed to finish one. Without this the widened door would
+  // be a trap with the bytes already paid for: start() takes the upload, the
+  // file goes to the store, and this line refuses the editor whose task is
+  // closed — leaving the row stuck at UPLOADING and the cut nowhere. The
+  // reservation is UPLOADING, so it is not itself the standing version the test
+  // looks at; the approved one it would supersede still is.
+  const who = await uploadAuthor(row.projectId, row.deliverableId ? { deliverableId: row.deliverableId, slot: row.slot ?? 1 } : null);
   if (!who.ok) return who;
   if (row.status !== "UPLOADING") return { ok: true, message: "Already in review." };
   // The blob must live in a store WE HOLD A TOKEN FOR, under THIS row's prefix
@@ -1436,9 +1544,12 @@ export async function finishCutUpload(input: { submissionId: string; url: string
 }
 
 export async function abandonCutUpload(submissionId: string, blobUrl?: string | null): Promise<void> {
-  const row = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true } });
+  const row = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { projectId: true, deliverableId: true, slot: true } });
   if (!row) return;
-  const who = await uploadAuthor(row.projectId);
+  // Same slot as finishCutUpload's, for the same reason: whoever could open the
+  // replacement has to be able to clean up after a failed one, or a widened
+  // door leaves UPLOADING rows and orphan bytes behind it.
+  const who = await uploadAuthor(row.projectId, row.deliverableId ? { deliverableId: row.deliverableId, slot: row.slot ?? 1 } : null);
   if (!who.ok) return;
   await prisma.reviewSubmission.updateMany({
     where: { id: submissionId, status: "UPLOADING" },
