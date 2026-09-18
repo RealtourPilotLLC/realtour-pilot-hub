@@ -45,13 +45,25 @@ const MAX_BYTES = 8 * 1024 * 1024 * 1024; // 8 GB — 4K vertical exports run 1�
 // guess. The browser decides, so CutUploader is where the word lives, and it
 // reads NEXT_PUBLIC_REVIEW_CUT_ACCESS so flipping it is a Vercel setting and
 // a redeploy rather than an edit — docs/REVIEW-CUT-STORE-HANDOVER.md has the
-// order the halves have to happen in, and §4 lists the six places outside the
-// Review Room that hand this URL to somebody else's servers and break the day
-// it stops being public (the finalize in review/actions.ts:1152 refuses the
-// upload outright; Instagram's container call hands it to META's fetchers).
-// That order is NOT "swap the token, then stop": the 08:40 prune clears a
-// row's pointer before deleting, and del() deletes from the TOKEN's store, so
-// a row released mid-swap loses the only record of where its bytes are (§3).
+// order the halves have to happen in.
+//
+// THE SIX PLACES THAT USED TO BREAK ARE FIXED (Sep 18). §4 of that handover
+// listed six paths outside the Review Room that handed this URL to somebody
+// else's servers — the finalize's own hostname check, Instagram's container
+// fetch, the approval's Dropbox copy, Topaz and the header probes, and both
+// delete guards. They now go through one place, src/lib/reviewCuts.ts (THE CUT
+// STORE): our own fetches carry the store's token, an outside fetcher gets a
+// short-lived presigned GET scoped to one object, and every hostname test asks
+// the TOKEN which store we own instead of matching `.public.`. None of it has
+// ever run against a private store, because none exists.
+//
+// What is left is genuinely Jordan's: create the store. The deployment can
+// hold BOTH tokens while the objects move (BLOB_READ_WRITE_TOKEN +
+// BLOB_READ_WRITE_TOKEN_LEGACY), which is what closes the window the old order
+// left open — the 08:40 prune cleared a row's pointer and then aimed del() at
+// whatever store the token named (§4). The prune now refuses to clear a
+// pointer it cannot aim a delete with, so that window is shut in code and not
+// in a runbook step somebody has to remember.
 //
 // What IS in this route's hands, and is done below:
 //   · the cut's bytes no longer leave through a store URL at all — the stream
@@ -124,10 +136,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         // NOT refused: refusing here would strand a finished export the editor
         // has already spent an hour uploading, which is a worse trade than one
         // more object to re-home.
-        if (process.env.NEXT_PUBLIC_REVIEW_CUT_ACCESS === "private" && blob.url.includes(".public.")) {
+        const { ownCutObject, finalizeCutUpload } = await import("@/lib/reviewCuts");
+        const landed = ownCutObject(blob.url);
+        if (process.env.NEXT_PUBLIC_REVIEW_CUT_ACCESS === "private" && landed.ok && landed.access === "public") {
           console.error("[review] cut landed in a PUBLIC store while the hub is configured private:", blob.pathname);
         }
-        const { finalizeCutUpload } = await import("@/lib/reviewCuts");
+        // …and the same sentence for the other half-flipped state: bytes in a
+        // store no token of ours owns. Logged, never refused, for the same
+        // reason — an editor's finished export is not thrown away over a
+        // configuration mistake — but it is the state that makes a cut
+        // unplayable and unprunable, so it must not be silent.
+        if (!landed.ok) {
+          console.error("[review] cut landed in a store this deployment has no token for:", landed.reason, blob.pathname);
+        }
         await finalizeCutUpload(tokenPayload, { url: blob.url, pathname: blob.pathname });
       },
     });

@@ -3,6 +3,9 @@ import "server-only";
 import { createHash } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { isAutomationEnabled, recordAutomationRun, getAutomation } from "@/lib/programAutomation";
+// The provider fetches the audio itself, so it needs a URL that carries its own
+// permission — never the store's read-write token (RTP-01).
+import { fetchableCutUrl } from "@/lib/reviewCuts";
 import {
   activeTranscriptionProvider,
   transcriptionStatus,
@@ -455,8 +458,32 @@ async function transcribeOne(id: string, provider: TranscriptionProvider): Promi
     return "no hosted file";
   }
 
+  // THE PROVIDER'S SERVERS FETCH THIS URL (RTP-01, handover §2). Same shape
+  // as Meta's container fetch: a speech-to-text provider pulls the file from
+  // its own network with no credential of ours, so on a private store the
+  // object's own address answers 401 and every transcript fails with somebody
+  // else's error message.
+  //
+  // The handoff is a presigned GET scoped to this one pathname, for two hours —
+  // long enough for a queued job to be picked up and a long cut to be pulled,
+  // short enough that a link in a provider's logs stops working the same
+  // morning. NOT a proxy route: that would have to be reachable without our
+  // session to be any use to them.
+  //
+  // Nothing here turns transcription on. There is still no speech-to-text key
+  // and the `cut_transcripts` switch has no row, so this code is not reached
+  // today; it is written now so the day it IS configured is not the day this is
+  // discovered.
+  const source = await fetchableCutUrl(cut, { ttlMs: 2 * 3600_000, purpose: "transcription" });
+  if (!source.ok) {
+    await prisma.contentCutTranscript.update({
+      where: { id },
+      data: { ...release, status: CUT_TRANSCRIPT_STATUS.NEEDS_REVIEW, lastError: `The hub could not give the transcription provider a link to this cut's file — ${source.message}`, lastErrorAt: new Date(), finishedAt: new Date() },
+    });
+    return "no readable file";
+  }
   try {
-    const r = await provider.transcribe({ url: cut.blobUrl, submissionId: cut.id });
+    const r = await provider.transcribe({ url: source.url, submissionId: cut.id });
     const text = r.text.trim();
     await prisma.contentCutTranscript.update({
       where: { id },

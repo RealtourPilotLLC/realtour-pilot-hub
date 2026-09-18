@@ -1,15 +1,19 @@
 # Handover — replacing the review-cut store with a private one (RTP-01)
 
-**Status: NOT DONE. Nothing in this document has been performed.** The private
-store does not exist, so **no code path in this repo has ever fetched a private
-blob**. Everything below about how a private read behaves is read off the
-installed SDK (`@vercel/blob` 2.8.0) and off Vercel's documented URL shape — it
-is a plan, not a result. **The first private upload is the first test.** Treat
-step 5 as an experiment with editors' work in it, and do it on a day someone is
-watching.
+**Status: the CODE is ready. The ACCOUNT STEP has never been performed, and
+nothing below step 3 has ever been run by anybody.**
 
-Last measured 2026-09-17. Probes: `scripts/_fix/G/` (read-only) and
-`scripts/_agent/G-media/` (read-only).
+The private store does not exist, so **no code path in this repo has ever read a
+private blob, minted a presigned URL for one, or copied an object between
+stores.** Everything here about how a private read behaves is read off the
+installed SDK (`@vercel/blob` 2.8.0) and off one live, read-only call to Vercel's
+control API (§5). It is a plan with a proven mechanism, not a result. **The first
+private upload is the first test.** Do it on a day someone is watching.
+
+Last measured 2026-09-18. Probes, all read-only:
+`scripts/_fix/R05/probe-store-decisions.ts`, `scripts/_drill/cut-store-prune.ts`
+(runs against a throwaway PostgreSQL, never production), `scripts/_fix/G/`,
+`scripts/_agent/G-media/`.
 
 ---
 
@@ -25,233 +29,310 @@ All 14 paths carry a random suffix, so nobody is guessing them. That is not a
 defence — an unguessable URL is still a bearer token that never expires, gets
 pasted into Slack, and travels in referrer headers.
 
-What has already been done in code:
-
-- **Playback no longer hands anyone the object's address.** `/api/review/cut/<id>/stream`
-  proxies the bytes behind the hub's own gate, and the client payload carries
-  `hasHubCopy` (a boolean) instead of the URL. Zero store URLs remain in
-  `ReviewSubmission.assetUrl` / `assetPath` / `finalPath`, in `MediaNote.assetUrl`,
-  or in `ProjectMessage` bodies.
-- **New uploads cache for 60 seconds, not 30 days**, so the CDN stops answering
-  for a re-homed URL within a minute.
-- **The hub's half of the flip is a setting**, not an edit: `CutUploader` reads
-  `NEXT_PUBLIC_REVIEW_CUT_ACCESS`.
-
-What cannot be done in code: **`access` is the browser's word.** The SDK writes
+**What cannot be done in code: `access` is the browser's word.** The SDK writes
 it as the `x-vercel-blob-access` header on the browser's own PUT
 (`createPutHeaders`), and `onBeforeGenerateToken` returns a `Pick<>` of seven
-keys that has no `access` in it. The store itself has to be **replaced** with one
-created private — an account action, in the Vercel dashboard, by a human.
+keys with no `access` in it. The store has to be **replaced** with one created
+private — an account action, in the Vercel dashboard, by a human. That is the
+whole of the external dependency.
 
 ---
 
-## 2. The order to do it in
+## 2. What the code now does — and what the 2026-09-17 version of this document
+got wrong
 
-> **The order previously circulated — "swap `BLOB_READ_WRITE_TOKEN` to the new
-> store, then STOP HERE while the rest lands" — is wrong and must not be used.**
-> Section 3 explains what it destroys.
+The previous version of this file said "what has already been done in code"
+and listed three things. A verification pass on 2026-09-18 found the claim was
+wrong: **six paths still handed a bare public URL to somebody**, and the
+document itself scheduled the repairs to four of them *after* the switch, which
+would have exposed the live team to known failures.
 
-The rule that makes the order safe: **no row's `blobUrl` may ever name a store
-that `BLOB_READ_WRITE_TOKEN` does not own — not for a day, not for an hour.**
-Every blob command (`put`, `putFromUrl`, `del`, `head`, `list`) accepts an
-explicit `token` option, so a migration script can hold *both* tokens at once
-while the deployment's environment still holds only the old one. That is what
-keeps the window closed.
+All six now go through **one place — `src/lib/reviewCuts.ts`, the section headed
+THE CUT STORE.** Three rules:
 
-1. **Create the new store, private, in the Vercel dashboard.** Copy its
-   read-write token somewhere local. **Change nothing in the project's
-   environment variables yet.**
-2. **Move the objects, from a local script, with both tokens passed explicitly.**
-   For each of the 14 rows carrying a `blobUrl`: `putFromUrl(pathname, oldUrl,
-   { access: "private", token: NEW_TOKEN, addRandomSuffix: false })` — the new
-   store fetches the old object, which is still public, so this works precisely
-   because the migration happens *before* anything is locked down. Then update
-   that row's `blobUrl` / `blobPathname` to the new object **in the same pass**.
-   Do not delete anything from the old store yet (house rule: retire, don't
-   delete). *Untested: `putFromUrl` across stores has not been run here.*
-3. **Check: zero rows still pointing at the old store.** `scripts/_fix/G/probe-hosts.ts`
-   prints the distinct hosts across every row carrying a `blobUrl`; it must print
-   the new store's host and nothing else. If any row still names the old store,
-   **stop** — going on from here is exactly the failure in section 3.
-4. **Now swap `BLOB_READ_WRITE_TOKEN`** in Vercel to the new store's token, and
-   redeploy. Playback is the thing to check first: the stream route sends the
-   token only to our own store's private host, so a cut should play as it did
-   yesterday. It has never been observed doing so (see the top of this file).
-5. **Only then set `NEXT_PUBLIC_REVIEW_CUT_ACCESS=private`** and redeploy, so new
-   uploads land private. Flipping it before step 4 stops every editor's upload
-   the same minute: private access against a public store is refused by the
-   control plane ("Cannot use private access on a public store").
-6. **Work through section 4** — several things outside the Review Room hand this
-   URL to somebody else's servers and will break the moment it stops being
-   public. At least one of them (4.1) refuses the upload itself.
-7. **Last, once the new store has been serving for a while:** delete the old
-   store's objects, then the old store. Not before — the old objects are the only
-   copy of anything step 2 got wrong.
+1. **Our own fetches carry the store's read token** (`blobFetchDecision`). The
+   stream route's proxy, the Topaz part upload.
+2. **Somebody else's fetch gets a short-lived presigned GET** scoped to that one
+   pathname (`fetchableCutUrl` → `issueSignedToken` + `presignUrl`). Dropbox's
+   `files/save_url`, Meta's `video_url`, a transcription provider, and our own
+   header probes — which take a bare URL and send no headers, so they need a URL
+   that carries its own permission too. **The read-write token never leaves the
+   building.**
+3. **No hard-coded hostname decides anything.** The store we own is whatever the
+   TOKEN says, and during the cutover we hold two.
 
-### If it cannot be done in one sitting
+| Path | Before 2026-09-18 | Now |
+|---|---|---|
+| `review/actions.ts` `finishCutUpload` | required `.public.` in the host — refused every private upload | `ownCutObject`: any store we hold a token for, under `review-cuts/` |
+| `reviewCuts.ts` `startDropboxCopy` | `files/save_url` with the raw `blobUrl` | presigned GET, 6 h; a failure writes the same Activity line the retry loop already reads |
+| `topazJobs.ts` `stepUploading` | bare `fetch(sub.blobUrl)` | same fetch, with the store's `authorization` header |
+| `topazJobs.ts` probes ×3, `reviewCuts.recordArrivedDimensions` | `probeVideoMetadata(blobUrl)` | `probeableUrl()` first; an unreadable file skips the render instead of misreporting its audio |
+| `publishing.ts` (Instagram) | `videoUrl: cut.blobUrl` to Meta's fetchers | presigned GET, 6 h; an unmintable link FAILS the job with that sentence |
+| `cutTranscripts.ts` | `transcribe({ url: cut.blobUrl })` | presigned GET, 2 h; unmintable → `NEEDS_REVIEW` with the reason |
+| `abandonCutUpload`, `removeCut`, `pruneReviewUploads` | hard-coded `.public.`; `del()` with whatever token was primary | `deleteCutObject`: aimed at the token that owns THAT object's store |
 
-There is no setting that turns the prune off. `keepUploadsDays` (Settings →
-Review Room) is clamped to 1–365 in `src/lib/settings.ts:247` — it cannot be set
-to "never" — and it gates only the *first* of the prune's three passes; the other
-two use a hard-coded 7-day window and ignore it entirely.
+**Proof, `scripts/_fix/R05/probe-store-decisions.ts`** (read-only; it imports the
+shipped functions and runs them against the real token and the real 14 rows,
+with the host rewritten to `.private.` to stand in for the store that does not
+exist yet):
 
-**The switch is the cron entry.** Remove
+```
+token store id : mphvkcyomow88h9w          production rows carrying a blobUrl: 14
 
-```json
-{ "path": "/api/cron/daily-reconcile", "schedule": "40 8 * * *" }
+1. TODAY (the public store). Nothing may change.
+   fetch: allowed with NO credential           14/14
+   finalize: accepted  old 14/14   new 14/14
+   delete:   aimable   old 14/14   new 14/14
+   handoff url byte-for-byte unchanged         14/14  (no signing call made)
+
+2. THE SAME OBJECTS ON A PRIVATE STORE
+   finalize accepts the upload   old 0/14   new 14/14
+   delete can be aimed           old 0/14   new 14/14
+   our own fetch carries the store token      14/14
+
+4. FIXTURES
+   our store, private, lower-case host    fetch: ALLOWED + token      delete: DELETABLE with our token
+   our store, private, UPPER-CASE host    fetch: ALLOWED + token      delete: DELETABLE with our token
+   our store, public                      fetch: ALLOWED, no token    delete: DELETABLE with our token
+   ANOTHER store, private                 fetch: REFUSED (foreign-store) delete: REFUSED (foreign-store)
+   our store, NOT a review cut            fetch: ALLOWED, no token    delete: REFUSED (not-a-cut-path)
+   look-alike domain                      fetch: REFUSED (unreadable) delete: REFUSED (unreadable)
+   not a url                              fetch: REFUSED (unreadable) delete: REFUSED (unreadable)
 ```
 
-from `vercel.json` and redeploy *before* the token is swapped, and put it back
-after step 3 confirms every row has moved. That route also carries photo counts,
-the Plaid retry, package margins and the growth plan — all of them are catch-up
-work that costs nothing to miss for a day or two.
+Read the first block carefully: **on today's store every one of these functions
+returns exactly what the code it replaced returned.** The public branch of
+`fetchableCutUrl` makes no network call and hands back the same URL. This shipped
+dormant on purpose — it changes nothing until the store is replaced.
+
+### Still outside this repair, and outside the files it was allowed to touch
+
+- **`src/lib/aryeoDelivery.ts:974`** measures a cut's duration with
+  `videoLength(c.blobUrl, …)`, which is `probeVideoMetadata` on a bare URL. On a
+  private store it returns `null`, and the rule immediately below it is "NO
+  MEASUREMENT, NO STAMP" — so deliveries stop being confirmable rather than
+  being confirmed wrongly. The one-line fix is the same `probeableUrl()` the
+  Topaz probes now use. **Do this before step 4.**
+- **`src/components/editing/CutUploader.tsx`** still says in a comment that
+  "§4.1 of that note is the finalize call that refuses a private upload". That
+  is no longer true — the finalize accepts either store — and the section
+  numbers here have changed. The sentence is stale, not dangerous; correct it
+  next time that file is open.
+- **`ProgramPublishingJob.mediaValidationJson`** stores the cut's `blobUrl` in
+  the approval snapshot. That is a record of what was approved against and is
+  kept (retire, don't delete) — but it means old public URLs also sit in that
+  column, and re-homing the objects does not rewrite them. It is read for the
+  hash comparison, never fetched.
 
 ---
 
-## 3. What the old order destroyed (the 08:40 window)
+## 3. The order to do it in
 
-`vercel.json` schedules `/api/cron/daily-reconcile` at `40 8 * * *`. Its **first**
-step is `pruneReviewUploads` (`src/lib/reviewCuts.ts:935`), whose `release()`
-helper, at `src/lib/reviewCuts.ts:952`:
+> **Two orders have been circulated and both were wrong.** "Swap the token, then
+> stop while the rest lands" destroys rows (§4). "Move the rows, THEN swap the
+> token" — the 2026-09-17 order — leaves a window running the other way: between
+> the first moved row and the redeploy, every moved row names a store the
+> deployment holds no token for, so its cut will not play, will not copy to
+> Dropbox and cannot be pruned. It also scheduled §2's repairs for *after* the
+> switch.
 
-1. sets `blobUrl` and `blobPathname` to `null`, **then**
-2. calls `del(blobUrl)`.
+The rule that makes an order safe: **at every instant, every row's `blobUrl`
+must name a store the deployment holds a token for.** The way to get that is not
+to sequence the two carefully — it is to hold **both tokens at once**, so the
+question cannot be asked at a bad moment.
 
-That order is deliberate and correct in normal running — there is a comment on it:
-*"Bytes go only once the row no longer points at them — a live blobUrl behind a
-deleted blob would 302 every viewer to a 404."* It is not the thing to change.
+1. **Fix `aryeoDelivery.ts` (§2, last block) and deploy it.** It is one line and
+   it is the only known consumer still on a bare URL.
+2. **Create the new store, private, in the Vercel dashboard.** Copy its
+   read-write token. Change nothing else yet. *(Account action — never done.)*
+3. **ONE redeploy that sets all three variables together:**
+   - `BLOB_READ_WRITE_TOKEN` = the **new** (private) store's token
+   - `BLOB_READ_WRITE_TOKEN_LEGACY` = the **old** (public) store's token
+   - `NEXT_PUBLIC_REVIEW_CUT_ACCESS` = `private`
 
-But `del()` deletes from the store that **`BLOB_READ_WRITE_TOKEN`** names, not
-from the store the **URL** names. So during any window in which the token has
-been swapped and the rows have not:
+   The first two must arrive together because the deployment has to be able to
+   read and delete objects in **both** stores from this moment on. The third has
+   to arrive in the *same* deploy as the first: the client token is minted from
+   `BLOB_READ_WRITE_TOKEN` server-side while the browser sends the `access`
+   header itself, so a private store with the flag still `public` — or a public
+   store with the flag already `private` — is an upload the control plane
+   refuses. *(Unverified: no private store has ever been uploaded to. The public
+   half of that refusal is documented — "Cannot use private access on a public
+   store".)*
 
-- the row's pointer is cleared — irreversibly, it is the only record of which
-  object held that cut;
-- the delete is aimed at the *new* store, so the bytes stay in the *old* one,
-  now unreferenced and unreachable by anything in the hub;
-- and it is silent. `del()` is idempotent about a path it cannot find, so the
-  prune counts it as `pruned`, not `failed`, and nothing is logged.
+   After this redeploy: **existing rows still name the old store and still work**
+   (public objects, read with no credential, deletable with the legacy token).
+   **New uploads land in the new store, private.** Nothing is stranded, because
+   nothing has moved.
 
-**Measured against production on 2026-09-17** (`scripts/_fix/G/probe-prune-window.ts`,
-read-only, counts only):
+   *Uploads in flight across the redeploy:* an editor whose browser holds the
+   previous bundle sends `access: public` against the new private store and the
+   PUT is refused — they see an upload error and retry on a reload. An editor
+   who already has a signed token for the OLD store finishes into the old store;
+   the finalize accepts it (it asks the token, not the hostname) and the row is
+   picked up by step 4 like any other. `onUploadCompleted` logs both
+   half-flipped states by name.
 
-```
-keepUploadsDays = 90
-rows carrying a blobUrl today                     : 14
-  step 1 approved + copied, past retention        : 0
-  step 2 UPLOAD_FAILED, bytes landed, >7d         : 0   <-- keepUploadsDays does NOT gate this
-  step 3 superseded/withdrawn round, >7d          : 0   <-- nor this
-  rows the next 08:40 pass would release          : 0 (up to 50 per step)
+4. **Move the objects, one row at a time:**
+   `npx tsx scripts/_fix/R05/migrate-cut-store.ts --new-token <new> --apply`.
+   Per row it copies, HEADs the copy and compares its size to the source, writes
+   a ledger line, and only then updates the row — so a crash anywhere leaves the
+   row pointing at an object that exists. It skips rows already in the new store
+   and rows still `UPLOADING`. **It never deletes the original.** Run it as often
+   as you like; it is idempotent.
 
-soonest a row now holding bytes can become eligible:
-  2026-09-25  step 3 superseded (once a newer round exists)
-```
+   *The old handover's step 2 could not have worked.* It called
+   `putFromUrl(pathname, oldUrl, { access: "private", token: NEW_TOKEN })`. In
+   2.8.0 `putFromUrl` is the deprecated **image** pipeline — its options type
+   requires `optimizeImage`, it needs OIDC auth, and it optimizes rather than
+   copies. `copy()` is no help either: it copies within one store. The move has
+   to stream: read the old object, `put` it into the new store with
+   `multipart: true`. That is what the script does.
 
-Read that honestly: **today the window would eat nothing**, and on **2026-09-25**
-it starts eating rows — and any cut uploaded and superseded from today is
-eligible seven days later. A "stop here for a bit" that stretches past a week
-loses cuts. That is why the order above closes the window instead of timing it.
+5. **Check.** `scripts/_fix/G/probe-hosts.ts` prints the distinct hosts across
+   every row carrying a `blobUrl`. When it prints only the new store's host,
+   every cut is private. Until then a mixture is *fine* — that is the whole point
+   of holding both tokens.
 
----
+6. **Rollback, at any point:**
+   `… migrate-cut-store.ts --rollback --ledger <file> --apply` puts every moved
+   row back to the URL in the ledger. The old objects were never deleted, so the
+   restore is complete. To back out the deployment as well, **swap the two token
+   variables** (primary = old, legacy = new) and set
+   `NEXT_PUBLIC_REVIEW_CUT_ACCESS` back to `public` in one redeploy — do not
+   simply remove the new token, or the rows already moved lose their store.
 
-## 4. What breaks the day the store goes private
-
-Each of these hands the cut's URL to **somebody else's servers**, which have no
-session and no token. "Server-side" does not mean "authenticated" — it matters
-*whose* server does the fetching.
-
-**4.1 The upload's own finalize refuses — fix this first.**
-`src/app/review/actions.ts:1152` (`finishCutUpload`) requires the URL to match
-`^https:\/\/[a-z0-9]+\.public\.blob\.vercel-storage\.com\/`. On a private store
-the browser's finish call answers *"That file doesn't belong to this cut."* The
-store's own completion callback (`finalizeCutUpload`, `src/lib/reviewCuts.ts:653`)
-has no such check and would still file the row — so the outcome is a race, and
-what the editor sees is an error on a cut that may or may not have landed.
-
-**4.2 Instagram publishing — the reel never gets fetched.**
-`src/lib/publishing.ts:649` passes `videoUrl: cut.blobUrl` into
-`createMediaContainer`, which at `src/lib/integrations/instagram.ts:303` posts it
-to Meta's Graph API as `video_url`. **Meta's servers fetch that URL**, from
-Meta's network, with no credential of ours. A private object answers them with a
-401/403 and the container is never created: the publish job fails or retries
-until it stops. Nothing in the hub logs "Meta could not read the file" in those
-words — it surfaces as a failed publishing job. (The 2026-09-17 handover missed
-this one entirely. Publishing is outside this group's files; it is named here so
-whoever does the flip knows to fix or gate it.)
-
-**4.3 The Dropbox copy on approval.**
-`src/lib/reviewCuts.ts:837` calls Dropbox `files/save_url` with `sub.blobUrl`.
-**Dropbox's servers** fetch it. Approvals would stop filing the copy that is
-supposed to become the file of record.
-
-**4.4 Topaz and the duration probe.**
-`src/lib/topazJobs.ts:1007` fetches `sub.blobUrl` directly, and
-`probeVideoMetadata` range-probes it (also reached from
-`src/lib/aryeoDelivery.ts:974` to measure a cut's length). Both are plain
-unauthenticated fetches from our own server process — they can be given the
-token, but somebody has to give it to them.
-
-**4.5 Both delete guards refuse to delete anything.**
-`src/app/review/actions.ts:1201` (`abandonCutUpload`) and
-`src/app/review/actions.ts:1702` (remove-a-cut) each match a hard-coded
-`\.public\.`. On a private store they stop deleting and start reporting the file
-"left behind" — safe, but wrong, and it accumulates.
-
-**4.6 Transcription, when it is turned on.**
-`src/lib/cutTranscripts.ts:459` hands `cut.blobUrl` to a speech-to-text provider,
-whose servers fetch it. Dormant today (no key, switch off) — it becomes 4.2 all
-over again the day it is configured.
-
-Only one path is already correct: `/api/review/cut/<id>/stream`, which fetches
-the object **from our own server** and attaches
-`authorization: Bearer <read-write token>` — but only for our own store's private
-host. See section 5.
+7. **Last, and only once the new store has been serving for a while:** delete the
+   old store's objects, then the old store, then remove
+   `BLOB_READ_WRITE_TOKEN_LEGACY`. Not before — the old objects are the only copy
+   of anything step 4 got wrong, **and until they are deleted every public URL
+   that has ever left the building still works.** Copying does not revoke
+   anything; deleting is what finally does.
 
 ---
 
-## 5. The store-id guard, and the bug it had
+## 4. The 08:40 window — measured, and now shut in code
 
-`blobFetchDecision` in `src/app/api/review/cut/[id]/stream/route.ts` decides
-whether a cut's object may be fetched and with what. Private host → our token.
-Public host → no credential. **Any other store's private host → refused**, because
-the read-write token is a bearer credential for one store and the migration puts
-two stores in play at once.
+`vercel.json` schedules `/api/cron/daily-reconcile` at `40 8 * * *`. Its first
+step is `pruneReviewUploads`, whose `release()` helper:
 
-As it shipped in `f3d70a3`, that comparison was **case-sensitive**, and it was
-wrong in exactly the direction that hurts: the store id sits in the token the way
-the dashboard writes it (`mphvkCyOMoW88h9w`), while `new URL().host` lower-cases
-a hostname before anyone sees it, and the store's own URLs arrive lower-cased too
-— all 14 production rows read `mphvkcyomow88h9w.public.blob.vercel-storage.com`.
-`mphvkCyOMoW88h9w` never equals `mphvkcyomow88h9w`, so the guard would have
-refused **every legitimate cut**, on the one day it is meant to start working.
+1. set `blobUrl` and `blobPathname` to `null`, **then**
+2. `del(blobUrl)`.
 
-Fixed by folding case on both sides. Proof, `scripts/_fix/G/probe-guard.ts`
-(read-only; it imports the shipped function and runs it against the real token
-and the real rows, with the host rewritten to `.private.` to stand in for the
-store that does not exist yet):
+That order is deliberate and correct in normal running — there is a comment on
+it: *"Bytes go only once the row no longer points at them — a live blobUrl behind
+a deleted blob would 302 every viewer to a 404."* It is not the thing to change.
+
+The problem was that **`del()` deletes from the store the TOKEN names, not the
+store the URL names**, and it is idempotent about a path it cannot find. During
+any window where the token had moved and a row had not: the pointer — the only
+record of which object held that cut — was cleared, the delete was aimed at the
+wrong store, the bytes were orphaned, and the pass counted it as `pruned`.
+
+Measured against production on 2026-09-17 (`scripts/_fix/G/probe-prune-window.ts`,
+read-only, counts only): with `keepUploadsDays = 90`, **0 of the 14 rows were
+eligible that day**, and the soonest a row could become eligible was
+**2026-09-25** — so a "stop here for a bit" that stretched past a week lost cuts.
+
+**The old answer was a runbook step** (pull the cron entry from `vercel.json`
+before the swap, put it back after). **The new answer is in the code:** a
+pointer is only cleared once the object has been matched to a token we hold.
+Anything else is left whole and counted as `failed`, which is the one outcome
+that is recoverable.
+
+Proof, `scripts/_drill/cut-store-prune.ts` — a real PostgreSQL (PGlite on a
+loopback socket, schema pushed, `DATABASE_URL` pinned before the first app
+import; production is never touched, and the blob token is one for a store that
+does not exist so nothing real can be deleted):
 
 ```
-production rows carrying a blobUrl: 14
-  today (public URLs), new guard allows : 14/14  (no authorization header sent)
-  same objects as .private., OLD guard  : 0/14 allowed  <-- the blocker
-  same objects as .private., NEW guard  : 14/14 allowed, with Bearer <our token>
+── THE OLD release() — a faithful copy of the pre-Sep-18 lines
+   ours                   blobUrl after: null  <-- the only record of where those bytes are, gone
+   foreign store          blobUrl after: null  <-- the only record of where those bytes are, gone
+   ours, not a cut path   blobUrl after: null  <-- the only record of where those bytes are, gone
 
-fixtures (does the token leave the building?)
-  our store, private, lower-case host    ALLOWED + token
-  our store, private, UPPER-CASE host    ALLOWED + token
-  our store, public                      ALLOWED, no token
-  ANOTHER store, private                 REFUSED (foreign-store)
-  look-alike domain                      REFUSED (unreadable)
-  not a url                              REFUSED (unreadable)
+── THE SHIPPED release() — pruneReviewUploads(90) against the same rows
+   pruneReviewUploads returned {"pruned":0,"failed":3} in 288ms
+   [PASS] ours — pointer cleared, delete aimed  got null
+   [PASS] foreign store — row left whole
+   [PASS] ours, not a cut path — row left whole
+   [PASS] nothing was counted as pruned  got 0
+   [PASS] all three accounted for as failed  got 3
+
+── WITH THE LEGACY TOKEN SET — the cutover state the new order creates
+   [PASS] a row still in the OLD store is still prunable  got null
+   [PASS] …and WITHOUT the legacy token it is left whole, not stranded
 ```
 
-A look-alike domain (`…blob.vercel-storage.com.evil.test`) is refused, and a
-genuine-but-foreign store is refused with the host in the log and a generic
-sentence to the viewer.
+(The one "ours" delete does reach Vercel and fails — `BlobStoreNotFoundError`,
+because the drill's store is invented. That failure is the network confirming
+the delete was *aimed*, which is what the test is about.)
+
+`keepUploadsDays` (Settings → Review Room) is still clamped to 1–365 in
+`src/lib/settings.ts` and still gates only the first of the prune's three passes;
+the other two use a hard-coded 7-day window. Nothing about that changed — it no
+longer matters, because the unsafe outcome is now impossible rather than merely
+avoided.
 
 ---
 
-## 6. Until the store is replaced
+## 5. The store-id guard, and the signed handoff
+
+`blobFetchDecision` (now in `src/lib/reviewCuts.ts`, still re-exported from
+`src/app/api/review/cut/[id]/stream/route.ts` because that is where it shipped
+and where `scripts/_fix/G/probe-guard.ts` imports it) decides whether a cut's
+object may be fetched and with what. Private host → our token. Public host → no
+credential. **Any other store's private host → refused**, because the read-write
+token is a bearer credential for one store and the cutover puts two in play.
+
+As it shipped in `f3d70a3` that comparison was **case-sensitive**, and wrong in
+exactly the direction that hurts: the store id sits in the token the way the
+dashboard writes it (`mphvkCyOMoW88h9w`), while `new URL().host` lower-cases a
+hostname and the store's own URLs arrive lower-cased too. It would have refused
+**every legitimate cut**, on the one day it is meant to start working. Fixed by
+folding case on both sides; §2's fixture table is the proof.
+
+**The signed handoff** is the one thing here with a live result. `fetchableCutUrl`
+mints a presigned GET with `issueSignedToken` → `presignUrl`. Asked against the
+**real** store with the real token (`probe-store-decisions.ts --live`,
+2026-09-18, read-only — it issues a five-minute delegation and prints nothing
+but its expiry):
+
+```
+--live: asking the control API for a GET delegation on review-cuts/cmtak04sn…
+  delegation issued, valid until 2026-09-18T02:31:07.095Z
+  presigning a DIFFERENT pathname with it → refused: Blob path does not match
+                                            the signed token scope; expected …
+```
+
+So: the control API **does** issue read delegations for our store with the token
+we hold, and the delegation **is** scoped to one pathname — a link handed to
+Dropbox or Meta cannot be replayed against another client's video. What has
+**not** been shown, and cannot be until the store exists, is a private object
+actually being fetched with one.
+
+---
+
+## 6. What has never been executed
+
+Stated plainly, because the previous version of this file did not:
+
+- No private store has been created. **Every private-store behaviour below the
+  SDK's own types is a design, not a result.**
+- No blob has ever been uploaded with `access: "private"` from this codebase,
+  so it is not known that the browser's PUT succeeds, that `NEXT_PUBLIC_REVIEW_CUT_ACCESS`
+  and the token flipping together is sufficient, or what the control plane says
+  if they disagree.
+- No presigned URL has ever been **fetched** — only issued (§5).
+- No object has ever been copied between stores. `migrate-cut-store.ts` has been
+  dry-run against the 14 real rows and has never been run with `--apply`.
+- No rollback has been exercised.
+- The private read path in the stream proxy (`authorization: Bearer …` against
+  `*.private.blob.vercel-storage.com`) has never returned a byte. Playback with
+  seeking, authorised download, the Dropbox copy, a Topaz render and a prune are
+  all **proven on the public store and designed for the private one.**
+
+## 7. Until the store is replaced
 
 Every URL that has already left the building is still live and cannot be
 revoked. Treat any cut URL in a Slack message, an email or a browser history as

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { blobFetchDecision as decideBlobFetch } from "@/lib/reviewCuts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -185,50 +186,15 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
 // gate just admitted.
 const PASS_THROUGH = ["content-type", "content-length", "content-range", "accept-ranges", "etag", "last-modified"];
 
-/** What, if anything, this cut's object may be fetched with.
- *  `foreign-store` means the URL names a Vercel store this deployment holds no
- *  token for — refuse rather than hand our bearer credential to a stranger. */
-export type BlobFetchDecision =
-  | { ok: true; authorization: string | null }
-  | { ok: false; reason: "unreadable" | "foreign-store"; host: string };
-
-// A private blob needs the store's read token; a public one ignores it. The
-// host says which — the SDK builds `<store>.<access>.blob.vercel-storage.com`
-// (constructBlobUrl, @vercel/blob 2.8.0) and reads a private object with a
-// plain `authorization: Bearer <read-write token>` (get(), same package) — so
-// this keeps working unchanged the day the store goes private.
-//
-// But the token is a bearer credential for ONE store, and matching on
-// `.private.` alone would have offered it to ANY Vercel store's host. That is
-// not hypothetical here: the store replacement puts two stores in play at once
-// — the old public one still holding the 14 objects live today and the new
-// private one — and a row carrying the wrong one must fail loudly, not quietly
-// present our credential to a stranger. The store id is the fourth
-// underscore-separated field of the token (parseStoreIdFromReadWriteToken).
-//
-// CASE-FOLDED ON BOTH SIDES, and that is the whole point of this function
-// existing rather than four inline lines. The store id sits in the token the
-// way the dashboard writes it — ours is `mphvkCyOMoW88h9w` — while a hostname
-// is case-insensitive by DNS and `new URL().host` lower-cases it before we ever
-// see it. The store's own URLs arrive lower-cased too: all 14 rows carrying a
-// blobUrl in production today read `mphvkcyomow88h9w.public.blob.vercel-
-// storage.com`. Compared raw, `mphvkCyOMoW88h9w` never equals
-// `mphvkcyomow88h9w`, so the guard refused EVERY legitimate object — and it
-// would have done it on the one day it is meant to start working, the day the
-// store goes private (review, Sep 17; scripts/_fix/G/probe-guard.ts runs this
-// function against the real token and the real rows).
-//
-// Exported so that comparison can be exercised directly, the way the Aryeo
-// webhook exports its classifier.
-export function blobFetchDecision(blobUrl: string, rwToken: string | undefined): BlobFetchDecision {
-  let host = "";
-  try { host = new URL(blobUrl).host.toLowerCase(); } catch { return { ok: false, reason: "unreadable", host: "" }; }
-  if (!host.endsWith(".blob.vercel-storage.com")) return { ok: false, reason: "unreadable", host };
-  if (!host.includes(".private.")) return { ok: true, authorization: null };
-  const storeId = (rwToken ?? "").split("_")[3]?.toLowerCase() ?? "";
-  if (!storeId || host !== `${storeId}.private.blob.vercel-storage.com`) return { ok: false, reason: "foreign-store", host };
-  return { ok: true, authorization: `Bearer ${rwToken}` };
-}
+// WHO MAY FETCH THE OBJECT, and with what, now lives in src/lib/reviewCuts.ts
+// (Sep 18). It moved because the workers that also need it — the Topaz upload,
+// the header probes, the retention prune, the approval's Dropbox copy — have no
+// business importing an app route to get at it, and a second copy of this
+// decision is exactly how six paths ended up handing out a bare public URL.
+// Re-exported here because that is the path it shipped at and the probe that
+// proves it (scripts/_fix/G/probe-guard.ts) imports it from this file.
+export { blobFetchDecision } from "@/lib/reviewCuts";
+export type { BlobFetchDecision } from "@/lib/reviewCuts";
 
 async function proxyBlob(req: NextRequest, blobUrl: string, fileName: string | null, asAttachment = false): Promise<Response> {
   const range = req.headers.get("range");
@@ -236,7 +202,10 @@ async function proxyBlob(req: NextRequest, blobUrl: string, fileName: string | n
   if (range) headers.Range = range;
   const ifRange = req.headers.get("if-range");
   if (ifRange) headers["If-Range"] = ifRange;
-  const decision = blobFetchDecision(blobUrl, process.env.BLOB_READ_WRITE_TOKEN);
+  // No token argument: the decision reads every store token this deployment
+  // holds (blobStoreTokens), which during the store cutover is two — so a cut
+  // still living in the old store and one already in the new one both play.
+  const decision = decideBlobFetch(blobUrl);
   if (!decision.ok) {
     if (decision.reason === "unreadable") return NextResponse.json({ error: "That cut's file link is unreadable" }, { status: 502 });
     // A generic answer to the viewer; the detail belongs in the log, where it

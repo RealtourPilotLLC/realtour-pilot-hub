@@ -194,9 +194,20 @@ export type CreatedCut = { id: string; assetPath: string; fileName: string; roun
 export async function recordArrivedDimensions(submissionId: string, url: string, sizeBytes: number | null): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    // WHAT THE PROBE IS ALLOWED TO FETCH (Sep 18). Two kinds of URL arrive
+    // here: a Dropbox temporary link (the folder door, measureFolderCuts) and
+    // the hub store's own object URL (the panel door, review/actions'
+    // finishCutUpload). probeVideoMetadata takes a URL and nothing else — it
+    // range-GETs it with no headers — so the store's half cannot be
+    // authenticated by passing a token down; it has to be a URL that already
+    // carries its own permission. On today's public store that is the object's
+    // own URL and this line is a no-op; on a private one it is a short-lived
+    // presigned GET. A Dropbox link is left exactly as it came.
+    const probeUrl = await probeableUrl(url);
+    if (!probeUrl) return;
     const { probeVideoMetadata } = await import("@/lib/integrations/topaz");
     const meta = await Promise.race([
-      probeVideoMetadata(url, sizeBytes),
+      probeVideoMetadata(probeUrl, sizeBytes),
       new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 6_000); }),
     ]);
     if (!meta || !(meta.width > 0 && meta.height > 0)) return;
@@ -703,6 +714,251 @@ const SAFE_NAME = (name: string) => name.replace(/[^\w.\- ()]+/g, "_").replace(/
 export const uploadPathnameFor = (projectId: string, submissionId: string, fileName: string) =>
   `review-cuts/${projectId}/${submissionId}/${SAFE_NAME(fileName)}`;
 
+// ===========================================================================
+// THE CUT STORE — who may read these bytes, and with what.
+//
+// RTP-01 (Sep 16 → Sep 18). A review cut is an unreleased client video, and the
+// store holding them was created PUBLIC, which makes every object URL a
+// permanent credential-free link: the Sep 16 audit pulled a 368 MB .mov off
+// `mphvkcyomow88h9w.public.blob.vercel-storage.com` with no session at all.
+// The store's access level is fixed AT CREATION — `access` is the BROWSER's
+// header (@vercel/blob 2.8.0 writes `x-vercel-blob-access` in createPutHeaders,
+// and `onBeforeGenerateToken` has no `access` key to return), so only a human
+// in the Vercel dashboard can make a private one. THAT is a real external
+// dependency.
+//
+// The code half is not, and on Sep 17 it was reported finished while six paths
+// still handed a bare public URL to somebody else's servers (reviewer, Sep 18):
+// the approval's Dropbox copy, the Topaz upload, the header probes, Meta's
+// container fetch, the transcription provider, and both delete guards. This
+// section is that half, in ONE place so there is never a seventh.
+//
+// Three rules:
+//   1. OUR OWN fetch carries the store's read token — blobFetchDecision.
+//   2. SOMEBODY ELSE'S fetch — Dropbox pulling `files/save_url`, Meta pulling
+//      `video_url`, a speech-to-text provider — gets a SHORT-LIVED PRESIGNED
+//      GET scoped to that one pathname (fetchableCutUrl). Never the read-write
+//      token: a presigned URL carries a delegation naming one object and one
+//      expiry, which is a categorically different thing to hand a stranger than
+//      a credential that can write and delete every cut we hold.
+//   3. Nothing is decided by a hard-coded hostname. The store this deployment
+//      owns is whatever its TOKEN says — and during the cutover it owns TWO
+//      (BLOB_READ_WRITE_TOKEN and BLOB_READ_WRITE_TOKEN_LEGACY). That pair is
+//      what makes the cutover window-free: a row may name either store at any
+//      instant and every read, probe and delete still resolves to the right
+//      token. docs/REVIEW-CUT-STORE-HANDOVER.md §3 is the order.
+//
+// NOTHING BELOW HAS EVER RUN AGAINST A PRIVATE STORE, because no private store
+// exists. On today's public store every function here returns exactly what the
+// code it replaced returned — no signing call is made, no header is added, the
+// same URL comes back (scripts/_fix/R05/probe-store-decisions.ts runs them
+// against the real token and the real rows and prints old beside new). That is
+// deliberate: this ships dormant and wakes the day the store is replaced.
+// ===========================================================================
+
+/** Every blob read-write token this deployment holds, primary first.
+ *
+ *  BLOB_READ_WRITE_TOKEN is the store new uploads land in. The LEGACY slot is
+ *  the store cutover and nothing else: for as long as some rows still name the
+ *  old store and some name the new one, BOTH have to be readable and
+ *  deletable, or `del()` is aimed at the wrong store — which is the 08:40
+ *  window in handover §4, where a row's only pointer was cleared and then
+ *  nothing was deleted. It comes out again once every row has moved. */
+export function blobStoreTokens(): string[] {
+  return [process.env.BLOB_READ_WRITE_TOKEN, process.env.BLOB_READ_WRITE_TOKEN_LEGACY]
+    .map((t) => (t ?? "").trim())
+    .filter((t) => t.length > 0);
+}
+
+/** The store id a read-write token names: the fourth underscore-separated
+ *  field, CASE-FOLDED. The token spells it the way the dashboard writes it
+ *  (`mphvkCyOMoW88h9w`) while a hostname is case-insensitive by DNS and
+ *  `new URL().host` lower-cases it before anyone sees it — compared raw, the
+ *  guard refused every legitimate object, on the one day it is meant to start
+ *  working (review, Sep 17). */
+export function blobStoreIdOf(token: string | null | undefined): string {
+  return (token ?? "").split("_")[3]?.toLowerCase() ?? "";
+}
+
+/** What, if anything, this cut's object may be fetched with.
+ *  `foreign-store` means the URL names a Vercel store this deployment holds no
+ *  token for — refuse rather than hand our bearer credential to a stranger. */
+export type BlobFetchDecision =
+  | { ok: true; authorization: string | null; token: string | null }
+  | { ok: false; reason: "unreadable" | "foreign-store"; host: string };
+
+/** A private blob needs the store's read token; a public one ignores it. The
+ *  host says which — the SDK builds `<store>.<access>.blob.vercel-storage.com`
+ *  (constructBlobUrl) and reads a private object with a plain
+ *  `authorization: Bearer <read-write token>` (get(), same package, read line
+ *  by line in 2.8.0).
+ *
+ *  The token is a bearer credential for ONE store, so matching on `.private.`
+ *  alone would have offered it to ANY Vercel store's host. Not hypothetical:
+ *  the cutover puts two stores in play at once, and a row carrying a store we
+ *  do not hold must fail loudly rather than quietly present our credential.
+ *
+ *  Lived in the stream route until Sep 18 and is still re-exported from there
+ *  (scripts/_fix/G/probe-guard.ts imports it by that path). It moved because
+ *  the workers that now need it — Topaz, the probes, the prune — have no
+ *  business importing an app route. */
+export function blobFetchDecision(
+  blobUrl: string,
+  tokens: string | readonly string[] | undefined = blobStoreTokens(),
+): BlobFetchDecision {
+  const list = (typeof tokens === "string" ? [tokens] : [...(tokens ?? [])]).filter(Boolean);
+  let host = "";
+  try { host = new URL(blobUrl).host.toLowerCase(); } catch { return { ok: false, reason: "unreadable", host: "" }; }
+  if (!host.endsWith(".blob.vercel-storage.com")) return { ok: false, reason: "unreadable", host };
+  const owner = list.find((t) => {
+    const id = blobStoreIdOf(t);
+    return !!id && host.startsWith(`${id}.`);
+  }) ?? null;
+  // A PUBLIC object needs no credential and never gets one, whichever store it
+  // sits in. `token` is still reported when we own that store, because a
+  // delete has to be aimed at the right one even when a read does not.
+  if (!host.includes(".private.")) return { ok: true, authorization: null, token: owner };
+  if (!owner || host !== `${blobStoreIdOf(owner)}.private.blob.vercel-storage.com`) {
+    return { ok: false, reason: "foreign-store", host };
+  }
+  return { ok: true, authorization: `Bearer ${owner}`, token: owner };
+}
+
+/** Is this object ours to delete, and with which token?
+ *
+ *  A different question from blobFetchDecision: reading a public object needs
+ *  no ownership, DELETING one does. `del()` deletes from the store the TOKEN
+ *  names, not the store the URL names, so a delete aimed with the wrong token
+ *  removes nothing and reports success (handover §4). It also pins the path:
+ *  this code may only ever delete review cuts.
+ *
+ *  `ok: true` with `token: null` means no blob token is configured at all
+ *  (local dev, a preview with no store bound). A caller that only asks "is
+ *  this one of ours" may proceed on the host and path; a caller that DELETES
+ *  must require the token. */
+export type CutObjectOwner =
+  | { ok: true; token: string | null; host: string; pathname: string; access: "public" | "private" | "unknown" }
+  | { ok: false; reason: "unreadable" | "not-a-cut-path" | "foreign-store"; host: string };
+
+export function ownCutObject(
+  blobUrl: string,
+  tokens: string | readonly string[] | undefined = blobStoreTokens(),
+): CutObjectOwner {
+  const list = (typeof tokens === "string" ? [tokens] : [...(tokens ?? [])]).filter(Boolean);
+  let u: URL;
+  try { u = new URL(blobUrl); } catch { return { ok: false, reason: "unreadable", host: "" }; }
+  const host = u.host.toLowerCase();
+  if (!host.endsWith(".blob.vercel-storage.com")) return { ok: false, reason: "unreadable", host };
+  const pathname = decodeURIComponent(u.pathname.replace(/^\//, ""));
+  if (!pathname.startsWith("review-cuts/")) return { ok: false, reason: "not-a-cut-path", host };
+  const access = host.includes(".private.") ? "private" : host.includes(".public.") ? "public" : "unknown";
+  const token = list.find((t) => {
+    const id = blobStoreIdOf(t);
+    return !!id && host.startsWith(`${id}.`);
+  }) ?? null;
+  if (!token && list.length > 0) return { ok: false, reason: "foreign-store", host };
+  return { ok: true, token, host, pathname, access };
+}
+
+/** A URL that SOMEBODY ELSE'S servers can fetch this cut with.
+ *
+ *  Public store (today): the object's own URL, unchanged, and no network call
+ *  at all — so Dropbox, Topaz and the header probes behave exactly as they did
+ *  before this function existed.
+ *
+ *  Private store: a presigned GET, minted through the SDK's own two-step
+ *  (`issueSignedToken` → `presignUrl`, @vercel/blob 2.8.0). The delegation is
+ *  scoped to ONE pathname with ONE expiry and is signed per issuance, so what
+ *  leaves the building is a link to one video for a few hours — not the
+ *  read-write token. `presignUrl` is local HMAC; only `issueSignedToken` talks
+ *  to the control API, which is why today's public branch costs nothing.
+ *
+ *  UNPROVEN, and it must not be described otherwise: no private store exists,
+ *  so no presigned URL has ever been minted or fetched from here. The two-step,
+ *  the option names and the pathname/expiry scoping are read off the installed
+ *  SDK's own types and implementation. The first private upload is the first
+ *  test (handover §5). */
+export type FetchableCutUrl =
+  | { ok: true; url: string; signed: boolean; expiresAt: Date | null }
+  | { ok: false; reason: "no-file" | "unreadable" | "foreign-store" | "mint-failed"; message: string };
+
+const SIGNED_URL_MIN_MS = 60_000;
+const SIGNED_URL_MAX_MS = 24 * 3600_000;
+
+export async function fetchableCutUrl(
+  cut: { blobUrl?: string | null; blobPathname?: string | null },
+  opts: { ttlMs?: number; purpose?: string } = {},
+): Promise<FetchableCutUrl> {
+  const url = (cut.blobUrl ?? "").trim();
+  const purpose = opts.purpose ?? "external fetch";
+  if (!url) return { ok: false, reason: "no-file", message: "The hub no longer holds this cut's file." };
+  const decision = blobFetchDecision(url);
+  if (!decision.ok) {
+    // The host goes in the log, never in the sentence a person reads: it names
+    // a half-finished configuration, not anything about the video.
+    console.error(`[cut-store] ${purpose}: refused a cut url (${decision.reason})`, decision.host);
+    return {
+      ok: false,
+      reason: decision.reason,
+      message: decision.reason === "unreadable"
+        ? "That cut's file link is unreadable."
+        : "That cut's file is in a store this deployment holds no token for.",
+    };
+  }
+  // Public object: nothing to sign, and signing it would turn a URL that works
+  // today into one that can expire. This is the branch production takes.
+  if (!decision.authorization || !decision.token) return { ok: true, url, signed: false, expiresAt: null };
+
+  const pathname = (cut.blobPathname ?? "").trim() || decodeURIComponent(new URL(url).pathname.replace(/^\//, ""));
+  const ttl = Math.min(Math.max(opts.ttlMs ?? 4 * 3600_000, SIGNED_URL_MIN_MS), SIGNED_URL_MAX_MS);
+  try {
+    const { issueSignedToken, presignUrl } = await import("@vercel/blob");
+    const signed = await issueSignedToken({
+      token: decision.token,
+      pathname,
+      operations: ["get"],
+      validUntil: Date.now() + ttl,
+    });
+    // validUntil is deliberately NOT repeated to presignUrl: the SDK caps the
+    // URL at the delegation's ceiling and omits it on the wire when the two are
+    // equal, so passing it again can only disagree with the token just minted.
+    const { presignedUrl } = await presignUrl(signed, { operation: "get", pathname, access: "private" });
+    return { ok: true, url: presignedUrl, signed: true, expiresAt: new Date(signed.validUntil) };
+  } catch (e) {
+    console.error(`[cut-store] ${purpose}: could not mint a signed url for ${pathname}`, e);
+    return { ok: false, reason: "mint-failed", message: "The hub could not mint a temporary link to this cut's file." };
+  }
+}
+
+/** A URL our OWN header probes can be pointed at.
+ *  `probeVideoMetadata` takes a bare URL and sends no headers, so a store
+ *  object has to arrive already carrying its permission — the same handoff an
+ *  outside fetcher gets. Anything that is not a store object (a Dropbox
+ *  temporary link, a Topaz download link) is returned untouched. null = this
+ *  file cannot be read at all, so there is nothing honest to measure. */
+export async function probeableUrl(url: string): Promise<string | null> {
+  if (!/^https:\/\/[^/]+\.blob\.vercel-storage\.com\//i.test(url)) return url;
+  const r = await fetchableCutUrl({ blobUrl: url }, { ttlMs: 30 * 60_000, purpose: "header probe" });
+  return r.ok ? r.url : null;
+}
+
+/** Delete one cut object with the token of the store it is ACTUALLY in.
+ *  Returns why not, in words, when it did not happen — every caller says so
+ *  out loud rather than counting a miss as a success (handover §4). */
+export async function deleteCutObject(blobUrl: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const owner = ownCutObject(blobUrl);
+  if (!owner.ok) return { ok: false, reason: owner.reason };
+  if (!owner.token) return { ok: false, reason: "no-token" };
+  try {
+    const { del } = await import("@vercel/blob");
+    await del(blobUrl, { token: owner.token });
+    return { ok: true };
+  } catch (e) {
+    console.error("[cut-store] delete failed", owner.host, e);
+    return { ok: false, reason: "delete-failed" };
+  }
+}
+
 /** The upload landed in the store → the cut is in review. Idempotent (the
  *  client calls it, and Vercel's upload-completed callback may call it too). */
 export async function finalizeCutUpload(
@@ -718,11 +974,24 @@ export async function finalizeCutUpload(
   if (!blob.pathname.startsWith(`review-cuts/${sub.projectId}/${sub.id}/`)) {
     return { ok: false, message: "That file doesn't belong to this cut." };
   }
+  // …and the object has to be in a store this deployment actually holds a token
+  // for. The path above says which CUT the bytes are for; this says whose STORE
+  // they are in, which is the question that starts mattering the moment there
+  // are two of them (handover §3). Deliberately NOT a hostname match: the
+  // regex this replaces named `.public.` and would have refused every upload
+  // the day the store went private.
+  const owner = ownCutObject(blob.url);
+  if (!owner.ok) {
+    console.error("[review] upload finalize refused a foreign object", owner.reason, owner.host);
+    return { ok: false, message: "That file isn't in the hub's cut store." };
+  }
   // Only an UPLOADING row becomes a cut — a late store callback must not
   // resurrect an abandoned/failed row (its bytes get released instead).
   if (sub.status !== "UPLOADING") {
     if (sub.status === "UPLOAD_FAILED") {
-      try { const { del } = await import("@vercel/blob"); await del(blob.url); } catch { /* the retention sweep catches strays */ }
+      // Aimed at the store the URL names, not whatever token happens to be
+      // primary — see deleteCutObject. The retention sweep catches a stray.
+      await deleteCutObject(blob.url);
     }
     return { ok: false, message: "That upload was cancelled — start it again from the editor portal." };
   }
@@ -886,10 +1155,34 @@ export async function startDropboxCopy(submissionId: string, opts: { inline?: bo
   const folder = actualFolderPaths(sub.project).finalVideo;
   const path = `${folder}/${name}`;
   await dbx("files/create_folder_v2", { path: folder, autorename: false }).catch(() => {});
+  // DROPBOX'S SERVERS FETCH THIS, NOT OURS (RTP-01, Sep 18). "Server-side" is
+  // not the same as "authenticated" — it matters whose server does the
+  // fetching, and save_url is Dropbox's. So the URL handed over has to carry
+  // its own permission: on today's public store that is the object's own URL
+  // and nothing changes; on a private store it is a presigned GET scoped to
+  // this one pathname for six hours. The read-write token is never in it.
+  //
+  // Six hours because save_url is asynchronous: Dropbox answers with a job id
+  // and pulls the bytes on its own schedule, and the hourly finalizeApprovedCuts
+  // pass is what finishes it. A link that outlives the poll loop costs nothing;
+  // one that expires mid-pull costs an approval.
+  const source = await fetchableCutUrl(sub, { ttlMs: 6 * 3600_000, purpose: "dropbox save_url" });
+  if (!source.ok) {
+    // Same first words as a failed save_url, on purpose: the bounded-failure
+    // counter above reads this prefix, so a store misconfiguration rings the
+    // owner after three hours instead of writing an Activity row forever.
+    await prisma.activity.create({
+      data: {
+        projectId: sub.projectId, type: "SYSTEM",
+        body: `Dropbox could not copy the approved cut (${source.reason}) — ${source.message} It will be retried on the next hourly pass.`,
+      },
+    }).catch(() => {});
+    return { complete: false, finalPath: sub.finalPath };
+  }
   type SaveUrl = { ".tag": "complete" | "async_job_id"; async_job_id?: string };
   let r: SaveUrl;
   try {
-    r = await dbx<SaveUrl>("files/save_url", { path, url: sub.blobUrl });
+    r = await dbx<SaveUrl>("files/save_url", { path, url: source.url });
   } catch (e) {
     // The file is already there (an earlier attempt landed after we lost
     // track of it) → that IS the copy.
@@ -1000,11 +1293,28 @@ export async function pruneReviewUploads(keepDays: number): Promise<{ pruned: nu
       { topazJob: { state: { notIn: ["queued", "estimated", "uploading", "processing", "saving"] } } },
     ],
   } satisfies Prisma.ReviewSubmissionWhereInput;
-  const { del } = await import("@vercel/blob");
   let pruned = 0, failed = 0;
   // Release the row FIRST, then the bytes: a deleted blob behind a live
   // blobUrl would leave the stream route redirecting to a 404 (review).
   const release = async (id: string, blobUrl: string, assetPath: string | null) => {
+    // …BUT ONLY IF WE CAN AIM THE DELETE (RTP-01, Sep 18 — handover §4).
+    // `del()` deletes from the store the TOKEN names, not the store the URL
+    // names, and it is idempotent about a path it cannot find. So during a
+    // store cutover this function used to clear the row's pointer — the only
+    // record of where those bytes were — and then delete nothing, counting it
+    // as `pruned`, silently. The pointer is now only cleared once the object
+    // has been matched to a token we hold; anything else is left whole and
+    // counted as failed, which is the one outcome that is recoverable.
+    //
+    // The old plan answered this by telling a human to pull the daily cron
+    // from vercel.json before the swap and put it back after. This is the same
+    // safety without a person having to remember it.
+    const owner = ownCutObject(blobUrl);
+    if (!owner.ok || !owner.token) {
+      console.error("[review] prune left a cut alone — no token owns its store", id, owner.ok ? "no-token" : owner.reason);
+      failed++;
+      return;
+    }
     let cleared = false;
     try {
       await prisma.reviewSubmission.update({ where: { id }, data: { blobUrl: null, blobPathname: null, ...(assetPath ? { assetPath } : {}) } });
@@ -1020,7 +1330,8 @@ export async function pruneReviewUploads(keepDays: number): Promise<{ pruned: nu
     // Bytes go only once the row no longer points at them — a live blobUrl
     // behind a deleted blob would 302 every viewer to a 404 (review).
     if (!cleared) { failed++; return; }
-    try { await del(blobUrl); pruned++; } catch { failed++; }
+    const gone = await deleteCutObject(blobUrl);
+    if (gone.ok) pruned++; else failed++;
   };
   // 1. Approved and copied — after the retention window, the Dropbox copy is
   //    the file of record and the room streams it from there.

@@ -7,6 +7,9 @@ import { appBase } from "@/lib/appUrl";
 import { encryptSecret, decryptSecret } from "@/lib/integrations/crypto";
 import * as ig from "@/lib/integrations/instagram";
 import { cutIdentityHash } from "@/lib/cutTranscripts";
+// META fetches the file itself, so it needs a URL that carries its own
+// permission — never the store's read-write token (RTP-01).
+import { fetchableCutUrl } from "@/lib/reviewCuts";
 
 // ---------------------------------------------------------------------------
 // Publishing jobs (spec §12) — Sep 16 2026.
@@ -321,7 +324,10 @@ export async function createPublishingJob(input: CreatePublishingJobInput): Prom
   if (!cut.blobUrl || !/^https:\/\//.test(cut.blobUrl)) {
     return { ok: false, reason: "no_public_url", message: "This cut has no https file URL in the hub's store, so Instagram could not fetch it. Upload it through the Review Room first." };
   }
-  checks.push("public https url");
+  // Deliberately not "public https url" any more. Queue time only establishes
+  // that the hub HOLDS the file; whether Meta can fetch it is decided at
+  // publish time, where the link it is given is minted (runPublishingJob).
+  checks.push("https file url in the hub's store");
   if (cut.sizeBytes != null) {
     if (cut.sizeBytes > MAX_REEL_BYTES) return { ok: false, reason: "too_large", message: "This file is over Instagram's 1 GB limit for Reels." };
     checks.push(`size ${(cut.sizeBytes / 1024 / 1024).toFixed(0)} MB ≤ 1 GB`);
@@ -645,8 +651,27 @@ async function publishOne(jobId: string, claimedFrom: string): Promise<"succeede
   }
 
   if (!containerId) {
-    if (!cut.blobUrl) { await stop(JOB_STATE.FAILED, "The cut has no hosted file URL."); return "no url"; }
-    const created = await ig.createMediaContainer({ igUserId, accessToken: token, videoUrl: cut.blobUrl, caption: job.captionText, coverUrl: job.coverRef ?? null });
+    // META'S SERVERS FETCH THIS URL (RTP-01, handover §2 — the row the Sep 17
+    // handover missed entirely). `video_url` is pulled from Meta's network with no
+    // credential of ours, so handing over the store object's own address only
+    // works while that store is public: on a private one Meta gets a 401, the
+    // container is never created, and nothing anywhere says "Meta could not read
+    // the file" — it surfaces as a publishing job that failed.
+    //
+    // The handoff chosen is a SHORT-LIVED PRESIGNED GET scoped to this one
+    // pathname, not a proxy route: Meta pulls a whole reel at its own pace and
+    // a proxy would put a multi-hundred-megabyte transfer through a function
+    // with a 300s ceiling on an endpoint that, to be fetchable by Meta, could
+    // not be behind our session gate — which is the very thing being closed.
+    // Six hours covers the container's own processing window; the job's retry
+    // mints a fresh link rather than reusing a stale one. On today's public
+    // store this returns the same URL the line above used to pass.
+    const source = await fetchableCutUrl(cut, { ttlMs: 6 * 3600_000, purpose: "instagram container" });
+    if (!source.ok) {
+      await stop(JOB_STATE.FAILED, `Instagram could not be given a link to this cut's file — ${source.message}`);
+      return "no url";
+    }
+    const created = await ig.createMediaContainer({ igUserId, accessToken: token, videoUrl: source.url, caption: job.captionText, coverUrl: job.coverRef ?? null });
     if (!created.ok) {
       if (created.reason === "not_configured") { await stop(JOB_STATE.FAILED, created.message); return created.message; }
       if (created.retryable && job.attempts < MAX_ATTEMPTS) { await retryLater(JOB_STATE.QUEUED, created.message, backoffMinutes(job.attempts)); return "awaiting"; }

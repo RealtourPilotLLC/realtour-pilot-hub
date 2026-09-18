@@ -8,6 +8,10 @@ import { aryeoJobUrl } from "@/lib/aryeoUrl";
 import { appBase } from "@/lib/appUrl";
 import { etDayKey, etAt } from "@/lib/datetime";
 import { topazSettings, type TopazSettings } from "@/lib/settings";
+// The cut store's own rules about who may read these bytes (RTP-01). Every
+// read below goes through them: the header probes get a URL that carries its
+// own permission, and the one direct fetch carries the store's token.
+import { blobFetchDecision, probeableUrl } from "@/lib/reviewCuts";
 import {
   ARYEO_MANUAL_NOTE,
   TopazError,
@@ -709,7 +713,17 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
   // request below). It is not stored on the row, so it comes off the header.
   let sourceAudio: { present: boolean; codec: string | null } | null = null;
   if (!(meta.frameCount > 0 && meta.durationSec > 0 && meta.width > 0)) {
-    const probed = await probeVideoMetadata(sub.blobUrl, sub.sizeBytes ?? null);
+    // probeVideoMetadata range-GETs a bare URL with no headers, so on a private
+    // store the object's own address answers 401 and every render would skip
+    // with "we couldn't read this video's header". probeableUrl hands it a URL
+    // that carries its own permission instead — on today's public store it is
+    // the same URL and this costs nothing (RTP-01, handover §2).
+    const readable = await probeableUrl(sub.blobUrl);
+    if (!readable) {
+      await skip(job, "The hub can't read this cut out of its own store, so nothing was sent. Nothing was charged.");
+      return "skipped";
+    }
+    const probed = await probeVideoMetadata(readable, sub.sizeBytes ?? null);
     meta = probed;
     sourceAudio = probed.audio;
     await prisma.topazJob.update({
@@ -730,7 +744,14 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
   // still has to be read once for the audio track.
   let audioUnreadable = false;
   if (!sourceAudio) {
-    sourceAudio = await probeVideoMetadata(sub.blobUrl, meta.sizeBytes || sub.sizeBytes || null)
+    sourceAudio = await probeableUrl(sub.blobUrl)
+      .then((readable) => {
+        // A URL we could not mint is the same kind of not-knowing as a header
+        // we could not read: audioUnreadable, which retries rather than
+        // declaring the audio a format we can't carry.
+        if (!readable) throw new Error("no readable url for this cut");
+        return probeVideoMetadata(readable, meta.sizeBytes || sub.sizeBytes || null);
+      })
       .then((p) => p.audio)
       .catch(() => {
         audioUnreadable = true;
@@ -1077,8 +1098,23 @@ async function stepUploading(job: NonNullable<JobRow>, s: TopazSettings, budget:
       done.push({ partNum: t.partNum, eTag: "empty" });
       continue;
     }
+    // OUR OWN server pulls these bytes, so it carries the store's read token
+    // rather than trusting the URL to be world-readable (RTP-01, handover
+    // §2). blobFetchDecision returns no header at all for a public object, so
+    // this is byte-for-byte the request it was before, today.
+    const decision = blobFetchDecision(sub.blobUrl);
+    if (!decision.ok) {
+      throw new TopazError(
+        "The hub can't read this cut out of its own store (its file is in a store this deployment has no token for).",
+        0,
+        false,
+      );
+    }
     const res = await fetch(sub.blobUrl, {
-      headers: targets.length > 1 ? { Range: `bytes=${start}-${end}` } : {},
+      headers: {
+        ...(targets.length > 1 ? { Range: `bytes=${start}-${end}` } : {}),
+        ...(decision.authorization ? { authorization: decision.authorization } : {}),
+      },
       cache: "no-store",
       signal: AbortSignal.timeout(240_000),
     });
@@ -1178,7 +1214,10 @@ async function audioSurvived(job: NonNullable<JobRow>, downloadUrl: string): Pro
   // Topaz object has been read end to end this check has never been proven
   // against one (review, Sep 17): the verdict now goes on the project's
   // activity so the first real render answers it for free.
-  const src = await probeVideoMetadata(sub.blobUrl, job.sourceSizeBytes ?? sub.sizeBytes ?? null).then((p) => p.audio).catch(() => null);
+  const src = await probeableUrl(sub.blobUrl)
+    .then((readable) => (readable ? probeVideoMetadata(readable, job.sourceSizeBytes ?? sub.sizeBytes ?? null) : null))
+    .then((p) => p?.audio ?? null)
+    .catch(() => null);
   const out = await probeVideoMetadata(downloadUrl).then((p) => p.audio).catch(() => null);
   const verdict: "ok" | "lost" | "unreadable" =
     out === null ? "unreadable"

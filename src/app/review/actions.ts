@@ -1206,16 +1206,30 @@ export async function finishCutUpload(input: { submissionId: string; url: string
   const who = await uploadAuthor(row.projectId);
   if (!who.ok) return who;
   if (row.status !== "UPLOADING") return { ok: true, message: "Already in review." };
-  // The blob must live in THIS store under THIS row's prefix — never attach a
-  // foreign URL to a cut.
-  if (!input.pathname.startsWith(`review-cuts/${row.projectId}/${input.submissionId}/`) || !/^https:\/\/[a-z0-9]+\.public\.blob\.vercel-storage\.com\//.test(input.url)) {
+  // The blob must live in a store WE HOLD A TOKEN FOR, under THIS row's prefix
+  // — never attach a foreign URL to a cut.
+  //
+  // This used to require the hostname to contain `.public.` (RTP-01 handover
+  // §2, the first row of the table). On a private store the browser's finish
+  // call would have answered "That file doesn't belong to this cut" while the
+  // store's own completion callback, which has no such check, filed the row
+  // anyway — a race whose visible half is an error on a cut that may or may not
+  // have landed. ownCutObject asks the question that actually matters: is this
+  // object in one of OUR stores, under review-cuts/. It is access-blind by
+  // design, and during the cutover it accepts either store.
+  const { ownCutObject } = await import("@/lib/reviewCuts");
+  const owner = ownCutObject(input.url);
+  if (!input.pathname.startsWith(`review-cuts/${row.projectId}/${input.submissionId}/`) || !owner.ok) {
     return { ok: false, message: "That file doesn't belong to this cut." };
   }
-  // Prove the bytes are really in the store before calling it a cut.
+  // Prove the bytes are really in the store before calling it a cut. The token
+  // is the one that owns THIS object's store, not whichever is primary — on a
+  // private store head() is a credentialled control-plane read, and during the
+  // cutover the object may be in the legacy one.
   let size: number | null = null;
   try {
     const { head } = await import("@vercel/blob");
-    const meta = await head(input.url);
+    const meta = await head(input.url, owner.token ? { token: owner.token } : undefined);
     size = meta.size;
     if (meta.pathname !== input.pathname) return { ok: false, message: "Upload mismatch — try again." };
   } catch {
@@ -1256,12 +1270,18 @@ export async function abandonCutUpload(submissionId: string, blobUrl?: string | 
     where: { id: submissionId, status: "UPLOADING" },
     data: { status: "UPLOAD_FAILED" },
   }).catch(() => {});
-  // Bytes that landed but never became a cut have no reason to stay public.
-  if (blobUrl && /^https:\/\/[a-z0-9]+\.public\.blob\.vercel-storage\.com\/review-cuts\//.test(blobUrl)) {
-    try {
-      const { del } = await import("@vercel/blob");
-      await del(blobUrl);
-    } catch { /* the retention sweep catches strays */ }
+  // Bytes that landed but never became a cut have no reason to stay anywhere.
+  // deleteCutObject makes the same two checks the hard-coded `.public.` regex
+  // used to make — a Vercel blob host, a review-cuts/ path — and then one the
+  // regex could not: it aims the delete at the token that owns THAT object's
+  // store. A URL from a store we hold no token for is left alone rather than
+  // handed to del() on trust. (The regex also refused every private URL, so on
+  // the new store it would have quietly stopped deleting anything at all —
+  // handover §2.)
+  if (blobUrl) {
+    const { deleteCutObject } = await import("@/lib/reviewCuts");
+    const gone = await deleteCutObject(blobUrl);
+    if (!gone.ok) console.error("[review] abandoned upload left bytes behind", submissionId, gone.reason);
   }
 }
 
@@ -1754,22 +1774,29 @@ async function removeCutInner(
   const leftBehind: string[] = [];
   let hubCopyDeleted = false;
   if (sub.blobUrl) {
-    // The same shape check abandonCutUpload makes before it deletes: this path
-    // may only ever delete cut bytes in THIS store, so a row carrying a URL
-    // from anywhere else is left alone and said out loud rather than handed to
-    // del() on trust (reviewer, Sep 16).
-    if (!/^https:\/\/[a-z0-9]+\.public\.blob\.vercel-storage\.com\/review-cuts\//.test(sub.blobUrl)) {
-      console.error("[review] refused to delete a foreign blob url on removed cut", sub.id, sub.blobUrl);
-      leftBehind.push(`Its video file isn't in the hub's cut store, so it was left where it is: ${sub.blobPathname ?? sub.blobUrl}.`);
+    // The same check abandonCutUpload makes before it deletes: this path may
+    // only ever delete cut bytes in a store WE HOLD A TOKEN FOR, so a row
+    // carrying a URL from anywhere else is left alone and said out loud rather
+    // than handed to del() on trust (reviewer, Sep 16).
+    //
+    // It used to be a hard-coded `.public.` hostname, which meant the day the
+    // store goes private this branch would have refused every legitimate cut
+    // and started reporting perfectly deletable files as "left behind"
+    // (handover §2). deleteCutObject keeps the refusal for a genuinely
+    // foreign object and aims the delete at the owning store's token.
+    const { deleteCutObject } = await import("@/lib/reviewCuts");
+    const gone = await deleteCutObject(sub.blobUrl);
+    if (gone.ok) {
+      hubCopyDeleted = true;
+    } else if (gone.reason === "delete-failed" || gone.reason === "no-token") {
+      // "no-token" is a deployment with no blob store bound at all (local dev,
+      // a preview). Same sentence as a store having a bad minute: the file is
+      // still there and the person is told so.
+      console.error("[review] blob delete failed for removed cut", sub.id, gone.reason);
+      leftBehind.push(`The video file could not be deleted from the hub's store — it is still at ${sub.blobPathname ?? sub.blobUrl}.`);
     } else {
-      try {
-        const { del } = await import("@vercel/blob");
-        await del(sub.blobUrl);
-        hubCopyDeleted = true;
-      } catch (e) {
-        console.error("[review] blob delete failed for removed cut", sub.id, e);
-        leftBehind.push(`The video file could not be deleted from the hub's store — it is still at ${sub.blobPathname ?? sub.blobUrl}.`);
-      }
+      console.error("[review] refused to delete a foreign blob url on removed cut", sub.id, gone.reason);
+      leftBehind.push(`Its video file isn't in the hub's cut store, so it was left where it is: ${sub.blobPathname ?? sub.blobUrl}.`);
     }
   }
   // The hub's own copy in Dropbox — the only file the checkbox governs.
