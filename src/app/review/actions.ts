@@ -1773,6 +1773,14 @@ async function removeCutInner(
     at,
   });
 
+  // THE PER-VIDEO ROW HAS TO HEAR ABOUT THIS (reviewer, Sep 18). A removal
+  // DELETES the submission row, so an output that pointed at it —
+  // currentSubmissionId, and approvedSubmissionId/approvedAt on a cut Jordan
+  // had signed off — is left naming a row that no longer exists and asserting
+  // an approval nobody stands behind. refreshOutputsForProject re-derives every
+  // stamp from the rounds that survive, including back to null; without this
+  // call it never ran on the one event that can retract one.
+  await syncOutputs(sub.projectId);
   refresh(sub.projectId);
   revalidatePath(`/projects/${sub.projectId}`);
   const stage =
@@ -1974,6 +1982,13 @@ async function reassignCutInner(
     dedupeSuffix: `moved-${movedAt.getTime()}`,
   });
 
+  // BOTH JOBS. The cut left one slot and landed on another, so the per-video
+  // rows on both sides are out of date — the source's current/approved pointers
+  // still name a round that is no longer its, and the target's name nothing
+  // yet. Same reason removeCut syncs: a take-back is a cut event like any other
+  // and refresh is a derivation, not a second opinion.
+  await syncOutputs(sub.projectId);
+  await syncOutputs(target.id);
   refresh(sub.projectId);
   refresh(target.id);
   revalidatePath(`/projects/${sub.projectId}`);

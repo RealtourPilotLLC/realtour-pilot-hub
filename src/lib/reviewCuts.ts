@@ -573,6 +573,61 @@ export function slotKeyOf(deliverableId: string, slot: number | null | undefined
   return `${deliverableId}:${slot ?? 1}`;
 }
 
+/**
+ * THE OWED-SLOT KEY OF A ROUND — not the same thing as cutKeyOf (reviewer,
+ * Sep 18, and the reason the per-item revision rule could never close an ask).
+ *
+ * cutKeyOf answers "which cut is this a version of", and for a round carrying
+ * no deliverable it answers with the Dropbox path (or the row's own id). That
+ * is a perfectly good IDENTITY — it is what groups rounds of the same file —
+ * but it is not a SLOT, and `cutSlots`/`slotKeyOf`/the work order's per-item
+ * scope all speak in slots. Compare the two sets and they never intersect: on
+ * 1956 Wetherhill Dr the job owes one slot, `cmsnr2ycm000vjr0411ci8om2:1`, and
+ * its two APPROVED rounds key as
+ * `/AutoHDR/…/05-Final-Video/Finish_1956 Wetherhill Dr….mp4`. Measured across
+ * production: 14 of the 35 rounds carry no deliverableId, and NOT ONE of them
+ * intersected its job's owed keys, so every `all`/`unknown` item on those jobs
+ * was outstanding for ever on a job with nothing left to do.
+ *
+ * Where the deliverable IS on the row, the two keys agree by construction.
+ * Where it is not, exactly one thing can be said honestly:
+ *   · the job owes ONE slot → the round is that slot. A fact, not a guess, and
+ *     the same fact cutAnswersAsk ("owed <= 1") and the analyser
+ *     (`cuts.length === 1 → scope "all"`) already act on;
+ *   · the job owes several → NOTHING. Guessing which of four videos a Dropbox
+ *     path is would put a client's approval on the wrong deliverable
+ *     (deliverableOutputs.linkRoundsToOutputs refuses the same guess, which is
+ *     why `outputId` is null on all 14 of these rows and cannot rescue them).
+ *     The ask then holds open until a keyed round lands on each slot, and the
+ *     task's own Complete button is the person's override — the same escape
+ *     outstandingItems documents. Production today: 3 jobs, 8 rounds
+ *     (1033 Preserve Ln ×5, 38 E Gay St ×2, 131 Woodcutter St ×1).
+ */
+export function owedSlotKeyOf(
+  round: { deliverableId?: string | null; slot?: number | null },
+  owedKeys: readonly string[],
+): string | null {
+  if (round.deliverableId) return slotKeyOf(round.deliverableId, round.slot);
+  return owedKeys.length === 1 ? owedKeys[0] : null;
+}
+
+/** Every slot with an APPROVED round since the ask, in the key space the work
+ *  order's items are scoped in. Pure, so the rule can be exercised against the
+ *  shapes the REAL submit paths produce (scripts/_fix/A/scope-real-path.ts)
+ *  rather than against hand-written slot keys the folder path never mints. */
+export function approvedSlotKeys(
+  rounds: readonly { deliverableId?: string | null; slot?: number | null; status?: string | null }[],
+  owedKeys: readonly string[],
+): Set<string> {
+  const out = new Set<string>();
+  for (const r of rounds) {
+    if (r.status !== "APPROVED") continue;
+    const k = owedSlotKeyOf(r, owedKeys);
+    if (k) out.add(k);
+  }
+  return out;
+}
+
 /** Every video cut this job owes, in order. Monthly plans put the whole batch
  *  on their one video row (quantity / videosFilmed / plan quota).
  *  Each cut is NAMED by its resolved style (Deliverable.videoStyle →
@@ -1092,12 +1147,18 @@ export function photoLaneRevisionKey(projectId: string): string {
   return createHash("sha1").update(`${projectId}|revision|photo`).digest("hex").slice(0, 24);
 }
 
-/** Open revision tasks on the VIDEO lane of a job. */
-export function videoLaneRevisionWhere(projectId: string): Prisma.SmartTaskWhereInput {
+/** Open revision tasks on the VIDEO lane of a job.
+ *
+ *  `anyStatus` drops the open-only filter, for the one caller that needs the
+ *  lane's IDENTITY rather than its open work: correctionStillOwed matches a
+ *  RevisionBrief to the lane it was raised on, and a brief whose task has since
+ *  been closed and re-raised is still that lane's brief (WF-03 follow-up). The
+ *  time window around the ask is what keeps an OLD lane's brief out. */
+export function videoLaneRevisionWhere(projectId: string, opts: { anyStatus?: boolean } = {}): Prisma.SmartTaskWhereInput {
   return {
     projectId,
     taskType: "revision",
-    status: { notIn: ["COMPLETED", "CANCELLED"] },
+    ...(opts.anyStatus ? {} : { status: { notIn: ["COMPLETED", "CANCELLED"] } }),
     AND: [
       { OR: [{ dedupeKey: null }, { dedupeKey: { not: photoLaneRevisionKey(projectId) } }] },
       {
@@ -1216,29 +1277,50 @@ export async function correctedCutSubmitted(
  * Every manual close still works — the task's Complete button, the last
  * checklist tick, the project-page button — so a held card is never a trap.
  */
-async function correctionStillOwed(projectId: string, raisedAt: Date, approvedKey: string | null): Promise<string | null> {
+async function correctionStillOwed(
+  projectId: string,
+  raisedAt: Date,
+  /** The round Jordan just ruled on — the ROW, not a pre-built key. It has to
+   *  be re-keyed here into the slot space the items are scoped in, and a
+   *  caller holding a cutKeyOf string cannot do that (reviewer, Sep 18). */
+  approvedRound: { deliverableId?: string | null; slot?: number | null; assetPath?: string | null; id: string } | null,
+  /** The video lane this approval belongs to — every task on it, open or since
+   *  closed. The brief is matched to THIS lane so a photo-lane ask cannot gate
+   *  a video ask (below). */
+  laneTaskIds: readonly string[],
+): Promise<string | null> {
   const since = await prisma.reviewSubmission.findMany({
     where: { projectId, kind: "video", createdAt: { gte: raisedAt }, status: { notIn: ["WITHDRAWN", "UPLOAD_FAILED"] } },
     select: { deliverableId: true, slot: true, assetPath: true, id: true, status: true },
   });
-  // One entry per slot: did ANY cut on it land an approval since the ask?
-  const approvedBySlot = new Map<string, boolean>();
+  // One entry per CUT (cutKeyOf): did any round of it land an approval since
+  // the ask? This is the in-flight fallback's own question and its own key
+  // space — every key in it is built the same way, so it is self-consistent.
+  const approvedByCut = new Map<string, boolean>();
   for (const r of since) {
     const k = cutKeyOf(r);
-    approvedBySlot.set(k, (approvedBySlot.get(k) ?? false) || r.status === "APPROVED");
+    approvedByCut.set(k, (approvedByCut.get(k) ?? false) || r.status === "APPROVED");
   }
   // The cut being approved right now counts as approved even if its row has not
   // been re-read yet (approveCut writes the verdict and calls straight in).
-  if (approvedKey) approvedBySlot.set(approvedKey, true);
-  const approvedKeys = new Set([...approvedBySlot.entries()].filter(([, ok]) => ok).map(([k]) => k));
+  if (approvedRound) approvedByCut.set(cutKeyOf(approvedRound), true);
 
-  // The newest brief raised for this ask. The minute of slack absorbs the gap
-  // between stamping revisionRequestedAt and writing the brief row.
-  const brief = await prisma.revisionBrief.findFirst({
-    where: { projectId, createdAt: { gte: new Date(raisedAt.getTime() - 60_000) } },
-    orderBy: { createdAt: "desc" },
-    select: { itemsJson: true, doneJson: true },
-  });
+  // THE BRIEF FOR THIS LANE, not for this minute (reviewer, Sep 18). A job can
+  // carry an open PHOTO-lane ask and an open VIDEO-lane ask against the same
+  // project.revisionRequestedAt — 1956 Wetherhill Dr already carries two briefs
+  // on two different tasks — and the old lookup took the newest brief in the
+  // window whatever lane it was raised on, so the photo brief's items could
+  // hold the video ask open (or close it). Every one of the 17 briefs in
+  // production carries a taskId, so scoping to the lane loses nothing.
+  // The minute of slack absorbs the gap between stamping revisionRequestedAt
+  // and writing the brief row.
+  const brief = laneTaskIds.length === 0
+    ? null
+    : await prisma.revisionBrief.findFirst({
+        where: { projectId, taskId: { in: [...laneTaskIds] }, createdAt: { gte: new Date(raisedAt.getTime() - 60_000) } },
+        orderBy: { createdAt: "desc" },
+        select: { itemsJson: true, doneJson: true },
+      });
   let items: RevisionItemShape[] = [];
   let done: string[] = [];
   try { items = brief?.itemsJson ? ((JSON.parse(brief.itemsJson) as { items?: RevisionItemShape[] }).items ?? []) : []; } catch { /* unreadable analysis holds nothing up */ }
@@ -1249,12 +1331,20 @@ async function correctionStillOwed(projectId: string, raisedAt: Date, approvedKe
     // static import here would close the circle.
     const { outstandingItems, outstandingReason } = await import("@/lib/revisionBrief");
     const owedKeys = (await cutSlots(projectId).catch(() => [])).map((s) => slotKeyOf(s.deliverableId, s.slot));
+    // ONE KEY SPACE. The items are scoped in slot keys (briefCutsFor hands the
+    // analyser slotKeyOf keys), so the approvals have to be counted in slot
+    // keys too — owedSlotKeyOf, never cutKeyOf. See its header for what a
+    // round with no deliverable can and cannot be resolved to.
+    const approvedKeys = approvedSlotKeys(
+      approvedRound ? [...since, { ...approvedRound, status: "APPROVED" }] : since,
+      owedKeys,
+    );
     const open = outstandingItems({ items, done, approvedKeys, owedKeys });
     return open.length > 0 ? outstandingReason(open, items.length) : null;
   }
 
   // No work order to reason about: fall back to work in flight.
-  const waiting = [...approvedBySlot.values()].filter((ok) => !ok).length;
+  const waiting = [...approvedByCut.values()].filter((ok) => !ok).length;
   if (waiting > 0) {
     return `${waiting} other video${waiting === 1 ? "" : "s"} on this job ${waiting === 1 ? "has a corrected cut" : "have corrected cuts"} still waiting on a verdict.`;
   }
@@ -1308,9 +1398,17 @@ export async function correctedCutApproved(
           .findUnique({ where: { id: opts.submissionId }, select: { id: true, deliverableId: true, slot: true, assetPath: true } })
           .catch(() => null)
       : null);
-  const approvedKey = cut ? cutKeyOf(cut) : null;
-  // This approval answers the work it answers — not the whole conversation.
-  const owed = await correctionStillOwed(projectId, raisedAt, approvedKey);
+  // This approval answers the work it answers — not the whole conversation,
+  // and not the other lane's. The lane is handed over with its CLOSED tasks
+  // too: the brief belongs to the lane it was raised on, and a task that was
+  // closed and re-raised inside the same ask is still this lane (the time
+  // window is what keeps an older ask's brief out).
+  const laneTaskIds = (
+    await prisma.smartTask
+      .findMany({ where: videoLaneRevisionWhere(projectId, { anyStatus: true }), select: { id: true } })
+      .catch(() => lane.map((t) => ({ id: t.id })))
+  ).map((t) => t.id);
+  const owed = await correctionStillOwed(projectId, raisedAt, cut, laneTaskIds);
   if (owed) {
     await prisma.activity
       .create({ data: { projectId, type: "SYSTEM", body: `Corrected cut approved. The revision stays open: ${owed}`.slice(0, 500) } })

@@ -32,9 +32,15 @@ const NOT_A_ROUND = ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"] as const;
 //
 // NOTHING HERE DELETES. A slot that leaves the order is stamped
 // removedFromOrderAt; a row the office waives is stamped waivedAt and keeps its
-// review history. The evidence stamps are DERIVED from the rounds that already
-// exist (refreshOutputsForProject), so re-running any of it is a no-op rather
-// than a second opinion.
+// review history. BOTH stamps are cleared when the fact that made them goes
+// away — the slot comes back onto the order, or the office un-waives the row
+// (deliverableActions.unwaiveDeliverable). The notes survive either way; the
+// null date is what says the video is owed again.
+//
+// The evidence stamps are DERIVED from the rounds that already exist
+// (refreshOutputsForProject), so re-running any of it is a no-op rather than a
+// second opinion — and derived means BOTH WAYS: a stamp whose round is gone is
+// retracted, never left asserting an approval nobody stands behind.
 // ===========================================================================
 
 /** One slot as this module will store it: what cutSlots said, plus the three
@@ -65,6 +71,8 @@ export type EnsureResult = {
   unretired: number;
   /** rows newly stamped waivedAt because the office waived their row */
   waived: number;
+  /** rows whose waivedAt was cleared because the office un-waived their row */
+  unwaived: number;
   /** ReviewSubmission rows given their outputId by this pass */
   linkedRounds: number;
   slotKeys: string[];
@@ -123,7 +131,7 @@ export async function planOutputsForProject(projectId: string): Promise<OutputPl
  */
 export async function ensureOutputsForProject(projectId: string): Promise<EnsureResult> {
   const { slots, waived } = await planOutputsForProject(projectId);
-  const out: EnsureResult = { projectId, created: 0, retired: 0, unretired: 0, waived: 0, linkedRounds: 0, slotKeys: [] };
+  const out: EnsureResult = { projectId, created: 0, retired: 0, unretired: 0, waived: 0, unwaived: 0, linkedRounds: 0, slotKeys: [] };
   const existing = await prisma.deliverableOutput.findMany({
     where: { projectId },
     select: { id: true, deliverableId: true, slot: true, removedFromOrderAt: true, waivedAt: true },
@@ -167,6 +175,23 @@ export async function ensureOutputsForProject(projectId: string): Promise<Ensure
     if (isWaived && !row.waivedAt) {
       await prisma.deliverableOutput.update({ where: { id: row.id }, data: { waivedAt: new Date() } });
       out.waived++;
+    }
+    // AND THE MIRROR OF IT (reviewer, Sep 18). The office can undo a waiver —
+    // deliverableActions.unwaiveDeliverable clears Deliverable.waivedAt and
+    // says so on the timeline — and cutSlots mints the slot again the moment it
+    // does. Without this branch the OUTPUT row kept its waivedAt for ever:
+    // outputsForProject reads it as "Not required on this job", the promise
+    // clock and every "what is owed" reader skip it, and the video is invisible
+    // on a job that owes it. The builder's own report claimed "a slot that
+    // comes back has that stamp cleared" — true of removedFromOrderAt above,
+    // and it was not true here.
+    //
+    // The NOTE stays, exactly as the retirement note above stays: it is the
+    // record of why the row was ever set aside, and the null date is what says
+    // it is owed again (house rule — retire, never delete).
+    if (!isWaived && row.waivedAt) {
+      await prisma.deliverableOutput.update({ where: { id: row.id }, data: { waivedAt: null } });
+      out.unwaived++;
     }
   };
 
@@ -239,11 +264,26 @@ export async function linkRoundsToOutputs(projectId: string): Promise<number> {
  *
  * DERIVED, not asserted: the rounds are the record, so this can run after any
  * cut event (upload, verdict, withdrawal, "mark sent") and reach the same
- * answer every time. Two things it will not do —
+ * answer every time.
+ *
+ * DERIVED IN BOTH DIRECTIONS (reviewer, Sep 18). This used to be write-once —
+ * `if (rs.length === 0) continue` plus a `!o.X` guard on every stamp — so a
+ * fact could be written and never taken back. review/actions.removeCut DELETES
+ * the submission row outright (Jordan, Sep 16: "when removing the cut, I want
+ * it to remove completely"), so approving version 2 and then removing it left
+ * `approvedSubmissionId` pointing at a row that no longer exists and
+ * `approvedAt` asserting an approval nobody stands behind — on the one column
+ * the project view, the promise clock and the content meter read to say a video
+ * is accepted. Every stamp below is now recomputed from the rounds that exist
+ * NOW, including to null.
+ *
+ * Two things it still will not do —
  *   · it never clears a `deliveredAt` it did not write. A person pressing
  *     "delivered by hand" on a video the hub holds no file for is the office's
  *     word, and no sweep gets to argue with it (COMPLETION-CONTRACT §4,
- *     *overridden*);
+ *     *overridden*). Removing the version the client already has does not
+ *     un-send it, so the STAMP stays even when the round is gone — only the
+ *     dangling pointer to that round is repaired;
  *   · it never invents delivery. `sentToClientAt` on the round is the only
  *     thing here that can mean the client has it — an approval is not a
  *     delivery and a copy in the Final folder is not a delivery (§5).
@@ -268,16 +308,21 @@ export async function refreshOutputsForProject(projectId: string): Promise<numbe
   }
   let touched = 0;
   for (const o of outputs) {
+    // NO `continue` ON AN EMPTY LIST. A slot whose every round has been removed
+    // is exactly the case that has to be retracted — see the header.
     const rs = byKey.get(slotKeyOf(o.deliverableId, o.slot)) ?? [];
-    if (rs.length === 0) continue;
-    const latest = rs[rs.length - 1];
+    const latest = rs[rs.length - 1] ?? null;
     const approved = [...rs].reverse().find((r) => r.status === "APPROVED") ?? null;
     const sent = [...rs].reverse().find((r) => r.sentToClientAt) ?? null;
     const data: Prisma.DeliverableOutputUpdateInput = {};
-    if (o.currentSubmissionId !== latest.id) data.currentSubmissionId = latest.id;
-    if (!o.reviewReadyAt) data.reviewReadyAt = rs[0].createdAt;
-    if (approved && o.approvedSubmissionId !== approved.id) data.approvedSubmissionId = approved.id;
-    if (approved && !o.approvedAt) data.approvedAt = approved.decidedAt ?? approved.createdAt;
+    // Each of these is "what the rounds say", computed the same way whether the
+    // answer is a row or nothing.
+    if (o.currentSubmissionId !== (latest?.id ?? null)) data.currentSubmissionId = latest?.id ?? null;
+    const readyAt = rs[0]?.createdAt ?? null;
+    if ((o.reviewReadyAt?.getTime() ?? null) !== (readyAt?.getTime() ?? null)) data.reviewReadyAt = readyAt;
+    if (o.approvedSubmissionId !== (approved?.id ?? null)) data.approvedSubmissionId = approved?.id ?? null;
+    const approvedAt = approved ? approved.decidedAt ?? approved.createdAt : null;
+    if ((o.approvedAt?.getTime() ?? null) !== (approvedAt?.getTime() ?? null)) data.approvedAt = approvedAt;
     if (sent && !o.deliveredAt) {
       data.sentSubmissionId = sent.id;
       data.deliveredAt = sent.sentToClientAt;
@@ -288,6 +333,15 @@ export async function refreshOutputsForProject(projectId: string): Promise<numbe
       data.deliveredVia = "office-hand";
       data.evidenceSource = "review-sent";
       data.evidenceSucceededAt = new Date();
+    } else if (o.sentSubmissionId && !rs.some((r) => r.id === o.sentSubmissionId)) {
+      // THE POINTER, NEVER THE STAMP. The round that proved the delivery has
+      // gone (removed, or moved to another job), so the id on the row points at
+      // nothing. `deliveredAt`, `deliveredBy` and `deliveredVia` stay exactly as
+      // they are — the client HAS the video, and deleting our copy of the
+      // version is not an un-send (see the header, and correctedCutWithdrawn's
+      // note on the same rule for the client's ask). Only the broken reference
+      // is repaired, to whichever round can still prove it, or to nothing.
+      data.sentSubmissionId = sent?.id ?? null;
     }
     if (Object.keys(data).length === 0) continue;
     await prisma.deliverableOutput.update({ where: { id: o.id }, data });
