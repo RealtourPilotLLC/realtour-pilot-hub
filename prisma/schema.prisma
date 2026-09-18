@@ -669,6 +669,44 @@ model Project {
   @@index([editorId])
   @@index([shootDate])
   @@index([deliveredAt])
+
+  // ---- THE PROMISE THIS JOB WAS SOLD UNDER (audit WF-04, Sep 18) ----
+  // Written ONCE, when the promise first becomes computable, and never
+  // recomputed. Without it, changing a turnaround default rewrites history:
+  // measured Sep 18, moving the premium default alone flips 39 of 222 delivered
+  // premium jobs from late to on-time, which re-scores the owner's on-time dial
+  // AND the photographer quarterly bonus that reads it. A pinned promise is
+  // what makes "preserve existing agreed promises when changing defaults" true.
+  promisedDueAt    DateTime? // the CLIENT deadline
+  promisedTargetAt DateTime? // the INTERNAL target, always on or before it
+  promisedTierKey  String? // premium_reel | video_48h | next_day | monthly_social | same_day
+  promisedPinnedAt DateTime? // null = never pinned; still floats on current rules
+  promisedReason   String? // a documented per-project exception, in words
+
+  // ---- WHO SAID IT WAS DELIVERED (audit WF-04) ----
+  // deliveredAt alone cannot tell a human hand-delivery from a sweep's own
+  // conclusion, and the sweep writes it too — 1,333 of 1,524 stamps carry no
+  // actor of any kind, which is why the 14-job reconciliation could not start
+  // from the stamp. Null stays null: "we do not know" is the honest answer for
+  // every existing row and none of them is backfilled.
+  deliveredBy           String?
+  deliveredVia          String? // sweep | board | queue-pill | override | office-hand | aryeo-listing
+  // Set by the reconciliation when a delivery CANNOT be confirmed; cleared only
+  // by the human who answers it. Mirrors aryeoMissingAt — a flag, never an
+  // action, and no engine may clear it.
+  deliveryExceptionAt   DateTime?
+  deliveryExceptionNote String?
+
+  // ---- FILES IN IS NOT INSTRUCTIONS READY (audit WF-06) ----
+  handoffReadyAt      DateTime? // first pass where the product's brief requirements were met
+  handoffBlockedReason String? // the plain-English missing list at mint time
+  handoffOwnerKey     String? // who the handoff is waiting on, frozen at mint
+
+  // Whether a dueOverride applies to the whole job or to one video. Read as
+  // "video" when null, so a job-level override cannot silently become every
+  // video's deadline (audit WF-02).
+  dueOverrideScope String?
+
 }
 
 model Deliverable {
@@ -725,6 +763,9 @@ model Deliverable {
 
   uploads           UploadedFile[]
   reviewSubmissions ReviewSubmission[]
+  // The individual things this row owes — one per video on a multi-video
+  // product. See model DeliverableOutput.
+  outputs           DeliverableOutput[]
   // ---- Sep 16 (Kyle call, item 9): "not required on this job". Hub-owned —
   // the Aryeo reconcile never clears it (unlike removedFromOrderAt, which a
   // package-implied type un-retires). Every "owed" reader honours it.
@@ -733,6 +774,107 @@ model Deliverable {
   waivedNote        String?
 
   @@index([projectId])
+}
+
+/// ONE ROW PER OWED THING (audit WF-02, Sep 18 2026).
+///
+/// A Deliverable is one row per TYPE — that is the identity invariant the whole
+/// system rests on, because a cut's key is `${deliverableId}:${slot}` and the
+/// Aryeo reconcile matches rows by type and relabels them IN PLACE. So a
+/// sixteen-video branding package is ONE Deliverable row with quantity 16, and
+/// until now the sixteenth video existed only as an integer inside a count.
+/// 893 S Matlack St is exactly that: VIDEOx16, status DONE, six files in
+/// Dropbox, nothing on the listing, and no way to say which video is whose or
+/// when any one of them is due.
+///
+/// This materialises the slot that reviewCuts.cutSlots already computes, as a
+/// durable row, and changes nothing else. It is NOT a second tracker:
+///   · the slot identity stays (deliverableId, slot) — the same key cuts,
+///     notes, verdicts and uploads already use, so nothing is re-keyed;
+///   · Deliverable keeps its quantity and its meaning;
+///   · ReviewSubmission keeps deliverableId + slot as its join, and merely
+///     GAINS a pointer to the row they identify.
+/// What it adds is the five facts an owed video could not carry: who owns it,
+/// when it is due, which version is current, what was approved, and the
+/// evidence that it actually reached the client.
+model DeliverableOutput {
+  id            String      @id @default(cuid())
+  deliverable   Deliverable @relation(fields: [deliverableId], references: [id], onDelete: Cascade)
+  deliverableId String
+  /// Denormalised for the many "everything owed on this job" reads. Plain ref.
+  projectId     String
+  /// 1..quantity — the same slot number cutSlots hands out.
+  slot          Int
+  /// The media category this output is, copied from the Deliverable at mint.
+  category      String
+  /// What this particular video IS ("His and hers", a topic title) — null until
+  /// somebody names it. Never guessed from the product name.
+  title         String?
+
+  /// WHO IS CARRYING IT. An assignees.ts slug, set by a person; null means the
+  /// job-level editor still answers for it.
+  ownerKey    String?
+  ownerName   String?
+  ownerSetBy  String?
+  ownerSetAt  DateTime?
+
+  /// WHAT IT PROMISED. targetAt is the internal aim, promisedAt the client
+  /// deadline; promiseSource records which rule produced it and
+  /// promiseAnchorAt the visit it was counted from.
+  targetAt         DateTime?
+  promisedAt       DateTime?
+  promiseSource    String?
+  promiseAnchorAt  DateTime?
+
+  /// WHERE IT STANDS. The live round, and the one that was approved.
+  currentSubmissionId  String?
+  approvedSubmissionId String?
+
+  /// WHETHER THE CLIENT ACTUALLY HAS IT — the WF-01 distinction, per video.
+  /// deliveredVia is 'aryeo-listing' | 'office-hand' | 'dropbox-link' | …
+  sentSubmissionId String?
+  deliveredAt      DateTime?
+  deliveredVia     String?
+  deliveredBy      String?
+
+  /// The last evidence read about this one output, mirroring the project-level
+  /// evidenceAttemptedAt / evidenceSucceededAt pair.
+  evidenceSource      String?
+  evidenceAttemptedAt DateTime?
+  evidenceSucceededAt DateTime?
+
+  /// WHEN IT BECAME OWED — the moment the obligation started, so a video added
+  /// to an order mid-job does not inherit the first video's clock.
+  requiredFrom DateTime?
+
+  /// THE EVIDENCE STAMPS, in the order they happen (COMPLETION-CONTRACT §9).
+  /// Each is written only by the pass that can prove it, and each records what
+  /// proved it through evidenceSource.
+  rawInAt       DateTime?
+  reviewReadyAt DateTime?
+  approvedAt    DateTime?
+
+  /// Not owed any more, kept as history — the same two mechanisms Deliverable
+  /// already has, per video rather than per row. `waived` is the office saying
+  /// "not required on this job"; `removedFromOrder` is Aryeo dropping the item.
+  waivedAt             DateTime?
+  waivedBy             String?
+  waivedNote           String?
+  removedFromOrderAt   DateTime?
+  removedFromOrderNote String?
+
+  /// 'quantity' when materialised from the product count, 'manual' when a
+  /// person added it, 'override' when videosOwedOverride produced it.
+  source    String   @default("quantity")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  revisionBriefs RevisionBrief[]
+
+  @@unique([deliverableId, slot])
+  @@index([projectId])
+  @@index([ownerKey])
+  @@index([promisedAt])
 }
 
 // A file uploaded through the photographer portal. The actual bytes live in
@@ -911,6 +1053,15 @@ model SmartTask {
   @@index([clientId])
   @@index([dueAt])
   @@index([completedAt])
+
+  // WHEN TO CHASE THIS AGAIN (audit WF-06). Distinct from dueAt on purpose: a
+  // card blocked on a missing brief still owes its delivery date, and moving
+  // dueAt would move the clock the editor is scored on.
+  followUpAt    DateTime?
+  // WHY it is BLOCKED, in words, so the board can print the sentence instead of
+  // a bare status.
+  blockedReason String?
+
 }
 
 // Client feedback collected after delivery (via the post-delivery text's form
@@ -1033,6 +1184,11 @@ model RevisionBrief {
   project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
   projectId     String
   taskId        String? // the revision SmartTask this ask belongs to
+  /// WHICH VIDEO THIS ASK IS ABOUT (audit WF-03, Sep 18). Null means the ask
+  /// covers the job, or nobody has said yet — per-ITEM scope lives inside
+  /// itemsJson, because one ask can name two videos and leave a third alone.
+  output        DeliverableOutput? @relation(fields: [outputId], references: [id], onDelete: SetNull)
+  outputId      String?
   source        String // openphone | gmail | review_room | manual | …
   sourceDetail  String? // thread ref, so the full conversation stays reachable
   originalText  String // the client's words, UNCLIPPED — the record of truth
@@ -1046,6 +1202,7 @@ model RevisionBrief {
 
   @@index([projectId])
   @@index([taskId])
+  @@index([outputId])
 }
 
 // Per-person read watermark for a project's message thread — powers the
@@ -1441,6 +1598,11 @@ model ReviewSubmission {
    */
   topazJob                 TopazJob?
   slot                     Int          @default(1) // 1..quantity for multi-video deliverables
+  /// The owed video this round is a version OF (audit WF-02, Sep 18). Derived
+  /// from (deliverableId, slot) — it does not replace them, and the pair stays
+  /// the join key everything else uses. Null on rounds whose slot has not been
+  /// materialised yet, and on the legacy folder rows that carry no deliverable.
+  outputId                 String?
   source                   String       @default("folder") // upload | folder | button
   blobUrl                  String? // the uploaded version's URL in the hub store
   blobPathname             String?
@@ -1554,6 +1716,7 @@ model ReviewSubmission {
   @@index([deliverableId, slot])
   @@index([videoId])
   @@index([clientReleasedAt])
+  @@index([outputId])
 }
 
 // Per-photo quick verdict while arrowing through a gallery in review mode.
@@ -2498,6 +2661,14 @@ model PendingSms {
 
   @@index([teamMemberId, sentAt])
   @@index([sentAt])
+
+  // HELD UNTIL THE NEXT COVERED PERIOD (audit WF-05/paging, Sep 18). Null =
+  // send at the next permitted flush, which is exactly today's behaviour for
+  // every existing row. A routine alert raised on a Saturday carries Monday
+  // 9am ET here instead of paging somebody at the weekend.
+  deferUntil DateTime?
+
+  @@index([deferUntil])
 }
 
 // Who changed what on the login roster — the Kyle role-flip (Aug 18) was
@@ -3297,6 +3468,12 @@ model ContentVideo {
   @@index([deliverableId])
   @@index([currentSubmissionId])
   @@index([status])
+
+  /// The shared owed-video row this content video IS (audit WF-02). The Content
+  /// Program's per-video row POINTS at the operational unit rather than
+  /// competing with it; syncEnrollmentVideos keeps owning everything else here.
+  outputId String? @unique
+
 }
 
 // One SOURCE of one logical video (a review cut round, an Aryeo listing file,
