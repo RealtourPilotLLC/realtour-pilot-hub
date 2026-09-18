@@ -14,6 +14,16 @@ import { PGlite } from "@electric-sql/pglite";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
 import { execFile } from "child_process";
 import { promisify } from "util";
+// tasks.ts drags next/navigation in at module load, which tsx cannot resolve
+// outside a request. Nothing under test touches it, so it is stubbed in front
+// of the import (same harness trick as scripts/_drill/editor-keys.ts).
+import Module from "module";
+const __M = Module as unknown as { prototype: { require: (id: string) => unknown } };
+const __realRequire = __M.prototype.require;
+__M.prototype.require = function (this: unknown, id: string) {
+  if (id === "next/navigation" || id === "next/headers") return {};
+  return __realRequire.call(this, id);
+} as never;
 const exec = promisify(execFile);
 
 const PORT = 5473;

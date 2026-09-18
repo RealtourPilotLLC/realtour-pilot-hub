@@ -694,7 +694,14 @@ export function computeStatus(sig: StatusSignals): StatusResult {
     // gets here with something the listing does not carry rests on somebody
     // having said so — and the sentence now names who, because until R02 it
     // credited "the office" for a stamp this sweep had written itself.
-    const allOnAryeo = verifiable && expected.every((c) => clientHas.has(c));
+    // ASK THE LISTING, NOT clientHas (check, Sep 18). clientHas is no longer
+    // sourced from Aryeo alone — R02 widened it to take the larger of the
+    // listing count and the per-video delivery stamps, so a video the office
+    // handed over by Dropbox link now satisfies it. Reading that back as
+    // "confirmed live on Aryeo" would put the old false sentence back on a job
+    // whose listing is empty, which is the exact claim WF-01 removed. The
+    // listing's own count is the only witness for a sentence about the listing.
+    const allOnAryeo = verifiable && expected.every((c) => onListing[c] >= Math.max(1, unitsOf(c).owed));
     const who = sig.deliveredBy?.trim() ? `by ${sig.deliveredBy.trim()}` : "by the office";
     reason = !verifiable
       ? "Order fulfilled and media is live on Aryeo."

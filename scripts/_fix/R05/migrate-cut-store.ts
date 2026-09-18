@@ -37,6 +37,7 @@
 //
 // NOTHING HERE HAS EVER BEEN RUN. No private store exists to run it against.
 import { createWriteStream, existsSync, readFileSync } from "node:fs";
+import { cutIdentityHash } from "@/lib/cutTranscripts";
 import { Readable } from "node:stream";
 import { prisma } from "../../../src/lib/prisma";
 import { blobFetchDecision, blobStoreIdOf, blobStoreTokens } from "../../../src/lib/reviewCuts";
@@ -72,6 +73,9 @@ async function rollback() {
     if (!row) { console.log(`   ${l.submissionId}  row is gone — nothing to restore`); continue; }
     if (row.blobUrl !== l.newUrl) { console.log(`   ${l.submissionId}  points somewhere else now (${row.blobUrl ?? "null"}) — left alone`); continue; }
     if (!APPLY) { console.log(`   ${l.submissionId}  would restore → ${l.oldUrl}`); continue; }
+    // contentHash is deliberately NOT unwound: it was pinned to the value the
+    // row already had, the bytes never moved, and un-pinning it would put the
+    // URL back into the identity and break the same approvals on the way back.
     await prisma.reviewSubmission.update({ where: { id: l.submissionId }, data: { blobUrl: l.oldUrl, blobPathname: l.oldPathname } });
     console.log(`   ${l.submissionId}  restored → ${l.oldUrl}`);
   }
@@ -91,7 +95,7 @@ async function main() {
 
   const rows = await prisma.reviewSubmission.findMany({
     where: { blobUrl: { not: null } },
-    select: { id: true, blobUrl: true, blobPathname: true, status: true, fileName: true, sizeBytes: true },
+    select: { id: true, blobUrl: true, blobPathname: true, status: true, fileName: true, sizeBytes: true, contentHash: true },
     orderBy: { createdAt: "asc" },
   });
   console.log(`rows carrying a blobUrl: ${rows.length}   target store: ${newStore}   ledger: ${LEDGER}`);
@@ -156,7 +160,23 @@ async function main() {
       const line: LedgerLine = { at: new Date().toISOString(), submissionId: r.id, oldUrl, oldPathname: r.blobPathname, newUrl: copied.url, newPathname: there.pathname, bytes: there.size };
       await new Promise<void>((res, rej) => ledger!.write(`${JSON.stringify(line)}\n`, (e) => (e ? rej(e) : res())));
 
-      await prisma.reviewSubmission.update({ where: { id: r.id }, data: { blobUrl: copied.url, blobPathname: there.pathname } });
+      // PIN THE IDENTITY BEFORE THE URL MOVES (check, Sep 18).
+      //
+      // cutIdentityHash falls back to hashing blobPathname + blobUrl + size +
+      // name whenever contentHash is null — and it is null on all 14 rows. So
+      // rewriting blobUrl silently changes the identity of the cut, and every
+      // gate that compares it stops matching: a client's approval
+      // (ClientDecision.contentHash) would no longer name the video they
+      // approved, and the posting kit would call an unchanged file stale. The
+      // bytes are identical — only the address moved — so the identity must not.
+      //
+      // contentHash exists for exactly this. Filling it with the CURRENT value
+      // freezes the answer, and the fallback never runs again for this row.
+      const pinned = r.contentHash ?? cutIdentityHash(r);
+      await prisma.reviewSubmission.update({
+        where: { id: r.id },
+        data: { blobUrl: copied.url, blobPathname: there.pathname, contentHash: pinned },
+      });
       console.log(`   MOVED ${tag}  ${there.size} bytes verified`);
       moved++;
     } catch (e) {

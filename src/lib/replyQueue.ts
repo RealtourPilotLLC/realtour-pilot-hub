@@ -720,11 +720,16 @@ export async function openObligations(
       : Promise.resolve([] as { fromPhone: string | null; contactName: string | null; _max: { occurredAt: Date | null } }[]),
     clientIds.length
       ? prisma.commLog.groupBy({
-          by: ["clientId"],
+          // BY CHANNEL TOO (check, Sep 18). Grouped on clientId alone, ONE
+          // unrelated email we sent marked a sixty-day-old TEXT question
+          // answered — the two lanes are different conversations with different
+          // people in them, and an obligation is only settled by a reply on the
+          // lane it was raised on.
+          by: ["clientId", "channel"],
           where: { clientId: { in: clientIds }, ...substantiveOut },
           _max: { occurredAt: true },
         })
-      : Promise.resolve([] as { clientId: string | null; _max: { occurredAt: Date | null } }[]),
+      : Promise.resolve([] as { clientId: string | null; channel: string; _max: { occurredAt: Date | null } }[]),
     phones.length
       ? prisma.commLog.groupBy({
           by: ["fromPhone", "contactName"],
@@ -769,7 +774,16 @@ export async function openObligations(
   };
   const lastInClient = maxOf(inMaxByClient, "clientId");
   const lastInPhone = maxOf(inMaxByPhone, "phone");
-  const lastOutClient = maxOf(outMaxByClient, "clientId");
+  // Keyed "<clientId>|<family>", so a reply on one lane cannot answer for the
+  // other. The channel vocabulary is the same one familyOf uses everywhere else
+  // in this file: text and call are the phone lane, email is its own.
+  const lastOutClient = new Map<string, Date>();
+  for (const r of outMaxByClient as { clientId: string | null; channel: string; _max: { occurredAt: Date | null } }[]) {
+    const at = r._max?.occurredAt;
+    if (!at || !r.clientId) continue;
+    const key = `${r.clientId}|${r.channel === "email" ? "email" : "phone"}`;
+    if ((lastOutClient.get(key) ?? new Date(0)) < at) lastOutClient.set(key, at);
+  }
   const lastOutPhone = maxOf(outMaxByPhone, "phone");
 
   // The newest inbound per thread that actually ASKS something — the same
@@ -857,7 +871,7 @@ export async function openObligations(
     // Has a PERSON answered since? (`substantiveOut` already dropped our
     // robots.) If so the obligation is stale, not owed — leave it on the board
     // as a task and keep it off the comms queue.
-    const lastOut = (t.clientId ? lastOutClient.get(t.clientId) : undefined) ?? (phone ? lastOutPhone.get(phone) : undefined);
+    const lastOut = (t.clientId ? lastOutClient.get(`${t.clientId}|${family}`) : undefined) ?? (phone ? lastOutPhone.get(phone) : undefined);
     if (lastOut && lastOut >= refAt) continue;
 
     // Ticked handled by hand, after the message — an explicit resolution.
