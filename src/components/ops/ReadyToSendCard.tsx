@@ -2,6 +2,7 @@ import Link from "next/link";
 import { AlertTriangle, CheckCircle2, Download, ExternalLink, Eye, Files, FolderOpen, Loader2, Send } from "lucide-react";
 import { Avatar } from "@/components/ui/Avatar";
 import { MarkSent } from "@/components/ops/MarkSent";
+import { RetryRender } from "@/components/ops/RetryRender";
 import { cn } from "@/lib/utils";
 import { etDateTime } from "@/lib/datetime";
 import type { ReadyBoard, ReadyVideo, RenderingVideo } from "@/lib/readyToSend";
@@ -26,9 +27,10 @@ import type { ReadyBoard, ReadyVideo, RenderingVideo } from "@/lib/readyToSend";
 // sends the editor's un-enhanced export by mistake.
 //
 // A SERVER COMPONENT. It renders rows the page already fetched (opsDay), and
-// the only interactive part is <MarkSent/>, which is a client island holding an
-// id. Nothing here reaches the database, and nothing here can reach a client:
-// the buttons are "download the file" and "record what you did".
+// the only interactive parts are <MarkSent/> and <RetryRender/>, client islands
+// holding an id. Nothing here reaches the database, and nothing here can reach a
+// client: the buttons are "download the file", "record what you did" and "run
+// the 1080p pass again".
 //
 // OWNER/ADMIN ONLY. Enforced by the caller (Home hides it) AND by both things
 // it can actually do — the download routes are requireRole(OWNER/ADMIN) /
@@ -218,6 +220,15 @@ function ReadyRow({ v }: { v: ReadyVideo }) {
           <Eye className="size-3.5" /> Watch it
         </Link>
         <MarkSent submissionId={v.submissionId} street={v.street} />
+        {/* THE RETRY LIVES WHERE THE FAILURE IS READ (Jordan, Sep 18: "I need a
+            way to retry the render without going into connections"). Offered
+            only on a row whose 1080p pass did NOT produce the file — there is a
+            job to re-run and a reason printed two lines above it. A row already
+            carrying the enhanced file has nothing to retry, and showing the
+            button there would invite spending money to replace a good file. */}
+        {v.topazJobId && v.file.source !== "topaz-1080p" && (
+          <RetryRender jobId={v.topazJobId} street={v.street} />
+        )}
       </div>
     </div>
   );
