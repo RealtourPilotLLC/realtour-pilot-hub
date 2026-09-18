@@ -1,10 +1,12 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
-import { parseEvidence } from "@/lib/statusEvidence";
+import { parseEvidence, type ParsedEvidence } from "@/lib/statusEvidence";
 import { getListingMedia } from "@/lib/integrations/aryeo";
 import { isTestClientName } from "@/lib/testClients";
 import { laneStillOwesWork } from "@/lib/readyToSend";
+import { expectedCategories } from "@/lib/projectStatus";
+import { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 import type { ProactiveFlag } from "@/lib/queries";
 
 // ---------------------------------------------------------------------------
@@ -37,6 +39,51 @@ import type { ProactiveFlag } from "@/lib/queries";
 //     which is why an unreadable listing produces "cannot tell" and NEVER an
 //     exception. An Aryeo outage must not flag the back catalogue.
 //
+// ---------------------------------------------------------------------------
+// SEP 18, SECOND PASS — four corrections, all of them the same mistake read
+// from four sides: a number the hub never measured being spent as if it had.
+//
+// 1. A SEND IS PER VIDEO, NOT PER JOB. `cutsSentToClient` counted every
+//    ReviewSubmission on the PROJECT, and one stamp anywhere on the job
+//    retired the whole VIDEO lane. 893 S Matlack St is sixteen videos on one
+//    Deliverable row (quantity 16), six finished in Dropbox, listing empty and
+//    UNDELIVERED: marking the FIRST one sent used to declare the other fifteen
+//    delivered another way. lib/deliverableOutputs now mints a row per owed
+//    video with its own send stamp, so SENT_ANOTHER_WAY needs them ALL, and the
+//    count of owed units is taken as the LARGEST of the three witnesses (output
+//    rows, ordered slots, distinct sent keys) — under-counting what a job owes
+//    is the failure itself.
+//
+// 2. THE ASYMMETRY RUNS BOTH WAYS, AND IT ONLY RAN ONE. "This module never
+//    reads the cached counts for the Aryeo side" was written against a frozen
+//    ZERO and still holds for every zero. But a cached count is the record of a
+//    read that SAW something, and "what a read SAW still stands" was only ever
+//    applied to Dropbox. 45 Heron Hill's shape with one number changed —
+//    cached images 60 on a listing that same read saw DELIVERED, live images 0,
+//    marked delivered Jun 9 — came out OWED: the hub calling it a debt when a
+//    client took their own gallery down months later. A cached POSITIVE on a
+//    listing the same read saw RELEASED is now history that stands
+//    (WAS_ON_THE_LISTING), and only on a job the hub already considers
+//    delivered. A cached zero is still worth exactly nothing.
+//
+// 3. AN UNKNOWN IS NOT A ZERO. `dropboxFinalVideo` is `?? null`, and the null
+//    was printed as "nothing finished in Dropbox" — a measurement nobody took.
+//    projectStatus.ts:266 settles it: "a skipped source was never a question,
+//    and a stale zero from a failed one is not an absence." So the pass now
+//    carries WHETHER the Dropbox half answered, a carried-forward zero counts
+//    as unknown, and an unknown says so in the sentence a person reads.
+//
+// 4. WHAT GETS EXAMINED COMES FROM THE ORDER. `expected` — the list deciding
+//    which lanes are looked at at all — was read off the same blob this header
+//    calls untrustworthy. A DELIVERED job with a listing id, an APPROVED unsent
+//    cut and NO statusEvidence was selected, spent a live Aryeo read, and then
+//    examined zero lanes. The Deliverable rows are live rows, and
+//    projectStatus.expectedCategories is the derivation the status engine
+//    itself uses, so the two cannot drift apart; the blob's words are merged in
+//    on top, never relied on alone; and a job whose order names no lane this
+//    pass has a channel for is not a candidate and does not cost a read.
+// ---------------------------------------------------------------------------
+//
 // WHAT IT MAY DO, AND WHAT IT MAY NOT. The only write in this file is
 // Project.deliveryExceptionAt/Note, raised once, through raiseDeliveryException
 // below. It is a flag, never an action. It does not text, resend, close a task,
@@ -60,13 +107,49 @@ const LANE_OF_EXPECTED: Record<string, DeliveryLane> = {
   "3D tour": "THREED",
 };
 
+/** A fixed reading order, so two jobs with the same lanes print the same way. */
+const LANE_ORDER: DeliveryLane[] = ["VIDEO", "PHOTOS", "FLOORPLAN", "THREED"];
+
+/**
+ * WHICH LANES THIS PASS EXAMINES — from the ORDER first (header correction 4).
+ *
+ * The Deliverable rows are live rows, and projectStatus.expectedCategories is
+ * the derivation the status engine itself runs, so this cannot drift from what
+ * the rest of the hub thinks was ordered. The evidence blob's own words are
+ * merged in on top — they are the only witness for a job whose order rows were
+ * never expanded — but they are never the sole source any more: a job with no
+ * statusEvidence used to come back with an empty list, which bought a live
+ * Aryeo read and examined nothing.
+ *
+ * Pure. No database, so it can be argued with in a fixture.
+ */
+export function lanesExpectedFor(
+  deliverables: { type: string; label: string | null }[],
+  evidence: ParsedEvidence | null,
+): DeliveryLane[] {
+  const out = new Set<DeliveryLane>(expectedCategories(deliverables));
+  for (const word of evidence?.expected ?? []) {
+    const lane = LANE_OF_EXPECTED[word];
+    if (lane) out.add(lane);
+  }
+  return LANE_ORDER.filter((l) => out.has(l));
+}
+
 export const laneLabel = (lane: DeliveryLane): string =>
   lane === "VIDEO" ? "Video" : lane === "PHOTOS" ? "Photos" : lane === "FLOORPLAN" ? "Floor plan" : "3D tour";
 
 export type LaneVerdict =
   /** live on a listing Aryeo reports as delivered — the client can open it */
   | "ON_THE_LISTING"
-  /** not on the listing, but a person marked this cut sent to the client */
+  /**
+   * A SUCCESSFUL read once saw this lane live on a listing Aryeo reported
+   * DELIVERED, and the live read sees none of it now. The client had it and the
+   * listing they own no longer shows it. Correction 2 in the header: this is
+   * the Dropbox rule ("what a read SAW still stands") finally applied to the
+   * Aryeo side, and it is built ONLY on cached positives — never on a zero.
+   */
+  | "WAS_ON_THE_LISTING"
+  /** not on the listing, but every owed video on this job carries a send stamp */
   | "SENT_ANOTHER_WAY"
   /** the work is not finished yet — nothing to reconcile, and nobody is late by this test */
   | "IN_PRODUCTION"
@@ -75,7 +158,13 @@ export type LaneVerdict =
   /** the evidence disagrees with itself, or there is none */
   | "CANNOT_TELL";
 
-export type DeliveryVerdict = "DELIVERED" | "DELIVERED_ANOTHER_WAY" | "IN_PRODUCTION" | "OWED" | "CANNOT_TELL";
+export type DeliveryVerdict =
+  | "DELIVERED"
+  | "DELIVERED_THEN_REMOVED"
+  | "DELIVERED_ANOTHER_WAY"
+  | "IN_PRODUCTION"
+  | "OWED"
+  | "CANNOT_TELL";
 
 /** Worst-first, so a job takes the verdict of its worst lane. */
 const VERDICT_RANK: Record<LaneVerdict, number> = {
@@ -83,7 +172,8 @@ const VERDICT_RANK: Record<LaneVerdict, number> = {
   CANNOT_TELL: 1,
   IN_PRODUCTION: 2,
   SENT_ANOTHER_WAY: 3,
-  ON_THE_LISTING: 4,
+  WAS_ON_THE_LISTING: 4,
+  ON_THE_LISTING: 5,
 };
 
 export type ListingRead =
@@ -115,8 +205,28 @@ export type DeliveryInput = {
   /** Dropbox FINAL counts. Positive facts only — an old count still proves the work exists. */
   dropboxFinalVideo: number | null;
   dropboxFinalPhotos: number | null;
-  /** ReviewSubmissions a person (or the aryeoDelivery proof pass) stamped sentToClientAt */
-  cutsSentToClient: number;
+  /**
+   * DID THE DROPBOX HALF ACTUALLY ANSWER? (header correction 3.)
+   *   ok     — a read succeeded and these counts are what it saw
+   *   stale  — the latest read FAILED and these were carried forward. A
+   *            carried-forward POSITIVE still proves the work exists; a
+   *            carried-forward ZERO proves nothing at all.
+   *   never  — the blob has no Dropbox half. Every count here is unknown.
+   * Without this the pass could not tell an observed zero from a null, and it
+   * printed both as "nothing finished in Dropbox".
+   */
+  dropboxRead: "ok" | "stale" | "never";
+  /**
+   * THE VIDEO LANE, COUNTED IN UNITS — one per owed video, which is the only
+   * unit a send can be true of (header correction 1). `videoUnitsOwed` is the
+   * largest of the three witnesses the caller has (DeliverableOutput rows,
+   * ordered slots, distinct sent keys) because on this number a mistake
+   * downwards silences real work; `videoUnitsSent` counts the DISTINCT videos
+   * carrying a send stamp, not the rounds — two rounds of one cut are one
+   * video, sent once.
+   */
+  videoUnitsOwed: number;
+  videoUnitsSent: number;
   /**
    * Approved cuts nobody has marked sent, split by whether the 1080p lane has
    * finished with them — readyToSend.laneStillOwesWork is the arbiter, asked
@@ -130,9 +240,16 @@ export type DeliveryInput = {
   listing: ListingRead;
   exceptionAt: Date | null;
   exceptionNote: string | null;
-  /** what the CACHED evidence blob last recorded, for the drift measurement only */
+  /**
+   * What the CACHED evidence blob last recorded. Used for the drift measurement
+   * and — POSITIVES ONLY, and only next to a cached delivery status of
+   * DELIVERED — as the record that this lane was once published to the client
+   * (header correction 2). A cached zero is never read as an absence.
+   */
   cachedAryeoVideos: number | null;
   cachedAryeoPhotos: number | null;
+  /** Aryeo's own delivery word AT THE TIME of that cached read. */
+  cachedAryeoDelivery: string | null;
 };
 
 export type LaneFinding = { lane: DeliveryLane; verdict: LaneVerdict; why: string };
@@ -232,10 +349,47 @@ export function classifyDelivery(input: DeliveryInput): DeliveryClassification {
     `LIVE listing (${live.atISO.slice(0, 16)}): videos ${live.videos} · images ${live.photos} · floor plans ${live.floorPlans} · Aryeo says ${live.deliveryStatus ?? "no delivery status"}`,
   );
   if (live.videoTitles.length) facts.push(`  listing videos: ${live.videoTitles.map((t) => `"${t}"`).join(", ")}`);
+  const dropboxSaw =
+    input.dropboxRead === "ok" ? "read" : input.dropboxRead === "stale" ? "CARRIED FORWARD from a failed read" : "NEVER READ";
   facts.push(
-    `Dropbox Final: video ${input.dropboxFinalVideo ?? "?"} · photos ${input.dropboxFinalPhotos ?? "?"} · ` +
-      `cuts marked sent ${input.cutsSentToClient} · approved and unsent: ${input.finishedCutsUnsent} finished, ${input.renderingCutsUnsent} still rendering`,
+    `Dropbox Final (${dropboxSaw}): video ${input.dropboxFinalVideo ?? "?"} · photos ${input.dropboxFinalPhotos ?? "?"} · ` +
+      `videos marked sent ${input.videoUnitsSent} of ${input.videoUnitsOwed} owed · ` +
+      `approved and unsent: ${input.finishedCutsUnsent} finished, ${input.renderingCutsUnsent} still rendering`,
   );
+  if (input.cachedAryeoVideos !== null || input.cachedAryeoPhotos !== null || input.cachedAryeoDelivery) {
+    facts.push(
+      `cached listing read (history only — positives only, never a zero): videos ${input.cachedAryeoVideos ?? "?"} · ` +
+        `images ${input.cachedAryeoPhotos ?? "?"} · Aryeo then said ${input.cachedAryeoDelivery ?? "nothing"}`,
+    );
+  }
+
+  // ---- what the cached blob is allowed to say, and what it is not -----------
+  // A cached count is the record of a read that SAW something. Read as history
+  // it is evidence; read as a current state it is the trap this whole module
+  // was written about. So: positives only, only when the SAME read saw the
+  // listing RELEASED, and only on a job the hub already considers delivered —
+  // a job still in REVIEW with a vanished listing video is genuinely strange
+  // and keeps its flag.
+  const cachedFor = (lane: DeliveryLane): number | null =>
+    lane === "VIDEO" ? input.cachedAryeoVideos : lane === "PHOTOS" ? input.cachedAryeoPhotos : null;
+  const wasPublished = (lane: DeliveryLane): boolean =>
+    input.deliveredAt !== null &&
+    (input.cachedAryeoDelivery ?? "").toUpperCase() === "DELIVERED" &&
+    (cachedFor(lane) ?? 0) > 0;
+
+  // ---- what Dropbox is allowed to say ---------------------------------------
+  // projectStatus.ts:266, verbatim: "a skipped source was never a question, and
+  // a stale zero from a failed one is not an absence." null here means UNKNOWN
+  // and must never be printed as a count of nothing. Floor plans are always
+  // unknown: the hub has no Dropbox channel for them, so its silence about one
+  // is not an observation either.
+  const finishedInDropbox = (lane: DeliveryLane): number | null => {
+    if (lane !== "VIDEO" && lane !== "PHOTOS") return null;
+    const n = lane === "VIDEO" ? input.dropboxFinalVideo : input.dropboxFinalPhotos;
+    if (n === null || input.dropboxRead === "never") return null;
+    if (input.dropboxRead === "stale" && n === 0) return null;
+    return n;
+  };
 
   for (const lane of input.expected) {
     const onListing = countFor(lane, live);
@@ -269,28 +423,67 @@ export function classifyDelivery(input: DeliveryInput): DeliveryClassification {
       lanes.push({ lane, verdict: "ON_THE_LISTING", why: `${onListing} on a listing Aryeo reports delivered` });
       continue;
     }
-    // Nothing of this lane on the listing.
-    if (lane === "VIDEO" && input.cutsSentToClient > 0) {
+    // Nothing of this lane on the listing NOW — but a read once saw it there,
+    // on a listing the same read saw released. Media does not un-deliver; a
+    // client editing their own gallery months later is not a debt we owe.
+    if (wasPublished(lane)) {
       lanes.push({
         lane,
-        verdict: "SENT_ANOTHER_WAY",
-        why: `${input.cutsSentToClient} cut${input.cutsSentToClient === 1 ? "" : "s"} carry sentToClientAt — a person, or the aryeoDelivery proof pass, recorded the send`,
+        verdict: "WAS_ON_THE_LISTING",
+        why:
+          `${cachedFor(lane)} were live on this listing when Aryeo last reported it DELIVERED, and none are now — ` +
+          `the media came off a listing the client could already open`,
       });
       continue;
     }
+    // A SEND IS PER VIDEO. This retires the lane only when EVERY owed video
+    // carries a send stamp. The old test was `cutsSentToClient > 0` against a
+    // PROJECT-wide count of rounds, so one stamp on 893 S Matlack's first video
+    // declared the other fifteen delivered.
+    const sentUnits = lane === "VIDEO" ? input.videoUnitsSent : 0;
+    const owedUnits = lane === "VIDEO" ? input.videoUnitsOwed : 0;
+    if (lane === "VIDEO" && owedUnits > 0 && sentUnits >= owedUnits) {
+      lanes.push({
+        lane,
+        verdict: "SENT_ANOTHER_WAY",
+        why:
+          `all ${owedUnits} owed video${owedUnits === 1 ? "" : "s"} carry a send stamp — a person, or the aryeoDelivery ` +
+          `proof pass, recorded the send`,
+      });
+      continue;
+    }
+    // Some sent, some not: every sentence below is about THE REST, and says so.
+    const partly =
+      sentUnits > 0
+        ? ` (${sentUnits} of ${owedUnits} video${owedUnits === 1 ? "" : "s"} on this job already ` +
+          `carr${sentUnits === 1 ? "ies" : "y"} a send stamp; this is about the rest)`
+        : "";
     // FINISHED VIDEO, TWO WAYS TO KNOW IT. A file in the Dropbox Final folder,
     // or an approved cut the render lane has finished with — including a FAILED
     // pass, where the editor's own export is the deliverable (readyToSend case
     // b, 322 N 62nd St). Counted as a max rather than a sum: 893 S Matlack's
     // six Final files and its one approved cut are the same work seen twice,
     // and "7 finished files" would be a number nobody could check.
-    const finishedVideo = Math.max(input.dropboxFinalVideo ?? 0, input.finishedCutsUnsent);
-    const inFinal = lane === "VIDEO" ? finishedVideo : lane === "PHOTOS" ? input.dropboxFinalPhotos ?? 0 : 0;
+    //
+    // A file that already went out is not owed a second time, so the send
+    // stamps come off the folder count first. That subtraction is the one guess
+    // in this function — the folder count is not keyed to units — and it is a
+    // guess in the safe direction: it can only ever shrink a claim, never
+    // invent one.
+    const dropboxFinal = finishedInDropbox(lane);
+    const unsentFinal = dropboxFinal === null ? null : Math.max(0, dropboxFinal - sentUnits);
+    const inFinal = lane === "VIDEO" ? Math.max(unsentFinal ?? 0, input.finishedCutsUnsent) : unsentFinal ?? 0;
+    // Zero is only a fact when somebody measured it.
+    const absenceMeasured = unsentFinal !== null || (lane === "VIDEO" && input.finishedCutsUnsent > 0);
     if (lane === "VIDEO" && inFinal === 0 && input.renderingCutsUnsent > 0) {
       lanes.push({
         lane,
         verdict: "IN_PRODUCTION",
-        why: `${input.renderingCutsUnsent} approved cut${input.renderingCutsUnsent === 1 ? " is" : "s are"} still in the 1080p lane — there is no finished file to be owed yet`,
+        why:
+          `${input.renderingCutsUnsent} approved cut${input.renderingCutsUnsent === 1 ? " is" : "s are"} still in the 1080p lane — ` +
+          `there is no finished file to be owed yet` +
+          (dropboxFinal === null ? ", and no Dropbox read on this job to say otherwise" : "") +
+          partly,
       });
       continue;
     }
@@ -306,17 +499,43 @@ export function classifyDelivery(input: DeliveryInput): DeliveryClassification {
       continue;
     }
     if (inFinal > 0) {
+      const fromDropbox = unsentFinal !== null && unsentFinal >= input.finishedCutsUnsent;
       lanes.push({
         lane,
         verdict: "OWED",
-        why: `${inFinal} finished file${inFinal === 1 ? "" : "s"} in the Dropbox Final folder and nothing on the listing`,
+        why:
+          `${inFinal} finished ` +
+          (fromDropbox
+            ? `file${inFinal === 1 ? "" : "s"} in the Dropbox Final folder`
+            : `approved cut${inFinal === 1 ? "" : "s"} the render lane is done with`) +
+          ` and nothing on the listing` +
+          partly,
       });
       continue;
     }
+    // Nothing on the listing and nothing finished — but "nothing finished" is
+    // only a finding when a read actually looked. Otherwise the honest sentence
+    // names the silence instead of dressing it up as a measurement.
+    const dropboxSilence =
+      lane !== "VIDEO" && lane !== "PHOTOS"
+        ? "the hub has no Dropbox channel for this lane"
+        : input.dropboxRead === "never"
+          ? "the hub has no Dropbox read for this job at all"
+          : "its only Dropbox count was carried forward from a failed read";
+    // Every finished file is spoken for by a send stamp, so the videos still
+    // owed have nothing finished behind them — which is a different sentence
+    // from "the folder is empty", and `partly` would only repeat it.
+    const spokenFor = sentUnits > 0 && (dropboxFinal ?? 0) > 0 && unsentFinal === 0;
     lanes.push({
       lane,
       verdict: "CANNOT_TELL",
-      why: "nothing on the listing and nothing finished in Dropbox — the hub cannot see this being produced at all",
+      why: spokenFor
+        ? `nothing on the listing, and all ${dropboxFinal} finished file${dropboxFinal === 1 ? "" : "s"} in the Dropbox Final folder ` +
+          `are accounted for by the ${sentUnits} send stamp${sentUnits === 1 ? "" : "s"} — the other ` +
+          `${owedUnits - sentUnits} video${owedUnits - sentUnits === 1 ? " has" : "s have"} nothing finished behind ${owedUnits - sentUnits === 1 ? "it" : "them"} yet`
+        : absenceMeasured
+          ? `nothing on the listing and nothing finished in Dropbox — the hub cannot see this being produced at all${partly}`
+          : `nothing on the listing, and ${dropboxSilence} — an absence nobody measured is not an absence${partly}`,
     });
   }
 
@@ -337,10 +556,12 @@ export function classifyDelivery(input: DeliveryInput): DeliveryClassification {
           ? "IN_PRODUCTION"
           : worst === "SENT_ANOTHER_WAY"
             ? "DELIVERED_ANOTHER_WAY"
-            : worst === "ON_THE_LISTING"
-              ? "DELIVERED"
-              : // nothing this pass has a channel for — say so, flag nobody
-                "CANNOT_TELL";
+            : worst === "WAS_ON_THE_LISTING"
+              ? "DELIVERED_THEN_REMOVED"
+              : worst === "ON_THE_LISTING"
+                ? "DELIVERED"
+                : // nothing this pass has a channel for — say so, flag nobody
+                  "CANNOT_TELL";
 
   const problems = actionable.filter((l) => l.verdict === "OWED" || l.verdict === "CANNOT_TELL");
   const lead = finalVerdict === "OWED" ? "Owed" : "Unconfirmed";
@@ -349,12 +570,14 @@ export function classifyDelivery(input: DeliveryInput): DeliveryClassification {
     : `never marked delivered (the job reads ${input.status})`;
   const clean =
     finalVerdict === "DELIVERED_ANOTHER_WAY"
-      ? "Confirmed — not on the listing, but the send is recorded against the cut itself."
-      : finalVerdict === "DELIVERED"
-        ? "Confirmed — every ordered category is live on a listing Aryeo reports delivered."
-        : finalVerdict === "IN_PRODUCTION"
-          ? "Nothing owed yet — the work is still in the 1080p lane."
-          : "Unconfirmed — nothing this pass can read speaks to what was ordered.";
+      ? "Confirmed — not on the listing, but every owed video carries a send recorded against the cut itself."
+      : finalVerdict === "DELIVERED_THEN_REMOVED"
+        ? "Confirmed — a listing read saw this live on a listing Aryeo reported delivered; it has since come off the listing, which is the client's own gallery to edit."
+        : finalVerdict === "DELIVERED"
+          ? "Confirmed — every ordered category is live on a listing Aryeo reports delivered."
+          : finalVerdict === "IN_PRODUCTION"
+            ? "Nothing owed yet — the work is still in the 1080p lane."
+            : "Unconfirmed — nothing this pass can read speaks to what was ordered.";
   const note =
     problems.length === 0
       ? clean
@@ -421,6 +644,10 @@ export type ReconcileResult = {
   scanned: number;
   candidates: number;
   skippedTest: number;
+  /** jobs that had a reason to doubt but no lane this pass has a channel for —
+   *  reported so the saving is visible, and so a wrong lane map shows up as a
+   *  number rather than as silence. */
+  skippedNoLanes: number;
   classifications: DeliveryClassification[];
   raised: { projectId: string; street: string; note: string }[];
   alreadyFlagged: { projectId: string; street: string; note: string | null }[];
@@ -457,12 +684,23 @@ export async function reconcileDeliveries(opts: ReconcileOptions = {}): Promise<
       deliveryExceptionAt: true,
       deliveryExceptionNote: true,
       client: { select: { name: true } },
+      // OWED rows only. This used to filter on removedFromOrderAt alone, which
+      // let a row the office had already marked "not required on this job" put
+      // a lane into `expected` and a slot into the ordered count. tasks.ts
+      // states the rule once for every reader; spread it, never restate it.
       deliverables: {
-        where: { removedFromOrderAt: null },
+        where: OWED_DELIVERABLE_WHERE,
         select: { type: true, label: true, productTitle: true, quantity: true },
       },
       reviewSubmissions: {
-        select: { status: true, sentToClientAt: true, topazJob: { select: { state: true } } },
+        select: {
+          id: true,
+          deliverableId: true,
+          slot: true,
+          status: true,
+          sentToClientAt: true,
+          topazJob: { select: { state: true } },
+        },
       },
     },
     orderBy: { deliveredAt: "desc" },
@@ -472,6 +710,7 @@ export async function reconcileDeliveries(opts: ReconcileOptions = {}): Promise<
     scanned: projects.length,
     candidates: 0,
     skippedTest: 0,
+    skippedNoLanes: 0,
     classifications: [],
     raised: [],
     alreadyFlagged: [],
@@ -490,7 +729,17 @@ export async function reconcileDeliveries(opts: ReconcileOptions = {}): Promise<
     );
     const approvedUnsent = p.reviewSubmissions.some((r) => r.status === "APPROVED" && !r.sentToClientAt);
     const awaitingSend = !!(e && e.awaitingSend.length > 0);
-    return finishedButAbsent || approvedUnsent || awaitingSend;
+    if (!(finishedButAbsent || approvedUnsent || awaitingSend)) return false;
+    // NOTHING TO EXAMINE, NOTHING TO BUY. `expected` came off the blob, so a
+    // DELIVERED job with a listing id, an APPROVED unsent cut and no
+    // statusEvidence was selected, cost a live Aryeo read, and then looked at
+    // zero lanes. The order decides now — and a job whose order names no lane
+    // this pass has a channel for is not a candidate at all.
+    if (lanesExpectedFor(p.deliverables, e).length === 0) {
+      result.skippedNoLanes++;
+      return false;
+    }
+    return true;
   });
 
   const live = candidates.filter((p) => {
@@ -504,6 +753,24 @@ export async function reconcileDeliveries(opts: ReconcileOptions = {}): Promise<
   });
   const chosen = opts.limit ? live.slice(0, opts.limit) : live;
   result.candidates = chosen.length;
+
+  // ONE query for the whole batch: every LIVE video unit on the chosen jobs,
+  // each with its own send stamp. This is the row lib/deliverableOutputs mints
+  // per owed video — the only place a "this particular video went out" fact can
+  // live, and the reason SENT_ANOTHER_WAY can be per video instead of per job.
+  const videoUnits = chosen.length
+    ? await prisma.deliverableOutput.findMany({
+        where: {
+          projectId: { in: chosen.map((p) => p.id) },
+          category: "VIDEO",
+          waivedAt: null,
+          removedFromOrderAt: null,
+        },
+        select: { projectId: true, deliverableId: true, slot: true, deliveredAt: true },
+      })
+    : [];
+  const unitsByProject = new Map<string, typeof videoUnits>();
+  for (const u of videoUnits) unitsByProject.set(u.projectId, [...(unitsByProject.get(u.projectId) ?? []), u]);
 
   for (const p of chosen) {
     const e = parseEvidence(p.statusEvidence);
@@ -527,13 +794,30 @@ export async function reconcileDeliveries(opts: ReconcileOptions = {}): Promise<
         : { readable: false, why: "read-failed" };
     }
 
-    const expected = (e?.expected ?? [])
-      .map((w) => LANE_OF_EXPECTED[w])
-      .filter((l): l is DeliveryLane => !!l);
+    const expected = lanesExpectedFor(p.deliverables, e);
     const orderedVideoSlots = p.deliverables
       .filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL")
       .reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
     const approvedUnsent = p.reviewSubmissions.filter((r) => r.status === "APPROVED" && !r.sentToClientAt);
+
+    // A SEND IS PER VIDEO, counted by SLOT KEY so two rounds of one cut are one
+    // video sent once. Both witnesses count: DeliverableOutput.deliveredAt is
+    // DERIVED from the round (refreshOutputsForProject), so a job whose outputs
+    // have not been refreshed yet would otherwise read as nothing-sent. 14 of
+    // the 35 rounds in production carry no deliverable at all — the
+    // folder-discovered cuts — and those are keyed by their own id, which
+    // counts each one once and guesses at no slot.
+    const units = unitsByProject.get(p.id) ?? [];
+    const sentKeys = new Set<string>();
+    for (const u of units) if (u.deliveredAt) sentKeys.add(`${u.deliverableId}:${u.slot}`);
+    for (const r of p.reviewSubmissions) {
+      if (!r.sentToClientAt) continue;
+      sentKeys.add(r.deliverableId ? `${r.deliverableId}:${r.slot}` : `round:${r.id}`);
+    }
+    // The LARGEST of the three witnesses. An owed count that is too low is what
+    // silenced fifteen of 893 S Matlack's sixteen videos; one that is too high
+    // only ever asks a person to look.
+    const videoUnitsOwed = Math.max(units.length, orderedVideoSlots, sentKeys.size);
     const photoLaneProducts = p.deliverables
       .filter((d) => ["PHOTOS", "DRONE", "TWILIGHT", "HEADSHOT", "VIRTUAL_STAGING"].includes(d.type))
       .map((d) => d.productTitle ?? d.label ?? d.type);
@@ -550,7 +834,11 @@ export async function reconcileDeliveries(opts: ReconcileOptions = {}): Promise<
       photoLaneProducts,
       dropboxFinalVideo: e?.dropbox?.finalVideo ?? null,
       dropboxFinalPhotos: e?.dropbox?.finalPhotos ?? null,
-      cutsSentToClient: p.reviewSubmissions.filter((r) => r.sentToClientAt).length,
+      // Whether the Dropbox half ANSWERED, kept separate from what it said, so
+      // the classifier can tell an observed zero from a null it never read.
+      dropboxRead: !e?.dropbox ? "never" : e.dropbox.stale ? "stale" : "ok",
+      videoUnitsOwed,
+      videoUnitsSent: sentKeys.size,
       finishedCutsUnsent: approvedUnsent.filter((r) => !(r.topazJob && laneStillOwesWork(r.topazJob.state))).length,
       renderingCutsUnsent: approvedUnsent.filter((r) => !!r.topazJob && laneStillOwesWork(r.topazJob.state)).length,
       listing,
@@ -558,6 +846,7 @@ export async function reconcileDeliveries(opts: ReconcileOptions = {}): Promise<
       exceptionNote: p.deliveryExceptionNote,
       cachedAryeoVideos: e?.aryeo?.videos ?? null,
       cachedAryeoPhotos: e?.aryeo?.photos ?? null,
+      cachedAryeoDelivery: e?.aryeo?.delivery ?? null,
     });
 
     result.classifications.push(c);

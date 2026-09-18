@@ -65,6 +65,7 @@ import {
   reconcileDeliveries,
   raiseDeliveryException,
   classifyDelivery,
+  lanesExpectedFor,
   laneLabel,
   type DeliveryClassification,
   type DeliveryInput,
@@ -587,6 +588,7 @@ async function fingerprint(ids: string[]): Promise<Fingerprint> {
 
 const VERDICT_WORD: Record<DeliveryClassification["verdict"], string> = {
   DELIVERED: "DELIVERED       ",
+  DELIVERED_THEN_REMOVED: "WAS ON LISTING  ",
   DELIVERED_ANOTHER_WAY: "SENT ANOTHER WAY",
   IN_PRODUCTION: "IN PRODUCTION   ",
   OWED: "STILL OWED      ",
@@ -618,9 +620,12 @@ async function deliveryPass() {
   const counts = new Map<string, number>();
   for (const c of dry.classifications) counts.set(c.verdict, (counts.get(c.verdict) ?? 0) + 1);
   console.log(`\n${"-".repeat(100)}`);
-  console.log(`SCOPE: ${dry.scanned} non-cancelled jobs scanned · ${dry.candidates} carried an internal reason to doubt the delivery · ${dry.skippedTest} synthetic TEST jobs skipped`);
+  console.log(
+    `SCOPE: ${dry.scanned} non-cancelled jobs scanned · ${dry.candidates} carried an internal reason to doubt the delivery · ` +
+      `${dry.skippedTest} synthetic TEST jobs skipped · ${dry.skippedNoLanes} had a reason to doubt but no lane this pass has a channel for (no read bought)`,
+  );
   console.log("VERDICTS:");
-  for (const v of ["DELIVERED", "DELIVERED_ANOTHER_WAY", "IN_PRODUCTION", "OWED", "CANNOT_TELL"] as const) {
+  for (const v of ["DELIVERED", "DELIVERED_THEN_REMOVED", "DELIVERED_ANOTHER_WAY", "IN_PRODUCTION", "OWED", "CANNOT_TELL"] as const) {
     console.log(`   ${pad(VERDICT_WORD[v].trim(), 20)} ${num(counts.get(v) ?? 0)}`);
   }
   // HOW MUCH OF THE OLD ANSWER WAS STALE CACHE. The report above (HEADLINE 1,
@@ -742,7 +747,9 @@ function selftest(): void {
     photoLaneProducts: ["Photos"],
     dropboxFinalVideo: 1,
     dropboxFinalPhotos: 40,
-    cutsSentToClient: 0,
+    dropboxRead: "ok",
+    videoUnitsOwed: 1,
+    videoUnitsSent: 0,
     finishedCutsUnsent: 0,
     renderingCutsUnsent: 0,
     listing: listing(),
@@ -750,10 +757,69 @@ function selftest(): void {
     exceptionNote: null,
     cachedAryeoVideos: null,
     cachedAryeoPhotos: null,
+    cachedAryeoDelivery: null,
     ...over,
   });
 
-  const cases: { name: string; input: DeliveryInput; verdict: DeliveryClassification["verdict"]; flagged: boolean }[] = [
+  // 893 S MATLACK ST, as production carries it (probed Sep 18): one Deliverable
+  // row of quantity 16, sixteen DeliverableOutput rows, six finished files in
+  // the Dropbox Final folder, slot 1 approved at round 2, listing empty and
+  // UNDELIVERED. The fixture exists so the "one stamp silences fifteen videos"
+  // failure can be replayed without writing a send stamp to a live job.
+  const matlack = (over: Partial<DeliveryInput> = {}): DeliveryInput =>
+    job({
+      projectId: "cmt32he1k00s4l504qaaaw9kk",
+      street: "893 S Matlack St",
+      status: "REVIEW",
+      deliveredAt: null,
+      expected: ["VIDEO"],
+      orderedVideoSlots: 16,
+      photoLaneProducts: [],
+      dropboxFinalVideo: 6,
+      dropboxFinalPhotos: 0,
+      videoUnitsOwed: 16,
+      videoUnitsSent: 0,
+      finishedCutsUnsent: 1,
+      listing: listing({ deliveryStatus: "UNDELIVERED", photos: 0, videos: 0, floorPlans: 0, videoTitles: [] }),
+      cachedAryeoVideos: 0,
+      cachedAryeoPhotos: 0,
+      cachedAryeoDelivery: "UNDELIVERED",
+      ...over,
+    });
+
+  // 45 HERON HILL DR, as production carries it, with ONE number changed: the
+  // cached image count. The live listing really does read photos 0 · videos 1 ·
+  // DELIVERED, and the job really was stamped delivered Jun 9 with 60 finished
+  // photos in Dropbox. A cached 60 is the record of the day those images WERE
+  // on the listing — the client taking them down since is not a debt.
+  const heron = (over: Partial<DeliveryInput> = {}): DeliveryInput =>
+    job({
+      projectId: "cmqiksm5t009x9k9qgq02x9rd",
+      street: "45 Heron Hill Dr",
+      status: "DELIVERED",
+      deliveredAt: new Date("2026-06-09T16:22:54.000Z"),
+      expected: ["PHOTOS", "VIDEO"],
+      orderedVideoSlots: 1,
+      photoLaneProducts: ["HDR Photos"],
+      dropboxFinalVideo: 1,
+      dropboxFinalPhotos: 60,
+      listing: listing({ photos: 0, videos: 1, floorPlans: 8 }),
+      cachedAryeoVideos: 1,
+      cachedAryeoPhotos: 60,
+      cachedAryeoDelivery: "DELIVERED",
+      ...over,
+    });
+
+  const cases: {
+    name: string;
+    input: DeliveryInput;
+    verdict: DeliveryClassification["verdict"];
+    flagged: boolean;
+    /** a claim the note is NOT allowed to make (defect 3: a null read as a zero) */
+    whyMustNotSay?: string;
+    /** the honest wording that has to be there instead */
+    whyMustSay?: string;
+  }[] = [
     { name: "everything live on a delivered listing", input: job(), verdict: "DELIVERED", flagged: false },
     {
       name: "video absent, two finished files in the Final folder",
@@ -762,8 +828,8 @@ function selftest(): void {
       flagged: true,
     },
     {
-      name: "video absent, but a person marked the cut sent",
-      input: job({ listing: listing({ videos: 0, videoTitles: [] }), cutsSentToClient: 1 }),
+      name: "video absent, but the one owed video is marked sent",
+      input: job({ listing: listing({ videos: 0, videoTitles: [] }), videoUnitsOwed: 1, videoUnitsSent: 1 }),
       verdict: "DELIVERED_ANOTHER_WAY",
       flagged: false,
     },
@@ -812,18 +878,169 @@ function selftest(): void {
       verdict: "CANNOT_TELL",
       flagged: false,
     },
+
+    // -----------------------------------------------------------------------
+    // THE FOUR DEFECTS OF SEP 18, EACH REPLAYED AS THE REVIEWER DEMONSTRATED IT.
+    // Every one of these FAILED before the fix in lib/deliveryExceptions.
+    // -----------------------------------------------------------------------
+
+    // 1. A SEND IS PER VIDEO. 893 S Matlack's exact production shape, plus ONE
+    //    send stamp. `cutsSentToClient > 0` retired the whole lane, so fifteen
+    //    videos and five finished files stopped being owed.
+    { name: "893 S Matlack as it stands: 16 owed, none sent, 6 finished", input: matlack(), verdict: "OWED", flagged: true },
+    {
+      name: "893 S Matlack + ONE video marked sent — the other fifteen are still owed",
+      input: matlack({ videoUnitsSent: 1, finishedCutsUnsent: 0 }),
+      verdict: "OWED",
+      flagged: true,
+    },
+    {
+      // Fifteen sends against six finished files: every file in the folder is
+      // spoken for, so the sixteenth video has nothing finished behind it. Not
+      // a debt for a FILE — but still a job nobody may call delivered, which is
+      // what "flagged" means here. (The old code called this whole job
+      // DELIVERED_ANOTHER_WAY on the strength of stamp number one.)
+      name: "893 S Matlack + fifteen of sixteen sent — the sixteenth still stops the job",
+      input: matlack({ videoUnitsSent: 15, finishedCutsUnsent: 0 }),
+      verdict: "CANNOT_TELL",
+      flagged: true,
+      whyMustNotSay: "nothing finished in Dropbox",
+      whyMustSay: "the other 1 video has nothing finished behind it yet",
+    },
+    {
+      name: "893 S Matlack + all sixteen sent — only THEN is the lane retired",
+      input: matlack({ videoUnitsSent: 16, finishedCutsUnsent: 0 }),
+      verdict: "DELIVERED_ANOTHER_WAY",
+      flagged: false,
+    },
+
+    // 2. MEDIA THAT WAS ON THE LISTING AND CAME OFF IT IS NOT A DEBT.
+    {
+      name: "delivered Jun 9, 60 images were live on a DELIVERED listing, none are now",
+      input: heron(),
+      verdict: "DELIVERED_THEN_REMOVED",
+      flagged: false,
+    },
+    {
+      name: "  ...but a cached ZERO is still worth nothing — this one is owed",
+      input: heron({ cachedAryeoPhotos: 0 }),
+      verdict: "OWED",
+      flagged: true,
+    },
+    {
+      name: "  ...and a cached positive on a listing that was never RELEASED proves nothing",
+      input: heron({ cachedAryeoDelivery: "UNDELIVERED" }),
+      verdict: "OWED",
+      flagged: true,
+    },
+    {
+      name: "  ...and a job the hub never called delivered keeps its flag",
+      input: heron({ status: "REVIEW", deliveredAt: null }),
+      verdict: "OWED",
+      flagged: true,
+    },
+
+    // 3. AN UNKNOWN DROPBOX COUNT IS NOT AN OBSERVED ABSENCE.
+    //    projectStatus.ts:266 — "a stale zero from a failed one is not an
+    //    absence". The verdict is CANNOT_TELL either way; what must not survive
+    //    is the SENTENCE claiming the hub looked.
+    {
+      name: "no Dropbox read at all — the note must not claim 'nothing finished in Dropbox'",
+      input: job({
+        listing: listing({ photos: 0, videos: 0, videoTitles: [] }),
+        dropboxRead: "never",
+        dropboxFinalVideo: null,
+        dropboxFinalPhotos: null,
+      }),
+      verdict: "CANNOT_TELL",
+      flagged: true,
+      whyMustNotSay: "nothing finished in Dropbox",
+      whyMustSay: "an absence nobody measured is not an absence",
+    },
+    {
+      name: "a carried-forward ZERO from a failed Dropbox read is unknown, not empty",
+      input: job({
+        listing: listing({ photos: 0, videos: 0, videoTitles: [] }),
+        dropboxRead: "stale",
+        dropboxFinalVideo: 0,
+        dropboxFinalPhotos: 0,
+      }),
+      verdict: "CANNOT_TELL",
+      flagged: true,
+      whyMustNotSay: "nothing finished in Dropbox",
+      whyMustSay: "carried forward from a failed read",
+    },
+    {
+      name: "a carried-forward POSITIVE still stands — the work exists and is owed",
+      input: job({
+        listing: listing({ photos: 0, videos: 0, videoTitles: [] }),
+        dropboxRead: "stale",
+        dropboxFinalVideo: 2,
+        dropboxFinalPhotos: 40,
+      }),
+      verdict: "OWED",
+      flagged: true,
+    },
+    {
+      name: "an observed zero IS a finding, and still says so",
+      input: job({
+        listing: listing({ photos: 0, videos: 0, videoTitles: [] }),
+        dropboxRead: "ok",
+        dropboxFinalVideo: 0,
+        dropboxFinalPhotos: 0,
+      }),
+      verdict: "CANNOT_TELL",
+      flagged: true,
+      whyMustSay: "nothing finished in Dropbox",
+    },
   ];
 
   let failed = 0;
   console.log("CLASSIFIER SELF-TEST — pure, no database, no Aryeo\n");
   for (const c of cases) {
     const got = classifyDelivery(c.input);
-    const ok = got.verdict === c.verdict && got.flagWorthy === c.flagged;
+    const said = got.lanes.map((l) => l.why).join(" | ");
+    const wording =
+      (c.whyMustNotSay ? !said.includes(c.whyMustNotSay) : true) && (c.whyMustSay ? said.includes(c.whyMustSay) : true);
+    const ok = got.verdict === c.verdict && got.flagWorthy === c.flagged && wording;
     if (!ok) failed++;
-    console.log(`  ${ok ? "pass" : "FAIL"}  ${pad(c.name, 62)} ${pad(got.verdict, 22)} ${got.flagWorthy ? "would flag" : "no flag"}`);
-    if (!ok) console.log(`        expected ${c.verdict} / ${c.flagged ? "flag" : "no flag"}`);
+    console.log(`  ${ok ? "pass" : "FAIL"}  ${pad(c.name, 66)} ${pad(got.verdict, 24)} ${got.flagWorthy ? "would flag" : "no flag"}`);
+    if (!ok) {
+      console.log(`        expected ${c.verdict} / ${c.flagged ? "flag" : "no flag"}`);
+      if (!wording) console.log(`        wording: ${said}`);
+    }
   }
-  console.log(`\n${cases.length - failed} of ${cases.length} passed.`);
+
+  // DEFECT 4, AS ITS OWN QUESTION. `expected` decided which lanes were looked
+  // at at all, and it came off the evidence blob — so a job with no
+  // statusEvidence examined nothing after paying for a live listing read. These
+  // hand the derivation NO blob at all.
+  console.log("\nWHICH LANES GET EXAMINED — from the order, with no evidence blob\n");
+  const laneCases: { name: string; rows: { type: string; label: string | null }[]; want: string }[] = [
+    { name: "one VIDEO row, no statusEvidence", rows: [{ type: "VIDEO", label: null }], want: "VIDEO" },
+    { name: "a branding package: VIDEO x16, no statusEvidence", rows: [{ type: "VIDEO", label: "Custom Branding Video Package 16 Videos Total" }], want: "VIDEO" },
+    {
+      name: "45 Heron Hill's real order rows, no statusEvidence",
+      rows: [
+        { type: "DRONE", label: "Drone Videography" },
+        { type: "FLOORPLAN", label: "2D Floor Plan" },
+        { type: "SOCIAL_REEL", label: "Standard Video Highlight Reel" },
+        { type: "VIDEO", label: "Drone Videography" },
+      ],
+      want: "VIDEO,PHOTOS,FLOORPLAN",
+    },
+    { name: "an order of nothing this pass can read", rows: [{ type: "OTHER", label: "Rush fee" }], want: "" },
+  ];
+  for (const lc of laneCases) {
+    const got = lanesExpectedFor(lc.rows, null).join(",");
+    const ok = got === lc.want;
+    if (!ok) failed++;
+    console.log(`  ${ok ? "pass" : "FAIL"}  ${pad(lc.name, 66)} [${got}]`);
+    if (!ok) console.log(`        expected [${lc.want}]`);
+  }
+
+  const total = cases.length + laneCases.length;
+  console.log(`\n${total - failed} of ${total} passed.`);
   if (failed) process.exitCode = 1;
 }
 
