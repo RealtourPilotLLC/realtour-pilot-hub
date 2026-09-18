@@ -16,7 +16,16 @@ import { UploadPortal } from "@/components/upload/UploadPortal";
 import { isVideoStyleKey, type VideoStyleKey } from "@/lib/videoStyles";
 import { AppointmentFeedback } from "@/components/upload/AppointmentFeedback";
 import { AddedAtShoot } from "./AddedAtShoot";
-import { itemFromTaskTitle, shootAddonKeyPrefix, streetOf, type ShootAddOn } from "@/app/upload/shootAddOns";
+import { AdditionalShoot } from "./AdditionalShoot";
+import { itemFromTaskTitle, shootAddonKey, shootAddonKeyPrefix, streetOf, type ShootAddOn } from "@/app/upload/shootAddOns";
+import {
+  additionalShootItem,
+  additionalShootLabel,
+  isAdditionalVideoType,
+  type AdditionalShoot as AdditionalShootRow,
+} from "@/app/upload/additionalShoots";
+import { UPLOAD_PENDING_STATUSES } from "@/lib/uploadHistory";
+import { etDayKey } from "@/lib/datetime";
 import { getProjectFolderState } from "@/lib/dropboxFolders";
 import { photoPolicyFor, rawBudgetFor, rawOverageCeiling } from "@/lib/culling";
 import { ActivityType } from "@prisma/client";
@@ -154,7 +163,7 @@ export default async function UploadProjectPage({
   // and CANCELLED rows stay hidden — those were withdrawn here.
   const addOnTasks = await prisma.smartTask.findMany({
     where: { projectId: project.id, dedupeKey: { startsWith: shootAddonKeyPrefix(project.id) }, status: { not: "CANCELLED" } },
-    select: { id: true, title: true, description: true, contactName: true, createdAt: true, status: true },
+    select: { id: true, title: true, description: true, contactName: true, createdAt: true, status: true, dedupeKey: true },
     orderBy: { createdAt: "asc" },
   });
   const street = streetOf(project.title);
@@ -166,6 +175,50 @@ export default async function UploadProjectPage({
     addedAtISO: t.createdAt.toISOString(),
     handled: t.status === "COMPLETED",
   }));
+
+  // Extra shoots this job has been reopened for (Jordan, Sep 18 — 204 Spring
+  // Ln). Read with their OWN counts rather than off `project.deliverables`
+  // above: whether a cut or a file already hangs off the row is what decides
+  // if the photographer may still take it back, and the shared include does
+  // not carry it. See app/upload/additionalShoots.ts for the shape.
+  const extraShootRows = await prisma.deliverable.findMany({
+    where: {
+      projectId: project.id,
+      manual: true,
+      removedFromOrderAt: null,
+      capturedAt: { not: null },
+      type: { in: ["VIDEO", "SOCIAL_REEL"] },
+    },
+    orderBy: { capturedAt: "asc" },
+    select: {
+      id: true, type: true, label: true, capturedAt: true, uploadedAt: true, createdAt: true,
+      _count: { select: { uploads: true, reviewSubmissions: true } },
+    },
+  });
+  // Who logged it: the office card the same action minted carries the name
+  // (SmartTask.contactName), and the two are joined by the dedupe key the item
+  // name slugifies to — nothing is stored twice.
+  const addOnByKey = new Map(addOnTasks.map((t) => [t.dedupeKey ?? "", t.contactName]));
+  const extraShoots: AdditionalShootRow[] = extraShootRows.flatMap((d) => {
+    if (!isAdditionalVideoType(d.type) || !d.capturedAt) return [];
+    const key = shootAddonKey(project.id, additionalShootItem(d.type, etDayKey(d.capturedAt)));
+    return [{
+      id: d.id,
+      type: d.type,
+      label: d.label ?? additionalShootLabel(d.type, etDayKey(d.capturedAt)),
+      shotOnISO: d.capturedAt.toISOString(),
+      uploadedISO: d.uploadedAt?.toISOString() ?? null,
+      addedBy: addOnByKey.get(key) ?? null,
+      addedAtISO: d.createdAt.toISOString(),
+      hasWork: d._count.uploads > 0 || d._count.reviewSubmissions > 0,
+    }];
+  });
+  // "This job has left the upload portal" — the hub's own definition
+  // (uploadHistory.UPLOAD_PENDING_WHERE), so the card that offers a way back in
+  // appears on exactly the jobs that have no other way back in.
+  const leftThePortal =
+    !(UPLOAD_PENDING_STATUSES as string[]).includes(project.status) || project.debriefSubmittedAt != null;
+
   // ONE policy source for everything this page says about photo counts — the
   // enforcement target, the display range, and which regime produced them
   // (override / legacy / SOP), so the chip can never contradict the sweep.
@@ -319,6 +372,21 @@ export default async function UploadProjectPage({
       {/* Anything the agent added on site that the order doesn't know about —
           becomes one task for the office to add the item to the Aryeo order. */}
       <AddedAtShoot projectId={project.id} initial={addOns} />
+
+      {/* The way back in for a job that has already left the portal: a second
+          reel or video filmed on another day joins THIS job as its own video.
+          Hidden while the job is still a live to-do — the checklist above is
+          the place for footage from the shoot it was booked for. */}
+      {leftThePortal && (
+        <AdditionalShoot
+          projectId={project.id}
+          initial={extraShoots}
+          todayKey={etDayKey(new Date())}
+          minKey={project.shootDate ? etDayKey(project.shootDate) : ""}
+          jobShootISO={project.shootDate?.toISOString() ?? null}
+          delivered={project.deliveredAt != null}
+        />
+      )}
 
       {/* How the shoot went — client issues, anything we should change on our
           end. Routes to Kyle + the feedback board when it wasn't smooth. */}

@@ -11,6 +11,16 @@ import {
   streetOf,
   type ShootAddOn,
 } from "@/app/upload/shootAddOns";
+import {
+  ADDITIONAL_VIDEO_WORD,
+  additionalShootItem,
+  additionalShootLabel,
+  additionalShootSentence,
+  isAdditionalVideoType,
+  shootDayWords,
+  type AdditionalShoot,
+} from "@/app/upload/additionalShoots";
+import { etAt, etDate, etDayKey, etDayStartUtc } from "@/lib/datetime";
 import { revalidatePath } from "next/cache";
 import { ProjectStatus, DeliverableStatus, ActivityType } from "@prisma/client";
 import { saveUpload, deleteFile } from "@/lib/storage";
@@ -1011,6 +1021,288 @@ export async function removeShootAddOn(
       dedupeKey: null,
     },
   });
+  revalidatePath(`/upload/${projectId}`);
+  revalidatePath(`/projects/${projectId}`);
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// BACK FOR A SECOND SHOOT (Jordan, Sep 18 2026 — 204 Spring Ln, Mike Flatley).
+//
+// "He ended up doing a second reel for that listing and it was shot on a
+// separate day. So the photographer should be able to go back into the upload
+// portal and re open the upload portal for that job and be able to add another
+// project."
+//
+// The reasoning for putting the extra video on the SAME job — and the 82 live
+// re-shoots that argument was measured against — is in ./additionalShoots.ts.
+// This is the write half. Three things happen, in this order, and the order
+// matters: the row first (it is the thing that is owed), then the per-video
+// slot, then the office's paperwork. If the last one fails the work still
+// exists; if the first one failed there would be nothing to bill for.
+// ---------------------------------------------------------------------------
+
+/**
+ * Reopen a finished job for an extra video shot on another day.
+ *
+ * What it does NOT touch, because Jordan was explicit that the first delivery
+ * stays exactly as it is: Project.status, Project.deliveredAt, Project.shootDate,
+ * any ReviewSubmission, any sent stamp, and the quantity of the video row the
+ * client's delivered cut hangs off.
+ */
+export async function reopenForAdditionalShoot(
+  projectId: string,
+  input: { type: string; shotOn: string; note?: string },
+): Promise<{ ok: boolean; message: string; row?: AdditionalShoot }> {
+  // Same shape as addShootAddOn: a guard that throws reaches the client as a
+  // redacted error in production, which reads as a button that does nothing.
+  try {
+    await requireShootAccess(projectId);
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "You don't have access to that shoot." };
+  }
+  if (!isAdditionalVideoType(input.type)) {
+    return { ok: false, message: "Pick whether it was a reel or a video." };
+  }
+  const type = input.type;
+  const dayKey = (input.shotOn || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dayKey)) return { ok: false, message: "Pick the day you shot it." };
+  const shotOn = etAt(dayKey, 12); // noon ET — the day is the fact, the clock is not
+  if (Number.isNaN(shotOn.getTime())) return { ok: false, message: "That date didn't read as a day — pick it again." };
+
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      title: true, shootDate: true, status: true,
+      videosOwedOverride: true,
+      photographer: { select: { name: true } },
+      deliverables: {
+        where: { removedFromOrderAt: null },
+        orderBy: { createdAt: "asc" },
+        select: { id: true, type: true, videoStyle: true, manual: true, capturedAt: true },
+      },
+    },
+  });
+  if (!project) return { ok: false, message: "Couldn't find that shoot." };
+  if (project.status === "CANCELLED") return { ok: false, message: "That job is cancelled — the office has to un-cancel it first." };
+
+  // A shoot that has not happened is a BOOKING, and bookings are Aryeo's job.
+  // This also keeps the client-text sweep out of it: a future date on a job is
+  // a shoot to confirm, and nothing on this screen may cause an outbound text.
+  if (shotOn.getTime() > Date.now()) {
+    return { ok: false, message: "That day hasn't happened yet — this is for footage you've already shot." };
+  }
+  // …and it cannot predate the job's own shoot. A typo there would put the
+  // extra video's clock before the original's and read as the older of the two
+  // everywhere they are listed side by side.
+  if (project.shootDate && shotOn.getTime() < etDayStartUtc(project.shootDate).getTime()) {
+    return { ok: false, message: `That's before this job's own shoot on ${etDate(project.shootDate)} — check the date.` };
+  }
+
+  // One open extra shoot per job at a time. Two at once is a real thing that
+  // could happen, but it would mint two cards, two slots and two payroll
+  // questions from a screen with no way to tell them apart — and nobody has
+  // ever needed it (measured Sep 18: no job in the database carries even one).
+  if (project.deliverables.some((d) => d.manual && d.capturedAt)) {
+    return { ok: false, message: "This job already has an extra shoot on it — upload that one first, or remove it below." };
+  }
+
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const who = (me?.name || project.photographer?.name || "The photographer").trim().slice(0, 80);
+  const street = streetOf(project.title);
+  const note = (input.note ?? "").trim().slice(0, 500);
+  const sentence = additionalShootSentence(type, dayKey, who, street);
+
+  // The Style Guide type the job's existing video already resolved to — the
+  // extra reel is the same product shot again, so the editor's brief, the cut
+  // label and the "what to make" card should read the same. `productTitle` is
+  // deliberately left null: the schema's word for it is "the Aryeo order-item
+  // name this row came from, VERBATIM", and this row came from no order line.
+  const styleFrom = project.deliverables.find((d) => (d.type === "VIDEO" || d.type === "SOCIAL_REEL") && d.videoStyle);
+
+  const row = await prisma.deliverable.create({
+    data: {
+      projectId,
+      type,
+      label: additionalShootLabel(type, dayKey),
+      // Manual: the Aryeo reconcile skips these rows outright, so the order
+      // catching up later can never retire or relabel the extra video.
+      manual: true,
+      quantity: 1,
+      status: DeliverableStatus.PENDING,
+      // "The photographer ticked this off on site" — the schema's own meaning,
+      // holding the day the extra footage was shot. evidenceUnits reads it as
+      // RAW_IN, which is exactly what this is until the files land.
+      capturedAt: shotOn,
+      videoStyle: styleFrom?.videoStyle ?? null,
+      notes: (note ? `${sentence} ${note}` : sentence).slice(0, 1000),
+    },
+    select: { id: true, label: true, createdAt: true },
+  });
+
+  // THE OFFICE'S NUMBER STILL HAS TO ADD UP (found by reading the arithmetic,
+  // Sep 18). editOverrides.effectiveSlotCounts lays `videosOwedOverride` over
+  // the video rows BY POSITION: with an override of 1 and two video rows it
+  // returns [1, 0], so the extra row would have been minted owing nothing at
+  // all. 204 Spring Ln carries exactly that override. Raise it by one so the
+  // office's total still means what it says, and record who moved it and why
+  // in the three columns that exist for that — never INTRODUCE an override on
+  // a job that had none, where the row count already answers the question.
+  const owedBefore = project.videosOwedOverride ?? 0;
+  if (owedBefore > 0) {
+    await prisma.project.update({
+      where: { id: projectId },
+      data: {
+        videosOwedOverride: owedBefore + 1,
+        overrideBy: who,
+        overrideAt: new Date(),
+        overrideNote: `Videos owed ${owedBefore} → ${owedBefore + 1}: ${sentence}`.slice(0, 500),
+      },
+    });
+  }
+
+  // The per-video row, its deadline and its place in the Editing Room. Same
+  // entry point the order reconcile, the waiver and the office override use —
+  // it never throws into this action, and the hourly sweep repairs a failure.
+  const { ensureOutputsSafely } = await import("@/lib/deliverableOutputs");
+  await ensureOutputsSafely(projectId, `upload-additional-shoot#${row.id}`);
+
+  // Kyle's paperwork, through the card the office already reads on Ops Day.
+  // Reusing addShootAddOn rather than minting a second kind of task buys the
+  // whole hardened path: the plain-text dedupe key, the double-tap race, the
+  // timeline line, the office bell — and the auto-close, so this card ticks
+  // itself off the moment the line appears on the Aryeo order.
+  //
+  // The wording is kept tight on purpose: addShootAddOn folds this detail into
+  // a 500-character summary behind its own "<who> added <item> at the shoot on
+  // <street>" prefix, so a long preamble would push the one instruction that
+  // matters — add a SEPARATE line — off the end of the card Kyle reads.
+  const addon = await addShootAddOn(
+    projectId,
+    additionalShootItem(type, dayKey),
+    `Shot ${shootDayWords(dayKey)}, a separate day from this job's own shoot. Add it to the order as its OWN line: the video is already on the job here as its own row, so raising the quantity on the existing video line would owe one more than was shot. Its due date is the job's until someone sets it in the Editing Room, and the extra shoot day is not on this job's payroll.${note ? ` Photographer: ${note}` : ""}`,
+  );
+
+  revalidatePath("/upload");
+  revalidatePath(`/upload/${projectId}`);
+  revalidatePath(`/projects/${projectId}`);
+  return {
+    ok: true,
+    // The office half can fail on its own (a lost race, a dropped write) and
+    // the video still exists — say which half landed rather than claiming both.
+    message: addon.ok
+      ? "Added — upload the raws below, and the office will add it to the order."
+      : `Added to the job — but the office's card didn't save. Tell Kyle about the extra ${ADDITIONAL_VIDEO_WORD[type].toLowerCase()}.`,
+    row: {
+      id: row.id,
+      type,
+      label: row.label ?? additionalShootLabel(type, dayKey),
+      shotOnISO: shotOn.toISOString(),
+      uploadedISO: null,
+      addedBy: who,
+      addedAtISO: row.createdAt.toISOString(),
+      hasWork: false,
+    },
+  };
+}
+
+/**
+ * Take an extra shoot back off the job — the wrong listing, the wrong day, or
+ * the agent changed their mind before anything was cut.
+ *
+ * RETIRED, NEVER DELETED (house rule): the row keeps its capturedAt, its notes
+ * and its id, and `removedFromOrderAt` is the stamp that says it is not owed.
+ * ensureOutputsSafely then stamps the per-video slot the same way, and BOTH
+ * stamps clear on their own if the row ever comes back.
+ */
+export async function withdrawAdditionalShoot(
+  projectId: string,
+  deliverableId: string,
+): Promise<{ ok: boolean; message?: string }> {
+  try {
+    await requireShootAccess(projectId);
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "You don't have access to that shoot." };
+  }
+  const d = await prisma.deliverable.findUnique({
+    where: { id: deliverableId },
+    select: {
+      id: true, projectId: true, type: true, label: true, manual: true,
+      capturedAt: true, uploadedAt: true, removedFromOrderAt: true,
+      _count: { select: { uploads: true, reviewSubmissions: true } },
+    },
+  });
+  // Every condition of the shape reopenForAdditionalShoot created, re-checked
+  // here: this must never be usable to retire a real order line.
+  if (!d || d.projectId !== projectId || !d.manual || !d.capturedAt) {
+    return { ok: false, message: "That isn't an extra shoot you can remove." };
+  }
+  if (d.removedFromOrderAt) return { ok: false, message: "That one is already off the job." };
+  // Work has started on it — a cut, a file, a tick. Retiring the row now would
+  // leave that work pointing at something nobody owes.
+  if (d.uploadedAt || d._count.uploads > 0 || d._count.reviewSubmissions > 0) {
+    return { ok: false, message: "The raws are already in on that one — ask the office to take it off." };
+  }
+
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { title: true, videosOwedOverride: true },
+  });
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const who = (me?.name || "the photographer").trim().slice(0, 80);
+
+  await prisma.deliverable.update({
+    where: { id: d.id },
+    data: {
+      removedFromOrderAt: new Date(),
+      removedFromOrderNote: `Extra shoot withdrawn by ${who} — it was never uploaded.`.slice(0, 300),
+    },
+  });
+  // The mirror of the raise above: put the office's total back where it was, so
+  // withdrawing an extra shoot does not leave the job owing a video that no row
+  // asks for.
+  const owedNow = project?.videosOwedOverride ?? 0;
+  if (owedNow > 1) {
+    await prisma.project.update({
+      where: { id: projectId },
+      data: {
+        videosOwedOverride: owedNow - 1,
+        overrideBy: who,
+        overrideAt: new Date(),
+        overrideNote: `Videos owed ${owedNow} → ${owedNow - 1}: the extra shoot was withdrawn.`.slice(0, 500),
+      },
+    });
+  }
+  const { ensureOutputsSafely } = await import("@/lib/deliverableOutputs");
+  await ensureOutputsSafely(projectId, `upload-additional-shoot-withdrawn#${d.id}`);
+
+  // Kyle's card goes with it — the same withdrawal removeShootAddOn performs,
+  // found by the key the item name slugifies to rather than by an id the client
+  // would have to hand back.
+  if (isAdditionalVideoType(d.type)) {
+    const key = shootAddonKey(projectId, additionalShootItem(d.type, etDayKey(d.capturedAt)));
+    const t = await prisma.smartTask.findUnique({ where: { dedupeKey: key }, select: { id: true, status: true } });
+    if (t && t.status !== "COMPLETED" && t.status !== "CANCELLED") {
+      await prisma.smartTask.update({
+        where: { id: t.id },
+        // dedupeKey freed so the same extra shoot can be logged again — the
+        // same reason removeShootAddOn frees it.
+        data: { status: "CANCELLED", completedAt: new Date(), dedupeKey: null },
+      }).catch(() => {});
+    }
+  }
+
+  await prisma.activity.create({
+    data: {
+      projectId,
+      type: ActivityType.NOTE,
+      body: `Extra shoot withdrawn by ${who} — “${d.label ?? d.type}” is no longer owed on ${streetOf(project?.title)}. The row is kept, not deleted.`.slice(0, 1000),
+    },
+  }).catch(() => {});
+
+  revalidatePath("/upload");
   revalidatePath(`/upload/${projectId}`);
   revalidatePath(`/projects/${projectId}`);
   return { ok: true };

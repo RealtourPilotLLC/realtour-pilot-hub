@@ -35,6 +35,48 @@ export const UPLOAD_PENDING_WHERE: Prisma.ProjectWhereInput = {
   debriefSubmittedAt: null,
 };
 
+// ---------------------------------------------------------------------------
+// THE JOB CAME BACK (Jordan, Sep 18 — 204 Spring Ln). A photographer who shot
+// an extra video for a job that already finished gets a manual video row with
+// `capturedAt` set to the day they shot it; see app/upload/additionalShoots.ts
+// for why it is a row on the same job rather than a second job.
+//
+// These three predicates are the only thing that reads that shape, and they
+// live together on purpose: the same fact has to pull the job BACK into the
+// day buckets and keep it OUT of "Past uploads" while it is open, or the job is
+// listed twice — the exact double-listing the Sep 15 rebuild was written to
+// stop.
+// ---------------------------------------------------------------------------
+
+/** A manual video row minted by a return trip to the portal. `manual` alone is
+ *  not enough: the Editing Room's own queue-add mints a manual VIDEO row too
+ *  (editing/actions.ts, "Video — added manually") and that one is an edit of
+ *  existing footage, not a second visit. `capturedAt` is what says a
+ *  photographer stood at the property again. */
+export const ADDITIONAL_SHOOT_WHERE: Prisma.DeliverableWhereInput = {
+  manual: true,
+  removedFromOrderAt: null,
+  capturedAt: { not: null },
+  type: { in: ["VIDEO", "SOCIAL_REEL"] },
+};
+
+/** …and the raws are not in yet, so the portal still owes the photographer a
+ *  screen. `uploadedAt` here is the photographer's own tick on the checklist
+ *  (upload/actions.markDeliverableUploaded), never the Dropbox sweep's
+ *  project-level stamp — that one was written by the FIRST shoot and would
+ *  retire the second one before it ever appeared. */
+export const OPEN_ADDITIONAL_SHOOT_WHERE: Prisma.DeliverableWhereInput = {
+  ...ADDITIONAL_SHOOT_WHERE,
+  uploadedAt: null,
+};
+
+/** Jobs with an extra shoot still to upload — listed in the /upload day
+ *  buckets whatever their status, which is the whole point: a DELIVERED job
+ *  has no other way back onto that page. */
+export const REOPENED_FOR_ADDITIONAL_SHOOT: Prisma.ProjectWhereInput = {
+  deliverables: { some: OPEN_ADDITIONAL_SHOOT_WHERE },
+};
+
 /** Whose shoot: the project's photographer, or an appointment assignee
  *  (Aryeo assigns per appointment; a job can carry only that). The
  *  photographer's own scope on both /upload sections, the office's filter
@@ -83,6 +125,11 @@ function historyWhere(scope: UploadViewerScope, query: HistoryQuery, now: Date):
     { OR: [{ shootDate: { lt: uploadWindowStart(now) } }, { shootDate: null }] },
     { OR: [{ debriefSubmittedAt: { not: null } }, { uploadedAt: { not: null } }] },
     { NOT: UPLOAD_PENDING_WHERE },
+    // A job reopened for an extra shoot is back in the day buckets above, on
+    // the day it was re-shot. History is "jobs that have left the portal", and
+    // this one has walked back in — listing it in both would be the same job
+    // twice on one screen.
+    { NOT: REOPENED_FOR_ADDITIONAL_SHOOT },
   ];
   if (scope.mine) {
     and.push(ownedBy(scope.mine));

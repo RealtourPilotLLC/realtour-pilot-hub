@@ -1,6 +1,6 @@
 import { requirePageAccess } from "@/lib/auth/guards";
 import Link from "next/link";
-import { CheckCircle2, Camera, ArrowRight, Upload, FolderOpen, Scissors } from "lucide-react";
+import { CheckCircle2, Camera, ArrowRight, Upload, FolderOpen, Scissors, CalendarPlus } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge, ink } from "@/components/ui/Badge";
@@ -17,7 +17,8 @@ import { DeliverableType } from "@prisma/client";
 import { etDateTime, etDaysAgo } from "@/lib/datetime";
 import {
   historyPhotographers, listUploadHistory, ownedBy, uploadWindowStart,
-  UPLOAD_PENDING_STATUSES, UPLOAD_PENDING_WHERE, type UploadViewerScope,
+  REOPENED_FOR_ADDITIONAL_SHOOT, UPLOAD_PENDING_STATUSES, UPLOAD_PENDING_WHERE,
+  type UploadViewerScope,
 } from "@/lib/uploadHistory";
 import { UploadHistory } from "@/components/upload/UploadHistory";
 
@@ -82,6 +83,14 @@ export default async function UploadListPage() {
             { status: { in: UPLOAD_PENDING_STATUSES }, shootDate: { gt: now } },
             { ...UPLOAD_PENDING_WHERE, shootDate: null },
             { ...UPLOAD_PENDING_WHERE, shootDate: { lt: windowStart } },
+            // …AND THE JOB THAT CAME BACK (Jordan, Sep 18 — 204 Spring Ln).
+            // A photographer who filmed an extra reel for a job that already
+            // delivered has no other way onto this page: every clause above is
+            // about the shoot the job was booked for, and that one is done.
+            // Deliberately not status-scoped beyond CANCELLED — the whole point
+            // is that a DELIVERED job is listed here again, without its status,
+            // its delivery date or its promise being touched.
+            { ...REOPENED_FOR_ADDITIONAL_SHOOT, status: { not: "CANCELLED" } },
           ],
         },
       ],
@@ -90,7 +99,12 @@ export default async function UploadListPage() {
     include: {
       client: true,
       photographer: true,
-      deliverables: { where: { removedFromOrderAt: null }, select: { id: true, type: true } },
+      deliverables: {
+        where: { removedFromOrderAt: null },
+        // manual/capturedAt/uploadedAt carry the extra shoot: which day it was
+        // filmed, and whether its raws are in yet.
+        select: { id: true, type: true, manual: true, capturedAt: true, uploadedAt: true },
+      },
       _count: { select: { uploads: true } },
     },
   });
@@ -110,18 +124,33 @@ export default async function UploadListPage() {
     }
   }
 
-  const grouped = new Map<BucketKey, typeof shoots>();
-  for (const s of shoots) {
-    const b = bucketFor(s.shootDate);
+  // THE DAY THIS ROW IS ABOUT. For almost every job that is Project.shootDate.
+  // For a job reopened for an extra shoot it is the day the EXTRA footage was
+  // filmed — bucketing a job re-shot yesterday under a shoot date from three
+  // weeks ago would file it in "Previous weeks", which is the one place the
+  // photographer will not look for today's upload.
+  const rows = shoots.map((s) => {
+    const extra = extraShootDay(s.deliverables);
+    return { s, extra, when: extra ?? s.shootDate };
+  });
+  rows.sort((a, b) => (b.when?.getTime() ?? 0) - (a.when?.getTime() ?? 0));
+
+  const grouped = new Map<BucketKey, typeof rows>();
+  for (const r of rows) {
+    const b = bucketFor(r.when);
     const arr = grouped.get(b) ?? [];
-    arr.push(s);
+    arr.push(r);
     grouped.set(b, arr);
   }
   // "Upcoming" oldest-first (next shoot first); everything else newest-first.
   const up = grouped.get("upcoming");
-  if (up) up.sort((a, b) => (a.shootDate?.getTime() ?? 0) - (b.shootDate?.getTime() ?? 0));
+  if (up) up.sort((a, b) => (a.when?.getTime() ?? 0) - (b.when?.getTime() ?? 0));
 
-  const pendingToday = (grouped.get("today") ?? []).filter((s) => !s.uploadedAt).length;
+  // Still to upload. A reopened job has Project.uploadedAt set from its FIRST
+  // shoot, so the project stamp alone would count the extra footage as already
+  // in — the open extra shoot is what makes it pending again.
+  const stillToUpload = (r: (typeof rows)[number]) => !r.s.uploadedAt || r.extra != null;
+  const pendingToday = (grouped.get("today") ?? []).filter(stillToUpload).length;
 
   // Past uploads — first page server-rendered; search / chips / paging go
   // through the searchUploadHistory action (same scope, re-derived there).
@@ -147,7 +176,7 @@ export default async function UploadListPage() {
         {BUCKETS.map(({ key, label }) => {
           const items = grouped.get(key);
           if (!items || items.length === 0) return null;
-          const pending = items.filter((s) => !s.uploadedAt).length;
+          const pending = items.filter(stillToUpload).length;
           return (
             <section key={key}>
               <div className="mb-2 flex items-center gap-2">
@@ -160,8 +189,8 @@ export default async function UploadListPage() {
                 )}
               </div>
               <div className="space-y-2">
-                {items.map((s) => (
-                  <JobRow key={s.id} s={s} overBudget={overBudget.has(s.id)} nowMs={now.getTime()} />
+                {items.map((r) => (
+                  <JobRow key={r.s.id} s={r.s} extraShoot={r.extra} overBudget={overBudget.has(r.s.id)} nowMs={now.getTime()} />
                 ))}
               </div>
             </section>
@@ -171,6 +200,15 @@ export default async function UploadListPage() {
         {pendingToday === 0 && (grouped.get("today")?.length ?? 0) > 0 && (
           <p className="text-center text-sm text-success">All of today&rsquo;s jobs are uploaded. Nice work.</p>
         )}
+
+        {/* The only signpost to the way back in (Jordan, Sep 18). A job that
+            has left the portal is reachable ONLY through the history below, and
+            a photographer standing in a driveway with an extra reel has no
+            reason to guess that an old job's page is where it goes. */}
+        <p className="-mb-4 text-xs text-muted-2">
+          Shot an extra reel or video for a job you&rsquo;ve already finished? Open it below and use
+          &ldquo;Add another shoot&rdquo; — it comes back to the top of this page to upload.
+        </p>
 
         <UploadHistory initial={history} photographers={photographers} officeView={scope.office} />
       </div>
@@ -185,14 +223,35 @@ type Shoot = {
   deliverables: { type: DeliverableType }[]; _count: { uploads: number };
 };
 
+/** The day an EXTRA shoot re-opened this job, or null for the ordinary case.
+ *  A manual video row carrying `capturedAt` and no photographer upload tick is
+ *  the shape app/upload/actions.reopenForAdditionalShoot writes; the newest one
+ *  wins, so a job re-shot twice files under the later visit. Kept beside the
+ *  Prisma predicate's twin in lib/uploadHistory.ts — that one decides WHICH
+ *  jobs are read, this one decides which DAY the row sits under, and they must
+ *  agree about what an extra shoot is. */
+function extraShootDay(
+  deliverables: { type: DeliverableType; manual: boolean; capturedAt: Date | null; uploadedAt: Date | null }[],
+): Date | null {
+  let best: Date | null = null;
+  for (const d of deliverables) {
+    if (!d.manual || !d.capturedAt || d.uploadedAt) continue;
+    if (d.type !== DeliverableType.VIDEO && d.type !== DeliverableType.SOCIAL_REEL) continue;
+    if (!best || d.capturedAt.getTime() > best.getTime()) best = d.capturedAt;
+  }
+  return best;
+}
+
 // Shoots from Sep 2 2026 on ride the payroll gate: pay shows in My Pay only
 // once the upload page is SUBMITTED (debriefSubmittedAt — not the Dropbox
 // auto-stamp). The row says so until they do.
 
 // `nowMs` comes from the page's one `now` (a render must not read the clock).
-function JobRow({ s, overBudget, nowMs }: { s: Shoot; overBudget: boolean; nowMs: number }) {
+function JobRow({ s, extraShoot, overBudget, nowMs }: { s: Shoot; extraShoot: Date | null; overBudget: boolean; nowMs: number }) {
   const stage = stageMeta(s.status as Parameters<typeof stageMeta>[0]);
-  const uploaded = s.uploadedAt != null;
+  // An extra shoot's raws are not in, whatever the project stamp says: that
+  // stamp belongs to the first shoot, and a delivered job carries it.
+  const uploaded = s.uploadedAt != null && !extraShoot;
   const payrollPending =
     !s.debriefSubmittedAt &&
     s.shootDate != null &&
@@ -214,7 +273,16 @@ function JobRow({ s, overBudget, nowMs }: { s: Shoot; overBudget: boolean; nowMs
               (debriefSubmittedAt — the human submit, never the sweep's
               uploadedAt) rides beside it. */}
           <Badge color={stage.color} soft={stage.soft}>{stage.short}</Badge>
-          {s.debriefSubmittedAt ? (
+          {/* The job is back on this page for footage shot on ANOTHER day. The
+              badge names that day, because the row's own date is now the extra
+              shoot's and the job's status still belongs to the first one —
+              without it a Delivered job sitting under "Today" reads as a bug. */}
+          {extraShoot && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-brand/15 px-2 py-0.5 text-[10px] font-semibold text-brand">
+              <CalendarPlus className="size-3" /> Extra shoot {etDateTime(extraShoot)}
+            </span>
+          )}
+          {s.debriefSubmittedAt && !extraShoot ? (
             <Badge color="#34d399" soft="rgba(52,211,153,0.14)">Submitted ✓ {etDateTime(s.debriefSubmittedAt)}</Badge>
           ) : uploaded ? (
             <Badge color="#34d399" soft="rgba(52,211,153,0.14)">Uploaded</Badge>
@@ -249,7 +317,10 @@ function JobRow({ s, overBudget, nowMs }: { s: Shoot; overBudget: boolean; nowMs
       </div>
       {s.photographer && <Avatar name={s.photographer.name} color={s.photographer.avatarColor} size={28} />}
       <span className="flex shrink-0 items-center gap-1 text-sm font-medium text-brand">
-        {s.debriefSubmittedAt ? "View" : uploaded ? "Review" : <><FolderOpen className="size-4" /> Upload</>} <ArrowRight className="size-4" />
+        {/* A reopened job reads "Upload" even though its page was submitted
+            weeks ago — the extra footage is what the photographer is here for,
+            and "View" would send them away from the only thing left to do. */}
+        {s.debriefSubmittedAt && !extraShoot ? "View" : uploaded ? "Review" : <><FolderOpen className="size-4" /> Upload</>} <ArrowRight className="size-4" />
       </span>
     </Link>
   );
