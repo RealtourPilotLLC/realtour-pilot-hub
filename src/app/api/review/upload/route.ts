@@ -20,22 +20,32 @@ const MAX_BYTES = 8 * 1024 * 1024 * 1024; // 8 GB — 4K vertical exports run 1�
 // pulled a 368 MB .mov straight off `…public.blob.vercel-storage.com` with no
 // session at all, `cache-control: public, max-age=2592000`.
 //
-// This route CANNOT pin that on its own. In @vercel/blob 2.8.0 `access` is a
-// CLIENT option (`ClientCommonCreateBlobOptions.access`, dist/client.d.ts),
-// sent by the browser as the `x-vercel-blob-access` header on its own PUT; the
+// This route CANNOT pin that on its own, and the installed SDK was read line
+// by line on Sep 17 to be sure of it rather than to assume it. In
+// @vercel/blob 2.8.0 `access` is a CLIENT option
+// (`ClientCommonCreateBlobOptions.access`, dist/client.d.ts:17), turned into
+// the `x-vercel-blob-access` header on the browser's own PUT by
+// `createPutHeaders` (`putOptionHeaderMap.access`, dist/chunk-YYMLUMXS.js) —
+// and, tellingly, it is the ONE header that function writes unconditionally,
+// before it consults the allowed-options list at all. The
 // `blob.generate-client-token` event we receive carries only
-// `{ pathname, clientPayload, multipart }`, and the signed client token's
-// option set (`BlobClientTokenConstraintOptions`) has no `access` key — nor
-// does `issueSignedToken`'s (`IssueSignedTokenOptions`), so the presigned
-// flow is no better. Returning `access: "private"` from onBeforeGenerateToken
-// was tried: it does compile (the option is undeclared, not refused), but
+// `{ pathname, clientPayload, multipart }`, and `onBeforeGenerateToken` is
+// typed to return exactly
+// `Pick<GenerateClientTokenOptions,'allowedContentTypes'|'maximumSizeInBytes'
+// |'validUntil'|'addRandomSuffix'|'allowOverwrite'|'cacheControlMaxAge'
+// |'ifMatch'>` (dist/client.d.ts:341) — no `access` key. Nor has
+// `issueSignedToken` one (`IssueSignedTokenOptions`), so the presigned flow is
+// no better. Returning `access: "private"` from onBeforeGenerateToken was
+// tried: it does compile (the option is undeclared, not refused), but
 // handleUpload only blind-spreads unknown keys into the signed token payload,
 // the browser still sends `x-vercel-blob-access: public` on its own PUT, and
 // whether the control plane reads or rejects the extra key can only be
 // learned by performing a real upload — which, if it rejects, breaks every
 // editor's cut upload in production. It is deliberately NOT shipped on a
-// guess. The browser decides, so CutUploader has to be the one to say
-// "private" — see the handover note filed with this ticket.
+// guess. The browser decides, so CutUploader is where the word lives, and it
+// reads NEXT_PUBLIC_REVIEW_CUT_ACCESS so flipping it is a Vercel setting and
+// a redeploy rather than an edit — see the handover note filed with this
+// ticket for the order the two halves have to happen in.
 //
 // What IS in this route's hands, and is done below:
 //   · the cut's bytes no longer leave through a store URL at all — the stream
@@ -43,15 +53,19 @@ const MAX_BYTES = 8 * 1024 * 1024 * 1024; // 8 GB — 4K vertical exports run 1�
 //     browser the object's address — and since Sep 16 no other surface does
 //     either: CutSubmission carries `hasHubCopy` (a boolean) where it used to
 //     carry blobUrl, so the URL is no longer in any page's HTML;
-//   · cacheControlMaxAge drops from the store default of 30 DAYS to the SDK
-//     minimum of 1 minute, so when the objects are re-homed to a private
-//     store the CDN stops answering for the old URL within a minute instead
-//     of a month.
-// Neither is a fix. Nor would a longer random path segment be: an unguessable
-// URL is still a bearer token that never expires, is copied into Slack
-// messages and referrer headers, and cannot be revoked. The fix is a private
-// store.
-const CACHE_MAX_AGE_SECONDS = 60; // the SDK floor; anything lower is refused
+//   · cacheControlMaxAge drops from the store default of 30 DAYS to the
+//     documented platform minimum of 1 minute, so when the objects are
+//     re-homed to a private store the CDN stops answering for the old URL
+//     within a minute instead of a month. The store survey on Sep 17 proves
+//     it took: of the 14 objects, the 4 uploaded since this line shipped
+//     answer `cache-control: public, max-age=60` and the 10 older ones still
+//     answer `max-age=2592000`.
+// Neither is a fix. Nor is the random path segment the token asks for — the
+// survey confirmed all 14 objects really are suffixed, so nobody is guessing
+// URLs, but an unguessable URL is still a bearer token that never expires, is
+// copied into Slack messages and referrer headers, and cannot be revoked. The
+// fix is a private store, and that is an account action.
+const CACHE_MAX_AGE_SECONDS = 60; // the documented floor; the SDK sends whatever it is given
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   const body = (await req.json()) as HandleUploadBody;
@@ -94,6 +108,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       },
       onUploadCompleted: async ({ blob, tokenPayload }) => {
         if (!tokenPayload) return;
+        // The browser chose `access` (see the note above), so this callback is
+        // the only moment the hub ever learns where the bytes ACTUALLY landed.
+        // Once the store is replaced, a cut that still lands in a public store
+        // is the exact half-flipped state the replacement can leave behind —
+        // an editor on a cached bundle, a preview deployment built before the
+        // variable was set — and it is otherwise invisible: the row records a
+        // URL, the Review Room plays it, nothing looks wrong. It is logged and
+        // NOT refused: refusing here would strand a finished export the editor
+        // has already spent an hour uploading, which is a worse trade than one
+        // more object to re-home.
+        if (process.env.NEXT_PUBLIC_REVIEW_CUT_ACCESS === "private" && blob.url.includes(".public.")) {
+          console.error("[review] cut landed in a PUBLIC store while the hub is configured private:", blob.pathname);
+        }
         const { finalizeCutUpload } = await import("@/lib/reviewCuts");
         await finalizeCutUpload(tokenPayload, { url: blob.url, pathname: blob.pathname });
       },

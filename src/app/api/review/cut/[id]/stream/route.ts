@@ -191,12 +191,32 @@ async function proxyBlob(req: NextRequest, blobUrl: string, fileName: string | n
   if (ifRange) headers["If-Range"] = ifRange;
   // A private blob needs the store's read token; a public one ignores it. The
   // host says which — the SDK builds `<store>.<access>.blob.vercel-storage.com`
-  // — so this keeps working unchanged the day the store goes private.
+  // (constructBlobUrl, @vercel/blob 2.8.0) and reads a private object with a
+  // plain `authorization: Bearer <read-write token>` (get(), same package) —
+  // so this keeps working unchanged the day the store goes private.
+  //
+  // But the token is a bearer credential for ONE store, and matching on
+  // `.private.` alone would have offered it to ANY Vercel store's host. That
+  // is not hypothetical here: the store replacement puts two stores in play at
+  // once — the old public one still holding the 14 objects live today and the
+  // new private one — and a row carrying the wrong one must fail loudly, not
+  // quietly present our credential to a stranger. The store id is the fourth
+  // underscore-separated field of the token (parseStoreIdFromReadWriteToken),
+  // so only our own store's private host is given it (audit, Sep 17).
   let host = "";
   try { host = new URL(blobUrl).host; } catch { return NextResponse.json({ error: "That cut's file link is unreadable" }, { status: 502 }); }
   if (!host.endsWith(".blob.vercel-storage.com")) return NextResponse.json({ error: "That cut's file link is unreadable" }, { status: 502 });
-  const rw = process.env.BLOB_READ_WRITE_TOKEN;
-  if (host.includes(".private.") && rw) headers.authorization = `Bearer ${rw}`;
+  if (host.includes(".private.")) {
+    const rw = process.env.BLOB_READ_WRITE_TOKEN;
+    const storeId = rw ? rw.split("_")[3] ?? "" : "";
+    if (!storeId || host !== `${storeId}.private.blob.vercel-storage.com`) {
+      // A generic answer to the viewer; the detail belongs in the log, where
+      // it names the half-finished configuration rather than the video.
+      console.error("[review] private cut object on a store this deployment holds no token for:", host);
+      return NextResponse.json({ error: "That cut couldn't be fetched right now — try again" }, { status: 502 });
+    }
+    headers.authorization = `Bearer ${rw}`;
+  }
 
   let upstream: Response;
   try {
@@ -224,6 +244,11 @@ async function proxyBlob(req: NextRequest, blobUrl: string, fileName: string | n
     if (v) out.set(h, v);
   }
   out.set("Cache-Control", "private, no-store");
+  // The content type on this response is whatever the store said, and the
+  // filename below is whatever the editor called the export — neither is the
+  // hub's word. nosniff keeps a browser from deciding for itself that a cut is
+  // something it should execute rather than play.
+  out.set("X-Content-Type-Options", "nosniff");
   // Inline so it plays in the tab; the name is the editor's file name, which
   // is already the one the review surfaces show.
   const safe = (fileName ?? "cut").replace(/["\\\r\n]/g, "");

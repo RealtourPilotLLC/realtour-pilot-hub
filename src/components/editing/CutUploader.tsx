@@ -29,6 +29,27 @@ import type { CutTakeBackInfo } from "@/components/review/types";
 // cut with nothing new to wire up.
 // ---------------------------------------------------------------------------
 
+// THE ONE LINE THAT FLIPS THE CUT STORE (RTP-01, Sep 17). `access` is the
+// BROWSER's decision, not the server's: the SDK turns it into the
+// `x-vercel-blob-access` header on this client's own PUT (createPutHeaders,
+// @vercel/blob 2.8.0), and the signed token the hub hands back cannot overrule
+// it — onBeforeGenerateToken's return type is
+// Pick<GenerateClientTokenOptions,'allowedContentTypes'|'maximumSizeInBytes'
+// |'validUntil'|'addRandomSuffix'|'allowOverwrite'|'cacheControlMaxAge'
+// |'ifMatch'>, which has no `access` key at all. That is why the fix for 14
+// world-readable client videos has to be made here and not in the route that
+// audits the upload.
+//
+// So it reads an environment variable instead of a literal: the day the store
+// is replaced with a private one, the hub's side of the change is
+// NEXT_PUBLIC_REVIEW_CUT_ACCESS=private in Vercel plus a redeploy, and nobody
+// has to find this file. It is NOT flipped ahead of the store: private access
+// against the public store that exists today is refused by the control plane
+// ("Cannot use private access on a public store") and every editor's upload
+// stops that minute. Store first, variable second — the handover note in
+// /api/review/upload has the order.
+const CUT_STORE_ACCESS = process.env.NEXT_PUBLIC_REVIEW_CUT_ACCESS === "private" ? "private" : "public";
+
 export type CutRow = {
   deliverableId: string;
   slot: number;
@@ -330,7 +351,7 @@ export function CutUploader({
     let landed: string | null = null;
     try {
       const blob = await upload(started.pathname, file, {
-        access: "public",
+        access: CUT_STORE_ACCESS,
         handleUploadUrl: "/api/review/upload",
         clientPayload: JSON.stringify({ submissionId: started.submissionId }),
         multipart: true,
