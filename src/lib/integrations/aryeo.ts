@@ -1009,6 +1009,51 @@ function withoutZillowFloorPlan(title: string, parsed: ParsedDeliverable[]): Par
   return parsed.filter((d) => d.type !== "FLOORPLAN");
 }
 
+// ---------------------------------------------------------------------------
+// DRONE ON A VIDEO-ONLY LINE IS FOOTAGE, NOT STILLS.
+//
+// Jordan, Sep 18 2026: "On Brie's shoot she ordered drone videography but the
+// hub is considering it as drone photos and is expecting photos to be in Aryeo
+// when the order never had photos."
+//
+// 5 Raymond Cir, Downingtown. Her order is Drone Videography + 2D Floor Plan +
+// Standard Video Highlight Reel — no photography of any kind. The job reads
+// `expected: ["Floor plan","Video","Photos"]` and has been missing Photos ever
+// since, because a DRONE row rides the PHOTOS lane (projectStatus's
+// CATEGORY_KEYWORDS put /drone|aerial/ there, correctly: drone stills land in
+// the client's photo gallery). Nothing can ever clear it. Two other jobs are in
+// the same state — 108 Sheeder Rd and 632 Greenridge Rd.
+//
+// THE CAUSE IS A MAPPING, NOT A PARSER. Settings → Products has "Standard Video
+// Highlight Reel" down as ["SOCIAL_REEL","DRONE_PHOTO"], and "Drone Videography"
+// itself is already mapped correctly to DRONE_VIDEO — so the phantom came off
+// the REEL line, not the drone line. "Premium Cinematic Video" and "STR Luxury
+// Cinematic Video Tour (with drone video)" carry the same DRONE_PHOTO, the last
+// one while saying "with drone video" in its own name.
+//
+// So this is a veto over the hand-set map, exactly like the Zillow one above
+// and for the same reason: only a human on /settings/products can correct the
+// row, and until they do the hub must not invent a deliverable nobody bought.
+// A line that sells VIDEO and no PHOTOGRAPHY cannot owe drone stills — its
+// drone is footage for the video it sells.
+//
+// Scoped to ONE line, so a job that also buys real photography keeps its drone
+// stills from THAT line. And the escape hatch is the product's own name: a line
+// that says it sells drone photos keeps them, which is what saves "Deluxe Land
+// Only Package - Drone Photo and Video".
+const DRONE_STILLS_RE = /\b(drone|aerial)[\s-]*(photo|photograph|still|image)/i;
+
+function droneOnVideoLineIsFootage(title: string, parsed: ParsedDeliverable[]): ParsedDeliverable[] {
+  if (!parsed.some((d) => d.type === "DRONE")) return parsed;
+  const sellsVideo = parsed.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+  const sellsPhotos = parsed.some((d) => d.type === "PHOTOS" || d.type === "TWILIGHT" || d.type === "HEADSHOT");
+  if (!sellsVideo || sellsPhotos) return parsed;
+  if (DRONE_STILLS_RE.test(title)) return parsed;
+  // Loud, because the right repair is the mapping row and not this veto.
+  console.warn(`[aryeo] "${title}" sells video and no photography — reading its drone as footage, not stills. Fix the mapping on /settings/products.`);
+  return parsed.filter((d) => d.type !== "DRONE");
+}
+
 /** One order line → the deliverables it owes. */
 export function itemToDeliverables(item: AryeoOrderItem): ParsedDeliverable[] {
   const title = (item.title || item.subtitle || item.sub_title || "Item").trim();
@@ -1017,7 +1062,8 @@ export function itemToDeliverables(item: AryeoOrderItem): ParsedDeliverable[] {
   // Reel)" must not out-name the "Standard Reel" it was bought for (dedupe's
   // MAIN-over-add-on tie-break).
   const addon = /\badd-?on\b/i.test(title);
-  return withoutZillowFloorPlan(title, deliverablesForItem(item)).map((d) => (d.addon === undefined ? { ...d, addon } : d));
+  const parsed = droneOnVideoLineIsFootage(title, withoutZillowFloorPlan(title, deliverablesForItem(item)));
+  return parsed.map((d) => (d.addon === undefined ? { ...d, addon } : d));
 }
 
 // ---------------------------------------------------------------------------

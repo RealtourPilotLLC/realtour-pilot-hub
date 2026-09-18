@@ -382,6 +382,20 @@ export function ReviewRoomSettings({ initial }: { initial: ReviewRoomRules }) {
               </option>
             ))}
           </select>
+          {/* THE SAME FLAG DOES THREE THINGS, AND ONLY ONE OF THEM IS VISIBLE
+              HERE (Sep 18, after Jordan asked why James was pinged about
+              Harrison's missing video files). TeamMember.creativeManager is
+              read by the shoot-bonus basis, by tasks.creativeAlertTargets —
+              which copies that person on every chase aimed at a photographer —
+              and, when nobody is named above, by this picker. Somebody
+              changing one of them should know about the other two. */}
+          {!r.creativeApproverTeamMemberId && (
+            <p className="w-full text-[11px] leading-relaxed text-muted-2">
+              With nobody named, this falls back to whoever carries the creative-manager flag. That
+              same flag sets their shoot-bonus basis and copies them on every &ldquo;chase the
+              photographer&rdquo; alert — so it is worth checking it is on the right person.
+            </p>
+          )}
           {approver && !approver.canApprove && (
             <span className="text-[13px] text-warning">
               {approver.name.split(/\s+/)[0]} has no owner/admin login, so the button they are being pointed at is one they cannot press.
