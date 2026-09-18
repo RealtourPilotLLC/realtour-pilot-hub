@@ -1288,7 +1288,7 @@ export async function reopenForAdditionalShoot(
   const addon = await addShootAddOn(
     projectId,
     additionalShootItem(type, dayKey),
-    `Shot ${shootDayWords(dayKey)}, a separate day from this job's own shoot. Add it to the order as its OWN line: the video is already on the job here as its own row, so raising the quantity on the existing video line would owe one more than was shot. Its due date is counted from the day it was shot, not the job's original date, and the extra shoot day is not on this job's payroll.${note ? ` Photographer: ${note}` : ""}`,
+    `Shot ${shootDayWords(dayKey)}, a separate day from this job's own shoot. Add it to the order as its OWN line — raising the existing line's quantity would owe one more video than was shot. Its due date runs from the shoot day. NOT PAID unless it is explicit: an aerial, an appointment, or its own order. This is none of those — give it one and payroll picks it up by itself.${note ? ` Photographer: ${note}` : ""}`,
   );
 
   revalidatePath("/upload");
