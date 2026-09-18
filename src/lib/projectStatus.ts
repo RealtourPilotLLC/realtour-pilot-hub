@@ -218,11 +218,165 @@ export type DropboxSignal = {
   readError?: string;
 };
 
+// ---------------------------------------------------------------------------
+// HOW MANY, NOT WHETHER (audit R02, Sep 18 2026).
+//
+// This engine asked CATEGORY questions: any video on the listing put VIDEO in
+// `clientHas`, so one video satisfied a sixteen-video branding package. 893 S
+// Matlack St is that job in production — VIDEO ×16 ordered, one approved,
+// listing empty — and the reviewer reproduced the same verdict ("DELIVERED /
+// All ordered deliverables confirmed live on Aryeo / awaitingSend []") for one
+// Aryeo video and for four. A count cannot be read out of a category set.
+//
+// `DeliverableOutput` is the per-video row (schema: ONE ROW PER OWED THING),
+// and this is the shape the engine needs from it: how many are owed, how many
+// the CLIENT can open, how many are FINISHED on our side, and which ones are
+// still outstanding by name. Optional, and ABSENT MUST MEAN EXACTLY TODAY'S
+// BEHAVIOUR — 645 of ~1,500 jobs have output rows and the rest still answer off
+// the order row's quantity, where owed collapses to 1 and every test below
+// becomes the `> 0` it has always been.
+//
+// THE VIDEO LANE ONLY, deliberately. cutSlots — which DeliverableOutput
+// materialises — filters to VIDEO/SOCIAL_REEL, and the photo lane arrives as
+// ONE Aryeo gallery: counting images against a quantity would read "42 photos
+// delivered" as a shortfall the moment a package said 50. Floor plans and 3D
+// tours arrive one per scan from a vendor. A count is only a delivery question
+// where the units are separately made and separately sent.
+// ---------------------------------------------------------------------------
+export type UnitTally = {
+  category: MediaCategory;
+  /** individual outputs owed. 1 reproduces the old boolean exactly. */
+  owed: number;
+  /** how many of them the hub can prove the CLIENT can open */
+  withClient: number;
+  /** how many exist as finished work on our side */
+  finished: number;
+  /** 'outputs' = the DeliverableOutput rows; 'quantity' = the order row's count */
+  source: "outputs" | "quantity";
+  /** the outputs carrying no delivery stamp, by slot key `<deliverableId>:<slot>`.
+   *  Only when the per-video rows exist — a quantity has no identities. */
+  outstandingKeys?: string[];
+};
+
+/** The per-category tally as it is written into the evidence blob: counts a
+ *  person can read, plus the identities of what is still owed. */
+export type UnitTallyView = {
+  category: string;
+  owed: number;
+  withClient: number;
+  finished: number;
+  outstanding: number;
+  source: string;
+  outstandingKeys?: string[];
+};
+
+const ALL_CATEGORIES: MediaCategory[] = ["PHOTOS", "VIDEO", "FLOORPLAN", "THREED"];
+
+/** "3 of 4 videos" — the plural of a category, for the one sentence that counts.
+ *  CATEGORY_LABEL is a heading ("Video", "Floor plan"); this is prose. */
+const CATEGORY_PLURAL: Record<MediaCategory, string> = {
+  PHOTOS: "photo sets",
+  VIDEO: "videos",
+  FLOORPLAN: "floor plans",
+  THREED: "3D tours",
+};
+
+// ---------------------------------------------------------------------------
+// WHO SAID THE CLIENT HAS IT (audit R02, Sep 18 2026).
+//
+// `deliveredAt` is not an answer to that question, and the comments around it
+// used to assume it was ("a human saying the client has the files"). THE SWEEP
+// WRITES THAT COLUMN ITSELF — see the `deliveredAt: new Date()` in the update
+// near the end of syncProjectStatuses — so "the office confirmed the delivery"
+// and "this engine concluded one an hour ago" are the same field. Measured on
+// production Sep 18: 1,524 projects carry a deliveredAt and ZERO carry a
+// deliveredBy. 626 Greycliffe Ln is the whole argument in one job — the sweep
+// stamped it DELIVERED at 23:02 on Sep 3, the delivery text auto-sent the next
+// lunchtime, and at 17:05 Gary texted "I'm looking for the social media video
+// for Greycliffe".
+//
+// A confirmation needs an ACTOR. deliveredBy names the person, deliveredVia the
+// surface they pressed. `sweep` and `aryeo-listing` are this software talking
+// about itself; so is a deliveredBy of "ARYEO" (lib/aryeoDelivery writes
+// exactly that on the TopazJob side and says so: "`deliveredBy` says ARYEO, not
+// a person").
+//
+// NOTHING IS BACKFILLED — every existing stamp keeps its null actor, and null
+// reads as "we do not know", never as "nobody delivered it". What that costs is
+// paid where it is spent: the hand-delivery guard in the sweep is keyed on
+// Project.status, not on this, so a delivery the office made still STICKS. All
+// this changes is whether an unwitnessed stamp may silence an owed send.
+// ---------------------------------------------------------------------------
+const MACHINE_ACTORS = new Set(["sweep", "aryeo", "aryeo-listing", "system", "hub", "auto", "cron", "robot"]);
+const HUMAN_DELIVERY_VIA = new Set(["board", "queue-pill", "override", "office-hand", "manual", "portal", "dropbox-link"]);
+
+export function officeConfirmedDelivery(p: {
+  deliveredAt: Date | null;
+  deliveredBy?: string | null;
+  deliveredVia?: string | null;
+}): boolean {
+  if (!p.deliveredAt) return false;
+  const by = (p.deliveredBy ?? "").trim().toLowerCase();
+  if (by && !MACHINE_ACTORS.has(by)) return true;
+  return HUMAN_DELIVERY_VIA.has((p.deliveredVia ?? "").trim().toLowerCase());
+}
+
+/**
+ * The video lane's tally for one job (R02). Pure — hand it the job's owed order
+ * rows and its per-video rows and it returns the only four numbers the status
+ * engine needs. Exported so a probe can argue with it without a database.
+ *
+ * THE OUTPUT ROWS ARE THE AUTHORITY WHERE THEY EXIST. They are minted from
+ * cutSlots, which is where the office's `videosOwedOverride` and its waivers
+ * both live (deliverableOutputs.ts), so a batch the office LOWERED must not be
+ * raised again by the order row's quantity. The quantity is the fallback for
+ * the jobs that have no rows yet — 922 rows cover 645 of ~1,500 jobs — and even
+ * then it is never worse than the flat 1 this engine assumed before.
+ *
+ * Null when no video was ordered: there is nothing to count, and a null tally
+ * leaves every category on the old one-is-enough test.
+ */
+export function videoUnitTally(
+  deliverables: { type: string; quantity?: number | null }[],
+  outputs: { deliverableId: string; slot: number; category: string | null; deliveredAt: Date | null; approvedAt: Date | null }[],
+): UnitTally | null {
+  const rows = outputs.filter((o) => (o.category ?? "").toUpperCase() === "VIDEO");
+  const quantityOwed = deliverables
+    .filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL")
+    .reduce((n, d) => n + Math.max(1, d.quantity ?? 1), 0);
+  const owed = rows.length > 0 ? rows.length : quantityOwed;
+  if (owed <= 0) return null;
+  return {
+    category: "VIDEO",
+    owed,
+    withClient: rows.filter((o) => o.deliveredAt).length,
+    // An ACCEPTED round is a finished video. Dropbox's Final count is the other
+    // witness and computeStatus takes the larger of the two, so a file in the
+    // folder that nobody has approved still counts as made.
+    finished: rows.filter((o) => o.approvedAt).length,
+    source: rows.length > 0 ? "outputs" : "quantity",
+    ...(rows.length > 0
+      ? { outstandingKeys: rows.filter((o) => !o.deliveredAt).map((o) => `${o.deliverableId}:${o.slot}`) }
+      : {}),
+  };
+}
+
 export type StatusSignals = {
   expected: Set<MediaCategory>;
   aryeo: AryeoMediaSignal | null;
   dropbox: DropboxSignal | null;
-  fulfilled: boolean; // Aryeo order fulfilled_at present
+  /** Project.deliveredAt is set. NOT a human confirmation — this sweep writes
+   *  that column itself (officeConfirmed is the witnessed question). */
+  fulfilled: boolean;
+  /** A PERSON is on record for the delivery — officeConfirmedDelivery(). */
+  officeConfirmed: boolean;
+  /** who, for the sentence. Null on all 1,524 historical stamps. */
+  deliveredBy?: string | null;
+  /** how — sweep | board | queue-pill | override | office-hand | aryeo-listing */
+  deliveredVia?: string | null;
+  /** what the per-video rows know, per category (R02). Absent = "we did not
+   *  count", which must read exactly like the old one-is-enough behaviour. */
+  units?: UnitTally[];
   scheduled: boolean; // a SCHEDULED (non-cancelled) appointment exists
   anyAppt: boolean;
   /** a non-canceled appointment WITH a start time (an UNSCHEDULED/postponed row has none) */
@@ -314,6 +468,14 @@ export type StatusEvidence = {
    * could not be read, and empty when the office hand-delivered the job.
    */
   awaitingSend: string[];
+  /**
+   * HOW MANY of each ordered category are owed, with the client, and finished
+   * (audit R02, Sep 18). Only for the lanes whose units are separately made and
+   * separately sent — in practice the video lane. Absent on every blob written
+   * before Sep 18 and on every job with no per-video rows, and absent must read
+   * as "not counted", never as "nothing owed".
+   */
+  units?: UnitTallyView[];
   partial: boolean; // looked delivered on Aryeo but content is missing
   aryeo: AryeoMediaSignal | null;
   dropbox: DropboxSignal | null;
@@ -353,15 +515,49 @@ export function computeStatus(sig: StatusSignals): StatusResult {
   // `present` stays their union because "is it made yet" is a real question
   // too (it drives the video-SLA and partial-delivery branches); what it may no
   // longer do on its own is claim a delivery.
-  const clientHas = new Set<MediaCategory>();
-  if ((a?.photos ?? 0) > 0) clientHas.add("PHOTOS");
-  if ((a?.videos ?? 0) > 0) clientHas.add("VIDEO");
-  if ((a?.floorPlans ?? 0) > 0) clientHas.add("FLOORPLAN");
-  if ((a?.interactive ?? 0) > 0) clientHas.add("THREED");
+  //
+  // AND SINCE R02 (Sep 18) both are counted, not tested. A category is in
+  // `clientHas` when EVERY owed unit of it is with the client, not when one is
+  // (see UnitTally above: owed is 1 without a tally, and then all of this is
+  // the `> 0` it always was).
+  const tallies = new Map<MediaCategory, UnitTally>((sig.units ?? []).map((u) => [u.category, u]));
+  const onListing: Record<MediaCategory, number> = {
+    PHOTOS: a?.photos ?? 0,
+    VIDEO: a?.videos ?? 0,
+    FLOORPLAN: a?.floorPlans ?? 0,
+    THREED: a?.interactive ?? 0,
+  };
+  const inFinal: Record<MediaCategory, number> = {
+    PHOTOS: own?.finalPhotos ?? 0,
+    VIDEO: own?.finalVideo ?? 0,
+    FLOORPLAN: 0,
+    THREED: 0,
+  };
+  // TWO WITNESSES PER SIDE, AND THE LARGER ONE WINS. The listing count is
+  // anonymous but real — that many videos are openable — while the per-video
+  // deliveredAt stamps are named but sparse. Neither can see what the other
+  // sees, so `max` is the honest combination: each is proof of AT LEAST that
+  // many. Capped at `owed`, because a fifth video on a four-video order (38 E
+  // Gay St carries exactly that today) is not a fifth delivery.
+  const unitsOf = (c: MediaCategory) => {
+    const t = tallies.get(c);
+    const owed = Math.max(1, t?.owed ?? 1);
+    return {
+      owed,
+      withClient: Math.min(owed, Math.max(onListing[c], t?.withClient ?? 0)),
+      finished: Math.min(owed, Math.max(inFinal[c], t?.finished ?? 0)),
+      source: t?.source ?? null,
+      keys: t?.outstandingKeys ?? [],
+    };
+  };
 
+  const clientHas = new Set<MediaCategory>();
   const weHave = new Set<MediaCategory>();
-  if ((own?.finalPhotos ?? 0) > 0) weHave.add("PHOTOS");
-  if ((own?.finalVideo ?? 0) > 0) weHave.add("VIDEO");
+  for (const c of ALL_CATEGORIES) {
+    const u = unitsOf(c);
+    if (u.withClient >= u.owed) clientHas.add(c);
+    if (u.finished >= u.owed) weHave.add(c);
+  }
 
   const present = new Set<MediaCategory>([...clientHas, ...weHave]);
 
@@ -381,12 +577,61 @@ export function computeStatus(sig: StatusSignals): StatusResult {
 
   // Ordered, finished, and still not where the client can reach it. Asked only
   // when Aryeo actually ANSWERED (a failed read must not invent an owed send),
-  // and never against the office's own hand-delivery: `sig.fulfilled` is
-  // `!!deliveredAt`, a human saying the client has the files, and no
-  // cross-check of two APIs overrules that (Sep 16, Kyle call). What this
-  // catches is the other case — Aryeo's ORDER flag flipping because the photos
-  // went out, while the video sits in Final.
-  const awaitingSend = a && !sig.fulfilled ? expected.filter((c) => weHave.has(c) && !clientHas.has(c)) : [];
+  // and never against a delivery the office really made (Sep 16, Kyle call).
+  //
+  // THE TEST USED TO BE `!sig.fulfilled`, on the stated ground that "`sig.fulfilled`
+  // is `!!deliveredAt`, a human saying the client has the files". Overruled
+  // (R02, Sep 18): this sweep writes deliveredAt itself, so that column said
+  // nothing about a human, and it was silencing the owed-send list on every job
+  // the engine had concluded about — 1,524 stamps, 0 actors. The gate is now
+  // the WITNESSED question (officeConfirmedDelivery). An unwitnessed stamp
+  // still keeps the job DELIVERED, because the guard that protects Kyle's hand
+  // deliveries is keyed on Project.status, not on this line.
+  //
+  // Counted, too: `finished > withClient` means at least one made unit is not
+  // with the client. With owed 1 that is exactly the old `weHave && !clientHas`.
+  const awaitingSend = a && !sig.officeConfirmed
+    ? expected.filter((c) => {
+        const u = unitsOf(c);
+        return u.finished > u.withClient;
+      })
+    : [];
+
+  // ---- THE COUNT, IN WORDS AND IN THE BLOB (R02) ---------------------------
+  // The sentence needs a listing read that actually happened. With `a === null`
+  // the only witness of "the client has it" is the per-video stamps; the engine
+  // still DECIDES on those (they are real evidence), but it must not print
+  // "1 of 16 confirmed" as though it had looked. A stale zero is not an absence.
+  const countsKnown = !!a;
+  const shortfallOf = (c: MediaCategory) => {
+    const u = unitsOf(c);
+    return u.owed > 1 ? Math.max(0, u.owed - u.withClient) : 0;
+  };
+  const outstandingPhrase = expected
+    .filter((c) => shortfallOf(c) > 0)
+    .map((c) => `${shortfallOf(c)} of ${unitsOf(c).owed} ${CATEGORY_PLURAL[c]} still outstanding`)
+    .join("; ");
+  const countSentence = countsKnown && outstandingPhrase ? ` ${outstandingPhrase}.` : "";
+  const unitView: UnitTallyView[] = expected
+    .filter((c) => tallies.has(c))
+    .map((c) => {
+      const u = unitsOf(c);
+      const outstanding = Math.max(0, u.owed - u.withClient);
+      // ARYEO NAMES NO CUT. A listing video proves a delivery happened but not
+      // WHICH slot it was, so the count is spent slot by slot in order — the
+      // same assumption lib/evidenceUnits states for the same reason. The keys
+      // that survive the trim are the ones nothing can account for.
+      const keys = u.keys.slice(Math.max(0, u.keys.length - outstanding));
+      return {
+        category: CATEGORY_LABEL[c],
+        owed: u.owed,
+        withClient: u.withClient,
+        finished: u.finished,
+        outstanding,
+        source: u.source ?? "quantity",
+        ...(keys.length > 0 ? { outstandingKeys: keys.slice(0, 32) } : {}),
+      };
+    });
 
   // Video SLA: a missing video is only a problem once its production window
   // (shoot date + standard/premium SLA) has passed. Before that, it's on-track.
@@ -425,6 +670,7 @@ export function computeStatus(sig: StatusSignals): StatusResult {
         present: [...present].map((c) => CATEGORY_LABEL[c]),
         missing: missing.map((c) => CATEGORY_LABEL[c as MediaCategory]),
         awaitingSend: awaitingSend.map((c) => CATEGORY_LABEL[c]),
+        ...(unitView.length > 0 ? { units: unitView } : {}),
         partial: false,
         aryeo: a,
         dropbox: d,
@@ -445,14 +691,18 @@ export function computeStatus(sig: StatusSignals): StatusResult {
   if (satisfied && fulfilled && awaitingSend.length === 0) {
     status = "DELIVERED";
     // Only say "live on Aryeo" when Aryeo is actually showing them. A job that
-    // gets here with something the listing does not carry got there on the
-    // office's hand-delivery, and the sentence says which fact it rests on.
+    // gets here with something the listing does not carry rests on somebody
+    // having said so — and the sentence now names who, because until R02 it
+    // credited "the office" for a stamp this sweep had written itself.
     const allOnAryeo = verifiable && expected.every((c) => clientHas.has(c));
+    const who = sig.deliveredBy?.trim() ? `by ${sig.deliveredBy.trim()}` : "by the office";
     reason = !verifiable
       ? "Order fulfilled and media is live on Aryeo."
       : allOnAryeo
         ? "All ordered deliverables confirmed live on Aryeo."
-        : "Delivered by the office. Not everything is on the Aryeo listing — the delivery rests on that confirmation, not on the listing.";
+        : sig.officeConfirmed
+          ? `Delivered ${who}. Not everything is on the Aryeo listing — the delivery rests on that confirmation, not on the listing.`
+          : "Marked delivered, but not everything is on the Aryeo listing and no person is recorded as confirming it — the stamp is the hub's own.";
   } else if (satisfied && fulfilled) {
     // Everything ordered has been MADE and Aryeo calls the order delivered, but
     // a category is only in our Dropbox. This is the shape the audit named: the
@@ -460,10 +710,16 @@ export function computeStatus(sig: StatusSignals): StatusResult {
     // still owed, and Kyle is the one who owes it.
     status = "REVIEW";
     const owed = awaitingSend.map((c) => CATEGORY_LABEL[c]).join(" and ");
-    reason = `${owed} finished and in Dropbox, but not on the client's Aryeo listing — still to send.`;
+    reason = `${owed} finished and in Dropbox, but not on the client's Aryeo listing — still to send.${countSentence}`;
   } else if (satisfied && !fulfilled) {
     status = "REVIEW";
     reason = "All media is present but the order isn't marked delivered on Aryeo yet — ready to deliver.";
+    // …and say WHICH piece is only on our side. This branch never mentioned the
+    // owed send, so 893 S Matlack read "ready to deliver" with sixteen videos
+    // in Dropbox and an empty listing (R02).
+    if (awaitingSend.length > 0) {
+      reason += ` ${awaitingSend.map((c) => CATEGORY_LABEL[c]).join(" and ")} is in Dropbox, not on the client's Aryeo listing.`;
+    }
   } else if ((fulfilled || anyFinalDropbox || present.has("PHOTOS") || present.has("VIDEO")) && verifiable && missing.length > 0) {
     // Partial delivery — but ONLY when CORE content (photos/video, i.e. work
     // that flowed through the shoot→edit pipeline) is out, or a human marked
@@ -481,8 +737,11 @@ export function computeStatus(sig: StatusSignals): StatusResult {
         ? `Video overdue — was due ${fmtDate(videoDue)}. Confirm it was delivered to the client, or upload it.`
         : `${lead} ${tier} video in production — due ${fmtDate(videoDue)}.`;
       if (others.length) reason += ` Also missing ${others.join(", ")}.`;
+      // "Video overdue" says nothing about a batch. 893 S Matlack owes sixteen
+      // (R02) — how many are left is the only number Kyle can act on.
+      reason += countSentence;
     } else {
-      reason = `Partial delivery — still missing ${missing.map((m) => CATEGORY_LABEL[m as MediaCategory]).join(", ")}.`;
+      reason = `Partial delivery — still missing ${missing.map((m) => CATEGORY_LABEL[m as MediaCategory]).join(", ")}.${countSentence}`;
     }
     // A category can be missing AND another one finished-but-unsent on the same
     // job (floor plan still to come, video sitting in Final). The unsent one has
@@ -523,6 +782,7 @@ export function computeStatus(sig: StatusSignals): StatusResult {
       present: [...present].map((c) => CATEGORY_LABEL[c]),
       missing: missing.map((c) => CATEGORY_LABEL[c as MediaCategory]),
       awaitingSend: awaitingSend.map((c) => CATEGORY_LABEL[c]),
+      ...(unitView.length > 0 ? { units: unitView } : {}),
       partial,
       aryeo: a,
       dropbox: d,
@@ -739,6 +999,10 @@ type StatusProject = {
   status: ProjectStatus;
   aryeoListingId: string | null;
   deliveredAt: Date | null;
+  /** WHO/HOW, when anybody recorded it (R02). Null on all 1,524 existing
+   *  stamps, and null means "we do not know", never "nobody delivered it". */
+  deliveredBy: string | null;
+  deliveredVia: string | null;
   uploadedAt: Date | null;
   // The photographer's upload-page submit — the release signal for the office's
   // Waiting hold (queueWaiting.ts). Only finalizeUpload writes it.
@@ -774,8 +1038,23 @@ type StatusProject = {
   promisedDueAt?: Date | null;
 };
 
-async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<StatusSignals> {
+/** The five columns of a DeliverableOutput row this engine reads. Declared
+ *  here rather than imported so the status engine does not take a dependency on
+ *  a signature in lib/deliverableOutputs that is still being written. */
+type OutputRow = {
+  projectId: string;
+  deliverableId: string;
+  slot: number;
+  category: string | null;
+  deliveredAt: Date | null;
+  approvedAt: Date | null;
+};
+
+async function gatherSignals(p: StatusProject, useDropbox: boolean, outputs: OutputRow[] = []): Promise<StatusSignals> {
   const expected = expectedCategories(p.deliverables);
+  // The per-video rows for THIS job, loaded once for the whole batch by the
+  // caller (R02) — a findMany per project would cost eighty round trips.
+  const videoUnits = videoUnitTally(p.deliverables, outputs);
   const sla = slaTierOf(p);
   // RTP-06: remember WHY each source is null, for the stamps only.
   let aryeoError: string | null = null;
@@ -789,11 +1068,16 @@ async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<Sta
   // Only spend Dropbox calls when Aryeo doesn't already account for everything
   // ordered — Aryeo is the delivery source of truth; Dropbox explains the
   // in-flight stage (raw shot / final awaiting upload) when Aryeo is short.
+  //
+  // COUNTED, since R02: one listing video on a sixteen-video job does not
+  // "account for everything ordered", and skipping Dropbox there is how the
+  // engine lost sight of the fifteen cuts sitting in Final. The video lane is
+  // the only one with a count; every other category keeps the `> 0` test.
   const aryeoSatisfies =
     expected.size > 0 &&
     [...expected].every((c) => {
       if (c === "PHOTOS") return (aryeo?.photos ?? 0) > 0;
-      if (c === "VIDEO") return (aryeo?.videos ?? 0) > 0;
+      if (c === "VIDEO") return (aryeo?.videos ?? 0) >= (videoUnits?.owed ?? 1);
       if (c === "FLOORPLAN") return (aryeo?.floorPlans ?? 0) > 0;
       return (aryeo?.interactive ?? 0) > 0;
     });
@@ -856,7 +1140,13 @@ async function gatherSignals(p: StatusProject, useDropbox: boolean): Promise<Sta
     aryeo,
     dropbox,
     dropboxUnavailable,
+    // deliveredAt is set — nothing more. This sweep writes that column itself
+    // (R02), so the WITNESSED question is the one beneath it.
     fulfilled: !!p.deliveredAt,
+    officeConfirmed: officeConfirmedDelivery(p),
+    deliveredBy: p.deliveredBy,
+    deliveredVia: p.deliveredVia,
+    ...(videoUnits ? { units: [videoUnits] } : {}),
     scheduled: p.appointments.some((a) => (a.status || "").toUpperCase() === "SCHEDULED"),
     // Canceled appointments are not "an appointment on file" — a job whose only
     // appointments were canceled must not read as scheduled (audit crack #14).
@@ -1001,6 +1291,9 @@ export async function syncProjectStatuses(
       status: true,
       aryeoListingId: true,
       deliveredAt: true,
+      // WHO/HOW the delivery was recorded (R02) — two columns, no extra query.
+      deliveredBy: true,
+      deliveredVia: true,
       uploadedAt: true,
       debriefSubmittedAt: true,
       coverImageUrl: true,
@@ -1041,8 +1334,24 @@ export async function syncProjectStatuses(
   let dropboxUnreadable = 0;
   const dropboxErrors: Record<string, number> = {};
 
+  // ---- THE PER-VIDEO ROWS FOR THE WHOLE BATCH (audit R02, Sep 18) ---------
+  // One findMany for every project in this pass. Waived and removed-from-order
+  // slots are excluded here, the same rule OWED_DELIVERABLE_WHERE applies to
+  // the order rows above: a video the office said is not required on this job
+  // is not owed, and must not hold a delivery open.
+  // Uncaught on purpose: a failed read must not quietly hand the engine an
+  // empty list, because empty here does not mean "nothing owed" — it means
+  // "fall back to the order row's quantity", a different authority, silently
+  // chosen. Unknown is not zero, and it is not a second opinion either.
+  const outputRows: OutputRow[] = await prisma.deliverableOutput.findMany({
+    where: { projectId: { in: projects.map((p) => p.id) }, waivedAt: null, removedFromOrderAt: null },
+    select: { projectId: true, deliverableId: true, slot: true, category: true, deliveredAt: true, approvedAt: true },
+  });
+  const outputsByProject = new Map<string, OutputRow[]>();
+  for (const o of outputRows) outputsByProject.set(o.projectId, [...(outputsByProject.get(o.projectId) ?? []), o]);
+
   const results = await pMap(projects, 5, async (p) => {
-    const sig = await gatherSignals(p, useDropbox);
+    const sig = await gatherSignals(p, useDropbox, outputsByProject.get(p.id) ?? []);
     return { p, sig, ...computeStatus(sig) };
   });
 
@@ -1177,12 +1486,26 @@ export async function syncProjectStatuses(
       // treating a half-delivered job as done, and he is the one who
       // delivered it.
       evidence.partial = false;
-      if (evidence.missing.length > 0) {
-        const on = p.deliveredAt
-          ? ` on ${p.deliveredAt.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}`
-          : "";
-        evidence.reason = `Delivered by the office${on}; the hub still cannot see: ${evidence.missing.join(", ")}.`;
-      }
+      // WHO IS ACTUALLY ON RECORD (R02, Sep 18). This sentence credited "the
+      // office" for every stamp in the table, including the 1,524 this sweep
+      // wrote about its own conclusion. The guard above is untouched — a
+      // genuine confirmation still outranks the cross-check, and it is keyed on
+      // Project.status, not on the actor — but the words may no longer name a
+      // person nobody recorded. It states the stamp, and blames nobody.
+      const on = p.deliveredAt
+        ? ` on ${p.deliveredAt.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}`
+        : "";
+      const who = officeConfirmedDelivery(p)
+        ? `Delivered${p.deliveredBy ? ` by ${p.deliveredBy}` : " by the office"}${on}`
+        : `Marked delivered${on} (the hub's own stamp — nobody is recorded as confirming it)`;
+      // A delivered job can now carry an owed SEND as well as an unseen
+      // category: with sixteen videos owed and one on the listing, the other
+      // fifteen are finished in Dropbox and the client cannot open them.
+      const gaps: string[] = [];
+      if (evidence.missing.length > 0) gaps.push(`the hub still cannot see: ${evidence.missing.join(", ")}`);
+      if (evidence.awaitingSend.length > 0)
+        gaps.push(`${evidence.awaitingSend.join(" and ")} finished in Dropbox but not on the client's Aryeo listing`);
+      if (gaps.length > 0) evidence.reason = `${who}; ${gaps.join("; ")}.`;
       // …and when the missing list empties (the listing id lands, the floor
       // plan syncs), computeStatus's own "All ordered deliverables confirmed
       // live on Aryeo." stands untouched. The sentence clears itself.
@@ -1364,7 +1687,18 @@ export async function syncProjectStatuses(
         // delivery. Nothing here changes the status decision above.
         ...evidenceStamps(sig.read),
         ...(deliveryDue ? { deliveryDue } : {}),
-        ...(final === "DELIVERED" && !p.deliveredAt ? { deliveredAt: new Date() } : {}),
+        // SIGN THE STAMP (R02, Sep 18). The columns that say WHO and HOW have
+        // existed since WF-04 and nothing ever wrote them — 1,524 deliveredAt
+        // stamps, 0 actors — so this engine's own conclusion was
+        // indistinguishable from Kyle's hand delivery, and telling those two
+        // apart is the whole finding. Only on FIRST arrival, and only when
+        // nothing else has claimed the delivery: no existing row is rewritten,
+        // and a hand delivery recorded anywhere else keeps its own actor.
+        // deliveredBy stays NULL — no person did this, and inventing one would
+        // be the original sin repeated.
+        ...(final === "DELIVERED" && !p.deliveredAt
+          ? { deliveredAt: new Date(), ...(p.deliveredVia ? {} : { deliveredVia: "sweep" }) }
+          : {}),
         ...(rawsDetected && !p.uploadedAt ? { uploadedAt: new Date() } : {}),
         // First live Aryeo image → the My Shoots thumbnail (refresh if it changes).
         ...(sig.aryeo?.cover && sig.aryeo.cover !== p.coverImageUrl ? { coverImageUrl: sig.aryeo.cover } : {}),
