@@ -1054,6 +1054,8 @@ export async function createCommTask(opts: {
         // A follow-up nudge means they're waiting — never LATER than the
         // current due, sometimes sooner.
         ...(existing.dueAt && existing.dueAt.getTime() > Date.now() + 2 * HOUR ? { dueAt: new Date(Date.now() + 2 * HOUR) } : {}),
+        // They wrote again, so the chase date restarts (see the mint below).
+        followUpAt: addBusinessDaysET(new Date(), 1),
       },
     }).catch(() => {});
     return false;
@@ -1109,6 +1111,15 @@ export async function createCommTask(opts: {
     sourceDetail: opts.threadRef ?? null,
     priority: opts.priority ?? "HIGH",
     dueAt,
+    // WHEN TO CHASE IT AGAIN — distinct from dueAt on purpose, and the reason
+    // this row can now outlive the messages that made it (audit R07, Sep 18).
+    // `dueAt` is the "reply within four hours" clock: a week later it says
+    // nothing except "late", and the reply queue reads MESSAGES, which age out
+    // of the seven-day window. The obligation itself does not age out — the
+    // ledger in replyQueue.ts (`openObligations`) reads these rows with no
+    // window at all — so it needs a date that still means something on day 60.
+    // Next business day, restarted every time the client writes again.
+    followUpAt: addBusinessDaysET(new Date(), 1),
     clientId: opts.clientId,
     contactName: differentName(opts.contactName, opts.clientName),
     projectId: opts.projectId ?? null,

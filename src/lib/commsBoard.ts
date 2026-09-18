@@ -42,6 +42,12 @@ export type CommsGroup = {
   items: CommsThreadItem[]; // every inbound since our last answer, oldest first
   oldestHours: number;
   openTaskId: string | null; // the silent client_reply task, when one exists
+  /** TRUE when this row came from the OBLIGATION LEDGER, not the message
+   *  window: the request is still open but the conversation behind it is older
+   *  than the seven-day read, so `items` is the ONE message the obligation was
+   *  raised on rather than the thread. The card should say so — there is no
+   *  scrollback here, and the full conversation lives on the client page. */
+  fromLedger: boolean;
 };
 
 function snippetOf(body: string): string {
@@ -63,6 +69,16 @@ export async function unansweredCommsBoard(family: "phone" | "email", now: Date 
     families: [family],
     includeUnmatched: false, // the tick needs a client record
     includeTeam: false, // "unanswered CLIENTS", not our own photographers
+    // A WORK ITEM MUST NOT VANISH FROM A LIST OF WORK (audit R07, Sep 18). The
+    // seven-day window is a rule about NOISE — the twelve extra rows a 21-day
+    // read added were out-of-office replies and vendor pitches nobody chose.
+    // An open reply to-do is the opposite: the hub looked at that conversation
+    // and wrote down that we owe an answer. That obligation is read from the
+    // ledger with no window and no row cap, so a question older than 45 days,
+    // or buried under 600 newer messages on a busy account, stays on this board
+    // until somebody resolves it. The board opts in; the 5-minute SLA pager
+    // deliberately does not (see UnansweredOptions.includeOwed).
+    includeOwed: true,
   });
   return threads.map((t) => ({
     clientId: t.clientId ?? "",
@@ -81,6 +97,7 @@ export async function unansweredCommsBoard(family: "phone" | "email", now: Date 
     // TRUE wait, not the age of message #4.
     oldestHours: t.hoursWaiting,
     openTaskId: t.openTaskId,
+    fromLedger: !!t.fromLedger,
   }));
 }
 
