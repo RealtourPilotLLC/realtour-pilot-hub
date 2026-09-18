@@ -553,9 +553,22 @@ export async function getShootPhotographer(memberId: string): Promise<{ id: stri
 
 // Is this shoot assigned to this photographer (as the project's photographer OR
 // the assignee on one of its appointments)?
+//
+// A CANCELED appointment is not a shoot they worked (review, Sep 18). This test
+// is the write guard behind the shoot page, the upload page, the Review Room
+// and askCutChange, and it was counting canceled visits: live today that is 4
+// jobs where Harrison's only link is a canceled appointment and somebody else
+// (Jordan on three, James on one) actually shot them — a photographer taken off
+// a job kept the right to rewrite its editor brief and to file change requests
+// on its cuts. The 39 canceled appointments in the table are the rescheduled
+// and reassigned ones; the ladder everywhere else already skips them
+// (editorQueue's liveAppts, getShootMapData, the pay engine).
 export async function photographerOwnsShoot(projectId: string, memberId: string): Promise<boolean> {
   const n = await prisma.project.count({
-    where: { id: projectId, OR: [{ photographerId: memberId }, { appointments: { some: { assignedToId: memberId } } }] },
+    where: {
+      id: projectId,
+      OR: [{ photographerId: memberId }, { appointments: { some: { assignedToId: memberId, status: { not: "CANCELED" } } } }],
+    },
   });
   return n > 0;
 }

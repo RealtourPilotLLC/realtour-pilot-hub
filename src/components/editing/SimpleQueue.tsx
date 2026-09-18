@@ -466,7 +466,10 @@ const DUE_LABEL: Record<DueFilter, { due: string; shoot: string }> = {
   any: { due: "Any due date", shoot: "Any shoot date" },
   overdue: { due: "Overdue", shoot: "Overdue" },
   today: { due: "Due today", shoot: "Shoots today" },
-  week: { due: "Due this week", shoot: "Shoots this week" },
+  // "Shoots this week" named Monday–Sunday while the Upcoming tab only ever
+  // holds shoots still ahead of now — on a Friday it advertised four days that
+  // cannot appear on it. The rest of the week is what it actually shows.
+  week: { due: "Due this week", shoot: "Shoots rest of this week" },
   undated: { due: "No due date", shoot: "No shoot date" },
 };
 
@@ -499,12 +502,21 @@ export function SimpleQueue({
   const all = view === "notdone" ? notDone : view === "upcoming" ? upcoming : done;
   const upcomingTab = view === "upcoming";
   const word = upcomingTab ? ("shoot" as const) : ("due" as const);
-  const DUE_CHOICES: DueFilter[] = upcomingTab ? ["today", "week", "undated"] : ["overdue", "today", "week", "undated"];
+  // Which due options a TAB can answer — Overdue is not one of Upcoming's (see
+  // DUE_LABEL). Taken as a function because the view pills below have to ask it
+  // about the tab you are NOT on, to count what clicking would really show.
+  const choicesFor = (tab: typeof view): DueFilter[] =>
+    tab === "upcoming" ? ["today", "week", "undated"] : ["overdue", "today", "week", "undated"];
+  const DUE_CHOICES = choicesFor(view);
   const when: DueFilter = DUE_CHOICES.includes(dueWanted) ? dueWanted : "any";
 
   // Read at render, like every other "today" in the app (MyShootsView does the
   // same): the page revalidates on every server action, so a tab left open
-  // across ET midnight picks the new day up on its next render.
+  // across ET midnight picks the new day up on its next render. It is read on
+  // the server too (this client component is SSR'd), so a render that straddles
+  // ET midnight can hydrate against the next day's key — the only thing that
+  // would differ is an option count, React re-renders it on the spot, and
+  // pinning the value at mount would leave a tab open all day on a stale one.
   const todayKey = etDayKey(new Date());
   const week = useMemo(() => etWeekBounds(todayKey), [todayKey]);
   // One etDayKey per ROW, not one per option per row: each call builds an
@@ -561,7 +573,16 @@ export function SimpleQueue({
   const dueTitle = (f: DueFilter) => {
     if (f === "overdue") return "Past its deadline — the same rows the Due column prints in red";
     if (f === "today") return `${upcomingTab ? "Shooting" : "Due"} today, Eastern — the whole ET calendar day, whatever hour the date carries`;
-    if (f === "week") return `${upcomingTab ? "Shooting" : "Due"} in this Eastern week, ${etMonthDay(week.start)}–${etMonthDay(week.end)}${upcomingTab ? "" : " — a deadline already missed but dated this week counts"}`;
+    // The Upcoming tab is built from `shootDate >= now`, so the first half of
+    // the ET week is already behind it: a title reading "Sep 14–Sep 20" on a
+    // Friday named four days the tab cannot hold, and the count beside it was
+    // only ever the days still ahead. It now names the window it can actually
+    // show. Not Done keeps the whole week, where a missed deadline dated this
+    // week is exactly the row you are looking for.
+    if (f === "week")
+      return upcomingTab
+        ? `Shooting between today and Sunday, Eastern — ${etMonthDay(todayKey)}–${etMonthDay(week.end)}. Earlier days of this week have already been shot, so this tab cannot hold them`
+        : `Due in this Eastern week, ${etMonthDay(week.start)}–${etMonthDay(week.end)} — a deadline already missed but dated this week counts`;
     if (f === "undated") return upcomingTab ? "No shoot date on the job" : "No delivery date on the job — the pile no date filter would otherwise show you";
     return "No date filter";
   };
@@ -570,11 +591,31 @@ export function SimpleQueue({
   // cross-filtered list above: a due filter that narrows the board to one
   // person must not take away the control you'd use to widen it again.
   const editorKeysOnTab = new Set(all.map((r) => r.editorKey ?? "__none__"));
+  // …and the DUE select's visibility is keyed to the tab for the same reason in
+  // the other direction. Hiding it on `dueOptions.length > 0` took the control
+  // away whenever the chosen editor had nothing in any bucket — on the live
+  // board this morning that was three real selections on the Done tab (Kim's 4
+  // rows, the outside agency's 2, Remar's 2: dated, not late, not this week, so
+  // no option matched). A control that disappears is one you cannot use to
+  // widen the board again. The OPTIONS stay cross-filtered; only the control
+  // itself now survives an editor pick.
+  const dueOnTab = DUE_CHOICES.some((f) => all.some((r) => matchesDue(f, r.late, dueKeys.get(r.id) ?? null, todayKey, week)));
   const filtering = who !== null || when !== "any";
+  // THE PILLS COUNT WHAT CLICKING THEM SHOWS (review, Sep 18). They were the
+  // one number on this screen that ignored the filters, so with Kim picked and
+  // Overdue on, the live board offered "Not Done 19" and "Done 32" and handed
+  // over an empty table both times — the same dead end the option counts above
+  // were cross-filtered to stop. Each tab is counted under the filter IT would
+  // apply: Upcoming cannot answer Overdue, so a carried-over Overdue counts as
+  // no due filter there, exactly as `when` does once you are on it.
+  const countOn = (tab: typeof view, rows: QueueRow[]) => {
+    const w: DueFilter = choicesFor(tab).includes(dueWanted) ? dueWanted : "any";
+    return rows.filter((r) => byWho(r) && matchesDue(w, r.late, dueKeys.get(r.id) ?? null, todayKey, week)).length;
+  };
   const VIEWS = [
-    { key: "notdone" as const, label: "Not Done", n: notDone.length },
-    { key: "upcoming" as const, label: "Upcoming", n: upcoming.length },
-    { key: "done" as const, label: "Done", n: done.length },
+    { key: "notdone" as const, label: "Not Done", n: countOn("notdone", notDone) },
+    { key: "upcoming" as const, label: "Upcoming", n: countOn("upcoming", upcoming) },
+    { key: "done" as const, label: "Done", n: countOn("done", done) },
   ];
   // Keeps click-to-open from firing when the click was really for a control
   // inside the row (status pill, editor select, a link).
@@ -595,7 +636,10 @@ export function SimpleQueue({
             className={cn("rounded-lg px-3 py-1.5 text-sm font-medium",
               view === v.key ? "bg-brand text-white" : "border border-border text-muted hover:bg-surface-2")}>
             {v.label}
-            {v.n > 0 && <span className={cn("ml-1.5 rounded-full px-1.5 text-xs font-semibold", view === v.key ? "bg-white/20" : "bg-surface-2")}>{v.n}</span>}
+            {/* A zero is worth printing while a filter is on: "Done 0" is the
+                answer to "is there any of Kim's in there", and a bare pill
+                would read as a tab nobody has counted. */}
+            {(v.n > 0 || filtering) && <span className={cn("ml-1.5 rounded-full px-1.5 text-xs font-semibold", view === v.key ? "bg-white/20" : "bg-surface-2")}>{v.n}</span>}
           </button>
         ))}
         {/* Not pills: the editor list grows, the due list is four words long,
@@ -620,7 +664,7 @@ export function SimpleQueue({
               </select>
             </label>
           )}
-          {dueOptions.length > 0 && (
+          {(dueOnTab || when !== "any") && (
             <label className="flex items-center gap-1.5 text-xs text-muted">
               {upcomingTab ? "Shoot" : "Due"}
               <select

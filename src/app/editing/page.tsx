@@ -62,11 +62,17 @@ export default async function EditorQueuePage() {
 
   // THE PHOTOGRAPHER'S VIEW (Jordan, Sep 18: "They should also see the editing
   // room and be able to make changes to their notes or instructions, but not
-  // full control like I do or Kyle does"). It returns BEFORE buildEditorQueue's
-  // office rails and the workload panel are built for them at all — a
-  // photographer must not receive the whole company's board and have the
-  // markup decide what to draw. Their own board, and the only writable thing
-  // on it, live in PhotographerJobs.
+  // full control like I do or Kyle does"). It returns before the workload
+  // panel, the message counts and the office's SimpleQueue are built for them
+  // at all — a photographer must not receive the whole company's board and
+  // have the markup decide what to draw. Their own board, and the only
+  // writable thing on it, live in PhotographerJobs.
+  //
+  // It does NOT skip buildEditorQueue (this comment claimed it did, review Sep
+  // 18): photographerEditingBoard calls it on the server to reuse the status
+  // ladder, then keeps only the rows this person shot and only the fields the
+  // type above can hold. Nothing that is not theirs crosses to the browser —
+  // which is the guarantee that matters — but the office query does run.
   if (me?.role === "PHOTOGRAPHER") {
     const { photographerMemberId } = await import("@/lib/shoot");
     const mid = await photographerMemberId(me).catch(() => null);

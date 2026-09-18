@@ -595,12 +595,17 @@ export async function askCutChange(input: {
   }
 
   const editorKey = submission.submittedByKey ?? (await projectEditorKey(input.projectId));
-  // The job's photographer of record, exactly as the capture lane resolves it.
-  // By the ownership test above this IS the author on every job that has one;
-  // it is read rather than assumed so a job where they are the appointment
-  // assignee and someone else is the column still files the ask consistently.
-  const { projectPhotographerId } = await import("@/lib/projectPhotographer");
-  const photographerId = (await projectPhotographerId(input.projectId).catch(() => null)) ?? me.teamMemberId;
+  // THE AUTHOR, not the photographer of record (review, Sep 18). This stamped
+  // projectPhotographerId(), which is a different person exactly when two
+  // people are attached to a job — the column says one, an appointment assigns
+  // the other, and the ownership test above lets EITHER write. On such a job
+  // the ask was filed under the other photographer: the lens that shows a
+  // photographer their own change requests reads `lane: EDITOR` +
+  // `photographerId = the viewer` (reviewRoom.ts), so the author posted into a
+  // composer that swallowed it and the other person found a request they never
+  // made — and the reply guard above (root.photographerId === mid) handed them
+  // the answer too.
+  const photographerId = me.teamMemberId;
   const { authorKey, authorTmId, authorName } = await sessionAuthor();
 
   const note = await prisma.mediaNote.create({

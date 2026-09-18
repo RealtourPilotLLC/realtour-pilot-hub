@@ -92,9 +92,16 @@ export default async function ReviewRoomPage() {
   // is the office's desk: every client's cut, Kyle's photo QC, the follow-up
   // rollup and the scoreboards. None of it is theirs, and none of it loads.
   if (!ownerDesk && me?.role === "PHOTOGRAPHER") {
-    const { photographerMemberId } = await import("@/lib/shoot");
-    const mid = await photographerMemberId(me).catch(() => null);
-    // No roster row = no way to say which shoots are theirs. Fail closed to
+    // THE SAME RULE AS THE PAGE THIS INDEX LINKS TO (review, Sep 18). This read
+    // the roster with photographerMemberId, which falls back to an email match
+    // when the login carries no teamMemberId; /review/<id> and askCutChange
+    // both require AppUser.teamMemberId itself. An unlinked login therefore got
+    // an index of cuts where every row redirected it straight back out, and a
+    // composer that refused it. One rule, and it is the narrower one, because
+    // it is the one the writes are guarded by. (Live today: the one
+    // photographer login is linked, so nobody's list changes.)
+    const mid = me.teamMemberId;
+    // No roster link = no way to say which shoots are theirs. Fail closed to
     // their own home rather than to somebody else's cuts.
     if (!mid) redirect(homeFor(me.role));
     const { PhotographerRoom } = await import("@/components/review/PhotographerRoom");
