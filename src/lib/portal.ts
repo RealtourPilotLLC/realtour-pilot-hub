@@ -796,6 +796,18 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
   return { groups, months, archivedCount: bank.archived, total: bank.total, strategyLabel: approvedStrategy ? `v${approvedStrategy.versionNo}` : null };
 }
 
+// A topic leaves the client's bank on `status` alone: contentTopics.
+// topicBankByPillar lists `status notIn ["REJECTED","ARCHIVED"]` and counts the
+// rest as "set aside". That — not the stricter write gate in
+// topicForEnrollment below, which also reads approvalState — is what decides
+// whether a CARD exists for the client to be pointed at.
+const OFF_BANK_TOPIC_STATUS = ["REJECTED", "ARCHIVED"];
+
+/** Is this topic still on the client's bank, i.e. does a card for it render? */
+export function topicOnBank(topic: { status: string } | null | undefined): boolean {
+  return !!topic && !OFF_BANK_TOPIC_STATUS.includes(topic.status);
+}
+
 /** Prove a topic is this enrollment's and in the bank (not rejected/archived). */
 export async function topicForEnrollment(enrollmentId: string, topicId: string) {
   if (!/^[a-z0-9]{10,40}$/i.test(topicId)) return null;
@@ -844,12 +856,35 @@ export type PortalInterviewView = {
    *   · "none"      — nothing built from these answers yet
    *   · "preparing" — a version exists and has not been released
    *   · "released"  — it is approved and shared; the client reads it on the topic
+   *   · "set_aside" — the topic has left the bank, so there is no card to read
+   *                   it on and this page claims nothing about it
    * `changedSince` still means "you have edited answers since the last draft",
    * which is true and useful without quoting anything.
+   *
+   * "set_aside" exists because both of the other two live stages point at a
+   * card: "preparing" promises the script "appears under this topic", and
+   * "released" says "it's under this topic". Staff archiving a topic that
+   * carries a released script and an open interview left this page sending the
+   * client to a card the bank no longer lists (review, Sep 18). Nothing is
+   * hidden by it — the client's own answers stay on the page.
    */
-  script: { stage: "none" | "preparing" | "released"; changedSince: boolean };
+  script: { stage: "none" | "preparing" | "released" | "set_aside"; changedSince: boolean };
   strategyLabel: string | null;
 };
+
+/**
+ * The stage this page may CLAIM. Kept as its own function because the rule is
+ * a rule, not an expression: both live stages point the client at the topic
+ * card ("it appears under this topic", "it's under this topic"), so both are
+ * false once the topic has left the bank — whatever the script rows say.
+ */
+export function interviewScriptStage(
+  topic: { status: string } | null | undefined,
+  opts: { released: boolean; versionsBuilt: number },
+): PortalInterviewView["script"]["stage"] {
+  if (!topicOnBank(topic)) return "set_aside";
+  return opts.released ? "released" : opts.versionsBuilt > 0 ? "preparing" : "none";
+}
 
 /** Where the guided interview stands for one of the viewer's topics (ownership proven by the caller). */
 export async function portalInterview(enrollment: { id: string; clientId: string }, interviewId: string): Promise<PortalInterviewView | null> {
@@ -859,7 +894,9 @@ export async function portalInterview(enrollment: { id: string; clientId: string
   const { interviewState, answersChangedSinceLastDraft } = await import("@/lib/contentInterview");
   const [st, topic, month, builtOne, changed, strategy, topicScript] = await Promise.all([
     interviewState(interviewId),
-    prisma.contentTopic.findUnique({ where: { id: row.topicId }, select: { title: true } }),
+    // `status` too: an archived topic has no card, and this page must not
+    // send the client to one (see the stage doc above).
+    prisma.contentTopic.findUnique({ where: { id: row.topicId }, select: { title: true, status: true } }),
     prisma.contentMonth.findUnique({ where: { id: row.monthId }, select: { monthKey: true } }),
     // COUNT, NOT CONTENT. We need to know whether a version exists; we must not
     // read its words, because nothing on this page may quote them.
@@ -875,7 +912,7 @@ export async function portalInterview(enrollment: { id: string; clientId: string
   ]);
   const released = !!topicScript && !topicScript.historical;
   const script: PortalInterviewView["script"] = {
-    stage: released ? "released" : builtOne > 0 ? "preparing" : "none",
+    stage: interviewScriptStage(topic, { released, versionsBuilt: builtOne }),
     changedSince: changed,
   };
   return {

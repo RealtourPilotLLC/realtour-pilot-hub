@@ -8,7 +8,7 @@ import { videoForEnrollment } from "@/lib/contentVideos";
 import { actorLabel } from "@/lib/portalAccess";
 import { streamUrlFor } from "@/lib/reviewCuts";
 import { CLIENT_VISIBLE_SCRIPT, type PortalViewer } from "@/lib/portal";
-import { clip, stripMoneySentences } from "@/lib/text";
+import { clip } from "@/lib/text";
 
 // ---------------------------------------------------------------------------
 // THE POSTING KIT (spec §10, Sep 17 2026). Per video: the final file (which
@@ -172,8 +172,30 @@ async function scriptForVideo(video: { id: string; topicId: string | null; scrip
   // the script that passed the gate — an unshared draft is never the client's
   // copy just because a production row points at it.
   const releasedId = script.sharedVersionId ?? script.approvedVersionId ?? null;
-  let v = releasedId ? await prisma.contentScriptVersion.findUnique({ where: { id: releasedId } }) : null;
-  if (!v && video.scriptVersionId) v = await prisma.contentScriptVersion.findFirst({ where: { id: video.scriptVersionId, scriptId: script.id } });
+  // The fence is scriptId + enrollmentId, and deliberately NOT clientId. A
+  // client dedupe merge re-points the surviving client's rows but leaves
+  // ContentScriptVersion.clientId naming the loser, so a clientId fence would
+  // MISS on exactly the rows it is meant to protect. enrollmentId is what the
+  // viewer was proven against upstream and no merge moves it. ("0 rows drift
+  // today" — measured Sep 18, 0 of 174 version rows — is a snapshot of a
+  // mutable column, not an invariant; the fence must not rest on it.)
+  const fence = { scriptId: script.id, enrollmentId: video.enrollmentId };
+  let v = releasedId ? await prisma.contentScriptVersion.findFirst({ where: { id: releasedId, ...fence } }) : null;
+  if (!v && video.scriptVersionId) v = await prisma.contentScriptVersion.findFirst({ where: { id: video.scriptVersionId, ...fence } });
+  // FAIL CLOSED. The fallback below serves ContentScript.body, and that column
+  // is only a RECORD in two cases: a historical import, which
+  // contentScripts.syncLegacyPointer exempts ("its legacy body is the record of
+  // what was filmed and no later version … moves it"), and a script that has no
+  // versions at all. Everywhere else syncLegacyPointer mirrors
+  // `shared ?? approved ?? THE NEWEST DRAFT` into it — so on a versioned live
+  // script the body follows unreviewed work, and a fence miss that falls
+  // through to it hands the client the very thing the release gate exists to
+  // hold back. Refuse instead: no script is a smaller failure than the wrong
+  // script. Measured Sep 18 on production: of 150 client-visible scripts, 6
+  // name a released version (all 6 resolve under this fence, 0 dangle) and 144
+  // are historical, so nothing live changes and the open door closes.
+  const bodyIsRecord = historical || !script.currentVersionId;
+  if (!v && !bodyIsRecord) return null;
 
   const strategyId = v?.strategyVersionId ?? script.strategyVersionId ?? null;
   const strategy = strategyId ? await prisma.contentStrategyVersion.findUnique({ where: { id: strategyId }, select: { versionNo: true } }) : null;
@@ -220,8 +242,23 @@ export async function postingKitFor(viewer: PortalViewer, video: NonNullable<Awa
     title: video.title ?? "Video",
     final, finalNote: note, cover,
     captions: captions.map(captionView),
-    transcript: { text: transcript.text ? stripMoneySentences(transcript.text) : null, gap: transcript.gap, source: transcript.source },
-    script: script ? { title: script.title, body: stripMoneySentences(script.body), versionLabel: script.versionLabel, strategyLabel: script.strategyLabel, historical: script.historical } : null,
+    // NEITHER IS MONEY-CLAMPED, on purpose. stripMoneySentences DELETES whole
+    // sentences, and text.ts:108 scopes it to the case it was written for —
+    // "used when client text lands on an EDITOR-visible task: creatives never
+    // see pricing". That is Jordan's rule about CREATIVES. The client is the
+    // other party to our pricing, and this is the client's own released script:
+    // run over it the clamp removed the thing they are meant to read and film.
+    // Measured against production (Sep 18): 64 of the 150 client-visible
+    // scripts lost text, and Erica Walker's "The List Price and the Sale Price
+    // Are Not the Same Thing" (ContentScript cmt7mxsrt001p9kg1mq0gngt3) went
+    // 569 -> 134 characters — hook, close and every line about price gone from
+    // a script whose SUBJECT is price. The transcript is the client's own words
+    // out of their own finished cut, and the factual source their caption is
+    // checked against, so it is served whole for the same reason. What a client
+    // may see at all is decided by scriptVisibility above — a release gate, not
+    // a word filter.
+    transcript: { text: transcript.text, gap: transcript.gap, source: transcript.source },
+    script: script ? { title: script.title, body: script.body, versionLabel: script.versionLabel, strategyLabel: script.strategyLabel, historical: script.historical } : null,
     postedAtISO: video.postedByClientAt?.toISOString() ?? null,
     downloadedAtISO: lastDownload?.createdAt.toISOString() ?? null,
     assistant: { enabled: assistantOn, why: assistantOn ? null : "Caption drafting is switched off until the program launches — we'll write your caption with the script for now, or you can write one below." },
@@ -310,7 +347,18 @@ export async function draftCaptionForVideo(viewer: PortalViewer, videoId: string
   const built = await buildClientContext(v.enrollmentId, { monthId: v.monthId, projectId: v.projectId });
   // With no script on file the transcript stands in as the "script" the prompt renders from — clearly labelled below.
   const canonical: CanonicalScript = script?.canonical ?? canonicalFromParts(partsFromBody(v.title ?? "Video", transcriptText ?? ""), viewer.enrollment.clientId);
-  const bundle = buildCaptionPrompt(built.ctx, canonical);
+  // buildCaptionPrompt refuses a prompt whose pieces belong to different
+  // clients (contentPolicy/prompts.assertClientScoped), and that refusal is a
+  // THROW. It reads CanonicalScript.clientId — a column a client dedupe merge
+  // leaves pointing at the merged-away client — so the same stale row that the
+  // version fence above now survives would land here as an unhandled 500 on
+  // the client's own page. Still refuse, but as an answer.
+  let bundle: ReturnType<typeof buildCaptionPrompt>;
+  try {
+    bundle = buildCaptionPrompt(built.ctx, canonical);
+  } catch {
+    return { ok: false, message: "We can't draft this one automatically — the records behind this video don't line up. Text us and we'll write the caption with you." };
+  }
   const scriptWord = script?.historical ? "an earlier script we have on file" : "the script";
   const sourceNote = transcriptText
     ? `Drafted from the transcript of the final cut, with ${scriptWord} as supporting context.`
