@@ -29,6 +29,8 @@ import { BackLink } from "@/components/ui/BackLink";
 import { Suspense } from "react";
 import { ListingMedia, ListingMediaSkeleton } from "@/components/project/ListingMedia";
 import { StatusEvidenceCard } from "@/components/project/StatusEvidenceCard";
+import { ProjectBriefCard } from "@/components/project/ProjectBriefCard";
+import { projectBrief } from "@/lib/projectBrief";
 import { TaskCard } from "@/components/queue/TaskCard";
 import { ReelScriptCard } from "@/components/project/ReelScriptCard";
 import { getProject, getTeam } from "@/lib/queries";
@@ -188,6 +190,13 @@ export default async function ProjectPage({
   // client page, so nobody can save a scrubbed copy back over the real one.
   const clientNote = showMoney ? customerNote(project.client) : creativeCustomerNote(project.client);
 
+  // The summary reads the same engines the cards below do; a failure here must
+  // never cost the page, so it degrades to no card at all.
+  const brief = await projectBrief(project.id).catch((e: unknown) => {
+    console.warn("projectBrief failed", (e as Error).message);
+    return null;
+  });
+
   const priority = PRIORITY_META[project.priority];
   const specialRequests = project.activities.filter(
     (a) => a.type === ActivityType.SPECIAL_REQUEST,
@@ -328,6 +337,11 @@ export default async function ProjectPage({
         {/* Main column — the work, in workflow order:
             status → tasks → order → logistics → output → money → collaboration */}
         <div className="min-w-0 space-y-6 lg:col-span-2">
+          {/* ONE SUMMARY, FIRST (R08). The cards below are in workflow order,
+              which is right for doing the job and wrong for answering a
+              question about it. Same facts, same engines, said once. */}
+          {brief && <ProjectBriefCard brief={brief} />}
+
           {/* Smart status cross-check */}
           <StatusEvidenceCard
             status={project.status}

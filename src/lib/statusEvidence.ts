@@ -503,6 +503,20 @@ export function evidenceTone(input: {
     };
   }
 
+  // MADE IS NOT SENT, AND "AWAITING PRODUCTION" SAYS THE OPPOSITE. When every
+  // outstanding thing is finished and merely unsent, the production is DONE and
+  // the word for it is not "awaiting production" — 893 S Matlack reads exactly
+  // that way today, with a v2 cut approved and the card claiming the work had
+  // not started.
+  if (neverMade.length === 0 && awaitingSend.length > 0) {
+    return {
+      ...promised,
+      kind: "awaiting",
+      headline: "Finished, not sent",
+      detail: `${owed} ${awaitingSend.length === 1 ? "is" : "are"} in our Dropbox and not on the client's listing${promiseAt ? ` — due ${etStamp(promiseAt, true)} ET` : ""}.`,
+    };
+  }
+
   return {
     ...promised,
     kind: "awaiting",
