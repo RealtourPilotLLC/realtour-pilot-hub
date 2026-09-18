@@ -16,6 +16,15 @@ const usd = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits
 // "Your pay for this shoot" reads to the person who did the work as "that was
 // worth nothing" (readiness audit, Sep 2).
 export async function ShootPayCard({ projectId, memberId }: { projectId: string; memberId: string }) {
+  // THE SAME DOLLARS, ON A DIFFERENT SCREEN (Jordan, Sep 18). Pausing /my-pay
+  // and leaving this card up would pause nothing — the per-shoot figure is the
+  // number the page adds up. It goes quiet rather than erroring: a failure card
+  // on every shoot in the list reads as the app falling apart, which is louder
+  // than the pause was meant to be.
+  const { payHiddenFor } = await import("@/lib/settings");
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  if (await payHiddenFor(await getCurrentUser().catch(() => null))) return null;
+
   const earnings = await shootEarnings(projectId, memberId);
   if (!earnings) return null;
 

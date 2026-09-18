@@ -7,17 +7,18 @@ import { Section } from "@/components/ui/Section";
 import { RoutingRulesForm } from "@/components/settings/RoutingRulesForm";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
-import { editorRouting, autoTextRules, turnaroundRules, internalAlertRules, textTemplates, reviewRoomRules, topazSettings, DEFAULT_TOPAZ_PARAMS } from "@/lib/settings";
+import { editorRouting, autoTextRules, turnaroundRules, internalAlertRules, textTemplates, reviewRoomRules, payVisibilityRules, topazSettings, DEFAULT_TOPAZ_PARAMS } from "@/lib/settings";
 import { ARYEO_MANUAL_NOTE } from "@/lib/integrations/topaz";
 import { topazDashboard } from "@/lib/topazJobs";
 import { TopazSettingsPanel, type TopazUsage } from "@/components/settings/TopazSettingsPanel";
 import { AutoTextSettings } from "@/components/settings/AutoTextSettings";
 import { TurnaroundSettings, InternalAlertSettings, TextTemplateSettings, ReviewRoomSettings } from "@/components/settings/OperatingRules";
+import { PayVisibilitySettings } from "@/components/settings/PayVisibility";
 import { TeamNotifications } from "@/components/settings/TeamNotifications";
 import { teamNotifyRows } from "@/lib/notifyPrefs";
 import { CalendlyMappingsPanel } from "@/components/settings/CalendlyMappingsPanel";
 import { loadCalendlyPanelState } from "@/app/settings/calendlyActions";
-import { CalendarCheck, Zap } from "lucide-react";
+import { CalendarCheck, Zap, EyeOff } from "lucide-react";
 import { ProgramAutomationPanel } from "@/components/settings/ProgramAutomationPanel";
 import { loadAutomations } from "@/app/settings/programActions";
 import { RemindersPanel } from "@/components/settings/RemindersPanel";
@@ -57,8 +58,9 @@ export default async function SettingsPage() {
   // ONE place the policy is written, because this is the shape the reminder
   // evaluator reads. A read that fails renders a note, not a blank page.
   const reminders = await loadRemindersPanelState().catch(() => null);
-  const [rules, textRules, turns, alerts, templates, reviewRoom, notifyRows, topaz, topazLane, calendly] = await Promise.all([
+  const [rules, textRules, turns, alerts, templates, reviewRoom, payVisibility, notifyRows, topaz, topazLane, calendly] = await Promise.all([
     editorRouting(), autoTextRules(), turnaroundRules(), internalAlertRules(), textTemplates(), reviewRoomRules(),
+    payVisibilityRules().then((r) => ({ paused: r.photographerPayPaused, pausedAtISO: r.pausedAt, pausedBy: r.pausedBy })),
     teamNotifyRows().catch(() => []),
     topazSettings(),
     // Only for the "what this month has cost so far" line beside the spending
@@ -123,6 +125,13 @@ export default async function SettingsPage() {
 
         <Section icon={Users} title="Team notifications" count={notifyRows.length}>
           <TeamNotifications rows={notifyRows} />
+        </Section>
+
+        {/* Owner's own switch — read here so the card can say how long it has
+            been on. Placed next to the Review Room because both are about what
+            a creative sees rather than what the machinery does. */}
+        <Section icon={EyeOff} title="Photographer pay view">
+          <PayVisibilitySettings initial={payVisibility} isOwner={me ? me.role === "OWNER" : !authEnforced()} />
         </Section>
 
         <Section icon={Clapperboard} title="Review Room">

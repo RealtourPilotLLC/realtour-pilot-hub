@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { Camera, Car, Wallet, ChevronRight, SlidersHorizontal, Receipt, History, TrendingUp, Upload } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { PayFlag } from "@/components/mypay/PayFlag";
+import { PayPaused } from "@/components/mypay/PayPaused";
 import { QuarterScoreCard } from "@/components/mypay/QuarterScoreCard";
 import { prisma } from "@/lib/prisma";
 import { quarterFor, scoreQuarter } from "@/lib/kpi";
@@ -68,6 +69,15 @@ export default async function MyPayPage({ searchParams }: { searchParams: Promis
   // NOBODY's pay ever renders as a guess: the old "first photographer"
   // local-dev fallback put James's page in front of the owner twice and is
   // gone for good. No session → login (prod) or the empty state (open dev).
+  // PAUSED (Jordan, Sep 18). A view switch, nothing more: payroll still runs,
+  // KPIs still score and bonuses still accrue behind this screen, and the owner
+  // and the office still see every number. It is asked FIRST, before any of the
+  // work below — a paused page that spends six seconds in the OSRM router and
+  // then shows a failure is a worse lie than the one intended, and an owner
+  // previewing with ?as= must still see the real thing.
+  const { payHiddenFor } = await import("@/lib/settings");
+  if (await payHiddenFor(me)) return <PayPaused />;
+
   let memberId: string | null = null;
   let showTeamLink = false;
   if (me?.role === "PHOTOGRAPHER") {

@@ -391,3 +391,43 @@ export async function loadTopazRules(): Promise<TopazSettings> {
   await requireSettingsActor();
   return topazSettings();
 }
+
+// ---- Pause the photographers' pay view -------------------------------------
+// Jordan, Sep 18 2026: a salary transition he has not announced yet, and he
+// wants the page to go quiet without going quiet in a way that announces it.
+// OWNER only: it is a compensation decision, not an operations one.
+export async function savePayVisibility(paused: boolean): Promise<{ ok: boolean; message: string }> {
+  try {
+    const me = await requireSettingsActor();
+    // OWNER only, checked after the admin gate: Kyle runs operations, and what
+    // a photographer is paid — and is shown about it — is not operations.
+    if (me && me.role !== "OWNER") return { ok: false, message: "Only Jordan can change this one." };
+    const { payVisibilityRules } = await import("@/lib/settings");
+    const now = await payVisibilityRules();
+    // pausedAt is the moment it STARTED, so a re-save does not reset the clock
+    // the settings card counts from.
+    const next = {
+      photographerPayPaused: paused,
+      pausedAt: paused ? now.pausedAt ?? new Date().toISOString() : null,
+      pausedBy: paused ? now.pausedBy ?? me?.name ?? me?.email ?? "The owner" : null,
+    };
+    await putSetting("pay_visibility", next, me?.email ?? null);
+    revalidatePath("/settings");
+    revalidatePath("/my-pay");
+    revalidatePath("/shoot");
+    return {
+      ok: true,
+      message: paused
+        ? "Paused. A photographer opening My Pay now sees the page-hit-a-problem screen, and the pay card is off their shoot screens."
+        : "Back on. Photographers can see their pay again.",
+    };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "Failed." };
+  }
+}
+export async function loadPayVisibility(): Promise<{ paused: boolean; pausedAtISO: string | null; pausedBy: string | null }> {
+  await requireSettingsActor();
+  const { payVisibilityRules } = await import("@/lib/settings");
+  const r = await payVisibilityRules();
+  return { paused: r.photographerPayPaused, pausedAtISO: r.pausedAt, pausedBy: r.pausedBy };
+}

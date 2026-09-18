@@ -231,6 +231,52 @@ export const DEFAULT_AUTO_TEXTS: ResolvedAutoTextRules = {
 // "going off what's in Dropbox can get messy"). Folder discovery — minting a
 // review row for every video file that appears in 05-Final-Video — stays as
 // an opt-in fallback, off by default.
+// ---------------------------------------------------------------------------
+// PAUSE THE PHOTOGRAPHERS' PAY VIEW (Jordan, Sep 18 2026).
+//
+// "I want to have a setting in my account where I can turn off the My Pay view
+// for the photographers. I'm going to be transitioning to Salary with them and
+// still tracking KPI's and bonuses, but I want to be able to pause the page and
+// just make it look like an error loading the shoot pay page."
+//
+// WHAT IT PAUSES AND WHAT IT DOES NOT. It is a VIEW switch and nothing else:
+// payroll still computes, KPIs still score, bonuses still accrue, /payouts is
+// untouched, and the owner and the office still see every number. The only
+// thing that changes is what a PHOTOGRAPHER login is shown — /my-pay, and the
+// per-shoot pay card on their shoot screen, which shows the same dollars and
+// would otherwise leak straight through the pause.
+//
+// ONE DELIBERATE OMISSION. The screen is styled as a failure because that is
+// what Jordan asked for, but it does NOT print a fabricated "Reference:" code
+// the way the real error screen does. A made-up log id is the one detail that
+// turns a quiet pause into somebody spending an afternoon searching for a
+// trace that was never written.
+// ---------------------------------------------------------------------------
+export type PayVisibilityRules = {
+  /** true = a PHOTOGRAPHER login sees the failure screen instead of their pay */
+  photographerPayPaused: boolean;
+  /** when it was paused, so the settings card can say how long it has been */
+  pausedAt: string | null;
+  pausedBy: string | null;
+};
+export const DEFAULT_PAY_VISIBILITY: PayVisibilityRules = { photographerPayPaused: false, pausedAt: null, pausedBy: null };
+export async function payVisibilityRules(): Promise<PayVisibilityRules> {
+  const r = await getSetting<PayVisibilityRules>("pay_visibility", DEFAULT_PAY_VISIBILITY);
+  return {
+    photographerPayPaused: r.photographerPayPaused === true,
+    pausedAt: typeof r.pausedAt === "string" && r.pausedAt ? r.pausedAt : null,
+    pausedBy: typeof r.pausedBy === "string" && r.pausedBy ? r.pausedBy : null,
+  };
+}
+
+/** Is THIS viewer's pay view paused? The gate every pay surface asks, so a new
+ *  surface cannot forget the rule and leak the numbers around the pause. */
+export async function payHiddenFor(user: { realRole?: string; role?: string } | null): Promise<boolean> {
+  const role = (user?.realRole ?? user?.role ?? "").toUpperCase();
+  if (role !== "PHOTOGRAPHER") return false;
+  return (await payVisibilityRules().catch(() => DEFAULT_PAY_VISIBILITY)).photographerPayPaused;
+}
+
 export type ReviewRoomRules = {
   /** mint review rows from files found in the job's Dropbox Final folder */
   discoverFromDropbox: boolean;
