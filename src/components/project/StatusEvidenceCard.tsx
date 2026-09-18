@@ -357,6 +357,15 @@ export async function StatusEvidenceCard({
           </div>
         )}
 
+        {/* ONE MANAGEABLE PROJECT VIEW (audit WF-02, Sep 18 — Jordan: "Every
+            owed video needs its own identity, current version, owner,
+            deadline, review state, and delivery evidence. Preserve one
+            manageable project view."). Not a new screen: one line per owed
+            video, under the card that already answers "where is this job".
+            Until now a sixteen-video package was a single chip reading
+            "Video" — and it went green the moment ONE file existed. */}
+        <OwedVideos projectId={projectId} />
+
         {/* Expected deliverables, colour-coded by present / missing / tone */}
         {e && e.expected.length > 0 && (
           <div>
@@ -483,6 +492,78 @@ export async function StatusEvidenceCard({
         </div>
       </div>
     </section>
+  );
+}
+
+/**
+ * Every owed video on this job, one line each — the per-video rows WF-02
+ * materialised (lib/deliverableOutputs), read-only.
+ *
+ * The state words are that module's, so this card, the Editing Room and the
+ * Ready-to-send board cannot drift about the same video. The one it exists to
+ * print is **Approved — not sent**: a cut the office has accepted and nobody
+ * has handed to the client is still owed work, and until now the only surface
+ * that said so was a card on Kyle's home screen (322 N 62nd St, Sep 17: the
+ * corrected file sat finished while every screen read DELIVERED).
+ *
+ * Renders NOTHING when the job owes no video, or before the rows exist — a job
+ * that has never been through the materialisation shows exactly what it showed
+ * yesterday rather than an empty promise of a table.
+ */
+async function OwedVideos({ projectId }: { projectId: string }) {
+  let rows: Awaited<ReturnType<typeof import("@/lib/deliverableOutputs").outputsForProject>> = [];
+  try {
+    const { outputsForProject } = await import("@/lib/deliverableOutputs");
+    rows = await outputsForProject(projectId);
+  } catch {
+    return null; // the rest of the card is worth more than this strip
+  }
+  if (rows.length === 0) return null;
+  const owed = rows.filter((r) => r.state !== "waived" && r.state !== "removed");
+  const unsent = owed.filter((r) => r.state === "approved");
+  const TONE_FOR: Record<string, string> = {
+    sent: "bg-success/10 text-success",
+    approved: "bg-brand-soft/70 text-brand",
+    in_revisions: "bg-[#ea580c]/10 text-[#ea580c] light:text-[#c2410c]",
+    in_review: "bg-warning/10 text-warning",
+    not_started: "bg-surface-2 text-muted-2",
+    waived: "bg-surface-2 text-muted-2",
+    removed: "bg-surface-2 text-muted-2",
+  };
+  return (
+    <div>
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-2">
+          Videos on this job ({owed.length})
+        </span>
+        {unsent.length > 0 && (
+          <span className="text-[11px] font-medium text-brand">
+            {unsent.length === 1 ? "1 approved, not sent" : `${unsent.length} approved, not sent`}
+          </span>
+        )}
+      </div>
+      <ul className="divide-y rounded-lg border">
+        {rows.map((r) => (
+          <li key={r.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5 text-xs">
+            <span className="min-w-0 flex-1 truncate text-foreground/85">
+              {owed.length > 1 && r.state !== "waived" && r.state !== "removed" ? `${r.index}. ` : ""}
+              {r.label}
+            </span>
+            {r.ownerName && <span className="text-[11px] text-muted-2">{r.ownerName}</span>}
+            {r.promisedAt && <span className="text-[11px] text-muted-2">due {etStamp(r.promisedAt)}</span>}
+            <span className={"shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium " + (TONE_FOR[r.state] ?? "bg-surface-2 text-muted-2")}>
+              {r.detail}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {unsent.length > 0 && (
+        <p className="mt-1 text-[11px] text-muted">
+          Approved is not delivered: {unsent.length === 1 ? "that video is" : "those videos are"} finished and waiting on
+          somebody to send {unsent.length === 1 ? "it" : "them"} — the Ready to send card has the file.
+        </p>
+      )}
+    </div>
   );
 }
 

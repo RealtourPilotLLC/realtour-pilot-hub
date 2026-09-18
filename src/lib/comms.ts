@@ -843,6 +843,20 @@ export async function resolveRevision(projectId: string): Promise<void> {
   if (landing === "DELIVERED" || (!landing && project?.status === "DELIVERED")) {
     await closeObsoleteTasks(projectId, "DELIVERED");
   }
+  // RESOLVED IS NOT SENT (audit WF-03, Sep 18 — Jordan: "Keep the return-to-
+  // client action visible after internal approval"). Closing the ask ends OUR
+  // obligation to edit; the corrected file still has to reach the client, and
+  // on a job that lands back on Delivered every other surface goes quiet. The
+  // Ready-to-send board is the one place that tracks the file itself, so its
+  // own answer — not a second opinion — goes on the timeline beside the
+  // resolution. The card and its "Upload the 1080p to Aryeo" task are left
+  // exactly where they are: this says so out loud instead of leaving the
+  // reader to notice.
+  let stillToSend = 0;
+  try {
+    const { cutsOnTheCardFor } = await import("@/lib/readyToSend");
+    stillToSend = (await cutsOnTheCardFor(projectId)).size;
+  } catch { /* the resolve never waits on the board */ }
   // Say what actually happened — the timeline used to read "back to Delivered"
   // on jobs that were never delivered.
   const { stageMeta } = await import("@/lib/pipeline");
@@ -850,9 +864,13 @@ export async function resolveRevision(projectId: string): Promise<void> {
     data: {
       projectId,
       type: "STATUS_CHANGE",
-      body: landing
-        ? `Revision marked resolved — back to ${stageMeta(landing).short}.`
-        : "Revision marked resolved — flag cleared, stage unchanged.",
+      body:
+        (landing
+          ? `Revision marked resolved — back to ${stageMeta(landing).short}.`
+          : "Revision marked resolved — flag cleared, stage unchanged.") +
+        (stillToSend > 0
+          ? ` ${stillToSend === 1 ? "One approved video has" : `${stillToSend} approved videos have`} still not gone to the client — ${stillToSend === 1 ? "it is" : "they are"} on Ready to send.`
+          : ""),
     },
   });
   // Bell: ops broadcast + the editor who worked it (best-effort, never breaks

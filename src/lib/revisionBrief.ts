@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { aiJson } from "@/lib/integrations/ai";
 import { stripMoneySentences } from "@/lib/text";
+import { cutSlots, slotKeyOf } from "@/lib/reviewCuts";
 
 // ---------------------------------------------------------------------------
 // THE REVISION WORK ORDER.
@@ -42,12 +43,26 @@ export const REVISION_AREAS = [
   "Other",
 ] as const;
 
+/** WHICH VIDEO an item is about (audit WF-03, Sep 18 — Jordan: "Link requests
+ *  to the affected videos. Fixing video 1 must not close an untouched request
+ *  for video 3.").
+ *   · `named`   — the client named the video(s); `cuts` holds their slot keys.
+ *   · `all`     — it applies to every video on the job ("they all need music").
+ *   · `unknown` — nothing in what they said says which, so nothing may assume.
+ *  Every row written before this existed parses as undefined, which reads as
+ *  `unknown` — itemsJson is free-form JSON, so no migration and no backfill. */
+export type ItemScope = "named" | "all" | "unknown";
+
 export type RevisionItem = {
   id: string;
   area: string;
   ask: string; // imperative, concrete — the thing to do
   detail?: string | null; // the specifics that make it actionable
   quote?: string | null; // the client's own words, verbatim
+  /** reviewCuts.slotKeyOf strings ("<deliverableId>:<slot>") — the SAME
+   *  identity the cut, its notes and its verdicts already use. */
+  cuts?: string[] | null;
+  scope?: ItemScope;
 };
 
 export type RevisionAnalysis = {
@@ -75,8 +90,18 @@ const SCHEMA = {
           ask: { type: "string", description: "The instruction, imperative and specific, as an editor would read it off a work order. Max ~90 chars." },
           detail: { type: "string", description: "The specifics that make it doable — colours, wording, timestamps, which video. Empty string if there are none." },
           quote: { type: "string", description: "The client's own words this came from, verbatim, trimmed to the relevant sentence(s)." },
+          scope: {
+            type: "string",
+            enum: ["named", "all", "unknown"],
+            description: "Which of the job's videos this change is about. \"named\" when the client identified one or more of the videos listed under VIDEOS ON THIS JOB; \"all\" when they clearly meant every one of them; \"unknown\" when nothing they said says which. Never guess — \"unknown\" is a correct answer and the safe one.",
+          },
+          videos: {
+            type: "array",
+            description: "When scope is \"named\": the reference codes (V1, V2, …) of the videos this item is about, exactly as they appear under VIDEOS ON THIS JOB. Empty otherwise.",
+            items: { type: "string" },
+          },
         },
-        required: ["area", "ask", "detail", "quote"],
+        required: ["area", "ask", "detail", "quote", "scope", "videos"],
       },
     },
     keep: {
@@ -118,11 +143,18 @@ RULES
 6. If the client reverses an earlier instruction ("I said less polished, but now I want more"), the item is the NEW direction, and say so in the detail.
 7. Preserve exact specifics — colour names, capitalisation they asked for, wording, timestamps, which video. These are the difference between a usable item and a useless one.
 8. Write asks in the imperative: "Replace the gold glitter with big chunky colourful glitter."
-9. Never mention prices, invoices, or payment. If the client discussed money, leave it out entirely.`;
+9. Never mention prices, invoices, or payment. If the client discussed money, leave it out entirely.
+10. SAY WHICH VIDEO. When the job has more than one video you are given the list, each with a reference code and its current file name. Match each item to the video(s) the client was talking about and put those codes in "videos" with scope "named". Use "all" only when they plainly meant every one of them. If they never said, scope is "unknown" — an item on the wrong video is worse than one nobody has placed.`;
 
 // The client's ask can be long (a 20-minute call). Give the model plenty of
 // room but keep a hard ceiling so one runaway transcript can't blow the request.
 const MAX_INPUT = 24_000;
+
+/** One owed video, as the analyser is shown it. `key` is reviewCuts.slotKeyOf;
+ *  `ref` is the short code the model answers with (V1, V2 …) because a cuid is
+ *  not something a language model copies reliably — the mapping back is done
+ *  here, in code. */
+export type BriefCut = { key: string; label: string; slot: number; fileName?: string | null };
 
 export async function analyzeRevisionText(opts: {
   text: string;
@@ -130,11 +162,23 @@ export async function analyzeRevisionText(opts: {
   clientName?: string | null;
   propertyAddress?: string | null;
   deliverables?: string[];
+  /** The job's actual cut slots. Until this existed the model was handed the
+   *  deliverable LABELS — one line for four videos — so it could not have said
+   *  which video an ask was about even when the client did (WF-03). */
+  cuts?: BriefCut[];
 }): Promise<RevisionAnalysis> {
+  const cuts = opts.cuts ?? [];
+  const refOf = (i: number) => `V${i + 1}`;
+  const byRef = new Map(cuts.map((c, i) => [refOf(i), c.key]));
+  const cutList = cuts.length
+    ? `VIDEOS ON THIS JOB (${cuts.length}):\n` +
+      cuts.map((c, i) => `  ${refOf(i)} — ${c.label}${c.fileName ? ` (current file: ${c.fileName})` : " (nothing uploaded yet)"}`).join("\n")
+    : null;
   const context = [
     opts.clientName ? `Client: ${opts.clientName}` : null,
     opts.propertyAddress ? `Job: ${opts.propertyAddress}` : null,
     opts.deliverables?.length ? `What we made for them: ${opts.deliverables.join(" · ")}` : null,
+    cutList,
     opts.twoSided
       ? "The text below is a TWO-SIDED phone call transcript — our staff and the client both speak, and the transcription is rough (repeated words, no speaker labels). Work out who is speaking from context and take only the client's asks."
       : "The text below is the client's own message.",
@@ -153,13 +197,26 @@ export async function analyzeRevisionText(opts: {
   // own the ids (the editor's tick-offs are stored against them).
   const items: RevisionItem[] = (Array.isArray(raw.items) ? raw.items : [])
     .filter((i) => i && typeof i.ask === "string" && i.ask.trim())
-    .map((i, n) => ({
-      id: `i${n + 1}`,
-      area: REVISION_AREAS.includes(i.area as (typeof REVISION_AREAS)[number]) ? i.area : "Other",
-      ask: i.ask.trim(),
-      detail: (i.detail ?? "").trim() || null,
-      quote: (i.quote ?? "").trim() || null,
-    }));
+    .map((i, n) => {
+      const named = (Array.isArray((i as { videos?: unknown }).videos) ? ((i as { videos?: unknown[] }).videos as unknown[]) : [])
+        .map((v) => byRef.get(String(v).trim().toUpperCase()))
+        .filter((k): k is string => !!k);
+      // One owed video means every ask is about that video — a fact, not a
+      // reading of the text, so the model never gets to be wrong about it. With
+      // no cut list at all (a job with no video slots yet) scope stays unknown,
+      // which holds the revision open rather than closing it on a guess.
+      const scope: ItemScope =
+        cuts.length === 1 ? "all" : named.length > 0 ? "named" : (i as { scope?: string }).scope === "all" && cuts.length > 0 ? "all" : "unknown";
+      return {
+        id: `i${n + 1}`,
+        area: REVISION_AREAS.includes(i.area as (typeof REVISION_AREAS)[number]) ? i.area : "Other",
+        ask: i.ask.trim(),
+        detail: (i.detail ?? "").trim() || null,
+        quote: (i.quote ?? "").trim() || null,
+        cuts: scope === "named" ? [...new Set(named)] : scope === "all" && cuts.length === 1 ? [cuts[0].key] : null,
+        scope,
+      };
+    });
 
   return {
     headline: (raw.headline ?? "").trim() || "Client asked for changes",
@@ -170,6 +227,75 @@ export async function analyzeRevisionText(opts: {
       .map((r) => ({ what: String(r.what).trim(), where: String(r.where ?? "").trim() })),
     questions: (Array.isArray(raw.questions) ? raw.questions : []).map((s) => String(s).trim()).filter(Boolean),
   };
+}
+
+// ---------------------------------------------------------------------------
+// WHAT AN APPROVAL ACTUALLY ANSWERS (audit WF-03, Sep 18).
+//
+// Jordan, on the guard that shipped the day before: "checking whether another
+// correction was uploaded or a checklist was partly ticked does not establish
+// that every requested change is done. Link requests to the affected videos.
+// Fixing video 1 must not close an untouched request for video 3."
+//
+// So the question stops being "does anything look unfinished on this job" and
+// becomes, per item, "is the video this item is about one we have accepted
+// since the client asked". Two things can answer it, and both are somebody's
+// word rather than an inference:
+//   · the item was TICKED on the work order — a person saying this one is done;
+//   · every video in the item's scope has an approved round dated after the ask.
+// An item scoped to a video nobody has re-cut stays outstanding. An item nobody
+// could place (`unknown`, which is every row written before scopes existed) is
+// treated as "all" — it is only answered when the whole job has come back
+// through the Room, which is the conservative reading and the one a person can
+// always override with the Complete button.
+// ---------------------------------------------------------------------------
+
+/** The part of an item this rule reads. Narrow on purpose: reviewCuts parses
+ *  itemsJson itself and must not have to reconstruct a whole RevisionItem (nor
+ *  import the analyser, which drags in the AI client) to ask the question. */
+export type ScopedItem = { id: string; ask: string; cuts?: string[] | null; scope?: ItemScope };
+
+/** Pure, so the rule can be exercised without a database (and is, in
+ *  scripts/_agent/A-units). `approvedKeys` are the slots with an approved round
+ *  since the ask; `owedKeys` is what the job owes now. */
+export function outstandingItems<T extends ScopedItem>(opts: {
+  items: T[];
+  done: string[];
+  approvedKeys: Set<string>;
+  owedKeys: string[];
+}): T[] {
+  const ticked = new Set(opts.done);
+  // "Nothing is left untouched." A job that owes no video at all answers this
+  // vacuously: there is no video left that could be carrying an unfinished
+  // change, so an ask must not be held open for one (the same reasoning as the
+  // named-item-on-a-removed-video case below — an obligation that cannot be
+  // worked on is not an obligation).
+  const everythingBack = opts.owedKeys.every((k) => opts.approvedKeys.has(k));
+  return opts.items.filter((it) => {
+    if (ticked.has(it.id)) return false;
+    const scope: ItemScope = it.scope ?? "unknown";
+    if (scope === "named") {
+      const keys = (it.cuts ?? []).filter(Boolean);
+      // A named video that is no longer one of the job's slots cannot be worked
+      // on and must not hold the ask open for ever.
+      const live = keys.filter((k) => opts.owedKeys.includes(k));
+      if (live.length === 0) return false;
+      return !live.every((k) => opts.approvedKeys.has(k));
+    }
+    return !everythingBack;
+  });
+}
+
+/** The line the timeline prints when an approval does NOT close the ask. */
+export function outstandingReason(items: ScopedItem[], total: number): string {
+  const first = items[0];
+  const named = items.filter((i) => (i.scope ?? "unknown") === "named").length;
+  const lead =
+    items.length === 1
+      ? `1 of the ${total} things the client asked for is still open`
+      : `${items.length} of the ${total} things the client asked for are still open`;
+  const which = named > 0 ? " on videos this approval did not touch" : "";
+  return `${lead}${which} — “${(first?.ask ?? "").slice(0, 90)}”.`;
 }
 
 /**
@@ -282,6 +408,30 @@ export async function createRevisionBrief(opts: {
   return brief.id;
 }
 
+/**
+ * The job's owed videos as the analyser needs to see them: the Review Room's
+ * own name for each slot, and the file currently sitting on it. Same slot list
+ * the Room, the edit card and the QC card read (cutSlots), so an item that says
+ * "video 2 of 4" means the same video on every screen.
+ */
+export async function briefCutsFor(projectId: string): Promise<BriefCut[]> {
+  const slots = await cutSlots(projectId).catch(() => []);
+  if (slots.length === 0) return [];
+  const rounds = await prisma.reviewSubmission
+    .findMany({
+      where: { projectId, deliverableId: { not: null }, withdrawnAt: null, status: { notIn: ["UPLOADING", "UPLOAD_FAILED", "WITHDRAWN"] } },
+      orderBy: { round: "asc" },
+      select: { deliverableId: true, slot: true, fileName: true },
+    })
+    .catch(() => []);
+  const fileByKey = new Map<string, string | null>();
+  for (const r of rounds) fileByKey.set(slotKeyOf(r.deliverableId!, r.slot), r.fileName);
+  return slots.map((s) => {
+    const key = slotKeyOf(s.deliverableId, s.slot);
+    return { key, label: s.label, slot: s.slot, fileName: fileByKey.get(key) ?? null };
+  });
+}
+
 /** Run (or re-run) the analysis for one brief. Never throws. */
 export async function analyzeBrief(
   briefId: string,
@@ -291,6 +441,7 @@ export async function analyzeBrief(
     where: { id: briefId },
     select: {
       id: true,
+      projectId: true,
       originalText: true,
       twoSided: true,
       project: {
@@ -304,6 +455,9 @@ export async function analyzeBrief(
   });
   if (!brief) return false;
   try {
+    // The cut list is what lets an item say WHICH video (WF-03). A job with no
+    // video slots simply gets none, and every item stays unplaced.
+    const cuts = await briefCutsFor(brief.projectId).catch(() => [] as BriefCut[]);
     const analysis = await analyzeRevisionText({
       text: brief.originalText,
       twoSided: brief.twoSided,
@@ -312,7 +466,26 @@ export async function analyzeBrief(
       deliverables:
         ctx?.deliverables ??
         (brief.project?.deliverables ?? []).map((d) => d.label || d.type).filter(Boolean),
+      cuts,
     });
+    // When every item lands on the SAME one video, the brief itself is about
+    // that video — the pointer the edit card follows to open the right cut
+    // (Jordan, Sep 16: "When I click the revisions… It should go directly to
+    // the cut that needs a revision"). Mixed or unplaced asks leave it null:
+    // a brief is not about a video the hub had to guess at.
+    const placed = [...new Set(analysis.items.flatMap((i) => (i.scope === "named" || i.scope === "all" ? i.cuts ?? [] : [])))];
+    const everyItemPlaced = analysis.items.length > 0 && analysis.items.every((i) => (i.cuts ?? []).length > 0);
+    const outputId =
+      everyItemPlaced && placed.length === 1
+        ? (
+            await prisma.deliverableOutput
+              .findFirst({
+                where: { projectId: brief.projectId, deliverableId: placed[0].split(":")[0], slot: Number(placed[0].split(":")[1]) || 1 },
+                select: { id: true },
+              })
+              .catch(() => null)
+          )?.id ?? null
+        : null;
     await prisma.revisionBrief.update({
       where: { id: briefId },
       data: {
@@ -325,6 +498,7 @@ export async function analyzeBrief(
         }),
         analyzedAt: new Date(),
         analysisError: null,
+        ...(outputId ? { outputId } : {}),
       },
     });
     // NOT EVERY MESSAGE IS A REVISION. The analyser reads the client's words
@@ -362,6 +536,9 @@ export type BriefView = {
   references: { what: string; where: string }[];
   questions: string[];
   done: string[];
+  /** slot key → the video's name, so an item scoped to a cut can print
+   *  "Video 2 of 4" instead of a cuid the editor has never seen. */
+  cutNames: Record<string, string>;
 };
 
 /**
@@ -374,6 +551,9 @@ export async function getRevisionBriefs(projectId: string, scrub: boolean): Prom
     where: { projectId },
     orderBy: { createdAt: "asc" },
   });
+  if (rows.length === 0) return [];
+  const cutNames: Record<string, string> = {};
+  for (const c of await briefCutsFor(projectId).catch(() => [] as BriefCut[])) cutNames[c.key] = c.label;
   const clean = (s: string | null | undefined): string | null => {
     const t = (s ?? "").trim();
     if (!t) return null;
@@ -412,6 +592,7 @@ export async function getRevisionBriefs(projectId: string, scrub: boolean): Prom
         .filter((r2) => r2.what),
       questions: (parsed.questions ?? []).map((s) => clean(s)).filter((s): s is string => !!s),
       done,
+      cutNames,
     };
   });
 }

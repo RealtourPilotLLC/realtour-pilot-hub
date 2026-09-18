@@ -4,6 +4,7 @@ import { parseEvidence, EVIDENCE_STALE_HOURS, type ParsedEvidence } from "@/lib/
 import { effectiveSlotCounts } from "@/lib/editOverrides";
 import { isMonthlyContentJob, monthlyVideoQuota } from "@/lib/pipeline";
 import { videoStyleFor } from "@/lib/videoStyles";
+import { slotKeyOf } from "@/lib/reviewCuts";
 import type { OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 
 // ---------------------------------------------------------------------------
@@ -372,13 +373,16 @@ export function computeUnits(p: UnitProjectInput, now: Date = new Date()): Proje
     return aryeo.interactive ?? 0;
   };
 
-  // Rounds, keyed the way reviewCuts.cutKeyOf keys them. A withdrawn round is
-  // kept (the history is the point) but is not a cut anybody is waiting on.
+  // Rounds, keyed the way reviewCuts keys them — literally, through its own
+  // slotKeyOf, so the unit here, the cut in the Review Room and the
+  // DeliverableOutput row WF-02 materialises can never spell the same identity
+  // two ways. A withdrawn round is kept (the history is the point) but is not a
+  // cut anybody is waiting on.
   const byKey = new Map<string, UnitSubmissionInput[]>();
   for (const s of p.reviewSubmissions) {
     if (!s.deliverableId) continue; // legacy folder-discovered rows key on a path, not a slot
     if (s.withdrawnAt || NOT_A_CUT.includes(s.status)) continue;
-    const k = `${s.deliverableId}:${s.slot ?? 1}`;
+    const k = slotKeyOf(s.deliverableId, s.slot);
     const arr = byKey.get(k) ?? [];
     arr.push(s);
     byKey.set(k, arr);
@@ -412,7 +416,7 @@ export function computeUnits(p: UnitProjectInput, now: Date = new Date()): Proje
 
     for (let slot = 1; slot <= count; slot++) {
       const label = video && count > 1 ? `${styleName} — Video ${slot} of ${count}` : styleName;
-      const rounds = byKey.get(`${d.id}:${slot}`) ?? [];
+      const rounds = byKey.get(slotKeyOf(d.id, slot)) ?? [];
       const approved = rounds.find((r) => r.status === "APPROVED") ?? null;
       const open = rounds.find((r) => r.status === "PENDING" || r.status === "CHANGES_REQUESTED") ?? null;
       const latestRound = rounds.reduce<number | null>((m, r) => (m === null || r.round > m ? r.round : m), null);

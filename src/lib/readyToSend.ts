@@ -1123,6 +1123,35 @@ export async function markVideoSent(submissionId: string, by: string | null): Pr
     return alreadySent(now?.sentToClientAt ?? new Date(), now?.sentToClientBy ?? null);
   }
 
+  // THE ONE FACT THE VIDEO'S OWN ROW EXISTS TO HOLD (audit WF-02): this
+  // particular video reached the client, and how we know. The cut row says it
+  // for the round; DeliverableOutput says it for the VIDEO, which is what the
+  // project view, the promise clock and the content meter read. Only ever
+  // written when it is still null — a stamp somebody already made by hand is
+  // not ours to restate — and never the other way round: nothing here can
+  // un-send a video. Best-effort; the send is recorded either way.
+  if (sub.deliverableId) {
+    // `by` carries the proof pass's own sentence when the hourly Aryeo reader
+    // settled it ("Aryeo — “Cinematic Video”, 60s on the listing since …"), so
+    // the channel is read from that rather than guessed: a person pressing the
+    // button is the office sending the file by hand, which is the only way
+    // finished video actually leaves this business (see the header note).
+    const via = by?.startsWith("Aryeo") ? "aryeo-listing" : "office-hand";
+    await prisma.deliverableOutput
+      .updateMany({
+        where: { deliverableId: sub.deliverableId, slot: sub.slot ?? 1, deliveredAt: null },
+        data: {
+          sentSubmissionId: submissionId,
+          deliveredAt: new Date(),
+          deliveredBy: by,
+          deliveredVia: via,
+          evidenceSource: via === "aryeo-listing" ? "aryeo-listing" : "review-sent",
+          evidenceSucceededAt: new Date(),
+        },
+      })
+      .catch(() => {});
+  }
+
   const j = sub.topazJob;
   if (j?.state === "done" && !j.deliveredAt) {
     // The 1080p path has had its own closer since Sep 16 — it stamps the job,

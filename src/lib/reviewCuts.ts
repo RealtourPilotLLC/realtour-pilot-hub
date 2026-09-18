@@ -553,6 +553,10 @@ export type CutSlot = {
   count: number;
   /** "Standard Reel with Agent Intro" or "Personal Branding Reel — Video 2 of 4" */
   label: string;
+  /** The office waived this row — "not required on this job". Only ever true
+   *  when the caller asked for waived slots (`{ includeWaived: true }`); the
+   *  default answer is the work that is genuinely owed. */
+  waived?: boolean;
 };
 
 /** Identity of a cut across rounds — uploaded rows by (deliverable, slot),
@@ -561,14 +565,35 @@ export function cutKeyOf(s: { deliverableId?: string | null; slot?: number | nul
   return s.deliverableId ? `${s.deliverableId}:${s.slot ?? 1}` : (s.assetPath ?? s.id);
 }
 
+/** The same identity from the two parts, for callers holding a slot rather than
+ *  a round — `DeliverableOutput`, the unit model in evidenceUnits, the revision
+ *  work order's per-video scope. One function so the three can never spell the
+ *  key differently. */
+export function slotKeyOf(deliverableId: string, slot: number | null | undefined): string {
+  return `${deliverableId}:${slot ?? 1}`;
+}
+
 /** Every video cut this job owes, in order. Monthly plans put the whole batch
  *  on their one video row (quantity / videosFilmed / plan quota).
  *  Each cut is NAMED by its resolved style (Deliverable.videoStyle →
  *  productTitle → label heuristics), with the same tier/monthly verdicts the
  *  tracker's "Edit type" uses — so "Send to Review", the Review Room
  *  switcher, the approved file name and the brief all say one thing. Jordan
- *  (Sep 2): a Standard Reel with Agent Intro cut must not read "Social Reel". */
-export async function cutSlots(projectId: string): Promise<CutSlot[]> {
+ *  (Sep 2): a Standard Reel with Agent Intro cut must not read "Social Reel".
+ *
+ *  A WAIVED ROW OWES NOTHING (audit WF-02, Sep 18). "Not required on this job"
+ *  (Deliverable.waivedAt, Kyle's call Sep 16) was honoured by every OTHER owed
+ *  reader and not by this one, so a waived video still minted a cut slot, still
+ *  counted against the approved-cut gate and still told the editor the job was
+ *  short. It is dropped AFTER the counts are computed, never before: the
+ *  office's videos-owed total is split across the video rows BY POSITION
+ *  (editOverrides.effectiveSlotCounts), so removing a row from the array
+ *  silently re-points every later row's count — which is how 893 S Matlack's
+ *  sixteen cuts would have read as one. `includeWaived` hands the waived slots
+ *  back, flagged, for the one caller that has to record them rather than work
+ *  on them (deliverableOutputs.ts — a waived video keeps its row and its
+ *  history; it is retired, not deleted). */
+export async function cutSlots(projectId: string, opts: { includeWaived?: boolean } = {}): Promise<CutSlot[]> {
   const p = await prisma.project.findUnique({
     where: { id: projectId },
     select: {
@@ -577,7 +602,7 @@ export async function cutSlots(projectId: string): Promise<CutSlot[]> {
       deliverables: {
         where: { removedFromOrderAt: null, type: { in: ["VIDEO", "SOCIAL_REEL"] } },
         orderBy: { createdAt: "asc" },
-        select: { id: true, type: true, label: true, quantity: true, videoStyle: true, productTitle: true },
+        select: { id: true, type: true, label: true, quantity: true, videoStyle: true, productTitle: true, waivedAt: true },
       },
     },
   });
@@ -601,6 +626,9 @@ export async function cutSlots(projectId: string): Promise<CutSlot[]> {
   const out: CutSlot[] = [];
   for (const [i, d] of p.deliverables.entries()) {
     const count = counts[i];
+    // The waived row kept its place in the arithmetic above (see the note on
+    // this function) and drops out here, where dropping it costs nothing.
+    if (d.waivedAt && !opts.includeWaived) continue;
     const base = videoStyleFor(d, { monthly, tier }).name;
     for (let slot = 1; slot <= count; slot++) {
       out.push({
@@ -609,6 +637,7 @@ export async function cutSlots(projectId: string): Promise<CutSlot[]> {
         slot,
         count,
         label: count > 1 ? `${base} — Video ${slot} of ${count}` : base,
+        ...(d.waivedAt ? { waived: true } : {}),
       });
     }
   }
@@ -1161,47 +1190,47 @@ export async function correctedCutSubmitted(
  * Does this job VISIBLY still owe work on the client's ask? Returns the reason
  * in words, or null when nothing says it does.
  *
- * WF-03 (audit, Sep 17). correctedCutApproved is handed a project, a time and a
- * round — never the identity of the item being satisfied — and it closes the
- * whole video lane. One card per medium is Jordan's decision (Sep 7: two asks
- * about the same video are one job of work), so the fix is not to split the
- * card; it is to stop ONE approval speaking for work the job can still see is
- * unfinished.
+ * WF-03 (audit, Sep 17-18). correctedCutApproved used to be handed a project, a
+ * time and a round — never the identity of the item being satisfied — and it
+ * closed the whole video lane. One card per medium is Jordan's decision (Sep 7:
+ * two asks about the same video are one job of work), so the fix is not to
+ * split the card; it is to stop ONE approval speaking for work nobody has done.
  *
- * Two signals, both evidence rather than inference. Neither guesses which video
- * the client meant, because nothing in the data says so:
+ * The first pass at this (Sep 17) asked whether the JOB looked unfinished: was
+ * another slot re-cut and not yet approved, was the work order partly ticked.
+ * Jordan's verdict on it: "checking whether another correction was uploaded or
+ * a checklist was partly ticked does not establish that every requested change
+ * is done. Link requests to the affected videos. Fixing video 1 must not close
+ * an untouched request for video 3."
  *
- *   (a) ANOTHER SLOT RE-CUT SINCE THE ASK AND NOT YET APPROVED. Somebody
- *       started correcting a second video for this request and has not landed
- *       it. That is work in flight for this ask, by the editor's own hand.
- *   (b) THE BRIEF IS BEING TICKED AND IS NOT FINISHED. The itemised work order
- *       is only a signal when somebody is actually using it — measured Sep 17,
- *       6 of 10 analysed briefs have never been ticked at all, so an untouched
- *       brief means "this editor does not tick", not "nothing is done". A
- *       PARTLY ticked one is a person saying, in the tool built for it, that
- *       items remain.
+ * So the question is now asked PER ITEM, against the video that item is about
+ * (revisionBrief.outstandingItems — scope `named` / `all` / `unknown`, and the
+ * approved-since-the-ask slots). An item on a video nobody has re-cut holds the
+ * ask open, which is exactly the case the old rule let through.
  *
- * A slot nobody has touched since the ask does NOT hold the card: we cannot
- * tell an untouched in-scope video from one the client never mentioned, and
- * holding on that would freeze every revision on a multi-video job. Every
- * manual close still works — the task's Complete button, the last checklist
- * tick, the project-page button — so a held card is never a trap.
+ * The in-flight signal is kept as a second, narrower test for the asks that
+ * have NO itemised work order at all (a Review Room bounce, a one-line text
+ * under the analyser's threshold): a corrected cut somebody has started and not
+ * landed is still work in flight, by the editor's own hand.
+ *
+ * Every manual close still works — the task's Complete button, the last
+ * checklist tick, the project-page button — so a held card is never a trap.
  */
-async function correctionStillOwed(projectId: string, raisedAt: Date): Promise<string | null> {
+async function correctionStillOwed(projectId: string, raisedAt: Date, approvedKey: string | null): Promise<string | null> {
   const since = await prisma.reviewSubmission.findMany({
     where: { projectId, kind: "video", createdAt: { gte: raisedAt }, status: { notIn: ["WITHDRAWN", "UPLOAD_FAILED"] } },
-    select: { deliverableId: true, slot: true, status: true },
+    select: { deliverableId: true, slot: true, assetPath: true, id: true, status: true },
   });
   // One entry per slot: did ANY cut on it land an approval since the ask?
   const approvedBySlot = new Map<string, boolean>();
   for (const r of since) {
-    const k = `${r.deliverableId ?? "-"}:${r.slot}`;
+    const k = cutKeyOf(r);
     approvedBySlot.set(k, (approvedBySlot.get(k) ?? false) || r.status === "APPROVED");
   }
-  const waiting = [...approvedBySlot.values()].filter((ok) => !ok).length;
-  if (waiting > 0) {
-    return `${waiting} other video${waiting === 1 ? "" : "s"} on this job ${waiting === 1 ? "has a corrected cut" : "have corrected cuts"} still waiting on a verdict.`;
-  }
+  // The cut being approved right now counts as approved even if its row has not
+  // been re-read yet (approveCut writes the verdict and calls straight in).
+  if (approvedKey) approvedBySlot.set(approvedKey, true);
+  const approvedKeys = new Set([...approvedBySlot.entries()].filter(([, ok]) => ok).map(([k]) => k));
 
   // The newest brief raised for this ask. The minute of slack absorbs the gap
   // between stamping revisionRequestedAt and writing the brief row.
@@ -1210,21 +1239,47 @@ async function correctionStillOwed(projectId: string, raisedAt: Date): Promise<s
     orderBy: { createdAt: "desc" },
     select: { itemsJson: true, doneJson: true },
   });
-  if (!brief) return null;
-  let items: unknown[] = [];
+  let items: RevisionItemShape[] = [];
   let done: string[] = [];
-  try { items = brief.itemsJson ? ((JSON.parse(brief.itemsJson) as { items?: unknown[] }).items ?? []) : []; } catch { /* unreadable analysis holds nothing up */ }
-  try { done = brief.doneJson ? (JSON.parse(brief.doneJson) as string[]) : []; } catch { /* ticks are best-effort */ }
-  if (items.length > 0 && done.length > 0 && done.length < items.length) {
-    const left = items.length - done.length;
-    return `${left} of the ${items.length} things the client asked for ${left === 1 ? "is" : "are"} still unticked on the revision card.`;
+  try { items = brief?.itemsJson ? ((JSON.parse(brief.itemsJson) as { items?: RevisionItemShape[] }).items ?? []) : []; } catch { /* unreadable analysis holds nothing up */ }
+  try { done = brief?.doneJson ? (JSON.parse(brief.doneJson) as string[]) : []; } catch { /* ticks are best-effort */ }
+
+  if (items.length > 0) {
+    // Dynamic import: revisionBrief imports this module for the slot list, so a
+    // static import here would close the circle.
+    const { outstandingItems, outstandingReason } = await import("@/lib/revisionBrief");
+    const owedKeys = (await cutSlots(projectId).catch(() => [])).map((s) => slotKeyOf(s.deliverableId, s.slot));
+    const open = outstandingItems({ items, done, approvedKeys, owedKeys });
+    return open.length > 0 ? outstandingReason(open, items.length) : null;
+  }
+
+  // No work order to reason about: fall back to work in flight.
+  const waiting = [...approvedBySlot.values()].filter((ok) => !ok).length;
+  if (waiting > 0) {
+    return `${waiting} other video${waiting === 1 ? "" : "s"} on this job ${waiting === 1 ? "has a corrected cut" : "have corrected cuts"} still waiting on a verdict.`;
   }
   return null;
 }
 
+/** The shape correctionStillOwed needs out of itemsJson. Structurally the same
+ *  as revisionBrief.RevisionItem — declared here so reading a brief needs no
+ *  runtime import of that module (the analyser pulls in the AI client). */
+type RevisionItemShape = { id: string; ask: string; cuts?: string[] | null; scope?: "named" | "all" | "unknown" };
+
 export async function correctedCutApproved(
   projectId: string,
-  opts: { cutCreatedAt: Date; round?: number | null; isRedo?: boolean },
+  opts: {
+    cutCreatedAt: Date;
+    round?: number | null;
+    isRedo?: boolean;
+    /** WHICH CUT was approved (WF-03). The caller passes the row it just ruled
+     *  on; `submissionId` is enough — the identity is looked up here so a caller
+     *  that only has the round (the queue pill's "Completed") does not have to
+     *  re-derive it. Without either, nothing is assumed: the items scoped to a
+     *  named video all stay open, which holds the ask rather than closing it. */
+    cut?: { deliverableId?: string | null; slot?: number | null; assetPath?: string | null; id: string } | null;
+    submissionId?: string | null;
+  },
 ): Promise<{ closed: number; resolved: boolean }> {
   const project = await prisma.project.findUnique({
     where: { id: projectId },
@@ -1242,8 +1297,20 @@ export async function correctedCutApproved(
   const raisedAt = project.revisionRequestedAt ?? new Date(Math.min(...lane.map((t) => t.createdAt.getTime())));
   if (opts.cutCreatedAt.getTime() < raisedAt.getTime()) return { closed: 0, resolved: false };
   if (!(await cutAnswersAsk(projectId, { round: opts.round, isRedo: opts.isRedo, deliveredAt: project.deliveredAt }))) return { closed: 0, resolved: false };
+  // WHICH video this approval is about. The row itself when the caller handed
+  // one over, else the row it names, else nothing — and nothing is honest, not
+  // permissive: an unidentified approval closes only the items no video is
+  // attached to.
+  const cut =
+    opts.cut ??
+    (opts.submissionId
+      ? await prisma.reviewSubmission
+          .findUnique({ where: { id: opts.submissionId }, select: { id: true, deliverableId: true, slot: true, assetPath: true } })
+          .catch(() => null)
+      : null);
+  const approvedKey = cut ? cutKeyOf(cut) : null;
   // This approval answers the work it answers — not the whole conversation.
-  const owed = await correctionStillOwed(projectId, raisedAt);
+  const owed = await correctionStillOwed(projectId, raisedAt, approvedKey);
   if (owed) {
     await prisma.activity
       .create({ data: { projectId, type: "SYSTEM", body: `Corrected cut approved. The revision stays open: ${owed}`.slice(0, 500) } })
@@ -1565,7 +1632,7 @@ export type ProjectVideoState = {
 // order, same NAMES (videoStyleFor with the job's tier + monthly verdicts), so
 // a cut is called the same thing on Ops Day as in the Review Room.
 const pureSlots = (
-  p: { packageName: string | null; videosFilmed: number | null; videosOwedOverride: number | null; deliverables: { id: string; type: string; label: string | null; quantity: number | null; videoStyle: string | null; productTitle: string | null }[] },
+  p: { packageName: string | null; videosFilmed: number | null; videosOwedOverride: number | null; deliverables: { id: string; type: string; label: string | null; quantity: number | null; videoStyle: string | null; productTitle: string | null; waivedAt?: Date | null }[] },
   monthly: boolean,
   quota: number,
   tier: "standard" | "premium" | null,
@@ -1582,6 +1649,9 @@ const pureSlots = (
   const out: CutSlot[] = [];
   for (const [i, d] of vids.entries()) {
     const count = counts[i];
+    // Waived after the counts, exactly as cutSlots does it — the office's
+    // total is split by row position, so the row has to keep its place.
+    if (d.waivedAt) continue;
     const base = videoStyleFor(d, { monthly, tier }).name;
     for (let slot = 1; slot <= count; slot++) out.push({ deliverableId: d.id, deliverableLabel: base, slot, count, label: count > 1 ? `${base} — Video ${slot} of ${count}` : base });
   }
@@ -1612,7 +1682,7 @@ export async function videoStatesFor(projectIds: string[]): Promise<Map<string, 
         client: { select: { name: true, avatarUrl: true } },
         // Same order as cutSlots() — the monthly batch count lands on the FIRST
         // video row, so both slot builders must see the rows the same way.
-        deliverables: { where: { removedFromOrderAt: null }, orderBy: { createdAt: "asc" }, select: { id: true, type: true, label: true, quantity: true, videoStyle: true, productTitle: true } },
+        deliverables: { where: { removedFromOrderAt: null }, orderBy: { createdAt: "asc" }, select: { id: true, type: true, label: true, quantity: true, videoStyle: true, productTitle: true, waivedAt: true } },
       },
     }),
     prisma.reviewSubmission.findMany({

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import {
   ArrowRight,
   Check,
@@ -287,16 +287,39 @@ function Fold({
 // is a new type to React, which would tear down and remount every row (and any
 // open detail) on each tick.
 function Item({
-  it, isDone, canTick, showing, onToggle, onShow,
+  it, isDone, canTick, showing, cutNames, onToggle, onShow,
 }: {
   it: BriefView["items"][number];
   isDone: boolean;
   canTick: boolean;
   showing: boolean;
+  /** slot key → the video's name, so "which video" is readable (WF-03) */
+  cutNames: Record<string, string>;
   onToggle: () => void;
   onShow: () => void;
 }) {
   const hasMore = !!(it.detail || it.quote);
+  // WHICH VIDEO (audit WF-03, Sep 18 — Jordan: "Fixing video 1 must not close
+  // an untouched request for video 3"). This chip is the SAME scope the
+  // approval rule reads, so the editor can see what the hub is about to act on:
+  // the named video, every video, or an honest "which video?" that nobody has
+  // placed — never a guess dressed as a fact. On a one-video job it says
+  // nothing at all: there is only one thing an ask can be about, and a chip
+  // repeating it on every line is the noise the Sep 7 redesign removed.
+  const scope = it.scope ?? "unknown";
+  const named = (it.cuts ?? []).map((k) => cutNames[k]).filter(Boolean) as string[];
+  // "Personal Branding Reel — Video 2 of 16" is the cut's full name everywhere
+  // else; on a chip beside the instruction it only has to say which one, and
+  // the whole name is on the hover.
+  const short = (label: string) => label.match(/Video \d+(?= of )/)?.[0] ?? label;
+  const scopeChip =
+    Object.keys(cutNames).length <= 1
+      ? null
+      : scope === "named" && named.length > 0
+        ? { text: named.length === 1 ? short(named[0]) : `${named.length} videos`, title: named.join(" · "), cls: "bg-brand-soft/70 text-brand" }
+        : scope === "all"
+          ? { text: "Every video", title: "The client asked for this on all of the job's videos", cls: "bg-surface-2 text-muted" }
+          : { text: "Which video?", title: "Nothing the client said identifies a video — this one holds the revision open until somebody says", cls: "bg-warning/10 text-warning" };
   return (
     <li className={cn("flex gap-2 rounded-lg px-1.5 py-1", isDone ? "opacity-70" : "hover:bg-surface-2/60")}>
       <button
@@ -320,7 +343,14 @@ function Item({
             {it.ask}
           </p>
           {!isDone && (
-            <span className="shrink-0 rounded bg-surface-2 px-1 py-px text-[10px] font-medium text-muted-2">{it.area}</span>
+            <>
+              {scopeChip && (
+                <span className={cn("shrink-0 rounded px-1 py-px text-[10px] font-medium", scopeChip.cls)} title={scopeChip.title}>
+                  {scopeChip.text}
+                </span>
+              )}
+              <span className="shrink-0 rounded bg-surface-2 px-1 py-px text-[10px] font-medium text-muted-2">{it.area}</span>
+            </>
           )}
         </div>
         {/* The specifics stay on screen but clamped to one line until asked
@@ -364,8 +394,16 @@ function OneBrief({
   const [done, setDone] = useState<string[]>(brief.done);
   // Re-read replaces the items on the server; the ticks must follow, or a
   // stale local list reads as a green "Done" card over real work (review).
+  // Adjusted DURING the render that brings the new list rather than in an
+  // effect afterwards: React re-runs this component before anything paints, so
+  // the boxes never flash the old state, and the lint rule against setState in
+  // an effect (which this line used to suppress) has nothing to object to.
   const doneKey = brief.done.join("|");
-  useEffect(() => { setDone(brief.done); }, [doneKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [seenKey, setSeenKey] = useState(doneKey);
+  if (seenKey !== doneKey) {
+    setSeenKey(doneKey);
+    setDone(brief.done);
+  }
   // Shut on arrival — Jordan, Sep 7: "Its way too big when you first open the
   // page." The header carries the ask and the score; opening is one click.
   const [open, setOpen] = useState(false);
@@ -437,6 +475,7 @@ function OneBrief({
       isDone={isDone}
       canTick={canTick}
       showing={shown.includes(it.id)}
+      cutNames={brief.cutNames ?? {}}
       onToggle={() => void toggle(it.id)}
       onShow={() => setShown((s) => (s.includes(it.id) ? s.filter((x) => x !== it.id) : [...s, it.id]))}
     />

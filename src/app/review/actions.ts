@@ -46,6 +46,24 @@ function refresh(projectId: string) {
   revalidatePath(`/edit/${projectId}`);
 }
 
+/**
+ * Keep the per-video rows in step with the round that just moved (audit WF-02).
+ *
+ * DeliverableOutput carries the five facts a cut's own row cannot — who owns
+ * this video, when it is promised, which version is current, what we approved,
+ * whether the client has it. Both calls are derivations of rows that already
+ * exist, so this is idempotent and never a second opinion: ensure mints the
+ * slots cutSlots computes, refresh re-reads the rounds. Best-effort by design —
+ * a verdict, an upload or a bounce must never fail over its own bookkeeping.
+ */
+async function syncOutputs(projectId: string): Promise<void> {
+  try {
+    const { ensureOutputsForProject, refreshOutputsForProject } = await import("@/lib/deliverableOutputs");
+    await ensureOutputsForProject(projectId);
+    await refreshOutputsForProject(projectId);
+  } catch { /* the cut's own write already landed */ }
+}
+
 /** after(), except a missing request scope is never a reason an editor's
  *  action fails. Both callers below hand it the same kind of work — measuring
  *  what a cut actually was, for a report — and both are reachable from another
@@ -370,6 +388,7 @@ export async function submitCutForReview(
     });
   }
 
+  await syncOutputs(projectId);
   refresh(projectId);
   const multiProgress =
     !closeEdit && cut.assetPath
@@ -733,7 +752,16 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
   let revisionResolved = false;
   try {
     const { correctedCutApproved } = await import("@/lib/reviewCuts");
-    revisionResolved = (await correctedCutApproved(submission.projectId, { cutCreatedAt: submission.createdAt, round: submission.round })).resolved;
+    // WHICH video was approved (WF-03). Without it the close falls back to
+    // "nothing named is done", which holds the ask open — the row is right
+    // here, so hand it over.
+    revisionResolved = (
+      await correctedCutApproved(submission.projectId, {
+        cutCreatedAt: submission.createdAt,
+        round: submission.round,
+        cut: { id: submission.id, deliverableId: submission.deliverableId, slot: submission.slot, assetPath: submission.assetPath },
+      })
+    ).resolved;
   } catch { /* the approval itself already landed */ }
 
   try {
@@ -757,6 +785,7 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
     });
   } catch { /* bell is best-effort */ }
 
+  await syncOutputs(submission.projectId);
   refresh(submission.projectId);
   revalidatePath("/tasks");
   revalidatePath(`/projects/${submission.projectId}`);
@@ -932,6 +961,7 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
     });
   } catch { /* bell is best-effort */ }
 
+  await syncOutputs(submission.projectId);
   refresh(submission.projectId);
   revalidatePath("/tasks");
   return {
@@ -1151,7 +1181,10 @@ export async function finishCutUpload(input: { submissionId: string; url: string
     });
   }
   const sub = await prisma.reviewSubmission.findUnique({ where: { id: input.submissionId }, select: { projectId: true } });
-  if (sub) refresh(sub.projectId);
+  if (sub) {
+    await syncOutputs(sub.projectId);
+    refresh(sub.projectId);
+  }
   return r;
 }
 
