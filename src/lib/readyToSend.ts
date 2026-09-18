@@ -647,6 +647,8 @@ const CANDIDATE_SELECT = {
     select: {
       id: true, status: true, deliveredAt: true, statusEvidence: true, contentMonthId: true,
       aryeoListingId: true, aryeoOrderId: true,
+      // WHOSE portal we would be claiming the video is on (R09, Sep 18).
+      clientId: true,
     },
   },
 } satisfies Prisma.ReviewSubmissionSelect;
@@ -699,7 +701,14 @@ export async function readyToSend(opts?: { projectId?: string }): Promise<ReadyB
   if (subs.length === 0) return { ready: [], rendering: [] };
 
   // Still the live version of its cut, and not already with the client.
-  const open = subs.filter((s) => !wentOut(s));
+  // WHO CAN ACTUALLY OPEN THE PORTAL. One query for the whole board, because
+  // "released to the portal" only closes a row for a client who has a way in —
+  // see wentOut. A membership is the concrete test: it is what a sign-in
+  // resolves to, and it is what will start existing when the portal launches.
+  const portalClientIds = new Set(
+    (await prisma.clientMembership.findMany({ select: { clientId: true } }).catch(() => [])).map((m) => m.clientId),
+  );
+  const open = subs.filter((s) => !wentOut(s, portalClientIds));
   if (open.length === 0) return { ready: [], rendering: [] };
 
   const states = await videoStatesFor([...new Set(open.map((s) => s.projectId))]);
@@ -982,7 +991,7 @@ function renderingSays(state: string): string {
  * here, each one now carrying Aryeo's own answer for Kyle to act on (see
  * listingLine). One decision, in one place, that leaves a record.
  */
-function wentOut(sub: CandidateSub): boolean {
+function wentOut(sub: CandidateSub, portalClientIds: ReadonlySet<string>): boolean {
   // A person pressed the button for this cut: the caller has already filtered
   // on `sentToClientAt: null`, so reaching here means nobody has.
 
@@ -995,12 +1004,28 @@ function wentOut(sub: CandidateSub): boolean {
   // it is filtered out later, as a rendering row rather than a sent one.)
   if (sub.topazJob) return Boolean(sub.topazJob.deliveredAt);
 
-  // A content-program cut IS the client's the moment it is approved: the portal
-  // library row is written on approval and the media gate opens for any
-  // APPROVED cut. Kyle has nothing to upload and nothing to send. The question
-  // "can the client see this cut" is answered by the portal's own helper, so
-  // the two surfaces cannot drift.
-  if (sub.project.contentMonthId && cutReleasedAt({ ...sub, status: "APPROVED" })) return true;
+  // A content-program cut IS the client's the moment it is approved — IF the
+  // client can actually open the portal (R09, external review, Sep 18).
+  //
+  // The first half of that was already true: the library row is written on
+  // approval and the media gate opens for any APPROVED cut, so Kyle has nothing
+  // to upload and nothing to send. The second half was assumed, and it is not
+  // true of this business: THE PORTAL HAS NEVER BEEN ISSUED TO CLIENTS.
+  // Measured Sep 18 — 29 content enrollments, 3 ClientUser rows, and exactly
+  // ONE client with any portal membership, which is a TEST client. So "released
+  // to the portal" was closing the row on a screen nobody could reach, and
+  // Sarina Spinelli's video left Kyle's card while the delivery reconciliation
+  // was independently flagging the same job as OWED. Two surfaces, two answers,
+  // one video.
+  //
+  // Release and delivery are different facts and this is where they part. A cut
+  // is released for client review on approval; it has REACHED the client only
+  // once there is somebody who can sign in and see it. When the portal launches
+  // and clients get memberships, this reads true on its own — no switch to
+  // remember to flip.
+  if (sub.project.contentMonthId && cutReleasedAt({ ...sub, status: "APPROVED" })) {
+    return !!sub.project.clientId && portalClientIds.has(sub.project.clientId);
+  }
 
   return false;
 }
