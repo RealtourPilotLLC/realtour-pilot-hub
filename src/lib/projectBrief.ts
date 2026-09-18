@@ -249,7 +249,17 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
     promisedAt,
     promiseSource,
     targetAt: p.promisedTargetAt ?? null,
-    overdue: tone.kind === "overdue",
+    // PAST THE DATE IS PAST THE DATE. Keying this on `tone.kind === "overdue"`
+    // let a job slip out of it whenever the tone had something more specific to
+    // say, and keying it on the COUNT let an anonymous listing video stop the
+    // clock on a video nobody has made. 204 Spring Ln is both at once: one video
+    // owed, one unidentified video on the listing, nothing started on our side,
+    // six days past the date the client was given.
+    //
+    // A DELIVERED job is never late — the same rule every other surface keeps,
+    // and without it the 234 jobs whose per-video rows carry no delivery stamp
+    // would all light up red for a delivery that really happened.
+    overdue: p.status !== "DELIVERED" && !!promisedAt && promisedAt.getTime() < Date.now() && live.some((o) => o.state !== "sent"),
     latestRequest,
     blocker,
     owner,

@@ -147,6 +147,112 @@ it reaches the client; sending the replacement is still a separate act.
 
 ---
 
+---
+
+## Four journeys, walked on the real data
+
+The Sep 18 review asked for four staff journeys shown end to end, with the
+assigned person, the promise, the current version, the next action and the
+resulting state on each screen. `scripts/_recon/journeys.ts` walks them through
+the shipped engines against production. It is read-only: every call is a query
+or a pure function, nothing is written and nobody is contacted. Run it with
+
+```
+PATH=/Users/jordanspackman/.nvm/versions/node/v20.20.2/bin:$PATH \
+set -a && source .env; set +a && \
+NODE_OPTIONS=--conditions=react-server npx tsx scripts/_recon/journeys.ts
+```
+
+What it printed on Sep 18, unedited apart from trimming to width.
+
+### 1 · A standard listing video — 204 Spring Ln
+
+```
+headline      Confirmed by count, not by name
+ordered       Zillow 3D Tour · Floor Plan · Photos · Social Influencer · Drone Photos
+videos        0 of 1 with the client
+promise       2026-09-12 (frozen) — PAST IT
+client asked  2026-09-17 — "Mike Added on a standard tour reel! Please edit as soon as possible."
+whose move    John Mark — Edit and hand it in
+per video     1:not_started
+```
+
+Everything the reviewer asked for is in those seven lines, and the job is a good
+one to start with because it is the awkward case. There IS a video on the Aryeo
+listing. Nothing ties it to the video we owe, our own row says nothing has been
+started, and the date the client was given passed six days ago. Three engines
+that used to give three answers here now give one: the headline refuses to call
+an anonymous listing entry a delivery, the promise is reported past whatever the
+counts say, and the next action names John Mark.
+
+### 2 · A multi-video monthly batch — 5642 Limeport Rd
+
+```
+headline      Awaiting production
+ordered       Video Starter - 2HR Session ×2
+videos        0 of 4 with the client · furthest: v1 — Personal Branding Reel — Video 1 of 4
+promise       2026-09-25 (frozen)
+blocker       Waiting on the flow and vision for the edit, how many videos were filmed,
+              the wrap-up on the upload page from James Livingston.
+whose move    Kyle — Send 1 finished video and press Mark as sent
+per video     1:approved/v1  2:not_started  3:not_started  4:not_started
+```
+
+Two things a row count cannot say. The order row says two sessions; the job owes
+FOUR videos and each one has its own line. And two people are holding it at
+once — James owes the wrap-up before videos 2–4 can be cut, and Kyle owes a send
+on video 1, which is finished now. Before this work the job was one status and
+one editor name.
+
+### 3 · A delivered video that needs replacing
+
+```
+no job in production is in this state today
+```
+
+Said plainly rather than demonstrated on a fixture. The state — an approved
+version the client has not been sent, on a slot an earlier version WAS sent from
+— is exercised in `scripts/_drill/output-lifecycle.ts` against an isolated
+database, 41 assertions with the pre-change module imported beside the new one
+at every step. It is also one of the five rows the exceptions card watches for,
+so the day it happens it appears on Kyle's board by itself.
+
+### 4 · An unresolved client request spanning the message window
+
+```
+3 open obligations
+(267) 900-8794    1d   inside the window   New caller — call back
+   "Missed call — call them back"
+Mike Flatley      0d   inside the window   Clarify two unrecognized AmEx charges
+   "I personally only need Sharra's. This was a little messy since Mike placed the video order…"
+Andrea Neff       0d   inside the window   Quote MLS-compliant video version for 632 Greenridge
+   "Hi Jordan! I ABSOLUTELY L.O.V.E. what you guys did with the video, but had no idea the MLS…"
+```
+
+All three are inside the seven-day window today, so the ledger is currently
+preventive rather than recovering anything — which is worth saying, because a
+fix that changes no rows today is easy to overstate. What it changes is that
+none of them can age out, and that an unsuccessful callback no longer counts as
+an answer.
+
+### And the board Kyle actually opens
+
+```
+5 exceptions
+[high]   aging-review   August 2026 Social Content   James Livingston   Watch it and approve or send it back
+[high]   aging-review   38 E Gay St                  James Livingston   Watch it and approve or send it back
+[high]   aging-review   August 2026 Social Content   James Livingston   Watch it and approve or send it back
+[high]   aging-review   August 2026 Social Content   James Livingston   Watch it and approve or send it back
+[medium] unassigned     TEST Cara listing job        Nobody yet         Pick an editor in the Editing Room
+```
+
+Four cuts have been waiting between sixteen and twenty-two days for somebody to
+say yes or no. That is the single most useful thing any of this work surfaced,
+and nothing was told to look for it — it fell out of asking every row who owns
+it. The name beside them comes from the creative-manager flag rather than a
+decision, and the card says so; naming the creative approver in Settings is on
+Jordan's list.
+
 ## What is switched off
 
 Client launch. No invitations, reminders, publishing or new outbound automation
@@ -160,6 +266,12 @@ work opens it.
   level is fixed at creation, so only a new store can fix it.
 - **An on-call person** for urgent alerts outside Mon–Fri 9–6. Until somebody is
   named, urgent alerts page exactly as they do today.
+- **A creative approver.** Any owner or admin can already approve a cut — the
+  capability was never the gap. Naming who is *expected* to is what stops every
+  waiting cut being implicitly Jordan's. Settings → Review Room.
+- **A scratch Neon branch** to rehearse a full database restore against. It is
+  the only way to test whole-hub recovery without touching production, and
+  creating one is an account action.
 - **45 Heron Hill Dr**: 60 finished photos in our Final folder for an order with
   no photography product, and a listing with no images. Either it was done and
   never billed, or those files belong to another job.

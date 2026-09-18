@@ -382,8 +382,18 @@ export function evidenceTone(input: {
       const named = u?.named ?? 0;
       const listed = u?.onListing ?? 0;
       const word = (u?.category ?? "item").toLowerCase();
+      // THE CLOCK DOES NOT STOP BECAUSE THE TOTALS TALLY. 204 Spring Ln reads
+      // this way today: one video owed, one anonymous video on the listing,
+      // nothing made on our side, and six days past the date the client was
+      // given. "Confirmed by count, not by name" is the right verdict and it is
+      // not the whole sentence — a promise that has passed belongs in it.
+      const due = input.dueAt ?? (input.promiseResolved ? null : asDate(e.videoDue));
+      const late = due && now > due;
+      const lateNote = late ? ` It is also past the ${etStamp(due, true)} ET date the client was given.` : "";
       return {
         ...base,
+        promiseAt: due ?? null,
+        promiseFor: due ? input.dueFor ?? null : null,
         // Quiet on a job the office has already delivered. The hub not being
         // able to name the videos on a listing from three months ago is not an
         // accusation, and 234 amber cards would say nothing. Amber is for the
@@ -394,6 +404,7 @@ export function evidenceTone(input: {
           `Aryeo's listing carries ${listed} ${word}${listed === 1 ? "" : "s"} against ${u?.owed ?? listed} ordered, ` +
           `and ${named === 0 ? "none of them is" : `only ${named} of them is`} tied to a ${word} the hub tracks. ` +
           `Repeat versions of one cut look the same from here, so open the listing before telling a client it is all there.` +
+          lateNote +
           (staleNote() ? ` ${staleNote()}` : ""),
       };
     }
