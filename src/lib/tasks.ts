@@ -5,11 +5,11 @@ import { QC_LABEL, QC_FAILURE_MODES, VIP_EXTRA_PASS, TYPE_CATEGORY_LABEL, qcCate
 import crypto from "crypto";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { type ChecklistItem, parseChecklist, serializeChecklist, checklistComplete } from "@/lib/checklist";
-import { etAt, etDayKey, etDayStartUtc, etDateTime } from "@/lib/datetime";
+import { etAt, etDayKey, etDayStartUtc, etDateTime, endOfBusinessDaysET } from "@/lib/datetime";
+import { premiumDueFrom, businessDayEndHour, cappedByPromise, type PromiseRules } from "@/lib/turnaround";
 import { slugForName } from "@/lib/assignees";
 import { BRACKET_RATIO, photoTargetFor } from "@/lib/culling";
 import { isMonthlyContentJob } from "@/lib/pipeline";
-import type { TurnaroundRules } from "@/lib/settings";
 import { clip } from "@/lib/text";
 import { pinnedEditorFor } from "@/lib/editors";
 import { effectiveTier } from "@/lib/editOverrides";
@@ -70,7 +70,7 @@ const TURNAROUND_HOURS: Record<string, number> = {
 
 // Reel/video turnaround tiers (a reel is just a vertical social video):
 //   • Standard reel/video  → 1-2 days (48h)
-//   • Premium reel/video   → 3 days (72h)   [label starts with "Premium"]
+//   • Premium reel/video   → 4 BUSINESS days, aiming at 3 (Jordan, Sep 18)
 //   • Monthly content      → 7-10 BUSINESS days  [recurring social-plan client]
 // PRECEDENCE: premium wins over monthly. A premium LISTING reel (e.g. a premium
 // reel ordered with a property shoot) is a one-off premium deliverable, NOT
@@ -79,22 +79,16 @@ const TURNAROUND_HOURS: Record<string, number> = {
 // monthly window. Premium-ness rides on the deliverable LABEL ("Premium Reel"/
 // "Premium Video"), set from the product map.
 const REEL_VIDEO_TYPES = new Set(["SOCIAL_REEL", "VIDEO"]);
-const PREMIUM_HOURS = 72;
 const STANDARD_REEL_HOURS = 48;
 
-// Add N business days (skip Sat/Sun) to a date.
-export function addBusinessDays(from: Date, days: number): Date {
-  const d = new Date(from);
-  let added = 0;
-  while (added < days) {
-    d.setUTCDate(d.getUTCDate() + 1);
-    const wd = d.getUTCDay();
-    if (wd !== 0 && wd !== 6) added++;
-  }
-  return d;
-}
+// The forward business-day walk this file used to keep lives in datetime.ts now
+// (addBusinessDayKeysET / endOfBusinessDaysET). It counted days by adding 86.4m
+// milliseconds at a time, which is an hour out either side of a clock change,
+// and there were three copies of it in the hub. The backward walk below has no
+// shared twin yet, so it stays — it decides when a task is MINTED, not what a
+// client was promised.
 
-// Walk BACK N business days (skip Sat/Sun) — the mirror of addBusinessDays.
+// Walk BACK N business days (skip Sat/Sun).
 // Used to hold the confirmation-text mint until the shoot is close: a task
 // minted at booking for a shoot 62 days out (47 Venuti Dr, Aug 4 → Oct 6) sits
 // in the open count for two months doing nothing (Sep 8 audit).
@@ -199,15 +193,22 @@ export function sameDayDue(shootDate: Date): Date {
 export function deliveryDueFrom(
   anchor: Date,
   deliverableType?: string | null,
-  opts: DueOpts & { rules?: TurnaroundRules } = {},
+  opts: DueOpts & { rules?: PromiseRules } = {},
 ): Date {
   const r = opts.rules;
   // A same-day rush outranks every table below, INCLUDING the editable
   // promises: the client bought a specific day, not a shorter hour count.
   if (opts.sameDay) return sameDayDue(anchor);
   if (deliverableType && REEL_VIDEO_TYPES.has(deliverableType)) {
-    if (opts.premium) return new Date(anchor.getTime() + (r?.premiumVideoHours ?? PREMIUM_HOURS) * HOUR);
-    if (opts.monthlyContent) return addBusinessDays(anchor, r?.monthlyBusinessDays ?? 10);
+    // PREMIUM AND MONTHLY ARE DAY-QUOTED (Sep 18). Both used to be hour
+    // arithmetic off the anchor, which dated a Friday 9am premium shoot at
+    // Monday 9am — a deadline inside the weekend's shadow that nobody in the
+    // office would have quoted. turnaround.ts owns the premium arithmetic now,
+    // so the board, the card and this engine cannot hold different numbers.
+    if (opts.premium) return premiumDueFrom(anchor, r);
+    if (opts.monthlyContent) {
+      return endOfBusinessDaysET(anchor, r?.monthlyBusinessDays ?? 10, businessDayEndHour(r));
+    }
     return new Date(anchor.getTime() + (r?.standardVideoHours ?? STANDARD_REEL_HOURS) * HOUR);
   }
   const table: Record<string, number> = r
@@ -268,8 +269,15 @@ export function standardDeliveryDue(
    *  moved the queue's LABEL while the 48h reel SLA kept firing overdue. */
   /** the last leg that actually happened (videoAnchorFor). The VIDEO rows date
    *  from it rather than from shootDate on a multi-visit job (Sep 16). */
-  opts: { tier?: SlaTier | null; videoAnchor?: Date | null } = {},
+  /** Project.promisedDueAt — the promise this job was SOLD under, frozen at
+   *  the rules in force then (scripts/pin-promises.ts). When it is set it IS
+   *  the answer: recomputing a delivered job's deadline under today's defaults
+   *  is how a settings change silently re-scores history and the photographer
+   *  bonus that reads it. Callers that do not load the column get the computed
+   *  date exactly as before. */
+  opts: { tier?: SlaTier | null; videoAnchor?: Date | null; promisedDueAt?: Date | null } = {},
 ): Date {
+  if (opts.promisedDueAt) return opts.promisedDueAt;
   if (deliverables.length === 0) return new Date(shootDate.getTime() + 48 * HOUR);
   const rush = sameDayTypes(deliverables, orderItems);
   const tierOpts = slaOptsForTier(opts.tier);
@@ -557,11 +565,16 @@ type PendingDueInput = {
   orderItems?: { title: string; isCanceled?: boolean }[] | null;
   statusEvidence?: string | null;
   monthlyContent?: boolean;
-  turnarounds?: TurnaroundRules;
+  turnarounds?: PromiseRules;
   /** the office's tier on the job (Sep 16) — branding → the monthly window,
-   *  premium → 72h, standard → 48h. It re-dates the VIDEO rows only; when it
-   *  is absent every row is read exactly as before. */
+   *  premium → four business days, standard → 48h. It re-dates the VIDEO rows
+   *  only; when it is absent every row is read exactly as before. */
   tier?: SlaTier | null;
+  /** Project.promisedDueAt. A per-category promise recomputed today may land
+   *  AFTER the whole-job deadline the client agreed to (the premium move on
+   *  Sep 18 pushes reels out); the pin caps it, so nobody is quietly granted
+   *  days that were never sold. Categories promised earlier are untouched. */
+  promisedDueAt?: Date | null;
   /** The job's appointment legs. The VIDEO rows date from the LAST leg that
    *  actually happened (videoAnchorFor), not from Project.shootDate — a reel
    *  filmed on the second visit is not late against the first (99 W Bridge,
@@ -598,12 +611,13 @@ export function pendingDuesByCategory(p: PendingDueInput): { category: string; a
   for (const t of pending) {
     const category = TYPE_CATEGORY_LABEL[t] ?? labelFor(t);
     const video = REEL_VIDEO_TYPES.has(t);
-    const at = deliveryDueFrom(video ? videoAnchor : anchor, t, {
+    const computed = deliveryDueFrom(video ? videoAnchor : anchor, t, {
       monthlyContent: video && tierOpts ? tierOpts.monthlyContent : !!p.monthlyContent,
       premium: video && tierOpts ? tierOpts.premium : premiumTypes.has(t),
       sameDay: rushTypes.has(t),
       rules: p.turnarounds,
-    }).getTime();
+    });
+    const at = (cappedByPromise(computed, p.promisedDueAt) ?? computed).getTime();
     const prev = soonestByCategory.get(category);
     if (prev === undefined || at < prev) soonestByCategory.set(category, at);
   }
@@ -649,7 +663,7 @@ export function specsForProject(p: {
   debriefSubmittedAt?: Date | null;
   videoInstructions?: string | null;
   /** editable promise table (Settings → Turnaround promises) */
-  turnarounds?: TurnaroundRules;
+  turnarounds?: PromiseRules;
   /** Aryeo appointment legs — shootStillAhead needs a past leg to tell a
    *  return visit from a not-yet-shot job. */
   appointments?: { startAt: Date | null; status: string | null }[] | null;
@@ -660,6 +674,8 @@ export function specsForProject(p: {
   city?: string | null;
   /** the office's tier (Sep 16) — the video rows' clock, see PendingDueInput */
   tier?: SlaTier | null;
+  /** Project.promisedDueAt — the sold deadline, see PendingDueInput */
+  promisedDueAt?: Date | null;
 }): TaskSpec[] {
   const specs: TaskSpec[] = [];
   const shoot = p.shootDate;
@@ -859,7 +875,14 @@ export function specsForProject(p: {
         done: true,
       });
     }
-    const pendingDues = qcTypes.filter((d) => !isDelivered(d)).map((d) => deliveryDueFrom(anchorFor(d), d, dueOpts(d)).getTime());
+    // Each pending item's own promise, never later than the deadline the job
+    // was SOLD under (Sep 18) — the same cap pendingDuesByCategory applies, so
+    // the QC card and the delivery board cannot print different dates.
+    const dueFor = (d: string) => {
+      const computed = deliveryDueFrom(anchorFor(d), d, dueOpts(d));
+      return cappedByPromise(computed, p.promisedDueAt) ?? computed;
+    };
+    const pendingDues = qcTypes.filter((d) => !isDelivered(d)).map((d) => dueFor(d).getTime());
     if (qcTypes.length > 0 && qcItems.some((i) => !i.done)) {
       specs.push({
         taskType: "media_qa",
@@ -876,7 +899,7 @@ export function specsForProject(p: {
         // still had a day to run, so Kyle's QC list cried wolf on jobs that
         // were perfectly on time (Jordan, Sep 1: 208 N Adams, 2009 Garrison,
         // 263 Towamensing). Per-item SLAs still drive the per-item chases.
-        dueAt: pendingDues.length ? new Date(Math.max(...pendingDues)) : deliveryDueFrom(anchorFor(primary), primary, dueOpts(primary)),
+        dueAt: pendingDues.length ? new Date(Math.max(...pendingDues)) : dueFor(primary),
         checklist: qcItems,
       });
     }
@@ -2549,9 +2572,15 @@ export async function ensureEditorLoginNudge(editorKey: string): Promise<void> {
 function editDueRule(
   shootDate: Date | null,
   videoType: string,
-  opts: { premium: boolean; monthlyContent: boolean },
+  // `rules` and `promisedDueAt` landed Sep 18: this was the one SLA path that
+  // never received the office's editable promises, so an edit card could sit a
+  // day off the QC card and the board for the same reel — and a premium job
+  // sold under the old 72-hour clock has to keep that date, not inherit the
+  // longer business-day one.
+  opts: { premium: boolean; monthlyContent: boolean; rules?: PromiseRules; promisedDueAt?: Date | null },
 ): { videoDue: Date | null; late: boolean; dueAt: Date } {
-  const videoDue = shootDate ? deliveryDueFrom(shootDate, videoType, opts) : null;
+  const computed = shootDate ? deliveryDueFrom(shootDate, videoType, opts) : null;
+  const videoDue = cappedByPromise(computed, opts.promisedDueAt);
   const rawDue = videoDue ? new Date(videoDue.getTime() - 12 * HOUR) : new Date(Date.now() + 4 * HOUR);
   const late = rawDue.getTime() < Date.now();
   return { videoDue, late, dueAt: late ? new Date(Date.now() + HOUR) : rawDue };
@@ -2577,6 +2606,8 @@ export async function mintEditTask(projectId: string): Promise<void> {
       // hourly refresh.
       dueOverrideAt: true,
       priorityOverride: true,
+      // The promise the job was sold under (Sep 18) — see editDueRule.
+      promisedDueAt: true,
       editor: { select: { name: true } },
       client: { select: { name: true, socialClient: true } },
       deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true } },
@@ -2616,7 +2647,13 @@ export async function mintEditTask(projectId: string): Promise<void> {
   // exactly that instant — no QC buffer, no late-clamp — and the summary
   // names that date. The hourly refresh below reads the same column, so it
   // can never roll the office's date back to the SLA.
-  const rule = editDueRule(p.shootDate, v.type, { premium: isPremium, monthlyContent: monthly });
+  const { turnaroundRules: editTurnarounds } = await import("@/lib/settings");
+  const rule = editDueRule(p.shootDate, v.type, {
+    premium: isPremium,
+    monthlyContent: monthly,
+    rules: await editTurnarounds().catch(() => undefined),
+    promisedDueAt: p.promisedDueAt,
+  });
   const videoDue = p.dueOverrideAt ?? rule.videoDue;
   const dueAt = p.dueOverrideAt ?? rule.dueAt;
   const late = p.dueOverrideAt ? false : rule.late;
@@ -2743,13 +2780,16 @@ export async function addRoundToEditCard(
   // round refresh must not undo any more than the hourly one may.
   const p = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { shootDate: true, dueOverrideAt: true, priorityOverride: true, deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true } } },
+    select: { shootDate: true, dueOverrideAt: true, priorityOverride: true, promisedDueAt: true, deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true } } },
   });
   const v = p?.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
   const { videoTier } = await import("@/lib/projectStatus");
+  const { turnaroundRules: roundTurnarounds } = await import("@/lib/settings");
   const rule = editDueRule(p?.shootDate ?? null, v?.type ?? "VIDEO", {
     premium: p ? videoTier(p.deliverables) === "premium" : false,
     monthlyContent: p ? isMonthlyContentJob(p.deliverables) : false,
+    rules: await roundTurnarounds().catch(() => undefined),
+    promisedDueAt: p?.promisedDueAt ?? null,
   });
   const dueAt = p?.dueOverrideAt ?? rule.dueAt;
   await prisma.smartTask.update({
@@ -3264,6 +3304,9 @@ type TaskProject = {
   /** the office's tier (Sep 13 column, honoured by the clock from Sep 16) */
   tierOverride?: string | null;
   packageName?: string | null;
+  /** the promise this job was SOLD under (Sep 18 column) — rides along with
+   *  `include`, and caps every date this reconciler writes */
+  promisedDueAt?: Date | null;
 };
 
 // Dedupe-key families minted OUTSIDE this reconciler (webhooks/integrations).
@@ -3381,6 +3424,8 @@ async function syncOneProjectTasks(
     status: p.status,
     title: p.title,
     shootDate: p.shootDate,
+    // The sold deadline caps every QC date below (Sep 18) — see PendingDueInput.
+    promisedDueAt: p.promisedDueAt ?? null,
     deliverables: p.deliverables,
     orderItems: p.orderItems,
     statusEvidence: p.statusEvidence,

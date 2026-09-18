@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etDayKey, etAddDays, etDayStartUtc } from "@/lib/datetime";
-import { tierFor, dueAtFor, type Tier } from "@/lib/turnaround";
+import { tierFor, dueAtFor, cappedByPromise, type Tier } from "@/lib/turnaround";
 import { parseEvidence, evidenceFreshness, type EvidenceFreshness, type ParsedEvidence } from "@/lib/statusEvidence";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 // The product-name → category read and the category labels live in the light,
@@ -182,6 +182,14 @@ export type PromiseInput = {
   revisionRequestedAt: Date | null;
   dueOverrideAt: Date | null;
   tierOverride: string | null;
+  /** Project.promisedDueAt — the deadline this job was SOLD under, frozen at
+   *  the rules in force then. Optional because two callers outside this file
+   *  build the input from their own select; without it a job simply reads on
+   *  today's rules, exactly as it did before Sep 18. */
+  promisedDueAt?: Date | null;
+  /** Project.promisedReason — the documented exception, in the office's own
+   *  words, for a job whose date is not what the product table would say. */
+  promisedReason?: string | null;
   packageName: string | null;
   statusEvidence: string | null;
   orderItems: { title: string; quantity: number }[];
@@ -197,6 +205,10 @@ export type BoardPromise = {
   tierLabel: string | null;
   /** the office set this date by hand; it outranks every product promise. */
   office: boolean;
+  /** this date is the promise the job was sold under, not today's rules. */
+  pinned?: boolean;
+  /** the documented reason this job's promise is what it is, if there is one. */
+  reason?: string | null;
 };
 
 export type TurnaroundRuleSet = Awaited<ReturnType<typeof turnaroundRules>> | undefined;
@@ -286,6 +298,7 @@ export function outstandingPromise(
           // keep reading LATE here on a 48h reel clock.
           tier: slaTierOf(p),
           appointments: p.appointments,
+          promisedDueAt: p.promisedDueAt ?? null,
         }).filter((d) => missingCategories.includes(d.category))
       : [];
   const earliestItem = settled || outstandingItems.length === 0
@@ -305,9 +318,32 @@ export function outstandingPromise(
   // promise and is labelled as the office's, not a tier's. It still stands on a
   // reopened job; only a settled one has no promise at all.
   if (!settled && p.dueOverrideAt) {
-    return { at: p.dueOverrideAt, label: earliest?.title ?? "the whole job", tierLabel: "office override", office: true };
+    return {
+      at: p.dueOverrideAt,
+      label: earliest?.title ?? "the whole job",
+      tierLabel: "office override",
+      office: true,
+      reason: p.promisedReason ?? null,
+    };
   }
-  return { at: earliest?.dueAt ?? null, label: earliest?.title ?? null, tierLabel: earliest?.tierLabel ?? null, office: false };
+  // THE PROMISE THE JOB WAS SOLD UNDER (Sep 18). Project.promisedDueAt is the
+  // whole-job client deadline frozen at the rules in force when it was booked.
+  // An item promise recomputed today can now land AFTER it — moving premium
+  // reels from 72 elapsed hours to four business days adds days to every reel
+  // still in flight — and showing that later date would quietly hand a client
+  // time they never agreed to. So a pinned job is never dated past its pin;
+  // items promised EARLIER (the photos, due tomorrow) are untouched, because
+  // that is still the thing Kyle is chasing.
+  const at = cappedByPromise(earliest?.dueAt ?? null, p.promisedDueAt);
+  const capped = !!at && !!earliest && at.getTime() !== earliest.dueAt.getTime();
+  return {
+    at,
+    label: earliest?.title ?? null,
+    tierLabel: capped ? "as promised" : earliest?.tierLabel ?? null,
+    office: false,
+    pinned: capped,
+    reason: p.promisedReason ?? null,
+  };
 }
 
 /**
@@ -440,7 +476,10 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
       statusCheckedAt: true, evidenceAttemptedAt: true, evidenceSucceededAt: true, evidenceError: true,
       packageName: true, // monthly-content detection (the one job kind whose clock runs without a shoot)
       dueOverrideAt: true, // the office's due for the job (Sep 13, editOverrides.ts) — wins over every promise below
-      tierOverride: true, // the office's tier (Sep 16) — branding → the monthly window, premium → 72h
+      tierOverride: true, // the office's tier (Sep 16) — branding → the monthly window, premium → four business days
+      // The promise the job was SOLD under, and the documented reason for it
+      // (Sep 18) — a job pinned before a default moved keeps its own date.
+      promisedDueAt: true, promisedReason: true,
       client: { select: { name: true } },
       orderItems: { where: { isCanceled: false }, select: { title: true, quantity: true } },
       deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, status: true, uploadedAt: true, label: true } },
