@@ -1039,7 +1039,14 @@ export async function startCutUpload(input: {
   height?: number | null;
   /** OWNER/ADMIN pressed "upload it anyway" on the over-spec dialog. */
   overrideExportSpec?: boolean;
-}): Promise<{ ok: true; submissionId: string; pathname: string; round: number } | { ok: false; message: string }> {
+  /**
+   * Why an ALREADY APPROVED video is being replaced when no revision is open
+   * (Jordan, Sep 18). Absent on every ordinary upload. The reason is the whole
+   * difference between replacing a version and losing one, so it goes on the
+   * timeline and to the office — see the approved-cut branch below.
+   */
+  reopenReason?: string | null;
+}): Promise<{ ok: true; submissionId: string; pathname: string; round: number } | { ok: false; message: string; needsReason?: boolean }> {
   const who = await uploadAuthor(input.projectId);
   if (!who.ok) return who;
   const { cutSlots, uploadPathnameFor } = await import("@/lib/reviewCuts");
@@ -1078,7 +1085,59 @@ export async function startCutUpload(input: {
   if (last?.status === "APPROVED") {
     const { videoLaneRevisionWhere } = await import("@/lib/reviewCuts");
     const revisionOpen = (await prisma.smartTask.count({ where: videoLaneRevisionWhere(input.projectId) })) > 0;
-    if (!revisionOpen) return { ok: false, message: `${slot.label} is already approved — nothing more to upload.` };
+    // A DELIBERATE REPLACEMENT, AFTER EVERYTHING (Jordan, Sep 18: "they need a
+    // way to re upload content after it was already approved submitted and
+    // delivered").
+    //
+    // The wall above is right by default: an approval is a decision, and a
+    // silent new round would undo one nobody asked to undo. But the wall was
+    // also the end of the conversation — an editor with a corrected file and no
+    // open revision had no way in except a new file name dropped straight into
+    // 05-Final-Video, which is exactly the hand-filing this system exists to
+    // replace.
+    //
+    // So the wall stays and gains a door. The door needs a REASON, because that
+    // is the whole difference between replacing a version and losing one: the
+    // reason goes on the job's timeline under the name of whoever opened it,
+    // the office is told, and the old version keeps its bytes, its round number
+    // and its verdict. Nothing about this reaches the client — it does not
+    // deliver, does not re-deliver, and does not message anybody outside the
+    // hub. If the client already has the old file, somebody still has to send
+    // the new one, and the Ready-to-send card is where that happens.
+    const reason = (input.reopenReason ?? "").trim();
+    if (!revisionOpen && !reason) {
+      return {
+        ok: false,
+        message: `${slot.label} is already approved. If you need to replace it, say why and upload again — the approved version is kept.`,
+        needsReason: true,
+      };
+    }
+    if (!revisionOpen) {
+      const sent = await prisma.reviewSubmission.findFirst({
+        where: { projectId: input.projectId, deliverableId: input.deliverableId, slot: slot.slot, sentToClientAt: { not: null } },
+        select: { sentToClientAt: true },
+      });
+      await prisma.activity.create({
+        data: {
+          projectId: input.projectId,
+          type: "SYSTEM",
+          body: `${who.name ?? "Somebody"} is replacing an approved ${slot.label}${sent ? " that had already gone to the client" : ""} — "${reason.slice(0, 200)}". The approved version is kept; the new one still has to be reviewed${sent ? " and re-sent" : ""}.`.slice(0, 500),
+        },
+      }).catch(() => {});
+      // The office decides what a client is told, so it is told first.
+      await import("@/lib/notify")
+        .then(({ notifyInApp }) =>
+          notifyInApp({
+            kind: "cut_uploaded",
+            title: `An approved video is being replaced — ${slot.label}`,
+            body: `${who.name ?? "Somebody"}: "${reason.slice(0, 160)}"${sent ? " · this one had already gone to the client." : ""}`,
+            href: `/review/${input.projectId}`,
+            targets: [{ roles: ["OWNER", "ADMIN"] }],
+            dedupeKey: `cut-reopen-${input.projectId}-${slot.slot}-${Date.now().toString(36)}`,
+          }),
+        )
+        .catch(() => {});
+    }
   }
   // Rounds count in-flight uploads too, so two tabs starting at once don't
   // both become "Version 1" (a failed one leaves a harmless gap). A WITHDRAWN

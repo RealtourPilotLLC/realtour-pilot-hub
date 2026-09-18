@@ -294,6 +294,14 @@ export function CutUploader({
   // or simply replaced — the picker is one click away either way.
   const [blocked, setBlocked] = useState<Record<string, { file: File; width: number; height: number }>>({});
   const clearBlocked = (key: string) => setBlocked((s) => { const n = { ...s }; delete n[key]; return n; });
+  // A file for a video that is ALREADY APPROVED, held until the editor says why
+  // they are replacing it (Jordan, Sep 18: "they need a way to re upload content
+  // after it was already approved submitted and delivered"). The server refuses
+  // without a reason and answers needsReason, so this box is drawn from the
+  // server's answer rather than from the browser's guess about the cut's state —
+  // the browser's copy of "is it approved" can be a minute old.
+  const [reopen, setReopen] = useState<Record<string, { file: File; dim: { width: number; height: number } | null; override: boolean; why: string }>>({});
+  const clearReopen = (key: string) => setReopen((s) => { const n = { ...s }; delete n[key]; return n; });
   // Remove / move state per version (Sep 16). The /edit page hands this panel
   // the cut rows, not these columns, so the panel asks for them itself — one
   // read per job, re-read whenever a version changes here or a control fires.
@@ -330,20 +338,29 @@ export function CutUploader({
   // `dim` is what the browser measured (null = it couldn't); `override` is an
   // owner/admin knowingly sending an over-spec file. Both ride up to the server
   // so the row records what arrived and who waved it through.
-  async function send(cut: CutRow, file: File, dim: { width: number; height: number } | null, override: boolean) {
+  async function send(cut: CutRow, file: File, dim: { width: number; height: number } | null, override: boolean, reopenReason?: string) {
     const key = `${cut.deliverableId}:${cut.slot}`;
     setErr((e) => ({ ...e, [key]: "" }));
     setBusy((b) => ({ ...b, [key]: { pct: 0, label: "Starting…" } }));
     const started = await startCutUpload({
       projectId, deliverableId: cut.deliverableId, slot: cut.slot, fileName: file.name, sizeBytes: file.size,
       width: dim?.width ?? null, height: dim?.height ?? null, overrideExportSpec: override,
+      ...(reopenReason ? { reopenReason } : {}),
     })
       .catch(() => ({ ok: false as const, message: "Couldn't start the upload — try again." }));
     if (!started.ok) {
       setBusy((b) => { const n = { ...b }; delete n[key]; return n; });
+      // The video is approved and nobody has asked for changes: hold the file
+      // and ask why, rather than sending the editor away with a refusal.
+      if ("needsReason" in started && started.needsReason) {
+        setReopen((r) => ({ ...r, [key]: { file, dim, override, why: "" } }));
+        setErr((e) => ({ ...e, [key]: started.message }));
+        return;
+      }
       setErr((e) => ({ ...e, [key]: started.message }));
       return;
     }
+    clearReopen(key);
     // The reservation exists, so the refusal card (and the file it was holding)
     // has done its job and can go. NOT a moment earlier (Sep 16 review): if the
     // server turns an override down — a session that timed out, a role that
@@ -513,6 +530,46 @@ export function CutUploader({
                     is wrong, then the exact export to use — in that order, and
                     never a word of telling-off. The rule is new; they have been
                     doing nothing wrong. */}
+                {/* REPLACING AN APPROVED VIDEO. The server held the upload and
+                    asked why; the file is still here, so answering is one line
+                    and a press rather than picking the file again. The reason
+                    is not paperwork — it is what goes on the job's timeline and
+                    what tells the office a video they may already have sent is
+                    being replaced. */}
+                {reopen[key] && (
+                  <div className="mt-2 rounded-xl border border-brand/40 bg-brand-soft/30 p-3">
+                    <p className="text-sm font-semibold">{c.label} is already approved</p>
+                    <p className="mt-1 text-xs leading-relaxed text-foreground/85">
+                      You can still replace it. Say why in a line — it goes on the job&rsquo;s timeline and tells the
+                      office. The approved version is kept, and the new one still has to be reviewed
+                      {" "}(and sent, if the client already has the old one).
+                    </p>
+                    <input
+                      value={reopen[key].why}
+                      onChange={(e) => setReopen((r) => ({ ...r, [key]: { ...r[key], why: e.target.value } }))}
+                      placeholder="e.g. the agent's name was spelled wrong in the end card"
+                      className="mt-2 w-full rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs outline-none focus:border-brand"
+                    />
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={!!b || reopen[key].why.trim().length < 4}
+                        onClick={() => { const r = reopen[key]; void send(c, r.file, r.dim, r.override, r.why.trim()); }}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60"
+                      >
+                        <CloudUpload className="size-3.5" /> Replace it
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!!b}
+                        onClick={() => { clearReopen(key); setErr((e) => ({ ...e, [key]: "" })); }}
+                        className="rounded-lg border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 disabled:opacity-60"
+                      >
+                        Leave it as it is
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {blk && refusal && (
                   <div className="mt-2 rounded-xl border border-warning/40 bg-warning-soft/40 p-3">
                     <p className="flex items-start gap-2 text-sm font-semibold">
