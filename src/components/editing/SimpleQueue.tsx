@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -13,6 +13,7 @@ import {
   Pin,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { etDayKey, etMonthDay } from "@/lib/datetime";
 import { Avatar } from "@/components/ui/Avatar";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
@@ -394,6 +395,81 @@ function LinkChip({
   );
 }
 
+// ---------------------------------------------------------------------------
+// THE DUE FILTER (Jordan, Sep 18: "Also another filter in the editing room like
+// Due Today would be nice.")
+//
+// Same design rule as the Editor select: it filters the view you are ON. No
+// fourth tab and no separate screen, so the view pills, their counts and every
+// in-row control keep working exactly as they did.
+//
+// DATES ARE THE JOB HERE and all of them are Eastern. "Today" is the ET
+// CALENDAR DAY via etDayKey — not a rolling 24 hours, and not the browser's
+// day: John Mark and Kim edit from Manila, twelve hours ahead, and "due today"
+// has to name the same square on their screen as on Jordan's. It is also not
+// `dueISO.slice(0, 10)`, which is the UTC date: 24 of the 540 jobs carrying a
+// deliveryDue on the live board sit on a different UTC date than ET one (probe,
+// Sep 18), because the hour-quoted tiers (video_48h and friends) land at
+// shoot-time + N hours and an evening deadline crosses midnight in UTC first.
+// ---------------------------------------------------------------------------
+export type DueFilter = "any" | "overdue" | "today" | "week" | "undated";
+
+// Day-KEY arithmetic, the shape src/lib/datetime.ts settled on (its
+// addBusinessDayKeysET and businessDaysBetweenET walk keys, never milliseconds):
+// "YYYY-MM-DD" strings order exactly as the dates do, and stepping through UTC
+// NOON keeps a clock change from moving the answer by a day.
+const shiftDayKey = (key: string, days: number) => {
+  const [y, m, d] = key.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days, 12)).toISOString().slice(0, 10);
+};
+
+// The ET week today sits in, Monday through Sunday. Monday-start, not the US
+// Sunday-start calendar: the promise this whole queue is measured against is
+// quoted in BUSINESS days (datetime.ts — weekends are not business days), so
+// the week the shop plans is the one that starts when the work does.
+export function etWeekBounds(todayKey: string): { start: string; end: string } {
+  const dow = new Date(`${todayKey}T12:00:00Z`).getUTCDay(); // 0 = Sunday, read the way isWeekdayET reads it
+  const start = shiftDayKey(todayKey, dow === 0 ? -6 : 1 - dow);
+  return { start, end: shiftDayKey(start, 6) };
+}
+
+// ONE predicate, used both to COUNT an option and to FILTER the rows, so an
+// option's number can never drift away from what picking it actually shows.
+// Exported with etWeekBounds above so scripts/_drill can run the real function
+// against the real board rather than a copy of it — the date arithmetic here is
+// the part most likely to be quietly wrong.
+export function matchesDue(f: DueFilter, late: boolean, key: string | null, today: string, week: { start: string; end: string }) {
+  if (f === "any") return true;
+  // OVERDUE is the row's own `late` flag — the server's instant comparison, the
+  // same one the Due cell already prints in red. Deriving a second answer here
+  // ("day key before today") would disagree with that red text on a job due 5pm
+  // today and read at 6pm, and on the Done tab it would brand all 32 delivered
+  // jobs overdue, since every delivered job's deadline is behind us by now.
+  if (f === "overdue") return late;
+  if (f === "undated") return key === null;
+  if (key === null) return false;
+  if (f === "today") return key === today;
+  // "This week" is the calendar week the deadline FALLS IN, not "between now
+  // and Sunday" — a job that was due Monday is still a thing due this week, and
+  // it is the one you most want to see.
+  return key >= week.start && key <= week.end;
+}
+
+// The Upcoming tab's dueISO is the SHOOT date, not a delivery date
+// (editorQueue.toRow: `due = upcoming ? p.shootDate : effectiveDue(...)`) — the
+// Due column there already says "Shoots Sep 21" for that reason. So the control
+// RENAMES itself on that tab rather than quietly answering a different question
+// under the word "Due". Overdue is not offered there at all: that tab is built
+// from `shootDate >= now`, so nothing on it can be late. Dropped because the
+// question is wrong, not because today's count happens to be zero.
+const DUE_LABEL: Record<DueFilter, { due: string; shoot: string }> = {
+  any: { due: "Any due date", shoot: "Any shoot date" },
+  overdue: { due: "Overdue", shoot: "Overdue" },
+  today: { due: "Due today", shoot: "Shoots today" },
+  week: { due: "Due this week", shoot: "Shoots this week" },
+  undated: { due: "No due date", shoot: "No shoot date" },
+};
+
 export function SimpleQueue({
   notDone, upcoming, done, hideEditor = false,
 }: {
@@ -412,25 +488,89 @@ export function SimpleQueue({
   // different screen, so the tabs, the counts and the row controls all keep
   // working exactly as they did.
   const [who, setWho] = useState<string | null>(null);
+  // WHEN IS IT DUE (Jordan, Sep 18) — see the DueFilter block above. Remembered
+  // across tab switches, but the TAB decides what can be applied: `when` below
+  // is what is actually in force and what the select shows, so carrying an
+  // Overdue off Not Done onto Upcoming (where nothing can be late) can't leave
+  // the table empty under a control claiming otherwise.
+  const [dueWanted, setDueWanted] = useState<DueFilter>("any");
   // The last thing a status click did beyond writing the label (see StatusPill).
   const [receipt, setReceipt] = useState<string | null>(null);
   const all = view === "notdone" ? notDone : view === "upcoming" ? upcoming : done;
+  const upcomingTab = view === "upcoming";
+  const word = upcomingTab ? ("shoot" as const) : ("due" as const);
+  const DUE_CHOICES: DueFilter[] = upcomingTab ? ["today", "week", "undated"] : ["overdue", "today", "week", "undated"];
+  const when: DueFilter = DUE_CHOICES.includes(dueWanted) ? dueWanted : "any";
+
+  // Read at render, like every other "today" in the app (MyShootsView does the
+  // same): the page revalidates on every server action, so a tab left open
+  // across ET midnight picks the new day up on its next render.
+  const todayKey = etDayKey(new Date());
+  const week = useMemo(() => etWeekBounds(todayKey), [todayKey]);
+  // One etDayKey per ROW, not one per option per row: each call builds an
+  // Intl.DateTimeFormat, and the four option counts alone would ask for the
+  // same answer four times over on every render of a 65-row board.
+  const dueKeys = useMemo(() => {
+    const m = new Map<string, string | null>();
+    for (const r of [...notDone, ...upcoming, ...done]) m.set(r.id, r.dueISO ? etDayKey(new Date(r.dueISO)) : null);
+    return m;
+  }, [notDone, upcoming, done]);
+
+  const byWho = (r: QueueRow) => who === null || (r.editorKey ?? "__none__") === who;
+  const byWhen = (r: QueueRow) => matchesDue(when, r.late, dueKeys.get(r.id) ?? null, todayKey, week);
+  const rows = all.filter((r) => byWho(r) && byWhen(r));
+
+  // CROSS-FILTERED, both ways: each select counts inside what the OTHER one has
+  // already narrowed to, so every number on offer is exactly the number of rows
+  // that picking it shows — in either order, and with both on. Counting either
+  // control over the whole tab would hand out dead ends: on the real board this
+  // morning Kim had 7 open jobs and not one of them due today, due this week or
+  // late, so a tab-wide "Due today (3)" sitting on her view would have emptied
+  // the table (probe, Sep 18).
+  const forEditors = all.filter(byWhen);
+  const forDue = all.filter(byWho);
+
   // Built from the rows ON THIS TAB, so a name never offers itself and then
   // shows nothing. "Nobody assigned" earns a place the moment a row has no
   // editor — that is the pile worth finding.
   const people = (() => {
     const seen = new Map<string, { key: string; label: string; n: number }>();
-    for (const r of all) {
+    for (const r of forEditors) {
       const key = r.editorKey ?? "__none__";
-      const label = r.editorKey ? (r.editor ?? r.editorKey) : "Nobody assigned";
-      const found = seen.get(key) ?? { key, label, n: 0 };
-      found.n++;
-      seen.set(key, found);
+      const found = seen.get(key);
+      if (found) found.n++;
+      else seen.set(key, { key, label: r.editorKey ? (r.editor ?? r.editorKey) : "Nobody assigned", n: 1 });
+    }
+    // The name actually SELECTED stays on the list even at zero. A <select>
+    // whose value matches no option renders blank, which reads as "no filter"
+    // while a filter is very much on — the one way a tab switch could still
+    // strand you on an editor this tab has never heard of.
+    if (who !== null && !seen.has(who)) {
+      const known = [...notDone, ...upcoming, ...done].find((r) => r.editorKey === who);
+      seen.set(who, { key: who, label: who === "__none__" ? "Nobody assigned" : known?.editor ?? who, n: 0 });
     }
     return [...seen.values()].sort((a, b) =>
       (a.key === "__none__" ? -1 : b.key === "__none__" ? 1 : 0) || b.n - a.n || a.label.localeCompare(b.label));
   })();
-  const rows = who === null ? all : all.filter((r) => (r.editorKey ?? "__none__") === who);
+  // Same rule for the due options, and the same escape hatch for the one in
+  // force. An option with nothing behind it is simply not offered.
+  const dueOptions = DUE_CHOICES.map((f) => ({
+    f,
+    n: forDue.filter((r) => matchesDue(f, r.late, dueKeys.get(r.id) ?? null, todayKey, week)).length,
+  })).filter((o) => o.n > 0 || o.f === when);
+  const dueTitle = (f: DueFilter) => {
+    if (f === "overdue") return "Past its deadline — the same rows the Due column prints in red";
+    if (f === "today") return `${upcomingTab ? "Shooting" : "Due"} today, Eastern — the whole ET calendar day, whatever hour the date carries`;
+    if (f === "week") return `${upcomingTab ? "Shooting" : "Due"} in this Eastern week, ${etMonthDay(week.start)}–${etMonthDay(week.end)}${upcomingTab ? "" : " — a deadline already missed but dated this week counts"}`;
+    if (f === "undated") return upcomingTab ? "No shoot date on the job" : "No delivery date on the job — the pile no date filter would otherwise show you";
+    return "No date filter";
+  };
+
+  // The Editor select's own visibility stays keyed to the TAB, not to the
+  // cross-filtered list above: a due filter that narrows the board to one
+  // person must not take away the control you'd use to widen it again.
+  const editorKeysOnTab = new Set(all.map((r) => r.editorKey ?? "__none__"));
+  const filtering = who !== null || when !== "any";
   const VIEWS = [
     { key: "notdone" as const, label: "Not Done", n: notDone.length },
     { key: "upcoming" as const, label: "Upcoming", n: upcoming.length },
@@ -458,29 +598,65 @@ export function SimpleQueue({
             {v.n > 0 && <span className={cn("ml-1.5 rounded-full px-1.5 text-xs font-semibold", view === v.key ? "bg-white/20" : "bg-surface-2")}>{v.n}</span>}
           </button>
         ))}
-        {/* Not a pill: the editor list grows, and a row of names would compete
-            with the views for the eye. Hidden on an editor's own queue, where
-            every row is already theirs. */}
-        {!hideEditor && people.length > 1 && (
-          <label className="ml-auto flex items-center gap-1.5 text-xs text-muted">
-            Editor
-            <select
-              value={who ?? ""}
-              onChange={(e) => setWho(e.target.value || null)}
-              className="rounded-lg border border-border bg-surface px-2 py-1.5 text-sm text-foreground"
-            >
-              <option value="">Everyone ({all.length})</option>
-              {people.map((p) => (
-                <option key={p.key} value={p.key}>{p.label} ({p.n})</option>
-              ))}
-            </select>
-          </label>
-        )}
+        {/* Not pills: the editor list grows, the due list is four words long,
+            and either as a row of buttons would compete with the views for the
+            eye. Both sit right-aligned together; the Editor one is hidden on an
+            editor's own queue, where every row is already theirs, but the due
+            one stays — "what's due today" is exactly the question an editor
+            opens this page with. */}
+        <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          {!hideEditor && (editorKeysOnTab.size > 1 || who !== null) && (
+            <label className="flex items-center gap-1.5 text-xs text-muted">
+              Editor
+              <select
+                value={who ?? ""}
+                onChange={(e) => setWho(e.target.value || null)}
+                className="rounded-lg border border-border bg-surface px-2 py-1.5 text-sm text-foreground"
+              >
+                <option value="">Everyone ({forEditors.length})</option>
+                {people.map((p) => (
+                  <option key={p.key} value={p.key}>{p.label} ({p.n})</option>
+                ))}
+              </select>
+            </label>
+          )}
+          {dueOptions.length > 0 && (
+            <label className="flex items-center gap-1.5 text-xs text-muted">
+              {upcomingTab ? "Shoot" : "Due"}
+              <select
+                value={when}
+                title={dueTitle(when)}
+                onChange={(e) => setDueWanted(e.target.value as DueFilter)}
+                className="rounded-lg border border-border bg-surface px-2 py-1.5 text-sm text-foreground"
+              >
+                <option value="any">{DUE_LABEL.any[word]} ({forDue.length})</option>
+                {dueOptions.map((o) => (
+                  <option key={o.f} value={o.f} title={dueTitle(o.f)}>{DUE_LABEL[o.f][word]} ({o.n})</option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
       </div>
 
       {rows.length === 0 ? (
         <p className="rounded-2xl border border-dashed border-border bg-surface p-6 text-sm text-muted">
-          {view === "upcoming" ? "No upcoming video shoots on the schedule." : view === "done" ? "Nothing completed in the last 60 days." : "Nothing open — new jobs add themselves when a video shoot is booked."}
+          {/* A filtered-empty table is not an empty queue, and saying "nothing
+              open" over a filter that is hiding 19 jobs is a lie the filters
+              themselves would have to answer for. The counts above make this
+              nearly unreachable — it is the landing spot for a selection that
+              went stale on a tab switch, so it comes with the way out. */}
+          {filtering ? (
+            <>
+              Nothing on this tab matches the filters above.{" "}
+              <button
+                onClick={() => { setWho(null); setDueWanted("any"); }}
+                className="font-medium text-brand underline underline-offset-2"
+              >
+                Clear filters
+              </button>
+            </>
+          ) : view === "upcoming" ? "No upcoming video shoots on the schedule." : view === "done" ? "Nothing completed in the last 60 days." : "Nothing open — new jobs add themselves when a video shoot is booked."}
         </p>
       ) : (
         <div className="overflow-x-auto rounded-2xl border border-border bg-surface">
