@@ -22,10 +22,43 @@
 
 export type StyleExample = { label: string; url: string };
 
+/**
+ * How long one video of each tier takes to cut — Jordan's numbers, in one
+ * place (audit WF-07, Sep 18 2026).
+ *
+ * The Editing Room shows how MANY jobs each editor holds, and a count cannot
+ * compare one premium film with five standard reels or a branding batch. These
+ * hours are the lightest possible answer: no new data entry, no timer, nothing
+ * for anybody to keep up to date — they are the numbers already printed on the
+ * Style Guide, now available as arithmetic. They are an ESTIMATE and every
+ * surface that uses them must say so; a range is honest where a single number
+ * would not be.
+ */
+export const EDIT_HOURS = {
+  standard: { low: 2, high: 2 },
+  premium: { low: 4, high: 6 },
+  branding: { low: 7, high: 8 },
+} as const;
+
+export type VideoTierKey = keyof typeof EDIT_HOURS;
+
+/** "~2 hours to edit" / "4–6 hours to edit", composed from EDIT_HOURS so the
+ *  words on the Style Guide and the numbers behind a workload cannot drift. */
+export function editHoursLabel(tier: VideoTierKey): string {
+  const { low, high } = EDIT_HOURS[tier];
+  return low === high ? `~${low} hours to edit` : `${low}–${high} hours to edit`;
+}
+
+/** The estimated hours for `count` videos of one tier, as a range. */
+export function estimateEditHours(tier: VideoTierKey, count = 1): { low: number; high: number } {
+  const { low, high } = EDIT_HOURS[tier];
+  return { low: low * count, high: high * count };
+}
+
 export const VIDEO_TIER = {
-  standard: { label: "Standard", color: "#38bdf8", edit: "~2 hours to edit", turnaround: "Next-day delivery" },
-  premium: { label: "Premium", color: "#a78bfa", edit: "4–6 hours to edit", turnaround: "3-day turnaround" },
-  branding: { label: "Personal Branding", color: "#f59e0b", edit: "7–8 hours to edit", turnaround: "Monthly social schedule" },
+  standard: { label: "Standard", color: "#38bdf8", edit: editHoursLabel("standard"), turnaround: "Next-day delivery" },
+  premium: { label: "Premium", color: "#a78bfa", edit: editHoursLabel("premium"), turnaround: "3-day turnaround" },
+  branding: { label: "Personal Branding", color: "#f59e0b", edit: editHoursLabel("branding"), turnaround: "Monthly social schedule" },
 } as const;
 
 // The Studio 910 treatment, spelled out once — premium + personal branding
