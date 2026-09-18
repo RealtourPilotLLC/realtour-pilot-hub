@@ -44,8 +44,14 @@ const MAX_BYTES = 8 * 1024 * 1024 * 1024; // 8 GB — 4K vertical exports run 1�
 // editor's cut upload in production. It is deliberately NOT shipped on a
 // guess. The browser decides, so CutUploader is where the word lives, and it
 // reads NEXT_PUBLIC_REVIEW_CUT_ACCESS so flipping it is a Vercel setting and
-// a redeploy rather than an edit — see the handover note filed with this
-// ticket for the order the two halves have to happen in.
+// a redeploy rather than an edit — docs/REVIEW-CUT-STORE-HANDOVER.md has the
+// order the halves have to happen in, and §4 lists the six places outside the
+// Review Room that hand this URL to somebody else's servers and break the day
+// it stops being public (the finalize in review/actions.ts:1152 refuses the
+// upload outright; Instagram's container call hands it to META's fetchers).
+// That order is NOT "swap the token, then stop": the 08:40 prune clears a
+// row's pointer before deleting, and del() deletes from the TOKEN's store, so
+// a row released mid-swap loses the only record of where its bytes are (§3).
 //
 // What IS in this route's hands, and is done below:
 //   · the cut's bytes no longer leave through a store URL at all — the stream

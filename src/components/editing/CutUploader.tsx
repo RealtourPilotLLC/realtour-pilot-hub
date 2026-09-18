@@ -46,8 +46,11 @@ import type { CutTakeBackInfo } from "@/components/review/types";
 // has to find this file. It is NOT flipped ahead of the store: private access
 // against the public store that exists today is refused by the control plane
 // ("Cannot use private access on a public store") and every editor's upload
-// stops that minute. Store first, variable second — the handover note in
-// /api/review/upload has the order.
+// stops that minute. Store first, rows moved second, token third, THIS
+// VARIABLE LAST — docs/REVIEW-CUT-STORE-HANDOVER.md has the order and why
+// each step is where it is. No private upload has ever been performed, so the
+// first one is the test; §4.1 of that note is the finalize call that refuses a
+// non-public URL and has to be fixed before an editor meets it.
 const CUT_STORE_ACCESS = process.env.NEXT_PUBLIC_REVIEW_CUT_ACCESS === "private" ? "private" : "public";
 
 export type CutRow = {
