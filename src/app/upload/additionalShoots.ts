@@ -1,4 +1,35 @@
 // ---------------------------------------------------------------------------
+// WHAT A SECOND SHOOT DAY IS WORTH (Jordan, Sep 18 2026) — written down here
+// because the next person to read this file will wonder why nothing pays.
+//
+// His rule, verbatim: "photographer does not get paid for a second shoot day
+// unless explicitly stated. Either by an aerial, a appointment, or order."
+//
+// The engine already keeps it, and keeps it without knowing this feature
+// exists. Payroll is APPOINTMENT-centric (lib/payroll.ts): the earliest
+// appointment is the primary shoot and pays a percentage of the invoice; a
+// later one on a DIFFERENT ET day pays a return trip at that person's flat
+// rate, and payroll.ts is explicit that this covers "the same shooter on
+// another day", not only a second shooter. 29 jobs in production already have
+// one person shooting on two days. A second ORDER is its own Project with its
+// own appointment, so it pays as an ordinary job.
+//
+// Filing an extra shoot HERE is neither. It creates a Deliverable and a cut
+// slot — work owed — and no Appointment and no order, so it pays nothing. That
+// is the rule, and it is said to the photographer before they file (see
+// AdditionalShoot.tsx) and to the office on Kyle's card.
+//
+// ONE THING TO KNOW BEFORE ANYBODY "FIXES" THIS. Primary pay is a LIVE
+// percentage of Project.payableInvoice, re-read on every payroll render, and
+// per-shoot pay has no frozen snapshot (PayrollEntry covers monthly and hourly
+// staff only). So a line added to an EXISTING order after the shoot raises the
+// FIRST shooter's pay for the FIRST day, by 30-40% of the line depending on the
+// person. That is why Kyle's card asks for the extra reel as its own line and
+// not a quantity bump. It is a question for Jordan, not something this file
+// should decide.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // "HE SHOT IT AGAIN" — a second video on a job that already delivered.
 //
 // Jordan, Sep 18 2026: "204 Spring Ln for Mike Flatley, he ended up doing a
