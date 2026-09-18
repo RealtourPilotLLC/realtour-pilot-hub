@@ -77,6 +77,29 @@ export const REOPENED_FOR_ADDITIONAL_SHOOT: Prisma.ProjectWhereInput = {
   deliverables: { some: OPEN_ADDITIONAL_SHOOT_WHERE },
 };
 
+/** …and the EDITOR's half of the same fact, which runs on past the portal's.
+ *
+ *  The photographer's screen closes when the raws are ticked in
+ *  (OPEN_ADDITIONAL_SHOOT_WHERE above); that is the moment the editor's opens,
+ *  so the editing rail cannot use `uploadedAt: null` — the job would leave the
+ *  portal and the queue in the same instant and be owed by nobody. The end of
+ *  an extra shoot is an APPROVED cut in the Review Room, which is the same
+ *  signal the queue's own status ladder reads (editorQueue.cutTally). A stale
+ *  row here means a video somebody still owes; an absent one meant nothing at
+ *  all, which is what the Sep 18 review found. */
+export const UNFINISHED_ADDITIONAL_SHOOT_WHERE: Prisma.DeliverableWhereInput = {
+  ...ADDITIONAL_SHOOT_WHERE,
+  reviewSubmissions: { none: { status: "APPROVED" } },
+};
+
+/** Jobs an extra video is still owed on, WHATEVER their status — the whole
+ *  point, exactly as REOPENED_FOR_ADDITIONAL_SHOOT is for /upload. Measured
+ *  Sep 18: of the 646 non-cancelled jobs with a live video row, 609 are
+ *  DELIVERED, and a DELIVERED job reaches the editor queue's Done tab only. */
+export const OWES_AN_ADDITIONAL_SHOOT: Prisma.ProjectWhereInput = {
+  deliverables: { some: UNFINISHED_ADDITIONAL_SHOOT_WHERE },
+};
+
 /** Whose shoot: the project's photographer, or an appointment assignee
  *  (Aryeo assigns per appointment; a job can carry only that). The
  *  photographer's own scope on both /upload sections, the office's filter

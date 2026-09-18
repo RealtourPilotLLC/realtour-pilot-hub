@@ -5,6 +5,7 @@ import { requireDeliverableAccess, requireShootAccess } from "@/lib/auth/guards"
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { shootStatusText, SHOOT_STATUS_META, type ShootStatusKind } from "@/lib/statusTexts";
+import { isAdditionalShootRow } from "@/app/upload/additionalShoots";
 
 // Server actions for the guided photographer experience (/shoot). Client texts
 // are DRAFT-then-SEND: the photographer always reviews the wording and taps Send
@@ -142,6 +143,41 @@ export async function setDeliverableCaptured(
   captured: boolean,
 ): Promise<{ ok: boolean }> {
   await requireDeliverableAccess(deliverableId);
+  // ---- AN EXTRA SHOOT'S ONLY IDENTITY IS capturedAt (Sep 18 review, F5) ----
+  //
+  // A return trip to the upload portal files the second video as a manual
+  // Deliverable whose capturedAt holds the day it was shot, and EVERY reader of
+  // that shape keys on manual AND capturedAt: the /upload day buckets, the card
+  // on the portal, the withdraw action, the editing rail. Untick it here — one
+  // tap, by the same photographer, on the original shoot's checklist, where the
+  // row arrived pre-ticked — and capturedAt went to null: the job dropped out of
+  // the day buckets, the card vanished, and withdrawAdditionalShoot refused with
+  // "That isn't an extra shoot you can remove". A video owed, that nobody could
+  // see and nobody could take back.
+  //
+  // WHY A REFUSAL RATHER THAN A SECOND IDENTITY COLUMN. A new column would have
+  // to be adopted by all five readers at once and back-filled on a live
+  // production database, and capturedAt is not the wrong word for this row —
+  // "the photographer stood at the property and shot it" is exactly what it
+  // means, and evidenceUnits reads it as RAW_IN, which is exactly right. What
+  // was wrong is that a checklist tick and a shoot record were the same write.
+  // The extra shoot has its own way off the job, one that keeps the row and its
+  // history: Remove on the upload portal (withdrawAdditionalShoot).
+  //
+  // It throws rather than returning ok:false because the caller
+  // (components/shoot/ShootScreen.tsx toggleCapture) is optimistic — it rolls
+  // the checkbox back and flashes on a rejected promise, and ignores the
+  // returned shape. The checklist no longer offers these rows at all
+  // (lib/shoot.ts), so this is the fence behind that, for a stale page.
+  if (!captured) {
+    const row = await prisma.deliverable.findUnique({
+      where: { id: deliverableId },
+      select: { type: true, manual: true, capturedAt: true, removedFromOrderAt: true },
+    });
+    if (row && isAdditionalShootRow(row)) {
+      throw new Error("That's an extra shoot filed from the upload portal — remove it there, not here.");
+    }
+  }
   const d = await prisma.deliverable.update({
     where: { id: deliverableId },
     data: { capturedAt: captured ? new Date() : null },

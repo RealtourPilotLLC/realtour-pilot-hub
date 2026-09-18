@@ -61,6 +61,23 @@ export const ADDITIONAL_VIDEO_CHOICE: Record<AdditionalVideoType, string> = {
 export const isAdditionalVideoType = (s: string): s is AdditionalVideoType =>
   (ADDITIONAL_VIDEO_TYPES as readonly string[]).includes(s);
 
+/**
+ * The in-memory twin of `uploadHistory.ADDITIONAL_SHOOT_WHERE` — the same four
+ * facts, for a row already loaded rather than a Prisma filter. Kept here, beside
+ * the words that mint the row, so the readers that hold rows (the /shoot
+ * checklist, the capture toggle's guard) and the readers that hold queries can
+ * never disagree about what an extra shoot IS.
+ *
+ * `capturedAt` is the whole identity, which is why it has a guard of its own:
+ * see setDeliverableCaptured in app/shoot/actions.ts.
+ */
+export const isAdditionalShootRow = (d: {
+  type: string;
+  manual: boolean;
+  capturedAt: Date | null;
+  removedFromOrderAt?: Date | null;
+}): boolean => d.manual && d.capturedAt != null && !d.removedFromOrderAt && isAdditionalVideoType(d.type);
+
 /** "2026-09-18" → "Sep 18". Plain string arithmetic on the ET calendar day the
  *  photographer typed — never `new Date(dayKey)`, which parses as UTC and
  *  reads back as the day before for anyone east of Greenwich. */

@@ -9,6 +9,7 @@ import { segmentMeta, type SegmentMeta } from "@/lib/segments";
 import { phoneKey } from "@/lib/integrations/openphone";
 import { ActivityType, type DeliverableType, type DeliverableStatus } from "@prisma/client";
 import { isFieldFlag } from "@/lib/debrief";
+import { isAdditionalShootRow } from "@/app/upload/additionalShoots";
 
 // Data layer for the guided photographer experience (/shoot). Assembles one
 // clean, serializable view model per shoot — appointment access brief, customer
@@ -281,7 +282,18 @@ export async function getShoot(projectId: string): Promise<ShootView | null> {
     },
     segment: segmentMeta(p.client.segment),
     profile: parseClientProfile(p.client.profileJson),
-    deliverables: p.deliverables.map((d) => ({
+    // AN EXTRA SHOOT IS NOT ON THIS DAY'S CHECKLIST (Sep 18 review, F5). A
+    // second video filed from the upload portal is a manual row that arrives
+    // already carrying capturedAt — the day it was shot, which is a DIFFERENT
+    // day from the appointment this screen is for. It was landing on the amber
+    // "Don't leave without" list pre-ticked, where one tap unticked it and
+    // nulled capturedAt, and capturedAt is the only thing that says the row is
+    // an extra shoot: the job then fell out of the /upload day buckets, the
+    // portal card disappeared and the withdraw action refused to touch it. It
+    // was never a thing to shoot today, so it does not belong on today's list.
+    // (app/shoot/actions.setDeliverableCaptured refuses the write too — this
+    // just stops the screen ever offering it.)
+    deliverables: p.deliverables.filter((d) => !isAdditionalShootRow(d)).map((d) => ({
       id: d.id,
       type: d.type,
       label: d.label,

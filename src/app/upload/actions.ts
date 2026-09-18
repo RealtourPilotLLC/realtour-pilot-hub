@@ -1075,11 +1075,24 @@ export async function reopenForAdditionalShoot(
     select: {
       title: true, shootDate: true, status: true,
       videosOwedOverride: true,
+      // THE JOB'S OWN SLA INPUTS (Sep 18 review, F4). The extra video's promise
+      // was asked for with monthlyContent=false and an EMPTY opts object, so
+      // slaOptsForTier(undefined) returned null and deliveryPromiseFor fell back
+      // to isPremiumLabel() on the row's own label — and "Reel — extra shoot
+      // Sep 18" is worded, by design, to trip none of the premium words. Every
+      // extra video was therefore promised on the standard 48h clock: on a
+      // branding job whose real window is 7–10 business days it read overdue two
+      // days later. Measured Sep 18: of the 646 non-cancelled jobs with a live
+      // video row, 234 resolve premium and 64 branding — 46% of the jobs this
+      // card can appear on. These two columns plus the deliverables' labels are
+      // exactly what slaTierOf/isMonthlyContentJob need, and they are the same
+      // inputs the only other production caller uses (projectStatus.ts:1665).
+      packageName: true, tierOverride: true,
       photographer: { select: { name: true } },
       deliverables: {
         where: { removedFromOrderAt: null },
         orderBy: { createdAt: "asc" },
-        select: { id: true, type: true, videoStyle: true, manual: true, capturedAt: true },
+        select: { id: true, type: true, label: true, videoStyle: true, manual: true, capturedAt: true },
       },
     },
   });
@@ -1105,6 +1118,28 @@ export async function reopenForAdditionalShoot(
   // ever needed it (measured Sep 18: no job in the database carries even one).
   if (project.deliverables.some((d) => d.manual && d.capturedAt)) {
     return { ok: false, message: "This job already has an extra shoot on it — upload that one first, or remove it below." };
+  }
+
+  // THE OVERRIDE HAS TO HAVE ROOM FOR THE NEW ROW (Sep 18 review, minor 1).
+  // editOverrides.effectiveSlotCounts spreads `videosOwedOverride` across the
+  // video rows BY POSITION and fills from the FRONT, while cutSlots orders the
+  // rows `createdAt: "asc"` — so the row minted below is always LAST. Raising
+  // the override by one only reaches that last row when the override was
+  // already at least the video-row count: with 3 rows and an override of 2,
+  // raising it to 3 gives [1, 1, 1, 0] and the extra shoot is minted owing no
+  // cut at all — no slot, nowhere for the editor to upload. Raising it further
+  // instead would silently re-owe the videos the office took off.
+  //
+  // So this refuses rather than guesses, and says whose desk it is on. Measured
+  // Sep 18 on the live database: 3 projects carry a videosOwedOverride and NONE
+  // of them sits below its video-row count, so this turns nobody away today.
+  const videoRowsNow = project.deliverables.filter((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL").length;
+  const owedBefore = project.videosOwedOverride ?? 0;
+  if (owedBefore > 0 && owedBefore < videoRowsNow) {
+    return {
+      ok: false,
+      message: `The office has this job set to ${owedBefore} video${owedBefore === 1 ? "" : "s"} against ${videoRowsNow} video lines — ask Kyle to add the extra one on the job so the count still adds up.`,
+    };
   }
 
   const { getCurrentUser } = await import("@/lib/auth/user");
@@ -1146,20 +1181,39 @@ export async function reopenForAdditionalShoot(
   // the video rows BY POSITION: with an override of 1 and two video rows it
   // returns [1, 0], so the extra row would have been minted owing nothing at
   // all. 204 Spring Ln carries exactly that override. Raise it by one so the
-  // office's total still means what it says, and record who moved it and why
-  // in the three columns that exist for that — never INTRODUCE an override on
+  // office's total still means what it says — never INTRODUCE an override on
   // a job that had none, where the row count already answers the question.
-  const owedBefore = project.videosOwedOverride ?? 0;
+  //
+  // …AND THE THREE COLUMNS ARE NOT OURS TO WRITE (Sep 18 review, F1). That was
+  // wrong, and it was wrong on the one job this feature was built for.
+  // overrideBy/overrideAt/overrideNote are ONE provenance triple for the WHOLE
+  // override record: saveEditOverrides stamps them once for dueOverrideAt,
+  // videosOwedOverride, tierOverride, typeDetailOverride and priorityOverride
+  // together, and editOverrides.ts:102-104 reads them back as the single note
+  // behind the chip. 204 Spring Ln is the only project in the database carrying
+  // an override note — "Ordered after the original appointment", typed by
+  // Jordan on Sep 17 over a due date, a standard tier, an URGENT priority AND
+  // a type detail. One tap of Add another shoot rewrote all three columns, so
+  // the chip would have explained that URGENT, that tier and that Sep 17
+  // deadline with the portal's sentence about a reel filmed the following day —
+  // and the office's typed reason was gone, with no Activity row anywhere to
+  // recover it from.
+  //
+  // So: raise the number the arithmetic needs, and record who and why on the
+  // timeline, which is where a photographer's action belongs and is exactly
+  // what withdrawAdditionalShoot already does on the way back out.
   if (owedBefore > 0) {
     await prisma.project.update({
       where: { id: projectId },
-      data: {
-        videosOwedOverride: owedBefore + 1,
-        overrideBy: who,
-        overrideAt: new Date(),
-        overrideNote: `Videos owed ${owedBefore} → ${owedBefore + 1}: ${sentence}`.slice(0, 500),
-      },
+      data: { videosOwedOverride: owedBefore + 1 },
     });
+    await prisma.activity.create({
+      data: {
+        projectId,
+        type: ActivityType.NOTE,
+        body: `Videos owed on this job raised ${owedBefore} → ${owedBefore + 1} by ${who}: ${sentence} The office's own override note is untouched.`.slice(0, 1000),
+      },
+    }).catch(() => {});
   }
 
   // The per-video row, its deadline and its place in the Editing Room. Same
@@ -1187,8 +1241,25 @@ export async function reopenForAdditionalShoot(
   // Best-effort, and deliberately: a slot with no date of its own falls back to
   // the job's exactly as it does today, which is the behaviour this replaces.
   try {
-    const { deliveryPromiseFor } = await import("@/lib/tasks");
-    const promise = deliveryPromiseFor(shotOn, [{ type, label: row.label, productTitle: null }], false, null, {});
+    // …ASKED WITH THE JOB'S TIER, NOT WITHOUT ONE (Sep 18 review, F4). This
+    // call used to pass monthlyContent=false and `{}`, which is not "no
+    // opinion" — slaOptsForTier(undefined) returns null and the engine then
+    // reads the tier off the ROW'S OWN LABEL, and additionalShootLabel is
+    // deliberately worded to trip none of the premium words. So every extra
+    // video, on every job, was promised on the standard 48h clock. These are
+    // the same two inputs projectStatus.ts:1665 passes, which is the only other
+    // production caller: the office's tierOverride wins (on 204 Spring Ln that
+    // is a deliberate "standard" over a premium_social_reel row, so the answer
+    // there is unchanged — but now it is the office's answer, not an accident).
+    const { deliveryPromiseFor, slaTierOf } = await import("@/lib/tasks");
+    const { isMonthlyContentJob } = await import("@/lib/pipeline");
+    const promise = deliveryPromiseFor(
+      shotOn,
+      [{ type, label: row.label, productTitle: null }],
+      isMonthlyContentJob(project.deliverables, project.packageName),
+      null,
+      { tier: slaTierOf(project) },
+    );
     await prisma.deliverableOutput.updateMany({
       // Only the slots of THIS new row, and only while they carry no promise —
       // never a second write over a date somebody has already set.
@@ -1283,7 +1354,17 @@ export async function withdrawAdditionalShoot(
 
   const project = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { title: true, videosOwedOverride: true },
+    select: {
+      title: true, videosOwedOverride: true,
+      // The video rows that will still be live once this one is retired — the
+      // floor the office's number must not be pushed below (see the lower
+      // below). The row being withdrawn is excluded by id, because this read
+      // happens before the retire stamp lands.
+      deliverables: {
+        where: { removedFromOrderAt: null, type: { in: ["VIDEO", "SOCIAL_REEL"] }, id: { not: d.id } },
+        select: { id: true },
+      },
+    },
   });
   const { getCurrentUser } = await import("@/lib/auth/user");
   const me = await getCurrentUser().catch(() => null);
@@ -1299,16 +1380,29 @@ export async function withdrawAdditionalShoot(
   // The mirror of the raise above: put the office's total back where it was, so
   // withdrawing an extra shoot does not leave the job owing a video that no row
   // asks for.
+  //
+  // TWO THINGS THE SEP 18 REVIEW CAUGHT HERE.
+  //
+  // F1 — the three override columns are the OFFICE's provenance for its whole
+  // override record (due date, tier, priority, type detail and videos owed are
+  // all explained by the one note). Stamping them from the portal wiped
+  // Jordan's typed reason on 204 Spring Ln. The number still moves; who moved
+  // it and why goes on the timeline, in the Activity row this action already
+  // writes a few lines down.
+  //
+  // Minor 2 — `owedNow > 1` lowered an override the reopen may never have
+  // raised: the raise only happens on a job that ALREADY had one, so on a job
+  // the office overrode AFTERWARDS this quietly took a video off the office's
+  // count. The real condition is the one the raise created — the override
+  // standing above the video rows that remain. Below that floor there is
+  // nothing of ours left to give back.
   const owedNow = project?.videosOwedOverride ?? 0;
-  if (owedNow > 1) {
+  const videoRowsLeft = project?.deliverables.length ?? 0;
+  const lowered = owedNow > 1 && owedNow > videoRowsLeft;
+  if (lowered) {
     await prisma.project.update({
       where: { id: projectId },
-      data: {
-        videosOwedOverride: owedNow - 1,
-        overrideBy: who,
-        overrideAt: new Date(),
-        overrideNote: `Videos owed ${owedNow} → ${owedNow - 1}: the extra shoot was withdrawn.`.slice(0, 500),
-      },
+      data: { videosOwedOverride: owedNow - 1 },
     });
   }
   const { ensureOutputsSafely } = await import("@/lib/deliverableOutputs");
@@ -1334,7 +1428,7 @@ export async function withdrawAdditionalShoot(
     data: {
       projectId,
       type: ActivityType.NOTE,
-      body: `Extra shoot withdrawn by ${who} — “${d.label ?? d.type}” is no longer owed on ${streetOf(project?.title)}. The row is kept, not deleted.`.slice(0, 1000),
+      body: `Extra shoot withdrawn by ${who} — “${d.label ?? d.type}” is no longer owed on ${streetOf(project?.title)}. The row is kept, not deleted.${lowered ? ` Videos owed put back ${owedNow} → ${owedNow - 1}; the office's own override note is untouched.` : ""}`.slice(0, 1000),
     },
   }).catch(() => {});
 

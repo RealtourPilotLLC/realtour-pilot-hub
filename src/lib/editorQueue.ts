@@ -10,6 +10,8 @@ import { actualFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { etAddDays } from "@/lib/datetime";
 import { EDIT_ROUND_SUMMARY, OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 import { WAITING_HOLD_PREFIX } from "@/lib/queueWaiting";
+import { OWES_AN_ADDITIONAL_SHOOT } from "@/lib/uploadHistory";
+import { isAdditionalShootRow } from "@/app/upload/additionalShoots";
 import {
   computedVideosOwed,
   computedView,
@@ -46,6 +48,22 @@ export const STATUS_LABEL: Record<string, string> = {
   DELIVERED: "Completed",
 };
 
+/**
+ * A DELIVERED job that a photographer went back and shot a second video for
+ * (Sep 18 review, F2). It is not "Completed" — a video is owed and no editor
+ * has approved a cut for it — and it is not a reopened delivery either: the
+ * first delivery stands untouched, which is the one thing Jordan was explicit
+ * about. These are the words for what it actually is.
+ *
+ * Deliberately NOT a key in STATUS_LABEL, and deliberately absent from
+ * SimpleQueue's own STATUSES map: an unknown label there falls back to a grey,
+ * NON-selectable pill, and that is exactly right. Every option on that pill
+ * writes Project.status, and there is no value anyone could pick that would not
+ * disturb a delivery that already happened. The work moves through the Review
+ * Room; the pill stays out of it.
+ */
+export const EXTRA_SHOOT_STATUS = "Extra video owed";
+
 export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcoming: QueueRow[]; done: QueueRow[] }> {
   const rules = await editorRouting();
   const now = new Date();
@@ -75,6 +93,23 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
           // editOverrides.ts) is the same kind of watched job as a hold: it
           // stays in Not Done past the 7-day window until the office moves it.
           { status: { in: ["BOOKED", "SCHEDULED"] }, statusPinnedAt: { not: null }, OR: [{ shootDate: { lt: now } }, { shootDate: null }] },
+          // ---- HE SHOT IT AGAIN (Sep 18 review, F2) -----------------------
+          // A photographer who films a second video for a finished job files it
+          // as its own row from the upload portal, and AdditionalShoot.tsx
+          // promises in words that "it joins this job as its own video — with
+          // its own row in the Editing Room". It did not. This rail is a status
+          // list, a DELIVERED job reaches the Done tab only, and adding an owed
+          // row does not move the job off DELIVERED (nor should it — Jordan was
+          // explicit that the first delivery is not disturbed). Measured Sep 18:
+          // 609 of the 646 non-cancelled jobs with a live video row are
+          // DELIVERED, so on 94% of the jobs the card can appear on the extra
+          // video reached no editor at all. 204 Spring Ln happens to be REVISION
+          // — one of the 37 — which is why walking it in a browser looked fine.
+          //
+          // The predicate is uploadHistory's, so the portal's "this job came
+          // back" and the queue's are the same fact read twice, never two
+          // drifting definitions of an extra shoot.
+          OWES_AN_ADDITIONAL_SHOOT,
         ],
         aryeoMissingAt: null,
       },
@@ -211,6 +246,37 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
 
   type P = (typeof inflight)[number];
   const hasVideo = (p: P) => p.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+
+  // ---- THE JOBS THAT CAME BACK (Sep 18 review, F2) -------------------------
+  // A DELIVERED job can only have reached the in-flight rail through
+  // OWES_AN_ADDITIONAL_SHOOT above — no other clause there admits one. That is
+  // the whole test, and it drives three things: the row's words, its date, and
+  // keeping it off the Done tab so it is not listed twice.
+  const reopenedIds = new Set(inflight.filter((p) => p.status === "DELIVERED").map((p) => p.id));
+  // Its date is the EXTRA video's promise, not the job's. Project.deliveryDue
+  // belongs to the first delivery and is already in the past on every one of
+  // these rows; sorting the queue by it would put a job filmed this morning at
+  // the top of the board wearing a deadline from last week. The per-video
+  // promise the portal stamped (DeliverableOutput.promisedAt, promiseSource
+  // "additional-shoot") is the only date that means anything here. One extra
+  // query, and only when a reopened job is actually on the rail.
+  const extraShootDue = new Map<string, Date>();
+  if (reopenedIds.size > 0) {
+    const extraRowIds = inflight
+      .filter((p) => reopenedIds.has(p.id))
+      .flatMap((p) => p.deliverables.filter(isAdditionalShootRow).map((d) => d.id));
+    if (extraRowIds.length > 0) {
+      const outs = await prisma.deliverableOutput.findMany({
+        where: { deliverableId: { in: extraRowIds }, removedFromOrderAt: null, waivedAt: null, promisedAt: { not: null } },
+        orderBy: { promisedAt: "asc" },
+        select: { projectId: true, promisedAt: true },
+      });
+      // Soonest first, so the first write per job wins — an extra shoot has one
+      // slot today, and if it ever has more the nearest deadline is the one the
+      // board has to show.
+      for (const o of outs) if (o.promisedAt && !extraShootDue.has(o.projectId)) extraShootDue.set(o.projectId, o.promisedAt);
+    }
+  }
   const toRow = (p: P, upcoming = false): QueueRow => {
     const v = p.deliverables.find((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
     const monthly = isMonthlyContentJob(p.deliverables);
@@ -316,7 +382,13 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
     if (pinned) effectiveStatus = p.status;
     const computedTypeDetail = videos.map((d) => d.label || d.type).join(" · ");
     const computedDue = upcoming ? null : p.deliveryDue ?? null;
-    const due = upcoming ? p.shootDate ?? null : effectiveDue(p, computedDue);
+    // A reopened job's date is the EXTRA video's, when the portal stamped one
+    // (see extraShootDue). Falling back to the job's own date is what this
+    // replaces, so a slot that never got a promise reads exactly as before.
+    const reopened = reopenedIds.has(p.id);
+    const due = upcoming ? p.shootDate ?? null
+      : reopened ? extraShootDue.get(p.id) ?? effectiveDue(p, computedDue)
+      : effectiveDue(p, computedDue);
     return {
       id: p.id,
       url: `${base}/edit/${p.id}`,
@@ -329,7 +401,9 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
       clientAvatarUrl: p.client.avatarUrl,
       tier,
       typeDetail: effectiveTypeDetail(p, computedTypeDetail),
-      status: upcoming && !pinned ? "Waiting" : STATUS_LABEL[effectiveStatus] ?? effectiveStatus,
+      status: upcoming && !pinned ? "Waiting"
+        : reopened ? EXTRA_SHOOT_STATUS
+        : STATUS_LABEL[effectiveStatus] ?? effectiveStatus,
       // The office is holding this job in Waiting (Sep 11): the pill on the
       // editor's queue greys every option on such a row — only the office or
       // the photographer's upload-page submit moves it on. A marker on a job
@@ -343,9 +417,17 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
       // Upcoming rows show the shoot date here (no clock has started); every
       // other row shows the delivery due — the office's date when set.
       dueISO: due?.toISOString() ?? null,
-      late: !upcoming && p.status !== "DELIVERED" && !!due && due < now,
+      // A DELIVERED job is never late — except a reopened one, where `due` is
+      // the EXTRA video's own promise and nothing about the first delivery.
+      late: !upcoming && (p.status !== "DELIVERED" || reopened) && !!due && due < now,
       priority: effectivePriority(p, p.priority),
-      videos: videosOwed,
+      // A reopened job owes the EXTRA videos, not the job's total. The job's
+      // number counts the video the client already has — on the Not Done rail,
+      // and in the workload panel that sums this column to size an editor's
+      // week (editorWorkload.ts), that would book a delivered video as work
+      // still to do. `computed`/`overrides` below still carry the job's own
+      // numbers, so the override dialog keeps showing the office the truth.
+      videos: reopened ? Math.max(1, p.deliverables.filter(isAdditionalShootRow).length) : videosOwed,
       // What the office set (null = nothing) and what the hub would say on its
       // own — the two columns of the override dialog (Sep 13).
       overrides: overrideView(p),
@@ -371,7 +453,10 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
   return {
     notDone: inflight.filter(hasVideo).map((p) => toRow(p)),
     upcoming: scheduled.filter(hasVideo).map((p) => toRow(p, true)),
-    done: deliveredRaw.filter(hasVideo).map((p) => toRow(p)),
+    // A reopened job is delivered AND in flight, so it matches both queries —
+    // and listed twice it would read "Completed" on one tab while owing a video
+    // on the other. Not Done wins: that is where the work is (Sep 18 review).
+    done: deliveredRaw.filter((p) => !reopenedIds.has(p.id)).filter(hasVideo).map((p) => toRow(p)),
   };
 }
 

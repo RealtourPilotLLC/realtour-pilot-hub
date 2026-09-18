@@ -1319,6 +1319,21 @@ export async function syncAryeoOrders(
     });
     const teamByCtm = new Map(team.map((t) => [t.aryeoTeamMemberId!, t.id]));
 
+    // Which projects hold a deliverable the Aryeo order does not know about —
+    // a photographer's extra shoot (upload/additionalShoots) or an editor's
+    // hand-added video row. Preloaded ONCE, so the DELIVERED branch of the
+    // update pass below (Sep 18 review, F3) costs nothing on the 600+ delivered
+    // jobs that carry none; measured Sep 18, that is every job in the database.
+    const manualRowProjects = new Set(
+      (
+        await prisma.deliverable.findMany({
+          where: { manual: true, removedFromOrderAt: null },
+          select: { projectId: true },
+          distinct: ["projectId"],
+        })
+      ).map((r) => r.projectId),
+    );
+
     const clientByAryeoId = new Map<string, string>();
     const clientByEmail = new Map<string, string>();
     // Same-person signals beyond id/email — the identity rule the merge tool
@@ -1739,6 +1754,15 @@ export async function syncAryeoOrders(
               // sync's result instead of vanishing into the catch below (R06).
               if (r.outputsError) outputErrors.push(`${proj.title}: ${r.outputsError}`.slice(0, 200));
             } catch { /* reconcile is best-effort — the money mirror above already landed */ }
+          } else if (proj.status === "DELIVERED" && manualRowProjects.has(proj.id)) {
+            // The gate above is right and stays (see the note on
+            // reconcileDeliverablesToOrder), but it also meant Kyle's "Add to
+            // the order" card could never close on a delivered job — which is
+            // where an extra shoot almost always happens. This touches no
+            // deliverable; it only ticks off the card the order just answered.
+            try {
+              await completeAbsorbedAddOnsFromOrder(proj.id, order);
+            } catch { /* closing a stale card never breaks the sync */ }
           }
           continue;
         }
@@ -1945,6 +1969,17 @@ export async function reconcileDeliverablesToOrder(
     if (!r.manual || r.removedFromOrderAt) continue;
     manualOwed.set(r.type, (manualOwed.get(r.type) ?? 0) + Math.max(1, r.quantity ?? 1));
   }
+  // …AND KYLE'S CARD HAS TO CLOSE FOR THAT ROW TOO (Sep 18 review, F3).
+  // completeShootAddonTasksFor had exactly ONE caller: the create loop at the
+  // bottom, right after a deliverable is minted. An extra reel is filed on a job
+  // that already HAS a SOCIAL_REEL row, so the row loop below consumes the type
+  // (`want.delete`) and the create loop never runs — the "Add to the order:
+  // Extra reel shot Sep 18" card sat open indefinitely, which is the same
+  // failure that loop's Sep 16 comment says was fixed, coming back through the
+  // other branch. It runs BEFORE the OrderItem rows are replaced at the bottom
+  // of this function, because those rows are the "before" it compares against.
+  await completeAddOnsWhenOrderQuantityRose(projectId, order, rows)
+    .catch(() => { /* closing a stale card never breaks the reconcile */ });
   // Types this order says it moved elsewhere — orderDeliverables has already
   // struck them off `want`; this is only for the wording of the retire note.
   const moved = movedAwayTypes(order.items);
@@ -2131,6 +2166,112 @@ export async function reconcileDeliverablesToOrder(
     if (!ensured.ok) out.outputsError = ensured.error;
   }
   return out;
+}
+
+/**
+ * The line quantity a set of order lines implies for each type, SUMMED across
+ * the lines.
+ *
+ * Deliberately not `orderDeliverables`, and this is the trap that has to be
+ * written down (Sep 18 review, F3). dedupeParsedDeliverables collapses the
+ * order to ONE parsed row per type and takes `Math.max` of the quantities,
+ * because its job is to NAME a deliverable row, not to count lines. Kyle's
+ * add-on card tells him, in those words, to add the extra reel as its OWN line
+ * — and two separate reel lines of one each come back out of that max as ONE.
+ * So the deduped number cannot tell "before Kyle" from "after Kyle" at all.
+ * Summed across the raw lines, it can: 1 becomes 2.
+ *
+ * Moved-away types are struck off for the same reason orderDeliverables strikes
+ * them: a "2D Floorplan — Moved to Order #1611" line is a negation, not a line
+ * that raises anything.
+ */
+function impliedLineTotals(parsed: ParsedDeliverable[], moved: Map<DeliverableType, string>): Map<DeliverableType, number> {
+  const out = new Map<DeliverableType, number>();
+  for (const d of parsed) {
+    if (moved.has(d.type)) continue;
+    out.set(d.type, (out.get(d.type) ?? 0) + Math.max(1, d.quantity ?? 1));
+  }
+  return out;
+}
+
+/**
+ * KYLE'S CARD CLOSES WHEN THE ORDER PICKS THE EXTRA LINE UP (Sep 18 review, F3).
+ *
+ * completeShootAddonTasksFor had exactly one caller: the create loop at the
+ * bottom of reconcileDeliverablesToOrder, immediately after a deliverable is
+ * minted. An extra shoot is filed on a job that ALREADY has a SOCIAL_REEL row,
+ * so the row loop consumes the type and the create loop never runs — the card
+ * sat open indefinitely, the same failure the Sep 16 comment in that loop says
+ * was fixed.
+ *
+ * Nor can the DELIVERABLE row answer it. reconcile subtracts the hub's manual
+ * rows from the order's number on purpose (`fromOrder`), so the original row
+ * stays at quantity 1 whatever Kyle types — nothing on it ever changes.
+ *
+ * What DID change is the order, and the hub keeps the previous order in
+ * OrderItem rows. So the signal is the honest one: the implied line total for
+ * that type ROSE against what we last stored, on a type the hub is holding a
+ * manual row for. No stored rows at all means no "before" to compare, and this
+ * stays out of it rather than closing a card on a first sync.
+ */
+async function completeAddOnsWhenOrderQuantityRose(
+  projectId: string,
+  order: AryeoOrder,
+  rows: { type: string; manual: boolean; removedFromOrderAt: Date | null }[],
+): Promise<void> {
+  const manualTypes = new Set(rows.filter((r) => r.manual && !r.removedFromOrderAt).map((r) => r.type));
+  if (manualTypes.size === 0) return; // nothing outside the order → nothing to pick up
+  const stored = await prisma.orderItem.findMany({
+    where: { projectId, isCanceled: false },
+    select: { title: true, quantity: true },
+  });
+  if (stored.length === 0) return; // no "before" — never guess on a first sync
+  const moved = movedAwayTypes(order.items);
+  const next = impliedLineTotals(
+    (order.items ?? []).filter((it) => !it.is_canceled).flatMap(itemToDeliverables),
+    moved,
+  );
+  const cur = impliedLineTotals(
+    stored.flatMap((r) => deliverablesForTitle(r.title, r.quantity)),
+    moved,
+  );
+  for (const t of manualTypes) {
+    const type = t as DeliverableType;
+    if ((next.get(type) ?? 0) > (cur.get(type) ?? 0)) {
+      await completeShootAddonTasksFor(projectId, type).catch(() => { /* a stale card never breaks a sync */ });
+    }
+  }
+}
+
+/**
+ * The same close, for a job the full reconcile will never touch.
+ *
+ * reconcileDeliverablesToOrder is gated on not-DELIVERED-or-CANCELLED, and 609
+ * of the 646 non-cancelled jobs with a live video row are DELIVERED (measured
+ * Sep 18) — which is most of the jobs an extra shoot happens on. That gate is
+ * right and stays: a delivered job's rows, labels, quantities and retirements
+ * are not to be rewritten by a later order edit, and Jordan was explicit that
+ * the first delivery is not disturbed.
+ *
+ * But Kyle's card is not the delivery record. It is a to-do the order itself
+ * has now answered, so this writes NOTHING to any deliverable, any project or
+ * any OrderItem — it only ticks off a card nobody needs any more.
+ *
+ * HOW THIS AND THE EDITING RAIL (F2) INTERACT: they do not, and that is the
+ * point. The rail fix (uploadHistory.OWES_AN_ADDITIONAL_SHOOT) puts the
+ * delivered job in front of an editor off the hub's OWN manual row, without
+ * waiting on Aryeo and without moving the job off DELIVERED. This one closes
+ * the office's paperwork when the billing catches up, hours or days later.
+ * Neither waits for the other, and neither is what files the extra video — the
+ * upload portal already did that.
+ */
+async function completeAbsorbedAddOnsFromOrder(projectId: string, order: AryeoOrder): Promise<void> {
+  const rows = await prisma.deliverable.findMany({
+    where: { projectId, manual: true, removedFromOrderAt: null },
+    select: { type: true, manual: true, removedFromOrderAt: true },
+  });
+  if (rows.length === 0) return;
+  await completeAddOnsWhenOrderQuantityRose(projectId, order, rows);
 }
 
 /** Close the office's "Add to the order: <item>" cards whose item names this
