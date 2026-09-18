@@ -195,17 +195,17 @@ export function AdditionalShoot({
               The original shoot was {etDate(jobShootISO)} — that date stays as this job&rsquo;s shoot date.
             </p>
           )}
-          {/* SAY IT BEFORE THEY FILE IT, not after they check My Pay (Jordan,
+          {/* SAY IT BEFORE THEY FILE IT, not after they check My Pay. Jordan,
               Sep 18: "photographer does not get paid for a second shoot day
-              unless explicitly stated. Either by an aerial, a appointment, or
-              order"). Filing here is none of the three, and payroll is
-              appointment-centric — a second appointment on another day already
-              pays a return trip at the person's flat rate, and a second order
-              pays as its own job. So this box is about the WORK, and the pay
-              follows the appointment or the order, never this form. */}
+              unless explicitly stated" — by Aryeo, an appointment or an order.
+              PAY FOLLOWS ARYEO, and payroll already works that way without
+              knowing this form exists: a second appointment on another day pays
+              a return trip at that person's flat rate, and a second order pays
+              as its own job. This box records the WORK. It is not a pay event
+              and must never read like one. */}
           <p className="text-[11px] text-muted-2">
-            This doesn&rsquo;t put the day on your pay. A return visit is paid when it has an
-            appointment or an order of its own — ask the office to add one if this was a paid trip.
+            This doesn&rsquo;t put the day on your pay. A return visit is paid when Aryeo carries it —
+            an appointment or an order of its own. Ask the office if this was a paid trip.
           </p>
           <AutoTextarea
             value={note}

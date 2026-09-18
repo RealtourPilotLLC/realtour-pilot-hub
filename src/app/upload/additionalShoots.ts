@@ -2,8 +2,12 @@
 // WHAT A SECOND SHOOT DAY IS WORTH (Jordan, Sep 18 2026) — written down here
 // because the next person to read this file will wonder why nothing pays.
 //
-// His rule, verbatim: "photographer does not get paid for a second shoot day
-// unless explicitly stated. Either by an aerial, a appointment, or order."
+// His rule: "photographer does not get paid for a second shoot day unless
+// explicitly stated" — either by Aryeo, an appointment, or an order.
+//
+// Which collapses to one sentence: PAY FOLLOWS ARYEO. An appointment or an
+// order, both of which arrive from there. Nothing the hub records on its own
+// side is a reason to pay anybody for a day.
 //
 // The engine already keeps it, and keeps it without knowing this feature
 // exists. Payroll is APPOINTMENT-centric (lib/payroll.ts): the earliest
