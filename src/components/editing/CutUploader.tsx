@@ -321,7 +321,14 @@ export function CutUploader({
 
   // Picking a file runs the export check first, then hands off to send(). The
   // check is local and quick; an over-spec file never reaches the network.
-  async function begin(cut: CutRow, file: File) {
+  //
+  // `replacing` is the approved-cut door (the control at the foot of the row).
+  // It takes the file to the reason box directly instead of firing an upload
+  // the server is certain to turn down, purely so the editor can read the
+  // refusal and discover the box exists. Nothing about the RULE moves: the
+  // server re-reads the cut's real state on the send that follows, and a reason
+  // it turns out not to need is ignored rather than filed.
+  async function begin(cut: CutRow, file: File, replacing = false) {
     const key = `${cut.deliverableId}:${cut.slot}`;
     setErr((e) => ({ ...e, [key]: "" }));
     clearBlocked(key);
@@ -330,6 +337,14 @@ export function CutUploader({
     if (dim && isOverExportSpec(dim.width, dim.height)) {
       setBusy((b) => { const n = { ...b }; delete n[key]; return n; });
       setBlocked((s) => ({ ...s, [key]: { file, width: dim.width, height: dim.height } }));
+      return;
+    }
+    if (replacing) {
+      // Asked AFTER the export check and never before: a reason typed for a 4K
+      // file that is about to be refused anyway is a sentence written for
+      // nothing. Any words already in the box survive re-picking the file.
+      setBusy((b) => { const n = { ...b }; delete n[key]; return n; });
+      setReopen((r) => ({ ...r, [key]: { file, dim, override: false, why: r[key]?.why ?? "" } }));
       return;
     }
     await send(cut, file, dim, false);
@@ -440,6 +455,21 @@ export function CutUploader({
             ? null
             : c.latest ? (withdrawn ? c.latest.round : c.latest.round + 1) : 1;
           const isRedo = c.latest?.status === "CHANGES_REQUESTED" || reopened || withdrawn;
+          // THE APPROVED CUT'S OWN DOOR (Jordan, Sep 18: "they need a way to re
+          // upload content after it was already approved submitted and
+          // delivered"). The round a replacement would supersede — null on
+          // every other row.
+          //
+          // `next` is null here, and until now that ended the conversation: the
+          // whole upload block, hidden file picker included, hung off
+          // `canUpload && next`, so an approved cut had no way to choose a file
+          // at all. startCutUpload has taken a reopenReason since Sep 18 and
+          // the reason box below has been built since then — it simply sat
+          // behind a send() that could never start. Not a rare corner either:
+          // 16 of the 20 cut slots in production sit at APPROVED, 15 of them
+          // with no open revision, 9 already gone to the client, and the door
+          // had been walked through exactly 0 times.
+          const approvedRound = canUpload && !next && c.latest?.status === "APPROVED" ? c.latest.round : null;
           // The remove/move state for this version. The flags read lands a
           // moment after the page does, so until it arrives the control is
           // drawn from what the row already knows: anyone who may upload here
@@ -544,6 +574,13 @@ export function CutUploader({
                       office. The approved version is kept, and the new one still has to be reviewed
                       {" "}(and sent, if the client already has the old one).
                     </p>
+                    {/* WHICH FILE. The door asks why AFTER the file is chosen,
+                        so this line is the only thing on screen that says which
+                        export is about to replace a video somebody signed off. */}
+                    <p className="mt-1.5 truncate text-[11px] text-muted-2">
+                      {reopen[key].file.name} · {fmtBytes(reopen[key].file.size)}
+                      {approvedRound !== null && ` · goes in as v${approvedRound + 1}; v${approvedRound} keeps its file and its approval`}
+                    </p>
                     <input
                       value={reopen[key].why}
                       onChange={(e) => setReopen((r) => ({ ...r, [key]: { ...r[key], why: e.target.value } }))}
@@ -628,29 +665,59 @@ export function CutUploader({
                     )}
                   </div>
                 )}
+                {/* THE DOOR, drawn as what it is. Deliberately NOT the primary
+                    button in the primary place: handing in the next version is
+                    routine work, and replacing a video the reviewer has already
+                    signed off — and in 9 of the 16 approved cuts on file,
+                    already sent to the client — is a decision. So it sits under
+                    the row, quiet, with the consequence said before it is
+                    pressed rather than after. It stands down while either card
+                    above is open, so a row never offers two ways to pick a file
+                    at once. */}
+                {approvedRound !== null && !reopen[key] && !blk && (
+                  <div className="mt-2">
+                    <button
+                      type="button"
+                      disabled={!!b}
+                      onClick={() => inputs.current[key]?.click()}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1 text-[11px] font-semibold text-muted hover:bg-surface-2 hover:text-foreground disabled:opacity-60"
+                    >
+                      <RotateCcw className="size-3" /> Replace the approved video
+                    </button>
+                    <p className="mt-1 text-[11px] leading-relaxed text-muted-2">
+                      Only if this cut itself is wrong. You pick the file, say why in a line, and it goes back through
+                      review as v{approvedRound + 1} — v{approvedRound} keeps its approval either way.
+                    </p>
+                  </div>
+                )}
               </div>
+              {/* ONE PICKER PER ROW, shared by every control that chooses a
+                  file: the button below, the export refusal's "Choose the 1080p
+                  export", and the replace door above. It lives outside the
+                  `next` gate because on an approved cut `next` is null and the
+                  door still has to be able to open a file dialog. */}
+              {canUpload && (next !== null || approvedRound !== null) && (
+                <input
+                  ref={(el) => { inputs.current[key] = el; }}
+                  type="file"
+                  accept="video/mp4,video/quicktime,video/x-m4v,video/webm,.mp4,.mov,.m4v,.webm"
+                  className="hidden"
+                  onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void begin(c, f, approvedRound !== null); }}
+                />
+              )}
               {canUpload && next && (
-                <>
-                  <input
-                    ref={(el) => { inputs.current[key] = el; }}
-                    type="file"
-                    accept="video/mp4,video/quicktime,video/x-m4v,video/webm,.mp4,.mov,.m4v,.webm"
-                    className="hidden"
-                    onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) void begin(c, f); }}
-                  />
-                  <button
-                    type="button"
-                    disabled={!!b}
-                    onClick={() => inputs.current[key]?.click()}
-                    className={cn(
-                      "inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-60",
-                      isRedo ? "bg-danger hover:opacity-90" : "bg-brand hover:opacity-90",
-                    )}
-                  >
-                    {b ? <Loader2 className="size-4 animate-spin" /> : isRedo ? <RotateCcw className="size-4" /> : <CloudUpload className="size-4" />}
-                    {b ? "Uploading" : `Upload version ${next}`}
-                  </button>
-                </>
+                <button
+                  type="button"
+                  disabled={!!b}
+                  onClick={() => inputs.current[key]?.click()}
+                  className={cn(
+                    "inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-60",
+                    isRedo ? "bg-danger hover:opacity-90" : "bg-brand hover:opacity-90",
+                  )}
+                >
+                  {b ? <Loader2 className="size-4 animate-spin" /> : isRedo ? <RotateCcw className="size-4" /> : <CloudUpload className="size-4" />}
+                  {b ? "Uploading" : `Upload version ${next}`}
+                </button>
               )}
             </li>
           );

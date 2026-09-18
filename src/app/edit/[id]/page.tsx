@@ -947,6 +947,16 @@ export default async function EditBriefPage({
               // only for real: the server checks the role again and puts their
               // name on it (startCutUpload).
               canOverrideExport={!viewer?.impersonating && isOwnerAdmin}
+              // The client has asked for changes on the VIDEO lane, so an
+              // approved cut takes the correction as an ordinary next round —
+              // startCutUpload has allowed exactly that since Sep 8, and this
+              // page has computed the flag since then, without ever handing it
+              // over. Left at its default (false) the panel called an approved
+              // cut finished and asked the editor to justify replacing it, on
+              // the one job where the client had already done the asking. The
+              // panel only DRAWS from this; the server re-reads the lane
+              // itself, so a stale page costs a refusal, never a wrong round.
+              revisionOpen={revisionOpen}
               cuts={shownCutRows}
             />
             {hiddenSlots >= 3 && (
