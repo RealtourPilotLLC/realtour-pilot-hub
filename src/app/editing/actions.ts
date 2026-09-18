@@ -1447,6 +1447,22 @@ export async function saveEditOverrides(projectId: string, input: EditOverrideIn
     },
   });
 
+  // THE OFFICE'S NUMBER IS A QUANTITY CHANGE (R06, review Sep 18). The other
+  // of the two paths the review named. cutSlots reads videosOwedOverride —
+  // 893 S Matlack owes sixteen because the office said so, not because Aryeo
+  // did — and DeliverableOutput is materialised FROM cutSlots, so raising the
+  // number here and not calling this left fifteen videos owed as an integer
+  // and not as rows with an owner, a deadline and a review state. Lowering it
+  // matters just as much: the rows above the new number are retired rather
+  // than left on somebody's card. Staff should not have to wait for the hourly
+  // repair sweep to catch up with a decision they just made.
+  if (merged.videosOwedOverride !== proj.videosOwedOverride) {
+    try {
+      const { ensureOutputsSafely } = await import("@/lib/deliverableOutputs");
+      await ensureOutputsSafely(projectId, `office-videos-owed#${actor}`);
+    } catch { /* the hourly sweep is the backstop; the override itself landed */ }
+  }
+
   // ONE timeline row, before the close-outs below: createDeliveryTextTask
   // reads an "Override by … → Completed" line as the office's word that a
   // monthly batch is done (the same release the pill's "Queue status set:

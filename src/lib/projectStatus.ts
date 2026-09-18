@@ -1892,10 +1892,23 @@ export async function syncProjectStatuses(
         // drop the quota from 8. The bigger of the two wins, and this whole
         // block never lowers a row's quantity either.
         const quota = Math.max(...stated, monthlyVideoQuota(names));
+        let lifted = 0;
         for (const d of p.deliverables) {
           if (d.type !== "VIDEO" && d.type !== "SOCIAL_REEL") continue;
           if ((d.quantity ?? 1) >= quota) continue;
           await prisma.deliverable.update({ where: { id: d.id }, data: { quantity: quota } }).catch(() => {});
+          lifted++;
+        }
+        // ONE OF THE TWO QUANTITY PATHS THE REVIEW NAMED (R06, Sep 18). Lifting
+        // a monthly batch from 1 to 8 changes how many videos are owed, and
+        // DeliverableOutput is the row-per-owed-video. Without this the seven
+        // new videos existed as a number and not as things with an owner, a
+        // deadline and a review state until the hourly repair happened to reach
+        // the job — which can be a full rotation away. Only on an actual lift:
+        // this block runs every pass and a no-op must stay a no-op.
+        if (lifted > 0) {
+          const { ensureOutputsSafely } = await import("@/lib/deliverableOutputs");
+          await ensureOutputsSafely(p.id, "monthly-quota-lift");
         }
       }
     } catch { /* best-effort */ }

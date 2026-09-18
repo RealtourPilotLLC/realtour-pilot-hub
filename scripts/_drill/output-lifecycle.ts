@@ -170,7 +170,14 @@ async function main() {
     ok("…and it says which version the client has", s3.now.detail === "v1 sent; v2 approved, awaiting send", s3.now.detail);
     ok("…it counts as owed work (awaitingSend)", s3.now.awaitingSend);
     ok("…the historical deliveredAt was NOT cleared to achieve it", !!s3.now.deliveredAt);
-    if (s3.then) ok("…and the baseline said the opposite", s3.then.state === "sent", `baseline: ${s3.then.state} / ${s3.then.detail}`);
+    // Only meaningful against a baseline from BEFORE the fix. Once the fix is
+    // in the default ref (HEAD) the two agree, which is the fix working, not a
+    // regression — so this asserts only when a ref was named on purpose.
+    if (s3.then && process.env.BASELINE_REF) {
+      ok("…and the baseline said the opposite", s3.then.state === "sent", `baseline: ${s3.then.state} / ${s3.then.detail}`);
+    } else if (s3.then) {
+      console.log(`    (baseline ${BASELINE_REF} already carries this fix: ${s3.then.state} / ${s3.then.detail} — set BASELINE_REF to a pre-fix commit to see the difference)`);
+    }
 
     // v2 sent.
     await prisma.reviewSubmission.update({ where: { id: v2.id }, data: { sentToClientAt: new Date(), sentToClientBy: "Kyle" } });
@@ -256,6 +263,56 @@ async function main() {
     const stillWaived = await prisma.deliverableOutput.count({ where: { projectId: p2.id, waivedAt: { not: null } } });
     ok("un-waiving hands them back, in the same press", stillWaived === 0, `${stillWaived} still waived (${unwaiveRes.message})`);
     ok("…and the two live videos are owed work again", (await outputsForProject(p2.id)).filter((r) => r.state === "not_started").length === 2);
+
+    // ---- THE WIRING, NOT THE MECHANISM (R06, review Sep 18) --------------
+    // Everything above proves ensureOutputsForProject does the right thing when
+    // somebody calls it. The reopened finding is that two paths did not call
+    // it: the office's videos-owed override and the monthly quota lift. So
+    // these two run the REAL office action and the REAL status sweep and make
+    // NO ensureOutputs call of their own — if the wiring is missing, the rows
+    // simply do not move until the hourly repair happens to reach the job.
+    console.log("\n── the office raises videos-owed through the real dialog (no manual sync)");
+    {
+      const { saveEditOverrides } = await import("@/app/editing/actions");
+      const before = (await outputsForProject(p2.id)).filter((r) => r.state !== "removed").length;
+      const res = await saveEditOverrides(p2.id, { videosOwed: 5 });
+      const after = await outputsForProject(p2.id);
+      const live = after.filter((r) => r.state !== "removed");
+      ok("the office's save is accepted", res.ok, res.message);
+      ok(`five videos are owed the moment the dialog closes (was ${before})`, live.length === 5, `${live.length} live of ${after.length}`);
+      ok("…each with an owner and a deadline, not just a number",
+        live.every((r) => !!r.ownerName || !!r.promisedAt), live.map((r) => `${r.label}:${r.ownerName ?? "—"}`).join(" "));
+
+      console.log("\n── …and lowering it retires the extras without losing their history");
+      const res2 = await saveEditOverrides(p2.id, { videosOwed: 3 });
+      const after2 = await outputsForProject(p2.id);
+      ok("the lower save is accepted", res2.ok, res2.message);
+      ok("three are owed", after2.filter((r) => r.state !== "removed").length === 3);
+      ok("…the other two are retired, not deleted", after2.filter((r) => r.state === "removed").length >= 2);
+      ok("…and every row still exists",
+        (await prisma.deliverableOutput.count({ where: { projectId: p2.id } })) === after2.length, `${after2.length} rows`);
+    }
+
+    console.log("\n── a monthly batch whose quota the status sweep lifts");
+    {
+      // The lift is a QUANTITY change on the Deliverable row, and the per-video
+      // rows are minted from cutSlots. The invariant worth proving is that the
+      // two agree the moment the sweep runs — not an hour later, when the
+      // repair rotation happens to reach the job.
+      const p4 = await mkProject("5 Quota Lift Ln", { shootDate: new Date(Date.now() - 2 * 24 * 3600_000) });
+      await prisma.project.update({ where: { id: p4.id }, data: { packageName: "Accelerator Plan" } });
+      await prisma.deliverable.create({
+        data: { projectId: p4.id, type: "VIDEO", label: "Monthly Content Video", quantity: 1 },
+      });
+
+      const { syncProjectStatuses } = await import("@/lib/projectStatus");
+      await syncProjectStatuses({ projectId: p4.id }).catch((e: unknown) => { console.log(`    (sweep: ${String(e).slice(0, 80)})`); });
+      const lifted = await prisma.deliverable.findFirstOrThrow({ where: { projectId: p4.id, type: "VIDEO" }, select: { quantity: true } });
+      const live = (await outputsForProject(p4.id)).filter((r) => r.state !== "removed");
+      ok("the sweep lifts the order row to the plan's batch", (lifted.quantity ?? 1) === 4, `quantity=${lifted.quantity}`);
+      ok("…and the per-video rows agree in the same pass", live.length === (lifted.quantity ?? 1), `${live.length} rows for ${lifted.quantity} owed`);
+      ok("…every one of them owned and dated", live.every((r) => !!r.ownerName || !!r.promisedAt), live.map((r) => r.label).join(" | "));
+    }
 
     // ---- the scheduled repair --------------------------------------------
     console.log("\n── the hourly repair picks up a job nothing else reached");

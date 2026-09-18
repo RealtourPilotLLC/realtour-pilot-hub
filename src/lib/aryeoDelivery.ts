@@ -1012,8 +1012,19 @@ async function videoLength(url: string, sizeBytes: number | null): Promise<numbe
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const { probeVideoMetadata } = await import("@/lib/integrations/topaz");
+    // THE LAST RAW URL (R05, review Sep 18). probeVideoMetadata takes a bare
+    // URL and sends no headers, so a store object has to arrive already
+    // carrying its permission. Against today's public store probeableUrl hands
+    // the URL straight back and costs nothing; against a private one it mints a
+    // short-lived signed GET. Without it this one read would be the single
+    // caller that breaks on the day the store is replaced — and it would break
+    // quietly, as "we could not measure it", which this function deliberately
+    // treats as a reason not to stamp a delivery.
+    const { probeableUrl } = await import("@/lib/reviewCuts");
+    const probe = await probeableUrl(url);
+    if (!probe) return null;
     const meta = await Promise.race([
-      probeVideoMetadata(url, sizeBytes),
+      probeVideoMetadata(probe, sizeBytes),
       new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), MEASURE_TIMEOUT_MS); }),
     ]);
     return meta && Number.isFinite(meta.durationSec) && meta.durationSec > 0 ? meta.durationSec : null;
