@@ -609,8 +609,19 @@ function findPath(buf: Buffer, from: number, to: number, path: string[]): Box | 
   return box;
 }
 
-async function rangeBytes(url: string, start: number, end: number): Promise<Buffer> {
-  const res = await fetch(url, { headers: { Range: `bytes=${start}-${end}` }, cache: "no-store", signal: AbortSignal.timeout(30_000) });
+async function rangeBytes(url: string, start: number, end: number, bust?: string): Promise<Buffer> {
+  // `cache: "no-store"` governs OUR fetch cache and nothing else. These objects
+  // are served from a CDN with `cache-control: public, max-age=2592000`, so a
+  // response cached against this URL — including one taken while an upload was
+  // still in flight — can be handed back for up to thirty days. A different
+  // query string is a different cache key, which is the only lever we have from
+  // this side (Sarina Spinelli's video, Sep 17: see readBoxesOrRetry).
+  const u = bust ? `${url}${url.includes("?") ? "&" : "?"}__rtp=${bust}` : url;
+  const res = await fetch(u, {
+    headers: { Range: `bytes=${start}-${end}`, "Cache-Control": "no-cache" },
+    cache: "no-store",
+    signal: AbortSignal.timeout(30_000),
+  });
   if (!res.ok) throw new TopazError(`Couldn't read the video file (${res.status}).`, res.status, res.status >= 500);
   return Buffer.from(await res.arrayBuffer());
 }
@@ -637,25 +648,50 @@ export async function probeVideoMetadata(url: string, knownSize?: number | null)
 
   // Walk the top-level boxes, reading only each one's header, until `moov`.
   // 64 is a generous ceiling: a real file has a handful (ftyp, free, mdat, moov).
-  let off = 0;
-  let moov: Box | null = null;
-  let container = "mp4";
-  for (let i = 0; i < 64 && off < total; i++) {
-    const head = await rangeBytes(url, off, off + 15);
-    const b = readBox(head, 0);
-    if (!b || b.size < 8) break;
-    if (b.type === "ftyp") {
-      const brand = head.toString("latin1", 8, 12).trim();
-      container = brand === "qt" ? "mov" : "mp4";
+  const walk = async (bust?: string): Promise<{ moov: Box | null; container: string }> => {
+    let off = 0;
+    let moov: Box | null = null;
+    let container = "mp4";
+    for (let i = 0; i < 64 && off < total; i++) {
+      const head = await rangeBytes(url, off, off + 15, bust);
+      const b = readBox(head, 0);
+      if (!b || b.size < 8) break;
+      if (b.type === "ftyp") {
+        const brand = head.toString("latin1", 8, 12).trim();
+        container = brand === "qt" ? "mov" : "mp4";
+      }
+      if (b.type === "moov") {
+        moov = { ...b, start: off };
+        break;
+      }
+      off += b.size;
     }
-    if (b.type === "moov") {
-      moov = { ...b, start: off };
-      break;
-    }
-    off += b.size;
-  }
+    return { moov, container };
+  };
+
+  // ONE BAD READ IS NOT A BROKEN FILE (Sarina Spinelli's video, Sep 17 2026).
+  //
+  // That file was written off permanently on a single attempt with "this
+  // video file's header isn't where a video file's header should be". Checked
+  // the next day, byte for byte: ftyp at 0, moov at 28 — the ideal layout, the
+  // best case this walk can meet. The file was always fine. Something served us
+  // bytes that were not the file's, once, and the error was classified as a
+  // permanent defect, so the lane never looked again and a paid render the
+  // client was owed simply stopped existing.
+  //
+  // So a failed walk is retried once against a fresh cache key before anything
+  // is concluded, and if it still fails the error is RETRYABLE — the lane backs
+  // off and tries again rather than writing the video off. A genuinely
+  // malformed file will fail every attempt and stop at maxAttempts, which is
+  // the honest way to reach that conclusion.
+  let { moov, container } = await walk();
+  if (!moov) ({ moov, container } = await walk(`${total}-retry`));
   if (!moov || moov.size > 64 * 1024 * 1024) {
-    throw new TopazError("This video file's header isn't where a video file's header should be, so its length and frame rate can't be read.", 0, false);
+    throw new TopazError(
+      "Couldn't find this video's header, twice. That usually means the file wasn't served correctly rather than that it is broken — the pass will try again.",
+      0,
+      true,
+    );
   }
   const m = await rangeBytes(url, moov.start, moov.start + moov.size - 1);
 
