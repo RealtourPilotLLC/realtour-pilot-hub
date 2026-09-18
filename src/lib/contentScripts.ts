@@ -234,6 +234,24 @@ export async function editScriptFromBody(scriptId: string, body: string, by: str
 }
 
 /**
+ * The shape of a script: hook, exactly three roled points, a close, a title, and
+ * no greeting in the spoken body. A blocking finding with one of these codes is
+ * not a judgement call an approver can write their way past — see the override
+ * split in approveScriptVersion.
+ */
+const STRUCTURAL_CODES = new Set([
+  "title.missing",
+  "hook.missing",
+  "hook.banned-opener",
+  "intro.greeting",
+  "talking-points.count",
+  "talking-points.extra-blocks",
+  "talking-points.roles",
+  "talking-points.empty",
+  "close.missing",
+]);
+
+/**
  * Approve: explicit and attributable. The version becomes APPROVED, any
  * earlier approved version SUPERSEDED, the script's approvedVersionId moves,
  * and a ContentScriptRelease row records the act. Approval does NOT release
@@ -258,6 +276,23 @@ export async function approveScriptVersion(versionId: string, actor: { email: st
   // (four points, no hook…) needs the approver's explicit note to pass.
   const check = validateNewScript(canonicalFromParts({ title: v.title, categoryLabel: v.categoryLabel, pillarId: v.pillarId, hook: v.hook, points: pointsFromJson(v.pointsJson), close: v.close, captionCta: v.captionCta }, s.clientId));
   const blocking = check.findings.filter((f) => f.severity === "block");
+  // A NOTE CANNOT MAKE A FOUR-POINT SCRIPT HAVE THREE (audit finding 6, Sep 17).
+  // Every blocking finding used to clear on any non-empty note, and the panel
+  // asked "Approve anyway?" — so a script with no hook, no close or the wrong
+  // number of points could be approved and released. These codes are facts
+  // about the SHAPE of a script, which is the house format Jordan dictated and
+  // the one thing a reason cannot argue with. Everything else that blocks (a
+  // missing pillar link, say) is a mapping judgement and still takes a written
+  // override, recorded on the ledger. Pacing stays a warning, deliberately: the
+  // 20–30s figure is an ESTIMATE from a word count, and it is Jordan's open
+  // question whether it should ever hard-block.
+  const unoverridable = blocking.filter((f) => STRUCTURAL_CODES.has(f.code));
+  if (unoverridable.length) {
+    // NOT prefixed "Format check:" on purpose — that prefix is what the panel
+    // matches to offer "Approve anyway?", and offering an override the server
+    // refuses is the trap this fix exists to remove.
+    throw new Error(`House script format: ${unoverridable.map((f) => f.message).join(" · ")} — fix this before approving. There is no override for the script's shape.`);
+  }
   if (blocking.length && !note?.trim()) {
     throw new Error(`Format check: ${blocking.map((f) => f.message).join(" · ")} — fix the script, or approve it anyway with a note saying why.`);
   }

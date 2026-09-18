@@ -855,19 +855,41 @@ async function stepEstimated(job: NonNullable<JobRow>, s: TopazSettings): Promis
   // fired — so an overshoot can still be handed back cleanly and for free.
   // Without this, the month could pass the cap by roughly (drivers × jobs per
   // tick) renders; with it, it cannot pass it at all.
-  const { monthStart } = etWindows();
-  const after = await prisma.topazJob.aggregate({ where: { acceptedAt: { gte: monthStart } }, _sum: { estimateCredits: true } });
-  if ((after._sum.estimateCredits ?? 0) > s.maxCreditsPerMonth) {
+  // EVERY CAP, NOT JUST THE CREDIT ONE (audit, Sep 17). This re-read closed the
+  // month's credit cap and left the other three open: concurrency, renders per
+  // day and renders per month were each counted before the accept and never
+  // again, so two drivers between the count and the write could both take the
+  // last slot. They are all counted the same way now — WITH this job in the
+  // ledger, so the test is "past the cap" rather than the gate's "at it".
+  const { dayStart, monthStart, nextDay, nextMonth } = etWindows();
+  const [credits, todayCount, monthCount, inFlight] = await Promise.all([
+    prisma.topazJob.aggregate({ where: { acceptedAt: { gte: monthStart } }, _sum: { estimateCredits: true } }),
+    prisma.topazJob.count({ where: { acceptedAt: { gte: dayStart } } }),
+    prisma.topazJob.count({ where: { acceptedAt: { gte: monthStart } } }),
+    prisma.topazJob.count({ where: { state: { in: IN_TOPAZ_HANDS } } }),
+  ]);
+  const overshoot: { why: string; retryAt: Date } | null =
+    (credits._sum.estimateCredits ?? 0) > s.maxCreditsPerMonth
+      ? { why: `This month's credit limit (${s.maxCreditsPerMonth}) is used up — this video waits, or raise the limit in Settings.`, retryAt: new Date(Date.now() + RETRY_CEILING_MS) }
+      : monthCount > s.maxRendersPerMonth
+        ? { why: `This month's limit of ${s.maxRendersPerMonth} videos is used up — this one goes through next month, or raise the limit in Settings.`, retryAt: nextMonth }
+        : todayCount > s.maxRendersPerDay
+          ? { why: `Today's limit of ${s.maxRendersPerDay} videos is used up — this one goes through tomorrow.`, retryAt: nextDay }
+          : inFlight > s.maxConcurrent
+            ? { why: `${inFlight - 1} videos were already being processed — this one waits its turn.`, retryAt: new Date(Date.now() + 3 * 60_000) }
+            : null;
+  if (overshoot) {
     if (job.requestId) await cancelVideoRequest(job.requestId);
     // Hand the commitment back in ONE write: acceptedAt cleared takes this job
-    // straight back out of the month's ledger, so the very next gate reads a
-    // true number rather than one that still counts a job we just let go.
+    // straight back out of the ledger, so the very next gate reads a true
+    // number rather than one that still counts a job we just let go. Nothing
+    // has been spent — complete-upload has not fired — so this is free.
     await release(job, {
       state: "estimated",
       acceptedAt: null,
       uploadUrlsJson: null,
-      nextAttemptAt: new Date(Date.now() + RETRY_CEILING_MS),
-      error: `This month's credit limit (${s.maxCreditsPerMonth}) is used up — this video waits, or raise the limit in Settings.`,
+      nextAttemptAt: new Date(Math.min(overshoot.retryAt.getTime(), Date.now() + RETRY_CEILING_MS)),
+      error: overshoot.why,
       errorAt: new Date(),
     });
     return "estimated";

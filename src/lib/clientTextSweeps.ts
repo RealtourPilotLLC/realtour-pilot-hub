@@ -1454,3 +1454,66 @@ export async function sweepAfterHoursReplies(texted: Set<string> = new Set()): P
 }
 
 export { AUTO_SOURCES };
+
+/**
+ * IS THIS QUEUED MESSAGE STILL TRUE? (audit, Sep 17.)
+ *
+ * The Gmail cron's recovery drain sends rows a stopped worker left behind. Its
+ * only gate was the client-text window — which stops a text going out after
+ * 4:30pm, and says nothing at all about whether the text is still correct. A
+ * confirmation queued on Monday for a Wednesday shoot that has since been moved
+ * or cancelled would have gone out on Tuesday saying the old time; a feedback
+ * ask for a job the client has since bounced back into revisions would have
+ * gone out congratulating them on the delivery.
+ *
+ * So the facts the sweep checked when it queued the row are checked again here,
+ * from the row's own identity. A row that is no longer true is not sent and not
+ * retried — it is superseded, and the sweep that owns it will queue a fresh one
+ * if one is still owed.
+ */
+export async function recoveredTextStillTrue(row: {
+  dedupeKey: string | null;
+  projectId: string | null;
+  clientId: string | null;
+}): Promise<{ ok: true } | { ok: false; why: string }> {
+  const [kind, head, ...rest] = (row.dedupeKey ?? "").split(":");
+  const tail = rest.join(":");
+  if (!kind || !head) return { ok: true }; // not one of ours to judge
+
+  if (kind === "confirmation") {
+    const p = await prisma.project.findUnique({ where: { id: head }, select: { shootDate: true, status: true } });
+    if (!p) return { ok: false, why: "the job no longer exists" };
+    if (p.status === "CANCELLED") return { ok: false, why: "the shoot was cancelled" };
+    // The key carries the ET day and start time the text was written about.
+    // Rebuilding it from the CURRENT shoot date is the whole check: a move of
+    // any size changes the key, and the message quotes the old time.
+    if (confirmationKey(head, p.shootDate) !== `confirmation:${head}:${tail}`) {
+      return { ok: false, why: "the shoot time changed after this text was written" };
+    }
+    const handled = await prisma.smartTask.findFirst({
+      where: { projectId: head, taskType: "confirmation_text", status: { in: ["COMPLETED", "CANCELLED"] } },
+      select: { id: true },
+    });
+    if (handled) return { ok: false, why: "somebody has already confirmed this shoot" };
+    return { ok: true };
+  }
+
+  if (kind === "delivery") {
+    const p = await prisma.project.findUnique({ where: { id: head }, select: { deliveredAt: true, status: true, revisionRequestedAt: true } });
+    if (!p) return { ok: false, why: "the job no longer exists" };
+    if (!p.deliveredAt) return { ok: false, why: "the job is no longer marked delivered" };
+    if (p.status === "REVISION" || p.revisionRequestedAt) return { ok: false, why: "the client has asked for changes since this was written" };
+    return { ok: true };
+  }
+
+  if (kind === "welcome") {
+    const c = await prisma.client.findUnique({ where: { id: head }, select: { welcomeTextAt: true } });
+    if (!c) return { ok: false, why: "the client record no longer exists" };
+    if (c.welcomeTextAt) return { ok: false, why: "this client has already been welcomed" };
+    return { ok: true };
+  }
+
+  // afterhours is bounded by its own period key, and the program kinds carry
+  // their eligibility on the notice the sender drains. The window gate stands.
+  return { ok: true };
+}

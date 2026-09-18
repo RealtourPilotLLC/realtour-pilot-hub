@@ -67,17 +67,29 @@ export async function GET(req: NextRequest) {
   // on every tick for ever.
   await step("outboxRecover", async () => {
     const { recoverExpiredLeases, drainPending, unknownSendCount, outboxKind, isClientKind } = await import("@/lib/outbox");
-    const { clientTextWindowOpen, recordDrainedSend } = await import("@/lib/clientTextSweeps");
+    const { clientTextWindowOpen, recordDrainedSend, recoveredTextStillTrue } = await import("@/lib/clientTextSweeps");
     const leases = await recoverExpiredLeases();
     let windowOpen: boolean | null = null; // one settings read per run, not per row
     const recovered: string[] = [];
+    const superseded: string[] = [];
     const drained = await drainPending({
       workerId: `cron-gmail-${Date.now().toString(36)}`,
       limit: 10,
       canSend: async (row) => {
         if (!isClientKind(outboxKind(row.dedupeKey))) return true; // team texts ignore the window by design
         if (windowOpen === null) windowOpen = await clientTextWindowOpen();
-        return windowOpen;
+        if (!windowOpen) return false;
+        // THE WINDOW IS NOT THE ONLY QUESTION (audit, Sep 17). "May we text a
+        // client now" and "is this text still correct" are different, and this
+        // only ever asked the first. A confirmation for a shoot that has since
+        // moved, or a feedback ask for a job the client has since bounced back
+        // into revisions, is wrong whatever time it is.
+        const still = await recoveredTextStillTrue(row);
+        if (!still.ok) {
+          superseded.push(`${outboxKind(row.dedupeKey) ?? "message"}: ${still.why}`);
+          return false;
+        }
+        return true;
       },
       onAccepted: async (row, providerId) => {
         // Each kind's bookkeeping lives with the code that owns it: client texts
@@ -93,6 +105,7 @@ export async function GET(req: NextRequest) {
       leases: { returned: leases.returned, toUnknown: leases.unknown, released: leases.released },
       drained,
       ...(recovered.length > 0 ? { recovered } : {}),
+      ...(superseded.length > 0 ? { superseded } : {}),
       unconfirmed: await unknownSendCount(),
     };
   });

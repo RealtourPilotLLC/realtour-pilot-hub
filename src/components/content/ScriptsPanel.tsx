@@ -113,7 +113,12 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
             {cur && (!approvedLive || cur.id !== s.approvedVersionId) && <button disabled={busy} onClick={() => run(async () => {
               const r = await approveScriptVersionAction(cur.id);
               if (!r.ok && /^Format check:/.test(r.message)) {
-                // Blocking format findings (four points, no hook…): the approver may override with a written reason, recorded on the ledger.
+                // An overridable finding — a missing pillar link and the like:
+                // the approver may pass it with a written reason, recorded on
+                // the ledger. A "House script format:" failure never reaches
+                // here (audit finding 6, Sep 17): the shape of a script is not
+                // something a reason can argue with, so it is shown as a plain
+                // error rather than an offer the server would refuse.
                 const why = window.prompt(`${r.message}\n\nApprove anyway? Say why (this is recorded):`) ?? "";
                 if (why.trim()) return approveScriptVersionAction(cur.id, why.trim());
               }
