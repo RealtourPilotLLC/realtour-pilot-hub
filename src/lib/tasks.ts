@@ -5,7 +5,7 @@ import { QC_LABEL, QC_FAILURE_MODES, VIP_EXTRA_PASS, TYPE_CATEGORY_LABEL, qcCate
 import crypto from "crypto";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { type ChecklistItem, parseChecklist, serializeChecklist, checklistComplete } from "@/lib/checklist";
-import { etAt, etDayKey, etDayStartUtc, etDateTime, endOfBusinessDaysET } from "@/lib/datetime";
+import { addBusinessDaysET, endOfBusinessDaysET, etAt, etDateTime, etDayKey, etDayStartUtc } from "@/lib/datetime";
 import { premiumDueFrom, businessDayEndHour, cappedByPromise, livePromise, targetAtFor, TIERS, type PromiseRules, type TierKey } from "@/lib/turnaround";
 import { slugForName } from "@/lib/assignees";
 import { BRACKET_RATIO, photoTargetFor } from "@/lib/culling";
@@ -2927,10 +2927,23 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
       photographerId: true,
       photographer: { select: { name: true } },
       client: { select: { socialClient: true } },
-      deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true, notCompletedReason: true, quantity: true } },
+      deliverables: { where: OWED_DELIVERABLE_WHERE, select: { type: true, label: true, productTitle: true, notCompletedReason: true, quantity: true } },
+      orderItems: { select: { title: true } },
       packageName: true,
       videosFilmed: true,
       videosOwedOverride: true, // the office's batch size (Sep 13) — wins below
+      // WHETHER THE EDITOR CAN ACTUALLY START (audit WF-06, Sep 18). This select
+      // used to carry none of these, so the engine minted editing work from
+      // FOOTAGE EVIDENCE alone and could not tell a complete handoff from a pile
+      // of files — the delivery board then fell through to "ready to edit" and
+      // told Kyle a job was ready to cut when nobody had said what to cut.
+      debriefSubmittedAt: true,
+      videoInstructions: true,
+      editorBrief: true,
+      reelScript: true,
+      reelHook: true,
+      scriptConfirmedAt: true,
+      handoffReadyAt: true,
     },
   });
   if (!p) return;
@@ -3127,6 +3140,59 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
   if (!anyRaw) return; // nothing detected at all → nothing to hand off yet
 
   await mintEditTask(projectId); // creates if absent; refreshes if open; skips completed
+
+  // NAME THE BLOCKER, THE OWNER AND THE NEXT CHASE (audit WF-06 / directive 8).
+  //
+  // The card is minted either way — the work exists and needs an owner, and a
+  // job with no card is a job nobody is carrying. What changes is that a card
+  // the editor cannot start now SAYS so, in words, with the person it is waiting
+  // on and a date to chase them. A plain social reel demands nothing and reads
+  // ready the moment the footage is in (Jordan: "if it's a standard social reel,
+  // it doesn't need additional notes").
+  //
+  // The task's STATUS is deliberately untouched. Moving it to BLOCKED would take
+  // it off queues that filter on OPEN, and an editor who CAN start on what they
+  // have should not be stopped by the hub — the point is that everybody can see
+  // what is missing, not that the work is frozen.
+  try {
+    const { handoffReadiness } = await import("@/lib/handoff");
+    const { isMonthlyContentJob } = await import("@/lib/pipeline");
+    const r = handoffReadiness({
+      titles: [...p.orderItems.map((o) => o.title), ...p.deliverables.map((d) => d.productTitle ?? d.label)],
+      hasFullVideo: p.deliverables.some((d) => d.type === "VIDEO"),
+      isMonthly: isMonthlyContentJob(p.deliverables, p.packageName),
+      debriefSubmittedAt: p.debriefSubmittedAt,
+      videoInstructions: p.videoInstructions,
+      editorBrief: p.editorBrief,
+      reelScript: p.reelScript,
+      reelHook: p.reelHook,
+      scriptConfirmedAt: p.scriptConfirmedAt,
+      videosFilmed: p.videosFilmed,
+      photographerName: p.photographer?.name ?? null,
+      photographerKey: p.photographer?.name ? slugForName(p.photographer.name) : null,
+    });
+    await prisma.project.update({
+      where: { id: projectId },
+      data: r.ready
+        ? {
+            // Stamped once. It is the moment the job became workable, not the
+            // last time a sweep happened to agree.
+            ...(p.handoffReadyAt ? {} : { handoffReadyAt: new Date() }),
+            handoffBlockedReason: null,
+            handoffOwnerKey: null,
+          }
+        : { handoffBlockedReason: r.blockedReason, handoffOwnerKey: r.ownerKey },
+    });
+    // The chase date lives on the CARD, in followUpAt rather than dueAt: a job
+    // blocked on a missing brief still owes its delivery date, and moving dueAt
+    // would move the clock the editor is scored on.
+    await prisma.smartTask.updateMany({
+      where: { dedupeKey: `edit-video-${projectId}`, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      data: r.ready
+        ? { blockedReason: null }
+        : { blockedReason: r.blockedReason, followUpAt: addBusinessDaysET(new Date(), 1) },
+    });
+  } catch { /* readiness is advisory — it must never stop a card being minted */ }
 
   // 5. Resurrect a falsely-completed work item: task COMPLETED but no cut
   // anywhere (no submission, no video evidence — checked above) and no open

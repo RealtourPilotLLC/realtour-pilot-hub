@@ -32,6 +32,11 @@ import { turnaroundRules } from "@/lib/settings";
 
 export type BlockerKind =
   | "on_hold" | "revision" | "not_shot" | "awaiting_upload"
+  // FILES IN, INSTRUCTIONS ABSENT (audit WF-06, Sep 18). The vocabulary had no
+  // value for the state four live jobs were actually in, so blockerFor fell
+  // through to ready_to_edit and told Kyle a job was ready to cut when nobody
+  // had said what to cut. One new member, not a second vocabulary.
+  | "handoff_incomplete"
   | "ready_to_edit" | "editing" | "qc" | "ready" | "delivered";
 
 /** dueAt is null while the job has no shoot date — no clock has started. */
@@ -376,7 +381,7 @@ export function outstandingPromise(
  * thing that needs doing.
  */
 function blockerFor(
-  p: { status: string; shootDate: Date | null; deliveredAt: Date | null; revisionRequestedAt: Date | null },
+  p: { status: string; shootDate: Date | null; deliveredAt: Date | null; revisionRequestedAt: Date | null; handoffBlockedReason?: string | null },
   deliverables: { type: string; status: string; uploadedAt: Date | null }[],
   /** the status engine's own answer — categories ordered but not live on
    *  Aryeo. Null when the job has no evidence yet (then the rows decide). */
@@ -411,6 +416,16 @@ function blockerFor(
       : kinds.has("PHOTOS") ? "photos"
       : "files";
     return { kind: "awaiting_upload", label: `Waiting on ${name}` };
+  }
+
+  // THE FILES ARE IN AND THE BRIEF IS NOT. Read, never recomputed: the handoff
+  // engine stamps this sentence (and the person it is waiting on) when it mints
+  // the edit card, so the board and the queue say the same thing rather than
+  // each deciding for themselves. Tested after the missing-files case, because
+  // "we do not have the footage" is a bigger blocker than "we do not have the
+  // notes", and before the editing states, because an editor cannot start.
+  if (p.handoffBlockedReason) {
+    return { kind: "handoff_incomplete", label: p.handoffBlockedReason.replace(/\.$/, "") };
   }
 
   if (p.status === "REVIEW") {
@@ -490,6 +505,9 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
     select: {
       id: true, title: true, addressLine: true, city: true, status: true,
       shootDate: true, deliveredAt: true, notes: true,
+      // Stamped by the handoff engine when it mints the edit card, so the board
+      // READS the blocker rather than deciding it a second time (audit WF-06).
+      handoffBlockedReason: true,
       // The outstanding ask (RTP-04): a reopened job is live work, and the
       // card says when it was reopened rather than showing a green delivery.
       revisionRequestedAt: true,
