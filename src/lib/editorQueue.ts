@@ -388,6 +388,34 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
     // job reads what was pinned, wherever its shoot date sits.
     const pinned = statusPinned(p);
     if (pinned) effectiveStatus = p.status;
+    // ---- FOUR VIDEOS, ONE WORD (Jordan, Sep 18) --------------------------
+    //
+    // "She has 4 videos. 1 is ready for review, and the rest are in editing.
+    // If the rest are in editing, I'd like to have the status say 1 edit ready
+    // for review, or 1 edit ready for review 3 more in editing depending on
+    // the deliverables."
+    //
+    // He is describing 5642 Limeport: slot 1 carries an approved v1 AND a
+    // PENDING v2, slots 2-4 have no cut at all. The ladder above picks the
+    // loudest state and the pill reads "Ready for review" — true of ONE video
+    // and read as true of the job, which is the same fault the delivery
+    // evidence had before it learned to count.
+    //
+    // The pill stays: it is the ACTION, and something really is waiting on a
+    // verdict. This is the arithmetic underneath it. Only on a job that owes
+    // more than one video — on a single-video job the pill already says
+    // everything and a second sentence repeating it is noise.
+    const started = cut?.total ?? 0;
+    const notStarted = Math.max(0, videosOwed - started);
+    const parts: string[] = [];
+    if (cut?.waiting) parts.push(`${cut.waiting} ready for review`);
+    if (cut?.revising) parts.push(`${cut.revising} in revisions`);
+    if (cut?.approved) parts.push(`${cut.approved} approved`);
+    // "more" only when something above it was said — "3 more in editing" reads
+    // wrong as the first and only clause.
+    if (notStarted) parts.push(`${notStarted}${parts.length ? " more" : ""} in editing`);
+    const videoBreakdown = videosOwed > 1 && parts.length > 1 ? parts.join(" · ") : null;
+
     const computedTypeDetail = videos.map((d) => d.label || d.type).join(" · ");
     const computedDue = upcoming ? null : p.deliveryDue ?? null;
     // A reopened job's date is the EXTRA video's, when the portal stamped one
@@ -417,6 +445,8 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
       // the photographer's upload-page submit moves it on. A marker on a job
       // that is no longer on Waiting is stale and does not count.
       held: heldSet.has(p.id) && (p.status === "BOOKED" || p.status === "SCHEDULED"),
+      // "1 ready for review · 3 more in editing" — null on a one-video job.
+      videoBreakdown,
       editor: (assigned ? editorMeta(assigned)?.name ?? assigned : null) ?? p.editor?.name ?? (routeKey ? editorMeta(routeKey)?.name ?? routeKey : null),
       // The key behind the name, for the row's reassign select. Same truth
       // ladder as the display: open task → Project.editor → routing rules.

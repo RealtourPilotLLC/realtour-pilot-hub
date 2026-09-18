@@ -83,6 +83,10 @@ export type QueueRow = {
   typeDetail: string; // the actual video deliverable labels, like Slack's "video type details"
   status: string;
   held: boolean; // the office put this job back to Waiting and is holding it there (Sep 11) — the editor's pill greys out
+  /** The per-video arithmetic under the pill on a multi-video job (Sep 18):
+   *  "1 ready for review · 3 more in editing". Null when the job owes one
+   *  video, where the pill already says everything. */
+  videoBreakdown: string | null;
   editor: string | null;
   editorKey: string | null; // key behind the name, drives the reassign select
   auto: boolean;
@@ -855,6 +859,16 @@ export function SimpleQueue({
                             words and lib/queueRemoved. */}
                         {!hideEditor && <RemoveFromQueueButton projectId={r.id} street={r.street} onReceipt={setReceipt} />}
                       </span>
+                      {/* FOUR VIDEOS, ONE WORD (Jordan, Sep 18). The pill names
+                          the loudest state, which on a batch is true of ONE
+                          video and reads as true of the job — 5642 Limeport
+                          says "Ready for review" with three videos not yet cut.
+                          The pill stays because it is the action; this is the
+                          arithmetic under it. Never rendered on a one-video
+                          job (editorQueue leaves it null there). */}
+                      {r.videoBreakdown && (
+                        <span className="mt-1 block text-[11px] text-muted-2">{r.videoBreakdown}</span>
+                      )}
                     </td>
                     <td
                       className={cn("whitespace-nowrap px-3 py-2.5 text-xs font-medium", r.late ? "text-danger" : "")}
