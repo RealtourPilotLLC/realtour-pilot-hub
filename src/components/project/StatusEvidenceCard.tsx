@@ -35,6 +35,9 @@ const TONE: Record<EvidenceToneKind, { border: string; icon: typeof ShieldCheck;
   overdue:     { border: "border-danger/40",     icon: CircleAlert, iconCls: "text-danger",   text: "font-medium text-danger",      chip: "bg-danger/10 text-danger" },
   unknown:     { border: "border-border",        icon: HelpCircle,  iconCls: "text-muted-2",  text: "text-muted",                   chip: "bg-surface-2 text-muted-2" },
   unconfirmed: { border: "border-border",        icon: ShieldCheck, iconCls: "text-muted-2",  text: "text-foreground/85",           chip: "bg-surface-2 text-muted" },
+  // Amber, not green. The totals agree and nothing identifies WHICH videos are
+  // on the listing, so this is a "go and look", not an all-clear (R02).
+  unmatched:   { border: "border-warning/40",    icon: HelpCircle,  iconCls: "text-warning",  text: "font-medium text-warning",     chip: "bg-warning/10 text-warning" },
 };
 
 const CHIP_SUFFIX: Record<EvidenceToneKind, string> = {
@@ -44,6 +47,7 @@ const CHIP_SUFFIX: Record<EvidenceToneKind, string> = {
   overdue: " — overdue",
   unknown: " — not checked",
   unconfirmed: " — not confirmed by the hub",
+  unmatched: " — on the listing, not matched",
 };
 
 // The engine's own sentence still carries an instruction this card must not

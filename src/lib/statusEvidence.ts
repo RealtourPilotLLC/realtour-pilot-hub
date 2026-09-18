@@ -2,6 +2,55 @@
 // the status engine writes to Project.statusEvidence. Keep this free of any
 // server-only imports so cards/components can use it directly.
 
+/**
+ * THE PER-VIDEO TALLY, AS IT TRAVELS (audit R02, Sep 18; reopened Sep 18 pm).
+ *
+ * The status engine counts individual owed videos and writes the result into
+ * the evidence blob — and until now this parser DROPPED the field on the floor,
+ * so every reader downstream of it (the project card, the chips, statusFlag)
+ * was still answering the category question the engine had stopped asking. A
+ * job with four videos made, one on the listing and three still to send read
+ * "Everything ordered is confirmed."
+ *
+ * TWO KINDS OF EVIDENCE, KEPT APART. `named` is a delivery with an identity on
+ * it — a DeliverableOutput row carrying deliveredAt, so the hub can say WHICH
+ * video went. `onListing` is Aryeo's count, which is real (that many videos are
+ * openable) and anonymous (it names none of them). Their maximum is the honest
+ * "at least this many", and it is what `withClient` carries; but where the
+ * anonymous count is doing the work, `unmatched` says so, because four exports
+ * of one cut and four separate videos look identical from here.
+ *
+ * Absent on older blobs, and absent must mean exactly the old behaviour.
+ */
+export type UnitTallyView = {
+  category: string;
+  /** individual outputs owed */
+  owed: number;
+  /** the honest "at least this many are with the client" — max(named, listing) */
+  withClient: number;
+  /** how many exist as finished work on our side */
+  finished: number;
+  /** owed − withClient */
+  outstanding: number;
+  /** 'outputs' = per-video rows; 'quantity' = the order row's count */
+  source: string;
+  /** deliveries with an identity: DeliverableOutput.deliveredAt stamps */
+  named?: number;
+  /** what Aryeo's listing carries for this category — anonymous but real */
+  onListing?: number;
+  /** listing media that no named delivery accounts for. > 0 means the count
+   *  adds up and nothing ties it to the individual videos. */
+  unmatched?: number;
+  /** outputs with no delivery stamp, by `<deliverableId>:<slot>`. NOT trimmed
+   *  against the anonymous count: spending a listing total across slots in
+   *  array order assigns certainty to specific videos on no evidence at all
+   *  (review, Sep 18). Every unstamped output is listed; `unmatched` says how
+   *  much anonymous cover exists for them. */
+  unresolvedKeys?: string[];
+  /** @deprecated the positionally-trimmed list. Kept so old blobs still parse. */
+  outstandingKeys?: string[];
+};
+
 export type ParsedEvidence = {
   expected: string[];
   present: string[];
@@ -13,6 +62,8 @@ export type ParsedEvidence = {
    * fills it in.
    */
   awaitingSend: string[];
+  /** the per-category counts (R02). [] on every blob written before Sep 18. */
+  units: UnitTallyView[];
   partial: boolean;
   aryeo: {
     photos: number;
@@ -56,6 +107,7 @@ export function parseEvidence(raw: string | null | undefined): ParsedEvidence | 
       present: e.present ?? [],
       missing: e.missing ?? [],
       awaitingSend: e.awaitingSend ?? [],
+      units: Array.isArray(e.units) ? e.units : [],
       partial: e.partial ?? false,
       aryeo: e.aryeo ?? null,
       dropbox: e.dropbox ?? null,
@@ -189,7 +241,15 @@ export function evidenceFreshness(input: {
 // pass its answer in as `dueAt` and every tone moves with it.
 // ---------------------------------------------------------------------------
 
-export type EvidenceToneKind = "clear" | "awaiting" | "at_risk" | "overdue" | "unknown" | "unconfirmed";
+export type EvidenceToneKind =
+  | "clear"
+  | "awaiting"
+  | "at_risk"
+  | "overdue"
+  | "unknown"
+  | "unconfirmed"
+  /** the counts add up and nothing ties them to the individual videos (R02) */
+  | "unmatched";
 
 export type EvidenceTone = {
   kind: EvidenceToneKind;
@@ -203,8 +263,18 @@ export type EvidenceTone = {
    *  statusFlag() guessed `missing[0]` — so a job missing Photos and Video got
    *  "Photos due <the video's date>" (review, Sep 16). */
   promiseFor: string | null;
-  /** what is still owed, in the engine's own category words */
+  /** EVERYTHING still owed, in the engine's own category words — the ones
+   *  never made AND the ones made and never sent. Both are obligations and a
+   *  reader who is told only about the first is being reassured wrongly. */
   missing: string[];
+  /** the subset of `missing` that exists in our Dropbox and has not gone out */
+  awaitingSend: string[];
+  /** individual outputs owed and not confirmed with the client, across every
+   *  counted category (R02). 0 on a job with no per-video rows. */
+  outstandingUnits: number;
+  /** listing media that no named delivery accounts for (R02). > 0 means the
+   *  totals agree and nothing identifies WHICH videos are up there. */
+  unmatchedUnits: number;
   freshness: EvidenceFreshness;
 };
 
@@ -240,9 +310,33 @@ export function evidenceTone(input: {
     checkedAt: input.checkedAt,
     now,
   });
-  const missing = e?.missing ?? [];
+  // ---- WHAT IS STILL OWED (R02 reopened, Sep 18) ---------------------------
+  //
+  // `missing` alone is "never made", and this function used to treat an empty
+  // one as proof that a job was finished. It is not. A video can be made,
+  // approved, sitting in our Dropbox Final folder and owed to a client who has
+  // never seen it — that is `awaitingSend`, the engine has computed it since
+  // WF-01, and the headline ignored it. Four videos finished with one on the
+  // listing therefore read "Everything ordered is confirmed." while the same
+  // engine's own numbers said three were outstanding.
+  //
+  // One list now: everything somebody still owes, whichever way it is owed.
+  const neverMade = e?.missing ?? [];
+  const awaitingSend = (e?.awaitingSend ?? []).filter((c) => !neverMade.includes(c));
+  const missing = [...neverMade, ...awaitingSend];
+  const units = e?.units ?? [];
+  const outstandingUnits = units.reduce((n, u) => n + Math.max(0, u.outstanding ?? 0), 0);
+  const unmatchedUnits = units.reduce((n, u) => n + Math.max(0, u.unmatched ?? 0), 0);
   const owed = listWords(missing);
-  const base = { promiseAt: null as Date | null, promiseFor: null as string | null, missing, freshness };
+  const base = {
+    promiseAt: null as Date | null,
+    promiseFor: null as string | null,
+    missing,
+    awaitingSend,
+    outstandingUnits,
+    unmatchedUnits,
+    freshness,
+  };
 
   // WHY it isn't known, said accurately (review, Sep 16). "The last check
   // failed" and "nothing has looked since Sep 1" are different facts, and the
@@ -267,16 +361,67 @@ export function evidenceTone(input: {
     };
   }
 
-  if (missing.length === 0) {
+  const staleNote = () =>
+    freshness.known
+      ? null
+      : `Last confirmed ${freshness.at ? `${etStamp(freshness.at, true)} ET` : "an unknown time ago"}. ${whyNotKnown()}, so this is the last good read.`;
+
+  if (missing.length === 0 && outstandingUnits === 0) {
+    // CONFIRMED BY COUNT IS NOT CONFIRMED BY NAME (R02, Sep 18). Aryeo's
+    // listing count is real — that many videos are openable — and anonymous:
+    // it names none of them. Where it is the thing carrying the total, four
+    // exports of one cut are indistinguishable from four separate videos, and
+    // saying "everything is confirmed" claims an identification nobody made.
+    // Measured on production the same day: 922 per-video rows exist and SIX
+    // carry a delivery stamp, so the anonymous count is doing the work on 234
+    // jobs. Refusing to count it would invent 234 false obligations; pretending
+    // it identifies anything is the error the reviewer reproduced. Both numbers
+    // are reported and the sentence says which one it is leaning on.
+    if (unmatchedUnits > 0) {
+      const u = units.find((x) => (x.unmatched ?? 0) > 0);
+      const named = u?.named ?? 0;
+      const listed = u?.onListing ?? 0;
+      const word = (u?.category ?? "item").toLowerCase();
+      return {
+        ...base,
+        // Quiet on a job the office has already delivered. The hub not being
+        // able to name the videos on a listing from three months ago is not an
+        // accusation, and 234 amber cards would say nothing. Amber is for the
+        // live job, where somebody can still go and look before it goes out.
+        kind: input.status === "DELIVERED" ? "unconfirmed" : "unmatched",
+        headline: "Confirmed by count, not by name",
+        detail:
+          `Aryeo's listing carries ${listed} ${word}${listed === 1 ? "" : "s"} against ${u?.owed ?? listed} ordered, ` +
+          `and ${named === 0 ? "none of them is" : `only ${named} of them is`} tied to a ${word} the hub tracks. ` +
+          `Repeat versions of one cut look the same from here, so open the listing before telling a client it is all there.` +
+          (staleNote() ? ` ${staleNote()}` : ""),
+      };
+    }
     return {
       ...base,
       kind: "clear",
       headline: "Everything ordered is confirmed.",
       // A stale POSITIVE is still not today's fact — say so rather than let a
       // carried-forward count read as a fresh delivery.
-      detail: freshness.known
-        ? null
-        : `Last confirmed ${freshness.at ? `${etStamp(freshness.at, true)} ET` : "an unknown time ago"}. ${whyNotKnown()}, so this is the last good read.`,
+      detail: staleNote(),
+    };
+  }
+
+  // Nothing is MISSING but individual outputs are still outstanding: the job
+  // owes specific videos even though every category has at least one. Say the
+  // count, not the category.
+  if (missing.length === 0) {
+    const short = units
+      .filter((u) => (u.outstanding ?? 0) > 0)
+      .map((u) => `${u.outstanding} of ${u.owed} ${u.category.toLowerCase()}${u.owed === 1 ? "" : "s"}`);
+    return {
+      ...base,
+      kind: input.status === "DELIVERED" ? "unconfirmed" : "at_risk",
+      headline: `${short.join("; ") || `${outstandingUnits} still outstanding`} still outstanding`,
+      detail:
+        input.status === "DELIVERED"
+          ? "The office has this job down as delivered, but the hub cannot account for every video that was ordered."
+          : "Every category has something, but not every video that was ordered is with the client.",
     };
   }
 
@@ -391,7 +536,10 @@ export function statusFlag(
   const e = parseEvidence(raw);
   if (!e) return null;
   const tone = evidenceTone({ status, evidence: e, ...freshness });
-  const missing = e.missing;
+  // The TONE's list, not the blob's: it is the union of "never made" and "made
+  // and never sent", and a label built from the blob's `missing` alone told a
+  // reader nothing was outstanding on a job with three videos waiting to go.
+  const missing = tone.missing;
   switch (tone.kind) {
     case "overdue":
       return {
@@ -417,7 +565,18 @@ export function statusFlag(
     case "unknown":
       return { kind: "unknown", label: tone.freshness.at ? `Not checked since ${etStamp(tone.freshness.at)}` : "Never cross-checked" };
     case "unconfirmed":
-      return { kind: "pending", label: `Delivered · ${missing.join(", ")} unconfirmed` };
+      return {
+        kind: "pending",
+        label: missing.length
+          ? `Delivered · ${missing.join(", ")} unconfirmed`
+          : tone.unmatchedUnits > 0
+            ? "Delivered · not matched to the videos ordered"
+            : `Delivered · ${tone.outstandingUnits} still outstanding`,
+      };
+    case "unmatched":
+      // The counts agree and nothing identifies WHICH. Worth a look, not an
+      // alarm — the label says exactly what the reader has to do.
+      return { kind: "missing", label: "On the listing, not matched to what was ordered" };
     default:
       if (status === "REVIEW" && e.present.length > 0 && !e.fulfilledOnAryeo) {
         return { kind: "ready", label: "Ready to deliver" };

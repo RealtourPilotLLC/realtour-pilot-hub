@@ -9,7 +9,7 @@ import { deliveryPromiseFor, deliveryDueFrom, slaTierOf, videoAnchorFor, OWED_DE
 import type { NotifyTarget } from "@/lib/notify";
 import { photoTargetFor, RAW_OVERAGE_FACTOR, BRACKET_RATIO } from "@/lib/culling";
 import { isMonthlyContentJob } from "@/lib/pipeline";
-import { parseEvidence } from "@/lib/statusEvidence";
+import { parseEvidence, type UnitTallyView } from "@/lib/statusEvidence";
 import { reviewRoomRules } from "@/lib/settings";
 import { holdStands, loadWaitingHolds, releaseWaitingHold } from "@/lib/queueWaiting";
 
@@ -258,17 +258,12 @@ export type UnitTally = {
   outstandingKeys?: string[];
 };
 
-/** The per-category tally as it is written into the evidence blob: counts a
- *  person can read, plus the identities of what is still owed. */
-export type UnitTallyView = {
-  category: string;
-  owed: number;
-  withClient: number;
-  finished: number;
-  outstanding: number;
-  source: string;
-  outstandingKeys?: string[];
-};
+/** The per-category tally as it is written into the evidence blob. DEFINED IN
+ *  statusEvidence.ts — the parser on the other side of the blob has to agree
+ *  with the writer, and the field it silently dropped (R02, reopened Sep 18)
+ *  was dropped precisely because the two shapes lived apart. Re-exported so
+ *  existing importers here keep working. */
+export type { UnitTallyView };
 
 const ALL_CATEGORIES: MediaCategory[] = ["PHOTOS", "VIDEO", "FLOORPLAN", "THREED"];
 
@@ -612,16 +607,26 @@ export function computeStatus(sig: StatusSignals): StatusResult {
     .map((c) => `${shortfallOf(c)} of ${unitsOf(c).owed} ${CATEGORY_PLURAL[c]} still outstanding`)
     .join("; ");
   const countSentence = countsKnown && outstandingPhrase ? ` ${outstandingPhrase}.` : "";
+  // ARYEO NAMES NO CUT, AND THE BLOB MAY NOT PRETEND IT DOES (R02, reopened
+  // Sep 18). This used to spend the listing total across the outstanding slots
+  // in array order and publish the survivors as "the ones nothing can account
+  // for" — which assigns certainty to specific videos on no evidence at all.
+  // Every output with no delivery stamp is now listed as unresolved, and the
+  // anonymous cover is reported separately as a NUMBER, which is the only shape
+  // that evidence actually has.
   const unitView: UnitTallyView[] = expected
     .filter((c) => tallies.has(c))
     .map((c) => {
       const u = unitsOf(c);
       const outstanding = Math.max(0, u.owed - u.withClient);
-      // ARYEO NAMES NO CUT. A listing video proves a delivery happened but not
-      // WHICH slot it was, so the count is spent slot by slot in order — the
-      // same assumption lib/evidenceUnits states for the same reason. The keys
-      // that survive the trim are the ones nothing can account for.
-      const keys = u.keys.slice(Math.max(0, u.keys.length - outstanding));
+      // Deliveries with an identity on them: the per-video rows' own stamps.
+      const named = Math.min(u.owed, tallies.get(c)?.withClient ?? 0);
+      const listed = Math.max(0, onListing[c]);
+      // Listing media that no named delivery accounts for. Only meaningful
+      // where per-video rows EXIST — with a quantity there are no names to
+      // match against, so everything would be "unmatched" and the flag would
+      // fire on ~850 jobs and mean nothing.
+      const unmatched = u.source === "outputs" ? Math.max(0, Math.min(u.owed, listed) - named) : 0;
       return {
         category: CATEGORY_LABEL[c],
         owed: u.owed,
@@ -629,7 +634,10 @@ export function computeStatus(sig: StatusSignals): StatusResult {
         finished: u.finished,
         outstanding,
         source: u.source ?? "quantity",
-        ...(keys.length > 0 ? { outstandingKeys: keys.slice(0, 32) } : {}),
+        named,
+        onListing: listed,
+        ...(unmatched > 0 ? { unmatched } : {}),
+        ...(u.keys.length > 0 ? { unresolvedKeys: u.keys.slice(0, 32) } : {}),
       };
     });
 
