@@ -117,10 +117,18 @@ worklist (R01–R10) is being worked through; rows above carry the fixing commit
 
 Three limits to state plainly rather than leave implied:
 
-- **Almost nothing here has browser evidence.** Screens were verified by calling the functions
-  behind them and by HTTP status after deploy. Whether a blocker chip reads well on a phone, whether
-  a long title wraps, whether video seeking works on a private store — none of that has been
-  watched by anybody.
+- **Browser evidence exists for three screens and no more** (Sep 18, dev server, real production
+  data). Kyle's home renders "3 videos ready to send to the client" with the three jobs the
+  reconciliation independently flags as owed, each labelled per video ("Video 1 of 16"); at 375px it
+  stacks with no horizontal scroll and the Dropbox path wraps. The mobile drawer was measured, not
+  inspected: 25 links inside it, `inert` set while closed and the first one unreachable by keyboard,
+  focus moving to "Home" on open and back to the hamburger on Escape. The project page shows
+  "VIDEOS ON THIS JOB (16) · 1 approved, not sent" with video 1 reading "v2 approved — still has to
+  go to the client" and videos 2–16 "No cut uploaded yet".
+  **That same screenshot also shows R02 unfixed**: the status card above that list still reads
+  "Everything ordered is confirmed" while fifteen videos are owed. One screen, two answers.
+  Everything else — the Editing Room, Settings, the portal, any private-store playback — has still
+  never been watched by anybody.
 - **Coverage is operationally incomplete until somebody is on call.** `routeAlert` deliberately
   falls back to the old recipients for an urgent out-of-hours alert when the rota is empty, because
   silence is the one outcome an urgent alert must never have. That is a safe default, not a
