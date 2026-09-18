@@ -18,6 +18,7 @@ import { Avatar } from "@/components/ui/Avatar";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { setEditVideoEditor, setQueueStatus } from "@/app/editing/actions";
 import { EditOverridesButton, OverrideChip, hasOverride } from "@/components/editing/EditOverridesDialog";
+import { RemoveFromQueueButton } from "@/components/editing/RemoveFromQueue";
 import type { EditComputedView, EditOverrideView } from "@/lib/editOverrideDefaults";
 
 // THE SLACK TRACKER, replicated — Jordan: "I want the editor queue to look
@@ -846,6 +847,13 @@ export function SimpleQueue({
                             onReceipt={setReceipt}
                           />
                         )}
+                        {/* OFF THIS BOARD (Jordan, Sep 18). Office only, beside
+                            the override for the same reason: this cell is where
+                            the per-row office controls live, and the cell's
+                            swallow keeps a click inside it from opening the
+                            edit page. It is not a delete — see the dialog's own
+                            words and lib/queueRemoved. */}
+                        {!hideEditor && <RemoveFromQueueButton projectId={r.id} street={r.street} onReceipt={setReceipt} />}
                       </span>
                     </td>
                     <td

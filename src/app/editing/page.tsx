@@ -10,6 +10,8 @@ import { SimpleQueue, type QueueRow } from "@/components/editing/SimpleQueue";
 import { buildEditorQueue, unreadThreadCount, WAITING_ON_OFFICE } from "@/lib/editorQueue";
 import { editingWorkload, type WorkloadRow } from "@/lib/editorWorkload";
 import { WorkloadPanel } from "@/components/editing/WorkloadPanel";
+import { RecentlyRemoved } from "@/components/editing/RemoveFromQueue";
+import { recentlyRemovedFromQueue } from "@/app/editing/actions";
 
 export const dynamic = "force-dynamic";
 
@@ -204,6 +206,9 @@ export default async function EditorQueuePage() {
         {/* Rows click straight through to /edit/<id> — the notes (customer +
             shoot) live there now, not in the table. */}
         <SimpleQueue notDone={notDone} upcoming={upcomingRows} done={done} />
+        {/* The undo window for a job taken off the board, made visible. Renders
+            nothing when nothing is in it. */}
+        <RecentlyRemoved rows={await recentlyRemovedFromQueue()} />
       </div>
     </div>
   );

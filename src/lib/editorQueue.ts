@@ -10,6 +10,7 @@ import { actualFolderPaths, dropboxWebUrl } from "@/lib/dropboxFolders";
 import { etAddDays } from "@/lib/datetime";
 import { EDIT_ROUND_SUMMARY, OWED_DELIVERABLE_WHERE } from "@/lib/tasks";
 import { WAITING_HOLD_PREFIX } from "@/lib/queueWaiting";
+import { removedProjectIds } from "@/lib/queueRemoved";
 import { OWES_AN_ADDITIONAL_SHOOT } from "@/lib/uploadHistory";
 import { isAdditionalShootRow } from "@/app/upload/additionalShoots";
 import {
@@ -77,6 +78,13 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
     await prisma.appSetting.findMany({ where: { key: { startsWith: WAITING_HOLD_PREFIX } }, select: { key: true } })
   ).map((r) => r.key.slice(WAITING_HOLD_PREFIX.length));
   const heldSet = new Set(heldIds);
+  // TAKEN OFF THIS BOARD BY HAND (Jordan, Sep 18). The ONLY reader of that
+  // marker is this function — see lib/queueRemoved for why it is a marker and
+  // not a column. Applied after the three rails are built rather than as a
+  // `notIn` on each: it is one small set, the rails are three different
+  // queries, and a filter nobody can forget to add to a fourth rail is worth
+  // more than the rows it saves.
+  const removed = await removedProjectIds();
   const [inflight, scheduled, deliveredRaw] = await Promise.all([
     prisma.project.findMany({
       // Past-shoot BOOKED/SCHEDULED jobs belong here too (as "Waiting"): the
@@ -450,13 +458,17 @@ export async function buildEditorQueue(): Promise<{ notDone: QueueRow[]; upcomin
     };
   };
 
+  // Every rail, including any rail somebody adds later: a job taken off this
+  // board is off ALL of it, or "removed" would mean "removed from the tab you
+  // were looking at".
+  const shown = (p: { id: string }) => !removed.has(p.id);
   return {
-    notDone: inflight.filter(hasVideo).map((p) => toRow(p)),
-    upcoming: scheduled.filter(hasVideo).map((p) => toRow(p, true)),
+    notDone: inflight.filter(shown).filter(hasVideo).map((p) => toRow(p)),
+    upcoming: scheduled.filter(shown).filter(hasVideo).map((p) => toRow(p, true)),
     // A reopened job is delivered AND in flight, so it matches both queries —
     // and listed twice it would read "Completed" on one tab while owing a video
     // on the other. Not Done wins: that is where the work is (Sep 18 review).
-    done: deliveredRaw.filter((p) => !reopenedIds.has(p.id)).filter(hasVideo).map((p) => toRow(p)),
+    done: deliveredRaw.filter((p) => !reopenedIds.has(p.id)).filter(shown).filter(hasVideo).map((p) => toRow(p)),
   };
 }
 

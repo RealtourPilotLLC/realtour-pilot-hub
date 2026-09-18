@@ -1653,3 +1653,170 @@ export async function saveEditOverrides(projectId: string, input: EditOverrideIn
     message: `${street}: ${receipt}.${editorNote}`,
   };
 }
+
+// ---------------------------------------------------------------------------
+// TAKE A JOB OFF THE EDITING ROOM, AND PUT IT BACK.
+//
+// Jordan, Sep 18 2026: "I'd like a way to delete the jobs from the editing
+// room… I don't want it to delete anything other than the editing task. I don't
+// want it to affect anything else in our system. Maybe keep it stored for 7
+// days after being deleted with the ability to bring it back."
+//
+// The blast radius is written down in lib/queueRemoved and enforced here: a
+// marker one query reads, and the edit task retired with its own state saved
+// first. Not the project status, not a deliverable, not a cut, not a verdict,
+// not a delivery stamp, not the Aryeo order, not the client. Nothing here
+// leaves the building — no client message, no Aryeo write, no file moved.
+// ---------------------------------------------------------------------------
+
+/** Take a job off the Editing Room. Reversible for RESTORE_WINDOW_DAYS. */
+export async function removeFromEditorQueue(projectId: string, note?: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const actor = me?.name ?? me?.email ?? "The office";
+
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true, title: true } });
+  if (!project) return { ok: false, message: "That job no longer exists." };
+
+  const { queueRemovedKey, removalFor, serialize } = await import("@/lib/queueRemoved");
+  const already = await removalFor(projectId);
+  if (already && !already.restoredAt) return { ok: true, message: "That job is already off the Editing Room." };
+
+  // READ THE TASK BEFORE TOUCHING IT. The restore is only as good as what is
+  // written down here, and `assignedManually` in particular cannot be
+  // reconstructed afterwards — it is the difference between a human's choice
+  // and a routing rule's, and every engine treats those differently.
+  const task = await prisma.smartTask.findUnique({
+    where: { dedupeKey: `edit-video-${projectId}` },
+    select: { id: true, status: true, assignedKey: true, assignedManually: true },
+  });
+  const taskWas = task ? { status: task.status, assignedKey: task.assignedKey, assignedManually: task.assignedManually } : null;
+
+  const at = new Date();
+  const clean = (note ?? "").trim().slice(0, 300) || null;
+  await prisma.appSetting.upsert({
+    where: { key: queueRemovedKey(projectId) },
+    create: { key: queueRemovedKey(projectId), value: serialize({ by: actor, at, note: clean, task: taskWas, restoredAt: null, restoredBy: null }) },
+    update: { value: serialize({ by: actor, at, note: clean, task: taskWas, restoredAt: null, restoredBy: null }) },
+  });
+
+  // CANCELLED, not deleted, and only if it is still live — a task somebody has
+  // already completed keeps its completion.
+  if (task && !["COMPLETED", "CANCELLED"].includes(task.status)) {
+    await prisma.smartTask
+      .update({ where: { id: task.id }, data: { status: "CANCELLED", completedAt: at } })
+      .catch(() => null);
+  }
+
+  const street = (project.title || "this job").split(",")[0].trim();
+  await prisma.activity
+    .create({
+      data: {
+        projectId,
+        type: "SYSTEM",
+        body: `${actor} took ${street} off the Editing Room${clean ? ` — "${clean}"` : ""}. The edit card is cancelled; nothing else about the job changed, and it can be brought back for 7 days.`.slice(0, 500),
+      },
+    })
+    .catch(() => {});
+
+  revalidatePath("/editing");
+  revalidatePath(`/edit/${projectId}`);
+  return { ok: true, message: `${street} is off the Editing Room. You can bring it back for 7 days.` };
+}
+
+/** Put it back, exactly as it was. */
+export async function restoreToEditorQueue(projectId: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  const actor = me?.name ?? me?.email ?? "The office";
+
+  const { queueRemovedKey, removalFor, restorable, serialize, RESTORE_WINDOW_DAYS } = await import("@/lib/queueRemoved");
+  const rec = await removalFor(projectId);
+  if (!rec || rec.restoredAt) return { ok: false, message: "That job isn't off the Editing Room." };
+  if (!restorable(rec)) {
+    return {
+      ok: false,
+      message: `That was removed more than ${RESTORE_WINDOW_DAYS} days ago, so it can't be brought back from here. Add it to the queue again with "Add a job to the queue".`,
+    };
+  }
+
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true, title: true } });
+  if (!project) return { ok: false, message: "That job no longer exists." };
+
+  // The task first: a job back on the board with no card is the same
+  // half-restored state the removal exists to avoid, in reverse.
+  if (rec.task) {
+    await prisma.smartTask
+      .update({
+        where: { dedupeKey: `edit-video-${projectId}` },
+        data: {
+          status: rec.task.status,
+          assignedKey: rec.task.assignedKey,
+          // Whoever held it still holds it. Re-deriving from the routing rules
+          // here would quietly hand a job to a different editor than the one it
+          // was taken from.
+          assignedManually: rec.task.assignedManually,
+          ...(["COMPLETED", "CANCELLED"].includes(rec.task.status) ? {} : { completedAt: null }),
+        },
+      })
+      .catch(() => null);
+  }
+
+  const at = new Date();
+  // The marker STAYS — who removed what and when is the record. `restoredAt` is
+  // what takes the job off the hidden set (lib/queueRemoved.removedProjectIds).
+  await prisma.appSetting
+    .update({
+      where: { key: queueRemovedKey(projectId) },
+      data: { value: serialize({ by: rec.by, at: rec.at, note: rec.note, task: rec.task, restoredAt: at, restoredBy: actor }) },
+    })
+    .catch(() => null);
+
+  const street = (project.title || "this job").split(",")[0].trim();
+  await prisma.activity
+    .create({
+      data: { projectId, type: "SYSTEM", body: `${actor} brought ${street} back to the Editing Room.`.slice(0, 500) },
+    })
+    .catch(() => {});
+
+  revalidatePath("/editing");
+  revalidatePath(`/edit/${projectId}`);
+  return { ok: true, message: `${street} is back on the Editing Room.` };
+}
+
+/** The "Recently removed" list the Editing Room offers — removals still inside
+ *  the undo window, newest first. Read-only. */
+export async function recentlyRemovedFromQueue(): Promise<
+  { projectId: string; street: string; by: string | null; atISO: string; note: string | null; expiresISO: string }[]
+> {
+  try {
+    await requireAdmin();
+  } catch {
+    return [];
+  }
+  const { allRemovals, restorable, RESTORE_WINDOW_DAYS } = await import("@/lib/queueRemoved");
+  const live = (await allRemovals()).filter((r) => restorable(r));
+  if (live.length === 0) return [];
+  const titles = new Map(
+    (await prisma.project.findMany({ where: { id: { in: live.map((r) => r.projectId) } }, select: { id: true, title: true } }))
+      .map((p) => [p.id, p.title] as const),
+  );
+  return live.map((r) => ({
+    projectId: r.projectId,
+    street: (titles.get(r.projectId) || "A job").split(",")[0].trim(),
+    by: r.by,
+    atISO: r.at.toISOString(),
+    note: r.note,
+    expiresISO: new Date(r.at.getTime() + RESTORE_WINDOW_DAYS * 86_400_000).toISOString(),
+  }));
+}
