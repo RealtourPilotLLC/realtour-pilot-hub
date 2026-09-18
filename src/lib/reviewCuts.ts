@@ -1157,6 +1157,71 @@ export async function correctedCutSubmitted(
  *  it: the video-lane task closes whoever holds it, and if no lane is left
  *  open the job resolves the normal way (resolveRevision — stamp cleared, a
  *  delivered job back to Delivered with the close-out and today's bells). */
+/**
+ * Does this job VISIBLY still owe work on the client's ask? Returns the reason
+ * in words, or null when nothing says it does.
+ *
+ * WF-03 (audit, Sep 17). correctedCutApproved is handed a project, a time and a
+ * round — never the identity of the item being satisfied — and it closes the
+ * whole video lane. One card per medium is Jordan's decision (Sep 7: two asks
+ * about the same video are one job of work), so the fix is not to split the
+ * card; it is to stop ONE approval speaking for work the job can still see is
+ * unfinished.
+ *
+ * Two signals, both evidence rather than inference. Neither guesses which video
+ * the client meant, because nothing in the data says so:
+ *
+ *   (a) ANOTHER SLOT RE-CUT SINCE THE ASK AND NOT YET APPROVED. Somebody
+ *       started correcting a second video for this request and has not landed
+ *       it. That is work in flight for this ask, by the editor's own hand.
+ *   (b) THE BRIEF IS BEING TICKED AND IS NOT FINISHED. The itemised work order
+ *       is only a signal when somebody is actually using it — measured Sep 17,
+ *       6 of 10 analysed briefs have never been ticked at all, so an untouched
+ *       brief means "this editor does not tick", not "nothing is done". A
+ *       PARTLY ticked one is a person saying, in the tool built for it, that
+ *       items remain.
+ *
+ * A slot nobody has touched since the ask does NOT hold the card: we cannot
+ * tell an untouched in-scope video from one the client never mentioned, and
+ * holding on that would freeze every revision on a multi-video job. Every
+ * manual close still works — the task's Complete button, the last checklist
+ * tick, the project-page button — so a held card is never a trap.
+ */
+async function correctionStillOwed(projectId: string, raisedAt: Date): Promise<string | null> {
+  const since = await prisma.reviewSubmission.findMany({
+    where: { projectId, kind: "video", createdAt: { gte: raisedAt }, status: { notIn: ["WITHDRAWN", "UPLOAD_FAILED"] } },
+    select: { deliverableId: true, slot: true, status: true },
+  });
+  // One entry per slot: did ANY cut on it land an approval since the ask?
+  const approvedBySlot = new Map<string, boolean>();
+  for (const r of since) {
+    const k = `${r.deliverableId ?? "-"}:${r.slot}`;
+    approvedBySlot.set(k, (approvedBySlot.get(k) ?? false) || r.status === "APPROVED");
+  }
+  const waiting = [...approvedBySlot.values()].filter((ok) => !ok).length;
+  if (waiting > 0) {
+    return `${waiting} other video${waiting === 1 ? "" : "s"} on this job ${waiting === 1 ? "has a corrected cut" : "have corrected cuts"} still waiting on a verdict.`;
+  }
+
+  // The newest brief raised for this ask. The minute of slack absorbs the gap
+  // between stamping revisionRequestedAt and writing the brief row.
+  const brief = await prisma.revisionBrief.findFirst({
+    where: { projectId, createdAt: { gte: new Date(raisedAt.getTime() - 60_000) } },
+    orderBy: { createdAt: "desc" },
+    select: { itemsJson: true, doneJson: true },
+  });
+  if (!brief) return null;
+  let items: unknown[] = [];
+  let done: string[] = [];
+  try { items = brief.itemsJson ? ((JSON.parse(brief.itemsJson) as { items?: unknown[] }).items ?? []) : []; } catch { /* unreadable analysis holds nothing up */ }
+  try { done = brief.doneJson ? (JSON.parse(brief.doneJson) as string[]) : []; } catch { /* ticks are best-effort */ }
+  if (items.length > 0 && done.length > 0 && done.length < items.length) {
+    const left = items.length - done.length;
+    return `${left} of the ${items.length} things the client asked for ${left === 1 ? "is" : "are"} still unticked on the revision card.`;
+  }
+  return null;
+}
+
 export async function correctedCutApproved(
   projectId: string,
   opts: { cutCreatedAt: Date; round?: number | null; isRedo?: boolean },
@@ -1177,6 +1242,14 @@ export async function correctedCutApproved(
   const raisedAt = project.revisionRequestedAt ?? new Date(Math.min(...lane.map((t) => t.createdAt.getTime())));
   if (opts.cutCreatedAt.getTime() < raisedAt.getTime()) return { closed: 0, resolved: false };
   if (!(await cutAnswersAsk(projectId, { round: opts.round, isRedo: opts.isRedo, deliveredAt: project.deliveredAt }))) return { closed: 0, resolved: false };
+  // This approval answers the work it answers — not the whole conversation.
+  const owed = await correctionStillOwed(projectId, raisedAt);
+  if (owed) {
+    await prisma.activity
+      .create({ data: { projectId, type: "SYSTEM", body: `Corrected cut approved. The revision stays open: ${owed}`.slice(0, 500) } })
+      .catch(() => {});
+    return { closed: 0, resolved: false };
+  }
   const laneIds = lane.map((t) => t.id);
   const otherOpen = await prisma.smartTask.count({
     where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] }, id: { notIn: laneIds } },

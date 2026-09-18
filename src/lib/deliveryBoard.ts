@@ -214,11 +214,18 @@ function clockStart(p: Pick<PromiseInput, "shootDate" | "deliverables" | "packag
 
 /** Every ordered product with its own tier and promise — the "n products
  *  ordered" list on the card, and the raw material for the date below. */
-export function boardItems(p: Pick<PromiseInput, "shootDate" | "deliverables" | "packageName" | "orderItems">, now = new Date()): BoardItem[] {
+export function boardItems(
+  p: Pick<PromiseInput, "shootDate" | "deliverables" | "packageName" | "orderItems">,
+  now = new Date(),
+  // The office's editable promises. This was the one date path in the hub that
+  // never received them, so a turnaround changed in Settings moved every
+  // surface EXCEPT Kyle's board (audit WF-04, Sep 17).
+  rules?: TurnaroundRuleSet,
+): BoardItem[] {
   const startedAt = clockStart(p, now);
   return p.orderItems.map((oi) => {
     const tier: Tier = tierFor(oi.title);
-    return { title: oi.title, quantity: oi.quantity, tierLabel: tier.label, dueAt: startedAt ? dueAtFor(tier, startedAt) : null };
+    return { title: oi.title, quantity: oi.quantity, tierLabel: tier.label, dueAt: startedAt ? dueAtFor(tier, startedAt, rules) : null };
   });
 }
 
@@ -252,7 +259,7 @@ export function outstandingPromise(
   const reopened = !settled && !!p.deliveredAt;
 
   const startedAt = clockStart(p, now);
-  const dated = boardItems(p, now).filter((i): i is BoardItem & { dueAt: Date } => i.dueAt !== null);
+  const dated = boardItems(p, now, opts.turnarounds).filter((i): i is BoardItem & { dueAt: Date } => i.dueAt !== null);
   const outstandingItems = missingCategories
     ? dated.filter((i) => {
         const cats = categoryLabelsForLabel(i.title);
@@ -449,7 +456,7 @@ export async function deliveryBoard(): Promise<DeliveryBoard> {
   });
 
   const jobs: BoardJob[] = rows.map((p) => {
-    const items = boardItems(p, now);
+    const items = boardItems(p, now, turnarounds);
 
     const ev = parseEvidence(p.statusEvidence);
     const missingCategories = ev ? ev.missing : null;

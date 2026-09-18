@@ -1,5 +1,6 @@
 import "server-only";
 import { etDayKey, etAt } from "@/lib/datetime";
+import type { TurnaroundRules } from "@/lib/settings";
 
 // ---------------------------------------------------------------------------
 // WHEN IS IT DUE — Jordan's turnaround promises, in one place.
@@ -105,13 +106,34 @@ function addBusinessDays(from: Date, days: number): Date {
 /**
  * The due instant for one ordered item.
  *
- * Lands at 5pm Eastern on the due day — a "next day" promise means end of that
- * day, not the same minute of the morning after.
+ * ONE PROMISE, TWO SHAPES (audit WF-04, Sep 17). This file and tasks.ts used to
+ * date the same job differently, and only tasks.ts read the office's editable
+ * turnaround settings — so Kyle's delivery board could say Friday 5pm while the
+ * project card, the edit task and the QC card said Thursday 10am, and changing
+ * a number in Settings moved three of those four. What the two engines were
+ * really disagreeing about is how a promise is QUOTED:
+ *
+ *   · Quoted in HOURS ("Standard Videos within 48hrs", premium reels) — an
+ *     hour count from the anchor, to the minute. These now take their numbers
+ *     from the same TurnaroundRules that tasks.ts uses, so the two agree
+ *     exactly and an office change reaches every surface at once.
+ *   · Quoted in DAYS ("next day", "7–10 business days") — end of the due day.
+ *     5pm Eastern, because a next-day promise means that day, not the same
+ *     minute of the following morning.
+ *
+ * `rules` is the office's settings; leaving it out keeps the dictated defaults.
  */
-export function dueAtFor(tier: Tier, startedAt: Date): Date {
-  const end = tier.businessDays
-    ? addBusinessDays(startedAt, tier.dueDays)
-    : new Date(startedAt.getTime() + tier.dueDays * 86_400_000);
+export function dueAtFor(tier: Tier, startedAt: Date, rules?: TurnaroundRules | null): Date {
+  // Hour-quoted tiers: the exact instant tasks.ts deliveryDueFrom computes.
+  if (tier.key === "video_48h") {
+    return new Date(startedAt.getTime() + (rules?.standardVideoHours ?? tier.dueDays * 24) * 3_600_000);
+  }
+  if (tier.key === "premium_reel") {
+    return new Date(startedAt.getTime() + (rules?.premiumVideoHours ?? tier.dueDays * 24) * 3_600_000);
+  }
+  // Day-quoted tiers: end of the due day.
+  const days = tier.key === "monthly_social" ? rules?.monthlyBusinessDays ?? tier.dueDays : tier.dueDays;
+  const end = tier.businessDays ? addBusinessDays(startedAt, days) : new Date(startedAt.getTime() + days * 86_400_000);
   return etAt(etDayKey(end), 17);
 }
 
