@@ -68,7 +68,16 @@ export function editorScopeOf(
   me: { role?: string | null; editorKey?: string | null; name?: string | null } | null | undefined,
 ): string | null {
   if (!me || me.role !== "EDITOR") return null;
-  return me.editorKey || (me.name ? slugForName(me.name) : null) || EDITOR_SCOPE_NONE;
+  // AN ASSIGNED IDENTITY OR NOTHING (audit, Sep 17). This used to fall back to
+  // the login name's slug, and slugForName keeps only the FIRST name — so an
+  // EDITOR account created without an editorKey would silently inherit the task
+  // board of any editor sharing that first name. An editorKey is set by Jordan
+  // or Kyle; the name on an AppUser is free text the account holder can edit,
+  // and the same reasoning already governs canViewProject below. Unlinked now
+  // fails closed to the sentinel, which shows UNMAPPED_EDITOR_MESSAGE rather
+  // than somebody else's work. (Verified Sep 17: both live editors — Kim and
+  // John — carry explicit editorKeys, so this locks nobody out.)
+  return me.editorKey || EDITOR_SCOPE_NONE;
 }
 
 /** True when a scope is the fail-closed sentinel (i.e. an unmapped editor). */

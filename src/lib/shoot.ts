@@ -735,6 +735,14 @@ export type PhotographerTaskRow = {
   taskType: string;
   priority: string;
   dueAtISO: string | null;
+  /**
+   * Past its due time as at the server render. Decided HERE rather than in the
+   * card: Date.now() inside a component is impure and disagrees between the
+   * server pass and hydration, and the card had been carrying a lint suppression
+   * for exactly that (audit, Sep 17). One clock, on the server, like every other
+   * date in the hub.
+   */
+  overdue: boolean;
   projectId: string | null;
   street: string | null;
 };
@@ -778,6 +786,7 @@ export async function listPhotographerTasks(memberId: string): Promise<Photograp
     taskType: t.taskType,
     priority: t.priority,
     dueAtISO: t.dueAt?.toISOString() ?? null,
+    overdue: t.dueAt != null && t.dueAt.getTime() < Date.now(),
     projectId: t.projectId,
     street: t.propertyAddress ? streetOf(t.propertyAddress) || null : null,
   }));

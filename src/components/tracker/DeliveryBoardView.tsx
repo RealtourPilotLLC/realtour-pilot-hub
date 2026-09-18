@@ -295,6 +295,19 @@ export function DeliveryBoardView({ board }: { board: DeliveryBoard }) {
   const [tab, setTab] = useState<(typeof TABS)[number]["key"]>("today");
   const jobs = board[tab];
 
+  if (board.unavailable) {
+    return (
+      <div className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/[0.07] px-4 py-3">
+        <AlertTriangle className="mt-0.5 size-5 shrink-0 text-warning" />
+        <p className="text-sm">
+          <span className="font-semibold">The delivery board didn&apos;t load.</span>{" "}
+          This is not an empty board — nothing here is a statement about what is due or late.
+          Reload the page, and if it keeps happening tell Jordan.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       {board.overdueCount > 0 && (

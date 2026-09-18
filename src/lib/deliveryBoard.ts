@@ -94,6 +94,14 @@ export type DeliveryBoard = {
   upcoming: BoardJob[];
   delivered: BoardJob[];
   overdueCount: number;
+  /**
+   * The board could not be read at all (the query threw). An empty board and an
+   * unreadable one look identical and mean opposite things — "nothing is late"
+   * versus "I do not know what is late" — and the home page used to render the
+   * first when it meant the second (audit, Sep 17). Callers that fall back MUST
+   * set this, and every reassuring zero is suppressed while it is true.
+   */
+  unavailable?: boolean;
 };
 
 const VIDEOISH = new Set(["VIDEO", "SOCIAL_REEL"]);

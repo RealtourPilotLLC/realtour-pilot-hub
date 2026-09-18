@@ -58,7 +58,14 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
   const cur = s.versions[0] ?? null;
   const [body, setBody] = useState(cur?.body ?? "");
   const [instr, setInstr] = useState("");
-  const state = s.historical ? "historical" : s.sharedVersionId ? "released to the portal" : s.approvedVersionId ? (cur && cur.id !== s.approvedVersionId ? "new draft since approval" : "approved · not released") : "needs your OK";
+  // WHAT IS TRUE NOW, not what a pointer still remembers (audit, Sep 17). A
+  // script pulled back to the queue keeps its ledger history, so the chip and
+  // the buttons ask the approved VERSION whether it is still live. Reading
+  // sharedVersionId first used to put "released to the portal" on withheld work
+  // and left a returned-then-shared script with no button at all.
+  const approvedLive = !!s.approvedVersionId && s.versions.some((v) => v.id === s.approvedVersionId && (v.status === "APPROVED" || v.status === "SHARED"));
+  const releasedLive = approvedLive && !!s.sharedVersionId && s.releaseState !== "withheld";
+  const state = s.historical ? "historical" : releasedLive ? "released to the portal" : approvedLive ? (cur && cur.id !== s.approvedVersionId ? "new draft since approval" : "approved · not released") : "needs your OK";
   const tone = s.historical ? "bg-surface-2 text-muted" : state.startsWith("needs") || state.startsWith("new draft") ? "bg-brand-soft text-brand" : "bg-success-soft text-success";
   return (
     <details className="group px-5 py-3" open={open}>
@@ -103,7 +110,7 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
         )}
         {mode === "read" && !s.historical && (
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            {cur && cur.id !== s.approvedVersionId && <button disabled={busy} onClick={() => run(async () => {
+            {cur && (!approvedLive || cur.id !== s.approvedVersionId) && <button disabled={busy} onClick={() => run(async () => {
               const r = await approveScriptVersionAction(cur.id);
               if (!r.ok && /^Format check:/.test(r.message)) {
                 // Blocking format findings (four points, no hook…): the approver may override with a written reason, recorded on the ledger.
@@ -112,7 +119,7 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
               }
               return r;
             })} className={`${btn} bg-success/15 text-success hover:bg-success/25`}><Check className="mr-1 inline size-3" />Approve v{cur.versionNo}</button>}
-            {s.approvedVersionId && s.sharedVersionId !== s.approvedVersionId && <button disabled={busy} onClick={() => run(() => releaseScriptAction(s.id))} className={`${btn} bg-brand text-white`}><Send className="mr-1 inline size-3" />Release to the portal</button>}
+            {approvedLive && s.sharedVersionId !== s.approvedVersionId && <button disabled={busy} onClick={() => run(() => releaseScriptAction(s.id))} className={`${btn} bg-brand text-white`}><Send className="mr-1 inline size-3" />Release to the portal</button>}
             <button onClick={() => setMode("revise")} className={quiet}><Sparkles className="mr-1 inline size-3" />Ask AI to revise</button>
             <button onClick={() => setMode("edit")} className={quiet}>Edit myself</button>
             {(s.approvedVersionId || s.sharedVersionId) && <button disabled={busy} onClick={() => run(() => returnScriptAction(s.id, ""))} className={quiet}><Undo2 className="mr-1 inline size-3" />Back to the queue</button>}

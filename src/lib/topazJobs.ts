@@ -362,8 +362,29 @@ export async function claimTopazJobs(limit: number, leaseBy: string): Promise<st
   return claimed;
 }
 
-async function release(jobId: string, patch: Record<string, unknown> = {}) {
-  await prisma.topazJob.update({ where: { id: jobId }, data: { leaseUntil: null, leaseBy: null, ...patch } }).catch(() => {});
+/**
+ * Hand the row back — but ONLY if it is still ours to hand back.
+ *
+ * WHY THIS IS A COMPARE-AND-SWAP (audit, Sep 17). hold() and finishAs() have
+ * always fenced their writes; release() did not, and it is the one every step
+ * ends on. Two drivers run (the five-minute lane and the hourly safety net) and
+ * they overlap once an hour. If our lease expires mid-step — a slow Topaz call,
+ * a big upload — the other driver claims the row and moves it on. An
+ * unfenced release would then write OUR stale state over ITS progress and null
+ * out ITS lease, so a third tick could claim a row that is actively uploading.
+ * Fencing on the leaseBy we read at the top of the step makes losing the race a
+ * no-op instead of corruption. The loss is logged, not swallowed: a lane that
+ * keeps losing its lease is telling us LEASE_MS is too short for these files.
+ */
+async function release(job: { id: string; leaseBy: string | null }, patch: Record<string, unknown> = {}): Promise<boolean> {
+  const r = await prisma.topazJob
+    .updateMany({ where: { id: job.id, leaseBy: job.leaseBy }, data: { leaseUntil: null, leaseBy: null, ...patch } })
+    .catch((e: unknown) => {
+      console.warn("topaz release failed", job.id, (e as Error).message);
+      return { count: 0 };
+    });
+  if (r.count !== 1) console.warn("topaz release lost the lease", job.id, "(another driver holds it now)");
+  return r.count === 1;
 }
 
 /** A held job never sleeps longer than this before re-asking. The caps park a
@@ -467,7 +488,7 @@ export async function advanceTopazJob(jobId: string, budget: { remainingMs: () =
   const job = await loadJob(jobId);
   if (!job) return "gone";
   if (!LIVE_STATES.includes(job.state as TopazState)) {
-    await release(jobId);
+    await release(job);
     return job.state;
   }
   const s = await topazSettings();
@@ -516,7 +537,7 @@ export async function advanceTopazJob(jobId: string, budget: { remainingMs: () =
       case "saving":
         return await stepSaving(job, s);
       default:
-        await release(jobId);
+        await release(job);
         return job.state;
     }
   } catch (e) {
@@ -531,7 +552,7 @@ export async function advanceTopazJob(jobId: string, budget: { remainingMs: () =
       return "failed";
     }
     const backoffMs = Math.min(30 * 60_000, 60_000 * 2 ** (attempt - 1)); // 1m, 2m, 4m…
-    await release(jobId, {
+    await release(job, {
       attempt,
       nextAttemptAt: new Date(Date.now() + backoffMs),
       error: err.message.slice(0, 400),
@@ -610,7 +631,7 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
     // something nobody measured (review, Sep 17). Try again instead.
     if (audioUnreadable) {
       if (job.attempt < 3) {
-        await release(job.id, { state: "queued", attempt: job.attempt + 1, nextAttemptAt: new Date(Date.now() + 120_000) });
+        await release(job, { state: "queued", attempt: job.attempt + 1, nextAttemptAt: new Date(Date.now() + 120_000) });
         return "queued";
       }
       await skip(
@@ -645,7 +666,7 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
   // unaccepted estimate — no credits, nothing to clean up, and we cannot cancel
   // an id we never learned. Never POST twice for a job that already has one.
   if (job.requestId) {
-    await release(job.id, { state: "estimated", attempt: 0, nextAttemptAt: null });
+    await release(job, { state: "estimated", attempt: 0, nextAttemptAt: null });
     return "estimated";
   }
 
@@ -740,7 +761,7 @@ async function stepQueued(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
     return "skipped";
   }
 
-  await release(job.id, { state: "estimated", attempt: 0, error: null, errorAt: null, nextAttemptAt: null });
+  await release(job, { state: "estimated", attempt: 0, error: null, errorAt: null, nextAttemptAt: null });
   return "estimated";
 }
 
@@ -778,7 +799,7 @@ async function applyGate(job: NonNullable<JobRow>, gate: Exclude<SpendGate, { ok
 async function stepEstimated(job: NonNullable<JobRow>, s: TopazSettings): Promise<string> {
   if (!job.requestId) {
     // Nothing to accept — go back and ask for an estimate again. Free.
-    await release(job.id, { state: "queued", nextAttemptAt: null });
+    await release(job, { state: "queued", nextAttemptAt: null });
     return "queued";
   }
 
@@ -796,7 +817,7 @@ async function stepEstimated(job: NonNullable<JobRow>, s: TopazSettings): Promis
   // top-ups against a $100 cap. Go back to the free price check instead.
   if (job.estimateCredits == null) {
     await cancelEstimate(job.requestId);
-    await release(job.id, { state: "queued", requestId: null, nextAttemptAt: null });
+    await release(job, { state: "queued", requestId: null, nextAttemptAt: null });
     return "queued";
   }
 
@@ -814,7 +835,7 @@ async function stepEstimated(job: NonNullable<JobRow>, s: TopazSettings): Promis
   if (stored.length) targets = stored;
   else targets = await acceptVideoRequest(job.requestId);
 
-  await release(job.id, {
+  await release(job, {
     state: "uploading",
     // acceptedAt is the ledger moment for every cap: we have now committed.
     acceptedAt: job.acceptedAt ?? new Date(),
@@ -841,7 +862,7 @@ async function stepEstimated(job: NonNullable<JobRow>, s: TopazSettings): Promis
     // Hand the commitment back in ONE write: acceptedAt cleared takes this job
     // straight back out of the month's ledger, so the very next gate reads a
     // true number rather than one that still counts a job we just let go.
-    await release(job.id, {
+    await release(job, {
       state: "estimated",
       acceptedAt: null,
       uploadUrlsJson: null,
@@ -911,7 +932,7 @@ async function stepUploading(job: NonNullable<JobRow>, s: TopazSettings, budget:
     // Don't start a part we cannot finish: a killed function mid-PUT is a part
     // with no eTag, and the next tick would just start it again.
     if (budget.remainingMs() < 90_000) {
-      await release(job.id, { nextAttemptAt: new Date(Date.now() + 5_000) });
+      await release(job, { nextAttemptAt: new Date(Date.now() + 5_000) });
       return "uploading";
     }
     const start = (t.partNum - 1) * chunk;
@@ -937,18 +958,25 @@ async function stepUploading(job: NonNullable<JobRow>, s: TopazSettings, budget:
     done.push(part);
     haveSet.add(part.partNum);
     // Persist after EVERY part: this line is the whole resumability story.
-    await prisma.topazJob.update({
-      where: { id: job.id },
+    // Fenced like release(): if our lease lapsed and another driver took the
+    // row, this must not write our part list over its work — nor renew a lease
+    // that is now somebody else's (audit, Sep 17).
+    const kept = await prisma.topazJob.updateMany({
+      where: { id: job.id, leaseBy: job.leaseBy },
       data: {
         uploadPartsJson: JSON.stringify(done),
         uploadedBytes: done.length * chunk > total ? total : done.length * chunk,
         leaseUntil: new Date(Date.now() + LEASE_MS), // renew — a big file is a long hold
       },
     });
+    if (kept.count !== 1) {
+      console.warn("topaz upload lost the lease mid-file", job.id);
+      return "uploading";
+    }
   }
 
   if (done.length < targets.length) {
-    await release(job.id, { nextAttemptAt: new Date(Date.now() + 5_000) });
+    await release(job, { nextAttemptAt: new Date(Date.now() + 5_000) });
     return "uploading";
   }
 
@@ -980,7 +1008,7 @@ async function stepUploading(job: NonNullable<JobRow>, s: TopazSettings, budget:
       // a timeout says nothing about what the server did. stepProcessing asks
       // Topaz which it was and, only if Topaz says the bytes are still owed,
       // hands the claim back. Retrying blind here is how you pay twice.
-      await release(job.id, {
+      await release(job, {
         state: "processing",
         error: `Asked Topaz to start and didn't get a clear answer (${(e as Error).message}). Checking with them.`.slice(0, 400),
         errorAt: new Date(),
@@ -994,7 +1022,7 @@ async function stepUploading(job: NonNullable<JobRow>, s: TopazSettings, budget:
   // awaiting-upload status and counts an attempt as it does so, we land here
   // again, and a reset meant the count could never reach maxAttempts. Progress
   // through the states is not evidence that the retries are behaving.
-  await release(job.id, { state: "processing", error: null, errorAt: null, nextAttemptAt: new Date(Date.now() + 45_000) });
+  await release(job, { state: "processing", error: null, errorAt: null, nextAttemptAt: new Date(Date.now() + 45_000) });
   return "processing";
 }
 
@@ -1056,7 +1084,7 @@ async function stepProcessing(job: NonNullable<JobRow>, s: TopazSettings): Promi
     if (verdict === "unreadable" && job.attempt < 3) {
       // Could not read one of the two files this minute. The render is finished
       // and paid for; try again shortly rather than file it unchecked.
-      await release(job.id, { attempt: job.attempt + 1, nextAttemptAt: new Date(Date.now() + 60_000) });
+      await release(job, { attempt: job.attempt + 1, nextAttemptAt: new Date(Date.now() + 60_000) });
       return "processing";
     }
     if (verdict === "unreadable") {
@@ -1067,7 +1095,7 @@ async function stepProcessing(job: NonNullable<JobRow>, s: TopazSettings): Promi
         `topaz-audio-unverified-${job.id}`,
       );
     }
-    await release(job.id, {
+    await release(job, {
       state: "saving",
       // The filing clock starts HERE. Measuring it from acceptedAt gave a
       // three-hour render half an hour to reach Dropbox and then re-failed it
@@ -1109,7 +1137,7 @@ async function stepProcessing(job: NonNullable<JobRow>, s: TopazSettings): Promi
     //    believing that would hand the claim straight back and ask Topaz to
     //    start the same render again. Wait and ask once more instead.
     if (job.completeUploadAt && Date.now() - job.completeUploadAt.getTime() < COMPLETE_UPLOAD_GRACE_MS) {
-      await release(job.id, { nextAttemptAt: new Date(Date.now() + 60_000) });
+      await release(job, { nextAttemptAt: new Date(Date.now() + 60_000) });
       return "processing";
     }
     // 2. NOT PAST THE CEILING. `attempt` here and completeUploadTries in
@@ -1120,7 +1148,7 @@ async function stepProcessing(job: NonNullable<JobRow>, s: TopazSettings): Promi
       await fail(job, "Topaz never started this render even though the file was sent. Nothing was charged.");
       return "failed";
     }
-    await release(job.id, {
+    await release(job, {
       state: "uploading",
       completeUploadAt: null,
       attempt,
@@ -1129,7 +1157,7 @@ async function stepProcessing(job: NonNullable<JobRow>, s: TopazSettings): Promi
     return "uploading";
   }
 
-  await release(job.id, { nextAttemptAt: new Date(Date.now() + 60_000), error: null, errorAt: null });
+  await release(job, { nextAttemptAt: new Date(Date.now() + 60_000), error: null, errorAt: null });
   return "processing";
 }
 
@@ -1191,11 +1219,11 @@ async function stepSaving(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
   if (job.dropboxJobId && !job.savedAt) {
     const state = await checkSaveJob(job.id, job.dropboxJobId);
     if (state === "pending") {
-      await release(job.id, { nextAttemptAt: new Date(Date.now() + 20_000) });
+      await release(job, { nextAttemptAt: new Date(Date.now() + 20_000) });
       return "saving";
     }
     if (state === "failed") {
-      await release(job.id, { dropboxJobId: null, downloadUrl: null, nextAttemptAt: new Date(Date.now() + 60_000), attempt: job.attempt + 1 });
+      await release(job, { dropboxJobId: null, downloadUrl: null, nextAttemptAt: new Date(Date.now() + 60_000), attempt: job.attempt + 1 });
       if (job.attempt + 1 >= s.maxAttempts) {
         await fail(job, "The finished video was made but Dropbox wouldn't take it. The credits were spent; the file is still at Topaz.");
         return "failed";
@@ -1232,7 +1260,7 @@ async function stepSaving(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
       const st = await videoStatus(job.requestId!);
       url = st.downloadUrl;
       if (!url) {
-        await release(job.id, { nextAttemptAt: new Date(Date.now() + 60_000) });
+        await release(job, { nextAttemptAt: new Date(Date.now() + 60_000) });
         return "saving";
       }
       await prisma.topazJob.update({ where: { id: job.id }, data: { downloadUrl: url } });
@@ -1254,7 +1282,7 @@ async function stepSaving(job: NonNullable<JobRow>, s: TopazSettings): Promise<s
       throw e;
     }
     if (r[".tag"] !== "complete") {
-      await release(job.id, { finalPath: path, dropboxJobId: r.async_job_id ?? null, nextAttemptAt: new Date(Date.now() + 20_000) });
+      await release(job, { finalPath: path, dropboxJobId: r.async_job_id ?? null, nextAttemptAt: new Date(Date.now() + 20_000) });
       return "saving";
     }
     await prisma.topazJob.update({ where: { id: job.id }, data: { finalPath: path, savedAt: new Date(), dropboxJobId: null } });
@@ -1310,7 +1338,7 @@ async function finishSaving(job: NonNullable<JobRow>, s: TopazSettings, path: st
         await fail(job, `The 1080p file is in Dropbox but the hub hasn't been able to check on it for over ${Math.round(STALL_MS / 3600_000)} hours. The editor's original is still in the Final folder — deliver that one, and press "Try again" once Dropbox is responding.`);
         return "failed";
       }
-      await release(job.id, { nextAttemptAt: new Date(Date.now() + 60_000) });
+      await release(job, { nextAttemptAt: new Date(Date.now() + 60_000) });
       return "saving";
     }
   }
@@ -1369,7 +1397,7 @@ async function finishSaving(job: NonNullable<JobRow>, s: TopazSettings, path: st
 
   const taskId = await pingKyle(job, path, originalMoved);
 
-  await release(job.id, {
+  await release(job, {
     state: "done",
     finalPath: path,
     savedAt: new Date(),
@@ -1609,11 +1637,14 @@ export async function driveTopazJobs(opts: { max?: number; budgetMs?: number; le
     where: { state: { in: LIVE_STATES }, leaseUntil: { lt: new Date() } },
   });
 
-  const ids = await claimTopazJobs(opts.max ?? 4, opts.leaseBy ?? `tick-${new Date().toISOString()}`);
+  const leaseBy = opts.leaseBy ?? `tick-${new Date().toISOString()}`;
+  const ids = await claimTopazJobs(opts.max ?? 4, leaseBy);
   const advanced: Record<string, number> = {};
   for (const id of ids) {
     if (budget.remainingMs() < 30_000) {
-      await release(id); // hand it back rather than half-do it
+      // Hand it back rather than half-do it — with the key we claimed under, so
+      // the fence recognises us. claimTopazJobs truncates to 60 chars.
+      await release({ id, leaseBy: leaseBy.slice(0, 60) });
       continue;
     }
     const state = await advanceTopazJob(id, budget).catch((e) => {

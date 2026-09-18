@@ -976,6 +976,27 @@ async function uploadAuthor(projectId: string): Promise<{ ok: true; key: string 
   return { ok: true, key, name: me.name ?? me.email ?? null, role: me.role };
 }
 
+/**
+ * A stable key pair for pg_advisory_xact_lock, scoped to ONE cut slot. Two
+ * FNV-1a passes with different seeds give the lock's two-int4 form: same slot →
+ * same pair on every worker, different slots → different pairs, so two editors
+ * uploading different videos never wait on each other. A collision across slots
+ * would only ever cost a moment's waiting, never correctness. (Two int4s rather
+ * than one int8 because the build targets below ES2020 — no BigInt literals.)
+ */
+function slotLockKey(projectId: string, deliverableId: string | null, slot: number): [number, number] {
+  const str = `${projectId}|${deliverableId ?? "-"}|${slot}`;
+  const fnv = (seed: number): number => {
+    let h = seed;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return h | 0; // int4, which is what the two-key lock takes
+  };
+  return [fnv(0x811c9dc5), fnv(0x9e3779b9)];
+}
+
 export async function startCutUpload(input: {
   projectId: string;
   deliverableId: string;
@@ -1034,31 +1055,46 @@ export async function startCutUpload(input: {
   // round FREES its number (Jordan, Sep 16: an editor who uploaded the wrong
   // file takes it back and sends the right one) — the corrected upload is
   // version 2, not version 3, and the editor's card and the Room agree.
-  const highest = await prisma.reviewSubmission.aggregate({
-    where: { projectId: input.projectId, deliverableId: input.deliverableId, slot: slot.slot, status: { notIn: ["UPLOAD_FAILED", "WITHDRAWN"] } },
-    _max: { round: true },
-  });
-  const round = (highest._max.round ?? 0) + 1;
-  const row = await prisma.reviewSubmission.create({
-    data: {
-      projectId: input.projectId,
-      kind: "video",
-      deliverableId: input.deliverableId,
-      slot: slot.slot,
-      round,
-      status: "UPLOADING",
-      source: "upload",
-      fileName: input.fileName.slice(0, 200),
-      sizeBytes: Number.isFinite(input.sizeBytes) ? Math.floor(input.sizeBytes) : null,
-      // What arrived, as the browser measured it. finishCutUpload fills these
-      // in from the file's own header when the browser couldn't.
-      sourceWidth: Number.isFinite(Number(input.width)) && Number(input.width) > 0 ? Math.round(Number(input.width)) : null,
-      sourceHeight: Number.isFinite(Number(input.height)) && Number(input.height) > 0 ? Math.round(Number(input.height)) : null,
-      ...(waved ? { exportOverrideBy: who.name ?? "The office", exportOverrideAt: new Date() } : {}),
-      submittedByKey: who.key,
-      submittedByName: who.name,
-    },
-    select: { id: true },
+  // READ-THEN-WRITE, SERIALISED PER SLOT (audit, Sep 17). Reading the highest
+  // round and creating round+1 as two statements let two editors starting at
+  // the same instant both become "Version 2" — two rows the Room cannot tell
+  // apart, with notes and an approval landing on whichever one a later query
+  // happened to return. A unique index is the wrong tool here because a
+  // WITHDRAWN row keeps its number while FREEING it for reuse, so duplicates
+  // are legal by design. Instead both statements run inside one transaction
+  // behind an advisory lock on this slot alone: concurrent uploads to OTHER
+  // slots and other jobs are unaffected, and the lock dies with the transaction
+  // whatever happens next.
+  const { round, row } = await prisma.$transaction(async (tx) => {
+    const [lockA, lockB] = slotLockKey(input.projectId, input.deliverableId, slot.slot);
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockA}, ${lockB})`;
+    const highest = await tx.reviewSubmission.aggregate({
+      where: { projectId: input.projectId, deliverableId: input.deliverableId, slot: slot.slot, status: { notIn: ["UPLOAD_FAILED", "WITHDRAWN"] } },
+      _max: { round: true },
+    });
+    const next = (highest._max.round ?? 0) + 1;
+    const created = await tx.reviewSubmission.create({
+      data: {
+        projectId: input.projectId,
+        kind: "video",
+        deliverableId: input.deliverableId,
+        slot: slot.slot,
+        round: next,
+        status: "UPLOADING",
+        source: "upload",
+        fileName: input.fileName.slice(0, 200),
+        sizeBytes: Number.isFinite(input.sizeBytes) ? Math.floor(input.sizeBytes) : null,
+        // What arrived, as the browser measured it. finishCutUpload fills these
+        // in from the file's own header when the browser couldn't.
+        sourceWidth: Number.isFinite(Number(input.width)) && Number(input.width) > 0 ? Math.round(Number(input.width)) : null,
+        sourceHeight: Number.isFinite(Number(input.height)) && Number(input.height) > 0 ? Math.round(Number(input.height)) : null,
+        ...(waved ? { exportOverrideBy: who.name ?? "The office", exportOverrideAt: new Date() } : {}),
+        submittedByKey: who.key,
+        submittedByName: who.name,
+      },
+      select: { id: true },
+    });
+    return { round: next, row: created };
   });
   // An override is a decision, so it goes in the job's history in words — the
   // same place a removed cut leaves its one line. Best-effort: the upload is

@@ -484,7 +484,13 @@ export default async function HomePage() {
       // Closes a PERSON made today — not the sweeps' (opsDay.ts explains).
       handledByPeopleToday(),
       // The Project Tracker's delivery board, merged into the Pipeline block.
-      deliveryBoard().catch((): DeliveryBoard => ({ today: [], tomorrow: [], upcoming: [], delivered: [], overdueCount: 0 })),
+      // A failed read is NOT a clean board: it is marked unavailable so the
+      // Pipeline block says it could not load and the "0 past due" reassurance
+      // is withheld (audit, Sep 17).
+      deliveryBoard().catch((e: unknown): DeliveryBoard => {
+        console.warn("deliveryBoard failed", (e as Error).message);
+        return { today: [], tomorrow: [], upcoming: [], delivered: [], overdueCount: 0, unavailable: true };
+      }),
       // WHO the flags are for: the viewer's own assignee key, resolved the way
       // openLoopsList resolves it (roster match by TeamMember → email → first
       // name, else the first-name slug). It used to be the literal "kyle" for
@@ -597,7 +603,9 @@ export default async function HomePage() {
     href: "/tasks?tab=comms&via=email", tone: "muted",
   });
   add({
-    key: "past-due", group: "risk", count: board.overdueCount,
+    // Withheld while the board is unreadable — a flag that says "0 past due"
+    // off a failed query is worse than no flag.
+    key: "past-due", group: "risk", count: board.unavailable ? 0 : board.overdueCount,
     label: `job${board.overdueCount === 1 ? "" : "s"} past their promised date`,
     detail: "at the top of the tracker's Due-today tab",
     href: "#pipeline", tone: "danger",

@@ -283,6 +283,15 @@ export async function releaseScriptVersion(scriptId: string, actor: { email: str
   if (!s) throw new Error("Script not found.");
   if (s.historical) throw new Error("Imported scripts are history — nothing to release.");
   if (!s.approvedVersionId) throw new Error("Approve a version first.");
+  // A POINTER IS NOT A CURRENT AUTHORISATION (audit, Sep 17). returnScriptToQueue
+  // now clears both pointers, but rows returned BEFORE that fix still carry a
+  // stale approvedVersionId over a version that went back to review — and this
+  // gate was the one click between such a row and the client's portal. Ask the
+  // version itself. (SHARED passes: re-releasing the live version is a no-op.)
+  const approvedVersion = await prisma.contentScriptVersion.findUnique({ where: { id: s.approvedVersionId }, select: { status: true } });
+  if (!approvedVersion || (approvedVersion.status !== "APPROVED" && approvedVersion.status !== "SHARED")) {
+    throw new Error("That approval was withdrawn — approve the current version again before releasing it.");
+  }
   const now = new Date();
   const emailOn = await isAutomationEnabled("script_share_email");
   const notificationState = emailOn ? "QUEUED" : "SUPPRESSED";
@@ -293,12 +302,48 @@ export async function releaseScriptVersion(scriptId: string, actor: { email: str
   return { versionId: s.approvedVersionId, notificationState };
 }
 
-/** Pull a script back off the portal / out of approval (recorded, never deleted). */
+/**
+ * Pull a script back off the portal / out of approval (recorded, never deleted).
+ *
+ * WHAT "BACK TO THE QUEUE" HAS TO UNDO (audit, Sep 17). This used to move the
+ * PARENT to INTERNAL_REVIEW and stop, leaving the version APPROVED/SHARED and
+ * both pointers standing. Three things went wrong, and every one of them was
+ * silent:
+ *   · scriptsAwaitingReview lists a script by its CURRENT VERSION's status, so
+ *     a returned script never reached the queue it said it was going back to;
+ *   · releaseScriptVersion only wanted an approvedVersionId, so a withdrawn
+ *     approval stayed one click from the client's portal;
+ *   · the panel read sharedVersionId before releaseState, so a withheld script
+ *     still wore the "released to the portal" chip — and a returned SHARED
+ *     script rendered neither Approve nor Release, so it was simply stuck.
+ * So the version, the pointers and the parent all move together, in one
+ * transaction. History is not touched: every APPROVE and SHARE stays on the
+ * ContentScriptRelease ledger with its actor and time, and each version row
+ * keeps its own approvedBy/approvedAt/sharedAt. What is cleared is CURRENT
+ * AUTHORISATION, which is a different fact from what happened before.
+ */
 export async function returnScriptToQueue(scriptId: string, actor: { email: string; appUserId?: string | null }, note?: string | null): Promise<void> {
-  const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { currentVersionId: true, approvedVersionId: true, enrollmentId: true, clientId: true, monthId: true } });
+  const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { currentVersionId: true, approvedVersionId: true, sharedVersionId: true, enrollmentId: true, clientId: true, monthId: true, historical: true } });
   if (!s || !s.currentVersionId) throw new Error("Script not found.");
-  await prisma.contentScript.update({ where: { id: scriptId }, data: { status: "INTERNAL_REVIEW", releaseState: "withheld" } });
-  await prisma.contentScriptRelease.create({ data: { scriptId, scriptVersionId: s.approvedVersionId ?? s.currentVersionId, enrollmentId: s.enrollmentId, clientId: s.clientId, monthId: s.monthId, action: "RETURN_TO_QUEUE", actorAppUserId: actor.appUserId ?? null, actorEmail: actor.email, note: note ?? null } });
+  if (s.historical) throw new Error("Imported scripts are history — there is no approval to withdraw.");
+  // The version the ledger row is ABOUT: what was live before this click.
+  const pinned = s.sharedVersionId ?? s.approvedVersionId ?? s.currentVersionId;
+  await prisma.$transaction([
+    // approveScriptVersion supersedes every other APPROVED/SHARED row, so this
+    // matches at most one version — the live one — and hands it back to review.
+    prisma.contentScriptVersion.updateMany({
+      where: { scriptId, status: { in: ["APPROVED", "SHARED"] } },
+      data: { status: "INTERNAL_REVIEW" },
+    }),
+    prisma.contentScript.update({
+      where: { id: scriptId },
+      data: { status: "INTERNAL_REVIEW", releaseState: "withheld", approvedVersionId: null, sharedVersionId: null, approvedAt: null, approvedBy: null, sharedAt: null },
+    }),
+    prisma.contentScriptRelease.create({ data: { scriptId, scriptVersionId: pinned, enrollmentId: s.enrollmentId, clientId: s.clientId, monthId: s.monthId, action: "RETURN_TO_QUEUE", actorAppUserId: actor.appUserId ?? null, actorEmail: actor.email, note: note ?? null } }),
+  ]);
+  // The legacy body mirrored shared → approved → current; with both pointers
+  // gone it follows the current version again.
+  await syncLegacyPointer(scriptId, s.currentVersionId);
 }
 
 export async function scriptVersions(scriptId: string) {

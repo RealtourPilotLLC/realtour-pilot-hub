@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Check, ClipboardList, Loader2, MapPin, MessageSquare } from "lucide-react";
@@ -31,7 +31,12 @@ export function YourTasksCard({ tasks, readOnly }: {
   const [done, setDone] = useState<Set<string>>(new Set());
   const [busyId, setBusyId] = useState<string | null>(null);
   const [, start] = useTransition();
-
+  // EVERY hook runs before the empty-list return below. A photographer whose
+  // last task closes goes 1 row -> 0 rows inside one mount, and a hook placed
+  // after that return changes the hook count between renders, which React
+  // throws on (audit, Sep 17). Hooks first, then the early exit. The overdue
+  // clock that used to live here as a Date.now() memo now arrives on the row
+  // from the server, which is the only place in the hub that reads the time.
   if (tasks.length === 0) return null;
 
   const complete = (id: string) => {
@@ -50,11 +55,6 @@ export function YourTasksCard({ tasks, readOnly }: {
     });
   };
 
-  // Stable per mount — the overdue tint doesn't need to tick live, and an
-  // impure Date.now() in render trips the React-compiler purity rule.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const now = useMemo(() => Date.now(), []);
-
   return (
     <div className="rounded-2xl border bg-surface p-4">
       <h2 className="flex items-center gap-2 text-sm font-semibold">
@@ -64,7 +64,7 @@ export function YourTasksCard({ tasks, readOnly }: {
       <ul className="mt-2.5 space-y-2.5">
         {tasks.map((t) => {
           const isDone = done.has(t.id);
-          const overdue = t.dueAtISO != null && new Date(t.dueAtISO).getTime() < now;
+          const overdue = t.overdue;
           const noteHref = t.summary?.match(NOTE_LINK)?.[1] ?? null;
           const summaryText = noteHref ? (t.summary ?? "").replace(NOTE_LINK, "").trim() : t.summary;
           return (
