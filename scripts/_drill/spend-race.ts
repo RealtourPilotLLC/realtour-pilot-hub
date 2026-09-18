@@ -1,5 +1,16 @@
 // TWO WORKERS, ONE SLOT — in an isolated PostgreSQL, against the shipped
 // reserveSpendSlot. Nothing here touches production.
+//
+// WHAT THIS PROVES, AND WHAT IT DOES NOT (review, Sep 18). It proves the
+// PREDICATE: that the caps are evaluated inside the claim, that a worker whose
+// lease was taken reserves nothing, and that a reservation can be handed back.
+// It does NOT prove isolation. PGlite Socket multiplexes every connection onto
+// one database connection, so two "concurrent" callers are serialized by the
+// harness rather than by the SQL — which is exactly why the drill's earlier
+// pass was not the evidence I claimed it was. Worse, it cannot even run two
+// interactive transactions at once: the calls below are therefore SEQUENTIAL,
+// and the isolation question is answered where it can be answered, against a
+// real PostgreSQL over two independent backends — scripts/_recon/budget-lock.ts.
 import { PGlite } from "@electric-sql/pglite";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
 import { execFile } from "child_process";
@@ -41,7 +52,8 @@ async function main() {
   console.log("\n1. TWO WORKERS CONTEST THE LAST SLOT (maxConcurrent 1)");
   const a = await mk("job-a", "worker-1");
   const b = await mk("job-b", "worker-2");
-  const [ra, rb] = await Promise.all([reserveSpendSlot(a, S), reserveSpendSlot(b, S)]);
+  const ra = await reserveSpendSlot(a, S);
+  const rb = await reserveSpendSlot(b, S);
   check("exactly one worker wins", (ra ? 1 : 0) + (rb ? 1 : 0) === 1, `a=${ra} b=${rb}`);
   const accepted = await prisma.topazJob.count({ where: { acceptedAt: { not: null } } });
   check("exactly one commitment exists in the ledger", accepted === 1, `accepted=${accepted}`);
@@ -49,7 +61,8 @@ async function main() {
   console.log("\n2. THE CREDIT CAP IS NOT CROSSED");
   await db.query(`UPDATE "TopazJob" SET "acceptedAt"=NULL`);
   const S2 = { ...(S as object), maxConcurrent: 99, maxCreditsPerMonth: 15 } as never;
-  const [c1, c2] = await Promise.all([reserveSpendSlot(a, S2), reserveSpendSlot(b, S2)]);
+  const c1 = await reserveSpendSlot(a, S2);
+  const c2 = await reserveSpendSlot(b, S2);
   const credits = await prisma.topazJob.aggregate({ where: { acceptedAt: { not: null } }, _sum: { estimateCredits: true } });
   check("one 10-credit job fits under a 15-credit cap, the second does not", (c1 ? 1 : 0) + (c2 ? 1 : 0) === 1, `sum=${credits._sum.estimateCredits}`);
   check("committed credits never exceed the cap", (credits._sum.estimateCredits ?? 0) <= 15);

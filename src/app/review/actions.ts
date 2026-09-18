@@ -1156,7 +1156,13 @@ export async function startCutUpload(input: {
   // whatever happens next.
   const { round, row } = await prisma.$transaction(async (tx) => {
     const [lockA, lockB] = slotLockKey(input.projectId, input.deliverableId, slot.slot);
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockA}, ${lockB})`;
+    // ::int4 IS NOT DECORATION (caught by the Topaz drill, Sep 18). Prisma
+    // sends a JS number as a bigint parameter, and Postgres has no
+    // pg_advisory_xact_lock(bigint, bigint) — only the one-argument bigint form
+    // and this two-argument int4 one. Without the casts every call raised
+    // 42883, the transaction aborted, and startCutUpload threw: an editor could
+    // not upload a cut at all. Verified against the real database both ways.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockA}::int4, ${lockB}::int4)`;
     const highest = await tx.reviewSubmission.aggregate({
       where: { projectId: input.projectId, deliverableId: input.deliverableId, slot: slot.slot, status: { notIn: ["UPLOAD_FAILED", "WITHDRAWN"] } },
       _max: { round: true },
