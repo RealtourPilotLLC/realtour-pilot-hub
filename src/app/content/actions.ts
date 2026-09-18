@@ -956,17 +956,39 @@ export async function approveScriptVersionAction(versionId: string, note?: strin
   } catch (e) { return fail(e); }
 }
 
+/**
+ * ONE CANONICAL SHARE (audit finding 2, Sep 17).
+ *
+ * This called releaseScriptVersion directly. That writes notificationState
+ * QUEUED on the ledger and nothing else — the ProgramReminder notice the sender
+ * actually drains is created by scriptShare.shareApprovedScript, which had no
+ * caller outside its own batch wrapper. So with the email switch ON, this
+ * button would have said "the email is queued" over a queue with nothing in it,
+ * for ever: drainShareNotices drains notices, and an orphaned ledger row is not
+ * a notice.
+ *
+ * It never lied in production — the switch has been off since the feature
+ * landed, so every release so far recorded SUPPRESSED and said so, and there
+ * are no orphaned QUEUED rows to reconcile (checked Sep 17). It would have lied
+ * the day Jordan turned the switch on, which is the wrong day to find out.
+ *
+ * The button now runs the same operation the batch does. It is idempotent —
+ * approve once, release once, queue once — and it reports what that operation
+ * actually did rather than what this action assumed. The switch stays off:
+ * nothing here authorises a client email.
+ */
 export async function releaseScriptAction(scriptId: string): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   try {
-    const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { enrollmentId: true, monthId: true } });
+    const s = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { enrollmentId: true, monthId: true, approvedVersionId: true } });
     if (!s) return { ok: false, message: "Script not found." };
+    if (!s.approvedVersionId) return { ok: false, message: "Approve a version first." };
     const me = await actor();
     await assertDutyOwner("SCRIPTS", s.enrollmentId, s.monthId, me);
-    const { releaseScriptVersion } = await import("@/lib/contentScripts");
-    const r = await releaseScriptVersion(scriptId, { email: me.email, appUserId: me.id });
+    const { shareApprovedScript } = await import("@/lib/scriptShare");
+    const r = await shareApprovedScript(s.approvedVersionId, { email: me.email, appUserId: me.id });
     path(s.enrollmentId);
-    return { ok: true, message: r.notificationState === "SUPPRESSED" ? "Released to the portal (no email — the share email is switched off)." : "Released to the portal; the email is queued." };
+    return { ok: true, message: r.message };
   } catch (e) { return fail(e); }
 }
 

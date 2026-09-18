@@ -76,6 +76,23 @@ import { HUB_REPLY_SOURCE, isHubSms, isHubSmsSource } from "@/lib/hubSms";
 // exists. Anything older than a week that is genuinely unanswered is an audit
 // finding, not a live queue item. It is one constant if Jordan wants it longer.
 const WINDOW_DAYS = 7;
+// AN OBLIGATION THE HUB ALREADY RAISED DOES NOT AGE OUT (audit WF-05, Sep 17).
+//
+// The window above is right about NOISE and the audit is right about LOSS: an
+// unanswered client question could leave the reply workflow through age alone,
+// silently. The two reconcile on who decided. The twelve extra rows at 21 days
+// were out-of-office replies, vendor pitches and threads long since dealt with
+// — nobody chose them. An open client_reply task is the opposite: the hub
+// looked at that conversation and recorded that we owe an answer, and that
+// obligation is persistent state, not a rolling read.
+//
+// So threads belonging to a client with an OPEN reply to-do are looked up
+// beyond the window, bounded to this many days and this many rows. Every other
+// thread keeps the seven-day read exactly as before. Closing the task is still
+// what ends it — this changes nothing about how a thread is answered, only
+// about whether it can vanish while still owed.
+const OWED_LOOKBACK_DAYS = 45;
+const OWED_SCAN_CAP = 600;
 const SCAN_CAP = 3000; // rows pulled; ~3 weeks of comms sits well under this
 const THREAD_TURNS = 24; // how much history each thread carries for the AI
 const PENDING_SHOWN = 5; // messages listed per thread — waitingSince keeps the TRUE age
@@ -477,23 +494,51 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
   const since = new Date(now.getTime() - windowDays * 86_400_000);
 
   const channels = [...(wantPhone ? ["text", "call"] : []), ...(wantEmail ? ["email"] : [])];
+  const ROW_SELECT = {
+    channel: true, direction: true, clientId: true, clientName: true, contactName: true,
+    fromPhone: true, projectId: true, subject: true, body: true, occurredAt: true, source: true,
+  } as const;
+  const roleGate = opts.minRoles ? { minRole: { in: opts.minRoles } } : {};
+  // Clients we have already written down that we owe an answer to. Read before
+  // the window so their threads can be fetched past it — see OWED_LOOKBACK_DAYS.
+  const owedClientIds = [
+    ...new Set(
+      (
+        await prisma.smartTask.findMany({
+          where: { taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] }, clientId: { not: null } },
+          select: { clientId: true },
+        })
+      )
+        .map((t) => t.clientId)
+        .filter((id): id is string => !!id),
+    ),
+  ];
   // Newest-first with a cap, then reversed: the walk needs time order, but a
   // blown-out window must drop the OLDEST rows, never the live ones.
-  const rows: Row[] = (
-    await prisma.commLog.findMany({
-      where: {
-        channel: { in: channels },
-        occurredAt: { gte: since },
-        ...(opts.minRoles ? { minRole: { in: opts.minRoles } } : {}),
-      },
+  const [fresh, owed] = await Promise.all([
+    prisma.commLog.findMany({
+      where: { channel: { in: channels }, occurredAt: { gte: since }, ...roleGate },
       orderBy: { occurredAt: "desc" },
       take: SCAN_CAP,
-      select: {
-        channel: true, direction: true, clientId: true, clientName: true, contactName: true,
-        fromPhone: true, projectId: true, subject: true, body: true, occurredAt: true, source: true,
-      },
-    })
-  ).reverse();
+      select: ROW_SELECT,
+    }),
+    owedClientIds.length
+      ? prisma.commLog.findMany({
+          where: {
+            channel: { in: channels },
+            clientId: { in: owedClientIds },
+            occurredAt: { lt: since, gte: new Date(now.getTime() - OWED_LOOKBACK_DAYS * 86_400_000) },
+            ...roleGate,
+          },
+          orderBy: { occurredAt: "desc" },
+          take: OWED_SCAN_CAP,
+          select: ROW_SELECT,
+        })
+      : Promise.resolve([] as Row[]),
+  ]);
+  // One time-ordered walk over both reads. The older rows only ever ADD history
+  // to a thread the queue would otherwise have started mid-conversation.
+  const rows: Row[] = [...fresh, ...owed].sort((a, b) => a.occurredAt.getTime() - b.occurredAt.getTime());
   if (rows.length === 0) return [];
 
   // Our own people, by number and by name. The number is the reliable signal
