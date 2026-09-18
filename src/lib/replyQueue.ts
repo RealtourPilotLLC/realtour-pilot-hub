@@ -5,7 +5,7 @@ import { contentTier } from "@/lib/auth/access";
 import { phoneKey } from "@/lib/integrations/openphone";
 import { classifyComm, isReaction, PRAISE_ONLY } from "@/lib/comms";
 import { stripQuotedReply } from "@/lib/text";
-import { HUB_REPLY_SOURCE, HUB_SMS_SOURCES, isHubSms, isHubSmsSource } from "@/lib/hubSms";
+import { HUB_REPLY_SOURCE, HUB_SMS_PREFIX, HUB_SMS_SOURCES, isHubSms, isHubSmsSource } from "@/lib/hubSms";
 
 // ---------------------------------------------------------------------------
 // THE ONE ANSWER TO "WHO IS WAITING ON A REPLY".
@@ -643,6 +643,33 @@ function obligationThread(t: {
 }
 
 /**
+ * A CALL THAT NOBODY ANSWERED IS NOT AN ANSWER (review, Sep 18).
+ *
+ * OpenPhone logs an outbound attempt as a `call` row like any other, and the
+ * live walk has always known the difference — an ANSWERED outbound call is a
+ * real reply (Jordan kept getting "still unanswered" pages two hours after
+ * handling something by phone), a missed one is not. The persistent ledger
+ * below did not: its outbound aggregate took the newest outbound row of any
+ * kind, so one unsuccessful callback made an old unanswered text disappear off
+ * the communications board while the task itself stayed open and invisible.
+ *
+ * The words live here so the two paths cannot drift. They are matched in SQL by
+ * the aggregate and in JavaScript by the walk, which is the same rule twice
+ * rather than two rules — `outboundIsAnswer` is the arbiter and the SQL is
+ * built from the same list.
+ */
+const UNANSWERED_CALL_WORDS = ["missed", "no answer", "unanswered"] as const;
+
+/** Did this outbound row actually answer anybody? Pure, and the only place the
+ *  question is decided. */
+export function outboundIsAnswer(r: { channel: string; source: string | null; body: string | null }): boolean {
+  if ((r.source ?? "").startsWith("auto-")) return false; // our robots
+  if (isHubSmsSource(r.source) || isHubSms(r.body)) return false; // the hub's own staff texts
+  if (r.channel === "call" && UNANSWERED_CALL_WORDS.some((w) => (r.body ?? "").toLowerCase().includes(w))) return false;
+  return true;
+}
+
+/**
  * Every request the hub wrote down and nobody has resolved — read from the
  * ledger, with no message window and no row cap.
  *
@@ -694,8 +721,21 @@ export async function openObligations(
   const substantiveOut = {
     direction: "out",
     channel: { in: channels },
-    NOT: { source: { startsWith: "auto-" } },
     source: { notIn: [...HUB_SMS_SOURCES, HUB_REPLY_SOURCE] },
+    NOT: {
+      OR: [
+        { source: { startsWith: "auto-" } },
+        // The hub's own staff texts, recognised by their body as well as their
+        // source: a "⚙️ RealTour Hub:" line logged under somebody's own number
+        // is not that person answering (outboundIsAnswer says the same).
+        { body: { startsWith: HUB_SMS_PREFIX } },
+        // AND THE UNSUCCESSFUL CALL. This is the reopened defect: without it a
+        // later missed callback counted as the answer to a text from a week
+        // ago, and the obligation vanished from the board without anybody
+        // having spoken to the client.
+        ...UNANSWERED_CALL_WORDS.map((w) => ({ channel: "call", body: { contains: w, mode: "insensitive" as const } })),
+      ],
+    },
   };
   // A stranger's CALL rows carry the number in `contactName` and nothing in
   // `fromPhone` (see nameAsPhone). Matching on both is what lets a lead
@@ -1259,19 +1299,14 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
     if (r.clientName && !ours) b.clientName = r.clientName;
 
     if (ours) {
-      // Automated confirmation/delivery texts answer nothing — a client's
-      // unanswered question must not vanish because the robot texted.
-      if ((r.source ?? "").startsWith("auto-")) continue;
-      // Nor do the hub's own staff texts: a "⚙️ RealTour Hub:" line (its echo
-      // was logged as "Us" → the teammate until Sep 11, and older rows still
-      // sit in the window) or an upload-page chaser, which logs a row on the
-      // teammate's number itself. Before this a payday notice read as Kyle
-      // answering Jordan (reviewer, Sep 11).
-      if (isHubSmsSource(r.source) || isHubSms(r.body)) continue;
-      // A missed / unanswered outgoing call clears nothing either; an ANSWERED
-      // outbound call IS an answer (Jordan kept getting "still unanswered"
-      // pages two hours after handling it by phone).
-      if (r.channel === "call" && /missed|no answer|unanswered/i.test(r.body ?? "")) continue;
+      // ONE RULE, SHARED WITH THE LEDGER (review, Sep 18). Automated
+      // confirmation/delivery texts answer nothing; nor do the hub's own staff
+      // texts — a "⚙️ RealTour Hub:" line (its echo was logged as "Us" → the
+      // teammate until Sep 11) or an upload-page chaser on the teammate's own
+      // number, which used to make a payday notice read as Kyle answering
+      // Jordan; nor does a missed outgoing call, though an ANSWERED one is a
+      // real reply. openObligations applies the same predicate in SQL.
+      if (!outboundIsAnswer(r)) continue;
       clearFor(r, id.key, ours);
       continue;
     }

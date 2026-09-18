@@ -340,6 +340,58 @@ async function main() {
   const muted = await unansweredComms({ now: NOW, includeOwed: true });
   check("and B, which nobody resolved, is still there", !!find(muted, `c:${B.id}`));
 
+  // -------------------------------------------------------------------------
+  // 9. AN UNSUCCESSFUL CALLBACK IS NOT AN ANSWER (review, Sep 18)
+  //
+  // The reopened R07 defect: the ledger's outbound aggregate took the newest
+  // outbound row of ANY kind, so one missed callback made B's twenty-day-old
+  // question disappear from the communications board while the to-do behind it
+  // stayed open — the client never spoke to anybody and nothing showed it.
+  // -------------------------------------------------------------------------
+  console.log("\n9. AN UNSUCCESSFUL CALLBACK IS NOT AN ANSWER");
+  const inLedger = (rows: { clientId: string | null }[], id: string) => rows.some((o) => o.clientId === id);
+  check("B is owed before anybody picks up the phone", inLedger(await openObligations({ now: NOW }), B.id));
+
+  const outCall = async (body: string, at: Date) =>
+    prisma.commLog.create({
+      data: {
+        channel: "call", direction: "out", clientId: B.id, clientName: B.name, contactName: B.name,
+        fromPhone: "2155550202", body, occurredAt: at, source: "openphone",
+      },
+    });
+
+  const missed = await outCall("Outgoing call — no answer (0:00)", ago(1));
+  check("a missed outgoing call leaves the obligation standing", inLedger(await openObligations({ now: NOW }), B.id));
+  check("  …and it is still on the board Kyle works",
+    !!find(await unansweredComms({ now: NOW, includeOwed: true }), `c:${B.id}`));
+  check("  …with the to-do untouched either way",
+    (await prisma.smartTask.findUnique({ where: { id: bTask.id }, select: { status: true } }))?.status === "OPEN");
+
+  await prisma.commLog.update({ where: { id: missed.id }, data: { body: "Outgoing call — 6m 12s" } });
+  check("an ANSWERED callback does resolve it", !inLedger(await openObligations({ now: NOW }), B.id));
+  await prisma.commLog.update({ where: { id: missed.id }, data: { body: "Outgoing call — missed" } });
+  check("…and it comes back when the call was missed after all", inLedger(await openObligations({ now: NOW }), B.id));
+
+  console.log("\n10. AN EMAIL DOES NOT ANSWER A TEXT");
+  await prisma.commLog.create({
+    data: {
+      channel: "email", direction: "out", clientId: B.id, clientName: B.name, contactName: B.name,
+      subject: "Your invoice", body: "Attached, thanks!", occurredAt: NOW, source: "gmail",
+    },
+  });
+  check("an unrelated email on the same account leaves the TEXT owed",
+    inLedger(await openObligations({ now: NOW }), B.id));
+
+  console.log("\n11. OUR OWN ROBOT STILL ANSWERS NOTHING");
+  await prisma.commLog.create({
+    data: {
+      channel: "text", direction: "out", clientId: B.id, clientName: B.name, contactName: B.name,
+      fromPhone: "2155550202", body: "⚙️ RealTour Hub: your gallery is ready", occurredAt: NOW, source: "openphone",
+    },
+  });
+  check("a hub text recognised by its BODY does not close the request",
+    inLedger(await openObligations({ now: NOW }), B.id));
+
   console.log(`\n${fail === 0 ? "ALL CHECKS PASSED" : `${fail} FAILED`} (${pass} passed)`);
   await server.stop();
   await db.close();
