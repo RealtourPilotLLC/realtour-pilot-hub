@@ -7,7 +7,6 @@ import { ArrowLeft, CheckCircle2, Loader2, Pencil, Send, Sparkles } from "lucide
 import { cn } from "@/lib/utils";
 import { portalAnswerInterview, portalSubmitInterview } from "@/app/portal/actions";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
-import { ScriptBody } from "@/components/portal/ScriptBody";
 import type { PortalInterviewView } from "@/lib/portal";
 
 // ---------------------------------------------------------------------------
@@ -98,18 +97,25 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
         </div>
       )}
 
-      {/* Draft preview */}
-      {iv.draft && (
+      {/* WHERE THE SCRIPT STANDS — never the script itself. This panel used to
+          print the newest AI draft under the label "A draft for our creative
+          review". Jordan, Sep 18: a draft label is not a substitute for
+          approval. Nothing here quotes a script; the server no longer sends
+          one. The finished script appears under the topic once it is approved
+          and released. */}
+      {iv.script.stage === "preparing" && (
         <div className="panel-shadow rounded-2xl border border-border bg-surface/70 p-4 backdrop-blur">
-          <div className="flex flex-wrap items-center gap-2 text-sm font-semibold"><Sparkles className="size-4 text-brand" /> Draft script from your answers <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">{iv.draft.versionLabel}{iv.draft.strategyLabel ? ` · strategy ${iv.draft.strategyLabel}` : ""}</span></div>
-          <p className="mt-0.5 text-[11px] text-muted-2">A draft for our creative review before it&rsquo;s final — the finished script will appear under this topic.{iv.draft.changedSince ? " You changed answers since this draft; the next draft will use them." : ""}</p>
-          <ScriptBody body={iv.draft.body} />
-          {iv.draft.gaps.length > 0 && (
-            <div className="mt-2 rounded-lg border border-warning/30 bg-warning-soft/30 p-2.5 text-xs">
-              <div className="font-semibold text-warning">Left open on purpose — we won&rsquo;t invent these:</div>
-              <ul className="mt-1 list-inside list-disc text-muted">{iv.draft.gaps.map((g, i) => <li key={i}>{g}</li>)}</ul>
-            </div>
-          )}
+          <div className="flex flex-wrap items-center gap-2 text-sm font-semibold"><Sparkles className="size-4 text-brand" /> Your script is being prepared</div>
+          <p className="mt-0.5 text-[11px] text-muted-2">
+            We&rsquo;re writing it from your answers and our team reviews it before you see it. It appears under this
+            topic once it&rsquo;s ready.{iv.script.changedSince ? " You&rsquo;ve changed an answer since we started — we&rsquo;ll use the newest ones." : ""}
+          </p>
+        </div>
+      )}
+      {iv.script.stage === "released" && (
+        <div className="panel-shadow rounded-2xl border border-border bg-surface/70 p-4 backdrop-blur">
+          <div className="flex flex-wrap items-center gap-2 text-sm font-semibold"><Sparkles className="size-4 text-brand" /> Your script is ready</div>
+          <p className="mt-0.5 text-[11px] text-muted-2">It&rsquo;s under this topic, with everything you need to film it.</p>
         </div>
       )}
       {msg && <p role="status" className={cn("text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}

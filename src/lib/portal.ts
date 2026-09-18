@@ -27,7 +27,13 @@ import { verifyClientSession, CLIENT_COOKIE } from "@/lib/auth/clientSession";
 // renders with it and the WRITE layer enforces it (review finding: the proofs
 // checked ownership but not visibility, so a stale tab could act on a script
 // that had dropped back to internal review).
-export const CLIENT_VISIBLE_SCRIPT = ["APPROVED", "CLIENT_VISIBLE", "READY_TO_FILM", "FILMED", "DELIVERED"];
+// Pre-CPOS rows carry no releaseState, so they are judged by status alone.
+// APPROVED IS NOT ON THIS LIST (Jordan, Sep 18: visibility comes after approval
+// AND release). The statuses that remain all assert the script already went out
+// and was used — a script cannot be FILMED without the client having had it.
+// Verified Sep 18: 0 non-historical scripts reach a client through this list,
+// so it is a closed door rather than a change to anything live.
+export const CLIENT_VISIBLE_SCRIPT = ["CLIENT_VISIBLE", "READY_TO_FILM", "FILMED", "DELIVERED"];
 
 export type PortalEnrollment = {
   id: string;
@@ -683,8 +689,28 @@ export type PortalInterviewView = {
   gaps: string[];
   ready: boolean;
   submittedAtISO: string | null;
-  /** The latest draft built from THESE answers — client-facing lines only, never filming notes. */
-  draft: { versionLabel: string; strategyLabel: string | null; body: string; gaps: string[]; changedSince: boolean; createdAtISO: string } | null;
+  /**
+   * WHERE THE SCRIPT STANDS — never the script itself.
+   *
+   * This used to carry the rendered body of the newest version built from these
+   * answers, behind the label "A draft for our creative review before it's
+   * final". Jordan, Sep 18: a draft label is not a substitute for approval. The
+   * workflow is answers -> generated draft -> INTERNAL REVIEW -> approval and
+   * release -> client visibility, and an unreviewed AI draft sitting on a
+   * client's screen skips the middle of it. Six such drafts were live across
+   * four interviews when this was written.
+   *
+   * So no script TEXT crosses this boundary at all. A released script reaches
+   * the client on its own surface, through postingKit.scriptVisibility, which
+   * is the hub's one script-visibility rule. All this says is whether one is
+   * being worked on:
+   *   · "none"      — nothing built from these answers yet
+   *   · "preparing" — a version exists and has not been released
+   *   · "released"  — it is approved and shared; the client reads it on the topic
+   * `changedSince` still means "you have edited answers since the last draft",
+   * which is true and useful without quoting anything.
+   */
+  script: { stage: "none" | "preparing" | "released"; changedSince: boolean };
   strategyLabel: string | null;
 };
 
@@ -694,34 +720,35 @@ export async function portalInterview(enrollment: { id: string; clientId: string
   const row = await prisma.contentInterview.findUnique({ where: { id: interviewId }, select: { id: true, enrollmentId: true, topicId: true, monthId: true, submittedAt: true, strategyVersionId: true } });
   if (!row || row.enrollmentId !== enrollment.id) return null;
   const { interviewState, answersChangedSinceLastDraft } = await import("@/lib/contentInterview");
-  const [st, topic, month, draftVersion, changed, strategy] = await Promise.all([
+  const [st, topic, month, builtOne, changed, strategy, topicScript] = await Promise.all([
     interviewState(interviewId),
     prisma.contentTopic.findUnique({ where: { id: row.topicId }, select: { title: true } }),
     prisma.contentMonth.findUnique({ where: { id: row.monthId }, select: { monthKey: true } }),
-    prisma.contentScriptVersion.findFirst({ where: { interviewId, enrollmentId: enrollment.id }, orderBy: { createdAt: "desc" }, select: { id: true, versionNo: true, title: true, hook: true, pointsJson: true, close: true, gapsJson: true, strategyVersionId: true, createdAt: true, clientId: true } }),
+    // COUNT, NOT CONTENT. We need to know whether a version exists; we must not
+    // read its words, because nothing on this page may quote them.
+    prisma.contentScriptVersion.count({ where: { interviewId, enrollmentId: enrollment.id } }),
     answersChangedSinceLastDraft(interviewId),
     row.strategyVersionId ? prisma.contentStrategyVersion.findUnique({ where: { id: row.strategyVersionId }, select: { versionNo: true } }) : Promise.resolve(null),
+    // Has the finished script for this topic actually been released? Judged by
+    // releaseState, the same authority postingKit.scriptVisibility uses — an
+    // approved-but-withheld script is NOT released, and this page says so.
+    prisma.contentScript.findFirst({
+      where: { enrollmentId: enrollment.id, topicId: row.topicId, historical: false },
+      orderBy: { updatedAt: "desc" },
+      select: { releaseState: true, sharedVersionId: true },
+    }),
   ]);
-  let draft: PortalInterviewView["draft"] = null;
-  if (draftVersion) {
-    const { canonicalFromParts, pointsFromJson } = await import("@/lib/contentScripts");
-    const { renderScript } = await import("@/lib/contentPolicy");
-    const { stripMoneySentences } = await import("@/lib/text");
-    const dv = draftVersion.strategyVersionId ? await prisma.contentStrategyVersion.findUnique({ where: { id: draftVersion.strategyVersionId }, select: { versionNo: true } }) : null;
-    let gaps: string[] = [];
-    try { gaps = draftVersion.gapsJson ? (JSON.parse(draftVersion.gapsJson) as { text?: string }[]).map((g) => g.text ?? "").filter(Boolean) : []; } catch { gaps = []; }
-    draft = {
-      versionLabel: `v${draftVersion.versionNo}`, strategyLabel: dv ? `v${dv.versionNo}` : null,
-      body: stripMoneySentences(renderScript(canonicalFromParts({ title: draftVersion.title, hook: draftVersion.hook, points: pointsFromJson(draftVersion.pointsJson), close: draftVersion.close }, draftVersion.clientId))),
-      gaps, changedSince: changed, createdAtISO: draftVersion.createdAt.toISOString(),
-    };
-  }
+  const released = topicScript?.releaseState === "released" && !!topicScript.sharedVersionId;
+  const script: PortalInterviewView["script"] = {
+    stage: released ? "released" : builtOne > 0 ? "preparing" : "none",
+    changedSince: changed,
+  };
   return {
     interviewId, topicId: row.topicId, topicTitle: topic?.title ?? "Topic", monthKey: month?.monthKey ?? "", status: st.status,
     next: { kind: st.next.kind, prompt: st.next.kind === "done" ? null : st.next.prompt, isFollowUp: st.next.kind === "follow-up" }, nextKey: st.nextKey,
     progress: { answered: st.answeredCount, substantiveAnswered: st.sufficiency.substantiveAnswered, substantiveTotal: st.sufficiency.substantiveTotal },
     answers: st.answers.filter((a) => !a.questionKey.includes(":fu:") || a.answerText).map((a) => ({ questionKey: a.questionKey, questionText: a.questionText, answerText: a.answerText, answerKind: a.answerKind, version: a.version })),
-    gaps: st.sufficiency.gaps.map((g) => g.text), ready: st.sufficiency.ready, submittedAtISO: row.submittedAt?.toISOString() ?? null, draft,
+    gaps: st.sufficiency.gaps.map((g) => g.text), ready: st.sufficiency.ready, submittedAtISO: row.submittedAt?.toISOString() ?? null, script,
     strategyLabel: strategy ? `v${strategy.versionNo}` : null,
   };
 }
