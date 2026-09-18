@@ -403,6 +403,48 @@ export async function reviseScriptAI(scriptId: string, instructions: string): Pr
   } catch (e) { return fail(e); }
 }
 
+/**
+ * ONE CLICK ON AN OVERRUN: send the script back to the generator with a tighten
+ * instruction built HERE, from the version's own stored estimate, and nowhere
+ * near a duration override.
+ *
+ * Why the instruction is not a client prop: the panel renders whatever
+ * estimatedSeconds the page was built with, and a script revised in another tab
+ * (or by an applied client suggestion) moves on underneath it. Reading the
+ * current version at the moment of the click means the AI is told the length the
+ * row actually has. The wording itself lives in contentPolicy/scriptFormat.ts
+ * beside the target it quotes.
+ *
+ * This is an ACTION, not an exemption. It produces another DRAFT that goes
+ * through the same validator and the same approval gate; nothing here relaxes
+ * the 20–30 s target, which has no override field anywhere in the policy layer.
+ */
+export async function tightenScriptAI(scriptId: string): Promise<Result> {
+  try { await requireAdmin(); } catch (e) { return fail(e); }
+  try {
+    const { ensureScriptVersioned } = await import("@/lib/contentScripts");
+    const { tightenInstruction, GENERATION_POLICY } = await import("@/lib/contentPolicy");
+    const head = await prisma.contentScript.findUnique({ where: { id: scriptId }, select: { historical: true } });
+    if (!head) return { ok: false, message: "That script no longer exists." };
+    // Same rule as every other rewrite path: an import is the record of what was
+    // filmed, and a 126-second archive script is history, not an overrun to fix.
+    if (head.historical) return { ok: false, message: "This is an imported historical script — it is not rewritten. Draft a new script for the topic instead." };
+    const versionId = await ensureScriptVersioned(scriptId);
+    const v = await prisma.contentScriptVersion.findUnique({ where: { id: versionId }, select: { versionNo: true, estimatedSeconds: true, spokenWordCount: true } });
+    if (!v) return { ok: false, message: "That script has no version to tighten." };
+    const [lo, hi] = GENERATION_POLICY.timing.targetSec;
+    const seconds = v.estimatedSeconds, words = v.spokenWordCount;
+    if (seconds == null || words == null) return { ok: false, message: "This version has no spoken-length estimate yet — save or regenerate it once and the estimate is recorded." };
+    if (seconds <= hi) return { ok: false, message: `Version ${v.versionNo} already estimates at ≈${seconds} s, inside the ${lo}–${hi} s target — nothing to tighten.` };
+    const instruction = tightenInstruction({ seconds, words, wordsPerSec: GENERATION_POLICY.timing.wordsPerSec, target: GENERATION_POLICY.timing.targetSec });
+    const { reviseScriptWithInstructions } = await import("@/lib/contentPipeline");
+    const me = await actor();
+    await reviseScriptWithInstructions(scriptId, instruction, { requestedBy: me.email });
+    revalidatePath("/content");
+    return { ok: true, message: `Sent back to be tightened from ≈${seconds} s (${words} words) toward ${lo}–${hi} s — v${v.versionNo} is kept. Review the new draft.` };
+  } catch (e) { return fail(e); }
+}
+
 export async function saveScriptText(scriptId: string, body: string): Promise<Result> {
   try { await requireAdmin(); } catch (e) { return fail(e); }
   const text = body.trim().slice(0, 20_000);

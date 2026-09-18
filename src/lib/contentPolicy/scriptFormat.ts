@@ -32,6 +32,10 @@ import {
   makeGap,
   roleFromLabel,
 } from "./policy";
+// One normaliser for pillar labels across the layer: the topic bank already
+// matches a generated pillar name against the approved strategy's with it, and
+// contentPillars.resolvePillarByLabel keys its lookup on the same function.
+import { normalizeTitle } from "./topicBank";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -807,9 +811,37 @@ export type ScriptValidation = {
   estimate: SpokenEstimate;
 };
 
+/**
+ * One of the client's pillars as the approved strategy defines it today. Shaped
+ * to take a `PillarRow` from src/lib/contentPillars.ts straight through — this
+ * layer never reads the database, so the caller hands the list in.
+ */
+export type ApprovedPillar = {
+  id: string;
+  name: string;
+  /** "ACTIVE" | "RETIRED" — a retired pillar keeps its id and its history. */
+  status: string;
+  /** Every earlier name and every import label that resolves to this pillar. */
+  aliases?: readonly string[];
+};
+
 export type ValidateScriptOptions = {
   /** Require a pillar link (default true; spec gate 7). */
   requirePillar?: boolean;
+  /**
+   * The client's pillars, INCLUDING retired ones, so membership is checked
+   * against the strategy rather than against the existence of a text label.
+   *
+   * WHY THIS IS AN OPTION AND NOT A CONSTANT: a category string satisfying
+   * `pillar.missing` was the whole check, so twelve live drafts carried labels
+   * ("Personal Brand", "Commission Transparency") that are on no pillar of the
+   * client they belong to and still validated clean (measured Sep 17 2026 —
+   * 12 of 20 live current versions). Omitting the list keeps the old, weaker
+   * behaviour for callers that validate raw generator output before the pillar
+   * has been resolved; an empty array means "this client has no pillars",
+   * which is a different fact from "not supplied".
+   */
+  approvedPillars?: readonly ApprovedPillar[];
 };
 
 // Greeting shapes. BLOCK = the viewer is being greeted or the agent introduced:
@@ -841,6 +873,50 @@ function isSelfIntro(text: string): boolean {
   if (/^my name is/i.test(m[1])) return true;
   const next = m[2].replace(/[,.!?:;]+$/, "");
   return /^[A-Z][a-z]+$/.test(next) && !/^(Not|Going|Here|Just|Sorry|About|Done|Tired|Sure|Telling)$/.test(next);
+}
+
+/**
+ * Resolve a script's pillar reference against the client's pillars: by id when
+ * the version already carries one, otherwise by the same normalised name/alias
+ * match resolvePillarByLabel() uses, so the validator and the writer agree on
+ * what "Personal Branding / Trust" means.
+ */
+function matchApprovedPillar(ref: PillarRef, known: readonly ApprovedPillar[]): ApprovedPillar | null {
+  if (ref.pillarId) {
+    const byId = known.find((p) => p.id === ref.pillarId);
+    // An id that is on NO pillar of this client is not a match to be excused —
+    // it is a pointer at another client's pillar or a deleted row.
+    if (byId) return byId;
+    return null;
+  }
+  const key = normalizeTitle(ref.pillarName ?? ref.categoryAsDelivered ?? "");
+  if (!key) return null;
+  return known.find((p) => normalizeTitle(p.name) === key || (p.aliases ?? []).some((a) => normalizeTitle(a) === key)) ?? null;
+}
+
+/**
+ * The words the one-click "Tighten" sends back to the generator, built from a
+ * version's own measured numbers.
+ *
+ * This lives next to the policy on purpose. "Offer a tighter revision" is an
+ * ACTION, never an exemption: there is no duration override field in this layer
+ * (policy.ts: "There is deliberately NO duration override field anywhere in this
+ * object. Do not add one."), so the only thing a long script can be offered is
+ * another draft with fewer words. The instruction therefore asks for CUTS and
+ * restates the shape that must survive them — a tighten that drops the close or
+ * merges two points would trade a warning for a blocking finding.
+ */
+export function tightenInstruction(estimate: Pick<SpokenEstimate, "seconds" | "words" | "wordsPerSec" | "target">): string {
+  const [lo, hi] = estimate.target;
+  const targetWords = Math.round(hi * estimate.wordsPerSec);
+  const cut = Math.max(0, estimate.words - targetWords);
+  return [
+    `This version estimates at about ${estimate.seconds} seconds — ${estimate.words} spoken words at ${estimate.wordsPerSec} words per second — against the ${lo}–${hi} second target.`,
+    cut > 0
+      ? `Cut roughly ${cut} spoken word${cut === 1 ? "" : "s"} to land at or under ${targetWords} words. Tighten by removing hedges, repeated setup and any sentence that restates the point before it — not by writing for a faster read.`
+      : `Tighten the delivery so a natural read lands inside ${lo}–${hi} seconds — by removing words, not by writing for a faster read.`,
+    `Keep the same idea, the same specifics and the client's voice. Keep the hook, exactly three talking points in the order Re-hook, Build up, Payoff, and the close: a shorter script that loses any of those is worse, not better.`,
+  ].join(" ");
 }
 
 export function validateNewScript(script: CanonicalScript, opts: ValidateScriptOptions = {}): ScriptValidation {
@@ -906,24 +982,52 @@ export function validateNewScript(script: CanonicalScript, opts: ValidateScriptO
   // Close
   if (!script.close?.text.trim()) push("close.missing", "block", "Every script must end with a strong close — none present.", "close");
 
-  // Timing — a finding with the measured seconds. Enforcement mode (block vs
-  // warn) is Jordan's open question Q1; the target itself is settled at 20–30 s.
+  // Timing — a finding with the measured seconds. Deliberately "warn", and
+  // deliberately NOT in contentScripts.STRUCTURAL_CODES: the seconds are an
+  // ESTIMATE from a word count, so word count alone must not reject a script
+  // (Jordan, Sep 17 2026 — "flag estimated overruns and offer a tighter
+  // revision, but do not make word count alone a hard rejection"). The offer is
+  // the one-click tighten built by tightenInstruction(); it is an action, not a
+  // duration override, of which there are none anywhere in this layer.
   const estimate = estimateSpokenSeconds(script);
   if (!estimate.inTarget) {
     const [lo, hi] = estimate.target;
+    const over = estimate.seconds > hi;
     push(
       "timing.out-of-range",
       "warn",
-      `Spoken estimate ≈${estimate.seconds} s (${estimate.words} words at ${estimate.wordsPerSec} w/s) is ${estimate.seconds < lo ? "under" : "over"} the ${lo}–${hi} s target. Tighten rather than force rapid delivery.`,
+      `Spoken estimate ≈${estimate.seconds} s (${estimate.words} words at ${estimate.wordsPerSec} w/s) is ${over ? "over" : "under"} the ${lo}–${hi} s target. ${over ? "Send it back for a tighter cut rather than forcing rapid delivery — or approve it and say why." : "It may read as thin on camera; add substance rather than padding."}`,
       "spoken",
-      { seconds: estimate.seconds, words: estimate.words, targetLo: lo, targetHi: hi },
+      { seconds: estimate.seconds, words: estimate.words, targetLo: lo, targetHi: hi, over },
     );
   }
 
-  // Pillar linkage (gate 7).
+  // Pillar linkage (gate 7) and, when the caller supplies the client's pillars,
+  // MEMBERSHIP: does this label name a pillar the approved strategy actually has?
   if (opts.requirePillar !== false) {
-    if (!script.pillarRef || (!script.pillarRef.pillarName && !script.pillarRef.pillarId)) push("pillar.missing", "block", "The script is not linked to an approved content pillar.", "pillarRef");
-    else if (!script.pillarRef.pillarId) push("pillar.unmapped", "info", `Category “${script.pillarRef.categoryAsDelivered}” has no pillar id yet — map it on import.`, "pillarRef.pillarId");
+    const ref = script.pillarRef;
+    const label = ref?.categoryAsDelivered || ref?.pillarName || "";
+    if (!ref || (!ref.pillarName && !ref.pillarId)) push("pillar.missing", "block", "The script is not linked to an approved content pillar.", "pillarRef");
+    else if (!opts.approvedPillars) {
+      if (!ref.pillarId) push("pillar.unmapped", "info", `Category “${ref.categoryAsDelivered}” has no pillar id yet — map it on import.`, "pillarRef.pillarId");
+    } else {
+      const known = opts.approvedPillars;
+      const match = matchApprovedPillar(ref, known);
+      const names = known.map((p) => p.name).join("; ");
+      if (!known.length) {
+        // A script is not misaligned because its client's strategy never
+        // produced pillars — all twelve unmapped live drafts measured on
+        // Sep 17 2026 sat on the two enrollments with zero pillar rows. The
+        // fix is on the Strategy tab, so this points there and does not block.
+        push("pillar.no-approved-pillars", "warn", `This client has no content pillars yet, so “${label}” cannot be checked against the approved strategy. Approve a strategy with a Content Pillars section, then map the label.`, "pillarRef", { label });
+      } else if (!match) {
+        push("pillar.unknown", "block", `“${label}” is not one of this client's approved pillars (${names}). Map it by alias; never rename the client's pillars.`, "pillarRef", { label, approved: names });
+      } else if (match.status !== "ACTIVE") {
+        push("pillar.retired", "block", `Pillar “${match.name}” was retired from this client's strategy — pick a current pillar, or say why this script still belongs to a retired one.`, "pillarRef", { label, pillarId: match.id });
+      } else if (!ref.pillarId) {
+        push("pillar.unmapped", "info", `Category “${ref.categoryAsDelivered}” resolves to “${match.name}” but carries no pillar id yet — it is stamped when the version is written.`, "pillarRef.pillarId");
+      }
+    }
   }
 
   // Unsupported-claim gaps the generator emitted stay visible; note them.

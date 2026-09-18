@@ -5,7 +5,7 @@ import { isAutomationEnabled } from "@/lib/programAutomation";
 import { listPillars, resolvePillarByLabel } from "@/lib/contentPillars";
 import {
   parseDeliveredScript, renderScript, estimateSpokenSeconds, makeBlock, emptyInternal, validateNewScript, TALKING_POINT_ROLES, roleFromLabel,
-  type CanonicalScript, type Finding, type Gap, type TalkingPointRole,
+  type ApprovedPillar, type CanonicalScript, type Finding, type Gap, type TalkingPointRole,
 } from "@/lib/contentPolicy";
 
 // ---------------------------------------------------------------------------
@@ -210,9 +210,20 @@ export async function editScriptVersion(scriptId: string, parts: VersionParts, b
   if (!s) throw new Error("Script not found.");
   if (s.historical) throw new Error("This is an imported historical script — it is not edited; draft a new script instead.");
   const baseId = await ensureScriptVersioned(scriptId);
-  const validation = validateNewScript(canonicalFromParts(parts, s.clientId));
+  // Resolve the pillar BEFORE validating, not after. createScriptVersion
+  // resolves the label itself when parts carries no id, so every hand edit used
+  // to store "Category X has no pillar id yet" on a row that got one a moment
+  // later — nine of nine validated rows in production said that about a script
+  // whose pillarId was set (measured Sep 17 2026). Now the findings describe
+  // the row that is written.
+  const [pillars, resolvedPillarId] = await Promise.all([
+    approvedPillarsFor(s.enrollmentId),
+    parts.pillarId ? Promise.resolve(parts.pillarId) : parts.categoryLabel ? resolvePillarByLabel(s.enrollmentId, parts.categoryLabel.split(/\s+(?:\/|•|\||·)\s+/)[0]) : Promise.resolve(null),
+  ]);
+  const linked: VersionParts = resolvedPillarId && !parts.pillarId ? { ...parts, pillarId: resolvedPillarId } : parts;
+  const validation = validateNewScript(canonicalFromParts(linked, s.clientId), { approvedPillars: pillars });
   const r = await createScriptVersion({
-    scriptId, enrollmentId: s.enrollmentId, monthId: s.monthId, topicId: s.topicId, parts, source: "MANUAL", basedOnVersionId: baseId, createdBy: by,
+    scriptId, enrollmentId: s.enrollmentId, monthId: s.monthId, topicId: s.topicId, parts: linked, source: "MANUAL", basedOnVersionId: baseId, createdBy: by,
     changeSummary: changeSummary ?? (s.sharedVersionId ? "Edited after sharing — the shared version is untouched; this is a new draft." : "Edited by hand"),
     interviewId: s.interviewId, callRecordId: s.callRecordId, strategyVersionId: s.strategyVersionId, policyVersionId: s.policyVersionId, status: "DRAFT",
     validation: { ok: validation.ok, findings: validation.findings }, gaps: validation.gaps,
@@ -238,8 +249,18 @@ export async function editScriptFromBody(scriptId: string, body: string, by: str
  * no greeting in the spoken body. A blocking finding with one of these codes is
  * not a judgement call an approver can write their way past — see the override
  * split in approveScriptVersion.
+ *
+ * THE PILLAR CODES ARE DELIBERATELY ABSENT (Sep 17 2026). pillar.missing,
+ * pillar.unknown and pillar.retired all block, and all stay overridable with a
+ * written reason, because which bucket a script belongs to is a MAPPING
+ * judgement about the strategy document, not a fact about the words: the same
+ * script is filmable whether or not the label has been reconciled, and Jordan
+ * renames pillars at every strategy refresh. Shape is different — no reason
+ * turns four talking points into three. timing.out-of-range is absent for the
+ * opposite reason: it is only a warning, because the seconds are estimated from
+ * a word count and word count alone must not reject a script.
  */
-const STRUCTURAL_CODES = new Set([
+export const STRUCTURAL_CODES = new Set([
   "title.missing",
   "hook.missing",
   "hook.banned-opener",
@@ -274,7 +295,12 @@ export async function approveScriptVersion(versionId: string, actor: { email: st
   // The format check runs again at the gate: a hand-edited version stores its
   // findings, a lifted legacy one may have none — either way a "block" finding
   // (four points, no hook…) needs the approver's explicit note to pass.
-  const check = validateNewScript(canonicalFromParts({ title: v.title, categoryLabel: v.categoryLabel, pillarId: v.pillarId, hook: v.hook, points: pointsFromJson(v.pointsJson), close: v.close, captionCta: v.captionCta }, s.clientId));
+  const check = validateNewScript(
+    canonicalFromParts({ title: v.title, categoryLabel: v.categoryLabel, pillarId: v.pillarId, hook: v.hook, points: pointsFromJson(v.pointsJson), close: v.close, captionCta: v.captionCta }, s.clientId),
+    // Membership is checked HERE, at the gate, against the pillars the client
+    // has today — not against whatever list existed when the draft was written.
+    { approvedPillars: await approvedPillarsFor(v.enrollmentId) },
+  );
   const blocking = check.findings.filter((f) => f.severity === "block");
   // A NOTE CANNOT MAKE A FOUR-POINT SCRIPT HAVE THREE (audit finding 6, Sep 17).
   // Every blocking finding used to clear on any non-empty note, and the panel
@@ -431,6 +457,17 @@ export async function markHistoricalImports(): Promise<{ stamped: number; total:
   const total = await prisma.contentScript.count({ where: { source: "import" } });
   const r = await prisma.contentScript.updateMany({ where: { source: "import", OR: [{ historical: false }, { releaseState: null }] }, data: { historical: true, releaseState: "historical" } });
   return { stamped: r.count, total };
+}
+
+/**
+ * The client's pillars for the validator's membership check — RETIRED ones
+ * included, because a script pinned to a pillar Jordan took out of the strategy
+ * has to be told apart from one naming a pillar that never existed. Both block,
+ * with different words and different fixes.
+ */
+async function approvedPillarsFor(enrollmentId: string): Promise<ApprovedPillar[]> {
+  const rows = await listPillars(enrollmentId, { includeRetired: true });
+  return rows.map((p) => ({ id: p.id, name: p.name, status: p.status, aliases: p.aliases }));
 }
 
 export function pointsFromJson(json: string): { role: TalkingPointRole | null; text: string }[] {

@@ -1,11 +1,15 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Check, FileText, History, Loader2, Send, Sparkles, Undo2 } from "lucide-react";
+import { Check, FileText, History, Loader2, Scissors, Send, Sparkles, Undo2 } from "lucide-react";
 import { Section } from "@/components/ui/Section";
 import { AutoTextarea } from "@/components/ui/AutoTextarea";
 import { ScriptBody } from "@/components/portal/ScriptBody";
-import { approveScriptVersionAction, releaseScriptAction, returnScriptAction, reviseScriptAI, saveScriptText } from "@/app/content/actions";
+// policy.ts is pure data with no imports of its own ("no node:crypto so this
+// file can be imported from client components") — the 20–30 s target is read
+// from it rather than copied, so the chip and the validator can never drift.
+import { GENERATION_POLICY } from "@/lib/contentPolicy/policy";
+import { approveScriptVersionAction, releaseScriptAction, returnScriptAction, reviseScriptAI, saveScriptText, tightenScriptAI } from "@/app/content/actions";
 
 // ---------------------------------------------------------------------------
 // Scripts tab (spec §22/§27): ONE review queue for both planning paths, the
@@ -14,12 +18,28 @@ import { approveScriptVersionAction, releaseScriptAction, returnScriptAction, re
 // the validator's findings + the generator's gaps shown, never filled.
 // ---------------------------------------------------------------------------
 
-export type VersionUi = { id: string; versionNo: number; status: string; source: string; body: string; createdBy: string | null; createdAt: string; changeSummary: string | null; approvedBy: string | null; approvedAt: string | null; sharedAt: string | null; estimatedSeconds: number | null; spokenWordCount: number | null; pointCount: number; findings: { severity: string; message: string }[]; gaps: { kind: string; text: string; question: string | null }[]; strategyVersionNo: number | null; policyVersionNo: number | null; answerCount: number; path: string; basedOnVersionNo: number | null; regeneratedSections: string[] };
+export type VersionUi = { id: string; versionNo: number; status: string; source: string; body: string; createdBy: string | null; createdAt: string; changeSummary: string | null; approvedBy: string | null; approvedAt: string | null; sharedAt: string | null; estimatedSeconds: number | null; spokenWordCount: number | null; pointCount: number; findings: { severity: string; message: string; code?: string }[]; gaps: { kind: string; text: string; question: string | null }[]; strategyVersionNo: number | null; policyVersionNo: number | null; answerCount: number; path: string; basedOnVersionNo: number | null; regeneratedSections: string[] };
 export type ScriptUi = { id: string; title: string; status: string; historical: boolean; releaseState: string | null; monthKey: string | null; pillarName: string | null; currentVersionId: string | null; approvedVersionId: string | null; sharedVersionId: string | null; approvedBy: string | null; approvedAt: string | null; sharedAt: string | null; versions: VersionUi[]; sourceFile: string | null };
 
 const btn = "rounded-md px-2.5 py-1 text-xs font-semibold disabled:opacity-50";
 const quiet = "rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2 disabled:opacity-50";
 const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" }) : "");
+
+const [TARGET_LO, TARGET_HI] = GENERATION_POLICY.timing.targetSec;
+
+/**
+ * Where a version's spoken estimate sits against the target.
+ *
+ * WHY THIS IS NOT READ OFF THE FINDINGS. The findings box only renders when the
+ * version has a stored validationJson, and on Sep 17 2026 that was true of 9 of
+ * 174 versions — while the estimate chip was on all 174 and untinted, so a 47 s
+ * script and a 24 s one looked identical in the queue. The seconds are on every
+ * row; the band is computed from them.
+ */
+function band(seconds: number | null): "under" | "on" | "over" | null {
+  if (seconds == null) return null;
+  return seconds > TARGET_HI ? "over" : seconds < TARGET_LO ? "under" : "on";
+}
 
 export function ScriptsPanel({ scripts, queueCount, scriptOwner }: { scripts: ScriptUi[]; queueCount: number; scriptOwner: string }) {
   const [note, setNote] = useState<string | null>(null);
@@ -58,6 +78,12 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
   const cur = s.versions[0] ?? null;
   const [body, setBody] = useState(cur?.body ?? "");
   const [instr, setInstr] = useState("");
+  // A HISTORICAL import is never paced against the policy. 129 of the 174
+  // versions in production estimate over 30 s and almost all of them are
+  // archive scripts with four talking points — what was filmed, not an overrun
+  // to fix. The validator makes the same distinction ("It never 'fixes' an old
+  // script"); tinting their chips amber would be the same mistake in colour.
+  const pace = s.historical ? null : band(cur?.estimatedSeconds ?? null);
   // WHAT IS TRUE NOW, not what a pointer still remembers (audit, Sep 17). A
   // script pulled back to the queue keeps its ledger history, so the chip and
   // the buttons ask the approved VERSION whether it is still live. Reading
@@ -73,7 +99,19 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
         <FileText className="size-3.5 shrink-0 text-muted-2" />
         <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">{s.title}</span>
         {s.pillarName && <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted">{s.pillarName}</span>}
-        {cur && <span className="text-[11px] text-muted-2">v{cur.versionNo} · {cur.path}{cur.estimatedSeconds != null ? ` · ≈${cur.estimatedSeconds}s / ${cur.spokenWordCount}w` : ""}{cur.pointCount !== 3 && !s.historical ? ` · ${cur.pointCount} points` : ""}</span>}
+        {cur && (
+          <span className="text-[11px] text-muted-2">
+            v{cur.versionNo} · {cur.path}
+            {cur.estimatedSeconds != null && (
+              // Never colour alone: the words "over"/"under" carry the same
+              // information for anyone who cannot tell the tints apart.
+              <span className={pace === "on" || pace === null ? "" : "font-medium text-warning"} title={`${TARGET_LO}–${TARGET_HI}s target · ${GENERATION_POLICY.timing.wordsPerSec} words per second`}>
+                {" "}· ≈{cur.estimatedSeconds}s / {cur.spokenWordCount}w{pace === "over" ? ` · over ${TARGET_LO}–${TARGET_HI}s` : pace === "under" ? ` · under ${TARGET_LO}–${TARGET_HI}s` : ""}
+              </span>
+            )}
+            {cur.pointCount !== 3 && !s.historical ? ` · ${cur.pointCount} points` : ""}
+          </span>
+        )}
         <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${tone}`}>{state}</span>
       </summary>
       <div className="mt-2">
@@ -84,9 +122,20 @@ function ScriptItem({ s, busy, run, open }: { s: ScriptUi; busy: boolean; run: (
             {s.approvedAt ? ` · approved ${fmt(s.approvedAt)} by ${s.approvedBy}` : ""}{s.sharedAt ? ` · released ${fmt(s.sharedAt)}` : ""}{s.sourceFile ? ` · from ${s.sourceFile}` : ""}
           </p>
         )}
-        {cur && !s.historical && (cur.findings.length > 0 || cur.gaps.length > 0) && (
+        {cur && !s.historical && (cur.findings.length > 0 || cur.gaps.length > 0 || pace === "over") && (
           <div className="mt-1.5 rounded-lg border border-border bg-surface-2/50 px-2.5 py-1.5 text-[11px]">
-            {cur.findings.filter((f) => f.severity !== "info").map((f, i) => <p key={`f${i}`} className={f.severity === "block" ? "text-danger" : "text-warning"}>{f.severity === "block" ? "Format: " : "Note: "}{f.message}</p>)}
+            {/* The stored timing finding, when there is one, says the same thing
+                as the row below and with a possibly older estimate — the row is
+                built from the version's current seconds, so the stored one goes. */}
+            {cur.findings.filter((f) => f.severity !== "info" && f.code !== "timing.out-of-range" && !/^Spoken estimate /.test(f.message)).map((f, i) => <p key={`f${i}`} className={f.severity === "block" ? "text-danger" : "text-warning"}>{f.severity === "block" ? "Format: " : "Note: "}{f.message}</p>)}
+            {pace === "over" && (
+              <p className="flex flex-wrap items-center gap-1.5 text-warning">
+                <span>Length: ≈{cur.estimatedSeconds}s ({cur.spokenWordCount} words) against the {TARGET_LO}–{TARGET_HI}s target. It can still be approved — this is an estimate from a word count, not a rejection.</span>
+                <button disabled={busy} onClick={() => run(() => tightenScriptAI(s.id))} className="inline-flex items-center gap-1 rounded-md border border-warning/40 px-2 py-0.5 font-semibold text-warning hover:bg-warning/10 disabled:opacity-50">
+                  <Scissors className="size-3" />Tighten to {TARGET_LO}–{TARGET_HI}s
+                </button>
+              </p>
+            )}
             {cur.gaps.map((g, i) => <p key={`g${i}`} className="text-muted">Gap ({g.kind}): {g.text}{g.question ? ` → ${g.question}` : ""}</p>)}
           </div>
         )}
