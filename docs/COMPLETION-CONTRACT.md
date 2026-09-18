@@ -2,9 +2,9 @@
 
 **What the hub means by owed, approved, delivered, overdue, overridden and unknown.**
 
-Status: **proposed — waiting on Jordan's sign-off.** Nothing in this document has been built into a
-screen and nothing has been written to the database. RTP-03, RTP-05 and RTP-24 are all blocked on
-this page being agreed, because all three are the same disagreement wearing three hats.
+**Status: Phase 1 SHIPPED, Sep 18 2026.** The `DeliverableOutput` table in §9 exists — 922 rows across 645 jobs, one per owed video, materialised against a pre-change slot baseline with 0 mismatches. Phases 2–4 (the evidence backfill, the dual run and flipping readers behind `evidenceModel`) are NOT built: `computeUnits` still answers from the legacy model on purpose, because flipping a reader early would silently restate the Phase 0 reconciliation's numbers. The §13 questions that blocked Phase 1 were answered by Jordan's Sep 18 directives; the ones about later phases stand.
+RTP-03, RTP-05 and RTP-24 were all blocked on this page being agreed, because all three are the
+same disagreement wearing three hats.
 
 Written Sep 16 2026 against `books-cleanup` (HEAD f0f1f9b). Every number below came from a read-only
 pass over the live database, `scripts/evidence-reconcile.ts`, which you can re-run any time.

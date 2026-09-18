@@ -12,6 +12,22 @@ plus Jordan's ten follow-up directives of Sep 18.
 - **Blocked** — cannot proceed without something outside the code. The blocker is named.
 - **Not started** — no work done. Said plainly rather than dressed up.
 
+**And so does the evidence.** These are not the same strength and this document had been letting
+one stand in for another (external review, Sep 18):
+
+| Tier | What it means |
+|---|---|
+| **source** | The code changed. Typecheck and lint pass. Proves nothing about behaviour. |
+| **scenario** | The real exported function was called with stated inputs and its output quoted — in an isolated PostgreSQL where a database is needed. |
+| **production read** | A read-only query or live API read against real data, with the number printed. |
+| **production run** | A real engine or script executed against production, with before/after counts. |
+| **deployed** | Live on hub.realtourpilot.com and smoke-tested (HTTP status only unless stated). |
+| **browser** | A person or an automated browser actually used the screen. **Almost nothing below carries this tier**, and where a row needs it, it says so. |
+
+Two things this distinction rules out, both of which had crept in: "nobody had ever pressed the
+button" proves a defect was **latent**, not that the repaired button works; and a release recorded
+as SUPPRESSED proves the switch is off, not that the enabled path sends.
+
 **Two rules that outrank everything below:** client launch stays off — no invitations, reminders,
 publishing or new outbound automation is enabled by any of this work; and nothing is deleted —
 records are retired, withheld or flagged.
@@ -63,7 +79,7 @@ records are retired, withheld or flagged.
 | 1 | Clients must not see unreviewed AI scripts. | **Done** | `1b24065`, `3f9e03c`, `39f505b` | The server sends a stage, never draft text — six unreleased drafts were live across four interviews. `CLIENT_VISIBLE_SCRIPT` no longer contains APPROVED. And the portal now actually renders a RELEASED script under its topic, so "it's under this topic" is true: 5 of the 6 released scripts were reachable by zero surfaces before. There is exactly one visibility rule — `scriptVisibility` — and every caller goes through it. A client's own script is no longer piped through the staff money-clamp, which deleted whole sentences from 46 of them, including one whose subject is price. |
 | 2 | Complete individual video tracking. | **Done** | `0ab546f`, `2aaae42`, `44940a5` | See WF-02. 922 rows, 0 failures, parity against the pre-change baseline. |
 | 3 | Finish revision tracking; keep the return-to-client action visible. | **Done** | `2aaae42`, `44940a5` | See WF-03. The return-to-client half: `markVideoSent` stamps the video's own row, resolving a revision says out loud when an approved video still has not gone, and the project card carries "Approved — not sent" as its own state. Five videos across the business are in it today. |
-| 4 | Reconcile the previously delivered jobs; exceptions for anything owed or uncertain. | **Done** | `9e7f385`, `6d5e2df`, `51c832f` | A repeatable read-only pass that asks Aryeo live. 1,559 jobs scanned, 17 candidates, 4 TEST skipped: **13 genuinely fine, 2 owed, 1 uncertain**. **This corrects my earlier report of "14 jobs":** that came from the cached evidence blob, which goes stale seven days after delivery. Confirmed separately that no stamp on this database proves a human confirmed anything — 1,524 projects carry `deliveredAt`, 0 carry `deliveredBy`. Three exceptions written, idempotent on re-run, now first on the owner's radar. No client contacted, no file re-sent, no timestamp or status changed. |
+| 4 | Reconcile the previously delivered jobs; exceptions for anything owed or uncertain. | **Done** | `9e7f385`, `6d5e2df`, `51c832f` | A repeatable read-only pass that asks Aryeo live. **Corrected arithmetic** (the earlier line — "17 candidates, 4 TEST skipped: 13 fine, 2 owed, 1 uncertain" — did not reconcile as one population: 13+2+1 is 16, not 17). Re-run Sep 18: 1,559 non-cancelled jobs scanned; 17 carried an internal reason to doubt the delivery; 2 synthetic TEST jobs skipped; 2 had a reason to doubt but no lane this pass can read. Verdicts over the 17: **13 delivered · 3 still owed · 1 cannot tell** — which does reconcile. **This corrects my earlier report of "14 jobs":** that came from the cached evidence blob, which goes stale seven days after delivery. Confirmed separately that no stamp on this database proves a human confirmed anything — 1,524 projects carry `deliveredAt`, 0 carry `deliveredBy`. **Four** exceptions now written (893 S Matlack St, 5642 Limeport Rd, 358 N Church St, 45 Heron Hill Dr) — 358 N Church St joined after the scope fix, and is a job whose photos and floor plans went out while two finished videos never did. Idempotent: a re-run raised 0 and left 3 exactly as they were. First on the owner's radar. No client contacted, no file re-sent, no timestamp or status changed. |
 | 5 | Premium reels: 3 business days internal target, 4 business days client deadline; preserve agreed promises. | **Done** | `af9f8dd`, `f371965`, `f25b97f`, `7569b7b`, `017bf4b` | See WF-04. **Correction to a figure of mine:** I said moving the premium default would flip "39 of 222" delivered premium jobs. Production has 121 such jobs, not 222, and 34 flip — the risk was real, my numbers were not. |
 | 6 | Coverage Mon–Fri 9–6 ET; defer routine alerts; explicit on-call for urgent. | **Done** | `af9f8dd`, `931c690`, `1890cedcd937` | Measured first: of 196 reply-SLA pages in 90 days, 47 fired at the weekend and — the part nobody had counted — **61 more fired on a weeknight**, so 108 of 196 landed when nobody was on. Routine now defers to the next covered period; urgent goes to a named on-call, and with nobody named behaves exactly as today, because silence is the one outcome an urgent alert must never have. Capture is unchanged. The window is also cross-validated on save, so the screen and the pager cannot disagree. **For Jordan:** 9–6 is narrower than the pager's old weekday 8–7. |
 | 7 | 20–30s stays a generation target with a tighten action, never a hard rejection. | **Done** | `ec6d747`, `740ec7a`, `1890cedcd937` | Structure is unoverridable; pacing is a warning. A one-click tighten builds its instruction server-side from the version's own stored numbers. The overrun is now visible where it matters: the findings box only rendered for 9 of 174 rows while the estimate chip was on all 174 and untinted, so 47s and 24s looked identical. An UNDER-target script is told it is short too. No duration override exists anywhere, and the "should pacing ever hard-block" question is recorded as still open, because it is. |
@@ -91,6 +107,28 @@ Recorded because each was a genuine defect, not a drill artefact.
 **One honest limit, printed by the drill itself:** `RevisionBrief` references `Project`, an
 operational table not in a program backup. Those 17 rows restore correctly into a database that
 still holds the operational core; a bare-metal rebuild needs the full `pg_dump` too.
+
+## F2. What this document does NOT claim
+
+An external verification review on Sep 18 (`~/Downloads/Realtour-Pilot-Remaining-Work-2026-09-18.md`)
+read `main` at `28524a5` and reproduced four defects locally. It was right about all four, and one
+of them — R01 — was a regression **I** introduced when I fenced the Topaz lease. Its remaining
+worklist (R01–R10) is being worked through; rows above carry the fixing commits as they land.
+
+Three limits to state plainly rather than leave implied:
+
+- **Almost nothing here has browser evidence.** Screens were verified by calling the functions
+  behind them and by HTTP status after deploy. Whether a blocker chip reads well on a phone, whether
+  a long title wraps, whether video seeking works on a private store — none of that has been
+  watched by anybody.
+- **Coverage is operationally incomplete until somebody is on call.** `routeAlert` deliberately
+  falls back to the old recipients for an urgent out-of-hours alert when the rota is empty, because
+  silence is the one outcome an urgent alert must never have. That is a safe default, not a
+  finished feature: directive 6's "explicitly assigned person" is not in force.
+- **The program backup alone cannot rebuild the hub.** The drill proves it rebuilds the content
+  program into an empty database — 6,409 of 6,426 rows with every internal relationship intact —
+  and prints its own limit: 17 RevisionBrief rows depend on operational `Project` rows that a
+  program backup does not contain. A full disaster recovery still needs the database-level dump.
 
 ## F. Open questions for Jordan
 
