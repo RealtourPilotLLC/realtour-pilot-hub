@@ -379,6 +379,86 @@ export async function claimTopazJobs(limit: number, leaseBy: string): Promise<st
  * no-op instead of corruption. The loss is logged, not swallowed: a lane that
  * keeps losing its lease is telling us LEASE_MS is too short for these files.
  */
+/**
+ * Write while KEEPING the lease. Same compare-and-swap as release(), but the
+ * row stays ours afterwards.
+ *
+ * WHY THIS EXISTS (review, Sep 18). stepEstimated used to write "uploading" with
+ * release(), which clears leaseBy, and THEN re-check the caps and hand the
+ * commitment back with a second release() — whose fence compared the original
+ * leaseBy against the null the first call had just written. It matched zero
+ * rows. The function returned "estimated" while the row sat in "uploading" with
+ * acceptedAt set and its provider request cancelled: a commitment counted
+ * against every cap for ever, on a job that could never upload. My own lease
+ * fence introduced that; before it, the unconditional write had worked.
+ *
+ * The sequence below no longer needs a second chance — the slot is RESERVED
+ * before anything is accepted — but a hold-with-lease is the right primitive
+ * either way: a decision is not finished until it is finished.
+ */
+async function holdLease(job: { id: string; leaseBy: string | null }, patch: Record<string, unknown>): Promise<boolean> {
+  const r = await prisma.topazJob
+    .updateMany({ where: { id: job.id, leaseBy: job.leaseBy }, data: { leaseUntil: new Date(Date.now() + LEASE_MS), ...patch } })
+    .catch((e: unknown) => {
+      console.warn("topaz holdLease failed", job.id, (e as Error).message);
+      return { count: 0 };
+    });
+  return r.count === 1;
+}
+
+/**
+ * TAKE THE LAST SLOT, OR DO NOT TAKE IT — in one statement.
+ *
+ * The old shape was: count, accept at Topaz, then count again and hand back an
+ * overshoot. Two drivers run (the five-minute lane and the hourly safety net)
+ * and both could be between the count and the write, so the recheck was doing
+ * the real work — and a recheck that cannot write (see holdLease) does none.
+ *
+ * This is the reservation the review asked for. Every cap is evaluated INSIDE
+ * the same UPDATE that claims the slot, against one snapshot, so two workers
+ * contesting the last render cannot both win: the loser matches zero rows and
+ * is told to wait. acceptedAt is the reservation — it is what every cap counts —
+ * and it is set BEFORE a single credit is committed at Topaz, so losing the race
+ * costs nothing and winning it cannot be double-spent.
+ *
+ * Returns true when this job now holds a slot.
+ */
+export async function reserveSpendSlot(
+  job: { id: string; leaseBy: string | null; estimateCredits: number | null },
+  s: TopazSettings,
+): Promise<boolean> {
+  const { dayStart, monthStart } = etWindows();
+  const wanted = job.estimateCredits ?? 0;
+  const n = await prisma.$executeRaw`
+    UPDATE "TopazJob" SET "acceptedAt" = now(), "leaseUntil" = now() + interval '10 minutes'
+    WHERE "id" = ${job.id}
+      AND "acceptedAt" IS NULL
+      AND "leaseBy" IS NOT DISTINCT FROM ${job.leaseBy}
+      AND (SELECT count(*) FROM "TopazJob" WHERE "acceptedAt" >= ${monthStart}) < ${s.maxRendersPerMonth}
+      AND (SELECT count(*) FROM "TopazJob" WHERE "acceptedAt" >= ${dayStart}) < ${s.maxRendersPerDay}
+      AND (SELECT coalesce(sum("estimateCredits"), 0) FROM "TopazJob" WHERE "acceptedAt" >= ${monthStart}) + ${wanted} <= ${s.maxCreditsPerMonth}
+      -- A RESERVATION OCCUPIES A SLOT (drill, Sep 18). Counting only
+      -- uploading/processing let two workers both reserve against one free
+      -- slot: a reserved row is still 'estimated' until the state write lands,
+      -- so neither saw the other. The count is now "holds a commitment and has
+      -- not finished" — which is what a slot IS. 'saving' stays out of it on
+      -- purpose: that is our own Dropbox copy, not Topaz's hands, and it must
+      -- not hold a slot hostage (spendGate's own rule).
+      AND (
+        SELECT count(*) FROM "TopazJob"
+        WHERE "acceptedAt" IS NOT NULL AND "state" IN ('estimated', 'uploading', 'processing')
+      ) < ${s.maxConcurrent}
+  `;
+  return n === 1;
+}
+
+/** Give a reserved slot back. Only ever called before anything was spent. */
+export async function releaseSpendSlot(job: { id: string; leaseBy: string | null }): Promise<void> {
+  await prisma.topazJob
+    .updateMany({ where: { id: job.id, leaseBy: job.leaseBy }, data: { acceptedAt: null } })
+    .catch(() => ({ count: 0 }));
+}
+
 async function release(job: { id: string; leaseBy: string | null }, patch: Record<string, unknown> = {}): Promise<boolean> {
   const r = await prisma.topazJob
     .updateMany({ where: { id: job.id, leaseBy: job.leaseBy }, data: { leaseUntil: null, leaseBy: null, ...patch } })
@@ -869,17 +949,50 @@ async function stepEstimated(job: NonNullable<JobRow>, s: TopazSettings): Promis
   const gate = await spendGate(s, { estimateCredits: job.estimateCredits });
   if (!gate.ok) return await applyGate(job, gate);
 
+  // RESERVE THE SLOT, THEN SPEND. In that order, and not the other way round.
+  //
+  // This used to accept at Topaz first and re-check the caps afterwards, handing
+  // back an overshoot. Two problems, both real: the hand-back could not write
+  // (it fenced on a lease the accept-write had already cleared — see holdLease),
+  // and even working it was a compare-after-commit, which is not a guarantee.
+  // reserveSpendSlot evaluates every cap inside the UPDATE that claims the slot,
+  // so two drivers contesting the last render cannot both win.
+  //
+  // A row that already carries upload targets has been here before — it is
+  // resuming, its slot is already reserved, and it must not reserve a second.
+  const stored = parseTargets(job.uploadUrlsJson);
+  const resuming = stored.length > 0 && !!job.acceptedAt;
+  if (!resuming) {
+    const got = await reserveSpendSlot(job, s);
+    if (!got) {
+      // Either a cap is genuinely full, or another driver took the last slot
+      // between the gate above and here. Ask the gate again so the row carries
+      // the real reason and the right retry time rather than a guess.
+      const again = await spendGate(s, { estimateCredits: job.estimateCredits });
+      if (!again.ok) return await applyGate(job, again);
+      // The caps say there is room but the reservation did not land: we no
+      // longer hold the lease. The holder owns this row now.
+      console.warn("topaz reservation lost the lease", job.id);
+      return job.state;
+    }
+  }
+
   // Accepting does NOT start processing (complete-upload does), which is what
   // makes a repeat safe after a crash between the call and the write.
   let targets: TopazUploadTarget[];
-  const stored = parseTargets(job.uploadUrlsJson);
-  if (stored.length) targets = stored;
-  else targets = await acceptVideoRequest(job.requestId);
+  try {
+    targets = stored.length ? stored : await acceptVideoRequest(job.requestId);
+  } catch (e) {
+    // Nothing was spent — Topaz refused the accept — so the slot goes straight
+    // back rather than sitting reserved until somebody notices.
+    if (!resuming) await releaseSpendSlot(job);
+    throw e;
+  }
 
-  await release(job, {
+  // The state write KEEPS the lease: the decision is finished, but this row is
+  // still ours until the step returns.
+  const wrote = await holdLease(job, {
     state: "uploading",
-    // acceptedAt is the ledger moment for every cap: we have now committed.
-    acceptedAt: job.acceptedAt ?? new Date(),
     balanceBefore: gate.balance,
     uploadUrlsJson: JSON.stringify(targets),
     attempt: 0,
@@ -887,54 +1000,14 @@ async function stepEstimated(job: NonNullable<JobRow>, s: TopazSettings): Promis
     errorAt: null,
     nextAttemptAt: null,
   });
-
-  // CLOSING THE LAST GAP IN THE CREDIT CAP. spendGate counts, then we accept —
-  // and two drivers (the */5 lane and the hourly sync's safety net) can be
-  // between those two moments at the same time, each having seen a ledger
-  // without the other's job in it. So the ledger is read ONE more time now that
-  // this job is IN it. Nothing has been spent yet — complete-upload has not
-  // fired — so an overshoot can still be handed back cleanly and for free.
-  // Without this, the month could pass the cap by roughly (drivers × jobs per
-  // tick) renders; with it, it cannot pass it at all.
-  // EVERY CAP, NOT JUST THE CREDIT ONE (audit, Sep 17). This re-read closed the
-  // month's credit cap and left the other three open: concurrency, renders per
-  // day and renders per month were each counted before the accept and never
-  // again, so two drivers between the count and the write could both take the
-  // last slot. They are all counted the same way now — WITH this job in the
-  // ledger, so the test is "past the cap" rather than the gate's "at it".
-  const { dayStart, monthStart, nextDay, nextMonth } = etWindows();
-  const [credits, todayCount, monthCount, inFlight] = await Promise.all([
-    prisma.topazJob.aggregate({ where: { acceptedAt: { gte: monthStart } }, _sum: { estimateCredits: true } }),
-    prisma.topazJob.count({ where: { acceptedAt: { gte: dayStart } } }),
-    prisma.topazJob.count({ where: { acceptedAt: { gte: monthStart } } }),
-    prisma.topazJob.count({ where: { state: { in: IN_TOPAZ_HANDS } } }),
-  ]);
-  const overshoot: { why: string; retryAt: Date } | null =
-    (credits._sum.estimateCredits ?? 0) > s.maxCreditsPerMonth
-      ? { why: `This month's credit limit (${s.maxCreditsPerMonth}) is used up — this video waits, or raise the limit in Settings.`, retryAt: new Date(Date.now() + RETRY_CEILING_MS) }
-      : monthCount > s.maxRendersPerMonth
-        ? { why: `This month's limit of ${s.maxRendersPerMonth} videos is used up — this one goes through next month, or raise the limit in Settings.`, retryAt: nextMonth }
-        : todayCount > s.maxRendersPerDay
-          ? { why: `Today's limit of ${s.maxRendersPerDay} videos is used up — this one goes through tomorrow.`, retryAt: nextDay }
-          : inFlight > s.maxConcurrent
-            ? { why: `${inFlight - 1} videos were already being processed — this one waits its turn.`, retryAt: new Date(Date.now() + 3 * 60_000) }
-            : null;
-  if (overshoot) {
-    if (job.requestId) await cancelVideoRequest(job.requestId);
-    // Hand the commitment back in ONE write: acceptedAt cleared takes this job
-    // straight back out of the ledger, so the very next gate reads a true
-    // number rather than one that still counts a job we just let go. Nothing
-    // has been spent — complete-upload has not fired — so this is free.
-    await release(job, {
-      state: "estimated",
-      acceptedAt: null,
-      uploadUrlsJson: null,
-      nextAttemptAt: new Date(Math.min(overshoot.retryAt.getTime(), Date.now() + RETRY_CEILING_MS)),
-      error: overshoot.why,
-      errorAt: new Date(),
-    });
-    return "estimated";
+  if (!wrote) {
+    // We lost the lease after accepting. Do NOT cancel the request — the driver
+    // that holds the row now will find the reservation and the accepted request
+    // and carry on. Cancelling here would take a paid-for slot away from it.
+    console.warn("topaz lost the lease after accepting", job.id);
+    return job.state;
   }
+  await release(job);
   return "uploading";
 }
 
