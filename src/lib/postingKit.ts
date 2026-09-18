@@ -116,19 +116,27 @@ export async function resolveFinalFile(video: { id: string; finalSubmissionId: s
   return { final: null, note: video.currentSubmissionId ? "The final file lands here once this version is approved and finished." : "No file yet — it appears here once the video is edited and delivered." };
 }
 
-type ScriptVisibility = "released" | "historical";
+export type ScriptVisibility = "released" | "historical";
 
 /**
  * May a CLIENT read this script, and in what character? This is the portal's
- * ONE script-visibility rule — the same one `scriptForEnrollment` enforces —
- * applied here rather than copied, because a second gate is a gate that drifts.
+ * ONE script-visibility rule — every surface that shows a client a script calls
+ * THIS FUNCTION, because a second gate is a gate that drifts.
+ *
+ * That sentence was aspirational until Sep 18: `scriptForEnrollment` was still
+ * running its own `CLIENT_VISIBLE_SCRIPT.includes(status)` test and
+ * `portalInterview` had grown a third one inline. Both now call here. The
+ * callers, so the next reader can check the claim rather than trust it:
+ *   · postingKit.scriptForVideo    — the script behind one video
+ *   · portal.visibleTopicScripts   — the script under one topic (bank + interview)
+ *   · portal.scriptForEnrollment   — the write gate on "suggest a change"
  *
  * `releaseState` is authoritative wherever production has written it:
  * approveScript writes "withheld" (approved internally, NOT shared),
  * shareScript writes "released", the import backfill writes "historical".
  * A null releaseState is pre-CPOS data and is judged by status alone.
  */
-function scriptVisibility(s: { status: string; releaseState: string | null; historical: boolean }): ScriptVisibility | null {
+export function scriptVisibility(s: { status: string; releaseState: string | null; historical: boolean }): ScriptVisibility | null {
   if (s.releaseState === "withheld") return null;
   if (s.releaseState === "released") return "released";
   // Imported scripts are HISTORY (Jordan's ruling) — visible, never re-labelled

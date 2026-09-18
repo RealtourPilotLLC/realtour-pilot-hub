@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, CheckCircle2, Loader2, Pencil, Send, Sparkles } from "lucide-react";
+import { ArrowLeft, ArrowRight, CheckCircle2, Loader2, Pencil, Send, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { portalAnswerInterview, portalSubmitInterview } from "@/app/portal/actions";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
@@ -112,10 +112,18 @@ export function InterviewFlow({ iv, backHref, canAct }: { iv: PortalInterviewVie
           </p>
         </div>
       )}
+      {/* "It's under this topic" was a promise nothing kept: the topic row
+          printed a version number and the only script renderer in the portal
+          needed a ContentVideo, and ContentVideo.topicId was set on 0 of 167
+          rows (Sep 18). The topic now renders the script, and this panel takes
+          the client to it instead of describing where it is. */}
       {iv.script.stage === "released" && (
         <div className="panel-shadow rounded-2xl border border-border bg-surface/70 p-4 backdrop-blur">
           <div className="flex flex-wrap items-center gap-2 text-sm font-semibold"><Sparkles className="size-4 text-brand" /> Your script is ready</div>
           <p className="mt-0.5 text-[11px] text-muted-2">It&rsquo;s under this topic, with everything you need to film it.</p>
+          <Link href={`${backHref}#topic-${iv.topicId}`} className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand">
+            Read my script <ArrowRight className="size-3.5" />
+          </Link>
         </div>
       )}
       {msg && <p role="status" className={cn("text-xs", msg.ok ? "text-success" : "text-danger")}>{msg.text}</p>}

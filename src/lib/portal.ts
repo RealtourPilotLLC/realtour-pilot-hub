@@ -328,15 +328,36 @@ export async function submissionForEnrollment(enrollment: { id: string; clientId
   return sub;
 }
 
-/** Prove a script belongs to the viewer's enrollment AND is client-visible. */
+/**
+ * Prove a script belongs to the viewer's enrollment AND is client-visible.
+ *
+ * This is an AUTHORIZATION gate on the portal's write layer (it is what stands
+ * between a client and "suggest a change to this script"), and until Sep 18 it
+ * ran its own status test while postingKit ran the real rule — two gates, one
+ * of which had already been overtaken by `releaseState`. It now calls
+ * postingKit.scriptVisibility, which is the only one.
+ *
+ * Measured before the swap, over all 164 ContentScript rows: 0 lose access, 141
+ * gain it (135 historical imports + 6 released). The gain is the point — a
+ * client who may READ their script history may say something about it — and the
+ * loss is what matters, so it was checked first. Against the pre-Sep-18 list
+ * (which still carried APPROVED) the swap would have closed 2 withheld scripts;
+ * commit 1b24065 closed those already.
+ *
+ * The verdict rides along: a caller that needs to tell "this month's script"
+ * from "an import we keep as history" must not re-derive it.
+ */
 export async function scriptForEnrollment(enrollmentId: string, scriptId: string) {
+  if (!/^[a-z0-9]{10,40}$/i.test(scriptId)) return null;
   const script = await prisma.contentScript.findUnique({
     where: { id: scriptId },
-    select: { id: true, enrollmentId: true, title: true, status: true, monthId: true },
+    select: { id: true, enrollmentId: true, title: true, status: true, monthId: true, releaseState: true, historical: true },
   });
   if (!script || script.enrollmentId !== enrollmentId) return null;
-  if (!CLIENT_VISIBLE_SCRIPT.includes(script.status)) return null;
-  return script;
+  const { scriptVisibility } = await import("@/lib/postingKit");
+  const verdict = scriptVisibility(script);
+  if (!verdict) return null;
+  return { ...script, verdict };
 }
 
 // The pre-§7 library path (portalCuts / portalLibrary / portalMonths, their
@@ -580,9 +601,26 @@ export type PortalTopic = {
   selection: { monthId: string; monthKey: string; status: string; overflow: boolean; removable: boolean } | null;
   interview: { id: string; status: string; answered: number } | null;
   script: { versionLabel: string | null; strategyLabel: string | null; shared: boolean } | null;
+  /**
+   * THE WORDS, when the client is allowed to read them. Null is the normal
+   * case: a draft, an internal review, an approved-but-withheld script all
+   * arrive here as null, and the page says the script is being prepared.
+   * Filled only by `portalTopicScript`, which asks postingKit.scriptVisibility.
+   */
+  scriptText: PortalTopicScript | null;
   strategyLabel: string | null;
   lastEventAtISO: string | null;
   history: { kind: string; atISO: string; note: string | null; monthKey: string | null }[];
+};
+
+export type PortalTopicScript = {
+  title: string;
+  /** Already money-scrubbed and client-facing; render it, do not re-process it. */
+  body: string;
+  versionLabel: string | null;
+  strategyLabel: string | null;
+  /** An import we hold as history, NOT the script for this topic's next video (Jordan's ruling). */
+  historical: boolean;
 };
 
 export type PortalTopicMonth = { id: string; monthKey: string; owed: number; selected: number; overflow: number; historical: boolean };
@@ -599,6 +637,100 @@ export type PortalTopicsData = {
 const LIVE_SELECTION = ["SELECTED", "RECONCILED", "PROPOSED", "CARRIED"];
 const PRODUCTION_STATES = ["SCRIPTED", "FILMED", "EDITING", "DELIVERED"];
 
+// ---------------------------------------------------------------------------
+// THE SCRIPT UNDER A TOPIC (Jordan, Sep 18)
+//
+// The portal promised a script it could not show. The interview page said "Your
+// script is ready — it's under this topic" and the scripts_ready email said
+// "Read it here"; the topic row printed a version NUMBER and nothing else, and
+// the only place in the whole portal that rendered a script body needed a
+// ContentVideo. Measured Sep 18: ContentVideo.topicId is set on 0 of 167 rows,
+// so 5 of the 6 released scripts were reachable by zero videos. Two true
+// sentences and no script.
+//
+// So this is where a script meets its topic, and the gate is
+// postingKit.scriptVisibility — called, not restated. Everything else here is
+// scoping and ranking:
+//   · candidates are scoped to enrollmentId AND clientId, like every other read
+//     on this page — a script filed under the wrong client is not a candidate
+//     at all rather than something we notice later;
+//   · a released script outranks a historical one, so an import can never
+//     shadow this month's work;
+//   · nothing else crosses the boundary. A DRAFT, an INTERNAL_REVIEW, an
+//     APPROVED-but-withheld script all resolve to null and the page says the
+//     script is being prepared, which is what is true.
+//
+// One batched resolve serves both callers (the whole bank, and one interview's
+// topic) so the gate runs in exactly one place and a 52-topic bank is still
+// three queries.
+// ---------------------------------------------------------------------------
+
+async function visibleTopicScripts(enrollment: { id: string; clientId: string }, topicIds: string[]): Promise<Map<string, PortalTopicScript>> {
+  const out = new Map<string, PortalTopicScript>();
+  const ids = topicIds.filter((id) => /^[a-z0-9]{10,40}$/i.test(id));
+  if (!ids.length) return out;
+  const [{ scriptVisibility }, { canonicalFromParts, pointsFromJson }, { renderScript }, { stripMoneySentences }] = await Promise.all([
+    import("@/lib/postingKit"),
+    import("@/lib/contentScripts"),
+    import("@/lib/contentPolicy"),
+    import("@/lib/text"),
+  ]);
+  const candidates = await prisma.contentScript.findMany({
+    where: { enrollmentId: enrollment.id, clientId: enrollment.clientId, topicId: { in: ids } },
+    orderBy: { updatedAt: "desc" },
+    select: { id: true, topicId: true, title: true, body: true, clientId: true, status: true, releaseState: true, historical: true, sharedVersionId: true, approvedVersionId: true, strategyVersionId: true },
+  });
+  // One winner per topic: released beats historical, then newest (the findMany
+  // is already newest-first, so the first survivor of each rank wins).
+  const winner = new Map<string, { s: (typeof candidates)[number]; historical: boolean }>();
+  for (const s of candidates) {
+    if (!s.topicId) continue;
+    const verdict = scriptVisibility(s);
+    if (!verdict) continue;
+    const held = winner.get(s.topicId);
+    if (held && !(held.historical && verdict === "released")) continue;
+    winner.set(s.topicId, { s, historical: verdict === "historical" });
+  }
+  if (!winner.size) return out;
+
+  const versionIds = [...winner.values()].map((w) => w.s.sharedVersionId ?? w.s.approvedVersionId).filter((x): x is string => !!x);
+  const versions = versionIds.length
+    ? await prisma.contentScriptVersion.findMany({ where: { id: { in: versionIds }, enrollmentId: enrollment.id, clientId: enrollment.clientId }, select: { id: true, versionNo: true, title: true, categoryLabel: true, pillarId: true, hook: true, pointsJson: true, close: true, captionCta: true, clientId: true, strategyVersionId: true } })
+    : [];
+  const stratIds = [...new Set([...versions.map((v) => v.strategyVersionId), ...[...winner.values()].map((w) => w.s.strategyVersionId)].filter((x): x is string => !!x))];
+  const strategies = stratIds.length ? await prisma.contentStrategyVersion.findMany({ where: { id: { in: stratIds } }, select: { id: true, versionNo: true } }) : [];
+  const stratLabel = new Map(strategies.map((s) => [s.id, `v${s.versionNo}`]));
+
+  for (const [topicId, { s, historical }] of winner) {
+    const v = versions.find((x) => x.id === (s.sharedVersionId ?? s.approvedVersionId));
+    const strategyId = v?.strategyVersionId ?? s.strategyVersionId ?? null;
+    const strategyLabel = strategyId ? stratLabel.get(strategyId) ?? null : null;
+    if (v) {
+      const canonical = canonicalFromParts({ title: v.title, categoryLabel: v.categoryLabel, pillarId: v.pillarId, hook: v.hook, points: pointsFromJson(v.pointsJson), close: v.close, captionCta: v.captionCta }, v.clientId);
+      out.set(topicId, { title: v.title, body: stripMoneySentences(renderScript(canonical)), versionLabel: `v${v.versionNo}`, strategyLabel, historical });
+      continue;
+    }
+    // No version row — an import, which is 140 of the 142 topic-linked visible
+    // scripts today. postingKit hands these back RAW rather than re-rendering
+    // them, and it is right to: running the 140 through
+    // partsFromBody -> canonicalFromParts -> renderScript drops more than 5% of
+    // the words on 45 of them, worst case 168 words down to 17 (measured Sep
+    // 18). A client's own script is not worth normalising into a house format
+    // at the price of losing two thirds of it.
+    out.set(topicId, { title: s.title, body: stripMoneySentences(s.body), versionLabel: null, strategyLabel, historical });
+  }
+  return out;
+}
+
+/**
+ * The script the client may read under ONE topic — or null, which is the answer
+ * for a draft, an internal review and an approved-but-withheld script alike.
+ * The verdict comes from postingKit.scriptVisibility; see visibleTopicScripts.
+ */
+export async function portalTopicScript(enrollment: { id: string; clientId: string }, topicId: string): Promise<PortalTopicScript | null> {
+  return (await visibleTopicScripts(enrollment, [topicId])).get(topicId) ?? null;
+}
+
 /** The client's bank by their pillars (Arielle's presentation) with the month selections, interviews and scripts each topic carries. */
 export async function portalTopics(enrollment: { id: string; clientId: string }): Promise<PortalTopicsData> {
   const { topicBankByPillar } = await import("@/lib/contentTopics");
@@ -609,12 +741,16 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
     prisma.contentMonth.findMany({ where: { enrollmentId: enrollment.id }, orderBy: { monthKey: "asc" }, select: { id: true, monthKey: true, videosOwed: true, historical: true } }),
   ]);
   const topicIds = bank.groups.flatMap((g) => g.topics.map((t) => t.id));
-  const [selections, interviews, scripts, events, versionsOfStrategies] = await Promise.all([
+  const [selections, interviews, scripts, events, versionsOfStrategies, topicScripts] = await Promise.all([
     prisma.contentTopicSelection.findMany({ where: { enrollmentId: enrollment.id, topicId: { in: topicIds }, status: { in: LIVE_SELECTION } }, orderBy: { createdAt: "desc" } }),
     prisma.contentInterview.findMany({ where: { enrollmentId: enrollment.id, topicId: { in: topicIds } }, select: { id: true, topicId: true, monthId: true, status: true, answeredCount: true } }),
     prisma.contentScript.findMany({ where: { enrollmentId: enrollment.id, topicId: { in: topicIds }, historical: false }, select: { id: true, topicId: true, sharedVersionId: true, approvedVersionId: true, currentVersionId: true, strategyVersionId: true } }),
     topicIds.length ? prisma.contentTopicEvent.findMany({ where: { enrollmentId: enrollment.id, topicId: { in: topicIds }, kind: { in: ["SELECTED", "DESELECTED", "DISCUSSED", "SCRIPTED", "FILMED", "DELIVERED", "CARRIED", "CREATED", "SUGGESTED"] } }, orderBy: { createdAt: "desc" }, select: { topicId: true, kind: true, createdAt: true, note: true, monthId: true, actorKind: true } }) : Promise.resolve([]),
     prisma.contentStrategyVersion.findMany({ where: { enrollmentId: enrollment.id }, select: { id: true, versionNo: true } }),
+    // The words, for the topics whose script the client may actually read.
+    // Batched: the biggest live bank is 52 topics carrying a script (Erica
+    // Walker, Sep 18) and one resolve is three queries however many there are.
+    visibleTopicScripts(enrollment, topicIds),
   ]);
   const monthKeyOf = new Map(monthsRaw.map((m) => [m.id, m.monthKey]));
   const strategyLabelOf = new Map(versionsOfStrategies.map((v) => [v.id, `v${v.versionNo}`]));
@@ -639,6 +775,7 @@ export async function portalTopics(enrollment: { id: string; clientId: string })
       selection: sel ? { monthId: sel.monthId, monthKey: monthKeyOf.get(sel.monthId) ?? "", status: sel.status, overflow: sel.overflow, removable: !inProduction && sel.status !== "RECONCILED" } : null,
       interview: iv ? { id: iv.id, status: iv.status, answered: iv.answeredCount } : null,
       script: sc ? { versionLabel: scv ? `v${scv.versionNo}` : null, strategyLabel: scv?.strategyVersionId ? strategyLabelOf.get(scv.strategyVersionId) ?? null : sc.strategyVersionId ? strategyLabelOf.get(sc.strategyVersionId) ?? null : null, shared: !!sc.sharedVersionId } : null,
+      scriptText: topicScripts.get(t.id) ?? null,
       strategyLabel: stratOfTopic.get(t.id) ? strategyLabelOf.get(stratOfTopic.get(t.id)!) ?? null : null,
       lastEventAtISO: t.lastEventAt,
       history: events.filter((e) => e.topicId === t.id).slice(0, 8).map((e) => ({ kind: e.kind, atISO: e.createdAt.toISOString(), note: e.actorKind === "CLIENT" || e.actorKind === "STAFF" ? e.note : null, monthKey: e.monthId ? monthKeyOf.get(e.monthId) ?? null : null })),
@@ -729,16 +866,14 @@ export async function portalInterview(enrollment: { id: string; clientId: string
     prisma.contentScriptVersion.count({ where: { interviewId, enrollmentId: enrollment.id } }),
     answersChangedSinceLastDraft(interviewId),
     row.strategyVersionId ? prisma.contentStrategyVersion.findUnique({ where: { id: row.strategyVersionId }, select: { versionNo: true } }) : Promise.resolve(null),
-    // Has the finished script for this topic actually been released? Judged by
-    // releaseState, the same authority postingKit.scriptVisibility uses — an
-    // approved-but-withheld script is NOT released, and this page says so.
-    prisma.contentScript.findFirst({
-      where: { enrollmentId: enrollment.id, topicId: row.topicId, historical: false },
-      orderBy: { updatedAt: "desc" },
-      select: { releaseState: true, sharedVersionId: true },
-    }),
+    // Has the finished script for this topic actually been released? Asked of
+    // the ONE resolver, not of a releaseState test written out again here: this
+    // panel now links the client to the script, and a panel that says "ready"
+    // while the topic renders nothing is the bug this whole change exists to
+    // kill. Its *verdict* is used; its text is thrown away on the next line.
+    portalTopicScript(enrollment, row.topicId),
   ]);
-  const released = topicScript?.releaseState === "released" && !!topicScript.sharedVersionId;
+  const released = !!topicScript && !topicScript.historical;
   const script: PortalInterviewView["script"] = {
     stage: released ? "released" : builtOne > 0 ? "preparing" : "none",
     changedSince: changed,

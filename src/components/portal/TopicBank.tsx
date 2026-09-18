@@ -6,12 +6,14 @@ import { CheckCircle2, ChevronRight, Lightbulb, Loader2, MessageSquare, Plus, X 
 import { cn } from "@/lib/utils";
 import { portalDiscussTopic, portalOpenInterview, portalRemoveSelection, portalSelectTopic, portalSuggestTopic } from "@/app/portal/actions";
 import { portalAuthFromLocation } from "@/components/portal/portalAuth";
+import { ScriptBody } from "@/components/portal/ScriptBody";
 import type { PortalTopic, PortalTopicMonth, PortalTopicState } from "@/lib/portal";
 
 // ---------------------------------------------------------------------------
 // VIDEO TOPICS (spec §5): the client's bank by their pillars, in the
 // presentation their strategist uses (pillar heading, purpose, numbered
-// topics with a one-line concept). Filters: Suggested / Selected for a month
+// topics with a one-line concept, and — since Sep 18 — the SCRIPT itself once
+// it is released). Filters: Suggested / Selected for a month
 // / Preparing / Filmed (+ how many are archived, kept internally). Select for
 // a NAMED month, remove an uncommitted selection, suggest an idea, discuss —
 // each a server action that re-reads the page. Capacity is explained, never
@@ -142,7 +144,10 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                 const selectedHere = t.selection && month && t.selection.monthId === month.id;
                 const canSelect = canAct && !readOnly && !!month && !t.selection;
                 return (
-                  <li key={t.id} className="rounded-xl border border-border bg-surface px-3 py-2.5">
+                  // The id is the interview page's "Read my script" target:
+                  // that panel links to #topic-<id> rather than telling the
+                  // client to go and find it.
+                  <li key={t.id} id={`topic-${t.id}`} className="scroll-mt-20 rounded-xl border border-border bg-surface px-3 py-2.5">
                     <div className="flex items-start gap-2">
                       <span className="mt-0.5 w-5 shrink-0 text-right text-xs text-muted-2 tabular-nums">{i + 1}.</span>
                       <div className="min-w-0 flex-1">
@@ -167,6 +172,27 @@ export function TopicBank({ groups, months, archivedCount, total, strategyLabel,
                                 {t.history.map((h, j) => <li key={j}>{h.kind.toLowerCase()}{h.monthKey ? ` · ${shortMonth(h.monthKey)}` : ""} · {new Date(h.atISO).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" })}{h.note ? ` — ${h.note}` : ""}</li>)}
                               </ul>
                             )}
+                          </details>
+                        )}
+                        {/* THE SCRIPT. The server sends words only when
+                            postingKit.scriptVisibility says this client may
+                            read them, so there is nothing to decide here — if
+                            it arrived, it is theirs. A released script opens on
+                            arrival (the client was sent here to read it); an
+                            import stays closed behind its own label, because an
+                            old script we hold is not this topic's script and
+                            must never be mistaken for one (Jordan's ruling). */}
+                        {t.scriptText && (
+                          <details className="mt-1.5 rounded-lg border border-border bg-surface-2/40 px-2.5 py-2" open={!t.scriptText.historical}>
+                            <summary className="cursor-pointer text-xs font-bold">
+                              {t.scriptText.historical ? "An earlier script we have on file" : "Your script"}
+                              <span className="ml-1 text-[10px] font-normal text-muted-2">
+                                {t.scriptText.historical ? "history" : t.scriptText.versionLabel ? `script ${t.scriptText.versionLabel}` : "script"}
+                                {t.scriptText.strategyLabel ? ` · strategy ${t.scriptText.strategyLabel}` : ""}
+                              </span>
+                            </summary>
+                            {t.scriptText.historical && <p className="mt-1.5 text-[11px] text-muted">Kept as history — a script we already have for this topic, not the one we&rsquo;re writing for your next video.</p>}
+                            <ScriptBody body={t.scriptText.body} size="xs" />
                           </details>
                         )}
                         {/* Actions */}
