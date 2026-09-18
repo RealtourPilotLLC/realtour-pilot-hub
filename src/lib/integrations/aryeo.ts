@@ -1928,6 +1928,23 @@ export async function reconcileDeliverablesToOrder(
   });
   const want = new Map(parsed.map((p) => [p.type, p]));
   const orderNo = order.number ?? order.id ?? "?";
+  // WHAT THE HUB ALREADY OWES OUTSIDE THE ORDER (Sep 18). A photographer who
+  // shoots a second reel for a listing files it as a MANUAL Deliverable and
+  // Kyle adds the matching line to the Aryeo order afterwards. The order then
+  // says SOCIAL_REEL ×2 — one original, one extra — while the hub already holds
+  // the extra as its own row. Raising the ORIGINAL row to 2 makes the job owe
+  // three videos for two shoots, and cutSlots would relabel the video the
+  // client already has as "Video 1 of 2".
+  //
+  // So the order's number is read as a TOTAL for the type and the manual rows
+  // are taken off it before the original is raised. This is the only place two
+  // sources of truth for one type can meet, because manual rows are skipped
+  // everywhere else in this function by design.
+  const manualOwed = new Map<string, number>();
+  for (const r of rows) {
+    if (!r.manual || r.removedFromOrderAt) continue;
+    manualOwed.set(r.type, (manualOwed.get(r.type) ?? 0) + Math.max(1, r.quantity ?? 1));
+  }
   // Types this order says it moved elsewhere — orderDeliverables has already
   // struck them off `want`; this is only for the wording of the retire note.
   const moved = movedAwayTypes(order.items);
@@ -1981,7 +1998,11 @@ export async function reconcileDeliverablesToOrder(
       });
       out.restored.push(w.label);
     } else {
-      const relabel = (r.label ?? "") !== w.label || r.quantity < w.quantity;
+      // The order's quantity minus anything the hub already owes for this type
+      // on its own (see manualOwed). Never below 1: an order line exists, so
+      // the row it belongs to is owed at least once.
+      const fromOrder = Math.max(1, w.quantity - (manualOwed.get(r.type) ?? 0));
+      const relabel = (r.label ?? "") !== w.label || r.quantity < fromOrder;
       // Product identity (Sep 2 2026) follows the same in-place rule — the
       // row's id, and every cut/upload/verdict keyed on it, never changes.
       const identity = (r.productTitle ?? null) !== w.productTitle || (r.videoStyle ?? null) !== w.videoStyle;
@@ -1991,7 +2012,7 @@ export async function reconcileDeliverablesToOrder(
         // the order line says 1 — writing 1 back would ping-pong hourly.
         await prisma.deliverable.update({
           where: { id: r.id },
-          data: { label: w.label, quantity: Math.max(r.quantity, w.quantity), productTitle: w.productTitle, videoStyle: w.videoStyle },
+          data: { label: w.label, quantity: Math.max(r.quantity, fromOrder), productTitle: w.productTitle, videoStyle: w.videoStyle },
         });
         // Identity alone — a title/style filled in under a label that already
         // matched — is a silent repair, not an "order changed" event.

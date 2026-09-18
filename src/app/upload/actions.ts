@@ -1168,6 +1168,42 @@ export async function reopenForAdditionalShoot(
   const { ensureOutputsSafely } = await import("@/lib/deliverableOutputs");
   await ensureOutputsSafely(projectId, `upload-additional-shoot#${row.id}`);
 
+  // ---- A VIDEO SHOT TODAY IS NOT LATE (Sep 18) ----------------------------
+  //
+  // Left alone, the new slot inherits the JOB's promise, because outputsForProject
+  // falls back to it when a slot carries no date of its own. On 204 Spring Ln —
+  // the job Jordan asked for this by name — the job's date is already past, so
+  // the extra reel would be born overdue on the board, on the exceptions card
+  // and in the photographer's own view, for work nobody had been asked for
+  // until today.
+  //
+  // The portal does NOT invent a date. It asks the same engine every other
+  // promise comes from (deliveryPromiseFor) for this ONE deliverable, anchored
+  // on the day it was actually shot, and records the answer on the slot. That
+  // is what DeliverableOutput.promisedAt is for, and it is the only way a
+  // per-video deadline can differ from the job's — which is the whole point of
+  // a second shoot on a later day.
+  //
+  // Best-effort, and deliberately: a slot with no date of its own falls back to
+  // the job's exactly as it does today, which is the behaviour this replaces.
+  try {
+    const { deliveryPromiseFor } = await import("@/lib/tasks");
+    const promise = deliveryPromiseFor(shotOn, [{ type, label: row.label, productTitle: null }], false, null, {});
+    await prisma.deliverableOutput.updateMany({
+      // Only the slots of THIS new row, and only while they carry no promise —
+      // never a second write over a date somebody has already set.
+      where: { projectId, deliverableId: row.id, promisedAt: null },
+      data: {
+        promisedAt: promise.at,
+        targetAt: promise.targetAt,
+        promiseSource: "additional-shoot",
+        promiseAnchorAt: shotOn,
+      },
+    });
+  } catch (e) {
+    console.warn("additional shoot: could not date the new video", projectId, (e as Error).message);
+  }
+
   // Kyle's paperwork, through the card the office already reads on Ops Day.
   // Reusing addShootAddOn rather than minting a second kind of task buys the
   // whole hardened path: the plain-text dedupe key, the double-tap race, the
@@ -1181,7 +1217,7 @@ export async function reopenForAdditionalShoot(
   const addon = await addShootAddOn(
     projectId,
     additionalShootItem(type, dayKey),
-    `Shot ${shootDayWords(dayKey)}, a separate day from this job's own shoot. Add it to the order as its OWN line: the video is already on the job here as its own row, so raising the quantity on the existing video line would owe one more than was shot. Its due date is the job's until someone sets it in the Editing Room, and the extra shoot day is not on this job's payroll.${note ? ` Photographer: ${note}` : ""}`,
+    `Shot ${shootDayWords(dayKey)}, a separate day from this job's own shoot. Add it to the order as its OWN line: the video is already on the job here as its own row, so raising the quantity on the existing video line would owe one more than was shot. Its due date is counted from the day it was shot, not the job's original date, and the extra shoot day is not on this job's payroll.${note ? ` Photographer: ${note}` : ""}`,
   );
 
   revalidatePath("/upload");

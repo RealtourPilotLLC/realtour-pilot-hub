@@ -184,16 +184,20 @@ export function defaultPrefsFor(role: string, isOwner: boolean): NotifyPrefs {
     p.mention = { ...sms };
     p.shoot_change = { ...sms };
     // Sep 18, Jordan on sharing the Review Room with the shooter: "they should
-    // be notified just like I am". The owner's own row for a video waiting on
-    // review is a text, so theirs is too. Volume was checked before the switch
-    // was defaulted ON rather than after: the Room holds 35 cuts in its whole
-    // life to date, 29 of them on jobs with a photographer — about a dozen a
-    // month across the roster, and the staff queue batches a person's lines
-    // into one message every 30 minutes anyway.
-    p.review_ready = { ...sms };
-    // The VERDICT is information, not a summons — the cut is already gone from
-    // their hands and the next move is the editor's. Bell only by default; the
-    // switch is on their Settings row the moment they want more.
+    // be notified just like I am". That is about what they get to SEE, and the
+    // switch exists for both rows below from this change on. It is left OFF.
+    //
+    // WHY OFF, when the owner's own row for a video in review is a text. The
+    // volume is fine — the Room holds 35 cuts in its whole life, 29 of them on
+    // a job with a photographer, and the staff queue batches a person's lines
+    // into one message every half hour. The reason is consent, not load: this
+    // would start texting Harrison's and James's phones on the deploy, and
+    // neither of them has been asked. Jordan can turn it on for them in one
+    // press on /settings; nobody can un-send a text. A default that can only be
+    // wrong in the recoverable direction is the one to ship.
+    //
+    // The bell reaches them either way, which is what "with access to the
+    // review room" actually needed.
     return p;
   }
   // MANAGER / ADMIN / VA / SALES without an editor key: the office.
