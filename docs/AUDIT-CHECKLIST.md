@@ -108,6 +108,24 @@ Recorded because each was a genuine defect, not a drill artefact.
 operational table not in a program backup. Those 17 rows restore correctly into a database that
 still holds the operational core; a bare-metal rebuild needs the full `pg_dump` too.
 
+## F1. The Sep 18 verification review (R01–R10)
+
+`~/Downloads/Realtour-Pilot-Remaining-Work-2026-09-18.md`, read against `28524a5`. It reproduced
+four defects locally and was right about all of them. Worked at `e5627dc`, deployed.
+
+| # | Finding | Status | Commit | Evidence |
+|---|---|---|---|---|
+| R01 | Topaz overshoot reset and worker ownership. **A regression I introduced**: fencing `release()` on the observed lease broke the one caller that released twice, so a cap overshoot cancelled the provider request, kept `acceptedAt`, stayed `uploading`, and counted against every cap for ever. | **Done** | `56be631` | *scenario* — accept-then-recheck replaced by `reserveSpendSlot`, which evaluates every cap inside the UPDATE that claims the slot. The overshoot path no longer exists. Proved in an isolated PostgreSQL, 7 checks: two workers contesting the last slot → exactly one wins; the credit cap is never crossed; a lost lease reserves nothing; a slot can be handed back; a job cannot reserve twice. The drill's first run failed and found a real hole — a reservation did not occupy a concurrency slot, so both workers won. |
+| R02 | Individual output evidence not connected to project completion — one Aryeo video satisfied a sixteen-video package. | **Done** | `be5adf1`, `e5627dc` | *scenario + production read* — `computeStatus` counts instead of testing. Four owed with one delivered now reads "3 of 4 videos still outstanding" where it previously read DELIVERED. Blast radius on real rows: 2 of 46 sweep-carried jobs change, and both are the defect. A checker then caught that the "live on Aryeo" sentence was reading the widened `clientHas`, so a hand-delivered video could claim the listing again — fixed and proved both ways. |
+| R03 | An old send hid an unsent replacement — v1 sent + v2 approved read "Sent to the client". | **Done** | `aaa7f46` | *scenario* — 41 assertions against an isolated database, with the pre-change module imported beside the new one at every step. |
+| R04 | Name-based editor authorization survived in `addressableKeys` and on the Editing Room page. | **Done** | `0866ea3` | *scenario* — the reported case (`task scope __none__` / `project keys [john]`) now returns `[]` for both; a linked editor keeps `[kim]`; an ADMIN keeps the task-ticking fallback. |
+| R05 | Private-media code not finished: six paths still handed a bare public URL to somebody. | **Partial** | `a5352c6`, `e5627dc` | *scenario* — internal reads carry the store token; an external fetcher (Dropbox, Meta) gets a short-lived presigned GET scoped to one pathname, never the store credential. A checker caught that the migration would change `cutIdentityHash` and silently break recorded client approvals; it now pins `contentHash` first. **Still open:** one probe in `aryeoDelivery.ts` and the cutover itself, which is Jordan's store. |
+| R06 | Output lifecycle not wired after the backfill. | **Partial** | `aaa7f46` | *scenario + production run* — creation wired into Aryeo import, the order reconcile, waive/un-waive and an hourly repair sweep. **Still open:** the office's videos-owed override and the monthly quota lift are two more quantity paths with no call. |
+| R07 | Unanswered obligations still aged out. | **Done** | `aa1838f`, `e5627dc` | *scenario* — the obligation, not the message, is what persists: open `client_reply`/`lead` tasks with no window and no row cap. 35 checks. A checker caught that one unrelated email marked a sixty-day-old text question answered; the answered test is now scoped to the lane. **Live impact today is zero recovered rows** — all five open obligations are inside the seven-day window, so this is preventive. |
+| R08 | Daily workflow and frontend consolidation. | **Partial** | `80b44a9` | *browser* — see the evidence note below. Three screens looked at; the rest not. |
+| R09 | Listing delivery versus content-program release. | **Done** | `db2a5a5` | *production read* — a content cut counted as delivered on approval because the portal library row is written then. 29 enrollments, 3 ClientUser rows, 1 client with any membership — and that one is a TEST client. Sarina Spinelli's video had left Kyle's card while the reconciliation flagged the same job as owed. Kyle's board now carries exactly the three the reconciliation flags. |
+| R10 | Checklist, evidence and arithmetic. | **Done** | `30f7045` | The evidence tiers above, the corrected reconciliation arithmetic, and the completion contract no longer calling itself an unbuilt proposal. |
+
 ## F2. What this document does NOT claim
 
 An external verification review on Sep 18 (`~/Downloads/Realtour-Pilot-Remaining-Work-2026-09-18.md`)
