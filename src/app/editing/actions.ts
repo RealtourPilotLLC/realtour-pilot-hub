@@ -1958,3 +1958,50 @@ export async function unmergeProjectWork(fromId: string): Promise<{ ok: boolean;
   revalidatePath(`/projects/${m.intoId}`);
   return { ok: true, message: `${street} has its work back.` };
 }
+
+/** The other jobs this one's work could merge into: the same client's, never
+ *  cancelled, never already merged away. Newest shoot first — a second shoot
+ *  almost always joins the listing's original job, which is the older one. */
+export async function mergeCandidates(projectId: string): Promise<
+  { id: string; street: string; status: string; shootISO: string | null; owes: number }[]
+> {
+  try {
+    await requireAdmin();
+  } catch {
+    return [];
+  }
+  const me = await prisma.project.findUnique({ where: { id: projectId }, select: { clientId: true } });
+  if (!me) return [];
+  const rows = await prisma.project.findMany({
+    where: { clientId: me.clientId, id: { not: projectId }, status: { not: "CANCELLED" } },
+    select: {
+      id: true, title: true, status: true, shootDate: true,
+      _count: { select: { deliverables: { where: { removedFromOrderAt: null } } } },
+    },
+    orderBy: { shootDate: "desc" },
+    take: 40,
+  });
+  const { allMerges } = await import("@/lib/projectMerge");
+  const mergedAway = new Set((await allMerges()).filter((m) => !m.undoneAt).map((m) => m.fromId));
+  return rows
+    .filter((r) => !mergedAway.has(r.id))
+    .map((r) => ({
+      id: r.id,
+      street: (r.title || "A job").split(",")[0].trim(),
+      status: r.status,
+      shootISO: r.shootDate?.toISOString() ?? null,
+      owes: r._count.deliverables,
+    }));
+}
+
+/** What a merge would move, for the dialog — read-only. */
+export async function mergePreview(projectId: string): Promise<{ deliverables: number; cuts: number; cards: number; videos: number }> {
+  try {
+    await requireAdmin();
+  } catch {
+    return { deliverables: 0, cuts: 0, cards: 0, videos: 0 };
+  }
+  const { previewMerge } = await import("@/lib/projectMerge");
+  const p = await previewMerge(projectId);
+  return { deliverables: p.deliverableIds.length, cuts: p.submissionIds.length, cards: p.taskIds.length, videos: p.videos };
+}

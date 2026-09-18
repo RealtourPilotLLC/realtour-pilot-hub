@@ -11,7 +11,7 @@ import {
   StickyNote,
   RefreshCw,
   Calendar,
-  CalendarClock,
+  CalendarClock, GitMerge,
   Clock,
   Mail,
   Phone,
@@ -31,6 +31,8 @@ import { ListingMedia, ListingMediaSkeleton } from "@/components/project/Listing
 import { StatusEvidenceCard } from "@/components/project/StatusEvidenceCard";
 import { ProjectBriefCard } from "@/components/project/ProjectBriefCard";
 import { projectBrief } from "@/lib/projectBrief";
+import { MergeWork } from "@/components/project/MergeWork";
+import { mergeFrom, mergedInto } from "@/lib/projectMerge";
 import { TaskCard } from "@/components/queue/TaskCard";
 import { ReelScriptCard } from "@/components/project/ReelScriptCard";
 import { getProject, getTeam } from "@/lib/queries";
@@ -189,6 +191,34 @@ export default async function ProjectPage({
   // block into one paragraph). Display only here — the note is edited on the
   // client page, so nobody can save a scrubbed copy back over the real one.
   const clientNote = showMoney ? customerNote(project.client) : creativeCustomerNote(project.client);
+
+  // WHERE THIS JOB'S WORK LIVES (Jordan, Sep 18: "I should be able to merge
+  // projects together"). Read for the office only — it is the one control on
+  // this page that moves rows between jobs.
+  const canMerge = viewer ? viewer.role === "OWNER" || viewer.role === "ADMIN" : !authEnforced();
+  const [mergeAway, mergeIn] = canMerge
+    ? await Promise.all([mergeFrom(project.id).catch(() => null), mergedInto(project.id).catch(() => [])])
+    : [null, []];
+  const mergeAwayView = mergeAway
+    ? {
+        intoId: mergeAway.intoId,
+        intoStreet: (
+          (await prisma.project.findUnique({ where: { id: mergeAway.intoId }, select: { title: true } }))?.title ?? "another job"
+        ).split(",")[0].trim(),
+        by: mergeAway.by,
+        atISO: mergeAway.at.toISOString(),
+        note: mergeAway.note,
+      }
+    : null;
+  const mergeInView = await Promise.all(
+    mergeIn.map(async (m) => ({
+      fromId: m.fromId,
+      fromStreet: (
+        (await prisma.project.findUnique({ where: { id: m.fromId }, select: { title: true } }))?.title ?? "another job"
+      ).split(",")[0].trim(),
+      atISO: m.at.toISOString(),
+    })),
+  );
 
   // The summary reads the same engines the cards below do; a failure here must
   // never cost the page, so it degrades to no card at all.
@@ -796,7 +826,20 @@ export default async function ProjectPage({
             </Section>
           )}
 
-          {/* Schedule & order */}
+          {/* NOT "where this job's work lives" — the summary card at the top of
+              this page is already called "Where this job is", and two headings
+              that close together read as one thing said twice. */}
+          {canMerge && (
+            <Section icon={GitMerge} title="Linked jobs">
+              <MergeWork
+                projectId={project.id}
+                street={(project.addressLine || project.title.split(",")[0] || "this job").trim()}
+                mergedAway={mergeAwayView}
+                mergedIn={mergeInView}
+              />
+            </Section>
+          )}
+
           <Section icon={CalendarClock} title="Order & schedule">
             <dl className="space-y-2.5 text-sm">
               {project.packageName && (
