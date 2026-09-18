@@ -106,6 +106,23 @@ export function promisedOr(promised: Date | null | undefined, computed: Date | n
 }
 
 /**
+ * The pin, unless it belongs to a visit that no longer exists.
+ *
+ * A promise is frozen against the shoot it was quoted from. When a job is
+ * REBOOKED the clock legitimately restarts, and the old pin is a deadline that
+ * falls before the new shoot has even happened — 80 W Lancaster Ave Floor 2
+ * was pinned at Sep 7 2:30pm and is now booked for the end of the month, and
+ * honouring that pin would have parked it on Kyle's late list for a job nobody
+ * has shot yet. A deadline that precedes its own shoot is not a promise
+ * anybody made; the current rules answer for it instead.
+ */
+export function livePromise(promised: Date | null | undefined, clockStart: Date | null | undefined): Date | null {
+  if (!promised) return null;
+  if (clockStart && promised <= clockStart) return null;
+  return promised;
+}
+
+/**
  * A computed date, never LATER than the promise the job was sold under.
  *
  * For a live job the pin is the whole-job client deadline; a per-item promise

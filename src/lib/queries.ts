@@ -10,6 +10,7 @@ import type { QcMissBucket } from "@/lib/qc";
 import { parseChecklist } from "@/lib/checklist";
 import { countQcMisses } from "@/lib/tasks";
 import { DEBRIEF_QC_LABELS } from "@/lib/debrief";
+import { livePromise } from "@/lib/turnaround";
 
 // Re-export the QC types so the dashboard can consume them without reaching
 // past this module — queries.ts is the dashboard's single data door.
@@ -728,7 +729,11 @@ export async function getOwnerPulse(): Promise<OwnerPulse> {
   // The turnaround dial already refused those rows; now both dials agree.
   // The promise it was sold under, falling back to the live column for a row
   // the pin has never covered (scripts/pin-promises.ts).
-  const promiseOf = (p: { deliveryDue: Date | null; promisedDueAt: Date | null }) => p.promisedDueAt ?? p.deliveryDue;
+  // …and never a pin left behind by a visit that was rescheduled: a deadline
+  // that precedes its own shoot belongs to the job we were booked for before,
+  // not this one (turnaround.livePromise).
+  const promiseOf = (p: { deliveryDue: Date | null; promisedDueAt: Date | null; shootDate: Date | null }) =>
+    livePromise(p.promisedDueAt, p.shootDate) ?? p.deliveryDue;
   const judged = delivered.filter(
     (p) => p.deliveredAt && promiseOf(p) && (!p.shootDate || p.deliveredAt > p.shootDate),
   );

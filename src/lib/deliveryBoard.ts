@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etDayKey, etAddDays, etDayStartUtc } from "@/lib/datetime";
-import { tierFor, dueAtFor, cappedByPromise, type Tier } from "@/lib/turnaround";
+import { tierFor, dueAtFor, cappedByPromise, livePromise, TIERS, type Tier } from "@/lib/turnaround";
 import { parseEvidence, evidenceFreshness, type EvidenceFreshness, type ParsedEvidence } from "@/lib/statusEvidence";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 // The product-name → category read and the category labels live in the light,
@@ -235,8 +235,18 @@ export function boardItems(
   rules?: TurnaroundRuleSet,
 ): BoardItem[] {
   const startedAt = clockStart(p, now);
+  // A VIDEO ON A MONTHLY JOB RUNS ON THE MONTHLY CLOCK (Sep 18). This read a
+  // product name and nothing else, so 893 S Matlack's "Custom Branding Video
+  // Package 16 Videos Total" was a 48-hour reel here and a 7–10 business-day
+  // batch in the SLA engine — the board called it late on Sep 11 for a job the
+  // QC card had promised on Sep 23. isMonthlyContentJob is the hub's own
+  // reading of a branding plan, and it is what tasks.ts consults. Premium
+  // still outranks monthly: a premium listing reel bought by a plan client is
+  // a one-off premium deliverable (tasks.ts, PRECEDENCE).
+  const monthly = isMonthlyContentJob(p.deliverables, p.packageName);
   return p.orderItems.map((oi) => {
-    const tier: Tier = tierFor(oi.title);
+    const read: Tier = tierFor(oi.title);
+    const tier: Tier = monthly && read.key === "video_48h" ? TIERS.monthly_social : read;
     return { title: oi.title, quantity: oi.quantity, tierLabel: tier.label, dueAt: startedAt ? dueAtFor(tier, startedAt, rules) : null };
   });
 }
@@ -334,7 +344,8 @@ export function outstandingPromise(
   // time they never agreed to. So a pinned job is never dated past its pin;
   // items promised EARLIER (the photos, due tomorrow) are untouched, because
   // that is still the thing Kyle is chasing.
-  const at = cappedByPromise(earliest?.dueAt ?? null, p.promisedDueAt);
+  const pin = livePromise(p.promisedDueAt, startedAt);
+  const at = cappedByPromise(earliest?.dueAt ?? null, pin);
   const capped = !!at && !!earliest && at.getTime() !== earliest.dueAt.getTime();
   return {
     at,

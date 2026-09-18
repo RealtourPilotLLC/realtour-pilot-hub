@@ -6,7 +6,7 @@ import crypto from "crypto";
 import { parseEvidence } from "@/lib/statusEvidence";
 import { type ChecklistItem, parseChecklist, serializeChecklist, checklistComplete } from "@/lib/checklist";
 import { etAt, etDayKey, etDayStartUtc, etDateTime, endOfBusinessDaysET } from "@/lib/datetime";
-import { premiumDueFrom, businessDayEndHour, cappedByPromise, type PromiseRules } from "@/lib/turnaround";
+import { premiumDueFrom, businessDayEndHour, cappedByPromise, livePromise, type PromiseRules } from "@/lib/turnaround";
 import { slugForName } from "@/lib/assignees";
 import { BRACKET_RATIO, photoTargetFor } from "@/lib/culling";
 import { isMonthlyContentJob } from "@/lib/pipeline";
@@ -617,7 +617,9 @@ export function pendingDuesByCategory(p: PendingDueInput): { category: string; a
       sameDay: rushTypes.has(t),
       rules: p.turnarounds,
     });
-    const at = (cappedByPromise(computed, p.promisedDueAt) ?? computed).getTime();
+    // livePromise: a pin quoted from a visit that was later rescheduled is not
+    // this job's promise — it is a deadline that falls before its own shoot.
+    const at = (cappedByPromise(computed, livePromise(p.promisedDueAt, p.shootDate)) ?? computed).getTime();
     const prev = soonestByCategory.get(category);
     if (prev === undefined || at < prev) soonestByCategory.set(category, at);
   }
@@ -880,7 +882,7 @@ export function specsForProject(p: {
     // the QC card and the delivery board cannot print different dates.
     const dueFor = (d: string) => {
       const computed = deliveryDueFrom(anchorFor(d), d, dueOpts(d));
-      return cappedByPromise(computed, p.promisedDueAt) ?? computed;
+      return cappedByPromise(computed, livePromise(p.promisedDueAt, p.shootDate)) ?? computed;
     };
     const pendingDues = qcTypes.filter((d) => !isDelivered(d)).map((d) => dueFor(d).getTime());
     if (qcTypes.length > 0 && qcItems.some((i) => !i.done)) {
@@ -2580,7 +2582,7 @@ function editDueRule(
   opts: { premium: boolean; monthlyContent: boolean; rules?: PromiseRules; promisedDueAt?: Date | null },
 ): { videoDue: Date | null; late: boolean; dueAt: Date } {
   const computed = shootDate ? deliveryDueFrom(shootDate, videoType, opts) : null;
-  const videoDue = cappedByPromise(computed, opts.promisedDueAt);
+  const videoDue = cappedByPromise(computed, livePromise(opts.promisedDueAt, shootDate));
   const rawDue = videoDue ? new Date(videoDue.getTime() - 12 * HOUR) : new Date(Date.now() + 4 * HOUR);
   const late = rawDue.getTime() < Date.now();
   return { videoDue, late, dueAt: late ? new Date(Date.now() + HOUR) : rawDue };

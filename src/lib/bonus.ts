@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { etDayKey, etDayStartUtc } from "@/lib/datetime";
+import { livePromise } from "@/lib/turnaround";
 
 // ---------------------------------------------------------------------------
 // QUARTERLY PERFORMANCE BONUS ENGINE
@@ -136,7 +137,7 @@ export async function scorecardFor(
     // metric is 40% of a $1,000-a-quarter bonus, and Project.deliveryDue is
     // recomputed by the status sweep: without the pin, moving a turnaround
     // default in Settings silently re-scores quarters that are already paid.
-    select: { id: true, deliveredAt: true, deliveryDue: true, promisedDueAt: true },
+    select: { id: true, deliveredAt: true, deliveryDue: true, promisedDueAt: true, shootDate: true },
   });
   const shootIds = shoots.map((s) => s.id);
   const n = shoots.length;
@@ -144,7 +145,11 @@ export async function scorecardFor(
   const metrics: MetricRow[] = [];
 
   // 1) ON-TIME DELIVERY — the densest, most trustworthy signal we have.
-  const promiseOf = (s: { deliveryDue: Date | null; promisedDueAt: Date | null }) => s.promisedDueAt ?? s.deliveryDue;
+  // A pin whose deadline precedes its own shoot belongs to a visit that was
+  // rescheduled (turnaround.livePromise) — judging a re-shoot against the
+  // first booking's date would take the quarter off someone unfairly.
+  const promiseOf = (s: { deliveryDue: Date | null; promisedDueAt: Date | null; shootDate: Date | null }) =>
+    livePromise(s.promisedDueAt, s.shootDate) ?? s.deliveryDue;
   const judged = shoots.filter((s) => s.deliveredAt && promiseOf(s));
   const onTimeN = judged.filter((s) => s.deliveredAt! <= promiseOf(s)!).length;
   const onTimeRate = judged.length ? onTimeN / judged.length : null;
