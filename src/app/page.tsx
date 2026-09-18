@@ -22,6 +22,8 @@ import { QcComplete, QcCategoryDone } from "@/components/ops/QcComplete";
 import { LoopActions } from "@/components/ops/LoopActions";
 import { ReadyToSendCard, ReadyToSendHeading } from "@/components/ops/ReadyToSendCard";
 import { ProactiveFlags } from "@/components/dashboard/ProactiveFlags";
+import { ExceptionsCard } from "@/components/ops/ExceptionsCard";
+import { opsExceptions } from "@/lib/opsExceptions";
 import { StuckJobs } from "@/components/dashboard/StuckJobs";
 import { WeekStrip } from "@/components/dashboard/WeekStrip";
 import { PulseStrip } from "@/components/dashboard/PulseStrip";
@@ -471,7 +473,7 @@ export default async function HomePage() {
   if (!me && authEnforced()) redirect("/login");
   const isOwner = !me || me.role === "OWNER";
 
-  const [dRaw, counts, stuck, shoots, radar, handledToday, boardRaw, flaggedRaw, ownerStats, pulse, dials, money, todos, newClients] =
+  const [dRaw, counts, stuck, shoots, radar, handledToday, boardRaw, flaggedRaw, ownerStats, pulse, dials, money, todos, newClients, exceptions] =
     await Promise.all([
       // The operating day: shoots, QC, loops, comms, pipeline, video review,
       // closeout. It already resolves the viewer's own loop lane, so this page
@@ -516,6 +518,12 @@ export default async function HomePage() {
       isOwner ? ownerTodoLists().catch(() => null) : Promise.resolve(null),
       // Clients the Aryeo webhook met in the last 10 days — for Jordan AND Kyle.
       newClientsForDashboard().catch(() => []),
+      // The five quiet failures (R08). Reporting only, and a failed read is an
+      // empty card rather than a page that will not render.
+      opsExceptions().catch((e: unknown) => {
+        console.warn("opsExceptions failed", (e as Error).message);
+        return [];
+      }),
     ]);
 
   // No money on an ADMIN screen (Jordan's standing rule). Everything the day
@@ -952,7 +960,12 @@ export default async function HomePage() {
           </section>
         )}
 
-        {/* 6 · Radar — fresh risk only (≤3; creatives never reach this page) */}
+        {/* 6 · EXCEPTIONS — the five quiet failures, each with an owner and one
+            next action (R08). Above the Radar on purpose: the Radar is
+            strategic risk, this is work somebody has to do today. */}
+        <ExceptionsCard rows={exceptions} />
+
+        {/* Radar — fresh risk only (≤3; creatives never reach this page) */}
         {/* New clients — say hello. Renders nothing when there are none. */}
         <NewClientCard clients={newClients} />
         {radarFlags.length > 0 && <ProactiveFlags flags={radarFlags} />}

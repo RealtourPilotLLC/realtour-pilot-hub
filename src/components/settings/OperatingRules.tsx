@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { Check, Loader2 } from "lucide-react";
-import { saveTurnarounds, saveInternalAlerts, saveTextTemplates, saveReviewRoomRules, loadOnCallCandidates } from "@/app/settings/actions";
+import { saveTurnarounds, saveInternalAlerts, saveTextTemplates, saveReviewRoomRules, loadOnCallCandidates, loadCreativeApproverCandidates } from "@/app/settings/actions";
 import type { TurnaroundRules, InternalAlertRules, TextTemplates, ReviewRoomRules } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { BUILTIN_TEMPLATE_TEXT } from "@/lib/textTemplateDefaults";
@@ -323,6 +323,11 @@ export function ReviewRoomSettings({ initial }: { initial: ReviewRoomRules }) {
   const [busy, start] = useTransition();
   const [msg, setMsg] = useState<string | null>(null);
   const set = (patch: Partial<ReviewRoomRules>) => { setR((p) => ({ ...p, ...patch })); setMsg(null); };
+  // Fetched, not passed in — the same reason the on-call picker fetches its
+  // roster: /settings should not wait on a query most visits do not need.
+  const [roster, setRoster] = useState<{ id: string; name: string; role: string; canApprove: boolean }[] | null>(null);
+  useEffect(() => { loadCreativeApproverCandidates().then(setRoster).catch(() => setRoster([])); }, []);
+  const approver = roster?.find((m) => m.id === r.creativeApproverTeamMemberId) ?? null;
   return (
     <div className="space-y-3">
       <p className="text-[13px] text-muted">
@@ -350,6 +355,38 @@ export function ReviewRoomSettings({ initial }: { initial: ReviewRoomRules }) {
         </p>
         <div className="mt-2 flex items-center gap-2 border-t border-border pt-2">
           <Num value={r.keepUploadsDays} onChange={(n) => set({ keepUploadsDays: n })} min={1} max={365} suffix="days" />
+        </div>
+      </div>
+
+      {/* WHOSE VERDICT IT IS (R08). Not a permission — an OWNER or ADMIN could
+          always approve — but a NAME, so routine work stops being implicitly
+          Jordan's on every screen that asks who is holding it up. */}
+      <div className="rounded-lg border border-border p-3">
+        <p className="text-sm font-semibold">Who approves cuts</p>
+        <p className="text-[13px] text-muted">
+          Any owner or admin can approve a cut. Naming somebody here says who is <i>expected</i> to, so a cut
+          waiting on a verdict shows up as theirs on the exceptions board instead of quietly waiting for Jordan.
+        </p>
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
+          <span className="text-[13px] text-muted">Creative approver</span>
+          <select
+            value={r.creativeApproverTeamMemberId ?? ""}
+            onChange={(e) => set({ creativeApproverTeamMemberId: e.target.value || null })}
+            disabled={roster === null}
+            className="rounded-lg border border-border bg-surface-2 px-2 py-1 text-sm outline-none focus:border-brand disabled:opacity-50"
+          >
+            <option value="">Nobody named — the office</option>
+            {(roster ?? []).map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}{m.canApprove ? "" : " — login can't approve yet"}
+              </option>
+            ))}
+          </select>
+          {approver && !approver.canApprove && (
+            <span className="text-[13px] text-warning">
+              {approver.name.split(/\s+/)[0]} has no owner/admin login, so the button they are being pointed at is one they cannot press.
+            </span>
+          )}
         </div>
       </div>
 

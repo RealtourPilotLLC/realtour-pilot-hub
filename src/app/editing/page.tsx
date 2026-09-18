@@ -8,6 +8,8 @@ import { AddToQueue } from "@/components/editing/AddToQueue";
 import { FloatingStyleGuide } from "@/components/editing/FloatingStyleGuide";
 import { SimpleQueue, type QueueRow } from "@/components/editing/SimpleQueue";
 import { buildEditorQueue, unreadThreadCount, WAITING_ON_OFFICE } from "@/lib/editorQueue";
+import { editingWorkload, type WorkloadRow } from "@/lib/editorWorkload";
+import { WorkloadPanel } from "@/components/editing/WorkloadPanel";
 
 export const dynamic = "force-dynamic";
 
@@ -73,6 +75,11 @@ export default async function EditorQueuePage() {
   }
 
   const { notDone, upcoming: upcomingRows, done } = await buildEditorQueue();
+  // WORKLOAD, NOT A ROW COUNT (R08, Sep 18). The open rows PLUS the upcoming
+  // ones, because a job whose footage has not landed is a real thing on the
+  // board and the whole point of the lanes is that it is not editing work.
+  const workloadRows = (rows: QueueRow[]): WorkloadRow[] =>
+    rows.map((r) => ({ status: r.status, editorKey: r.editorKey, editor: r.editor, videos: r.videos, dueISO: r.dueISO, late: r.late }));
 
   // THE EDITOR'S VIEW — the same table, filtered to rows whose resolved editor
   // (open task → Project.editor → routing rules, exactly what the owner's
@@ -118,6 +125,7 @@ export default async function EditorQueuePage() {
           }
         />
         <div className="mx-auto max-w-7xl space-y-4 p-4 pb-16 sm:p-6">
+          <WorkloadPanel view={await editingWorkload(workloadRows([...myNotDone, ...myUpcoming]))} mine />
           <SimpleQueue notDone={myNotDone} upcoming={myUpcoming} done={myDone} hideEditor />
         </div>
       </div>
@@ -147,6 +155,10 @@ export default async function EditorQueuePage() {
         {/* Manual add — the human override for jobs the automatic handoff never
             picks up (video added after booking, old footage, non-Aryeo work). */}
         <AddToQueue />
+        {/* Whose desk each job is on, and whether the person it is on can
+            actually move it. See lib/editorWorkload for why there is not a
+            single invented hour in it. */}
+        <WorkloadPanel view={await editingWorkload(workloadRows([...notDone, ...upcomingRows]))} />
         {/* Rows click straight through to /edit/<id> — the notes (customer +
             shoot) live there now, not in the table. */}
         <SimpleQueue notDone={notDone} upcoming={upcomingRows} done={done} />

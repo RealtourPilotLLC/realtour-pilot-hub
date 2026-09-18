@@ -236,9 +236,30 @@ export type ReviewRoomRules = {
   discoverFromDropbox: boolean;
   /** days an approved cut's upload is kept in the hub store after it was copied to Dropbox */
   keepUploadsDays: number;
+  /**
+   * WHOSE VERDICT IT IS (R08, review Sep 18: "Assignable creative approval so
+   * routine work can move to the designated creative manager without requiring
+   * Jordan every time").
+   *
+   * The CAPABILITY was never the gap — approveCut has always accepted any
+   * OWNER or ADMIN, so Kyle could rule on a cut today. What was missing is a
+   * NAME: with nobody designated, every "waiting on a verdict" row is
+   * implicitly Jordan's, nothing says otherwise, and routine work waits for him
+   * because no screen ever says it need not.
+   *
+   * Null falls back to whoever carries TeamMember.creativeManager, and then to
+   * "the office" — and the exceptions board says which of the three answered,
+   * so a name that came from a flag set for something else is visible rather
+   * than authoritative.
+   */
+  creativeApproverTeamMemberId: string | null;
 };
 // 90 days: the client portal shows the current and previous month's cuts.
-export const DEFAULT_REVIEW_ROOM: ReviewRoomRules = { discoverFromDropbox: false, keepUploadsDays: 90 };
+export const DEFAULT_REVIEW_ROOM: ReviewRoomRules = {
+  discoverFromDropbox: false,
+  keepUploadsDays: 90,
+  creativeApproverTeamMemberId: null,
+};
 export async function reviewRoomRules(): Promise<ReviewRoomRules> {
   const r = await getSetting<ReviewRoomRules>("review_room", DEFAULT_REVIEW_ROOM);
   return {
@@ -247,6 +268,10 @@ export async function reviewRoomRules(): Promise<ReviewRoomRules> {
       typeof r.keepUploadsDays === "number" && r.keepUploadsDays >= 1 && r.keepUploadsDays <= 365
         ? Math.floor(r.keepUploadsDays)
         : DEFAULT_REVIEW_ROOM.keepUploadsDays,
+    creativeApproverTeamMemberId:
+      typeof r.creativeApproverTeamMemberId === "string" && r.creativeApproverTeamMemberId
+        ? r.creativeApproverTeamMemberId
+        : null,
   };
 }
 

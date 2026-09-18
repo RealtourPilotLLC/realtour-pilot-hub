@@ -290,6 +290,18 @@ export async function saveTeamNotifyPrefs(teamMemberId: string, prefs: NotifyPre
 export async function saveReviewRoomRules(input: ReviewRoomRules): Promise<{ ok: boolean; message: string }> {
   try {
     const me = await requireSettingsActor();
+    // The approver is a PERSON, and a select can be stale or hand-rolled. Check
+    // the id against the roster before it is stored — a name on the exceptions
+    // board that points at nobody is worse than an empty field, which at least
+    // reads as "the office" and says so.
+    if (input.creativeApproverTeamMemberId) {
+      const { prisma } = await import("@/lib/prisma");
+      const exists = await prisma.teamMember.findFirst({
+        where: { id: input.creativeApproverTeamMemberId, active: true },
+        select: { id: true },
+      });
+      if (!exists) return { ok: false, message: "That person isn't on the roster any more — reload and pick again." };
+    }
     await putSetting("review_room", input, me?.email ?? null);
     revalidatePath("/settings");
     return { ok: true, message: "Saved — the next hourly run follows these rules." };
@@ -300,6 +312,26 @@ export async function saveReviewRoomRules(input: ReviewRoomRules): Promise<{ ok:
 export async function loadReviewRoomRules(): Promise<ReviewRoomRules> {
   await requireSettingsActor();
   return reviewRoomRules();
+}
+
+/** Who can be named as the creative approver, and whether their login could
+ *  actually press Approve. The same shape as the on-call picker's `reachable`,
+ *  and for the same reason: naming somebody who cannot act is a delegation that
+ *  delegates nothing (R08). */
+export async function loadCreativeApproverCandidates(): Promise<
+  { id: string; name: string; role: string; canApprove: boolean }[]
+> {
+  await requireSettingsActor();
+  const { prisma } = await import("@/lib/prisma");
+  const [roster, logins] = await Promise.all([
+    prisma.teamMember.findMany({ where: { active: true }, select: { id: true, name: true, role: true }, orderBy: { name: "asc" } }),
+    prisma.appUser.findMany({
+      where: { role: { in: ["OWNER", "ADMIN"] }, status: "ACTIVE", teamMemberId: { not: null } },
+      select: { teamMemberId: true },
+    }),
+  ]);
+  const canApprove = new Set(logins.map((l) => l.teamMemberId!));
+  return roster.map((r) => ({ id: r.id, name: r.name, role: r.role, canApprove: canApprove.has(r.id) }));
 }
 
 // ---- Client text wording ---------------------------------------------------
