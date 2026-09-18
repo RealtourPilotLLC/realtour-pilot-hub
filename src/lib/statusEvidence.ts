@@ -6,6 +6,13 @@ export type ParsedEvidence = {
   expected: string[];
   present: string[];
   missing: string[];
+  /**
+   * Ordered, finished, and still only in our Dropbox — a send somebody owes
+   * (audit WF-01, Sep 17). Older blobs predate the field and parse to [], which
+   * reads as "nothing known to be owed" — right for history, and the next sweep
+   * fills it in.
+   */
+  awaitingSend: string[];
   partial: boolean;
   aryeo: {
     photos: number;
@@ -48,6 +55,7 @@ export function parseEvidence(raw: string | null | undefined): ParsedEvidence | 
       expected: e.expected ?? [],
       present: e.present ?? [],
       missing: e.missing ?? [],
+      awaitingSend: e.awaitingSend ?? [],
       partial: e.partial ?? false,
       aryeo: e.aryeo ?? null,
       dropbox: e.dropbox ?? null,

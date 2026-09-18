@@ -328,6 +328,18 @@ export async function StatusEvidenceCard({
           )}
         </div>
 
+        {/* Finished, and still ours. This is the one row on the card with a
+            named next action, so it sits above the discrepancy notes: the file
+            exists, the client cannot open it, and somebody has to send it
+            (audit WF-01, Sep 17). */}
+        {e?.awaitingSend && e.awaitingSend.length > 0 && (
+          <div className="rounded-lg bg-brand-soft/60 px-3 py-2 text-xs font-medium text-brand">
+            {e.awaitingSend.join(" and ")} {e.awaitingSend.length === 1 ? "is" : "are"} finished and in Dropbox,
+            but not on the client&apos;s Aryeo listing. Until {e.awaitingSend.length === 1 ? "it goes" : "they go"} up,
+            the client cannot open {e.awaitingSend.length === 1 ? "it" : "them"}.
+          </div>
+        )}
+
         {/* Aryeo says fulfilled, the hub can't see it all. A discrepancy worth
             a look — not an instruction to go and upload something (Sep 16). */}
         {e?.partial && tone.kind !== "unconfirmed" && (

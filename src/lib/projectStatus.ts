@@ -307,6 +307,13 @@ export type StatusEvidence = {
   expected: string[];
   present: string[];
   missing: string[];
+  /**
+   * Ordered, finished, and sitting in our Dropbox rather than on the client's
+   * Aryeo listing — a send somebody still owes (audit WF-01, Sep 17). Distinct
+   * from `missing`, which is work that does not exist yet. Empty when Aryeo
+   * could not be read, and empty when the office hand-delivered the job.
+   */
+  awaitingSend: string[];
   partial: boolean; // looked delivered on Aryeo but content is missing
   aryeo: AryeoMediaSignal | null;
   dropbox: DropboxSignal | null;
@@ -334,11 +341,29 @@ export function computeStatus(sig: StatusSignals): StatusResult {
   // so a human can see them; they don't drive presence or the SHOT flip.
   const own = sig.shootPending ? null : d;
 
-  const present = new Set<MediaCategory>();
-  if ((a?.photos ?? 0) > 0 || (own?.finalPhotos ?? 0) > 0) present.add("PHOTOS");
-  if ((a?.videos ?? 0) > 0 || (own?.finalVideo ?? 0) > 0) present.add("VIDEO");
-  if ((a?.floorPlans ?? 0) > 0) present.add("FLOORPLAN");
-  if ((a?.interactive ?? 0) > 0) present.add("THREED");
+  // WHO HAS IT vs WHO MADE IT (audit WF-01, Sep 17). These used to be one set,
+  // and that is how a job could read "All ordered deliverables confirmed live
+  // on Aryeo" while the video existed only in our own Dropbox: the photos going
+  // out flipped the Aryeo ORDER to delivered, the Final folder made the video
+  // count as present, and the two together satisfied everything. The client
+  // could not open the video, and Kyle still owed the send.
+  //   · clientHas — on the Aryeo listing. This is the only evidence that the
+  //     client can actually get the file.
+  //   · weHave    — in Dropbox Final. Produced, not delivered.
+  // `present` stays their union because "is it made yet" is a real question
+  // too (it drives the video-SLA and partial-delivery branches); what it may no
+  // longer do on its own is claim a delivery.
+  const clientHas = new Set<MediaCategory>();
+  if ((a?.photos ?? 0) > 0) clientHas.add("PHOTOS");
+  if ((a?.videos ?? 0) > 0) clientHas.add("VIDEO");
+  if ((a?.floorPlans ?? 0) > 0) clientHas.add("FLOORPLAN");
+  if ((a?.interactive ?? 0) > 0) clientHas.add("THREED");
+
+  const weHave = new Set<MediaCategory>();
+  if ((own?.finalPhotos ?? 0) > 0) weHave.add("PHOTOS");
+  if ((own?.finalVideo ?? 0) > 0) weHave.add("VIDEO");
+
+  const present = new Set<MediaCategory>([...clientHas, ...weHave]);
 
   const anyAryeoMedia = a ? a.photos + a.videos + a.floorPlans + a.interactive > 0 : false;
   const anyFinalDropbox = own ? own.finalPhotos + own.finalVideo > 0 : false;
@@ -354,6 +379,15 @@ export function computeStatus(sig: StatusSignals): StatusResult {
   // ordered, fall back to "Aryeo says fulfilled AND some media exists".
   const satisfied = verifiable ? missing.length === 0 : fulfilled && anyAryeoMedia;
 
+  // Ordered, finished, and still not where the client can reach it. Asked only
+  // when Aryeo actually ANSWERED (a failed read must not invent an owed send),
+  // and never against the office's own hand-delivery: `sig.fulfilled` is
+  // `!!deliveredAt`, a human saying the client has the files, and no
+  // cross-check of two APIs overrules that (Sep 16, Kyle call). What this
+  // catches is the other case — Aryeo's ORDER flag flipping because the photos
+  // went out, while the video sits in Final.
+  const awaitingSend = a && !sig.fulfilled ? expected.filter((c) => weHave.has(c) && !clientHas.has(c)) : [];
+
   // Video SLA: a missing video is only a problem once its production window
   // (shoot date + standard/premium SLA) has passed. Before that, it's on-track.
   const fmtDate = (dt: Date) => dt.toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -362,7 +396,11 @@ export function computeStatus(sig: StatusSignals): StatusResult {
   // Only when content has actually started going out (photos/other media present)
   // AND the video specifically is still missing — i.e. a real staged/partial
   // delivery. Not for shoots that haven't happened yet (present is empty there).
-  if (missing.includes("VIDEO") && present.size > 0 && sig.videoTier && sig.shootDate) {
+  // "Still owed to the client" covers both shapes: never made (missing) and
+  // made but never sent (awaitingSend). Before WF-01 the second one silently
+  // stopped the clock — a video finished on day 2 and never sent could not go
+  // overdue, because it was no longer missing.
+  if ((missing.includes("VIDEO") || awaitingSend.includes("VIDEO")) && present.size > 0 && sig.videoTier && sig.shootDate) {
     // Use the SAME turnaround the task engine uses, so the status card, the
     // project's delivery-due, and the QA task all agree on one date — anchored
     // on the leg the footage came from (videoAnchorFor), not on a shootDate a
@@ -386,6 +424,7 @@ export function computeStatus(sig: StatusSignals): StatusResult {
         expected: expected.map((c) => CATEGORY_LABEL[c]),
         present: [...present].map((c) => CATEGORY_LABEL[c]),
         missing: missing.map((c) => CATEGORY_LABEL[c as MediaCategory]),
+        awaitingSend: awaitingSend.map((c) => CATEGORY_LABEL[c]),
         partial: false,
         aryeo: a,
         dropbox: d,
@@ -403,11 +442,25 @@ export function computeStatus(sig: StatusSignals): StatusResult {
     };
   }
 
-  if (satisfied && fulfilled) {
+  if (satisfied && fulfilled && awaitingSend.length === 0) {
     status = "DELIVERED";
-    reason = verifiable
-      ? "All ordered deliverables confirmed live on Aryeo."
-      : "Order fulfilled and media is live on Aryeo.";
+    // Only say "live on Aryeo" when Aryeo is actually showing them. A job that
+    // gets here with something the listing does not carry got there on the
+    // office's hand-delivery, and the sentence says which fact it rests on.
+    const allOnAryeo = verifiable && expected.every((c) => clientHas.has(c));
+    reason = !verifiable
+      ? "Order fulfilled and media is live on Aryeo."
+      : allOnAryeo
+        ? "All ordered deliverables confirmed live on Aryeo."
+        : "Delivered by the office. Not everything is on the Aryeo listing — the delivery rests on that confirmation, not on the listing.";
+  } else if (satisfied && fulfilled) {
+    // Everything ordered has been MADE and Aryeo calls the order delivered, but
+    // a category is only in our Dropbox. This is the shape the audit named: the
+    // photos went out, the video did not. It is a partial delivery with a send
+    // still owed, and Kyle is the one who owes it.
+    status = "REVIEW";
+    const owed = awaitingSend.map((c) => CATEGORY_LABEL[c]).join(" and ");
+    reason = `${owed} finished and in Dropbox, but not on the client's Aryeo listing — still to send.`;
   } else if (satisfied && !fulfilled) {
     status = "REVIEW";
     reason = "All media is present but the order isn't marked delivered on Aryeo yet — ready to deliver.";
@@ -430,6 +483,12 @@ export function computeStatus(sig: StatusSignals): StatusResult {
       if (others.length) reason += ` Also missing ${others.join(", ")}.`;
     } else {
       reason = `Partial delivery — still missing ${missing.map((m) => CATEGORY_LABEL[m as MediaCategory]).join(", ")}.`;
+    }
+    // A category can be missing AND another one finished-but-unsent on the same
+    // job (floor plan still to come, video sitting in Final). The unsent one has
+    // an owner and an action, so it does not get to hide behind the missing one.
+    if (awaitingSend.length > 0) {
+      reason += ` ${awaitingSend.map((c) => CATEGORY_LABEL[c]).join(" and ")} finished and in Dropbox, not yet on the Aryeo listing — still to send.`;
     }
   } else if (anyRaw) {
     status = "SHOT";
@@ -463,6 +522,7 @@ export function computeStatus(sig: StatusSignals): StatusResult {
       expected: expected.map((c) => CATEGORY_LABEL[c]),
       present: [...present].map((c) => CATEGORY_LABEL[c]),
       missing: missing.map((c) => CATEGORY_LABEL[c as MediaCategory]),
+      awaitingSend: awaitingSend.map((c) => CATEGORY_LABEL[c]),
       partial,
       aryeo: a,
       dropbox: d,
