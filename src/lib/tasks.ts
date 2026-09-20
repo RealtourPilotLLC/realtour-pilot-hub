@@ -2955,6 +2955,11 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
       reelHook: true,
       scriptConfirmedAt: true,
       handoffReadyAt: true,
+      // The stored blocker itself, not only the stamp. The early return further
+      // down has to be able to see whether this job is still WEARING one, so it
+      // can put the project row and the card back in agreement (Sep 20).
+      handoffBlockedReason: true,
+      handoffOwnerKey: true,
     },
   });
   if (!p) return;
@@ -3066,6 +3071,41 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
   // open task) and the rest of the set has no owner (audit).
   if (submitted > 0 || videoPresent) {
     await clearNudge();
+    // A CUT EXISTS, SO THE HANDOFF QUESTION IS CLOSED — and the readiness block
+    // at the end of this function is never reached again for this job, which is
+    // the second way a card used to freeze wearing a blocker (Sep 20). A row
+    // that was blocked when its cut landed kept saying "waiting on the flow and
+    // vision for the edit from Harrison" for good, with a chase date nothing
+    // would ever move, while the edit was already sitting in the Review Room.
+    // The test lives in the where clause, so this writes nothing — and does not
+    // touch updatedAt — on the great majority of jobs that carry neither.
+    await prisma.smartTask.updateMany({
+      where: {
+        dedupeKey: `edit-video-${projectId}`,
+        status: { notIn: ["COMPLETED", "CANCELLED"] },
+        OR: [{ blockedReason: { not: null } }, { followUpAt: { not: null } }],
+      },
+      data: { blockedReason: null, followUpAt: null },
+    });
+    // AND THE SAME ON THE PROJECT ROW, or the two halves of one sentence now
+    // contradict each other. The delivery board READS the stored blocker
+    // (deliveryBoard.ts) and tests it BEFORE the REVIEW branch, so clearing only
+    // the card would hand the editor a clean work item while the board went on
+    // telling Kyle the job was waiting on Harrison for a brief. 2645 N 8th St is
+    // in that shape today: REVIEW, one cut submitted, still carrying "waiting on
+    // the flow and vision for the edit". Stale on both sides was wrong but at
+    // least consistent; stale on one side is a board arguing with a card.
+    // handoffReadyAt is deliberately NOT stamped — this job never became
+    // workable, the question simply stopped being asked once a cut existed.
+    // (projectBrief recomputes readiness instead of reading the column, so the
+    // delivery board is the whole audience for this.) Guarded, so a job wearing
+    // neither is not written at all.
+    if (p.handoffBlockedReason || p.handoffOwnerKey) {
+      await prisma.project.update({
+        where: { id: projectId },
+        data: { handoffBlockedReason: null, handoffOwnerKey: null },
+      });
+    }
     const monthly = isMonthlyContentJob(p.deliverables, p.packageName);
     if (!monthly) return;
     const { monthlyVideoQuota } = await import("@/lib/pipeline");
@@ -3197,12 +3237,57 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
     // The chase date lives on the CARD, in followUpAt rather than dueAt: a job
     // blocked on a missing brief still owes its delivery date, and moving dueAt
     // would move the clock the editor is scored on.
-    await prisma.smartTask.updateMany({
-      where: { dedupeKey: `edit-video-${projectId}`, status: { notIn: ["COMPLETED", "CANCELLED"] } },
-      data: r.ready
-        ? { blockedReason: null }
-        : { blockedReason: r.blockedReason, followUpAt: addBusinessDaysET(new Date(), 1) },
+    //
+    // READ THE CARD FIRST — the same once-only discipline the project stamp
+    // above keeps, which this write did not (Sep 20). Two things were wrong:
+    //
+    //   · THE CHASE NEVER FIRED. The date was re-stamped on every hourly sweep,
+    //     and addBusinessDaysET lands on MIDNIGHT ET of the next business day —
+    //     the exact instant the top-of-the-hour cron runs — so the date the
+    //     sweep wrote at 5pm was written again at 6pm and was never once in the
+    //     past. 120 simulated hourly ticks, not one of them overdue. A job
+    //     blocked on Harrison's flow-and-vision note could sit blocked for a
+    //     week and nothing would ever say so. So: set it ONCE per blocker, and
+    //     let it mature at 9am when somebody is at a desk rather than at
+    //     midnight. A DIFFERENT blocker is a new ask and earns a fresh day.
+    //   · A CLEARED BLOCKER LEFT ITS DATE. The ready branch nulled the reason
+    //     and said nothing about the date, so three live cards (107 E Old
+    //     Baltimore Pike, 1462 Brandywine Ln and one job with no address on it)
+    //     were carrying a chase they could never shed: it matured into a
+    //     "Follow-up date passed" row on the home exceptions card, aged into
+    //     high severity after three days, and NO screen in the hub can set or
+    //     clear followUpAt. Ready means the chase is over. Both fields, or
+    //     neither.
+    const card = await prisma.smartTask.findUnique({
+      where: { dedupeKey: `edit-video-${projectId}` },
+      select: { status: true, blockedReason: true, followUpAt: true },
     });
+    const chaseAlreadySet = !!card?.followUpAt && card.blockedReason === r.blockedReason;
+    // A CLOSED CARD IS ALREADY RIGHT, whatever it is wearing: the write below
+    // excludes COMPLETED and CANCELLED, so comparing a closed row's fields only
+    // ever produced a 0-row update that fired again an hour later, for good. Two
+    // live rows are exactly that — 453 Cardigan Terrace and 2645 N 8th St both
+    // closed still holding a chase date — and reading the status is what stops
+    // the sweep pointlessly re-asking about them (Sep 20). Same for no card at
+    // all: there is nothing to write.
+    const terminal = card?.status === "COMPLETED" || card?.status === "CANCELLED";
+    // Say nothing when there is nothing to say — mintEditTask's own
+    // diff-before-write discipline. An hourly no-op update still moves
+    // updatedAt, and updatedAt is the only thing some of these rows have left
+    // to say when they were last genuinely touched.
+    const alreadyRight =
+      !card || terminal || (r.ready ? !card.blockedReason && !card.followUpAt : chaseAlreadySet);
+    if (!alreadyRight) {
+      await prisma.smartTask.updateMany({
+        where: { dedupeKey: `edit-video-${projectId}`, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+        data: r.ready
+          ? { blockedReason: null, followUpAt: null }
+          : {
+              blockedReason: r.blockedReason,
+              followUpAt: endOfBusinessDaysET(new Date(), 1, 9),
+            },
+      });
+    }
   } catch { /* readiness is advisory — it must never stop a card being minted */ }
 
   // 5. Resurrect a falsely-completed work item: task COMPLETED but no cut

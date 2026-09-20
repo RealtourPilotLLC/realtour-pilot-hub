@@ -23,7 +23,7 @@ import { LoopActions } from "@/components/ops/LoopActions";
 import { ReadyToSendCard, ReadyToSendHeading } from "@/components/ops/ReadyToSendCard";
 import { ProactiveFlags } from "@/components/dashboard/ProactiveFlags";
 import { ExceptionsCard } from "@/components/ops/ExceptionsCard";
-import { opsExceptions } from "@/lib/opsExceptions";
+import { emptyExceptionBoard, opsExceptionsBoard, type OpsExceptionBoard } from "@/lib/opsExceptions";
 import { StuckJobs } from "@/components/dashboard/StuckJobs";
 import { WeekStrip } from "@/components/dashboard/WeekStrip";
 import { PulseStrip } from "@/components/dashboard/PulseStrip";
@@ -519,10 +519,11 @@ export default async function HomePage() {
       // Clients the Aryeo webhook met in the last 10 days — for Jordan AND Kyle.
       newClientsForDashboard().catch(() => []),
       // The five quiet failures (R08). Reporting only, and a failed read is an
-      // empty card rather than a page that will not render.
-      opsExceptions().catch((e: unknown) => {
+      // empty card rather than a page that will not render. The BOARD, not the
+      // bare rows: the card has to be able to say how many it is not showing.
+      opsExceptionsBoard().catch((e: unknown): OpsExceptionBoard => {
         console.warn("opsExceptions failed", (e as Error).message);
-        return [];
+        return emptyExceptionBoard();
       }),
     ]);
 
@@ -963,7 +964,7 @@ export default async function HomePage() {
         {/* 6 · EXCEPTIONS — the five quiet failures, each with an owner and one
             next action (R08). Above the Radar on purpose: the Radar is
             strategic risk, this is work somebody has to do today. */}
-        <ExceptionsCard rows={exceptions} />
+        <ExceptionsCard rows={exceptions.rows} totals={exceptions.totals} />
 
         {/* Radar — fresh risk only (≤3; creatives never reach this page) */}
         {/* New clients — say hello. Renders nothing when there are none. */}
