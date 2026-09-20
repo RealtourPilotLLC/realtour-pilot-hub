@@ -4,7 +4,8 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin, requireRole, requireShootAccess } from "@/lib/auth/guards";
 import { editorTeamMemberId, VIDEO_LANE_KEYS, type EditorKey } from "@/lib/editors";
-import { deliveryStamp, outstandingForDelivery, outstandingMessage, VIDEO_CATEGORY } from "@/lib/delivery";
+import { deliveryStamp, neverMadeOnly, outstandingForDelivery, outstandingMessage } from "@/lib/delivery";
+import { owedPhrase } from "@/lib/statusEvidence";
 import { EDIT_PRIORITIES, EDIT_STATUS_LABELS, EDIT_TIERS, type EditOverrideInput, type EditTier } from "@/lib/editOverrideDefaults";
 import {
   OVERRIDE_SELECT,
@@ -667,6 +668,30 @@ const QUEUE_STATUS: Record<string, "WAITING" | "SHOT" | "EDITING" | "REVIEW" | "
   Completed: "DELIVERED",
 };
 
+/** Is this Completed click the office closing a revision it delivered by hand?
+ *
+ *  The one case the delivery gate has to make room for (Sep 20). An open
+ *  video-lane revision plus an OWNER/ADMIN clicking Completed is the shape the
+ *  branch further down calls "the office closes the loop" — Jordan's Sep 11
+ *  fix for 1244 West Chester Pike, where Marcee's corrected videos were
+ *  emailed to her and never went near Aryeo. The test is deliberately the
+ *  SAME one that branch makes a few lines later (an open lane, and the actor
+ *  is the office or auth is off), so the two can never disagree about who is
+ *  standing there. Anything that throws answers no: a witness we cannot read
+ *  is not a witness. */
+async function officeIsClosingAHandDelivery(projectId: string): Promise<boolean> {
+  try {
+    const { videoLaneRevisionWhere } = await import("@/lib/reviewCuts");
+    if ((await prisma.smartTask.count({ where: videoLaneRevisionWhere(projectId) })) === 0) return false;
+    const { getCurrentUser } = await import("@/lib/auth/user");
+    const { authEnforced } = await import("@/lib/auth/guards");
+    const me = await getCurrentUser().catch(() => null);
+    return me ? me.role === "OWNER" || me.role === "ADMIN" : !authEnforced();
+  } catch {
+    return false;
+  }
+}
+
 export async function setQueueStatus(projectId: string, label: string): Promise<{ ok: boolean; message: string }> {
   const target = QUEUE_STATUS[label];
   if (!target) return { ok: false, message: "That status is set automatically from upload/delivery evidence." };
@@ -717,8 +742,10 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
       revisionRequestedAt: true,
       editorId: true,
       editorManual: true,
-      videosFilmed: true, // the videos-owed ladder for the Completed gate (Sep 13, effectiveVideosOwed)
-      videosOwedOverride: true,
+      // videosFilmed / videosOwedOverride were selected here for the Completed
+      // gate's approved-cut counter-proof (Sep 13). That counter-proof was
+      // retired on Sep 20 (see the gate), so the ladder is no longer read on
+      // this path and the two columns are not fetched.
       editor: { select: { name: true } },
       deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, quantity: true } },
     },
@@ -871,27 +898,39 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
   // jobs carry evidence that names a missing category right now — 14 of them
   // the Video (Sep 2 probe). This button stops adding to that pile.
   if (status === "DELIVERED") {
-    // Freshness counter-proof for the video lane only: the evidence read is
-    // hourly, and the editor pressing this button may have finished minutes
-    // ago. An APPROVED Review-Room cut for EVERY video owed is the cut
-    // landing — approval copies the file into the job's 05-Final-Video folder
-    // and stamps completedAt — so accept it before the sweep catches up.
-    // Multi-video months need the whole set: cut 1 of 4 is progress, not done.
-    const proven: string[] = [];
-    // The office's number, the photographer's count, then the order rows
-    // (Sep 13, editOverrides.effectiveVideosOwed) — the same count the cut
-    // slots and the queue cell owe against.
-    const videosOwed = proj.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL")
-      ? effectiveVideosOwed(proj, proj.deliverables)
-      : 0;
-    if (videosOwed > 0) {
-      try {
-        const { approvedCutCount } = await import("@/lib/reviewCuts");
-        if ((await approvedCutCount(projectId)) >= videosOwed) proven.push(VIDEO_CATEGORY);
-      } catch { /* no counter-proof available → the evidence blob decides */ }
+    // THE FRESHNESS COUNTER-PROOF IS GONE (Sep 20, review of F03). This used
+    // to count APPROVED Review-Room cuts and, when every video owed had one,
+    // hand delivery.ts a "treat Video as landed" label so an editor who had
+    // just finished did not have to wait out the hourly sweep. Approval only
+    // copies the cut into the job's own 05-Final-Video folder, so the label
+    // was Dropbox evidence being spent on a claim about the client's listing,
+    // the exact substitution F03 is about. Measured before pulling it: of the
+    // 55 live blobs naming Video in `missing` on Sep 20, 26 already carried a
+    // per-video tally that outranked the label, and ZERO Completed clicks in
+    // the whole live board would have gone differently with it gone. It was a
+    // documented permission nobody was actually getting. The way past a stale
+    // blob is "Refresh from Aryeo" on the project page, which the refusal now
+    // names, or the owner's override there.
+    const outstanding = outstandingForDelivery(proj.statusEvidence);
+    if (outstanding.categories.length > 0) {
+      // THE OFFICE CLOSING A HAND-DELIVERED REVISION IS THE WITNESS THIS GATE
+      // IS ASKING FOR (Sep 20 review; Jordan, Sep 11: "When I change the
+      // status to completed … it didn't save" — 1244 West Chester Pike).
+      // Marcee's corrected videos were emailed to her by hand, so nothing
+      // ever went through the Review Room and nothing was ever published to
+      // that listing. That is the `awaitingSend` shape exactly, and refusing
+      // it here would take the click straight past the branch below that
+      // closes the client's asks, stamps handled-by-hand and writes the
+      // audit row — leaving the office only the board override, which does
+      // none of those. So on that one path the gate falls back to what
+      // nobody can find anywhere, which is what it asked before F03 widened
+      // it. The engine makes the same allowance in the same words: it
+      // silences awaitingSend on an office-confirmed delivery (the Sep 16
+      // Kyle call). No live job is in that shape today; this is here so the
+      // fix does not quietly undo the Sep 11 one.
+      const blocking = (await officeIsClosingAHandDelivery(projectId)) ? neverMadeOnly(outstanding) : outstanding;
+      if (blocking.categories.length > 0) return { ok: false, message: outstandingMessage(blocking) };
     }
-    const outstanding = outstandingForDelivery(proj.statusEvidence, proven);
-    if (outstanding.length > 0) return { ok: false, message: outstandingMessage(outstanding) };
   }
 
   // Sep 8 (Jordan: "A revision should be changed to ready for review when an
@@ -981,9 +1020,14 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
           // Another lane still open (Kyle's photo ask on a mixed job): close
           // the video asks only and say so. A Delivered write here would be
           // flipped straight back by the recompute while the stamp stands.
-          const otherOpen = await prisma.smartTask.count({
-            where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] }, id: { notIn: laneIds } },
-          });
+          //
+          // The count moved into comms.ts on Sep 20 when the task card's
+          // Complete button and the revision checklist finally took the same
+          // rule — this was one of two hand-written copies and the actions.ts
+          // pair had none, which is exactly how a fourth copy would have gone
+          // missing too. Same query, same answer; only the address changed.
+          const { otherOpenRevisionAsks } = await import("@/lib/comms");
+          const otherOpen = await otherOpenRevisionAsks(projectId, laneIds);
           if (otherOpen > 0) {
             for (const t of lane) {
               await prisma.smartTask.update({
@@ -1062,9 +1106,13 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
   // nothing has been published to Aryeo, which is precisely the gap Kyle hit
   // (photos out, video never QC'd or delivered). The evidence blob, unproven,
   // is what the line reports. Empty evidence says nothing.
-  const stillMissing = status === "DELIVERED" ? outstandingForDelivery(proj.statusEvidence) : [];
-  const missingClause = stillMissing.length
-    ? ` — with ${stillMissing.map((c) => c.toLowerCase()).join(", ")} still missing on Aryeo`
+  // Sep 20 (F03): this clause was built from the same blind `missing` read as
+  // the gate, so on exactly the jobs that were wrong the timeline recorded
+  // nothing missing at all. It now carries the union and the count, which is
+  // what makes the row worth reading a month later.
+  const stillMissing = status === "DELIVERED" ? outstandingForDelivery(proj.statusEvidence) : null;
+  const missingClause = stillMissing && stillMissing.categories.length
+    ? ` — with ${owedPhrase(stillMissing)} still missing on Aryeo`
     : "";
   await prisma.activity.create({
     data: { projectId, type: "SYSTEM", body: `Queue status set: ${label}${missingClause}` },
@@ -1545,10 +1593,14 @@ export async function saveEditOverrides(projectId: string, input: EditOverrideIn
   // outstanding at the moment of the force, so the timeline shows it. Empty or
   // unreadable evidence says nothing (delivery.ts rule 2: we speak only on
   // positive proof that something is owed).
-  const stillMissing = targetStatus === "DELIVERED" ? outstandingForDelivery(proj.statusEvidence) : [];
+  // Sep 20 (F03): same blind read as the pill's, fixed the same way. The force
+  // path is the LAST place a silent audit trail is acceptable — if somebody
+  // overrides a job with three of four videos still on no listing, the row has
+  // to say three of four.
+  const stillMissing = targetStatus === "DELIVERED" ? outstandingForDelivery(proj.statusEvidence) : null;
   const sentence =
     describeOverrides(before, after, actor) +
-    (stillMissing.length ? ` — with ${stillMissing.map((c) => c.toLowerCase()).join(", ")} still missing on Aryeo` : "");
+    (stillMissing && stillMissing.categories.length ? ` — with ${owedPhrase(stillMissing)} still missing on Aryeo` : "");
   await prisma.activity.create({ data: { projectId, type: "SYSTEM", body: sentence } }).catch(() => {});
 
   // ---- A forced status: the hold, the card, the close-outs. ----
@@ -1565,6 +1617,13 @@ export async function saveEditOverrides(projectId: string, input: EditOverrideIn
       // pill does: asks closed, stamp cleared, re-QC card retired. The status
       // is already Delivered, so resolveRevision keeps it there (its landing
       // only moves a REVISION/REVIEW job) and runs the delivered close-out.
+      //
+      // Project-wide on purpose, and re-checked as such on Sep 20 when the
+      // lane rule went into the card paths: this is the owner forcing the
+      // WHOLE job to Completed, which is a statement about every ask on it —
+      // not a person ticking one card off a board. Lane-scoping it would leave
+      // a job sitting at Delivered with an open ask nobody can now resolve
+      // from here.
       const openAsks = await prisma.smartTask.count({ where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } } });
       if (openAsks > 0 || proj.revisionRequestedAt) {
         try {
@@ -1842,7 +1901,7 @@ export async function mergeProjectWork(
   const { getCurrentUser } = await import("@/lib/auth/user");
   const me = await getCurrentUser().catch(() => null);
   const actor = me?.name ?? me?.email ?? "The office";
-  const { mergeKey, mergeFrom, previewMerge, serializeMerge } = await import("@/lib/projectMerge");
+  const { mergeKey, mergeFrom, mergedInto, previewMerge, serializeMerge } = await import("@/lib/projectMerge");
 
   const [from, into] = await Promise.all([
     prisma.project.findUnique({ where: { id: fromId }, select: { id: true, title: true, clientId: true, status: true, client: { select: { name: true } } } }),
@@ -1860,6 +1919,18 @@ export async function mergeProjectWork(
   }
   if (await mergeFrom(fromId)) return { ok: false, message: "That job's work has already been merged somewhere." };
   if (await mergeFrom(intoId)) return { ok: false, message: "You can't merge INTO a job whose own work has been merged away." };
+  // NO CHAINS (Sep 20 2026 review). The two guards above refuse a job whose work
+  // has gone and a destination whose work has gone, but nothing stopped moving a
+  // SURVIVOR away: merge the second shoot onto the original, then merge the
+  // original onto a third job, and the second shoot's rows follow the chain
+  // while its marker still names the middle job. Everything downstream that asks
+  // "where does this job's work live" gets the middle job — so a line later
+  // added to the second shoot's Aryeo order is filed on a job that holds none of
+  // its work. A third shoot joins the job that is already carrying the others,
+  // which this does not block; only the chain is refused.
+  if ((await mergedInto(fromId)).length > 0) {
+    return { ok: false, message: "That job is already carrying another job's work. Put that back first, then merge this one." };
+  }
 
   const moved = await previewMerge(fromId);
   if (moved.deliverableIds.length === 0 && moved.submissionIds.length === 0) {
@@ -1926,15 +1997,37 @@ export async function unmergeProjectWork(fromId: string): Promise<{ ok: boolean;
   if (!m) return { ok: false, message: "That job's work isn't merged anywhere." };
   const moved = m.moved;
 
-  // BY ID, not by shape. Anything created on the survivor SINCE the merge stays
-  // on the survivor — only the rows this merge actually moved come back.
+  // BY ID for the job-level rows, BY RELATIONSHIP for the children.
+  //
+  // Anything a PERSON started on the survivor since the merge stays on the
+  // survivor — a card, a revision brief, a job-level note. But a cut is not
+  // job-level: it hangs off a deliverable, and Sep 20 2026 (audit F01) showed
+  // what the id snapshot does with that. Merge a second shoot's reel onto the
+  // original job, let John upload round 2 against it, then undo: the deliverable
+  // went home and the round-2 cut — created after the merge, so absent from the
+  // marker — stayed behind pointing at a deliverable on another job. That is the
+  // orphaned cut the merge transaction's own comment above says no screen here
+  // can render. DeliverableOutput, ReviewSubmission and TopazJob all carry a
+  // deliverableId, so a child comes home with its parent, and the captured ids
+  // stay in the union for the legacy rows that carry no deliverable link at all.
   await prisma.$transaction(async (tx) => {
+    const withParent = (ids: string[]) => ({ OR: [{ id: { in: ids } }, { deliverableId: { in: moved.deliverableIds } }] });
     await tx.deliverable.updateMany({ where: { id: { in: moved.deliverableIds } }, data: { projectId: fromId } });
-    await tx.deliverableOutput.updateMany({ where: { id: { in: moved.outputIds } }, data: { projectId: fromId } });
-    await tx.reviewSubmission.updateMany({ where: { id: { in: moved.submissionIds } }, data: { projectId: fromId } });
+    await tx.deliverableOutput.updateMany({ where: withParent(moved.outputIds), data: { projectId: fromId } });
+    await tx.reviewSubmission.updateMany({ where: withParent(moved.submissionIds), data: { projectId: fromId } });
     await tx.smartTask.updateMany({ where: { id: { in: moved.taskIds } }, data: { projectId: fromId } });
     await tx.revisionBrief.updateMany({ where: { id: { in: moved.briefIds } }, data: { projectId: fromId } });
-    await tx.topazJob.updateMany({ where: { id: { in: moved.topazIds } }, data: { projectId: fromId } });
+    // A TopazJob carries no deliverable of its own — it hangs off the cut, one
+    // render per cut — so it follows its submission home. Resolved to ids first
+    // rather than filtered through the relation inside an updateMany.
+    const topazByCut = await tx.topazJob.findMany({
+      where: { submission: { deliverableId: { in: moved.deliverableIds } } },
+      select: { id: true },
+    });
+    await tx.topazJob.updateMany({
+      where: { id: { in: [...new Set([...moved.topazIds, ...topazByCut.map((t) => t.id)])] } },
+      data: { projectId: fromId },
+    });
     await tx.appSetting.update({
       where: { key: mergeKey(fromId) },
       data: { value: serializeMerge({ ...m, undoneAt: new Date(), undoneBy: actor }) },

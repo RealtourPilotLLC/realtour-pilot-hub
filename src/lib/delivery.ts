@@ -1,5 +1,5 @@
 import "server-only";
-import { parseEvidence } from "@/lib/statusEvidence";
+import { parseEvidence, owedNow, owedPhrase, owedVerb, sameCategory, type OwedShortfall } from "@/lib/statusEvidence";
 
 // ---------------------------------------------------------------------------
 // RULE 1 — THE DELIVERY DATE IS STAMPED ONCE.
@@ -39,51 +39,120 @@ export function deliveryStamp(
 }
 
 // ---------------------------------------------------------------------------
-// RULE 2 — "DELIVERED" MEANS EVERYTHING ORDERED HAS LANDED (Jordan's rule).
+// RULE 2 — "DELIVERED" MEANS EVERYTHING ORDERED HAS LANDED IN THE CLIENT'S
+// HANDS (Jordan's rule).
 //
-// The status engine already computes this per job and writes it to
-// Project.statusEvidence: `missing` is the list of ordered media categories
-// ("Photos", "Video", "Floor plan", "3D tour") that are live neither on Aryeo
-// nor in the job's Dropbox Final folder. Any human "mark it delivered" control
-// must consult it, or the hub says delivered while the reel is still unmade.
+// The status engine computes what is owed per job and writes it to
+// Project.statusEvidence. This gate used to read exactly one field off that
+// blob — `missing`, the categories live neither on Aryeo nor in our Dropbox —
+// and that is the audit F03 defect, found Sep 20. The engine's `present` set
+// is clientHas UNION weHave, so a video that gets CUT, approved and copied
+// into 05-Final-Video drops out of `missing` the moment the editor finishes
+// it. The gate's only input was emptied by the work being done rather than by
+// the client receiving it, and three live jobs were one pill click from a
+// false DELIVERED: 5 Raymond Cir, 453 Cardigan Terrace and 5642 Limeport Rd,
+// the last with four videos cut, four in Dropbox and zero on the client's
+// listing. Clients are not on the portal, so the Aryeo listing IS their only
+// access — `onListing: 0` means they genuinely cannot open the file.
 //
-// `provenLanded` is the escape hatch for freshness, NOT for judgement: the
-// evidence read is hourly, so a caller holding harder proof that a category
-// just landed (e.g. an APPROVED Review-Room cut for every video owed — approval
-// copies the file into the job's Final folder) passes that label in and it
-// drops off the list. Unreadable/absent evidence yields an EMPTY list on
-// purpose: we block on positive proof that something is owed, never on
-// ignorance, because manual and non-Aryeo jobs legitimately have no evidence.
+// So the gate now reads owedNow() — the same definition the status card and
+// statusFlag use (src/lib/statusEvidence.ts), so the two can never drift
+// again. Both obligations block: never made, and finished and never sent. The
+// per-video tally rides along as the COUNT on the sentence ("3 of 4 videos"),
+// not as a reason of its own; owedNow says why.
+//
+// THE FRESHNESS ESCAPE HATCH IS RETIRED (Sep 20, review of the F03 fix).
+// This gate used to take a `provenLanded` list — a caller holding harder
+// proof that a category had just landed could name it and drop it off. Its
+// only supplier was the Editing Room pill, which passed VIDEO when every cut
+// owed had an APPROVED Review-Room round. Approval copies the file into the
+// job's 05-Final-Video folder, so what it proves is that WE have it, which is
+// the very fact `awaitingSend` exists to flag. It was being spent to clear an
+// obligation to the CLIENT. Measured across the 55 live blobs carrying Video
+// in `missing` on Sep 20, the hatch was already inert on the 26 that carry a
+// unit tally, and the tally is being written to more of them every hour. So
+// it goes, rather than staying on the page describing a permission nobody
+// should have had: an approved cut is not a delivery, and the way past a
+// stale blob is "Refresh from Aryeo" on the project page or the owner's
+// documented override, both of which the refusal names.
+//
+// Unreadable/absent evidence yields an EMPTY list on purpose: we block on
+// positive proof that something is owed, never on ignorance, because manual
+// and non-Aryeo jobs legitimately have no evidence.
 // ---------------------------------------------------------------------------
 export const VIDEO_CATEGORY = "Video";
 
-export function outstandingForDelivery(
-  statusEvidence: string | null | undefined,
-  provenLanded: string[] = [],
-): string[] {
-  const missing = parseEvidence(statusEvidence)?.missing ?? [];
-  const proven = new Set(provenLanded.map((s) => s.trim().toLowerCase()));
-  return missing.filter((m) => !proven.has(m.trim().toLowerCase()));
+export type DeliveryBlockers = {
+  /** every category still owed, however it is owed. Empty = nothing to refuse. */
+  categories: string[];
+  /** the subset ordered and live nowhere */
+  neverMade: string[];
+  /** the subset finished in our Dropbox and on no client listing */
+  awaitingSend: string[];
+  /** per-category counts, so a refusal can say "3 of 4 videos" */
+  shortfall: OwedShortfall[];
+};
+
+export function outstandingForDelivery(statusEvidence: string | null | undefined): DeliveryBlockers {
+  const owed = owedNow(parseEvidence(statusEvidence));
+  return {
+    categories: owed.categories,
+    neverMade: owed.neverMade,
+    awaitingSend: owed.awaitingSend,
+    shortfall: owed.shortfall,
+  };
+}
+
+/** The same blockers with the owed-SEND half dropped — what is left is only
+ *  what nobody can find anywhere.
+ *
+ *  For the one caller that has a human's word in hand (Sep 20): the office
+ *  marking Completed on a job whose corrected video it delivered by hand is
+ *  the same witness the engine honours when it silences `awaitingSend` on an
+ *  office-confirmed delivery (projectStatus.ts, the Sep 16 Kyle call). It
+ *  cannot conjure a category nobody has made, so that half still blocks. */
+export function neverMadeOnly(blockers: DeliveryBlockers): DeliveryBlockers {
+  return {
+    categories: blockers.neverMade,
+    neverMade: blockers.neverMade,
+    awaitingSend: [],
+    shortfall: blockers.shortfall.filter((s) => blockers.neverMade.some((c) => sameCategory(c, s.category))),
+  };
 }
 
 // The refusal, in Jordan's voice (no em dashes, no emojis) and always with the
 // way forward. Owner/admin keep a documented override on the project page
 // (moveProjectStatus) for the case where the evidence itself is wrong.
-export function outstandingMessage(outstanding: string[]): string {
-  const items = outstanding.map((s) => s.trim().toLowerCase()).filter(Boolean);
+export function outstandingMessage(blockers: DeliveryBlockers): string {
   // Nothing outstanding = nothing to refuse. Exported helpers get called from
   // places their author never saw; never build a sentence about "undefined".
-  if (items.length === 0) return "Everything ordered has landed.";
-  const list = items.length > 1 ? `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}` : items[0];
-  // Verb agreement, same rule as the delivery text below: "the photos ARE
-  // still outstanding" / "the video IS still outstanding".
-  const verb = items.length > 1 || /s\s*$/i.test(items[0] ?? "") ? "are" : "is";
-  // The way forward depends on the lane: a cut goes through the Review Room,
-  // everything else lands by being delivered on Aryeo.
-  const how = items.includes(VIDEO_CATEGORY.toLowerCase())
-    ? "Send the cut to review, or deliver it on Aryeo, and this flips on its own."
-    : "Deliver it on Aryeo and this flips on its own.";
-  return `Not delivered yet: the ${list} ${verb} still outstanding. ${how} If everything really is out, mark it delivered from the project page.`;
+  if (blockers.categories.length === 0) return "Everything ordered has landed.";
+  const list = owedPhrase(blockers);
+  const verb = owedVerb(blockers);
+  // SAY WHICH PROBLEM IT IS (F03, Sep 20). "Still outstanding" on a job where
+  // the editor just finished every video reads as an accusation that the work
+  // was never done, and the editor's next move is to go looking for a file
+  // that is already sitting there. The "finished" half of the sentence is
+  // said only where `awaitingSend` carries every category, because that list
+  // is the one that actually knows the file is in our Final folder; a job
+  // with anything unmade gets the neutral wording.
+  const waitingOnAPublish = blockers.neverMade.length === 0 && blockers.awaitingSend.length > 0;
+  const state = waitingOnAPublish
+    ? `${verb} finished in our Dropbox and not on the client's listing`
+    : `${verb} still outstanding`;
+  // The way forward depends on the lane: an unmade cut goes through the Review
+  // Room, everything else lands by being published on Aryeo. And since the
+  // blob is read hourly, name the button that re-reads it now (Sep 20): with
+  // the freshness hatch retired, a job published on Aryeo five minutes ago is
+  // refused until somebody refreshes it, and the refusal has to say so rather
+  // than leaving Kyle to wait out the sweep.
+  const plural = verb === "are";
+  const how = waitingOnAPublish
+    ? `Deliver ${plural ? "them" : "it"} on Aryeo and this flips on its own.`
+    : blockers.neverMade.some((c) => sameCategory(c, VIDEO_CATEGORY))
+      ? "Send the cut to review, or deliver it on Aryeo, and this flips on its own."
+      : `Deliver ${plural ? "them" : "it"} on Aryeo and this flips on its own.`;
+  return `Not delivered yet: ${list} ${state}. ${how} If ${plural ? "they are" : "it is"} already up, press Refresh from Aryeo on the project page, and if everything really is out, mark it delivered from there.`;
 }
 
 // Public feedback form link for a project (lands in the post-delivery text).
@@ -154,22 +223,52 @@ export function deliveryMessage(p: DeliveryProject, templates?: { deliveryAll?: 
   const forPlace = street ? ` for ${street}` : city ? ` from your ${city} shoot` : " from your shoot";
   const url = feedbackUrl(p.id);
   const ev = parseEvidence(p.statusEvidence);
-  const missing = ev?.missing ?? [];
+  // THE SAME DEFINITION THE GATE USES (F03, Sep 20). This read `ev.missing`,
+  // which is "never made" — so a job with four videos cut, one on the listing
+  // and three still to send took the ALL branch and told the agent
+  // "Everything for <street> has been delivered. How did we do?" That is the
+  // 626 Greycliffe Ln text on Sep 4, and Gary replying the same afternoon
+  // "I'm looking for the social media video". The send gate in
+  // clientTextSweeps now holds these, and the copy no longer claims it either.
+  const owed = owedNow(ev);
+  const missing = owed.categories;
 
   // Jordan (Sep 1): lead with asking how we did, not "we just sent everything
   // over" — the text's job is to invite feedback, not announce the delivery.
   if (missing.length > 0) {
-    const presentItems = ev?.present ?? [];
-    const present = presentItems.length ? presentItems.join(", ").toLowerCase() : "first round of content";
+    // A category that is partly out is still owed, so it must not also be
+    // read back to the client as delivered in the same sentence.
+    const presentItems = (ev?.present ?? []).filter((c) => !missing.some((m) => sameCategory(m, c)));
+    const present = presentItems.join(", ").toLowerCase();
     // Verb agreement: "the photos ARE delivered" / "the video IS delivered".
     const presentVerb = presentItems.length > 1 || /s\s*$/i.test(presentItems[0] ?? "") ? "are" : "is";
-    const left = missing.join(", ").toLowerCase();
-    const leftVerb = missing.length > 1 || /s\s*$/i.test(missing[0]) ? "are" : "is";
+    // WITH THE COUNT, AND WITHOUT GUESSING WHY (Sep 20 review). Two things
+    // were wrong here on the jobs the new definition routes to this branch.
+    // "Still in production" is false for a video that is finished and merely
+    // unpublished, which is most of them; and `left` dropped the count, so an
+    // agent holding one of four reels was told "the video" was coming.
+    const left = owedPhrase(owed);
+    const leftVerb = owedVerb(owed);
+    const leftState = owed.neverMade.length === 0 && owed.awaitingSend.length > 0
+      ? "finished and going up on your listing"
+      : "still in production and coming shortly";
+    // NOTHING TO ANNOUNCE IS NOT "THE FIRST ROUND IS DELIVERED" (5642 Limeport
+    // Rd, Sep 20). The delivered half used to fall back to that phrase when
+    // every present category was also still owed, so a video-only job with
+    // four cuts in Dropbox and none on the listing told Gary the first round
+    // of content was delivered when nothing had reached him at all. When
+    // there is nothing out, the text says only what is still coming and asks
+    // for no feedback there is nothing to give. The owner's partial template
+    // is skipped here on purpose: its whole shape is "{delivered} is out and
+    // {remaining} is coming", and there is no honest word for {delivered}.
+    if (!presentItems.length) {
+      return `Hi ${first}! Quick update${forPlace}: ${left} ${leftVerb} ${leftState}. We will let you know the moment everything is up. If you need anything before then, just reply here.`;
+    }
     const tplPartial = templates?.deliveryPartial?.trim();
     if (tplPartial) {
       return applyTemplate(tplPartial, { first, street: streetForTemplate(street, city), delivered: present, remaining: left, feedbackUrl: url });
     }
-    return `Hi ${first}! The ${present}${forPlace} ${presentVerb} delivered, and the ${left} ${leftVerb} still in production and coming shortly. How is everything looking so far? If anything is not exactly right, just reply here and we will jump on it. Quick feedback means a lot to us: ${url}`;
+    return `Hi ${first}! The ${present}${forPlace} ${presentVerb} delivered, and ${left} ${leftVerb} ${leftState}. How is everything looking so far? If anything is not exactly right, just reply here and we will jump on it. Quick feedback means a lot to us: ${url}`;
   }
   const tplAll = templates?.deliveryAll?.trim();
   if (tplAll) return applyTemplate(tplAll, { first, street: streetForTemplate(street, city), feedbackUrl: url });

@@ -894,6 +894,196 @@ export async function resolveRevision(projectId: string): Promise<void> {
   } catch { /* non-fatal */ }
 }
 
+// ---------------------------------------------------------------------------
+// ONE LANE'S ASK IS NOT THE WHOLE JOB (Sep 20).
+//
+// resolveRevision above is project-wide on purpose: it closes every open
+// revision ask, clears the stamp and lands the job back where it genuinely
+// stands. That is right when the last ask has been answered and wrong every
+// other time, because raiseRevision deliberately splits a photo-worded ask
+// onto its own card for Kyle while the video ask stays with the editor ("a
+// photo ask that arrives while a video revision is open is different work for
+// a different person" — Gary Mercer's closet photo landing under "remove the
+// walk-out basement clip", Sep 7). Two open lanes on one job is a designed
+// state, and the board says so on both cards ("Also open on this job").
+//
+// The Review Room approval (reviewCuts.correctedCutApproved) and the /editing
+// pill already count the asks OUTSIDE the lane they are closing and hold the
+// job in Revisions when that count is not zero. The two hand paths in
+// src/app/actions.ts did not: the task card's Complete button and the last
+// tick of the revision checklist each completed one row and then handed the
+// whole project to the resolver. So John pressing Complete on his video
+// revision also stamped Kyle's photo ask COMPLETED — no actor on it, no
+// timeline line naming it, no bell — took the job out of Revisions, and on the
+// Delivered landing ran closeObsoleteTasks, which retires the re-QC card and
+// marks every OPEN ImageFlag FIXED. On a job whose photo ask was still owed,
+// that leaves nothing anywhere in the hub still saying the client is waiting,
+// and the delivery text will not re-send to remind anyone. An editor's board
+// is scoped to their own key, so the person pressing Complete cannot even see
+// the card they just closed.
+//
+// It has not bitten yet only because the lane split is 13 days old. 1337
+// Carolannes Way is carrying a single open photo-lane ask right now on a mixed
+// photo+video job; one video-worded client email mints the second lane with no
+// human involved (the Gmail sweep raises it). So the count lives in one place
+// from here and every hand path takes it.
+//
+// The count is every open `revision` row on the job, not a judgement about
+// which ones are real client work, and that cuts both ways. 322 N 62nd St is
+// carrying "Confirm receipt of song link for 322 N 62nd St video" — an admin
+// chore the OpenPhone classifier minted as a revision ask (Sep 17) — and while
+// that row sits there a genuine photo ask on the same job cannot be landed
+// from a task card at all: the admin has to clear it from the project page or
+// the /editing pill. That is the trade taken on purpose. A job held in
+// Revisions behind a stale card is visible and recoverable; a client's ask
+// closed by a button nobody pointed at it is neither. The classifier minting
+// a chore as an ask is the thing that wants fixing, and it is its own ticket.
+// ---------------------------------------------------------------------------
+
+/** Open revision asks on a job, ignoring the row(s) the caller is closing.
+ *  The same query reviewCuts.correctedCutApproved and the /editing pill run
+ *  before they hand the whole job to resolveRevision — but NOT the same
+ *  exclusion, and the difference matters to whoever reads the count next.
+ *  Those two exclude the whole LANE they are closing; the hand paths below
+ *  exclude the single row the person pressed, because one press authorises one
+ *  row. So a job carrying two rows on one lane (38 E Gay St had a legacy
+ *  cut-changes-* row beside the minted one) holds on a task card and resolves
+ *  on the pill. Holding is the safe direction of that disagreement, so it
+ *  stands rather than being smoothed over. */
+export async function otherOpenRevisionAsks(
+  projectId: string,
+  exceptTaskIds?: string | string[] | null,
+): Promise<number> {
+  const except = (Array.isArray(exceptTaskIds) ? exceptTaskIds : exceptTaskIds ? [exceptTaskIds] : []).filter(Boolean);
+  return prisma.smartTask.count({
+    where: {
+      projectId,
+      taskType: "revision",
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
+      ...(except.length > 0 ? { id: { notIn: except } } : {}),
+    },
+  });
+}
+
+/** What to call the lane in a sentence. The photo lane owns its own dedupe key
+ *  (raiseRevision above); everything else reads off the title raiseRevision
+ *  wrote. Unknown stays "revision" rather than guessing at "video". */
+function revisionLaneWord(projectId: string, task: { title?: string | null; dedupeKey?: string | null } | null): string {
+  if (task?.dedupeKey && task.dedupeKey === dedupeKey([projectId, "revision", "photo"])) return "photo revision";
+  if ((task?.title ?? "").startsWith("Video revision")) return "video revision";
+  return "revision";
+}
+
+/**
+ * A person took ONE revision ask off the board by hand — the task card's
+ * Complete button, the last tick of its checklist, or a dismissal. The caller
+ * has already written that row's close (COMPLETED, or CANCELLED for a
+ * dismissal); this decides what it means for the rest of the job.
+ *
+ * Last ask standing → the full resolveRevision: stamp and note cleared, the
+ * job back where it stands, the re-QC and delivery cards retired, ops and the
+ * editor rung. That is unchanged, and it is why this is not simply "stop
+ * calling resolveRevision".
+ *
+ * Another ask still open → touch NOTHING else. The sibling card stays on its
+ * owner's board, the job keeps its revision flag, and the timeline gets the
+ * same kind of line the /editing pill writes, so the close is visible rather
+ * than silent. The client's other ask is still owed, and the hub still says so.
+ *
+ * `how` is which door the row left by. A dismissal takes a row out of the open
+ * set exactly as a completion does, so it asks the same question — it just
+ * must not be written up as somebody answering the client.
+ */
+export async function resolveRevisionForTask(
+  taskId: string,
+  projectId: string,
+  how: "resolved" | "dismissed" = "resolved",
+): Promise<{ resolved: boolean; otherOpen: number }> {
+  const otherOpen = await otherOpenRevisionAsks(projectId, taskId);
+  if (otherOpen === 0) {
+    await resolveRevision(projectId);
+    return { resolved: true, otherOpen: 0 };
+  }
+  const [task, project] = await Promise.all([
+    prisma.smartTask
+      .findUnique({ where: { id: taskId }, select: { title: true, dedupeKey: true } })
+      .catch(() => null),
+    prisma.project
+      .findUnique({ where: { id: projectId }, select: { status: true, revisionRequestedAt: true } })
+      .catch(() => null),
+  ]);
+  const still = `${otherOpen} ask${otherOpen === 1 ? " is" : "s are"} still open on this job`;
+  // Name the stage this job is ACTUALLY on. The first draft of this line said
+  // "the job stays in Revisions" whatever was true, and a job with an open ask
+  // is not always in Revisions: a delivered job re-queued through the fresh
+  // rail sits in REVIEW while its ask is open (resolveRevision has its own
+  // paragraph about that shape, and the TEST Cara cut job is in it right now),
+  // and a row can outlive the flag entirely. This line is the thing somebody
+  // reads a month later, so it must not be the one sentence on the page that
+  // is wrong.
+  const { stageMeta } = await import("@/lib/pipeline");
+  const tail = project?.revisionRequestedAt
+    ? `so the job keeps its revision flag and stays on ${stageMeta(project.status).short}`
+    : "so nothing else on the job was changed";
+  const verb = how === "dismissed" ? "was dismissed" : "was marked resolved by hand";
+  await prisma.activity
+    .create({
+      data: {
+        projectId,
+        type: "SYSTEM",
+        body: `The ${revisionLaneWord(projectId, task)} ${verb}. ${still}, ${tail}.`,
+      },
+    })
+    .catch(() => {}); // the row is already closed — the note is the record, not the work
+  return { resolved: false, otherOpen };
+}
+
+/** One line naming every lane a whole-job close took with it, written by the
+ *  paths that legitimately speak for the whole job (the project page's Mark
+ *  resolved, a board move to Delivered). Rows must be read BEFORE the close.
+ *  Silent on a single lane — there is nothing there anyone could miss. */
+export async function noteRevisionLanesClosed(
+  projectId: string,
+  lead: string,
+  open: readonly { title?: string | null; dedupeKey?: string | null; assignedKey?: string | null }[],
+): Promise<void> {
+  if (open.length < 2) return;
+  const lanes = open
+    .map((t) => `${revisionLaneWord(projectId, t)}${t.assignedKey ? ` → ${t.assignedKey}` : ""}`)
+    .join(", ");
+  await prisma.activity
+    .create({
+      data: {
+        projectId,
+        type: "SYSTEM",
+        body: `${lead}, which closed all ${open.length} open asks on it (${lanes}). Completing one card on the board closes only that card.`.slice(0, 500),
+      },
+    })
+    .catch(() => {});
+}
+
+/**
+ * The project page's "Mark resolved" button, and it stays the WHOLE job: an
+ * admin standing on the job pressing it means every ask on it, not one lane.
+ * What it stops doing is closing lanes quietly. When more than one ask was
+ * open, the timeline now names them underneath the resolve line, so a photo
+ * ask that went out with a video one is on the record instead of only being
+ * discoverable by noticing a card has vanished off Kyle's board.
+ */
+export async function resolveRevisionWholeJob(projectId: string, actor?: string | null): Promise<{ closed: number }> {
+  const open = await prisma.smartTask.findMany({
+    where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    select: { id: true, title: true, dedupeKey: true, assignedKey: true },
+  });
+  await resolveRevision(projectId);
+  // An AppUser row with an empty name is not nobody — `??` only catches null,
+  // so the unguarded version wrote a timeline line that opened with a space
+  // (dismissTask in actions.ts has used the trimmed idiom since Sep 8).
+  const who = (actor ?? "").trim() || "The office";
+  await noteRevisionLanesClosed(projectId, `${who} marked the revision resolved from the job page`, open);
+  return { closed: open.length };
+}
+
 // Backfill / sweep: scan a project's recent inbound-text activities for a
 // revision request it may have missed (e.g. comms that arrived before this
 // feature existed). Used by the status sync so "Recheck statuses" catches them.

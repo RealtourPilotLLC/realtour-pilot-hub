@@ -2,7 +2,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { MONTHLY_PLAN_RE } from "@/lib/pipeline";
 import { getSecret, markSynced, markError } from "./connections";
-import type { DeliverableType, ProjectStatus } from "@prisma/client";
+import type { DeliverableType, Prisma, ProjectStatus } from "@prisma/client";
 import type { NotifyTarget } from "@/lib/notify";
 import { streetOf } from "@/lib/delivery";
 
@@ -1799,6 +1799,10 @@ export async function syncAryeoOrders(
               // A per-video materialisation that failed rides home in this
               // sync's result instead of vanishing into the catch below (R06).
               if (r.outputsError) outputErrors.push(`${proj.title}: ${r.outputsError}`.slice(0, 200));
+              // A line this order now sells that could not be filed against the
+              // merge carrying the job's work rides home the same way, rather
+              // than being minted somewhere nothing can find it again (Sep 20).
+              if (r.mergeError) outputErrors.push(`${proj.title}: ${r.mergeError}`.slice(0, 200));
             } catch { /* reconcile is best-effort — the money mirror above already landed */ }
           } else if (proj.status === "DELIVERED" && manualRowProjects.has(proj.id)) {
             // The gate above is right and stays (see the note on
@@ -1981,21 +1985,123 @@ export async function orderIdForListing(listingId: string): Promise<string | nul
 export async function reconcileDeliverablesToOrder(
   projectId: string,
   order: AryeoOrder,
-): Promise<{ changed: boolean; retired: string[]; restored: string[]; added: string[]; relabeled: string[]; outputsError?: string | null }> {
+): Promise<{ changed: boolean; retired: string[]; restored: string[]; added: string[]; relabeled: string[]; outputsError?: string | null; mergeError?: string | null }> {
   const out = {
     changed: false, retired: [] as string[], restored: [] as string[], added: [] as string[], relabeled: [] as string[],
     // Set when the per-video rows could NOT be brought in line with the order
     // this pass. It rides home in the sync's own result rather than being
     // swallowed, and the hourly `outputUnits` sweep retries it (R06).
     outputsError: null as string | null,
+    // Set when a row this order now sells could not be filed against the merge
+    // that carried the job's work away, so it was NOT created at all this pass
+    // (Sep 20 2026 review). Rides home the same way. The next sweep retries it.
+    mergeError: null as string | null,
   };
   const parsed = orderDeliverables(order.items);
   if (parsed.length === 0) return out;
 
-  const rows = await prisma.deliverable.findMany({
-    where: { projectId },
-    select: { id: true, type: true, label: true, quantity: true, status: true, manual: true, removedFromOrderAt: true, uploadedAt: true, productTitle: true, videoStyle: true },
+  // WHERE THIS ORDER'S ROWS ACTUALLY LIVE (Sep 20 2026, audit F01).
+  //
+  // This function reads what a job owes BY PROJECT and computes what is wanted
+  // FROM THE ORDER, and merging two jobs (editing/actions mergeProjectWork,
+  // shipped Sep 18) breaks exactly that correspondence: the second shoot's rows
+  // move onto the original job while both orders stand. Nothing here knew that,
+  // so the very next sweep undid the merge — within the hour on /api/cron/sync,
+  // within ~4 hours on the full /api/cron/reconcile pass, instantly on a webhook
+  // or a press of "Refresh from Aryeo". The donor, its rows gone, fell through
+  // to the create loop and re-minted the video it had just given away, putting
+  // itself back on the Editing Room owing work nobody would ever find footage
+  // for; the survivor, holding a row its own order does not sell, had it stamped
+  // "no longer on Aryeo order" with the editor's cut already sitting under it.
+  //
+  // So the merge is read first and the rest of the function works on THIS
+  // ORDER's rows, wherever they physically sit:
+  //   · movedAway — this job's work is on `rowHome` now. Read its rows there,
+  //     and mint anything new there too (recorded in the marker, so the undo
+  //     stays exact).
+  //   · movedIn — the rows another order's job parked here. They are not this
+  //     order's to retire, to relabel or to count against its line quantities.
+  const mergeLib = await import("@/lib/projectMerge");
+  let merge: Awaited<ReturnType<typeof mergeLib.mergeContext>>;
+  try {
+    merge = await mergeLib.mergeContext(projectId);
+  } catch {
+    // COULD NOT READ THE MARKER, SO DO NOTHING (Sep 20 2026 review). An empty
+    // answer here is indistinguishable from "these jobs were never merged", and
+    // that answer is the bug: this function would go on to retire the moved reel
+    // out from under the editor's cut and re-mint it on the job that gave it
+    // away. Every other unknown in here makes it do nothing; this is the one
+    // that used to make it write. A skipped job is repaired an hour later.
+    return out;
+  }
+  const movedAway = merge.movedAway;
+  const foreign = mergeLib.foreignDeliverableIds(merge.movedIn);
+  const rowHome = movedAway?.intoId ?? projectId;
+  const homeIds = [...(movedAway?.moved.deliverableIds ?? [])];
+  const ownWhere = (): Prisma.DeliverableWhereInput =>
+    movedAway ? { OR: [{ projectId }, { id: { in: homeIds } }] } : { projectId };
+
+  // THE JOB HOLDING THE WORK KEEPS ITS OWN PROTECTION (Sep 20 2026 review).
+  //
+  // Reading this order's rows wherever they sit means this function can now
+  // write to rows that physically belong to ANOTHER project — and the gate the
+  // sync applies per project (aryeo.ts, the update pass) was applied to the job
+  // that holds the ORDER, never to the job that holds the ROWS. That matters
+  // because a delivered survivor is not an edge case, it is what every finished
+  // merge looks like: the pair delivers once, so the survivor goes DELIVERED
+  // while the donor keeps EDITING for ever (nothing moves it — it has no video
+  // rows left, so it is off the Editing Room and nobody presses Completed on
+  // it). Measured Sep 20: of 141 same-client/same-street pairs carrying an order
+  // on both sides, 140 have a DELIVERED side. Without this, every hourly sweep,
+  // every webhook and every press of "Refresh from Aryeo" on the donor would be
+  // a live write path into a delivered client job — exactly what the note on
+  // completeAbsorbedAddOnsFromOrder says is not to happen, and what Jordan was
+  // explicit about: the first delivery is not disturbed.
+  //
+  // So this returns like a fee-only order does: nothing read, nothing written,
+  // not even the stored line items. That is strictly more conservative than
+  // before this change, and it still fixes the merge — the create loop never
+  // runs, so the donor never re-mints the video it gave away.
+  if (rowHome !== projectId) {
+    const home = await prisma.project.findUnique({ where: { id: rowHome }, select: { status: true } }).catch(() => null);
+    if (!home || ["DELIVERED", "CANCELLED"].includes(home.status)) return out;
+  }
+
+  const found = await prisma.deliverable.findMany({
+    where: ownWhere(),
+    select: { id: true, projectId: true, type: true, label: true, quantity: true, status: true, manual: true, removedFromOrderAt: true, uploadedAt: true, productTitle: true, videoStyle: true, createdAt: true },
   });
+  // LIVE ROWS FIRST, THEN OLDEST (Sep 20 2026). The read had no orderBy at all,
+  // so when a job carried two rows of one type — the ordinary shape after a
+  // merge, and reachable before one through a photographer's manual extra reel
+  // — which one the loop below kept and which one it retired was Postgres row
+  // order. The same sweep could keep the original one hour and retire it the
+  // next, orphaning whichever cuts hung off the loser.
+  const rows = found
+    .slice()
+    .sort((a, b) =>
+      Number(!!a.removedFromOrderAt) - Number(!!b.removedFromOrderAt) ||
+      a.createdAt.getTime() - b.createdAt.getTime() ||
+      a.id.localeCompare(b.id),
+    );
+  // The rows this ORDER answers for. A merged-in row belongs to the other job's
+  // order and is left completely alone here.
+  const own = rows.filter((r) => !foreign.has(r.id));
+  // A ROW THE DONOR HAD ALREADY RETIRED STAYS RETIRED WHILE THE MERGE STANDS
+  // (Sep 20 2026 review). previewMerge only carries rows that are still owed
+  // (removedFromOrderAt: null), so a row this job retired BEFORE the merge is
+  // still sitting here, on the job whose work has gone. If the order starts
+  // selling that type again, un-retiring it in place brings the merged-away job
+  // back onto the Editing Room owing a video nobody will ever find footage for
+  // — the phantom job this whole fix is about, reached through the other branch,
+  // while the create loop a few lines down would have put the identical business
+  // event on the job that holds the work. So it is left exactly as it is, with
+  // its note and its history, and the create loop mints the live row where the
+  // work is. It is not moved: its own per-video rows and cuts hang off it by
+  // projectId, and dragging a retired row between jobs inside an hourly sweep
+  // is more invasive than the bug.
+  const strandedOnDonor = (r: { projectId: string; removedFromOrderAt: Date | null }) =>
+    !!movedAway && r.projectId === projectId && !!r.removedFromOrderAt;
   const want = new Map(parsed.map((p) => [p.type, p]));
   const orderNo = order.number ?? order.id ?? "?";
   // WHAT THE HUB ALREADY OWES OUTSIDE THE ORDER (Sep 18). A photographer who
@@ -2011,7 +2117,7 @@ export async function reconcileDeliverablesToOrder(
   // sources of truth for one type can meet, because manual rows are skipped
   // everywhere else in this function by design.
   const manualOwed = new Map<string, number>();
-  for (const r of rows) {
+  for (const r of own) {
     if (!r.manual || r.removedFromOrderAt) continue;
     manualOwed.set(r.type, (manualOwed.get(r.type) ?? 0) + Math.max(1, r.quantity ?? 1));
   }
@@ -2024,14 +2130,17 @@ export async function reconcileDeliverablesToOrder(
   // failure that loop's Sep 16 comment says was fixed, coming back through the
   // other branch. It runs BEFORE the OrderItem rows are replaced at the bottom
   // of this function, because those rows are the "before" it compares against.
-  await completeAddOnsWhenOrderQuantityRose(projectId, order, rows)
+  await completeAddOnsWhenOrderQuantityRose(projectId, order, own)
     .catch(() => { /* closing a stale card never breaks the reconcile */ });
   // Types this order says it moved elsewhere — orderDeliverables has already
   // struck them off `want`; this is only for the wording of the retire note.
   const moved = movedAwayTypes(order.items);
 
-  for (const r of rows) {
+  for (const r of own) {
     if (r.manual || /added manually/i.test(r.label ?? "")) continue;
+    // Not this order's to revive while its work lives on another job, and it
+    // must not consume the order's line either — see strandedOnDonor.
+    if (strandedOnDonor(r)) continue;
     const w = want.get(r.type);
     if (!w) {
       if (!r.removedFromOrderAt) {
@@ -2106,10 +2215,51 @@ export async function reconcileDeliverablesToOrder(
   // per type is the invariant, and an editor-added video plus a later video
   // line item must not become two).
   for (const [, w] of want) {
-    if (rows.some((r) => r.type === w.type)) continue;
-    await prisma.deliverable.create({
-      data: { projectId, type: w.type, label: w.label, quantity: w.quantity, status: "PENDING", productTitle: w.productTitle, videoStyle: w.videoStyle },
-    });
+    // A row another job's order parked here does not answer this order's line:
+    // the second shoot's reel sitting on the original job must not stop the
+    // original job's own reel from being minted. A row stranded retired on a
+    // merged-away job does not answer it either — the live row belongs with the
+    // work now.
+    if (own.some((r) => r.type === w.type && !strandedOnDonor(r))) continue;
+    const data = {
+      type: w.type, label: w.label, quantity: w.quantity, status: "PENDING" as const,
+      productTitle: w.productTitle, videoStyle: w.videoStyle,
+    };
+    if (movedAway) {
+      // ON THE JOB THAT CARRIES THE WORK, not the job that holds the order
+      // (Sep 20 2026, audit F01). A line added to a merged-away job's order
+      // belongs with the rest of that job's work, and creating it back on the
+      // donor is what silently undid the merge every hour.
+      //
+      // THE MARKER APPEND IS THE PRECONDITION, NOT AN AFTERTHOUGHT (Sep 20
+      // review). The marker is the only thing that can find this row again —
+      // both for the undo and for the NEXT sweep, which looks for it by id. It
+      // shipped as a best-effort append after the row already existed, so one
+      // swallowed failure left a row on the survivor that neither job could
+      // account for: the donor minted a replacement every hour and the survivor
+      // retired each one in the same pass, "'2D Floorplan' is no longer on Aryeo
+      // order #<n>", for ever, with nothing raising a hand. So the two land
+      // together or neither lands, and an un-minted row is simply minted next
+      // hour.
+      let mintedId: string | null = null;
+      try {
+        mintedId = await prisma.$transaction(async (tx) => {
+          const d = await tx.deliverable.create({ data: { ...data, projectId: rowHome }, select: { id: true } });
+          const recorded = await mergeLib.recordMergedRow(tx, projectId, "deliverableIds", d.id);
+          if (!recorded) throw new Error("merge marker would not take the row");
+          return d.id;
+        });
+      } catch (e) {
+        mintedId = null;
+        const why = e instanceof Error ? e.message : String(e);
+        out.mergeError = `'${w.label}' not filed: ${why}`.slice(0, 200);
+        console.warn(`[aryeo-reconcile#${orderNo}] ${projectId}: ${out.mergeError}`);
+      }
+      if (!mintedId) continue;
+      homeIds.push(mintedId);
+    } else {
+      await prisma.deliverable.create({ data: { ...data, projectId }, select: { id: true } });
+    }
     out.added.push(w.label);
     // THE ADD-ON TASK IS ANSWERED BY THE ORDER ITSELF (Sep 16, Kyle call).
     // A photographer who logs an item the agent bought on site puts one
@@ -2155,26 +2305,58 @@ export async function reconcileDeliverablesToOrder(
     await prisma.activity.create({
       data: { projectId, type: "SYSTEM", body: `Order changed in Aryeo (#${orderNo}): ${bits}.`.slice(0, 1000) },
     }).catch(() => {});
+    // AND ON THE JOB THE ROWS ACTUALLY SIT ON (Sep 20 2026 review). The line
+    // above is written where the ORDER is. After a merge that is the job nobody
+    // opens: the survivor is where Kyle and John work, and a video quietly
+    // dropping off its owed list with nothing on its own timeline to explain it
+    // is the same two-sided silence audit F01 was raised about. Nothing here
+    // vanishes without a record, and the record belongs on the page where the
+    // change shows up. The note on the row itself still names the order the row
+    // belongs to, which is the donor's — that is correct, and this line is what
+    // makes it read correctly on the survivor's page.
+    if (rowHome !== projectId) {
+      const donor = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true } }).catch(() => null);
+      const street = (donor?.title || "the merged job").split(",")[0].trim();
+      await prisma.activity.create({
+        data: {
+          projectId: rowHome, type: "SYSTEM",
+          body: `Aryeo order #${orderNo} changed on ${street}'s job, whose work is here: ${bits}. That job keeps its own order, so this is where the change lands.`.slice(0, 1000),
+        },
+      }).catch(() => {});
+    }
     // The job's promise follows what is still owed.
     try {
       const { standardDeliveryDue } = await import("@/lib/tasks");
       const p = await prisma.project.findUnique({
         where: { id: projectId },
-        select: { shootDate: true, packageName: true, deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true } } },
+        select: { shootDate: true, packageName: true },
       });
       if (p?.shootDate) {
+        // What this ORDER still owes, wherever its rows sit. Reading the job's
+        // own `deliverables` would hand a merged-away job an empty list and
+        // re-date its promise off nothing at all.
+        const owed = await prisma.deliverable.findMany({
+          where: { ...ownWhere(), removedFromOrderAt: null },
+          select: { type: true, label: true },
+        });
         const { isMonthlyContentJob } = await import("@/lib/pipeline");
         await prisma.project.update({
           where: { id: projectId },
-          data: { deliveryDue: standardDeliveryDue(p.shootDate, p.deliverables, isMonthlyContentJob(p.deliverables, p.packageName)) },
+          data: { deliveryDue: standardDeliveryDue(p.shootDate, owed, isMonthlyContentJob(owed, p.packageName)) },
         });
       }
     } catch { /* due refresh is best-effort */ }
     // A retired video takes its chases with it. edit_video only when nobody
     // hand-assigned it (the assignedManually invariant every engine respects).
     if (out.retired.length > 0) {
+      // Counted the same way the rows were read (Sep 20 2026, audit F01). A
+      // survivor is owed the videos the merge brought it — they sit on its own
+      // projectId, so they count — and a merged-away job is owed the ones its
+      // order still sells even though they live on the other job now. Counting
+      // by bare projectId cancelled the edit card the merge had just carried
+      // over, on a job that still owed the video.
       const owedVideo = await prisma.deliverable.count({
-        where: { projectId, removedFromOrderAt: null, type: { in: ["VIDEO", "SOCIAL_REEL"] } },
+        where: { ...ownWhere(), removedFromOrderAt: null, type: { in: ["VIDEO", "SOCIAL_REEL"] } },
       });
       if (owedVideo === 0) {
         const { createHash } = await import("crypto");
@@ -2182,7 +2364,10 @@ export async function reconcileDeliverablesToOrder(
         const notCompletableKey = createHash("sha1").update([projectId, "video-not-completable"].join("|")).digest("hex").slice(0, 24);
         await prisma.smartTask.updateMany({
           where: {
-            projectId,
+            // The merge carries this job's cards to the survivor, and all three
+            // dedupe keys below already name the job they belong to, so the
+            // card is found wherever it was moved to.
+            projectId: { in: [projectId, rowHome] },
             status: { notIn: ["COMPLETED", "CANCELLED"] },
             OR: [
               { dedupeKey: `raw-video-missing-${projectId}` },
@@ -2208,7 +2393,10 @@ export async function reconcileDeliverablesToOrder(
     // the hourly page scan returns, and three round trips per untouched job,
     // every hour, buys nothing the sweep does not already cover.
     const { ensureOutputsSafely } = await import("@/lib/deliverableOutputs");
-    const ensured = await ensureOutputsSafely(projectId, `aryeo-reconcile#${orderNo}`);
+    // On the job the rows live on: ensureOutputsForProject plans and mints per
+    // project, so running it on a merged-away job would look at an empty set
+    // and leave the survivor's new slot unmaterialised.
+    const ensured = await ensureOutputsSafely(rowHome, `aryeo-reconcile#${orderNo}`);
     if (!ensured.ok) out.outputsError = ensured.error;
   }
   return out;

@@ -124,6 +124,153 @@ export function parseEvidence(raw: string | null | undefined): ParsedEvidence | 
 }
 
 // ---------------------------------------------------------------------------
+// ONE DEFINITION OF "STILL OWED" (audit F03, Sep 20).
+//
+// This used to live inside evidenceTone, which meant the CARD knew the right
+// answer and every GATE read the raw blob field. `missing` alone is "never
+// made anywhere we can see"; a video that is cut, approved and sitting in our
+// 05-Final-Video folder is `present` by the engine's own definition
+// (projectStatus.ts: present = clientHas UNION weHave), so finishing the work
+// EMPTIES the one list the delivery gate was reading. On Sep 20 three live
+// jobs sat in exactly that shape — 5 Raymond Cir, 453 Cardigan Terrace and
+// 5642 Limeport Rd, the last with four videos cut, none on the client's
+// listing — and the Editing Room's Completed pill returned no blockers on all
+// three while the same blob's own reason string read "3 of 4 videos still
+// outstanding".
+//
+// So the definition lives here, once, and the card and the gates both call it.
+// Two ways a job still owes somebody something, and both count:
+//   · neverMade    — ordered, live nowhere (the old `missing`)
+//   · awaitingSend — finished, in our Dropbox, on no listing (WF-01, Sep 17)
+//
+// WHY A UNIT SHORTFALL IS A COUNT AND NOT A THIRD REASON (review, Sep 20).
+// The first cut of this helper added any category with `outstanding > 0` to
+// the list as an obligation in its own right. It cannot be one: `outstanding
+// > 0` means withClient < owed, so the category is not in clientHas; if it is
+// finished it is in weHave and therefore in awaitingSend, and if it is not it
+// is not present at all and therefore in missing. The one shape that escapes
+// that is the shape the ENGINE deliberately silences — `awaitingSend = a &&
+// !sig.officeConfirmed ? … : []` (projectStatus.ts). So a standalone
+// shortfall category never says anything new; it only overrules the engine on
+// the two cases it means to suppress: a listing read that FAILED, and a
+// delivery a person is on record for (the Sep 16 Kyle call). Measured over
+// all 568 live blobs on Sep 20: zero carry a shortfall category that missing
+// and awaitingSend do not already carry, and dropping it changed zero gate
+// outcomes. The blob carries no officeConfirmed flag, so a consumer could not
+// honour that suppression by itself even if it wanted to — which is the
+// second reason this must not be a reason of its own.
+//
+// The counts stay, because "3 of 4 videos" is the sentence Kyle needs.
+// ---------------------------------------------------------------------------
+
+/** One category's unit count, for the sentence a refusal builds. */
+export type OwedShortfall = {
+  category: string;
+  /** individual outputs owed */
+  owed: number;
+  /** owed minus what is with the client */
+  outstanding: number;
+};
+
+export type OwedNow = {
+  /** ordered and live nowhere we can see */
+  neverMade: string[];
+  /** finished on our side and not on the client's listing */
+  awaitingSend: string[];
+  /** every category still owed, however it is owed. Never-made first, each
+   *  category once, in the engine's own words. */
+  categories: string[];
+  /** per-category unit counts for the phrase. [] on every blob written before
+   *  Sep 18, and [] when the listing read did not happen: the engine will not
+   *  print "1 of 16 confirmed" off a read it never got (`countsKnown`,
+   *  projectStatus.ts), and neither will a refusal quoting the same blob. */
+  shortfall: OwedShortfall[];
+  /** individual outputs owed across every counted category */
+  outstandingUnits: number;
+  /** listing media no named delivery accounts for */
+  unmatchedUnits: number;
+};
+
+/** Category identity, in one place. The blob carries the engine's own labels
+ *  ("Photos", "Video", "Floor plan", "3D tour") and every consumer compares
+ *  them; three copies of this line was how the card and the gate drifted
+ *  apart in the first place. */
+export const sameCategory = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+export function owedNow(ev: ParsedEvidence | null | undefined): OwedNow {
+  const neverMade = ev?.missing ?? [];
+  // A category can be in both lists on a partly-sent order. It is one
+  // obligation, so it is named once, and it is named as the harder of the two.
+  const awaitingSend = (ev?.awaitingSend ?? []).filter((c) => !neverMade.some((m) => sameCategory(m, c)));
+  const units = ev?.units ?? [];
+  // Counts only where the listing was actually read — the same witness the
+  // engine requires before it will print a number (`countsKnown = !!a`). With
+  // no read, `onListing` is 0 for every category and `outstanding` reads as
+  // the whole order, which is "we did not look", not "nobody has it".
+  const shortfall: OwedShortfall[] = ev?.aryeo
+    ? units
+        .filter((u) => Math.max(0, u.outstanding ?? 0) > 0)
+        .map((u) => ({ category: u.category, owed: Math.max(0, u.owed ?? 0), outstanding: Math.max(0, u.outstanding ?? 0) }))
+    : [];
+  return {
+    neverMade,
+    awaitingSend,
+    categories: [...neverMade, ...awaitingSend],
+    shortfall,
+    // The card has counted these off the raw tally since R02 and keeps doing
+    // so: its sentence is about what the per-video rows say, not about what a
+    // refusal is entitled to assert.
+    outstandingUnits: units.reduce((n, u) => n + Math.max(0, u.outstanding ?? 0), 0),
+    unmatchedUnits: units.reduce((n, u) => n + Math.max(0, u.unmatched ?? 0), 0),
+  };
+}
+
+/** The plural of a category, for the one sentence that counts. The engine
+ *  keeps the same map (CATEGORY_PLURAL, projectStatus.ts) against its own
+ *  enum; the blob only carries labels, so this one is keyed on those. Sep 20:
+ *  the first cut appended an "s" to the label, which turns "Photos" into
+ *  "photoss" the day a photo tally is added. */
+const CATEGORY_PLURAL_BY_LABEL: Record<string, string> = {
+  "photos": "photo sets",
+  "video": "videos",
+  "floor plan": "floor plans",
+  "3d tour": "3D tours",
+};
+function pluralOf(label: string): string {
+  const word = label.trim().toLowerCase();
+  return CATEGORY_PLURAL_BY_LABEL[word] ?? (/s$/.test(word) ? word : `${word}s`);
+}
+
+/** "the video" / "3 of 4 videos" / "the photos and 3 of 4 videos" — the phrase
+ *  a refusal, a hold note and a timeline row all build their sentence around.
+ *  The count is the point: before Sep 20 a monthly job with three of four
+ *  reels still to send read exactly like a job with one video outstanding,
+ *  and both of them read as nothing at all. */
+export function owedPhrase(owed: Pick<OwedNow, "categories" | "shortfall">): string {
+  const parts = owed.categories.map((c) => {
+    const u = owed.shortfall.find((s) => sameCategory(s.category, c));
+    // Only worth the long form when it says something the category does not:
+    // "3 of 4 videos" is news, "1 of 1 video" is just "the video".
+    return u && u.owed > 1 && u.outstanding > 0
+      ? `${u.outstanding} of ${u.owed} ${pluralOf(c)}`
+      : `the ${c.trim().toLowerCase()}`;
+  });
+  if (parts.length === 0) return "";
+  return parts.length > 1
+    ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`
+    : parts[0];
+}
+
+/** "is" / "are" for the phrase above. */
+export function owedVerb(owed: Pick<OwedNow, "categories" | "shortfall">): string {
+  if (owed.categories.length !== 1) return "are";
+  const c = owed.categories[0];
+  const u = owed.shortfall.find((s) => sameCategory(s.category, c));
+  if (u && u.owed > 1 && u.outstanding > 0) return u.outstanding === 1 ? "is" : "are";
+  return /s$/i.test(c.trim()) ? "are" : "is";
+}
+
+// ---------------------------------------------------------------------------
 // HOW FRESH IS THE EVIDENCE? (RTP-06/RTP-16, Sep 16 audit)
 //
 // "We could not look" and "we looked and saw nothing" are different facts, and
@@ -321,12 +468,14 @@ export function evidenceTone(input: {
   // engine's own numbers said three were outstanding.
   //
   // One list now: everything somebody still owes, whichever way it is owed.
-  const neverMade = e?.missing ?? [];
-  const awaitingSend = (e?.awaitingSend ?? []).filter((c) => !neverMade.includes(c));
-  const missing = [...neverMade, ...awaitingSend];
+  //
+  // Sep 20 (F03): the list itself moved out to owedNow() so the delivery gates
+  // read the same definition and the card and the gate can never again give a
+  // job two different answers. `missing` here is owed.categories; it is spelt
+  // out so the count sentence below reads against the same two lists it
+  // always has.
+  const { neverMade, awaitingSend, categories: missing, outstandingUnits, unmatchedUnits } = owedNow(e);
   const units = e?.units ?? [];
-  const outstandingUnits = units.reduce((n, u) => n + Math.max(0, u.outstanding ?? 0), 0);
-  const unmatchedUnits = units.reduce((n, u) => n + Math.max(0, u.unmatched ?? 0), 0);
   const owed = listWords(missing);
   const base = {
     promiseAt: null as Date | null,

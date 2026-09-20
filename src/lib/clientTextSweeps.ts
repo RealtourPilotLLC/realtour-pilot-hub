@@ -1,6 +1,6 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
-import { parseEvidence } from "@/lib/statusEvidence";
+import { parseEvidence, owedNow, owedPhrase, sameCategory, type ParsedEvidence } from "@/lib/statusEvidence";
 import { logComm } from "@/lib/commLog";
 import { MONTHLY_BATCH_INCOMPLETE, DELIVERED_LONG_AGO, SEND_UNVERIFIED } from "@/lib/tasks";
 import { etAt, etDateTime } from "@/lib/datetime";
@@ -853,7 +853,7 @@ function wholeJobOutstanding(
     deliverables: { type: string; label: string | null }[];
     reviewSubmissions: { deliverableId: string | null; assetPath: string | null; slot: number; round: number; status: string; completedAt: Date | null }[];
   },
-  ev: { aryeo: { videos: number } | null; dropbox: { finalVideo: number } | null },
+  ev: ParsedEvidence,
 ): string | null {
   const latest = new Map<string, { round: number; status: string; completedAt: Date | null }>();
   for (const r of p.reviewSubmissions) {
@@ -870,13 +870,20 @@ function wholeJobOutstanding(
 
   const videoOrdered = p.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
   if (videoOrdered) {
-    // "Completed and delivered" (Jordan's words): live on Aryeo, in the job's
-    // Final folder, or an approved cut whose copy into Dropbox has finished.
-    const proved =
-      (ev.aryeo?.videos ?? 0) > 0 ||
-      (ev.dropbox?.finalVideo ?? 0) > 0 ||
-      [...latest.values()].some((c) => c.status === "APPROVED" && c.completedAt);
-    if (!proved) return "video was ordered and nothing proves a video has shipped yet";
+    // "Completed and DELIVERED" (Jordan's words), and delivered means the
+    // client can open it. This used to accept `dropbox.finalVideo > 0` and an
+    // approved+copied cut as proof a video had shipped — both of which are
+    // facts about OUR Dropbox folder, and both of which are true the instant
+    // an editor finishes a cut nobody has published. Clients are not on the
+    // portal, so the Aryeo listing is their only access: a job with four cuts
+    // in 05-Final-Video and zero on the listing passed this and texted the
+    // agent that everything had been delivered. That is 626 Greycliffe Ln on
+    // Sep 4 and Gary asking for the social media video the same afternoon.
+    // Positive listing evidence only now, either Aryeo's own count or a named
+    // DeliverableOutput delivery stamp.
+    const unit = ev.units.find((u) => sameCategory(u.category, "Video"));
+    const proved = (ev.aryeo?.videos ?? 0) > 0 || (unit?.withClient ?? 0) > 0;
+    if (!proved) return "video was ordered and nothing on the client's listing proves a video has shipped yet";
   }
   return null;
 }
@@ -889,14 +896,23 @@ function wholeJobOutstanding(
  *
  *  So the send waits for the WHOLE job, proved three ways — any one of them
  *  unsatisfied and the task simply stays open for the next tick (or for Kyle):
- *    1. the status evidence lists nothing missing, and there IS evidence
- *       (a hand-drag to Delivered with no evidence proves nothing);
+ *    1. the status evidence says NOTHING is still owed, and there IS evidence
+ *       (a hand-drag to Delivered with no evidence proves nothing). Sep 20
+ *       (F03): "nothing owed" is owedNow(), the same definition the delivery
+ *       gate and the status card read — never made, and finished but never
+ *       sent. The old test read `missing` alone, which a finished video
+ *       empties, and it carried no count, so one reel of four held the same
+ *       as four of four. That count lives on gate 1 now: a category the
+ *       client has only part of is in one of those two lists by construction,
+ *       so it never reaches the checks below;
  *    2. every video CUT in the Review Room has been approved — an editor's
  *       version 2 sitting in review means the client hasn't got the video, no
  *       matter what a file count says;
- *    3. a job that ordered video has positive proof a video shipped (Aryeo, the
- *       Dropbox Final folder, or an approved+copied cut). Live data, Sep 2:
- *       8 of 156 delivered jobs with video ordered had no such proof.
+ *    3. a job that ordered video has positive proof a video reached the
+ *       CLIENT — Aryeo's listing count or a named DeliverableOutput delivery
+ *       stamp. Our own Dropbox Final folder is not proof and no longer counts
+ *       (F03, Sep 20). Live data, Sep 2: 8 of 156 delivered jobs with video
+ *       ordered had no such proof.
  *  Post-delivery revisions and the two human-decision flags stay manual.
  *
  *  EVERY reason this sweep does not send is written onto the task (Sep 8
@@ -1008,12 +1024,20 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
     // stale blob) or an unverifiable order (nothing expected, no Aryeo
     // fulfilled signal) is NOT the same as "everything shipped" — stays manual.
     const ev = parseEvidence(project.statusEvidence);
-    if (!ev || ev.missing.length > 0 || (ev.expected.length === 0 && !ev.fulfilledOnAryeo)) {
+    // STILL OWED, NOT JUST NEVER MADE (F03, Sep 20). This gate read
+    // `ev.missing`, which the engine empties the moment a video is cut into
+    // our Dropbox Final folder — so the one blob field standing between a
+    // half-delivered job and a "how did we do?" text was the field that goes
+    // blank when the editor finishes, not when the client receives. owedNow()
+    // is the same definition the Editing Room's Completed gate and the status
+    // card use, so the three can never disagree about what is out.
+    const owed = owedNow(ev);
+    if (!ev || owed.categories.length > 0 || (ev.expected.length === 0 && !ev.fulfilledOnAryeo)) {
       skipped++;
       await hold(
         t,
-        ev && ev.missing.length > 0
-          ? `On hold: nothing yet proves every deliverable shipped — still missing: ${ev.missing.join(", ")}. The feedback ask waits until the whole job is out.`
+        ev && owed.categories.length > 0
+          ? `On hold: nothing yet proves every deliverable shipped — still owed: ${owedPhrase(owed)}. The feedback ask waits until the whole job is out.`
           : "On hold: the hub has no delivery evidence for this order (a manual move to Delivered proves nothing), so it will not send the feedback ask on its own — send it by hand once you know everything is out.",
       );
       continue;

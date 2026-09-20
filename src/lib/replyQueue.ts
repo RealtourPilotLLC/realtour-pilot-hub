@@ -609,6 +609,23 @@ export type Obligation = {
   /** true when the conversation is older than `windowDays`, i.e. this row
    *  exists ONLY because the obligation was written down */
   beyondWindow: boolean;
+  /** the order this request is about, and its address in words. Carried so a
+   *  second request on the same client can NAME the property it is about
+   *  instead of showing a second, identical-looking card. */
+  projectId: string | null;
+  propertyAddress: string | null;
+  /** THE ROW'S OWN IDENTITY, which is not the conversation's.
+   *  `c:<clientId>` while a client holds one request — the conversation IS the
+   *  request. `c:<clientId>#<taskId>` once they hold more than one, so two
+   *  requests stop colliding on one React key and one Handled tick (Renee Ryan
+   *  held two, on 358 N Church St and on 453 Cardigan Terrace, Sep 2026). */
+  rowKey: string;
+  /** TRUE when we have written back to this client since they raised THIS
+   *  request, but the reply went out on another order (or named no order at
+   *  all). The conversation moved on without this request being answered, so
+   *  its message is no longer on the live card and nothing anybody ticks there
+   *  can be a decision about it. */
+  repliedElsewhere: boolean;
 };
 
 /** The obligation's thread identity, derived from the stored task alone.
@@ -670,6 +687,79 @@ export function outboundIsAnswer(r: { channel: string; source: string | null; bo
 }
 
 /**
+ * OPENPHONE'S OWN MISSED-CALL GREETING, WHICH IS NOT US ANSWERING (Sep 20).
+ *
+ * "Hey! Thanks for calling Realtour Pilot. We're sorry we missed your call…"
+ * is sent by OpenPhone the second a call goes unanswered, and it is logged
+ * `direction: "out"`, `source: "openphone"` — not `auto-*` — so every "have we
+ * replied since?" test in the hub has been reading a robot as a person. 48 of
+ * those rows exist and all 48 carry that source. Mike Flatley's "Add 4 flower
+ * photos to Firethorn Zillow Showcase" sat open for seven days and was then
+ * closed by the greeting, and Bety Pena's callback obligation was closed four
+ * seconds after it was raised, by the same text, with nobody having called her.
+ *
+ * The real repair is at INGEST — stamp the row `auto-openphone-greeting` in the
+ * OpenPhone webhook, where the existing `autoSent` guard would then also stop
+ * it closing the task. That file is not in this change, so the ledger reads the
+ * BODY instead, and only the ledger: the live walk (and therefore the 5-minute
+ * SLA pager that reads it) is left exactly as it was, because an unreturned
+ * missed call that starts paging people is a decision for Jordan, not a side
+ * effect of a visibility fix. Persisting an obligation is a visibility change;
+ * it must never become an alerting one (see `includeOwed`).
+ */
+const OPENPHONE_GREETING = "Hey! Thanks for calling Realtour Pilot";
+
+/**
+ * A REPLY IN THE SAME BREATH ANSWERED THE QUESTION, WHATEVER IT WAS FILED
+ * AGAINST (review, Sep 20).
+ *
+ * The per-order rule below asks "was this reply filed against THIS order?" and
+ * `CommLog.projectId` is the only thing that can answer it — a router guess
+ * that is wrong often enough to matter. Renee Ryan, Sep 18: 20:07:05 in "we
+ * ended up giving the aerial shots yesterday because of the rain at Cardigan",
+ * 20:08:16 out "I took the drones off your shoot from yesterday and credited
+ * your account back for the difference ($50)", 20:09:02 in "Thank you!!". The
+ * credit was applied and told to her in 71 seconds — and the router filed our
+ * answer to 1022 Chiswell, so on the order's own books 453 Cardigan looks
+ * unanswered to this day and would sit on Kyle's Replies tab forever, because
+ * no future text will ever be filed against a finished shoot.
+ *
+ * So before a request is called "answered around", we ask the one question the
+ * router cannot get wrong: how long after they asked did we write back? Inside
+ * an hour, in a conversation nobody else interrupted, that reply IS the answer
+ * — the office answers texts in minutes and a person does not write back about
+ * something else 71 seconds later. Beyond it we genuinely cannot tell, and the
+ * rule when we cannot tell is to leave the request owed and let Kyle say.
+ *
+ * Deliberately generous: every minute of it costs a false "waiting" row and
+ * saves nothing, and a real question nobody answered stays unanswered for far
+ * longer than an hour.
+ */
+const REPLY_BURST_MS = 60 * 60 * 1000;
+
+/** How far back the burst read looks for the reply that followed a request.
+ *  Bounded because this is a render path; when the bound bites we simply do not
+ *  claim a burst, which leaves the request owed — the safe side. */
+const OBLIGATION_OUTBOUND_SCAN = 1000;
+
+/** A request's own row key. `c:<clientId>` is the CONVERSATION; suffixing the
+ *  task id is how one property's request stops being the same row as another's
+ *  (see `Obligation.rowKey`). */
+function requestRowKey(threadKey: string, taskId: string): string {
+  return `${threadKey}#${taskId}`;
+}
+
+/** The request a per-request comms row stands for, read back out of its key.
+ *  Null when the key is a plain conversation — the caller then means the whole
+ *  conversation, as it always did. */
+export function requestTaskIdFrom(key: string | null | undefined): string | null {
+  const s = (key ?? "").trim();
+  const hash = s.lastIndexOf("#");
+  if (hash <= 0) return null;
+  return s.slice(hash + 1).trim() || null;
+}
+
+/**
  * Every request the hub wrote down and nobody has resolved — read from the
  * ledger, with no message window and no row cap.
  *
@@ -682,7 +772,7 @@ export function outboundIsAnswer(r: { channel: string; source: string | null; bo
  * obligation so it cannot be lost the other way round.
  */
 export async function openObligations(
-  opts: { now?: Date; families?: WaitingFamily[]; windowDays?: number } = {},
+  opts: { now?: Date; families?: WaitingFamily[]; windowDays?: number; clientId?: string } = {},
 ): Promise<Obligation[]> {
   const now = opts.now ?? new Date();
   const families = opts.families ?? (["phone", "email"] as WaitingFamily[]);
@@ -690,23 +780,106 @@ export async function openObligations(
   const windowStart = new Date(now.getTime() - windowDays * 86_400_000);
 
   const tasks = await prisma.smartTask.findMany({
-    where: { taskType: { in: [...OBLIGATION_TYPES] }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    // `clientId` narrows the whole read to one person's requests — every
+    // aggregate below is keyed off this list, so a caller who only wants one
+    // client (the Handled tick, deciding what it may close) pays for one client
+    // instead of rebuilding the board on a click path.
+    where: {
+      taskType: { in: [...OBLIGATION_TYPES] },
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
+      ...(opts.clientId ? { clientId: opts.clientId } : {}),
+    },
     select: {
       id: true, taskType: true, title: true, summary: true, description: true, source: true,
       dedupeKey: true, clientId: true, contactName: true, createdAt: true, ownerId: true,
-      followUpAt: true, blockedReason: true,
+      followUpAt: true, blockedReason: true, projectId: true, propertyAddress: true,
       client: { select: { name: true } },
     },
     orderBy: { createdAt: "asc" },
   });
   type TaskRow = (typeof tasks)[number];
-  const filed: { t: TaskRow; family: WaitingFamily; threadKey: string; phone: string | null }[] = [];
+  type Filed = { t: TaskRow; family: WaitingFamily; threadKey: string; phone: string | null; perRequest: boolean; rowKey: string };
+  const listed: { t: TaskRow; family: WaitingFamily; threadKey: string; phone: string | null }[] = [];
   for (const t of tasks) {
     const id = obligationThread(t);
     if (!id || !families.includes(id.family)) continue;
-    filed.push({ t, ...id });
+    listed.push({ t, ...id });
   }
-  if (filed.length === 0) return [];
+  if (listed.length === 0) return [];
+
+  // ONE CONVERSATION, SEPARATE REQUESTS UNDERNEATH IT (F10, Sep 20).
+  //
+  // A client texts from one number, so every property they are discussing is
+  // one phone conversation — that grouping is right and stays. What was wrong
+  // is that the REQUESTS underneath it were measured client-wide too: the
+  // reference message and the "have we replied since?" aggregate were both
+  // keyed on the client alone, so a reply about 1022 Chiswell marked Renee
+  // Ryan's 453 Cardigan question answered and her request left every comms
+  // surface while it was still owed.
+  //
+  // The split is per ORDER, for a request that names one, on the phone lane:
+  //   · the phone lane only. Email already keys per SENDER and its close is
+  //     scoped by mail thread, which is the same protection by another route.
+  //   · a request filed against no order has nothing to key on and keeps the
+  //     client-wide read, exactly as before.
+  //
+  // It is NOT gated on the client holding two requests today, which is the
+  // first thing this tried and the thing that quietly put the defect back: the
+  // moment one of the two was ticked off the survivor fell back to the
+  // client-wide read and disappeared again, which is the whole bug on a delay.
+  //
+  // TWO HARD LIMITS ON IT, both put there by the Sep 20 review, because the
+  // signal underneath is `CommLog.projectId` and that is a ROUTER GUESS, not a
+  // fact. 903 of 2,338 outbound phone rows in 120 days carry one at all, and
+  // the ones that do are demonstrably misfiled — Renee Ryan's "Harrison
+  // mentioned it could be credited" went to 1022 Chiswell while the question it
+  // belonged to went to 453 Cardigan. A rule built on that guess can invent a
+  // client who is waiting when nobody is, which is the failure this module's
+  // header says it exists to end. So:
+  //   · the split may only ever make a request MORE owed, never less. The
+  //     client-wide test has to agree before a request can be dropped (see
+  //     `answeredClientWide` below), so nothing the old read showed can go
+  //     missing because a message happened to carry no projectId.
+  //   · a reply that landed in the same BURST as the question answered it,
+  //     whatever the router filed it against (see `REPLY_BURST_MS`).
+  //
+  // What stops this filling the board with answered work is the layer above,
+  // not a condition here. `closeReplyScoped` (tasks.ts) closes a client's ONE
+  // open request on any reply and refuses to guess when there are several — so
+  // the single-request conversation is settled before the ledger ever sees it,
+  // and what reaches this rule is the case F10 is about: a client with more
+  // than one live order, where 85% of our texts name no street and nothing can
+  // tell which question a "Sounds good!" answered. When we cannot tell, the
+  // request stays owed and Kyle says, one tick, on the row that names it.
+  //
+  // `lead` rows are excluded deliberately. A lead can acquire a clientId and a
+  // projectId (contacts.ts back-fills both), and a per-request key on one would
+  // be a key the Handled tick cannot act on — it only ever looks at
+  // `client_reply` rows, so the tick would fall through to the conversation
+  // rule and clear everything EXCEPT the row that was pressed.
+  const perRequestOf = (f: { t: TaskRow; family: WaitingFamily }) =>
+    f.family === "phone" && f.t.taskType === "client_reply" && !!f.t.clientId && !!f.t.projectId;
+  // ONE ROW, ONE KEY — for every obligation, not only the split ones. The
+  // ledger drops a row whose key it has already emitted, so a key that repeats
+  // is an open request quietly leaving the board: two project-less requests on
+  // one client, or two email requests resolving to one sender group, both key
+  // on the conversation. Anything that would collide takes the task id too.
+  const plainKeyCount = new Map<string, number>();
+  for (const f of listed) {
+    if (perRequestOf(f)) continue;
+    plainKeyCount.set(f.threadKey, (plainKeyCount.get(f.threadKey) ?? 0) + 1);
+  }
+  const filed: Filed[] = listed.map((f) => {
+    const perRequest = perRequestOf(f);
+    const collides = !perRequest && (plainKeyCount.get(f.threadKey) ?? 0) > 1;
+    return {
+      ...f,
+      perRequest,
+      rowKey: perRequest || collides ? requestRowKey(f.threadKey, f.t.id) : f.threadKey,
+    };
+  });
+  const requestProjects = [...new Set(filed.filter((f) => f.perRequest).map((f) => f.t.projectId as string))];
+  const requestClients = [...new Set(filed.filter((f) => f.perRequest).map((f) => f.t.clientId as string))];
 
   const clientIds = [...new Set(filed.map((f) => f.t.clientId).filter((c): c is string => !!c))];
   const phones = [...new Set(filed.map((f) => f.phone).filter((p): p is string => !!p))];
@@ -734,6 +907,10 @@ export async function openObligations(
         // ago, and the obligation vanished from the board without anybody
         // having spoken to the client.
         ...UNANSWERED_CALL_WORDS.map((w) => ({ channel: "call", body: { contains: w, mode: "insensitive" as const } })),
+        // AND OPENPHONE'S OWN GREETING. It is logged as one of our outbound
+        // texts, so without this line a robot saying "sorry we missed your
+        // call" reads here as us having answered (see OPENPHONE_GREETING).
+        { body: { startsWith: OPENPHONE_GREETING } },
       ],
     },
   };
@@ -743,7 +920,7 @@ export async function openObligations(
   const pretty = phones.map(fmtPhone);
   const onPhone = { OR: [{ fromPhone: { in: phones } }, { contactName: { in: pretty } }] };
 
-  const [inMaxByClient, inMaxByPhone, outMaxByClient, outMaxByPhone, recent] = await Promise.all([
+  const [inMaxByClient, inMaxByPhone, outMaxByClient, outMaxByPhone, outMaxByProject, recent, recentOut] = await Promise.all([
     clientIds.length
       ? prisma.commLog.groupBy({
           by: ["clientId"],
@@ -777,6 +954,23 @@ export async function openObligations(
           _max: { occurredAt: true },
         })
       : Promise.resolve([] as { fromPhone: string | null; contactName: string | null; _max: { occurredAt: Date | null } }[]),
+    // THE SAME QUESTION, ASKED PER ORDER. Only for the requests that earned the
+    // split above, so on a normal day this array is empty and nothing changes.
+    //
+    // BY CLIENT TOO, for the same reason the client aggregate is by channel: an
+    // order can carry two contact records. Aryeo folds an assistant onto the
+    // agent through `parentClientId`, so a text we sent the assistant about
+    // 453 Cardigan is filed projectId=Cardigan, clientId=the assistant — and
+    // without the client in the key it would settle the AGENT's request on that
+    // order, a reply the agent never received. This is the one place the new
+    // rule could be LESS careful than the old one, and it is not.
+    requestProjects.length
+      ? prisma.commLog.groupBy({
+          by: ["clientId", "projectId", "channel"],
+          where: { projectId: { in: requestProjects }, clientId: { in: requestClients }, ...substantiveOut },
+          _max: { occurredAt: true },
+        })
+      : Promise.resolve([] as { clientId: string | null; projectId: string | null; channel: string; _max: { occurredAt: Date | null } }[]),
     // ONE bounded read for the message each obligation is actually waiting on.
     // Bounded because it is a render path; safe because when the bound bites we
     // fall back to the task's own copy of the message rather than dropping the
@@ -792,8 +986,20 @@ export async function openObligations(
       },
       orderBy: { occurredAt: "desc" },
       take: OBLIGATION_INBOUND_SCAN,
-      select: { clientId: true, fromPhone: true, contactName: true, channel: true, subject: true, body: true, occurredAt: true, source: true },
+      select: { clientId: true, projectId: true, fromPhone: true, contactName: true, channel: true, subject: true, body: true, occurredAt: true, source: true },
     }),
+    // THE REPLIES THEMSELVES, for the burst test (REPLY_BURST_MS). The
+    // aggregates above only know the NEWEST reply, and "newest" is no use for
+    // asking how fast we answered a question from last Tuesday. Read only for
+    // the clients holding a split request, which today is one of them.
+    requestClients.length
+      ? prisma.commLog.findMany({
+          where: { clientId: { in: requestClients }, ...substantiveOut },
+          orderBy: { occurredAt: "desc" },
+          take: OBLIGATION_OUTBOUND_SCAN,
+          select: { clientId: true, channel: true, occurredAt: true },
+        })
+      : Promise.resolve([] as { clientId: string | null; channel: string; occurredAt: Date }[]),
   ]);
 
   /** Prisma types a groupBy row by the selected aggregate, which no shared
@@ -825,6 +1031,41 @@ export async function openObligations(
     if ((lastOutClient.get(key) ?? new Date(0)) < at) lastOutClient.set(key, at);
   }
   const lastOutPhone = maxOf(outMaxByPhone, "phone");
+  // Keyed "<clientId>|<projectId>|<family>" — the newest substantive reply we
+  // sent THIS CLIENT that was actually filed against THAT order.
+  const lastOutProject = new Map<string, Date>();
+  for (const r of outMaxByProject as { clientId: string | null; projectId: string | null; channel: string; _max: { occurredAt: Date | null } }[]) {
+    const at = r._max?.occurredAt;
+    if (!at || !r.projectId || !r.clientId) continue;
+    const key = `${r.clientId}|${r.projectId}|${r.channel === "email" ? "email" : "phone"}`;
+    if ((lastOutProject.get(key) ?? new Date(0)) < at) lastOutProject.set(key, at);
+  }
+  // Our replies to those clients, oldest-first per lane, so a request can ask
+  // "what was the FIRST thing we said after they asked, and how long did it
+  // take?" rather than only "have we said anything since".
+  const outTimesByClient = new Map<string, Date[]>();
+  for (const r of recentOut as { clientId: string | null; channel: string; occurredAt: Date }[]) {
+    if (!r.clientId) continue;
+    const key = `${r.clientId}|${r.channel === "email" ? "email" : "phone"}`;
+    const list = outTimesByClient.get(key) ?? [];
+    list.push(r.occurredAt);
+    outTimesByClient.set(key, list);
+  }
+  for (const list of outTimesByClient.values()) list.sort((a, b) => a.getTime() - b.getTime());
+  /** The first reply we sent on this lane at or after `at` — undefined when the
+   *  bounded scan above could not reach back that far, which simply means no
+   *  burst is claimed and the request stays owed. */
+  const outScanCapped = recentOut.length >= OBLIGATION_OUTBOUND_SCAN;
+  const firstReplyAfter = (clientId: string | null, family: WaitingFamily, at: Date): Date | undefined => {
+    if (!clientId) return undefined;
+    const list = outTimesByClient.get(`${clientId}|${family}`);
+    if (!list || list.length === 0) return undefined;
+    // Only when the read actually hit its ceiling can "the oldest reply we can
+    // see is newer than the question" mean we are missing one. Under the
+    // ceiling it just means we never replied before then, which is the truth.
+    if (outScanCapped && list[0] > at) return undefined;
+    return list.find((d) => d >= at);
+  };
 
   // The newest inbound per thread that actually ASKS something — the same
   // noise/courtesy rules the live walk applies, so the ledger and the board can
@@ -832,6 +1073,17 @@ export async function openObligations(
   type Msg = { channel: string; subject: string | null; body: string; at: Date };
   const bestByClient = new Map<string, Msg>();
   const bestByPhone = new Map<string, Msg>();
+  // …and the same newest-real-message, per ORDER, for the requests that were
+  // split above. A second property's card has to print that property's words,
+  // not the client's most recent sentence about something else.
+  //
+  // Keyed "<clientId>|<projectId>|<family>", not on the order alone: this scan
+  // spans every obligation client at once, so an order with two contact records
+  // on it (an assistant folded onto the agent) would otherwise print one
+  // person's message as the other's words, on a card that scrubs money but not
+  // names. The lane is in the key for the same reason it is everywhere else —
+  // an email about an order is not a text about it.
+  const bestByProject = new Map<string, Msg>();
   for (const r of recent) {
     if (r.source === HUB_REPLY_SOURCE) continue;
     let body: string;
@@ -853,6 +1105,10 @@ export async function openObligations(
     const m: Msg = { channel: r.channel, subject: r.subject, body, at: r.occurredAt };
     // `recent` is newest-first, so the FIRST survivor per thread is the one.
     if (r.clientId && !bestByClient.has(r.clientId)) bestByClient.set(r.clientId, m);
+    if (r.clientId && r.projectId) {
+      const pk = `${r.clientId}|${r.projectId}|${r.channel === "email" ? "email" : "phone"}`;
+      if (!bestByProject.has(pk)) bestByProject.set(pk, m);
+    }
     const rp = r.fromPhone || nameAsPhone(r.contactName);
     if (rp && !bestByPhone.has(rp)) bestByPhone.set(rp, m);
   }
@@ -861,7 +1117,15 @@ export async function openObligations(
   // the spam mute. Both are CUT POINTS, exactly as they are for a live thread.
   const [acks, mutes] = await Promise.all([
     prisma.appSetting.findMany({
-      where: { key: { in: [...new Set(filed.map((f) => threadAckKey(f.family, f.threadKey)))] } },
+      where: {
+        key: {
+          in: [
+            ...new Set(
+              filed.flatMap((f) => [threadAckKey(f.family, f.threadKey), threadAckKey(f.family, f.rowKey)]),
+            ),
+          ],
+        },
+      },
       select: { key: true, value: true },
     }),
     phones.length
@@ -891,7 +1155,18 @@ export async function openObligations(
     // forever.
     if (!lastIn) continue;
 
-    const best = (t.clientId ? bestByClient.get(t.clientId) : undefined) ?? (phone ? bestByPhone.get(phone) : undefined);
+    // A SPLIT REQUEST READS ITS OWN ORDER FIRST: the client's most recent
+    // sentence belongs to the other property, and printing it here is how one
+    // card comes to stand for two questions.
+    //
+    // It FALLS BACK to the client-wide read when the order has no tagged
+    // message of its own, which is the usual case — 5,738 of 6,841 inbound
+    // phone rows in the last year (84%) carry no projectId at all, and the task
+    // can carry an order its messages do not. Without the fallback those rows
+    // dropped to the task's stored title, which is the bare-title-on-another-
+    // screen state this whole change exists to end.
+    const clientBest = (t.clientId ? bestByClient.get(t.clientId) : undefined) ?? (phone ? bestByPhone.get(phone) : undefined);
+    const ownBest = (f.perRequest ? bestByProject.get(`${t.clientId}|${t.projectId}|${family}`) : undefined) ?? clientBest;
     // WHAT ARE WE MEASURING FROM? The newest inbound that actually asks
     // something, when the scan reached it — otherwise the moment the hub wrote
     // the obligation down, which is within seconds of the message either way.
@@ -901,22 +1176,78 @@ export async function openObligations(
     // `lastIn` newer than our reply, and keying on it would hold a settled
     // conversation open forever on a task nobody remembered to close — the
     // courtesy rule (rule 3 at the top of this file) applied to the ledger.
-    const refAt = best?.at ?? t.createdAt;
+    const ownRefAt = ownBest?.at ?? t.createdAt;
+    const clientRefAt = clientBest?.at ?? t.createdAt;
+
+    // Has a PERSON answered since? (`substantiveOut` already dropped our
+    // robots.) If so the obligation is stale, not owed — leave it on the board
+    // as a task and keep it off the comms queue.
+    const lastOut = (t.clientId ? lastOutClient.get(`${t.clientId}|${family}`) : undefined) ?? (phone ? lastOutPhone.get(phone) : undefined);
+    // THE OLD READ, KEPT AS THE FLOOR. "Has a person written back since this
+    // client's newest real message?" is the only test that ran before Sep 20,
+    // and the split is not allowed to overrule it in the direction of silence.
+    // Whatever the router did with anybody's projectId, a row the old read
+    // showed still gets shown; all the split may do is say WHICH property it is
+    // about and print that property's words.
+    const answeredClientWide = !!(lastOut && lastOut >= clientRefAt);
+
+    // …and the two questions that are only asked of a split request.
+    //
+    // SETTLED ON ITS OWN ORDER? A reply filed against THIS property answers it.
+    // So does a reply that came back inside the hour, whatever the router filed
+    // it against: Renee Ryan asked about the Cardigan aerials at 20:07:05 on
+    // Sep 18 and was credited $50 at 20:08:16, and that answer went into the
+    // books against 1022 Chiswell. Per-order books alone would have her waiting
+    // on that question for the rest of the year, because nobody will ever text
+    // again about a finished shoot (REPLY_BURST_MS).
+    //
+    // OFF THE CARD? The live conversation only shows what arrived after our
+    // last reply, so a question older than that reply is not on it — which is
+    // exactly how a second property's ask went missing, and what lets the row
+    // come back beside a live card instead of behind it.
+    let repliedElsewhere = false;
+    let best = ownBest;
+    let refAt = ownRefAt;
+    if (f.perRequest) {
+      const onThisOrder = lastOutProject.get(`${t.clientId}|${t.projectId}|${family}`);
+      const firstBack = firstReplyAfter(t.clientId, family, ownRefAt);
+      const settledOnOwnOrder =
+        !!(onThisOrder && onThisOrder >= ownRefAt) ||
+        !!(firstBack && firstBack.getTime() - ownRefAt.getTime() <= REPLY_BURST_MS);
+      if (settledOnOwnOrder) {
+        // Its own question is answered. If the client-wide read agrees nothing
+        // is owed, the request is done. If it does NOT — they have said
+        // something newer that nobody has answered — then the old row is still
+        // owed and still gets rendered, word for word as before: the split is
+        // allowed to add a property line, never to take a row away.
+        if (answeredClientWide) continue;
+        best = clientBest;
+        refAt = clientRefAt;
+      } else {
+        // Owed. Can the live card be showing it? Only if it arrived after our
+        // last reply. When it did not, this row is the ONLY place the question
+        // can appear, and a tick on the conversation is not a decision about it.
+        repliedElsewhere = !!(lastOut && lastOut >= ownRefAt);
+      }
+    } else if (answeredClientWide) {
+      continue;
+    }
     const text =
       best?.body ||
       (t.description ?? "").split(/\n\n— /)[0].trim() ||
       t.summary ||
       t.title;
 
-    // Has a PERSON answered since? (`substantiveOut` already dropped our
-    // robots.) If so the obligation is stale, not owed — leave it on the board
-    // as a task and keep it off the comms queue.
-    const lastOut = (t.clientId ? lastOutClient.get(`${t.clientId}|${family}`) : undefined) ?? (phone ? lastOutPhone.get(phone) : undefined);
-    if (lastOut && lastOut >= refAt) continue;
-
     // Ticked handled by hand, after the message — an explicit resolution.
+    // A tick on THIS request's own row always resolves it. A tick on the whole
+    // conversation resolves what that card could show, which is everything
+    // since our last reply — so it does NOT reach a request whose messages a
+    // later reply had already cleared off it (`repliedElsewhere`). Nobody can
+    // decide about a question that was not on the screen.
+    const ownAck = ackAt.get(threadAckKey(family, f.rowKey));
+    if (ownAck && ownAck >= refAt) continue;
     const ack = ackAt.get(threadAckKey(family, threadKey));
-    if (ack && ack >= refAt) continue;
+    if (ack && ack >= refAt && !repliedElsewhere) continue;
 
     out.push({
       taskId: t.id,
@@ -936,10 +1267,34 @@ export async function openObligations(
       blockedReason: t.blockedReason,
       daysWaiting: Math.max(0, Math.floor((now.getTime() - refAt.getTime()) / 86_400_000)),
       beyondWindow: refAt < windowStart,
+      projectId: t.projectId,
+      propertyAddress: t.propertyAddress,
+      rowKey: f.rowKey,
+      repliedElsewhere,
     });
   }
   // Longest wait first — the same order every other comms surface uses.
   return out.sort((a, b) => a.lastInboundAt.getTime() - b.lastInboundAt.getTime());
+}
+
+export type OffThreadRequest = { taskId: string; nextAction: string; propertyAddress: string | null };
+
+/**
+ * This client's open phone requests that the live conversation CANNOT be
+ * about: we have written back since they asked, but on another order, so their
+ * messages were cleared off the card before anybody looked at it.
+ *
+ * The Handled tick reads this. Ticking a card is a person saying "I dealt with
+ * what is in front of me", and this is the list of what is not — a tick has to
+ * leave those standing, which is the whole of F10: on Sep 18 Renee Ryan held
+ * two requests, one on 358 N Church St and one on 453 Cardigan Terrace, and one
+ * tick would have closed both while only one conversation was on screen.
+ */
+export async function requestsOffThread(clientId: string, now: Date = new Date()): Promise<OffThreadRequest[]> {
+  const owed = await openObligations({ now, families: ["phone"], clientId });
+  return owed
+    .filter((o) => o.clientId === clientId && o.repliedElsewhere)
+    .map((o) => ({ taskId: o.taskId, nextAction: o.nextAction, propertyAddress: o.propertyAddress }));
 }
 
 /**
@@ -964,8 +1319,28 @@ async function ledgerThreads(
   const shownClients = new Set(shown.map((t) => `${t.family}:${t.clientId ?? ""}`));
   const keep = ledger.filter(
     (x) =>
-      !shownKeys.has(x.threadKey) &&
-      !(x.clientId && shownClients.has(`${x.family}:${x.clientId}`)) &&
+      // ONE EXCEPTION TO "the client already has a card" (F10, Sep 20). A
+      // request flagged `repliedElsewhere` is one we answered around rather
+      // than answered: its message sits BEFORE our last reply, so the live
+      // card — which only shows what came after that reply — cannot be
+      // showing it, and skipping it here is how the second property's question
+      // left every comms surface while it was still owed. It comes back as its
+      // own row, named after its own property.
+      //
+      // THE EXCEPTION HAS TO CLEAR BOTH TESTS OR IT CLEARS NEITHER (review,
+      // Sep 20). A phone card's key IS `c:<clientId>` (keyFor prefers the
+      // client) and so is the obligation's threadKey, so leaving the threadKey
+      // test ANDed in front made this whole branch dead code for the phone
+      // lane: it fired only for a client who had gone completely quiet, and
+      // went back to hiding the moment they texted again. Stephen Kennedy is
+      // texted a dozen times a day, which is why his 1429 N 62nd St question
+      // stood open from Jul 12 to Sep 14 with nobody able to see it.
+      //
+      // The row's OWN key is still checked unconditionally: a request the walk
+      // already produced a card for is that card, and must not double.
+      (x.repliedElsewhere ||
+        (!shownKeys.has(x.threadKey) && !(x.clientId && shownClients.has(`${x.family}:${x.clientId}`)))) &&
+      !shownKeys.has(x.rowKey) &&
       (x.clientId || o.includeUnmatched) &&
       // UNMATCHED EMAIL STAYS OUT OF THIS WALK, as it always has (`keyFor`
       // refuses it: "unmatched email is newsletters, not people"). An emailed
@@ -991,16 +1366,29 @@ async function ledgerThreads(
   const teamPhones = new Set(team.map((t) => phoneKey(t.phone)).filter((k) => k.length === 10));
 
   const out: WaitingThread[] = [];
+  // TWO ROWS MUST NOT SHARE ONE KEY. A split request carries its own
+  // (`c:<clientId>#<taskId>`), which is also what the Handled tick reads back
+  // to close that one request; anything else keys on the conversation, and two
+  // obligations landing on the same conversation key would render as two
+  // identical cards with the same React key.
+  //
+  // This is a BACKSTOP, not the mechanism: `openObligations` already gives any
+  // key that would repeat the task id too, precisely so that nothing is ever
+  // dropped here. Dropping a row would take a live open request off every
+  // comms surface, which is the bug this file is being edited for.
+  const emitted = new Set<string>();
   for (const x of keep) {
+    if (emitted.has(x.rowKey)) continue;
+    emitted.add(x.rowKey);
     // A teammate's number never becomes a lead (the receiver refuses to file
     // one), so this should never fire — but the flag stays honest either way.
     const isTeam = !x.clientId && !!(x.phone && teamPhones.has(x.phone));
     if (isTeam && !o.includeTeam) continue;
     const client = x.clientId ? clientById.get(x.clientId) : undefined;
     out.push({
-      key: x.threadKey,
+      key: x.rowKey,
       family: x.family,
-      groupKey: x.threadKey.slice(2),
+      groupKey: x.rowKey.slice(2),
       clientId: x.clientId,
       clientIds: x.clientId ? [x.clientId] : [],
       clientName: client?.name ?? (x.clientId ? x.displayName : null),
@@ -1012,8 +1400,13 @@ async function ledgerThreads(
       isVip: VIP_SEGMENTS.has(client?.segment ?? "") || VIP_SEGMENTS.has(client?.parent?.segment ?? ""),
       segment: client?.segment ?? null,
       socialPlan: client?.socialClient ? client?.socialPlan ?? "yes" : null,
-      propertyAddress: null,
-      projectId: null,
+      // THE PROPERTY TRAVELS WITH THE REQUEST. Two rows for one client are only
+      // telling apart by what they are about, and the card already prints this
+      // line ("· 453 Cardigan Terrace"). It also files the reply against the
+      // right order when Kyle answers from the Replies tab, which is what makes
+      // the next reply able to close this request instead of a sibling's.
+      propertyAddress: x.propertyAddress,
+      projectId: x.projectId,
       pending: [{ channel: x.lastInboundChannel, subject: null, body: x.lastInboundText, at: x.lastInboundAt }],
       courtesy: [],
       courtesyOnly: false,
@@ -1462,9 +1855,9 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
     allClientIds.length
       ? prisma.smartTask.findMany({
           where: { clientId: { in: allClientIds }, taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] } },
-          select: { id: true, clientId: true, propertyAddress: true, projectId: true },
+          select: { id: true, clientId: true, propertyAddress: true, projectId: true, source: true },
         })
-      : Promise.resolve([] as { id: string; clientId: string | null; propertyAddress: string | null; projectId: string | null }[]),
+      : Promise.resolve([] as { id: string; clientId: string | null; propertyAddress: string | null; projectId: string | null; source: string }[]),
     allClientIds.length
       ? prisma.client.findMany({
           where: { id: { in: allClientIds } },
@@ -1487,10 +1880,30 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
   // phone side (source ≠ gmail); email honors the Gmail sync's own reply
   // detection (gmail-sourced completions — the normal way email gets answered)
   // plus the per-group Handled ack markers.
+  //
+  // AND ONE REQUEST CLOSING IS NOT THE CONVERSATION CLOSING (F10, Sep 20). A
+  // completed client_reply cuts the whole phone conversation at the instant it
+  // closed, which was fair while a tick closed EVERY request a client held —
+  // the person had the whole pile in front of them. It stopped being fair when
+  // the ledger started giving one property's request its own row: Renee Ryan's
+  // Cardigan row could be ticked at 10:04 and her brand new 10:02 question
+  // about Church St would vanish from the Replies tab, the board, the /ops pill
+  // and the pager, with nobody having read it.
+  //
+  // So the cut only counts while the client has nothing else open on this lane.
+  // While another request of theirs is standing, the conversation is by
+  // definition not settled and closing one row cannot say it is; what clears
+  // the card in that case is the person's own tick on the conversation, which
+  // writes its own ack (markCommsHandled). Email is untouched — its map is the
+  // Gmail sync's reply detection, which is a real answer, not a tick.
+  const stillOpenPhoneRequest = new Set(
+    openTasks.filter((t) => t.clientId && t.source !== "gmail").map((t) => t.clientId as string),
+  );
   const handledByClient = { phone: new Map<string, Date>(), email: new Map<string, Date>() };
   for (const h of handledTasks) {
     if (!h.clientId || !h.completedAt) continue;
     const lane = h.source === "gmail" ? "email" : "phone";
+    if (lane === "phone" && stillOpenPhoneRequest.has(h.clientId)) continue;
     const m = handledByClient[lane];
     if ((m.get(h.clientId) ?? new Date(0)) < h.completedAt) m.set(h.clientId, h.completedAt);
   }
@@ -1505,7 +1918,20 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
   for (const m of mutes) {
     if (parseAckValue(m.value)) mutedPhones.add(m.key.slice("comms-mute:".length));
   }
-  const openTaskByClient = new Map(openTasks.filter((t) => t.clientId).map((t) => [t.clientId as string, t]));
+  // EVERY open request per client, not the last one the loop happened to see.
+  // A card's property line, and the order its reply gets filed against, used to
+  // be whichever of a busy client's requests came back last — so Renee Ryan's
+  // card could print 358 N Church St over a conversation about Cardigan, and
+  // the reply sent from it would be filed against the wrong order. Now the
+  // conversation's own order picks the request, and when nothing picks it the
+  // card names no property rather than the wrong one.
+  const openTasksByClient = new Map<string, typeof openTasks>();
+  for (const t of openTasks) {
+    if (!t.clientId) continue;
+    const list = openTasksByClient.get(t.clientId) ?? [];
+    list.push(t);
+    openTasksByClient.set(t.clientId, list);
+  }
   const leadTaskByPhone = new Map(
     leadTasks
       .filter((t) => t.dedupeKey)
@@ -1555,8 +1981,14 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
     // The client's reply to-do, or — for a number we never matched — the lead
     // task the receiver already filed for it. Either way the card now has a
     // work item behind it that outlives the message window.
+    const openForClient = (b.clientId ? openTasksByClient.get(b.clientId) : undefined) ?? [];
     const task =
-      (b.clientId ? openTaskByClient.get(b.clientId) : undefined) ??
+      openForClient.find((t) => !!t.projectId && t.projectId === b.projectId) ??
+      // One open request on the record means the conversation IS that request.
+      // Two or more and the conversation cannot say which, so the card carries
+      // none of them: each request has its own row on the board (see
+      // `Obligation.rowKey`), and the tick there closes the one it names.
+      (openForClient.length === 1 ? openForClient[0] : undefined) ??
       (!b.clientId && b.family === "phone"
         ? leadTaskByPhone.get(b.phone ?? (b.key.startsWith("p:") ? b.key.slice(2) : ""))
         : undefined);

@@ -2,6 +2,7 @@
 
 import { requireAdmin, requireTaskAccess } from "@/lib/auth/guards";
 import { deliveryStamp, outstandingForDelivery } from "@/lib/delivery";
+import { owedPhrase } from "@/lib/statusEvidence";
 import { appBase } from "@/lib/appUrl";
 
 import { prisma } from "@/lib/prisma";
@@ -15,7 +16,7 @@ import {
 import { stageMeta } from "@/lib/pipeline";
 import { Aryeo } from "@/lib/integrations/aryeo";
 import { getSecret } from "@/lib/integrations/connections";
-import { resolveRevision } from "@/lib/comms";
+import { noteRevisionLanesClosed, resolveRevisionForTask, resolveRevisionWholeJob } from "@/lib/comms";
 import { closeObsoleteTasks, CLOSED_BY_HAND, qcGateComplete, reopenedForCategories, qcCategoryOfRow } from "@/lib/tasks";
 import { etEndOfDay } from "@/lib/datetime";
 import { DISMISS_REASONS, DISMISSED_PREFIX, type DismissReason } from "@/lib/triage";
@@ -217,13 +218,59 @@ export async function markCommsHandled(
       for (const t of nowDone) await stampHandledByHand(t.id, me?.name ?? null, me?.email ?? null);
     }
   } else {
-    // Complete EVERY open client_reply for this client (a busy client can hold
-    // several) so the tick clears the pager and the board in one motion —
-    // except gmail-born ones: a phone tick answers texts, not email (review).
-    const openIds = (await prisma.smartTask.findMany({
+    // THE TICK RESOLVES WHAT THE PERSON WAS LOOKING AT (F10, Sep 20).
+    //
+    // It used to complete EVERY open client_reply on the record. That is right
+    // for the usual shape — one client, one request, one conversation — and
+    // wrong the moment a client has two properties running: on Sep 18 Renee
+    // Ryan held "Check with editor on Church St ETA" (358 N Church St) and
+    // "Apply credit for skipped aerial shots at Cardigan" (453 Cardigan
+    // Terrace), and one tick on one card would have closed both, including the
+    // one whose messages a later reply had already cleared off that card.
+    // Nobody can decide about a question that was not on the screen.
+    //
+    // Four shapes, in order:
+    //   · the card names its request (`c:<clientId>#<taskId>`, the per-request
+    //     row the ledger now emits) and that request is open — close exactly
+    //     that one;
+    //   · the card names a request that somebody else has already closed — the
+    //     tick has nothing to do. Say so and close NOTHING: falling through to
+    //     the client-wide rule here would complete a DIFFERENT property's
+    //     request on a click aimed at this one, which is the whole defect
+    //     wearing a stale page as a disguise;
+    //   · the client has one open request — close it, exactly as before;
+    //   · the client has several — close the ones the conversation could be
+    //     about and leave the rest standing, then cut the conversation itself
+    //     so the row still clears. Gmail-born requests are excluded throughout:
+    //     a phone tick answers texts, not email (review).
+    // Still-open requests are named in the return message so the tick never
+    // silently keeps work alive.
+    const { requestTaskIdFrom, requestsOffThread, threadAckKey, ackValue } = await import("@/lib/replyQueue");
+    const openRows = await prisma.smartTask.findMany({
       where: { clientId, taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] }, source: { not: "gmail" } },
-      select: { id: true },
-    })).map((t) => t.id);
+      select: { id: true, title: true, propertyAddress: true },
+    });
+    const named = requestTaskIdFrom(groupKey) ?? requestTaskIdFrom(threadKey);
+    const onOneRequest = !!named && openRows.some((t) => t.id === named);
+    if (named && !onOneRequest) {
+      revalidatePath("/tasks");
+      revalidatePath("/ops");
+      revalidatePath("/communications");
+      revalidatePath("/");
+      return { ok: true, message: "That one was already handled, so nothing changed. Refresh and the row will be gone." };
+    }
+    let openIds = openRows.map((t) => t.id);
+    let kept: { id: string; title: string; propertyAddress: string | null }[] = [];
+    if (onOneRequest) {
+      openIds = [named as string];
+      kept = openRows.filter((t) => t.id !== named);
+    } else if (openRows.length > 1) {
+      // A request we replied around rather than replied to: its message sits
+      // before our last text, so the card being ticked cannot have shown it.
+      const offThread = new Set((await requestsOffThread(clientId)).map((r) => r.taskId));
+      kept = openRows.filter((t) => offThread.has(t.id));
+      openIds = openRows.filter((t) => !offThread.has(t.id)).map((t) => t.id);
+    }
     const done = await prisma.smartTask.updateMany({
       where: { id: { in: openIds } },
       data: { status: "COMPLETED", completedAt: new Date() },
@@ -235,6 +282,11 @@ export async function markCommsHandled(
       const me = await getCurrentUser().catch(() => null);
       for (const id of openIds) await stampHandledByHand(id, me?.name ?? null, me?.email ?? null);
     }
+    // A TICK THAT CLOSED NOTHING IS STILL A DECISION, and it always left this
+    // row behind so "handled today" and the audit trail could see it. The
+    // early return added on Sep 20 skipped straight past it, so a tick on a
+    // client whose every open request was off the card left no trace at all
+    // except an AppSetting — a person made a call and nothing recorded it.
     if (done.count === 0) {
       await prisma.smartTask.create({
         data: {
@@ -244,6 +296,38 @@ export async function markCommsHandled(
           source: "manual", status: "COMPLETED", completedAt: new Date(), clientId,
         },
       });
+    }
+    if (kept.length > 0) {
+      // A tick on the CONVERSATION also has to clear the conversation, or it
+      // looks broken when the request it closed was not the only one. It used
+      // to ride on the closed task's own completedAt, which the live walk reads
+      // as a client-wide cut — and that cut now stands down while the client
+      // still has a request open (replyQueue), precisely so one property's row
+      // cannot silence another property's message. So the tick says it plainly
+      // instead, on the conversation's own ack key.
+      //
+      // It is only ever a CUT POINT, at the moment of the click: a message that
+      // arrives after it is waiting again, and the requests left standing above
+      // carry their own rows, which this does not reach (openObligations). A
+      // tick on ONE REQUEST'S row writes nothing here — it was not a decision
+      // about the messages on screen.
+      if (!onOneRequest) {
+        const key = threadAckKey("phone", `c:${clientId}`);
+        const value = ackValue(new Date(), reason ?? "answered elsewhere");
+        await prisma.appSetting.upsert({ where: { key }, create: { key, value }, update: { value } });
+      }
+      revalidatePath("/tasks");
+      revalidatePath("/ops");
+      revalidatePath("/communications");
+      revalidatePath("/");
+      const names = kept.map((t) => t.propertyAddress?.split(",")[0] || t.title).join(", ");
+      return {
+        ok: true,
+        message:
+          kept.length === 1
+            ? `Cleared. One request is still open on ${names}, so it stays on the list until someone answers it.`
+            : `Cleared. ${kept.length} requests are still open (${names}), so they stay on the list until someone answers them.`,
+      };
     }
   }
   revalidatePath("/tasks");
@@ -320,7 +404,7 @@ export async function dismissTask(
   }
   const t = await prisma.smartTask.findUnique({
     where: { id: taskId },
-    select: { id: true, title: true, status: true, summary: true, projectId: true },
+    select: { id: true, title: true, status: true, summary: true, projectId: true, taskType: true },
   });
   if (!t) return { ok: false, message: "That task no longer exists." };
   if (t.status === "CANCELLED") return { ok: true, message: "Already dismissed." };
@@ -363,6 +447,24 @@ export async function dismissTask(
         },
       })
       .catch(() => {});
+    // A dismissal takes a revision ask out of the open set exactly as a
+    // Complete does, and nothing here ever told the job about it. That was
+    // survivable while a Complete on ANY card cleaned the whole job up; it
+    // stopped being survivable on Sep 20, when a Complete started correctly
+    // holding the job while a sibling ask is open. "Hold on Kyle's photo card,
+    // then dismiss the video ask that turned out to be a misread email" left
+    // the job pinned in Revisions with no open ask on it and no card left to
+    // press — the shape 204 Spring Ln and 358 N Church St are already stuck in
+    // from other routes, and the only way out is an admin noticing and using
+    // the project page. The last ask out of the open set resolves the job; an
+    // earlier one holds it and says so, which is the same rule the Complete
+    // button takes.
+    if (t.taskType === "revision") {
+      try {
+        await resolveRevisionForTask(taskId, t.projectId, "dismissed");
+        revalidatePath("/pipeline");
+      } catch { /* the dismissal itself stands — this only lets the job move on */ }
+    }
     revalidatePath(`/projects/${t.projectId}`);
   }
   revalidatePath("/tasks");
@@ -381,7 +483,7 @@ export async function setSmartTaskStatus(taskId: string, status: string) {
   // the SAME update, or the hourly reconciler wins the race and reopens it.
   const t = await prisma.smartTask.findUnique({
     where: { id: taskId },
-    select: { projectId: true, taskType: true, checklist: true, assignedKey: true, dedupeKey: true, title: true, propertyAddress: true, sourceDetail: true },
+    select: { projectId: true, taskType: true, status: true, checklist: true, assignedKey: true, dedupeKey: true, title: true, propertyAddress: true, sourceDetail: true },
   });
   if (!t) return; // task no longer exists — no-op instead of throw
   // Every route into this action is a HUMAN pressing Complete (requireTaskAccess
@@ -440,8 +542,51 @@ export async function setSmartTaskStatus(taskId: string, status: string) {
   // so the hourly sync re-pinned the job as REVISION forever (audit crack #10).
   // resolveRevision also returns the job to DELIVERED and closes its now-moot
   // re-QC / delivery tasks.
-  if (status === "COMPLETED" && t?.taskType === "revision" && t.projectId) {
-    await resolveRevision(t.projectId);
+  //
+  // Sep 20: THIS ROW, not the whole job. requireTaskAccess above authorised
+  // exactly one task and then the bare resolveRevision closed every revision
+  // ask on the project — so John's Complete on his video revision also stamped
+  // Kyle's photo ask COMPLETED, silently, on a job the client was still owed
+  // work on. resolveRevisionForTask runs the identical full resolve when this
+  // was the last open ask and holds the job in Revisions when it was not
+  // (comms.ts) — the same rule the Review Room approval and the /editing pill
+  // have carried since Sep 8.
+  //
+  // Two conditions on that, both about which rows actually LEAVE the open set:
+  //
+  // · The row must not already have been closed. This updateMany matches on id
+  //   alone, so pressing Complete on a finished card runs the whole branch
+  //   again — harmless when it resolved (resolveRevision's writes are
+  //   idempotent), but on a held job every extra press used to append another
+  //   "still open on this job" line to the timeline Jordan reads a month
+  //   later. The checklist path below has carried this guard all along.
+  //
+  // · CANCELLED counts as a close for this purpose and WAITING_* does not.
+  //   Picking "Cancelled" from the card's status dropdown takes the ask out of
+  //   the open set just as a dismissal does, so the job has to be told. Parking
+  //   the card on WAITING_EDITOR does not: the ask is still open, and calling
+  //   the resolver there would resolve the job off a row that is still owed —
+  //   the count excludes the row being acted on.
+  //
+  // THE HOLD IS NOT VISIBLE TO THE PERSON WHO CAUSED IT, and it cannot be made
+  // visible from this file. The explanation goes to the job's timeline, and the
+  // one non-admin login that reaches a revision card is an editor, whose role
+  // /projects bounces — so John presses Complete, the card disappears, and
+  // nothing on his screen says the job is still in Revisions waiting on Kyle's
+  // photos. The /editing pill answers the identical branch in words (Jordan,
+  // Sep 11: "it didn't save"). Returning { heldInRevisions } from here looks
+  // free because no caller reads it, but it is not: TaskCard.tsx:531 hands this
+  // action straight to a React 19 transition, whose callback is typed
+  // () => VoidOrUndefinedOnly | Promise<VoidOrUndefinedOnly>, and the build
+  // fails on a file this fix may not touch. The sentence and the return belong
+  // together in the card's own ticket.
+  if (
+    t?.taskType === "revision" &&
+    t.projectId &&
+    t.status !== "COMPLETED" &&
+    (status === "COMPLETED" || status === "CANCELLED")
+  ) {
+    await resolveRevisionForTask(taskId, t.projectId, status === "CANCELLED" ? "dismissed" : "resolved");
     revalidatePath("/pipeline");
     revalidatePath("/");
   }
@@ -749,8 +894,13 @@ export async function toggleTaskChecklistItem(
   // a completion — it must run the same side effects as the Complete button,
   // or the project stays pinned in REVISION with its re-QC card frozen open
   // and the editor never gets the resolved ping.
+  //
+  // Which now includes the lane rule (Sep 20). Fixing the button and leaving
+  // this alone would have left the identical cross-lane close one checkbox
+  // away: this path is admin-only (requireAdmin above), and Kyle — who clears
+  // the board fastest — reaches it every day.
   if (completed && t.status !== "COMPLETED" && t.taskType === "revision" && t.projectId) {
-    await resolveRevision(t.projectId);
+    await resolveRevisionForTask(taskId, t.projectId);
     revalidatePath("/pipeline");
     revalidatePath("/");
   }
@@ -871,11 +1021,27 @@ export async function moveProjectStatus(projectId: string, status: ProjectStatus
   }
 
   // Close out the revision task too when manually delivered.
+  //
+  // Whole-job on purpose, like the project page's Mark resolved: dragging the
+  // card to Delivered is a statement about every ask on the job, not one lane.
+  // What it did not do until Sep 20 was say which ones it took — of the three
+  // paths that speak for the whole job this was the last silent one, and the
+  // whole point of the lane split is that a photo ask belongs to Kyle while
+  // the video ask belongs to the editor. The rows have to be read before the
+  // close or there is nothing left to name.
   if (status === ProjectStatus.DELIVERED && project.revisionRequestedAt) {
+    const openAsks = await prisma.smartTask.findMany({
+      where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
+      select: { title: true, dedupeKey: true, assignedKey: true },
+    });
     await prisma.smartTask.updateMany({
       where: { projectId, taskType: "revision", status: { notIn: ["COMPLETED", "CANCELLED"] } },
       data: { status: "COMPLETED", completedAt: new Date() },
     });
+    const { getCurrentUser } = await import("@/lib/auth/user");
+    const mover = await getCurrentUser().catch(() => null);
+    const movedBy = (mover?.name ?? mover?.email ?? "").trim() || "The office";
+    await noteRevisionLanesClosed(projectId, `${movedBy} moved the job to Delivered on the board`, openAsks);
   }
 
   // Clear obsolete production tasks when a job is delivered or cancelled.
@@ -890,9 +1056,13 @@ export async function moveProjectStatus(projectId: string, status: ProjectStatus
   // fact anywhere. Now the timeline carries it, so the next person reading the
   // job can see the call that was made rather than guessing at it. Empty
   // evidence (a manual or non-Aryeo job) says nothing, as it should.
-  const stillMissing = status === ProjectStatus.DELIVERED ? outstandingForDelivery(project.statusEvidence) : [];
-  const missingClause = stillMissing.length
-    ? ` with ${stillMissing.map((c) => c.toLowerCase()).join(", ")} still missing on Aryeo`
+  // Sep 20 (F03): the read was `missing` only, which is "never made" — so a
+  // board move on a job with four videos cut and none on the client's listing
+  // left a timeline row saying nothing was missing. It now reads the same
+  // union the gates and the card read, and it carries the count.
+  const stillMissing = status === ProjectStatus.DELIVERED ? outstandingForDelivery(project.statusEvidence) : null;
+  const missingClause = stillMissing && stillMissing.categories.length
+    ? ` with ${owedPhrase(stillMissing)} still missing on Aryeo`
     : "";
   await prisma.activity.create({
     data: {
@@ -1083,9 +1253,19 @@ export async function sendConfirmationText(taskId: string): Promise<{ ok: boolea
 }
 
 // Mark a revision request resolved (handled or dismissed as a false alarm).
+// Deliberately the WHOLE job, unlike the Complete button on a single card: an
+// admin standing on the project pressing "Mark resolved" is speaking for every
+// ask on it. Since Sep 20 it says so out loud — when it closed more than one
+// lane the timeline names them, so a photo ask that went out alongside a video
+// one is on the record instead of just missing off Kyle's board.
 export async function resolveRevisionAction(projectId: string) {
   await requireAdmin();
-  await resolveRevision(projectId);
+  const { getCurrentUser } = await import("@/lib/auth/user");
+  const me = await getCurrentUser().catch(() => null);
+  // Trimmed, not just null-checked: a saved name of "" is not a person, and
+  // `??` would have put it on the timeline as a leading space (the same idiom
+  // dismissTask above uses).
+  await resolveRevisionWholeJob(projectId, (me?.name ?? me?.email ?? "").trim() || null);
   revalidatePath("/pipeline");
   revalidatePath("/queue");
   revalidatePath("/");
