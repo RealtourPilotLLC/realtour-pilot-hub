@@ -3,6 +3,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { outputsForProject, type OutputRowView } from "@/lib/deliverableOutputs";
 import { handoffReadiness, meaningfulBrief } from "@/lib/handoff";
+import { isMonthlyContentJob } from "@/lib/pipeline";
 import { parseEvidence, evidenceTone, type EvidenceTone } from "@/lib/statusEvidence";
 import { effectiveDue } from "@/lib/editOverrides";
 
@@ -158,12 +159,22 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
               : cached.awaitingSend,
         }
       : cached;
+  // WHAT THIS JOB ACTUALLY OWES. The same one-line test the upload portal
+  // (upload/actions.ts, `wantsVideoGate`) and the handoff sweep (tasks.ts,
+  // "photos-only → AutoHDR, no human editor") already apply — this card was the
+  // one place that asked the video engines about a job that sold only stills.
+  // Waived rows still count: a waived video is a video job with a row retired,
+  // which is the same rule cutSlots keeps.
+  const owesVideo = p.deliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
+
   const tone = evidenceTone({
     status: p.status,
     evidence,
     shootDate: p.shootDate,
     dueAt: promisedAt,
-    dueFor: "Video",
+    // "Video" was hardcoded, so a photo-only job's promise was labelled as a
+    // video promise it never had (F05, Sep 20 2026).
+    dueFor: owesVideo ? "Video" : "Photos",
     promiseResolved: true,
     attemptedAt: p.evidenceAttemptedAt,
     succeededAt: p.evidenceSucceededAt,
@@ -174,21 +185,59 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
   // THE BLOCKER, from the engine that already decides it. A job whose footage
   // is in but whose instructions are not is blocked on a person, and that is
   // more specific than anything the status can say.
-  const titles = p.deliverables.map((d) => d.productTitle || d.label || d.type);
-  const handoff = handoffReadiness({
-    titles,
-    hasFullVideo: p.deliverables.some((d) => d.type === "VIDEO"),
-    isPremium: /premium|signature|luxur/i.test(`${p.packageName ?? ""} ${titles.join(" ")}`),
-    isMonthly: /monthly|starter|accelerator|branding/i.test(`${p.packageName ?? ""} ${titles.join(" ")}`),
-    debriefSubmittedAt: p.debriefSubmittedAt,
-    videoInstructions: p.videoInstructions,
-    editorBrief: p.editorBrief,
-    reelScript: p.reelScript,
-    reelHook: p.reelHook,
-    scriptConfirmedAt: p.scriptConfirmedAt,
-    videosFilmed: p.videosFilmed,
-    photographerName: p.photographer?.name ?? null,
+  //
+  // ONLY EVER ASKED OF A VIDEO JOB (F05, Sep 20 2026). handoffReadiness speaks
+  // for the EDIT, and `hasFullVideo` only chooses which video rules apply — it
+  // never turns them off. Asked about a photo-only order the titles match no
+  // reel, so `minimalReel` is false and it answers "waiting on the flow and
+  // vision for the edit" on a job that sold stills. 1217 River Rd read that
+  // way: photos, drone and a floor plan, and a card telling Kyle that James
+  // still owed editing vision. Worse, nobody could ever clear it — the upload
+  // portal never shows the video step on a photo job, so the instructions
+  // field stays null forever. Measured Sep 20: 924 of 1,585 projects (907 of
+  // them DELIVERED) printed that sentence.
+  //
+  // isMonthly comes from the shared helper the other two callers use. The
+  // hand-rolled regexes that used to sit here (/premium|signature|luxur/i and
+  // /monthly|starter|accelerator|branding/i) were a tenth opinion in the one
+  // card whose whole contract is that it cannot be one, and passing an
+  // explicit isPremium DEFEATS pipeline's own PREMIUM_SCRIPT_RE. Same shape as
+  // tasks.ts, which is what writes Project.handoffBlockedReason, so the card
+  // says what the stored blocker says.
+  //
+  // BOTH NAMES OF A LINE, NOT THE PREFERRED ONE (F05, review Sep 20 2026).
+  // /settings/products carries a human's premium mapping onto the deliverable
+  // LABEL — itemToDeliverables writes "Premium <Type>" — while productTitle
+  // keeps whatever the order line was sold as. Reading productTitle first hid
+  // the mapping behind the bundle name: 151 Garner Dr, 3218 Alton St and 308
+  // Highland Rd all carry a "Premium Video" label under the productTitle
+  // "DIAMOND BUNDLE - The Ultimate Real Estate Marketing Package", and 800
+  // Grayson Ln's "Premium Social Reel" sits under "Premium Social Media Video
+  // Upgrade". videoTier() calls all four premium and the upload portal demands
+  // the script, so the card was asking for LESS than the portal on the one job
+  // the office would check it against. videoStepSpec's own doc asks for both
+  // names. Measured Sep 20: feeding both moves 4 of 661 video jobs and every
+  // move ADDS the script gap; adding packageName on top, the way
+  // upload/actions.ts does, moves nothing further, so it stays out.
+  const titles = p.deliverables.flatMap((d) => {
+    const names = [d.productTitle, d.label].filter((s): s is string => !!s && !!s.trim());
+    return names.length > 0 ? names : [d.type];
   });
+  const handoff = owesVideo
+    ? handoffReadiness({
+        titles,
+        hasFullVideo: p.deliverables.some((d) => d.type === "VIDEO"),
+        isMonthly: isMonthlyContentJob(p.deliverables, p.packageName),
+        debriefSubmittedAt: p.debriefSubmittedAt,
+        videoInstructions: p.videoInstructions,
+        editorBrief: p.editorBrief,
+        reelScript: p.reelScript,
+        reelHook: p.reelHook,
+        scriptConfirmedAt: p.scriptConfirmedAt,
+        videosFilmed: p.videosFilmed,
+        photographerName: p.photographer?.name ?? null,
+      })
+    : null;
 
   const briefRow = p.revisionBriefs[0] ?? null;
   const noteText = meaningfulBrief(p.revisionNote);
@@ -205,7 +254,7 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
   const editorName = p.editor?.name ?? (p.editorVendorKey ? "the outside shop" : null);
   let owner: BriefOwner;
   let nextAction: string;
-  let blocker: string | null = handoff.blockedReason;
+  let blocker: string | null = handoff?.blockedReason ?? null;
 
   const awaitingSend = live.filter((o) => o.awaitingSend);
   const inReview = live.filter((o) => o.state === "in_review");
@@ -221,7 +270,7 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
   } else if (inReview.length > 0) {
     owner = { who: "The office", whose: "office" };
     nextAction = `Give ${inReview.length === 1 ? "the cut" : `${inReview.length} cuts`} a verdict in the Review Room`;
-  } else if (handoff.blockedReason) {
+  } else if (handoff?.blockedReason) {
     owner = {
       who: handoff.ownerName ?? (handoff.gaps[0]?.owedBy === "photographer" ? p.photographer?.name ?? "The photographer" : "The office"),
       whose: handoff.gaps[0]?.owedBy === "photographer" ? "field" : "office",
@@ -230,6 +279,40 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
   } else if (p.status === "DELIVERED") {
     owner = { who: "Nobody", whose: "nobody" };
     nextAction = tone.kind === "clear" ? "Nothing — this one is finished" : "Check the listing before telling the client it is all there";
+  } else if (!owesVideo) {
+    // A PHOTO JOB HAS ITS OWN LINE OF WORK (F05, Sep 20 2026). Without this the
+    // next branches hand a stills-only order to an editor and tell the office to
+    // "Pick an editor on the row in the Editing Room" — there is no row, photos
+    // go through AutoHDR and nobody is ever assigned. The wrap-up IS owed on a
+    // photo shoot (upload/actions.ts gates it on PHOTOS/DRONE/TWILIGHT the same
+    // way), so that one clause of the old sentence survives the fix — but only
+    // once the shoot has happened, because asking a photographer to wrap up a
+    // job booked for next week is the kind of nag that makes people stop
+    // reading the card. 20 Thompson Mill was doing exactly that.
+    const shot = !!p.shootDate && p.shootDate.getTime() <= Date.now();
+    if (p.status === "CANCELLED") {
+      owner = { who: "Nobody", whose: "nobody" };
+      nextAction = "Nothing — this order was cancelled";
+    } else if (!shot) {
+      // A date nobody has set is the office's problem, not the photographer's —
+      // 265 Koser Rd sat BOOKED with no shoot date and named Jordan as the man
+      // who owed the shoot.
+      owner =
+        p.shootDate && p.photographer?.name
+          ? { who: p.photographer.name, whose: "field" }
+          : { who: "The office", whose: "office" };
+      nextAction = p.shootDate ? "Shoot it on the date booked" : "Get a shoot date on the calendar";
+    } else if (!p.debriefSubmittedAt) {
+      owner = { who: p.photographer?.name ?? "The photographer", whose: "field" };
+      nextAction = "Finish the wrap-up on the upload page";
+      blocker = blocker ?? `Waiting on the wrap-up on the upload page${p.photographer?.name ? ` from ${p.photographer.name}` : ""}.`;
+    } else {
+      owner = { who: "The office", whose: "office" };
+      nextAction =
+        p.status === "REVISION"
+          ? "Make the photo fixes the client asked for and send them back"
+          : "Confirm the photos are on the listing and send them";
+    }
   } else if (editorName) {
     owner = { who: editorName, whose: "editor" };
     nextAction = live.length > 1 ? `Edit and hand in ${live.length} videos` : "Edit and hand it in";
@@ -258,8 +341,46 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
     //
     // A DELIVERED job is never late — the same rule every other surface keeps,
     // and without it the 234 jobs whose per-video rows carry no delivery stamp
-    // would all light up red for a delivery that really happened.
-    overdue: p.status !== "DELIVERED" && !!promisedAt && promisedAt.getTime() < Date.now() && live.some((o) => o.state !== "sent"),
+    // would all light up red for a delivery that really happened. A CANCELLED
+    // one is never late either: six of the eight past-due open photo jobs on
+    // Sep 20 were cancelled orders, and the moment the count below started
+    // working for photo jobs they would all have gone red.
+    //
+    // AND A PHOTO JOB COULD NEVER BE LATE AT ALL (F05, Sep 20 2026). The count
+    // reads the per-video rows, and those are minted only from VIDEO /
+    // SOCIAL_REEL lines (reviewCuts.cutSlots), so on a stills-only order the
+    // list is empty BY CONSTRUCTION — 0 of 924 have a row — and the last
+    // conjunct was pinned false however late the job ran. 1217 River Rd printed
+    // the headline "Overdue" above a Promise line in plain black. When there is
+    // no per-video row to ask, ask the engine that does know what is still
+    // owed: anything but a clear verdict means something is still out. Keyed on
+    // "not clear" rather than on tone.kind === "overdue" on purpose — that was
+    // the old bug, where a tone with something more specific to say let a job
+    // slip out of being late.
+    //
+    // AND A REVISION BEATS A CLEAR LISTING (F05, review Sep 20 2026). The
+    // evidence engine reads the LISTING, so it says "everything ordered is
+    // confirmed" whenever the media is up — it has no way to know the client
+    // asked for one of those photos to be redone. 84 Longfellow Cir was a day
+    // past its promise in REVISION and still read black, under a headline
+    // saying it was all confirmed, while this same card's next-action line said
+    // "make the photo fixes the client asked for and send them back". A card
+    // that names owed work cannot call the job on time. Keyed on the STATUS and
+    // not on `latestRequest`: a revision brief is never retracted, so an ask
+    // from August still reads truthy long after the fix shipped and would pin a
+    // job red with no way to clear it — the same unclearable nag F05 was about.
+    // Both tests pick the same single job on today's book (measured Sep 20: one
+    // photo-only job in REVISION, and every other photo-only job carrying an
+    // open ask is DELIVERED and excluded above), so the status is the one that
+    // costs nothing and still lets go.
+    overdue:
+      p.status !== "DELIVERED" &&
+      p.status !== "CANCELLED" &&
+      !!promisedAt &&
+      promisedAt.getTime() < Date.now() &&
+      (live.length > 0
+        ? live.some((o) => o.state !== "sent")
+        : !owesVideo && (tone.kind !== "clear" || p.status === "REVISION")),
     latestRequest,
     blocker,
     owner,
