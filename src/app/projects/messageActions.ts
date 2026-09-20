@@ -137,6 +137,13 @@ export async function postProjectMessage(
     ? await prisma.teamMember.findMany({ where: { active: true }, select: { id: true, name: true } }).catch(() => [])
     : [];
   const mentions = Array.from(new Set([...mentionIds.filter(Boolean), ...matchMentions(text, roster).map((p) => p.id)]));
+  // The names the @tags have to be stripped by before this text is read for
+  // what it ASKS or ANSWERS (mentions.ts withoutTags). Guessing the surname
+  // off a capital letter ate the next real word of the sentence, which turned
+  // "@Kyle What time do you need it" into an answer and closed the row — the
+  // 358 N Church St shape again. Filled in from the tagged rows below too, in
+  // case the roster read failed and the composer supplied the ids.
+  const tagNames: string[] = roster.map((p) => p.name);
   const msg = await prisma.projectMessage.create({
     data: {
       projectId,
@@ -160,6 +167,7 @@ export async function postProjectMessage(
   if (mentions.length) {
     const project = await prisma.project.findUnique({ where: { id: projectId }, select: { title: true, clientId: true } });
     const tagged = await prisma.teamMember.findMany({ where: { id: { in: mentions } }, select: { id: true, name: true, role: true } });
+    for (const t of tagged) if (!tagNames.includes(t.name)) tagNames.push(t.name);
     const street = project?.title?.split(",")[0] ?? "a project";
     // Editor resolution + role-aware routing — the SAME shape as the note-comment
     // mentions (src/lib/mentions.ts): an editor gets their tm: row plus the
@@ -185,6 +193,20 @@ export async function postProjectMessage(
     // himself, and must reach him). The owners inference only when nothing
     // identified the writer at all.
     const inferOwner = !me && !authorId;
+    // What this tag is ASKING, and when it is owed (Sep 20). Until then every
+    // tag was HIGH with a raw four-hour wall clock, so "here's the revised
+    // version" paged two people as urgently as a client's revision request,
+    // and a 5pm Friday tag was overdue before dinner. Both rules live in
+    // mentions.ts so the five note surfaces get the identical treatment.
+    const { mentionPriority, mentionDueAt, formatMentionAsks, appendMentionAsk, mergeMentionDetail, earlierDue } =
+      await import("@/lib/mentions");
+    const priority = mentionPriority(text, tagNames);
+    const summary = `${authorName ?? "A teammate"} tagged you in the ${street} team thread: “${text.slice(0, 200)}”. Take any needed action and reply in the thread.`;
+    // THIS message is the ask — one ask, however many people it tags. The row
+    // remembers it by id so the reply that answers it can be recognised, and
+    // so a reply here can never tick off an ask that a cut note raised on
+    // another surface (632 Greenridge Rd).
+    const ask = { kind: "msg" as const, id: msg.id, asker: authorId };
     for (const t of tagged) {
       const editorKey = editorTmIds.get(t.id) ?? null;
       const selfTag = t.id === authorId || (inferOwner && owners.includes(t.id));
@@ -204,12 +226,13 @@ export async function postProjectMessage(
       const data = {
         taskType: "internal_instruction",
         title: `${authorName ?? "Team"} tagged you — ${street}`.slice(0, 120),
-        summary: `${authorName ?? "A teammate"} tagged you in the ${street} team thread: “${text.slice(0, 200)}”. Take any needed action and reply in the thread.`.slice(0, 500),
+        summary: summary.slice(0, 500),
         description: text.slice(0, 400),
         reasonCreated: "You were tagged in a team message",
         source: "team",
-        priority: "HIGH" as const,
-        dueAt: new Date(Date.now() + 4 * 3600_000),
+        priority,
+        dueAt: mentionDueAt(new Date(), priority),
+        sourceDetail: formatMentionAsks([ask]),
         projectId,
         clientId: project?.clientId ?? null,
         ownerId: t.id,
@@ -220,8 +243,37 @@ export async function postProjectMessage(
         dedupeKey: `mention-${projectId}-${t.id}`,
       };
       const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: data.dedupeKey } });
-      if (existing) await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } }).catch(() => {});
-      else await prisma.smartTask.create({ data }).catch(() => {});
+      if (existing) {
+        const reopening = existing.status === "COMPLETED" || existing.status === "CANCELLED";
+        await prisma.smartTask
+          .update({
+            where: { id: existing.id },
+            data: {
+              ...data,
+              // A second tag ADDS an ask; it does not replace the first one.
+              // The old `{ ...data }` spread overwrote summary, description and
+              // dueAt, and that is how Kyle's "any concerns for the video?"
+              // vanished off his board on Sep 14.
+              //
+              // The TITLE is the one field that still moves with the newest
+              // tag, on purpose. Freezing it looked tidier and quietly broke a
+              // bell: mentionDone.ts pulls the tagger's name out of this string
+              // (`title.split(" tagged you")[0]`) to decide whose bell a
+              // hand-tick rings, so a frozen headline rings the FIRST tagger
+              // for ever and the second one is never told their tag was
+              // handled. The earlier ask is kept where it belongs — the
+              // summary, the description and the ask ledger.
+              summary: reopening ? data.summary : mergeMentionDetail(existing.summary, summary, 500),
+              description: reopening ? data.description : mergeMentionDetail(existing.description, text, 400),
+              priority: !reopening && existing.priority === "HIGH" ? "HIGH" : priority,
+              dueAt: reopening ? data.dueAt : earlierDue(existing.dueAt, data.dueAt),
+              sourceDetail: appendMentionAsk(existing.sourceDetail, ask, { reopening }),
+              status: "OPEN",
+              completedAt: null,
+            },
+          })
+          .catch(() => {});
+      } else await prisma.smartTask.create({ data }).catch(() => {});
       // Bell mirror: the tagged person (whatever their role), keyed per message
       // so every new tag rings even when the task above just refreshed. The
       // money clamp strips the body for creative roles automatically.
@@ -308,10 +360,16 @@ export async function postProjectMessage(
   // Answering in the thread closes YOUR OWN "tagged you" task (Kyle call, Sep
   // 16): 6 of 6 mention-* tasks were sitting OPEN on the Tasks page with the
   // reply already posted, because only a hand-tick ever closed one. Narrow on
-  // purpose — the poster's own companion key on this job, nobody else's —
-  // and it rings the tagger exactly as a hand-tick does (mentionDone.ts),
-  // landing them on this reply.
-  await completeOwnMentionTask(projectId, authorId, authorName, anchor);
+  // purpose — the poster's own companion key on this job, nobody else's — and
+  // narrower still since Sep 20: it now has to be an ANSWER to an ask this
+  // thread actually raised (see below).
+  await completeOwnMentionTask(projectId, authorId, {
+    messageId: msg.id,
+    parentId,
+    text,
+    taggedTmIds: mentions,
+    rosterNames: tagNames,
+  });
 
   revalidatePath(`/projects/${projectId}`);
   revalidatePath("/editing");
@@ -322,23 +380,85 @@ export async function postProjectMessage(
   return { ok: true, message: mentions.length ? "Posted & tagged." : "Posted." };
 }
 
-async function completeOwnMentionTask(projectId: string, authorTmId: string | null, authorName: string | null, anchor: string): Promise<void> {
+/**
+ * A post in the team chat ticks off the asks it ANSWERS on the poster's own
+ * tag row, and closes the row when nothing is left on it.
+ *
+ * Sep 20, from 358 N Church St. This used to close the row on every successful
+ * post, whatever the post said. Kyle asked John Mark for a cut with no
+ * voiceover; John Mark replied "May I know where to upload the no V.O Version
+ * I don't have a button for that in my Interface"; his task went COMPLETED 285
+ * milliseconds later and Kyle's bell read "John finished your tag". Nothing had
+ * been finished. Worse, because one row is shared by all six @mention
+ * composers, a post here was also closing asks that a Review Room cut note had
+ * raised — the surface where the answer actually had to go.
+ *
+ * So four gates, all of which have to pass:
+ *   · the row carries an ask ledger (mentions.ts). No ledger = a row minted
+ *     before today, or on a surface this thread cannot answer — a person ticks
+ *     that one off by hand, the way it always worked;
+ *   · the ask is a TEAM-CHAT ask. A cut note is answered on the cut note;
+ *   · the post is a real answer: a reply to the message that asked, or a post
+ *     that tags the person who asked and hands the ball back (their own row
+ *     opens in the same request, so the loop never dies with no owner);
+ *   · and it is not a bare "on it" or a question back — the exact shape that
+ *     bit John Mark. Reading that off the text means taking the @tags off
+ *     first, which is why the roster's names are passed in: guessing a surname
+ *     off a capital letter ate "What" out of "@Kyle What time do you need it"
+ *     and handed the question back as an answer.
+ * Anything else leaves the row exactly as it is. A manually assigned row is
+ * left alone outright: a human put that on someone's plate.
+ *
+ * The bell is deliberately gone from this path. "<name> finished your tag" is
+ * a claim, and it is not this code's to make — the tagger already hears the
+ * true sentence from notifyMessageReply ("↩︎ John replied to you on …") or
+ * from their own mention ping. A hand-tick still rings it (actions.ts), which
+ * is where a person really is saying the loop is done.
+ */
+async function completeOwnMentionTask(
+  projectId: string,
+  authorTmId: string | null,
+  post: { messageId: string; parentId: string | null; text: string; taggedTmIds: string[]; rosterNames: string[] },
+): Promise<void> {
   if (!authorTmId) return;
   try {
     const task = await prisma.smartTask.findUnique({
       where: { dedupeKey: `mention-${projectId}-${authorTmId}` },
-      select: { id: true, title: true, projectId: true, propertyAddress: true, dedupeKey: true, status: true },
+      select: { id: true, status: true, sourceDetail: true, assignedManually: true },
     });
     if (!task || task.status === "COMPLETED" || task.status === "CANCELLED") return;
+    if (task.assignedManually) return; // the invariant every engine here respects
+    const { parseMentionAsks, formatMentionAsks, mentionAsksAnsweredBy } = await import("@/lib/mentions");
+    const asks = parseMentionAsks(task.sourceDetail);
+    if (asks.length === 0) return;
+    const answered = mentionAsksAnsweredBy(asks, { ...post, posterTmId: authorTmId });
+    if (answered.length === 0) return;
+    const remaining = asks.filter((a) => !answered.some((x) => x.kind === a.kind && x.id === a.id));
+    if (remaining.length > 0) {
+      // Half answered is not answered. The row stays open carrying what is
+      // left — the Greenridge shape, where two different asks lived on one row.
+      //
+      // Same compare-and-swap as the close below, and for the same reason: the
+      // status was read several awaits ago, and a hand-tick or the 7-day
+      // janitor (tasks.ts) can have closed the row since. Trimming the ledger
+      // of a row somebody just finished would leave a settled task carrying a
+      // half-list nothing will ever read.
+      const trimmed = await prisma.smartTask
+        .updateMany({
+          where: { id: task.id, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+          data: { sourceDetail: formatMentionAsks(remaining) },
+        })
+        .catch(() => ({ count: 0 }));
+      if (trimmed.count === 0) return;
+      revalidatePath("/tasks");
+      revalidatePath("/queue");
+      return;
+    }
     const done = await prisma.smartTask.updateMany({
       where: { id: task.id, status: { notIn: ["COMPLETED", "CANCELLED"] } },
       data: { status: "COMPLETED", completedAt: new Date() },
     });
     if (done.count === 0) return;
-    const { notifyMentionDone } = await import("@/lib/mentionDone");
-    // quiet: the tagger hears about it, the OWNER/ADMIN desk does not — this
-    // path fires on every reply, not on a deliberate hand-tick (review, Sep 16).
-    await notifyMentionDone(task, authorName, { href: `/projects/${projectId}${anchor}`, quiet: true });
     revalidatePath("/tasks");
     revalidatePath("/queue");
   } catch { /* closing the tag is a courtesy — the reply is already posted */ }

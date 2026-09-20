@@ -2,6 +2,8 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { appBase } from "@/lib/appUrl";
 import { clip, stripInvisible, scrubMoney, escapeSlack } from "@/lib/text";
+import { addBusinessDayKeysET, etAt, etDayKey, etMinutesOfDay, isWeekdayET } from "@/lib/datetime";
+import { BUSINESS_DAY_END_HOUR } from "@/lib/turnaround";
 
 // ---------------------------------------------------------------------------
 // @mentions in note comments. The note/reply actions call notifyMentions with
@@ -194,6 +196,258 @@ async function editorTmIdMap(): Promise<Map<string, string>> {
   return map;
 }
 
+// ---------------------------------------------------------------------------
+// WHAT A TAG TASK IS CARRYING — the ask ledger (Sep 20).
+//
+// One row per (project, person) is Kyle's rule and it stays: he wants ONE "you
+// were tagged on this job" item, not a pile. What was wrong was that the row
+// only ever remembered the LAST tag. Both mint sites did
+// `update({ data: { ...data } })`, which replaced title, summary, description
+// and dueAt wholesale — so on 632 Greenridge Rd, John Mark's cut note ("here's
+// the revised version") landed on top of his own earlier team-chat question
+// ("please let me know if you have any concern for the video") and Kyle's
+// board simply stopped showing the question. Two asks, one row, one survivor.
+//
+// So the row now carries a LEDGER of the asks still outstanding on it, in
+// sourceDetail: `asks: msg:<messageId>@<askerTmId> note:<noteId>@<askerTmId>`.
+// The ledger is what tells the auto-close (messageActions.ts) which ask a
+// reply actually answered and which surface raised it — a team-chat post must
+// never close a cut-note ask, because the cut note is not where it was
+// answered. An ask leaves the ledger when it is answered; the row closes when
+// the ledger empties. Nothing is erased on the way: the summary keeps the
+// earlier ask underneath the new one.
+// ---------------------------------------------------------------------------
+
+/** One ask still outstanding on a tag task: the message or note that raised
+ *  it, and who raised it (null when the writer had no roster row). */
+export type MentionAsk = { kind: "msg" | "note"; id: string; asker: string | null };
+
+const ASKS_PREFIX = "asks:";
+/** A tag task is a to-do list of asks, not a transcript. Twelve is far past
+ *  anything seen on a real job (the busiest row ever held two). */
+const MAX_ASKS = 12;
+
+export function parseMentionAsks(sourceDetail: string | null | undefined): MentionAsk[] {
+  const raw = (sourceDetail ?? "").trim();
+  if (!raw.startsWith(ASKS_PREFIX)) return []; // no ledger = a row minted before Sep 20
+  const out: MentionAsk[] = [];
+  for (const token of raw.slice(ASKS_PREFIX.length).trim().split(/\s+/)) {
+    const m = /^(msg|note):([A-Za-z0-9_-]+)(?:@([A-Za-z0-9_-]+))?$/.exec(token);
+    if (!m) continue;
+    const kind: MentionAsk["kind"] = m[1] === "msg" ? "msg" : "note";
+    if (out.some((a) => a.kind === kind && a.id === m[2])) continue;
+    out.push({ kind, id: m[2], asker: m[3] ?? null });
+  }
+  return out;
+}
+
+export function formatMentionAsks(asks: MentionAsk[]): string {
+  const seen = new Set<string>();
+  const tokens: string[] = [];
+  for (const a of asks) {
+    const key = `${a.kind}:${a.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tokens.push(a.asker ? `${key}@${a.asker}` : key);
+  }
+  // Oldest first in, oldest first out: a row that somehow collects more than
+  // MAX_ASKS keeps the newest, and the dropped ones are still in the thread.
+  return `${ASKS_PREFIX}${tokens.slice(-MAX_ASKS).join(" ")}`;
+}
+
+/** The ledger a row should carry after this tag: the asks already on it, plus
+ *  this one. A CLOSED row starts a fresh loop — its old asks were settled. */
+export function appendMentionAsk(
+  sourceDetail: string | null | undefined,
+  ask: MentionAsk,
+  opts: { reopening?: boolean } = {},
+): string {
+  const prior = opts.reopening ? [] : parseMentionAsks(sourceDetail);
+  return formatMentionAsks([...prior.filter((a) => !(a.kind === ask.kind && a.id === ask.id)), ask]);
+}
+
+// A tag that ASKS something ("please re-cut the intro", "she wants a version
+// without the voiceover", anything with a question mark) is work. A tag that
+// TELLS you something ("here's the revised version") is an FYI. Until Sep 20
+// every tag was HIGH with a four-hour clock, so John Mark's "here's the revised
+// version" paged two people as urgently as a client's revision request, and
+// 12 of 12 live rows were HIGH. Deliberately generous about what counts as an
+// ask: the cost of calling an FYI urgent is noise, the cost of calling a real
+// request an FYI is a missed job.
+const ASK_CUES =
+  /\b(please|pls|can you|could you|would you|will you|let me know|lmk|asap|needs?|needed|wants?|wanted|asked for|asking for|requests?|requested|check|confirm|fix|redo|re-?cut|resend|send|upload|approve|reshoot|add|remove)\b/i;
+
+/**
+ * The @tags themselves are addressing, not content — "@Kyle Smith ok" is still
+ * just "ok", so they come out before the text is read for what it says.
+ *
+ * `names` is the ACTIVE ROSTER, and it is the whole trick. The first cut of
+ * this (Sep 20 morning) guessed instead: `@token` plus an optional following
+ * CAPITALISED word, on the theory that the capital was a surname. It fires on
+ * any capital, so "@Kyle What time do you need it" came out as "time do you
+ * need it" — the interrogative that isAcknowledgementOnly keys on was eaten
+ * with the name, and a question back read as an answer and closed the row.
+ * That is the exact 358 N Church St failure this whole file exists to stop,
+ * and it was not hypothetical: the Sep 14 cut note on 632 Greenridge Rd, "Hi
+ * @Jordan and @Kyle Here's the revised version…", lost its "Here's" the same
+ * way. Bare first-name tags are real — matchMentions resolves them on purpose
+ * (Jordan, Sep 15: "if I type at John or at Kyle").
+ *
+ * So: strip the names people actually have, longest first the way
+ * matchMentions matches them, and then take any leftover "@handle" as one
+ * token and NOTHING after it.
+ *
+ * `names` is therefore not optional in spirit — both mint sites and the
+ * auto-close pass the whole active roster. Empty means the roster read itself
+ * failed, and then a hand-typed "@Kyle Smith Where do I upload this" leaves
+ * "Smith" in front of the interrogative and reads as an answer. Rare, and it
+ * still has to clear the three other gates in completeOwnMentionTask before
+ * anything closes — but it is the reason the roster is threaded through
+ * instead of being inferred from the text.
+ */
+function withoutTags(text: string, names: string[] = []): string {
+  let t = stripInvisible(text);
+  for (const name of [...new Set(names.filter((n) => n && n.trim()))].sort((a, b) => b.length - a.length)) {
+    const esc = name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+    // Ends on a word boundary, so a roster "John Mark" does not swallow the
+    // "ets" out of a hand-typed "@John Markets".
+    t = t.replace(new RegExp(`@${esc}(?![A-Za-z0-9])`, "gi"), " ");
+  }
+  return t
+    .replace(/@[^\s,.:;!?]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function mentionAsksSomething(text: string, names: string[] = []): boolean {
+  const t = withoutTags(text, names);
+  return t.includes("?") || ASK_CUES.test(t);
+}
+
+export function mentionPriority(text: string, names: string[] = []): "HIGH" | "MEDIUM" {
+  return mentionAsksSomething(text, names) ? "HIGH" : "MEDIUM";
+}
+
+const BARE_ACK =
+  /^(ok|okay|k|kk|got it|gotcha|noted|sure|yes|yep|yup|thanks|thank you|ty|on it|working on it|will do|copy|copy that|understood|sounds good|perfect|great)$/i;
+const OPENS_A_QUESTION =
+  /^(who|what|whats|what's|where|wheres|where's|when|why|how|which|can|could|may|might|should|shall|would|will|is|are|am|do|does|did|have|has|any)\b/i;
+const REPORTS_WORK =
+  /\b(uploaded|posted|sent|delivered|attached|here'?s|here is|link|finished|completed|complete|fixed|re-?cut|rendered|ready|done)\b/i;
+const GREETING = /^(hi|hey|hello|good (morning|afternoon|evening))\b[\s,!.]*/i;
+
+/**
+ * Is this reply a bare acknowledgement or a question back, rather than an
+ * answer? (Sep 20, from 358 N Church St.) Kyle asked John Mark for a cut with
+ * no voiceover; John Mark replied "May I know where to upload the no V.O
+ * Version I don't have a button for that in my Interface" and the hub closed
+ * his task and rang Kyle "John finished your tag". He had not finished
+ * anything — he had asked where to put it. A question back and an "on it" are
+ * the two shapes that must never count as the work being done.
+ *
+ * `names` is the active roster — see withoutTags. The interrogative test is
+ * anchored to the start of the sentence, so a tag stripper that eats one word
+ * too many silently disarms it; that is why the names are threaded through
+ * rather than guessed at.
+ */
+export function isAcknowledgementOnly(text: string, names: string[] = []): boolean {
+  const t = withoutTags(text, names).replace(GREETING, "").trim();
+  if (!t) return true;
+  if (BARE_ACK.test(t.replace(/[\s.!]+$/, ""))) return true;
+  if (t.endsWith("?") || OPENS_A_QUESTION.test(t)) return true;
+  return !REPORTS_WORK.test(t) && t.length < 12; // "hmm", "…" — nothing said
+}
+
+/** The office day a tag is measured against: 9am to BUSINESS_DAY_END_HOUR ET,
+ *  weekdays. */
+export const MENTION_OPEN_HOUR = 9;
+/** An ask gets four WORKING hours, which is what the old raw +4h meant to be. */
+const MENTION_HIGH_MINUTES = 4 * 60;
+
+/**
+ * When a tag is due — four working hours for an ask, end of the next working
+ * day for an FYI (Sep 20).
+ *
+ * The old line was `new Date(Date.now() + 4 * 3600_000)`: wall clock, no ET, no
+ * weekday. A Friday 5pm tag was overdue before dinner and a Saturday tag was
+ * born late; 6 of the 12 live rows were due outside office hours or on a
+ * weekend. This is the same rule the promise dates use — a day of work is a
+ * day of work, not an elapsed-hours count (Jordan, Sep 18). It only ever
+ * pushes a deadline LATER than the wall clock did, so nothing that was on time
+ * becomes late.
+ */
+export function mentionDueAt(from: Date, priority: "HIGH" | "MEDIUM"): Date {
+  const openMin = MENTION_OPEN_HOUR * 60;
+  const closeMin = BUSINESS_DAY_END_HOUR * 60;
+  let key = etDayKey(from);
+  let startMin = etMinutesOfDay(from);
+  if (!isWeekdayET(from) || startMin >= closeMin) {
+    key = addBusinessDayKeysET(etAt(key, 12), 1); // tagged after hours → the clock starts tomorrow
+    startMin = openMin;
+  } else if (startMin < openMin) {
+    startMin = openMin;
+  }
+  // An FYI is not a same-day obligation: end of the next working day.
+  if (priority !== "HIGH") return etAt(addBusinessDayKeysET(etAt(key, 12), 1), BUSINESS_DAY_END_HOUR);
+  const end = startMin + MENTION_HIGH_MINUTES;
+  if (end <= closeMin) return etAt(key, Math.floor(end / 60), end % 60);
+  // Four working hours that run past 5pm finish tomorrow morning.
+  const spill = Math.min(end - closeMin, closeMin - openMin);
+  const m = openMin + spill;
+  return etAt(addBusinessDayKeysET(etAt(key, 12), 1), Math.floor(m / 60), m % 60);
+}
+
+/**
+ * Which of a tag row's outstanding asks a TEAM-CHAT post actually answers
+ * (Sep 20). Pure, so the rule can be read and drilled on its own.
+ *
+ * An ask is answered when the post replies to the message that raised it, or
+ * when the post tags the person who raised it and hands the ball back — their
+ * own row opens in the same request, so the loop always has an owner. A cut
+ * note ("note:") is never answered from here: the answer belongs on the cut.
+ * A bare "on it" and a question back answer nothing at all, whatever they
+ * reply to (358 N Church St).
+ */
+export function mentionAsksAnsweredBy(
+  asks: MentionAsk[],
+  post: {
+    messageId: string;
+    parentId: string | null;
+    text: string;
+    taggedTmIds: string[];
+    posterTmId: string;
+    /** The active roster's names, so the @tags come off the text precisely
+     *  before it is read (withoutTags). */
+    rosterNames?: string[];
+  },
+): MentionAsk[] {
+  if (isAcknowledgementOnly(post.text, post.rosterNames ?? [])) return [];
+  const tagged = new Set(post.taggedTmIds);
+  return asks.filter(
+    (a) =>
+      a.kind === "msg" &&
+      // This very post minted that ask — a self-tag does not answer itself.
+      a.id !== post.messageId &&
+      a.asker !== post.posterTmId &&
+      (a.id === post.parentId || (!!a.asker && tagged.has(a.asker))),
+  );
+}
+
+/** The earlier of two deadlines, nulls ignored. A second tag must never push
+ *  out the clock on an ask that is already running (Sep 20) — the row owes the
+ *  OLDEST outstanding thing. */
+export function earlierDue(a: Date | null | undefined, b: Date): Date {
+  return a && a < b ? a : b;
+}
+
+/** The new ask on top, as much of what was already there as the column holds
+ *  underneath. Replaces the old full-field overwrite. */
+export function mergeMentionDetail(previous: string | null | undefined, next: string, max: number): string {
+  const older = (previous ?? "").trim();
+  if (!older || older === next.trim()) return clip(next, max);
+  return clip(`${next.trim()} Still open from before: ${older}`, max);
+}
+
 export async function notifyMentions(opts: {
   text: string;
   projectId: string;
@@ -235,6 +489,10 @@ export async function notifyMentions(opts: {
     });
     const tagged = matchMentions(opts.text, people);
     if (tagged.length === 0) return [];
+    // The names the tag-stripping has to remove before the text is read for
+    // what it ASKS — the whole active roster, not just the people this tag hit,
+    // because a note can address someone who is already on the thread.
+    const rosterNames = people.map((p) => p.name);
 
     const { street, client, clientId } = await projectWhere(opts.projectId);
     const author = opts.authorName ?? "A teammate";
@@ -314,16 +572,30 @@ export async function notifyMentions(opts: {
 
       // Same open-tag task per (project, person) the team-message tags use —
       // deliberately the SAME dedupeKey so one person has ONE "you were
-      // tagged on this job" item however they were tagged.
+      // tagged on this job" item however they were tagged. What it is CARRYING
+      // is per-ask since Sep 20 (the ask ledger above): this note goes on the
+      // row, it does not replace what was already on it.
+      const priority = mentionPriority(opts.text, rosterNames);
+      const summary = `${author} tagged you in ${opts.context ?? "a note"} on ${street}: “${opts.text.slice(0, 200)}”. Take any needed action and reply on the note.${noteLink}`;
+      // Which ask this is, so the reply that answers it can be recognised. A
+      // note id when the surface has one; a team-chat message id when it is a
+      // message; otherwise the text's own hash — never nothing, because an ask
+      // with no identity cannot be ticked off and would hold the row open.
+      const ask: MentionAsk = {
+        kind: opts.noteId || !opts.messageId ? "note" : "msg",
+        id: opts.noteId ?? opts.messageId ?? simpleHash(opts.text),
+        asker: opts.authorTmId ?? null,
+      };
       const data = {
         taskType: "internal_instruction",
         title: `${author} tagged you — ${street}`.slice(0, 120),
-        summary: `${author} tagged you in ${opts.context ?? "a note"} on ${street}: “${opts.text.slice(0, 200)}”. Take any needed action and reply on the note.${noteLink}`.slice(0, 500),
+        summary: clip(summary, 500),
         description: opts.text.slice(0, 400),
         reasonCreated: `You were tagged in ${opts.context ?? "a note"}`,
         source: "team",
-        priority: "HIGH" as const,
-        dueAt: new Date(Date.now() + 4 * 3600_000),
+        priority,
+        dueAt: mentionDueAt(new Date(), priority),
+        sourceDetail: formatMentionAsks([ask]),
         projectId: opts.projectId,
         clientId,
         ownerId: t.id,
@@ -333,8 +605,38 @@ export async function notifyMentions(opts: {
         dedupeKey: `mention-${opts.projectId}-${t.id}`,
       };
       const existing = await prisma.smartTask.findUnique({ where: { dedupeKey: data.dedupeKey } });
-      if (existing) await prisma.smartTask.update({ where: { id: existing.id }, data: { ...data, status: "OPEN", completedAt: null } }).catch(() => {});
-      else await prisma.smartTask.create({ data }).catch(() => {});
+      if (existing) {
+        const reopening = existing.status === "COMPLETED" || existing.status === "CANCELLED";
+        await prisma.smartTask
+          .update({
+            where: { id: existing.id },
+            data: {
+              ...data,
+              // THE TITLE STAYS ON THE NEWEST TAGGER, AND IT IS LOAD-BEARING.
+              // An earlier cut of this froze the headline on a re-tag, to keep
+              // the first ask visible. That silently redirected a bell:
+              // mentionDone.ts reads the tagger out of this very string
+              // (`title.split(" tagged you")[0]`, matched against the roster)
+              // to decide whose bell a hand-tick rings — so a frozen title
+              // rings whoever tagged FIRST and never tells the second person
+              // their tag was handled. History belongs in the summary, the
+              // description and the ask ledger below, which is where
+              // mergeMentionDetail puts it; it does not belong in a field
+              // another module parses for an identity.
+              summary: reopening ? data.summary : mergeMentionDetail(existing.summary, summary, 500),
+              description: reopening ? data.description : mergeMentionDetail(existing.description, opts.text, 400),
+              // The row owes the OLDEST outstanding thing, so an FYI can never
+              // cool down — or push out the clock on — a question already
+              // running on it.
+              priority: !reopening && existing.priority === "HIGH" ? "HIGH" : priority,
+              dueAt: reopening ? data.dueAt : earlierDue(existing.dueAt, data.dueAt),
+              sourceDetail: appendMentionAsk(existing.sourceDetail, ask, { reopening }),
+              status: "OPEN",
+              completedAt: null,
+            },
+          })
+          .catch(() => {});
+      } else await prisma.smartTask.create({ data }).catch(() => {});
 
       // Visibility needs the person's APP role in the audience (the bell API
       // matches audience AND userKey), so the tm: row stays broad. Roles are
