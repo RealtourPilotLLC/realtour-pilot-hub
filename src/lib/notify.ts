@@ -220,6 +220,141 @@ const BELL_RULES: Record<string, BellRule> = {
 };
 
 // ---------------------------------------------------------------------------
+// WHEN A BELL ROW IS ALLOWED TO BUZZ A PHONE ON A DAY NOBODY WORKS
+// (Sep 20 2026, audit F07 — narrowed the same day after review).
+//
+// coverage.ts landed on Sep 18 with the rule Jordan asked for — "queue routine
+// alerts for the next covered period" — but only ONE helper ever consulted it
+// (notifyStaffSms, and it has two callers). The personal bridge below, which
+// carries essentially all of the traffic, never imported it. What that cost,
+// counted off the delivery log: on Saturday Sep 19 a "cut ready" went out as a
+// DM AND a text to Jordan, Kyle and Harrison at 09:26 and again at 12:22, a
+// "review approved" followed on the Sunday, and 23 bridge deliveries in all
+// landed on a Saturday or a Sunday. That weekend wave is the whole of what
+// this block exists to stop.
+//
+// WHAT IS *NOT* HELD, AND WHY — the first cut of this fix reached further and
+// the review was right to send it back. It deferred every routine alert raised
+// outside Mon–Fri 9–6, which swept up weekday evenings too: a 7:15pm cut_ready
+// to Jordan on Wed Sep 16 and a 7:34pm one on Thu Sep 17 would have waited
+// until 9am the next morning, adding fourteen hours to the review→delivery
+// clock the premium promise is measured against. Worse, it would have done so
+// over the top of a switch he set by hand — every one of the six active roster
+// rows has a saved notify-prefs matrix, and his review_ready row is
+// {slack:true, sms:true}, the Sep 11 "make sure I get a text when a video is
+// in review" ask in matrix form. An automated sweep does not get to quietly
+// undo a person's own decision; that is the assignedManually invariant wearing
+// a different hat.
+//
+// So the question this asks is narrower and it is about the DAY, not the hour:
+// is this a day the rota covers at all? A Saturday is nobody's shift, and
+// holding until Monday 9am is exactly the queue Jordan described. A Tuesday
+// evening is the same working day as the Tuesday morning — the person whose
+// switch is on is still the person who wanted to know, and the 7:00–22:00
+// texting window in queueStaffSms already keeps it off their phone overnight.
+// Note what that implies about the reviewer's other suggestion, to skip the
+// hold for anyone with an explicitly saved matrix: all six active roster rows
+// ARE explicit (verified against production), so that gate would hold nothing
+// for anybody — a fix that reads as a fix and does nothing. The day rule is
+// the honest narrow version.
+//
+// ROUTINE = work arriving in a lane somebody reads during the workday: raws
+// in, a cut ready, an edit finished, a verdict on a cut. On an uncovered day,
+// those wait. EVERYTHING ELSE IS TREATED AS URGENT, which is byte-for-byte
+// today's behaviour — a kind nobody thought to classify must never go quiet by
+// accident, the same fail-open rule BELL_RULES follows. A tag, a message, a
+// revision ask, a reschedule, a cull, a task landing on your name: all
+// unlisted, all unchanged. Field kinds are unlisted ON PURPOSE (see
+// review_feedback below): the office rota is not the field's calendar.
+//
+// "Urgent" here means only "send now". routeAlert's on-call redirect is
+// deliberately NOT applied: a bridge row is addressed to ONE named human
+// about their own work, so handing James's tag to whoever is on call would
+// deliver it to the wrong person entirely. The redirect stays where it makes
+// sense — a role page (notifyStaffSms).
+//
+// TWO CARVE-OUTS, both of which would be regressions without them:
+//  · A recipient on their OWN clock is not governed by the office rota.
+//    Mon–Fri is the wrong calendar for Manila — Saturday is a working day for
+//    Kim and John Mark, and 4 of the weekend DMs in the log were theirs. Their
+//    quiet hours already run on their own timezone (queueStaffSms's `tz`);
+//    that stays their only gate.
+//  · Holding is only a hold when the alert is actually KEPT. The text queue
+//    can keep a line (PendingSms.deferUntil, since Sep 18); a Slack DM has
+//    nowhere to wait, so the DM is suppressed ONLY when the same sentence was
+//    successfully held as a text. If nothing could be held — no text switch,
+//    no US number, or Kyle's roster phone being the office line — the DM goes
+//    now exactly as before. Quieter than today is the goal; silent never is.
+//
+// KNOWN LIMIT, disclosed rather than papered over (review, Sep 20): a held
+// line can still die in the queue. parkUntextableSms retires every unsent line
+// for a member whose roster phone is edited or blanked before the flush, and
+// flushMemberSms's RTP-08 "held" outcome (OpenPhone never confirmed) keeps the
+// rows claimed and never re-queues them. In either case a held alert ends at
+// the bell with no DM and no relay, where before it had already been DM'd.
+// Narrowing the hold to uncovered DAYS is what keeps that exposure to the
+// handful of weekend rows above rather than to every evening. Closing it
+// properly means relaying from the flusher's park/held paths for any line
+// carrying a notificationId — the flusher is a different owner's surface, so
+// it is on the handoff list, not smuggled in here.
+// ---------------------------------------------------------------------------
+const OFFICE_TZ = "America/New_York";
+
+const ROUTINE_KINDS = new Set<string>([
+  "raws_landed", // the files are in; the edit starts on a working day
+  "edit_assigned",
+  "edit_started",
+  "edit_finished",
+  "review_submitted", // a cut came back for a verdict
+  "review_changes", // …and the changes asked for on it
+  "review_approved", // the editor's loop closing
+  "cut_ready", // the Saturday 09:26 and 12:22 pages, by name
+  "cut_change_ask", // the photographer asking the editor for a tweak
+  // review_feedback is deliberately ABSENT (review, Sep 20). It was listed in
+  // the first cut and it does not belong: notifyPrefs maps it to shoot_change,
+  // BELL_RULES calls it "capture feedback the photographer has to fix", and it
+  // is addressed to the person standing at the property. 23 Saturday shoots in
+  // the last 180 days say the office rota is the wrong calendar for it — "you
+  // missed the basement", dated to Monday 9am, reaches a photographer two days
+  // and one job too late. If the field ever wants a hold it needs a field
+  // coverage window, not this one.
+]);
+
+/** The instant a routine alert should wait for, or null to send it now.
+ *  ONE definition, shared by both bridges and by the acceptance drill
+ *  (scripts/_drill/fix-F07.ts) — the same reason dueSmsWhere is exported: a
+ *  second copy of this rule in a test is exactly how the two drift apart.
+ *  `at` exists so the drill can replay a real Saturday instead of asking what
+ *  the answer happens to be right now.
+ *
+ *  It asks routeAlert's question one notch coarser on purpose: routeAlert
+ *  defers anything outside the covered HOURS, which is right for an unattended
+ *  cron pager and wrong for a person's own subscription (see the block above).
+ *  Here only a day the rota does not cover at all holds the alert, so the
+ *  answer changes for a Saturday and never for a Tuesday evening. A rota set
+ *  to cover every day therefore holds nothing — correctly: there is no day
+ *  left for the alert to wait for.
+ *
+ *  Never throws: a coverage read that fails sends the alert rather than
+ *  swallowing it (rule 3 in coverage.ts — silence is the one outcome an alert
+ *  must never have). */
+export async function holdUntilCovered(kind: string, tz: string | undefined, at: Date = new Date()): Promise<Date | null> {
+  if (!ROUTINE_KINDS.has(kind)) return null;
+  if (tz && tz !== OFFICE_TZ) return null; // not on the office clock (Manila)
+  try {
+    const { coverageRules, nextCoveredMomentAt } = await import("@/lib/coverage");
+    const { isWeekdayET } = await import("@/lib/datetime");
+    const c = await coverageRules();
+    if (!c.weekdaysOnly || isWeekdayET(at)) return null; // a day somebody works
+    const until = nextCoveredMomentAt(at, c);
+    return until > at ? until : null;
+  } catch (e) {
+    console.warn("coverage check failed (sending now)", kind, e);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // THE CHANNEL BRIDGE (Sep 15). A person-addressed bell row — tm:<id>, or
 // editor:<key> resolved through the roster — that is NEW also goes out on the
 // channels THAT PERSON has switched on for the row's event: the matrix on
@@ -228,15 +363,22 @@ const BELL_RULES: Record<string, BellRule> = {
 // getting pinged on slack when they are tagged in a message or a message was
 // sent on their project. James and harrison can get texted with the links
 // when they are tagged in a message."
-//   · Slack DM — immediately (Slack has its own do-not-disturb): the
-//     emitter's own sentence (slackDm — who, where, the summary, the link),
-//     else the title and the link.
+//   · Slack DM — the emitter's own sentence (slackDm — who, where, the
+//     summary, the link), else the title and the link. Immediate, EXCEPT for
+//     a routine kind raised on a day the rota does not cover at all, where the
+//     same sentence was successfully held as a text (see the coverage block
+//     above; until Sep 20 this was unconditionally immediate on the grounds
+//     that Slack has its own do-not-disturb — true, and it still did not stop
+//     the Saturday Sep 19 "cut ready" wave).
 //   · Text — the same sentence in plain-text form, through the staff SMS
 //     queue below: 7:00–22:00 quiet hours (ET; an editor's own timezone),
 //     the 30-minute digest, the "⚙️ RealTour Hub:" prefix, TEAM MEMBERS ONLY
 //     (the number comes off the roster row, never a client contact — the
-//     drafts-only policy for client texting is not weakened here), and never
-//     our own OpenPhone line.
+//     drafts-only policy for client texting is not weakened here), never our
+//     own OpenPhone line, and — for a routine kind raised on a Saturday or a
+//     Sunday — Monday 9am on the line instead of a buzz at the weekend. An
+//     evening on a working day is untouched: the texting window already owns
+//     that, and the switch is the person's own.
 //   Both go when both are on. ONE delivery per person per event, on whichever
 //   of their rows is new first (an editor is addressed twice — tm: and
 //   editor: — and is one human). A tag or reply row with NO sentence is a
@@ -750,13 +892,30 @@ export type StaffSmsResult = { teamMemberId: string; name: string; outcome: "sen
 /** Anyone we could not reach still gets the alert — via Slack ops. Lifted out
  *  of notifyStaffSms (Sep 18) so the deferred path shares it: a routine alert
  *  the text queue could not hold must still land somewhere. "deferred" is a
- *  success — the line is queued and dated, not missed. */
-async function relayUnreached(out: StaffSmsResult[], text: string): Promise<void> {
+ *  success — the line is queued and dated, not missed.
+ *
+ *  Since Sep 20 (audit F07) the PERSONAL bridge shares it too, with a
+ *  one-person list: bridgePerson and bridgeBroadcast used to write a
+ *  "slack failed" row and move on, which for a Slack-only teammate meant the
+ *  alert ended at the bell. One relay policy for both paths, here.
+ *
+ *  It is honest about its own limit: opsAlert is Slack as well, so in a real
+ *  Slack outage the relay fails with the DM it is relaying. It is the last
+ *  channel we have, not a guarantee — which is why the deferred text and the
+ *  bell row both stay exactly where they are.
+ *
+ *  `verb` because the line has to name the right problem (review, Sep 20).
+ *  notifyStaffSms really is a texting path, so "Couldn't text" is accurate
+ *  there. On the bridge the failing leg is often a Slack DM to somebody with
+ *  no text switch at all — Kim Miguel has none — and an ops line reading
+ *  "Couldn't text Kim Miguel" sends the office hunting for a phone problem
+ *  that does not exist. */
+async function relayUnreached(out: StaffSmsResult[], text: string, verb: "text" | "reach" = "text"): Promise<void> {
   const unreached = out.filter(
     (r) => r.outcome !== "sent" && r.outcome !== "slack" && r.outcome !== "quiet-hours" && r.outcome !== "deferred",
   );
   if (unreached.length) {
-    await opsAlert(`⚠️ Couldn't text ${unreached.map((r) => `${r.name} (${r.outcome})`).join(", ")} — relaying: ${text}`);
+    await opsAlert(`⚠️ Couldn't ${verb} ${unreached.map((r) => `${r.name} (${r.outcome})`).join(", ")} — relaying: ${text}`);
   }
 }
 
@@ -1002,6 +1161,12 @@ const SENTENCE_EVENTS = new Set<string>(["mention", "project_message"]);
 //     and Slack wanted → the weekly People nudge instead;
 //   · text — the sentence's plain-text form (or "title → link") through the
 //     staff queue, quiet hours in the recipient's timezone.
+// Since Sep 20 (audit F07) it also asks the two questions notifyStaffSms has
+// always asked and this path never did: is this a day anybody works, for a
+// ROUTINE kind (holdUntilCovered — if not, the text is dated to Monday morning
+// and the DM waits with it; an evening on a working day is left alone), and
+// did anything actually get through (if not, relayUnreached names the person
+// on the ops channel instead of leaving the alert in a bell).
 // Returns what went out for this person — on THIS row or an earlier one in
 // the same call. A refused DM counts as not sent. Best-effort by contract:
 // the note or message that carried the ping is already saved, so nothing
@@ -1046,8 +1211,53 @@ async function bridgePerson(
     if (!want.slack && !want.sms) return state;
     const link = `${appBase()}${ctx.href}`;
     const meta = { kind, notificationId: ctx.notificationId };
+    // The recipient's own clock, read BEFORE either channel (Sep 20): it is
+    // half of the coverage answer as well as the texting-hours one, and the
+    // Slack leg needs the answer too.
+    const editorKey = ctx.editorKey ?? (await editorKeysByTeamMemberId()).get(personId) ?? null;
+    const { editorMeta, DEFAULT_EDITOR_TZ } = await import("@/lib/editors");
+    const tz = editorKey ? editorMeta(editorKey)?.tz ?? DEFAULT_EDITOR_TZ : undefined;
+    const hold = await holdUntilCovered(kind, tz);
+    // THE TEXT GOES FIRST when the alert is being held (Slack went first until
+    // Sep 20, audit F07). The digest queue is the only channel that can keep a
+    // line until Monday, so whether it took the line is what decides whether
+    // suppressing the DM is a hold or a drop. In cover — the ordinary case —
+    // nothing is held and the two legs are as independent as they always were.
+    if (want.sms) {
+      const { ownerTeamMemberIds } = await import("@/lib/smsPrefs");
+      const isOwner = (await ownerTeamMemberIds()).includes(personId);
+      // The sentence, as text. ownerSms is read only for the owner: on a
+      // non-owner it was built unscrubbed (it never used to reach anyone
+      // else) — slackDm is the money-safe one for everybody.
+      const line = t.slackDm ? smsLineFromSlackDm(t.slackDm) : isOwner && t.ownerSms ? t.ownerSms : `${ctx.title} → ${link}`;
+      // Quiet hours in the recipient's own timezone: a Manila editor's night
+      // is exactly the ET texting window. `hold` is the coverage answer on top
+      // of that — null for everyone on their own clock, and for every kind
+      // that is not routine.
+      state.sms = await queueStaffSms(personId, line, tz, meta, hold);
+    }
+    // Did the Slack leg ever actually get tried? A person who wants Slack and
+    // has no ID on file is a CONFIGURATION gap, and the codebase already
+    // handles it weekly (nudgeMissingSlackId, throttled, on the People page).
+    // The relay at the bottom must not also fire on it — one new hire would
+    // otherwise produce an unthrottled ops line per notification on top of
+    // that nudge, for a week, saying nothing the nudge does not (review,
+    // Sep 20).
+    let slackIdMissing = false;
     if (want.slack) {
-      if (member.slackId) {
+      if (hold && state.sms) {
+        // Held, not dropped: the same sentence is in the digest queue dated to
+        // the next covered moment, and the bell row is already there. A DM
+        // buzzes a phone exactly like a text does, which is why notifyStaffSms's
+        // own defer branch does not try Slack either.
+        await logDelivery({
+          ...meta,
+          teamMemberId: personId,
+          channel: "slack",
+          status: "skipped",
+          detail: `routine alert, nobody works today — held as a text until ${hold.toISOString()}`,
+        });
+      } else if (member.slackId) {
         const { slackDmUserDetailed } = await import("@/lib/integrations/slack");
         const { escapeSlack } = await import("@/lib/text");
         const dm = await slackDmUserDetailed(member.slackId, t.slackDm ?? `${escapeSlack(ctx.title)}\n${link}`);
@@ -1058,23 +1268,36 @@ async function bridgePerson(
           await logDelivery({ ...meta, teamMemberId: personId, channel: "slack", status: "failed", detail: dm.error });
         }
       } else {
+        slackIdMissing = true;
         await logDelivery({ ...meta, teamMemberId: personId, channel: "slack", status: "skipped", detail: "no Slack ID on file" });
         await nudgeMissingSlackId(personId, member.name);
       }
     }
-    if (want.sms) {
-      const { ownerTeamMemberIds } = await import("@/lib/smsPrefs");
-      const isOwner = (await ownerTeamMemberIds()).includes(personId);
-      // The sentence, as text. ownerSms is read only for the owner: on a
-      // non-owner it was built unscrubbed (it never used to reach anyone
-      // else) — slackDm is the money-safe one for everybody.
-      const line = t.slackDm ? smsLineFromSlackDm(t.slackDm) : isOwner && t.ownerSms ? t.ownerSms : `${ctx.title} → ${link}`;
-      // Quiet hours in the recipient's own timezone: a Manila editor's night
-      // is exactly the ET texting window.
-      const editorKey = ctx.editorKey ?? (await editorKeysByTeamMemberId()).get(personId) ?? null;
-      const { editorMeta, DEFAULT_EDITOR_TZ } = await import("@/lib/editors");
-      const tz = editorKey ? editorMeta(editorKey)?.tz ?? DEFAULT_EDITOR_TZ : undefined;
-      state.sms = await queueStaffSms(personId, line, tz, meta);
+    // NOBODY WAS REACHED (Sep 20, audit F07). notifyStaffSms has always ended
+    // in relayUnreached — anyone it could not reach is named on the ops channel
+    // with the alert itself — and this bridge, which carries roughly a hundred
+    // times that traffic, had no equivalent at all: a DM that failed to somebody
+    // with their text switch off wrote one "failed" row and the function moved
+    // on. Kim Miguel is exactly that person (Slack-only; her +63 number is
+    // untextable by policy and her matrix has job_ping sms off), so a Slack
+    // outage during a revision push would have left those asks in a bell and
+    // nowhere else. Same helper, same policy, one place. A HELD line is not
+    // unreached — it is dated, and state.sms says so.
+    //
+    // Only when a channel was genuinely ATTEMPTED and came back with nothing:
+    // a missing Slack ID belongs to the weekly nudge above, not to an ops line
+    // per event. And money is scrubbed on the way out even though no
+    // person-addressed title carries any today — the same guard, for the same
+    // reason, as the sentence bridgeBroadcast relays fifty lines below: the ops
+    // channel is not the owner's DM.
+    const slackTried = want.slack && !slackIdMissing;
+    if (!state.slack && !state.sms && (slackTried || want.sms)) {
+      const { scrubMoney } = await import("@/lib/text");
+      await relayUnreached(
+        [{ teamMemberId: personId, name: member.name, outcome: "failed" }],
+        scrubMoney(`${ctx.title} → ${link}`),
+        "reach",
+      );
     }
     return state;
   } catch (e) {
@@ -1113,6 +1336,13 @@ async function bridgeBroadcast(
     if (ctx.roles.includes("OWNER")) for (const id of owners) ids.add(id);
     if (ctx.roles.includes("ADMIN")) for (const id of await officeTeamMemberIds()) ids.add(id);
     const meta = { kind, notificationId: ctx.notificationId };
+    // One coverage answer for the whole broadcast (Sep 20, audit F07): the
+    // kind is the same for everyone on it and the office is on the office
+    // clock, so the rota is asked once rather than per person. This is the
+    // path the Saturday Sep 19 09:26 and 12:22 "cut ready" DMs and texts to
+    // Jordan, Kyle and Harrison came down — the wave the hold is scoped to,
+    // and the reason it is scoped to weekend days and nothing else.
+    const hold = await holdUntilCovered(kind, undefined);
     for (const id of ids) {
       if (delivered.has(id)) continue;
       const state: Delivery = { slack: false, sms: false };
@@ -1127,8 +1357,23 @@ async function bridgeBroadcast(
       // Sep 16 — the Room's sentence carries no money today, but the guard the
       // contract on NotifyTarget.ownerSms promises must still be here).
       const line = owners.has(id) ? sentence : scrubMoney(sentence);
+      // Text first, for the reason bridgePerson carries in full: only the
+      // digest queue can actually hold a line until Monday, so it answers
+      // first and the DM reads that answer.
+      if (want.sms) state.sms = await queueStaffSms(id, line, undefined, meta, hold);
+      // A missing Slack ID is the weekly People nudge's business, not the
+      // relay's — see the same flag in bridgePerson (review, Sep 20).
+      let slackIdMissing = false;
       if (want.slack) {
-        if (member.slackId) {
+        if (hold && state.sms) {
+          await logDelivery({
+            ...meta,
+            teamMemberId: id,
+            channel: "slack",
+            status: "skipped",
+            detail: `routine alert, nobody works today — held as a text until ${hold.toISOString()}`,
+          });
+        } else if (member.slackId) {
           const { slackDmUserDetailed } = await import("@/lib/integrations/slack");
           const dm = await slackDmUserDetailed(member.slackId, escapeSlack(line));
           state.slack = dm.ok;
@@ -1138,11 +1383,17 @@ async function bridgeBroadcast(
             await logDelivery({ ...meta, teamMemberId: id, channel: "slack", status: "failed", detail: dm.error });
           }
         } else {
+          slackIdMissing = true;
           await logDelivery({ ...meta, teamMemberId: id, channel: "slack", status: "skipped", detail: "no Slack ID on file" });
           await nudgeMissingSlackId(id, member.name);
         }
       }
-      if (want.sms) state.sms = await queueStaffSms(id, line, undefined, meta);
+      // Nobody reached, same relay as bridgePerson and notifyStaffSms (Sep 20).
+      // Money-scrubbed regardless of who this row was for: the ops channel is
+      // not the owner's DM.
+      if (!state.slack && !state.sms && ((want.slack && !slackIdMissing) || want.sms)) {
+        await relayUnreached([{ teamMemberId: id, name: member.name, outcome: "failed" }], scrubMoney(line), "reach");
+      }
     }
   } catch (e) {
     console.warn("broadcast bridge failed (bell row kept)", kind, e);
