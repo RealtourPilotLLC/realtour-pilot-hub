@@ -21,6 +21,13 @@ import {
   type AdditionalShoot,
 } from "@/app/upload/additionalShoots";
 import { etAt, etDate, etDayKey, etDayStartUtc } from "@/lib/datetime";
+// The Sep 2 pay gate — the day from which a shoot is expected to carry a
+// photographer's submit at all. Static, the way both upload pages take it:
+// this file loads its heavy helpers lazily inside the branch that needs them,
+// but this one is a single parsed date read on every finalize, and reaching
+// for the whole payroll engine through a dynamic import to get at a number is
+// ceremony with nothing behind it.
+import { DEBRIEF_PAY_GATE_FROM } from "@/lib/payroll";
 import { revalidatePath } from "next/cache";
 import { ProjectStatus, DeliverableStatus, ActivityType } from "@prisma/client";
 import { saveUpload, deleteFile } from "@/lib/storage";
@@ -351,8 +358,9 @@ export async function finalizeUpload(
   },
 ): Promise<{ pdfPath?: string; needsConfirm?: boolean; warning?: string; blocked?: string }> {
   await requireShootAccess(projectId);
-  // First finalize or a re-submit? The raws-landed handoff below only fires on
-  // the FIRST completed upload (the transition), never on edits/re-submits.
+  // First finalize or a re-submit? The debrief gates and the raws-landed
+  // handoff below only fire on the FIRST human submit (the transition), never
+  // on edits/re-submits — see `firstFinalize` under the query for what counts.
   const prior = await prisma.project.findUnique({
     where: { id: projectId },
     select: {
@@ -378,7 +386,6 @@ export async function finalizeUpload(
       deliverables: { where: { removedFromOrderAt: null }, select: { type: true, label: true, notCompletedReason: true } },
     },
   });
-  const firstFinalize = !prior?.uploadedAt;
   // WHO is submitting (Jordan, Sep 15: the office can now re-open a submitted
   // page from /upload history "and also make adjustments"). A submitted page
   // is the photographer's word that the footage is in, and everything that
@@ -389,6 +396,35 @@ export async function finalizeUpload(
   // (debriefSubmittedAt unset) or when the submitter is the shoot's own
   // photographer. Resolved once here; every side effect below reads it.
   const everSubmitted = !!prior?.debriefSubmittedAt;
+  // Is this the first HUMAN submit? This used to read `!prior.uploadedAt`, and
+  // that was wrong: uploadedAt means "the raws landed", and the hourly status
+  // sweep stamps it off a Dropbox file count alone (projectStatus.ts,
+  // rawsDetected — shoot happened, no hold, files in the folder; it never looks
+  // at debriefSubmittedAt). So on any job where the footage sat in the folder
+  // across an hour boundary before the photographer pressed Submit, the stamp
+  // was already there, this flag was already false, and every debrief gate
+  // below went silently inert on the photographer's genuine first submit —
+  // 12 of the 36 submits since the Sep 2 pay gate, the widest of them 5 days
+  // apart (5642 Limeport Rd, Emmaus). Nothing bad reached an editor only
+  // because UploadPortal refuses to call this action while anything is
+  // unanswered; the server had no rule left. debriefSubmittedAt is the one
+  // stamp finalizeUpload itself writes, so it is the only one that can tell a
+  // human submit from a folder read — schema.prisma and queueWaiting.ts both
+  // already say so.
+  //
+  // The escape hatch that the old predicate gave by accident is deliberate
+  // now: 83 production jobs shot before the Sep 2 pay gate carry uploadedAt
+  // with no submit, because back then there was no submit step — the sweep's
+  // stamp is the only record they ever finished. Demanding retroactive cull,
+  // shot-order and removal answers the first time the office re-opens one of
+  // those is exactly the trap the gate comment below warns about. Same test
+  // UploadPortal.tsx uses to decide a legacy page reads as already submitted.
+  const shootMs: number | null = prior?.shootDate?.getTime() ?? null;
+  const legacyDone =
+    !everSubmitted &&
+    !!prior?.uploadedAt &&
+    (shootMs == null || shootMs < DEBRIEF_PAY_GATE_FROM);
+  const firstFinalize = !everSubmitted && !legacyDone;
   const { getCurrentUser } = await import("@/lib/auth/user");
   const me = await getCurrentUser().catch(() => null);
   let submitterIsPhotographer = false;
@@ -415,7 +451,9 @@ export async function finalizeUpload(
   // re-submits — nobody re-types a form to fix a typo in the brief.
   // Gates apply to the FIRST finalize only — a job already submitted once
   // (or delivered weeks ago and re-opened for a brief tweak) keeps its prior
-  // answers and never demands retroactive debrief data (review finding).
+  // answers and never demands retroactive debrief data (review finding), and
+  // a pre-pay-gate shoot that never had a submit step is left alone entirely
+  // (see `legacyDone` above).
   if (prior && firstFinalize) {
     const wantsPhotosGate = liveDeliverables.some((d) => ["PHOTOS", "DRONE", "TWILIGHT"].includes(d.type));
     const wantsVideoGate = liveDeliverables.some((d) => d.type === "VIDEO" || d.type === "SOCIAL_REEL");
@@ -442,7 +480,21 @@ export async function finalizeUpload(
     }
     // What this order's video step demands — computed from LIVE lines only
     // (canceled items filtered in the query; excused deliverables filtered
-    // here), mirroring the client so the two can never disagree.
+    // here). It does NOT quite mirror the client, whatever this comment used
+    // to claim: the portal resolves the same spec from the Deliverable
+    // .videoStyle stamp (upload/[id]/page.tsx, specForStyle) and only falls
+    // back to product names, while the gate here is name-based throughout.
+    // When a stamp and the names disagree, the server can demand a brief the
+    // browser never asked for — and the photographer is then stuck in the
+    // field, blocked by a step their screen doesn't show. Measured against
+    // production Sep 20 2026 (scripts/_drill/fix-F06-verify.ts): of 630 jobs
+    // with video and no submit on record, four resolve differently and three
+    // of those would block — all four pre-pay-gate, all three already reachable
+    // before the first-submit predicate above was corrected, and none of the 16
+    // post-pay-gate ones diverge at all. Re-run that replay after the next
+    // Aryeo product mapping change. The cure is lifting specForStyle into
+    // lib/pipeline so both sides read the stamp — page.tsx's own comment
+    // already anticipates this one "once it reads the stamp".
     const { videoStepSpec } = await import("@/lib/pipeline");
     const { videoTier } = await import("@/lib/projectStatus");
     const { isMonthlyContentJob } = await import("@/lib/pipeline");
@@ -791,6 +843,13 @@ export async function finalizeUpload(
   // Aryeo/Dropbox and calls the idempotent ensureEditorHandoff inside. A
   // submit that just released the office's Waiting hold runs it too (Sep 11):
   // the editors are owed a fresh "Raws in" the moment the job moves on.
+  // This reads the human-submit `firstFinalize` now. On the old raws-landed
+  // one it skipped any job the sweep had already stamped, and since that same
+  // sweep pass had itself run the handoff off an empty debrief, the editor's
+  // card could keep saying "Waiting on the flow and vision for the edit" for
+  // up to an hour after the photographer had in fact written it. Re-running is
+  // safe: ensureEditorHandoff is idempotent (activity marker + dedupeKeys), so
+  // no second bench ping and no second edit_video card.
   if (firstFinalize || holdReleased) {
     try {
       const { syncProjectStatuses } = await import("@/lib/projectStatus");
