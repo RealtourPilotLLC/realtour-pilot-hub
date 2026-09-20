@@ -898,6 +898,91 @@ export async function setQueueStatus(projectId: string, label: string): Promise<
   // jobs carry evidence that names a missing category right now — 14 of them
   // the Video (Sep 2 probe). This button stops adding to that pile.
   if (status === "DELIVERED") {
+    // A MERGED-IN VIDEO IS OWED BY NOBODY THE MOMENT THIS CLICK LANDS (Sep 20
+    // 2026, audit F01 wave 3).
+    //
+    // mergeProjectWork below now refuses a destination the Editing Room cannot
+    // show, which closes "merge INTO a job that has already delivered". It does
+    // not close the shape the feature is actually FOR: merge while both jobs
+    // are live, then press Completed here with the second shoot's reel still
+    // unfinished. From that instant the donor has no video rows at all
+    // (buildEditorQueue's hasVideo filter drops it) and this job is DELIVERED
+    // (the Done tab and nothing else), so the reel is on no rail an editor
+    // works from. Same failure, same silence, one step later.
+    //
+    // WHY THIS IS NOT LEFT TO THE EVIDENCE BLOB BELOW. That gate reads
+    // proj.statusEvidence, an hourly snapshot, and when the blob is ABSENT it
+    // passes — and an hour after a merge is exactly when it is absent or stale.
+    // This asks the rows instead, and it asks the SAME question the F01 drill's
+    // strandedVideos invariant asks (live, not retired, not waived, not DONE,
+    // no APPROVED cut) so the gate and the invariant cannot drift apart.
+    // Jordan's own scope says the same thing: Sep 18, "one Editing Room row,
+    // ONE DELIVERY, two order lines". A pair that delivers while half its work
+    // is still open was never one delivery.
+    //
+    // ONLY THE MERGED-IN ROWS, AND ONLY THE VIDEO ONES. This job's own owed
+    // rows are the blob gate's job and always have been, and a merged-in floor
+    // plan or photo set is counted by projectStatus per category like any other
+    // row on this project. The video is the one that goes INVISIBLE rather than
+    // merely unrecorded, because the editor rails are video rails.
+    //
+    // THREE WAYS PAST IT, all human, all recorded, all reversible: get the cut
+    // APPROVED in the Review Room, waive the line on the project page, or Undo
+    // merge so that shoot goes back to carrying its own video on its own rail.
+    //
+    // AND IT SITS AHEAD OF THE SEP 11 HAND-DELIVERY ALLOWANCE ON PURPOSE. That
+    // allowance (officeIsClosingAHandDelivery, below) exists so the office can
+    // close a revision it delivered by email, and it narrows the BLOB's answer
+    // — a claim about the client's listing that nobody can find evidence for.
+    // This is not that: a merged-in row is a second Aryeo order's obligation
+    // that a human chose to hang on this job, and if it really went out by hand
+    // the waiver is the honest record of that, one click on the project page,
+    // rather than a blob the next sweep will rewrite. The two can only collide
+    // on a job that has BOTH an open video-lane revision and an unfinished
+    // merged-in reel; no live job has either of those today.
+    //
+    // FAILS CLOSED, like the three marker guards in mergeProjectWork. The one
+    // read that can fail here is the marker table, and the answer it fails with
+    // ("these jobs were never merged") is the answer that reopens the hole.
+    // Cost measured read-only on live Neon, Sep 20: the database holds exactly
+    // ONE merge marker and it is already undone, so there are ZERO live merge
+    // destinations and this refuses nothing that can be clicked today. For
+    // scale, the same predicate unscoped by the marker would catch 3 DELIVERED
+    // jobs and 29 non-cancelled ones — which is why it is scoped by the marker.
+    const { mergeContext } = await import("@/lib/projectMerge");
+    const movedIn = await mergeContext(projectId).then((c) => c.movedIn).catch(() => null);
+    if (!movedIn) {
+      return { ok: false, message: "I can't read the merge records right now, so I can't tell whether another job's video is still owed on this one. Try again in a minute." };
+    }
+    const mergedInDeliverableIds = movedIn.flatMap((m) => m.moved.deliverableIds);
+    if (mergedInDeliverableIds.length > 0) {
+      const stranded = await prisma.deliverable.findMany({
+        where: {
+          id: { in: mergedInDeliverableIds },
+          // The marker records what moved, not where it is now: an undo, or a
+          // row put back by hand, leaves an id here that no longer belongs to
+          // this job. Only a row sitting on THIS job can be stranded by THIS
+          // click.
+          projectId,
+          type: { in: ["VIDEO", "SOCIAL_REEL"] },
+          removedFromOrderAt: null,
+          waivedAt: null,
+          status: { not: "DONE" },
+          reviewSubmissions: { none: { status: "APPROVED" } },
+        },
+        select: { id: true, label: true },
+      });
+      if (stranded.length > 0) {
+        const owed = stranded.length === 1
+          ? `${stranded[0].label?.trim() || "a video"} is still owed`
+          : `${stranded.length} videos are still owed`;
+        return {
+          ok: false,
+          message: `The other shoot's work was merged onto this job and ${owed} on it. Get the cut approved in the Review Room, waive that line on the project page, or undo the merge so that job carries its own video again. Marking this Completed now would take that video off every editor's board.`,
+        };
+      }
+    }
+
     // THE FRESHNESS COUNTER-PROOF IS GONE (Sep 20, review of F03). This used
     // to count APPROVED Review-Room cuts and, when every video owed had one,
     // hand delivery.ts a "treat Video as landed" label so an editor who had
@@ -1901,7 +1986,7 @@ export async function mergeProjectWork(
   const { getCurrentUser } = await import("@/lib/auth/user");
   const me = await getCurrentUser().catch(() => null);
   const actor = me?.name ?? me?.email ?? "The office";
-  const { mergeKey, mergeFrom, mergedInto, previewMerge, serializeMerge } = await import("@/lib/projectMerge");
+  const { mergeKey, mergeContext, previewMerge, serializeMerge } = await import("@/lib/projectMerge");
 
   const [from, into] = await Promise.all([
     prisma.project.findUnique({ where: { id: fromId }, select: { id: true, title: true, clientId: true, status: true, client: { select: { name: true } } } }),
@@ -1911,14 +1996,83 @@ export async function mergeProjectWork(
   if (from.status === "CANCELLED" || into.status === "CANCELLED") {
     return { ok: false, message: "A cancelled job can't be merged — un-cancel it first." };
   }
+  // THE JOB THAT TAKES THE WORK HAS TO BE ABLE TO SHOW IT (Sep 20 2026 review).
+  //
+  // This is the hole the Sep 20 reconcile fix opened and could not close from
+  // its own side. Merging a second shoot onto a job that is already DELIVERED
+  // leaves the owed video owed by NOBODY: the donor has no video rows left so
+  // buildEditorQueue's hasVideo filter drops it, and the survivor is DELIVERED
+  // so it reaches the Done tab and nothing else. Before the fix the donor at
+  // least re-minted the video every hour — the wrong job, but visible. Now it
+  // is silent on both sides, which is worse, because somebody trusted it.
+  //
+  // WHY THE ANSWER IS A REFUSAL AND NOT A WIDER EDITING-ROOM RAIL. The rail
+  // clause that admits a DELIVERED job (uploadHistory.OWES_AN_ADDITIONAL_SHOOT)
+  // is a static Prisma predicate, and the only thing that knows a row arrived
+  // here from another job's merge is the AppSetting marker, which no Prisma
+  // where-input can join. Every column-shaped proxy measured read-only on live
+  // Neon on Sep 20 either floods the rail (604 delivered jobs hold a live video
+  // row with no approved cut) or means something else and would have to be
+  // faked onto the moved rows (`capturedAt` is the photographer's own tick: 3
+  // jobs). Stamping a shape onto a row to trip a predicate is the
+  // "added manually" regex all over again.
+  //
+  // And the merge's own scope says the same thing. Jordan, Sep 18: "second
+  // order's deliverables join the first job. One Editing Room row, ONE
+  // DELIVERY, two order lines." A job that has already delivered cannot be
+  // half of one delivery. When the original is finished, the second shoot's job
+  // carries its own video perfectly well on its own — which is how every one of
+  // these has worked for the life of the hub — and the hub's own answer for an
+  // extra video on a finished listing is the upload portal's additional-shoot
+  // row ("Extra video owed"), not this button.
+  //
+  // Same test for ON_HOLD: no Editing Room rail lists it either.
+  //
+  // TWO THINGS THIS REFUSAL USED TO GET WRONG IN WORDS (Sep 20 2026 wave-3
+  // review), both corrected below and neither of them a change of behaviour:
+  //
+  //   · it said a delivered destination "reads as finished", full stop. That is
+  //     a status whitelist answering a question about a RAIL, and the Not-Done
+  //     rail is not a status list: editorQueue's inflight OR also admits a
+  //     DELIVERED job through uploadHistory.OWES_AN_ADDITIONAL_SHOOT, so a
+  //     delivered job can be in front of an editor right now and still be
+  //     refused here. The blanket refusal STAYS — that job drops off the rail
+  //     again the instant its extra-shoot cut is approved, so it is not a
+  //     destination anything can promise to keep showing — but the sentence
+  //     now says what is actually true.
+  //   · it advised putting the delivered job "back into production", which is
+  //     the one move the rest of this change exists to prevent: it takes the
+  //     job back past the sync's own status gate (aryeo.ts, the rowHome check)
+  //     and makes reconcileDeliverablesToOrder a live write path into a job
+  //     that has already been delivered. The advice is gone; the cost is named
+  //     instead, for the one case where it is genuinely the right move.
+  const RAILS_CAN_SHOW: readonly string[] = ["BOOKED", "SCHEDULED", "SHOT", "EDITING", "REVIEW", "REVISION"];
+  if (!RAILS_CAN_SHOW.includes(into.status)) {
+    const intoStreet = (into.title || "that job").split(",")[0].trim();
+    const why = into.status === "DELIVERED"
+      ? `${intoStreet} has already been delivered, so I can't promise this job's video would stay in front of an editor once it moved onto it. Leave the two jobs as they are and finish this one on its own. (Putting a delivered job back into production restarts order syncing on it, so only do that if the delivery itself was wrong.)`
+      : `${intoStreet} is ${into.status.toLowerCase().replace("_", " ")}, so it isn't on the Editing Room and the work would land somewhere nobody is looking. Move it back into production first, then merge.`;
+    return { ok: false, message: why };
+  }
   // DIFFERENT CLIENTS IS ALMOST ALWAYS A MISTAKE, and the one thing this action
   // could do that nobody could unpick by eye: a cut delivered to the wrong
   // agent. Refused rather than warned.
   if (from.clientId !== into.clientId) {
     return { ok: false, message: `Those belong to different clients (${from.client.name} and ${into.client.name}). Merging across clients isn't allowed.` };
   }
-  if (await mergeFrom(fromId)) return { ok: false, message: "That job's work has already been merged somewhere." };
-  if (await mergeFrom(intoId)) return { ok: false, message: "You can't merge INTO a job whose own work has been merged away." };
+  // THE THREE MARKER GUARDS READ THE TABLE FOR REAL (Sep 20 2026 review). They
+  // used to go through mergeFrom / mergedInto, which answer "no merge" when the
+  // marker cannot be read or will not parse — and every one of them is a guard
+  // where that answer opens the door: a second merge of a job whose work has
+  // already gone, or a chain. mergeContext throws instead, and a merge nobody
+  // can check is a merge nobody should make.
+  const fromMerges = await mergeContext(fromId).catch(() => null);
+  const intoMerges = await mergeContext(intoId).catch(() => null);
+  if (!fromMerges || !intoMerges) {
+    return { ok: false, message: "I can't read the merge records right now, so I'm not going to move anything. Try again in a minute." };
+  }
+  if (fromMerges.movedAway) return { ok: false, message: "That job's work has already been merged somewhere." };
+  if (intoMerges.movedAway) return { ok: false, message: "You can't merge INTO a job whose own work has been merged away." };
   // NO CHAINS (Sep 20 2026 review). The two guards above refuse a job whose work
   // has gone and a destination whose work has gone, but nothing stopped moving a
   // SURVIVOR away: merge the second shoot onto the original, then merge the
@@ -1928,7 +2082,7 @@ export async function mergeProjectWork(
   // added to the second shoot's Aryeo order is filed on a job that holds none of
   // its work. A third shoot joins the job that is already carrying the others,
   // which this does not block; only the chain is refused.
-  if ((await mergedInto(fromId)).length > 0) {
+  if (fromMerges.movedIn.length > 0) {
     return { ok: false, message: "That job is already carrying another job's work. Put that back first, then merge this one." };
   }
 
@@ -2000,7 +2154,7 @@ export async function unmergeProjectWork(fromId: string): Promise<{ ok: boolean;
   // BY ID for the job-level rows, BY RELATIONSHIP for the children.
   //
   // Anything a PERSON started on the survivor since the merge stays on the
-  // survivor — a card, a revision brief, a job-level note. But a cut is not
+  // survivor — a card, a job-level ask, a job-level note. But a cut is not
   // job-level: it hangs off a deliverable, and Sep 20 2026 (audit F01) showed
   // what the id snapshot does with that. Merge a second shoot's reel onto the
   // original job, let John upload round 2 against it, then undo: the deliverable
@@ -2016,7 +2170,22 @@ export async function unmergeProjectWork(fromId: string): Promise<{ ok: boolean;
     await tx.deliverableOutput.updateMany({ where: withParent(moved.outputIds), data: { projectId: fromId } });
     await tx.reviewSubmission.updateMany({ where: withParent(moved.submissionIds), data: { projectId: fromId } });
     await tx.smartTask.updateMany({ where: { id: { in: moved.taskIds } }, data: { projectId: fromId } });
-    await tx.revisionBrief.updateMany({ where: { id: { in: moved.briefIds } }, data: { projectId: fromId } });
+    // AND THE CLIENT'S ASK IS A CHILD TOO, WHEN IT NAMES A VIDEO (Sep 20 2026
+    // review). This one was left on the id snapshot while its siblings moved to
+    // the parent rule, and a brief is exactly the row that gets created on the
+    // survivor AFTER the merge: the client rings about the second shoot's
+    // video, /edit files the work order on the job where the work is, scoped to
+    // that video through RevisionBrief.outputId. The undo then sent the video
+    // home and left the ask behind for ever — proved Sep 20 (journey 2.2), with
+    // no sweep anywhere that repairs it. The job that gets its video back had
+    // no work order on it, and the survivor kept an ask pointing at a video it
+    // does not own, which correctionStillOwed and outstandingItems then reason
+    // about on a job whose cutSlots can never produce that slot key.
+    // A JOB-LEVEL ask (outputId null) stays where it was raised, same as a card.
+    await tx.revisionBrief.updateMany({
+      where: { OR: [{ id: { in: moved.briefIds } }, { output: { deliverableId: { in: moved.deliverableIds } } }] },
+      data: { projectId: fromId },
+    });
     // A TopazJob carries no deliverable of its own — it hangs off the cut, one
     // render per cut — so it follows its submission home. Resolved to ids first
     // rather than filtered through the relation inside an updateMany.

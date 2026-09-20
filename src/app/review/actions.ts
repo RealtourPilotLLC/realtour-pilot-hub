@@ -796,16 +796,64 @@ export async function approveCut(submissionId: string): Promise<{ ok: boolean; m
   });
   if (!submission) return { ok: false, message: "That submission no longer exists." };
   if (submission.status === "APPROVED") return { ok: true, message: "Already approved." };
+  // ---- WHAT A STALE SCREEN MUST NOT SIGN OFF -----------------------------
+  // Sep 20 (acceptance journeys, journey 1b). The panel hides both verdict
+  // buttons the moment a round is decided or replaced (CutReviewPanel.tsx:213),
+  // so the only way to reach this line on an old round is a tab rendered
+  // BEFORE that happened — and until today nothing here stopped it.
+  //
+  // SUPERSEDED is the expensive one, because it is not an edge case: it is
+  // exactly the state finishCutUpload leaves round N in the instant round N+1
+  // lands (src/lib/reviewCuts.ts:1032-1036). Driven end to end on a DELIVERED
+  // job with the client's revision open, approving the superseded round took
+  // the open revision asks from 1 to 0 and cleared Project.revisionRequestedAt
+  // — the client's ask closed out (and every open image flag marked FIXED) on
+  // the strength of a version the editor had already replaced, while the newest
+  // round still sat waiting for a verdict. The per-cut side effects below fire
+  // on that old file too: it goes into 05-Final-Video as the Final, it spends a
+  // 1080p Topaz credit, and on a content-program job it is published to the
+  // client's portal library. This file has refused the same state on the move
+  // path since Sep 16 (whyNotTakeBack) and these are its words.
+  if (submission.status === "SUPERSEDED") {
+    return { ok: false, message: "A newer version of this cut has replaced that one — rule on the newest version instead." };
+  }
   // A withdrawn cut has left the room (Sep 16) — there is nothing to rule on.
   if (submission.status === "WITHDRAWN") {
     return { ok: false, message: "That version was withdrawn — there's nothing to approve. The next version comes in on the same cut." };
   }
+  // An unfinished upload is not a video. Beyond the obvious, signing one off
+  // would make the editor's own finish step LOSE — finishCutUpload claims the
+  // row with `updateMany({ status: "UPLOADING" })` (reviewCuts.ts) and answers
+  // "Already in review" when it finds nothing — so the cut would stand APPROVED
+  // with no file behind it and the Final folder would stay empty. Same two
+  // sentences whyNotTakeBack uses for these rows (Sep 20).
+  if (submission.status === "UPLOADING") {
+    return { ok: false, message: "That version is still uploading — wait for the upload to finish, then rule on it." };
+  }
+  if (submission.status === "UPLOAD_FAILED") {
+    return { ok: false, message: "That upload never finished, so there's nothing in review to approve." };
+  }
 
   const { authorName } = await sessionAuthor();
-  await prisma.reviewSubmission.update({
-    where: { id: submissionId },
+  // COMPARE-AND-SET on the status this request read, the shape reassignCut has
+  // used since Sep 16 (:2282, "two presses must not both run the source-job
+  // release"). Every refusal above is a read-then-write, which two overlapping
+  // requests both clear; this makes the ROW the referee, so the whole downstream
+  // — the Dropbox copy into 05-Final-Video, the 1080p credit, the portal-library
+  // row, the edit-card close-out and the client's revision — runs once, for the
+  // caller that actually moved the cut. (Sep 20 acceptance journeys: the drill
+  // can only press twice seconds apart, so the sequential guards are proved and
+  // this is the part that has to hold when the presses overlap.)
+  const won = await prisma.reviewSubmission.updateMany({
+    where: { id: submissionId, status: submission.status },
     data: { status: "APPROVED", decidedAt: new Date(), decidedBy: authorName },
   });
+  if (won.count === 0) {
+    return {
+      ok: false,
+      message: "Someone else ruled on that version a moment ago — reload the Review Room and rule on where the cut stands now.",
+    };
+  }
   const street = streetOf(submission.project?.title);
   await prisma.activity.create({
     data: { projectId: submission.projectId, type: "SYSTEM", body: `Cut approved in review (round ${submission.round}).` },
@@ -983,6 +1031,35 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
   if (submission.status === "WITHDRAWN") {
     return { ok: false, message: "That version was withdrawn — there's nothing to send back. The next version comes in on the same cut." };
   }
+  // ---- A STALE BOUNCE MUST NOT UN-APPROVE A SIGNED-OFF CUT ---------------
+  // Sep 20 (acceptance journeys, journey 1c). This action refused only a
+  // withdrawn row, so a tab rendered before the approval — the panel hides the
+  // verdict buttons once a cut is decided, so a fresh render cannot get here —
+  // sent an APPROVED cut back: status APPROVED -> CHANGES_REQUESTED, the job to
+  // REVISION, round 2 minted on the editor's card. The hub's own bookkeeping
+  // self-corrects (the per-video sweep drops approvedAt), but the approval's
+  // OUTWARD effects do not come back: the copy already sitting in
+  // 05-Final-Video stays there until some later approval moves it aside (see
+  // startDropboxCopy's note below), and the row addApprovedCutToLibrary put on
+  // the client's portal library has no remover anywhere in this file. Pulling
+  // an approved cut is the office's call and it has a sanctioned door —
+  // canReplaceApprovedCut behind takeBackGuard — and this path went round it.
+  if (submission.status === "APPROVED") {
+    return {
+      ok: false,
+      message:
+        "That cut is already approved, so sending it back here would leave the approved copy in the Final folder and the video on the client's portal. Use Take back on the cut, or have the editor upload a replacement, then rule on that version.",
+    };
+  }
+  if (submission.status === "SUPERSEDED") {
+    return { ok: false, message: "A newer version of this cut has replaced that one — rule on the newest version instead." };
+  }
+  if (submission.status === "UPLOADING") {
+    return { ok: false, message: "That version is still uploading — wait for the upload to finish, then rule on it." };
+  }
+  if (submission.status === "UPLOAD_FAILED") {
+    return { ok: false, message: "That upload never finished, so there's nothing in review to send back." };
+  }
 
   const assetKey = submission.assetUrl ?? `cut:${submission.id}`;
   const open = await prisma.mediaNote.findMany({
@@ -1047,8 +1124,63 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
       editorKey = maker;
     }
   }
+  const { authorName } = await sessionAuthor();
+  // COMPARE-AND-SET, same as approveCut's (Sep 20). The refusal above is a
+  // read-then-write, so an Approve whose request overlaps this one clears it
+  // too, and the un-approval it was written to stop happens anyway. Keyed on
+  // the status this request read, the approval wins the row and the bounce
+  // stops here.
+  //
+  // WHY THIS SITS AFTER THE ROUND AND NOT BEFORE IT: everything above can still
+  // refuse (no notes, no edit card), so the row cannot be claimed first without
+  // inventing a rollback. Losing here therefore leaves the editor holding the
+  // notes as a round on their card while the cut stands APPROVED. That is
+  // deliberate: the notes reaching the editor is recoverable and visible, an
+  // approved video quietly un-approved while its copy sits in 05-Final-Video
+  // and on the client's portal is neither. The message says both halves.
+  //
+  // EVERYTHING ELSE MOVED BELOW THE CLAIM (Sep 20, wave-4 review). The edit-card
+  // round is the ONLY residue a loser leaves, and that is the one thing the
+  // paragraph above weighs. It used to leave a second one: the client's revision
+  // task was flipped IN_PROGRESS -> OPEN and its state sentence rewritten to
+  // "the corrected cut came back from review" BEFORE this claim ran, so a lost
+  // race told the office the job was back with the editor while the cut in fact
+  // stood APPROVED and the job status was never flipped to REVISION (that write
+  // is below). The loop gates no refusal and reads nothing the claim needs, so
+  // it simply sits after it now — the happy path is unchanged, the losing path
+  // stops rewriting a ledger it did not win the right to rewrite.
+  const claimed = await prisma.reviewSubmission.updateMany({
+    where: { id: submissionId, status: submission.status },
+    // A copied-to-Dropbox cut that gets bounced is no longer complete; the
+    // next approved version moves the old file aside (startDropboxCopy).
+    data: { status: "CHANGES_REQUESTED", decidedAt: new Date(), decidedBy: authorName, completedAt: null },
+  });
+  if (claimed.count === 0) {
+    // The row may also have been REMOVED under us (removeCut), in which case
+    // there is no status to name — say the plainer sentence rather than an
+    // empty one.
+    const now = await prisma.reviewSubmission.findUnique({ where: { id: submissionId }, select: { status: true } });
+    // Say exactly what is and is not true after a lost race (Sep 20, wave-4
+    // review). The round IS on the card; the bell is not, because notifyInApp
+    // is below this block and never runs for the loser — so the reviewer has to
+    // tell the editor themselves or the notes sit there unannounced. Nothing
+    // else was touched: the job status, the client's revision task and the
+    // timeline line are all below the claim too.
+    const residue = `Your ${open.length} note${s} did go back to the editor as round ${submission.round + 1} on the edit card, but nobody was pinged about it, so tell the editor yourself. Nothing else on the job changed.`;
+    if (!now) {
+      return {
+        ok: false,
+        message: `That version was removed a moment ago. ${residue} Reload the Review Room.`,
+      };
+    }
+    return {
+      ok: false,
+      message: `Someone else ruled on that version a moment ago — it now reads ${cutStatusWords(now.status)}, so the verdict stands. ${residue} Reload the Review Room before you rule again.`,
+    };
+  }
   // The client's revision this cut was answering is back with the editor —
-  // the state sentence goes in front of the ask line, never over it.
+  // the state sentence goes in front of the ask line, never over it. This runs
+  // only for the caller that won the row above (Sep 20, wave-4 review).
   const { revisionStateSummary } = await import("@/lib/reviewCuts");
   const waiting = await prisma.smartTask.findMany({
     where: { ...videoLaneRevisionWhere(submission.projectId), status: "IN_PROGRESS" },
@@ -1063,14 +1195,6 @@ export async function requestCutChanges(submissionId: string): Promise<{ ok: boo
       },
     }).catch(() => {});
   }
-
-  const { authorName } = await sessionAuthor();
-  await prisma.reviewSubmission.update({
-    where: { id: submissionId },
-    // A copied-to-Dropbox cut that gets bounced is no longer complete; the
-    // next approved version moves the old file aside (startDropboxCopy).
-    data: { status: "CHANGES_REQUESTED", decidedAt: new Date(), decidedBy: authorName, completedAt: null },
-  });
   // The job IS in revisions now (Jordan, Aug 27: "once we review the video and
   // I submit it for revisions, change the status to revisions"). The stamp
   // makes it sweep-proof — computeStatus honours an open revision, so the

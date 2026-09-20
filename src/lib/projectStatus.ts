@@ -1818,6 +1818,15 @@ export async function syncProjectStatuses(
     // buttons set SHOT directly, so the sweep saw no transition and skipped the
     // handoff. ensureEditorHandoff re-checks every pass and is deduped inside
     // (activity marker + dedupeKeys), so calling it every hour is safe.
+    //
+    // THIS DOOR ONLY OPENS ONE WAY, AND THE CHASE HAS TO COME OUT (Sep 20).
+    // ensureEditorHandoff is the only writer that can null the card's
+    // followUpAt, so a job that leaves the lane still wearing an armed chase
+    // can never shed it from in here — ON_HOLD jobs are not even swept (see
+    // the candidate query above). The way out is
+    // releaseChasesOffTheEditingLane(), run by the hourly janitor
+    // (closeTasksOnInactiveProjects). If this list of statuses ever changes,
+    // change it there too: they are two halves of one rule.
     if (["SHOT", "EDITING", "REVIEW"].includes(final)) {
       try {
         const { ensureEditorHandoff } = await import("@/lib/tasks");

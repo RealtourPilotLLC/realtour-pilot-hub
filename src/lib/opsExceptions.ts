@@ -268,6 +268,16 @@ export async function opsExceptionsBoard(opts: { now?: Date } = {}): Promise<Ops
   const followUpWhere: Prisma.SmartTaskWhereInput = {
     followUpAt: { lt: new Date(now) },
     status: { notIn: ["COMPLETED", "CANCELLED"] },
+    // A PARKED JOB IS NOT A BROKEN PROMISE (journey drill, Sep 20). The office
+    // puts a job on hold precisely so nobody chases it, and a cancelled one is
+    // over — escalating either to "high, 5 days, clear the blocker or move the
+    // date" asks for work the hub itself has decided not to do, on a card whose
+    // whole worth is that everything on it is genuinely wrong. Same idiom as
+    // the aging-verdict rule above, and the same list minus DELIVERED: an
+    // unanswered promise on a shipped job is still an unanswered promise.
+    // A task with no job at all (a personal to-do) is nobody's hold, so it
+    // stays — a bare relation filter would silently drop every one of them.
+    OR: [{ projectId: null }, { project: { is: { status: { notIn: ["ON_HOLD", "CANCELLED"] } } } }],
   };
   // High = three days past the date somebody set, as the row builder has it.
   const followUpHighWhere: Prisma.SmartTaskWhereInput = {

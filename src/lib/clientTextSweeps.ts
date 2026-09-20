@@ -913,6 +913,16 @@ function wholeJobOutstanding(
  *       stamp. Our own Dropbox Final folder is not proof and no longer counts
  *       (F03, Sep 20). Live data, Sep 2: 8 of 156 delivered jobs with video
  *       ordered had no such proof.
+ *    4. and, where MORE THAN ONE of a thing was ordered, the hub can NAME what
+ *       shipped. Aryeo's listing count is real and anonymous: where it carries
+ *       the total and the per-video rows hold no delivery stamps, the blob says
+ *       `unmatched` and the card says "open the listing before telling a client
+ *       it is all there". A sweep cannot open a listing, so it holds and a
+ *       person finishes the job (Sep 20 journey drill, 38 E Gay St). One cut
+ *       ordered and one video on the listing is NOT that case and still sends
+ *       itself: nothing there can be mistaken for anything else (review,
+ *       Sep 20). The human paths are untouched — this is the one sender that
+ *       cannot go and look.
  *  Post-delivery revisions and the two human-decision flags stay manual.
  *
  *  EVERY reason this sweep does not send is written onto the task (Sep 8
@@ -1048,6 +1058,56 @@ export async function sweepDeliveryTexts(texted: Set<string> = new Set()): Promi
       skipped++;
       await hold(t, `On hold: ${outstanding} — the feedback ask waits until the whole job is delivered, then goes out on its own.`);
       notes.push(`${project.title}: ${outstanding} — the feedback ask waits`);
+      continue;
+    }
+    // CONFIRMED BY COUNT IS NOT CONFIRMED BY NAME, AND A SWEEP CANNOT GO AND
+    // LOOK (journey drill, Sep 20). Where the Aryeo listing count carries the
+    // total and few or none of the per-video rows hold a delivery stamp, the
+    // engine records `unmatched` and the status card says so in as many words:
+    // "Confirmed by count, not by name … repeat versions of one cut look the
+    // same from here, so open the listing before telling a client it is all
+    // there." owedNow() returns that number and, until now, only the CARD
+    // spent it: this gate read `owed.categories` off the same object, saw an
+    // empty list and texted the client the wrap-up ask — the exact thing the
+    // card had just said not to do. Driven end to end on 38 E Gay St: four
+    // videos owed, four approved, four on the listing, ONE named delivery.
+    //
+    // It holds the AUTOMATED send only. The Editing Room pill and the Send
+    // button are people who can open the listing in ten seconds, and the card
+    // already tells them to. And it is deliberately NOT folded into
+    // owed.categories: an anonymous count legitimately covers a great many
+    // jobs (922 per-video rows on Sep 18 and six delivery stamps), so treating
+    // it as an obligation would invent one on every job that is genuinely out.
+    //
+    // ONE ORDERED AND ONE ON THE LISTING CANNOT BE CONFUSED WITH ANYTHING
+    // (review, Sep 20). The first cut of this gate fired on `unmatchedUnits`
+    // alone, and `unmatched` is min(owed, listed) − named where `named` counts
+    // the per-video delivery stamps the hub writes on NINE of 924 rows. So a
+    // one-video job with one video on the listing scored unmatched = 1 and was
+    // held, on a job where the hazard cannot arise: with a single cut ordered
+    // there is no second video for an export of the first to be mistaken for.
+    // Measured on the live book that day: 617 Westbourne Rd and 207 S 5 Points
+    // Rd both read owed=1 / listed=1 / named=0, and both had their feedback ask
+    // sent automatically and correctly (Sep 14 and Sep 16). Under the first cut
+    // both would have been held and then closed unsent at seven days, forever,
+    // because nothing but a stamp we almost never write lowers `unmatched`.
+    // The hold now needs a second unit in play, which is the whole of the R02
+    // hazard and nothing else: 38 E Gay St (4 ordered against a listing of 5)
+    // and 1337 Carolannes Way (2 and 2) still wait for a person.
+    const unnamed = ev.units.find((x) => (x.unmatched ?? 0) > 0 && x.owed > 1);
+    if (unnamed) {
+      skipped++;
+      const word = unnamed.category.toLowerCase();
+      const listed = unnamed.onListing ?? 0;
+      const named = unnamed.named ?? 0;
+      await hold(
+        t,
+        `On hold: ${unnamed.owed} ${word}${unnamed.owed === 1 ? "" : "s"} were ordered, the listing carries ${listed}, and ` +
+          `${named === 0 ? "none of them is" : `only ${named} of them is`} tied to a ${word} the hub tracks. ` +
+          `Repeat versions of one cut look the same from here, so open the listing and confirm it is all there, ` +
+          `then send the feedback ask by hand.`,
+      );
+      notes.push(`${project.title}: ${unnamed.owed} ${word}${unnamed.owed === 1 ? "" : "s"} ordered, ${listed} on the listing, ${named} tied to anything — left for a human`);
       continue;
     }
     // A delivery text minted only because a monthly batch ran out of time is a

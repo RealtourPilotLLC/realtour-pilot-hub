@@ -1699,7 +1699,7 @@ export async function closeObsoleteTasks(
 // hour from generateTasksForActiveProjects (one indexed query when there is
 // nothing to do); exported so the daily cron can own it instead if preferred.
 // ---------------------------------------------------------------------------
-export async function closeTasksOnInactiveProjects(): Promise<{ delivered: number; cancelled: number; onHold: number }> {
+export async function closeTasksOnInactiveProjects(): Promise<{ delivered: number; cancelled: number; onHold: number; chasesReleased: number }> {
   const stray = await prisma.smartTask.findMany({
     where: {
       status: { notIn: ["COMPLETED", "CANCELLED"] },
@@ -1735,7 +1735,7 @@ export async function closeTasksOnInactiveProjects(): Promise<{ delivered: numbe
     },
     select: { id: true, projectId: true, project: { select: { status: true } } },
   });
-  const out = { delivered: 0, cancelled: 0, onHold: 0 };
+  const out = { delivered: 0, cancelled: 0, onHold: 0, chasesReleased: 0 };
   const byProject = new Map<string, { status: string; ids: string[] }>();
   for (const t of stray) {
     if (!t.projectId || !t.project) continue;
@@ -1785,7 +1785,72 @@ export async function closeTasksOnInactiveProjects(): Promise<{ delivered: numbe
   });
   out.delivered += mentions.count;
 
+  // A PARKED JOB CANNOT ANSWER A CHASE (journey drill, Sep 20, 1462 Brandywine
+  // Ln). ensureEditorHandoff is the only writer in the hub that can null
+  // SmartTask.followUpAt, and the hourly sweep only calls it for SHOT / EDITING
+  // / REVIEW (projectStatus.ts) — ON_HOLD and REVISION are outside that door,
+  // and ON_HOLD is not even swept. So: blocked on a missing brief, chase armed
+  // and matured onto the exceptions board, the office parks the job, the
+  // photographer THEN writes the brief and submits — and 72 further hourly
+  // sweeps left a HIGH "Follow-up date passed — blocked: waiting on the flow
+  // and vision" row whose advice is "clear the blocker" when the blocker was
+  // answered three days earlier. No screen in the hub can set or clear
+  // followUpAt, so the only exit was moving the job back to EDITING. That is
+  // the same unclearable chase 073a6f5 cured on three live cards, reached
+  // through a door that fix did not close.
+  //
+  // So the chase is cleared on the way OUT of the editing lane as well as
+  // inside it — the ready branch's own "both fields, or neither" rule, applied
+  // to the door. Nothing is lost by it: the blocker is RECOMPUTED, not
+  // remembered (projectBrief works it out from the job's own fields, and the
+  // delivery board answers "On hold" / "Changes requested" before it ever
+  // reads the stored sentence), so the moment the job comes back into the lane
+  // the next sweep re-reads readiness and re-arms a fresh chase if it is still
+  // blocked.
+  out.chasesReleased = await releaseChasesOffTheEditingLane();
+
   return out;
+}
+
+/** Null the blocker and the chase on every open editor card whose job has left
+ *  the editing lane. Set-based and self-limiting: a card that is already clear
+ *  is not selected, so an hourly pass on a quiet database is one indexed read
+ *  and no writes. Returns how many cards were released. */
+export async function releaseChasesOffTheEditingLane(): Promise<number> {
+  const stranded = await prisma.smartTask.findMany({
+    where: {
+      taskType: "edit_video",
+      status: { notIn: ["COMPLETED", "CANCELLED"] },
+      // Only rows with something to clear — no churn on updatedAt, the same
+      // diff-before-write discipline ensureEditorHandoff keeps on this card.
+      OR: [{ followUpAt: { not: null } }, { blockedReason: { not: null } }],
+      // The lane the handoff engine runs in, spelled the way its door spells
+      // it. Anything else — ON_HOLD, REVISION, a job moved back to SCHEDULED,
+      // a delivered one — is a job no sweep will ever clear from the inside.
+      project: { is: { status: { notIn: ["SHOT", "EDITING", "REVIEW"] } } },
+    },
+    select: { id: true, projectId: true },
+  });
+  if (stranded.length === 0) return 0;
+  const cards = await prisma.smartTask.updateMany({
+    where: { id: { in: stranded.map((t) => t.id) }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
+    data: { blockedReason: null, followUpAt: null },
+  });
+  // The project's copy of the same sentence goes with it, or the delivery board
+  // and the card would disagree the moment the job comes off hold and lands
+  // somewhere the handoff engine does not run. handoffReadyAt is NOT touched:
+  // it is the moment the job became workable, stamped once.
+  const projectIds = [...new Set(stranded.map((t) => t.projectId).filter((id): id is string => !!id))];
+  if (projectIds.length > 0) {
+    await prisma.project.updateMany({
+      where: {
+        id: { in: projectIds },
+        OR: [{ handoffBlockedReason: { not: null } }, { handoffOwnerKey: { not: null } }],
+      },
+      data: { handoffBlockedReason: null, handoffOwnerKey: null },
+    });
+  }
+  return cards.count;
 }
 
 // When a job is delivered, queue Kyle's post-delivery client TEXT (we dropped
@@ -3222,18 +3287,31 @@ export async function ensureEditorHandoff(projectId: string): Promise<void> {
       photographerName: p.photographer?.name ?? null,
       photographerKey: p.photographer?.name ? slugForName(p.photographer.name) : null,
     });
-    await prisma.project.update({
-      where: { id: projectId },
-      data: r.ready
-        ? {
-            // Stamped once. It is the moment the job became workable, not the
-            // last time a sweep happened to agree.
-            ...(p.handoffReadyAt ? {} : { handoffReadyAt: new Date() }),
-            handoffBlockedReason: null,
-            handoffOwnerKey: null,
-          }
-        : { handoffBlockedReason: r.blockedReason, handoffOwnerKey: r.ownerKey },
-    });
+    // SAY NOTHING WHEN THERE IS NOTHING TO SAY (Sep 20 journey drill). The card
+    // write below has read-then-diff discipline and this one did not, so a job
+    // sitting quietly in the editing lane had its project row rewritten with
+    // the values it already held on every pass: 120 of 120 no-op sweeps on a
+    // blocked job, 48 of 48 on a job that was already clear, against 0 of 120
+    // on the card. Project.updatedAt is the age the exceptions board falls back
+    // to when a job has no shoot date (opsExceptions.ts), so a no-op write is
+    // not free — it is the row forgetting when it was last genuinely touched.
+    const projectRight = r.ready
+      ? !!p.handoffReadyAt && !p.handoffBlockedReason && !p.handoffOwnerKey
+      : p.handoffBlockedReason === r.blockedReason && p.handoffOwnerKey === r.ownerKey;
+    if (!projectRight) {
+      await prisma.project.update({
+        where: { id: projectId },
+        data: r.ready
+          ? {
+              // Stamped once. It is the moment the job became workable, not the
+              // last time a sweep happened to agree.
+              ...(p.handoffReadyAt ? {} : { handoffReadyAt: new Date() }),
+              handoffBlockedReason: null,
+              handoffOwnerKey: null,
+            }
+          : { handoffBlockedReason: r.blockedReason, handoffOwnerKey: r.ownerKey },
+      });
+    }
     // The chase date lives on the CARD, in followUpAt rather than dueAt: a job
     // blocked on a missing brief still owes its delivery date, and moving dueAt
     // would move the clock the editor is scored on.

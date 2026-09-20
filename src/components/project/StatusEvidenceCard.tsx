@@ -135,6 +135,21 @@ async function statusContext(
           revisionRequestedAt: true,
           dueOverrideAt: true,
           tierOverride: true,
+          // THE FROZEN PROMISE, SAME TWO COLUMNS THE BOARD PASSES (Sep 20
+          // 2026 audit). PromiseInput marks these optional for callers that
+          // build their own select, and this select was the caller that left
+          // them out — so on a job whose pin CAPS a later recomputed item
+          // date, outstandingPromise saw no pin here and dated the job on
+          // today's rules while Kyle's board and the Promise line on the card
+          // an inch above both read the pin. Measured read-only on production
+          // Sep 20: 14 of the 36 dated open jobs were in that capped state and
+          // this card disagreed with the brief on all 14. 80 W Lancaster Ave
+          // Floor 2 (BOOKED, pinned Sep 7 2:30pm) was the worst of them — the
+          // brief printed a red "Sep 7 · past it" while this card printed
+          // Oct 2 and called the same job on time, on the same screen.
+          // Additive: a job with no pin is untouched.
+          promisedDueAt: true,
+          promisedReason: true,
           packageName: true,
           statusEvidence: true,
           evidenceAttemptedAt: true,

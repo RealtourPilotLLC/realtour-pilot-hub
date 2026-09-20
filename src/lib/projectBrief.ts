@@ -5,7 +5,8 @@ import { outputsForProject, type OutputRowView } from "@/lib/deliverableOutputs"
 import { handoffReadiness, meaningfulBrief } from "@/lib/handoff";
 import { isMonthlyContentJob } from "@/lib/pipeline";
 import { parseEvidence, evidenceTone, type EvidenceTone } from "@/lib/statusEvidence";
-import { effectiveDue } from "@/lib/editOverrides";
+import { outstandingPromise } from "@/lib/deliveryBoard";
+import { turnaroundRules } from "@/lib/settings";
 
 // ---------------------------------------------------------------------------
 // ONE SUMMARY OF A JOB (R08, review Sep 18).
@@ -63,15 +64,30 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
       statusEvidence: true, statusCheckedAt: true,
       evidenceAttemptedAt: true, evidenceSucceededAt: true, evidenceError: true,
       promisedDueAt: true, promisedTargetAt: true, promisedTierKey: true, promisedReason: true,
-      dueOverrideAt: true, deliveryDue: true, videosOwedOverride: true, videosFilmed: true,
+      // deliveryDue (the JOB-level date the Aryeo sync writes off the video
+      // SLA) is deliberately no longer read here — see THE PROMISE below.
+      dueOverrideAt: true, videosOwedOverride: true, videosFilmed: true,
       revisionNote: true, revisionRequestedAt: true,
       debriefSubmittedAt: true, videoInstructions: true, editorBrief: true,
       reelScript: true, reelHook: true, scriptConfirmedAt: true,
       editor: { select: { name: true } }, editorVendorKey: true,
       photographer: { select: { name: true } },
+      // ONE PROMISE (F05, review Sep 20 2026) — the extra columns below are
+      // exactly deliveryBoard's PromiseInput, so this card can ask the promise
+      // engine the same question Kyle's board asks instead of keeping its own
+      // answer. deliveredAt and tierOverride are new here; the rest were
+      // already loaded.
+      deliveredAt: true, tierOverride: true,
+      orderItems: { where: { isCanceled: false }, select: { title: true, quantity: true } },
+      appointments: { select: { startAt: true, status: true }, orderBy: { startAt: "asc" } },
       deliverables: {
         where: { removedFromOrderAt: null },
-        select: { type: true, label: true, productTitle: true, quantity: true, waivedAt: true },
+        // status/uploadedAt are the promise engine's witnesses for what has
+        // actually landed. The WHERE stays as it was — a waived line still
+        // proves the job SOLD video (owesVideo below), and the promise engine
+        // gets the same waivedAt-free list the board gives it, filtered in
+        // memory a few lines down.
+        select: { type: true, label: true, productTitle: true, quantity: true, waivedAt: true, status: true, uploadedAt: true },
       },
       revisionBriefs: {
         orderBy: { createdAt: "desc" },
@@ -95,18 +111,134 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
       return q > 1 ? `${name} ×${q}` : name;
     });
 
-  // THE PROMISE, AND WHERE IT CAME FROM. The frozen one is the client's; the
+  // THE PROMISE, FROM THE ENGINE THAT ALREADY ARBITRATES IT (F05, review Sep
+  // 20 2026).
+  //
+  // This used to be its own arithmetic — `promisedDueAt ?? dueOverrideAt ??
+  // effectiveDue(dueOverrideAt, deliveryDue)` — and deliveryDue is the
+  // JOB-level date the Aryeo sync writes off the VIDEO SLA. One inch below on
+  // the same page, StatusEvidenceCard calls outstandingPromise, which dates a
+  // job by its EARLIEST OUTSTANDING item, and so does every row of Kyle's
+  // delivery board. Two promise engines, two cards, one job. deliveryBoard's
+  // own header says outstandingPromise "cannot drift, because there is only
+  // one of it", and the header at the top of this file says the summary uses
+  // the engine that already arbitrates — and then this line did not call it.
+  //
+  // Measured read-only on production Sep 20 2026: of 36 open jobs where both
+  // cards produced a date, 21 disagreed, and three contradicted each other on
+  // late versus on time in the same minute — 1462 Brandywine Ln (board LATE
+  // Sep 18 for the same-day floor plan, page on time Sep 21 "Video"), 204
+  // Spring Ln (board LATE Sep 17, page on time Sep 12) and 1337 Carolannes Way
+  // (board on time Sep 25, page LATE Aug 21). A synthetic sweep of nine
+  // mixed-media jobs differed 9 times out of 9, by 10 to 28 hours.
+  //
+  // AND ONE DOCUMENTED RULE IN THIS FILE WAS RETIRED WITH THAT LINE, so it is
+  // written down here rather than allowed to vanish (review, Sep 20 2026). The
+  // old arithmetic put the frozen promise FIRST and its comment said so: "the
   // office's override beats a computed date but not a promise already made
-  // (the rule the premium work established, kept in one place here).
-  const officeDue = effectiveDue({ dueOverrideAt: p.dueOverrideAt }, p.deliveryDue ?? null);
-  const promisedAt = p.promisedDueAt ?? p.dueOverrideAt ?? officeDue ?? null;
-  const promiseSource: ProjectBrief["promiseSource"] = p.promisedDueAt
-    ? "frozen"
-    : p.dueOverrideAt
-      ? "office"
-      : officeDue
-        ? "computed"
-        : null;
+  // (the rule the premium work established)". outstandingPromise does the
+  // opposite — deliveryBoard.ts:338 returns dueOverrideAt ahead of everything
+  // on a job that is not settled — and editOverrides.ts:177 already did too
+  // (`dueOverrideAt ?? pinnedPromise(p) ?? computed`), so this file was the
+  // only surface still ranking them the other way. Three open jobs now read
+  // the office's LATER date and are labelled as the office's: 99 W Bridge St
+  // (frozen Sep 11 16:00 -> Sep 19 14:26), 204 Spring Ln (Sep 12 13:00 ->
+  // Sep 17 23:00) and 1337 Carolannes Way, the REVISION row (Aug 21 18:00 ->
+  // Sep 25 20:26). On the last of those a red flag goes away. That is the
+  // intended answer — when Jordan sets a date by hand he has seen the pin and
+  // ruled anyway — but it IS a change of rule, not a refactor.
+  //
+  // So: ask once, and take the label with the date. `dueFor` used to be a
+  // ternary on whether the job owed video, which labelled a mixed job's floor
+  // plan promise "Video" on 25 live jobs; the engine knows which product the
+  // date belongs to and says so.
+  //
+  // A JOB WITH NO LIVE CLOCK NOW HAS NO DATE HERE EITHER, and that is the
+  // point rather than a loss. outstandingPromise returns null for a REOPENED
+  // job (delivered, then asked to change) on the rule that a revision has no
+  // clock of its own until Jordan sets one, and for a job with no shoot booked
+  // at all. Six open jobs read that way on Sep 20 and four of them were
+  // printing a red "past it": 84 Longfellow Cir, 358 N Church St, 322 N 62nd
+  // St and 56 Hillview Rd were each DELIVERED BEFORE the date they were being
+  // called late against. The other two, 7 Mendenhall Dr and 2705 Graystone Rd,
+  // have never been shot. The first telling of this said their only date came
+  // from the Aryeo sync's job-level deliveryDue; that is wrong, and the review
+  // caught it — read on production Sep 20, both rows carry a real
+  // Project.promisedDueAt (Sep 14 20:30Z and Jul 19 12:30Z) and deliveryDue
+  // merely holds the same value. The right reason is the one the rest of the
+  // hub already applies: an UNSHOT job has no clock anywhere. queries.ts:535
+  // gates both late columns on `shootDate: { lte: now }`, so neither row has
+  // ever reached a late list, and projectStatus.ts:1765 only writes a pin once
+  // the clock has started — which means these two pins came from the
+  // scripts/pin-promises.ts backfill, not from a promise made after a shoot.
+  // The Status check card beneath has always shown no date on those six; now
+  // both cards say the same nothing.
+  const turnarounds = await turnaroundRules().catch(() => undefined);
+  const promise = outstandingPromise(
+    {
+      status: p.status,
+      shootDate: p.shootDate,
+      deliveredAt: p.deliveredAt,
+      revisionRequestedAt: p.revisionRequestedAt,
+      dueOverrideAt: p.dueOverrideAt,
+      tierOverride: p.tierOverride,
+      promisedDueAt: p.promisedDueAt,
+      promisedReason: p.promisedReason,
+      packageName: p.packageName,
+      statusEvidence: p.statusEvidence,
+      orderItems: p.orderItems,
+      // The board's OWED_DELIVERABLE_WHERE in memory: a waived line is not an
+      // obligation and must not carry a promise.
+      deliverables: p.deliverables
+        .filter((d) => !d.waivedAt)
+        .map((d) => ({ type: d.type, status: d.status, uploadedAt: d.uploadedAt, label: d.label })),
+      appointments: p.appointments,
+    },
+    { turnarounds },
+  );
+  // …EXCEPT THAT A FINISHED JOB STILL KEEPS THE PROMISE IT WAS GIVEN (F05,
+  // review Sep 20 2026). The engine's null means "no clock is running", which is the
+  // right answer for a verdict and the wrong one for a history. Measured Sep
+  // 20: 506 projects would lose the Promise line, and on all 500 of the
+  // settled ones the date came from Project.promisedDueAt — the frozen,
+  // client-facing promise, a STORED FACT and not a second engine's opinion.
+  // This card is the only place on the project page that prints it, so
+  // dropping it would delete "we said Sep 12" from 487 delivered job pages to
+  // fix a disagreement those pages do not have: nothing else computes a date
+  // for a settled job, so there is nobody to disagree with.
+  //
+  // Narrow on purpose. DELIVERED and CANCELLED only — the two statuses the
+  // overdue rule below already excludes, so this date can never colour a card
+  // red. A REOPENED job (delivered, then asked to change) is deliberately NOT
+  // included: there the stored date is one the job already MET, and printing
+  // it is exactly the "LATE · Aug 21" that started this.
+  const settledPromise =
+    !promise.at && (p.status === "DELIVERED" || p.status === "CANCELLED") ? p.promisedDueAt ?? null : null;
+  const promisedAt = promise.at ?? settledPromise;
+  // Where the date came from, in the engine's own terms: the office set it by
+  // hand, or it is the frozen promise capping a later recomputed one, or it is
+  // today's turnaround on the earliest outstanding item. With no live clock at
+  // all the only date left is the frozen one, and it says so.
+  //
+  // A DATE THAT EQUALS THE PIN IS THE PIN, whether or not it had to cap
+  // anything (review, Sep 20 2026). `promise.pinned` is set only when the pin
+  // BEAT a later computed date (deliveryBoard.ts:365, `capped = at !==
+  // earliest.dueAt`), so when the two coincide the source used to fall through
+  // to "computed" and the card printed "on the standard turnaround" over a
+  // date the client was actually quoted. One row today: 1217 River Rd shows
+  // Sep 20 06:00, exactly its Project.promisedDueAt. Measured across all 538
+  // pinned projects, this test moves that row and no other, and promiseSource
+  // is read in one place (ProjectBriefCard.tsx:29) to choose a word — it
+  // cannot move a date or a verdict.
+  const promiseSource: ProjectBrief["promiseSource"] = !promisedAt
+    ? null
+    : !promise.at
+      ? "frozen"
+      : promise.office
+        ? "office"
+        : promise.pinned || (!!p.promisedDueAt && promise.at.getTime() === p.promisedDueAt.getTime())
+          ? "frozen"
+          : "computed";
 
   // ---- THE LIVE COUNT BEATS THE CACHED ONE --------------------------------
   //
@@ -171,10 +303,29 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
     status: p.status,
     evidence,
     shootDate: p.shootDate,
-    dueAt: promisedAt,
-    // "Video" was hardcoded, so a photo-only job's promise was labelled as a
-    // video promise it never had (F05, Sep 20 2026).
-    dueFor: owesVideo ? "Video" : "Photos",
+    // THE LIVE CLOCK ONLY, never the settled-job history above: feeding a
+    // finished job its old promise here would print "Overdue" over work that
+    // shipped. The first telling of this said 487 delivered pages; the review
+    // checked the engine and it is CANCELLED that this protects, not
+    // DELIVERED. statusEvidence.ts:590 returns "Delivered — n items
+    // unconfirmed" before the overdue branch is ever reached, so a DELIVERED
+    // job cannot print "Overdue" whatever date it is handed. CANCELLED has no
+    // such early return and falls straight through to it — 13 cancelled rows
+    // carry a pin today. Smaller number, same decision.
+    dueAt: promise.at,
+    // WHAT THE DATE IS FOR, FROM WHOEVER SET IT (F05, review Sep 20 2026).
+    // "Video" was hardcoded, which labelled a photo-only job's promise as a
+    // video promise it never had; the first pass replaced it with a ternary on
+    // owesVideo, which fixed the stills-only case and still said "Video" on a
+    // mixed job whose earliest promise was the floor plan's — 25 live jobs on
+    // Sep 20, including 1462 Brandywine Ln, where the neighbouring card and
+    // Kyle's board both said "Same Day 2D Floor-Plan Delivery". The promise
+    // engine picked the item; it is the one that can name it.
+    dueFor: promise.label,
+    // True because the engine RAN, not because it produced a date: a null date
+    // from outstandingPromise is an answer ("nothing is outstanding"), and
+    // falling back to the blob's videoDue would put the tenth opinion back.
+    // Same argument StatusEvidenceCard passes.
     promiseResolved: true,
     attemptedAt: p.evidenceAttemptedAt,
     succeededAt: p.evidenceSucceededAt,
@@ -373,13 +524,47 @@ export async function projectBrief(projectId: string): Promise<ProjectBrief | nu
     // photo-only job in REVISION, and every other photo-only job carrying an
     // open ask is DELIVERED and excluded above), so the status is the one that
     // costs nothing and still lets go.
+    //
+    // AND THE DATE IT RUNS AGAINST IS NOW KYLE'S (F05, review Sep 20 2026).
+    // The rule below is unchanged; `promisedAt` is simply the promise engine's
+    // answer instead of this file's own, so the page and the board can no
+    // longer call the same job late on different days. The one thing that
+    // moves: a reopened job (delivered, then asked to change) has no date at
+    // all under that engine, so it cannot be overdue here either — which is
+    // right, because the promise it is being measured against is one it
+    // already kept. 1337 Carolannes Way read "LATE · Aug 21" for the client's
+    // September notes until this line.
     overdue:
       p.status !== "DELIVERED" &&
       p.status !== "CANCELLED" &&
-      !!promisedAt &&
-      promisedAt.getTime() < Date.now() &&
+      !!promise.at &&
+      promise.at.getTime() < Date.now() &&
       (live.length > 0
-        ? live.some((o) => o.state !== "sent")
+        ? // AND THE OFFICE'S OWN DATE IS NOT SECOND-GUESSED (F05, review Sep 20
+          // 2026). When Jordan sets a date by hand on a job, that IS the
+          // office saying work is owed by then, and outstandingPromise returns
+          // it ahead of every product promise. Counting the per-video rows on
+          // top of it let one job's single sent-and-stamped reel say "nothing
+          // is owed" while the job sat in REVISION past the date the office
+          // had set — 204 Spring Ln, board LATE Sep 17, page black. Measured
+          // the same day: this moves exactly that one job, and it only ever
+          // moves a card from on-time to late, never the other way.
+          //
+          // AND ON THAT ONE JOB THE CARD NOW ARGUES WITH ITS OWN HEADLINE,
+          // knowingly (review, Sep 20 2026). ProjectBriefCard.tsx:37 prints
+          // tone.headline directly above the Promise line, and on 204 Spring
+          // Ln that headline is "Everything ordered is confirmed." over a red
+          // "Sep 17 — set by the office · past it". The red flag is the right
+          // answer: Kyle's board says LATE on the same minute, and so does the
+          // office's own date. What is wrong is the headline — evidenceTone
+          // reads the LISTING, and a listing full of media cannot tell that
+          // the client asked for a change, which is a defect in the tone
+          // engine (statusEvidence.ts) and not in this date. Mirroring the
+          // photo-only guard here would silence the flag instead of fixing the
+          // headline: measured Sep 20, that form moves ZERO jobs, so it would
+          // trade a visible contradiction for a silent miss. Left as is on
+          // purpose, and filed against the tone engine.
+          live.some((o) => o.state !== "sent") || promise.office
         : !owesVideo && (tone.kind !== "clear" || p.status === "REVISION")),
     latestRequest,
     blocker,

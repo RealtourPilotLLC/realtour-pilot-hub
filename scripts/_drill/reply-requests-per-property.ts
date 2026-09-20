@@ -36,6 +36,36 @@
 //      tick on a row somebody else already closed closes nothing at all (§6c);
 //  12. two requests that resolve to the same conversation key are two rows, not
 //      one row and a silently dropped obligation (§5b).
+//
+// And two the Sep 20 RE-review put here, which are the repair's own regression,
+// in both directions (§6d, §6e):
+//  13. the tick on one property's row does not silence the conversation EVEN
+//      WHEN IT IS THE LAST REQUEST OPEN. The first repair stood the cut down
+//      only while a sibling happened to be open, so §6c passed on a condition
+//      that has nothing to do with what was clicked — and with the sibling
+//      gone the same click hid an unread message from the Replies tab, the
+//      comms board, the /ops pill and the 5-minute pager;
+//  14. every OTHER close still settles the conversation. Standing the cut down
+//      threw away 29 of the 130 completed phone requests on the books, 13 of
+//      them with no outbound within five minutes — conversations somebody
+//      settled by hand, still on the board and still paging. A visibility
+//      change must never become an alerting one;
+//  15. a client holding exactly ONE request we replied around keeps it through
+//      a tick on the conversation card (§6f). The off-thread protection was
+//      gated on the client holding more than one, and the count was taken after
+//      gmail had been filtered out — so one text request plus one email request
+//      read as "one" and the gate opened.
+//
+// And one the wave-3 VERIFICATION put here, which is the same blocking failure
+// through the only other door these rows render on (§6g):
+//  16. Ops Day's Handled button is not a client-wide cut either. `client_reply`
+//      is in BOARD_HIDDEN_TYPES, so the Open Loops card is the only surface
+//      left, and `markLoopHandled` wrote a bare COMPLETED — so Kyle pressing
+//      Handled on Renee's Cardigan row took her two-minute-old Church St
+//      question off the Replies tab, the comms board, the /ops pill and the
+//      pager. Both directions are pinned: a loop row that names an ORDER is one
+//      property's row and does not cut (§6g), and a reply request filed against
+//      no order is the conversation and still does (§6g-bis).
 import { PGlite } from "@electric-sql/pglite";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
 import { execFile } from "child_process";
@@ -79,10 +109,12 @@ async function main() {
   await exec("npx", ["prisma", "db", "push", "--skip-generate", "--accept-data-loss"], { env: { ...process.env } });
 
   // Import AFTER the URL is pinned, so the client connects to the drill db.
-  const { unansweredComms, openObligations, requestsOffThread } = await import("@/lib/replyQueue");
+  const { unansweredComms, openObligations, requestsOffThread, requestTickKey, ackValue } = await import("@/lib/replyQueue");
   const { unansweredCommsBoard } = await import("@/lib/commsBoard");
   const { findUnansweredInbound } = await import("@/lib/commsSla");
-  const { markCommsHandled } = await import("@/app/actions");
+  const { markCommsHandled, setSmartTaskStatus } = await import("@/app/actions");
+  const { markLoopHandled } = await import("@/app/ops/actions");
+  const { openLoopsList } = await import("@/lib/opsDay");
   const { closeReplyForOutbound } = await import("@/lib/tasks");
   const { prisma } = await import("@/lib/prisma");
 
@@ -91,6 +123,17 @@ async function main() {
     if (ok) pass++; else fail++;
     console.log(`  ${ok ? "PASS" : "FAIL"} ${label}${detail ? ` — ${detail}` : ""}`);
   };
+
+  // THE HARNESS CLOCK (Sep 20 2026). Every message here is written on a fixed
+  // fake NOW, but the shipped close paths stamp `completedAt: new Date()` — the
+  // real wall clock. A reply that the drill says went out a day ago therefore
+  // lands in the database stamped today, and a completed request is a CUT POINT
+  // on the conversation, so every fake-past message after it would read as
+  // older than the close and drop off the card. Re-stamp a close at the moment
+  // the drill says it happened. Ticks the drill performs "now" keep the real
+  // clock, because that is exactly what a click is.
+  const stampClose = (taskIds: string[], at: Date) =>
+    prisma.smartTask.updateMany({ where: { id: { in: taskIds } }, data: { completedAt: at } });
 
   const mkClient = (name: string, phone: string) =>
     prisma.client.create({ data: { name, phone }, select: { id: true, name: true } });
@@ -147,6 +190,7 @@ async function main() {
   const CHURCH_REPLY = "The editor has 358 N Church St back to us tomorrow morning, I'll send it over the second it lands.";
   await outbound({ clientId: R.id, phone: R_PHONE, projectId: church.id, body: CHURCH_REPLY, at: ago(1 * DAY) });
   await closeReplyForOutbound(R.id, CHURCH_REPLY);
+  await stampClose([churchTask.id], ago(1 * DAY));
 
   // A second client with ONE open request and a street-less reply — the shape
   // that must NOT change (85% of our texts name no property).
@@ -372,6 +416,283 @@ async function main() {
   check("a stale per-request tick says so", stale.ok && /already handled/i.test(stale.message ?? ""), stale.message ?? "no message");
   const venangoStatus = (await prisma.smartTask.findUnique({ where: { id: venangoTask.id }, select: { status: true } }))?.status;
   check("and it does not close the request that is still open", venangoStatus !== "COMPLETED", venangoStatus ?? "?");
+
+  console.log("\n6d. …and it still does not, when it is the LAST request open");
+  // THE SHAPE 6c EXCLUDED, AND THE REGRESSION IT HID (re-review, Sep 20 2026).
+  //
+  // The first repair stood the completed-request cut down while the client
+  // still had another phone request open. Ashley above has one, so 6c passed
+  // on a condition that has nothing to do with what was clicked. Take the
+  // sibling away and the same click cuts the whole conversation again: the set
+  // is empty on the next render, the completion lands as a client-wide cut, and
+  // every message older than the click drops off the Replies tab, the comms
+  // board, the /ops pill AND findUnansweredInbound, which is what the 5-minute
+  // pager reads. Jamie Achberger is one of the five real clients this would
+  // have hit.
+  const J = await mkClient("Jamie Achberger", "(610) 555-0133");
+  const J_PHONE = "6105550133";
+  const lincoln = await mkProject("8 Lincoln Pl, Whitehall, PA 18052", J.id);
+  const scheidy = await mkProject("41 Scheidys Rd, Allentown, PA 18104", J.id);
+  const livingston = await mkProject("2726 W Livingston St, Allentown, PA 18104", J.id);
+  const LINCOLN_ASK = "Is the Lincoln Place order set up for the twilight add-on?";
+  const SCHEIDY_ASK = "Does Jamie have a credit we can put toward Scheidys Rd?";
+  const LIVINGSTON_ASK = "Sorry, one more — did anyone lock the back door at Livingston when you left?";
+
+  await inbound({ clientId: J.id, clientName: J.name, phone: J_PHONE, projectId: lincoln.id, body: LINCOLN_ASK, at: ago(6 * DAY) });
+  const lincolnTask = await request({ clientId: J.id, projectId: lincoln.id, address: "8 Lincoln Pl", title: "Set up the Lincoln Place twilight add-on", message: LINCOLN_ASK, at: ago(6 * DAY) });
+  await inbound({ clientId: J.id, clientName: J.name, phone: J_PHONE, projectId: scheidy.id, body: SCHEIDY_ASK, at: ago(5 * DAY) });
+  const scheidyTask = await request({ clientId: J.id, projectId: scheidy.id, address: "41 Scheidys Rd", title: "Check the credit and apply it to Scheidys", message: SCHEIDY_ASK, at: ago(5 * DAY) });
+  // A street-less reply four days ago. `findClientProjectByText` finds no street
+  // in it (85% of our texts name none), so tasks.ts falls back to the order the
+  // most recent inbound was filed against — Scheidys — and closes THAT request.
+  // A real close, about the conversation, and the shape 15 of the 29 discarded
+  // cuts actually are. Lincoln Place is left open and now sits BEFORE our last
+  // reply, so its question is off the live card.
+  await outbound({ clientId: J.id, phone: J_PHONE, projectId: livingston.id, body: "All set on your end, nothing else needed from you.", at: ago(4 * DAY) });
+  await closeReplyForOutbound(J.id, "All set on your end, nothing else needed from you.");
+  await stampClose([scheidyTask.id], ago(4 * DAY));
+  const jamieOpenNow = await prisma.smartTask.findMany({ where: { clientId: J.id, taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] } }, select: { id: true } });
+  check("Lincoln Place is the ONLY request she has open", jamieOpenNow.length === 1 && jamieOpenNow[0].id === lincolnTask.id, `${jamieOpenNow.length} open`);
+
+  // …and NOW she texts about something else entirely, two minutes ago. The
+  // receiver mints her reply task off the webhook; the message is on the card
+  // from the instant it lands, which is what the pager reads.
+  await inbound({ clientId: J.id, clientName: J.name, phone: J_PHONE, projectId: livingston.id, body: LIVINGSTON_ASK, at: ago(2 * 60_000) });
+  const jBefore = await unansweredComms({ now: NOW, families: ["phone"], includeOwed: true });
+  check("her two-minute-old question is on the card", jBefore.some((t) => t.key === `c:${J.id}` && t.pending.some((m) => m.body === LIVINGSTON_ASK)), jBefore.filter((t) => t.clientId === J.id).map((t) => t.key).join(" | "));
+  check("and the Lincoln Place request is beside it", jBefore.some((t) => t.key === `c:${J.id}#${lincolnTask.id}`));
+  const jPagedBefore = await findUnansweredInbound(NOW, { families: ["phone"] });
+  check("the pager can see her", jPagedBefore.some((p) => p.clientId === J.id), `${jPagedBefore.filter((p) => p.clientId === J.id).length} pageable`);
+
+  const tickLincoln = await markCommsHandled(J.id, "phone", `${J.id}#${lincolnTask.id}`);
+  check("the tick on the last open request reports ok", tickLincoln.ok, tickLincoln.message ?? "");
+  const lincolnAfter = (await prisma.smartTask.findUnique({ where: { id: lincolnTask.id }, select: { status: true } }))?.status;
+  check("it closes exactly that request", lincolnAfter === "COMPLETED", lincolnAfter ?? "?");
+  const jAfter = await unansweredComms({ now: NOW, families: ["phone"], includeOwed: true });
+  const jLive = jAfter.find((t) => t.key === `c:${J.id}`);
+  check("HER TWO-MINUTE-OLD QUESTION SURVIVES IT", !!jLive, "her live card is gone — the tick cut the conversation");
+  check("word for word", jLive?.pending.some((m) => m.body === LIVINGSTON_ASK) ?? false, jLive?.pending.map((m) => m.body.slice(0, 28)).join(" | ") ?? "none");
+  const jBoard = await unansweredCommsBoard("phone", NOW);
+  check("it is still on the /tasks comms board", jBoard.some((g) => g.clientId === J.id), `${jBoard.filter((g) => g.clientId === J.id).length} rows`);
+  const jPaged = await findUnansweredInbound(NOW, { families: ["phone"] });
+  check("and the 5-minute pager can still see it", jPaged.some((p) => p.clientId === J.id), `${jPaged.filter((p) => p.clientId === J.id).length} pageable`);
+  check("the Lincoln Place row itself is gone", !(await openObligations({ now: NOW, families: ["phone"] })).some((o) => o.taskId === lincolnTask.id));
+
+  console.log("\n6d-bis. A marker outlives its click but not its close");
+  // A `client_reply` can be REOPENED — `mergeIntoExistingTask` does it when a
+  // client asks the same thing again — and the marker from the tick that closed
+  // it the first time is still sitting in AppSetting. If it went on suppressing
+  // the cut, the SECOND close would be silent too and the conversation would
+  // page forever about something we settled. The marker only speaks for the
+  // close it was written beside (REQUEST_TICK_WINDOW_MS).
+  await prisma.appSetting.update({ where: { key: requestTickKey(lincolnTask.id) }, data: { value: ackValue(ago(1 * DAY), "handled on the request's own row") } });
+  await prisma.smartTask.update({ where: { id: lincolnTask.id }, data: { status: "OPEN", completedAt: null } });
+  await inbound({ clientId: J.id, clientName: J.name, phone: J_PHONE, projectId: lincoln.id, body: "Following up on the Lincoln Place twilight add-on.", at: ago(60_000) });
+  check("her conversation is back on the board", (await unansweredComms({ now: NOW, families: ["phone"] })).some((t) => t.key === `c:${J.id}`));
+  // Kyle rings her and closes the row from the task side — no ack, no outbound.
+  await setSmartTaskStatus(lincolnTask.id, "COMPLETED");
+  check("the stale marker does not silence the SECOND close", !(await unansweredComms({ now: NOW, families: ["phone"] })).some((t) => t.key === `c:${J.id}`), "the conversation is still on the board");
+  check("and the pager lets go with it", !(await findUnansweredInbound(NOW, { families: ["phone"] })).some((p) => p.clientId === J.id));
+
+  console.log("\n6e. A close that IS about the conversation still settles it");
+  // THE OTHER DIRECTION, AND THE OTHER HALF OF THE REGRESSION. Standing the cut
+  // down whenever a sibling was open threw away 29 of the 130 completed phone
+  // requests on the books — 13 of them with no outbound within five minutes of
+  // the close, so the cut was the only thing that had ever cleared those cards.
+  // Brenna Barkasi is one of them: somebody rang her, sorted it, closed the row
+  // from the task side, and the conversation stayed on the board and stayed
+  // pageable because another property's request was open somewhere else.
+  //
+  // A close made ON ONE PROPERTY'S ROW is the only one that is not a statement
+  // about the conversation. Every other one — a reply, a tick on the card, a
+  // status set to Complete — is.
+  //
+  // Sep 20, wave-3 follow-up: "a loop marked handled" used to be on that list
+  // and has come off it, for the per-request shape only. The Open Loops card is
+  // the one surface a `client_reply` renders on outside the comms card, and a
+  // row there carries a title and a street and no messages, so pressing Handled
+  // on it is the same act as ticking it on the comms card (§6g). A loop that
+  // names no order is still the conversation and still cuts (§6g-bis).
+  // `setSmartTaskStatus`, exercised here and in §6d-bis, is deliberately NOT in
+  // the exception — see the note in src/app/actions.ts.
+  const BB = await mkClient("Brenna Barkasi", "(484) 555-0111");
+  const BB_PHONE = "4845550111";
+  const skyline = await mkProject("14 Skyline Dr, Reading, PA 19606", BB.id);
+  const shells = await mkProject("903 Shells Church Rd, Reading, PA 19606", BB.id);
+  const penn = await mkProject("2200 Penn Ave, Reading, PA 19609", BB.id);
+  const SKYLINE_ASK = "Can the Skyline Dr card charge be refunded and put on as a credit instead?";
+  const SHELLS_ASK = "Where do I find the revised Shells Church Rd video?";
+  const SHELLS_CHASE = "Sorry to chase — still can't find that revised Shells Church video anywhere.";
+
+  await inbound({ clientId: BB.id, clientName: BB.name, phone: BB_PHONE, projectId: skyline.id, body: SKYLINE_ASK, at: ago(6 * DAY) });
+  const skylineTask = await request({ clientId: BB.id, projectId: skyline.id, address: "14 Skyline Dr", title: "Refund the Skyline Dr charge and apply the credit", message: SKYLINE_ASK, at: ago(6 * DAY) });
+  await inbound({ clientId: BB.id, clientName: BB.name, phone: BB_PHONE, projectId: shells.id, body: SHELLS_ASK, at: ago(5 * DAY) });
+  const shellsTask = await request({ clientId: BB.id, projectId: shells.id, address: "903 Shells Church Rd", title: "Find the revised Shells Church Rd video and send it", message: SHELLS_ASK, at: ago(5 * DAY) });
+  // A note about a THIRD order, which owes no reply, is the newest thing she
+  // sent before our text — so tasks.ts infers Penn Ave, finds no request on it,
+  // sees two open and refuses to guess. Both stay open, which is the multi-order
+  // doctrine working and the state 107 historical overlaps were in.
+  await inbound({ clientId: BB.id, clientName: BB.name, phone: BB_PHONE, projectId: penn.id, body: "Penn Ave went great by the way, thank you!", at: ago(4 * DAY + 2 * HOUR) });
+  await outbound({ clientId: BB.id, phone: BB_PHONE, projectId: penn.id, body: "On it, I'll come back to you shortly.", at: ago(4 * DAY) });
+  await closeReplyForOutbound(BB.id, "On it, I'll come back to you shortly.");
+  const bbOpen = await prisma.smartTask.count({ where: { clientId: BB.id, taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] } } });
+  check("the street-less reply closes neither of her two requests", bbOpen === 2, `${bbOpen} open`);
+  // She chases three hours ago, about Shells Church — so THAT question is on
+  // the card and the Skyline one, answered around four days back, is not.
+  await inbound({ clientId: BB.id, clientName: BB.name, phone: BB_PHONE, projectId: shells.id, body: SHELLS_CHASE, at: ago(3 * HOUR) });
+
+  const bbOwed = await openObligations({ now: NOW, families: ["phone"] });
+  check("the Skyline request is owed and off the card", bbOwed.some((o) => o.taskId === skylineTask.id && o.repliedElsewhere));
+  check("the Shells Church request is owed and ON the card", bbOwed.some((o) => o.taskId === shellsTask.id && !o.repliedElsewhere));
+  const bbBefore = await unansweredComms({ now: NOW, families: ["phone"], includeOwed: true });
+  check("her chase is on the live card", bbBefore.some((t) => t.key === `c:${BB.id}` && t.pending.some((m) => m.body === SHELLS_CHASE)));
+  const bbPagedBefore = await findUnansweredInbound(NOW, { families: ["phone"] });
+  check("and the pager is watching it", bbPagedBefore.some((p) => p.clientId === BB.id));
+
+  // Kyle rings her, finds the video, sends it, and closes the row from the task
+  // side — the path the Open Loops card and the task board both use. No ack, no
+  // outbound text: the completed request is the whole record of the decision.
+  await setSmartTaskStatus(shellsTask.id, "COMPLETED");
+  const bbAfter = await unansweredComms({ now: NOW, families: ["phone"], includeOwed: true });
+  check("the conversation clears", !bbAfter.some((t) => t.key === `c:${BB.id}`), bbAfter.filter((t) => t.clientId === BB.id).map((t) => t.key).join(" | "));
+  const bbPaged = await findUnansweredInbound(NOW, { families: ["phone"] });
+  check("THE PAGER STOPS PAGING ABOUT A CONVERSATION SOMEBODY SETTLED", !bbPaged.some((p) => p.clientId === BB.id), `${bbPaged.filter((p) => p.clientId === BB.id).length} pageable`);
+  const bbBoard = await unansweredCommsBoard("phone", NOW);
+  check("the /tasks comms board loses the conversation row", !bbBoard.some((g) => g.clientId === BB.id && g.openTaskId === shellsTask.id), `${bbBoard.filter((g) => g.clientId === BB.id).length} rows`);
+  check("and keeps the Skyline request's own row", bbBoard.some((g) => g.clientId === BB.id && g.openTaskId === skylineTask.id));
+  check("and the OTHER property's request is still standing", bbAfter.some((t) => t.key === `c:${BB.id}#${skylineTask.id}`), bbAfter.filter((t) => t.clientId === BB.id).map((t) => t.key).join(" | ") || "none");
+  check("named after its own property", bbAfter.find((t) => t.key === `c:${BB.id}#${skylineTask.id}`)?.propertyAddress === "14 Skyline Dr");
+
+  console.log("\n6f. One request off the card is still a request off the card");
+  // THE OTHER HALF OF THE SAME REGRESSION (re-review, Sep 20 2026). The
+  // off-thread protection used to be consulted only when the client held MORE
+  // THAN ONE open request, so a client holding exactly ONE that we replied
+  // around still had it closed by a tick on the conversation card — the exact
+  // behaviour the branch's own comment condemns. And that single request is
+  // precisely the one the ledger renders as its own row, so Kyle sees two rows
+  // and ticking the live one closes the other.
+  //
+  // The count was wrong twice over: `openRows` filters gmail out before it is
+  // taken, so a client with one text request and one email request read as
+  // "one" and the gate opened. Jeff Scott holds both here.
+  const JS = await mkClient("Jeff Scott", "(267) 555-0155");
+  const JS_PHONE = "2675550155";
+  const ettingProj = await mkProject("1631 S Etting St, Philadelphia, PA 19148", JS.id);
+  const chelten = await mkProject("428 E Chelten Ave, Philadelphia, PA 19144", JS.id);
+  const kingsessing = await mkProject("6305 Kingsessing Ave, Philadelphia, PA 19142", JS.id);
+  const ETTING_ASK = "Is the Etting St shoot still down for the full package or did we drop the video?";
+  const CHELTEN_ASK = "Is the issue at the back of Chelten the railing or the door?";
+  const KINGSESSING_ASK = "Last thing — is the tenant at Kingsessing expecting you on Thursday?";
+
+  await inbound({ clientId: JS.id, clientName: JS.name, phone: JS_PHONE, projectId: ettingProj.id, body: ETTING_ASK, at: ago(6 * DAY) });
+  const ettingTask = await request({ clientId: JS.id, projectId: ettingProj.id, address: "1631 S Etting St", title: "Confirm the Etting St package still includes video", message: ETTING_ASK, at: ago(6 * DAY) });
+  await inbound({ clientId: JS.id, clientName: JS.name, phone: JS_PHONE, projectId: chelten.id, body: CHELTEN_ASK, at: ago(5 * DAY) });
+  const cheltenTask = await request({ clientId: JS.id, projectId: chelten.id, address: "428 E Chelten Ave", title: "Clarify whether the Chelten rear issue is railing or door", message: CHELTEN_ASK, at: ago(5 * DAY) });
+  // An email request too. A phone tick answers texts, not email — and the count
+  // that used to gate this branch never saw it.
+  // On its OWN order, because `closeClientReplyTask` filters on client + order
+  // and has no lane scope of its own (a separate F10 note) — parking it on the
+  // order the reply below infers would close it for reasons this section is not
+  // about.
+  const wyoming = await mkProject("119 Wyoming St, Philadelphia, PA 19140", JS.id);
+  const mailTask = await request({ clientId: JS.id, projectId: wyoming.id, address: "119 Wyoming St", title: "Reply to Jeff's email about the Wyoming St invoice", message: "Can you resend the Wyoming St invoice?", at: ago(5 * DAY), source: "gmail", dedupe: `${JS.id}|${wyoming.id}|client_reply|mail` });
+  // A note about a third order is the newest thing he sent before our text, so
+  // the close infers Kingsessing, finds no request on it, sees two open on the
+  // phone lane and refuses. Both stay open and both are now off the card.
+  await inbound({ clientId: JS.id, clientName: JS.name, phone: JS_PHONE, projectId: kingsessing.id, body: "Kingsessing looked great, thanks.", at: ago(4 * DAY + 2 * HOUR) });
+  await outbound({ clientId: JS.id, phone: JS_PHONE, projectId: kingsessing.id, body: "All good, nothing needed from you.", at: ago(4 * DAY) });
+  await closeReplyForOutbound(JS.id, "All good, nothing needed from you.");
+  // Kyle deals with Chelten and ticks ITS row, so Etting is the only phone
+  // request left — and it is one nobody has answered.
+  const tickChelten = await markCommsHandled(JS.id, "phone", `${JS.id}#${cheltenTask.id}`);
+  check("the Chelten row ticks off on its own", tickChelten.ok, tickChelten.message ?? "");
+  const jsOpen = await prisma.smartTask.findMany({ where: { clientId: JS.id, taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] } }, select: { id: true, source: true } });
+  check("he holds exactly one phone request and one email request", jsOpen.filter((t) => t.source !== "gmail").length === 1 && jsOpen.some((t) => t.id === mailTask.id), jsOpen.map((t) => t.source).join(" | "));
+  const jsOwed = await openObligations({ now: NOW, families: ["phone"] });
+  check("the Etting request is owed and off the card", jsOwed.some((o) => o.taskId === ettingTask.id && o.repliedElsewhere));
+
+  // …and now he texts about something else, and Kyle ticks the CONVERSATION.
+  await inbound({ clientId: JS.id, clientName: JS.name, phone: JS_PHONE, projectId: kingsessing.id, body: KINGSESSING_ASK, at: ago(2 * HOUR) });
+  const jsBefore = await unansweredComms({ now: NOW, families: ["phone"], includeOwed: true });
+  check("he has a live card and an Etting row", jsBefore.filter((t) => t.clientId === JS.id).length === 2, jsBefore.filter((t) => t.clientId === JS.id).map((t) => t.key).join(" | "));
+  const convTick = await markCommsHandled(JS.id, "phone");
+  check("the conversation tick reports ok", convTick.ok, convTick.message ?? "");
+  const ettingAfter = (await prisma.smartTask.findUnique({ where: { id: ettingTask.id }, select: { status: true } }))?.status;
+  check("THE ETTING REQUEST IS STILL OPEN — nobody decided about a question that was not on screen", ettingAfter !== "COMPLETED", ettingAfter ?? "?");
+  check("and the tick says which one it left standing", /Etting/.test(convTick.message ?? ""), convTick.message ?? "no message");
+  const mailAfter = (await prisma.smartTask.findUnique({ where: { id: mailTask.id }, select: { status: true } }))?.status;
+  check("the email request is untouched — a phone tick answers texts, not email", mailAfter !== "COMPLETED", mailAfter ?? "?");
+  const jsAfter = await unansweredComms({ now: NOW, families: ["phone"], includeOwed: true });
+  check("the conversation itself clears", !jsAfter.some((t) => t.key === `c:${JS.id}`), jsAfter.filter((t) => t.clientId === JS.id).map((t) => t.key).join(" | "));
+  check("and the Etting row is still there, named after its own property", jsAfter.some((t) => t.key === `c:${JS.id}#${ettingTask.id}` && t.propertyAddress === "1631 S Etting St"));
+  const trace = await prisma.smartTask.count({ where: { clientId: JS.id, source: "manual", status: "COMPLETED" } });
+  check("a tick that closed nothing still left a trace", trace === 1, `${trace} trace rows`);
+
+  console.log("\n6g. The OTHER door onto a request's own row — Ops Day's Handled button");
+  // THE SAME BLOCKING FAILURE, THROUGH THE ONLY OTHER SURFACE THESE ROWS
+  // RENDER ON (wave-3 verification, Sep 20 2026). `client_reply` is in
+  // BOARD_HIDDEN_TYPES, so after the comms card the /ops Open Loops list is
+  // the only place Kyle ever sees one — and `markLoopHandled` wrote a bare
+  // COMPLETED. The walk read that as a client-wide cut, so pressing Handled on
+  // 453 Cardigan took a 358 N Church St question that arrived two minutes
+  // earlier off the Replies tab, the comms board, the /ops pill and
+  // findUnansweredInbound. Renee Ryan holds exactly those two rows in
+  // production today, both with orders, both rendering as loop rows.
+  //
+  // Same client, same two properties as §1, rebuilt on a second record so the
+  // history above is untouched.
+  const R2 = await mkClient("Renee Ryan (second record)", "(610) 555-0166");
+  const R2_PHONE = "6105550166";
+  const churchB = await mkProject(CHURCH, R2.id);
+  const cardiganB = await mkProject(CARDIGAN, R2.id);
+  await inbound({ clientId: R2.id, clientName: R2.name, phone: R2_PHONE, projectId: cardiganB.id, body: CARDIGAN_ASK, at: ago(2 * DAY) });
+  const cardiganLoop = await request({ clientId: R2.id, projectId: cardiganB.id, address: CARDIGAN, title: "Apply credit for skipped aerial shots at Cardigan", message: CARDIGAN_ASK, at: ago(2 * DAY) });
+  // …and the Church St question lands two minutes ago, unread by anybody.
+  await inbound({ clientId: R2.id, clientName: R2.name, phone: R2_PHONE, projectId: churchB.id, body: CHURCH_ASK, at: ago(2 * 60_000) });
+  const churchLoop = await request({ clientId: R2.id, projectId: churchB.id, address: CHURCH, title: "Check with editor on Church St ETA and update Renee", message: CHURCH_ASK, at: ago(2 * 60_000) });
+
+  const loopsBefore = await openLoopsList(NOW, null);
+  check("both requests render on the Open Loops card", [cardiganLoop.id, churchLoop.id].every((id) => loopsBefore.some((l) => l.taskId === id && l.kind === "client_reply")), `${loopsBefore.filter((l) => l.kind === "client_reply").length} client_reply loops`);
+  const r2Before = await unansweredComms({ now: NOW, families: ["phone"], includeOwed: true });
+  check("her two-minute-old Church St question is on the live card", r2Before.some((t) => t.key === `c:${R2.id}` && t.pending.some((m) => m.body === CHURCH_ASK)), r2Before.filter((t) => t.clientId === R2.id).map((t) => t.key).join(" | "));
+  check("the pager is watching it", (await findUnansweredInbound(NOW, { families: ["phone"] })).some((p) => p.clientId === R2.id));
+
+  // Kyle presses Handled on the CARDIGAN row, from Ops Day. He has a title and
+  // a street in front of him and no messages at all.
+  const loopTick = await markLoopHandled(cardiganLoop.id);
+  check("the Handled button reports ok", loopTick.ok, loopTick.message ?? "");
+  const cardiganLoopAfter = (await prisma.smartTask.findUnique({ where: { id: cardiganLoop.id }, select: { status: true } }))?.status;
+  check("it closes exactly that request", cardiganLoopAfter === "COMPLETED", cardiganLoopAfter ?? "?");
+  const churchLoopAfter = (await prisma.smartTask.findUnique({ where: { id: churchLoop.id }, select: { status: true } }))?.status;
+  check("and leaves the other one standing", churchLoopAfter !== "COMPLETED", churchLoopAfter ?? "?");
+  const r2After = await unansweredComms({ now: NOW, families: ["phone"], includeOwed: true });
+  const r2Live = r2After.find((t) => t.key === `c:${R2.id}`);
+  check("HER TWO-MINUTE-OLD QUESTION SURVIVES THE OPS DAY CLOSE", !!r2Live, "her live card is gone — Handled cut the whole conversation");
+  check("word for word", r2Live?.pending.some((m) => m.body === CHURCH_ASK) ?? false, r2Live?.pending.map((m) => m.body.slice(0, 28)).join(" | ") ?? "none");
+  check("it is still on the /tasks comms board", (await unansweredCommsBoard("phone", NOW)).some((g) => g.clientId === R2.id));
+  check("and the 5-minute pager can still see it", (await findUnansweredInbound(NOW, { families: ["phone"] })).some((p) => p.clientId === R2.id));
+  check("the Cardigan row itself is gone from the ledger", !(await openObligations({ now: NOW, families: ["phone"] })).some((o) => o.taskId === cardiganLoop.id));
+
+  console.log("\n6g-bis. …and a loop that is NOT one property's row still cuts");
+  // THE OTHER DIRECTION, which is what made the first F10 repair worse than the
+  // bug. The marker is scoped to `isPerRequestReply` — a phone-lane client_reply
+  // that NAMES AN ORDER — and nothing else. A reply request filed against no
+  // order has no property to be "about": it is the conversation, and a person
+  // marking it handled has settled the conversation. That close must go on
+  // cutting, or a client somebody dealt with by hand keeps paging, which is the
+  // 29-discarded-cuts failure all over again.
+  const NL = await mkClient("Nehemiah Lindo", "(717) 555-0122");
+  const NL_PHONE = "7175550122";
+  await inbound({ clientId: NL.id, clientName: NL.name, phone: NL_PHONE, body: "Are you free to shoot 2358 Buck Mountain Rd tomorrow at 10?", at: ago(3 * HOUR) });
+  const nlLoop = await request({ clientId: NL.id, projectId: null, address: null, title: "Schedule shoot at 2358 Buck Mountain Rd for tomorrow at 10 AM", message: "Are you free to shoot 2358 Buck Mountain Rd tomorrow at 10?", at: ago(3 * HOUR) });
+  check("his conversation is on the card", (await unansweredComms({ now: NOW, families: ["phone"], includeOwed: true })).some((t) => t.key === `c:${NL.id}`));
+  check("and the pager is watching it", (await findUnansweredInbound(NOW, { families: ["phone"] })).some((p) => p.clientId === NL.id));
+  // Kyle rings him, books it, and presses Handled. No ack, no outbound text.
+  const nlTick = await markLoopHandled(nlLoop.id);
+  check("the Handled button reports ok", nlTick.ok, nlTick.message ?? "");
+  check("no per-request marker was written for a request with no order", !(await prisma.appSetting.findUnique({ where: { key: requestTickKey(nlLoop.id) }, select: { key: true } })));
+  check("THE CONVERSATION CLEARS", !(await unansweredComms({ now: NOW, families: ["phone"], includeOwed: true })).some((t) => t.key === `c:${NL.id}`), "still on the board after somebody settled it");
+  check("and the pager stops paging about it", !(await findUnansweredInbound(NOW, { families: ["phone"] })).some((p) => p.clientId === NL.id));
 
   console.log("\n7. Nothing was deleted");
   const all = await prisma.smartTask.count({ where: { clientId: R.id } });

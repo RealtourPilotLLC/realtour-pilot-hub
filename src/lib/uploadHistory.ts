@@ -100,6 +100,44 @@ export const OWES_AN_ADDITIONAL_SHOOT: Prisma.ProjectWhereInput = {
   deliverables: { some: UNFINISHED_ADDITIONAL_SHOOT_WHERE },
 };
 
+// WHY A MERGED-IN VIDEO IS NOT ADMITTED HERE (Sep 20 2026, audit F01 re-review).
+//
+// The other way a delivered job can end up owing a video is a second shoot that
+// arrived as its own Aryeo order and was merged onto the finished one
+// (editing/actions.mergeProjectWork). That row is manual=false with capturedAt
+// null, so it fails the clause above, and the proposal was to widen this
+// predicate to admit "a live owed VIDEO/SOCIAL_REEL whose id sits in a live
+// merge marker". It was not done, and this note is here so nobody spends the
+// afternoon finding out why:
+//
+//   · SCOPE, not impossibility (corrected Sep 20 2026, wave-3 review — the
+//     first version of this note said a marker clause could not be built
+//     because this constant is static and buildEditorQueue "cannot await
+//     anything". That is not true, and a wrong WHY is worse than no WHY: the
+//     next person reads it and stops looking. buildEditorQueue awaits TWO
+//     AppSetting marker reads of its own — WAITING_HOLD_PREFIX and
+//     removedProjectIds() — and injects `id: { in: heldIds }` into the very OR
+//     array this constant sits in (editorQueue.ts:74-120). A live-merge clause
+//     is the pattern already in use there. It was not done because
+//     editorQueue.ts was outside the change's file list, and because a rail
+//     clause keyed on a marker only holds while the merge stands — undo the
+//     merge and the rail silently loses the row again.
+//   · no column on Deliverable records that a row arrived by merge, and every
+//     proxy was measured read-only on live Neon on Sep 20: 604 DELIVERED jobs
+//     hold a live video row with no approved cut, so "delivered and still owed"
+//     floods the rail; `capturedAt` alone is 3 jobs, but it means the
+//     photographer's own on-site tick and would have to be written onto the
+//     moved row to be useful, which is the "added manually" regex all over
+//     again.
+//
+// So the guarantee lives where the work moves instead, in two halves, both in
+// src/app/editing/actions.ts: mergeProjectWork REFUSES a destination no Editing
+// Room rail can show (DELIVERED, ON_HOLD, CANCELLED), and setQueueStatus
+// refuses a Completed on a survivor while a merged-in video is still owed. The
+// second shoot keeps its own job, its own video row and its own place on the
+// Not-Done rail either way. This predicate stays exactly what its name says:
+// the portal's return trip.
+
 /** Whose shoot: the project's photographer, or an appointment assignee
  *  (Aryeo assigns per appointment; a job can carry only that). The
  *  photographer's own scope on both /upload sections, the office's filter

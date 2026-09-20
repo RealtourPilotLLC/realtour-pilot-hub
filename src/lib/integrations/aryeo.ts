@@ -2025,13 +2025,26 @@ export async function reconcileDeliverablesToOrder(
   let merge: Awaited<ReturnType<typeof mergeLib.mergeContext>>;
   try {
     merge = await mergeLib.mergeContext(projectId);
-  } catch {
+  } catch (e) {
     // COULD NOT READ THE MARKER, SO DO NOTHING (Sep 20 2026 review). An empty
     // answer here is indistinguishable from "these jobs were never merged", and
     // that answer is the bug: this function would go on to retire the moved reel
     // out from under the editor's cut and re-mint it on the job that gave it
     // away. Every other unknown in here makes it do nothing; this is the one
     // that used to make it write. A skipped job is repaired an hour later.
+    //
+    // AND IT SAYS SO (Sep 20 2026 re-review). The skip shipped as a bare
+    // `return out` with mergeError left null, which is indistinguishable from
+    // "this order needed nothing". This read is unconditional and sits ahead of
+    // every write in the function, so one AppSetting read that keeps failing
+    // silently disables ALL deliverable reconciliation — retire, restore,
+    // relabel, create, OrderItem refresh, deliveryDue, per-video outputs — for
+    // every ordered job, hourly, hub-wide, with nothing raised anywhere. The
+    // field exists for exactly this and the caller already pushes it into the
+    // sync's result, the same way a failed marker append rides home.
+    const why = e instanceof Error ? e.message : String(e);
+    out.mergeError = `merge marker unreadable, reconcile skipped this pass: ${why}`.slice(0, 200);
+    console.warn(`[aryeo-reconcile#${order.number ?? order.id ?? "?"}] ${projectId}: ${out.mergeError}`);
     return out;
   }
   const movedAway = merge.movedAway;
@@ -2062,9 +2075,55 @@ export async function reconcileDeliverablesToOrder(
   // not even the stored line items. That is strictly more conservative than
   // before this change, and it still fixes the merge — the create loop never
   // runs, so the donor never re-mints the video it gave away.
+  //
+  // WHAT THIS GATE MAY NO LONGER DO IS SWALLOW A WHOLE LINE (Sep 20 2026
+  // re-review). Holding an order change back from a delivered job is right;
+  // losing it is not. A line this order sells that nothing owes anywhere — the
+  // client bought a floor plan on the second order after the pair delivered —
+  // was skipped in silence, hourly, for ever, and the only way it ever landed
+  // was somebody undoing the merge. It rides home in mergeError instead, which
+  // is the channel the caller already reads. Nothing is written either way.
+  //
+  // WHAT IT STILL HOLDS BACK IN SILENCE, SAID PLAINLY (Sep 20 2026 wave-3
+  // review). `held` compares BY TYPE, so it catches a whole type nothing owes
+  // and says nothing when an existing type's QUANTITY rises — the ordinary
+  // Aryeo edit, and the one journey 3 is built on (a reel going 1 to 2). That
+  // is a real gap and it is left open deliberately rather than by oversight:
+  // the write this gate is holding back for a quantity rise is not "the order
+  // sells more than the row says", it is
+  // `Math.max(r.quantity, Math.max(1, want.quantity - manualOwed[type]))` over
+  // the DEDUPED `want` map, with manual rows netted off (see the row loop and
+  // the manualOwed note below). None of those three inputs exists yet at this
+  // point in the function — this gate deliberately sits ahead of every read so
+  // it can return having touched nothing — so a quantity-aware `held` here
+  // would be a second, hand-copied definition of "how much does this order owe
+  // for this type", drifting from the first the day either changes. The honest
+  // fix is to move the gate below `own`/`want`/`manualOwed` and reuse them,
+  // which is a restructure of this function and not a diagnostic tweak. Until
+  // then: a quantity rise on a delivered pair's order is invisible here, and
+  // the way it lands is still undoing the merge.
+  //
+  // Note what this gate can and cannot be reached by since the same review:
+  // mergeProjectWork now REFUSES a destination the Editing Room cannot show
+  // (editing/actions.ts), so a merge can no longer be made INTO a delivered
+  // job. What is left is the honest shape — merged while both were live, then
+  // delivered — and that is what this protects.
   if (rowHome !== projectId) {
     const home = await prisma.project.findUnique({ where: { id: rowHome }, select: { status: true } }).catch(() => null);
-    if (!home || ["DELIVERED", "CANCELLED"].includes(home.status)) return out;
+    if (!home || ["DELIVERED", "CANCELLED"].includes(home.status)) {
+      const owed: { id: string; type: DeliverableType }[] | null = await prisma.deliverable
+        .findMany({ where: { ...ownWhere(), removedFromOrderAt: null }, select: { id: true, type: true } })
+        .catch(() => null);
+      // A read that failed is an unknown, not "nothing owes this" — say nothing.
+      const held = owed
+        ? parsed.filter((p) => !owed.some((r) => r.type === p.type && !foreign.has(r.id))).map((p) => p.label)
+        : [];
+      if (held.length > 0) {
+        out.mergeError = `${held.join(", ")} not filed: the job carrying this one's work is ${home ? home.status.toLowerCase() : "gone"}, so nothing owes it`.slice(0, 200);
+        console.warn(`[aryeo-reconcile#${order.number ?? order.id ?? "?"}] ${projectId}: ${out.mergeError}`);
+      }
+      return out;
+    }
   }
 
   const found = await prisma.deliverable.findMany({

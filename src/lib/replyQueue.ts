@@ -749,6 +749,115 @@ function requestRowKey(threadKey: string, taskId: string): string {
   return `${threadKey}#${taskId}`;
 }
 
+/** The prefix of the per-request tick marker (see `requestTickKey`). */
+const REQUEST_TICK_PREFIX = "comms-request-tick:";
+
+/**
+ * THE MARKER THAT SAYS "THIS CLOSE WAS ABOUT ONE PROPERTY, NOT THE
+ * CONVERSATION" (regression repair, Sep 20 2026).
+ *
+ * A completed `client_reply` has always been read by the live walk as a cut
+ * point on the whole phone conversation — everything up to that instant was
+ * dealt with. That was true while a tick closed EVERY request a client held:
+ * the person had the whole pile in front of them.
+ *
+ * Then the ledger started giving one property's request its own row, and the
+ * same completion started meaning something much smaller. Ticking the Cardigan
+ * row at 10:04 is not a statement about a Church St question that arrived at
+ * 10:02 — but the walk could not tell the two closes apart, so it cut the
+ * conversation anyway and the unread question left the Replies tab, the
+ * /tasks comms board, the /ops pill AND findUnansweredInbound, which is what
+ * the 5-minute pager reads. Somebody resolved one property and silently
+ * discarded another property's unread message.
+ *
+ * The first attempt at this stood the cut down whenever the client still held
+ * another open phone request, which was wrong in both directions: it still cut
+ * the conversation when the ticked row happened to be the last one open, and
+ * it threw away 29 of the 130 real hand-and-reply closes on the books (13 of
+ * them with no outbound anywhere near, so the cut was the only thing that ever
+ * cleared those cards) — a conversation somebody settled kept paging.
+ *
+ * So the tick says it itself, on the row it closed. A key per task, written by
+ * `markCommsHandled` BEFORE it completes the request, so no walk can ever read
+ * the completion without the marker beside it. Nothing else writes these, and
+ * an unmarked completion means what it has always meant.
+ */
+export function requestTickKey(taskId: string): string {
+  return `${REQUEST_TICK_PREFIX}${taskId}`;
+}
+
+/**
+ * IS THIS ROW ONE PROPERTY'S REQUEST, OR THE WHOLE CONVERSATION? — the same
+ * test `openObligations` files a row under (`perRequestOf`, above), lifted out
+ * so the close paths can ask it without rebuilding the ledger on a click.
+ *
+ * Phone lane (`source` is the only thing on a task that says which lane it was
+ * born in — `createCommTask` stamps "gmail" for mail), a `client_reply`, a
+ * client, and an ORDER. That is exactly the row the ledger gives its own
+ * `c:<clientId>#<taskId>` key to, so it is exactly the row a person can close
+ * while another property's question is still on the conversation unread.
+ * Anything else — a request filed against no order, a lead, an email — keeps
+ * the client-wide read and the client-wide cut, as it always did.
+ */
+export function isPerRequestReply(t: {
+  taskType: string;
+  source: string;
+  clientId: string | null;
+  projectId: string | null;
+}): boolean {
+  return t.taskType === "client_reply" && t.source !== "gmail" && !!t.clientId && !!t.projectId;
+}
+
+/**
+ * STAMP "THIS CLOSE WAS ABOUT ONE PROPERTY" — for the close paths that reach a
+ * per-request row from the TASK side (follow-up repair, Sep 20 2026).
+ *
+ * `markCommsHandled` already writes this marker, keyed to the row the person
+ * pressed on the comms card. It is not the only door. `client_reply` sits in
+ * BOARD_HIDDEN_TYPES, so the /ops Open Loops card is the ONLY other surface
+ * Kyle works these rows from — and `markLoopHandled` wrote a bare COMPLETED,
+ * which the walk below reads as a cut across the whole phone conversation.
+ * Kyle closing "Apply credit for skipped aerial shots at Cardigan" from Ops
+ * Day therefore took a Church St question that arrived two minutes earlier off
+ * the Replies tab, the /tasks comms board, the /ops pill and
+ * `findUnansweredInbound`, which is what the five-minute SLA sweep pages on.
+ * Renee Ryan holds exactly those two rows today, both with orders, both
+ * rendering on that card.
+ *
+ * `setSmartTaskStatus` deliberately does NOT call this — see the note there.
+ *
+ * Deliberately NOT widened past `isPerRequestReply`: a `comms_followup`, a
+ * `callback` or an internal instruction marked handled IS a statement about
+ * the conversation and must keep cutting it — that is what the 13 hand-closes
+ * with no outbound anywhere near them were, and throwing their cuts away is
+ * the over-correction this repair already had to undo once.
+ *
+ * Never fails the close it rides beside: an unwritten marker degrades to the
+ * pre-Sep-20 behaviour (the conversation cuts), which is the direction that
+ * pages somebody rather than the direction that silences a client.
+ */
+export async function stampRequestTick(
+  task: { id: string; taskType: string; source: string; clientId: string | null; projectId: string | null },
+  reason: string,
+): Promise<void> {
+  if (!isPerRequestReply(task)) return;
+  const key = requestTickKey(task.id);
+  const value = ackValue(new Date(), reason);
+  await prisma.appSetting.upsert({ where: { key }, create: { key, value }, update: { value } }).catch(() => {});
+}
+
+/** How far apart the marker and the completion it describes may be.
+ *
+ *  The marker is written milliseconds before the close, so this is slack, not a
+ *  rule. It exists because a `client_reply` can be REOPENED — `mergeIntoExisting
+ *  Task` does it when a client asks the same thing again — and a marker left
+ *  over from the tick that closed it the first time must not go on suppressing
+ *  the cut when a REPLY closes it the second time, weeks later. That would be
+ *  the alerting failure again, on a delay: a conversation we answered, still
+ *  paging. Outside the window the marker is history, not a statement about
+ *  this close. */
+const REQUEST_TICK_WINDOW_MS = 5 * 60_000;
+
 /** The request a per-request comms row stands for, read back out of its key.
  *  Null when the key is a plain conversation — the caller then means the whole
  *  conversation, as it always did. */
@@ -857,8 +966,15 @@ export async function openObligations(
   // be a key the Handled tick cannot act on — it only ever looks at
   // `client_reply` rows, so the tick would fall through to the conversation
   // rule and clear everything EXCEPT the row that was pressed.
+  // The test itself lives next to `requestTickKey` (`isPerRequestReply`) so the
+  // close paths that stamp the marker and the ledger that splits the row cannot
+  // drift apart — one of them deciding a row is per-request while the other
+  // does not is how a tick starts hiding messages again (follow-up, Sep 20).
+  // The family check is kept alongside it and is redundant by construction: a
+  // `client_reply` with a clientId and a non-gmail source is filed "phone" by
+  // `obligationThread`.
   const perRequestOf = (f: { t: TaskRow; family: WaitingFamily }) =>
-    f.family === "phone" && f.t.taskType === "client_reply" && !!f.t.clientId && !!f.t.projectId;
+    f.family === "phone" && isPerRequestReply(f.t);
   // ONE ROW, ONE KEY — for every obligation, not only the split ones. The
   // ledger drops a row whose key it has already emitted, so a key that repeats
   // is an open request quietly leaving the board: two project-less requests on
@@ -1834,18 +1950,42 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
     ),
   ];
 
-  const [handledTasks, emailAcks, mutes, openTasks, clients, leadTasks] = await Promise.all([
+  /** A closed reply request, plus whether the close was a tick on ONE
+   *  property's row rather than on the conversation (see `requestTickKey`). */
+  type HandledClose = { id: string; clientId: string | null; completedAt: Date | null; source: string };
+  type HandledReads = { rows: HandledClose[]; perRequest: Map<string, Date> };
+
+  const [handled, emailAcks, mutes, openTasks, clients, leadTasks] = await Promise.all([
     allClientIds.length
-      ? prisma.smartTask.findMany({
-          where: {
-            clientId: { in: allClientIds },
-            taskType: "client_reply",
-            status: "COMPLETED",
-            completedAt: { gte: since },
-          },
-          select: { clientId: true, completedAt: true, source: true },
-        })
-      : Promise.resolve([] as { clientId: string | null; completedAt: Date | null; source: string }[]),
+      ? prisma.smartTask
+          .findMany({
+            where: {
+              clientId: { in: allClientIds },
+              taskType: "client_reply",
+              status: "COMPLETED",
+              completedAt: { gte: since },
+            },
+            select: { id: true, clientId: true, completedAt: true, source: true },
+          })
+          // The markers ride along INSIDE the Promise.all, so the second round
+          // trip overlaps the other five reads instead of lengthening the walk.
+          // Phone-lane closes only: email's map is the Gmail sync's own reply
+          // detection, which is a real answer, not a tick.
+          .then(async (rows): Promise<HandledReads> => {
+            const ids = rows.filter((r) => r.source !== "gmail").map((r) => r.id);
+            if (ids.length === 0) return { rows, perRequest: new Map<string, Date>() };
+            const marks = await prisma.appSetting.findMany({
+              where: { key: { in: ids.map(requestTickKey) } },
+              select: { key: true, value: true },
+            });
+            const perRequest = new Map<string, Date>();
+            for (const m of marks) {
+              const v = parseAckValue(m.value);
+              if (v) perRequest.set(m.key.slice(REQUEST_TICK_PREFIX.length), v.at);
+            }
+            return { rows, perRequest };
+          })
+      : Promise.resolve({ rows: [], perRequest: new Map<string, Date>() } as HandledReads),
     ackKeys.length
       ? prisma.appSetting.findMany({ where: { key: { in: [...new Set(ackKeys)] } } })
       : Promise.resolve([] as { key: string; value: string }[]),
@@ -1890,20 +2030,36 @@ export async function unansweredComms(opts: UnansweredOptions = {}): Promise<Wai
   // about Church St would vanish from the Replies tab, the board, the /ops pill
   // and the pager, with nobody having read it.
   //
-  // So the cut only counts while the client has nothing else open on this lane.
-  // While another request of theirs is standing, the conversation is by
-  // definition not settled and closing one row cannot say it is; what clears
-  // the card in that case is the person's own tick on the conversation, which
-  // writes its own ack (markCommsHandled). Email is untouched — its map is the
-  // Gmail sync's reply detection, which is a real answer, not a tick.
-  const stillOpenPhoneRequest = new Set(
-    openTasks.filter((t) => t.clientId && t.source !== "gmail").map((t) => t.clientId as string),
-  );
+  // THE FIRST REPAIR FOR THAT WAS WORSE THAN THE BUG (re-review, Sep 20 2026).
+  // It stood the cut down whenever the client still had ANOTHER open phone
+  // request, which got both directions wrong:
+  //   · it still hid the message, whenever the ticked row happened to be the
+  //     last one open — the set was empty on the next render and the cut landed
+  //     client-wide exactly as before, on a click nobody made about those
+  //     messages;
+  //   · and it threw away every close made while a sibling stood — 29 of the
+  //     130 completed phone requests on the books, 13 of them with no outbound
+  //     within five minutes, so the cut was the only thing that had ever
+  //     cleared those cards. Stephen Kennedy, Jamie Achberger, Ashley Brunner:
+  //     conversations somebody settled by hand, still on the board and still
+  //     pageable, because commsSla reads this same walk. A visibility change
+  //     must never become an alerting one.
+  //
+  // So the close says for ITSELF what it was about, instead of the walk
+  // guessing from who else happens to be open. `markCommsHandled` stamps
+  // `requestTickKey(taskId)` before it completes a per-request row; every other
+  // close — a real reply, a tick on the conversation, a loop marked handled —
+  // is a decision about the conversation and cuts it, as it always did. Email
+  // is untouched: its map is the Gmail sync's reply detection, a real answer.
+  const handledTasks = handled.rows;
+  const perRequestTicks = handled.perRequest;
   const handledByClient = { phone: new Map<string, Date>(), email: new Map<string, Date>() };
   for (const h of handledTasks) {
     if (!h.clientId || !h.completedAt) continue;
     const lane = h.source === "gmail" ? "email" : "phone";
-    if (lane === "phone" && stillOpenPhoneRequest.has(h.clientId)) continue;
+    // …and only for the close it was written for: see REQUEST_TICK_WINDOW_MS.
+    const tick = lane === "phone" ? perRequestTicks.get(h.id) : undefined;
+    if (tick && Math.abs(h.completedAt.getTime() - tick.getTime()) <= REQUEST_TICK_WINDOW_MS) continue;
     const m = handledByClient[lane];
     if ((m.get(h.clientId) ?? new Date(0)) < h.completedAt) m.set(h.clientId, h.completedAt);
   }

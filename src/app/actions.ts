@@ -238,14 +238,29 @@ export async function markCommsHandled(
     //     the client-wide rule here would complete a DIFFERENT property's
     //     request on a click aimed at this one, which is the whole defect
     //     wearing a stale page as a disguise;
-    //   · the client has one open request — close it, exactly as before;
-    //   · the client has several — close the ones the conversation could be
-    //     about and leave the rest standing, then cut the conversation itself
-    //     so the row still clears. Gmail-born requests are excluded throughout:
-    //     a phone tick answers texts, not email (review).
+    //   · otherwise close the requests the conversation could be about and
+    //     leave standing the ones it could not, then cut the conversation
+    //     itself so the row still clears. Gmail-born requests are excluded
+    //     throughout: a phone tick answers texts, not email (review).
     // Still-open requests are named in the return message so the tick never
     // silently keeps work alive.
-    const { requestTaskIdFrom, requestsOffThread, threadAckKey, ackValue } = await import("@/lib/replyQueue");
+    //
+    // THAT LAST SHAPE USED TO BE GATED ON THE CLIENT HOLDING MORE THAN ONE
+    // OPEN REQUEST, which let the defect straight back in for the commonest
+    // version of it (re-review, Sep 20 2026). A client holding exactly ONE
+    // request that we replied AROUND still had it closed by a tick on the
+    // conversation card — and that single request is precisely the one the
+    // ledger now renders as its own row, so Kyle sees two rows and ticking the
+    // live one closes the other. Nobody can decide about a question that was
+    // not on the screen, whether they hold one of them or four. The count was
+    // wrong twice over, because `openRows` filters gmail out before it is
+    // taken: a client with one text request and one email request read as
+    // "one", and the gate opened.
+    //
+    // So the off-thread read always runs. It costs one extra query on a click
+    // path and it is the only thing standing between a tick and a question
+    // nobody has read.
+    const { requestTaskIdFrom, requestsOffThread, threadAckKey, ackValue, requestTickKey } = await import("@/lib/replyQueue");
     const openRows = await prisma.smartTask.findMany({
       where: { clientId, taskType: "client_reply", status: { notIn: ["COMPLETED", "CANCELLED"] }, source: { not: "gmail" } },
       select: { id: true, title: true, propertyAddress: true },
@@ -259,17 +274,32 @@ export async function markCommsHandled(
       revalidatePath("/");
       return { ok: true, message: "That one was already handled, so nothing changed. Refresh and the row will be gone." };
     }
-    let openIds = openRows.map((t) => t.id);
+    let openIds: string[];
     let kept: { id: string; title: string; propertyAddress: string | null }[] = [];
     if (onOneRequest) {
       openIds = [named as string];
       kept = openRows.filter((t) => t.id !== named);
-    } else if (openRows.length > 1) {
+    } else if (openRows.length === 0) {
+      openIds = []; // nothing open to sort — the tick is a bare decision (below)
+    } else {
       // A request we replied around rather than replied to: its message sits
       // before our last text, so the card being ticked cannot have shown it.
       const offThread = new Set((await requestsOffThread(clientId)).map((r) => r.taskId));
       kept = openRows.filter((t) => offThread.has(t.id));
       openIds = openRows.filter((t) => !offThread.has(t.id)).map((t) => t.id);
+    }
+    // A PER-REQUEST TICK SAYS SO BEFORE IT CLOSES ANYTHING (regression repair,
+    // Sep 20 2026). The live walk reads a completed request as a cut across the
+    // whole phone conversation, which is right for every other way a request
+    // closes and wrong for this one: a click on 453 Cardigan's row is not a
+    // decision about a Church St question that came in two minutes ago. The
+    // marker goes down FIRST so there is no instant in which a walk can read
+    // the completion without it — and a marker on a row that then fails to
+    // close costs nothing, because only completed requests are ever looked up.
+    if (onOneRequest) {
+      const key = requestTickKey(named as string);
+      const value = ackValue(new Date(), reason ?? "handled on the request's own row");
+      await prisma.appSetting.upsert({ where: { key }, create: { key, value }, update: { value } });
     }
     const done = await prisma.smartTask.updateMany({
       where: { id: { in: openIds } },
@@ -288,14 +318,25 @@ export async function markCommsHandled(
     // client whose every open request was off the card left no trace at all
     // except an AppSetting — a person made a call and nothing recorded it.
     if (done.count === 0) {
-      await prisma.smartTask.create({
+      const trace = await prisma.smartTask.create({
         data: {
           taskType: "client_reply", title: "Client reply — handled outside the hub",
           summary: "Marked handled from the Comms Checklist.",
           reasonCreated: "Manual tick on the Comms Checklist.",
           source: "manual", status: "COMPLETED", completedAt: new Date(), clientId,
         },
+        select: { id: true },
       });
+      // The trace row is a completed client_reply like any other, so the walk
+      // would read it as a conversation-wide cut. When the click was on ONE
+      // property's row it is not one, and it carries the same marker as the
+      // request it stood in for (a lost race on the close, or a client whose
+      // every open request was off the card).
+      if (onOneRequest) {
+        const key = requestTickKey(trace.id);
+        const value = ackValue(new Date(), reason ?? "handled on the request's own row");
+        await prisma.appSetting.upsert({ where: { key }, create: { key, value }, update: { value } });
+      }
     }
     if (kept.length > 0) {
       // A tick on the CONVERSATION also has to clear the conversation, or it
@@ -428,6 +469,12 @@ export async function dismissTask(
     // CANCELLED, never COMPLETED, and no completedAt: nothing happened here —
     // every "what got done" count pairs COMPLETED with completedAt, and a
     // dismissal must not inflate them.
+    //
+    // Which is also why this path needs no per-request marker, though the Sep 20
+    // filing listed it beside the two that do: the live walk's handled read is
+    // `status: "COMPLETED"` with `completedAt >= since` (replyQueue), so a
+    // dismissal has never cut a phone conversation in either direction and
+    // stamping one here would mark a close that does not exist.
     data: { status: "CANCELLED", completedAt: null, summary },
   });
   if (done.count === 0) return { ok: true, message: "Already dismissed." };
@@ -505,6 +552,33 @@ export async function setSmartTaskStatus(taskId: string, status: string) {
         : t.sourceDetail === CLOSED_BY_HAND
           ? { sourceDetail: null }
           : {};
+  // THE THIRD DOOR ONTO A PER-REQUEST REPLY ROW, AND WHY IT IS DELIBERATELY
+  // LEFT ALONE (follow-up repair, Sep 20 2026). Recorded so the next pass does
+  // not re-derive it.
+  //
+  // Ops Day's Handled button now stamps `requestTickKey` before it closes a
+  // phone-lane `client_reply` that names an order, so one property's row can
+  // never cut the client's whole conversation (ops/actions.ts). The wave-3
+  // filing excused THIS path on the grounds that `client_reply` is in
+  // BOARD_HIDDEN_TYPES so no UI reaches it. That reason is wrong: /tasks hides
+  // them, but getClientDetail's "Open to-dos" selects EVERY open SmartTask on
+  // the record with no taskType filter (queries.ts) and ClientTodos completes
+  // them inline through here — Renee Ryan's 453 Cardigan Terrace and 358 N
+  // Church St rows render there today, titles only, no messages on screen.
+  //
+  // The conclusion still holds, on the numbers rather than the reason. Of 130
+  // completed non-gmail `client_reply` rows on the books, 126 are per-request
+  // shaped and exactly ONE was ever closed by a person through any of the three
+  // doors (Rick Schultz, Sep 15, no sibling and no outbound within five
+  // minutes). Everything else was `closeReplyScoped` off a real reply, which
+  // writes no marker and still cuts. So the client page tick is a once-a-
+  // fortnight path at most, while the two drills that pin this file's behaviour
+  // (§6d-bis and §6e in reply-requests-per-property.ts) both assert that a
+  // Complete from the task side SETTLES the conversation and stops the pager —
+  // which is the direction the last pass had to restore after standing 29 real
+  // cuts down. Stamping here would flip both of them to satisfy a note, which
+  // is how the previous three over-corrections happened. It wants its own
+  // filing, with Jordan's call on what a to-do tick on a client page means.
   const updated = await prisma.smartTask.updateMany({
     where: { id: taskId },
     data: { status, completedAt: status === "COMPLETED" ? new Date() : null, ...qcMarker },

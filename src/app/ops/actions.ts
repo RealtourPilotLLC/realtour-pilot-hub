@@ -233,13 +233,38 @@ export async function markLoopHandled(taskId: string): Promise<{ ok: boolean; me
   }
   const task = await prisma.smartTask.findUnique({
     where: { id: taskId },
-    select: { id: true, projectId: true, title: true, status: true, dedupeKey: true, propertyAddress: true },
+    select: {
+      id: true, projectId: true, title: true, status: true, dedupeKey: true, propertyAddress: true,
+      // taskType/source/clientId are here for the per-request marker below, not
+      // for the close itself (follow-up repair, Sep 20 2026).
+      taskType: true, source: true, clientId: true,
+    },
   });
   if (!task) return { ok: false, message: "That follow-up no longer exists." };
   if (task.status === "COMPLETED") return { ok: true, message: "Already handled." };
 
   const me = await getCurrentUser().catch(() => null);
   const who = (me?.name ?? "").trim();
+  // A LOOP MARKED HANDLED ON ONE PROPERTY'S ROW IS NOT A DECISION ABOUT THE
+  // WHOLE CONVERSATION (follow-up repair, Sep 20 2026). `client_reply` is in
+  // BOARD_HIDDEN_TYPES, so this card is the ONLY surface those rows render on
+  // — and a bare COMPLETED here is read by the live walk as a cut across the
+  // client's entire phone thread. Kyle pressing Handled on "Apply credit for
+  // skipped aerial shots at Cardigan" therefore dropped a Church St question
+  // that arrived two minutes earlier off the Replies tab, the /tasks comms
+  // board, the /ops pill and findUnansweredInbound, which is what the
+  // five-minute SLA sweep pages on. Renee Ryan holds exactly those two rows
+  // today, both with orders, both rendering here.
+  //
+  // Same marker discipline markCommsHandled uses, and scoped the same way: ONLY
+  // a phone-lane client_reply that names an order (isPerRequestReply). A
+  // comms_followup, a callback or an internal instruction marked handled is a
+  // statement about the conversation and still cuts it — restoring that cut is
+  // what the last pass had to do after an over-correction threw 29 real closes
+  // away. The marker goes down BEFORE the completion so no walk can read the
+  // close without it.
+  const { stampRequestTick } = await import("@/lib/replyQueue");
+  await stampRequestTick(task, "handled on the request's own row from Ops Day");
   const done = await prisma.smartTask.updateMany({
     where: { id: taskId, status: { notIn: ["COMPLETED", "CANCELLED"] } },
     data: { status: "COMPLETED", completedAt: new Date() },

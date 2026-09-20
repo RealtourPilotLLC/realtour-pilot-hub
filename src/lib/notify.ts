@@ -1092,6 +1092,13 @@ export async function notifyInApp(n: {
           console.warn("notifyInApp money clamp", n.kind);
         }
       }
+      // Who this row is addressed to, resolved BEFORE the insert (Sep 20) so
+      // the dedupe branch below can reach the same person the bridge would
+      // have. Nothing about the values changed — they were computed eight
+      // lines lower until the retry landed.
+      const tmId = t.userKey?.startsWith("tm:") ? t.userKey.slice(3) : null;
+      const editorKey = t.userKey?.startsWith("editor:") ? t.userKey.slice(7) : null;
+      const rowKey = n.dedupeKey ? `${n.dedupeKey}-${i}` : null;
       try {
         const row = await prisma.notification.create({
           data: {
@@ -1101,14 +1108,12 @@ export async function notifyInApp(n: {
             href,
             audience: JSON.stringify(roles),
             userKey: t.userKey ?? null,
-            dedupeKey: n.dedupeKey ? `${n.dedupeKey}-${i}` : null,
+            dedupeKey: rowKey,
           },
           select: { id: true },
         });
-        // Row is NEW (a dedupe hit threw P2002 above) — the bridge below fires
-        // once per row, which is what makes a re-announcement unable to re-text.
-        const tmId = t.userKey?.startsWith("tm:") ? t.userKey.slice(3) : null;
-        const editorKey = t.userKey?.startsWith("editor:") ? t.userKey.slice(7) : null;
+        // Row is NEW (a dedupe hit throws P2002 and takes the retry branch in
+        // the catch below) — the bridge fires once per row.
         if (tmId || editorKey) {
           // A person: their matrix row for this event decides Slack / text /
           // both / neither (see the bridge header above and bridgePerson).
@@ -1131,11 +1136,77 @@ export async function notifyInApp(n: {
           } catch { /* the nudge must never break the bell */ }
         }
       } catch (e) {
-        // Unique violation on dedupeKey = this event was already announced —
-        // silently skip (recurring events put the changing part IN the key, e.g.
-        // a reschedule's new startAt). Anything else is logged but still swallowed.
+        // Unique violation on dedupeKey = this event was already announced.
+        // Anything else is logged but still swallowed.
         if ((e as { code?: string } | null)?.code !== "P2002") {
           console.warn("notifyInApp failed", n.kind, e);
+          continue;
+        }
+        // A RE-ANNOUNCEMENT IS A RETRY, NOT A NO-OP (Sep 20, journey 5).
+        //
+        // Until today this branch returned here, and bridgePerson sat inside
+        // the try above, so the channel leg was never attempted again. Driven
+        // in the drill: Slack ratelimits Kim Miguel's DM, one "slack/failed"
+        // row is written, the ops relay fails too (relayUnreached is Slack as
+        // well — it says so itself), and then NOTHING picks it up. No sweep
+        // reads a failed delivery row: NotificationDelivery.status="failed" is
+        // read by notifyPrefs.lastReachedByMember for the Settings "Last
+        // reached" line and by nothing else. Re-announcing the same event gave
+        // 0 further DM attempts; the only way to get the DM out was a NEW key,
+        // which left TWO bell rows for one tag. No duplicates or a retry,
+        // never both. Kim is the person this strands — mention.sms off and a
+        // +63 number staffTextNumber refuses, so Slack is her only channel.
+        //
+        // So: find the row the collision names and re-drive the SAME row's
+        // bridge. One bell row per event is untouched (nothing is inserted
+        // here), and bridgePerson's own retry gate refuses to re-send anything
+        // that already reached a channel — see MAX_BRIDGE_ATTEMPTS. A
+        // BROADCAST row is deliberately not retried: its ownerSms fan-out is a
+        // per-person loop of its own and the defect proved was the person leg.
+        if (!rowKey || !(tmId || editorKey)) continue;
+        try {
+          const existing = await prisma.notification.findUnique({ where: { dedupeKey: rowKey }, select: { id: true, createdAt: true, userKey: true } });
+          if (!existing) continue; // the collision was on some other constraint
+          // THE KEY NAMES AN INDEX, NOT A PERSON (Sep 20 review). rowKey is
+          // `<dedupeKey>-<i>`, the position in the target array — so if a
+          // target list's composition changes between two announcements under
+          // one base key (review/actions.ts builds [broadcast, editor IF
+          // in-house, shooter IF resolvable], and the shooter's index moves
+          // when the editor row is absent), this collision can be somebody
+          // ELSE's row. Sending on the strength of a positional key would DM
+          // person B and write B's legs against A's notification. Nothing
+          // reaches that today — no delivery leg in production names a person
+          // other than its notification's own userKey — and the retry is the
+          // first code in this file that would send on it, so it checks.
+          if (existing.userKey !== (t.userKey ?? null)) continue;
+          // A ROW THIS YOUNG MAY STILL BE IN FLIGHT (Sep 20 review, the one
+          // window the retry itself opened). The first pass commits the bell
+          // row and THEN awaits Slack, so for as long as that call is running
+          // there are no channel legs on the log yet. A second announcement
+          // arriving inside that window would read an empty log, count zero
+          // attempts and DM the same person a second time — the very
+          // duplicate the old early-return used to make impossible, and there
+          // is nothing else serialising two announcements of one event (an
+          // advisory lock would have to be held across the Slack and
+          // OpenPhone calls, which is not a transaction this code may take
+          // out on a pooled Neon connection).
+          //
+          // So the retry refuses a row that has not had time to finish. The
+          // number is measured, not guessed: across every delivery leg in
+          // production the gap from the bell row's insert to its channel leg
+          // is 0.02s median and 2.16s at the worst (the long sms/sent rows are
+          // the flusher cron, a different process), so a minute is nearly
+          // thirty times the slowest pass on record. Nothing legitimate is
+          // lost: a re-announcement inside a minute is a double fire, not an
+          // outage recovery, and before this wave NO re-announcement retried
+          // at all.
+          if (Date.now() - existing.createdAt.getTime() < BRIDGE_IN_FLIGHT_MS) continue;
+          await bridgePerson(n.kind, t, { tmId, editorKey, title, href, notificationId: existing.id, retry: true }, delivered);
+          // `bridged` is deliberately NOT appended to on a retry: the emitters
+          // that read it write their own "texted / relayed" line, and this
+          // announcement's line was already written the first time round.
+        } catch (retryErr) {
+          console.warn("notifyInApp bridge retry failed (bell row kept)", n.kind, retryErr);
         }
       }
     }
@@ -1147,6 +1218,27 @@ export async function notifyInApp(n: {
 
 // What went out for one person in one notifyInApp call (the `delivered` map).
 type Delivery = { slack: boolean; sms: boolean };
+
+/** How many times ONE person's channel legs may be driven for ONE bell row —
+ *  the first announcement plus two re-announcements (Sep 20, journey 5).
+ *
+ *  The cap is read off the delivery log itself rather than a new column: every
+ *  pass through the bridge writes exactly one row per channel it was asked for
+ *  (sent / queued / failed / skipped), so the number of rows on the busiest
+ *  channel IS the attempt count. A permanently broken Slack ID — a revoked
+ *  account, an editor who left — therefore costs three DM attempts and then
+ *  stops for good, however many times the emitter re-announces. Three because
+ *  a Slack ratelimit clears in seconds and an outage in minutes, and the
+ *  emitters that re-announce do so on a 5-minute cron at worst. */
+const MAX_BRIDGE_ATTEMPTS = 3;
+
+/** How long one bridge pass is allowed to still be running before a
+ *  re-announcement of the same event is willing to treat it as finished
+ *  (Sep 20 review). See the long note at the retry branch in notifyInApp:
+ *  measured worst pass in production is 2.16s, so this is deliberately an
+ *  order of magnitude clear of it. Err toward silence — a staff alert that
+ *  arrives once late beats one that arrives twice. */
+const BRIDGE_IN_FLIGHT_MS = 60_000;
 
 // The events whose rows ALWAYS carry the emitter's sentence unless the row
 // is a self-tag (mentions.ts, messageActions.ts leave slackDm off exactly
@@ -1167,6 +1259,10 @@ const SENTENCE_EVENTS = new Set<string>(["mention", "project_message"]);
 // and the DM waits with it; an evening on a working day is left alone), and
 // did anything actually get through (if not, relayUnreached names the person
 // on the ops channel instead of leaving the alert in a bell).
+// Since Sep 20 (journey 5) it can also be called a SECOND time for a bell row
+// that already exists — `ctx.retry`, from notifyInApp's dedupeKey collision.
+// That pass re-drives only the channels that reached nobody, at most
+// MAX_BRIDGE_ATTEMPTS times, and adds no bell row of its own.
 // Returns what went out for this person — on THIS row or an earlier one in
 // the same call. A refused DM counts as not sent. Best-effort by contract:
 // the note or message that carried the ping is already saved, so nothing
@@ -1177,7 +1273,20 @@ const SENTENCE_EVENTS = new Set<string>(["mention", "project_message"]);
 async function bridgePerson(
   kind: string,
   t: NotifyTarget,
-  ctx: { tmId: string | null; editorKey: string | null; title: string; href: string; notificationId: string },
+  ctx: {
+    tmId: string | null;
+    editorKey: string | null;
+    title: string;
+    href: string;
+    notificationId: string;
+    /** This bell row already exists and we are re-driving its channels after a
+     *  dedupeKey collision (Sep 20, journey 5). Changes three things and
+     *  nothing else: the delivery log is read first and the pass is abandoned
+     *  if any channel already reached this person or the attempt cap is spent,
+     *  and the bell leg is not logged again (the row and its "bell/sent" line
+     *  were written on the first pass). */
+    retry?: boolean;
+  },
   delivered: Map<string, Delivery>,
 ): Promise<Delivery> {
   const none: Delivery = { slack: false, sms: false };
@@ -1198,12 +1307,40 @@ async function bridgePerson(
       select: { name: true, slackId: true, phone: true, active: true },
     });
     if (!member?.active) return state;
+    // IS THERE ANYTHING LEFT TO RETRY (Sep 20, journey 5)? Only on the retry
+    // pass, and it is the whole safety of the retry:
+    //   · a leg already "sent" or "queued" means this person WAS reached on
+    //     this event, so re-driving would be a duplicate DM or a second text.
+    //     A queued text counts — the line is in PendingSms with the flusher
+    //     behind it, and queueStaffSms would happily queue a second copy;
+    //   · otherwise every existing row is "failed" or "skipped", i.e. nobody
+    //     got it, and the busiest channel's row count is the attempt number.
+    // "skipped: no Slack ID on file" is a configuration gap the weekly People
+    // nudge owns, and it burns attempts exactly like a failure does, so a new
+    // hire cannot be re-bridged forever either.
+    if (ctx.retry) {
+      const legs = await prisma.notificationDelivery.findMany({
+        where: { notificationId: ctx.notificationId, teamMemberId: personId, channel: { in: ["slack", "sms"] } },
+        select: { channel: true, status: true },
+      });
+      if (legs.some((l) => l.status === "sent" || l.status === "queued")) return state;
+      const attempts = Math.max(
+        legs.filter((l) => l.channel === "slack").length,
+        legs.filter((l) => l.channel === "sms").length,
+      );
+      if (attempts >= MAX_BRIDGE_ATTEMPTS) return state;
+    }
     // The bell row is a delivery too — logged before any channel question, so
     // "bell only" is visible as such and not as silence. It sits BELOW the
     // per-person dedupe and the active check (review, Sep 16): an editor
     // addressed twice on one event (tm: and editor:) used to log two bell
     // rows, and a deactivated member logged one for a bell nobody reads.
-    await logDelivery({ notificationId: ctx.notificationId, teamMemberId: personId, kind, channel: "bell", status: "sent" });
+    // A retry does not log it again: the same bell row is being re-bridged,
+    // not rung a second time, and "Last reached" would otherwise read a bell
+    // as the newest thing that happened to a DM that just landed.
+    if (!ctx.retry) {
+      await logDelivery({ notificationId: ctx.notificationId, teamMemberId: personId, kind, channel: "bell", status: "sent" });
+    }
     const event = eventForKind(kind);
     if (!event) return state; // an unclassified kind is bell-only
     if (SENTENCE_EVENTS.has(event) && !t.slackDm) return state; // a self-tag
@@ -1230,11 +1367,44 @@ async function bridgePerson(
       // non-owner it was built unscrubbed (it never used to reach anyone
       // else) — slackDm is the money-safe one for everybody.
       const line = t.slackDm ? smsLineFromSlackDm(t.slackDm) : isOwner && t.ownerSms ? t.ownerSms : `${ctx.title} → ${link}`;
-      // Quiet hours in the recipient's own timezone: a Manila editor's night
-      // is exactly the ET texting window. `hold` is the coverage answer on top
-      // of that — null for everyone on their own clock, and for every kind
-      // that is not routine.
-      state.sms = await queueStaffSms(personId, line, tz, meta, hold);
+      // ASK THE QUEUE, NOT THE LOG, BEFORE A RETRY TEXTS (Sep 20 review).
+      // The gate above reads NotificationDelivery, and that log is best-effort
+      // by its own contract: logDelivery "never throws; a failure is a console
+      // line", and queueStaffSms writes the PendingSms row FIRST and logs the
+      // queued leg SECOND. Lose that one write — or die between the two — and
+      // the line really is in the queue with the flusher behind it while the
+      // log says nobody was reached, so the retry would queue a second copy of
+      // the same text. That is not hypothetical bookkeeping: 99 of the 126
+      // PendingSms rows in production have no queued leg at all (every row
+      // before the log landed on Sep 16). PendingSms is the durable record of
+      // the send; the delivery log is the story about it, and only the record
+      // may stop a text.
+      //
+      // Scoped to lines that have NOT gone out yet, on purpose: an unsent line
+      // WILL reach them, so a second copy is pure duplication whatever wrote
+      // it, whereas matching an already-sent line would suppress a real text —
+      // production has two cases of one person legitimately getting the same
+      // sentence twice, 47 minutes and 3.5 days apart.
+      let queuedAlready = false;
+      if (ctx.retry) {
+        queuedAlready = !!(await prisma.pendingSms.findFirst({
+          where: { teamMemberId: personId, line, sentAt: null, skippedAt: null },
+          select: { id: true },
+        }));
+      }
+      if (queuedAlready) {
+        // Reached, as far as this event is concerned: the sentence is queued,
+        // so the relay below must not call them unreached and the DM must not
+        // buzz a phone the text is already going to.
+        state.sms = true;
+        await logDelivery({ ...meta, teamMemberId: personId, channel: "sms", status: "skipped", detail: "the same line is already queued and unsent — not queuing a second copy" });
+      } else {
+        // Quiet hours in the recipient's own timezone: a Manila editor's night
+        // is exactly the ET texting window. `hold` is the coverage answer on top
+        // of that — null for everyone on their own clock, and for every kind
+        // that is not routine.
+        state.sms = await queueStaffSms(personId, line, tz, meta, hold);
+      }
     }
     // Did the Slack leg ever actually get tried? A person who wants Slack and
     // has no ID on file is a CONFIGURATION gap, and the codebase already

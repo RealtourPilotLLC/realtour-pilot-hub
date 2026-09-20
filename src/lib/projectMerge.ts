@@ -125,9 +125,22 @@ async function readMergesOrThrow(): Promise<ProjectMerge[]> {
     where: { key: { startsWith: MERGE_PREFIX } },
     select: { key: true, value: true, updatedAt: true },
   });
-  return rows
-    .map((r) => parse(r.key, r.value, r.updatedAt))
-    .filter((m): m is ProjectMerge => !!m)
+  const read = rows.map((r) => ({ key: r.key, merge: parse(r.key, r.value, r.updatedAt) }));
+  // A ROW THAT WILL NOT PARSE IS AN UNKNOWN, NOT AN ABSENCE (Sep 20 2026
+  // review). Making this function throw on a failed findMany closed one half of
+  // the hole and left the other open: a marker whose JSON is damaged, or whose
+  // JSON has no intoId, came back null from parse() and was silently dropped —
+  // so the answer was "these two jobs were never merged", which is precisely
+  // the answer the throw was added to prevent. The reconcile would then go on
+  // to retire the moved reel out from under the editor's cut and re-mint it on
+  // the job that gave it away. Unknown beats wrong, whichever way the read
+  // failed. allMerges (the screens) still swallows it.
+  const broken = read.filter((r) => !r.merge).map((r) => r.key);
+  if (broken.length > 0) {
+    throw new Error(`merge marker will not parse: ${broken.slice(0, 3).join(", ")}${broken.length > 3 ? ` (+${broken.length - 3})` : ""}`);
+  }
+  return read
+    .flatMap((r) => (r.merge ? [r.merge] : []))
     .sort((a, b) => b.at.getTime() - a.at.getTime());
 }
 
@@ -228,25 +241,54 @@ export async function recordMergedRow(
 /** How many rows a merge would move, without moving them — what the dialog
  *  shows before anybody presses anything. */
 export async function previewMerge(fromId: string): Promise<MergedRows & { videos: number }> {
-  const [deliverables, subs, tasks] = await Promise.all([
+  // A CHILD FOLLOWS ITS PARENT, AND ONLY ITS PARENT (Sep 20 2026 review).
+  //
+  // This read shipped filtering the DELIVERABLES to what is still owed while
+  // taking EVERY cut, per-video row and brief on the job by projectId — so a row
+  // the donor's order dropped back in August stayed behind (correctly) while the
+  // editor's cut against it, and its slot, walked off to the survivor. Retiring
+  // a deliverable never touches its cuts, so that shape is ordinary, and the
+  // result is the exact thing mergeProjectWork's own transaction comment says
+  // the single transaction exists to prevent: a version pointing at a video that
+  // lives on another job, which no screen in this codebase is built to render.
+  // Proved end to end Sep 20 (journey 2.3): {cuts:1, outputs:1} across the
+  // boundary for as long as the merge stood.
+  //
+  // So each set is now taken off the set above it. The one deliberate exception
+  // is a cut with NO deliverable at all — the legacy folder-discovered rounds —
+  // which has no parent to stay with and follows the job.
+  const [deliverables, tasks] = await Promise.all([
     prisma.deliverable.findMany({ where: { projectId: fromId, removedFromOrderAt: null }, select: { id: true, type: true } }),
-    prisma.reviewSubmission.findMany({ where: { projectId: fromId }, select: { id: true } }),
     prisma.smartTask.findMany({
       where: { projectId: fromId, taskType: { in: ["edit_video", "revision"] }, status: { notIn: ["COMPLETED", "CANCELLED"] } },
       select: { id: true },
     }),
   ]);
   const ids = deliverables.map((d) => d.id);
-  const [outputs, briefs, topaz] = await Promise.all([
-    prisma.deliverableOutput.findMany({ where: { projectId: fromId }, select: { id: true } }),
-    prisma.revisionBrief.findMany({ where: { projectId: fromId }, select: { id: true } }),
-    prisma.topazJob.findMany({ where: { projectId: fromId }, select: { id: true } }),
+  const [subs, outputs] = await Promise.all([
+    prisma.reviewSubmission.findMany({
+      where: { projectId: fromId, OR: [{ deliverableId: null }, { deliverableId: { in: ids } }] },
+      select: { id: true },
+    }),
+    prisma.deliverableOutput.findMany({ where: { projectId: fromId, deliverableId: { in: ids } }, select: { id: true } }),
   ]);
-  void ids;
+  const submissionIds = subs.map((s) => s.id);
+  const outputIds = outputs.map((o) => o.id);
+  const [briefs, topaz] = await Promise.all([
+    // A job-level ask (outputId null) is about the job, so it goes with the
+    // work; an ask about one video goes only if that video is going.
+    prisma.revisionBrief.findMany({
+      where: { projectId: fromId, OR: [{ outputId: null }, { outputId: { in: outputIds } }] },
+      select: { id: true },
+    }),
+    // One render per cut, so a render follows its cut — a render whose cut is
+    // staying behind would otherwise land on a job holding none of its work.
+    prisma.topazJob.findMany({ where: { projectId: fromId, submissionId: { in: submissionIds } }, select: { id: true } }),
+  ]);
   return {
-    deliverableIds: deliverables.map((d) => d.id),
-    outputIds: outputs.map((o) => o.id),
-    submissionIds: subs.map((s) => s.id),
+    deliverableIds: ids,
+    outputIds,
+    submissionIds,
     taskIds: tasks.map((t) => t.id),
     briefIds: briefs.map((b) => b.id),
     topazIds: topaz.map((t) => t.id),

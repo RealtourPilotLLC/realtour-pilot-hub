@@ -52,7 +52,7 @@ async function main() {
   await exec("npx", ["prisma", "db", "push", "--skip-generate", "--accept-data-loss"], { env: { ...process.env } });
 
   const { prisma } = await import("@/lib/prisma");
-  const { mergeProjectWork, unmergeProjectWork } = await import("@/app/editing/actions");
+  const { mergeProjectWork, unmergeProjectWork, setQueueStatus } = await import("@/app/editing/actions");
   const { reconcileDeliverablesToOrder, orderDeliverables } = await import("@/lib/integrations/aryeo");
   const { mergeFrom, mergeKey } = await import("@/lib/projectMerge");
   const { buildEditorQueue } = await import("@/lib/editorQueue");
@@ -100,14 +100,46 @@ async function main() {
   // The sync loop's exact call, including the one gate above it (aryeo.ts:1795).
   const sweep = async (projectId: string, o: Order) => {
     const p = await prisma.project.findUniqueOrThrow({ where: { id: projectId }, select: { status: true } });
-    if (["DELIVERED", "CANCELLED"].includes(p.status)) return { skipped: true, retired: [] as string[], added: [] as string[], restored: [] as string[] };
+    if (["DELIVERED", "CANCELLED"].includes(p.status)) {
+      return { skipped: true, retired: [] as string[], added: [] as string[], restored: [] as string[], mergeError: null as string | null };
+    }
     const r = await reconcileDeliverablesToOrder(projectId, o);
-    return { skipped: false, retired: r.retired, added: r.added, restored: r.restored };
+    return { skipped: false, retired: r.retired, added: r.added, restored: r.restored, mergeError: r.mergeError ?? null };
   };
   const live = (projectId: string) => prisma.deliverable.count({ where: { projectId, removedFromOrderAt: null } });
   const onBoard = async (id: string) => {
     const q = await buildEditorQueue();
     return [...q.notDone, ...q.upcoming, ...q.done].some((r) => r.id === id);
+  };
+  // ON A RAIL AN EDITOR WORKS FROM — which is NOT the same question as onBoard
+  // (Sep 20 2026 re-review). The Done tab counts as "on the board" and counts
+  // for nothing as work: a job that reaches only the Done tab has no owed row
+  // in front of anybody. Scenario 8 used to assert invisibility as a PASS
+  // through exactly that confusion, so the two questions are now two helpers.
+  const onNotDone = async (id: string) => {
+    const q = await buildEditorQueue();
+    return [...q.notDone, ...q.upcoming].some((r) => r.id === id);
+  };
+  /** Every owed, unfinished video in the database that no editor rail lists.
+   *  The invariant the whole of F01 is about: work may move, but it may never
+   *  end up owed by nobody. */
+  const strandedVideos = async () => {
+    const q = await buildEditorQueue();
+    const seen = new Set([...q.notDone, ...q.upcoming].map((r) => r.id));
+    const rows = await prisma.deliverable.findMany({
+      where: {
+        type: { in: ["VIDEO", "SOCIAL_REEL"] },
+        removedFromOrderAt: null, waivedAt: null,
+        status: { not: "DONE" },
+        reviewSubmissions: { none: { status: "APPROVED" } },
+      },
+      select: { id: true, projectId: true, label: true },
+    });
+    return rows.filter((r) => !seen.has(r.projectId));
+  };
+  const nobodyOwesNothing = async (label: string) => {
+    const s = await strandedVideos();
+    ok(label, s.length === 0, s.map((r) => `${r.label ?? r.id} on ${r.projectId.slice(0, 8)}`).join(", "));
   };
   const row = (id: string) => prisma.deliverable.findUniqueOrThrow({ where: { id }, select: { projectId: true, removedFromOrderAt: true, removedFromOrderNote: true } });
 
@@ -242,28 +274,131 @@ async function main() {
   ok("both are back on the Editing Room", (await onBoard(A.id)) && (await onBoard(B.id)));
 
   // ---------------------------------------------------------------------
-  console.log("\n8. THE SURVIVOR IS DELIVERED — which is what every finished merge looks like");
-  // The pair delivers once, so the survivor goes DELIVERED while the donor keeps
-  // EDITING for ever: it has no video rows left, so it is off the Editing Room
-  // and nobody presses Completed on it. From then on the donor passes the sync's
-  // status gate hourly, and everything it does lands on the delivered job.
+  console.log("\n8. A JOB THAT HAS ALREADY DELIVERED CANNOT TAKE THE WORK");
+  // THE REGRESSION THIS SCENARIO USED TO BLESS (Sep 20 2026 re-review). It
+  // merged a second shoot onto a job, delivered that job, and then asserted
+  // "the merged-away job is still not on the Editing Room" as a PASS — with an
+  // onBoard helper that counts the Done tab. Both jobs were off every rail an
+  // editor works from and the second shoot's reel was owed by NOBODY, which is
+  // worse than the bug it replaced (the donor at least re-minted it: the wrong
+  // job, but visible). The merge now refuses a destination the Editing Room
+  // cannot show, and the work stays exactly where it can be seen.
   {
     const S = await mk("88 Delivered Dr", `ord-${++seq}`), T = await mk("88 Delivered Dr", `ord-${++seq}`);
     const dS = await mkReel(S.id, "Original reel");
     const dT = await mkReel(T.id, "Second reel");
-    ok("the merge is accepted", (await mergeProjectWork(T.id, S.id)).ok);
+    await prisma.reviewSubmission.create({
+      data: { projectId: T.id, kind: "video", deliverableId: dT.id, slot: 1, round: 1, status: "PENDING", source: "upload", fileName: "second-shoot-v1.mp4" },
+    });
+    // The original listing finished and went out weeks ago — the shape 105 of
+    // the 106 same-client/same-street pairs on live Neon are in today.
+    await prisma.deliverable.update({ where: { id: dS.id }, data: { status: "DONE" } });
+    await prisma.project.update({ where: { id: S.id }, data: { status: "DELIVERED", deliveredAt: new Date() } });
+
+    const refused = await mergeProjectWork(T.id, S.id, "second shoot on a finished listing");
+    ok("merging onto a delivered job is refused", !refused.ok && /already been delivered/.test(refused.message), refused.message);
+    // The copy is load-bearing (Sep 20 2026 wave-3 review): it must say what to
+    // do instead, must NOT claim the Editing Room cannot show a delivered job
+    // (OWES_AN_ADDITIONAL_SHOOT admits one), and must not advise putting the
+    // job back into production without naming what that restarts.
+    ok("…and it says what to do instead", /finish this one on its own/.test(refused.message), refused.message);
+    ok("…without claiming the rail can never show a delivered job", !/reads it as finished/.test(refused.message), refused.message);
+    ok("…and without recommending the one move the sync gate exists to prevent",
+      !/put .* back into production first/.test(refused.message) && /restarts order syncing/.test(refused.message), refused.message);
+    ok("nothing moved", (await row(dT.id)).projectId === T.id && (await live(T.id)) === 1);
+    ok("no marker was written", !(await mergeFrom(T.id)));
+    ok("THE SECOND SHOOT'S VIDEO IS STILL IN FRONT OF AN EDITOR", await onNotDone(T.id));
+    await nobodyOwesNothing("no owed video is left invisible");
+
+    // Same test for a destination no rail lists for another reason.
+    await prisma.project.update({ where: { id: S.id }, data: { status: "ON_HOLD", deliveredAt: null } });
+    const held = await mergeProjectWork(T.id, S.id);
+    ok("merging onto a job that is on hold is refused too", !held.ok && /on hold/.test(held.message), held.message);
+    await prisma.project.update({ where: { id: S.id }, data: { status: "EDITING" } });
+    ok("the delivered job's own reel is untouched by any of that", !(await row(dS.id)).removedFromOrderAt && (await row(dS.id)).projectId === S.id);
+  }
+
+  console.log("\n8b. …AND WHEN THE SURVIVOR DELIVERS AFTER THE MERGE, THE GATE HOLDS");
+  // The honest shape: merged while both were live, finished together, delivered
+  // once. From then on the donor still passes the sync's status gate hourly, and
+  // nothing it does may be written into the delivered client job.
+  {
+    const S = await mk("90 Finished Way", `ord-${++seq}`), T = await mk("90 Finished Way", `ord-${++seq}`);
+    const dS = await mkReel(S.id, "Original reel");
+    const dT = await mkReel(T.id, "Second reel");
+    ok("the merge is accepted while both jobs are live", (await mergeProjectWork(T.id, S.id)).ok);
+    ok("the work is on a rail an editor works from", await onNotDone(S.id));
+    // Both videos finished, then the pair delivers once.
+    await prisma.deliverable.updateMany({ where: { id: { in: [dS.id, dT.id] } }, data: { status: "DONE" } });
     await prisma.project.update({ where: { id: S.id }, data: { status: "DELIVERED", deliveredAt: new Date() } });
     const before = await prisma.deliverable.count();
 
     const addLine = await sweep(T.id, order(1802, REEL, FLOORPLAN));
     ok("a line added to the merged-away job's order mints nothing on a delivered job", addLine.added.length === 0, JSON.stringify(addLine));
     ok("…and nothing on the merged-away job either", (await prisma.deliverable.count()) === before);
+    ok("…but the sweep SAYS the line is owed by nobody instead of swallowing it",
+      !!addLine.mergeError && /Floorplan/i.test(addLine.mergeError ?? ""), addLine.mergeError ?? "(silent)");
 
     const pullLine = await sweep(T.id, order(1802, PHOTOS));
     ok("a line pulled from its order retires nothing on the delivered job", pullLine.retired.length === 0, JSON.stringify(pullLine));
     ok("the delivered job's rows are exactly as they were", !(await row(dT.id)).removedFromOrderAt && !(await row(dS.id)).removedFromOrderAt);
     ok("…and the delivered job's timeline was not written to", (await prisma.activity.count({ where: { projectId: S.id, body: { contains: "Aryeo" } } })) === 0);
-    ok("the merged-away job is still not on the Editing Room", !(await onBoard(T.id)));
+    await nobodyOwesNothing("nothing owed is invisible once the pair has delivered");
+  }
+
+  console.log("\n8c. …AND THE HUMAN PATH CANNOT DELIVER THE MERGED-IN VIDEO AWAY");
+  // THE HALF SCENARIO 8'S REFUSAL DOES NOT REACH (Sep 20 2026, wave-3 review).
+  // Merging onto a LIVE job is the feature's own shape and stays allowed. The
+  // silence just arrives one step later: somebody presses Completed on the
+  // survivor with the merged-in reel still open, and from that instant the
+  // donor has no video rows (buildEditorQueue drops it) and the survivor is
+  // DELIVERED (the Done tab, nothing else). Scenarios 8 and 8b both finish
+  // EVERY video before delivering, so neither ever asked this question and the
+  // strandedVideos invariant was never pointed at the one case that breaks it.
+  // This one asks it, through the shipped pill (setQueueStatus), not a hand
+  // UPDATE — and asks the other half too, that an honest Completed still goes
+  // through.
+  {
+    const U = await mk("92 Half Done Ln", `ord-${++seq}`), V = await mk("92 Half Done Ln", `ord-${++seq}`);
+    const dU = await mkReel(U.id, "Original reel");
+    const dV = await mkReel(V.id, "Second reel");
+    ok("the merge is accepted while both jobs are live", (await mergeProjectWork(V.id, U.id)).ok);
+    // Only the survivor's OWN reel is finished. The merged-in one is still open.
+    await prisma.deliverable.update({ where: { id: dU.id }, data: { status: "DONE" } });
+    const statusOf = async (id: string) => (await prisma.project.findUniqueOrThrow({ where: { id }, select: { status: true } })).status;
+
+    const early = await setQueueStatus(U.id, "Completed");
+    ok("Completed is refused while the merged-in reel is still owed", !early.ok && /merged onto this job/.test(early.message), early.message);
+    ok("…and the refusal names all three ways past it",
+      /Review Room/.test(early.message) && /waive/.test(early.message) && /undo the merge/.test(early.message), early.message);
+    ok("nothing was delivered", (await statusOf(U.id)) !== "DELIVERED");
+    ok("the merged-in reel is still in front of an editor", await onNotDone(U.id));
+    await nobodyOwesNothing("the refusal is what keeps the merged-in reel visible");
+
+    // The honest way through: the editor finishes it and Jordan approves it.
+    await prisma.reviewSubmission.create({
+      data: { projectId: U.id, kind: "video", deliverableId: dV.id, slot: 1, round: 1, status: "APPROVED", source: "upload", fileName: "second-v1.mp4" },
+    });
+    const through = await setQueueStatus(U.id, "Completed");
+    ok("…and once the merged-in cut is approved, Completed goes through", through.ok, through.message);
+    ok("the survivor is delivered", (await statusOf(U.id)) === "DELIVERED");
+    await nobodyOwesNothing("and nothing is owed by nobody once the pair really is finished");
+
+    // The gate reads the marker, so it must not survive the undo: put the work
+    // back and a Completed on the survivor is the survivor's own business again.
+    const W = await mk("94 Undone Way", `ord-${++seq}`), X = await mk("94 Undone Way", `ord-${++seq}`);
+    const dW = await mkReel(W.id, "Original reel");
+    await mkReel(X.id, "Second reel");
+    ok("a second pair merges", (await mergeProjectWork(X.id, W.id)).ok);
+    // Its own reel is finished — the only thing open is the one that arrived.
+    await prisma.deliverable.update({ where: { id: dW.id }, data: { status: "DONE" } });
+    const refusedW = await setQueueStatus(W.id, "Completed");
+    ok("Completed is refused on it too, and for the merge reason", !refusedW.ok && /merged onto this job/.test(refusedW.message), refusedW.message);
+    ok("the undo is accepted", (await unmergeProjectWork(X.id)).ok);
+    const afterUndo8c = await setQueueStatus(W.id, "Completed");
+    ok("…and after the undo the gate lets the survivor's own delivery through", afterUndo8c.ok, afterUndo8c.message);
+    ok("the second shoot kept its video, on its own rail", await onNotDone(X.id));
+    await nobodyOwesNothing("the undone pair leaves nothing owed by nobody");
   }
 
   // ---------------------------------------------------------------------
@@ -333,7 +468,7 @@ async function main() {
     const fresh = await prisma.deliverable.findFirstOrThrow({ where: { projectId: W.id, type: VIDEO_TYPE as "SOCIAL_REEL", removedFromOrderAt: null }, select: { id: true } });
     ok("…and recorded in the marker, so it goes home on an undo", ((await mergeFrom(X.id))?.moved.deliverableIds ?? []).includes(fresh.id));
     ok("the merged-away job stays off the Editing Room", !(await onBoard(X.id)));
-    ok("a second sweep mints nothing and revives nothing", JSON.stringify(await sweep(X.id, order(1902, PHOTOS, REEL))) === JSON.stringify({ skipped: false, retired: [], added: [], restored: [] }));
+    ok("a second sweep mints nothing and revives nothing", JSON.stringify(await sweep(X.id, order(1902, PHOTOS, REEL))) === JSON.stringify({ skipped: false, retired: [], added: [], restored: [], mergeError: null }));
     ok("the survivor's own sweep leaves both alone", (await sweep(W.id, oW)).retired.length === 0);
 
     // …and the job holding the work says on its OWN page why its owed list moved.
@@ -359,6 +494,94 @@ async function main() {
     ok("…but the job carrying them cannot itself be merged away", !chain.ok && /already carrying/.test(chain.message), chain.message);
     ok("the two merges it is carrying are untouched", !!(await mergeFrom(Z.id)) && !!(await mergeFrom(Z2.id)));
   }
+
+  // ---------------------------------------------------------------------
+  console.log("\n12. A MARKER NOBODY CAN READ FAILS CLOSED — AND SAYS SO");
+  // "Unknown beats wrong" was already the rule; the skip was silent, so a
+  // persistent failure of this one read disabled ALL deliverable reconciliation
+  // hub-wide, hourly, with nothing raised anywhere.
+  {
+    const AA = await mk("6 Broken Marker Ln", `ord-${++seq}`), BB = await mk("6 Broken Marker Ln", `ord-${++seq}`);
+    const oBB = order(2001, REEL);
+    await mkReel(AA.id, "Original reel");
+    const dBB = await mkReel(BB.id, "Second reel");
+    ok("the merge is accepted", (await mergeProjectWork(BB.id, AA.id)).ok);
+    const key = mergeKey(BB.id);
+    const good = (await prisma.appSetting.findUniqueOrThrow({ where: { key }, select: { value: true } })).value;
+    await prisma.appSetting.update({ where: { key }, data: { value: "{not json at all" } });
+
+    const rowsBefore12 = await prisma.deliverable.count();
+    const blind = await sweep(BB.id, oBB);
+    ok("the reconcile writes nothing at all", blind.added.length === 0 && blind.retired.length === 0 && (await prisma.deliverable.count()) === rowsBefore12, JSON.stringify(blind));
+    ok("…and the skip rides home in the sync's result", !!blind.mergeError && /marker/i.test(blind.mergeError ?? ""), blind.mergeError ?? "(silent)");
+    ok("the moved reel is untouched", (await row(dBB.id)).projectId === AA.id && !(await row(dBB.id)).removedFromOrderAt);
+    await prisma.appSetting.update({ where: { key }, data: { value: good } });
+    ok("and with the marker readable again the sweep is quiet", (await sweep(BB.id, oBB)).mergeError === null);
+    await unmergeProjectWork(BB.id);
+  }
+
+  // ---------------------------------------------------------------------
+  console.log("\n13. A CHILD FOLLOWS ITS PARENT, BOTH WAYS");
+  // previewMerge took every cut, per-video row and brief on the donor while
+  // filtering the deliverables to what is still owed, so a cut against a row the
+  // order dropped in August moved without its row. And the undo moved the
+  // client's ask by the merge-time id snapshot, so an ask filed on the survivor
+  // after the merge never went home.
+  {
+    const CC = await mk("42 Stale Row", `ord-${++seq}`), DD = await mk("42 Stale Row", `ord-${++seq}`);
+    await mkPhotos(CC.id);
+    const liveReel = await mkReel(DD.id, "Second reel");
+    const dropped = await mkReel(DD.id, "Reel the order dropped in August");
+    await prisma.deliverable.update({
+      where: { id: dropped.id },
+      data: { removedFromOrderAt: new Date(Date.now() - 30 * 86_400_000), removedFromOrderNote: "'Reel' is no longer on Aryeo order #2102" },
+    });
+    const staleOut = await prisma.deliverableOutput.create({
+      data: { projectId: DD.id, deliverableId: dropped.id, slot: 1, category: VIDEO_TYPE, source: "quantity" },
+      select: { id: true },
+    });
+    const staleCut = await prisma.reviewSubmission.create({
+      data: { projectId: DD.id, kind: "video", deliverableId: dropped.id, outputId: staleOut.id, slot: 1, round: 1, status: "CHANGES_REQUESTED", source: "upload", fileName: "dropped-v1.mp4" },
+      select: { id: true },
+    });
+    const staleTopaz = await prisma.topazJob.create({ data: { submissionId: staleCut.id, projectId: DD.id, state: "done" }, select: { id: true } });
+    const liveOut = await prisma.deliverableOutput.create({
+      data: { projectId: DD.id, deliverableId: liveReel.id, slot: 1, category: VIDEO_TYPE, source: "quantity" },
+      select: { id: true },
+    });
+
+    ok("the merge is accepted", (await mergeProjectWork(DD.id, CC.id, "second shoot")).ok);
+    ok("the cut against the dropped row stayed with its row", (await prisma.reviewSubmission.findUniqueOrThrow({ where: { id: staleCut.id }, select: { projectId: true } })).projectId === DD.id);
+    ok("…so did its per-video row", (await prisma.deliverableOutput.findUniqueOrThrow({ where: { id: staleOut.id }, select: { projectId: true } })).projectId === DD.id);
+    ok("…and its Topaz render", (await prisma.topazJob.findUniqueOrThrow({ where: { id: staleTopaz.id }, select: { projectId: true } })).projectId === DD.id);
+    ok("the live reel and its per-video row moved", (await row(liveReel.id)).projectId === CC.id && (await prisma.deliverableOutput.findUniqueOrThrow({ where: { id: liveOut.id }, select: { projectId: true } })).projectId === CC.id);
+    ok("nothing points at a deliverable on another job", Number((await prisma.$queryRawUnsafe<{ n: bigint }[]>(
+      `SELECT COUNT(*)::bigint AS n FROM "ReviewSubmission" s JOIN "Deliverable" d ON d.id = s."deliverableId" WHERE d."projectId" <> s."projectId"`,
+    ))[0].n) === 0);
+    ok("…and no per-video row does either", Number((await prisma.$queryRawUnsafe<{ n: bigint }[]>(
+      `SELECT COUNT(*)::bigint AS n FROM "DeliverableOutput" o JOIN "Deliverable" d ON d.id = o."deliverableId" WHERE d."projectId" <> o."projectId"`,
+    ))[0].n) === 0);
+
+    // The client rings about the second shoot's video AFTER the merge; /edit
+    // files the ask on the job holding the work, scoped to that video.
+    const askAboutMoved = await prisma.revisionBrief.create({
+      data: { projectId: CC.id, outputId: liveOut.id, source: "review_room", originalText: "Can we lose the drone shot at 0:12 on the second video?" },
+      select: { id: true },
+    });
+    const askAboutTheJob = await prisma.revisionBrief.create({
+      data: { projectId: CC.id, source: "manual", originalText: "Agent wants everything a touch warmer." },
+      select: { id: true },
+    });
+    const u = await unmergeProjectWork(DD.id);
+    ok("the undo is accepted", u.ok, u.message);
+    ok("THE CLIENT'S ASK ABOUT THE MOVED VIDEO WENT HOME WITH IT", (await prisma.revisionBrief.findUniqueOrThrow({ where: { id: askAboutMoved.id }, select: { projectId: true } })).projectId === DD.id);
+    ok("…and the job-level ask stayed where it was raised", (await prisma.revisionBrief.findUniqueOrThrow({ where: { id: askAboutTheJob.id }, select: { projectId: true } })).projectId === CC.id);
+    ok("no ask is on a different job from the video it is about", Number((await prisma.$queryRawUnsafe<{ n: bigint }[]>(
+      `SELECT COUNT(*)::bigint AS n FROM "RevisionBrief" b JOIN "DeliverableOutput" o ON o.id = b."outputId" WHERE o."projectId" <> b."projectId"`,
+    ))[0].n) === 0);
+  }
+
+  await nobodyOwesNothing("AND AT THE END OF ALL OF IT, no owed video is invisible to an editor");
 
   console.log(`\n${fail === 0 ? `ALL CHECKS PASSED (${pass} passed)` : `${fail} FAILED, ${pass} passed`}`);
   await server.stop();
