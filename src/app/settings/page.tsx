@@ -1,13 +1,14 @@
+import { Suspense } from "react";
 import { requirePageAccess } from "@/lib/auth/guards";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { SlidersHorizontal, Route, Package, ArrowRight, MessageSquareText, Clock, BellRing, Clapperboard, Users, Film } from "lucide-react";
+import { Route, Package, ArrowRight, MessageSquareText, Clock, BellRing, Clapperboard, Users, Film } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { Section } from "@/components/ui/Section";
 import { RoutingRulesForm } from "@/components/settings/RoutingRulesForm";
 import { getCurrentUser } from "@/lib/auth/user";
 import { authEnforced } from "@/lib/auth/guards";
-import { editorRouting, autoTextRules, turnaroundRules, internalAlertRules, textTemplates, reviewRoomRules, payVisibilityRules, topazSettings, DEFAULT_TOPAZ_PARAMS } from "@/lib/settings";
+import { editorRouting, autoTextRules, turnaroundRules, internalAlertRules, textTemplates, reviewRoomRules, payVisibilityRules, topazSettings, DEFAULT_TOPAZ_PARAMS, type TopazSettings } from "@/lib/settings";
 import { ARYEO_MANUAL_NOTE } from "@/lib/integrations/topaz";
 import { topazDashboard } from "@/lib/topazJobs";
 import { TopazSettingsPanel, type TopazUsage } from "@/components/settings/TopazSettingsPanel";
@@ -18,13 +19,19 @@ import { TeamNotifications } from "@/components/settings/TeamNotifications";
 import { teamNotifyRows } from "@/lib/notifyPrefs";
 import { CalendlyMappingsPanel } from "@/components/settings/CalendlyMappingsPanel";
 import { loadCalendlyPanelState } from "@/app/settings/calendlyActions";
-import { CalendarCheck, Zap, EyeOff } from "lucide-react";
+import { CalendarCheck, Zap, EyeOff, type LucideIcon } from "lucide-react";
 import { ProgramAutomationPanel } from "@/components/settings/ProgramAutomationPanel";
 import { loadAutomations } from "@/app/settings/programActions";
 import { RemindersPanel } from "@/components/settings/RemindersPanel";
 import { loadRemindersPanelState } from "@/app/settings/reminderActions";
 
 export const dynamic = "force-dynamic";
+// The two provider cards stream (see the <Suspense> boundaries below), so the
+// response stays open until Topaz and Calendly answer or their caps fire. An
+// explicit ceiling, because a stream that the platform kills half-sent leaves
+// the browser holding a page that never finishes loading — the whole screen
+// looks broken, not just the one card. /trends and /sales do the same.
+export const maxDuration = 60;
 
 // A read that leaves this machine gets a hard ceiling: null rather than a page
 // that hangs on somebody else's API. Declared out here, not inline, because the
@@ -37,6 +44,82 @@ function capped<T>(p: Promise<T>, ms: number): Promise<T | null> {
   );
 }
 
+// The shared fallback for both provider cards below: the real heading with four
+// grey bars under it, so the column keeps its shape while a provider answers.
+// Same pattern as the trends skeletons (src/components/trends/MarginByPackage.tsx).
+function ProviderCardSkeleton({ icon, title, note }: { icon: LucideIcon; title: string; note: string }) {
+  return (
+    <Section icon={icon} title={title} action={<span className="text-[11px] text-muted-2">{note}</span>}>
+      <div className="space-y-2">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="h-7 animate-pulse rounded bg-surface-2" />
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+// THE SAVED RULES DO NOT WAIT ON SOMEBODY ELSE'S API (Sep 20). Until today the
+// Topaz balance and the Calendly event-type list were members of the page's one
+// Promise.all, and a Promise.all resolves on its SLOWEST member — so all
+// fourteen cards sat behind whichever provider was slowest, and a Calendly
+// connection that is accepted and then held open silently cost the whole page
+// the full 8-second cap to fill in two cards out of fourteen. Jordan opening
+// Settings to flip one editor-routing rule was paying Calendly's latency for
+// it. The rules themselves are local reads; they now paint straight away and
+// each provider card streams into its own <Suspense> when it arrives. The caps
+// stay exactly where they were — they just hold up one card instead of all of
+// them.
+//
+// ONE THING TRADED KNOWINGLY: the Topaz card streams whole, settings form and
+// all, even though its saved rule was read with the other locals. The panel
+// takes its usage strip as a plain value rather than a promise, so there is no
+// seam to split it on from in here, and the form sits behind a skeleton for as
+// long as the balance read takes (147-953ms across the Sep 20 measurements off
+// this laptop; shorter from Vercel). Still strictly better than before, when that
+// same form waited on the slowest of all fourteen reads. Closing it properly
+// means making TopazSettingsPanel take `usage` as a promise and reading it with
+// use() — a change to that component, not to this page.
+
+// The 1080p pass. `initial` is the saved rule, already read with the rest of
+// them; the only thing awaited in here is the live balance.
+async function TopazCard({ initial }: { initial: TopazSettings }) {
+  // Only for the "what this month has cost so far" line beside the spending
+  // limits — a limit you can't see your position against is a number, not a
+  // control. Reading it asks Topaz for the balance (free, starts nothing), so
+  // it is capped and falls back to no strip rather than holding the card open.
+  const topazLane = await capped(topazDashboard().catch(() => null), 6000);
+  const usage: TopazUsage | null = topazLane
+    ? {
+        connected: topazLane.connected,
+        // null, never 0: "we couldn't ask" and "you have none left" are
+        // different problems with different answers.
+        balance: topazLane.balance ? topazLane.balance.available : null,
+        todayRenders: topazLane.today.renders,
+        monthRenders: topazLane.month.renders,
+        monthCredits: topazLane.month.credits,
+      }
+    : null;
+  return (
+    <Section icon={Film} title="1080p video pass">
+      <TopazSettingsPanel initial={initial} defaults={DEFAULT_TOPAZ_PARAMS} aryeoNote={ARYEO_MANUAL_NOTE} usage={usage} />
+    </Section>
+  );
+}
+
+// Calendly & calls (content program, spec §26): lists the account's event types
+// live, so it is capped like Topaz and renders as "unreachable" rather than
+// holding the card open.
+async function CalendlyCard() {
+  const calendly = await capped(loadCalendlyPanelState().catch(() => null), 8000);
+  return (
+    <Section icon={CalendarCheck} title="Calendly & content-program calls">
+      {calendly
+        ? <CalendlyMappingsPanel state={calendly} />
+        : <p className="text-sm text-muted">Calendly could not be reached just now — reload to try again.</p>}
+    </Section>
+  );
+}
 
 // SETTINGS — the rules the business runs on, editable by Jordan and Kyle
 // without a deploy. First resident: editor auto-routing (who gets standard /
@@ -48,49 +131,43 @@ export default async function SettingsPage() {
   if (!me && authEnforced()) redirect("/login?next=/settings");
   if (me && me.role !== "OWNER" && me.role !== "ADMIN") redirect("/");
 
-  // Team notifications (Jordan, Sep 15) — every active person, the owner
-  // included; the Sep 11 owner-only "Text me" card folded into this matrix. A
-  // roster read that fails renders the card empty rather than taking the
-  // page down with it.
-  const automations = await loadAutomations().catch(() => []);
-  // Program reminders (spec §24) — the policy, the dry run and the send
-  // ledger. The switch itself is on the automations panel above; this is the
-  // ONE place the policy is written, because this is the shape the reminder
-  // evaluator reads. A read that fails renders a note, not a blank page.
-  const reminders = await loadRemindersPanelState().catch(() => null);
-  const [rules, textRules, turns, alerts, templates, reviewRoom, payVisibility, notifyRows, topaz, topazLane, calendly] = await Promise.all([
+  // ONE WAIT, NOT THREE (Sep 20). These used to be three serial awaits —
+  // automations, then reminders, then everything else — with no data dependency
+  // between them, so the page paid two extra round trips to Neon for nothing.
+  //
+  // EVERY FALLBACK HERE IS null, NEVER AN EMPTY LIST. A read that fails still
+  // must not take the page down with it, but "the list is empty" and "we could
+  // not read the list" are different sentences and only one of them is true.
+  // An empty array used to print "Nobody active on the roster yet" at a roster
+  // of six real people, and "0 of 0" automations against thirteen keys; null
+  // prints the same honest note the reminders card has always used, and the
+  // Section badge is left off rather than asserting a number nobody read.
+  const [rules, textRules, turns, alerts, templates, reviewRoom, payVisibility, notifyRows, topaz, automations, reminders] = await Promise.all([
     editorRouting(), autoTextRules(), turnaroundRules(), internalAlertRules(), textTemplates(), reviewRoomRules(),
     payVisibilityRules().then((r) => ({ paused: r.photographerPayPaused, pausedAtISO: r.pausedAt, pausedBy: r.pausedBy })),
-    teamNotifyRows().catch(() => []),
+    // Team notifications (Jordan, Sep 15) — every active person, the owner
+    // included; the Sep 11 owner-only "Text me" card folded into this matrix.
+    teamNotifyRows().catch(() => null),
     topazSettings(),
-    // Only for the "what this month has cost so far" line beside the spending
-    // limits — a limit you can't see your position against is a number, not a
-    // control. Reading it asks Topaz for the balance (free, starts nothing), so
-    // it is capped and falls back to no strip rather than holding the page.
-    capped(topazDashboard().catch(() => null), 6000),
-    // Calendly & calls (content program, spec §26): lists the account's event
-    // types live, so it is capped like Topaz and renders as "unreachable"
-    // rather than holding the page.
-    capped(loadCalendlyPanelState().catch(() => null), 8000),
+    loadAutomations().catch(() => null),
+    // Program reminders (spec §24) — the policy, the dry run and the send
+    // ledger. The switch itself is on the automations panel above; this is the
+    // ONE place the policy is written, because this is the shape the reminder
+    // evaluator reads.
+    loadRemindersPanelState().catch(() => null),
   ]);
-
-  const topazUsage: TopazUsage | null = topazLane
-    ? {
-        connected: topazLane.connected,
-        // null, never 0: "we couldn't ask" and "you have none left" are
-        // different problems with different answers.
-        balance: topazLane.balance ? topazLane.balance.available : null,
-        todayRenders: topazLane.today.renders,
-        monthRenders: topazLane.month.renders,
-        monthCredits: topazLane.month.credits,
-      }
-    : null;
 
   return (
     <div>
+      {/* "Within a minute" is true of the rules themselves (getSetting caches
+          them for 60 seconds), but up here it read as a promise about all
+          fourteen cards, and the automated texts are not one of them: flipping
+          a text switch changes nothing until the hourly sweep runs, which the
+          Automated texts card says in its own words. Say "most" up here and let
+          that card be the specific one. */}
       <PageHeader
         title="Settings"
-        subtitle="The rules the platform runs on — changes apply to new work within a minute"
+        subtitle="The rules the platform runs on — most changes apply within a minute; the automated texts wait for the next hourly run"
       />
       <div className="mx-auto max-w-3xl space-y-6 p-4 pb-16 sm:p-6">
         <Section icon={Route} title="Editor auto-assignment">
@@ -123,8 +200,10 @@ export default async function SettingsPage() {
           <InternalAlertSettings initial={alerts} />
         </Section>
 
-        <Section icon={Users} title="Team notifications" count={notifyRows.length}>
-          <TeamNotifications rows={notifyRows} />
+        <Section icon={Users} title="Team notifications" count={notifyRows ? notifyRows.length : undefined}>
+          {notifyRows
+            ? <TeamNotifications rows={notifyRows} />
+            : <p className="text-sm text-muted">The roster could not be read just now — reload to try again. Nothing has changed about who gets notified.</p>}
         </Section>
 
         {/* Owner's own switch — read here so the card can say how long it has
@@ -142,28 +221,29 @@ export default async function SettingsPage() {
             it starts: approving a cut in there is what sets it off. The anchor
             is what the Connections page links to. */}
         <div id="topaz" className="scroll-mt-6">
-          <Section icon={Film} title="1080p video pass">
-            <TopazSettingsPanel
-              initial={topaz}
-              defaults={DEFAULT_TOPAZ_PARAMS}
-              aryeoNote={ARYEO_MANUAL_NOTE}
-              usage={topazUsage}
-            />
-          </Section>
+          <Suspense fallback={<ProviderCardSkeleton icon={Film} title="1080p video pass" note="asking Topaz where the month stands…" />}>
+            <TopazCard initial={topaz} />
+          </Suspense>
         </div>
 
         {/* CONTENT-PROGRAM AUTOMATIONS (spec §13) — every switch, including the
             ones that have never been configured. */}
         <div id="program-automations" className="scroll-mt-6">
-          <Section icon={Zap} title="Content program automations" count={`${automations.filter((a) => a.enabled).length}/${automations.length} on`}>
-            <ProgramAutomationPanel
-              isOwner={me ? me.role === "OWNER" : !authEnforced()}
-              rows={automations.map((a) => ({
-                key: a.key, enabled: a.enabled, missing: a.missing, enabledBy: a.enabledBy,
-                enabledAtISO: a.enabledAt?.toISOString() ?? null, lastRunAtISO: a.lastRunAt?.toISOString() ?? null,
-                lastError: a.lastError, lastErrorAtISO: a.lastErrorAt?.toISOString() ?? null,
-              }))}
-            />
+          <Section
+            icon={Zap}
+            title="Content program automations"
+            count={automations ? `${automations.filter((a) => a.enabled).length}/${automations.length} on` : undefined}
+          >
+            {automations
+              ? <ProgramAutomationPanel
+                  isOwner={me ? me.role === "OWNER" : !authEnforced()}
+                  rows={automations.map((a) => ({
+                    key: a.key, enabled: a.enabled, missing: a.missing, enabledBy: a.enabledBy,
+                    enabledAtISO: a.enabledAt?.toISOString() ?? null, lastRunAtISO: a.lastRunAt?.toISOString() ?? null,
+                    lastError: a.lastError, lastErrorAtISO: a.lastErrorAt?.toISOString() ?? null,
+                  }))}
+                />
+              : <p className="text-sm text-muted">The automation switches could not be read just now — reload to try again. Nothing has been turned on or off.</p>}
           </Section>
         </div>
 
@@ -180,9 +260,9 @@ export default async function SettingsPage() {
         </div>
 
         <div id="calendly" className="scroll-mt-6">
-          <Section icon={CalendarCheck} title="Calendly & content-program calls">
-            {calendly ? <CalendlyMappingsPanel state={calendly} /> : <p className="text-sm text-muted">Calendly could not be reached just now — reload to try again.</p>}
-          </Section>
+          <Suspense fallback={<ProviderCardSkeleton icon={CalendarCheck} title="Calendly & content-program calls" note="asking Calendly for the event types…" />}>
+            <CalendlyCard />
+          </Suspense>
         </div>
 
         <Section icon={Package} title="Product categories">
@@ -196,13 +276,13 @@ export default async function SettingsPage() {
             Open the product map <ArrowRight className="size-3.5" />
           </Link>
         </Section>
-
-        <Section icon={SlidersHorizontal} title="More settings">
-          <p className="text-sm text-muted">
-            Turnaround promises, alert thresholds, and text templates are next to move in here.
-            Ask and they&rsquo;ll be added — anything currently hard-coded can become a setting.
-          </p>
-        </Section>
+        {/* RETIRED Sep 20: the "More settings" card promised that turnaround
+            promises, alert thresholds and text templates were "next to move in
+            here". All three have shipped on this very page for months — they
+            are the Turnaround promises, Internal alerts and Text wording cards
+            above — so the card was telling the three people who use this screen
+            that a finished tool was half-built. Anything hard-coded can still
+            become a setting; that is a conversation, not a card. */}
       </div>
     </div>
   );
