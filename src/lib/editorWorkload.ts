@@ -1,7 +1,8 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
-import { EDITORS, editorKeyForTeamName, editorMeta } from "@/lib/editors";
+import { EDITORS, VIDEO_LANE_KEYS, editorKeyForTeamName, editorMeta } from "@/lib/editors";
+import { NOT_A_CUT } from "@/lib/reviewCuts";
 
 // ---------------------------------------------------------------------------
 // WHAT IS ON WHOSE DESK, AND WHETHER IT FITS (R08, review Sep 18).
@@ -25,13 +26,18 @@ import { EDITORS, editorKeyForTeamName, editorMeta } from "@/lib/editors";
 // guess dressed as a measurement. Everything below is measured off this
 // database and says how big its sample was:
 //
-//   · throughput — approved cuts per editor per week over the sample window.
-//     Thin (John Mark 9 in eight weeks, Kim 3) and that is the honest picture
-//     of a hub that has never run at scale, so the number is reported WITH its
-//     sample and is null rather than misleading when there is too little.
-//   · turnaround — the median hours from shoot to first cut, 22 samples on
-//     production today. It is ELAPSED time, not hands-on effort, and the
-//     wording everywhere says so.
+//   · throughput — approved cuts per editor per week over the sample window,
+//     dated by the decision that finished them and credited to whoever handed
+//     each one in (see measuredThroughput for why both of those are the rule).
+//     The sample is thin, because this is a hub that has never run at scale, so
+//     the number is reported WITH its sample and is null rather than misleading
+//     when there is too little. No counts are written into this comment: they
+//     rot. This line read "John Mark 9 in eight weeks, Kim 3" while the panel
+//     was printing 13 and 5, and the panel prints the sample beside every rate
+//     anyway, which is the copy a reader should trust.
+//   · turnaround — the median hours from shoot to first cut. Same rule about
+//     counts: the footer prints how many rows it was measured over. It is
+//     ELAPSED time, not hands-on effort, and the wording everywhere says so.
 //
 // A reader gets "John has 7 videos he can work on, he finishes about 1 a week,
 // two are already late" — three facts, each of which came from somewhere.
@@ -208,17 +214,62 @@ export function foldWorkload(
 }
 
 /** Approved cuts per editor over the window — the only capacity number that is
- *  not a guess. Keyed the same way the queue keys a row: the vendor pin first,
- *  then the assigned team member's name through the roster. */
+ *  not a guess.
+ *
+ *  TWO RULES, BOTH ABOUT NOT CREDITING THE WRONG THING (review Sep 20 2026).
+ *
+ *  THE CLOCK IS `decidedAt`, NOT `updatedAt`. `updatedAt` is `@updatedAt`: it
+ *  moves every time anything later touches the row, and plenty does. On
+ *  production today 20 of 25 approved cuts carry an `updatedAt` more than an
+ *  hour past their decision, 14 more than a day, and "August 2026 Personal
+ *  Branding" round 1 is 404 hours out — dragged forward by readyToSend stamping
+ *  sentToClientAt on it, and deliverableOutputs backfilling an outputId is the
+ *  same story in bulk. Since `updatedAt >= decidedAt` always, the error only
+ *  ever runs one way: an old approval gets pulled back INTO the window and the
+ *  rate reads high. Nothing has miscounted yet only because the whole review
+ *  room is younger than eight weeks — the oldest approval is Aug 4, so that
+ *  cover runs out around Oct 1 and Kyle marking one old cut "sent" would start
+ *  inflating somebody's rate. The decision stamp cannot move, so it is the one
+ *  to window on. An APPROVED row with no `decidedAt` (none exist today) falls
+ *  out of the count rather than in, which is the safe side of the mistake.
+ *
+ *  THE CREDIT GOES TO WHOEVER HANDED THE CUT IN. The project's editor pin is
+ *  who is on the job NOW, which is not the same person the moment anybody
+ *  repoints a job — reassignEditor refuses on a DELIVERED job for exactly this
+ *  reason, but a REVIEW or REVISION job is two clicks, and the project merge
+ *  moves every submission of the losing job in one updateMany. The row already
+ *  records its own author, so use it, the same order review/actions.ts uses
+ *  for a cut's notes: submitter first, the project pin behind it.
+ *
+ *  Only a VIDEO LANE key takes the credit, and the reason is NOT that an
+ *  operator might otherwise take a cut off its editor — the first draft of this
+ *  comment said that and the review of Sep 20 2026 disproved it. An operator
+ *  never lands an operator key here: uploadAuthor (review/actions.ts) writes
+ *  `submittedByKey` only when the uploader's role is EDITOR, so Kyle's one row
+ *  and Jordan's three are already NULL and already fall through to the project
+ *  pin, and the submit-for-review button stamps the PROJECT's editor key, which
+ *  is how Jordan's one submit-on-behalf row carries `luma`. The gate earns its
+ *  place for a different case: an EDITOR whose key falls back to
+ *  `slugForName(name)` produces a slug that is not on the roster, and without
+ *  the gate the `key in EDITORS` guard below would DROP that cut outright
+ *  rather than let the project pin count it.
+ */
 export async function measuredThroughput(sampleWeeks = 8): Promise<Map<string, number>> {
   const since = new Date(Date.now() - sampleWeeks * 7 * DAY);
   const rows = await prisma.reviewSubmission.findMany({
-    where: { status: "APPROVED", updatedAt: { gte: since } },
-    select: { project: { select: { editorVendorKey: true, editor: { select: { name: true } } } } },
+    where: { status: "APPROVED", decidedAt: { gte: since } },
+    select: {
+      submittedByKey: true,
+      project: { select: { editorVendorKey: true, editor: { select: { name: true } } } },
+    },
   });
   const out = new Map<string, number>();
   for (const r of rows) {
-    const key = r.project.editorVendorKey ?? editorKeyForTeamName(r.project.editor?.name);
+    const submitter =
+      r.submittedByKey && (VIDEO_LANE_KEYS as readonly string[]).includes(r.submittedByKey)
+        ? r.submittedByKey
+        : null;
+    const key = submitter ?? r.project.editorVendorKey ?? editorKeyForTeamName(r.project.editor?.name);
     if (!key || !(key in EDITORS)) continue;
     out.set(key, (out.get(key) ?? 0) + 1);
   }
@@ -226,11 +277,46 @@ export async function measuredThroughput(sampleWeeks = 8): Promise<Map<string, n
 }
 
 /** Median ELAPSED hours from shoot to the first cut being handed in. Not
- *  hands-on effort, and never described as such. */
+ *  hands-on effort, and never described as such.
+ *
+ *  ONLY ROWS THAT ARE A CUT (review Sep 20 2026). A round-1 row is dated by
+ *  when it was CREATED, and two kinds of row get created without a cut ever
+ *  arriving: an upload that was reserved and abandoned (reviewCuts flips it to
+ *  UPLOAD_FAILED after 24h, and UPLOADING is the same row before the sweep sees
+ *  it), and the legacy withdrawn rows — 328 Columbia Ave is the one still in
+ *  the table, and at 50 hours it was sitting in this median as a first cut that
+ *  was taken down. That is precisely the set the review room already exports as
+ *  NOT_A_CUT (reviewCuts.ts), so this imports it rather than retyping it — a
+ *  retyped copy is a list that drifts.
+ *
+ *  SUPERSEDED IS DELIBERATELY NOT EXCLUDED, and the first pass of this change
+ *  wrongly added it (caught in review, Sep 20 2026). The Editing Room's own
+ *  counts do spell `[...NOT_A_CUT, "SUPERSEDED"]`, but they are asking a
+ *  different question — "is anybody still waiting on this?" — and a superseded
+ *  round is nobody's wait. Here the question is when the first cut arrived, and
+ *  a SUPERSEDED round 1 is an editor who handed one in and then replaced it
+ *  before anyone ruled: reviewCuts supersedes ANY earlier PENDING round of the
+ *  same deliverable+slot, round 1 included. Dropping it would not mis-date that
+ *  job, it would delete the job from the median entirely, because this query
+ *  only ever looks at round 1. No such row exists today, so the wrong list
+ *  would have been a silent under-count waiting to happen.
+ *
+ *  PENDING and CHANGES_REQUESTED stay IN for the same reason: a cut that was
+ *  handed in and is awaiting a verdict, or came back for changes, is exactly
+ *  the event this is trying to date.
+ *
+ *  AND THE SAMPLE IS THE NEWEST 400, not whichever 400 Postgres felt like. The
+ *  cap has never been reached (27 rows today), so this changes nothing now and
+ *  stops the number from silently becoming an all-time slice later. */
 export async function measuredFirstCut(): Promise<{ medianHours: number | null; samples: number }> {
   const rows = await prisma.reviewSubmission.findMany({
-    where: { round: 1, project: { shootDate: { not: null } } },
+    where: {
+      round: 1,
+      status: { notIn: [...NOT_A_CUT] },
+      project: { shootDate: { not: null } },
+    },
     select: { createdAt: true, project: { select: { shootDate: true } } },
+    orderBy: { createdAt: "desc" },
     take: 400,
   });
   const hours = rows
